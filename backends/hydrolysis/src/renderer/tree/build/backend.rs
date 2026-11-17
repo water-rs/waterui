@@ -341,12 +341,13 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         (): (),
     ) -> RenderNode<E> {
         let renderer = &mut *self.renderer;
-        let (content, scoped_env) = flatten_environment_metadata_owned(AnyView::new(metadata), env);
+        let Metadata { content, value } = metadata;
         // The snapshot replaces the environment wholesale, so the
         // accessibility naming scope this build installed above it has
         // to be carried across or the name is lost — see
-        // `restore_a11y_naming_scope`.
-        let scoped_env = restore_a11y_naming_scope::<E>(env, scoped_env);
+        // `restore_a11y_naming_scope` — and so do the defaults an enclosing
+        // scope gives its whole subtree.
+        let scoped_env = apply_snapshot_defaults(env, restore_a11y_naming_scope::<E>(env, value));
         // Carry the scoped environment in the node (not flattened away), so
         // it is also the env used at flush/measure/layout — text shaping and
         // a11y read env every frame.
@@ -796,27 +797,18 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
         let (gesture, action) = value.into_parts();
-        // A node has no `content` at flush, so resolve the two
-        // content-derived pieces now (the default a11y label string and
-        // the gesture group identity) and store them in the effect.
+        let child = RenderNode::build_view(content, env, renderer);
         let effect = GestureObserverEffect {
             gesture,
             action: Rc::new(RefCell::new(action)),
-            #[cfg(feature = "accessibility")]
-            default_a11y_label: renderer.accessibility_label_from_view(&content, env),
-            gesture_group_identity: gesture_group_identity(&content),
+            gesture_group_identity: child.gesture_group_identity(),
             gesture_target: Cell::new(None),
             chrome: RefCell::new(None),
             chrome_state: nami::Binding::container(
                 waterui_core::interaction::InteractionState::empty(),
             ),
         };
-        RenderNode::build_wrapper(
-            WrapperEffect::GestureObserver(effect),
-            content,
-            env,
-            renderer,
-        )
+        RenderNode::wrap(WrapperEffect::GestureObserver(effect), child, env, renderer)
     }
 
     fn focused(
@@ -849,7 +841,6 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     ) -> RenderNode<E> {
         let renderer = &mut *self.renderer;
         let (axis, content, controller, offset) = native.into_inner().into_parts();
-        let content = normalize_layout_view(content, env);
         // A scroll surface owns §7.1 for its subtree: the layout
         // pass hands the surface its facts and the child lays out
         // with no safe-area context — the surface insets and
@@ -1288,10 +1279,12 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
 
     fn provided_metadata_dyn(
         &mut self,
-        mut metadata: ErasedPayload<'_>,
+        metadata: ErasedPayload<'_>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        #[cfg(any(feature = "menu", hydrolysis_video_plane))]
+        let mut metadata = metadata;
         #[cfg(feature = "menu")]
         if let Some(metadata) = metadata.take::<Metadata<PopupMenuSurface>>() {
             return self.popup_menu_surface(metadata, env);

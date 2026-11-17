@@ -48,10 +48,6 @@ macro_rules! raw_view {
             fn body(self, _env: &$crate::Environment) -> impl $crate::View {
                 $crate::Native::new(self)
             }
-
-            fn stretch_axis(&self) -> $crate::layout::StretchAxis {
-                $axis
-            }
         }
     };
 
@@ -62,10 +58,6 @@ macro_rules! raw_view {
         impl $crate::View for $ty {
             fn body(self, _env: &$crate::Environment) -> impl $crate::View {
                 $crate::Native::new(self)
-            }
-
-            fn stretch_axis(&self) -> $crate::layout::StretchAxis {
-                $crate::layout::StretchAxis::None
             }
         }
     };
@@ -154,10 +146,6 @@ macro_rules! configurable {
                     $crate::AnyView::new($crate::Native::new(($resolve_native)(config, env)))
                 }
             }
-
-            fn stretch_axis(&self) -> $crate::layout::StretchAxis {
-                $crate::NativeView::stretch_axis(&self.0)
-            }
         }
     };
 
@@ -208,10 +196,6 @@ macro_rules! configurable {
                 } else {
                     $crate::AnyView::new($crate::Native::new(($resolve_native)(config, env)))
                 }
-            }
-
-            fn stretch_axis(&self) -> $crate::layout::StretchAxis {
-                $crate::NativeView::stretch_axis(&self.0)
             }
         }
     };

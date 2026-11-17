@@ -495,8 +495,4 @@ impl View for ExternalFrameView {
     fn body(self, _env: &Environment) -> impl View {
         Native::new(self)
     }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        NativeView::stretch_axis(self)
-    }
 }

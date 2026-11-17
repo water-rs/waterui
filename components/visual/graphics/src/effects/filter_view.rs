@@ -77,7 +77,6 @@ pub use filtrate::{Filter, FilterImage, LutImage, Reach};
 use nami::SignalExt;
 use nami::{Signal, signal::IntoComputed};
 use waterui_core::animation::ChangeAnimation;
-use waterui_core::layout::StretchAxis;
 use waterui_core::{AnyView, Environment, IntoSignalF32, View};
 
 #[cfg(feature = "gpu")]
@@ -894,10 +893,6 @@ impl<V: View, F: Reach + RenderTransfer> View for Filtered<V, F> {
     fn body(self, _env: &Environment) -> impl View {
         self.erase()
     }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        self.view.stretch_axis()
-    }
 }
 
 /// A view with an effect on its rendered subtree, as a backend receives it.
@@ -925,22 +920,13 @@ impl FilteredView {
     }
 }
 
-// `raw_view!` only takes a constant axis; an effect never changes how its
-// subtree stretches, so both impls report the content's axis, as `Filtered`
-// does.
-impl waterui_core::NativeView for FilteredView {
-    fn stretch_axis(&self) -> StretchAxis {
-        self.content.stretch_axis()
-    }
-}
+/// An effect never changes how its subtree stretches, so backends answer
+/// the axis from the realized content.
+impl waterui_core::NativeView for FilteredView {}
 
 impl View for FilteredView {
     fn body(self, _env: &Environment) -> impl View {
         waterui_core::Native::new(self)
-    }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        self.content.stretch_axis()
     }
 }
 
@@ -1032,10 +1018,6 @@ impl<V: View> WithEffect<V, filtrate::ShaderEffect> {
 impl<V: View, E: filtrate::Effect + RenderTransfer> View for WithEffect<V, E> {
     fn body(self, _env: &Environment) -> impl View {
         self.erase()
-    }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        self.view.stretch_axis()
     }
 }
 
@@ -2158,8 +2140,6 @@ mod tests {
     #[cfg(feature = "gpu")]
     use waterui_core::AnyView;
     use waterui_core::animation::Animation;
-    use waterui_core::layout::StretchAxis;
-    use waterui_core::{Native, NativeView, View};
 
     /// Records each stage's kind, name and parameter offset, and checks that
     /// it carries its shader source.
@@ -2321,20 +2301,6 @@ mod tests {
         drop(guards);
     }
 
-    /// Content that stretches horizontally only.
-    struct HorizontalRule;
-    waterui_core::raw_view!(HorizontalRule, StretchAxis::Horizontal);
-
-    #[cfg(feature = "gpu")]
-    #[test]
-    fn effect_view_reports_its_content_stretch_axis() {
-        let effected = HorizontalRule.effect(NoopEffect);
-        assert_eq!(View::stretch_axis(&effected), StretchAxis::Horizontal);
-        let erased = effected.erase();
-        assert_eq!(View::stretch_axis(&erased), StretchAxis::Horizontal);
-        assert_eq!(NativeView::stretch_axis(&erased), StretchAxis::Horizontal);
-    }
-
     /// A shader effect's reactive parameter reaches the built effect: the
     /// binding's change crosses the lowered view's subscriptions and wakes
     /// the engine's redraw callback, exactly as a filter parameter does.
@@ -2400,20 +2366,6 @@ mod tests {
         animated.set(false);
         assert_eq!(redraws.load(Ordering::Relaxed), 2);
         drop(guards);
-    }
-
-    #[test]
-    fn output_sized_view_reports_its_content_stretch_axis() {
-        let sized = HorizontalRule
-            .brightness(0.25_f32)
-            .erase()
-            .output_size(OutputSize::Scale(2.0));
-        assert_eq!(View::stretch_axis(&sized), StretchAxis::Horizontal);
-        assert_eq!(NativeView::stretch_axis(&sized), StretchAxis::Horizontal);
-        assert_eq!(
-            View::stretch_axis(&Native::new(sized)),
-            StretchAxis::Horizontal
-        );
     }
 
     #[cfg(feature = "gpu")]

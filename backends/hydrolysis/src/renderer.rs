@@ -3,7 +3,6 @@
 //! This module owns [`HydrolysisRenderer`] — its construction and field
 //! layout live here; behavior is split into focused submodules:
 //!
-//! - [`dispatch`]: type-erased view dispatch and `HydroNativeView` registration
 //! - [`frame`]: frame lifecycle, layer stack, frame triggers, statistics
 //! - [`FrameSignals`]: the shared frame trigger handle (lives in
 //!   `waterui-backend-core`, shared with other self-drawn backends)
@@ -120,14 +119,9 @@ pub use render::FrameError;
 pub use render::FrameRenderTarget;
 pub use render::WidgetRenderContext;
 pub use render::*;
-pub use render::{
-    anchor_point, estimate_layout_intrinsic, gesture_group_identity, normalize_layout_view,
-    normalize_view_for_render, path_commands_to_path, resolved_shape_to_path, transformed_rect,
-};
-use rustc_hash::FxHashSet;
+pub use render::{anchor_point, path_commands_to_path, resolved_shape_to_path, transformed_rect};
 use signals::LayoutDependencies;
 use std::any::Any;
-use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::{Rc, Weak};
@@ -173,7 +167,7 @@ use waterui::accessibility::{
     AccessibilityValue,
 };
 use waterui::animation::Animation;
-use waterui::background::{Background, GlassBackground, MaterialBackground, MaterialGroup};
+use waterui::background::{GlassBackground, MaterialBackground};
 use waterui::border::Border;
 use waterui::component::badge::BadgeConfig;
 use waterui::component::focus::Focused;
@@ -181,31 +175,32 @@ use waterui::component::focus::Focused;
 use waterui::component::list::{ListConfig, ListItem};
 use waterui::component::progress::ProgressConfig;
 #[cfg(feature = "table")]
-use waterui::component::table::{TableColumn, TableConfig};
+use waterui::component::table::TableConfig;
 use waterui::cursor::{Cursor, CursorStyle};
 use waterui::drag_drop::{Draggable, DropDestination};
 use waterui::filter::Opacity;
-use waterui::gesture::{Gesture, GestureObserver};
+use waterui::gesture::Gesture;
 use waterui::interaction::Hittable;
 use waterui::metadata::anchored_overlay::AnchoredOverlay;
 #[cfg(feature = "menu")]
-use waterui::metadata::context_menu::{ContextMenu, ResolvedContextMenu};
-use waterui::metadata::secure::{HighDynamicRange, Secure, StandardDynamicRange};
+use waterui::metadata::context_menu::ResolvedContextMenu;
 #[cfg(feature = "navigation")]
 use waterui::navigation::tab::{NativeTabStyle, TabsLayout};
 #[cfg(feature = "navigation")]
 use waterui::navigation::{
-    CustomNavigationController, NavigationController, NavigationLinkHint, NavigationSplitLayout,
-    NavigationStack, NavigationToolbarPlacement, NavigationTransaction,
-    NavigationTransitionDestination, NavigationTransitionSource, NavigationView,
+    CustomNavigationController, NavigationController, NavigationSplitLayout, NavigationStack,
+    NavigationTransaction, NavigationView,
 };
 use waterui::style::{Offset, Rotation, Scale, Shadow};
 use waterui::widget::Divider;
 #[cfg(any(feature = "menu", feature = "color-picker"))]
 use waterui::window::{Window, WindowState, WindowStyle};
-use waterui_controls::button::{Button, ButtonConfig};
+#[cfg(feature = "menu")]
+use waterui_controls::button::Button;
+use waterui_controls::button::ButtonConfig;
 #[cfg(feature = "accessibility")]
 use waterui_controls::input::ContentType;
+#[cfg(feature = "menu")]
 use waterui_controls::label::Label as SemanticLabel;
 #[cfg(feature = "menu")]
 use waterui_controls::menu::{CommandRole, ResolvedCommand, ResolvedMenu, ResolvedMenuItem};
@@ -215,11 +210,9 @@ use waterui_controls::slider::SliderConfig;
 use waterui_controls::stepper::StepperConfig;
 #[cfg(feature = "text-field")]
 use waterui_controls::text_field::ResolvedTextFieldConfig;
-#[cfg(feature = "navigation")]
-use waterui_controls::text_field::TextField;
 #[cfg(feature = "toggle")]
 use waterui_controls::toggle::ToggleConfig;
-use waterui_core::dynamic::{Dynamic, DynamicInitialContent};
+use waterui_core::dynamic::DynamicInitialContent;
 use waterui_core::event::{Event, HoverEvent, LifeCycle, LifeCycleHook, OnEvent};
 #[cfg(any(feature = "menu", feature = "color-picker"))]
 use waterui_core::handler::AnyViewBuilder;
@@ -227,15 +220,14 @@ use waterui_core::handler::{BoxedAction, SharedAction};
 #[cfg(any(feature = "menu", feature = "color-picker"))]
 use waterui_core::impl_extractor;
 use waterui_core::key::{KeyHandling, KeyPress, OnKeyPress};
+#[cfg(any(feature = "menu", feature = "color-picker"))]
+use waterui_core::layout::Point as LayoutPoint;
 use waterui_core::layout::{
-    HorizontalAlignment, Layout, PlacedSubview, Point as LayoutPoint, ProposalSize,
-    Rect as LayoutRect, Size as LayoutSize, StretchAxis, SubView, SubviewPlacement,
-    VerticalAlignment, ViewDimensions,
+    HorizontalAlignment, Layout, ProposalSize, Rect as LayoutRect, Size as LayoutSize, StretchAxis,
+    SubView, SubviewPlacement, VerticalAlignment, ViewDimensions,
 };
 #[cfg(feature = "accessibility")]
 use waterui_core::metadata::MetadataKey;
-#[cfg(any(feature = "table", feature = "navigation"))]
-use waterui_core::views::Views;
 use waterui_core::{AnyView, Environment, Metadata, Native, Retain, Str, View};
 #[cfg(feature = "picker")]
 use waterui_form::picker::PickerConfig;
@@ -246,28 +238,25 @@ use waterui_form::picker::date::DatePickerConfig;
 #[cfg(feature = "secure-field")]
 use waterui_form::secure::{Secure as FormSecure, SecureFieldConfig};
 use waterui_graphics::Gradient;
-use waterui_graphics::backend::{FilteredView, SceneView};
-use waterui_graphics::canvas::CanvasView;
+use waterui_graphics::backend::FilteredView;
+#[cfg(any(feature = "menu", feature = "navigation", feature = "color-picker"))]
 use waterui_graphics::color::Color;
 #[cfg(hydrolysis_gpu)]
 use waterui_graphics::gpu::RedrawHandle;
 #[cfg(hydrolysis_gpu)]
 use waterui_graphics::{ExternalFrameView, GpuView};
 
-#[cfg(waterui_feature = "map")]
-use waterui::map::MapConfig;
 #[cfg(waterui_feature = "webview")]
 use waterui::webview::WebView;
 use waterui_icon::SystemIcon;
-use waterui_layout::container::{FixedContainer, LazyContainer};
-use waterui_layout::safe_area::IgnoreSafeArea;
+use waterui_layout::container::FixedContainer;
 #[cfg(feature = "accessibility")]
 use waterui_layout::scroll::Axis as ScrollAxis;
-use waterui_layout::scroll::ScrollView;
 use waterui_layout::spacer::Spacer;
 use waterui_shape::{ClipShape, PathCommand, ResolvedShape, ShapeKind};
+#[cfg(any(feature = "menu", all(feature = "list", feature = "accessibility")))]
+use waterui_text::Text;
 use waterui_text::styled::StyledStr;
-use waterui_text::{Text, TextConfig};
 
 use crate::animation::{
     AnimatedScalarHandle, AnimationController, AnimationKey, PerpetualAnimation,
@@ -2051,6 +2040,12 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
             theme,
             crate::text::ParleyEngine::from_collection(fonts, family_resolution),
         )
+    }
+}
+
+impl<E: crate::text::TextEngine> core::fmt::Debug for HydrolysisRenderer<E> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("HydrolysisRenderer").finish_non_exhaustive()
     }
 }
 

@@ -349,28 +349,9 @@ fn offscreen_scale_factor() -> f64 {
 /// `video-gpu` / `map-gpu` features. What this renderer installs are the
 /// platform's own primitives it bridges: the system web view on macOS and the
 /// `<video>` element on the web.
-#[cfg(any(
-    test,
-    feature = "text-field",
-    feature = "secure-field",
-    feature = "color-picker",
-    feature = "date-picker",
-    feature = "list",
-    feature = "navigation",
-    feature = "table",
-    hydrolysis_system_webview,
-    all(target_arch = "wasm32", feature = "web", feature = "video")
-))]
+#[cfg(any(test, hydrolysis_component_hooks))]
 fn install_native_component_hooks(env: &mut Environment) {
-    #[cfg(any(
-        test,
-        feature = "text-field",
-        feature = "secure-field",
-        feature = "color-picker",
-        feature = "date-picker",
-        feature = "list",
-        feature = "navigation"
-    ))]
+    #[cfg(any(test, hydrolysis_localization))]
     crate::localization::install(env);
     // The only web engine this backend knows about is the platform's own: a
     // browser engine an application links installs its realization itself.
@@ -492,18 +473,7 @@ pub fn run(app: impl FnOnce(Environment) -> App, env: Environment, style: impl c
     waterui::inspector::install(&mut env, inspector);
     let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
     let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
-    #[cfg(any(
-        test,
-        feature = "text-field",
-        feature = "secure-field",
-        feature = "color-picker",
-        feature = "date-picker",
-        feature = "list",
-        feature = "navigation",
-        feature = "table",
-        hydrolysis_system_webview,
-        all(target_arch = "wasm32", feature = "web", feature = "video")
-    ))]
+    #[cfg(any(test, hydrolysis_component_hooks))]
     install_native_component_hooks(&mut env);
     install_headless_window_managers::<crate::text::ParleyEngine>(
         &mut env,

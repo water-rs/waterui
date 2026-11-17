@@ -353,9 +353,8 @@ pub fn str_accessibility<E: crate::text::TextEngine>(
     }
 }
 
-/// Measures a retained string leaf from its immutable content, mirroring how
-/// [`measure_view_dimensions_with_proposal`] measures a `Str` (plain styled text,
-/// leading alignment, wrapped at the proposal width).
+/// Measures a retained string leaf from its immutable content: plain styled
+/// text, leading alignment, wrapped at the proposal width.
 pub fn measure_str_node<E: crate::text::TextEngine>(
     text: &Str,
     proposal: ProposalSize,

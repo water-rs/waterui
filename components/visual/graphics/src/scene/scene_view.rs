@@ -497,10 +497,6 @@ impl View for SceneView {
         // tree. There is no second renderer to fall back on.
         AnyView::new(Native::new(self))
     }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        scene_stretch_axis(self.intrinsic_size())
-    }
 }
 
 #[cfg(test)]

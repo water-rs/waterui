@@ -11,7 +11,7 @@ use core::time::Duration;
 
 use nami::{Computed, SignalExt as _, signal::IntoComputed};
 use waterui_core::easing::EasingCurve;
-use waterui_core::layout::{Point, Size, StretchAxis};
+use waterui_core::layout::{Point, Size};
 use waterui_core::{Environment, View, contract_violation};
 use waterui_graphics::canvas::{Canvas, Path, PathBuilder};
 use waterui_graphics::color::Color;
@@ -389,11 +389,6 @@ impl View for MorphShape {
                 .computed();
             cx.fill(outline, fill);
         })
-    }
-
-    /// A canvas without an intrinsic size fills both axes.
-    fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::Both
     }
 }
 

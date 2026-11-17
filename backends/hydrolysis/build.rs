@@ -120,6 +120,28 @@ fn main() {
         hydrolysis_system_webview: {
             any(hydrolysis_macos_system_webview, hydrolysis_web_system_webview)
         },
+        // The built-in localized strings: the controls that draw them, and the
+        // list and navigation chrome that name accessibility nodes with them.
+        hydrolysis_localization: {
+            any(
+                feature = "text-field",
+                feature = "secure-field",
+                feature = "color-picker",
+                feature = "date-picker",
+                feature = "navigation",
+                all(feature = "list", feature = "accessibility")
+            )
+        },
+        // The renderer installs component hooks: its localizations, the
+        // platform web view and `<video>` it bridges, and the table hook.
+        hydrolysis_component_hooks: {
+            any(
+                hydrolysis_localization,
+                hydrolysis_system_webview,
+                feature = "table",
+                all(target_arch = "wasm32", feature = "web", feature = "video")
+            )
+        },
         // The persistent pipeline cache serialises through `std::fs` into a
         // platform cache directory; targets without that filesystem contract
         // (wasm, redox) compile the renderer without it.

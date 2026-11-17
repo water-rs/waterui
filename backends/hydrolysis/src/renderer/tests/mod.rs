@@ -184,6 +184,63 @@ use cherenkov_record::{
 };
 use waterui_core::handler::SharedAction;
 
+/// A view realized into a retained node and measured through it — the path
+/// layout measures every child on.
+pub(super) struct Realized {
+    renderer: HydrolysisRenderer<ParleyEngine>,
+    node: RenderNode<ParleyEngine>,
+    env: Environment,
+}
+
+impl Realized {
+    pub(super) fn new(view: impl View, env: &Environment) -> Self {
+        Self::with_renderer(view, env, test_renderer())
+    }
+
+    pub(super) fn with_theme(
+        view: impl View,
+        env: &Environment,
+        theme: &Rc<dyn WidgetTheme>,
+    ) -> Self {
+        Self::with_renderer(
+            view,
+            env,
+            HydrolysisRenderer::with_engine(
+                Rc::clone(theme),
+                ParleyEngine::system(FontFamilyResolution::Strict),
+            ),
+        )
+    }
+
+    pub(super) fn with_renderer(
+        view: impl View,
+        env: &Environment,
+        mut renderer: HydrolysisRenderer<ParleyEngine>,
+    ) -> Self {
+        let node = RenderNode::build(AnyView::new(view), env, &mut renderer);
+        Self {
+            renderer,
+            node,
+            env: env.clone(),
+        }
+    }
+
+    pub(super) fn measure(&mut self, proposal: ProposalSize) -> ViewDimensions {
+        self.node.prepare_for_measure(&mut self.renderer);
+        let theme = self.renderer.theme();
+        self.node
+            .measure(&mut self.renderer.state, &self.env, &theme, proposal)
+    }
+
+    pub(super) fn intrinsic(&mut self) -> LayoutSize {
+        self.measure(ProposalSize::UNSPECIFIED).size
+    }
+
+    pub(super) fn stretch_axis(&self) -> StretchAxis {
+        self.node.stretch()
+    }
+}
+
 fn test_renderer() -> HydrolysisRenderer<crate::text::ParleyEngine> {
     test_renderer_with_theme(MinimalTestTheme::default())
 }
@@ -486,15 +543,6 @@ pub fn capture_bytes(runtime: &crate::HeadlessRuntime) -> u64 {
 #[derive(Clone, Default)]
 pub struct BadgeDrawLog(pub Rc<RefCell<Vec<Rect>>>);
 
-#[derive(Clone, Copy)]
-struct RecursivelyErasedView;
-
-impl View for RecursivelyErasedView {
-    fn body(self, _env: &Environment) -> impl View {
-        AnyView::new(self)
-    }
-}
-
 #[derive(Clone)]
 struct EmitsDuringSignalSubscription<T> {
     subscribed: Rc<Cell<bool>>,
@@ -752,29 +800,19 @@ fn text_input_target(
 }
 
 #[test]
-fn measure_layout_dimensions_collects_alignment_keys_from_wrapper_layouts() {
+fn a_stack_collects_alignment_keys_from_wrapper_layouts() {
+    use waterui_layout::container::FixedContainer;
     let env = test_environment();
-    let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-    let child = normalize_layout_view(
-        AnyView::new(().size(20.0, 10.0).horizontal_alignment_guide(
-            HorizontalAlignment::Leading,
-            |dimensions: &ViewDimensions| dimensions.size.width * 0.5,
-        )),
-        &env,
-    );
+    let child = AnyView::new(().size(20.0, 10.0).horizontal_alignment_guide(
+        HorizontalAlignment::Leading,
+        |dimensions: &ViewDimensions| dimensions.size.width * 0.5,
+    ));
     let layout = VStackLayout {
         alignment: HorizontalAlignment::Leading,
         spacing: Computed::constant(0.0),
     };
-    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
-    let dimensions = measure_layout_dimensions(
-        &layout,
-        [&child],
-        ProposalSize::UNSPECIFIED,
-        &mut state,
-        &env,
-        &theme,
-    );
+    let dimensions = Realized::new(FixedContainer::new(layout, vec![child]), &env)
+        .measure(ProposalSize::UNSPECIFIED);
 
     assert_eq!(
         dimensions.explicit_horizontal(HorizontalAlignment::Leading),
@@ -782,8 +820,8 @@ fn measure_layout_dimensions_collects_alignment_keys_from_wrapper_layouts() {
     );
 }
 
-/// A plain `FixedContainer` — normalization's form, before `body` wraps its
-/// layout in `DirectionalLayout` — must still resolve explicit horizontal
+/// A plain `FixedContainer` — before `body` wraps its layout in
+/// `DirectionalLayout` — must still resolve explicit horizontal
 /// guides against the placements `DirectionalLayout` produces: under RTL the
 /// leading-aligned child sits on the trailing edge, so a guide anchored in
 /// its frame mirrors to `width - offset`.
@@ -794,24 +832,20 @@ fn plain_fixed_container_measurement_mirrors_guides_under_rtl() {
     let mut env = test_environment();
     env.insert(LayoutDirection::RightToLeft);
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-    let view = normalize_layout_view(
-        AnyView::new(FixedContainer::new(
-            VStackLayout {
-                alignment: HorizontalAlignment::Leading,
-                spacing: Computed::constant(0.0),
-            },
-            vec![
-                AnyView::new(().size(20.0, 10.0).horizontal_alignment_guide(
-                    HorizontalAlignment::Leading,
-                    |dimensions: &ViewDimensions| dimensions.size.width * 0.5,
-                )),
-                AnyView::new(().size(100.0, 10.0)),
-            ],
-        )),
-        &env,
-    );
-    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
-    let dimensions = measure_view_dimensions(&view, &mut state, &env, &theme);
+    let view = AnyView::new(FixedContainer::new(
+        VStackLayout {
+            alignment: HorizontalAlignment::Leading,
+            spacing: Computed::constant(0.0),
+        },
+        vec![
+            AnyView::new(().size(20.0, 10.0).horizontal_alignment_guide(
+                HorizontalAlignment::Leading,
+                |dimensions: &ViewDimensions| dimensions.size.width * 0.5,
+            )),
+            AnyView::new(().size(100.0, 10.0)),
+        ],
+    ));
+    let dimensions = Realized::with_theme(view, &env, &theme).measure(ProposalSize::UNSPECIFIED);
 
     // Under RTL the 20-wide leading child mirrors to the trailing edge —
     // placed at `width - 20`, so its mid-child guide resolves at
@@ -824,70 +858,31 @@ fn plain_fixed_container_measurement_mirrors_guides_under_rtl() {
 }
 
 #[test]
-fn layout_normalization_does_not_charge_metadata_depth_to_component_recursion() {
-    let env = test_environment();
-    let mut view = AnyView::new(text("Leaf"));
-    for _ in 0..80 {
-        view = AnyView::new(view.opacity(1.0));
-    }
-
-    let normalized = normalize_layout_view(view, &env);
-
-    assert!(normalized.is::<Metadata<Opacity>>());
-}
-
-#[test]
-#[cfg_attr(
-    debug_assertions,
-    should_panic(expected = "hydrolysis layout normalization exceeded recursion budget")
-)]
-fn layout_normalization_reports_recursive_component_bodies_and_draws_nothing() {
-    let env = test_environment();
-
-    let view = normalize_layout_view(AnyView::new(RecursivelyErasedView), &env);
-    assert!(
-        view.is::<()>(),
-        "the recursive body is replaced by an empty view"
-    );
-}
-
-#[test]
 fn scale_metadata_is_layout_transparent() {
     let env = test_environment();
-    let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
     let scale = Binding::f32(1.0);
-    let view = normalize_layout_view(
-        AnyView::new(
-            ().size(80.0, 80.0)
-                .scale(scale.clone(), scale.clone())
-                .min_height(120.0),
-        ),
+    let mut realized = Realized::new(
+        ().size(80.0, 80.0)
+            .scale(scale.clone(), scale.clone())
+            .min_height(120.0),
         &env,
     );
 
-    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
-    let initial = measure_view_dimensions(&view, &mut state, &env, &theme).size;
-
+    let initial = realized.intrinsic();
     scale.set(2.0);
-    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
-    let scaled = measure_view_dimensions(&view, &mut state, &env, &theme).size;
+    let scaled = realized.intrinsic();
 
     assert_eq!(initial, LayoutSize::new(80.0, 120.0));
     assert_eq!(scaled, initial);
 }
 
 #[test]
-fn hydro_subview_preserves_stretch_control_minimum_under_zero_width_proposal() {
+fn a_stretch_control_keeps_its_minimum_under_a_zero_width_proposal() {
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
     let value = Binding::f64(0.5);
-    let view = normalize_layout_view(
-        AnyView::new(slider("Playback position", &value).hide_label()),
-        &env,
-    );
-    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
-    let state = RefCell::new(&mut state);
-    let subview = HydroSubview::from_view(&view, &state, &env, &theme);
+    let view = AnyView::new(slider("Playback position", &value).hide_label());
+    let mut subview = Realized::with_theme(view, &env, &theme);
 
     let measured = subview.measure(ProposalSize::new(Some(0.0), None));
 
@@ -897,24 +892,31 @@ fn hydro_subview_preserves_stretch_control_minimum_under_zero_width_proposal() {
     );
 }
 
+/// A tighter proposal caps a button's minimum-size floor but never its
+/// padded label: every proposal below that footprint answers it.
 #[test]
-fn hydro_subview_preserves_non_stretch_button_intrinsic_under_zero_width_proposal() {
+fn a_compressed_button_keeps_its_padded_label() {
     let env = test_environment();
-    let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-    let view = normalize_layout_view(AnyView::new(button("Medium (0.7)").action(|| {})), &env);
-    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
-    let state = RefCell::new(&mut state);
-    let subview = HydroSubview::from_view(&view, &state, &env, &theme);
+    let mut subview = Realized::new(button("Medium (0.7)").action(|| {}), &env);
 
     let intrinsic = subview.measure(ProposalSize::UNSPECIFIED);
-    let constrained = subview.measure(ProposalSize::new(Some(0.0), None));
+    let zero = subview.measure(ProposalSize::new(Some(0.0), None));
+    let narrow = subview.measure(ProposalSize::new(Some(10.0), None));
 
     assert!(
-        approx::relative_eq!(constrained.size.width, intrinsic.size.width),
-        "Hydrolysis non-stretch controls must not be compressed below their intrinsic text width: left {:?}, right {:?}",
-        constrained.size.width,
-        intrinsic.size.width
+        zero.size.width > 0.0 && zero.size.width <= intrinsic.size.width,
+        "the zero-width answer is the padded label, within the floored intrinsic: {zero:?} vs {intrinsic:?}"
     );
+    assert!(
+        approx::relative_eq!(narrow.size.width, zero.size.width),
+        "Hydrolysis non-stretch controls must not be compressed below their padded label: left {:?}, right {:?}",
+        narrow.size.width,
+        zero.size.width
+    );
+    assert!(approx::relative_eq!(
+        zero.size.height,
+        intrinsic.size.height
+    ));
 }
 
 #[test]
@@ -922,19 +924,14 @@ fn state_wrapped_button_remains_non_stretch_for_layout() {
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
     let expanded = Binding::bool(false);
-    let view = normalize_layout_view(
-        AnyView::new(
-            button("Toggle Bars")
-                .action(|waterui::State(value): waterui::State<Binding<bool>>| {
-                    value.toggle();
-                })
-                .state(&expanded),
-        ),
-        &env,
+    let view = AnyView::new(
+        button("Toggle Bars")
+            .action(|waterui::State(value): waterui::State<Binding<bool>>| {
+                value.toggle();
+            })
+            .state(&expanded),
     );
-    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
-    let state = RefCell::new(&mut state);
-    let subview = HydroSubview::from_view(&view, &state, &env, &theme);
+    let mut subview = Realized::with_theme(view, &env, &theme);
 
     let intrinsic = subview.measure(ProposalSize::UNSPECIFIED);
     let proposed = subview.measure(ProposalSize::new(Some(720.0), None));
@@ -1166,25 +1163,29 @@ fn draggable_metadata_delivers_typed_payload_to_drop_destination() {
 }
 
 #[test]
-fn gesture_group_identity_collapses_nested_gesture_observers_on_same_view() {
-    let view = AnyView::new(Metadata::new(
+fn nested_gesture_observers_on_one_view_share_a_group() {
+    let env = test_environment();
+    let mut renderer = test_renderer();
+    let view = Metadata::new(
         Metadata::new(
-            ().size(20.0, 10.0),
+            ().size(20.0, 10.0).opacity(0.5),
             GestureObserver::new(DragGesture::new(8.0), || {}),
         ),
         GestureObserver::new(MagnificationGesture::new(1.0), || {}),
-    ));
-    let outer = view
-        .downcast_ref::<Metadata<GestureObserver>>()
-        .expect("expected outer gesture observer metadata");
-    let inner = outer
-        .content
-        .downcast_ref::<Metadata<GestureObserver>>()
-        .expect("expected inner gesture observer metadata");
+    );
+    let node = RenderNode::build(AnyView::new(view), &env, &mut renderer);
 
-    assert_eq!(
-        gesture_group_identity(&outer.content),
-        gesture_group_identity(&inner.content)
+    let (outer, inner) = node
+        .observed_gesture_group()
+        .expect("the outer gesture observer wraps the tree");
+    let (inner, observed) = inner
+        .observed_gesture_group()
+        .expect("the inner gesture observer wraps the view");
+    assert_eq!(outer, inner);
+    assert_ne!(
+        inner,
+        Rc::as_ptr(&observed.core().cell) as usize,
+        "the opacity wrapper is transparent to the group"
     );
 }
 
@@ -1247,37 +1248,15 @@ fn renderer_magnification_targets_outer_observer_in_stacked_gesture_chain() {
 fn string_views_measure_through_body_recursion() {
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
     let proposal = ProposalSize::UNSPECIFIED;
 
-    let raw = measure_view_dimensions_with_proposal(
-        &AnyView::new(Str::from("Hydrolysis")),
-        proposal,
-        &mut state,
-        &env,
-        &theme,
-    );
-    let borrowed = measure_view_dimensions_with_proposal(
-        &AnyView::new("Hydrolysis"),
-        proposal,
-        &mut state,
-        &env,
-        &theme,
-    );
-    let owned = measure_view_dimensions_with_proposal(
-        &AnyView::new(String::from("Hydrolysis")),
-        proposal,
-        &mut state,
-        &env,
-        &theme,
-    );
-    let cow = measure_view_dimensions_with_proposal(
-        &AnyView::new(Cow::Borrowed("Hydrolysis")),
-        proposal,
-        &mut state,
-        &env,
-        &theme,
-    );
+    let raw =
+        Realized::with_theme(AnyView::new(Str::from("Hydrolysis")), &env, &theme).measure(proposal);
+    let borrowed = Realized::with_theme(AnyView::new("Hydrolysis"), &env, &theme).measure(proposal);
+    let owned = Realized::with_theme(AnyView::new(String::from("Hydrolysis")), &env, &theme)
+        .measure(proposal);
+    let cow = Realized::with_theme(AnyView::new(Cow::Borrowed("Hydrolysis")), &env, &theme)
+        .measure(proposal);
 
     assert_eq!(borrowed.size, raw.size);
     assert_eq!(owned.size, raw.size);
@@ -1762,9 +1741,9 @@ fn a_container_with_an_explicit_label_still_consumes_its_text() {
 }
 
 /// A view hook wraps whatever it returns in a snapshot of the environment it was
-/// called with, and layout normalization resolves that body before the naming
-/// scope exists — so the snapshot carries no label, and flattening it replaces
-/// the scoped environment the build installed. Every `Map` in a `map-gpu` build
+/// called with; when that body resolves before the naming scope exists, the
+/// snapshot carries no label, and flattening it replaces the scoped
+/// environment the build installed. Every `Map` in a `map-gpu` build
 /// and every `Video` in a `video-gpu` one sits under such a hook, and
 /// `.a11y_label()` on them named nothing at all: the engine, finding no ambient
 /// label, announced its own generated description instead.
@@ -1781,9 +1760,8 @@ fn a_label_survives_the_environment_snapshot_a_view_hook_takes() {
         AnyView::new(text("map").a11y_role(AccessibilityRole::Image))
     });
     let mut renderer = test_renderer();
-    // The frame matters: a layout container normalizes its children, and it is
-    // normalization that resolves the hooked body — one level above the naming
-    // scope the build installs.
+    // The frame puts the hooked map inside a layout container, one level below
+    // the naming scope the build installs.
     let view = Map::new(Region::new(Coordinate::default(), 1.0, 1.0))
         .a11y_label("City map")
         .size(120.0, 120.0);
@@ -3952,44 +3930,6 @@ fn text_shaping_produces_nonzero_intrinsic_in_tests() {
 }
 
 #[test]
-fn resolved_text_fast_path_matches_the_recursive_measure() {
-    use core::cell::RefCell;
-
-    let env = test_environment();
-    let proposal = ProposalSize::UNSPECIFIED;
-
-    // A text leaf resolves once into a layout input and is then shaped through the
-    // text service directly, skipping the general recursion through `HydroState`.
-    // That shortcut is only sound while it reports what the path it bypasses would.
-    // Covers a bare `Str` and a string-like (`String`) bodied into text and recursed.
-    let str_view = AnyView::new(Str::from("probe"));
-    let string_view = AnyView::new(String::from("hello world"));
-
-    for view in [&str_view, &string_view] {
-        let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
-        let state_cell = RefCell::new(&mut state);
-        let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-        let fast_path = HydroSubview::from_view(view, &state_cell, &env, &theme).measure(proposal);
-        let recursive = {
-            let mut state = state_cell.borrow_mut();
-            measure_view_dimensions_with_proposal(view, proposal, &mut state, &env, &theme)
-        };
-
-        assert_eq!(
-            fast_path.size,
-            recursive.size,
-            "the resolved-text fast path for {} must equal the recursive measure",
-            view.name()
-        );
-        assert!(
-            fast_path.size.width > 0.0 && fast_path.size.height > 0.0,
-            "text shaping must produce a non-zero size for {}",
-            view.name()
-        );
-    }
-}
-
-#[test]
 #[cfg(hydrolysis_gpu_painter)]
 fn bare_str_renders_into_page() {
     let mut renderer = test_renderer();
@@ -4041,8 +3981,6 @@ fn render_path_text_layout_has_lines() {
 /// same invariant; verifying that needs a test in each of those languages.
 #[test]
 fn every_view_answers_the_three_point_probe_consistently() {
-    use core::cell::RefCell;
-
     let env = test_environment();
 
     let cases: Vec<(&str, AnyView)> = vec![
@@ -4076,13 +4014,7 @@ fn every_view_answers_the_three_point_probe_consistently() {
     ];
 
     for (name, view) in cases {
-        // The layout path measures normalized views, so the contract is about
-        // those, not about raw bodies.
-        let view = normalize_layout_view(view, &env);
-        let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
-        let cell = RefCell::new(&mut state);
-        let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-        let subview = HydroSubview::from_view(&view, &cell, &env, &theme);
+        let mut subview = Realized::new(view, &env);
 
         let ideal = subview.measure(ProposalSize::UNSPECIFIED).size;
 
@@ -4255,15 +4187,9 @@ fn tab_badge_draws_only_for_a_nonzero_count() {
 fn a_collapsed_naming_scope_reports_the_containers_resolved_extent() {
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
-    let measured = measure_view_dimensions_with_proposal(
-        &normalize_layout_view(AnyView::new(button("OK").padding_with(8.0)), &env),
-        ProposalSize::new(Some(160.0), Some(160.0)),
-        &mut state,
-        &env,
-        &theme,
-    )
-    .size;
+    let measured = Realized::with_theme(AnyView::new(button("OK").padding_with(8.0)), &env, &theme)
+        .measure(ProposalSize::new(Some(160.0), Some(160.0)))
+        .size;
     let mut renderer = test_renderer();
     let view = button("OK").padding_with(8.0).a11y_label("Named");
     capture_root_window(&mut renderer, view, &env, Rect::new(0.0, 0.0, 160.0, 160.0));
@@ -4305,17 +4231,12 @@ fn a_collapsed_naming_scope_reports_the_containers_resolved_extent() {
 fn a_collapsed_naming_scope_centres_the_resolved_extent_on_the_assigned_frame() {
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
-    let measured = measure_view_dimensions_with_proposal(
-        &normalize_layout_view(
-            AnyView::new(button("OK").padding_with([0.0, 20.0, 0.0, 0.0])),
-            &env,
-        ),
-        ProposalSize::new(Some(160.0), Some(160.0)),
-        &mut state,
+    let measured = Realized::with_theme(
+        AnyView::new(button("OK").padding_with([0.0, 20.0, 0.0, 0.0])),
         &env,
         &theme,
     )
+    .measure(ProposalSize::new(Some(160.0), Some(160.0)))
     .size;
     let mut renderer = test_renderer();
     let view = button("OK")
@@ -4407,4 +4328,28 @@ fn diagnostic_gpu() -> (
         },
     );
     (gpu, diagnostics)
+}
+
+/// A bar item's icon-only default reaches through an environment snapshot
+/// wrapping its content, which replaces the environment wholesale — as the
+/// navigation stack's retained environment wraps every bar slot.
+#[cfg(feature = "navigation")]
+#[test]
+fn a_toolbar_item_keeps_icon_only_labels_inside_an_environment_snapshot() {
+    let env = test_environment();
+    let mut renderer = test_renderer();
+    let item = AnyView::new(Metadata::new(text("Share"), Environment::new()));
+    let node = RenderNode::build(
+        crate::widgets::nav::navigation::toolbar_item_view(item, &env),
+        &env,
+        &mut renderer,
+    );
+
+    let scope = node
+        .leading_scope_env()
+        .expect("the item opens with its environment scope");
+    assert!(matches!(
+        scope.get::<LabelDisplayMode>(),
+        Some(LabelDisplayMode::IconOnly)
+    ));
 }

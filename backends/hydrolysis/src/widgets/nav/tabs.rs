@@ -6,8 +6,7 @@ use std::rc::Rc;
 use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::live_tabs::{LiveTabsParts, TabsFrames};
 use crate::renderer::{
-    Edge, HydroNativeView, HydroState, RetainedSubview, WidgetRenderContext, measure_tabs_layout,
-    tabs_button_rect, tabs_content_proposal,
+    Edge, HydroState, RetainedSubview, WidgetRenderContext, tabs_button_rect, tabs_content_proposal,
 };
 use crate::theme::{TabItemGeometry, TabItemLayout, TabsLook, TabsSpec, WidgetTheme};
 #[cfg(feature = "accessibility")]
@@ -22,7 +21,7 @@ use waterui_core::contract_violation;
 use waterui_core::id::Id;
 use waterui_core::layout::{LayoutDirection, ProposalSize, Size as LayoutSize, ViewDimensions};
 use waterui_core::views::{AnyViewsSnapshot, ViewSnapshot, Views};
-use waterui_core::{AnyView, Environment, Native};
+use waterui_core::{AnyView, Environment};
 
 #[cfg(feature = "accessibility")]
 use crate::widgets::util::widget_disabled;
@@ -312,39 +311,6 @@ impl<E: crate::text::TextEngine> TabsRenderState<E> {
     }
 }
 
-impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<TabsLayout> {
-    fn intrinsic(
-        state: &mut HydroState<E>,
-        view: &Self,
-        env: &Environment,
-        theme: &Rc<dyn crate::theme::WidgetTheme>,
-    ) -> LayoutSize {
-        measure_tabs_layout(
-            view.as_inner(),
-            ProposalSize::UNSPECIFIED,
-            state,
-            env,
-            theme,
-        )
-    }
-
-    fn dimensions(
-        state: &mut HydroState<E>,
-        view: &Self,
-        env: &Environment,
-        theme: &Rc<dyn crate::theme::WidgetTheme>,
-        proposal: ProposalSize,
-    ) -> ViewDimensions {
-        ViewDimensions::new(measure_tabs_layout(
-            view.as_inner(),
-            proposal,
-            state,
-            env,
-            theme,
-        ))
-    }
-}
-
 /// One tab's accessibility inputs: `(tag, interaction_key, default_label,
 /// is_selected, badge_count)`; a zero badge count is not announced.
 #[cfg(feature = "accessibility")]
@@ -553,6 +519,7 @@ pub fn render_tabs_node<E: crate::text::TextEngine>(
                 st.prebuild_labels(ctx.renderer_mut(), env);
                 let selected_index = st.selected_index(selected_id);
                 let badges = st.badge_counts(ctx.renderer_mut());
+                let renderer = ctx.renderer_mut();
                 let labels: Vec<TabAccessibilityEntry> = st
                     .tabs
                     .iter()
@@ -564,7 +531,7 @@ pub fn render_tabs_node<E: crate::text::TextEngine>(
                                 state,
                                 crate::num_cast::i32_as_u32(i32::from(tab.tag)) as usize,
                             ),
-                            tab.label.default_a11y_label(),
+                            tab.label.accessibility_label(renderer),
                             Some(index) == selected_index,
                             badges[index],
                         )
@@ -1137,7 +1104,7 @@ pub fn emit_tabs_accessibility<E: crate::text::TextEngine>(
                         owner,
                         crate::num_cast::i32_as_u32(i32::from(tab.tag)) as usize,
                     ),
-                    tab.label.default_a11y_label(),
+                    tab.label.accessibility_label(renderer),
                     Some(index) == selected_index,
                     badges[index],
                 )

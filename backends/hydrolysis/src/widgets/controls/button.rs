@@ -2,12 +2,11 @@
 use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::chrome::{ChromeContent, LiveChromeParts};
 #[cfg(feature = "menu")]
-use crate::renderer::measure_view_intrinsic;
 #[cfg(feature = "menu")]
 use crate::renderer::popup_menu_nodes;
 use crate::renderer::{
-    GroupOpacity, HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, RetainedSubview,
-    WidgetRenderContext, measure_label_intrinsic,
+    GroupOpacity, HydroState, HydrolysisRenderer, RenderContext, RetainedSubview,
+    WidgetRenderContext,
 };
 use crate::theme::{
     ButtonLook, ButtonSpec, Chrome, CornerShape, Corners, Inputs, Label as LookLabel, SpecTint,
@@ -33,7 +32,7 @@ use waterui_core::handler::ReportExtraction as _;
 use waterui_core::interaction::InteractionState;
 use waterui_core::layout::Size as LayoutSize;
 use waterui_core::layout::{ProposalSize, ViewDimensions};
-use waterui_core::{AnyView, Environment, Native};
+use waterui_core::{AnyView, Environment};
 use waterui_graphics::color::Color;
 use waterui_text::font::Font;
 use waterui_text::styled::StyledStr;
@@ -300,6 +299,17 @@ pub struct ButtonRenderState<E: crate::text::TextEngine> {
 }
 
 impl<E: crate::text::TextEngine> ButtonRenderState<E> {
+    /// The label this control contributes to a node naming itself from its
+    /// content: its own label.
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn contributed_label(
+        &self,
+        _renderer: &mut crate::renderer::SemanticCore<E>,
+        env: &Environment,
+    ) -> Option<String> {
+        crate::renderer::SemanticCore::<E>::accessibility_label_from_label(self.config.label(), env)
+    }
+
     pub(crate) fn from_config(config: ButtonConfig) -> Self {
         Self {
             config,
@@ -379,17 +389,6 @@ impl<E: crate::text::TextEngine> ButtonRenderState<E> {
             .expect("the label sub-view was checked above");
         subview.map_source(|_| button_label_view(color, AnyView::new(styled)));
         subview.ensure_built(renderer, env);
-    }
-}
-
-impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<ButtonConfig> {
-    fn intrinsic(
-        state: &mut crate::renderer::HydroState<E>,
-        view: &Self,
-        env: &Environment,
-        theme: &Rc<dyn crate::theme::WidgetTheme>,
-    ) -> LayoutSize {
-        measure_button_intrinsic(view.as_inner(), state, env, theme)
     }
 }
 
@@ -546,11 +545,10 @@ pub fn render_button_node<E: crate::text::TextEngine>(
     render_button_parts(ctx, state, env);
 }
 
-/// The retained render state of a menu trigger. `ResolvedMenu::label` is a
-/// move-only `AnyView`, so the persistent `Widget` node holds it as a
-/// [`RetainedSubview`] built once and re-flushed each frame (unless it is a
-/// `Label`/`TitleOnly`, which is rendered as styled text fresh each frame like a
-/// button); the `items`/`accessibility_label` signals are kept and read through
+/// The retained render state of a menu trigger. The persistent `Widget` node
+/// holds `ResolvedMenu::label` as a [`RetainedSubview`] built once and
+/// re-flushed each frame, unless the label is a plain `TitleOnly` title, which
+/// is rendered as styled text fresh each frame like a button's; the `items`/`accessibility_label` signals are kept and read through
 /// `read_signal`.
 #[cfg(feature = "menu")]
 pub struct MenuRenderState<E: crate::text::TextEngine> {
@@ -570,18 +568,38 @@ pub struct MenuRenderState<E: crate::text::TextEngine> {
 }
 
 /// How a menu trigger renders its label, decided once at build time from the
-/// label `AnyView`.
+/// label.
 #[cfg(feature = "menu")]
 enum MenuLabel<E: crate::text::TextEngine> {
     /// A `Label` with `TitleOnly` display: rendered as centered styled text fresh
     /// each frame (cloneable, like a button title).
     Title(Label),
-    /// Any other view: re-flushed from a retained sub-view each frame.
+    /// Any other label: re-flushed from a retained sub-view each frame.
     View(Box<RetainedSubview<E>>),
 }
 
 #[cfg(feature = "menu")]
 impl<E: crate::text::TextEngine> MenuRenderState<E> {
+    /// The label a menu contributes to a node naming itself from its
+    /// content: its accessibility label.
+    #[cfg(feature = "accessibility")]
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "the widget label contract answers an Option; a menu always names itself"
+    )]
+    pub(crate) fn contributed_label(
+        &self,
+        renderer: &mut crate::renderer::SemanticCore<E>,
+        _env: &Environment,
+    ) -> Option<String> {
+        Some(
+            renderer
+                .read_signal(&self.accessibility_label)
+                .to_semantic()
+                .to_string(),
+        )
+    }
+
     pub(crate) fn from_resolved(menu: ResolvedMenu, env: &Environment) -> Self {
         let ResolvedMenu {
             label,
@@ -593,13 +611,11 @@ impl<E: crate::text::TextEngine> MenuRenderState<E> {
             style,
             size,
         } = menu;
-        let icon_only = label
-            .downcast_ref::<Label>()
-            .is_some_and(|label| label_resolves_icon_only(label, env));
-        let label = match label.downcast::<Label>() {
-            Ok(label) if renders_as_plain_title(&label) => MenuLabel::Title(*label),
-            Ok(label) => MenuLabel::View(Box::new(RetainedSubview::new(AnyView::new(*label)))),
-            Err(view) => MenuLabel::View(Box::new(RetainedSubview::new(view))),
+        let icon_only = label_resolves_icon_only(&label, env);
+        let label = if renders_as_plain_title(&label) {
+            MenuLabel::Title(label)
+        } else {
+            MenuLabel::View(Box::new(RetainedSubview::new(AnyView::new(label))))
         };
         Self {
             label,
@@ -649,18 +665,6 @@ impl<E: crate::text::TextEngine> MenuRenderState<E> {
             MenuLabel::View(subview) => subview.take_layout_dirty_if_built(),
             MenuLabel::Title(_) => false,
         }
-    }
-}
-
-#[cfg(feature = "menu")]
-impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<ResolvedMenu> {
-    fn intrinsic(
-        state: &mut crate::renderer::HydroState<E>,
-        view: &Self,
-        env: &Environment,
-        theme: &Rc<dyn crate::theme::WidgetTheme>,
-    ) -> LayoutSize {
-        measure_menu_intrinsic(view.as_inner(), state, env, theme)
     }
 }
 
@@ -1135,72 +1139,6 @@ pub fn render_menu_parts<E: crate::text::TextEngine>(
                 )
             },
         );
-}
-
-/// The intrinsic size of a button from its look, measured without a
-/// retained node.
-pub fn measure_button_intrinsic<E: crate::text::TextEngine>(
-    button: &ButtonConfig,
-    state: &mut HydroState<E>,
-    env: &Environment,
-    theme: &Rc<dyn crate::theme::WidgetTheme>,
-) -> LayoutSize {
-    measure_button_look_intrinsic(
-        button.style(),
-        button.size(),
-        button.label(),
-        state,
-        env,
-        theme,
-    )
-}
-
-/// The intrinsic size of a `style` button of `size` showing `label`, from
-/// its look — shared by the configured and the generic `Button` paths.
-pub fn measure_button_look_intrinsic<E: crate::text::TextEngine>(
-    style: ButtonStyle,
-    size: ControlSize,
-    label: &Label,
-    state: &mut HydroState<E>,
-    env: &Environment,
-    theme: &Rc<dyn crate::theme::WidgetTheme>,
-) -> LayoutSize {
-    let spec = button_spec(style, size, label_resolves_icon_only(label, env), env);
-    let look = resolve_look(theme, &spec, env);
-    let font = look_font(&look, InteractionState::empty(), Rect::ZERO);
-    let label_size = if renders_as_plain_title(label) {
-        let styled = styled_button_title(state, font, label, env);
-        HydrolysisRenderer::measure_text_intrinsic_size(state, styled, env)
-    } else {
-        let label = styled_button_label(font, label.clone());
-        measure_label_intrinsic(&label, state, env, theme)
-    };
-    button_size(label_size, &look, ProposalSize::UNSPECIFIED)
-}
-
-#[cfg(feature = "menu")]
-pub fn measure_menu_intrinsic<E: crate::text::TextEngine>(
-    menu: &ResolvedMenu,
-    state: &mut HydroState<E>,
-    env: &Environment,
-    theme: &Rc<dyn crate::theme::WidgetTheme>,
-) -> LayoutSize {
-    let icon_only = menu
-        .label
-        .downcast_ref::<Label>()
-        .is_some_and(|label| label_resolves_icon_only(label, env));
-    let spec = button_spec(menu.style, menu.size, icon_only, env);
-    let look = resolve_look(theme, &spec, env);
-    let label_size = if let Some(label) = menu.label.downcast_ref::<Label>()
-        && renders_as_plain_title(label)
-    {
-        let font = look_font(&look, InteractionState::empty(), Rect::ZERO);
-        let styled = styled_button_title(state, font, label, env);
-        HydrolysisRenderer::measure_text_intrinsic_size(state, styled, env)
-    } else {
-        measure_view_intrinsic(&menu.label, state, env, theme)
-    };
-    button_size(label_size, &look, ProposalSize::UNSPECIFIED)
 }
 
 fn button_label_view(color: Option<Color>, label: AnyView) -> AnyView {

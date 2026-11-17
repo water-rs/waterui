@@ -174,10 +174,6 @@ impl View for MultiDatePicker {
             AnyView::new(Native::new(config))
         }
     }
-
-    fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
-        waterui_core::layout::StretchAxis::None
-    }
 }
 
 /// The multi-date picker composed from `WaterUI` views: how a self-drawn

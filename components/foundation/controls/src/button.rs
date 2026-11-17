@@ -441,10 +441,6 @@ where
             AnyView::new(Native::new(config.resolve(env)))
         }
     }
-
-    fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
-        waterui_core::layout::StretchAxis::None
-    }
 }
 
 impl ViewConfiguration for ButtonConfig {

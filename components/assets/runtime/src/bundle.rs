@@ -112,11 +112,6 @@ impl View for ImageAsset {
         };
         Some(Photo::new(self.url(resources)))
     }
-
-    /// Matches the non-resizable `Photo` constructed by `body`, independent of its URL.
-    fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
-        waterui_core::layout::StretchAxis::None
-    }
 }
 
 /// Video asset resolved from a `WaterUI` asset bundle.
@@ -170,11 +165,6 @@ impl View for VideoAsset {
             return None;
         };
         Some(self.raw(resources))
-    }
-
-    /// Matches the default fit-mode `Video` constructed by `body`, independent of its URL.
-    fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
-        waterui_core::layout::StretchAxis::Horizontal
     }
 }
 
@@ -329,24 +319,5 @@ mod tests {
             Path::new("/second/assets/documents/readme.json")
         );
         assert_eq!(bundle_root(&first), Path::new("/first/assets"));
-    }
-
-    #[cfg(feature = "media")]
-    #[test]
-    fn image_asset_axis_matches_the_resolved_photo() {
-        let context = ResourceContext::new("/fixture/assets", "/fixture/fonts");
-        let image = ImageAsset::new(Bundle::main(), "image.png");
-        assert_eq!(
-            image.stretch_axis(),
-            Photo::new(image.url(&context)).stretch_axis()
-        );
-    }
-
-    #[cfg(feature = "video")]
-    #[test]
-    fn video_asset_axis_matches_the_resolved_video() {
-        let context = ResourceContext::new("/fixture/assets", "/fixture/fonts");
-        let video = VideoAsset::new(Bundle::main(), "movie.mp4");
-        assert_eq!(video.stretch_axis(), video.raw(&context).stretch_axis());
     }
 }

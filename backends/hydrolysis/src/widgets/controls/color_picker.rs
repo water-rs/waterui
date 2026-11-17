@@ -10,16 +10,14 @@ use nami::Signal;
 use std::cell::RefCell;
 use std::rc::Rc;
 use waterui_core::layout::{HorizontalAlignment, ProposalSize, Size as LayoutSize, ViewDimensions};
-use waterui_core::{AnyView, Environment, Native};
+use waterui_core::{AnyView, Environment};
 use waterui_form::picker::color::ColorPickerConfig;
 use waterui_graphics::color::Color;
 use waterui_text::styled::StyledStr;
 
 use crate::renderer::RetainedSubview;
-use crate::renderer::{
-    HydroNativeView, HydroState, RenderContext, WidgetRenderContext, measure_label_intrinsic,
-};
-use crate::widgets::controls::field_look::{FieldChrome, field_look};
+use crate::renderer::{HydroState, RenderContext, WidgetRenderContext};
+use crate::widgets::controls::field_look::FieldChrome;
 use crate::widgets::util::inset_rect;
 #[cfg(feature = "accessibility")]
 use crate::widgets::util::widget_disabled;
@@ -40,6 +38,17 @@ pub struct ColorPickerRenderState<E: crate::text::TextEngine> {
 }
 
 impl<E: crate::text::TextEngine> ColorPickerRenderState<E> {
+    /// The label this control contributes to a node naming itself from its
+    /// content: its own label.
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn contributed_label(
+        &self,
+        _renderer: &mut crate::renderer::SemanticCore<E>,
+        env: &Environment,
+    ) -> Option<String> {
+        crate::renderer::SemanticCore::<E>::accessibility_label_from_label(self.config.label(), env)
+    }
+
     pub(crate) fn from_config(config: ColorPickerConfig) -> Self {
         Self {
             label_view: RetainedSubview::new(AnyView::new(config.label().clone())),
@@ -63,17 +72,6 @@ impl<E: crate::text::TextEngine> ColorPickerRenderState<E> {
     /// (water-rs/waterui#1957).
     pub(crate) fn take_layout_dirty(&mut self) -> bool {
         self.label_view.take_layout_dirty_if_built()
-    }
-}
-
-impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<ColorPickerConfig> {
-    fn intrinsic(
-        state: &mut HydroState<E>,
-        view: &Self,
-        env: &Environment,
-        theme: &Rc<dyn crate::theme::WidgetTheme>,
-    ) -> LayoutSize {
-        measure_color_picker_intrinsic(view.as_inner(), state, env, theme)
     }
 }
 
@@ -225,25 +223,6 @@ pub fn render_color_picker_node<E: crate::text::TextEngine>(
         );
     }
     render_color_picker_parts(ctx, state, env);
-}
-
-fn measure_color_picker_intrinsic<E: crate::text::TextEngine>(
-    color_picker: &ColorPickerConfig,
-    state: &mut HydroState<E>,
-    env: &Environment,
-    theme: &Rc<dyn crate::theme::WidgetTheme>,
-) -> LayoutSize {
-    let input_metrics = field_look(theme, env).metrics();
-    let label_size = measure_label_intrinsic(color_picker.label(), state, env, theme);
-    let label_height = if label_size.width > 0.0 || label_size.height > 0.0 {
-        f64::from(label_size.height).max(input_metrics.label_height)
-    } else {
-        0.0
-    };
-    LayoutSize::new(
-        COLOR_PICKER_MIN_WIDTH,
-        crate::num_cast::f64_as_f32(label_height + input_metrics.min_height),
-    )
 }
 
 #[expect(

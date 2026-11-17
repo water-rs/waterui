@@ -79,6 +79,17 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         renderer: &mut SemanticCore<E>,
     ) -> Self {
         let child = Self::build_view(content, env, renderer);
+        Self::wrap(effect, child, env, renderer)
+    }
+
+    /// Wraps the already built `child` in a [`WrapperNode`] applying
+    /// `effect`, for an effect that reads the child it wraps.
+    fn wrap(
+        effect: WrapperEffect<E>,
+        child: Self,
+        env: &Environment,
+        renderer: &SemanticCore<E>,
+    ) -> Self {
         let env = if effect.captures_environment() {
             Self::resolved_handler_env(&child, env).clone()
         } else {
@@ -100,6 +111,52 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             node.core().cell.material_group_scope.set(true);
         }
         node
+    }
+
+    /// The identity gesture observers on `self` group by: the first node
+    /// below the layout-transparent wrappers (environment scopes, retention,
+    /// effect wrappers and animated transforms), so every observer stacked
+    /// on one view joins one group.
+    fn gesture_group_identity(&self) -> usize {
+        match self {
+            Self::Env(node) => node.child.gesture_group_identity(),
+            Self::Retain(node) => node.child.gesture_group_identity(),
+            Self::Wrapper(node) => node.child.gesture_group_identity(),
+            Self::Opacity(node) => node.child.gesture_group_identity(),
+            Self::Scale(node) => node.child.gesture_group_identity(),
+            Self::Rotation(node) => node.child.gesture_group_identity(),
+            Self::Offset(node) => node.child.gesture_group_identity(),
+            _ => Rc::as_ptr(&self.core().cell) as usize,
+        }
+    }
+
+    /// The group identity of a gesture observer wrapper, with the node it
+    /// wraps; `None` for any other node.
+    #[cfg(test)]
+    pub(crate) fn observed_gesture_group(&self) -> Option<(usize, &Self)> {
+        match self {
+            Self::Wrapper(node) => match &node.effect {
+                WrapperEffect::GestureObserver(effect) => {
+                    Some((effect.gesture_group_identity, &node.child))
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// The environment the content of `self` resolves in below its leading
+    /// environment scopes — `Env` nodes and `.material_group()` markers —
+    /// or `None` when `self` opens with neither.
+    #[cfg(any(test, feature = "list"))]
+    pub(crate) fn leading_scope_env(&self) -> Option<&Environment> {
+        match self {
+            Self::Env(node) => Some(node.child.leading_scope_env().unwrap_or(&node.env)),
+            Self::Wrapper(node) if matches!(node.effect, WrapperEffect::MaterialGroup) => {
+                node.child.leading_scope_env()
+            }
+            _ => None,
+        }
     }
 
     /// The environment a metadata-carried callback captures: the one its
@@ -241,7 +298,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 let view = item_view_or_empty(&snapshot, index);
                 let entry_core = renderer.new_core();
                 entry_core.cell.set_parent(&core.cell);
-                let node = Self::build_view(normalize_layout_view(view, env), env, renderer);
+                let node = Self::build_view(view, env, renderer);
                 node.core().cell.set_parent(&entry_core.cell);
                 Some(CollectionEntry::new(id, node, entry_core))
             })
@@ -276,10 +333,6 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// Build a viewport-virtualized lazy stack: store the collection and subscribe
     /// to membership changes (a change schedules a refresh so the visible window
     /// re-resolves). Items are materialized lazily at flush, not here.
-    #[expect(
-        clippy::needless_pass_by_ref_mut,
-        reason = "the mutable borrow is required by the shared signature even though this implementation does not mutate it"
-    )]
     fn build_lazy_stack(
         axis: LazyStackAxisConfig,
         views: &AnyViews<AnyView>,
@@ -347,7 +400,8 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         let env = item_env.as_ref().unwrap_or(env);
         *layout_mark.borrow_mut() = Rc::downgrade(&core.cell);
         let transitions = LazyTransitions::new(env, snapshot.borrow().clone(), membership);
-        Self::LazyStack(Box::new(LazyStackNode {
+        let first_snapshot = snapshot.borrow().clone();
+        let node = Box::new(LazyStackNode {
             memo_gate: Cell::default(),
             memo_slots: RefCell::default(),
             axis,
@@ -373,7 +427,9 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             _direction_guard: direction_guard,
             _layout_guards: layout_guards,
             transitions,
-        }))
+        });
+        node.realize_first_item(&first_snapshot, renderer);
+        Self::LazyStack(node)
     }
 
     /// Build a self-drawn scene node owning its `SceneContent` (no effect slot).
@@ -461,7 +517,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             guards,
         } = filtered;
         let runtime = Rc::new(RefCell::new(FilteredRuntime::new(effect, guards)));
-        let child = Self::build_view(normalize_layout_view(content, env), env, renderer);
+        let child = Self::build_view(content, env, renderer);
         Self::Filtered(Box::new(FilteredNode {
             core: renderer.new_core(),
             runtime,
@@ -477,9 +533,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         env: &Environment,
         renderer: &mut SemanticCore<E>,
     ) -> Self {
-        let identity = dynamic.identity();
         let pending: Rc<RefCell<Option<AnyView>>> = Rc::new(RefCell::new(None));
-        let source = dynamic.clone();
         let signals = renderer.signals.clone();
         let core = renderer.new_core();
         let cell = Rc::downgrade(&core.cell);
@@ -514,16 +568,9 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             None => Self::build_view(AnyView::new(()), env, renderer),
         };
         let child = Rc::new(RefCell::new(child));
-        // The dispatch measure (`measure_dynamic`) reaches this child through
-        // the identity registry once the `Dynamic` has connected.
-        renderer
-            .state
-            .measurement
-            .register_dynamic_node(identity, &child);
         let host = DynamicHostNode {
             core,
             safe_area: None,
-            source,
             pending,
             env: env.clone(),
             child,
@@ -539,8 +586,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// whose background slot was already identified — `Some(slot)` wraps the
     /// slot's fill in [`RenderNode::Fill`], the type §7.1's paint extension
     /// records on. The identification happens once here, while the layout
-    /// type is still concrete (normalization rebuilds the `FixedContainer`
-    /// from its parts instead of running `body` early); a declaration
+    /// type is still concrete; a declaration
     /// wrapping the fill (`.ignore_safe_area` on the fill itself) stops the
     /// predicate, so it replaces the default rather than stacking with it.
     fn build_fixed_container(
@@ -563,8 +609,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             .into_iter()
             .enumerate()
             .map(|(index, child)| {
-                let node =
-                    Self::build_view(normalize_layout_view(child, child_env), child_env, renderer);
+                let node = Self::build_view(child, child_env, renderer);
                 if Some(index) == background_slot && is_background_fill_leaf(&node) {
                     Self::Fill(Box::new(FillNode::new(node, renderer.new_core())))
                 } else {

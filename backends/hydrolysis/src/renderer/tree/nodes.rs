@@ -70,10 +70,10 @@ struct BuiltSubview<E: crate::text::TextEngine> {
     /// reach the sub-view again). `None` only while the set is lent to
     /// [`HydroState::layout_dependencies`] for the duration of a pass.
     layout_dependencies: Option<LayoutDependencies<E>>,
-    /// The default spoken accessibility label extracted from the source view once,
-    /// at build time (mirrors `GestureObserverEffect::default_a11y_label`): the
-    /// node owns the source after build, so the per-frame a11y path reads this.
-    default_a11y_label: Option<String>,
+    /// The size [`RetainedSubview::patch_and_measure`] last answered and the
+    /// proposal it answered: an unchanged sub-view answers it again on a
+    /// later frame without re-running its measure.
+    measured: Option<(ProposalSize, Size)>,
 }
 
 /// Writes `safe_area` into a node's stored-context slot, overwriting the
@@ -221,15 +221,6 @@ impl<E: crate::text::TextEngine> RetainedSubview<E> {
             return;
         };
         let view = core::mem::replace(source, AnyView::new(()));
-        // Extract the default a11y label from the source before it is consumed
-        // by `build` (the node owns the view afterward).
-        #[cfg(feature = "accessibility")]
-        let default_a11y_label = renderer.accessibility_label_from_view(&view, env);
-        #[cfg(not(feature = "accessibility"))]
-        let default_a11y_label = None;
-        // Normalize as the container/collection build paths do, so a layout
-        // view (stack/spacer/etc.) inside a label lowers to its native form.
-        let view = normalize_layout_view(view, env);
         let node = RenderNode::build(view, env, renderer);
         let layout_dependencies = Some(LayoutDependencies::new(Rc::downgrade(&node.core().cell)));
         self.state = RetainedSubviewState::Built(Box::new(BuiltSubview {
@@ -240,7 +231,7 @@ impl<E: crate::text::TextEngine> RetainedSubview<E> {
             laid_out_area: None,
             content_anchor: None,
             layout_dependencies,
-            default_a11y_label,
+            measured: None,
         }));
         // The current reader — the record or layout pass this build runs
         // inside — is the owning widget's cell; a build with no reader
@@ -270,11 +261,13 @@ impl<E: crate::text::TextEngine> RetainedSubview<E> {
         built
     }
 
-    /// The default spoken a11y label extracted from the source at build time.
-    pub(crate) fn default_a11y_label(&self) -> Option<String> {
-        self.expect_built("default_a11y_label")
-            .default_a11y_label
-            .clone()
+    /// The spoken label the sub-view's realized content derives, read now:
+    /// see [`RenderNode::accessibility_label`].
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn accessibility_label(&self, renderer: &mut SemanticCore<E>) -> Option<String> {
+        self.expect_built("accessibility_label")
+            .node
+            .accessibility_label(renderer)
     }
 
     /// Transform the still-unbuilt source view (e.g. apply a default foreground
@@ -302,9 +295,9 @@ impl<E: crate::text::TextEngine> RetainedSubview<E> {
         }
     }
 
-    /// Measure the sub-view's intrinsic size (building it once if needed), the
-    /// node analogue of [`measure_view_intrinsic`] at the unspecified proposal.
-    /// For the render path, which has the renderer to build on first use.
+    /// Measure the sub-view's intrinsic size (building it once if needed), at
+    /// the unspecified proposal. For the render path, which has the renderer to
+    /// build on first use.
     pub(crate) fn measure_intrinsic(
         &mut self,
         renderer: &mut HydrolysisRenderer<E>,
@@ -370,6 +363,11 @@ impl<E: crate::text::TextEngine> RetainedSubview<E> {
     /// visible items so a connected `Dynamic` is measured through the retained
     /// node that owns its current content, rather than by re-measuring the
     /// already-connected source view.
+    ///
+    /// A sub-view that took no structural patch and no layout mark, and whose
+    /// last layout's signal dependencies are clean, answers the size it last
+    /// answered for the same proposal without measuring: nothing it measures
+    /// against has changed since.
     pub(crate) fn patch_and_measure(
         &mut self,
         renderer: &mut HydrolysisRenderer<E>,
@@ -378,16 +376,27 @@ impl<E: crate::text::TextEngine> RetainedSubview<E> {
     ) -> (Size, StretchAxis) {
         self.ensure_built(renderer, env);
         let built = self.expect_built_mut("patch_and_measure");
-        built.needs_layout |= Self::patch_built(&mut built.node, renderer);
+        let structural = Self::patch_built(&mut built.node, renderer);
+        built.needs_layout |= structural | built.node.take_layout_dirty();
+        let unchanged = !built.needs_layout
+            && !built
+                .layout_dependencies
+                .as_ref()
+                .is_some_and(LayoutDependencies::is_dirty);
+        if unchanged
+            && let Some((measured_proposal, size)) = built.measured
+            && measured_proposal == proposal
+        {
+            return (size, built.node.stretch());
+        }
         built.node.prepare_for_measure(renderer);
         let theme = renderer.theme();
-        (
-            built
-                .node
-                .measure(&mut renderer.state, env, &theme, proposal)
-                .size,
-            built.node.stretch(),
-        )
+        let size = built
+            .node
+            .measure(&mut renderer.state, env, &theme, proposal)
+            .size;
+        built.measured = Some((proposal, size));
+        (size, built.node.stretch())
     }
 
     /// Run the layout-time prepare pass over the sub-view's built node.
@@ -402,12 +411,6 @@ impl<E: crate::text::TextEngine> RetainedSubview<E> {
     /// Stretch contract of an already-built retained sub-view.
     pub(crate) fn stretch_axis(&self) -> StretchAxis {
         self.expect_built("stretch_axis").node.stretch()
-    }
-
-    fn collect_dynamic_identities_into(&self, out: &mut FxHashSet<usize>) {
-        self.expect_built("collect_dynamic_identities_into")
-            .node
-            .collect_dynamic_identities_into(out);
     }
 
     /// Emit this sub-view's accessibility nodes for the semantic walk: builds
@@ -452,7 +455,7 @@ impl<E: crate::text::TextEngine> RetainedSubview<E> {
     /// Unlike [`Self::patch_built`], this does not carry the change into another
     /// frame: the parent tree's current patch result already owns the structural
     /// bookkeeping and will lay out the updated child immediately.
-    fn patch_for_parent(&mut self, renderer: &mut SemanticCore<E>) -> bool {
+    pub(super) fn patch_for_parent(&mut self, renderer: &mut SemanticCore<E>) -> bool {
         let built = self.expect_built_mut("patch_for_parent");
         let structural = built.node.patch(renderer);
         built.needs_layout |= structural;
@@ -725,6 +728,9 @@ pub struct VisibleSubviewCache<K: Eq + core::hash::Hash + Clone, E: crate::text:
     entries: std::collections::HashMap<K, RetainedSubview<E>>,
     /// Keys touched during the in-progress frame; [`Self::end_frame`] evicts the rest.
     touched: std::collections::HashSet<K>,
+    /// A key [`Self::end_frame`] keeps although no frame touched it: the item
+    /// the collection measures for its estimates while it is scrolled away.
+    pinned: Option<K>,
 }
 
 impl<K: Eq + core::hash::Hash + Clone, E: crate::text::TextEngine> VisibleSubviewCache<K, E> {
@@ -732,7 +738,20 @@ impl<K: Eq + core::hash::Hash + Clone, E: crate::text::TextEngine> VisibleSubvie
         Self {
             entries: std::collections::HashMap::new(),
             touched: std::collections::HashSet::new(),
+            pinned: None,
         }
+    }
+
+    /// Keeps `key` retained across frames that do not touch it, replacing the
+    /// previously pinned key, which is evicted by the next [`Self::end_frame`]
+    /// that does not touch it. `None` unpins.
+    pub(crate) fn pin(&mut self, key: Option<K>) {
+        self.pinned = key;
+    }
+
+    /// The key [`Self::pin`] keeps.
+    pub(crate) const fn pinned(&self) -> Option<&K> {
+        self.pinned.as_ref()
     }
 
     /// Begin a frame: forget which keys were visible last frame.
@@ -765,6 +784,24 @@ impl<K: Eq + core::hash::Hash + Clone, E: crate::text::TextEngine> VisibleSubvie
         self.entries
             .entry(key)
             .or_insert_with(|| RetainedSubview::new(build()))
+    }
+
+    /// Marks the retained item for `key` visible this frame; `false` when
+    /// none is retained.
+    #[cfg(any(feature = "list", feature = "table"))]
+    pub(crate) fn touch(&mut self, key: &K) -> bool {
+        let retained = self.entries.contains_key(key);
+        if retained {
+            self.touched.insert(key.clone());
+        }
+        retained
+    }
+
+    /// The already-retained item for `key`, mutably, without marking it
+    /// visible this frame.
+    #[cfg(feature = "list")]
+    pub(crate) fn get_mut(&mut self, key: &K) -> Option<&mut RetainedSubview<E>> {
+        self.entries.get_mut(key)
     }
 
     /// Look up an already-retained item without marking it visible this frame.
@@ -812,17 +849,12 @@ impl<K: Eq + core::hash::Hash + Clone, E: crate::text::TextEngine> VisibleSubvie
             .fold(false, |dirty, entry| entry.take_layout_dirty() | dirty)
     }
 
-    /// Add every connected `Dynamic` owned by a visible retained item.
-    pub(crate) fn collect_dynamic_identities_into(&self, out: &mut FxHashSet<usize>) {
-        for entry in self.entries.values() {
-            entry.collect_dynamic_identities_into(out);
-        }
-    }
-
     /// Evict every sub-view not touched this frame (items scrolled out of view).
     pub(crate) fn end_frame(&mut self) {
         let touched = &self.touched;
-        self.entries.retain(|key, _| touched.contains(key));
+        let pinned = self.pinned.as_ref();
+        self.entries
+            .retain(|key, _| touched.contains(key) || Some(key) == pinned);
     }
 }
 
@@ -926,6 +958,19 @@ pub trait WidgetBehavior<E: crate::text::TextEngine> {
     #[cfg(feature = "accessibility")]
     #[cfg(hydrolysis_cherenkov)]
     fn emit_accessibility(self: Rc<Self>, _renderer: &mut SemanticCore<E>, _env: &Environment) {}
+
+    /// The spoken label this widget contributes when an enclosing node names
+    /// itself from its content — a control's own label, so a row of a single
+    /// `toggle("Wi-Fi")` announces "Wi-Fi". `env` is the widget's build
+    /// environment. Widgets that name nothing answer `None`.
+    #[cfg(feature = "accessibility")]
+    fn accessibility_label(
+        &self,
+        _renderer: &mut SemanticCore<E>,
+        _env: &Environment,
+    ) -> Option<String> {
+        None
+    }
 }
 
 /// A native widget leaf rendered every flush from one retained state allocation.
@@ -1185,16 +1230,14 @@ impl Drop for LifeCycleEffect {
 
 /// The build-resolved state of a `.gesture(...)` observer, shared by the dispatch
 /// handler and the retained `Wrapper` node. A node has no `content: AnyView` at
-/// flush, so the two pieces the dispatch path derives from `content` are resolved
-/// at build time and stored here: `default_a11y_label` (the default spoken label,
-/// via `accessibility_label_from_view`) and `gesture_group_identity` (via
-/// `gesture_group_identity`). The action is shared (`Rc<RefCell<…>>`) so the node
-/// can re-register the same action every flush.
+/// flush, so the gesture group identity the dispatch path derives from `content`
+/// is resolved at build time and stored here; the default spoken label is
+/// derived from the wrapper's realized child when the claim is emitted. The
+/// action is shared (`Rc<RefCell<…>>`) so the node can re-register the same
+/// action every flush.
 pub struct GestureObserverEffect {
     pub gesture: Gesture,
     pub(crate) action: Rc<RefCell<BoxedAction<()>>>,
-    #[cfg(feature = "accessibility")]
-    pub(crate) default_a11y_label: Option<String>,
     pub(crate) gesture_group_identity: usize,
     /// The target the last flush registered. Every scene emit rebuilds the
     /// engine's target list under `clear_targets`, so the next flush
@@ -1664,12 +1707,6 @@ pub struct DynamicHostNode<E: crate::text::TextEngine> {
     /// The §7.1 context the host was last laid out against — the flush's
     /// mid-pass layout for a child that applied its pending reuses it.
     pub(super) safe_area: Option<Box<safe_area::SafeAreaLayout>>,
-    /// The source `Dynamic`, kept alive so its identity cannot be reused while
-    /// this node lives — otherwise a freed identity could be reallocated to a
-    /// different `Dynamic` and confused for this one. Also read by
-    /// [`RenderNode::collect_dynamic_identities`] to keep the measure-path dynamic
-    /// dimension cache pruned to the identities still live in the retained tree.
-    pub(super) source: waterui_core::dynamic::Dynamic,
     /// Latest content delivered by the `Dynamic`, awaiting a patch.
     pub(super) pending: Rc<RefCell<Option<AnyView>>>,
     /// Environment captured at build, used to rebuild the child on a change.
@@ -1677,10 +1714,7 @@ pub struct DynamicHostNode<E: crate::text::TextEngine> {
     /// The current expansion of the `Dynamic`'s content. Interior mutability
     /// lets a pass that runs under `&self` (flush, semantic emit) apply a
     /// pending structural change at this node's own entry, instead of waiting
-    /// for the next `patch` walk. The shared cell lets the measurement caches
-    /// hold a weak handle by `Dynamic` identity, so a dispatch measure that
-    /// meets the connected `Dynamic` can re-measure this child for the real
-    /// proposal.
+    /// for the next `patch` walk.
     pub(super) child: Rc<RefCell<RenderNode<E>>>,
     /// A mid-pass swap changed the child after the parent's layout already
     /// placed this host. Read through [`RenderNode::take_layout_dirty`], it

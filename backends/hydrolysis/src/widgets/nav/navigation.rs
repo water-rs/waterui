@@ -2,15 +2,14 @@
 use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::ROOT_NAVIGATION_IDENTITY;
 use crate::renderer::SafeAreaLayout;
+use crate::renderer::SnapshotDefaults;
 use crate::renderer::bounded_proposal;
 use crate::renderer::chrome::{ChromeContent, LiveChromeParts};
 use crate::renderer::live_bar::{BarFrames, LiveBarParts};
 use crate::renderer::{
-    Edge, HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, RetainedSubview,
-    WidgetRenderContext, measure_navigation_view_intrinsic,
-    measure_owned_navigation_view_with_proposal, measure_transient_view_with_proposal,
+    Edge, HydroState, HydrolysisRenderer, RenderContext, RetainedSubview, WidgetRenderContext,
     navigation_back_button_rect, navigation_base_bar_height, navigation_look,
-    normalize_layout_view, split_compact_threshold,
+    split_compact_threshold,
 };
 use crate::theme::{NavigationBarLook, NavigationSpec, WidgetTheme};
 #[cfg(feature = "accessibility")]
@@ -36,7 +35,7 @@ use waterui_core::contract_violation;
 use waterui_core::id::Id;
 use waterui_core::interaction::InteractionState;
 use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
-use waterui_core::{AnyView, Environment, Metadata, Native};
+use waterui_core::{AnyView, Environment, Metadata};
 use waterui_graphics::color::Color;
 
 #[derive(Clone, Copy)]
@@ -201,7 +200,6 @@ pub struct NavigationViewRenderState<E: crate::text::TextEngine> {
     color: Computed<WorkingColor>,
     hidden: Computed<bool>,
     display_mode: NavigationTitleDisplayMode,
-    subtitle_present: bool,
     /// The look the theme gave for the chrome's spec, held while the spec
     /// stays the same.
     look: Option<(NavigationSpec, NavigationBarLook)>,
@@ -227,25 +225,6 @@ fn held_navigation_look(
     (look.clone(), requested)
 }
 
-/// Whether a bar slot is bound. An unbound slot is `()`, which resolves to
-/// the native-leaf `Native<()>` by the time the backend sees it (`()` is a
-/// raw view); waterui may also wrap a slot in `Metadata<Environment>`
-/// (`navigation_slot_with_environment`), so the check looks through that wrap
-/// too.
-#[expect(
-    clippy::option_if_let_else,
-    reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
-)]
-fn navigation_slot_is_empty(view: &AnyView) -> bool {
-    if view.is::<()>() || view.is::<Native<()>>() {
-        return true;
-    }
-    match view.downcast_ref::<Metadata<Environment>>() {
-        Some(meta) => navigation_slot_is_empty(&meta.content),
-        None => false,
-    }
-}
-
 /// The environment a bar item builds, measures and renders under: `env`
 /// with labels defaulting to icon-only, as the platform bars present them.
 /// An explicit `LabelDisplayMode` keeps precedence; the title stays the
@@ -261,12 +240,13 @@ pub fn toolbar_item_env(env: &Environment) -> Environment {
     }
 }
 
-/// `content` scoped to [`toolbar_item_env`]. The scope is baked into the
-/// view because an environment snapshot in the content replaces the
-/// environment wholesale, so build, measure and render all see one scope.
+/// `content` scoped to [`toolbar_item_env`]: the scope reaches every
+/// environment snapshot inside the content as its [`SnapshotDefaults`], so
+/// build, measure and render all see one scope.
 pub fn toolbar_item_view(content: AnyView, env: &Environment) -> AnyView {
-    let (content, scoped) = crate::renderer::flatten_environment_metadata_owned(content, env);
-    AnyView::new(Metadata::new(content, toolbar_item_env(&scoped)))
+    let mut scoped = toolbar_item_env(env);
+    scoped.insert(SnapshotDefaults(toolbar_item_env));
+    AnyView::new(Metadata::new(content, scoped))
 }
 
 impl<E: crate::text::TextEngine> NavigationViewRenderState<E> {
@@ -285,7 +265,6 @@ impl<E: crate::text::TextEngine> NavigationViewRenderState<E> {
             || Color::new(Surface).resolve(env),
             |color| color.expect_resolved().clone(),
         );
-        let subtitle_present = !navigation_slot_is_empty(&subtitle);
         let mut principal = Vec::new();
         let mut leading = Vec::new();
         let mut trailing = Vec::new();
@@ -328,7 +307,6 @@ impl<E: crate::text::TextEngine> NavigationViewRenderState<E> {
             color,
             hidden,
             display_mode,
-            subtitle_present,
             look: None,
             top_bar: None,
             bottom_bar: None,
@@ -350,17 +328,21 @@ impl<E: crate::text::TextEngine> NavigationViewRenderState<E> {
         look
     }
 
+    /// Whether the bar's subtitle slot draws anything: an unbound slot is
+    /// `()`, which realizes as an empty node.
+    fn subtitle_present(&self) -> bool {
+        self.subtitle.node().is_some_and(|node| !node.is_empty())
+    }
+
     /// Eagerly build the bar/content sub-views (the measure path has no renderer to
-    /// build on), mirroring the dispatch path's normalization.
+    /// build on).
     pub(crate) fn prebuild(
         &mut self,
         renderer: &mut crate::renderer::SemanticCore<E>,
         env: &Environment,
     ) {
         self.title.ensure_built(renderer, env);
-        if self.subtitle_present {
-            self.subtitle.ensure_built(renderer, env);
-        }
+        self.subtitle.ensure_built(renderer, env);
         for item in self
             .principal
             .iter_mut()
@@ -407,30 +389,6 @@ impl<E: crate::text::TextEngine> NavigationViewRenderState<E> {
     }
 }
 
-impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<NavigationView> {
-    fn intrinsic(
-        state: &mut HydroState<E>,
-        view: &Self,
-        env: &Environment,
-        theme: &Rc<dyn crate::theme::WidgetTheme>,
-    ) -> LayoutSize {
-        measure_navigation_view_intrinsic(view.as_inner(), state, env, theme)
-    }
-
-    fn dimensions(
-        state: &mut HydroState<E>,
-        view: &Self,
-        env: &Environment,
-        theme: &Rc<dyn crate::theme::WidgetTheme>,
-        proposal: ProposalSize,
-    ) -> ViewDimensions {
-        if let (Some(width), Some(height)) = (proposal.width, proposal.height) {
-            return ViewDimensions::new(LayoutSize::new(width, height));
-        }
-        ViewDimensions::new(Self::intrinsic(state, view, env, theme))
-    }
-}
-
 /// Emits a navigation view's bar/title/subtitle accessibility nodes. Shared by
 /// the dispatch path and the retained `Widget`-node path. The title and
 /// subtitle views are owned by [`RetainedSubview`]s in `state`, which keeps the
@@ -455,9 +413,9 @@ pub fn navigation_view_accessibility<E: crate::text::TextEngine>(
         if renderer.read_signal(hidden) {
             return;
         }
-        let default_title_label = state.title.default_a11y_label();
-        let default_subtitle_label = if state.subtitle_present {
-            state.subtitle.default_a11y_label()
+        let default_title_label = state.title.accessibility_label(renderer);
+        let default_subtitle_label = if state.subtitle_present() {
+            state.subtitle.accessibility_label(renderer)
         } else {
             None
         };
@@ -516,7 +474,7 @@ pub fn navigation_view_accessibility<E: crate::text::TextEngine>(
                         .then_some(title_rect);
                     // The subtitle sits under the title inside `title_rect`,
                     // positioned by the same split the suppressed flush draws at.
-                    let subtitle_bounds = if state.subtitle_present {
+                    let subtitle_bounds = if state.subtitle_present() {
                         let title_size =
                             state.title.measure_built(renderer.state_mut(), env, theme);
                         let subtitle_size =
@@ -564,7 +522,7 @@ pub fn navigation_view_accessibility<E: crate::text::TextEngine>(
         if let Some(title_node_id) = title_node_id {
             bar_node.push_child(title_node_id);
         }
-        if state.subtitle_present {
+        if state.subtitle_present() {
             let mut subtitle_node = AccessibilityNode::new(
                 crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
                     env,
@@ -636,7 +594,7 @@ pub fn measure_navigation_view_node<E: crate::text::TextEngine>(
     };
     let title_size = if bar_height > 0.0 && state.principal.is_empty() {
         let title = state.title.measure_built(hydro, env, theme);
-        let subtitle = if state.subtitle_present {
+        let subtitle = if state.subtitle_present() {
             state.subtitle.measure_built(hydro, env, theme)
         } else {
             LayoutSize::zero()
@@ -1117,7 +1075,7 @@ fn flush_title_and_subtitle<E: crate::text::TextEngine>(
     bar: &crate::renderer::ChromeBar,
 ) {
     let title_size = state.title.measure_intrinsic(ctx.renderer_mut(), env);
-    let subtitle_size = if state.subtitle_present {
+    let subtitle_size = if state.subtitle_present() {
         state.subtitle.measure_intrinsic(ctx.renderer_mut(), env)
     } else {
         LayoutSize::zero()
@@ -1135,7 +1093,7 @@ fn flush_title_and_subtitle<E: crate::text::TextEngine>(
             title_area,
         );
     }
-    if state.subtitle_present && subtitle_rect.height() > 0.0 {
+    if state.subtitle_present() && subtitle_rect.height() > 0.0 {
         let render_ctx = ctx.render_context();
         let subtitle_area = bar.area_for(subtitle_rect);
         state.subtitle.place(
@@ -1314,39 +1272,6 @@ impl<E: crate::text::TextEngine> NavigationSplitRenderState<E> {
     }
 }
 
-impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<NavigationSplitLayout> {
-    fn intrinsic(
-        state: &mut HydroState<E>,
-        view: &Self,
-        env: &Environment,
-        theme: &Rc<dyn crate::theme::WidgetTheme>,
-    ) -> LayoutSize {
-        measure_navigation_split_layout(
-            view.as_inner(),
-            ProposalSize::UNSPECIFIED,
-            state,
-            env,
-            theme,
-        )
-    }
-
-    fn dimensions(
-        state: &mut HydroState<E>,
-        view: &Self,
-        env: &Environment,
-        theme: &Rc<dyn crate::theme::WidgetTheme>,
-        proposal: ProposalSize,
-    ) -> ViewDimensions {
-        ViewDimensions::new(measure_navigation_split_layout(
-            view.as_inner(),
-            proposal,
-            state,
-            env,
-            theme,
-        ))
-    }
-}
-
 /// The column plan a navigation split resolves under a proposal, mirroring
 /// [`render_navigation_split_parts`]: whether the pane is compact, whether a
 /// three-column split shows all columns, the resolved fixed-column width, and
@@ -1421,134 +1346,6 @@ fn retained_split_column<'a, E: crate::text::TextEngine>(
     } else {
         placeholder
     }
-}
-
-#[expect(
-    clippy::option_if_let_else,
-    reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
-)]
-// the split layout's column-size resolution is one continuous pass
-#[expect(
-    clippy::too_many_lines,
-    reason = "the layout resolves pane columns and dividers in a single sweep; the length is the enumeration, not logic"
-)]
-fn measure_navigation_split_layout<E: crate::text::TextEngine>(
-    split: &NavigationSplitLayout,
-    proposal: ProposalSize,
-    state: &mut HydroState<E>,
-    env: &Environment,
-    theme: &Rc<dyn crate::theme::WidgetTheme>,
-) -> LayoutSize {
-    let primary_selection = state.measure_signal(split.primary_selection());
-    let detail_selection = split
-        .secondary_selection()
-        .map_or(primary_selection, |selection| {
-            state.measure_signal(selection)
-        });
-    let plan = split_measure_plan(
-        split.content_builder().is_some(),
-        split.sidebar_width_constraints(),
-        split.native_style(),
-        state.measure_signal(split.column_visibility_signal()),
-        proposal,
-    );
-
-    // A dispatch-time measure has no retained columns to read: each column is
-    // built transient — normalized then measured — against the proposal its
-    // rect would hand it.
-    let transient_primary = || normalize_layout_view(split.primary_builder().build(), env);
-    let transient_placeholder = || normalize_layout_view(split.placeholder_builder().build(), env);
-
-    if plan.compact {
-        let view = if plan.three_column {
-            if let Some(selected) = detail_selection {
-                normalize_layout_view(AnyView::new(split.detail_builder().build(selected)), env)
-            } else if let Some(selected) = primary_selection {
-                normalize_layout_view(
-                    AnyView::new(
-                        split
-                            .content_builder()
-                            .expect("three-column split must provide a content builder")
-                            .build(selected),
-                    ),
-                    env,
-                )
-            } else {
-                transient_primary()
-            }
-        } else if let Some(selected) = detail_selection {
-            normalize_layout_view(AnyView::new(split.detail_builder().build(selected)), env)
-        } else {
-            transient_primary()
-        };
-        return measure_transient_view_with_proposal(&view, proposal, state, env, theme);
-    }
-
-    let mut width = 0.0_f64;
-    let mut height = 0.0_f64;
-    if !plan.three_column || plan.show_all {
-        let size = measure_transient_view_with_proposal(
-            &transient_primary(),
-            plan.column_proposal,
-            state,
-            env,
-            theme,
-        );
-        width += f64::from(size.width);
-        height = height.max(f64::from(size.height));
-    }
-    if plan.three_column {
-        let size = if let Some(selected) = primary_selection {
-            measure_owned_navigation_view_with_proposal(
-                split
-                    .content_builder()
-                    .expect("three-column split must provide a content builder")
-                    .build(selected),
-                plan.column_proposal,
-                state,
-                env,
-                theme,
-            )
-        } else {
-            measure_transient_view_with_proposal(
-                &transient_placeholder(),
-                plan.column_proposal,
-                state,
-                env,
-                theme,
-            )
-        };
-        width += f64::from(size.width);
-        height = height.max(f64::from(size.height));
-    }
-    let size = if let Some(selected) = detail_selection {
-        measure_owned_navigation_view_with_proposal(
-            split.detail_builder().build(selected),
-            plan.detail_proposal,
-            state,
-            env,
-            theme,
-        )
-    } else {
-        measure_transient_view_with_proposal(
-            &transient_placeholder(),
-            plan.detail_proposal,
-            state,
-            env,
-            theme,
-        )
-    };
-    width += f64::from(size.width);
-    height = height.max(f64::from(size.height));
-
-    LayoutSize::new(
-        proposal
-            .width
-            .unwrap_or_else(|| crate::num_cast::f64_as_f32(width)),
-        proposal
-            .height
-            .unwrap_or_else(|| crate::num_cast::f64_as_f32(height)),
-    )
 }
 
 pub fn measure_navigation_split_node<E: crate::text::TextEngine>(
@@ -2729,17 +2526,6 @@ fn present_navigation_pages<E: crate::text::TextEngine>(
                 );
             }
         }
-    }
-}
-
-impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<NavigationStack<(), ()>> {
-    fn intrinsic(
-        _state: &mut HydroState<E>,
-        _view: &Self,
-        _env: &Environment,
-        _theme: &Rc<dyn crate::theme::WidgetTheme>,
-    ) -> LayoutSize {
-        LayoutSize::zero()
     }
 }
 

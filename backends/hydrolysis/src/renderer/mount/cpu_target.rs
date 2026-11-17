@@ -37,9 +37,8 @@ use super::engine_target::{
 use super::{FilterHandle, LayerTarget, MaterialTerms};
 
 /// Why a view that needs a GPU device cannot mount on this target. A build
-/// without the `gpu` feature refuses those views before they reach a target
-/// (`refuse_gpu_device_view`), so here the build has both painters and
-/// adapter selection chose this one.
+/// without the `gpu` feature realizes those views as empty nodes, so here the
+/// build has both painters and adapter selection chose this one.
 #[cfg(hydrolysis_gpu)]
 const NO_GPU: &str = "this runtime renders on the Cherenkov CPU backend: the host has no usable \
                       hardware GPU";

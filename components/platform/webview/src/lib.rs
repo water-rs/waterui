@@ -1275,10 +1275,6 @@ impl View for WebViewOpen {
             web_view_controller(env).and_then(|controller| self.create(&controller, env))
         })
     }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::Both
-    }
 }
 
 // `WebView` is a raw view for a backend that bridges a platform web engine: it
@@ -1315,10 +1311,6 @@ impl View for WebView {
         } else {
             AnyView::new(self.render())
         }
-    }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::Both
     }
 }
 

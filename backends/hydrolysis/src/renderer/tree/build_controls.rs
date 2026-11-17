@@ -13,6 +13,7 @@ impl_widget_behavior!(
     ; prepare: ensure_label_built
     ; dirty: take_layout_dirty
     ; a11y: crate::widgets::controls::button::emit_button_accessibility
+    ; label: contributed_label
 );
 #[cfg(feature = "toggle")]
 impl_widget_behavior!(
@@ -21,6 +22,7 @@ impl_widget_behavior!(
     crate::widgets::controls::toggle::measure_toggle_node
     ; dirty: take_layout_dirty
     ; a11y: crate::widgets::controls::toggle::emit_toggle_accessibility
+    ; label: contributed_label
 );
 #[cfg(feature = "slider")]
 impl_widget_behavior!(
@@ -29,6 +31,7 @@ impl_widget_behavior!(
     crate::widgets::controls::slider::measure_slider_node
     ; dirty: take_layout_dirty
     ; a11y: crate::widgets::controls::slider::emit_slider_accessibility
+    ; label: contributed_label
 );
 #[cfg(feature = "stepper")]
 impl_widget_behavior!(
@@ -37,6 +40,7 @@ impl_widget_behavior!(
     crate::widgets::controls::stepper::measure_stepper_node
     ; dirty: take_layout_dirty
     ; a11y: crate::widgets::controls::stepper::emit_stepper_accessibility
+    ; label: contributed_label
 );
 impl_widget_behavior!(
     crate::widgets::controls::progress::ProgressRenderState<E>,
@@ -44,6 +48,7 @@ impl_widget_behavior!(
     crate::widgets::controls::progress::measure_progress_node
     ; dirty: take_layout_dirty
     ; a11y: crate::widgets::controls::progress::emit_progress_accessibility
+    ; label: contributed_label
 );
 #[cfg(feature = "menu")]
 impl_widget_behavior!(
@@ -53,6 +58,7 @@ impl_widget_behavior!(
     ; prepare: ensure_label_built
     ; dirty: take_layout_dirty
     ; a11y: crate::widgets::controls::button::emit_menu_accessibility
+    ; label: contributed_label
 );
 #[cfg(feature = "date-picker")]
 impl_widget_behavior!(
@@ -61,6 +67,7 @@ impl_widget_behavior!(
     crate::widgets::controls::date_picker::measure_date_picker_node
     ; dirty: take_layout_dirty
     ; a11y: crate::widgets::controls::date_picker::emit_date_picker_accessibility
+    ; label: contributed_label
 );
 #[cfg(feature = "color-picker")]
 impl_widget_behavior!(
@@ -69,6 +76,7 @@ impl_widget_behavior!(
     crate::widgets::controls::color_picker::measure_color_picker_node
     ; dirty: take_layout_dirty
     ; a11y: crate::widgets::controls::color_picker::emit_color_picker_accessibility
+    ; label: contributed_label
 );
 #[cfg(feature = "picker")]
 impl_widget_behavior!(
@@ -77,6 +85,7 @@ impl_widget_behavior!(
     crate::widgets::controls::picker::measure_picker_node
     ; dirty: take_layout_dirty
     ; a11y: crate::widgets::controls::picker::emit_picker_accessibility
+    ; label: contributed_label
 );
 #[cfg(feature = "text-field")]
 impl_widget_behavior!(
@@ -85,6 +94,7 @@ impl_widget_behavior!(
     crate::widgets::controls::text_field::measure_text_field_node
     ; dirty: take_layout_dirty
     ; a11y: crate::widgets::controls::text_field::emit_text_field_accessibility
+    ; label: contributed_label
 );
 #[cfg(feature = "secure-field")]
 impl_widget_behavior!(
@@ -93,6 +103,7 @@ impl_widget_behavior!(
     crate::widgets::controls::text_field::measure_secure_field_node
     ; dirty: take_layout_dirty
     ; a11y: crate::widgets::controls::text_field::emit_secure_field_accessibility
+    ; label: contributed_label
 );
 impl_widget_behavior!(
     crate::widgets::layout::badge::BadgeRenderState<E>,

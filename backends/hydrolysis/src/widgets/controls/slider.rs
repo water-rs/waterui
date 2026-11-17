@@ -4,8 +4,8 @@ use crate::renderer::chrome::{ChromeContent, IndicatorContent, LiveChromeParts, 
 #[cfg(feature = "accessibility")]
 use crate::renderer::slider_step_for_range;
 use crate::renderer::{
-    GroupOpacity, HydroNativeView, HydroState, HydrolysisRenderer, RenderContext,
-    WidgetRenderContext, slider_value_epsilon,
+    GroupOpacity, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext,
+    slider_value_epsilon,
 };
 use crate::theme::{
     DragMapping, Inputs, SliderLayout, SliderLook, SliderSpec, SpecTint, WidgetTheme,
@@ -26,7 +26,6 @@ use waterui_controls::label::{Label, LabelDisplayMode};
 use waterui_controls::slider::{SliderConfig, ValueFormatter, snap};
 use waterui_core::AnyView;
 use waterui_core::Environment;
-use waterui_core::Native;
 use waterui_core::contract_violation;
 use waterui_core::interaction::InteractionState;
 use waterui_core::layout::Alignment;
@@ -50,8 +49,6 @@ pub struct SliderRenderState<E: crate::text::TextEngine> {
     label_view: RetainedSubview<E>,
     min_value_label: RetainedSubview<E>,
     max_value_label: RetainedSubview<E>,
-    /// Whether a label is set beside either end of the track.
-    value_labels: bool,
     range: RangeInclusive<f64>,
     step: Option<f64>,
     value: Binding<f64>,
@@ -89,6 +86,17 @@ fn valid_range(range: RangeInclusive<f64>) -> RangeInclusive<f64> {
 }
 
 impl<E: crate::text::TextEngine> SliderRenderState<E> {
+    /// The label this control contributes to a node naming itself from its
+    /// content: its own label.
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn contributed_label(
+        &self,
+        _renderer: &mut crate::renderer::SemanticCore<E>,
+        env: &Environment,
+    ) -> Option<String> {
+        crate::renderer::SemanticCore::<E>::accessibility_label_from_label(&self.label, env)
+    }
+
     pub(crate) fn from_config(config: SliderConfig) -> Self {
         let (label, min_value_label, max_value_label, range, value, size, value_indicator, step) =
             config.into_parts();
@@ -101,7 +109,6 @@ impl<E: crate::text::TextEngine> SliderRenderState<E> {
         Self {
             label_view: RetainedSubview::new(AnyView::new(label.clone())),
             label,
-            value_labels: !min_value_label.is::<()>() || !max_value_label.is::<()>(),
             min_value_label: RetainedSubview::new(min_value_label),
             max_value_label: RetainedSubview::new(max_value_label),
             range,
@@ -140,13 +147,21 @@ impl<E: crate::text::TextEngine> SliderRenderState<E> {
             | self.max_value_label.take_layout_dirty_if_built()
     }
 
+    /// Whether a label beside either end of the track draws anything: an
+    /// unset one is `()`, which realizes as an empty node.
+    fn value_labels(&self) -> bool {
+        [&self.min_value_label, &self.max_value_label]
+            .into_iter()
+            .any(|label| label.node().is_some_and(|node| !node.is_empty()))
+    }
+
     fn spec(&self, env: &Environment) -> SliderSpec {
         slider_spec(
             &self.label,
             self.size,
             &self.range,
             self.step,
-            self.value_labels,
+            self.value_labels(),
             self.value_indicator.is_some(),
             env,
         )
@@ -202,43 +217,6 @@ fn slider_spec(
         value_labels,
         value_indicator,
     )
-}
-
-impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<SliderConfig> {
-    fn intrinsic(
-        state: &mut HydroState<E>,
-        view: &Self,
-        env: &Environment,
-        theme: &Rc<dyn crate::theme::WidgetTheme>,
-    ) -> LayoutSize {
-        measure_slider_intrinsic(view.as_inner(), state, env, theme)
-    }
-}
-
-/// Measures a slider from its config, without a retained node.
-pub fn measure_slider_intrinsic<E: crate::text::TextEngine>(
-    slider: &SliderConfig,
-    state: &mut HydroState<E>,
-    env: &Environment,
-    theme: &Rc<dyn crate::theme::WidgetTheme>,
-) -> LayoutSize {
-    let value_labels = !slider.min_value_label().is::<()>() || !slider.max_value_label().is::<()>();
-    let spec = slider_spec(
-        slider.label(),
-        slider.size(),
-        slider.range(),
-        slider.step(),
-        value_labels,
-        slider.value_indicator().is_some(),
-        env,
-    );
-    let look = theme.slider(&spec, env);
-    let measured = Measured {
-        label: crate::renderer::measure_label_intrinsic(slider.label(), state, env, theme),
-        min: crate::renderer::measure_view_intrinsic(slider.min_value_label(), state, env, theme),
-        max: crate::renderer::measure_view_intrinsic(slider.max_value_label(), state, env, theme),
-    };
-    intrinsic_size(&look, &spec, &measured)
 }
 
 /// The sizes of a slider's labels, as measured.

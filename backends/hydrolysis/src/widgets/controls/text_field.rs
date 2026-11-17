@@ -1,21 +1,20 @@
 use crate::platform::TextInputPurpose;
 #[cfg(feature = "text-field")]
 use crate::renderer::TailMark;
+#[cfg(feature = "secure-field")]
+use crate::renderer::measure_secure_field_size_with_label_size;
+#[cfg(feature = "text-field")]
+use crate::renderer::measure_text_field_size_with_label_size;
 use crate::renderer::text_editing::CaretPaints;
 use crate::renderer::{
-    HydroNativeView, HydroState, HydrolysisRenderer, RetainedSubview, TextInputModel,
-    TextInputTargetRegistration, TextSelectionSlot, WidgetRenderContext, clamp_to_char_boundary,
-    measure_label_intrinsic, transformed_rect,
+    HydroState, HydrolysisRenderer, RetainedSubview, TextInputModel, TextInputTargetRegistration,
+    TextSelectionSlot, WidgetRenderContext, clamp_to_char_boundary, transformed_rect,
 };
-#[cfg(feature = "secure-field")]
-use crate::renderer::{measure_secure_field_intrinsic, measure_secure_field_size_with_label_size};
-#[cfg(feature = "text-field")]
-use crate::renderer::{measure_text_field_intrinsic, measure_text_field_size_with_label_size};
 use crate::text::{TextLayout as _, TextPosition};
 use crate::theme::{ModalInteraction, TextFieldLook};
 #[cfg(feature = "text-field")]
 use crate::widgets::controls::field_look::placeholder_text;
-use crate::widgets::controls::field_look::{FieldChrome, FloatLabel, field_look, value_text};
+use crate::widgets::controls::field_look::{FieldChrome, FloatLabel, value_text};
 #[cfg(feature = "text-field")]
 use core::num::NonZeroUsize;
 use nami::Signal as _;
@@ -24,6 +23,7 @@ use std::rc::Rc;
 use waterui::cursor::CursorStyle;
 #[cfg(feature = "text-field")]
 use waterui_controls::text_field::ResolvedTextFieldConfig;
+use waterui_core::Environment;
 #[cfg(feature = "text-field")]
 use waterui_core::Str;
 #[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
@@ -31,7 +31,6 @@ use waterui_core::interaction::InteractionState;
 use waterui_core::layout::{
     HorizontalAlignment, LayoutDirection, ProposalSize, Size as LayoutSize, ViewDimensions,
 };
-use waterui_core::{Environment, Native};
 #[cfg(feature = "secure-field")]
 use waterui_form::secure::SecureFieldConfig;
 #[cfg(feature = "text-field")]
@@ -57,6 +56,17 @@ pub struct TextFieldRenderState<E: crate::text::TextEngine> {
 
 #[cfg(feature = "text-field")]
 impl<E: crate::text::TextEngine> TextFieldRenderState<E> {
+    /// The label this control contributes to a node naming itself from its
+    /// content: its own label.
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn contributed_label(
+        &self,
+        _renderer: &mut crate::renderer::SemanticCore<E>,
+        env: &Environment,
+    ) -> Option<String> {
+        crate::renderer::SemanticCore::<E>::accessibility_label_from_label(self.config.label(), env)
+    }
+
     pub(crate) fn from_config(config: ResolvedTextFieldConfig) -> Self {
         let field = FieldChrome::new();
         Self {
@@ -101,6 +111,17 @@ pub struct SecureFieldRenderState<E: crate::text::TextEngine> {
 
 #[cfg(feature = "secure-field")]
 impl<E: crate::text::TextEngine> SecureFieldRenderState<E> {
+    /// The label this control contributes to a node naming itself from its
+    /// content: its own label.
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn contributed_label(
+        &self,
+        _renderer: &mut crate::renderer::SemanticCore<E>,
+        env: &Environment,
+    ) -> Option<String> {
+        crate::renderer::SemanticCore::<E>::accessibility_label_from_label(self.config.label(), env)
+    }
+
     pub(crate) fn from_config(config: SecureFieldConfig) -> Self {
         let field = FieldChrome::new();
         Self {
@@ -137,68 +158,6 @@ use accesskit::{
 };
 
 use crate::widgets::util::widget_disabled;
-
-#[cfg(feature = "text-field")]
-impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<ResolvedTextFieldConfig> {
-    fn intrinsic(
-        state: &mut HydroState<E>,
-        view: &Self,
-        env: &Environment,
-        theme: &Rc<dyn crate::theme::WidgetTheme>,
-    ) -> LayoutSize {
-        measure_text_field_intrinsic(view.as_inner(), state, env, theme)
-    }
-
-    fn dimensions(
-        state: &mut HydroState<E>,
-        view: &Self,
-        env: &Environment,
-        theme: &Rc<dyn crate::theme::WidgetTheme>,
-        proposal: ProposalSize,
-    ) -> ViewDimensions {
-        let text_field = view.as_inner();
-        let label_size = measure_label_intrinsic(text_field.label(), state, env, theme);
-        ViewDimensions::new(measure_text_field_size_with_label_size(
-            text_field,
-            label_size,
-            state,
-            env,
-            &field_look(theme, env),
-            proposal,
-        ))
-    }
-}
-
-#[cfg(feature = "secure-field")]
-impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<SecureFieldConfig> {
-    fn intrinsic(
-        state: &mut HydroState<E>,
-        view: &Self,
-        env: &Environment,
-        theme: &Rc<dyn crate::theme::WidgetTheme>,
-    ) -> LayoutSize {
-        measure_secure_field_intrinsic(view.as_inner(), state, env, theme)
-    }
-
-    fn dimensions(
-        state: &mut HydroState<E>,
-        view: &Self,
-        env: &Environment,
-        theme: &Rc<dyn crate::theme::WidgetTheme>,
-        proposal: ProposalSize,
-    ) -> ViewDimensions {
-        let secure_field = view.as_inner();
-        let label_size = measure_label_intrinsic(secure_field.label(), state, env, theme);
-        ViewDimensions::new(measure_secure_field_size_with_label_size(
-            secure_field,
-            label_size,
-            state,
-            env,
-            &field_look(theme, env),
-            proposal,
-        ))
-    }
-}
 
 /// Renders a retained text-field leaf every flush: text fields are
 /// render-driven a11y, so the inline a11y is emitted by `render_text_field_parts`
@@ -881,9 +840,9 @@ pub fn render_secure_field_parts<E: crate::text::TextEngine>(
     }
 }
 
-/// Measures a retained text-field leaf from its [`TextFieldRenderState`], mirroring
-/// [`measure_text_field_intrinsic`] but reading the label size from its already-built
-/// [`RetainedSubview`] so layout and the floating-label render agree.
+/// Measures a retained text-field leaf from its [`TextFieldRenderState`],
+/// reading the label size from its already-built [`RetainedSubview`] so layout
+/// and the floating-label render agree.
 #[cfg(feature = "text-field")]
 pub fn measure_text_field_node<E: crate::text::TextEngine>(
     render_state: &TextFieldRenderState<E>,
@@ -904,8 +863,8 @@ pub fn measure_text_field_node<E: crate::text::TextEngine>(
 }
 
 /// Measures a retained secure-field leaf from its [`SecureFieldRenderState`],
-/// mirroring [`measure_secure_field_intrinsic`] but reading the label size from its
-/// already-built [`RetainedSubview`] so layout and the floating-label render agree.
+/// reading the label size from its already-built [`RetainedSubview`] so layout
+/// and the floating-label render agree.
 #[cfg(feature = "secure-field")]
 pub fn measure_secure_field_node<E: crate::text::TextEngine>(
     render_state: &SecureFieldRenderState<E>,

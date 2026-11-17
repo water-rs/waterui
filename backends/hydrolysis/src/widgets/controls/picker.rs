@@ -4,9 +4,8 @@ use crate::renderer::chrome::{ChromeContent, LabelPaint, LiveChromeParts};
 use crate::renderer::live_segmented::{LiveSegmented, LiveSegmentedParts, SegmentedFrames};
 use crate::renderer::live_toggle::LiveToggleParts;
 use crate::renderer::{
-    GroupOpacity, HydroNativeView, HydroState, HydrolysisRenderer, PickerMenuEntry,
-    PickerMenuRequest, RenderContext, RetainedSubview, WidgetRenderContext,
-    measure_picker_intrinsic, measure_picker_intrinsic_with_label_size,
+    GroupOpacity, HydroState, HydrolysisRenderer, PickerMenuEntry, PickerMenuRequest,
+    RenderContext, RetainedSubview, WidgetRenderContext, measure_picker_intrinsic_with_label_size,
 };
 use crate::renderer::{InteractionKey, Track, TrackAction, measure_segmented_intrinsic, menu_look};
 #[cfg(feature = "accessibility")]
@@ -32,7 +31,6 @@ use waterui::ViewExt as _;
 use waterui_controls::label::Label;
 use waterui_core::AnyView;
 use waterui_core::Environment;
-use waterui_core::Native;
 use waterui_core::contract_violation;
 use waterui_core::id::Id;
 use waterui_core::interaction::InteractionState;
@@ -47,17 +45,6 @@ use waterui_text::font::Font;
 use waterui_text::styled::StyledStr;
 
 use crate::widgets::util::{label_beside_control_bounds, widget_disabled};
-
-impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<PickerConfig> {
-    fn intrinsic(
-        state: &mut HydroState<E>,
-        view: &Self,
-        env: &Environment,
-        theme: &Rc<dyn crate::theme::WidgetTheme>,
-    ) -> LayoutSize {
-        measure_picker_intrinsic(view.as_inner(), state, env, theme)
-    }
-}
 
 /// State shared by the retained picker node and its popup callbacks: the
 /// cloneable [`PickerConfig`] drives the field chrome + accessibility, and its
@@ -128,6 +115,17 @@ impl<E: crate::text::TextEngine> Default for SegmentedState<E> {
 }
 
 impl<E: crate::text::TextEngine> PickerRenderState<E> {
+    /// The label this control contributes to a node naming itself from its
+    /// content: its own label.
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn contributed_label(
+        &self,
+        _renderer: &mut crate::renderer::SemanticCore<E>,
+        env: &Environment,
+    ) -> Option<String> {
+        crate::renderer::SemanticCore::<E>::accessibility_label_from_label(self.config.label(), env)
+    }
+
     pub(crate) fn from_config(config: PickerConfig) -> Self {
         Self {
             label_view: RetainedSubview::new(menu_picker_label_view(config.label())),
@@ -745,7 +743,7 @@ fn register_option<E: crate::text::TextEngine>(
 
 /// Measures a retained picker leaf from its [`PickerRenderState`], reading the
 /// label size from its already-built [`RetainedSubview`] so layout and the
-/// in-field label render agree (mirrors [`measure_picker_intrinsic`]).
+/// in-field label render agree.
 ///
 /// A segmented picker (`StretchAxis::Horizontal`) answers a finite width
 /// proposal, never below its intrinsic width; every other picker answers its

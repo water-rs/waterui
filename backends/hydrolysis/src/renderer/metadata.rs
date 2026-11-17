@@ -396,11 +396,19 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         clippy::too_many_lines,
         reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
     )]
+    #[cfg_attr(
+        not(feature = "accessibility"),
+        expect(
+            unused_variables,
+            reason = "the content only names the synthesized accessibility claim"
+        )
+    )]
     pub(super) fn apply_gesture_observer(
         renderer: &mut Self,
         ctx: RenderContext,
         env: &Environment,
         effect: &GestureObserverEffect,
+        content: &RenderNode<E>,
         render_content: impl FnOnce(&mut Self, &Environment),
     ) {
         // The action environment contract (water-rs/hydrolysis#177,
@@ -457,9 +465,8 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                         AccessibilityNodeRole::Button,
                     ),
                 );
-                if let Some(label) =
-                    renderer.resolve_accessibility_label(env, effect.default_a11y_label.clone())
-                {
+                let default_label = content.accessibility_label(renderer);
+                if let Some(label) = renderer.resolve_accessibility_label(env, default_label) {
                     node.set_label(label);
                 }
                 if let Some(value) = renderer.resolve_accessibility_value(env, None) {
@@ -705,6 +712,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         renderer: &mut SemanticCore<E>,
         env: &Environment,
         effect: &GestureObserverEffect,
+        content: &RenderNode<E>,
     ) -> Option<GestureA11yClaim> {
         if !matches!(effect.gesture, Gesture::Tap(_)) {
             return None;
@@ -742,9 +750,8 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                     AccessibilityNodeRole::Button,
                 ),
             );
-            if let Some(label) =
-                renderer.resolve_accessibility_label(env, effect.default_a11y_label.clone())
-            {
+            let default_label = content.accessibility_label(renderer);
+            if let Some(label) = renderer.resolve_accessibility_label(env, default_label) {
                 node.set_label(label);
             }
             node.add_action(AccessibilityAction::Focus);

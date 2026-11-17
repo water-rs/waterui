@@ -23,7 +23,7 @@
 //! re-dispatching the same screen from the `View` tree costs ~15ms.
 
 macro_rules! impl_widget_behavior {
-    ($state:ty, $render:path, $measure:expr $(, $priority:expr)? $(; prepare: $prepare:ident)? $(; dirty: $dirty:ident)? $(; a11y: $a11y:path)? $(; renders_nothing: $renders_nothing:literal)? $(; surface: $surface:ident)? $(; page: $page:path)?) => {
+    ($state:ty, $render:path, $measure:expr $(, $priority:expr)? $(; prepare: $prepare:ident)? $(; dirty: $dirty:ident)? $(; a11y: $a11y:path)? $(; renders_nothing: $renders_nothing:literal)? $(; surface: $surface:ident)? $(; page: $page:path)? $(; label: $label:ident)?) => {
         impl<E: crate::text::TextEngine> WidgetBehavior<E> for RefCell<$state> {
             $(fn priority(&self) -> i32 { $priority })?
 
@@ -67,6 +67,17 @@ macro_rules! impl_widget_behavior {
             )?
 
             $(
+                #[cfg(feature = "accessibility")]
+                fn accessibility_label(
+                    &self,
+                    renderer: &mut SemanticCore<E>,
+                    env: &Environment,
+                ) -> Option<String> {
+                    self.borrow().$label(renderer, env)
+                }
+            )?
+
+            $(
                 fn update_scroll_surface(&self, facts: Option<safe_area::ScrollSurfaceFacts>) {
                     self.borrow().$surface.facts.set(facts);
                 }
@@ -94,6 +105,8 @@ mod collection;
 mod flush;
 #[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
 mod hosted;
+#[cfg(feature = "accessibility")]
+mod label;
 mod layout;
 mod nodes;
 pub(super) mod safe_area;
@@ -209,7 +222,7 @@ pub enum RenderNode<E: crate::text::TextEngine> {
     /// marker, not a frame.
     Fill(Box<FillNode<E>>),
     /// A native widget leaf (button, toggle, slider, picker, text field, …) rendered
-    /// by its `HydroNativeView` handler **every flush** from a retained,
+    /// by its widget behavior **every flush** from a retained,
     /// signal-holding config — never baked. Its `builder` reconstructs the leaf view
     /// (actions retained as `Rc`, label/value signals kept) and the flush re-dispatches
     /// it, so the handler re-reads its live signals and reactive content (a `text!`
