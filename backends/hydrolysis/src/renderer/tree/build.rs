@@ -16,7 +16,7 @@ use waterui::component::form::picker::MultiDatePickerGrid;
 use waterui_backend_core::Child;
 use waterui_core::contract_violation;
 
-pub(in crate::renderer::tree) mod backend;
+pub mod backend;
 
 /// A retained node's layout-dirty mark and the callback its input
 /// subscriptions fire: the callback sets the mark, which an enclosing

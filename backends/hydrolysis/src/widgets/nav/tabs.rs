@@ -4,6 +4,7 @@ use std::rc::Rc;
 
 #[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
+use crate::renderer::HeldChild;
 use crate::renderer::live_tabs::{LiveTabsParts, TabsFrames};
 use crate::renderer::{
     Edge, HydroState, RetainedSubview, WidgetRenderContext, tabs_button_rect, tabs_content_proposal,
@@ -15,13 +16,13 @@ use accesskit::{
 };
 use nami::watcher::BoxWatcherGuard;
 use nami::{Binding, Signal};
-use waterui::navigation::tab::{NativeTabStyle, Tab, TabIcon, TabsLayout};
+use waterui::navigation::tab::{NativeTabStyle, TabIcon, TabItem, TabsLayout};
 use waterui_controls::label::LabelDisplayMode;
 use waterui_core::contract_violation;
 use waterui_core::id::Id;
 use waterui_core::layout::{LayoutDirection, ProposalSize, Size as LayoutSize, ViewDimensions};
-use waterui_core::views::{AnyViewsSnapshot, Views};
-use waterui_core::{AnyView, Environment};
+use waterui_core::views::AnyViewsSnapshot;
+use waterui_core::{AnyView, Environment, Native};
 
 #[cfg(feature = "accessibility")]
 use crate::widgets::util::widget_disabled;
@@ -43,18 +44,18 @@ struct TabRenderState<E: crate::text::TextEngine> {
 }
 
 impl<E: crate::text::TextEngine> TabRenderState<E> {
-    fn from_tab(tag: Id, tab: Tab) -> Self {
+    fn from_tab(tag: Id, tab: TabItem<HeldChild<E>>) -> Self {
         let (label, icon, content, badge, enabled, _) = tab.into_parts();
         Self {
             tag,
-            label: RetainedSubview::new(label.build()),
+            label: RetainedSubview::held(label.build()),
             icon: icon.map(|icon| {
                 RetainedSubview::new(match icon {
                     TabIcon::System(icon) => AnyView::new(icon),
                     TabIcon::View(builder) => builder.build(),
                 })
             }),
-            content: RetainedSubview::new(AnyView::new(content.build())),
+            content: RetainedSubview::new(Native::new(content.build())),
             enabled,
             badge,
         }
@@ -75,7 +76,7 @@ pub struct TabsRenderState<E: crate::text::TextEngine> {
     tabs: Vec<TabRenderState<E>>,
     /// The collection snapshot the last applied change reported — every
     /// reconcile works this membership, never the live collection.
-    snapshot: Rc<RefCell<AnyViewsSnapshot<Tab>>>,
+    snapshot: Rc<RefCell<AnyViewsSnapshot<TabItem<HeldChild<E>>>>>,
     /// A relocation [`reconcile`] decided but has not published: callers run
     /// it under a `borrow_mut` of the whole state, and writing `selection`
     /// there would let a user watcher re-enter the borrowed state. The id
@@ -93,7 +94,10 @@ pub struct TabsRenderState<E: crate::text::TextEngine> {
 }
 
 impl<E: crate::text::TextEngine> TabsRenderState<E> {
-    pub(crate) fn from_tabs(tabs: TabsLayout, renderer: &crate::renderer::SemanticCore<E>) -> Self {
+    pub(crate) fn from_tabs(
+        tabs: TabsLayout<HeldChild<E>>,
+        renderer: &crate::renderer::SemanticCore<E>,
+    ) -> Self {
         let (selection, tabs, style, ..) = tabs.into_parts();
         let snapshot = Rc::new(RefCell::new(tabs.snapshot()));
         // Membership changes mark the owning widget's cell — the node whose

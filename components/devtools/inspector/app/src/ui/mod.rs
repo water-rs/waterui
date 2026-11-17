@@ -25,11 +25,9 @@ pub(crate) mod parts;
 pub fn inspector(model: Model, subscriptions: SubscriptionSender) -> impl View {
     let selected = model.section.clone();
 
-    NavigationSplitView::new(
-        &selected,
-        sidebar(model.clone()),
-        detail_builder(model, subscriptions),
-    )
+    NavigationSplitView::new(&selected, sidebar(model.clone()), move |section| {
+        detail(section, model.clone(), subscriptions.clone())
+    })
 }
 
 /// Builds one section's pane, without the surrounding split view.
@@ -46,16 +44,13 @@ pub fn pane(section: Section, model: Model, subscriptions: SubscriptionSender) -
     }
 }
 
-/// Builds the detail column for whichever section is selected.
-fn detail_builder(
+/// The detail column for the selected `section`.
+fn detail(
+    section: Section,
     model: Model,
     subscriptions: SubscriptionSender,
-) -> impl Fn(Section) -> NavigationView + 'static {
-    move |section| {
-        let model = model.clone();
-        let subscriptions = subscriptions.clone();
-        NavigationView::new(section.title(), pane(section, model, subscriptions))
-    }
+) -> NavigationView<impl View> {
+    NavigationView::new(section.title(), pane(section, model, subscriptions))
 }
 
 /// The section list, with a live connection indicator pinned above it.

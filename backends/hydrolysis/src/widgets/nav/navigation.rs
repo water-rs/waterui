@@ -1,5 +1,6 @@
 #[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
+use crate::renderer::HeldChild;
 use crate::renderer::ROOT_NAVIGATION_IDENTITY;
 use crate::renderer::SafeAreaLayout;
 use crate::renderer::SnapshotDefaults;
@@ -24,9 +25,9 @@ use std::rc::Rc;
 use waterui::navigation::split::NavigationSplitDetailBuilder;
 use waterui::navigation::{
     AnyNavigationTransition, Bar, NavigationDestinationState, NavigationSearch,
-    NavigationSplitLayout, NavigationStack, NavigationTitleDisplayMode, NavigationToolbarPlacement,
-    NavigationTransitionDirection, NavigationView, RetainedNavigationTransition,
-    resolve_navigation_root,
+    NavigationSplitLayout, NavigationStackLayout, NavigationTitleDisplayMode,
+    NavigationToolbarPlacement, NavigationTransitionDirection, NavigationView,
+    RetainedNavigationTransition,
 };
 use waterui::theme::color::{Background, Surface};
 use waterui_controls::label::LabelDisplayMode;
@@ -250,7 +251,7 @@ pub fn toolbar_item_view(content: AnyView, env: &Environment) -> AnyView {
 }
 
 impl<E: crate::text::TextEngine> NavigationViewRenderState<E> {
-    pub(crate) fn from_view(navigation: NavigationView, env: &Environment) -> Self {
+    pub(crate) fn from_view(navigation: NavigationView<HeldChild<E>>, env: &Environment) -> Self {
         let NavigationView { bar, content, .. } = navigation;
         let Bar {
             title,
@@ -301,7 +302,7 @@ impl<E: crate::text::TextEngine> NavigationViewRenderState<E> {
             leading,
             trailing,
             bottom,
-            content: RetainedSubview::new(content),
+            content: RetainedSubview::held(content),
             search,
             search_field,
             color,
@@ -1833,7 +1834,7 @@ fn render_split_detail<E: crate::text::TextEngine>(
 /// destination own a persistent render node, so inactive pages retain local widget
 /// state and a transition never reconstructs its source or destination subtree.
 pub struct NavigationStackRenderState<E: crate::text::TextEngine> {
-    unresolved_root: Option<AnyView>,
+    unresolved_root: Option<NavigationStackLayout<HeldChild<E>>>,
     root: Option<crate::renderer::navigation_state::StackPage<E>>,
     background: Option<Computed<WorkingColor>>,
     transition_style: AnyNavigationTransition,
@@ -1845,10 +1846,10 @@ pub struct NavigationStackRenderState<E: crate::text::TextEngine> {
 }
 
 impl<E: crate::text::TextEngine> NavigationStackRenderState<E> {
-    pub(crate) fn from_stack(stack: NavigationStack<(), ()>) -> Self {
+    pub(crate) fn from_stack(stack: NavigationStackLayout<HeldChild<E>>) -> Self {
         let transition_style = stack.transition_style().clone();
         Self {
-            unresolved_root: Some(stack.into_inner()),
+            unresolved_root: Some(stack),
             root: None,
             background: None,
             transition_style,
@@ -1879,10 +1880,10 @@ impl<E: crate::text::TextEngine> NavigationStackRenderState<E> {
             state,
             // The root is never pushed, so it has no arrival to style.
             transition: _,
-        } = resolve_navigation_root(unresolved_root, env);
+        } = unresolved_root.resolve(env);
         self.background = Some(Color::new(Background).resolve(env));
         self.root = Some(crate::renderer::navigation_state::StackPage::new(
-            AnyView::new(NavigationView {
+            waterui_core::Native::new(NavigationView {
                 bar,
                 content,
                 state: NavigationDestinationState::default(),

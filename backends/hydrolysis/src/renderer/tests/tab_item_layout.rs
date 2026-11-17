@@ -5,50 +5,38 @@
 use super::*;
 use crate::theme::TabItemLayout;
 use waterui::navigation::tab::NativeTabStyle;
-use waterui_core::views::{SharedAnyViews, Views as _};
-use waterui_navigation::tab::{Tab, TabsLayout, tab_style};
+use waterui_core::handler::ViewBuilder;
+use waterui_navigation::tab::{Tab, Tabs, tab_style};
 
-fn tabs_view(count: usize) -> TabsLayout {
-    let tabs = SharedAnyViews::new(
-        (1..=count)
-            .map(|i| {
-                Tab::new(format!("Tab {i}"), move || {
-                    NavigationView::new(format!("Pane {i}"), text!("pane"))
-                })
+fn tabs_view(
+    count: usize,
+) -> Tabs<Vec<Tab<impl ViewBuilder<Output = NavigationView<impl View>> + use<>>>, ()> {
+    let tabs = (1..=count)
+        .map(|i| {
+            Tab::new(format!("Tab {i}"), move || {
+                NavigationView::new(format!("Pane {i}"), text!("pane"))
             })
-            .collect::<Vec<_>>(),
-    );
-    let selection = Binding::container(
-        tabs.snapshot()
-            .get_id(0)
-            .expect("a non-empty tab set reports an id"),
-    );
-    TabsLayout::new(selection, tabs)
+        })
+        .collect::<Vec<_>>();
+    Tabs::new(&Binding::container(0usize), tabs)
 }
 
 /// Tabs whose items carry a text icon beside the title, so the item's
 /// content extent is icon + spacing + label exactly.
-fn icon_tabs_view(count: usize, icon: &str) -> TabsLayout {
+fn icon_tabs_view(count: usize, icon: &str) -> impl View + use<> {
     let icon = icon.to_owned();
-    let tabs = SharedAnyViews::new(
-        (1..=count)
-            .map(|i| {
-                Tab::new(
-                    label(format!("Tab {i}")).icon(text(icon.clone())),
-                    move || NavigationView::new(format!("Pane {i}"), text!("pane")),
-                )
-            })
-            .collect::<Vec<_>>(),
-    );
-    let selection = Binding::container(
-        tabs.snapshot()
-            .get_id(0)
-            .expect("a non-empty tab set reports an id"),
-    );
-    TabsLayout::new(selection, tabs)
+    let tabs = (1..=count)
+        .map(|i| {
+            Tab::new(
+                label(format!("Tab {i}")).icon(text(icon.clone())),
+                move || NavigationView::new(format!("Pane {i}"), text!("pane")),
+            )
+        })
+        .collect::<Vec<_>>();
+    Tabs::new(&Binding::container(0usize), tabs)
 }
 
-fn sidebar_tabs_view(count: usize) -> TabsLayout {
+fn sidebar_tabs_view(count: usize) -> impl View + use<> {
     tabs_view(count).style(tab_style::Sidebar)
 }
 

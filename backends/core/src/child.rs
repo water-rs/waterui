@@ -66,20 +66,29 @@ impl<F: NativeBackendFamily, V: View> ChildFn<F> for ViewChild<V> {
 
 /// A child view a payload hands to `B`'s method, realized where the
 /// backend places it.
-pub trait ChildView<B: NativeBackend>: 'static {
+pub trait ChildView<B: NativeBackend>: IntoChild<B::Family> {
     /// Realizes the child through `backend`.
     fn realize(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output;
+}
 
-    /// The child as its backend family's [`Child`], for a backend that
-    /// holds it to realize later, outside the method that received it.
-    fn into_child(self) -> Child<B::Family>;
+/// A child view held as its backend family's [`Child`], for a backend that
+/// realizes it later, outside the method that received it.
+///
+/// Separate from [`ChildView`] because the conversion names only the
+/// family, which borrows nothing: a backend can hand it to code that keeps
+/// it.
+pub trait IntoChild<F: NativeBackendFamily>: 'static {
+    /// The child as the family's [`Child`].
+    fn into_child(self) -> Child<F>;
 }
 
 impl<B: NativeBackend> ChildView<B> for Child<B::Family> {
     fn realize(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
         backend.with_family(|backend| self.0.call(backend, env, cx))
     }
+}
 
+impl<F: NativeBackendFamily> IntoChild<F> for Child<F> {
     fn into_child(self) -> Self {
         self
     }
@@ -89,8 +98,10 @@ impl<B: NativeBackend> ChildView<B> for AnyView {
     fn realize(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
         Realize::child(backend, self, env, cx)
     }
+}
 
-    fn into_child(self) -> Child<B::Family> {
+impl<F: NativeBackendFamily> IntoChild<F> for AnyView {
+    fn into_child(self) -> Child<F> {
         Child::from_view(self)
     }
 }

@@ -210,7 +210,7 @@ pub trait ViewExt: View + Sized {
     /// # Arguments
     /// * `title` - The semantic title for the navigation view
     #[cfg(feature = "navigation")]
-    fn title(self, title: impl crate::text::IntoText) -> NavigationView {
+    fn title(self, title: impl crate::text::IntoText) -> NavigationView<Self> {
         NavigationView::new(title, self)
     }
 

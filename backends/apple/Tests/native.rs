@@ -2633,7 +2633,7 @@ mod navigation {
         let detail = binding(Some(1_i32));
         let leaf = resolve::render(Tabs::new(
             &tab,
-            vec![
+            (
                 Tab::new("Inbox", move || {
                     NavigationView::new("Inbox", text("inbox")).navigation_toolbar(
                         NavigationToolbar::new(vec![NavigationToolbarItem::action(
@@ -2648,7 +2648,7 @@ mod navigation {
                         NavigationView::new(format!("Detail {id}"), text("detail"))
                     })
                 }),
-            ],
+            ),
         ));
         let window = super::mount_and_order_front(leaf.view());
         assert!(

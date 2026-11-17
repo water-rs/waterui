@@ -13,7 +13,9 @@ use waterui::navigation::tab::{Tab, TabIcon};
 use waterui::text::Text;
 use waterui_icons_lucide as lucide;
 
-fn tab(label: impl waterui::component::IntoLabel) -> Tab {
+fn tab(
+    label: impl waterui::component::IntoLabel,
+) -> Tab<impl waterui::handler::ViewBuilder<Output = NavigationView<Text>>> {
     Tab::new(label, || NavigationView::new("Root", Text::new("content")))
 }
 
@@ -52,8 +54,8 @@ fn a_label_without_an_icon_carries_none() {
 
 #[test]
 fn erasing_tab_identity_keeps_the_icon() {
+    use waterui::AnyView;
     use waterui::navigation::Tabs;
-    use waterui::views::Views as _;
 
     let selection = Binding::container(0usize);
     let tabs = Tabs::new(
@@ -63,7 +65,7 @@ fn erasing_tab_identity_keeps_the_icon() {
 
     // The icon has to survive the projection into the `Id`-keyed container the
     // C ABI carries, which is the only form a backend ever sees.
-    let layout = tabs.into_layout();
+    let layout = tabs.into_layout::<AnyView>();
     match &layout
         .tabs()
         .snapshot()

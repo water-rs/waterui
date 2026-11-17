@@ -118,8 +118,7 @@ pub use collection::*;
 
 /// A child view held for Hydrolysis to build later: a payload's child in
 /// Hydrolysis's child slot.
-pub(in crate::renderer::tree) type HeldChild<E> =
-    waterui_backend_core::Child<build::backend::HydroFamily<E>>;
+pub type HeldChild<E> = waterui_backend_core::Child<build::backend::HydroFamily<E>>;
 pub use nodes::*;
 use subview::NodeSubView;
 

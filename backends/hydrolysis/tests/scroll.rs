@@ -483,7 +483,7 @@ fn report_offset_writes_the_offset_on_controller_scroll_to() {
 fn nav_rail(
     offset: &Binding<waterui::layout::Point>,
     controller: &waterui_layout::scroll::ScrollController<waterui::layout::Point>,
-) -> impl View {
+) -> impl View + use<> {
     scroll(
         vstack((
             labeled_card("Item 1", 120.0, 60.0, Srgb::new(1.0, 0.1, 0.1)),

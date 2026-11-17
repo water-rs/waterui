@@ -193,7 +193,7 @@ impl<E: crate::text::TextEngine> RetainedSubview<E> {
     }
 
     /// The sub-view of a child a payload held in its slot.
-    pub(in crate::renderer::tree) const fn held(source: HeldChild<E>) -> Self {
+    pub(crate) const fn held(source: HeldChild<E>) -> Self {
         Self {
             state: RetainedSubviewState::Unbuilt { source },
         }

@@ -172,7 +172,7 @@ pub mod split_style {
 
 /// Type-erased selected-column builder used by native split navigation backends.
 #[derive(Clone)]
-pub struct NavigationSplitDetailBuilder(Rc<dyn Fn(Id) -> NavigationView>);
+pub struct NavigationSplitDetailBuilder(Rc<dyn Fn(Id) -> NavigationView<AnyView>>);
 
 impl core::fmt::Debug for NavigationSplitDetailBuilder {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -181,9 +181,10 @@ impl core::fmt::Debug for NavigationSplitDetailBuilder {
 }
 
 impl NavigationSplitDetailBuilder {
-    fn mapped<T>(mapping: Mapping<T>, detail: impl Fn(T) -> NavigationView + 'static) -> Self
+    fn mapped<T, D>(mapping: Mapping<T>, detail: impl Fn(T) -> NavigationView<D> + 'static) -> Self
     where
         T: Clone + Ord + 'static,
+        D: View,
     {
         Self(Rc::new(move |selected| {
             detail(
@@ -191,11 +192,12 @@ impl NavigationSplitDetailBuilder {
                     .to_data(selected)
                     .expect("NavigationSplitView selected id must exist in mapping"),
             )
+            .map_content(AnyView::new)
         }))
     }
 
     /// Builds a column view for a selected identifier.
-    pub fn build(&self, selected: Id) -> NavigationView {
+    pub fn build(&self, selected: Id) -> NavigationView<AnyView> {
         (self.0)(selected)
     }
 }
@@ -337,7 +339,7 @@ impl NavigationSplitView {
     /// back control (including a completed back gesture) writes `None` into
     /// the selection. Start with `None` to open on the sidebar; the binding is
     /// the single source of truth for the visible compact column.
-    pub fn new<T, Sidebar, Detail>(
+    pub fn new<T, Sidebar, Detail, D>(
         selection: &Binding<Option<T>>,
         sidebar: Sidebar,
         detail: Detail,
@@ -345,7 +347,8 @@ impl NavigationSplitView {
     where
         T: Clone + Ord + 'static,
         Sidebar: View + Clone,
-        Detail: 'static + Fn(T) -> NavigationView,
+        Detail: 'static + Fn(T) -> NavigationView<D>,
+        D: View,
     {
         let mapping = Mapping::new();
         Self {
@@ -364,7 +367,7 @@ impl NavigationSplitView {
     }
 
     /// Creates a three-column split with independently selected content and detail columns.
-    pub fn three_column<S, C, Sidebar, Content, Detail>(
+    pub fn three_column<S, C, Sidebar, Content, Detail, CV, DV>(
         sidebar_selection: &Binding<Option<S>>,
         content_selection: &Binding<Option<C>>,
         sidebar: Sidebar,
@@ -375,8 +378,10 @@ impl NavigationSplitView {
         S: Clone + Ord + 'static,
         C: Clone + Ord + 'static,
         Sidebar: View + Clone,
-        Content: 'static + Fn(S) -> NavigationView,
-        Detail: 'static + Fn(C) -> NavigationView,
+        Content: 'static + Fn(S) -> NavigationView<CV>,
+        Detail: 'static + Fn(C) -> NavigationView<DV>,
+        CV: View,
+        DV: View,
     {
         let sidebar_mapping = Mapping::new();
         let content_mapping = Mapping::new();

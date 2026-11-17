@@ -171,7 +171,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// bar re-renders. Stretch is `Both` (read from the config).
     #[cfg(feature = "navigation")]
     pub(super) fn build_navigation_view(
-        navigation: NavigationView,
+        navigation: NavigationView<HeldChild<E>>,
         env: &Environment,
         renderer: &mut SemanticCore<E>,
     ) -> Self {
@@ -222,7 +222,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     #[cfg(feature = "navigation")]
     pub(super) fn build_navigation_stack(
         renderer: &SemanticCore<E>,
-        stack: NavigationStack<(), ()>,
+        stack: NavigationStackLayout<HeldChild<E>>,
         env: &Environment,
     ) -> Self {
         use crate::widgets::nav::navigation::NavigationStackRenderState;
@@ -238,7 +238,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// content/indicator updates. Stretch is `Both` (read from the config).
     #[cfg(feature = "navigation")]
     pub(super) fn build_tabs(
-        tabs: TabsLayout,
+        tabs: TabsLayout<HeldChild<E>>,
         env: &Environment,
         renderer: &mut SemanticCore<E>,
     ) -> Self {

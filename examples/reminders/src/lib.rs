@@ -368,7 +368,10 @@ fn user_list_row(name: &'static str, count: i32, color: Srgb) -> impl View {
     .padding_with((4.0, 8.0))
 }
 
-fn detail_view(dest: SidebarDestination, search: &Binding<Str>) -> NavigationView {
+fn detail_view(
+    dest: SidebarDestination,
+    search: &Binding<Str>,
+) -> NavigationView<impl View + use<>> {
     let (today_rows, upcoming_rows) = reminders_for(dest);
 
     vstack((
@@ -461,7 +464,7 @@ fn reminder_list(
     today_rows: &'static [ReminderRow],
     upcoming_rows: &'static [ReminderRow],
     search: &Binding<Str>,
-) -> impl View {
+) -> impl View + use<> {
     List::content((
         Section::new("Today").content(ForEach::new(matching_rows(today_rows, search), |row| {
             reminder_item(&row)
