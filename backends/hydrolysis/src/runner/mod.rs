@@ -28,21 +28,19 @@ use waterui::app::App;
     not(target_os = "android")
 ))]
 use waterui::app::AppParts;
+use waterui::app::{WindowSink, Windows};
 #[cfg(feature = "table")]
 use waterui::component::table::TableConfig;
-use waterui::window::Window;
-use waterui::window::WindowManager;
-#[cfg(hydrolysis_cherenkov)]
-use waterui_core::AnyView;
+use waterui::window::{AnyWindow, Window, WindowContent, WindowManager};
 use waterui_core::Environment;
 use waterui_core::Retain;
-#[cfg(hydrolysis_cherenkov)]
-use waterui_core::handler::AnyViewBuilder;
+use waterui_core::handler::ViewBuilder;
 use waterui_core::key::KeyPress;
 #[cfg(feature = "table")]
 use waterui_core::{Native, view::Hook};
 #[cfg(hydrolysis_cherenkov)]
 use waterui_text::FontCollection;
+use window::{RootWindow, root_window};
 
 // The JNI host exists only where a painter does: a painter-less Android
 // build ships none of the session bridge the Kotlin side calls into.
@@ -257,8 +255,8 @@ use crate::time::Instant;
 /// `env` must carry the installed theme — colour scheme and colour slots —
 /// the resolved background reads; every runner installs it before mounting
 /// a window.
-fn subscribe_window_declaration_signals<E: crate::text::TextEngine>(
-    window: &Window,
+fn subscribe_window_declaration_signals<E: crate::text::TextEngine, C>(
+    window: &Window<C>,
     env: &Environment,
     core: &SemanticCore<E>,
 ) -> Vec<Retain> {
@@ -368,7 +366,7 @@ fn install_native_component_hooks(env: &mut Environment) {
 
 fn install_headless_window_managers<E: crate::text::TextEngine>(
     env: &mut Environment,
-    pending_windows: Rc<RefCell<Vec<Window>>>,
+    pending_windows: Rc<RefCell<Vec<AnyWindow>>>,
 ) {
     #[cfg(any(feature = "menu", feature = "color-picker"))]
     let popup_windows = Rc::clone(&pending_windows);
@@ -428,7 +426,11 @@ fn exit_without_gpu(error: impl core::error::Error + Send + Sync + 'static) -> !
 ///
 /// # Panics
 /// Panics when the seeded environment lost its `MenuShortcutRegistry`.
-pub fn run(app: impl FnOnce(Environment) -> App, env: Environment, style: impl crate::Style) {
+pub fn run<W: Windows>(
+    app: impl FnOnce(Environment) -> App<W>,
+    env: Environment,
+    style: impl crate::Style,
+) {
     init_tracing();
     let inspector = init_main_thread_executors();
     let app = app(env);
@@ -512,7 +514,7 @@ pub fn run(app: impl FnOnce(Environment) -> App, env: Environment, style: impl c
         .get::<crate::renderer::WindowIdentities>()
         .expect("install_headless_window_managers seeds WindowIdentities")
         .clone();
-    let mut pending_windows = VecDeque::from(windows);
+    let mut pending_windows = VecDeque::from(window::RootWindows::collect(windows));
     while let Some(window) = pending_windows.pop_front() {
         let frame = crate::platform::validated_window_frame(window.frame.snapshot());
         let width = crate::num_cast::f32_as_u32(frame.width().max(1.0));
@@ -537,7 +539,7 @@ pub fn run(app: impl FnOnce(Environment) -> App, env: Environment, style: impl c
         {
             exit_without_gpu(error);
         }
-        pending_windows.extend(pending_window_queue.borrow_mut().drain(..));
+        pending_windows.extend(pending_window_queue.borrow_mut().drain(..).map(root_window));
     }
 }
 
@@ -553,7 +555,11 @@ pub fn run(app: impl FnOnce(Environment) -> App, env: Environment, style: impl c
 ///
 /// # Panics
 /// Propagates panics from `web_runner::run`.
-pub fn run(app: impl FnOnce(Environment) -> App, env: Environment, style: impl crate::Style) {
+pub fn run<W: Windows>(
+    app: impl FnOnce(Environment) -> App<W>,
+    env: Environment,
+    style: impl crate::Style,
+) {
     // The page has no stderr, so the default hook's report goes nowhere;
     // this one sends the message and location to `console.error`, and shows
     // it on the page: a panic traps the wasm instance, so the app is gone and
@@ -580,7 +586,11 @@ pub fn run(app: impl FnOnce(Environment) -> App, env: Environment, style: impl c
 /// # Panics
 /// Propagates panics from `winit_runner::run` and tracing initialization.
 #[cfg(all(not(target_arch = "wasm32"), hydrolysis_winit))]
-pub fn run(app: impl FnOnce(Environment) -> App, env: Environment, style: impl crate::Style) {
+pub fn run<W: Windows>(
+    app: impl FnOnce(Environment) -> App<W>,
+    env: Environment,
+    style: impl crate::Style,
+) {
     init_tracing();
     let executors = init_main_thread_executors();
     let app = app(env);

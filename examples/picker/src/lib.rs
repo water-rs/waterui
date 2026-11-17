@@ -12,7 +12,7 @@ use std::collections::BTreeSet;
 
 use jiff::civil::{Date, DateTime, Time};
 use waterui::Url;
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::color::Srgb;
 use waterui::form::Calendar;
 use waterui::form::picker::color::ColorPicker;
@@ -288,6 +288,6 @@ fn file_list(files: &Binding<Vec<Url>>) -> impl View + use<> {
 }
 
 /// Builds the example app, showing the picker gallery demo.
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     App::new(demo, env)
 }

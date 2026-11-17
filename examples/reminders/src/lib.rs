@@ -10,7 +10,7 @@ use mdi::format_list_bulleted;
 use mdi::inbox;
 use mdi::plus;
 use waterui::Identifiable;
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::background::Material;
 use waterui::component::list::{List, ListItem, Section};
 use waterui::prelude::theme_color::Foreground;
@@ -474,6 +474,6 @@ fn reminder_list(
 }
 
 /// Builds the reminders example app.
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     App::new(demo, env)
 }

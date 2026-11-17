@@ -1,7 +1,7 @@
 //! Snippets from `.claude/skills/waterui/references/navigation.md`, in file
 //! order. Transcription conventions are documented in the crate README.
 
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::prelude::*;
 use waterui::reactive::binding;
 use waterui_icons_material_icon as mdi;
@@ -491,7 +491,7 @@ pub fn navigation_split_prose() -> impl View {
     clippy::redundant_closure,
     reason = "the snippet is transcribed verbatim from the skill; rewriting it to satisfy the lint would defeat this crate's purpose"
 )]
-pub fn navigation_block_12(env: Environment) -> App {
+pub fn navigation_block_12(env: Environment) -> App<impl Windows> {
     fn scene() -> impl View {
         text("scene")
     }
@@ -619,7 +619,7 @@ pub fn navigation_block_13() -> impl View {
 // ---------------------------------------------------------------------------
 // navigation.md § "## Windows" — rust block 14/16
 // ---------------------------------------------------------------------------
-pub fn navigation_block_14() -> waterui::window::Window {
+pub fn navigation_block_14() -> waterui::window::Window<impl waterui::handler::ViewBuilder> {
     fn editor_content() -> impl View {
         text("editor")
     }
@@ -672,16 +672,16 @@ pub fn navigation_block_15() -> impl View {
 // ---------------------------------------------------------------------------
 // navigation.md § "## Resident apps and windows on demand" — rust block 16/16
 // ---------------------------------------------------------------------------
-pub fn navigation_block_16(env: Environment) -> App {
+pub fn navigation_block_16(env: Environment) -> App<impl Windows> {
     fn scratch_content() -> impl View {
         text("scratch")
     }
 
-    use waterui::app::{App, LastWindowPolicy, QuitReply};
+    use waterui::app::{App, LastWindowPolicy, QuitReply, Windows};
     use waterui::window::{Window, WindowState};
 
-    fn app(env: Environment) -> App {
-        App::new_with_windows(Vec::<Window>::new(), env)
+    fn app(env: Environment) -> App<impl Windows> {
+        App::new_with_windows((), env)
             .on_last_window_closed(LastWindowPolicy::StayResident)
             .on_quit_request(|| async { QuitReply::Quit })
             .on_terminate(|| async {})

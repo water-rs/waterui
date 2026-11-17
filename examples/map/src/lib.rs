@@ -11,7 +11,7 @@ use lucide::minus;
 use lucide::plus;
 use waterkit_location::{Location, Permission, PermissionStatus};
 use waterkit_permission::request;
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::env::use_env;
 use waterui::prelude::theme_color::Surface;
 use waterui::prelude::*;
@@ -189,7 +189,7 @@ pub fn demo() -> impl View {
 /// same `Map` view above draws through the native bridge. Every other platform
 /// draws the map itself, and the tile source below is what it draws from.
 #[must_use]
-pub fn app(mut env: Environment) -> App {
+pub fn app(mut env: Environment) -> App<impl Windows> {
     env.insert(MapGpuOptions::new(Url::new(
         "https://tiles.openfreemap.org/styles/positron",
     )));

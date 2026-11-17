@@ -22,8 +22,8 @@ use nami::Signal;
 use serde::Deserialize;
 use wasm_bindgen::{JsCast, closure::Closure};
 use wasm_bindgen_futures::JsFuture;
-use waterui::app::{App, AppParts};
-use waterui::window::{Window, WindowState};
+use waterui::app::{App, AppParts, Windows};
+use waterui::window::WindowState;
 use waterui_core::{Environment, contract_violation};
 use web_sys::Response;
 
@@ -36,6 +36,7 @@ use crate::renderer::HydrolysisTextContextMenuMode;
 use crate::renderer::MenuShortcutRegistry;
 use crate::renderer::{FontFamilyResolution, HydrolysisRenderer};
 use crate::runner::web_accessibility::WebAccessibilityBridge;
+use crate::runner::window::{RootWindow, RootWindows};
 use crate::runner::{
     RenderDiagnosticsConfig, RuntimeWindow, WindowFrame, advance_runtime, handle_input_events,
     render_window,
@@ -444,7 +445,7 @@ impl BrowserRunnerHandle {
     clippy::too_many_lines,
     reason = "the runner wires every browser subsystem once at startup; the length is the enumeration, not logic"
 )]
-pub fn run(app: App, style: impl crate::Style) {
+pub fn run<W: Windows>(app: App<W>, style: impl crate::Style) {
     wasm_bindgen_futures::spawn_local(async move {
         let schedule_frame_ref: ScheduleFrameSlot = Rc::new(RefCell::new(None));
         let browser_schedule = {
@@ -504,8 +505,9 @@ pub fn run(app: App, style: impl crate::Style) {
             last_window: _,
             termination: _,
         } = app.into_parts();
+        let windows = RootWindows::<crate::text::ParleyEngine>::collect(windows);
         let window_count = windows.len();
-        let Ok([window]) = <[Window; 1]>::try_from(windows) else {
+        let Ok([window]) = <[RootWindow<crate::text::ParleyEngine>; 1]>::try_from(windows) else {
             let message = format!(
                 "hydrolysis web runner requires exactly one window, got {window_count}: a browser \
                  page is the application's only window and has no windowless state"

@@ -14,7 +14,7 @@
 //! injected script, the page API and JavaScript evaluation are not compiled
 //! there, so this example gates them the same way.
 
-use waterui::app::App;
+use waterui::app::{App, Windows};
 #[cfg(not(target_arch = "wasm32"))]
 use waterui::js_api;
 use waterui::prelude::*;
@@ -296,7 +296,7 @@ pub fn demo() -> impl View {
         reason = "only the platforms with no bridged web engine install one"
     )
 )]
-pub fn app(mut env: Environment) -> App {
+pub fn app(mut env: Environment) -> App<impl Windows> {
     #[cfg(all(target_os = "linux", feature = "wpe"))]
     waterui_browser_wpe::install(&mut env);
     App::new(demo, env)

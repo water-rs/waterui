@@ -569,7 +569,7 @@ impl PlatformWindow for BrowserWindow {
         self.surface.size()
     }
 
-    fn apply_properties(&mut self, window: &WuiWindow) {
+    fn apply_properties<C>(&mut self, window: &WuiWindow<C>) {
         self.document
             .set_title(window.display_title().snapshot().as_str());
 

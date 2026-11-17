@@ -3,7 +3,7 @@
 use core::time::Duration;
 use mdi::check_circle;
 use mdi::delete;
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::log::info;
 use waterui::prelude::*;
 use waterui::preview;
@@ -68,6 +68,6 @@ pub fn demo() -> impl View {
 }
 
 /// Builds the snackbar example app.
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     App::new(demo, env)
 }

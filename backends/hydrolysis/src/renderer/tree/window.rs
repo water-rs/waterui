@@ -386,7 +386,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// Like the rendered path, a call made with a tree already built applies
     /// the pending patch and re-emits instead of re-dispatching.
     #[cfg(hydrolysis_cherenkov)]
-    pub(crate) fn capture_window_semantics(&mut self, content: AnyView, env: &Environment) {
+    pub(crate) fn capture_window_semantics(&mut self, content: impl View, env: &Environment) {
         if self.render_tree.is_some() {
             assert!(
                 self.flush_window_semantics(env),
@@ -534,7 +534,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// Build the retained tree before its first sized frame, so statically
     /// reachable nodes exist before the first render target is presented.
     #[cfg(test)]
-    pub(crate) fn prepare_window_tree(&mut self, content: AnyView, env: &Environment) {
+    pub(crate) fn prepare_window_tree(&mut self, content: impl View, env: &Environment) {
         assert!(
             self.render_tree.is_none(),
             "hydrolysis renderer: window tree prepared more than once"
@@ -557,7 +557,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// `render_tree` for subsequent per-frame flushes.
     pub fn capture_window_tree(
         &mut self,
-        content: AnyView,
+        content: impl View,
         env: &Environment,
         bounds: kurbo::Rect,
         transform: kurbo::Affine,

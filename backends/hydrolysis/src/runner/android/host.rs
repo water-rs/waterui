@@ -614,7 +614,7 @@ impl PlatformWindow for AndroidHostWindow {
         (self.metrics.width_px, self.metrics.height_px)
     }
 
-    fn apply_properties(&mut self, window: &waterui::window::Window) {
+    fn apply_properties<C>(&mut self, window: &waterui::window::Window<C>) {
         if window.state.snapshot() == WindowState::Closed {
             return;
         }
@@ -981,7 +981,7 @@ pub struct AndroidSession {
     /// Extra windows the app asks for while mounted: on Android one session
     /// mounts exactly one host view, so a second window is an explicit
     /// unsupported-feature error, not a silently dropped request.
-    pending_window_queue: Rc<RefCell<Vec<waterui::window::Window>>>,
+    pending_window_queue: Rc<RefCell<Vec<waterui::window::AnyWindow>>>,
     /// The published accessibility snapshot — read only by the
     /// `accessibility` feature's publish/query paths.
     #[cfg_attr(
@@ -1136,7 +1136,7 @@ fn install_platform_view_surfaces(env: &mut Environment) -> crate::platform_view
 /// window's registry id, and the bindings and sinks the host later drives.
 struct SessionMounts {
     env: Environment,
-    window: waterui::window::Window,
+    window: super::super::window::RootWindow<super::AndroidTextEngine>,
     theme: Rc<dyn WidgetTheme>,
     /// The collection the env installs; only the GPU runtime's
     /// `ParleyEngine` reads it back — the HWUI engine draws text through
@@ -1144,7 +1144,7 @@ struct SessionMounts {
     #[cfg(hydrolysis_gpu_painter)]
     fonts: waterui_text::FontCollection,
     window_id: crate::renderer::WindowId,
-    pending_window_queue: Rc<RefCell<Vec<waterui::window::Window>>>,
+    pending_window_queue: Rc<RefCell<Vec<waterui::window::AnyWindow>>>,
     platform_views: crate::platform_view::PlatformViewSink,
     platform_view_focus: crate::platform_view::PlatformViewFocus,
     safe_area: nami::Binding<waterui_layout::padding::EdgeInsets>,
@@ -1175,7 +1175,7 @@ fn session_mounts(
     #[cfg(hydrolysis_android_system_webview)] jni_env: &mut Env,
     #[cfg(hydrolysis_android_system_webview)] bridge: &HostBridge,
 ) -> Result<Option<SessionMounts>, JniError> {
-    let Some((app, style)) = super::instantiate_app() else {
+    let Some((parts, style)) = super::instantiate_app() else {
         return Ok(None);
     };
     let waterui::app::AppParts {
@@ -1190,7 +1190,7 @@ fn session_mounts(
         // Android kills the process without notice, so the termination
         // hooks are never called and the machine is never started.
         termination: _,
-    } = app.into_parts();
+    } = parts;
     let mut env = env
         .extending(waterui_graphics::backend::SceneViewMergeToParent)
         .layered_on(&services.env);
@@ -1289,7 +1289,7 @@ fn session_mounts(
 /// a feature mismatch, not a surface to adopt.
 #[cfg(hydrolysis_gpu_painter)]
 fn gpu_runtime_window(
-    window: waterui::window::Window,
+    window: super::super::window::RootWindow<super::AndroidTextEngine>,
     platform: AndroidHostWindow,
     theme: Rc<dyn WidgetTheme>,
     fonts: &waterui_text::FontCollection,
@@ -1332,7 +1332,7 @@ type HwuiRuntimeWindow = (
 fn hwui_runtime_window(
     jni_env: &mut Env,
     painter: &JObject<'_>,
-    window: waterui::window::Window,
+    window: super::super::window::RootWindow<super::AndroidTextEngine>,
     platform: AndroidHostWindow,
     theme: Rc<dyn WidgetTheme>,
     window_id: crate::renderer::WindowId,

@@ -5,7 +5,7 @@
 //! lazy realization, measurement, and recycling of non-uniform cells.
 
 use waterui::Identifiable;
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::collection::List as ReactiveList;
@@ -87,6 +87,6 @@ pub fn demo() -> impl View {
 }
 
 /// Builds the edge-list example app.
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     App::new(demo, env)
 }

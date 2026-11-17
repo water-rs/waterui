@@ -319,6 +319,12 @@ App::new_with_windows(
 )
 ```
 
+The windows are a window set, and `fn app(env: Environment) -> App<impl Windows>` (with
+`waterui::app::{App, Windows}`) returns it unnamed: one `Window`, a tuple of windows whose
+contents each keep their own type, an array or `Vec` of windows with one content type, or
+`()` for none. `App::new(view, env)` declares one window, and `.window(w)` appends another.
+Each window's content keeps its type up to the backend, so nothing in the tree is erased.
+
 The `Window` builder, precisely:
 
 - `Window::new(title, state, content)` — the title is `impl IntoComputed<Str>` (a
@@ -480,11 +486,11 @@ view — from any handler that takes `Environment`, including `App::menu_bar` co
 run under the application environment:
 
 ```rust
-use waterui::app::{App, LastWindowPolicy, QuitReply};
+use waterui::app::{App, LastWindowPolicy, QuitReply, Windows};
 use waterui::window::{Window, WindowState};
 
-fn app(env: Environment) -> App {
-    App::new_with_windows(Vec::<Window>::new(), env)
+fn app(env: Environment) -> App<impl Windows> {
+    App::new_with_windows((), env)
         .on_last_window_closed(LastWindowPolicy::StayResident)
         .on_quit_request(|| async { QuitReply::Quit })
         .on_terminate(|| async {})

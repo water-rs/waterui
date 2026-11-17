@@ -48,7 +48,11 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// expand via `body()` once and recurse. Then it wires the subtree's cell
     /// parent links (`attach_subtree`): the tree root attaches to the
     /// window's root cell, every other node to its structural parent's cell.
-    pub(crate) fn build(view: AnyView, env: &Environment, renderer: &mut SemanticCore<E>) -> Self {
+    pub(crate) fn build(
+        view: impl View,
+        env: &Environment,
+        renderer: &mut SemanticCore<E>,
+    ) -> Self {
         let node = Self::build_view(view, env, renderer);
         node.attach_subtree();
         node

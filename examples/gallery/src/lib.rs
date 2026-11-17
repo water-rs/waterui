@@ -33,7 +33,7 @@ use waterui::PropertyTransition;
 use waterui::Signal;
 use waterui::accessibility::{AccessibilityRole, AccessibilityState};
 use waterui::animation::Animation;
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::form::picker::{PickerStyle, picker};
 use waterui::layout::stack::VStack;
 use waterui::navigation::{NavigationSplitView, NavigationView};
@@ -653,7 +653,7 @@ pub fn demo() -> impl View {
 
 /// Builds the gallery app, owning its selection and drawer state at window scope.
 #[must_use]
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     // Own all mutable state at the window scope so it persists across rebuilds.
     let (selected, groups_open, rows, state) = new_state();
     App::new(

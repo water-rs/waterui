@@ -11,7 +11,7 @@
 //! - Use `.frame()` or container constraints to size them
 
 use core::f32::consts::{FRAC_PI_2, PI};
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::metadata::secure::ColorSpace;
 use waterui::prelude::*;
 use waterui::preview;
@@ -432,6 +432,6 @@ pub fn demo() -> impl View {
 }
 
 /// Builds the example app, showing the shape demo.
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     App::new(demo, env)
 }

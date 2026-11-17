@@ -7,7 +7,7 @@
 //! - Lifecycle events with `on_appear` and `on_disappear`
 
 use waterui::animation::Animation;
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::cursor::CursorStyle;
 use waterui::graphics::color::Srgb;
 use waterui::prelude::*;
@@ -211,6 +211,6 @@ pub fn demo() -> impl View {
 }
 
 /// Builds the example app, showing the hover demo.
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     App::new(demo, env)
 }

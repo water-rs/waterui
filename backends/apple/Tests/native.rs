@@ -11769,15 +11769,16 @@ mod embedding {
     };
     use cocoa_ui::objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
     use cocoa_ui::{MainThreadMarker, Retained, view};
-    use waterui::app::App;
+    use waterui::app::{App, Windows};
     use waterui::component::menu::{Command, Menu, MenuItem};
     use waterui::component::text::Text;
     use waterui::graphics::color::ColorScheme;
+    use waterui::handler::ViewBuilder;
     use waterui::layout::container::FixedContainer;
     use waterui::reactive::{Computed, binding};
     use waterui::regional;
     use waterui::text::font::ResolvedFont;
-    use waterui::window::WindowState;
+    use waterui::window::{Window, WindowContent, WindowState};
     use waterui::{Environment, Signal};
 
     use crate::mtm;
@@ -11790,16 +11791,16 @@ mod embedding {
     }
 
     impl Embed {
-        fn new(host: &NSView, app: impl FnOnce(Environment) -> App) -> Self {
+        fn new<W: Windows>(host: &NSView, app: impl FnOnce(Environment) -> App<W>) -> Self {
             Self::new_with_environment(host, None, app)
         }
 
         /// `environment` is the scoped host snapshot a `SwiftUI` host would
         /// declare; `None` mounts under the ambient platform.
-        fn new_with_environment(
+        fn new_with_environment<W: Windows>(
             host: &NSView,
             environment: Option<waterui_apple::embedding::HostEnvironment>,
-            app: impl FnOnce(Environment) -> App,
+            app: impl FnOnce(Environment) -> App<W>,
         ) -> Self {
             let runtime = Box::new(waterui_apple::embedding::Runtime::for_test());
             // SAFETY: `_runtime` keeps the runtime box alive past the mount's
@@ -12027,7 +12028,7 @@ mod embedding {
                     c"/tmp/waterui-embed-test-assets".as_ptr(),
                     c"/tmp/waterui-embed-test-fonts".as_ptr(),
                     None,
-                    |env| App::new_with_windows(Vec::<waterui::window::Window>::new(), env),
+                    |env| App::new_with_windows((), env),
                 )
             }
         }));
@@ -12110,6 +12111,25 @@ mod embedding {
     struct ProbeLayout {
         seen: Rc<RefCell<Vec<ProposalSize>>>,
     }
+
+    /// The probe mount's window content: a container laid out by
+    /// [`ProbeLayout`].
+    struct ProbeContent {
+        seen: Rc<RefCell<Vec<ProposalSize>>>,
+    }
+
+    impl ViewBuilder for ProbeContent {
+        type Output = FixedContainer<(Text,)>;
+
+        fn build(&self) -> Self::Output {
+            FixedContainer::new(
+                ProbeLayout {
+                    seen: Rc::clone(&self.seen),
+                },
+                (Text::new("probe"),),
+            )
+        }
+    }
     impl Layout for ProbeLayout {
         fn size_that_fits(&self, proposal: ProposalSize, _children: &[&dyn SubView]) -> Size {
             self.seen.borrow_mut().push(proposal);
@@ -12166,7 +12186,7 @@ mod embedding {
         fn app(
             &self,
             seen: Rc<RefCell<Vec<ProposalSize>>>,
-        ) -> impl FnOnce(Environment) -> App + use<> {
+        ) -> impl FnOnce(Environment) -> App<Window<WindowContent<ProbeContent>>> + use<> {
             let (bodies, scheme, fonts, direction, locale) = (
                 Rc::clone(&self.bodies),
                 Rc::clone(&self.scheme),
@@ -12196,17 +12216,7 @@ mod embedding {
                     &binding.snapshot()
                 );
                 *locale.borrow_mut() = Some(binding);
-                App::new(
-                    move || {
-                        FixedContainer::new(
-                            ProbeLayout {
-                                seen: Rc::clone(&seen),
-                            },
-                            (Text::new("probe"),),
-                        )
-                    },
-                    env,
-                )
+                App::new(ProbeContent { seen }, env)
             }
         }
         fn scheme_now(&self) -> ColorScheme {

@@ -6,7 +6,7 @@
 //! window.
 
 use core::time::Duration;
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::snackbar::{Snackbar, SnackbarManager};
@@ -26,6 +26,6 @@ pub fn demo() -> impl View {
 }
 
 /// Builds the example app, showing the multi-scene demo.
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     App::new(demo, env)
 }

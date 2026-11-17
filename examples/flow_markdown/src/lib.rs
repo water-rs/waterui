@@ -2,7 +2,7 @@
 use std::time::Duration;
 
 use waterui::animation::Animation;
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::prelude::flow_markdown::FlowMarkdownConfig;
 use waterui::prelude::*;
 use waterui::preview;
@@ -438,6 +438,6 @@ pub fn demo() -> impl View {
 }
 
 /// Builds the flow-markdown example app.
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     App::new(demo, env)
 }

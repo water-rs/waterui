@@ -176,7 +176,7 @@ adding them is an architectural error.
 ## Quick start
 
 ```rust
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::prelude::*;
 
 fn counter() -> impl View {
@@ -192,7 +192,7 @@ fn counter() -> impl View {
     .padding()
 }
 
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     App::new(counter, env)
 }
 ```

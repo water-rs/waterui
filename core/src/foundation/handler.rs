@@ -374,6 +374,14 @@ impl<V: View> AnyViewBuilder<V> {
     }
 }
 
+impl<V: View> ViewBuilder for AnyViewBuilder<V> {
+    type Output = V;
+
+    fn build(&self) -> V {
+        ViewBuilder::build(&*self.0)
+    }
+}
+
 impl<V> fmt::Debug for AnyViewBuilder<V> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("AnyViewBuilder")

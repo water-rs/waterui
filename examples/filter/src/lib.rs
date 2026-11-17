@@ -15,7 +15,7 @@
 use core::future::ready;
 use core::time::Duration;
 use waterui::animation::Animation;
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::graphics::filter_view::{
     Effect, EffectContext, EffectInput, EffectOutput, EffectRenderResult, EffectSetupResult,
     RetainedMemory, TextureViews,
@@ -476,6 +476,6 @@ fn filter_preview() -> impl View {
 }
 
 /// Builds the example app, showing the filter demo.
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     App::new(demo, env)
 }

@@ -11,7 +11,7 @@ use futures::StreamExt;
 use shaderloom::CompiledShader;
 use waterkit_camera::{Camera, FrameConverter};
 use waterkit_permission::{Permission, PermissionStatus, check, request};
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::graphics::gpu::bytemuck;
 use waterui::graphics::{Context, Frame, GpuContent, GpuView};
 use waterui::prelude::slider::slider;
@@ -843,6 +843,6 @@ const CAMERA_FILTER_SHADER: CompiledShader =
     include!(concat!(env!("OUT_DIR"), "/camera_filter.rs"));
 
 /// Builds the camera filter lab app around [`demo`].
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     App::new(demo, env)
 }

@@ -4295,12 +4295,12 @@ mod tests {
                 )
                 && matches!(
                     output.as_ref(),
-                    syn::Type::Path(path) if path.path.is_ident("App")
+                    syn::Type::Path(path) if path.path.segments.last().is_some_and(|segment| segment.ident == "App")
                 )
         });
         assert!(
             app_shim,
-            "the app(env) -> App shim the export_app!() expansion calls must exist"
+            "the app(env) -> App<impl Windows> shim the export_app!() expansion calls must exist"
         );
     }
 

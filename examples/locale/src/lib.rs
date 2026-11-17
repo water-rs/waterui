@@ -16,7 +16,7 @@
 //! 3. Push locale updates to `waterui::regional`
 //! 4. `text!` automatically reacts to locale changes - no `watch()` needed!
 
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::form::picker::{Picker, PickerItem};
 use waterui::prelude::*;
 use waterui::preview;
@@ -261,7 +261,7 @@ pub fn demo() -> impl View {
 
 /// Builds the locale example app, starting from the environment's locale.
 #[must_use]
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     let system_locale = env.get::<Locale>().cloned().unwrap_or(locales::EN);
 
     App::new(move || scene(&system_locale), env)

@@ -104,10 +104,10 @@ my-app/
 `src/lib.rs` exposes an entry point:
 
 ```rust
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::prelude::*;
 
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     App::new(root_view, env)
 }
 ```
@@ -116,7 +116,7 @@ For state that must exist before the first view, build it in `app` and clone int
 builder:
 
 ```rust
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     let state = AppState::new();
     App::new(move || content(state.clone()), env)
 }

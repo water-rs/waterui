@@ -8,7 +8,7 @@
 //! The backdrop is deliberately loud — glass is a lens, and a lens needs
 //! something to bend.
 
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::background::Glass;
 use waterui::icon::SystemIcon;
 use waterui::id::SelfId;
@@ -267,6 +267,6 @@ fn backdrop() -> impl View {
 }
 
 /// Builds the Liquid Glass example app around [`main`].
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     App::new(main, env)
 }

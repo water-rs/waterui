@@ -30,7 +30,7 @@ use mdi::inbox;
 use mdi::pencil;
 use mdi::view_gallery;
 use waterui::Identifiable;
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::component::list::{
     List, ListContent, ListDelete, ListItem, ListMove, Section, SectionScope, TaggedBy, row,
 };
@@ -840,6 +840,6 @@ fn about_page() -> NavigationView {
 }
 
 /// Builds the navigation tour app around [`demo`].
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     App::new(demo, env)
 }

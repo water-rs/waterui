@@ -5,7 +5,7 @@
 //!
 //! The starfield effect uses a GPU shader to render layered stars and nebulae.
 
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::graphics::shader;
 use waterui::prelude::*;
 use waterui::preview;
@@ -30,6 +30,6 @@ pub fn demo() -> impl View {
 }
 
 /// Builds the starfield example app around [`demo`].
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     App::new(demo, env)
 }

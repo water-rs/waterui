@@ -1823,7 +1823,7 @@ mod navigation {
             waterui::color::Color::srgb(255, 255, 255),
         ));
         let scene =
-            realize_into_shown_scene(mtm, &declaration, &render_environment(), window.clone());
+            realize_into_shown_scene(mtm, declaration, &render_environment(), window.clone());
 
         // The invariant itself: before any run-loop turn, the leaf already
         // holds the frame the root host resolves for it.

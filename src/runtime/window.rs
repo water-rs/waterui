@@ -32,7 +32,7 @@ use std::{fmt::Debug, future::Future, rc::Rc, sync::Arc};
 use nami::{Binding, Computed, Signal, SignalExt as _, impl_constant, signal::IntoComputed};
 use suiteki::Str;
 use waterui_core::handler::{AnyViewBuilder, Handler, ViewBuilder, boxed_action};
-use waterui_core::{AnyView, Dynamic, Environment, View, flatten_signal};
+use waterui_core::{AnyView, Dynamic, Environment, OneOf2, View, flatten_signal};
 use waterui_graphics::{Color, color::WorkingColor};
 use waterui_layout::{Point, Rect, Size};
 
@@ -49,8 +49,11 @@ use crate::{
 };
 
 /// Represents a window in the UI.
-#[derive(Debug)]
-pub struct Window {
+///
+/// `C` builds the window's content; [`Window::new`] wraps the application's
+/// builder in a [`WindowContent`], so the content keeps its type up to the
+/// backend that realizes it.
+pub struct Window<C> {
     /// The title of the window.
     ///
     /// Notice that it may not be displayed on all platforms.
@@ -73,7 +76,7 @@ pub struct Window {
     /// Notice that it may not be supported on all platforms.
     pub frame: Binding<Rect>,
     /// The root view builder for the window content.
-    pub content: AnyViewBuilder<AnyView>,
+    pub content: C,
     /// The current state of the window.
     pub state: Binding<WindowState>,
     /// Optional toolbar content for the window.
@@ -223,6 +226,61 @@ pub struct Window {
     /// `Rc` with [`WindowHandle`] and armed by the backend when the window
     /// is realized.
     focus_request: FocusRequest,
+}
+
+/// A window whose content type is erased: what a runner holds for windows
+/// opened while the application runs, through [`WindowManager`].
+pub type AnyWindow = Window<AnyViewBuilder<AnyView>>;
+
+impl<C> Debug for Window<C> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Window")
+            .field("title", &self.title)
+            .field("closable", &self.closable)
+            .field("resizable", &self.resizable)
+            .field("state", &self.state)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The content builder [`Window::new`] gives a window: the application's
+/// builder, with the full-screen overlay and snackbar hosts every window
+/// carries.
+#[derive(Debug)]
+pub struct WindowContent<B>(B);
+
+impl<B: ViewBuilder> ViewBuilder for WindowContent<B> {
+    type Output = WindowRoot<B::Output>;
+
+    fn build(&self) -> Self::Output {
+        WindowRoot(self.0.build())
+    }
+}
+
+/// One built instance of a window's content, see [`WindowContent`].
+#[derive(Debug)]
+pub struct WindowRoot<V>(V);
+
+impl<V: View> View for WindowRoot<V> {
+    fn body(self, _env: &Environment) -> impl View {
+        // Overlay and snackbar state are created per built instance, so each
+        // owns its own managers: a `Dynamic` is single-consumer and cannot be
+        // mounted by more than one scene.
+        let (overlay_manager, overlay_view) = FullScreenOverlayManager::new();
+        let content = self
+            .0
+            .overlay(overlay_view)
+            .with(overlay_manager.clone())
+            .state(&overlay_manager);
+        #[cfg(feature = "snackbar")]
+        let (snackbar_manager, snackbar_view) = SnackbarManager::new();
+        #[cfg(feature = "snackbar")]
+        let content = content
+            .overlay(snackbar_view)
+            .with(snackbar_manager.clone())
+            .state(&snackbar_manager);
+        content
+    }
 }
 
 /// Why pixels cannot make a [`WindowIcon`].
@@ -760,7 +818,7 @@ impl From<Material> for WindowBackgroundInput {
 
 /// Manages the display of windows.
 #[derive(Clone)]
-pub struct WindowManager(Rc<dyn Fn(Window)>);
+pub struct WindowManager(Rc<dyn Fn(AnyWindow)>);
 
 impl Debug for WindowManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -770,13 +828,13 @@ impl Debug for WindowManager {
 
 impl WindowManager {
     /// Create a new `WindowManager` with the specified show function.
-    pub fn new<F: 'static + Fn(Window)>(show: F) -> Self {
+    pub fn new<F: 'static + Fn(AnyWindow)>(show: F) -> Self {
         Self(Rc::new(show))
     }
 
     /// Show a window using the window manager.
-    pub fn show(&self, window: Window) {
-        (self.0)(window);
+    pub fn show<C: ViewBuilder>(&self, window: Window<C>) {
+        (self.0)(window.erase());
     }
 }
 
@@ -789,7 +847,7 @@ impl From<WindowStyle> for Binding<WindowStyle> {
     }
 }
 
-impl Window {
+impl<B: ViewBuilder> Window<WindowContent<B>> {
     /// Create a new window with the specified title, state binding, and content.
     ///
     /// `state` is required: every example calls `.with_state(...)` on every
@@ -801,32 +859,9 @@ impl Window {
     /// [`Self::show`] or by being conditionally rendered with
     /// [`conditional_window`].
     #[must_use]
-    pub fn new(
-        title: impl IntoComputed<Str>,
-        state: Binding<WindowState>,
-        content: impl ViewBuilder,
-    ) -> Self {
+    pub fn new(title: impl IntoComputed<Str>, state: Binding<WindowState>, content: B) -> Self {
         let default_frame = Rect::new(Point::zero(), Size::new(800.0, 600.0));
-        // Overlay and snackbar state are created inside the builder so each
-        // built instance owns its own managers: a `Dynamic` is single-consumer
-        // and cannot be mounted by more than one scene.
-        let content = AnyViewBuilder::new(move || {
-            let (overlay_manager, overlay_view) = FullScreenOverlayManager::new();
-            let content = content
-                .build()
-                .overlay(overlay_view)
-                .with(overlay_manager.clone())
-                .state(&overlay_manager);
-            #[cfg(feature = "snackbar")]
-            let (snackbar_manager, snackbar_view) = SnackbarManager::new();
-            #[cfg(feature = "snackbar")]
-            let content = content
-                .overlay(snackbar_view)
-                .with(snackbar_manager.clone())
-                .state(&snackbar_manager);
-            AnyView::new(content)
-        });
-
+        let content = WindowContent(content);
         let close_request = CloseRequest::new(&state);
         Self {
             title: title.into_computed(),
@@ -850,6 +885,68 @@ impl Window {
             icon: Binding::container(None),
             close_request,
             focus_request: FocusRequest::new(),
+        }
+    }
+}
+
+impl<C> Window<C> {
+    /// The same window showing `content` instead, wrapped as
+    /// [`Window::new`] wraps it.
+    ///
+    /// For content that needs the window itself, such as its
+    /// [`handle`](Self::handle), which exists only once the window does.
+    #[must_use]
+    pub fn content<B: ViewBuilder>(self, content: B) -> Window<WindowContent<B>> {
+        self.map_content(|_| WindowContent(content))
+    }
+
+    /// The same window with its content builder replaced by `f(content)`.
+    pub fn map_content<D>(self, f: impl FnOnce(C) -> D) -> Window<D> {
+        let Self {
+            title,
+            closable,
+            resizable,
+            frame,
+            content,
+            state,
+            toolbar,
+            style,
+            background,
+            min_size,
+            max_size,
+            app_id,
+            instance_name,
+            placement,
+            activation,
+            level,
+            attention,
+            resize_increments,
+            icon,
+            close_request,
+            focus_request,
+        } = self;
+        Window {
+            title,
+            closable,
+            resizable,
+            frame,
+            content: f(content),
+            state,
+            toolbar,
+            style,
+            background,
+            min_size,
+            max_size,
+            app_id,
+            instance_name,
+            placement,
+            activation,
+            level,
+            attention,
+            resize_increments,
+            icon,
+            close_request,
+            focus_request,
         }
     }
 
@@ -1016,8 +1113,19 @@ impl Window {
     }
 
     /// Builds the current window content tree.
-    pub fn build_content(&self) -> AnyView {
+    pub fn build_content(&self) -> C::Output
+    where
+        C: ViewBuilder,
+    {
         self.content.build()
+    }
+
+    /// The same window with its content type erased, see [`AnyWindow`].
+    pub fn erase(self) -> AnyWindow
+    where
+        C: ViewBuilder,
+    {
+        self.map_content(|content| AnyViewBuilder::new(move || AnyView::new(content.build())))
     }
 
     /// Set the title of the window.
@@ -1187,7 +1295,10 @@ impl Window {
     ///
     /// An environment without a `WindowManager` breaks the contract: a debug
     /// build panics, and a release build logs the error and shows nothing.
-    pub fn show(self, env: &Environment) {
+    pub fn show(self, env: &Environment)
+    where
+        C: ViewBuilder,
+    {
         let Some(manager) = env.get::<WindowManager>() else {
             crate::contract_violation!(
                 "WindowManager not found in environment, so the window is not shown"
@@ -1200,7 +1311,7 @@ impl Window {
 
 // Implement View for Window to allow reactive window display.
 // When a Window is rendered as a View, it shows itself via WindowManager.
-impl View for Window {
+impl<C: ViewBuilder> View for Window<C> {
     fn body(self, env: &Environment) -> impl View {
         self.show(env);
         // Return empty view - the window is shown separately
@@ -1248,9 +1359,13 @@ impl WindowPresentation {
 /// must outlive every other window — for example one reopened under
 /// [`LastWindowPolicy::StayResident`](crate::app::LastWindowPolicy::StayResident)
 /// after the last window closed — is opened with [`Window::show`] instead.
-pub fn conditional_window<F>(presentation: &WindowPresentation, creator: F) -> impl View + use<F>
+pub fn conditional_window<F, C>(
+    presentation: &WindowPresentation,
+    creator: F,
+) -> impl View + use<F, C>
 where
-    F: Fn(Binding<WindowState>) -> Window + 'static,
+    F: Fn(Binding<WindowState>) -> Window<C> + 'static,
+    C: ViewBuilder,
 {
     let state = presentation.state.clone();
     let presented = presentation.presented.clone();
@@ -1258,12 +1373,12 @@ where
     Dynamic::watch(state.clone(), move |s| {
         if s == WindowState::Closed {
             presented.set(false);
-            AnyView::new(())
+            OneOf2::A(())
         } else if !presented.snapshot() {
             presented.set(true);
-            AnyView::new(creator(state.clone()))
+            OneOf2::B(creator(state.clone()))
         } else {
-            AnyView::new(())
+            OneOf2::A(())
         }
     })
 }
