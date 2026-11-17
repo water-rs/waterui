@@ -31,7 +31,7 @@ use waterui::app::AppParts;
 use waterui::app::{WindowSink, Windows};
 #[cfg(feature = "table")]
 use waterui::component::table::TableConfig;
-use waterui::window::{AnyWindow, Window, WindowContent, WindowManager};
+use waterui::window::{AnyWindow, Window, WindowManager};
 use waterui_core::Environment;
 use waterui_core::Retain;
 use waterui_core::handler::ViewBuilder;
