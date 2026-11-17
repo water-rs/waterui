@@ -14113,11 +14113,11 @@ mod transition {
         // tree in the caller's pool — without these pools the weak probe
         // could never see the release.
         autoreleasepool(|_| {
-            handler.set(Metadata::new(
+            handler.set(AnyView::new(Metadata::new(
                 Metadata::new(label("gone"), Retain::new(Died(Rc::clone(&died)))),
                 TransitionSpec::new(PropertyTransition::opacity())
                     .with_animation(Animation::linear(Duration::from_millis(60))),
-            ));
+            )));
         });
         let ghost_ptr: Cell<*const PlatformView> = Cell::new(std::ptr::null());
         let live_ptr: Cell<*const PlatformView> = Cell::new(std::ptr::null());
@@ -14128,7 +14128,7 @@ mod transition {
             Weak::new(&*subviews[0])
         });
 
-        autoreleasepool(|_| handler.set(label("here")));
+        autoreleasepool(|_| handler.set(AnyView::new(label("here"))));
         // The semantic boundary: the old leaf — its watchers, guards and
         // retained values — is dead immediately.
         assert!(died.get(), "the removed leaf's keepalive ended at removal");
@@ -14417,11 +14417,11 @@ mod transition {
             nested_view,
         ));
         let (handler, view) = Dynamic::new();
-        handler.set(Metadata::new(
+        handler.set(AnyView::new(Metadata::new(
             child,
             TransitionSpec::new(PropertyTransition::opacity())
                 .with_animation(Animation::linear(Duration::from_millis(60))),
-        ));
+        )));
         // Every kit call below runs in its own pool: the update path
         // autoreleases `subviews` arrays that retain the tree, and the weak
         // probe sees the release only once they drain.
@@ -14432,7 +14432,7 @@ mod transition {
             (mounted, window)
         });
         assert!(!d1.get() && !d2.get(), "the mounted child's Retains live");
-        autoreleasepool(|_| handler.set(label("after")));
+        autoreleasepool(|_| handler.set(AnyView::new(label("after"))));
         assert!(d1.get(), "the removed child's Retain dies at the swap");
         assert!(d2.get(), "the nested Dynamic's Retain dies at the swap");
         let weak: Weak<PlatformView> = autoreleasepool(|_| {
@@ -14464,15 +14464,15 @@ mod transition {
     pub fn opacity_composes_with_the_contents_own_opacity() {
         let _mtm = mtm();
         let (handler, view) = Dynamic::new();
-        handler.set(label("before"));
+        handler.set(AnyView::new(label("before")));
         let (leaf, clock) = super::resolve::render_on_manual_clock(view);
         let mounted = leaf.mount(&HostView::new(mtm(), cocoa_ui::Rect::ZERO));
         let window = super::mount_and_order_front(mounted.view());
-        handler.set(Metadata::new(
+        handler.set(AnyView::new(Metadata::new(
             label("coming").opacity(0.5),
             TransitionSpec::new(PropertyTransition::opacity())
                 .with_animation(Animation::linear(Duration::from_millis(60))),
-        ));
+        )));
         clock.advance(Duration::from_millis(30));
         autoreleasepool(|_| {
             let host = transition_host(&mounted);
@@ -14499,15 +14499,15 @@ mod transition {
     pub fn scale_composes_with_the_contents_own_scale() {
         let _mtm = mtm();
         let (handler, view) = Dynamic::new();
-        handler.set(label("before"));
+        handler.set(AnyView::new(label("before")));
         let (leaf, clock) = super::resolve::render_on_manual_clock(view);
         let mounted = leaf.mount(&HostView::new(mtm(), cocoa_ui::Rect::ZERO));
         let window = super::mount_and_order_front(mounted.view());
-        handler.set(Metadata::new(
+        handler.set(AnyView::new(Metadata::new(
             label("coming").scale(0.5, 0.5),
             TransitionSpec::new(PropertyTransition::scale(0.5))
                 .with_animation(Animation::linear(Duration::from_millis(60))),
-        ));
+        )));
         clock.advance(Duration::from_millis(30));
         autoreleasepool(|_| {
             let host = transition_host(&mounted);
@@ -14548,17 +14548,17 @@ mod transition {
     pub fn combined_transition_samples_every_frame() {
         let _mtm = mtm();
         let (handler, view) = Dynamic::new();
-        handler.set(label("before"));
+        handler.set(AnyView::new(label("before")));
         let (leaf, clock) = super::resolve::render_on_manual_clock(view);
         let mounted = leaf.mount(&HostView::new(mtm(), cocoa_ui::Rect::ZERO));
         let window = super::mount_and_order_front(mounted.view());
-        handler.set(Metadata::new(
+        handler.set(AnyView::new(Metadata::new(
             label("coming"),
             TransitionSpec::new(
                 PropertyTransition::opacity().combined(PropertyTransition::scale(0.5)),
             )
             .with_animation(Animation::linear(Duration::from_millis(120))),
-        ));
+        )));
         clock.advance(Duration::from_millis(60));
         autoreleasepool(|_| {
             let host = transition_host(&mounted);
@@ -14640,12 +14640,12 @@ mod transition {
         let (leaf, clock) = super::resolve::render_on_manual_clock(leaf_view);
         let mounted = leaf.mount(&HostView::new(mtm(), cocoa_ui::Rect::ZERO));
         let window = super::mount_and_order_front(mounted.view());
-        handler.set(Metadata::new(
+        handler.set(AnyView::new(Metadata::new(
             label("a"),
             TransitionSpec::new(PropertyTransition::scale(0.5))
                 .with_animation(Animation::linear(Duration::from_millis(60))),
-        ));
-        handler.set(label("b"));
+        )));
+        handler.set(AnyView::new(label("b")));
         clock.advance(Duration::from_millis(30));
         autoreleasepool(|_| {
             let host = transition_host(&mounted);
@@ -14692,15 +14692,15 @@ mod transition {
     pub fn zero_duration_removal_detaches_at_once() {
         let _mtm = mtm();
         let (handler, view) = Dynamic::new();
-        handler.set(Metadata::new(
+        handler.set(AnyView::new(Metadata::new(
             label("a"),
             TransitionSpec::new(PropertyTransition::opacity())
                 .with_animation(Animation::linear(Duration::ZERO)),
-        ));
+        )));
         let leaf = super::resolve::render(view);
         let mounted = leaf.mount(&HostView::new(mtm(), cocoa_ui::Rect::ZERO));
         let window = super::mount_and_order_front(mounted.view());
-        handler.set(label("b"));
+        handler.set(AnyView::new(label("b")));
         autoreleasepool(|_| {
             assert_eq!(
                 view::subviews(mounted.view()).len(),
@@ -14718,11 +14718,11 @@ mod transition {
     pub fn ghost_completion_does_not_need_the_site() {
         let _mtm = mtm();
         let (handler, view) = Dynamic::new();
-        handler.set(Metadata::new(
+        handler.set(AnyView::new(Metadata::new(
             label("a"),
             TransitionSpec::new(PropertyTransition::opacity())
                 .with_animation(Animation::linear(Duration::from_millis(60))),
-        ));
+        )));
         // Every kit call below runs in its own pool: the update path
         // autoreleases `subviews` arrays that retain the tree, and the weak
         // probe sees the release only once they drain.
@@ -14732,7 +14732,7 @@ mod transition {
             let window = super::mount_and_order_front(mounted.view());
             (mounted, window)
         });
-        autoreleasepool(|_| handler.set(label("b")));
+        autoreleasepool(|_| handler.set(AnyView::new(label("b"))));
         let weak: Weak<PlatformView> = autoreleasepool(|_| {
             let ghost = transition_host(&mounted);
             Weak::from(&ghost)
@@ -14746,15 +14746,15 @@ mod transition {
 
         // With the site live, the ghost completes through `on_complete`.
         let (handler2, view2) = Dynamic::new();
-        handler2.set(Metadata::new(
+        handler2.set(AnyView::new(Metadata::new(
             label("a"),
             TransitionSpec::new(PropertyTransition::opacity())
                 .with_animation(Animation::linear(Duration::from_millis(30))),
-        ));
+        )));
         let leaf2 = super::resolve::render(view2);
         let mounted2 = leaf2.mount(&HostView::new(mtm(), cocoa_ui::Rect::ZERO));
         let window2 = super::mount_and_order_front(mounted2.view());
-        handler2.set(label("b"));
+        handler2.set(AnyView::new(label("b")));
         autoreleasepool(|_| {
             let completed = pump_main_until(2.0, || view::subviews(mounted2.view()).len() == 1);
             assert!(completed, "the ghost completes through on_complete");
@@ -15761,7 +15761,7 @@ mod transition {
         let leaf = gpu_leaf(dynamic);
         let _window = super::mount_and_order_front(leaf.view());
         autoreleasepool(|_| {
-            handler.set(Metadata::new(gpu_picture(), frozen_spec()));
+            handler.set(AnyView::new(Metadata::new(gpu_picture(), frozen_spec())));
         });
         assert!(
             pump_main_until(5.0, || autoreleasepool(|_| {
@@ -15776,7 +15776,7 @@ mod transition {
             assert_eq!(entries.len(), 1, "one capturable surface in the subtree");
             Rc::downgrade(&entries[0].1)
         });
-        autoreleasepool(|_| handler.set(label("gone")));
+        autoreleasepool(|_| handler.set(AnyView::new(label("gone"))));
         assert!(
             live.upgrade().is_none(),
             "the removal dropped the live capturable with the leaf"
@@ -15817,7 +15817,7 @@ mod transition {
         let leaf = gpu_leaf(dynamic);
         let _window = super::mount_and_order_front(leaf.view());
         autoreleasepool(|_| {
-            handler.set(Metadata::new(filtered_label(), frozen_spec()));
+            handler.set(AnyView::new(Metadata::new(filtered_label(), frozen_spec())));
         });
         assert!(
             pump_main_until(5.0, || autoreleasepool(|_| {
@@ -15836,7 +15836,7 @@ mod transition {
             );
             Rc::downgrade(&entries[0].1)
         });
-        autoreleasepool(|_| handler.set(label("gone")));
+        autoreleasepool(|_| handler.set(AnyView::new(label("gone"))));
         assert!(
             live.upgrade().is_none(),
             "the removal dropped the live capturable with the leaf"
@@ -15881,7 +15881,7 @@ mod transition {
         let _window = super::mount_and_order_front(leaf.view());
         autoreleasepool(|_| {
             outer.set(dynamic.blur(2.0));
-            handler.set(Metadata::new(gpu_picture(), frozen_spec()));
+            handler.set(AnyView::new(Metadata::new(gpu_picture(), frozen_spec())));
         });
         assert!(
             pump_main_until(5.0, || autoreleasepool(|_| {
@@ -15897,7 +15897,7 @@ mod transition {
                 .map(|(_, surface)| Rc::downgrade(surface))
                 .collect()
         });
-        autoreleasepool(|_| handler.set(label("gone")));
+        autoreleasepool(|_| handler.set(AnyView::new(label("gone"))));
         autoreleasepool(|_| {
             let entries = capturables_deep(leaf.view());
             assert_eq!(
@@ -16049,7 +16049,7 @@ mod transition {
         let (handler, dynamic) = Dynamic::new();
         let (leaf, clock) = gpu_leaf_on_manual_clock(dynamic);
         let _window = super::mount_and_order_front(leaf.view());
-        autoreleasepool(|_| handler.set(label("before")));
+        autoreleasepool(|_| handler.set(AnyView::new(label("before"))));
         assert!(
             pump_main_until(3.0, || {
                 autoreleasepool(|_| !view::subviews(leaf.view()).is_empty())
@@ -16057,7 +16057,7 @@ mod transition {
             "the first child mounts"
         );
         autoreleasepool(|_| {
-            handler.set(Metadata::new(blur_picture(), blur_spec()));
+            handler.set(AnyView::new(Metadata::new(blur_picture(), blur_spec())));
         });
         let host_ptr: Cell<*const PlatformView> = Cell::new(std::ptr::null());
         let content_ptr: Cell<*const PlatformView> = Cell::new(std::ptr::null());
@@ -16113,7 +16113,7 @@ mod transition {
         let (leaf, clock) = gpu_leaf_on_manual_clock(dynamic);
         let _window = super::mount_and_order_front(leaf.view());
         autoreleasepool(|_| {
-            handler.set(Metadata::new(blur_picture(), blur_spec()));
+            handler.set(AnyView::new(Metadata::new(blur_picture(), blur_spec())));
         });
         assert!(
             pump_main_until(5.0, || autoreleasepool(|_| {
@@ -16148,7 +16148,7 @@ mod transition {
                 &*view::subviews(&host).into_iter().next().expect("content"),
             ));
         });
-        autoreleasepool(|_| handler.set(label("gone")));
+        autoreleasepool(|_| handler.set(AnyView::new(label("gone"))));
         // The root is still visible right at removal — it hides only
         // when the effect's first frame lands.
         let root_view = autoreleasepool(|_| {
@@ -16228,7 +16228,7 @@ mod transition {
         let (handler, dynamic) = Dynamic::new();
         let leaf = gpu_leaf(dynamic);
         let _window = super::mount_and_order_front(leaf.view());
-        autoreleasepool(|_| handler.set(label("before")));
+        autoreleasepool(|_| handler.set(AnyView::new(label("before"))));
         assert!(
             pump_main_until(3.0, || {
                 autoreleasepool(|_| !view::subviews(leaf.view()).is_empty())
@@ -16236,11 +16236,11 @@ mod transition {
             "the first child mounts"
         );
         autoreleasepool(|_| {
-            handler.set(Metadata::new(
+            handler.set(AnyView::new(Metadata::new(
                 label("pulse"),
                 TransitionSpec::new(PulseBlur)
                     .with_animation(Animation::linear(Duration::from_millis(400))),
-            ));
+            )));
         });
         let first_effect: Cell<*const PlatformView> = Cell::new(std::ptr::null());
         let saw_effect = Cell::new(false);
@@ -16480,11 +16480,11 @@ mod transition {
         let (leaf, clock) = gpu_leaf_on_manual_clock(dynamic);
         let window = super::mount_and_order_front(leaf.view());
         autoreleasepool(|_| {
-            handler.set(Metadata::new(blur_picture(), spec));
+            handler.set(AnyView::new(Metadata::new(blur_picture(), spec)));
         });
         await_gpu_presented(leaf.view());
         finish_pixel_run(&window, &clock);
-        autoreleasepool(|_| handler.set(label("gone")));
+        autoreleasepool(|_| handler.set(AnyView::new(label("gone"))));
         // The frozen capture lands and the effect mounts in the window
         // overlay — the ghost stays beneath the live child.
         assert!(
@@ -16564,7 +16564,7 @@ mod transition {
         let (handler, dynamic) = Dynamic::new();
         let (leaf, clock) = gpu_leaf_on_manual_clock(dynamic);
         let window = super::mount_and_order_front(leaf.view());
-        autoreleasepool(|_| handler.set(label("before")));
+        autoreleasepool(|_| handler.set(AnyView::new(label("before"))));
         assert!(
             pump_main_until(3.0, || {
                 autoreleasepool(|_| !view::subviews(leaf.view()).is_empty())
@@ -16573,10 +16573,10 @@ mod transition {
         );
         let died = Rc::new(Cell::new(false));
         autoreleasepool(|_| {
-            handler.set(Metadata::new(
+            handler.set(AnyView::new(Metadata::new(
                 Metadata::new(blur_picture(), Retain::new(Died(Rc::clone(&died)))),
                 spec,
-            ));
+            )));
         });
         // The claimed child mounts inside the transition host — its
         // content view keeps that parent while the effect lives in the
@@ -16693,11 +16693,11 @@ mod transition {
             window
         };
         autoreleasepool(|_| {
-            handler.set(Metadata::new(blur_picture(), spec));
+            handler.set(AnyView::new(Metadata::new(blur_picture(), spec)));
         });
         await_gpu_presented(leaf.view());
         finish_pixel_run(&window, &clock);
-        autoreleasepool(|_| handler.set(label("gone")));
+        autoreleasepool(|_| handler.set(AnyView::new(label("gone"))));
         assert!(
             pump_main_until(5.0, || autoreleasepool(
                 |_| retired_overlay(&window).is_some()
