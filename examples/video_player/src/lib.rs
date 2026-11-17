@@ -16,7 +16,7 @@ use std::fmt;
 use std::rc::Rc;
 
 use waterui::ContentLedger;
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::color::Srgb;
 use waterui::prelude::grid::{grid as layout_grid, row as grid_row};
 use waterui::prelude::*;
@@ -301,6 +301,6 @@ fn pill_button(
 }
 
 /// Builds the video player example app.
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     App::new(demo, env)
 }

@@ -21,7 +21,7 @@ use executor_core::{
 };
 use nami::Signal;
 use waterui::app::{
-    App, AppParts, LastWindowPolicy, TerminationHandle, TerminationHost, TerminationKind,
+    App, AppParts, LastWindowPolicy, TerminationHandle, TerminationHost, TerminationKind, Windows,
 };
 use waterui::window::{Monitor, MonitorSelector, Window, WindowState};
 use waterui_core::Environment;
@@ -41,6 +41,7 @@ use winit::window::{Window as NativeWindow, WindowId};
 
 #[cfg(any(feature = "menu", feature = "color-picker"))]
 use super::window::runtime_window_origin;
+use super::window::{RootWindow, RootWindows, root_window};
 use crate::platform::{PlatformWindow, WinitGpuContext, WinitWindow};
 #[cfg(any(feature = "text-field", feature = "secure-field"))]
 use crate::renderer::HydrolysisTextContextMenuMode;
@@ -600,12 +601,12 @@ fn install_console_close_handler(event_proxy: &winit::event_loop::EventLoopProxy
 }
 
 struct PendingWindow {
-    window: Window,
+    window: RootWindow<crate::text::ParleyEngine>,
     activates: bool,
 }
 
 impl PendingWindow {
-    const fn application(window: Window) -> Self {
+    fn application(window: RootWindow<crate::text::ParleyEngine>) -> Self {
         Self {
             window,
             activates: true,
@@ -613,7 +614,7 @@ impl PendingWindow {
     }
 
     #[cfg(any(feature = "menu", feature = "color-picker"))]
-    const fn popup(window: Window) -> Self {
+    fn popup(window: RootWindow<crate::text::ParleyEngine>) -> Self {
         Self {
             window,
             activates: false,
@@ -674,8 +675,8 @@ impl LocalExecutor for WinitMainThreadExecutor {
     clippy::too_many_lines,
     reason = "startup wires the event loop, the first windows and the executor in one ordered sequence; splitting it would obscure the setup order"
 )]
-pub fn run(
-    app: App,
+pub fn run<W: Windows>(
+    app: App<W>,
     style: impl crate::Style,
     inspector: Option<waterui::inspector::InspectorRuntime>,
 ) {
@@ -687,6 +688,7 @@ pub fn run(
         last_window,
         termination,
     } = app.into_parts();
+    let windows = RootWindows::<crate::text::ParleyEngine>::collect(windows);
     // No early return for a windowless `Quit` launch: its required
     // termination goes through the machine like every other path, and its
     // hook future needs the loop running — the first `resumed` files it.
@@ -758,7 +760,7 @@ pub fn run(
         move |window| {
             pending_window_queue
                 .borrow_mut()
-                .push(PendingWindow::application(window));
+                .push(PendingWindow::application(root_window(window)));
             let _ = event_proxy.send_event(RunnerEvent::MountPendingWindows);
         }
     }));
@@ -769,7 +771,7 @@ pub fn run(
         move |window| {
             pending_window_queue
                 .borrow_mut()
-                .push(PendingWindow::popup(window));
+                .push(PendingWindow::popup(root_window(window)));
             let _ = event_proxy.send_event(RunnerEvent::MountPendingWindows);
         }
     }));
@@ -1072,7 +1074,7 @@ fn load_staged_window_icon(
 /// activation-token request, as the handle's docs say. The hook holds the
 /// native window weakly, so a request filed through a handle that outlived
 /// the window's teardown is a no-op.
-fn arm_window_focus_requests(window: &Window, native_window: &Arc<NativeWindow>) {
+fn arm_window_focus_requests<C>(window: &Window<C>, native_window: &Arc<NativeWindow>) {
     let native = Arc::downgrade(native_window);
     window.arm_focus_requests(move || {
         if let Some(native) = native.upgrade() {
@@ -1081,8 +1083,8 @@ fn arm_window_focus_requests(window: &Window, native_window: &Arc<NativeWindow>)
     });
 }
 
-fn native_window_attributes(
-    window: &Window,
+fn native_window_attributes<C>(
+    window: &Window<C>,
     env: &Environment,
     activates: bool,
     icon: Option<winit::window::Icon>,
@@ -1185,7 +1187,7 @@ fn native_window_attributes(
 /// when the window and the application both leave the identity unset, so
 /// winit's default (the executable name) applies.
 #[cfg(hydrolysis_wayland_platform)]
-fn window_desktop_identity(window: &Window) -> Option<(Str, Str)> {
+fn window_desktop_identity<C>(window: &Window<C>) -> Option<(Str, Str)> {
     let class = window.display_app_id();
     (!class.is_empty()).then(|| (class, window.display_instance_name()))
 }
@@ -1278,10 +1280,10 @@ impl WinitRunner {
     /// a context yet — the host has no GPU Hydrolysis can render on — the
     /// app cannot show anything: the error is logged and the process exits
     /// with a failure status.
-    fn create_platform_window(
+    fn create_platform_window<C>(
         &mut self,
         native_window: Arc<NativeWindow>,
-        window: &Window,
+        window: &Window<C>,
     ) -> Option<WinitWindow> {
         let wake = {
             let event_proxy = self.event_proxy.clone();

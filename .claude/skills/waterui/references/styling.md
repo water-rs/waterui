@@ -84,7 +84,7 @@ takes a **signal**, which is how a runtime dark-mode toggle works with no rebuil
 ```rust
 use waterui::text::font::{FontWeight, ResolvedFont};
 
-pub fn app(mut env: Environment) -> App {
+pub fn app(mut env: Environment) -> App<impl Windows> {
     let dark = Binding::bool(true);
     env.install(
         Theme::new()

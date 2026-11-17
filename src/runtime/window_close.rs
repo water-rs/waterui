@@ -263,6 +263,7 @@ mod tests {
     use super::super::parked_executor::{drain, install as install_executor};
     use super::*;
     use crate::window::Window;
+    use waterui_core::handler::ViewBuilder;
 
     /// A flag a dropped future reports through — how a cancelled question
     /// shows it died.
@@ -274,12 +275,12 @@ mod tests {
         }
     }
 
-    fn window() -> Window {
+    fn window() -> Window<impl ViewBuilder> {
         Window::new("w", binding(WindowState::Normal), || ())
     }
 
     /// A window whose handler counts its questions and answers `reply`.
-    fn counting(reply: CloseReply) -> (Window, Rc<Cell<u32>>) {
+    fn counting(reply: CloseReply) -> (Window<impl ViewBuilder>, Rc<Cell<u32>>) {
         let calls = Rc::new(Cell::new(0u32));
         let window = window().on_close_request({
             let calls = Rc::clone(&calls);
@@ -348,7 +349,7 @@ mod tests {
 
     /// A pending question whose future reports its drop through the returned
     /// flag.
-    fn pending_question() -> (Window, Rc<Cell<bool>>) {
+    fn pending_question() -> (Window<impl ViewBuilder>, Rc<Cell<bool>>) {
         let dropped = Rc::new(Cell::new(false));
         let window = window().on_close_request({
             let dropped = Rc::clone(&dropped);

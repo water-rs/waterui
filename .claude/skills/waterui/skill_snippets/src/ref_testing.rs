@@ -380,7 +380,10 @@ pub mod gated {
     // accessors, `scale_factor`, and the builder form of `mount_app`. Not
     // counted as a rust block.
     // -----------------------------------------------------------------------
-    pub fn testing_snapshot_prose(app: &mut OffscreenApp, window_app: waterui::app::App) {
+    pub fn testing_snapshot_prose(
+        app: &mut OffscreenApp,
+        window_app: waterui::app::App<impl waterui::app::Windows>,
+    ) {
         let shot = app.snapshot();
         let _: (u32, u32, &[u8]) = (shot.width(), shot.height(), shot.rgba8());
 

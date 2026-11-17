@@ -5,7 +5,7 @@
 
 use waterui::Identifiable;
 use waterui::animation::Animation;
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::component::list::{List, ListDelete, ListItem, ListMove};
 use waterui::prelude::theme_color::Foreground;
 use waterui::prelude::*;
@@ -164,7 +164,7 @@ pub fn demo() -> impl View {
 
 /// Builds the example app, showing the large-data list demo.
 #[must_use]
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     let state = DemoState::new();
     App::new(move || content(&state), env)
 }

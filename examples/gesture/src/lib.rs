@@ -9,7 +9,7 @@
 //! - Non-primary pointer buttons (middle-click closes a tab)
 
 use waterui::Identifiable;
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::gesture::{DragGesture, LongPressGesture, PointerButtons, TapGesture};
 use waterui::graphics::color::Srgb;
 use waterui::prelude::*;
@@ -236,6 +236,6 @@ pub fn demo() -> impl View {
 }
 
 /// Builds the gesture example app.
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     App::new(demo, env)
 }

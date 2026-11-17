@@ -12,7 +12,7 @@
 
 use std::rc::Rc;
 
-use waterui::app::App;
+use waterui::app::{App, Windows};
 #[cfg(not(feature = "probe"))]
 use waterui::component::input::{ContentType, KeyboardType};
 #[cfg(not(feature = "probe"))]
@@ -95,7 +95,7 @@ fn app_view(
 /// one: `configure_environment!` captures the `ResourceContext` rooted at
 /// the assets the Kotlin host synced, which is where the font collection
 /// reads the application's staged faces from.
-fn build_app() -> App {
+fn build_app() -> App<impl Windows> {
     App::new_with_windows(
         [Window::new(
             "Hydrolysis Test App",

@@ -7,7 +7,7 @@
 //! asks for `AnchorEdge::Bottom` and flips above; the middle row shows the
 //! same edges where they fit without flipping.
 
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::border::Border;
 use waterui::metadata::anchored_overlay::{
     AnchorEdge, AnchoredOverlay, Clamp, Dismissal, EdgeAlignment,
@@ -140,6 +140,6 @@ pub fn demo() -> impl View {
 }
 
 /// Builds the example app, showing the anchored overlay demo.
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     App::new(demo, env)
 }

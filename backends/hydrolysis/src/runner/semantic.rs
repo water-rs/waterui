@@ -12,6 +12,7 @@
 //! and accessibility actions addressed to nodes directly.
 
 use super::executor::{DrainExecutorOnDrop, HeadlessMainThreadExecutor};
+use super::window::{RootWindow, root_window};
 use super::*;
 use crate::animation::PerpetualAnimation;
 #[cfg(feature = "accessibility")]
@@ -107,7 +108,7 @@ impl SemanticPumpResult {
 /// state, content builder), the [`SemanticCore`] owning its retained tree,
 /// and the input events queued for the next pump.
 struct SemanticWindow {
-    window: Window,
+    window: RootWindow<crate::text::ParleyEngine>,
     core: SemanticCore<crate::text::ParleyEngine>,
     pending_events: VecDeque<InputEvent>,
     /// Set when state changed outside a pump (an accessibility action, a
@@ -132,7 +133,7 @@ struct SemanticWindow {
 
 impl SemanticWindow {
     fn new(
-        window: Window,
+        window: RootWindow<crate::text::ParleyEngine>,
         fonts: &FontCollection,
         window_id: WindowId,
         family_resolution: FontFamilyResolution,
@@ -183,7 +184,7 @@ impl SemanticWindow {
 pub struct SemanticRuntime {
     env: Environment,
     window: SemanticWindow,
-    pending_window_queue: Rc<RefCell<Vec<Window>>>,
+    pending_window_queue: Rc<RefCell<Vec<AnyWindow>>>,
     popup_windows: Vec<SemanticWindow>,
     /// The application's font collection: popup windows' cores are seeded
     /// from it so they shape with the same faces as the main window.
@@ -213,25 +214,30 @@ impl SemanticRuntime {
     #[must_use]
     pub fn new(
         env: Environment,
-        content: AnyViewBuilder<AnyView>,
+        content: impl ViewBuilder,
         width: u32,
         height: u32,
         family_resolution: FontFamilyResolution,
     ) -> Self {
+        let window = root_window(Window::new(
+            "",
+            waterui_core::binding(waterui::window::WindowState::Normal),
+            content,
+        ));
         // A native app loads the fonts its `ResourceContext` stages; a browser
         // page has no synchronous resource directory to scan, so the semantic
         // runtime there shapes with the default collection alone.
         #[cfg(not(target_arch = "wasm32"))]
         return Self::on_env(
             env,
-            content,
+            window,
             width,
             height,
             family_resolution,
             crate::text::fonts::native_collection,
         );
         #[cfg(target_arch = "wasm32")]
-        Self::on_env(env, content, width, height, family_resolution, |_| {
+        Self::on_env(env, window, width, height, family_resolution, |_| {
             crate::text::fonts::system_collection()
         })
     }
@@ -242,7 +248,7 @@ impl SemanticRuntime {
     )]
     fn on_env(
         env: Environment,
-        content: AnyViewBuilder<AnyView>,
+        window: RootWindow<crate::text::ParleyEngine>,
         width: u32,
         height: u32,
         family_resolution: FontFamilyResolution,
@@ -299,12 +305,6 @@ impl SemanticRuntime {
             inspector_probe,
         ));
 
-        let content_builder = content;
-        let window = Window::new(
-            "",
-            waterui_core::binding(waterui::window::WindowState::Normal),
-            move || content_builder.build(),
-        );
         window.frame.set(waterui_core::layout::Rect::new(
             waterui_core::layout::Point::zero(),
             waterui_core::layout::Size::new(
@@ -565,7 +565,7 @@ impl SemanticRuntime {
                 .mint_window_id();
             window.arm_close_requests(&self.env);
             self.popup_windows.push(SemanticWindow::new(
-                window,
+                root_window(window),
                 &fonts,
                 window_id,
                 self.family_resolution,
@@ -860,8 +860,10 @@ fn pump_semantic_window(window: &mut SemanticWindow, env: &Environment) -> bool 
         window.refresh_requested = false;
         return true;
     }
-    let content = window.window.build_content();
-    window.core.capture_window_semantics(content, env);
+    window
+        .window
+        .content
+        .capture_semantics(&mut window.core, env);
     window.refresh_requested = false;
     true
 }
@@ -880,6 +882,7 @@ mod tests {
     use waterui::ViewExt as _;
     use waterui_controls::button::button;
     use waterui_controls::menu::{CommandExt, Menu, MenuItem};
+    use waterui_core::AnyView;
     use waterui_core::handler::AnyViewBuilder;
     use waterui_layout::stack::{hstack, vstack};
     use waterui_text::text;

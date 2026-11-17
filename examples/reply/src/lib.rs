@@ -10,7 +10,7 @@
 use core::num::NonZeroUsize;
 
 use waterui::Identifiable;
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::component::list::{List, ListItem};
 use waterui::layout::ContentMode;
 use waterui::media::Photo;
@@ -328,7 +328,7 @@ pub fn demo() -> impl View {
 
 /// Builds the Reply example app around the inbox and the tab container.
 #[must_use]
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     let selected = binding(Some(2u64));
     let destination = binding(0usize);
     App::new(move || reply(selected.clone(), &destination), env)

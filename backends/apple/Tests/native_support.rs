@@ -346,10 +346,11 @@ impl core::fmt::Debug for RealizedScene {
 #[must_use]
 pub fn realize_into_shown_scene(
     mtm: MainThreadMarker,
-    declaration: &waterui::window::Window,
+    declaration: waterui::window::Window<impl waterui::handler::ViewBuilder>,
     env: &Environment,
     window: cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIWindow>,
 ) -> RealizedScene {
+    let declaration = crate::windows::root_window(declaration);
     let controller = cocoa_ui::uikit::ViewController::new(mtm, cocoa_ui::uikit::window_root(mtm));
     window.setRootViewController(Some(&controller));
     window.makeKeyAndVisible();
@@ -371,7 +372,7 @@ pub fn realize_into_shown_scene(
         &waterui::graphics::Color::new(waterui::theme::color::Background).resolve(&env),
     );
     let host = crate::windows::realize(
-        declaration,
+        &declaration,
         crate::windows::Pending {
             session_id: String::new(),
             window: window.clone(),

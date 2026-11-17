@@ -13,7 +13,7 @@ pub(crate) fn load_preview_view() -> waterui::AnyView {
 }
 {% else %}
 fn ensure_preview_crate_is_linked() {
-    let _ = {{ crate_name_ident }}::app as fn(waterui::env::Environment) -> waterui::app::App;
+    let _: fn(waterui::env::Environment) -> _ = {{ crate_name_ident }}::app;
 }
 
 unsafe extern "C" {

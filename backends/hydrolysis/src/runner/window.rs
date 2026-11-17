@@ -74,8 +74,77 @@ impl FrameMode {
     }
 }
 
+/// A window's content as a runner holds it: the content builder's type is
+/// erased behind the one call that builds the window's tree, so everything
+/// below the window dispatches statically.
+pub trait WindowRoot<E: crate::text::TextEngine> {
+    /// Builds the window's content, calls `built`, then builds the window's
+    /// tree from it into `renderer`, see
+    /// [`HydrolysisRenderer::capture_window_tree`].
+    fn capture_tree(
+        &self,
+        renderer: &mut HydrolysisRenderer<E>,
+        env: &Environment,
+        bounds: kurbo::Rect,
+        transform: kurbo::Affine,
+        hit_transform: kurbo::Affine,
+        built: &mut dyn FnMut(),
+    );
+
+    /// Builds the window's tree into `core` for its semantics only.
+    #[cfg(hydrolysis_cherenkov)]
+    fn capture_semantics(&self, core: &mut SemanticCore<E>, env: &Environment);
+}
+
+impl<E: crate::text::TextEngine, C: ViewBuilder> WindowRoot<E> for C {
+    fn capture_tree(
+        &self,
+        renderer: &mut HydrolysisRenderer<E>,
+        env: &Environment,
+        bounds: kurbo::Rect,
+        transform: kurbo::Affine,
+        hit_transform: kurbo::Affine,
+        built: &mut dyn FnMut(),
+    ) {
+        let content = self.build();
+        built();
+        renderer.capture_window_tree(content, env, bounds, transform, hit_transform);
+    }
+
+    #[cfg(hydrolysis_cherenkov)]
+    fn capture_semantics(&self, core: &mut SemanticCore<E>, env: &Environment) {
+        core.capture_window_semantics(self.build(), env);
+    }
+}
+
+/// A window as a runner holds it, see [`WindowRoot`].
+pub type RootWindow<E> = Window<Box<dyn WindowRoot<E>>>;
+
+/// `window` as a runner holds it.
+pub fn root_window<E: crate::text::TextEngine, C: ViewBuilder>(window: Window<C>) -> RootWindow<E> {
+    window.map_content(|content| Box::new(content) as Box<dyn WindowRoot<E>>)
+}
+
+/// Collects an application's windows as a runner holds them.
+pub struct RootWindows<E: crate::text::TextEngine>(pub(crate) Vec<RootWindow<E>>);
+
+impl<E: crate::text::TextEngine> RootWindows<E> {
+    /// `windows` as a runner holds them, in declaration order.
+    pub(crate) fn collect(windows: impl Windows) -> Vec<RootWindow<E>> {
+        let mut sink = Self(Vec::with_capacity(windows.len()));
+        windows.for_each(&mut sink);
+        sink.0
+    }
+}
+
+impl<E: crate::text::TextEngine> WindowSink for RootWindows<E> {
+    fn window<C: ViewBuilder>(&mut self, window: Window<C>) {
+        self.0.push(root_window(window));
+    }
+}
+
 pub(super) struct RuntimeWindow<P: PlatformWindow, E: crate::text::TextEngine> {
-    pub(super) window: Window,
+    pub(super) window: RootWindow<E>,
     pub(super) platform: P,
     pub(super) renderer: HydrolysisRenderer<E>,
     pub(super) mode: FrameMode,
@@ -128,7 +197,7 @@ pub(super) struct RuntimeWindow<P: PlatformWindow, E: crate::text::TextEngine> {
 // a compile-time painter boundary.
 impl<P: PlatformWindow, E: crate::text::TextEngine> RuntimeWindow<P, E> {
     pub(super) fn new(
-        window: Window,
+        window: RootWindow<E>,
         platform: P,
         renderer: HydrolysisRenderer<E>,
         render_diagnostics_config: RenderDiagnosticsConfig,
@@ -166,7 +235,7 @@ impl<P: PaintedWindow> RuntimeWindow<P, crate::text::ParleyEngine> {
     /// A Cherenkov painter's window: the shared construction plus the host
     /// redraw handle, installed before the window's first frame.
     pub(super) fn new_painted(
-        window: Window,
+        window: RootWindow<crate::text::ParleyEngine>,
         platform: P,
         renderer: HydrolysisRenderer<crate::text::ParleyEngine>,
         config: RenderDiagnosticsConfig,
@@ -1082,7 +1151,7 @@ pub(super) struct SurfaceBackground(ResolvedWindowBackground);
 
 impl SurfaceBackground {
     /// `window`'s background as it resolves now.
-    pub(super) fn of(window: &Window, env: &Environment) -> Self {
+    pub(super) fn of<C>(window: &Window<C>, env: &Environment) -> Self {
         Self(window.resolved_background(env).snapshot())
     }
 
@@ -1172,7 +1241,7 @@ pub(super) fn apply_window_background<P: PaintedWindow, E: crate::text::TextEngi
 }
 
 #[cfg(hydrolysis_winit)]
-pub fn window_requires_transparency(window: &Window, env: &Environment) -> bool {
+pub fn window_requires_transparency<C>(window: &Window<C>, env: &Environment) -> bool {
     SurfaceBackground::of(window, env).transparent()
 }
 
@@ -1301,19 +1370,21 @@ fn build_window_scene<P: PlatformWindow, E: crate::text::TextEngine>(
     runtime.renderer.reset_scene();
     runtime.renderer.begin_rebuild_frame();
     let build_content_started_at = Instant::now();
-    let content = runtime.window.build_content();
-    phases.build_content += build_content_started_at.elapsed();
-    let _ = drain_local_tasks();
-    let scene_dispatch_started_at = Instant::now();
+    let mut scene_dispatch_started_at = build_content_started_at;
     // The capture records the presentation hosts too — an open text
     // context menu or `.context_menu` presentation builds and places its
     // sub-views there, under its host cell.
-    runtime.renderer.capture_window_tree(
-        content,
+    runtime.window.content.capture_tree(
+        &mut runtime.renderer,
         env,
         bounds,
         root_transform,
         kurbo::Affine::IDENTITY,
+        &mut || {
+            phases.build_content += build_content_started_at.elapsed();
+            let _ = drain_local_tasks();
+            scene_dispatch_started_at = Instant::now();
+        },
     );
     phases.scene_dispatch += scene_dispatch_started_at.elapsed();
     let scene_finish_started_at = Instant::now();

@@ -1,7 +1,7 @@
 //! Native application startup. GPU setup completes on the main executor
 //! before services, application declarations, and windows are realized.
 
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui_backend_core::Environment;
 
 /// Runs `app` on `env`, which the caller's `configure_environment!` already
@@ -16,8 +16,8 @@ use waterui_backend_core::Environment;
 /// is lent to native services for the rest of the process, so the
 /// caller's frame must live that long — this function does not return, which
 /// is what guarantees it.
-pub unsafe fn run(
-    app: impl FnOnce(Environment) -> App + 'static,
+pub unsafe fn run<W: Windows>(
+    app: impl FnOnce(Environment) -> App<W> + 'static,
     env: &mut Environment,
     accessory: bool,
 ) -> ! {
@@ -45,7 +45,7 @@ mod imp {
     use cocoa_ui::appkit::{
         ActivationPolicy, Application, ApplicationHandlers, ColorSchemeObservation, TerminateReply,
     };
-    use waterui::app::App;
+    use waterui::app::{App, Windows};
     use waterui_backend_core::Environment;
 
     use crate::termination::Session;
@@ -54,8 +54,8 @@ mod imp {
     /// What GPU preparation finishes the launch with — everything alive at
     /// launch-handler time that must live for the rest of the process, plus
     /// the user's `app` and the environment it runs under.
-    struct Launch {
-        app: Option<Box<dyn FnOnce(Environment) -> App>>,
+    struct Launch<F> {
+        app: Option<F>,
         env: *mut Environment,
         _theme: Rc<ThemeSignals>,
         _appearance: ColorSchemeObservation,
@@ -67,11 +67,13 @@ mod imp {
 
     /// GPU preparation has installed native services; `app(env)` now declares
     /// its windows under the native window manager.
-    unsafe extern "C" fn prepared(context: *mut c_void) {
+    unsafe extern "C" fn prepared<F: FnOnce(Environment) -> App<W>, W: Windows>(
+        context: *mut c_void,
+    ) {
         let mtm = MainThreadMarker::new().expect("GPU completion runs on the main thread");
         // SAFETY: `context` is the `Launch` box transferred by GPU completion,
         // which calls this function exactly once.
-        let mut launch = unsafe { Box::from_raw(context.cast::<Launch>()) };
+        let mut launch = unsafe { Box::from_raw(context.cast::<Launch<F>>()) };
         let app = launch
             .app
             .take()
@@ -117,8 +119,8 @@ mod imp {
             // A zero-window application acts on its policy at launch.
             session.no_window_left();
         } else {
-            for window in parts.windows {
-                let host = crate::windows::realize(window, &app_env, mtm);
+            for window in crate::windows::root_windows(parts.windows) {
+                let host = crate::windows::realize_root(window, &app_env, mtm);
                 crate::windows::track(host);
             }
         }
@@ -127,8 +129,8 @@ mod imp {
         core::mem::forget(launch);
     }
 
-    pub fn launch(
-        app: impl FnOnce(Environment) -> App + 'static,
+    pub fn launch<W: Windows, F: FnOnce(Environment) -> App<W> + 'static>(
+        app: F,
         env: &mut Environment,
         accessory: bool,
     ) -> ! {
@@ -152,7 +154,7 @@ mod imp {
 
         let termination = Rc::new(OnceCell::new());
         let launch = Box::new(Launch {
-            app: Some(Box::new(app)),
+            app: Some(app),
             env: core::ptr::from_mut(env),
             _theme: theme,
             _appearance: appearance,
@@ -170,7 +172,7 @@ mod imp {
                 unsafe {
                     crate::gpu_runtime::prepare(env_ptr, move || {
                         crate::embedding::install_services(&mut *env_ptr);
-                        prepared(Box::into_raw(launch).cast::<c_void>());
+                        prepared::<F, W>(Box::into_raw(launch).cast::<c_void>());
                     });
                 }
             })
@@ -207,7 +209,7 @@ mod imp {
 
     use cocoa_ui::MainThreadMarker;
     use cocoa_ui::uikit::{self, ApplicationHandlers};
-    use waterui::app::App;
+    use waterui::app::{App, Windows};
     use waterui::graphics::Color;
     use waterui::theme::color::Background;
     use waterui_backend_core::Environment;
@@ -217,8 +219,8 @@ mod imp {
     /// The same hand-off as macOS's `Launch`; the appearance side of the
     /// theme arrives per scene instead, through each controller's trait
     /// observation.
-    struct Launch {
-        app: Option<Box<dyn FnOnce(Environment) -> App>>,
+    struct Launch<F> {
+        app: Option<F>,
         env: *mut Environment,
         declared: crate::menus::Declared,
         scenes: crate::scene_registry::Registration<crate::windows::Scenes>,
@@ -228,11 +230,13 @@ mod imp {
 
     /// GPU completion: `app(env)` declares its windows, and each fills
     /// the scene already waiting for it — or queues for the next connection.
-    unsafe extern "C" fn prepared(context: *mut c_void) {
+    unsafe extern "C" fn prepared<F: FnOnce(Environment) -> App<W>, W: Windows>(
+        context: *mut c_void,
+    ) {
         let mtm = MainThreadMarker::new().expect("GPU completion runs on the main thread");
         // SAFETY: `context` is the `Launch` box transferred by GPU completion,
         // which calls this function exactly once.
-        let mut launch = unsafe { Box::from_raw(context.cast::<Launch>()) };
+        let mut launch = unsafe { Box::from_raw(context.cast::<Launch<F>>()) };
         let app = launch
             .app
             .take()
@@ -270,12 +274,18 @@ mod imp {
             &app_env,
             &launch.declared,
         ));
-        crate::windows::declare(&launch.scenes.state, parts.windows, &app_env, 0, mtm);
+        crate::windows::declare(
+            &launch.scenes.state,
+            crate::windows::root_windows(parts.windows),
+            &app_env,
+            0,
+            mtm,
+        );
         core::mem::forget(launch);
     }
 
-    pub fn launch(
-        app: impl FnOnce(Environment) -> App + 'static,
+    pub fn launch<W: Windows, F: FnOnce(Environment) -> App<W> + 'static>(
+        app: F,
         env: &mut Environment,
         _accessory: bool,
     ) -> ! {
@@ -299,7 +309,7 @@ mod imp {
             .register(crate::windows::Scenes::default());
         let scene_state = scenes.state.clone();
         let launch = Box::new(Launch {
-            app: Some(Box::new(app)),
+            app: Some(app),
             env: core::ptr::from_mut(env),
             declared,
             scenes,
@@ -326,7 +336,7 @@ mod imp {
             unsafe {
                 crate::gpu_runtime::prepare(env_ptr, move || {
                     crate::embedding::install_services(&mut *env_ptr);
-                    prepared(Box::into_raw(launch).cast::<c_void>());
+                    prepared::<F, W>(Box::into_raw(launch).cast::<c_void>());
                 });
             }
         });

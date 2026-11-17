@@ -9,7 +9,7 @@
 //! - A headless Chromium page controlled through CDP
 
 use serde_json::{Value, json};
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
@@ -401,7 +401,7 @@ pub fn demo() -> impl View {
 /// `waterui-browser-cef` and calling `install_chromium` starts the packaged CEF
 /// runtime, supplies the `ChromiumController` the code above extracts from the
 /// environment, and registers the realization that draws a visible page.
-pub fn app(mut env: Environment) -> App {
+pub fn app(mut env: Environment) -> App<impl Windows> {
     install_chromium(&mut env);
     App::new(demo, env)
 }

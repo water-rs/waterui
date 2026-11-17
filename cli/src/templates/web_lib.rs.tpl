@@ -1,4 +1,4 @@
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::env::use_env;
 use waterui::prelude::*;
 use waterui::{include_web, js_api, preview};
@@ -27,6 +27,6 @@ fn main() -> impl View {
     })
 }
 
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     App::new(main, env)
 }

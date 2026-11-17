@@ -640,7 +640,7 @@ pub fn components_block_17() {
     clippy::redundant_closure,
     reason = "the snippet is transcribed verbatim from the skill; rewriting it to satisfy the lint would defeat this crate's purpose"
 )]
-pub fn components_block_18(env: Environment) -> waterui::app::App {
+pub fn components_block_18(env: Environment) -> waterui::app::App<impl waterui::app::Windows> {
     fn content() -> impl View {
         text("demo")
     }

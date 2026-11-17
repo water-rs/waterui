@@ -8,7 +8,7 @@
 //! compiled, linted, and tested along with the rest of the workspace. A devtool
 //! that the compiler cannot see is a devtool that rots.
 
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::prelude::*;
 
 pub mod connection;
@@ -45,7 +45,7 @@ pub fn main() -> impl View {
 
 /// Application entry point.
 #[must_use]
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     App::new(main, env)
 }
 

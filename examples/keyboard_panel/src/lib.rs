@@ -13,7 +13,7 @@
 //! `docs/layout-spec.md` §7.1 defines the two-region model; the example
 //! uses only default behaviour — no per-view safe-area workarounds.
 
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::graphics::color::Srgb;
 use waterui::prelude::*;
 use waterui::preview;
@@ -80,6 +80,6 @@ fn main() -> impl View {
 }
 
 /// Builds the keyboard panel example app around [`main`].
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     App::new(main, env)
 }

@@ -21,7 +21,7 @@
 use core::time::Duration;
 
 use waterui::animation::Animation;
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::Binding;
@@ -289,7 +289,7 @@ pub fn demo() -> impl View {
 }
 
 /// Standalone entry point for the stress example.
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     App::new(demo, env)
 }
 

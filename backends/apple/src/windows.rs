@@ -8,8 +8,46 @@
 //! `Window::show` finds it, and it fails exactly as the Swift implementation
 //! did.
 
+use alloc::boxed::Box;
+use alloc::vec::Vec;
+
+use cocoa_ui::MainThreadMarker;
 #[cfg(target_os = "macos")]
 use cocoa_ui::geometry::{Rect, Size};
+use waterui::app::{WindowSink, Windows};
+use waterui::handler::ViewBuilder;
+use waterui::window::Window;
+use waterui_backend_core::Environment;
+
+use crate::contract::NativeLeaf;
+
+/// A window's content as this backend holds it: the content builder's type
+/// is erased behind the one call that renders the window's tree, so
+/// everything below the window dispatches statically.
+pub type Root = Box<dyn Fn(&Environment, MainThreadMarker) -> NativeLeaf>;
+
+/// A window as this backend holds it, see [`Root`].
+pub type RootWindow = Window<Root>;
+
+/// `window` as this backend holds it.
+pub fn root_window<C: ViewBuilder>(window: Window<C>) -> RootWindow {
+    window.map_content(|content| -> Root {
+        Box::new(move |env, mtm| crate::dispatch::render(content.build(), env, mtm))
+    })
+}
+
+/// `windows` as this backend holds them, in declaration order.
+pub fn root_windows(windows: impl Windows) -> Vec<RootWindow> {
+    struct Collect(Vec<RootWindow>);
+    impl WindowSink for Collect {
+        fn window<C: ViewBuilder>(&mut self, window: Window<C>) {
+            self.0.push(root_window(window));
+        }
+    }
+    let mut collect = Collect(Vec::with_capacity(windows.len()));
+    windows.for_each(&mut collect);
+    collect.0
+}
 #[cfg(target_os = "macos")]
 use waterui_core::layout::{Point as WPoint, Rect as WRect, Size as WSize};
 
@@ -19,13 +57,16 @@ mod imp {
     use alloc::vec::Vec;
     use core::cell::{Cell, RefCell};
 
+    use super::RootWindow;
     use super::{into_kit_rect, into_kit_size, into_layout_rect};
     use cocoa_ui::appkit::{AttentionRequest, HostView, WindowLevel as KitLevel, WindowStyle};
     use cocoa_ui::{MainThreadMarker, Retained};
     use waterui::animation::ChangeAnimation;
+    use waterui::handler::ViewBuilder;
     use waterui::reactive::{Binding, Computed, Signal};
+    use waterui::window::Window;
     use waterui::window::{
-        ResolvedWindowBackground, UserAttention, Window, WindowHandle, WindowLevel, WindowState,
+        ResolvedWindowBackground, UserAttention, WindowHandle, WindowLevel, WindowState,
         WindowStyle as WuiStyle,
     };
     use waterui_backend_core::Environment;
@@ -115,6 +156,16 @@ mod imp {
         drop(hosts);
     }
 
+    /// Realizes `declaration` as a platform window and returns its host, see
+    /// [`realize_root`].
+    pub fn realize<C: ViewBuilder>(
+        declaration: Window<C>,
+        env: &Environment,
+        mtm: MainThreadMarker,
+    ) -> WindowHost {
+        realize_root(super::root_window(declaration), env, mtm)
+    }
+
     /// Realizes `declaration` as a platform window and returns its host. The
     /// window is ordered front at full transparency and revealed when its
     /// content reports ready — the same path the Swift host took, so a GPU
@@ -123,7 +174,11 @@ mod imp {
         clippy::too_many_lines,
         reason = "one sequential realization: order is the point, splitting it obscures the wiring"
     )]
-    pub fn realize(declaration: Window, env: &Environment, mtm: MainThreadMarker) -> WindowHost {
+    pub fn realize_root(
+        declaration: RootWindow,
+        env: &Environment,
+        mtm: MainThreadMarker,
+    ) -> WindowHost {
         let mut keepalive = KeepAlive::default();
 
         declaration.arm_close_requests(env);
@@ -277,8 +332,7 @@ mod imp {
         // Content: the declared tree becomes one leaf whose view fills the
         // host each layout pass, at the safe-area-aware frame `content_frame`
         // resolves.
-        let content = declaration.build_content();
-        let leaf = crate::dispatch::render(content, env, mtm);
+        let leaf = (declaration.content)(env, mtm);
 
         let host = HostView::new(mtm, window.content_rect());
         host.add_subview(leaf.view());
@@ -467,7 +521,7 @@ mod imp {
     /// back on screen — the same post-teardown answer the winit hook's
     /// weak reference gives.
     pub fn wire_focus_requests(
-        declaration: &Window,
+        declaration: &RootWindow,
         window: &Rc<cocoa_ui::appkit::Window>,
         mtm: MainThreadMarker,
     ) {
@@ -760,6 +814,7 @@ mod imp {
     use alloc::vec::Vec;
     use core::cell::{Cell, RefCell};
 
+    use super::RootWindow;
     use cocoa_ui::objc2_ui_kit::{NSObjectUIAccessibility as _, UIView, UIWindow};
     use cocoa_ui::uikit::{
         ColorSchemeObservation, HostView, ViewController, WindowScene, window_root,
@@ -769,7 +824,6 @@ mod imp {
     use waterui::graphics::color::WorkingColor;
     use waterui::reactive::Computed;
     use waterui::theme::color::Background;
-    use waterui::window::Window;
     use waterui_backend_core::Environment;
 
     use crate::contract::KeepAlive;
@@ -858,13 +912,13 @@ mod imp {
     pub struct Scenes {
         hosts: RefCell<std::collections::BTreeMap<String, WindowHost>>,
         pending: RefCell<VecDeque<Pending>>,
-        declared: RefCell<Vec<Rc<Window>>>,
+        declared: RefCell<Vec<Rc<RootWindow>>>,
         claimed: Cell<usize>,
         env: RefCell<Option<Environment>>,
     }
 
     impl Scenes {
-        fn claim(&self) -> Option<Rc<Window>> {
+        fn claim(&self) -> Option<Rc<RootWindow>> {
             let declared = self.declared.borrow();
             if declared.is_empty() {
                 return None;
@@ -1007,7 +1061,7 @@ mod imp {
     /// `connect` realizes declarations under the same env.
     pub fn declare(
         scenes: &Scenes,
-        windows: Vec<Window>,
+        windows: Vec<RootWindow>,
         env: &Environment,
         claimed: usize,
         mtm: MainThreadMarker,
@@ -1083,7 +1137,7 @@ mod imp {
     /// tree becomes one leaf laid out inside the controller's host view, at
     /// the safe-area-aware frame `content_frame` resolves.
     pub fn realize(
-        declaration: &Window,
+        declaration: &RootWindow,
         pending: Pending,
         env: &Environment,
         mtm: MainThreadMarker,
@@ -1116,8 +1170,7 @@ mod imp {
             mtm,
         );
 
-        let content = declaration.build_content();
-        let leaf = crate::dispatch::render(content, env, mtm);
+        let leaf = (declaration.content)(env, mtm);
         let leaf_view = cocoa_ui::view::retain_base(leaf.view());
         #[cfg(feature = "gpu_surface")]
         let reveal_view = leaf_view.clone();
@@ -1222,12 +1275,14 @@ mod imp {
 #[cfg(target_os = "ios")]
 pub use imp::bind_background;
 pub use imp::install_manager;
+#[cfg(all(target_os = "macos", feature = "native-test"))]
+pub use imp::realize;
 #[cfg(all(target_os = "ios", feature = "native-test"))]
 pub use imp::{Pending, Veil, WindowHost, realize};
 #[cfg(target_os = "ios")]
 pub use imp::{Scenes, connect, connect_embedded, declare};
 #[cfg(target_os = "macos")]
-pub use imp::{bind_background, close_all, realize, track};
+pub use imp::{bind_background, close_all, realize_root, track};
 
 /// A waterui layout rect, as the kit sees it.
 #[cfg(target_os = "macos")]

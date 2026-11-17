@@ -10,8 +10,9 @@
 
 use std::time::Duration;
 
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::background::Material;
+use waterui::handler::ViewBuilder;
 use waterui::prelude::theme_color::SurfaceVariant;
 use waterui::prelude::*;
 use waterui::preview;
@@ -139,7 +140,7 @@ fn window_section(
 }
 
 /// Create a standard titled window with opaque background
-fn create_standard_window(state: Binding<WindowState>) -> Window {
+fn create_standard_window(state: Binding<WindowState>) -> Window<impl ViewBuilder> {
     Window::new("Standard Window", state, move || {
         window_content(
             "Standard Titled Window",
@@ -152,7 +153,7 @@ fn create_standard_window(state: Binding<WindowState>) -> Window {
 }
 
 /// Create a borderless window with colored background
-fn create_borderless_window(state: Binding<WindowState>) -> Window {
+fn create_borderless_window(state: Binding<WindowState>) -> Window<impl ViewBuilder> {
     let tinted_color = Color::srgb_f32(0.2, 0.4, 0.8).with_opacity(0.85);
 
     Window::new("Borderless Window", state, move || {
@@ -167,7 +168,7 @@ fn create_borderless_window(state: Binding<WindowState>) -> Window {
 }
 
 /// Create a frosted glass window with material blur
-fn create_frosted_window(state: Binding<WindowState>) -> Window {
+fn create_frosted_window(state: Binding<WindowState>) -> Window<impl ViewBuilder> {
     Window::new("Frosted Glass", state, move || {
         window_content(
             "Frosted Glass Window",
@@ -180,7 +181,7 @@ fn create_frosted_window(state: Binding<WindowState>) -> Window {
 }
 
 /// Create a transparent overlay window
-fn create_transparent_window(state: Binding<WindowState>) -> Window {
+fn create_transparent_window(state: Binding<WindowState>) -> Window<impl ViewBuilder> {
     // Use a semi-transparent color for the overlay effect
     let overlay_color = Color::srgb_f32(0.1, 0.1, 0.1).with_opacity(0.3);
 
@@ -191,7 +192,7 @@ fn create_transparent_window(state: Binding<WindowState>) -> Window {
 }
 
 /// Create an ultra-thin material window
-fn create_ultra_thin_window(state: Binding<WindowState>) -> Window {
+fn create_ultra_thin_window(state: Binding<WindowState>) -> Window<impl ViewBuilder> {
     Window::new("Ultra-Thin Material", state, move || {
         window_content(
             "Ultra-Thin Material Window",
@@ -206,9 +207,9 @@ fn create_ultra_thin_window(state: Binding<WindowState>) -> Window {
 /// Create a window showcasing the window-control API: maximizing, an
 /// always-on-top toggle, an attention request after a delay, and resize
 /// increments.
-fn create_controls_window(state: Binding<WindowState>) -> Window {
+fn create_controls_window(state: Binding<WindowState>) -> Window<impl ViewBuilder> {
     let always_on_top = binding(false);
-    let mut window = Window::new("Window Controls", state, || ())
+    let window = Window::new("Window Controls", state, || ())
         .style(WindowStyle::Titled)
         .resizable(true)
         .level(always_on_top.map(|on| {
@@ -222,10 +223,7 @@ fn create_controls_window(state: Binding<WindowState>) -> Window {
     // The content drives the window through its handle, which is only
     // available once the `Window` exists, so the builder is installed after.
     let handle = window.handle();
-    window.content = waterui::handler::AnyViewBuilder::new(move || {
-        AnyView::new(controls_window_content(&handle, &always_on_top))
-    });
-    window
+    window.content(move || controls_window_content(&handle, &always_on_top))
 }
 
 /// Content of the controls window: buttons driving its `WindowHandle`.
@@ -340,6 +338,6 @@ fn material_item(name: &'static str, description: &'static str) -> impl View + u
 }
 
 /// Builds the multi-window example app.
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     App::new(demo, env)
 }

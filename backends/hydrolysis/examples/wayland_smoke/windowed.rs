@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use hydrolysis::run;
 use waterui::Environment;
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::prelude::*;
 use waterui::reactive::binding;
 use waterui::shape::{RoundedRectangle, ShapeExt};
@@ -40,7 +40,7 @@ fn main_view() -> impl View {
     .foreground(Color::srgb_hex("#0F172A"))
 }
 
-fn app(env: Environment) -> App {
+fn app(env: Environment) -> App<impl Windows> {
     App::new_with_windows(
         [Window::new(
             "Hydrolysis Wayland Smoke",

@@ -13,6 +13,13 @@ use core::time::Duration;
 use nami::Signal;
 #[cfg(feature = "date-picker")]
 use waterui::form::Calendar;
+#[cfg(any(
+    feature = "menu",
+    feature = "color-picker",
+    feature = "picker",
+    feature = "date-picker"
+))]
+use waterui::window::AnyWindow;
 #[cfg(any(feature = "picker", feature = "color-picker", feature = "date-picker"))]
 use waterui_controls::button;
 #[cfg(any(feature = "menu", feature = "color-picker"))]
@@ -57,11 +64,11 @@ pub fn menu_look(theme: &Rc<dyn crate::theme::WidgetTheme>, env: &Environment) -
 /// application windows retain their normal focus behavior.
 #[derive(Clone)]
 #[cfg(any(feature = "menu", feature = "color-picker"))]
-pub struct PopupWindowManager(Rc<dyn Fn(Window)>);
+pub struct PopupWindowManager(Rc<dyn Fn(AnyWindow)>);
 
 #[cfg(any(feature = "menu", feature = "color-picker"))]
 impl PopupWindowManager {
-    pub(crate) fn new(show: impl Fn(Window) + 'static) -> Self {
+    pub(crate) fn new(show: impl Fn(AnyWindow) + 'static) -> Self {
         Self(Rc::new(show))
     }
 
@@ -69,7 +76,7 @@ impl PopupWindowManager {
     /// opened the popup (water-rs/hydrolysis#140), so its `.state(&value)`
     /// and `.with(...)` overlays reach the item actions' extractors exactly
     /// as they do for inline views.
-    pub(crate) fn show(&self, window: Window, env: &Environment) {
+    pub(crate) fn show(&self, window: AnyWindow, env: &Environment) {
         (self.0)(window_in_opening_environment(window, env));
     }
 }
@@ -84,7 +91,7 @@ impl PopupWindowManager {
 /// value the input dispatcher installs for a root window, so a nested popup
 /// opened from this window anchors to it.
 #[cfg(any(feature = "menu", feature = "color-picker"))]
-pub fn window_in_opening_environment(mut window: Window, env: &Environment) -> Window {
+pub fn window_in_opening_environment(mut window: AnyWindow, env: &Environment) -> AnyWindow {
     let frame = window.frame.snapshot();
     let content_env = env.extending(HydrolysisWindowOrigin {
         x: frame.x(),
@@ -619,7 +626,7 @@ pub fn popup_menu_window(
     metrics: MenuLayout,
     text: PopupMenuTextMetrics,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
-) -> (Window, Binding<WindowState>) {
+) -> (AnyWindow, Binding<WindowState>) {
     let state = Binding::container(WindowState::Normal);
     let (width, height) = popup_menu_size(&nodes, metrics, &text);
     let group_for_content = group;
@@ -667,7 +674,7 @@ pub fn popup_menu_window(
             crate::num_cast::f64_as_f32(POPUP_MENU_PANEL_MARGIN.mul_add(2.0, height)),
         ),
     ));
-    (popup, state)
+    (popup.erase(), state)
 }
 
 /// The semantic counterpart of [`popup_menu_window`]: the same rows —
@@ -681,7 +688,7 @@ pub fn semantic_popup_menu_window(
     nodes: Vec<PopupMenuNode>,
     group: PopupMenuStateGroup,
     depth: usize,
-) -> (Window, Binding<WindowState>) {
+) -> (AnyWindow, Binding<WindowState>) {
     let state = Binding::container(WindowState::Normal);
     let group_for_content = group;
     let state_for_content = state.clone();
@@ -742,7 +749,7 @@ pub fn semantic_popup_menu_window(
     .resizable(false)
     .background(Color::transparent());
     popup.closable = false;
-    (popup, state)
+    (popup.erase(), state)
 }
 
 /// The semantic counterpart of [`picker_menu_window`]: the same selection
@@ -755,7 +762,7 @@ pub fn semantic_picker_menu_window(
     selection: Binding<Id>,
     open: Rc<Cell<bool>>,
     group: PopupMenuStateGroup,
-) -> (Window, Binding<WindowState>) {
+) -> (AnyWindow, Binding<WindowState>) {
     let state = Binding::container(WindowState::Normal);
     let group_for_content = group;
     let state_for_content = state.clone();
@@ -794,7 +801,7 @@ pub fn semantic_picker_menu_window(
         .resizable(false)
         .background(Color::transparent());
     popup.closable = false;
-    (popup, state)
+    (popup.erase(), state)
 }
 
 #[allow(
@@ -812,7 +819,7 @@ pub fn picker_menu_window(
     selected: Id,
     group: PopupMenuStateGroup,
     look: &MenuLook,
-) -> (Window, Binding<WindowState>) {
+) -> (AnyWindow, Binding<WindowState>) {
     let state = Binding::container(WindowState::Normal);
     let layout = look.layout();
     let height = picker_menu_panel_height(layout, row_height, entries.len());
@@ -885,7 +892,7 @@ pub fn picker_menu_window(
             crate::num_cast::f64_as_f32(POPUP_MENU_PANEL_MARGIN.mul_add(2.0, height)),
         ),
     ));
-    (popup, state)
+    (popup.erase(), state)
 }
 
 /// The height of a picker popup's panel: its rows of `row_height` inside the
@@ -961,7 +968,7 @@ fn color_picker_window_base(
     support_hdr: bool,
     group: PopupMenuStateGroup,
     env: &Environment,
-) -> (Window, Binding<WindowState>) {
+) -> (AnyWindow, Binding<WindowState>) {
     let state = Binding::container(WindowState::Normal);
     let (width, _) = color_picker_size(support_alpha, support_hdr);
     let swatch = 40.0;
@@ -1051,7 +1058,7 @@ fn color_picker_window_base(
         .resizable(false)
         .background(Color::transparent());
     popup.closable = false;
-    (popup, state)
+    (popup.erase(), state)
 }
 
 /// The rendered popup path: the shared color-picker window anchored at the
@@ -1065,7 +1072,7 @@ pub fn color_picker_window(
     origin: LayoutPoint,
     group: PopupMenuStateGroup,
     env: &Environment,
-) -> (Window, Binding<WindowState>) {
+) -> (AnyWindow, Binding<WindowState>) {
     let (popup, state) = color_picker_window_base(value, support_alpha, support_hdr, group, env);
     let (width, height) = color_picker_size(support_alpha, support_hdr);
     popup.frame.set(LayoutRect::new(
@@ -1143,7 +1150,7 @@ fn date_picker_window_base(
     ty: DatePickerType,
     group: PopupMenuStateGroup,
     env: &Environment,
-) -> (Window, Binding<WindowState>) {
+) -> (AnyWindow, Binding<WindowState>) {
     let state = Binding::container(WindowState::Normal);
     let current = value.snapshot().clamp(*range.start(), *range.end());
     let staged_date = Binding::container(current.date());
@@ -1259,7 +1266,7 @@ fn date_picker_window_base(
         .resizable(false)
         .background(Color::transparent());
     popup.closable = false;
-    (popup, state)
+    (popup.erase(), state)
 }
 
 /// The rendered popup path: the shared date-picker window anchored at the
@@ -1273,7 +1280,7 @@ pub fn date_picker_window(
     origin: LayoutPoint,
     group: PopupMenuStateGroup,
     env: &Environment,
-) -> (Window, Binding<WindowState>) {
+) -> (AnyWindow, Binding<WindowState>) {
     let (popup, state) = date_picker_window_base(value, range, ty, group, env);
     let (width, height) = date_picker_size(ty);
     popup.frame.set(LayoutRect::new(

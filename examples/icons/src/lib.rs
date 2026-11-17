@@ -5,7 +5,7 @@
 //! - Material Design Icons (SVG rendering)
 //! - Lucide Icons (SVG rendering)
 
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::prelude::*;
 use waterui::preview;
 
@@ -112,6 +112,6 @@ pub fn demo() -> impl View {
 }
 
 /// Builds the icons example app.
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     App::new(demo, env)
 }

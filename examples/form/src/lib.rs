@@ -6,7 +6,7 @@
 //! - Reactive data binding with live preview
 //! - Manual form control composition
 use core::num::NonZeroUsize;
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::prelude::*;
 use waterui::prelude::{slider::slider, stepper::stepper};
 use waterui::preview;
@@ -138,7 +138,7 @@ fn scene(
 
 /// Builds the form example app: a theme driven by the settings form, and the three forms.
 #[must_use]
-pub fn app(mut env: Environment) -> App {
+pub fn app(mut env: Environment) -> App<impl Windows> {
     let settings = AppSettings::binding();
     let registration = RegistrationForm::binding();
     let custom_name = binding("");
