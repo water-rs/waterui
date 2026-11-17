@@ -454,8 +454,13 @@ fn apply_scroll_request(scroll: &ScrollSurface, request: &ScrollRequest<Point>) 
     }
 }
 
-/// Renders a `ScrollView` config into the kit's scroll surface.
-fn render(config: ScrollView, ctx: &RenderContext<'_>) -> NativeLeaf {
+/// Renders a `ScrollView` config into the kit's scroll surface, its content
+/// realized by `realize_content` once the surface exists.
+pub fn realize_scroll_view<C>(
+    config: ScrollView<C>,
+    realize_content: impl FnOnce(C) -> NativeLeaf,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
     let (axis, content, controller, offset) = config.into_inner().into_parts();
     let mtm = ctx.mtm();
     // An axis the backend does not know is a contract violation of the
@@ -475,7 +480,7 @@ fn render(config: ScrollView, ctx: &RenderContext<'_>) -> NativeLeaf {
         _ => (true, false),
     };
     let scroll = ScrollSurface::new(mtm, vertical, horizontal);
-    let child_leaf = ctx.render(content);
+    let child_leaf = realize_content(content);
     // `AppKit` mounts on the flipped document; `UIKit` scrolls the view's
     // own content area, so the child mounts on the scroll view itself.
     #[cfg(target_os = "macos")]
@@ -743,11 +748,6 @@ fn wire_scroll_reporting(
         },
     ));
     report(scroll);
-}
-
-/// Registers the `scroll` leaf.
-pub fn realize_scroll_view(value: ScrollView, ctx: &RenderContext<'_>) -> NativeLeaf {
-    render(value, ctx)
 }
 
 #[cfg(test)]

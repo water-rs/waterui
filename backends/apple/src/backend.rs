@@ -1,7 +1,9 @@
 //! The Apple backend's [`NativeBackend`]: each component's realization,
 //! reached through static dispatch.
 
-use waterui_backend_core::{Environment, NativeBackend, report_unprovided};
+use waterui_backend_core::{
+    ChildView, Environment, NativeBackend, NativeBackendFamily, report_unprovided,
+};
 use waterui_core::backend::ErasedPayload;
 use waterui_core::metadata::MetadataKey;
 use waterui_core::{Metadata, NativeView};
@@ -22,9 +24,20 @@ impl AppleBackend {
     }
 }
 
+impl NativeBackendFamily for AppleBackend {
+    type Output = NativeLeaf;
+    type Ctx = ();
+    type Backend<'a> = Self;
+}
+
 impl NativeBackend for AppleBackend {
     type Output = NativeLeaf;
     type Ctx = ();
+    type Family = Self;
+
+    fn with_family<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        f(self)
+    }
 
     fn empty(&mut self, native: (), env: &Environment, (): ()) -> NativeLeaf {
         crate::components::empty::realize_empty(native, &RenderContext::new(env, self.mtm))
@@ -83,13 +96,18 @@ impl NativeBackend for AppleBackend {
         )
     }
 
-    fn scroll(
+    fn scroll<C: ChildView<Self>>(
         &mut self,
-        native: waterui::layout::scroll::ScrollView,
+        native: waterui::layout::scroll::ScrollView<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
-        crate::components::scroll::realize_scroll_view(native, &RenderContext::new(env, self.mtm))
+        let mtm = self.mtm;
+        crate::components::scroll::realize_scroll_view(
+            native,
+            |content| content.realize(self, env, ()),
+            &RenderContext::new(env, mtm),
+        )
     }
 
     fn dynamic(&mut self, native: waterui_core::Dynamic, env: &Environment, (): ()) -> NativeLeaf {
