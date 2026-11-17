@@ -633,6 +633,15 @@ lto = "thin"
 # xcb 1.7.0 still builds with vulnerable quick-xml 0.30. Upstream has migrated
 # to quick-xml 0.41, but has not released that change yet.
 [patch.crates-io]
+# `SignalExt` derived signals capture only their source (water-rs/nami#77),
+# which generic containers and modifiers need; unreleased.
+nami = { git = "https://github.com/water-rs/nami", branch = "main" }
+nami-core = { git = "https://github.com/water-rs/nami", branch = "main" }
+nami-derive = { git = "https://github.com/water-rs/nami", branch = "main" }
+# The macro contract snapshots name a dependency's source as a registry path;
+# this normalizes a git checkout of the same package, such as the nami patch
+# above, to that form (dtolnay/trybuild has no such normalization).
+trybuild = { git = "https://github.com/lexoliu/trybuild", branch = "normalize-git-checkouts" }
 shaderloom = { git = "https://github.com/water-rs/shaderloom", branch = "main" }
 # Extracted crates on crates.io (waterui-chart #188, …) depend on the
 # registry `waterui-core` and `waterui-graphics`; the workspace must resolve
@@ -677,7 +686,7 @@ waterui-watcher-set = { path = "utils/watcher-set" }
 # and the split tabs-bar surface and divider calls (#1982). Drop the git pin
 # once a release has these changes.
 hydrolysis = { path = "backends/hydrolysis" }
-hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", branch = "main" }
+hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", branch = "refactor/view-sequence" }
 # The waterkit family follows waterkit's `dev` so the framework consumes its
 # unreleased changes; the patches apply only while the `[workspace.dependencies]`
 # requirements admit `dev`'s version (0.3). Every waterkit crate the

@@ -232,7 +232,7 @@ mod tests {
     use super::*;
     use crate::container::FixedContainer;
     use crate::{LayoutError, Rect, ResolvedExtent, StretchAxis, ViewDimensions};
-    use waterui_core::{AnyView, Environment, View};
+    use waterui_core::{AnyView, Environment, View, view::ViewSequence};
 
     struct MockSubView {
         size: Size,
@@ -328,11 +328,11 @@ mod tests {
         let env = Environment::default();
         let body = overlay((), ()).body(&env);
         let container = AnyView::new(body)
-            .downcast::<FixedContainer>()
+            .downcast::<FixedContainer<((), ())>>()
             .expect("overlay body should be a FixedContainer");
         let (layout, children) = container.as_parts();
 
-        assert_eq!(children.len(), 2);
+        assert_eq!(ViewSequence::len(children), 2);
         assert_eq!(
             layout.stretch_axis(&[StretchAxis::Horizontal, StretchAxis::None]),
             StretchAxis::Horizontal

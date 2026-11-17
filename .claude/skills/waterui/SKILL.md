@@ -279,8 +279,10 @@ impl View for ColorSwatch {
 }
 ```
 
-`AnyView` is the erased view type — `.anyview()` or `AnyView::new(v)` — for match arms,
-struct fields, and heterogeneous `collect()`s.
+Branches that return different view types return `OneOf2`..`OneOf8` (in the prelude):
+`if wide { OneOf2::A(sidebar()) } else { OneOf2::B(tabs()) }`. Each branch keeps its own
+type and dispatches statically. `AnyView::new(v)` is the erased view type, for a set of
+view types that is genuinely open at run time.
 
 ### State
 
@@ -399,15 +401,15 @@ The distinction matters: `Option<impl View>` is a view, but a *signal* of
 `Option<impl View>` is not, so `flag.map(|b| b.then(|| view))` on a `Binding` does not
 compile. Reach for `when` or `.visible` there.
 
-For many branches over a plain (non-reactive) value, a `match` returning `.anyview()` is
-clearer than a long `when` chain.
+For many branches over a plain (non-reactive) value, a `match` whose arms return the
+variants of one `OneOfN` is clearer than a long `when` chain.
 
 `#[view_builder]` (a non-async function or method returning `-> impl View`) and
 `view! { .. }` (a block expression) let branches return different view types without
-`.anyview()`. They rewrite only tail-position `if`, `if let` and `match` expressions
+naming a `OneOfN`. They rewrite only tail-position `if`, `if let` and `match` expressions
 (and `return` values): the condition or scrutinee is evaluated once and bound as the
 signal, and the expression becomes `watch(signal.clone(), move |value| ..)`, the `if`
-or `match` running on each value; branches are wrapped in `Result`/`Option` so the
+or `match` running on each value; branches are wrapped in `OneOfN`/`Option` so the
 types unify (an `if` without `else` renders nothing when false). So the condition must
 itself be a `Clone` signal: `if flag` on a `Binding<bool>` or `match tab` on a
 `Binding<i32>` is reactive, a plain `bool` or integer is a constant signal read once,

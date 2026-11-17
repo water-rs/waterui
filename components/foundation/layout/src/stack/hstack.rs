@@ -3,8 +3,8 @@
 use alloc::{vec, vec::Vec};
 use nami::{Computed, Signal, SignalExt, collection::Collection};
 use waterui_core::{
-    AnyView, IntoSignalF32, View, env::with, id::Identifiable, layout::LayoutInvalidationCallback,
-    view::TupleViews, views::ForEach,
+    IntoSignalF32, View, env::with, id::Identifiable, layout::LayoutInvalidationCallback,
+    view::ViewSequence, views::ForEach,
 };
 
 use crate::{
@@ -268,7 +268,7 @@ impl Layout for HStackLayout {
     }
 }
 
-impl<C: TupleViews> HStack<(C,)> {
+impl<C: ViewSequence> HStack<(C,)> {
     /// Creates a horizontal stack with the provided alignment, spacing, and
     /// children.
     pub fn new(alignment: VerticalAlignment, spacing: f32, contents: C) -> Self {
@@ -313,18 +313,18 @@ impl<C> HStack<C> {
 
 crate::stack::impl_stack_for_each!(HStack, HStackLayout);
 
-impl<V> FromIterator<V> for HStack<(Vec<AnyView>,)>
+impl<V> FromIterator<V> for HStack<(Vec<V>,)>
 where
     V: View,
 {
     fn from_iter<T: IntoIterator<Item = V>>(iter: T) -> Self {
-        let contents = iter.into_iter().map(AnyView::new).collect();
+        let contents = iter.into_iter().collect::<Vec<_>>();
         Self::new(VerticalAlignment::default(), 10.0, contents)
     }
 }
 
 /// Convenience constructor that centres children and uses the default spacing.
-pub fn hstack<C: TupleViews>(contents: C) -> HStack<(C,)> {
+pub fn hstack<C: ViewSequence>(contents: C) -> HStack<(C,)> {
     HStack::new(VerticalAlignment::Center, 10.0, contents)
 }
 
@@ -344,7 +344,7 @@ where
     }
 }
 
-impl<C: TupleViews + 'static> View for HStack<(C,)> {
+impl<C: ViewSequence + 'static> View for HStack<(C,)> {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         // Inject the horizontal axis into the container
         with(

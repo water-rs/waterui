@@ -72,15 +72,17 @@ impl NativeBackend for AppleBackend {
         crate::dispatch::render(native.composed(env), env, self.mtm)
     }
 
-    fn fixed_container(
+    fn fixed_container<C: ChildView<Self>>(
         &mut self,
-        native: waterui::layout::container::FixedContainer,
+        native: waterui::layout::container::FixedContainer<Vec<C>>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
+        let mtm = self.mtm;
         crate::components::fixed_container::realize_fixed_container(
             native,
-            &RenderContext::new(env, self.mtm),
+            |child| child.realize(self, env, ()),
+            &RenderContext::new(env, mtm),
         )
     }
 

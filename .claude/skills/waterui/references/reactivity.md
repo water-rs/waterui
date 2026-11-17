@@ -429,12 +429,12 @@ Before writing one, check all three replacements:
 
 The associated-function spelling `Dynamic::watch(signal, closure)` is the same thing as
 the free `watch(..)`; the closure takes the value by move and must return one uniform
-type, so heterogeneous arms erase with `AnyView::new(..)`:
+type, so heterogeneous arms return the variants of one `OneOfN`:
 
 ```rust
 Dynamic::watch(mode.clone(), |mode| match mode {
-    ChartMode::Bar => AnyView::new(bar_chart()),
-    ChartMode::Line => AnyView::new(line_chart()),
+    ChartMode::Bar => OneOf2::A(bar_chart()),
+    ChartMode::Line => OneOf2::B(line_chart()),
 })
 ```
 

@@ -75,62 +75,50 @@ fn a2() -> impl View {
         // wrap-overflow vs truncate: (w=100, h=20)
         t("twins.a2.text")
             .size(100.0, 20.0)
-            .a11y_label("twins.a2.wrap")
-            .anyview(),
+            .a11y_label("twins.a2.wrap"),
         // line limits at the same proposal
         lt("twins.a2.l1.text", 1)
             .size(100.0, 20.0)
-            .a11y_label("twins.a2.l1")
-            .anyview(),
+            .a11y_label("twins.a2.l1"),
         lt("twins.a2.l2.text", 2)
             .size(100.0, 20.0)
-            .a11y_label("twins.a2.l2")
-            .anyview(),
+            .a11y_label("twins.a2.l2"),
         // sub-line-height proposal: 8.4pt text under (w=100, h=8)
         t("twins.a2.sub.text")
             .size(100.0, 8.0)
-            .a11y_label("twins.a2.subline")
-            .anyview(),
+            .a11y_label("twins.a2.subline"),
         // (w=0, h=20): zero-width proposal
         t("twins.a2.w0.text")
             .size(0.0, 20.0)
-            .a11y_label("twins.a2.w0")
-            .anyview(),
+            .a11y_label("twins.a2.w0"),
         // (w=100, h=0): zero-height proposal
         t("twins.a2.h0.text")
             .size(100.0, 0.0)
-            .a11y_label("twins.a2.h0")
-            .anyview(),
+            .a11y_label("twins.a2.h0"),
         // short text, (w=100, h=20)
         tshort("twins.a2.short.text")
             .size(100.0, 20.0)
-            .a11y_label("twins.a2.short")
-            .anyview(),
+            .a11y_label("twins.a2.short"),
         // (w=100, h=None): vertical scroll hands content an unspecified height
         scroll(t("twins.a2.inf.text"))
             .size(100.0, 20.0)
-            .a11y_label("twins.a2.inf")
-            .anyview(),
+            .a11y_label("twins.a2.inf"),
         // (w=0, h=None): zero-width frame inside a vertical scroll
         scroll(t("twins.a2.w0none.text").width(0.0))
             .size(100.0, 20.0)
-            .a11y_label("twins.a2.w0none")
-            .anyview(),
+            .a11y_label("twins.a2.w0none"),
         // (w=None, h=20): horizontal scroll hands content an unspecified width
         scroll_horizontal(t("twins.a2.nonew.text").height(20.0))
             .size(100.0, 20.0)
-            .a11y_label("twins.a2.nonew")
-            .anyview(),
+            .a11y_label("twins.a2.nonew"),
         // (w=None, h=0)
         scroll_horizontal(t("twins.a2.noneh0.text").height(0.0))
             .size(100.0, 20.0)
-            .a11y_label("twins.a2.noneh0")
-            .anyview(),
+            .a11y_label("twins.a2.noneh0"),
         // (w=None, h=None): two-axis scroll
         scroll_both(t("twins.a2.nonenone.text"))
             .size(100.0, 20.0)
-            .a11y_label("twins.a2.nonenone")
-            .anyview(),
+            .a11y_label("twins.a2.nonenone"),
     ))
     .spacing(4.0)
 }
@@ -143,7 +131,7 @@ fn a2() -> impl View {
 // empty view (the `is_empty` slot probe).
 // ---------------------------------------------------------------------------
 fn a3() -> impl View {
-    vstack((a3a().anyview(), a3b().anyview())).spacing(4.0)
+    vstack((a3a(), a3b())).spacing(4.0)
 }
 
 fn a3a() -> impl View {
@@ -156,8 +144,7 @@ fn a3a() -> impl View {
         ))
         .spacing(10.0)
         .size(100.0, 10.0)
-        .a11y_label("twins.a3.mem")
-        .anyview(),
+        .a11y_label("twins.a3.mem"),
         // identity member, rigid child
         hstack((
             r("twins.a3.memr.l", 20.0, 10.0),
@@ -166,8 +153,7 @@ fn a3a() -> impl View {
         ))
         .spacing(10.0)
         .size(100.0, 10.0)
-        .a11y_label("twins.a3.memr")
-        .anyview(),
+        .a11y_label("twins.a3.memr"),
         // Frame width 40 — rigid child
         hstack((
             r("twins.a3.frame.l", 20.0, 10.0),
@@ -178,8 +164,7 @@ fn a3a() -> impl View {
         ))
         .spacing(10.0)
         .size(100.0, 60.0)
-        .a11y_label("twins.a3.frame")
-        .anyview(),
+        .a11y_label("twins.a3.frame"),
         // Frame width 40 — empty child
         hstack((
             r("twins.a3.framex.l", 20.0, 10.0),
@@ -190,8 +175,7 @@ fn a3a() -> impl View {
         ))
         .spacing(10.0)
         .size(100.0, 60.0)
-        .a11y_label("twins.a3.framex")
-        .anyview(),
+        .a11y_label("twins.a3.framex"),
         // Padding 10 — rigid child
         hstack((
             r("twins.a3.pad.l", 20.0, 10.0),
@@ -202,8 +186,7 @@ fn a3a() -> impl View {
         ))
         .spacing(10.0)
         .size(100.0, 60.0)
-        .a11y_label("twins.a3.pad")
-        .anyview(),
+        .a11y_label("twins.a3.pad"),
         // Padding 10 — empty child
         hstack((
             r("twins.a3.padx.l", 20.0, 10.0),
@@ -214,8 +197,7 @@ fn a3a() -> impl View {
         ))
         .spacing(10.0)
         .size(100.0, 60.0)
-        .a11y_label("twins.a3.padx")
-        .anyview(),
+        .a11y_label("twins.a3.padx"),
         // AspectRatio 2 fit — rigid child
         hstack((
             r("twins.a3.aspect.l", 20.0, 10.0),
@@ -224,8 +206,7 @@ fn a3a() -> impl View {
         ))
         .spacing(10.0)
         .size(100.0, 60.0)
-        .a11y_label("twins.a3.aspect")
-        .anyview(),
+        .a11y_label("twins.a3.aspect"),
         // AspectRatio 2 fit — empty child
         hstack((
             r("twins.a3.aspectx.l", 20.0, 10.0),
@@ -234,8 +215,7 @@ fn a3a() -> impl View {
         ))
         .spacing(10.0)
         .size(100.0, 60.0)
-        .a11y_label("twins.a3.aspectx")
-        .anyview(),
+        .a11y_label("twins.a3.aspectx"),
         // second half moved to a3b()
     ))
     .spacing(4.0)
@@ -257,8 +237,7 @@ fn a3b() -> impl View {
         ))
         .spacing(10.0)
         .size(100.0, 60.0)
-        .a11y_label("twins.a3.zstack")
-        .anyview(),
+        .a11y_label("twins.a3.zstack"),
         // ZStack member — empty child
         hstack((
             r("twins.a3.zstackx.l", 20.0, 10.0),
@@ -267,8 +246,7 @@ fn a3b() -> impl View {
         ))
         .spacing(10.0)
         .size(100.0, 60.0)
-        .a11y_label("twins.a3.zstackx")
-        .anyview(),
+        .a11y_label("twins.a3.zstackx"),
         // overlay member
         hstack((
             r("twins.a3.overlay.l", 20.0, 10.0),
@@ -279,8 +257,7 @@ fn a3b() -> impl View {
         ))
         .spacing(10.0)
         .size(100.0, 60.0)
-        .a11y_label("twins.a3.overlay")
-        .anyview(),
+        .a11y_label("twins.a3.overlay"),
         // overlay member — empty child
         hstack((
             r("twins.a3.overlayx.l", 20.0, 10.0),
@@ -291,8 +268,7 @@ fn a3b() -> impl View {
         ))
         .spacing(10.0)
         .size(100.0, 60.0)
-        .a11y_label("twins.a3.overlayx")
-        .anyview(),
+        .a11y_label("twins.a3.overlayx"),
         // background member
         hstack((
             r("twins.a3.bg.l", 20.0, 10.0),
@@ -303,8 +279,7 @@ fn a3b() -> impl View {
         ))
         .spacing(10.0)
         .size(100.0, 60.0)
-        .a11y_label("twins.a3.bg")
-        .anyview(),
+        .a11y_label("twins.a3.bg"),
         // background member — empty child
         hstack((
             r("twins.a3.bgx.l", 20.0, 10.0),
@@ -315,8 +290,7 @@ fn a3b() -> impl View {
         ))
         .spacing(10.0)
         .size(100.0, 60.0)
-        .a11y_label("twins.a3.bgx")
-        .anyview(),
+        .a11y_label("twins.a3.bgx"),
         // alignment-guide member: explicit leading guide at -5
         hstack((
             r("twins.a3.guide.l", 20.0, 10.0),
@@ -327,8 +301,7 @@ fn a3b() -> impl View {
         ))
         .spacing(10.0)
         .size(100.0, 60.0)
-        .a11y_label("twins.a3.guide")
-        .anyview(),
+        .a11y_label("twins.a3.guide"),
         // alignment-guide member — empty child
         hstack((
             r("twins.a3.guidex.l", 20.0, 10.0),
@@ -339,8 +312,7 @@ fn a3b() -> impl View {
         ))
         .spacing(10.0)
         .size(100.0, 60.0)
-        .a11y_label("twins.a3.guidex")
-        .anyview(),
+        .a11y_label("twins.a3.guidex"),
         // grid-cell member
         hstack((
             r("twins.a3.grid.l", 20.0, 10.0),
@@ -349,8 +321,7 @@ fn a3b() -> impl View {
         ))
         .spacing(10.0)
         .size(100.0, 60.0)
-        .a11y_label("twins.a3.grid")
-        .anyview(),
+        .a11y_label("twins.a3.grid"),
         // grid-cell member — empty child
         hstack((
             r("twins.a3.gridx.l", 20.0, 10.0),
@@ -359,8 +330,7 @@ fn a3b() -> impl View {
         ))
         .spacing(10.0)
         .size(100.0, 60.0)
-        .a11y_label("twins.a3.gridx")
-        .anyview(),
+        .a11y_label("twins.a3.gridx"),
         // absolute member: empty pinned at (0,0) 40×10
         hstack((
             r("twins.a3.abs.l", 20.0, 10.0),
@@ -376,8 +346,7 @@ fn a3b() -> impl View {
         ))
         .spacing(10.0)
         .size(100.0, 60.0)
-        .a11y_label("twins.a3.abs")
-        .anyview(),
+        .a11y_label("twins.a3.abs"),
     ))
     .spacing(4.0)
 }
@@ -390,34 +359,28 @@ fn a11() -> impl View {
     vstack((
         scroll(r("twins.a11.v.content", 60.0, 300.0))
             .size(100.0, 80.0)
-            .a11y_label("twins.a11.v")
-            .anyview(),
+            .a11y_label("twins.a11.v"),
         // cross-axis overflow: content wider than the viewport
         scroll(r("twins.a11.wide.content", 140.0, 300.0))
             .size(100.0, 80.0)
-            .a11y_label("twins.a11.wide")
-            .anyview(),
+            .a11y_label("twins.a11.wide"),
         scroll_horizontal(r("twins.a11.h.content", 300.0, 60.0))
             .size(100.0, 80.0)
-            .a11y_label("twins.a11.h")
-            .anyview(),
+            .a11y_label("twins.a11.h"),
         // two-axis scroll, content smaller than the viewport on both axes
         scroll_both(r("twins.a11.both.content", 60.0, 30.0))
             .size(100.0, 80.0)
-            .a11y_label("twins.a11.both")
-            .anyview(),
+            .a11y_label("twins.a11.both"),
         // zero-width viewport proposal
         scroll(r("twins.a11.w0.content", 60.0, 300.0))
             .size(0.0, 80.0)
-            .a11y_label("twins.a11.w0")
-            .anyview(),
+            .a11y_label("twins.a11.w0"),
         // inner vertical scroll under an unspecified-width proposal
         scroll_horizontal(
             scroll(r("twins.a11.inf.content", 60.0, 300.0)).a11y_label("twins.a11.inf.scroll"),
         )
         .size(100.0, 80.0)
-        .a11y_label("twins.a11.inf")
-        .anyview(),
+        .a11y_label("twins.a11.inf"),
     ))
     .spacing(4.0)
 }
@@ -428,11 +391,12 @@ fn a11() -> impl View {
 // ---------------------------------------------------------------------------
 fn a12_root(case: &str) -> impl View + use<> {
     match case {
-        "a12.ignore" => scroll(r("twins.a12.content", 60.0, 300.0))
-            .a11y_label("twins.a12.scroll")
-            .ignore_safe_area(EdgeSet::ALL)
-            .anyview(),
-        "a12.bar" => zstack((
+        "a12.ignore" => OneOf3::A(
+            scroll(r("twins.a12.content", 60.0, 300.0))
+                .a11y_label("twins.a12.scroll")
+                .ignore_safe_area(EdgeSet::ALL),
+        ),
+        "a12.bar" => OneOf3::B(zstack((
             scroll(r("twins.a12.content", 60.0, 300.0)).a11y_label("twins.a12.scroll"),
             vstack((
                 Color::srgb_hex(RED)
@@ -440,11 +404,8 @@ fn a12_root(case: &str) -> impl View + use<> {
                     .a11y_label("twins.a12.bar"),
                 spacer(),
             )),
-        ))
-        .anyview(),
-        _ => scroll(r("twins.a12.content", 60.0, 300.0))
-            .a11y_label("twins.a12.scroll")
-            .anyview(),
+        ))),
+        _ => OneOf3::C(scroll(r("twins.a12.content", 60.0, 300.0)).a11y_label("twins.a12.scroll")),
     }
 }
 
@@ -460,8 +421,7 @@ fn a13() -> impl View {
         ))
         .spacing(0.0)
         .size(100.0, 10.0)
-        .a11y_label("twins.a13.fills")
-        .anyview(),
+        .a11y_label("twins.a13.fills"),
         vstack((
             ttiny("twins.a13.text.a"),
             ttiny("twins.a13.text.b"),
@@ -469,8 +429,7 @@ fn a13() -> impl View {
         ))
         .spacing(0.0)
         .size(100.0, 40.0)
-        .a11y_label("twins.a13.texts")
-        .anyview(),
+        .a11y_label("twins.a13.texts"),
     ))
     .spacing(4.0)
 }
@@ -489,47 +448,33 @@ fn d() -> impl View {
             ))],
         )
         .size(200.0, 50.0)
-        .a11y_label("twins.d1")
-        .anyview(),
+        .a11y_label("twins.d1"),
         // D2: AspectRatio(2, fit) around a 30×10 rigid under 100×100
         aspect_ratio(r("twins.d2.i", 30.0, 10.0), 2.0)
             .a11y_label("twins.d2.w")
             .size(100.0, 100.0)
-            .a11y_label("twins.d2")
-            .anyview(),
+            .a11y_label("twins.d2"),
         // D3: 20×10 background under a 100×50 base in a 100×50 host
         r("twins.d3.base", 100.0, 50.0)
             .background(r("twins.d3.bg", 20.0, 10.0))
             .a11y_label("twins.d3.w")
             .size(100.0, 50.0)
-            .a11y_label("twins.d3")
-            .anyview(),
+            .a11y_label("twins.d3"),
         // D5: ZStack [R(100,100) p0, R(20,20) p1] under 200×200
         zstack((
             r("twins.d5.bottom", 100.0, 100.0),
             r("twins.d5.top", 20.0, 20.0).layout_priority(1),
         ))
         .size(200.0, 200.0)
-        .a11y_label("twins.d5")
-        .anyview(),
+        .a11y_label("twins.d5"),
     ))
     .spacing(4.0)
 }
 
 fn root_case(case: &str) -> impl View + use<> {
     match case {
-        "a12.scroll" | "a12.ignore" | "a12.bar" => a12_root(case).anyview(),
-        _ => scroll(
-            vstack((
-                a2().anyview(),
-                a3().anyview(),
-                a11().anyview(),
-                a13().anyview(),
-                d().anyview(),
-            ))
-            .spacing(8.0),
-        )
-        .anyview(),
+        "a12.scroll" | "a12.ignore" | "a12.bar" => OneOf2::A(a12_root(case)),
+        _ => OneOf2::B(scroll(vstack((a2(), a3(), a11(), a13(), d())).spacing(8.0))),
     }
 }
 

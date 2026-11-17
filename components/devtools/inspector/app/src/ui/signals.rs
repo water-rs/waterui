@@ -69,7 +69,7 @@ pub fn view(model: Model) -> impl View {
 }
 
 /// Graph-wide figures, which are what you look at before any single node.
-fn totals(model: &Model) -> impl View {
+fn totals(model: &Model) -> impl View + use<> {
     let signals = model.signals.clone();
 
     hstack((

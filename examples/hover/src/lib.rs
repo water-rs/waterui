@@ -42,7 +42,10 @@ const DRAG_ACTIVE_COLOR: Srgb = Srgb::from_hex("#FF5722");
 const DRAG_INACTIVE_COLOR: Srgb = Srgb::from_hex("#FF9800");
 
 /// Section demonstrating hover enter/exit events
-fn hover_events_section(hover_count: &Binding<i32>, is_hovered: &Binding<bool>) -> impl View {
+fn hover_events_section(
+    hover_count: &Binding<i32>,
+    is_hovered: &Binding<bool>,
+) -> impl View + use<> {
     // Clone for display in text macros
     let hover_count_display = hover_count.clone();
     let is_hovered_display = is_hovered.clone();
@@ -112,7 +115,7 @@ fn cursor_styles_section() -> impl View {
 }
 
 /// Helper to create a cursor demo box
-fn cursor_box(label: &'static str, style: CursorStyle, color: Srgb) -> impl View {
+fn cursor_box(label: &'static str, style: CursorStyle, color: Srgb) -> impl View + use<> {
     text(label)
         .caption()
         .padding()
@@ -123,7 +126,7 @@ fn cursor_box(label: &'static str, style: CursorStyle, color: Srgb) -> impl View
 }
 
 /// Section demonstrating reactive cursor based on state
-fn reactive_cursor_section(is_dragging: &Binding<bool>) -> impl View {
+fn reactive_cursor_section(is_dragging: &Binding<bool>) -> impl View + use<> {
     // Clone for display and reactive properties
     let is_dragging_display = is_dragging.clone();
     let active_bg_opacity = is_dragging.clone().select(1.0, 0.0);

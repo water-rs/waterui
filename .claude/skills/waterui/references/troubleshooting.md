@@ -131,7 +131,7 @@ Use `app.pump_for(duration)`.
 | `the trait bound 'Url: From<Str>' is not satisfied` | `Url` converts from `&'static str` only | `Url::parse(s)` (returns `Option`) — or `Url::parse_user_input(s)` for human-typed addresses |
 | `Computed<Option<View>>` rejected where a view is expected | a *signal* of `Option<View>` is not a view | `when(..)`, or keep the view and use `.visible(signal)` |
 | `text!` rejects an expression in a placeholder | placeholders are i18n slot keys | alias it: `text!("{slot}", slot = expr)` |
-| mismatched types between `if` branches returning views | different concrete view types | wrap the `if`/`match` in `view! { .. }`, or put `#[view_builder]` on the function so tail-position branches may return different view types under one `impl View` (both turn the branches into `Fn` closures over a `watch`, so clone captured values inside them); or `when(..).otherwise(..)`, or `.anyview()` / `AnyView::new(..)` on each arm |
+| mismatched types between `if` branches returning views | different concrete view types | wrap the `if`/`match` in `view! { .. }`, or put `#[view_builder]` on the function so tail-position branches may return different view types under one `impl View` (both turn the branches into `Fn` closures over a `watch`, so clone captured values inside them); or `when(..).otherwise(..)`, or `OneOf2::A(..)` / `OneOf2::B(..)` (up to `OneOf8`) on the arms |
 
 Do not add crate-, module-, or file-level `allow` attributes to silence a lint. If a lint is
 genuinely a false positive, use a narrowly scoped item-level `expect` with a reason.

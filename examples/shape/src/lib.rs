@@ -225,7 +225,7 @@ fn hdr_shapes() -> impl View {
 }
 
 /// Demo: HDR shapes
-fn hdr_shape_demo(show_hdr: &Binding<bool>) -> impl View {
+fn hdr_shape_demo(show_hdr: &Binding<bool>) -> impl View + use<> {
     let show_hdr = show_hdr.clone();
     let hdr_opacity = show_hdr.select(1.0, 0.0);
     let sdr_opacity = show_hdr.select(0.0, 1.0);

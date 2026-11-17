@@ -312,7 +312,7 @@ where
 #[cfg(test)]
 mod tests {
     use crate::{LayoutError, Rect, ResolvedExtent};
-    use waterui_core::{AnyView, Environment, View, layout::Point};
+    use waterui_core::{AnyView, Environment, View, layout::Point, view::ViewSequence};
 
     use super::*;
 
@@ -351,11 +351,11 @@ mod tests {
         )
         .body(&env);
         let container = AnyView::new(body)
-            .downcast::<FixedContainer>()
+            .downcast::<FixedContainer<((),)>>()
             .expect("alignment guide body should be a FixedContainer");
         let (layout, children) = container.as_parts();
 
-        assert_eq!(children.len(), 1);
+        assert_eq!(ViewSequence::len(children), 1);
         assert_eq!(
             layout.stretch_axis(&[StretchAxis::Horizontal]),
             StretchAxis::Horizontal
@@ -372,11 +372,11 @@ mod tests {
         )
         .body(&env);
         let container = AnyView::new(body)
-            .downcast::<FixedContainer>()
+            .downcast::<FixedContainer<((),)>>()
             .expect("alignment guide body should be a FixedContainer");
         let (layout, children) = container.as_parts();
 
-        assert_eq!(children.len(), 1);
+        assert_eq!(ViewSequence::len(children), 1);
         assert_eq!(layout.stretch_axis(&[StretchAxis::None]), StretchAxis::None);
         assert_eq!(
             layout.explicit_horizontal_alignments(),
@@ -455,11 +455,11 @@ mod tests {
         )
         .body(&env);
         let container = AnyView::new(body)
-            .downcast::<FixedContainer>()
+            .downcast::<FixedContainer<((),)>>()
             .expect("alignment guide body should be a FixedContainer");
         let (layout, children) = container.as_parts();
 
-        assert_eq!(children.len(), 1);
+        assert_eq!(ViewSequence::len(children), 1);
         assert_eq!(layout.stretch_axis(&[StretchAxis::None]), StretchAxis::None);
         assert_eq!(
             layout.explicit_vertical_alignments(),

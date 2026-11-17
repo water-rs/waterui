@@ -3,8 +3,8 @@
 use alloc::{vec, vec::Vec};
 use nami::{Computed, Signal, SignalExt, collection::Collection};
 use waterui_core::{
-    AnyView, IntoSignalF32, View, env::with, id::Identifiable, layout::LayoutInvalidationCallback,
-    view::TupleViews, views::ForEach,
+    IntoSignalF32, View, env::with, id::Identifiable, layout::LayoutInvalidationCallback,
+    view::ViewSequence, views::ForEach,
 };
 
 use crate::{
@@ -270,7 +270,7 @@ pub struct VStack<C> {
     contents: C,
 }
 
-impl<C: TupleViews> VStack<(C,)> {
+impl<C: ViewSequence> VStack<(C,)> {
     /// Creates a vertical stack with the provided alignment, spacing, and
     /// children.
     pub fn new(alignment: HorizontalAlignment, spacing: f32, contents: C) -> Self {
@@ -313,18 +313,18 @@ impl<C> VStack<C> {
     }
 }
 
-impl<V> FromIterator<V> for VStack<(Vec<AnyView>,)>
+impl<V> FromIterator<V> for VStack<(Vec<V>,)>
 where
     V: View,
 {
     fn from_iter<T: IntoIterator<Item = V>>(iter: T) -> Self {
-        let contents = iter.into_iter().map(AnyView::new).collect::<Vec<_>>();
+        let contents = iter.into_iter().collect::<Vec<_>>();
         Self::new(HorizontalAlignment::default(), 10.0, contents)
     }
 }
 
 /// Convenience constructor that centres children and uses the default spacing.
-pub fn vstack<C: TupleViews>(contents: C) -> VStack<(C,)> {
+pub fn vstack<C: ViewSequence>(contents: C) -> VStack<(C,)> {
     VStack::new(HorizontalAlignment::Center, 10.0, contents)
 }
 
@@ -344,7 +344,7 @@ where
     }
 }
 
-impl<C: TupleViews + 'static> View for VStack<(C,)> {
+impl<C: ViewSequence + 'static> View for VStack<(C,)> {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         // Inject the vertical axis into the container
         with(

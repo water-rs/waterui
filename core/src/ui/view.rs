@@ -12,7 +12,7 @@
 //! These abstractions support a declarative and composable approach to UI building, allowing
 //! for flexible combinations of views and transformations.
 
-use crate::backend::Backend;
+use crate::backend::{Backend, ChildSlot};
 use crate::{AnyView, Environment, components::Metadata};
 use alloc::{boxed::Box, vec::Vec};
 use core::any::type_name;
@@ -38,7 +38,7 @@ use core::fmt;
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is not a WaterUI view",
     label = "expected a view",
-    note = "Any `'static` type implementing `View::body` is a view, as is a function returning `impl View` or a bare `&'static str`, `String`, or `Str`. A `ForEach` is a collection of views, not a view — hand it to a container such as `Lazy::for_each` or `List::for_each`, and erase differing view types with `.anyview()`."
+    note = "Any `'static` type implementing `View::body` is a view, as is a function returning `impl View` or a bare `&'static str`, `String`, or `Str`. A `ForEach` is a collection of views, not a view — hand it to a container such as `Lazy::for_each` or `List::for_each`, and unify differing view types with `OneOf2`..`OneOf8`."
 )]
 pub trait View: 'static {
     /// Build this view and return the content.
@@ -122,32 +122,51 @@ impl<V: View> IntoView for V {
     }
 }
 
-/// A trait for converting collections and tuples of views into a vector of `AnyView`s.
+/// The children of a container: a tuple, an array or a `Vec` of views.
 ///
-/// This trait provides a uniform way to handle multiple views, allowing them
-/// to be converted into a homogeneous collection that can be processed consistently.
-pub trait TupleViews {
-    /// Converts the implementing type into a vector of `AnyView` objects.
-    ///
-    /// # Returns
-    ///
-    /// A `Vec<AnyView>` containing each view from the original collection.
-    fn into_views(self) -> Vec<AnyView>;
-}
+/// A container keeps its children's own types until it reaches a backend,
+/// which receives each child in its [`Backend::Slot`]: a typed child stays
+/// statically dispatched, and only an erased backend sees [`AnyView`]s.
+pub trait ViewSequence: 'static {
+    /// How many views the sequence holds.
+    fn len(&self) -> usize;
 
-impl<V: View> TupleViews for Vec<V> {
-    fn into_views(self) -> Vec<AnyView> {
-        self.into_iter()
-            .map(|content| AnyView::new(content))
-            .collect()
+    /// Whether the sequence holds no view.
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Appends each view, in order, to `slots` as a slot of type `S`.
+    fn push_slots<S: ChildSlot>(self, slots: &mut Vec<S>);
+
+    /// The views, in order, each in a slot of type `S`.
+    fn into_slots<S: ChildSlot>(self) -> Vec<S>
+    where
+        Self: Sized,
+    {
+        let mut slots = Vec::with_capacity(self.len());
+        self.push_slots(&mut slots);
+        slots
     }
 }
 
-impl<V: View, const N: usize> TupleViews for [V; N] {
-    fn into_views(self) -> Vec<AnyView> {
-        self.into_iter()
-            .map(|content| AnyView::new(content))
-            .collect()
+impl<V: View> ViewSequence for Vec<V> {
+    fn len(&self) -> usize {
+        self.len()
+    }
+
+    fn push_slots<S: ChildSlot>(self, slots: &mut Vec<S>) {
+        slots.extend(self.into_iter().map(S::from_view));
+    }
+}
+
+impl<V: View, const N: usize> ViewSequence for [V; N] {
+    fn len(&self) -> usize {
+        N
+    }
+
+    fn push_slots<S: ChildSlot>(self, slots: &mut Vec<S>) {
+        slots.extend(self.into_iter().map(S::from_view));
     }
 }
 
@@ -248,15 +267,19 @@ macro_rules! impl_tuple_views {
         #[allow(non_snake_case)]
         #[allow(unused_variables)]
         #[allow(unused_parens)]
-        impl <$($ty:View,)*>TupleViews for ($($ty,)*){
-            fn into_views(self) -> Vec<AnyView> {
+        impl <$($ty:View,)*> ViewSequence for ($($ty,)*){
+            fn len(&self) -> usize {
+                let views: &[&str] = &[$(stringify!($ty)),*];
+                views.len()
+            }
+
+            fn push_slots<S: ChildSlot>(self, slots: &mut Vec<S>) {
                 // The trailing comma matters: `let (T) = self` is a parenthesized
                 // binding, not a one-element tuple pattern, so without it a
-                // single-child container erased the tuple itself instead of the
-                // view inside it — and the tuple answers every view question with
-                // its default, losing whatever the child had declared.
-                let ($($ty,)*)=self;
-                alloc::vec![$(AnyView::new($ty)),*]
+                // single-child container would hold the tuple itself instead
+                // of the view inside it.
+                let ($($ty,)*) = self;
+                $(slots.push(S::from_view($ty));)*
             }
         }
     };

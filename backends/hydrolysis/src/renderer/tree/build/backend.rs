@@ -109,16 +109,57 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         RenderNode::build_empty(self.renderer, env)
     }
 
-    fn fixed_container(
+    /// Builds the [`RenderNode::Container`] for a fixed container. A
+    /// `BackgroundLayout` container's slot 0 is the background the §7.1 fill
+    /// rule extends: its fill is wrapped in [`RenderNode::Fill`], the type
+    /// §7.1's paint extension records on. The identification happens here,
+    /// while the layout type is still concrete; a declaration wrapping the
+    /// fill (`.ignore_safe_area` on the fill itself) stops the predicate, so
+    /// it replaces the default rather than stacking with it.
+    fn fixed_container<C: ChildView<Self>>(
         &mut self,
-        native: waterui::layout::container::FixedContainer,
+        native: waterui::layout::container::FixedContainer<Vec<C>>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
-        // A `BackgroundLayout` container's slot 0 is the background the
-        // §7.1 fill rule extends.
         let background_slot = native.background_slot();
-        RenderNode::build_fixed_container(Native::new(native), env, self.renderer, background_slot)
+        let (layout, children) = native.into_inner();
+        let core = self.renderer.new_core();
+        let (layout_dirty, invalidate) = layout_invalidation(&core.cell);
+        let guards = layout.watch_invalidation(invalidate);
+        #[cfg(feature = "accessibility")]
+        let accessibility_child_env = accessibility_container_child_environment(env);
+        #[cfg(feature = "accessibility")]
+        let child_env = accessibility_child_env.as_ref().unwrap_or(env);
+        #[cfg(not(feature = "accessibility"))]
+        let child_env = env;
+        let children: Vec<RenderNode<E>> = children
+            .into_iter()
+            .enumerate()
+            .map(|(index, child)| {
+                let node = self.build_child(child, child_env);
+                if Some(index) == background_slot && is_background_fill_leaf(&node) {
+                    RenderNode::Fill(Box::new(FillNode::new(node, self.renderer.new_core())))
+                } else {
+                    node
+                }
+            })
+            .collect();
+        RenderNode::Container(Box::new(ContainerNode {
+            memo_gate: Cell::default(),
+            memo_slots: RefCell::default(),
+            accessibility_identity: Rc::new(()),
+            core,
+            layout,
+            children,
+            #[cfg(feature = "accessibility")]
+            accessibility_child_env,
+            placed: Vec::new(),
+            #[cfg(feature = "accessibility")]
+            geometry: None,
+            layout_dirty,
+            _guards: guards,
+        }))
     }
 
     // GPU/effect leaves each own their effect runtime directly (textures,

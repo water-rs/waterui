@@ -23,7 +23,6 @@
 
 use crate::AnyView;
 use crate::SignalExt;
-use crate::ViewExt;
 use nami::Computed;
 use nami::signal::IntoComputed;
 use waterui_controls::IntoLabel;
@@ -238,8 +237,8 @@ impl Progress {
         let value = value.into_signal().computed();
         let value_label = progress_value_label(&value);
         Self(ProgressConfig {
-            label: text!("Please wait...").anyview(),
-            value_label: text!("{value_label}").anyview(),
+            label: AnyView::new(text!("Please wait...")),
+            value_label: AnyView::new(text!("{value_label}")),
             value,
             style: ProgressStyle::Linear,
             four_color: false,
@@ -256,7 +255,7 @@ impl Progress {
         let value = self.0.value;
         self.0.value = total.zip(&value).map(|(t, v)| v / t).computed();
         let value_label = progress_value_label(&self.0.value);
-        self.0.value_label = text!("{value_label}").anyview();
+        self.0.value_label = AnyView::new(text!("{value_label}"));
 
         ProgressWithTotal(self)
     }
@@ -275,7 +274,7 @@ impl Progress {
     /// * `label` - The view to use as the progress label.
     #[must_use]
     pub fn label(mut self, label: impl IntoLabel) -> Self {
-        self.0.label = label.into_label().anyview();
+        self.0.label = AnyView::new(label.into_label());
         self
     }
 

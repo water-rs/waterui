@@ -16,7 +16,7 @@ use waterui_core::IntoSignalF32;
 use waterui_core::handler::ReportExtraction;
 pub use waterui_core::view::*;
 use waterui_core::{
-    AnyView, Environment, Metadata, Retain,
+    AnyView, Environment, Metadata, OneOf2, Retain,
     env::{Installed, With},
     extract::State,
     handler::{EventHandler, Handler, HandlerOnce},
@@ -56,7 +56,7 @@ use crate::{
     filter::Opacity,
     gesture::{Gesture, GestureObserver, LongPressGesture, TapGesture},
     interaction::Hittable,
-    metadata::secure::Secure,
+    metadata::secure::{HighDynamicRange, Secure, StandardDynamicRange},
     theme,
 };
 use crate::{
@@ -118,11 +118,14 @@ pub trait ViewExt: View + Sized {
     /// let wide_gamut = text!("Sunset").color_space(ColorSpace::Hdr);
     /// let thumbnail = text!("Avatar").color_space(ColorSpace::Sdr);
     /// ```
-    fn color_space(self, space: crate::metadata::secure::ColorSpace) -> AnyView {
-        use crate::metadata::secure::{ColorSpace, HighDynamicRange, StandardDynamicRange};
+    fn color_space(
+        self,
+        space: crate::metadata::secure::ColorSpace,
+    ) -> OneOf2<Metadata<StandardDynamicRange>, Metadata<HighDynamicRange>> {
+        use crate::metadata::secure::ColorSpace;
         match space {
-            ColorSpace::Sdr => AnyView::new(self.metadata(StandardDynamicRange::new())),
-            ColorSpace::Hdr => AnyView::new(self.metadata(HighDynamicRange::new())),
+            ColorSpace::Sdr => OneOf2::A(self.metadata(StandardDynamicRange::new())),
+            ColorSpace::Hdr => OneOf2::B(self.metadata(HighDynamicRange::new())),
         }
     }
 
@@ -271,11 +274,6 @@ pub trait ViewExt: View + Sized {
     {
         let local_task = spawn_local(task);
         self.retain(local_task)
-    }
-
-    /// Converts this view to an `AnyView` type-erased container.
-    fn anyview(self) -> AnyView {
-        AnyView::new(self)
     }
 
     /// Sets the background of this view.
@@ -584,52 +582,52 @@ pub trait ViewExt: View + Sized {
     }
 
     /// Fixes this view's width to the provided value.
-    fn width(self, width: f32) -> Frame {
+    fn width(self, width: f32) -> Frame<Self> {
         Frame::new(self).width(width)
     }
 
     /// Fixes this view's height to the provided value.
-    fn height(self, height: f32) -> Frame {
+    fn height(self, height: f32) -> Frame<Self> {
         Frame::new(self).height(height)
     }
 
     /// Applies a minimum width constraint.
-    fn min_width(self, width: f32) -> Frame {
+    fn min_width(self, width: f32) -> Frame<Self> {
         Frame::new(self).min_width(width)
     }
 
     /// Applies a maximum width constraint.
-    fn max_width(self, width: f32) -> Frame {
+    fn max_width(self, width: f32) -> Frame<Self> {
         Frame::new(self).max_width(width)
     }
 
     /// Applies a minimum height constraint.
-    fn min_height(self, height: f32) -> Frame {
+    fn min_height(self, height: f32) -> Frame<Self> {
         Frame::new(self).min_height(height)
     }
 
     /// Applies a maximum height constraint.
-    fn max_height(self, height: f32) -> Frame {
+    fn max_height(self, height: f32) -> Frame<Self> {
         Frame::new(self).max_height(height)
     }
 
     /// Fixes both width and height simultaneously.
-    fn size(self, width: f32, height: f32) -> Frame {
+    fn size(self, width: f32, height: f32) -> Frame<Self> {
         Frame::new(self).width(width).height(height)
     }
 
     /// Applies minimum constraints on both axes.
-    fn min_size(self, width: f32, height: f32) -> Frame {
+    fn min_size(self, width: f32, height: f32) -> Frame<Self> {
         Frame::new(self).min_width(width).min_height(height)
     }
 
     /// Applies maximum constraints on both axes.
-    fn max_size(self, width: f32, height: f32) -> Frame {
+    fn max_size(self, width: f32, height: f32) -> Frame<Self> {
         Frame::new(self).max_width(width).max_height(height)
     }
 
     /// Aligns this view within its frame using the provided alignment.
-    fn alignment(self, alignment: Alignment) -> Frame {
+    fn alignment(self, alignment: Alignment) -> Frame<Self> {
         Frame::new(self).alignment(alignment)
     }
 
@@ -673,12 +671,12 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `edge` - The edge insets to apply as padding
-    fn padding_with(self, edge: impl IntoComputed<EdgeInsets>) -> Padding {
+    fn padding_with(self, edge: impl IntoComputed<EdgeInsets>) -> Padding<Self> {
         Padding::new(edge, self)
     }
 
     /// Adds padding on the leading and trailing edges only.
-    fn padding_horizontal(self, value: impl IntoSignalF32) -> Padding {
+    fn padding_horizontal(self, value: impl IntoSignalF32) -> Padding<Self> {
         Padding::new(
             value
                 .into_signal_f32()
@@ -688,7 +686,7 @@ pub trait ViewExt: View + Sized {
     }
 
     /// Adds padding on the top and bottom edges only.
-    fn padding_vertical(self, value: impl IntoSignalF32) -> Padding {
+    fn padding_vertical(self, value: impl IntoSignalF32) -> Padding<Self> {
         Padding::new(
             value
                 .into_signal_f32()
@@ -708,7 +706,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// text!("Hello").padding();
     /// ```
-    fn padding(self) -> Padding {
+    fn padding(self) -> Padding<Self> {
         Padding::new(EdgeInsets::all(DEFAULT_PADDING), self)
     }
 

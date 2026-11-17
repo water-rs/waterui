@@ -581,59 +581,6 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         Self::Dynamic(Box::new(host))
     }
 }
-impl<E: crate::text::TextEngine> RenderNode<E> {
-    /// Builds the [`RenderNode::Container`] for a `Native<FixedContainer>`
-    /// whose background slot was already identified — `Some(slot)` wraps the
-    /// slot's fill in [`RenderNode::Fill`], the type §7.1's paint extension
-    /// records on. The identification happens once here, while the layout
-    /// type is still concrete; a declaration
-    /// wrapping the fill (`.ignore_safe_area` on the fill itself) stops the
-    /// predicate, so it replaces the default rather than stacking with it.
-    fn build_fixed_container(
-        container: Native<FixedContainer>,
-        env: &Environment,
-        renderer: &mut SemanticCore<E>,
-        background_slot: Option<usize>,
-    ) -> Self {
-        let (layout, children) = container.into_inner().into_inner();
-        let core = renderer.new_core();
-        let (layout_dirty, invalidate) = layout_invalidation(&core.cell);
-        let guards = layout.watch_invalidation(invalidate);
-        #[cfg(feature = "accessibility")]
-        let accessibility_child_env = accessibility_container_child_environment(env);
-        #[cfg(feature = "accessibility")]
-        let child_env = accessibility_child_env.as_ref().unwrap_or(env);
-        #[cfg(not(feature = "accessibility"))]
-        let child_env = env;
-        let children: Vec<Self> = children
-            .into_iter()
-            .enumerate()
-            .map(|(index, child)| {
-                let node = Self::build_view(child, child_env, renderer);
-                if Some(index) == background_slot && is_background_fill_leaf(&node) {
-                    Self::Fill(Box::new(FillNode::new(node, renderer.new_core())))
-                } else {
-                    node
-                }
-            })
-            .collect();
-        Self::Container(Box::new(ContainerNode {
-            memo_gate: Cell::default(),
-            memo_slots: RefCell::default(),
-            accessibility_identity: Rc::new(()),
-            core,
-            layout,
-            children,
-            #[cfg(feature = "accessibility")]
-            accessibility_child_env,
-            placed: Vec::new(),
-            #[cfg(feature = "accessibility")]
-            geometry: None,
-            layout_dirty,
-            _guards: guards,
-        }))
-    }
-}
 
 /// Whether the node a [`BackgroundLayout`] slot holds paints a fill §7.1
 /// extends: a `Color` leaf, or the gradient's fill-widget leaf — read only

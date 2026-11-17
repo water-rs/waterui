@@ -65,16 +65,18 @@ pub fn components_block_03() {
             "tab"
         }
     }
-    // The doc mandates `fn(usize) -> AnyView`: heterogeneous helpers erase so
-    // the collect below can unify them.
-    #[allow(unknown_lints, needless_anyview)]
-    fn photo_tile(i: usize) -> AnyView {
-        text!("tile {i}").anyview()
+    // Glue: a helper whose branches differ, unified by a `OneOfN`.
+    fn photo_tile(i: usize) -> impl View {
+        if i.is_multiple_of(2) {
+            OneOf2::A(text!("tile {i}"))
+        } else {
+            OneOf2::B(Divider)
+        }
     }
     let tabs = [Tab, Tab];
 
     let row: HStack<_> = tabs.iter().map(|t| button(t.label())).collect();
-    let tiles: VStack<_> = (0..6).map(photo_tile).collect(); // photo_tile: fn(usize) -> AnyView
+    let tiles: VStack<_> = (0..6).map(photo_tile).collect(); // photo_tile: fn(usize) -> impl View
 
     let _ = (row, tiles);
 }
@@ -208,10 +210,10 @@ pub fn components_block_07() {
     let _ = {
         layout_grid(
             3,
-            [
+            (
                 grid_row((a, b, c)),
                 grid_row((d, e)), // short rows are fine
-            ],
+            ),
         )
         .spacing(10.0)
     };
@@ -1375,7 +1377,7 @@ pub fn components_secure_and_error_prose() -> impl View {
     // The independent runtime pair.
     let _ = waterui::error::ErrorView::from(io::Error::other("failed"));
     let _ = waterui::error::ErrorViewBuilder::new(
-        |e: Box<dyn std::error::Error>, _env: &Environment| text(e.to_string()).anyview(),
+        |e: Box<dyn std::error::Error>, _env: &Environment| AnyView::new(text(e.to_string())),
     );
 
     // A body may return `Result<impl View, Error>`.

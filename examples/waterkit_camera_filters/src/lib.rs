@@ -195,7 +195,7 @@ fn filter_button(
     label: &'static str,
     filter_index: usize,
     active_filter: &Binding<usize>,
-) -> impl View {
+) -> impl View + use<> {
     button(label)
         .action(move |State(selected): State<Binding<usize>>| selected.set(filter_index))
         .state(active_filter)

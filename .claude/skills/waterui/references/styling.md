@@ -172,7 +172,7 @@ the rule-1 bug in a hat.
 `color.with_headroom(1.5)` marks a color as extended-range (up to 2.5× SDR white), and
 the *view* must additionally opt in: `.color_space(ColorSpace::Hdr)` (import
 `waterui::metadata::secure::ColorSpace`). `.color_space(..)` takes a plain enum, not a
-signal, and erases its receiver to `AnyView`. Compare SDR/HDR variants by stacking both
+signal, so the choice is fixed when the view is built. Compare SDR/HDR variants by stacking both
 and cross-fading opacity — not by swapping subtrees.
 
 ## Backgrounds, materials, gradients

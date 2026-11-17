@@ -105,11 +105,12 @@ corners `TopLeading` …) convert only into the axis they are legal for, so
 `vstack(..).alignment(Top)` does not compile.
 
 Children are a tuple for a fixed set. For a runtime-length static set, collect — the
-iterator item must be a single concrete type, so heterogeneous helpers return `AnyView`:
+iterator item must be a single concrete type, so a helper whose branches differ returns
+a `OneOfN`:
 
 ```rust
 let row: HStack<_> = tabs.iter().map(|t| button(t.label())).collect();
-let tiles: VStack<_> = (0..6).map(photo_tile).collect();   // photo_tile: fn(usize) -> AnyView
+let tiles: VStack<_> = (0..6).map(photo_tile).collect();   // photo_tile: fn(usize) -> impl View
 ```
 
 Spacing and separation:
@@ -167,15 +168,17 @@ pivot on an `Anchor` (in the prelude; normalized, `(0, 0)` top-left: `CENTER`, `
 `TOP_RIGHT`, `BOTTOM_LEFT`, `BOTTOM_RIGHT`, or `Anchor::new(x, y)`). Factors and angles take
 signals; the anchor is a plain value.
 
-Grid — note the import and the `row` name collision with the list row builder:
+Grid — note the import and the `row` name collision with the list row builder. Rows go in
+a tuple, which lets each row hold different views; an array or `Vec` works when every row
+has the same view types:
 
 ```rust
 use waterui::layout::grid::{grid as layout_grid, row as grid_row};
 
-layout_grid(3, [
+layout_grid(3, (
     grid_row((a, b, c)),
     grid_row((d, e)),          // short rows are fine
-])
+))
 .spacing(10.0)
 ```
 
@@ -826,7 +829,7 @@ environment entry `DefaultErrorView::new(|e: BoxedStdError| view)` installed abo
 draw nothing when none is installed; `Error::from_view` draws its own view. A separate
 `waterui::error::{ErrorView, ErrorViewBuilder}` pair — not the same-named items inside
 `widget::error` — is an independent mechanism: `ErrorView::from(err)` renders through an
-installed `ErrorViewBuilder::new(|e: Box<dyn std::error::Error>, env: &Environment| view.anyview())`,
+installed `ErrorViewBuilder::new(|e: Box<dyn std::error::Error>, env: &Environment| AnyView::new(view))`,
 or as plain text without one. The two do not read each other's environment entry, so pick
 one per app.
 

@@ -26,7 +26,7 @@ use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::{Binding, Signal};
 
-fn set_f64_button(label: &'static str, value: f64, binding: &Binding<f64>) -> impl View {
+fn set_f64_button(label: &'static str, value: f64, binding: &Binding<f64>) -> impl View + use<> {
     button(label)
         .action(move |State(current): State<Binding<f64>>| current.set(value))
         .state(binding)
@@ -62,7 +62,7 @@ fn sample_content() -> impl View {
 }
 
 /// Demo: Blur filter - Gaussian blur effect
-fn blur_section(blur_radius: &Binding<f64>) -> impl View {
+fn blur_section(blur_radius: &Binding<f64>) -> impl View + use<> {
     let animated_blur = animated_filter_value(
         blur_radius,
         Animation::ease_in_out(Duration::from_millis(300)),
@@ -86,7 +86,7 @@ fn blur_section(blur_radius: &Binding<f64>) -> impl View {
 }
 
 /// Demo: Brightness filter - lighten or darken
-fn brightness_section(brightness: &Binding<f64>) -> impl View {
+fn brightness_section(brightness: &Binding<f64>) -> impl View + use<> {
     let animated_brightness = animated_filter_value(
         brightness,
         Animation::ease_in_out(Duration::from_millis(300)),
@@ -112,7 +112,7 @@ fn brightness_section(brightness: &Binding<f64>) -> impl View {
 }
 
 /// Demo: Saturation filter - color intensity
-fn saturation_section(saturation: &Binding<f64>) -> impl View {
+fn saturation_section(saturation: &Binding<f64>) -> impl View + use<> {
     let animated_saturation = animated_filter_value(
         saturation,
         Animation::ease_in_out(Duration::from_millis(300)),
@@ -138,7 +138,7 @@ fn saturation_section(saturation: &Binding<f64>) -> impl View {
 }
 
 /// Demo: Contrast filter
-fn contrast_section(contrast: &Binding<f64>) -> impl View {
+fn contrast_section(contrast: &Binding<f64>) -> impl View + use<> {
     let animated_contrast =
         animated_filter_value(contrast, Animation::ease_in_out(Duration::from_millis(300)));
 
@@ -160,7 +160,7 @@ fn contrast_section(contrast: &Binding<f64>) -> impl View {
 }
 
 /// Demo: Hue rotation filter - shift colors
-fn hue_rotation_section(hue: &Binding<f64>) -> impl View {
+fn hue_rotation_section(hue: &Binding<f64>) -> impl View + use<> {
     let animated_hue =
         animated_filter_value(hue, Animation::ease_in_out(Duration::from_millis(400)));
 
@@ -182,7 +182,7 @@ fn hue_rotation_section(hue: &Binding<f64>) -> impl View {
 }
 
 /// Demo: Grayscale filter
-fn grayscale_section(grayscale: &Binding<f64>) -> impl View {
+fn grayscale_section(grayscale: &Binding<f64>) -> impl View + use<> {
     let animated_grayscale = animated_filter_value(
         grayscale,
         Animation::ease_in_out(Duration::from_millis(300)),
@@ -205,7 +205,7 @@ fn grayscale_section(grayscale: &Binding<f64>) -> impl View {
 }
 
 /// Demo: Opacity filter
-fn opacity_section(opacity: &Binding<f64>) -> impl View {
+fn opacity_section(opacity: &Binding<f64>) -> impl View + use<> {
     let animated_opacity =
         animated_filter_value(opacity, Animation::ease_in_out(Duration::from_millis(300)));
 
@@ -237,7 +237,7 @@ fn combined_section(
     combined_blur: &Binding<f64>,
     combined_saturation: &Binding<f64>,
     combined_hue: &Binding<f64>,
-) -> impl View {
+) -> impl View + use<> {
     let filters = CombinedFilters {
         blur: combined_blur.clone(),
         saturation: combined_saturation.clone(),

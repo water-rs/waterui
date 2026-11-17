@@ -8,15 +8,15 @@ error[E0277]: expected an `FnOnce()` closure, found `ForEach<Vec<Row>, {closure@
    |
    = help: the trait `FnOnce()` is not implemented for `ForEach<Vec<Row>, {closure@$DIR/tests/ui/first_contact/view.rs:17:32: 17:37}, waterui::component::Text>`
    = note: wrap the `ForEach<Vec<Row>, {closure@$DIR/tests/ui/first_contact/view.rs:17:32: 17:37}, waterui::component::Text>` in a closure with no arguments: `|| { /* code */ }`
-   = help: the following other types implement trait `TupleViews`:
+   = help: the following other types implement trait `ViewSequence`:
              (T₁, T₂, …, Tₙ) up to tuples of arity 15
    = note: required for `ForEach<Vec<Row>, {closure@$DIR/tests/ui/first_contact/view.rs:17:32: 17:37}, waterui::component::Text>` to implement `waterui::View`
-   = note: required for `(ForEach<Vec<Row>, {closure@$DIR/tests/ui/first_contact/view.rs:17:32: 17:37}, waterui::component::Text>,)` to implement `TupleViews`
+   = note: required for `(ForEach<Vec<Row>, {closure@$DIR/tests/ui/first_contact/view.rs:17:32: 17:37}, waterui::component::Text>,)` to implement `ViewSequence`
 note: required by a bound in `waterui::component::vstack`
   --> $WORKSPACE/components/foundation/layout/src/stack/vstack.rs
    |
-   | pub fn vstack<C: TupleViews>(contents: C) -> VStack<(C,)> {
-   |                  ^^^^^^^^^^ required by this bound in `vstack`
+   | pub fn vstack<C: ViewSequence>(contents: C) -> VStack<(C,)> {
+   |                  ^^^^^^^^^^^^ required by this bound in `vstack`
 
 error[E0277]: `VStack<((ForEach<Vec<Row>, {closure@$DIR/tests/ui/first_contact/view.rs:17:32: 17:37}, waterui::component::Text>,),)>` is not a WaterUI view
   --> tests/ui/first_contact/view.rs:15:16
@@ -28,7 +28,7 @@ error[E0277]: `VStack<((ForEach<Vec<Row>, {closure@$DIR/tests/ui/first_contact/v
    |     --------------------------------------------------- return type was inferred to be `VStack<((ForEach<Vec<Row>, {closure@$DIR/tests/ui/first_contact/view.rs:17:32: 17:37}, waterui::component::Text>,),)>` here
    |
    = help: the trait `waterui::View` is not implemented for `VStack<((ForEach<Vec<Row>, {closure@$DIR/tests/ui/first_contact/view.rs:17:32: 17:37}, waterui::component::Text>,),)>`
-   = note: Any `'static` type implementing `View::body` is a view, as is a function returning `impl View` or a bare `&'static str`, `String`, or `Str`. A `ForEach` is a collection of views, not a view — hand it to a container such as `Lazy::for_each` or `List::for_each`, and erase differing view types with `.anyview()`.
+   = note: Any `'static` type implementing `View::body` is a view, as is a function returning `impl View` or a bare `&'static str`, `String`, or `Str`. A `ForEach` is a collection of views, not a view — hand it to a container such as `Lazy::for_each` or `List::for_each`, and unify differing view types with `OneOf2`..`OneOf8`.
 help: the following other types implement trait `waterui::View`
   --> $WORKSPACE/components/foundation/layout/src/stack/vstack.rs
    |
@@ -40,5 +40,5 @@ help: the following other types implement trait `waterui::View`
    | |     V: View,
    | |____________^ `VStack<ForEach<C, F, V>>`
 ...
-   |   impl<C: TupleViews + 'static> View for VStack<(C,)> {
-   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `VStack<(C,)>`
+   |   impl<C: ViewSequence + 'static> View for VStack<(C,)> {
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `VStack<(C,)>`

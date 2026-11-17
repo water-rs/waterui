@@ -70,7 +70,7 @@ fn app_view(
             slider("Volume", &volume),
             text!("Volume: {volume}", volume = volume),
             // The autofill/IME cluster nests: the outer column would otherwise
-            // exceed `TupleViews`' arity once every control the Android landing
+            // exceed `ViewSequence`' arity once every control the Android landing
             // tests drive sits in a single tuple.
             vstack((
                 TextField::new("Email address", &name)
