@@ -26,7 +26,7 @@ use core::{
 
 use nami::{Binding, Computed, Signal as _, SignalExt as _};
 use waterui_controls::{ButtonStyle, IntoLabel, button};
-use waterui_core::backend::{Backend, ChildSlot};
+use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::handler::{AnyViewBuilder, BoxedAction, Handler, ReportExtraction, boxed_action};
 use waterui_core::metadata::MetadataKey;
 use waterui_core::{
@@ -861,6 +861,25 @@ impl Navigator<ErasedNavigationRoute> {
 
 /// A navigation view reaches its backend with its content in the backend's
 /// child slot.
+impl<S> MapSlots<S> for NavigationView<S> {
+    type With<T: 'static> = NavigationView<T>;
+
+    fn map_slots<T: 'static>(self, f: impl Fn(S) -> T + Clone + 'static) -> NavigationView<T> {
+        self.map_content(f)
+    }
+}
+
+impl<S: 'static> MapSlots<S> for NavigationStackLayout<S> {
+    type With<T: 'static> = NavigationStackLayout<T>;
+
+    fn map_slots<T: 'static>(
+        self,
+        f: impl Fn(S) -> T + Clone + 'static,
+    ) -> NavigationStackLayout<T> {
+        self.map_slot(f)
+    }
+}
+
 impl<S: 'static> NativeView for NavigationView<S> {
     fn stretch_axis(&self) -> StretchAxis {
         StretchAxis::Both

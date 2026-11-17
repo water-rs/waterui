@@ -97,6 +97,10 @@ impl<E: crate::text::TextEngine> NativeBackendFamily for HydroFamily<E> {
     type Output = RenderNode<E>;
     type Ctx = ();
     type Backend<'a> = HydroBackend<'a, E>;
+
+    fn reborrow<'r>(backend: &'r mut HydroBackend<'_, E>) -> HydroBackend<'r, E> {
+        HydroBackend::new(backend.renderer)
+    }
 }
 
 impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
@@ -213,29 +217,53 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         self.unrealized("a `Picture` outside `SceneViewMergeToParent`", env)
     }
 
-    // Video is drawn by the realization the application links (the GPU
-    // player installs a `Hook` for it); reaching the backend means none did.
+    // Video is the page's `<video>` element on the web and the GPU player
+    // (`video-gpu`) elsewhere; a build with neither draws no video.
     #[cfg(waterui_feature = "video")]
     fn video(
         &mut self,
-        _native: waterui::video::video::NativeVideoConfig,
+        native: waterui::video::video::NativeVideoConfig,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
-        self.unrealized("a `Video` no linked video realization drew", env)
+        #[cfg(hydrolysis_web_video)]
+        {
+            self.build(crate::widgets::platform::video::video(native), env)
+        }
+        #[cfg(hydrolysis_gpu_video)]
+        {
+            self.build(waterui_video_gpu::video(env, native), env)
+        }
+        #[cfg(not(any(hydrolysis_web_video, hydrolysis_gpu_video)))]
+        {
+            let _ = native;
+            self.unrealized("a `Video` in a build with no video realization", env)
+        }
     }
 
     #[cfg(waterui_feature = "video")]
     fn video_player(
         &mut self,
-        _native: waterui::video::video::NativeVideoPlayerConfig,
+        native: waterui::video::video::NativeVideoPlayerConfig,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
-        self.unrealized("a `VideoPlayer` no linked video realization drew", env)
+        #[cfg(hydrolysis_web_video)]
+        {
+            self.build(crate::widgets::platform::video::video_player(native), env)
+        }
+        #[cfg(hydrolysis_gpu_video)]
+        {
+            self.build(waterui_video_gpu::video_player(env, native), env)
+        }
+        #[cfg(not(any(hydrolysis_web_video, hydrolysis_gpu_video)))]
+        {
+            let _ = native;
+            self.unrealized("a `VideoPlayer` in a build with no video realization", env)
+        }
     }
 
-    // `Map::body` found no `Hook<MapConfig>`: no map realization is linked.
+    // No hook in scope realized the map: no map realization is linked.
     #[cfg(waterui_feature = "map")]
     fn map(
         &mut self,
@@ -248,8 +276,8 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     }
 
     // This backend bridges the platform's own web engine. An application that
-    // linked a browser engine of its own installed a `Hook<WebView>`, which
-    // `WebView::body` applies before the payload reaches here.
+    // linked a browser engine of its own scopes that engine's hook over its
+    // views, which claims the payload before it reaches here.
     #[cfg(waterui_feature = "webview")]
     fn web_view(
         &mut self,

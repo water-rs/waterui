@@ -139,12 +139,7 @@ macro_rules! configurable {
         impl $crate::view::View for $view {
             fn body(self, env: &$crate::Environment) -> impl $crate::View {
                 use $crate::view::ConfigurableView;
-                let config = self.config();
-                if let Some(hook) = env.get::<$crate::view::Hook<$config>>() {
-                    $crate::AnyView::new(hook.apply(env, config))
-                } else {
-                    $crate::AnyView::new($crate::Native::new(($resolve_native)(config, env)))
-                }
+                $crate::Native::new(($resolve_native)(self.config(), env))
             }
         }
     };
@@ -190,12 +185,7 @@ macro_rules! configurable {
         impl $crate::view::View for $view {
             fn body(self, env: &$crate::Environment) -> impl $crate::View {
                 use $crate::view::ConfigurableView;
-                let config = self.config();
-                if let Some(hook) = env.get::<$crate::view::Hook<$config>>() {
-                    $crate::AnyView::new(hook.apply(env, config))
-                } else {
-                    $crate::AnyView::new($crate::Native::new(($resolve_native)(config, env)))
-                }
+                $crate::Native::new(($resolve_native)(self.config(), env))
             }
         }
     };

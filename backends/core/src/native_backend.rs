@@ -17,11 +17,13 @@
 use alloc::boxed::Box;
 use core::any::Any;
 
-use waterui_core::backend::{Backend, DynBackend, ErasedPayload, cast};
+use waterui_core::backend::{Backend, DynBackend, ErasedPayload, MapSlots, cast};
+use waterui_core::view::hook::{ComposeErased, ErasedHooks, HookList, HookableView};
 use waterui_core::metadata::MetadataKey;
 use waterui_core::{AnyView, Environment, Metadata, NativeView, View, contract_violation};
 
 use crate::child::{Child, ChildView, NativeBackendFamily};
+use crate::hooked::{Hooked, HookedFamily};
 
 /// Declares [`NativeBackend`] and both routers from one list, so the trait
 /// and the routing never disagree.
@@ -97,6 +99,124 @@ macro_rules! native_backend {
             /// [`provided_metadata`](Self::provided_metadata) for a wrapper an
             /// [`AnyView`] handed back erased.
             fn provided_metadata_dyn(&mut self, metadata: ErasedPayload<'_>, env: &Environment, cx: Self::Ctx) -> Self::Output;
+
+            /// Realizes `view` inside the hook scope `hooks` an erased
+            /// [`Backend::scoped`] handed back. A backend realizes it under a
+            /// [`Hooked`] decorator holding the scope; a decorator extends its
+            /// own.
+            fn scoped_erased(&mut self, hooks: &ErasedHooks, view: AnyView, env: &Environment, cx: Self::Ctx) -> Self::Output {
+                self.with_family(|backend| {
+                    let mut hooked = Hooked::new(
+                        <Self::Family as NativeBackendFamily>::reborrow(backend),
+                        (),
+                        ErasedHooks::new().nest(hooks),
+                    );
+                    Realize::child(&mut hooked, view, env, cx)
+                })
+            }
+
+            /// Realizes a [`HookableView`] no hook claimed: its own
+            /// composition.
+            fn hookable<T: HookableView>(&mut self, view: T, env: &Environment, cx: Self::Ctx) -> Self::Output {
+                let view = view.compose(env);
+                Realize::child(self, view, env, cx)
+            }
+
+            /// [`hookable`](Self::hookable) for a payload an [`AnyView`]
+            /// handed back erased, which `compose` draws.
+            fn hookable_dyn(&mut self, mut view: ErasedPayload<'_>, compose: ComposeErased, env: &Environment, cx: Self::Ctx) -> Self::Output {
+                let view = compose(&mut view, env);
+                Realize::child(self, view, env, cx)
+            }
+        }
+
+        impl<B: NativeBackend, H: HookList> NativeBackend for Hooked<B, H> {
+            type Output = B::Output;
+            type Ctx = B::Ctx;
+            type Family = HookedFamily<B::Family, H>;
+
+            fn with_family<R>(
+                &mut self,
+                f: impl for<'a> FnOnce(&mut <Self::Family as NativeBackendFamily>::Backend<'a>) -> R,
+            ) -> R {
+                // The decorator as its family names it: the same scope over
+                // the inner backend as the inner family names that.
+                let (hooks, erased) = self.scope();
+                self.inner().with_family(|backend| {
+                    f(&mut Hooked::new(
+                        <B::Family as NativeBackendFamily>::reborrow(backend),
+                        hooks,
+                        erased,
+                    ))
+                })
+            }
+
+            $(
+                $(#[cfg($ncfg)])*
+                fn $native(&mut self, native: $native_ty, env: &Environment, cx: Self::Ctx) -> Self::Output {
+                    match self.offer(native, env, cx) {
+                        Ok(output) => output,
+                        Err((native, cx)) => self.inner().$native(native, env, cx),
+                    }
+                }
+            )*
+
+            $(
+                $(#[cfg($pcfg)])*
+                fn $parent<$child: ChildView<Self>>(&mut self, native: $parent_ty, env: &Environment, cx: Self::Ctx) -> Self::Output {
+                    let native = MapSlots::map_slots(native, self.rehooker::<$child>());
+                    self.inner().$parent(native, env, cx)
+                }
+            )*
+
+            $(
+                $(#[cfg($mcfg)])*
+                fn $meta<C: ChildView<Self>>(&mut self, metadata: Metadata<$meta_ty, C>, env: &Environment, cx: Self::Ctx) -> Self::Output {
+                    let metadata = metadata.map_content(|content| self.rehook(content));
+                    self.inner().$meta(metadata, env, cx)
+                }
+            )*
+
+            fn provided<T: NativeView + 'static>(&mut self, native: T, env: &Environment, cx: Self::Ctx) -> Self::Output {
+                match self.offer(native, env, cx) {
+                    Ok(output) => output,
+                    Err((native, cx)) => self.inner().provided(native, env, cx),
+                }
+            }
+
+            fn provided_dyn(&mut self, mut native: ErasedPayload<'_>, env: &Environment, cx: Self::Ctx) -> Self::Output {
+                match self.offer_erased(&mut native, env, cx) {
+                    Ok(output) => output,
+                    Err(cx) => self.inner().provided_dyn(native, env, cx),
+                }
+            }
+
+            fn provided_metadata<K: MetadataKey, C: ChildView<Self>>(&mut self, metadata: Metadata<K, C>, env: &Environment, cx: Self::Ctx) -> Self::Output {
+                let metadata = metadata.map_content(|content| self.rehook(content));
+                self.inner().provided_metadata(metadata, env, cx)
+            }
+
+            fn provided_metadata_dyn(&mut self, metadata: ErasedPayload<'_>, env: &Environment, cx: Self::Ctx) -> Self::Output {
+                self.inner().provided_metadata_dyn(metadata, env, cx)
+            }
+
+            fn scoped_erased(&mut self, hooks: &ErasedHooks, view: AnyView, env: &Environment, cx: Self::Ctx) -> Self::Output {
+                Hooked::scoped_erased(self, hooks, view, env, cx)
+            }
+
+            fn hookable<T: HookableView>(&mut self, view: T, env: &Environment, cx: Self::Ctx) -> Self::Output {
+                match self.offer(view, env, cx) {
+                    Ok(output) => output,
+                    Err((view, cx)) => self.inner().hookable(view, env, cx),
+                }
+            }
+
+            fn hookable_dyn(&mut self, mut view: ErasedPayload<'_>, compose: ComposeErased, env: &Environment, cx: Self::Ctx) -> Self::Output {
+                match self.offer_erased(&mut view, env, cx) {
+                    Ok(output) => output,
+                    Err(cx) => self.inner().hookable_dyn(view, compose, env, cx),
+                }
+            }
         }
 
         fn route_native<B: NativeBackend, T: NativeView + 'static>(
@@ -206,6 +326,10 @@ macro_rules! native_backend {
             type Output = ();
             type Ctx = ();
             type Backend<'a> = Self;
+
+            fn reborrow<'r>(backend: &'r mut Self) -> Self {
+                backend.clone()
+            }
         }
 
         #[cfg(test)]
@@ -221,14 +345,14 @@ macro_rules! native_backend {
             $(
                 $(#[cfg($ncfg)])*
                 fn $native(&mut self, _native: $native_ty, _env: &Environment, (): ()) {
-                    self.reached.push(stringify!($native));
+                    self.reached.borrow_mut().push(stringify!($native));
                 }
             )*
 
             $(
                 $(#[cfg($pcfg)])*
                 fn $parent<$child: ChildView<Self>>(&mut self, native: $parent_ty, env: &Environment, (): ()) {
-                    self.reached.push(stringify!($parent));
+                    self.reached.borrow_mut().push(stringify!($parent));
                     tests::Recorder::realize_children(self, tests::Parent::children(native), env);
                 }
             )*
@@ -236,26 +360,26 @@ macro_rules! native_backend {
             $(
                 $(#[cfg($mcfg)])*
                 fn $meta<C: ChildView<Self>>(&mut self, metadata: Metadata<$meta_ty, C>, env: &Environment, (): ()) {
-                    self.reached.push(stringify!($meta));
+                    self.reached.borrow_mut().push(stringify!($meta));
                     metadata.content.realize(self, env, ());
                 }
             )*
 
             fn provided<T: NativeView + 'static>(&mut self, _native: T, _env: &Environment, (): ()) {
-                self.reached.push(core::any::type_name::<T>());
+                self.reached.borrow_mut().push(core::any::type_name::<T>());
             }
 
             fn provided_dyn(&mut self, native: ErasedPayload<'_>, _env: &Environment, (): ()) {
-                self.reached.push(native.type_name());
+                self.reached.borrow_mut().push(native.type_name());
             }
 
             fn provided_metadata<K: MetadataKey, C: ChildView<Self>>(&mut self, metadata: Metadata<K, C>, env: &Environment, (): ()) {
-                self.reached.push(core::any::type_name::<K>());
+                self.reached.borrow_mut().push(core::any::type_name::<K>());
                 metadata.content.realize(self, env, ());
             }
 
             fn provided_metadata_dyn(&mut self, metadata: ErasedPayload<'_>, _env: &Environment, (): ()) {
-                self.reached.push(metadata.type_name());
+                self.reached.borrow_mut().push(metadata.type_name());
             }
         }
     };
@@ -343,6 +467,27 @@ impl<B: NativeBackend> Backend for Realize<'_, B> {
         route_metadata(self.backend, metadata, env, cx)
     }
 
+    fn scoped<H: HookList, V: View>(
+        &mut self,
+        hooks: H,
+        view: V,
+        env: &Environment,
+        cx: Self::Ctx,
+    ) -> Self::Output {
+        self.backend.with_family(|backend| {
+            let mut hooked = Hooked::new(
+                <B::Family as NativeBackendFamily>::reborrow(backend),
+                hooks,
+                ErasedHooks::new(),
+            );
+            Realize::child(&mut hooked, view, env, cx)
+        })
+    }
+
+    fn hookable<T: HookableView>(&mut self, view: T, env: &Environment, cx: Self::Ctx) -> Self::Output {
+        self.backend.hookable(view, env, cx)
+    }
+
     fn erased(&mut self, view: AnyView, env: &Environment, cx: Self::Ctx) -> Self::Output {
         if self.erased_hops == ERASED_HOP_BUDGET {
             contract_violation!(
@@ -406,6 +551,29 @@ impl<B: NativeBackend> DynBackend for RealizeDyn<'_, B> {
             erased_hops: self.erased_hops,
         };
         Box::new(realize.erased(view, env, Self::cx(cx)))
+    }
+
+    fn scoped_dyn(
+        &mut self,
+        hooks: ErasedHooks,
+        view: AnyView,
+        env: &Environment,
+        cx: Box<dyn Any>,
+    ) -> Box<dyn Any> {
+        Box::new(self.backend.scoped_erased(&hooks, view, env, Self::cx(cx)))
+    }
+
+    fn hookable_dyn(
+        &mut self,
+        view: ErasedPayload<'_>,
+        compose: ComposeErased,
+        env: &Environment,
+        cx: Box<dyn Any>,
+    ) -> Box<dyn Any> {
+        Box::new(
+            self.backend
+                .hookable_dyn(view, compose, env, Self::cx(cx)),
+        )
     }
 }
 
@@ -630,13 +798,14 @@ mod tests {
     use waterui::layout::Spacer;
     use waterui::layout::scroll::scroll;
     use waterui_core::layout::LayoutPriority;
+    use waterui_core::view::hook::{Hook, Hooks};
 
     use super::*;
 
     /// Records the method each payload reaches.
-    #[derive(Debug, Default)]
+    #[derive(Debug, Default, Clone)]
     pub(super) struct Recorder {
-        pub(super) reached: Vec<&'static str>,
+        pub(super) reached: alloc::rc::Rc<core::cell::RefCell<Vec<&'static str>>>,
     }
 
     /// A payload that holds child views, taken apart into them.
@@ -719,7 +888,7 @@ mod tests {
             env: &Environment,
         ) {
             for child in children {
-                self.reached.push(
+                self.reached.borrow_mut().push(
                     if core::any::TypeId::of::<C>() == core::any::TypeId::of::<AnyView>() {
                         "erased child"
                     } else {
@@ -739,7 +908,7 @@ mod tests {
     fn each_payload_reaches_its_method() {
         let mut recorder = Recorder::default();
         Realize::child(&mut recorder, tree(), &Environment::new(), ());
-        assert_eq!(recorder.reached, ["layout_priority", "spacer"]);
+        assert_eq!(recorder.reached.borrow().as_slice(), ["layout_priority", "spacer"]);
     }
 
     #[derive(Debug)]
@@ -759,7 +928,7 @@ mod tests {
     fn a_body_that_erases_itself_realizes_as_an_empty_view() {
         let mut recorder = Recorder::default();
         Realize::child(&mut recorder, ErasesItself, &Environment::new(), ());
-        assert_eq!(recorder.reached, ["empty"]);
+        assert_eq!(recorder.reached.borrow().as_slice(), ["empty"]);
     }
 
     #[test]
@@ -773,7 +942,7 @@ mod tests {
         // carries an erased child. Content erased by hand stays erased
         // inside the typed slot.
         assert_eq!(
-            recorder.reached,
+            recorder.reached.borrow().as_slice(),
             [
                 ["scroll", "typed child", "layout_priority", "spacer"],
                 ["scroll", "erased child", "layout_priority", "spacer"],
@@ -787,6 +956,194 @@ mod tests {
     fn an_erased_tree_reaches_the_same_methods() {
         let mut recorder = Recorder::default();
         Realize::child(&mut recorder, AnyView::new(tree()), &Environment::new(), ());
-        assert_eq!(recorder.reached, ["layout_priority", "spacer"]);
+        assert_eq!(recorder.reached.borrow().as_slice(), ["layout_priority", "spacer"]);
+    }
+    /// Draws every spacer as a divider.
+    #[derive(Clone)]
+    struct SpacerAsDivider;
+
+    impl Hook for SpacerAsDivider {
+        type Target = Spacer;
+
+        fn apply(&self, _target: Spacer, _env: &Environment) -> Result<impl View, Spacer> {
+            Ok::<_, Spacer>(waterui::layout::Divider)
+        }
+    }
+
+    /// Draws a spacer as itself inside a scroll view: a view holding its own
+    /// target.
+    #[derive(Clone)]
+    struct SpacerInScroll;
+
+    impl Hook for SpacerInScroll {
+        type Target = Spacer;
+
+        fn apply(&self, target: Spacer, _env: &Environment) -> Result<impl View, Spacer> {
+            Ok::<_, Spacer>(scroll(target))
+        }
+    }
+
+    /// Declines every spacer.
+    #[derive(Clone)]
+    struct DeclinesSpacers;
+
+    impl Hook for DeclinesSpacers {
+        type Target = Spacer;
+
+        fn apply(&self, target: Spacer, _env: &Environment) -> Result<impl View, Spacer> {
+            Err::<(), _>(target)
+        }
+    }
+
+    fn reached(view: impl View) -> Vec<&'static str> {
+        let mut recorder = Recorder::default();
+        Realize::child(&mut recorder, view, &Environment::new(), ());
+        let reached = recorder.reached.borrow().clone();
+        reached
+    }
+
+    /// Inside a scope every child a payload holds is the decorator's own, so
+    /// the recorder sees it typed even where the tree erased it.
+    #[test]
+    fn a_hook_realizes_its_target_in_its_scope() {
+        assert_eq!(
+            reached(Hooks::new(tree(), SpacerAsDivider)),
+            ["layout_priority", "divider"]
+        );
+        assert_eq!(reached(tree()), ["layout_priority", "spacer"]);
+    }
+
+    #[test]
+    fn the_scope_reaches_children_a_payload_holds() {
+        assert_eq!(
+            reached(Hooks::new(scroll(scroll(tree())), SpacerAsDivider)),
+            [
+                "scroll",
+                "typed child",
+                "scroll",
+                "typed child",
+                "layout_priority",
+                "divider"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_scope_reaches_through_an_erased_view() {
+        assert_eq!(
+            reached(Hooks::new(scroll(AnyView::new(tree())), SpacerAsDivider)),
+            ["scroll", "typed child", "layout_priority", "divider"]
+        );
+        assert_eq!(
+            reached(Hooks::new(AnyView::new(scroll(tree())), SpacerAsDivider)),
+            ["scroll", "typed child", "layout_priority", "divider"]
+        );
+    }
+
+    #[test]
+    fn a_scope_entered_on_the_erased_path_reaches_its_subtree() {
+        assert_eq!(
+            reached(AnyView::new(Hooks::new(scroll(tree()), SpacerAsDivider))),
+            ["scroll", "typed child", "layout_priority", "divider"]
+        );
+    }
+
+    #[test]
+    fn a_hook_does_not_receive_its_own_target_back() {
+        assert_eq!(
+            reached(Hooks::new(tree(), SpacerInScroll)),
+            ["layout_priority", "scroll", "typed child", "spacer"]
+        );
+        assert_eq!(
+            reached(AnyView::new(Hooks::new(tree(), SpacerInScroll))),
+            ["layout_priority", "scroll", "typed child", "spacer"]
+        );
+    }
+
+    #[test]
+    fn a_declined_payload_reaches_the_next_hook_and_then_the_backend() {
+        assert_eq!(
+            reached(Hooks::new(
+                Hooks::new(tree(), DeclinesSpacers),
+                SpacerAsDivider
+            )),
+            ["layout_priority", "divider"]
+        );
+        assert_eq!(
+            reached(Hooks::new(tree(), DeclinesSpacers)),
+            ["layout_priority", "spacer"]
+        );
+    }
+
+    #[test]
+    fn an_inner_scope_is_offered_a_payload_before_an_outer_one() {
+        assert_eq!(
+            reached(Hooks::new(
+                Hooks::new(tree(), SpacerAsDivider),
+                SpacerInScroll
+            )),
+            ["layout_priority", "divider"]
+        );
+        assert_eq!(
+            reached(Hooks::new(
+                AnyView::new(Hooks::new(tree(), SpacerAsDivider)),
+                SpacerInScroll
+            )),
+            ["layout_priority", "divider"]
+        );
+    }
+
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "two hooks for"))]
+    fn a_list_with_two_hooks_for_one_target_is_refused() {
+        let _ = Hooks::new(tree(), (SpacerAsDivider, DeclinesSpacers));
+    }
+
+    /// A payload drawn as a spacer unless a hook claims it.
+    struct Fence;
+
+    impl NativeView for Fence {}
+
+    impl HookableView for Fence {
+        fn compose(self, _env: &Environment) -> impl View {
+            Spacer::flexible()
+        }
+    }
+
+    impl View for Fence {
+        fn body(self, env: &Environment) -> impl View {
+            self.compose(env)
+        }
+
+        fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+            backend.hookable(self, env, cx)
+        }
+    }
+
+    /// Draws a fence as a divider.
+    #[derive(Clone)]
+    struct FenceAsDivider;
+
+    impl Hook for FenceAsDivider {
+        type Target = Fence;
+
+        fn apply(&self, _target: Fence, _env: &Environment) -> Result<impl View, Fence> {
+            Ok::<_, Fence>(waterui::layout::Divider)
+        }
+    }
+
+    #[test]
+    fn a_hookable_view_draws_its_composition_unless_claimed() {
+        assert_eq!(reached(Fence), ["spacer"]);
+        assert_eq!(reached(AnyView::new(Fence)), ["spacer"]);
+        assert_eq!(reached(Hooks::new(Fence, FenceAsDivider)), ["divider"]);
+        assert_eq!(
+            reached(Hooks::new(scroll(AnyView::new(Fence)), FenceAsDivider)),
+            ["scroll", "typed child", "divider"]
+        );
+        assert_eq!(
+            reached(AnyView::new(Hooks::new(Fence, FenceAsDivider))),
+            ["divider"]
+        );
     }
 }

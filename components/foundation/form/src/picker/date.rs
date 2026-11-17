@@ -7,8 +7,8 @@ pub use jiff::civil::{Date, DateTime, Time};
 use nami::Binding;
 use waterui_controls::label::Label;
 use waterui_controls::{IntoLabel, impl_label_style_methods};
-use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
-use waterui_core::{AnyView, Environment, Native, NativeView, View};
+use waterui_core::view::{ConfigurableView, ViewConfiguration};
+use waterui_core::{Environment, Native, NativeView, View};
 
 /// Configuration for the `DatePicker` component.
 #[derive(Debug)]
@@ -195,12 +195,7 @@ impl DatePickerConfig {
 
 impl View for DatePicker {
     fn body(self, env: &Environment) -> impl View {
-        let config = self.0;
-        if let Some(hook) = env.get::<Hook<DatePickerConfig>>() {
-            AnyView::new(hook.apply(env, config))
-        } else {
-            AnyView::new(Native::new(config.resolve(env)))
-        }
+        Native::new(self.0.resolve(env))
     }
 }
 

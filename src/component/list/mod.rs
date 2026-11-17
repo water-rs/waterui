@@ -17,7 +17,7 @@ use nami::{Binding, Computed, signal::IntoComputed};
 
 use crate::views::{AnyViews, ForEach, SharedAnyViews, ViewSnapshot, Views};
 use waterui_core::id::Mapping;
-use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
+use waterui_core::view::{ConfigurableView, ViewConfiguration};
 use waterui_core::{
     AnyView, Environment, Metadata, Native, NativeView, View,
     handler::{Handler, shared_action},
@@ -436,11 +436,7 @@ fn render_list_config(mut config: ListConfig, env: &Environment) -> impl View {
     // environment is in hand.
     config.sections = config.sections.clone().rekeyed(&ids).resolved(env);
     config.min_row_height = env.get::<ListMinRowHeight>().map(|height| height.0);
-    if let Some(hook) = env.get::<Hook<ListConfig>>() {
-        AnyView::new(hook.apply(env, config))
-    } else {
-        AnyView::new(Native::new(config))
-    }
+    Native::new(config)
 }
 
 /// `Views` adapter that hands each element's id to the mapping closure — the

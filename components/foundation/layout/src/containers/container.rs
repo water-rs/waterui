@@ -9,7 +9,7 @@ use alloc::{boxed::Box, vec::Vec};
 use nami::{Computed, Signal};
 use waterui_core::{
     AnyView, Environment, Native, NativeView, View,
-    backend::{Backend, ChildSlot},
+    backend::{Backend, ChildSlot, MapSlots},
     layout::{
         HorizontalAlignment, LayoutDirection, LayoutError, LayoutInvalidationCallback,
         PlacedSubview, PlacementInput, Point, ProposalSize, Rect, ResolvedExtent, Size, SubView,
@@ -418,6 +418,27 @@ impl<V: View> View for LazyContainer<V> {
     /// Reaches the backend with each item in the backend's child slot.
     fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
         backend.native(self.resolved::<B::Slot>(env), env, cx)
+    }
+}
+
+impl<C> MapSlots<C> for FixedContainer<Vec<C>> {
+    type With<T: 'static> = FixedContainer<Vec<T>>;
+
+    fn map_slots<T: 'static>(self, f: impl Fn(C) -> T + Clone + 'static) -> FixedContainer<Vec<T>> {
+        let Self { layout, contents } = self;
+        FixedContainer::from_parts(layout, contents.into_iter().map(f).collect())
+    }
+}
+
+impl<C: 'static> MapSlots<C> for LazyContainer<C> {
+    type With<T: 'static> = LazyContainer<T>;
+
+    fn map_slots<T: 'static>(self, f: impl Fn(C) -> T + Clone + 'static) -> LazyContainer<T> {
+        LazyContainer {
+            layout: self.layout,
+            contents: self.contents.map_views(f),
+            direction: self.direction,
+        }
     }
 }
 

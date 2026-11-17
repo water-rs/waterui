@@ -44,6 +44,9 @@ cpu = ["hydrolysis/cpu", "waterui/cpu"]
 # environment, so a view that reaches a `tsx!` mount renders. A test that
 # mounts no TypeScript never needs the variable.
 ts = ["waterui/ts"]
+# The GPU video player as Hydrolysis's realization of `Video`, as an
+# application selecting `waterui/video-gpu` gets it.
+video-gpu = ["hydrolysis/video-gpu", "waterui/video-gpu"]
 
 [dev-dependencies]
 approx = "0.5"

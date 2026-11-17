@@ -1,7 +1,7 @@
 //! Scroll containers that defer behaviour to the active renderer backend.
 
 use nami::{Binding, Computed};
-use waterui_core::backend::{Backend, ChildSlot};
+use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::{AnyView, Environment, Native, NativeView, View, animation::Animation};
 
 use crate::{Point, Size, StretchAxis};
@@ -499,6 +499,14 @@ impl<C: View> View for ScrollView<C> {
     /// Reaches the backend with the content in the backend's child slot.
     fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
         backend.native(self.map_content(B::Slot::from_view), env, cx)
+    }
+}
+
+impl<C> MapSlots<C> for ScrollView<C> {
+    type With<T: 'static> = ScrollView<T>;
+
+    fn map_slots<T: 'static>(self, f: impl Fn(C) -> T + Clone + 'static) -> ScrollView<T> {
+        self.map_content(f)
     }
 }
 

@@ -3,8 +3,8 @@
 //!
 //! `Code` is a text-presentation widget, so it lives beside [`Language`],
 //! [`DefaultHighlighter`] and [`StyledStr`] rather than in the root crate. That
-//! is what lets a component crate claim a fence — install a
-//! [`Hook<CodeConfig>`] — without depending on the aggregator.
+//! is what lets a component crate claim a fence — supply a hook targeting
+//! [`CodeConfig`] — without depending on the aggregator.
 
 use alloc::{
     rc::Rc,
@@ -21,8 +21,10 @@ use waterui_color::{
 use waterui_core::accessibility::AccessibilityRole;
 use waterui_core::gesture::{GestureObserver, TapGesture};
 use waterui_core::resolve::Resolvable;
-use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
-use waterui_core::{AnyView, Environment, Metadata, View, contract_violation};
+use waterui_core::backend::Backend;
+use waterui_core::view::hook::HookableView;
+use waterui_core::view::{ConfigurableView, ViewConfiguration};
+use waterui_core::{AnyView, Environment, Metadata, NativeView, View, contract_violation};
 use waterui_layout::{
     background::background,
     padding::{EdgeInsets, Padding},
@@ -147,9 +149,9 @@ impl Code {
 
 /// Everything a fenced code block is, before anything decides how to show it.
 ///
-/// An application claims a fence by installing a [`Hook<CodeConfig>`] on its
-/// environment; a hook that does not recognise [`info`](Self::info) calls
-/// [`ViewConfiguration::render`] to get the ordinary code block back.
+/// An application claims a fence with a hook targeting `CodeConfig` over the
+/// views that hold it; a hook that does not recognise [`info`](Self::info)
+/// declines, and the ordinary code block is drawn.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct CodeConfig {
@@ -219,18 +221,24 @@ impl ConfigurableView for Code {
     }
 }
 
+impl NativeView for CodeConfig {}
+
+impl HookableView for CodeConfig {
+    fn compose(self, env: &Environment) -> impl View {
+        default_rendering(env, self)
+    }
+}
+
 impl View for Code {
+    /// The ordinary code block, for code that expands views by hand.
     fn body(self, env: &Environment) -> impl View {
-        let config = self.config();
-        // `Hook::from` removes the hook from the environment it hands to the
-        // closure, so a realization that does not recognise the info token can
-        // call `config.render()` and get this default rendering back without
-        // recursing into itself.
-        if let Some(hook) = env.get::<Hook<CodeConfig>>() {
-            AnyView::new(hook.apply(env, config))
-        } else {
-            AnyView::new(default_rendering(env, config))
-        }
+        default_rendering(env, self.config())
+    }
+
+    /// Offers the fence to the hooks in scope before drawing the ordinary
+    /// code block.
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        backend.hookable(self.config(), env, cx)
     }
 }
 

@@ -746,8 +746,8 @@ pub fn run<W: Windows>(
     waterui::inspector::install(&mut env, inspector);
     let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
     let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
-    #[cfg(any(test, hydrolysis_component_hooks))]
-    super::install_native_component_hooks(&mut env);
+    #[cfg(any(test, hydrolysis_platform_services))]
+    super::install_platform_services(&mut env);
     #[cfg(unix)]
     let _termination_signals = install_termination_handler(&event_proxy);
     #[cfg(windows)]

@@ -5,11 +5,13 @@
 //! `<iframe>` (`web`) — both mounted through Cherenkov `Hosted` content — and
 //! on Android `android.webkit.WebView`, mounted as a platform-view *instance*
 //! inside the host's view tree. Every other engine — CEF, WPE `WebKit` — is a
-//! crate the *application* links and installs as a `Hook<WebView>` realization,
-//! which intercepts the component before it reaches this backend.
+//! crate the *application* links, whose hook targeting `WebView` the
+//! application scopes over its views, claiming the component before it reaches
+//! this backend.
 //!
-//! Other engines must install their own hook; reaching the backend without one
-//! is a programmer error rather than a layout slot with no page behind it.
+//! Reaching the backend without such a hook where no platform engine is
+//! bridged is a programmer error rather than a layout slot with no page behind
+//! it.
 
 // Only macOS can act on this: there the feature names a bridge that exists and
 // the diagnostic tells the reader what is missing. On the web the feature
@@ -147,7 +149,6 @@ pub fn install_controller(env: &mut Environment) {
 
 // No `install_controller` without a system bridge. A build that bridges no
 // platform engine installs no controller, so a `WebView` can only be created in
-// it under a controller the application installed itself — an engine crate's
-// `install`, which also installs the `Hook<WebView>` that intercepts the
-// component before this backend sees it. A `WebView` that still gets here has
-// nothing to draw it, and panics.
+// it under a controller the application installed itself — an engine crate's,
+// whose hook targeting `WebView` claims the component before this backend
+// sees it. A `WebView` that still gets here has nothing to draw it, and panics.

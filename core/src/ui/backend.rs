@@ -23,6 +23,7 @@ use core::marker::PhantomData;
 use crate::components::Native;
 use crate::components::{Metadata, NativeView};
 use crate::metadata::MetadataKey;
+use crate::view::hook::{ComposeErased, ErasedHooks, HookList, HookableView, compose_erased};
 use crate::{AnyView, Environment, View};
 
 /// A target a view tree resolves into: a platform's views, a retained
@@ -60,6 +61,36 @@ pub trait Backend {
     /// Realizes an erased view, typically through
     /// [`AnyView::dispatch_dyn`].
     fn erased(&mut self, view: AnyView, env: &Environment, cx: Self::Ctx) -> Self::Output;
+
+    /// Realizes `view` with `hooks` offered every native payload below it
+    /// first, the scope a [`Hooks`](crate::view::hook::Hooks) modifier
+    /// installs. A backend that realizes nothing — a probe — looks through
+    /// the scope to `view`.
+    fn scoped<H: HookList, V: View>(
+        &mut self,
+        hooks: H,
+        view: V,
+        env: &Environment,
+        cx: Self::Ctx,
+    ) -> Self::Output;
+
+    /// Realizes a [`HookableView`]: a hook in scope that targets it, or else
+    /// its own composition.
+    fn hookable<T: HookableView>(&mut self, view: T, env: &Environment, cx: Self::Ctx) -> Self::Output;
+}
+
+/// A native payload holding child views in a backend's slot `S`, which can
+/// move them into another slot.
+///
+/// A backend that decorates another — a hook scope — hands the payload on
+/// with each child in a slot that re-enters the decorator, so the children
+/// stay in its scope.
+pub trait MapSlots<S>: Sized {
+    /// The same payload with its children in the slot `T`.
+    type With<T: 'static>;
+
+    /// Moves every child through `f`, now or as the payload produces it.
+    fn map_slots<T: 'static>(self, f: impl Fn(S) -> T + Clone + 'static) -> Self::With<T>;
 }
 
 /// A child view of a native payload, held until the backend realizes it.
@@ -103,6 +134,27 @@ pub trait DynBackend {
 
     /// Realizes a further erased view.
     fn erased_dyn(&mut self, view: AnyView, env: &Environment, cx: Box<dyn Any>) -> Box<dyn Any>;
+
+    /// Realizes `view` inside the hook scope `hooks`, which an erased
+    /// [`Backend::scoped`] handed back.
+    fn scoped_dyn(
+        &mut self,
+        hooks: ErasedHooks,
+        view: AnyView,
+        env: &Environment,
+        cx: Box<dyn Any>,
+    ) -> Box<dyn Any>;
+
+    /// Realizes the [`HookableView`] `view` holds, which an erased
+    /// [`Backend::hookable`] handed back; `compose` draws it when no hook
+    /// claims it.
+    fn hookable_dyn(
+        &mut self,
+        view: ErasedPayload<'_>,
+        compose: ComposeErased,
+        env: &Environment,
+        cx: Box<dyn Any>,
+    ) -> Box<dyn Any>;
 }
 
 /// The [`Backend`] an erased view expands through: every leaf it reaches is
@@ -152,6 +204,26 @@ impl Backend for Erased<'_> {
     fn erased(&mut self, view: AnyView, env: &Environment, cx: Self::Ctx) -> Self::Output {
         self.inner.erased_dyn(view, env, cx)
     }
+
+    fn scoped<H: HookList, V: View>(
+        &mut self,
+        hooks: H,
+        view: V,
+        env: &Environment,
+        cx: Self::Ctx,
+    ) -> Self::Output {
+        self.inner
+            .scoped_dyn(ErasedHooks::new().with(hooks), AnyView::new(view), env, cx)
+    }
+
+    fn hookable<T: HookableView>(&mut self, view: T, env: &Environment, cx: Self::Ctx) -> Self::Output {
+        self.inner.hookable_dyn(
+            ErasedPayload::new(&mut Some(view)),
+            compose_erased::<T>,
+            env,
+            cx,
+        )
+    }
 }
 
 /// A payload an erased view hands back to its [`DynBackend`]: the value,
@@ -174,6 +246,20 @@ impl<'a> ErasedPayload<'a> {
     /// Takes the payload when it is a `T`, leaving the slot empty.
     pub fn take<T: 'static>(&mut self) -> Option<T> {
         self.slot.downcast_mut::<Option<T>>().and_then(Option::take)
+    }
+
+    /// Puts back a payload [`take`](Self::take) took, for the next
+    /// receiver to take.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `payload` is not of the slot's type.
+    pub fn restore<T: 'static>(&mut self, payload: T) {
+        let slot = self
+            .slot
+            .downcast_mut::<Option<T>>()
+            .expect("a payload is restored into the slot it was taken from");
+        *slot = Some(payload);
     }
 
     /// The payload type's name.
@@ -276,6 +362,20 @@ impl<T: 'static> Backend for Peel<T> {
             .downcast::<Option<T>>()
             .expect("the erased path returns this probe's own output")
     }
+
+    fn scoped<H: HookList, V: View>(
+        &mut self,
+        _hooks: H,
+        view: V,
+        env: &Environment,
+        (): (),
+    ) -> Option<T> {
+        view.dispatch(self, env, ())
+    }
+
+    fn hookable<N: HookableView>(&mut self, view: N, _env: &Environment, (): ()) -> Option<T> {
+        cast(view).ok()
+    }
 }
 
 impl<T: 'static> DynBackend for Peel<T> {
@@ -299,6 +399,26 @@ impl<T: 'static> DynBackend for Peel<T> {
 
     fn erased_dyn(&mut self, view: AnyView, env: &Environment, _cx: Box<dyn Any>) -> Box<dyn Any> {
         Box::new(Backend::erased(self, view, env, ()))
+    }
+
+    fn scoped_dyn(
+        &mut self,
+        _hooks: ErasedHooks,
+        view: AnyView,
+        env: &Environment,
+        _cx: Box<dyn Any>,
+    ) -> Box<dyn Any> {
+        Box::new(Backend::erased(self, view, env, ()))
+    }
+
+    fn hookable_dyn(
+        &mut self,
+        mut view: ErasedPayload<'_>,
+        _compose: ComposeErased,
+        _env: &Environment,
+        _cx: Box<dyn Any>,
+    ) -> Box<dyn Any> {
+        Box::new(view.take::<T>())
     }
 }
 
@@ -342,6 +462,14 @@ mod tests {
                 "the erased path returns the backend's output"
             );
         }
+
+        fn scoped<H: HookList, V: View>(&mut self, _hooks: H, view: V, env: &Environment, (): ()) {
+            view.dispatch(self, env, ());
+        }
+
+        fn hookable<T: HookableView>(&mut self, _view: T, _env: &Environment, (): ()) {
+            self.leaves.push(type_name::<T>());
+        }
     }
 
     /// The recorder's object-safe face: every payload it can name.
@@ -384,6 +512,28 @@ mod tests {
             _cx: Box<dyn Any>,
         ) -> Box<dyn Any> {
             self.0.erased(view, env, ());
+            Box::new(())
+        }
+
+        fn scoped_dyn(
+            &mut self,
+            _hooks: ErasedHooks,
+            view: AnyView,
+            env: &Environment,
+            _cx: Box<dyn Any>,
+        ) -> Box<dyn Any> {
+            self.0.erased(view, env, ());
+            Box::new(())
+        }
+
+        fn hookable_dyn(
+            &mut self,
+            view: ErasedPayload<'_>,
+            _compose: ComposeErased,
+            _env: &Environment,
+            _cx: Box<dyn Any>,
+        ) -> Box<dyn Any> {
+            self.0.leaves.push(view.type_name());
             Box::new(())
         }
     }

@@ -71,12 +71,7 @@ pastey.workspace = true
 tree-sitter = { version = "0.27", optional = true }
 tree-sitter-md = { version = "0.5.3", optional = true }
 
-# The self-drawn video realization. Selected by `video-gpu` rather than by
-# `video`, because whether it is the realization is a property of the platform's
-# own frameworks, not of the semantic component. The web plays video through
-# the browser's `<video>` element, so a wasm32 build never links it.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-waterui-video-gpu = { workspace = true, optional = true }
 # Inspector session tokens come from the OS RNG; the endpoint exists only on
 # native targets, so the entropy source is declared beside it.
 getrandom = { workspace = true, optional = true }
@@ -187,12 +182,12 @@ remote = [
     "waterui-media?/remote",
     "waterui-assets?/remote",
 ]
-# `WaterUI`'s own GPU video player, installed as the video realization. Not
-# implied by `video`: Apple bridges AVPlayer and the web the `<video>` element,
-# so an application there would otherwise link and pay for a player it never
-# runs. The backend that has no native player to bridge selects this; on
-# wasm32 it links nothing.
-video-gpu = ["video", "gpu", "dep:waterui-video-gpu"]
+# Selects `WaterUI`'s own GPU video player as the video realization where the
+# platform has no player to bridge: the `water` CLI reads it and enables the
+# self-drawn backend's player. Not implied by `video`: Apple bridges AVPlayer
+# and the web the `<video>` element, so an application there would otherwise
+# link and pay for a player it never runs.
+video-gpu = ["video", "gpu"]
 webview = ["dep:waterui-webview"]
 # Maps (`waterui::map`).
 map = ["dep:waterui-map"]

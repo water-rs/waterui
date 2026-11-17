@@ -12,11 +12,11 @@
 //! These abstractions support a declarative and composable approach to UI building, allowing
 //! for flexible combinations of views and transformations.
 
+pub mod hook;
+
 use crate::backend::{Backend, ChildSlot};
-use crate::{AnyView, Environment, components::Metadata};
-use alloc::{boxed::Box, vec::Vec};
-use core::any::type_name;
-use core::fmt;
+use crate::{AnyView, Environment};
+use alloc::vec::Vec;
 
 /// View represents a part of the user interface.
 ///
@@ -204,63 +204,6 @@ pub trait ViewConfiguration: 'static {
     fn render(self) -> Self::View;
 }
 
-// Note: Hook could change the behavior of the view dynamically based on the environment
-// only view implemented `ViewConfiguration` can be hooked.
-// A struct implemented `View` can be not concrete, but `ViewConfiguration` providing
-// `config()` method, which would return a concrete type.
-// By add `Hook<Config>` into `Environment`, a
-/// A function type for view hooks.
-type HookFn<C> = Box<dyn Fn(&Environment, C) -> AnyView>;
-
-/// A hook that can intercept and modify view configurations.
-///
-/// Hooks are used to apply global transformations to views based on their configuration.
-pub struct Hook<C>(HookFn<C>);
-
-impl<C> fmt::Debug for Hook<C> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Modifier<{}>(..)", type_name::<C>())
-    }
-}
-
-impl<V, C, F> From<F> for Hook<C>
-where
-    C: ViewConfiguration,
-    V: View,
-    F: Fn(&Environment, C) -> V + 'static,
-{
-    fn from(value: F) -> Self {
-        Self(Box::new(move |env, config| {
-            let mut env = env.clone();
-            env.remove::<Self>(); // avoid infinite recursion
-            AnyView::new(Metadata::new(value(&env, config), env))
-        }))
-    }
-}
-
-impl<C> Hook<C>
-where
-    C: ViewConfiguration,
-{
-    /// Creates a new hook from a function.
-    ///
-    /// The function will be called with the environment and configuration
-    /// whenever a matching view configuration is encountered.
-    pub fn new<V, F>(f: F) -> Self
-    where
-        V: View,
-        F: Fn(&Environment, C) -> V + 'static,
-    {
-        Self::from(f)
-    }
-
-    /// Applies this hook to a configuration, producing a view.
-    pub fn apply(&self, env: &Environment, config: C) -> AnyView {
-        (self.0)(env, config)
-    }
-}
-
-impl<C: ViewConfiguration> Hook<C> {}
 
 macro_rules! impl_tuple_views {
     ($($ty:ident),*) => {

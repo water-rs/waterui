@@ -205,6 +205,16 @@ pub trait ViewExt: View + Sized {
         With::new(self, value)
     }
 
+    /// Offers every native payload in this view to `hooks` before the
+    /// backend realizes it: the realization a subtree chooses for a
+    /// component, such as a browser engine for `WebView`.
+    ///
+    /// `hooks` is one [`Hook`](hook::Hook) or a tuple of them; an inner
+    /// scope is offered a payload before an outer one.
+    fn hooks<H: hook::HookList>(self, hooks: H) -> hook::Hooks<Self, H> {
+        hook::Hooks::new(self, hooks)
+    }
+
     /// Sets this view as the content of a navigation view with the specified title.
     ///
     /// # Arguments

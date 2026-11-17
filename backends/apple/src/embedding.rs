@@ -235,11 +235,6 @@ impl Drop for Mount {
 }
 
 pub(crate) fn install_services(env: &mut Environment) {
-    #[cfg(feature = "map")]
-    {
-        use waterui_core::view::ViewConfiguration;
-        env.insert_hook::<waterui_map::MapConfig, _>(|_env, config| config.render());
-    }
     crate::windows::install_manager(env);
     crate::components::view_renderer::install_service(env);
 }

@@ -28,6 +28,10 @@ impl NativeBackendFamily for AppleBackend {
     type Output = NativeLeaf;
     type Ctx = ();
     type Backend<'a> = Self;
+
+    fn reborrow<'r>(backend: &'r mut Self) -> Self {
+        Self { mtm: backend.mtm }
+    }
 }
 
 impl NativeBackend for AppleBackend {

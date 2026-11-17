@@ -545,10 +545,10 @@ hwui = [
     "dep:waterkit-clipboard",
     "dep:waterui-backend-core",
 ]
-# The Android realization of the GPU video player's decoder plane
-# (`AndroidVideoSurfaceHost`), for an application that links
-# `waterui-video-gpu`. The CLI enables it for such an application; elsewhere
-# the feature selects nothing.
+# The GPU video player as the realization of `Video` and `VideoPlayer` off the
+# web, with its Android decoder plane
+# (`AndroidVideoSurfaceHost`). The CLI enables it for an application that
+# selects `waterui/video-gpu`.
 video-gpu = ["gpu", "dep:waterui-video-gpu"]
 # The platform's own web engine: `WKWebView` on macOS, an `<iframe>` on the web,
 # each hosted on a compositor plane, and `android.webkit.WebView` on Android,

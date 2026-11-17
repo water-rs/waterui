@@ -132,15 +132,19 @@ fn main() {
                 all(feature = "list", feature = "accessibility")
             )
         },
-        // The renderer installs component hooks: its localizations, the
-        // platform web view and `<video>` it bridges, and the table hook.
-        hydrolysis_component_hooks: {
-            any(
-                hydrolysis_localization,
-                hydrolysis_system_webview,
-                feature = "table",
-                all(target_arch = "wasm32", feature = "web", feature = "video")
-            )
+        // The renderer installs the environment its platform services need:
+        // its localizations and the platform web view's controller.
+        // The page's `<video>` element realizes `Video` on the web.
+        hydrolysis_web_video: {
+            all(target_arch = "wasm32", feature = "web", feature = "video")
+        },
+        // The GPU player realizes `Video` everywhere but the web: this
+        // backend bridges no platform player.
+        hydrolysis_gpu_video: {
+            all(feature = "video-gpu", not(target_arch = "wasm32"))
+        },
+        hydrolysis_platform_services: {
+            any(hydrolysis_localization, hydrolysis_system_webview)
         },
         // The persistent pipeline cache serialises through `std::fs` into a
         // platform cache directory; targets without that filesystem contract

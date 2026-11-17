@@ -140,6 +140,24 @@ mod tests {
         fn erased(&mut self, _view: AnyView, _env: &Environment, (): ()) {
             self.0.push("erased");
         }
+        fn scoped<H: crate::view::hook::HookList, V: crate::View>(
+            &mut self,
+            _hooks: H,
+            view: V,
+            env: &Environment,
+            (): (),
+        ) {
+            view.dispatch(self, env, ());
+        }
+
+        fn hookable<T: crate::view::hook::HookableView>(
+            &mut self,
+            _view: T,
+            _env: &Environment,
+            (): (),
+        ) {
+            self.0.push(type_name::<T>());
+        }
     }
 
     #[test]
