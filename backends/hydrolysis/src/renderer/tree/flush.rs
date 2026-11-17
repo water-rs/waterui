@@ -381,8 +381,14 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             }
             Self::Env(node) => {
                 renderer.register_modal_scope(&node.env);
+                #[cfg(feature = "accessibility")]
+                let walk_env = renderer.accessibility_scope_walk_env(&node.env);
+                #[cfg(feature = "accessibility")]
+                let env: &Environment = &walk_env;
+                #[cfg(not(feature = "accessibility"))]
+                let env = &node.env;
                 node.child
-                    .flush(renderer, ctx, &node.env, kurbo::Affine::IDENTITY);
+                    .flush(renderer, ctx, env, kurbo::Affine::IDENTITY);
             }
             Self::Wrapper(node) => {
                 renderer.push_render_owner(&node.accessibility_identity);
@@ -960,7 +966,8 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Self::Retain(node) => node.child.emit_accessibility(renderer, env),
             Self::Env(node) => {
                 renderer.register_modal_scope(&node.env);
-                node.child.emit_accessibility(renderer, &node.env);
+                let env = renderer.accessibility_scope_walk_env(&node.env);
+                node.child.emit_accessibility(renderer, &env);
             }
             Self::Wrapper(node) => {
                 renderer.push_accessibility_owner(&node.accessibility_identity);

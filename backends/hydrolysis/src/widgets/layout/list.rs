@@ -8,7 +8,7 @@ use crate::renderer::chrome::{ChromeContent, LiveChromeParts};
 #[cfg(feature = "accessibility")]
 use crate::renderer::{
     AccessibilityActionTarget, ScopedAccessibilitySemantics,
-    accessibility_container_child_environment, hoist_accessibility_metadata,
+    accessibility_container_child_environment,
 };
 use crate::renderer::{
     HydroState, RenderContext, ScopeOperands, VisibleSubviewCache, WidgetRenderContext,
@@ -450,6 +450,46 @@ struct RealizedRow {
     subtree_env: Environment,
 }
 
+/// Moves the accessibility scope a row's content opens with onto the row:
+/// every naming, state and identity value `scope_env` holds that the
+/// content installed itself — it is not the value `subtree_env`, the
+/// environment the content was built under, already carried.
+#[cfg(feature = "accessibility")]
+fn adopt_content_naming<E: crate::text::TextEngine>(
+    row_env: &mut Environment,
+    scope_env: &Environment,
+    subtree_env: &Environment,
+) {
+    use crate::renderer::accessibility::ScopedAccessibilityIdentifier;
+    use waterui::accessibility::{
+        AccessibilityChildren, AccessibilityGeometry, AccessibilityLabel, AccessibilityRole,
+        AccessibilityValue,
+    };
+
+    macro_rules! adopt {
+        ($($ty:ty),+ $(,)?) => {
+            $(
+                if let Some(value) = scope_env.get::<$ty>()
+                    && !subtree_env.get::<$ty>().is_some_and(|carried| std::ptr::eq(carried, value))
+                {
+                    row_env.insert(value.clone());
+                }
+            )+
+        };
+    }
+    adopt!(
+        AccessibilityLabel,
+        AccessibilityValue,
+        AccessibilityRole,
+        ScopedAccessibilityIdentifier,
+        AccessibilityHidden,
+        AccessibilityChildren,
+        AccessibilityGeometry,
+        AccessibilityStateSignal,
+        ScopedAccessibilitySemantics<E>,
+    );
+}
+
 /// A list row is its own chrome: a button inside one is a row, not a filled
 /// container floating on a screen. Buttons that picked a style explicitly
 /// keep it.
@@ -690,23 +730,27 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
         }
         let row_env = list_row_environment(env);
         let mut item = materialize_list_item(contents, index);
-        // The row's `ListItem` node claims whatever naming scope the content
-        // carries: the metadata is hoisted off the content onto the row's
-        // environment, or the first leaf inside the subtree would claim the
-        // row's explicit label for itself. The subtree then builds under the
-        // container-child environment that strips that naming.
-        #[cfg(feature = "accessibility")]
-        let (content, row_env) = hoist_accessibility_metadata::<E>(item.take_content(), &row_env);
-        #[cfg(not(feature = "accessibility"))]
         let content = item.take_content();
-        let disabled = crate::widgets::util::widget_disabled(
-            &crate::renderer::flatten_environment_metadata_ref(&content, &row_env).1,
-        );
         let subtree_env = self.row_subtree_environment(row_id, &row_env);
         let subview = cache.entry(row_id, move || content);
         // The row owns the transition its content root declares; it is
         // claimed before anything walks the row.
         subview.ensure_built(renderer, &subtree_env);
+        let scope_env = subview
+            .node()
+            .and_then(crate::renderer::RenderNode::leading_scope_env);
+        let disabled = crate::widgets::util::widget_disabled(scope_env.unwrap_or(&row_env));
+        // The row's `ListItem` node claims the naming scope its content
+        // opens with, or the first leaf inside the subtree would claim the
+        // row's explicit label for itself.
+        #[cfg(feature = "accessibility")]
+        let row_env = {
+            let mut row_env = row_env;
+            if let Some(scope_env) = scope_env {
+                adopt_content_naming::<E>(&mut row_env, scope_env, &subtree_env);
+            }
+            row_env
+        };
         self.transitions.track(row_id, subview, renderer);
         self.realized_rows.borrow_mut().insert(
             row_id,

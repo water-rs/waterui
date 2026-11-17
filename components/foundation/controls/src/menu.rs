@@ -481,7 +481,7 @@ impl View for Menu {
         let label = self.label.resolve(env);
         let accessibility_label = label.accessibility_label();
         AnyView::new(ResolvedMenu {
-            label: AnyView::new(label),
+            label,
             items: resolve_menu_items(&self.items, env),
             accessibility_label,
             style: self.style.resolve(env),
@@ -1373,8 +1373,8 @@ impl_constant!(ResolvedMenuItem);
 #[doc(hidden)]
 #[derive(Debug)]
 pub struct ResolvedMenu {
-    /// The label view displayed on the menu button.
-    pub label: AnyView,
+    /// The label displayed on the menu button.
+    pub label: Label,
     /// The fully resolved menu items.
     pub items: Computed<Vec<ResolvedMenuItem>>,
     /// Semantic accessibility label for the menu trigger.

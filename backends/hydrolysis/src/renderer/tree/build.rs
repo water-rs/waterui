@@ -79,6 +79,17 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         renderer: &mut SemanticCore<E>,
     ) -> Self {
         let child = Self::build_view(content, env, renderer);
+        Self::wrap(effect, child, env, renderer)
+    }
+
+    /// Wraps the already built `child` in a [`WrapperNode`] applying
+    /// `effect`, for an effect that reads the child it wraps.
+    fn wrap(
+        effect: WrapperEffect<E>,
+        child: Self,
+        env: &Environment,
+        renderer: &SemanticCore<E>,
+    ) -> Self {
         let env = if effect.captures_environment() {
             Self::resolved_handler_env(&child, env).clone()
         } else {
@@ -100,6 +111,52 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             node.core().cell.material_group_scope.set(true);
         }
         node
+    }
+
+    /// The identity gesture observers on `self` group by: the first node
+    /// below the layout-transparent wrappers (environment scopes, retention,
+    /// effect wrappers and animated transforms), so every observer stacked
+    /// on one view joins one group.
+    fn gesture_group_identity(&self) -> usize {
+        match self {
+            Self::Env(node) => node.child.gesture_group_identity(),
+            Self::Retain(node) => node.child.gesture_group_identity(),
+            Self::Wrapper(node) => node.child.gesture_group_identity(),
+            Self::Opacity(node) => node.child.gesture_group_identity(),
+            Self::Scale(node) => node.child.gesture_group_identity(),
+            Self::Rotation(node) => node.child.gesture_group_identity(),
+            Self::Offset(node) => node.child.gesture_group_identity(),
+            _ => Rc::as_ptr(&self.core().cell) as usize,
+        }
+    }
+
+    /// The group identity of a gesture observer wrapper, with the node it
+    /// wraps; `None` for any other node.
+    #[cfg(test)]
+    pub(crate) fn observed_gesture_group(&self) -> Option<(usize, &Self)> {
+        match self {
+            Self::Wrapper(node) => match &node.effect {
+                WrapperEffect::GestureObserver(effect) => {
+                    Some((effect.gesture_group_identity, &node.child))
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// The environment the content of `self` resolves in below its leading
+    /// environment scopes — `Env` nodes and `.material_group()` markers —
+    /// or `None` when `self` opens with neither.
+    #[cfg(any(test, feature = "list"))]
+    pub(crate) fn leading_scope_env(&self) -> Option<&Environment> {
+        match self {
+            Self::Env(node) => Some(node.child.leading_scope_env().unwrap_or(&node.env)),
+            Self::Wrapper(node) if matches!(node.effect, WrapperEffect::MaterialGroup) => {
+                node.child.leading_scope_env()
+            }
+            _ => None,
+        }
     }
 
     /// The environment a metadata-carried callback captures: the one its
