@@ -13,10 +13,11 @@ use crate::platform_view::PlatformView;
 use waterui::component::form::CalendarGrid;
 #[cfg(feature = "multi-date-picker")]
 use waterui::component::form::picker::MultiDatePickerGrid;
+use waterui_backend_core::Child;
 use waterui_core::contract_violation;
 use waterui_core::views::ViewSnapshot;
 
-mod backend;
+pub(in crate::renderer::tree) mod backend;
 
 /// A retained node's layout-dirty mark and the callback its input
 /// subscriptions fire: the callback sets the mark, which an enclosing
@@ -50,6 +51,17 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// window's root cell, every other node to its structural parent's cell.
     pub(crate) fn build(view: AnyView, env: &Environment, renderer: &mut SemanticCore<E>) -> Self {
         let node = Self::build_view(view, env, renderer);
+        node.attach_subtree();
+        node
+    }
+
+    /// Builds a child a node held to realize later, like [`build`](Self::build).
+    pub(super) fn build_held(
+        child: Child<backend::HydroFamily<E>>,
+        env: &Environment,
+        renderer: &mut SemanticCore<E>,
+    ) -> Self {
+        let node = backend::HydroBackend::new(renderer).build_child(child, env);
         node.attach_subtree();
         node
     }
@@ -528,12 +540,16 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
 
     /// Build a reactive `Dynamic` host: connect to receive content updates, build
     /// the initial child, and wrap it so later content changes patch in isolation.
-    fn build_dynamic_host(
-        dynamic: waterui_core::dynamic::Dynamic,
+    ///
+    /// `into_child` holds each delivered view as the backend's [`Child`].
+    fn build_dynamic_host<C: 'static>(
+        dynamic: waterui_core::dynamic::Dynamic<C>,
+        into_child: fn(C) -> Child<backend::HydroFamily<E>>,
         env: &Environment,
         renderer: &mut SemanticCore<E>,
     ) -> Self {
-        let pending: Rc<RefCell<Option<AnyView>>> = Rc::new(RefCell::new(None));
+        let pending: Rc<RefCell<Option<Child<backend::HydroFamily<E>>>>> =
+            Rc::new(RefCell::new(None));
         let signals = renderer.signals.clone();
         let core = renderer.new_core();
         let cell = Rc::downgrade(&core.cell);
@@ -542,7 +558,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         // exactly that view, so it is never a change to mark.
         let render_generation = signals.rebuild_generation();
         let rebuild_active = renderer.rebuild_active_flag();
-        dynamic.connect_with_pending_view(Rc::clone(&pending), {
+        dynamic.connect({
             let pending = Rc::clone(&pending);
             move |update| {
                 let is_initial = update
@@ -550,7 +566,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                     .try_get::<DynamicInitialContent>()
                     .is_some()
                     || signals.initial_dynamic_content_already_rendered(render_generation);
-                *pending.borrow_mut() = Some(update.into_value());
+                *pending.borrow_mut() = Some(into_child(update.into_value()));
                 // A real content change marks the host structure-dirty; the
                 // flush rebuilds only this node's child. A rebuild already in
                 // flight covers it, so the mark is gated on one not running.
@@ -564,8 +580,8 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         });
         let initial = pending.borrow_mut().take();
         let child = match initial {
-            Some(content) => Self::build_view(content, env, renderer),
-            None => Self::build_view(AnyView::new(()), env, renderer),
+            Some(content) => backend::HydroBackend::new(renderer).build_child(content, env),
+            None => Self::build_view((), env, renderer),
         };
         let child = Rc::new(RefCell::new(child));
         let host = DynamicHostNode {

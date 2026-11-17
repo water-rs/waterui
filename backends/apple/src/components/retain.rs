@@ -85,6 +85,11 @@ pub fn realize_retain_metadata(metadata: Metadata<Retain>, ctx: &RenderContext<'
     let host = HostView::new(mtm, Rect::ZERO);
     let host_view: &PlatformView = &host;
 
+    // The guard is transparent to a transition's adoption: the conditional
+    // a `watch` wraps in it adopts the declaration over the guard.
+    if let Some(offer) = ctx.offer() {
+        offer.pass_on();
+    }
     let child = ctx.render(metadata.content);
     // A `Retain::resolved` value is built from the environment its
     // content's modifier chain resolves in, as a handler's is.

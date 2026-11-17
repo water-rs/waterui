@@ -4,7 +4,7 @@
 //! full-screen overlays such as modal dialogs, loading screens, and
 //! toast notifications.
 
-use crate::View;
+use crate::{AnyView, View};
 use waterui_core::dynamic::{Dynamic, DynamicHandler};
 use waterui_core::plugin::Plugin;
 use waterui_macros::state;
@@ -31,8 +31,8 @@ impl FullScreenOverlayManager {
     ///
     /// A tuple containing the manager and the overlay view.
     pub fn new() -> (Self, impl View + Clone) {
-        let (handler, dynamic) = Dynamic::new();
-        handler.set(()); // Initially empty
+        let (handler, dynamic) = Dynamic::<AnyView>::new();
+        handler.set(AnyView::new(())); // Initially empty
         (Self { handler }, dynamic)
     }
 
@@ -40,14 +40,14 @@ impl FullScreenOverlayManager {
     ///
     /// The view will be displayed above all other content.
     pub fn show(&self, view: impl View) {
-        self.handler.set(view);
+        self.handler.set(AnyView::new(view));
     }
 
     /// Hides the current overlay.
     ///
     /// This clears the overlay, making it transparent.
     pub fn hide(&self) {
-        self.handler.set(());
+        self.handler.set(AnyView::new(()));
     }
 }
 
