@@ -92,7 +92,6 @@ fn level_picker(minimum: &Binding<LogLevel>) -> impl View + use<> {
                 .action(move |State(minimum): State<Binding<LogLevel>>| minimum.set(level))
                 .state(minimum)
                 .opacity(selected.select(1.0, 0.5))
-                .anyview()
         })
         .collect::<HStack<_>>()
         .spacing(4.0)

@@ -12,8 +12,8 @@
 //! let badge = badge::Badge::new(5, button("Messages"));
 //! ```
 
-use crate::ViewExt;
 use nami::{Computed, Signal, signal::IntoComputed};
+use waterui_core::AnyView;
 use waterui_core::View;
 use waterui_core::configurable;
 use waterui_core::handler::AnyViewBuilder;
@@ -66,7 +66,7 @@ impl Badge {
     pub fn new(value: impl IntoComputed<i32>, content: impl View + Clone) -> Self {
         Self(BadgeConfig {
             value: value.into_computed(),
-            content: AnyViewBuilder::new(move || content.clone().anyview()),
+            content: AnyViewBuilder::new(move || AnyView::new(content.clone())),
             color: Color::new(crate::theme::color::Error).into_computed(),
         })
     }

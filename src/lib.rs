@@ -61,10 +61,11 @@ pub mod prelude {
     #[cfg(feature = "webview")]
     pub use super::webview;
     pub use super::{
-        AnimationExt, AnyView, Binding, Color, Computed, Signal, SignalExt, State, Str, Use, View,
-        ViewExt, accessibility, animation, app, binding, color, component, cursor, drag_drop,
-        entry, env, error, filter, form, fullscreen, gesture, gradient, id, layout, locale,
-        metadata, reactive, regional, shape, signal, style, task, text, widget, window,
+        AnimationExt, AnyView, Binding, Color, Computed, OneOf2, OneOf3, OneOf4, OneOf5, OneOf6,
+        OneOf7, OneOf8, Signal, SignalExt, State, Str, Use, View, ViewExt, accessibility,
+        animation, app, binding, color, component, cursor, drag_drop, entry, env, error, filter,
+        form, fullscreen, gesture, gradient, id, layout, locale, metadata, reactive, regional,
+        shape, signal, style, task, text, widget, window,
     };
 
     #[cfg(feature = "flow-markdown")]
@@ -231,7 +232,8 @@ pub use waterui_url::Url;
 
 #[doc(inline)]
 pub use waterui_core::{
-    AnyView, ContentLedger, Error, Str, animation, contract_violation,
+    AnyView, ContentLedger, Error, OneOf2, OneOf3, OneOf4, OneOf5, OneOf6, OneOf7, OneOf8, Str,
+    animation, contract_violation,
     easing::{self, EasingCurve, Interpolatable},
     env::{self, Environment},
     event,

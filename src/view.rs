@@ -16,7 +16,7 @@ use waterui_core::IntoSignalF32;
 use waterui_core::handler::ReportExtraction;
 pub use waterui_core::view::*;
 use waterui_core::{
-    AnyView, Environment, Metadata, Retain,
+    AnyView, Environment, Metadata, OneOf2, Retain,
     env::{Installed, With},
     extract::State,
     handler::{EventHandler, Handler, HandlerOnce},
@@ -56,7 +56,7 @@ use crate::{
     filter::Opacity,
     gesture::{Gesture, GestureObserver, LongPressGesture, TapGesture},
     interaction::Hittable,
-    metadata::secure::Secure,
+    metadata::secure::{HighDynamicRange, Secure, StandardDynamicRange},
     theme,
 };
 use crate::{
@@ -118,11 +118,14 @@ pub trait ViewExt: View + Sized {
     /// let wide_gamut = text!("Sunset").color_space(ColorSpace::Hdr);
     /// let thumbnail = text!("Avatar").color_space(ColorSpace::Sdr);
     /// ```
-    fn color_space(self, space: crate::metadata::secure::ColorSpace) -> AnyView {
-        use crate::metadata::secure::{ColorSpace, HighDynamicRange, StandardDynamicRange};
+    fn color_space(
+        self,
+        space: crate::metadata::secure::ColorSpace,
+    ) -> OneOf2<Metadata<StandardDynamicRange>, Metadata<HighDynamicRange>> {
+        use crate::metadata::secure::ColorSpace;
         match space {
-            ColorSpace::Sdr => AnyView::new(self.metadata(StandardDynamicRange::new())),
-            ColorSpace::Hdr => AnyView::new(self.metadata(HighDynamicRange::new())),
+            ColorSpace::Sdr => OneOf2::A(self.metadata(StandardDynamicRange::new())),
+            ColorSpace::Hdr => OneOf2::B(self.metadata(HighDynamicRange::new())),
         }
     }
 
@@ -271,11 +274,6 @@ pub trait ViewExt: View + Sized {
     {
         let local_task = spawn_local(task);
         self.retain(local_task)
-    }
-
-    /// Converts this view to an `AnyView` type-erased container.
-    fn anyview(self) -> AnyView {
-        AnyView::new(self)
     }
 
     /// Sets the background of this view.

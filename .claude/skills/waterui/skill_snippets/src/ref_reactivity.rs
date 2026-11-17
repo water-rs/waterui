@@ -711,8 +711,8 @@ pub fn reactivity_block_20() -> impl View {
     let mode = Binding::container(ChartMode::Bar);
 
     Dynamic::watch(mode.clone(), |mode| match mode {
-        ChartMode::Bar => AnyView::new(bar_chart()),
-        ChartMode::Line => AnyView::new(line_chart()),
+        ChartMode::Bar => OneOf2::A(bar_chart()),
+        ChartMode::Line => OneOf2::B(line_chart()),
     })
 }
 

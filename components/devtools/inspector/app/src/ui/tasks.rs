@@ -112,23 +112,20 @@ fn stall_row(row: StallRow) -> ListItem {
 }
 
 /// The captured stack, or an explanation of why there isn't one.
-fn backtrace_view(backtrace: &[Str]) -> AnyView {
+fn backtrace_view(backtrace: &[Str]) -> impl View + use<> {
     if backtrace.is_empty() {
-        return text("stack not captured — rate-limited to avoid perturbing the target")
-            .caption()
-            .foreground(MutedForeground)
-            .anyview();
+        return OneOf2::A(
+            text("stack not captured — rate-limited to avoid perturbing the target")
+                .caption()
+                .foreground(MutedForeground),
+        );
     }
 
-    backtrace
-        .iter()
-        .map(|frame| {
-            text(frame.clone())
-                .caption()
-                .foreground(MutedForeground)
-                .anyview()
-        })
-        .collect::<VStack<_>>()
-        .alignment(HorizontalAlignment::Leading)
-        .anyview()
+    OneOf2::B(
+        backtrace
+            .iter()
+            .map(|frame| text(frame.clone()).caption().foreground(MutedForeground))
+            .collect::<VStack<_>>()
+            .alignment(HorizontalAlignment::Leading),
+    )
 }

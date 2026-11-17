@@ -88,10 +88,13 @@ fn dropped_notice(model: &Model) -> impl View + use<> {
     .otherwise(|| ())
 }
 
-fn channel_rows(model: &Model, subscriptions: &SubscriptionSender) -> VStack<(Vec<AnyView>,)> {
+fn channel_rows(
+    model: &Model,
+    subscriptions: &SubscriptionSender,
+) -> VStack<(Vec<impl View + use<>>,)> {
     Channel::ALL
         .iter()
-        .map(|channel| channel_row(*channel, model, subscriptions).anyview())
+        .map(|channel| channel_row(*channel, model, subscriptions))
         .collect()
 }
 

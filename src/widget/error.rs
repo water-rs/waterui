@@ -68,8 +68,8 @@
 //!         let message = Binding::container(err.to_string());
 //!         text!("Failed to load: {message}")
 //!     }) {
-//!         Ok(data) => text::text(data).anyview(),
-//!         Err(error_view) => error_view.anyview(),
+//!         Ok(data) => OneOf2::A(text::text(data)),
+//!         Err(error_view) => OneOf2::B(error_view),
 //!     }
 //! }
 //! ```

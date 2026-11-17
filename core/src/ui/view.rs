@@ -38,7 +38,7 @@ use core::fmt;
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is not a WaterUI view",
     label = "expected a view",
-    note = "Any `'static` type implementing `View::body` is a view, as is a function returning `impl View` or a bare `&'static str`, `String`, or `Str`. A `ForEach` is a collection of views, not a view — hand it to a container such as `Lazy::for_each` or `List::for_each`, and erase differing view types with `.anyview()`."
+    note = "Any `'static` type implementing `View::body` is a view, as is a function returning `impl View` or a bare `&'static str`, `String`, or `Str`. A `ForEach` is a collection of views, not a view — hand it to a container such as `Lazy::for_each` or `List::for_each`, and unify differing view types with `OneOf2`..`OneOf8`."
 )]
 pub trait View: 'static {
     /// Build this view and return the content.

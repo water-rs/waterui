@@ -8,7 +8,7 @@ use core::fmt::Debug;
 
 use waterui_core::{AnyView, Environment, View};
 
-use crate::ViewExt;
+use waterui_core::OneOf2;
 
 /// A `View` wrapper that renders a boxed `std::error::Error`.
 #[derive(Debug)]
@@ -47,9 +47,9 @@ impl View for ErrorView {
     /// falls back to rendering the error as plain text.
     fn body(self, env: &waterui_core::Environment) -> impl View {
         if let Some(builder) = env.get::<ErrorViewBuilder>() {
-            (builder.0)(self.inner, env)
+            OneOf2::A((builder.0)(self.inner, env))
         } else {
-            format!("{}", self.inner).anyview()
+            OneOf2::B(format!("{}", self.inner))
         }
     }
 }

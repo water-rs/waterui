@@ -158,13 +158,9 @@ fn a_list_under_a_header_renders_its_rows() {
     let mut app = test_ui().viewport(600, 400).mount(move || {
         vstack((
             text("Task").caption(),
-            vstack(
-                rows.iter()
-                    .map(|row| text(*row).anyview())
-                    .collect::<Vec<_>>(),
-            )
-            .alignment(HorizontalAlignment::Leading)
-            .spacing(8.0),
+            vstack(rows.iter().map(|row| text(*row)).collect::<Vec<_>>())
+                .alignment(HorizontalAlignment::Leading)
+                .spacing(8.0),
         ))
         .alignment(HorizontalAlignment::Leading)
         .spacing(12.0)
