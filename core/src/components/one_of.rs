@@ -81,12 +81,29 @@ one_of!(
 );
 one_of!(
     /// A view that is one of seven view types.
-    OneOf7 { A, B, C, D, E, F, G }
+    OneOf7 {
+        A,
+        B,
+        C,
+        D,
+        E,
+        F,
+        G
+    }
 );
 one_of!(
     /// A view that is one of eight view types. A choice among more types
     /// nests: the last variant holds another `OneOfN`.
-    OneOf8 { A, B, C, D, E, F, G, H }
+    OneOf8 {
+        A,
+        B,
+        C,
+        D,
+        E,
+        F,
+        G,
+        H
+    }
 );
 
 #[cfg(test)]
