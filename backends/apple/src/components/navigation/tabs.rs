@@ -167,7 +167,6 @@ mod platform {
     use waterui::reactive::Signal;
     use waterui_core::id::Id;
     use waterui_core::layout::ProposalSize;
-    use waterui_core::views::Views as _;
 
     use crate::contract::KeepAlive;
 

@@ -28,7 +28,7 @@ use crate::contract::Held;
 use crate::contract::KeepAlive;
 use crate::contract::{NativeLeaf, RenderContext};
 #[cfg(target_os = "ios")]
-use waterui_backend_core::ChildSlot;
+use waterui_core::backend::ChildSlot;
 
 /// The `NavigationSplitLayout` realization.
 pub fn realize_navigation_split_layout(
