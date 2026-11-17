@@ -1,3 +1,4 @@
+use crate::renderer::HeldChild;
 use crate::renderer::bounded_proposal;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -52,8 +53,11 @@ use waterui::theme::color;
 use waterui_core::resolve::Resolvable as _;
 
 /// The stable per-row id used to key the retained content sub-view cache, matching
-/// the id `ListConfig::contents` (a `SharedAnyViews<ListItem>`) yields per index.
+/// the id `ListConfig::contents` yields per index.
 pub type ListItemId = RawId;
+
+/// A row as this backend holds it: its content a child the renderer builds.
+pub(crate) type Row<E> = ListItem<HeldChild<E>>;
 
 #[derive(Clone, Copy)]
 struct ListViewportAnchor {
@@ -127,7 +131,7 @@ impl RowBinding {
 /// The selection holds row *tags*, not row ids: a row is selected when its
 /// tag is in the binding, a write stores the row's tag, and a row without a
 /// tag is not selectable at all.
-pub struct ListRowSelection {
+pub struct ListRowSelection<E: crate::text::TextEngine> {
     /// The erased selection `ListConfig` carries — keyed by the tags `tags`
     /// answers for the rows.
     selection: ListSelection<ListTagId>,
@@ -136,19 +140,19 @@ pub struct ListRowSelection {
     tags: ListRowTags,
     /// The list's retained row snapshot — row ids by index, resolved for
     /// Shift-range writes against the membership the list actually rendered.
-    snapshot: Rc<RefCell<AnyViewsSnapshot<ListItem>>>,
+    snapshot: Rc<RefCell<AnyViewsSnapshot<Row<E>>>>,
     /// The row a Shift range extends from — the last row written without
     /// Shift, or the list's first row when nothing has been written yet.
     anchor: Cell<Option<ListItemId>>,
 }
 
-impl ListRowSelection {
+impl<E: crate::text::TextEngine> ListRowSelection<E> {
     /// Shares the config's selection when the list is selectable; `None` on
     /// `ListSelection::None`, so a non-selectable list keeps its old input
     /// behaviour — no row press target, no selected state.
     fn new(
-        config: &ListConfig,
-        snapshot: Rc<RefCell<AnyViewsSnapshot<ListItem>>>,
+        config: &ListConfig<HeldChild<E>>,
+        snapshot: Rc<RefCell<AnyViewsSnapshot<Row<E>>>>,
     ) -> Option<Rc<Self>> {
         match config.selection() {
             ListSelection::None => None,
@@ -257,7 +261,7 @@ impl ListRowSelection {
 /// rows in the current visible window are built and retained (evicted once they
 /// scroll out), so the list stays virtualized — cost is bounded by visible rows.
 pub struct ListRenderState<E: crate::text::TextEngine> {
-    pub(crate) config: ListConfig,
+    pub(crate) config: ListConfig<HeldChild<E>>,
     /// Estimated/measured row extents belong to this list, not to its render
     /// position in a backend-global slot array. Shared with each row's
     /// `ListRow` accessibility target so a `ScrollIntoView` request resolves
@@ -332,17 +336,17 @@ pub struct ListRenderState<E: crate::text::TextEngine> {
     sections_stale: Rc<Cell<bool>>,
     /// The list's row-selection state shared by pointer, keyboard and
     /// accessibility input; `None` when the list is not selectable.
-    row_selection: Option<Rc<ListRowSelection>>,
+    row_selection: Option<Rc<ListRowSelection<E>>>,
     /// The immutable row set the membership watcher last applied. Section
     /// resolution, anchor mapping, the virtual window, and row emission all
     /// read this one membership — never the live collection while an older
     /// event is still being reconciled.
-    rows_snapshot: Rc<RefCell<AnyViewsSnapshot<ListItem>>>,
+    rows_snapshot: Rc<RefCell<AnyViewsSnapshot<Row<E>>>>,
     /// The rows' structural transitions (layout-spec.md §4.5): a row's
     /// declaration is claimed when its content is built, an inserted row
     /// animates in, and a removed row on screen stays as a ghost holding its
     /// slot. The extent index runs over display positions — rows and ghosts.
-    transitions: crate::renderer::LazyTransitions<E, ListItem>,
+    transitions: crate::renderer::LazyTransitions<E, Row<E>>,
     /// The list widget's cell: the owner a transition's blur host marks.
     owner: std::rc::Weak<crate::renderer::NodeCell<E>>,
     /// §7.1's scroll-surface bookkeeping: the extension and clearance
@@ -502,7 +506,7 @@ fn list_row_environment(env: &Environment) -> Environment {
 
 impl<E: crate::text::TextEngine> ListRenderState<E> {
     pub(crate) fn from_config(
-        config: ListConfig,
+        config: ListConfig<HeldChild<E>>,
         env: &Environment,
         renderer: &crate::renderer::SemanticCore<E>,
     ) -> Self {
@@ -718,7 +722,7 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
     /// Marks the row visible this frame either way.
     fn realize_row(
         &self,
-        contents: &AnyViewsSnapshot<ListItem>,
+        contents: &AnyViewsSnapshot<Row<E>>,
         index: usize,
         row_id: ListItemId,
         env: &Environment,
@@ -729,11 +733,10 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
             return;
         }
         let row_env = list_row_environment(env);
-        let mut item = materialize_list_item(contents, index);
-        let content = item.take_content();
+        let (content, deletable, insets) = materialize_list_item(contents, index).into_parts();
         let subtree_env = self.row_subtree_environment(row_id, &row_env);
         let subview = cache.entry(row_id, move || {
-            crate::renderer::RetainedSubview::new(content)
+            crate::renderer::RetainedSubview::held(content)
         });
         // The row owns the transition its content root declares; it is
         // claimed before anything walks the row.
@@ -757,8 +760,8 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
         self.realized_rows.borrow_mut().insert(
             row_id,
             RealizedRow {
-                deletable: item.get_deletable().clone(),
-                insets: item.get_insets().cloned(),
+                deletable,
+                insets,
                 env: row_env,
                 disabled,
                 subtree_env,

@@ -679,6 +679,12 @@ pub struct Renderer {
 }
 
 impl Renderer {
+    /// The captured environment.
+    #[must_use]
+    pub const fn env(&self) -> &Environment {
+        &self.env
+    }
+
     /// Renders `view` under the captured environment.
     #[must_use]
     pub fn render(&self, view: impl View) -> NativeLeaf {
@@ -691,20 +697,6 @@ impl Renderer {
         child.realize(&mut AppleBackend::new(self.mtm), &self.env, ())
     }
 
-    /// Renders `view` and answers the environment its leaf resolved
-    /// under: the scope of the *leading* `Metadata<Environment>` chain —
-    /// the environment layers at the root of `view` and the composite
-    /// bodies that produce them — and nothing below the first native
-    /// payload or other metadata, so a scope a descendant installs (a
-    /// `.disabled` child inside the content) never leaks into the answer.
-    /// Each `Metadata<Environment>` replaces the environment for its
-    /// subtree, matching `with_env`.
-    #[must_use]
-    pub fn render_resolved(&self, view: impl View) -> (NativeLeaf, Environment) {
-        let mut backend = AppleBackend::new(self.mtm);
-        view.dispatch(&mut ResolveEnvironment(&mut backend), &self.env, ())
-    }
-
     /// The captured environment as a context.
     #[must_use]
     pub const fn context(&self) -> RenderContext<'_> {
@@ -712,123 +704,3 @@ impl Renderer {
     }
 }
 
-/// Peels the leading `Metadata<Environment>` chain for
-/// [`Renderer::render_resolved`], then realizes the rest through
-/// [`AppleBackend`] under the environment the chain resolved to.
-struct ResolveEnvironment<'a>(&'a mut AppleBackend);
-
-impl Backend for ResolveEnvironment<'_> {
-    type Output = (NativeLeaf, Environment);
-    type Ctx = ();
-    /// The erased slot: peeling the leading environment chain dispatches each
-    /// wrapper's content through this probe again, which only an erased
-    /// child can do.
-    type Slot = AnyView;
-
-    fn native<T: NativeView + 'static>(
-        &mut self,
-        native: T,
-        env: &Environment,
-        (): (),
-    ) -> Self::Output {
-        (Realize::new(self.0).native(native, env, ()), env.clone())
-    }
-
-    fn metadata<K: MetadataKey>(
-        &mut self,
-        metadata: Metadata<K, AnyView>,
-        env: &Environment,
-        (): (),
-    ) -> Self::Output {
-        match cast::<Metadata<K, AnyView>, Metadata<Environment, AnyView>>(metadata) {
-            Ok(Metadata { content, value }) => content.dispatch(self, &value, ()),
-            Err(metadata) => (
-                Realize::new(self.0).metadata(
-                    metadata.map_content(<Held as ChildSlot>::from_view),
-                    env,
-                    (),
-                ),
-                env.clone(),
-            ),
-        }
-    }
-
-    fn erased(&mut self, view: AnyView, env: &Environment, (): ()) -> Self::Output {
-        *view
-            .dispatch_dyn(self, env, Box::new(()))
-            .downcast::<(NativeLeaf, Environment)>()
-            .expect("the erased path returns this probe's own output")
-    }
-
-    /// A hook scope ends the leading environment chain.
-    fn scoped<H: HookList, V: View>(
-        &mut self,
-        hooks: H,
-        view: V,
-        env: &Environment,
-        (): (),
-    ) -> Self::Output {
-        (
-            Realize::new(self.0).scoped(hooks, view, env, ()),
-            env.clone(),
-        )
-    }
-
-    fn hookable<T: HookableView>(&mut self, view: T, env: &Environment, (): ()) -> Self::Output {
-        (Realize::new(self.0).hookable(view, env, ()), env.clone())
-    }
-}
-
-impl DynBackend for ResolveEnvironment<'_> {
-    fn native_dyn(
-        &mut self,
-        native: ErasedPayload<'_>,
-        env: &Environment,
-        _cx: Box<dyn Any>,
-    ) -> Box<dyn Any> {
-        Box::new((
-            Realize::new(self.0).native_dyn(native, env, ()),
-            env.clone(),
-        ))
-    }
-
-    fn metadata_dyn(
-        &mut self,
-        mut metadata: ErasedPayload<'_>,
-        env: &Environment,
-        _cx: Box<dyn Any>,
-    ) -> Box<dyn Any> {
-        if let Some(Metadata { content, value }) = metadata.take::<Metadata<Environment, AnyView>>()
-        {
-            return Box::new(content.dispatch(self, &value, ()));
-        }
-        Box::new((
-            Realize::new(self.0).metadata_dyn(metadata, env, ()),
-            env.clone(),
-        ))
-    }
-
-    fn erased_dyn(&mut self, view: AnyView, env: &Environment, _cx: Box<dyn Any>) -> Box<dyn Any> {
-        Box::new(self.erased(view, env, ()))
-    }
-
-    fn scoped_dyn(
-        &mut self,
-        hooks: ErasedHooks,
-        view: AnyView,
-        env: &Environment,
-        _cx: Box<dyn Any>,
-    ) -> Box<dyn Any> {
-        Box::new((self.0.scoped_erased(&hooks, view, env, ()), env.clone()))
-    }
-
-    fn hookable_dyn(
-        &mut self,
-        view: ErasedPayload<'_>,
-        compose: ComposeErased,
-        env: &Environment,
-        _cx: Box<dyn Any>,
-    ) -> Box<dyn Any> {
-        Box::new((self.0.hookable_dyn(view, compose, env, ()), env.clone()))
-    }
-}

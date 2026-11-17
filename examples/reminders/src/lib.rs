@@ -439,7 +439,7 @@ fn matching_rows(
 // `row.flagged` is immutable fixture data: the `&'static [ReminderRow]` rows
 // never change, so reading the field in the row builder cannot go stale.
 #[allow(unknown_lints, collection_item_snapshot)]
-fn reminder_item(row: &ReminderRow) -> ListItem {
+fn reminder_item(row: &ReminderRow) -> ListItem<impl View + use<>> {
     ListItem::new(
         hstack((
             circle_outline().size(16.0, 16.0).muted(),

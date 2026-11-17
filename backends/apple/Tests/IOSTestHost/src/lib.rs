@@ -14,7 +14,7 @@ use waterui::prelude::theme_color::{Accent, Foreground};
 use waterui::prelude::*;
 use waterui::shape::Circle;
 
-fn message_row(sender: &'static str, subject: &'static str, preview: &'static str) -> ListItem {
+fn message_row(sender: &'static str, subject: &'static str, preview: &'static str) -> ListItem<impl View> {
     ListItem::new(Label::new(
         Str::from(format!("{sender}: {subject}")),
         move || {

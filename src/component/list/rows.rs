@@ -31,11 +31,11 @@ use core::ops::{Range, RangeBounds};
 use nami::collection::{CollectionChange, Edit};
 use nami::watcher::{BoxWatcherGuard, Context, WatcherGuard};
 use nami::{Computed, SignalExt};
-use waterui_core::Environment;
+use waterui_core::{Environment, View};
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::{Id as RawId, Mapping};
 
-use crate::views::{AnyViewsSnapshot, SharedAnyViews, ViewSnapshot, Views};
+use crate::views::{AnyViews, AnyViewsSnapshot, SharedAnyViews, ViewSnapshot, Views};
 
 use super::content::{ContentTags, HoldsTag};
 use super::selection::SelectableRows;
@@ -114,7 +114,7 @@ impl ListSections {
     /// contract: a debug build panics, and a release build logs the error and
     /// places that row in section 0.
     #[must_use]
-    pub fn spans(&self, rows: &impl ViewSnapshot<Id = RawId>) -> Vec<ListSectionSpan> {
+    pub fn spans<V>(&self, rows: &AnyViewsSnapshot<V>) -> Vec<ListSectionSpan> {
         let range = rows.range();
         let section_at = |index: usize| {
             let Some(id) = rows.get_id(index) else {
@@ -260,9 +260,10 @@ pub struct ListRowId {
 /// `C` is the content the rows were collected from. It holds no data; it
 /// carries the content's type to [`ListBuilder::selection`](super::ListBuilder::selection),
 /// which accepts a selection type only when the content is
-/// [`TaggedBy`](super::TaggedBy) it.
-pub struct ContentRows<C> {
-    parts: Rc<[SharedAnyViews<ListItem>]>,
+/// [`TaggedBy`](super::TaggedBy) it. `R` is the content type every row
+/// carries, the content's [`ListContent::Row`](super::ListContent::Row).
+pub struct ContentRows<C, R> {
+    parts: Rc<[SharedAnyViews<ListItem<R>>]>,
     tags: Rc<[PartTags]>,
     _content: PhantomData<fn() -> C>,
 }
@@ -353,8 +354,9 @@ impl<T: Ord + Clone> TypedPartTags<T> {
 /// tagged by `T`: a static row by its `.tag(…)` value, a `ForEach` row by
 /// its item's id, and an untagged static row not at all. Content with no row
 /// selected by `T` is not selectable by it.
-impl<C, T> SelectableRows<T> for ContentRows<C>
+impl<C, R, T> SelectableRows<T> for ContentRows<C, R>
 where
+    R: View,
     C: ContentTags<T>,
     C::Presence: HoldsTag,
     T: 'static + Ord + Clone,
@@ -375,7 +377,7 @@ where
     }
 }
 
-impl<C> fmt::Debug for ContentRows<C> {
+impl<C, R> fmt::Debug for ContentRows<C, R> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ContentRows")
             .field("parts", &self.parts.len())
@@ -385,14 +387,23 @@ impl<C> fmt::Debug for ContentRows<C> {
 
 /// An immutable snapshot of [`ContentRows`]: one snapshot per part, plus
 /// where each part starts.
-#[derive(Clone)]
-pub struct ContentRowsSnapshot {
-    parts: Rc<[AnyViewsSnapshot<ListItem>]>,
+pub struct ContentRowsSnapshot<R> {
+    parts: Rc<[AnyViewsSnapshot<ListItem<R>>]>,
     starts: Rc<[usize]>,
     len: usize,
 }
 
-impl fmt::Debug for ContentRowsSnapshot {
+impl<R> Clone for ContentRowsSnapshot<R> {
+    fn clone(&self) -> Self {
+        Self {
+            parts: Rc::clone(&self.parts),
+            starts: Rc::clone(&self.starts),
+            len: self.len,
+        }
+    }
+}
+
+impl<R> fmt::Debug for ContentRowsSnapshot<R> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ContentRowsSnapshot")
             .field("len", &self.len)
@@ -400,8 +411,8 @@ impl fmt::Debug for ContentRowsSnapshot {
     }
 }
 
-impl ContentRowsSnapshot {
-    fn new(parts: Rc<[AnyViewsSnapshot<ListItem>]>) -> Self {
+impl<R> ContentRowsSnapshot<R> {
+    fn new(parts: Rc<[AnyViewsSnapshot<ListItem<R>>]>) -> Self {
         let mut len = 0;
         let starts = parts
             .iter()
@@ -426,9 +437,9 @@ impl ContentRowsSnapshot {
     }
 }
 
-impl ViewSnapshot for ContentRowsSnapshot {
+impl<R: View> ViewSnapshot for ContentRowsSnapshot<R> {
     type Id = ListRowId;
-    type View = ListItem;
+    type View = ListItem<R>;
 
     fn range(&self) -> Range<usize> {
         0..self.len
@@ -473,11 +484,11 @@ fn shifted(edit: &Edit, offset: usize) -> Edit {
     }
 }
 
-impl<C> Views for ContentRows<C> {
+impl<C, R: View> Views for ContentRows<C, R> {
     type Id = ListRowId;
     type Guard = ContentRowsGuard;
-    type View = ListItem;
-    type Snapshot = ContentRowsSnapshot;
+    type View = ListItem<R>;
+    type Snapshot = ContentRowsSnapshot<R>;
 
     fn len(&self) -> Computed<usize> {
         self.parts
@@ -504,7 +515,7 @@ impl<C> Views for ContentRows<C> {
         _range: impl RangeBounds<usize>,
         watcher: impl Fn(Context<Self::Snapshot>, &CollectionChange) + 'static,
     ) -> Self::Guard {
-        let delivered: Rc<RefCell<Vec<AnyViewsSnapshot<ListItem>>>> = Rc::new(RefCell::new(
+        let delivered: Rc<RefCell<Vec<AnyViewsSnapshot<ListItem<R>>>>> = Rc::new(RefCell::new(
             self.parts.iter().map(Views::snapshot).collect(),
         ));
         let watcher = Rc::new(watcher);
@@ -542,19 +553,26 @@ impl<C> Views for ContentRows<C> {
 }
 
 /// A run of static rows: builders identified by their position.
-struct StaticRows {
-    builders: Rc<[AnyViewBuilder<ListItem>]>,
+struct StaticRows<R> {
+    builders: Rc<[AnyViewBuilder<ListItem<R>>]>,
 }
 
 /// The snapshot of [`StaticRows`] — the same builders, which never change.
-#[derive(Clone)]
-struct StaticRowsSnapshot {
-    builders: Rc<[AnyViewBuilder<ListItem>]>,
+struct StaticRowsSnapshot<R> {
+    builders: Rc<[AnyViewBuilder<ListItem<R>>]>,
 }
 
-impl ViewSnapshot for StaticRowsSnapshot {
+impl<R> Clone for StaticRowsSnapshot<R> {
+    fn clone(&self) -> Self {
+        Self {
+            builders: Rc::clone(&self.builders),
+        }
+    }
+}
+
+impl<R: View> ViewSnapshot for StaticRowsSnapshot<R> {
     type Id = usize;
-    type View = ListItem;
+    type View = ListItem<R>;
 
     fn range(&self) -> Range<usize> {
         0..self.builders.len()
@@ -569,11 +587,11 @@ impl ViewSnapshot for StaticRowsSnapshot {
     }
 }
 
-impl Views for StaticRows {
+impl<R: View> Views for StaticRows<R> {
     type Id = usize;
     type Guard = ();
-    type View = ListItem;
-    type Snapshot = StaticRowsSnapshot;
+    type View = ListItem<R>;
+    type Snapshot = StaticRowsSnapshot<R>;
 
     fn len(&self) -> Computed<usize> {
         Computed::constant(self.builders.len())
@@ -598,20 +616,20 @@ impl Views for StaticRows {
 // ============================================================================
 
 /// One static row a [`ListItemSink`] collected.
-struct StaticRow {
-    builder: AnyViewBuilder<ListItem>,
+struct StaticRow<R> {
+    builder: AnyViewBuilder<ListItem<R>>,
     /// The row's `.tag(…)` value; `None` when the row is not selectable.
     tag: Option<Rc<dyn Any>>,
 }
 
 /// One part a [`ListItemSink`] is collecting.
-enum SinkPart {
+enum SinkPart<R> {
     /// Consecutive static rows of one section.
-    Static(Vec<StaticRow>),
+    Static(Vec<StaticRow<R>>),
     /// One reactive collection and the `Mapping<Id>` its rows were erased
     /// through.
     Rows {
-        rows: SharedAnyViews<ListItem>,
+        rows: SharedAnyViews<ListItem<R>>,
         ids: Rc<dyn Any>,
     },
 }
@@ -621,21 +639,22 @@ enum SinkPart {
 /// It records the parts the content produces — runs of static row builders
 /// and reactive row collections — and the section each belongs to. Rows
 /// outside any [`Section`](super::Section) form sections without chrome.
-pub struct ListItemSink {
-    parts: Vec<SinkPart>,
+/// `R` is the content type of every row it holds.
+pub struct ListItemSink<R> {
+    parts: Vec<SinkPart<R>>,
     part_sections: Vec<usize>,
     sections: Vec<Option<ListSection>>,
     /// The section new rows join; `None` opens a section without chrome.
     open: Option<usize>,
 }
 
-impl Default for ListItemSink {
+impl<R: View> Default for ListItemSink<R> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl fmt::Debug for ListItemSink {
+impl<R> fmt::Debug for ListItemSink<R> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ListItemSink")
             .field("parts", &self.parts.len())
@@ -644,7 +663,7 @@ impl fmt::Debug for ListItemSink {
     }
 }
 
-impl ListItemSink {
+impl<R: View> ListItemSink<R> {
     /// Creates an empty sink.
     #[must_use]
     pub const fn new() -> Self {
@@ -665,16 +684,16 @@ impl ListItemSink {
 
     /// Pushes one static row built from a cloneable builder. The row carries
     /// no tag, so it is not selectable.
-    pub fn push(&mut self, builder: AnyViewBuilder<ListItem>) {
+    pub fn push(&mut self, builder: AnyViewBuilder<ListItem<R>>) {
         self.push_static(builder, None);
     }
 
     /// Pushes one static row selected by `tag`.
-    pub(crate) fn push_tagged<T: 'static>(&mut self, builder: AnyViewBuilder<ListItem>, tag: T) {
+    pub(crate) fn push_tagged<T: 'static>(&mut self, builder: AnyViewBuilder<ListItem<R>>, tag: T) {
         self.push_static(builder, Some(Rc::new(tag)));
     }
 
-    fn push_static(&mut self, builder: AnyViewBuilder<ListItem>, tag: Option<Rc<dyn Any>>) {
+    fn push_static(&mut self, builder: AnyViewBuilder<ListItem<R>>, tag: Option<Rc<dyn Any>>) {
         let section = self.open_section();
         if let (Some(SinkPart::Static(rows)), Some(last)) =
             (self.parts.last_mut(), self.part_sections.last())
@@ -688,14 +707,18 @@ impl ListItemSink {
         self.part_sections.push(section);
     }
 
-    /// Pushes a reactive collection of rows, each selected by its own id.
-    /// Its rows are inserted, removed and moved in place as the collection
-    /// changes.
-    pub fn push_rows<V: Views<View = ListItem> + 'static>(&mut self, rows: V) {
+    /// Pushes a reactive collection of rows, each selected by its own id and
+    /// carried into this sink's row type by `row`. Its rows are inserted,
+    /// removed and moved in place as the collection changes.
+    pub fn push_rows<V, F>(&mut self, rows: V, row: F)
+    where
+        V: Views + 'static,
+        F: Fn(V::View) -> ListItem<R> + Clone + 'static,
+    {
         let section = self.open_section();
-        let (rows, ids) = SharedAnyViews::new_with_ids(rows);
+        let (rows, ids) = AnyViews::new_with_ids(rows);
         self.parts.push(SinkPart::Rows {
-            rows,
+            rows: SharedAnyViews::from(rows.map_views(row)),
             ids: Rc::new(ids),
         });
         self.part_sections.push(section);
@@ -715,7 +738,7 @@ impl ListItemSink {
 
     /// The collected rows of the content `C` and the section each belongs
     /// to.
-    pub(crate) fn finish<C>(self) -> (ContentRows<C>, RowSections<ListRowId>) {
+    pub(crate) fn finish<C>(self) -> (ContentRows<C, R>, RowSections<ListRowId>) {
         let (parts, tags): (Vec<_>, Vec<_>) = self
             .parts
             .into_iter()
