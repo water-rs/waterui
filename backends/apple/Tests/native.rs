@@ -9074,9 +9074,9 @@ mod scroll {
 mod list_scroll {
     use std::time::Duration;
 
+    use waterui::OneOf2;
     use waterui::ViewExt;
     use waterui::animation::Animation;
-    use waterui::OneOf2;
     use waterui::component::list::ListItem;
     use waterui::component::text::Text;
     use waterui::layout::padding::Padding;

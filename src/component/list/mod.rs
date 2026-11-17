@@ -16,9 +16,9 @@ use nami::watcher::Context;
 use nami::{Binding, Computed, signal::IntoComputed};
 
 use crate::views::{AnyViews, ForEach, SharedAnyViews, ViewSnapshot, Views};
+use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::id::Mapping;
 use waterui_core::view::{ConfigurableView, ViewConfiguration};
-use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::{
     AnyView, Environment, Metadata, Native, NativeView, OneOf2, View,
     handler::{Handler, shared_action},

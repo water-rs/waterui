@@ -31,9 +31,9 @@ use core::ops::{Range, RangeBounds};
 use nami::collection::{CollectionChange, Edit};
 use nami::watcher::{BoxWatcherGuard, Context, WatcherGuard};
 use nami::{Computed, SignalExt};
-use waterui_core::{Environment, View};
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::{Id as RawId, Mapping};
+use waterui_core::{Environment, View};
 
 use crate::views::{AnyViews, AnyViewsSnapshot, SharedAnyViews, ViewSnapshot, Views};
 

@@ -253,8 +253,8 @@ fn retained_list_measurement_reuses_the_watcher_snapshot() {
     use nami::Computed;
     use nami::collection::CollectionChange;
     use nami::watcher::Context;
-    use waterui_core::layout::ProposalSize;
     use waterui_core::backend::{ChildSlot, MapSlots as _};
+    use waterui_core::layout::ProposalSize;
     use waterui_core::view::ConfigurableView as _;
     use waterui_core::views::{ForEach, Views};
 
@@ -302,7 +302,8 @@ fn retained_list_measurement_reuses_the_watcher_snapshot() {
     let mut renderer = super::test_renderer();
     let theme = renderer.theme();
     let widget = RefCell::new(ListRenderState::from_config(
-        list.config().map_slots(<crate::renderer::HeldChild<_> as ChildSlot>::from_view),
+        list.config()
+            .map_slots(<crate::renderer::HeldChild<_> as ChildSlot>::from_view),
         &env,
         &renderer,
     ));
@@ -326,8 +327,8 @@ fn specified_list_viewport_does_not_materialize_rows() {
     use core::cell::{Cell, RefCell};
     use std::rc::Rc;
 
-    use waterui_core::layout::ProposalSize;
     use waterui_core::backend::{ChildSlot, MapSlots as _};
+    use waterui_core::layout::ProposalSize;
     use waterui_core::view::ConfigurableView as _;
 
     use crate::renderer::WidgetBehavior as _;
@@ -344,7 +345,8 @@ fn specified_list_viewport_does_not_materialize_rows() {
     let mut renderer = super::test_renderer();
     let theme = renderer.theme();
     let widget = RefCell::new(ListRenderState::from_config(
-        list.config().map_slots(<crate::renderer::HeldChild<_> as ChildSlot>::from_view),
+        list.config()
+            .map_slots(<crate::renderer::HeldChild<_> as ChildSlot>::from_view),
         &env,
         &renderer,
     ));

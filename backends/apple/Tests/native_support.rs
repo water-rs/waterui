@@ -926,7 +926,11 @@ pub mod toolbar_reach {
 
     /// The fixtures' list: three plain rows.
     fn rows() -> impl waterui::View {
-        List::content(vec![row_item as fn() -> ListItem<waterui::component::text::Text>; 3])
+        List::content(vec![
+            row_item
+                as fn() -> ListItem<waterui::component::text::Text>;
+            3
+        ])
     }
 
     /// Window → `NavigationStack` → page whose content is a `List`.
@@ -950,7 +954,11 @@ pub mod toolbar_reach {
             || {
                 NavigationStack::new(NavigationView::new(
                     "Inbox",
-                    List::content(vec![row_item as fn() -> ListItem<waterui::component::text::Text>; 60]),
+                    List::content(vec![
+                        row_item
+                            as fn() -> ListItem<waterui::component::text::Text>;
+                        60
+                    ]),
                 ))
             },
             false,
