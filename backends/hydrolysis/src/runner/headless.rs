@@ -1,5 +1,6 @@
 //! Pump-based headless runtime for tests, snapshots and offscreen rendering.
 
+use super::window::{RootWindow, root_window};
 use super::*;
 use crate::animation::PerpetualAnimation;
 #[cfg(not(target_arch = "wasm32"))]

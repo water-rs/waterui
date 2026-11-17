@@ -40,7 +40,6 @@ use waterui_core::key::KeyPress;
 use waterui_core::{Native, view::Hook};
 #[cfg(hydrolysis_cherenkov)]
 use waterui_text::FontCollection;
-use window::{RootWindow, root_window};
 
 // The JNI host exists only where a painter does: a painter-less Android
 // build ships none of the session bridge the Kotlin side calls into.
@@ -539,7 +538,12 @@ pub fn run<W: Windows>(
         {
             exit_without_gpu(error);
         }
-        pending_windows.extend(pending_window_queue.borrow_mut().drain(..).map(root_window));
+        pending_windows.extend(
+            pending_window_queue
+                .borrow_mut()
+                .drain(..)
+                .map(window::root_window),
+        );
     }
 }
 
