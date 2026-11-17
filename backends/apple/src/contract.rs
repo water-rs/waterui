@@ -28,7 +28,7 @@ use cocoa_ui::uikit::HostView;
 use cocoa_ui::view::retain_base;
 use waterui::reactive::Signal;
 use waterui::reactive::watcher::Context;
-use waterui_backend_core::{AnyView, Environment, Realize, View};
+use waterui_backend_core::{AnyView, Child, ChildView, Environment, Realize, View};
 use waterui_core::backend::{Backend, DynBackend, ErasedPayload, cast};
 use waterui_core::layout::SubView;
 use waterui_core::metadata::MetadataKey;
@@ -39,6 +39,7 @@ use cocoa_ui::Retained;
 use crate::backend::AppleBackend;
 use crate::measure_memo::MemoizingSubView;
 use crate::proposal::{self, CommittedGeometry};
+use crate::transition::adoption::AdoptionOffer;
 
 /// What a rendered component owns beyond its platform view: watcher guards,
 /// action targets, rendered children, the platform objects they act on.
@@ -580,6 +581,9 @@ pub(crate) fn adopt_controllers(
 pub struct RenderContext<'a> {
     env: &'a Environment,
     mtm: cocoa_ui::MainThreadMarker,
+    /// The adoption offer this payload took, when it is the first payload
+    /// of a transition's content.
+    offer: Option<AdoptionOffer>,
 }
 
 impl fmt::Debug for RenderContext<'_> {
@@ -590,7 +594,28 @@ impl fmt::Debug for RenderContext<'_> {
 
 impl<'a> RenderContext<'a> {
     pub(crate) const fn new(env: &'a Environment, mtm: cocoa_ui::MainThreadMarker) -> Self {
-        Self { env, mtm }
+        Self {
+            env,
+            mtm,
+            offer: None,
+        }
+    }
+
+    /// The context a backend method realizes its payload in: it takes an
+    /// armed [`AdoptionOffer`] from `env`, so only the first payload of a
+    /// transition's content sees it.
+    pub(crate) fn entry(env: &'a Environment, mtm: cocoa_ui::MainThreadMarker) -> Self {
+        Self {
+            env,
+            mtm,
+            offer: env.get::<AdoptionOffer>().and_then(AdoptionOffer::take),
+        }
+    }
+
+    /// The adoption offer this payload took, if any.
+    #[must_use]
+    pub const fn offer(&self) -> Option<&AdoptionOffer> {
+        self.offer.as_ref()
     }
 
     /// The environment this subtree resolves against.
@@ -647,6 +672,12 @@ impl Renderer {
     #[must_use]
     pub fn render(&self, view: impl View) -> NativeLeaf {
         crate::dispatch::render(view, &self.env, self.mtm)
+    }
+
+    /// Realizes a child a payload handed over to be realized later.
+    #[must_use]
+    pub fn realize(&self, child: Child<AppleBackend>) -> NativeLeaf {
+        child.realize(&mut AppleBackend::new(self.mtm), &self.env, ())
     }
 
     /// Renders `view` and answers the environment its leaf resolved

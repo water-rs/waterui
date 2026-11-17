@@ -425,8 +425,6 @@ native_backend! {
         divider: waterui::layout::Divider,
         /// A container whose children are produced lazily.
         lazy_container: waterui::layout::container::LazyContainer,
-        /// A view whose content a signal replaces.
-        dynamic: waterui_core::Dynamic,
         /// A resolved shape.
         shape: waterui::shape::ResolvedShape,
         /// A system icon.
@@ -525,6 +523,8 @@ native_backend! {
         scroll<C>: waterui::layout::scroll::ScrollView<C>,
         /// A container with a fixed child list and a layout.
         fixed_container<C>: waterui::layout::container::FixedContainer<alloc::vec::Vec<C>>,
+        /// A view whose content a handler replaces.
+        dynamic<C>: waterui_core::Dynamic<C>,
     }
     metadata {
         /// An environment scope over its content.
@@ -623,7 +623,9 @@ native_backend! {
 
 #[cfg(test)]
 mod tests {
+    use alloc::rc::Rc;
     use alloc::vec::Vec;
+    use core::cell::RefCell;
 
     use waterui::layout::Spacer;
     use waterui::layout::scroll::scroll;
@@ -652,6 +654,18 @@ mod tests {
         fn children(self) -> Vec<C> {
             let (_, content, _, _) = self.into_inner().into_parts();
             alloc::vec![content]
+        }
+    }
+
+    /// A dynamic's children are the views it delivers once connected.
+    impl<C> Parent<C> for waterui_core::Dynamic<C> {
+        fn children(self) -> Vec<C> {
+            let delivered = Rc::new(RefCell::new(Vec::new()));
+            self.connect({
+                let delivered = Rc::clone(&delivered);
+                move |context| delivered.borrow_mut().push(context.into_value())
+            });
+            delivered.take()
         }
     }
 
