@@ -451,7 +451,7 @@ struct FlowBlockContent(Rc<RefCell<FlowBlockContentState>>);
 
 struct FlowBlockContentState {
     current: FlowBlockRender,
-    subscribers: HashMap<u64, DynamicHandler>,
+    subscribers: HashMap<u64, DynamicHandler<AnyView>>,
     next_subscriber_identity: u64,
 }
 

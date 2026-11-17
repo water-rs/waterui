@@ -34,12 +34,12 @@ use waterui_macros::state;
 
 /// A view whose content is replaced at runtime, by a [`DynamicHandler`].
 ///
-/// `V` is the type of the content it shows. A dynamic fed views of different
-/// types holds [`AnyView`], the default.
+/// `V` is the type of the content it shows; a dynamic fed views of different
+/// types holds [`AnyView`] (`Dynamic<AnyView>`).
 ///
 /// You should avoid using this component if possible,
 /// most of components in `WaterUI` already provide a way to update their content reactively.
-pub struct Dynamic<V: 'static = AnyView>(DynamicHandler<V>);
+pub struct Dynamic<V: 'static>(DynamicHandler<V>);
 
 impl<V> Clone for Dynamic<V> {
     fn clone(&self) -> Self {
@@ -52,10 +52,10 @@ impl<V> Clone for Dynamic<V> {
 /// Provides methods to set new content for the associated Dynamic view.
 ///
 /// Extracts through `State<Self>`, so `.state(&handler)` injects it and a bare
-/// `handler: DynamicHandler` parameter shares positions with
-/// `State<DynamicHandler>` ones.
+/// `handler: DynamicHandler<V>` parameter shares positions with
+/// `State<DynamicHandler<V>>` ones.
 #[state]
-pub struct DynamicHandler<V: 'static = AnyView>(Rc<DynamicHandlerInner<V>>);
+pub struct DynamicHandler<V: 'static>(Rc<DynamicHandlerInner<V>>);
 
 impl<V> Clone for DynamicHandler<V> {
     fn clone(&self) -> Self {
@@ -208,7 +208,7 @@ impl<V: View> Dynamic<V> {
     }
 }
 
-impl Dynamic {
+impl Dynamic<()> {
     /// Creates a Dynamic view that watches structural reactive state.
     ///
     /// The provided function is used to convert the value to a view.

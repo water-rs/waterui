@@ -241,7 +241,7 @@ impl Layout for DirectionalLayout {
 ///
 /// Authored over a [`ViewSequence`] `S`, the container reaches a backend as
 /// `FixedContainer<Vec<C>>`, each child in the backend's child slot `C`.
-pub struct FixedContainer<S = Vec<AnyView>> {
+pub struct FixedContainer<S> {
     layout: Box<dyn Layout>,
     contents: S,
 }
@@ -345,7 +345,7 @@ impl<S: ViewSequence> View for FixedContainer<S> {
 /// rendering of large lists. The collection keeps its item view type `V`,
 /// and a backend receives each item in its own child slot.
 #[derive(Debug)]
-pub struct LazyContainer<V = AnyView> {
+pub struct LazyContainer<V> {
     layout: Box<dyn Layout>,
     contents: AnyViews<V>,
     direction: Computed<LayoutDirection>,
@@ -486,8 +486,8 @@ mod tests {
         assert_eq!(background.background_slot(), Some(0));
         let body = AnyView::new(background.body(&waterui_core::Environment::new()));
         let native = body
-            .downcast::<Native<FixedContainer>>()
-            .expect("FixedContainer::body produces Native<FixedContainer>");
+            .downcast::<Native<FixedContainer<Vec<AnyView>>>>()
+            .expect("FixedContainer::body produces Native<FixedContainer<Vec<AnyView>>>");
         assert_eq!(native.as_inner().background_slot(), Some(0));
 
         let plain = FixedContainer::new(OffsetLayout, ((),));

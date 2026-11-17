@@ -25,7 +25,7 @@ pub struct BadgeConfig {
     /// The numeric value to display on the badge
     pub value: Computed<i32>,
     /// The content that the badge will be attached to
-    pub content: AnyViewBuilder,
+    pub content: AnyViewBuilder<AnyView>,
     /// The color of the badge
     pub color: Computed<Color>,
 }
