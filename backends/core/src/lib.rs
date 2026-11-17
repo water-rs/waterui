@@ -47,6 +47,7 @@
 
 extern crate alloc;
 
+pub mod child;
 pub mod frame_signals;
 #[cfg(feature = "gestures")]
 pub mod gesture;
@@ -59,6 +60,7 @@ pub mod overlay;
 pub mod scroll;
 pub mod time;
 
+pub use child::{Child, ChildView, NativeBackendFamily};
 pub use native_backend::{NativeBackend, Realize, report_unprovided};
 
 // Re-export common types from waterui-core

@@ -53,7 +53,7 @@ fn stress_card_background(index: usize) -> Color {
     }
 }
 
-fn system_tile(toggle: &Binding<bool>, index: usize) -> impl View {
+fn system_tile(toggle: &Binding<bool>, index: usize) -> impl View + use<> {
     let fast = Duration::from_millis(520);
     let easing = Animation::bezier(fast, 0.22, 1.0, 0.36, 1.0);
 
@@ -89,7 +89,7 @@ fn filter_tile(
     saturation_target: &Binding<f64>,
     hue_target: &Binding<f64>,
     index: usize,
-) -> impl View {
+) -> impl View + use<> {
     let idx = index as f64;
 
     let blur = blur_target
@@ -117,7 +117,7 @@ fn filter_tile(
     .hue_rotation(hue)
 }
 
-fn system_section(count: usize, toggle: &Binding<bool>) -> impl View {
+fn system_section(count: usize, toggle: &Binding<bool>) -> impl View + use<> {
     let columns = 18usize;
     let rows = count.div_ceil(columns);
 
@@ -170,7 +170,7 @@ fn filter_section(
     blur_target: &Binding<f64>,
     saturation_target: &Binding<f64>,
     hue_target: &Binding<f64>,
-) -> impl View {
+) -> impl View + use<> {
     let columns = 12usize;
     let rows = count.div_ceil(columns);
 

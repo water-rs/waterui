@@ -678,6 +678,7 @@ struct ResolveEnvironment<'a>(&'a mut AppleBackend);
 impl Backend for ResolveEnvironment<'_> {
     type Output = (NativeLeaf, Environment);
     type Ctx = ();
+    type Slot = waterui_backend_core::Child<AppleBackend>;
 
     fn native<T: NativeView + 'static>(
         &mut self,

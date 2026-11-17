@@ -105,7 +105,7 @@ fn chips() -> impl View {
     .spacing(8.0)
 }
 
-fn chip_row(rail: ScrollView) -> impl View {
+fn chip_row<C: View>(rail: ScrollView<C>) -> impl View {
     vstack((hstack((
         rail.a11y_label("chip-rail"),
         button("F").action(|| {}).a11y_label("More filters"),
@@ -333,9 +333,9 @@ fn chip_rail_fills_offer_when_row_fits() {
             Environment::new(),
             move || {
                 chip_row(if horizontal {
-                    scroll_horizontal(chips())
+                    scroll_horizontal(AnyView::new(chips()))
                 } else {
-                    scroll(chips())
+                    scroll(AnyView::new(chips()))
                 })
             },
             900,
