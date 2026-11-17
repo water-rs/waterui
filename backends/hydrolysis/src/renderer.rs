@@ -195,9 +195,12 @@ use waterui::style::{Offset, Rotation, Scale, Shadow};
 use waterui::widget::Divider;
 #[cfg(any(feature = "menu", feature = "color-picker"))]
 use waterui::window::{Window, WindowState, WindowStyle};
-use waterui_controls::button::{Button, ButtonConfig};
+#[cfg(feature = "menu")]
+use waterui_controls::button::Button;
+use waterui_controls::button::ButtonConfig;
 #[cfg(feature = "accessibility")]
 use waterui_controls::input::ContentType;
+#[cfg(feature = "menu")]
 use waterui_controls::label::Label as SemanticLabel;
 #[cfg(feature = "menu")]
 use waterui_controls::menu::{CommandRole, ResolvedCommand, ResolvedMenu, ResolvedMenuItem};
@@ -217,9 +220,11 @@ use waterui_core::handler::{BoxedAction, SharedAction};
 #[cfg(any(feature = "menu", feature = "color-picker"))]
 use waterui_core::impl_extractor;
 use waterui_core::key::{KeyHandling, KeyPress, OnKeyPress};
+#[cfg(any(feature = "menu", feature = "color-picker"))]
+use waterui_core::layout::Point as LayoutPoint;
 use waterui_core::layout::{
-    HorizontalAlignment, Layout, Point as LayoutPoint, ProposalSize, Rect as LayoutRect,
-    Size as LayoutSize, StretchAxis, SubView, SubviewPlacement, VerticalAlignment, ViewDimensions,
+    HorizontalAlignment, Layout, ProposalSize, Rect as LayoutRect, Size as LayoutSize, StretchAxis,
+    SubView, SubviewPlacement, VerticalAlignment, ViewDimensions,
 };
 #[cfg(feature = "accessibility")]
 use waterui_core::metadata::MetadataKey;
@@ -234,6 +239,7 @@ use waterui_form::picker::date::DatePickerConfig;
 use waterui_form::secure::{Secure as FormSecure, SecureFieldConfig};
 use waterui_graphics::Gradient;
 use waterui_graphics::backend::FilteredView;
+#[cfg(any(feature = "menu", feature = "navigation", feature = "color-picker"))]
 use waterui_graphics::color::Color;
 #[cfg(hydrolysis_gpu)]
 use waterui_graphics::gpu::RedrawHandle;
@@ -248,6 +254,7 @@ use waterui_layout::container::FixedContainer;
 use waterui_layout::scroll::Axis as ScrollAxis;
 use waterui_layout::spacer::Spacer;
 use waterui_shape::{ClipShape, PathCommand, ResolvedShape, ShapeKind};
+#[cfg(any(feature = "menu", all(feature = "list", feature = "accessibility")))]
 use waterui_text::Text;
 use waterui_text::styled::StyledStr;
 

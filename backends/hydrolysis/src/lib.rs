@@ -36,15 +36,7 @@ mod hosted;
 #[cfg(any(test, hydrolysis_hwui))]
 pub mod hwui;
 #[cfg(hydrolysis_runtime)]
-#[cfg(any(
-    test,
-    feature = "text-field",
-    feature = "secure-field",
-    feature = "color-picker",
-    feature = "date-picker",
-    feature = "list",
-    feature = "navigation"
-))]
+#[cfg(any(test, hydrolysis_localization))]
 mod localization;
 #[cfg(hydrolysis_runtime)]
 mod num_cast;
