@@ -22,6 +22,7 @@
 //! a claim; `remove` performs the retirement sequence of §1.5 and hands
 //! back the ghost the site holds until `on_complete` fires.
 
+pub mod adoption;
 pub mod clock;
 pub mod ghost;
 pub mod host;

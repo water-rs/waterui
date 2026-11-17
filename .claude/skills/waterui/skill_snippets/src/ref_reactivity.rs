@@ -743,24 +743,21 @@ pub fn reactivity_block_21() -> impl View {
     let url = Binding::container(Str::from("https://waterui.dev/logo.png"));
     let blur = Binding::f64(0.0);
 
-    let (handler, slot) = Dynamic::new();
+    let (handler, slot) = Dynamic::<Photo>::new();
 
     button("Load")
         .action(
-            |State(url): State<Binding<Str>>,
-             State(blur): State<Binding<f64>>,
-             h: DynamicHandler| {
+            |State(url): State<Binding<Str>>, h: DynamicHandler<Photo>| {
                 let Ok(parsed) = url.snapshot().as_str().parse::<Url>() else {
                     return;
                 };
-                h.set(Photo::new(parsed).blur(blur.clone()));
+                h.set(Photo::new(parsed));
             },
         )
         .state(&url)
-        .state(&blur)
         .state(&handler);
 
-    vstack((slot, ())) // [ellipsis filled]
+    vstack((slot.blur(blur.clone()), ())) // [ellipsis filled]
 }
 
 // ---------------------------------------------------------------------------

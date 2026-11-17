@@ -72,7 +72,7 @@ impl Remount {
 
     /// Replaces the mounted subtree with `view` and pumps.
     pub fn mount(&mut self, view: impl View) {
-        self.handler.set(view);
+        self.handler.set(AnyView::new(view));
         self.pump();
     }
 

@@ -19,9 +19,9 @@ use std::time::Instant;
 
 use waterui::animation::Animation;
 use waterui::{Binding, SignalExt as _, ViewExt as _};
-use waterui_core::AnyView;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::SelfId;
+use waterui_core::{AnyView, OneOf2};
 use waterui_layout::scroll;
 use waterui_layout::stack::{VStack, vstack, zstack};
 
@@ -634,7 +634,7 @@ fn dynamic_growth_from_empty_renders_content_without_rebuild() {
     // Mirror the runtime window composition: overlay Dynamic layered in a ZStack
     // above the main content, sized by its own (initially zero) measurement.
     let (handler, dynamic) = Dynamic::new();
-    handler.set(());
+    handler.set(OneOf2::A(()));
     let builder = AnyViewBuilder::<AnyView>::new(move || {
         AnyView::new(zstack((().size(360.0, 600.0), dynamic.clone())))
     });
@@ -645,7 +645,7 @@ fn dynamic_growth_from_empty_renders_content_without_rebuild() {
     let start = Instant::now();
     let _ = runtime.pump_at(true, start);
 
-    handler.set(overlay_content());
+    handler.set(OneOf2::B(overlay_content()));
     let result = runtime.pump_at(true, start + Duration::from_millis(16));
     assert_eq!(
         result.profile().counters().rebuild_iterations(),

@@ -69,16 +69,28 @@ impl<F: NativeBackendFamily, V: View> ChildFn<F> for ViewChild<V> {
 pub trait ChildView<B: NativeBackend>: 'static {
     /// Realizes the child through `backend`.
     fn realize(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output;
+
+    /// The child as its backend family's [`Child`], for a backend that
+    /// holds it to realize later, outside the method that received it.
+    fn into_child(self) -> Child<B::Family>;
 }
 
 impl<B: NativeBackend> ChildView<B> for Child<B::Family> {
     fn realize(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
         backend.with_family(|backend| self.0.call(backend, env, cx))
     }
+
+    fn into_child(self) -> Self {
+        self
+    }
 }
 
 impl<B: NativeBackend> ChildView<B> for AnyView {
     fn realize(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
         Realize::child(backend, self, env, cx)
+    }
+
+    fn into_child(self) -> Child<B::Family> {
+        Child::from_view(self)
     }
 }
