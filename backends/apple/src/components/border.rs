@@ -20,7 +20,7 @@ use waterui_core::layout::{
     ViewDimensions,
 };
 
-use crate::contract::{Mounted, NativeLeaf};
+use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;
 
 use crate::contract::RenderContext;
@@ -143,7 +143,10 @@ impl SubView for BorderSubView {
 }
 
 /// The `border` realization.
-pub fn realize_border_metadata(metadata: Metadata<Border>, ctx: &RenderContext<'_>) -> NativeLeaf {
+pub fn realize_border_metadata(
+    metadata: Metadata<Border, Held>,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
     let border = metadata.value;
     let edges = border.get_edges();
     let width = border.width();
@@ -153,7 +156,7 @@ pub fn realize_border_metadata(metadata: Metadata<Border>, ctx: &RenderContext<'
     let mtm = ctx.mtm();
     let host = HostView::new(mtm, Rect::ZERO);
     layer::ensure_layer(&host);
-    let mounted = ctx.render(metadata.content).mount(&host);
+    let mounted = ctx.realize(metadata.content).mount(&host);
     crate::primary_content::forward(&host, mounted.view());
     view::set_translates_autoresizing(mounted.view(), true);
 

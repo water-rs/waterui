@@ -18,7 +18,7 @@ use waterui_core::layout::{
 };
 use waterui_core::metadata::Retain;
 
-use crate::contract::{Mounted, NativeLeaf};
+use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;
 
 use crate::contract::RenderContext;
@@ -80,7 +80,10 @@ impl SubView for RetainSubView {
 /// The `retain` realization: `Metadata<Retain>` maps
 /// to a transparent container that holds the retained value for the leaf's
 /// life.
-pub fn realize_retain_metadata(metadata: Metadata<Retain>, ctx: &RenderContext<'_>) -> NativeLeaf {
+pub fn realize_retain_metadata(
+    metadata: Metadata<Retain, Held>,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
     let mtm = ctx.mtm();
     let host = HostView::new(mtm, Rect::ZERO);
     let host_view: &PlatformView = &host;
@@ -90,7 +93,7 @@ pub fn realize_retain_metadata(metadata: Metadata<Retain>, ctx: &RenderContext<'
     if let Some(offer) = ctx.offer() {
         offer.pass_on();
     }
-    let child = ctx.render(metadata.content);
+    let child = ctx.realize(metadata.content);
     // A `Retain::resolved` value is built from the environment its
     // content's modifier chain resolves in, as a handler's is.
     let env = child.handler_env(ctx.env());

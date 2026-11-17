@@ -29,7 +29,7 @@ use cocoa_ui::view::retain_base;
 use waterui::reactive::Signal;
 use waterui::reactive::watcher::Context;
 use waterui_backend_core::{AnyView, Child, ChildView, Environment, Realize, View};
-use waterui_core::backend::{Backend, DynBackend, ErasedPayload, cast};
+use waterui_core::backend::{Backend, ChildSlot, DynBackend, ErasedPayload, cast};
 use waterui_core::layout::SubView;
 use waterui_core::metadata::MetadataKey;
 use waterui_core::{Metadata, NativeView};
@@ -577,6 +577,9 @@ pub(crate) fn adopt_controllers(
     adopted
 }
 
+/// A child view a metadata wrapper or payload held for the Apple backend.
+pub type Held = Child<AppleBackend>;
+
 /// What a handler sees while it renders.
 pub struct RenderContext<'a> {
     env: &'a Environment,
@@ -635,6 +638,12 @@ impl<'a> RenderContext<'a> {
     #[must_use]
     pub fn render(&self, view: impl View) -> NativeLeaf {
         crate::dispatch::render(view, self.env, self.mtm)
+    }
+
+    /// Realizes a child a payload or metadata wrapper held.
+    #[must_use]
+    pub fn realize(&self, child: Child<AppleBackend>) -> NativeLeaf {
+        child.realize(&mut AppleBackend::new(self.mtm), self.env, ())
     }
 
     /// The same context under another environment — for metadata handlers
@@ -709,7 +718,10 @@ struct ResolveEnvironment<'a>(&'a mut AppleBackend);
 impl Backend for ResolveEnvironment<'_> {
     type Output = (NativeLeaf, Environment);
     type Ctx = ();
-    type Slot = waterui_backend_core::Child<AppleBackend>;
+    /// The erased slot: peeling the leading environment chain dispatches each
+    /// wrapper's content through this probe again, which only an erased
+    /// child can do.
+    type Slot = AnyView;
 
     fn native<T: NativeView + 'static>(
         &mut self,
@@ -722,14 +734,18 @@ impl Backend for ResolveEnvironment<'_> {
 
     fn metadata<K: MetadataKey>(
         &mut self,
-        metadata: Metadata<K>,
+        metadata: Metadata<K, AnyView>,
         env: &Environment,
         (): (),
     ) -> Self::Output {
-        match cast::<Metadata<K>, Metadata<Environment>>(metadata) {
+        match cast::<Metadata<K, AnyView>, Metadata<Environment, AnyView>>(metadata) {
             Ok(Metadata { content, value }) => content.dispatch(self, &value, ()),
             Err(metadata) => (
-                Realize::new(self.0).metadata(metadata, env, ()),
+                Realize::new(self.0).metadata(
+                    metadata.map_content(<Held as ChildSlot>::from_view),
+                    env,
+                    (),
+                ),
                 env.clone(),
             ),
         }
@@ -762,7 +778,8 @@ impl DynBackend for ResolveEnvironment<'_> {
         env: &Environment,
         _cx: Box<dyn Any>,
     ) -> Box<dyn Any> {
-        if let Some(Metadata { content, value }) = metadata.take::<Metadata<Environment>>() {
+        if let Some(Metadata { content, value }) = metadata.take::<Metadata<Environment, AnyView>>()
+        {
             return Box::new(content.dispatch(self, &value, ()));
         }
         Box::new((

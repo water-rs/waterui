@@ -65,6 +65,12 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         node
     }
 
+    /// Builds a held child through [`backend::HydroBackend`], leaving its
+    /// cell for the caller to parent.
+    fn build_slot(child: HeldChild<E>, env: &Environment, renderer: &mut SemanticCore<E>) -> Self {
+        backend::HydroBackend::new(renderer).build_child(child, env)
+    }
+
     /// Builds `view` through [`backend::HydroBackend`]: `View::dispatch`
     /// expands composites and hands each payload to its method.
     fn build_view(view: impl View, env: &Environment, renderer: &mut SemanticCore<E>) -> Self {
@@ -85,11 +91,11 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// first node means the env is unchanged, so the child sees no new scope.
     fn build_wrapper(
         effect: WrapperEffect<E>,
-        content: AnyView,
+        content: HeldChild<E>,
         env: &Environment,
         renderer: &mut SemanticCore<E>,
     ) -> Self {
-        let child = Self::build_view(content, env, renderer);
+        let child = Self::build_slot(content, env, renderer);
         Self::wrap(effect, child, env, renderer)
     }
 
@@ -207,11 +213,11 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// `.state(&s)` between the view and `.on_appear` reaches the hook.
     fn build_lifecycle(
         hook: LifeCycleHook,
-        content: AnyView,
+        content: HeldChild<E>,
         env: &Environment,
         renderer: &mut SemanticCore<E>,
     ) -> Self {
-        let child = Self::build_view(content, env, renderer);
+        let child = Self::build_slot(content, env, renderer);
         let env = Self::resolved_handler_env(&child, env).clone();
         let effect = match hook.lifecycle() {
             LifeCycle::Appear => LifeCycleEffect {

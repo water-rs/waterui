@@ -17,6 +17,7 @@
 
 use alloc::boxed::Box;
 use core::any::Any;
+use core::marker::PhantomData;
 
 #[cfg(test)]
 use crate::components::Native;
@@ -51,7 +52,7 @@ pub trait Backend {
     /// Realizes a metadata wrapper around its content.
     fn metadata<K: MetadataKey>(
         &mut self,
-        metadata: Metadata<K>,
+        metadata: Metadata<K, Self::Slot>,
         env: &Environment,
         cx: Self::Ctx,
     ) -> Self::Output;
@@ -140,7 +141,7 @@ impl Backend for Erased<'_> {
 
     fn metadata<K: MetadataKey>(
         &mut self,
-        metadata: Metadata<K>,
+        metadata: Metadata<K, Self::Slot>,
         env: &Environment,
         cx: Self::Ctx,
     ) -> Self::Output {
@@ -223,6 +224,84 @@ pub fn dispatch<V: View, B: Backend>(
     view.dispatch(backend, env, cx)
 }
 
+/// Reads the first [`Metadata<K>`] wrapper `view` resolves to, with its
+/// content erased, or `None` when the first leaf is anything else.
+///
+/// Composites expand on the way, erased views included, so this sees what a
+/// backend sees. It is a probe for code that inspects a tree, such as tests
+/// asserting what a modifier emits.
+pub fn peel_metadata<K: MetadataKey>(
+    view: impl View,
+    env: &Environment,
+) -> Option<Metadata<K, AnyView>> {
+    view.dispatch(&mut Peel::<Metadata<K, AnyView>>(PhantomData), env, ())
+}
+
+/// Reads the native payload `T` `view` resolves to, its child views erased,
+/// or `None` when the first leaf is anything else. See [`peel_metadata`].
+pub fn peel_native<T: NativeView + 'static>(view: impl View, env: &Environment) -> Option<T> {
+    view.dispatch(&mut Peel::<T>(PhantomData), env, ())
+}
+
+/// The probe behind [`peel_metadata`] and [`peel_native`]: it answers `Some`
+/// for the one leaf type `T` and `None` for any other.
+struct Peel<T>(PhantomData<fn() -> T>);
+
+impl<T: 'static> Backend for Peel<T> {
+    type Output = Option<T>;
+    type Ctx = ();
+    type Slot = AnyView;
+
+    fn native<N: NativeView + 'static>(
+        &mut self,
+        native: N,
+        _env: &Environment,
+        (): (),
+    ) -> Option<T> {
+        cast(native).ok()
+    }
+
+    fn metadata<K: MetadataKey>(
+        &mut self,
+        metadata: Metadata<K, AnyView>,
+        _env: &Environment,
+        (): (),
+    ) -> Option<T> {
+        cast(metadata).ok()
+    }
+
+    fn erased(&mut self, view: AnyView, env: &Environment, (): ()) -> Option<T> {
+        *view
+            .dispatch_dyn(self, env, Box::new(()))
+            .downcast::<Option<T>>()
+            .expect("the erased path returns this probe's own output")
+    }
+}
+
+impl<T: 'static> DynBackend for Peel<T> {
+    fn native_dyn(
+        &mut self,
+        mut native: ErasedPayload<'_>,
+        _env: &Environment,
+        _cx: Box<dyn Any>,
+    ) -> Box<dyn Any> {
+        Box::new(native.take::<T>())
+    }
+
+    fn metadata_dyn(
+        &mut self,
+        mut metadata: ErasedPayload<'_>,
+        _env: &Environment,
+        _cx: Box<dyn Any>,
+    ) -> Box<dyn Any> {
+        Box::new(metadata.take::<T>())
+    }
+
+    fn erased_dyn(&mut self, view: AnyView, env: &Environment, _cx: Box<dyn Any>) -> Box<dyn Any> {
+        Box::new(Backend::erased(self, view, env, ()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::string::String;
@@ -246,7 +325,12 @@ mod tests {
             self.leaves.push(type_name::<T>());
         }
 
-        fn metadata<K: MetadataKey>(&mut self, metadata: Metadata<K>, env: &Environment, (): ()) {
+        fn metadata<K: MetadataKey>(
+            &mut self,
+            metadata: Metadata<K, AnyView>,
+            env: &Environment,
+            (): (),
+        ) {
             self.leaves.push(type_name::<K>());
             metadata.content.dispatch(self, env, ());
         }
@@ -286,7 +370,7 @@ mod tests {
             _cx: Box<dyn Any>,
         ) -> Box<dyn Any> {
             let metadata = metadata
-                .take::<Metadata<Key>>()
+                .take::<Metadata<Key, AnyView>>()
                 .expect("only `Key` is attached");
             self.0.leaves.push(type_name::<Key>());
             metadata.content.dispatch(self.0, env, ());

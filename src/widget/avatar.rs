@@ -383,24 +383,16 @@ fn first_grapheme(word: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Avatar, CapturedShape, avatar, initials};
+    use super::{CapturedShape, avatar, initials};
     use crate::metadata::secure::{ColorSpace, HighDynamicRange, StandardDynamicRange};
-    use waterui_core::{AnyView, Environment, Metadata, View};
+    use waterui_core::{Environment, backend::peel_metadata};
     use waterui_shape::{Circle, RoundedRectangle, ShapeKind};
-
-    /// The view `Avatar::body` produced, past the `OneOf2` its colour space
-    /// chooses: a `OneOf2`'s body is the chosen variant, erased.
-    fn realize(avatar: Avatar) -> AnyView {
-        let env = Environment::new();
-        AnyView::new(avatar.body(&env).body(&env))
-    }
 
     #[test]
     fn an_avatar_is_standard_dynamic_range_unless_asked_otherwise() {
         assert!(
-            realize(avatar("Ada Lovelace"))
-                .downcast::<Metadata<StandardDynamicRange>>()
-                .is_ok(),
+            peel_metadata::<StandardDynamicRange>(avatar("Ada Lovelace"), &Environment::new())
+                .is_some(),
             "water-rs/waterui#93: an avatar opts its contents out of HDR"
         );
     }
@@ -408,9 +400,11 @@ mod tests {
     #[test]
     fn an_avatar_can_be_opted_back_into_high_dynamic_range() {
         assert!(
-            realize(avatar("Ada Lovelace").dynamic_range(ColorSpace::Hdr))
-                .downcast::<Metadata<HighDynamicRange>>()
-                .is_ok(),
+            peel_metadata::<HighDynamicRange>(
+                avatar("Ada Lovelace").dynamic_range(ColorSpace::Hdr),
+                &Environment::new()
+            )
+            .is_some(),
             "an avatar whose picture is the subject can ask for the framework default back"
         );
     }

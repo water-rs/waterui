@@ -128,7 +128,12 @@ mod tests {
             self.0.push(type_name::<T>());
         }
 
-        fn metadata<K: MetadataKey>(&mut self, _metadata: Metadata<K>, _env: &Environment, (): ()) {
+        fn metadata<K: MetadataKey>(
+            &mut self,
+            _metadata: Metadata<K, AnyView>,
+            _env: &Environment,
+            (): (),
+        ) {
             self.0.push(type_name::<K>());
         }
 

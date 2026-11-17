@@ -13,8 +13,8 @@ use core::any::Any;
 use core::any::type_name;
 use core::fmt;
 
-use crate::backend::Backend;
-use crate::{AnyView, Environment, View};
+use crate::backend::{Backend, ChildSlot};
+use crate::{Environment, View};
 
 /// Represents a view that carries additional metadata of type `T`.
 ///
@@ -22,11 +22,13 @@ use crate::{AnyView, Environment, View};
 /// backend handles every key, so a `Metadata` never expands through `body`.
 ///
 /// Metadata is transparent for layout system, it is not a native view.
+///
+/// The content keeps its type `C`; a backend receives it in its child slot.
 #[derive(Debug)]
 #[must_use]
-pub struct Metadata<T: MetadataKey> {
+pub struct Metadata<T: MetadataKey, C> {
     /// The view content wrapped by this metadata.
-    pub content: AnyView,
+    pub content: C,
     /// The metadata value associated with the content.
     pub value: T,
 }
@@ -34,28 +36,34 @@ pub struct Metadata<T: MetadataKey> {
 /// A marker trait for metadata keys.
 pub trait MetadataKey: 'static {}
 
-impl<T: MetadataKey> Metadata<T> {
+impl<T: MetadataKey, C> Metadata<T, C> {
     /// Creates a new `Metadata` instance with the specified content and value.
     ///
     /// # Arguments
     ///
     /// * `content` - The view to be wrapped with metadata.
     /// * `value` - The metadata value to associate with the content.
-    pub fn new(content: impl View, value: T) -> Self {
-        Self {
-            content: AnyView::new(content),
-            value,
+    pub const fn new(content: C, value: T) -> Self {
+        Self { content, value }
+    }
+
+    /// The same metadata with its content mapped through `f`.
+    pub fn map_content<D>(self, f: impl FnOnce(C) -> D) -> Metadata<T, D> {
+        Metadata {
+            content: f(self.content),
+            value: self.value,
         }
     }
 }
 
-impl<T: MetadataKey> View for Metadata<T> {
+impl<T: MetadataKey, C: View> View for Metadata<T, C> {
     fn body(self, _env: &Environment) -> impl View {
         never_expands::<T>();
     }
 
+    /// Reaches the backend with the content in the backend's child slot.
     fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
-        backend.metadata(self, env, cx)
+        backend.metadata(self.map_content(B::Slot::from_view), env, cx)
     }
 }
 
@@ -143,6 +151,7 @@ impl Retain {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::AnyView;
 
     struct Probe;
     impl MetadataKey for Probe {}

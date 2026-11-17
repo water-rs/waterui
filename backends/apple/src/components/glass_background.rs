@@ -26,7 +26,7 @@ use waterui_core::layout::{
     ViewDimensions,
 };
 
-use crate::contract::{Mounted, NativeLeaf};
+use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;
 
 use crate::contract::RenderContext;
@@ -207,7 +207,7 @@ impl SubView for GlassBackgroundSubView {
 /// `Metadata<GlassBackground>` maps to a transparent container
 /// with the platform's glass surface behind the content.
 pub fn realize_glass_background_metadata(
-    metadata: Metadata<GlassBackground>,
+    metadata: Metadata<GlassBackground, Held>,
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
     let mtm = ctx.mtm();
@@ -244,10 +244,10 @@ pub fn realize_glass_background_metadata(
                 .expect("the Apple theme installs its label slots with the color slots, and the glass handler runs under that theme");
         let mut env = ctx.env().clone();
         env.insert(slots.in_glass());
-        ctx.with_env(&env).render(metadata.content)
+        ctx.with_env(&env).realize(metadata.content)
     };
     #[cfg(target_os = "ios")]
-    let child_leaf = ctx.render(metadata.content);
+    let child_leaf = ctx.realize(metadata.content);
     let mounted = {
         #[cfg(target_os = "ios")]
         {

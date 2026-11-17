@@ -519,456 +519,494 @@ impl NativeBackend for AppleBackend {
         crate::components::map::realize_map_config(native, &RenderContext::entry(env, self.mtm))
     }
 
-    fn environment(
+    fn environment<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<Environment>,
+        metadata: Metadata<Environment, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
+        let metadata = metadata.map_content(C::into_child);
         crate::components::with_env::realize_environment_metadata(
             metadata,
             &RenderContext::entry(env, self.mtm),
         )
     }
 
-    fn retain(
+    fn retain<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_core::metadata::Retain>,
+        metadata: Metadata<waterui_core::metadata::Retain, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
+        let metadata = metadata.map_content(C::into_child);
         crate::components::retain::realize_retain_metadata(
             metadata,
             &RenderContext::entry(env, self.mtm),
         )
     }
 
-    fn layout_priority(
+    fn layout_priority<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_core::layout::LayoutPriority>,
+        metadata: Metadata<waterui_core::layout::LayoutPriority, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
+        let metadata = metadata.map_content(C::into_child);
         crate::components::layout_priority::realize_layout_priority_metadata(
             metadata,
             &RenderContext::entry(env, self.mtm),
         )
     }
 
-    fn lifecycle_hook(
+    fn lifecycle_hook<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_core::event::LifeCycleHook>,
+        metadata: Metadata<waterui_core::event::LifeCycleHook, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
+        let metadata = metadata.map_content(C::into_child);
         crate::components::lifecycle_hook::realize_life_cycle_hook_metadata(
             metadata,
             &RenderContext::entry(env, self.mtm),
         )
     }
 
-    fn on_event(
+    fn on_event<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_core::event::OnEvent>,
+        metadata: Metadata<waterui_core::event::OnEvent, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
+        let metadata = metadata.map_content(C::into_child);
         crate::components::on_event::realize_on_event_metadata(
             metadata,
             &RenderContext::entry(env, self.mtm),
         )
     }
 
-    fn on_key_press(
+    fn on_key_press<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_core::key::OnKeyPress>,
+        metadata: Metadata<waterui_core::key::OnKeyPress, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
+        let metadata = metadata.map_content(C::into_child);
         crate::components::on_key_press::realize_on_key_press_metadata(
             metadata,
             &RenderContext::entry(env, self.mtm),
         )
     }
 
-    fn gesture_observer(
+    fn gesture_observer<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_core::gesture::GestureObserver>,
+        metadata: Metadata<waterui_core::gesture::GestureObserver, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
+        let metadata = metadata.map_content(C::into_child);
         crate::components::gesture::realize_gesture_observer_metadata(
             metadata,
             &RenderContext::entry(env, self.mtm),
         )
     }
 
-    fn selected(
+    fn selected<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_core::interaction::Selected>,
+        metadata: Metadata<waterui_core::interaction::Selected, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
+        let metadata = metadata.map_content(C::into_child);
         crate::components::accessibility_metadata::realize_selected_metadata(
             metadata,
             &RenderContext::entry(env, self.mtm),
         )
     }
 
-    fn accessibility_children(
+    fn accessibility_children<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_core::accessibility::AccessibilityChildren>,
+        metadata: Metadata<waterui_core::accessibility::AccessibilityChildren, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
+        let metadata = metadata.map_content(C::into_child);
         crate::components::accessibility_metadata::realize_accessibility_children_metadata(
             metadata,
             &RenderContext::entry(env, self.mtm),
         )
     }
 
-    fn accessibility_geometry(
+    fn accessibility_geometry<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_core::accessibility::AccessibilityGeometry>,
+        metadata: Metadata<waterui_core::accessibility::AccessibilityGeometry, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
+        let metadata = metadata.map_content(C::into_child);
         crate::components::accessibility_metadata::realize_accessibility_geometry_metadata(
             metadata,
             &RenderContext::entry(env, self.mtm),
         )
     }
 
-    fn accessibility_hidden(
+    fn accessibility_hidden<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_core::accessibility::AccessibilityHidden>,
+        metadata: Metadata<waterui_core::accessibility::AccessibilityHidden, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
+        let metadata = metadata.map_content(C::into_child);
         crate::components::accessibility_metadata::realize_accessibility_hidden_metadata(
             metadata,
             &RenderContext::entry(env, self.mtm),
         )
     }
 
-    fn accessibility_identifier(
+    fn accessibility_identifier<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_core::accessibility::AccessibilityIdentifier>,
+        metadata: Metadata<waterui_core::accessibility::AccessibilityIdentifier, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
+        let metadata = metadata.map_content(C::into_child);
         crate::components::accessibility_identifier::realize_accessibility_identifier_metadata(
             metadata,
             &RenderContext::entry(env, self.mtm),
         )
     }
 
-    fn accessibility_label(
+    fn accessibility_label<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_core::accessibility::AccessibilityLabel>,
+        metadata: Metadata<waterui_core::accessibility::AccessibilityLabel, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
+        let metadata = metadata.map_content(C::into_child);
         crate::components::accessibility_metadata::realize_accessibility_label_metadata(
             metadata,
             &RenderContext::entry(env, self.mtm),
         )
     }
 
-    fn accessibility_role(
+    fn accessibility_role<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_core::accessibility::AccessibilityRole>,
+        metadata: Metadata<waterui_core::accessibility::AccessibilityRole, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
+        let metadata = metadata.map_content(C::into_child);
         crate::components::accessibility_metadata::realize_accessibility_role_metadata(
             metadata,
             &RenderContext::entry(env, self.mtm),
         )
     }
 
-    fn accessibility_state(
+    fn accessibility_state<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_core::accessibility::AccessibilityState>,
+        metadata: Metadata<waterui_core::accessibility::AccessibilityState, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
+        let metadata = metadata.map_content(C::into_child);
         crate::components::accessibility_metadata::realize_accessibility_state_metadata(
             metadata,
             &RenderContext::entry(env, self.mtm),
         )
     }
 
-    fn accessibility_state_signal(
+    fn accessibility_state_signal<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_core::accessibility::AccessibilityStateSignal>,
+        metadata: Metadata<waterui_core::accessibility::AccessibilityStateSignal, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
+        let metadata = metadata.map_content(C::into_child);
         crate::components::accessibility_metadata::realize_accessibility_state_signal_metadata(
             metadata,
             &RenderContext::entry(env, self.mtm),
         )
     }
 
-    fn accessibility_value(
+    fn accessibility_value<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_core::accessibility::AccessibilityValue>,
+        metadata: Metadata<waterui_core::accessibility::AccessibilityValue, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
+        let metadata = metadata.map_content(C::into_child);
         crate::components::accessibility_metadata::realize_accessibility_value_metadata(
             metadata,
             &RenderContext::entry(env, self.mtm),
         )
     }
 
-    fn transition(
+    fn transition<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_structural_transition::TransitionSpec>,
+        metadata: Metadata<waterui_structural_transition::TransitionSpec, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
+        let metadata = metadata.map_content(C::into_child);
         crate::components::transition::realize_transition_spec_metadata(
             metadata,
             &RenderContext::entry(env, self.mtm),
         )
     }
 
-    fn opacity(
+    fn opacity<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::filter::Opacity>,
+        metadata: Metadata<waterui::filter::Opacity, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
+        let metadata = metadata.map_content(C::into_child);
         crate::components::opacity::realize_opacity_metadata(
             metadata,
             &RenderContext::entry(env, self.mtm),
         )
     }
 
-    fn scale(
+    fn scale<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::style::Scale>,
+        metadata: Metadata<waterui::style::Scale, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
+        let metadata = metadata.map_content(C::into_child);
         crate::components::scale::realize_scale_metadata(
             metadata,
             &RenderContext::entry(env, self.mtm),
         )
     }
 
-    fn rotation(
+    fn rotation<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::style::Rotation>,
+        metadata: Metadata<waterui::style::Rotation, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
+        let metadata = metadata.map_content(C::into_child);
         crate::components::rotation::realize_rotation_metadata(
             metadata,
             &RenderContext::entry(env, self.mtm),
         )
     }
 
-    fn offset(
+    fn offset<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::style::Offset>,
+        metadata: Metadata<waterui::style::Offset, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
+        let metadata = metadata.map_content(C::into_child);
         crate::components::offset::realize_offset_metadata(
             metadata,
             &RenderContext::entry(env, self.mtm),
         )
     }
 
-    fn shadow(
+    fn shadow<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::style::Shadow>,
+        metadata: Metadata<waterui::style::Shadow, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
+        let metadata = metadata.map_content(C::into_child);
         crate::components::shadow::realize_shadow_metadata(
             metadata,
             &RenderContext::entry(env, self.mtm),
         )
     }
 
-    fn border(
+    fn border<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::border::Border>,
+        metadata: Metadata<waterui::border::Border, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
+        let metadata = metadata.map_content(C::into_child);
         crate::components::border::realize_border_metadata(
             metadata,
             &RenderContext::entry(env, self.mtm),
         )
     }
 
-    fn clip_shape(
+    fn clip_shape<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::shape::ClipShape>,
+        metadata: Metadata<waterui::shape::ClipShape, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
+        let metadata = metadata.map_content(C::into_child);
         crate::components::clip_shape::realize_clip_shape_metadata(
             metadata,
             &RenderContext::entry(env, self.mtm),
         )
     }
 
-    fn material_background(
+    fn material_background<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::background::MaterialBackground>,
+        metadata: Metadata<waterui::background::MaterialBackground, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
+        let metadata = metadata.map_content(C::into_child);
         crate::components::material_background::realize_material_background_metadata(
             metadata,
             &RenderContext::entry(env, self.mtm),
         )
     }
 
-    fn glass_background(
+    fn glass_background<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::background::GlassBackground>,
+        metadata: Metadata<waterui::background::GlassBackground, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
+        let metadata = metadata.map_content(C::into_child);
         crate::components::glass_background::realize_glass_background_metadata(
             metadata,
             &RenderContext::entry(env, self.mtm),
         )
     }
 
-    fn material_group(
+    fn material_group<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::background::MaterialGroup>,
+        metadata: Metadata<waterui::background::MaterialGroup, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
+        let metadata = metadata.map_content(C::into_child);
         crate::components::material_background::realize_material_group_metadata(
             metadata,
             &RenderContext::entry(env, self.mtm),
         )
     }
 
-    fn ignore_safe_area(
+    fn ignore_safe_area<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::layout::safe_area::IgnoreSafeArea>,
+        metadata: Metadata<waterui::layout::safe_area::IgnoreSafeArea, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
+        let metadata = metadata.map_content(C::into_child);
         crate::components::ignore_safe_area::realize_ignore_safe_area_metadata(
             metadata,
             &RenderContext::entry(env, self.mtm),
         )
     }
 
-    fn cursor(
+    fn cursor<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::cursor::Cursor>,
+        metadata: Metadata<waterui::cursor::Cursor, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
+        let metadata = metadata.map_content(C::into_child);
         crate::components::cursor::realize_cursor_metadata(
             metadata,
             &RenderContext::entry(env, self.mtm),
         )
     }
 
-    fn draggable(
+    fn draggable<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::drag_drop::Draggable>,
+        metadata: Metadata<waterui::drag_drop::Draggable, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
+        let metadata = metadata.map_content(C::into_child);
         crate::components::draggable::realize_draggable_metadata(
             metadata,
             &RenderContext::entry(env, self.mtm),
         )
     }
 
-    fn drop_destination(
+    fn drop_destination<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::drag_drop::DropDestination>,
+        metadata: Metadata<waterui::drag_drop::DropDestination, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
+        let metadata = metadata.map_content(C::into_child);
         crate::components::drop_destination::realize_drop_destination_metadata(
             metadata,
             &RenderContext::entry(env, self.mtm),
         )
     }
 
-    fn hittable(
+    fn hittable<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::interaction::Hittable>,
+        metadata: Metadata<waterui::interaction::Hittable, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
+        let metadata = metadata.map_content(C::into_child);
         crate::components::hittable::realize_hittable_metadata(
             metadata,
             &RenderContext::entry(env, self.mtm),
         )
     }
 
-    fn focused(
+    fn focused<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::component::focus::Focused>,
+        metadata: Metadata<waterui::component::focus::Focused, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
+        let metadata = metadata.map_content(C::into_child);
         crate::components::focused::realize_focused_metadata(
             metadata,
             &RenderContext::entry(env, self.mtm),
         )
     }
 
-    fn secure(
+    fn secure<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::metadata::secure::Secure>,
+        metadata: Metadata<waterui::metadata::secure::Secure, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
+        let metadata = metadata.map_content(C::into_child);
         crate::components::secure::realize_secure_metadata(
             metadata,
             &RenderContext::entry(env, self.mtm),
         )
     }
 
-    fn standard_dynamic_range(
+    fn standard_dynamic_range<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::metadata::secure::StandardDynamicRange>,
+        metadata: Metadata<waterui::metadata::secure::StandardDynamicRange, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
+        let metadata = metadata.map_content(C::into_child);
         crate::components::dynamic_range::realize_standard_dynamic_range_metadata(
             metadata,
             &RenderContext::entry(env, self.mtm),
         )
     }
 
-    fn high_dynamic_range(
+    fn high_dynamic_range<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::metadata::secure::HighDynamicRange>,
+        metadata: Metadata<waterui::metadata::secure::HighDynamicRange, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
+        let metadata = metadata.map_content(C::into_child);
         crate::components::dynamic_range::realize_high_dynamic_range_metadata(
             metadata,
             &RenderContext::entry(env, self.mtm),
         )
     }
 
-    fn anchored_overlay(
+    fn anchored_overlay<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::metadata::anchored_overlay::AnchoredOverlay>,
+        metadata: Metadata<waterui::metadata::anchored_overlay::AnchoredOverlay, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
+        let metadata = metadata.map_content(C::into_child);
         crate::components::anchored_overlay::realize_anchored_overlay_metadata(
             metadata,
             &RenderContext::entry(env, self.mtm),
@@ -976,12 +1014,13 @@ impl NativeBackend for AppleBackend {
     }
 
     #[cfg(waterui_feature = "menu")]
-    fn resolved_context_menu(
+    fn resolved_context_menu<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::metadata::context_menu::ResolvedContextMenu>,
+        metadata: Metadata<waterui::metadata::context_menu::ResolvedContextMenu, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
+        let metadata = metadata.map_content(C::into_child);
         crate::components::context_menu::realize_resolved_context_menu_metadata(
             metadata,
             &RenderContext::entry(env, self.mtm),
@@ -989,12 +1028,13 @@ impl NativeBackend for AppleBackend {
     }
 
     #[cfg(waterui_feature = "dialog")]
-    fn dialog(
+    fn dialog<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::dialog::Dialog>,
+        metadata: Metadata<waterui::dialog::Dialog, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
+        let metadata = metadata.map_content(C::into_child);
         crate::components::dialog::realize_dialog_metadata(
             metadata,
             &RenderContext::entry(env, self.mtm),
@@ -1002,12 +1042,13 @@ impl NativeBackend for AppleBackend {
     }
 
     #[cfg(waterui_feature = "navigation")]
-    fn navigation_link_hint(
+    fn navigation_link_hint<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::navigation::NavigationLinkHint>,
+        metadata: Metadata<waterui::navigation::NavigationLinkHint, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
+        let metadata = metadata.map_content(C::into_child);
         crate::components::navigation::metadata::realize_navigation_link_hint_metadata(
             metadata,
             &RenderContext::entry(env, self.mtm),
@@ -1015,12 +1056,13 @@ impl NativeBackend for AppleBackend {
     }
 
     #[cfg(waterui_feature = "navigation")]
-    fn navigation_transition_source(
+    fn navigation_transition_source<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::navigation::NavigationTransitionSource>,
+        metadata: Metadata<waterui::navigation::NavigationTransitionSource, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
+        let metadata = metadata.map_content(C::into_child);
         crate::components::navigation::metadata::realize_navigation_transition_source_metadata(
             metadata,
             &RenderContext::entry(env, self.mtm),
@@ -1028,12 +1070,13 @@ impl NativeBackend for AppleBackend {
     }
 
     #[cfg(waterui_feature = "navigation")]
-    fn navigation_transition_destination(
+    fn navigation_transition_destination<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::navigation::NavigationTransitionDestination>,
+        metadata: Metadata<waterui::navigation::NavigationTransitionDestination, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
+        let metadata = metadata.map_content(C::into_child);
         crate::components::navigation::metadata::realize_navigation_transition_destination_metadata(
             metadata,
             &RenderContext::entry(env, self.mtm),
@@ -1058,9 +1101,9 @@ impl NativeBackend for AppleBackend {
         self.empty((), env, ())
     }
 
-    fn provided_metadata<K: MetadataKey>(
+    fn provided_metadata<K: MetadataKey, C: ChildView<Self>>(
         &mut self,
-        _metadata: Metadata<K>,
+        _metadata: Metadata<K, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {

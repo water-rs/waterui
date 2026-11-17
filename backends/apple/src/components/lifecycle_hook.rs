@@ -24,7 +24,7 @@ use waterui_core::layout::{
     ViewDimensions,
 };
 
-use crate::contract::{Mounted, NativeLeaf};
+use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;
 
 use crate::contract::RenderContext;
@@ -141,7 +141,7 @@ impl SubView for LifecycleSubView {
 /// `Metadata<LifeCycleHook>` maps to a transparent container that fires its
 /// one-shot handler on the matching window-membership change.
 pub fn realize_life_cycle_hook_metadata(
-    metadata: Metadata<LifeCycleHook>,
+    metadata: Metadata<LifeCycleHook, Held>,
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
     let mtm = ctx.mtm();
@@ -153,7 +153,7 @@ pub fn realize_life_cycle_hook_metadata(
         env: ctx.env().clone(),
     });
 
-    let mounted = ctx.render(metadata.content).mount(host_view);
+    let mounted = ctx.realize(metadata.content).mount(host_view);
 
     // §7.1: the fill answer resolves through the `cocoaUiPrimaryContent`
     // chain — `Color.opacity(..)` in a background slot stays a fill.

@@ -17,7 +17,7 @@ use waterui_core::layout::{
     ViewDimensions,
 };
 
-use crate::contract::{Mounted, NativeLeaf};
+use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;
 
 use crate::contract::RenderContext;
@@ -96,12 +96,12 @@ impl SubView for OpacitySubView {
 
 /// The `opacity` realization.
 pub fn realize_opacity_metadata(
-    metadata: Metadata<Opacity>,
+    metadata: Metadata<Opacity, Held>,
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
     let mtm = ctx.mtm();
     let host = HostView::new(mtm, Rect::ZERO);
-    let mounted = ctx.render(metadata.content).mount(&host);
+    let mounted = ctx.realize(metadata.content).mount(&host);
     // §7.1: the fill answer resolves through the `cocoaUiPrimaryContent`
     // chain — `Color.opacity(..)` in a background slot stays a fill.
     crate::primary_content::forward(&host, mounted.view());

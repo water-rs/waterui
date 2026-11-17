@@ -18,7 +18,7 @@ use waterui_core::layout::{
     SubView, ViewDimensions,
 };
 
-use crate::contract::{Mounted, NativeLeaf};
+use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;
 
 use crate::contract::RenderContext;
@@ -83,12 +83,12 @@ impl SubView for PrioritySubView {
 
 /// The `layout_priority` realization.
 pub fn realize_layout_priority_metadata(
-    metadata: Metadata<LayoutPriority>,
+    metadata: Metadata<LayoutPriority, Held>,
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
     let mtm = ctx.mtm();
     let host = HostView::new(mtm, Rect::ZERO);
-    let mounted = ctx.render(metadata.content).mount(&host);
+    let mounted = ctx.realize(metadata.content).mount(&host);
     // §7.1: the fill answer resolves through the `cocoaUiPrimaryContent`
     // chain — `Color.opacity(..)` in a background slot stays a fill.
     crate::primary_content::forward(&host, mounted.view());

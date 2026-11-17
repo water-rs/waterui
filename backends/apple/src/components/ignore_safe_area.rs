@@ -22,7 +22,7 @@ use waterui_core::layout::{
     ViewDimensions,
 };
 
-use crate::contract::{Mounted, NativeLeaf};
+use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;
 
 use crate::contract::RenderContext;
@@ -85,14 +85,14 @@ impl SubView for IgnoreSubView {
 /// `Metadata<IgnoreSafeArea>` maps to a transparent container that manages
 /// its safe area and erases the named edges for its subtree.
 pub fn realize_ignore_safe_area_metadata(
-    metadata: Metadata<IgnoreSafeArea>,
+    metadata: Metadata<IgnoreSafeArea, Held>,
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
     let mtm = ctx.mtm();
     let host = HostView::new(mtm, Rect::ZERO);
     let host_view: &PlatformView = &host;
 
-    let mounted = ctx.render(metadata.content).mount(host_view);
+    let mounted = ctx.realize(metadata.content).mount(host_view);
     view::set_translates_autoresizing(mounted.view(), true);
 
     // `WuiSafeAreaManaging`: the window root must hand this view the
