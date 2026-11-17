@@ -28,8 +28,8 @@ impl ToggleStyle {
     /// [`Self::Automatic`] resolves to the platform's default — a checkbox on
     /// macOS, a switch everywhere else, iOS and Android included; every
     /// other style is already concrete. The default is a property of the
-    /// target, not of the backend, because a toggle's stretch axis depends on
-    /// it and is read before `body` runs, without an environment.
+    /// target, not of the backend, so every backend on one target answers
+    /// the same stretch axis for it.
     #[must_use]
     pub const fn resolved(self) -> Self {
         match self {
@@ -196,11 +196,9 @@ impl ToggleConfig {
     }
 
     /// `docs/layout-spec.md` §3: a toggle is `Horizontal` when it draws the
-    /// switch style with a visible label, and `None` otherwise.
-    ///
-    /// Before resolution only the label's own display mode is known — an
-    /// environment-wide [`LabelDisplayMode`] is not — so an unresolved
-    /// label counts as visible; the resolved payload answers exactly.
+    /// switch style with a visible label, and `None` otherwise. Backends ask
+    /// the resolved payload, whose label carries an environment-wide
+    /// [`LabelDisplayMode`] too.
     const fn layout_stretch_axis(&self) -> StretchAxis {
         let label_visible = !matches!(
             self.label.display_mode_preference(),
@@ -270,15 +268,14 @@ pub fn toggle(label: impl IntoLabel, toggle: &Binding<bool>) -> Toggle {
 mod tests {
     use nami::Binding;
     use waterui_core::layout::StretchAxis;
-    use waterui_core::{Environment, NativeView, View};
+    use waterui_core::{Environment, NativeView};
     use waterui_locale::locales;
 
     use super::{Toggle, ToggleConfig, ToggleStyle};
     use crate::label::LabelDisplayMode;
 
-    /// `docs/layout-spec.md` §3 over the style × label-visibility matrix,
-    /// both as the static answer a container reads before `body` and as the
-    /// resolved payload a backend receives.
+    /// `docs/layout-spec.md` §3 over the style × label-visibility matrix, on
+    /// the resolved payload a backend receives.
     #[test]
     fn stretch_axis_follows_style_and_label_visibility() {
         let on = Binding::bool(false);
@@ -307,11 +304,6 @@ mod tests {
                 let toggle = Toggle::new("Wi-Fi", &on).style(style);
                 if visible { toggle } else { toggle.hide_label() }
             };
-            assert_eq!(
-                View::stretch_axis(&make()),
-                expected,
-                "{style:?}, label visible: {visible} (static)"
-            );
             let resolved = make().0.resolve(&env);
             assert_eq!(
                 NativeView::stretch_axis(&resolved),

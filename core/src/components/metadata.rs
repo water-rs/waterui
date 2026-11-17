@@ -14,7 +14,6 @@ use core::any::type_name;
 use core::fmt;
 
 use crate::backend::Backend;
-use crate::layout::StretchAxis;
 use crate::{AnyView, Environment, View};
 
 /// Represents a view that carries additional metadata of type `T`.
@@ -57,12 +56,6 @@ impl<T: MetadataKey> View for Metadata<T> {
 
     fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
         backend.metadata(self, env, cx)
-    }
-
-    /// Metadata is transparent for layout: the wrapper never changes how the
-    /// content sizes, so the axis answers for the content's leaf.
-    fn stretch_axis(&self) -> StretchAxis {
-        self.content.stretch_axis()
     }
 }
 

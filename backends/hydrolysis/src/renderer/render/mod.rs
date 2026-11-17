@@ -42,6 +42,6 @@ pub use render_context::{WidgetRenderContext, bounded_proposal};
 pub use state::HydroState;
 pub use view_helpers::*;
 pub use view_helpers::{
-    anchor_point, gesture_group_identity, path_commands_to_path, resolved_shape_to_path,
-    transformed_rect, working_color_to_rgba8,
+    anchor_point, path_commands_to_path, resolved_shape_to_path, transformed_rect,
+    working_color_to_rgba8,
 };

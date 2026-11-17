@@ -339,13 +339,6 @@ where
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         FixedContainer::new(self.layout, self.contents.0)
     }
-
-    /// Resolves to `FixedContainer` over the same layout and children;
-    /// reports what that container would — matching `FixedContainer`'s
-    /// `View::stretch_axis`.
-    fn stretch_axis(&self) -> StretchAxis {
-        self.layout.stretch_axis(&self.contents.0.stretch_axes())
-    }
 }
 
 impl<C, F, V> View for ZStack<ForEach<C, F, V>>
@@ -357,13 +350,6 @@ where
 {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         LazyContainer::new(self.layout, self.contents)
-    }
-
-    /// Resolves to `LazyContainer`, which cannot enumerate children without
-    /// materializing them and answers its layout's axis over an empty child
-    /// set — matching `LazyContainer::stretch_axis`.
-    fn stretch_axis(&self) -> StretchAxis {
-        self.layout.stretch_axis(&[])
     }
 }
 
@@ -437,7 +423,7 @@ mod tests {
             ViewDimensions::new(Size::zero())
         }
         fn stretch_axis(&self) -> StretchAxis {
-            crate::spacer::spacer().stretch_axis()
+            waterui_core::NativeView::stretch_axis(&crate::spacer::spacer())
         }
         fn priority(&self) -> i32 {
             crate::spacer::Spacer::DEFAULT_LAYOUT_PRIORITY

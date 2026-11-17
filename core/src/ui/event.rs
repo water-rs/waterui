@@ -11,7 +11,7 @@ use crate::{
         BoxedAction, BoxedActionOnce, EventHandler, Handler, HandlerOnce, ReportExtraction,
         boxed_action, boxed_action_once, boxed_event_handler,
     },
-    layout::{Point, StretchAxis},
+    layout::Point,
     metadata::MetadataKey,
 };
 use alloc::{boxed::Box, rc::Rc};
@@ -247,10 +247,6 @@ impl<V: View> View for OnChange<V> {
     fn body(self, _env: &Environment) -> impl View {
         let subscribe = self.subscribe;
         Metadata::new(self.content, Retain::resolved(subscribe))
-    }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        self.content.stretch_axis()
     }
 }
 

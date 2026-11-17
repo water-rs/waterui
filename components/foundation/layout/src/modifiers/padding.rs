@@ -348,12 +348,6 @@ impl View for Padding {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         FixedContainer::new(self.layout, vec![self.content])
     }
-
-    /// Resolves to `FixedContainer` over the same layout and single child;
-    /// reports what that container would.
-    fn stretch_axis(&self) -> StretchAxis {
-        self.layout.stretch_axis(&[self.content.stretch_axis()])
-    }
 }
 
 #[cfg(test)]

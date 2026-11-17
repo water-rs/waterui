@@ -3,6 +3,7 @@
 use super::*;
 use crate::renderer::mount::RetainedScopes;
 use crate::renderer::transformed_rect;
+use std::borrow::Cow;
 use waterui_core::contract_violation;
 
 #[cfg(feature = "accessibility")]
@@ -2267,6 +2268,23 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     #[cfg(feature = "accessibility")]
     pub(crate) fn accessibility_scope_is_claimed(&self, env: &Environment) -> bool {
         self.accessibility.semantics_scope_is_claimed(env)
+    }
+
+    /// The environment an `Env` node's subtree walks in. A scope an ancestor
+    /// already claimed this flush has spoken its naming, so the subtree walks
+    /// under the child environment the claim boundary hands its children,
+    /// as below a naming container: a leaf cannot repeat the claim's role
+    /// and label as a second node.
+    pub(crate) fn accessibility_scope_walk_env<'env>(
+        &self,
+        env: &'env Environment,
+    ) -> Cow<'env, Environment> {
+        if self.accessibility.semantics_scope_is_claimed(env)
+            && let Some(child_env) = accessibility_container_child_environment(env)
+        {
+            return Cow::Owned(child_env);
+        }
+        Cow::Borrowed(env)
     }
 
     /// Consume `text` into the enclosing name-from-contents claim, if `env`

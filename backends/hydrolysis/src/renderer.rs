@@ -119,10 +119,7 @@ pub use render::FrameError;
 pub use render::FrameRenderTarget;
 pub use render::WidgetRenderContext;
 pub use render::*;
-pub use render::{
-    anchor_point, gesture_group_identity, path_commands_to_path, resolved_shape_to_path,
-    transformed_rect,
-};
+pub use render::{anchor_point, path_commands_to_path, resolved_shape_to_path, transformed_rect};
 use signals::LayoutDependencies;
 use std::any::Any;
 use std::cell::{Cell, RefCell};
@@ -170,7 +167,7 @@ use waterui::accessibility::{
     AccessibilityValue,
 };
 use waterui::animation::Animation;
-use waterui::background::{Background, GlassBackground, MaterialBackground, MaterialGroup};
+use waterui::background::{GlassBackground, MaterialBackground};
 use waterui::border::Border;
 use waterui::component::badge::BadgeConfig;
 use waterui::component::focus::Focused;
@@ -182,19 +179,17 @@ use waterui::component::table::TableConfig;
 use waterui::cursor::{Cursor, CursorStyle};
 use waterui::drag_drop::{Draggable, DropDestination};
 use waterui::filter::Opacity;
-use waterui::gesture::{Gesture, GestureObserver};
+use waterui::gesture::Gesture;
 use waterui::interaction::Hittable;
 use waterui::metadata::anchored_overlay::AnchoredOverlay;
 #[cfg(feature = "menu")]
-use waterui::metadata::context_menu::{ContextMenu, ResolvedContextMenu};
-use waterui::metadata::secure::{HighDynamicRange, Secure, StandardDynamicRange};
+use waterui::metadata::context_menu::ResolvedContextMenu;
 #[cfg(feature = "navigation")]
 use waterui::navigation::tab::{NativeTabStyle, TabsLayout};
 #[cfg(feature = "navigation")]
 use waterui::navigation::{
-    CustomNavigationController, NavigationController, NavigationLinkHint, NavigationSplitLayout,
-    NavigationStack, NavigationTransaction, NavigationTransitionDestination,
-    NavigationTransitionSource, NavigationView,
+    CustomNavigationController, NavigationController, NavigationSplitLayout, NavigationStack,
+    NavigationTransaction, NavigationView,
 };
 use waterui::style::{Offset, Rotation, Scale, Shadow};
 use waterui::widget::Divider;
@@ -255,7 +250,6 @@ use waterui_graphics::{ExternalFrameView, GpuView};
 use waterui::webview::WebView;
 use waterui_icon::SystemIcon;
 use waterui_layout::container::FixedContainer;
-use waterui_layout::safe_area::IgnoreSafeArea;
 #[cfg(feature = "accessibility")]
 use waterui_layout::scroll::Axis as ScrollAxis;
 use waterui_layout::spacer::Spacer;

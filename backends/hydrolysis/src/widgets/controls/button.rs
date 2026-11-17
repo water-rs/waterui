@@ -545,11 +545,10 @@ pub fn render_button_node<E: crate::text::TextEngine>(
     render_button_parts(ctx, state, env);
 }
 
-/// The retained render state of a menu trigger. `ResolvedMenu::label` is a
-/// move-only `AnyView`, so the persistent `Widget` node holds it as a
-/// [`RetainedSubview`] built once and re-flushed each frame (unless it is a
-/// `Label`/`TitleOnly`, which is rendered as styled text fresh each frame like a
-/// button); the `items`/`accessibility_label` signals are kept and read through
+/// The retained render state of a menu trigger. The persistent `Widget` node
+/// holds `ResolvedMenu::label` as a [`RetainedSubview`] built once and
+/// re-flushed each frame, unless the label is a plain `TitleOnly` title, which
+/// is rendered as styled text fresh each frame like a button's; the `items`/`accessibility_label` signals are kept and read through
 /// `read_signal`.
 #[cfg(feature = "menu")]
 pub struct MenuRenderState<E: crate::text::TextEngine> {
@@ -569,13 +568,13 @@ pub struct MenuRenderState<E: crate::text::TextEngine> {
 }
 
 /// How a menu trigger renders its label, decided once at build time from the
-/// label `AnyView`.
+/// label.
 #[cfg(feature = "menu")]
 enum MenuLabel<E: crate::text::TextEngine> {
     /// A `Label` with `TitleOnly` display: rendered as centered styled text fresh
     /// each frame (cloneable, like a button title).
     Title(Label),
-    /// Any other view: re-flushed from a retained sub-view each frame.
+    /// Any other label: re-flushed from a retained sub-view each frame.
     View(Box<RetainedSubview<E>>),
 }
 
@@ -612,13 +611,11 @@ impl<E: crate::text::TextEngine> MenuRenderState<E> {
             style,
             size,
         } = menu;
-        let icon_only = label
-            .downcast_ref::<Label>()
-            .is_some_and(|label| label_resolves_icon_only(label, env));
-        let label = match label.downcast::<Label>() {
-            Ok(label) if renders_as_plain_title(&label) => MenuLabel::Title(*label),
-            Ok(label) => MenuLabel::View(Box::new(RetainedSubview::new(AnyView::new(*label)))),
-            Err(view) => MenuLabel::View(Box::new(RetainedSubview::new(view))),
+        let icon_only = label_resolves_icon_only(&label, env);
+        let label = if renders_as_plain_title(&label) {
+            MenuLabel::Title(label)
+        } else {
+            MenuLabel::View(Box::new(RetainedSubview::new(AnyView::new(label))))
         };
         Self {
             label,

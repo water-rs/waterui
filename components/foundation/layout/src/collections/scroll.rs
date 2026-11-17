@@ -472,19 +472,13 @@ pub const fn scroll_stretch_axis(axis: Axis, content: StretchAxis) -> StretchAxi
     }
 }
 
-impl NativeView for ScrollView {
-    fn stretch_axis(&self) -> StretchAxis {
-        scroll_stretch_axis(self.axis, self.content.stretch_axis())
-    }
-}
+/// A scroll's axis follows its realized content's (§6), so backends answer
+/// it from the realized node through [`scroll_stretch_axis`].
+impl NativeView for ScrollView {}
 
 impl View for ScrollView {
     fn body(self, _env: &Environment) -> impl View {
         Native::new(self)
-    }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        scroll_stretch_axis(self.axis, self.content.stretch_axis())
     }
 }
 

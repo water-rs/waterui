@@ -688,10 +688,6 @@ impl<V: View> View for Transitioned<V> {
     fn body(self, _env: &Environment) -> impl View {
         Metadata::new(self.content, self.spec)
     }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        self.content.stretch_axis()
-    }
 }
 
 /// An independent frame-driven transition lifetime.

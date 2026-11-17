@@ -49,8 +49,6 @@ pub struct SliderRenderState<E: crate::text::TextEngine> {
     label_view: RetainedSubview<E>,
     min_value_label: RetainedSubview<E>,
     max_value_label: RetainedSubview<E>,
-    /// Whether a label is set beside either end of the track.
-    value_labels: bool,
     range: RangeInclusive<f64>,
     step: Option<f64>,
     value: Binding<f64>,
@@ -111,7 +109,6 @@ impl<E: crate::text::TextEngine> SliderRenderState<E> {
         Self {
             label_view: RetainedSubview::new(AnyView::new(label.clone())),
             label,
-            value_labels: !min_value_label.is::<()>() || !max_value_label.is::<()>(),
             min_value_label: RetainedSubview::new(min_value_label),
             max_value_label: RetainedSubview::new(max_value_label),
             range,
@@ -150,13 +147,21 @@ impl<E: crate::text::TextEngine> SliderRenderState<E> {
             | self.max_value_label.take_layout_dirty_if_built()
     }
 
+    /// Whether a label beside either end of the track draws anything: an
+    /// unset one is `()`, which realizes as an empty node.
+    fn value_labels(&self) -> bool {
+        [&self.min_value_label, &self.max_value_label]
+            .into_iter()
+            .any(|label| label.node().is_some_and(|node| !node.is_empty()))
+    }
+
     fn spec(&self, env: &Environment) -> SliderSpec {
         slider_spec(
             &self.label,
             self.size,
             &self.range,
             self.step,
-            self.value_labels,
+            self.value_labels(),
             self.value_indicator.is_some(),
             env,
         )

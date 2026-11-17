@@ -470,10 +470,6 @@ impl<V: View> View for PositionedChild<V> {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         FixedContainer::new(self.layout, (self.content,))
     }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::Both
-    }
 }
 
 // ============================================================================
@@ -683,10 +679,6 @@ impl<C: TupleViews> Absolute<C> {
 impl<C: TupleViews + 'static> View for Absolute<C> {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         FixedContainer::new(AbsoluteLayout, self.contents)
-    }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::Both
     }
 }
 

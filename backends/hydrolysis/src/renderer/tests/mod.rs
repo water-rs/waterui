@@ -1163,25 +1163,29 @@ fn draggable_metadata_delivers_typed_payload_to_drop_destination() {
 }
 
 #[test]
-fn gesture_group_identity_collapses_nested_gesture_observers_on_same_view() {
-    let view = AnyView::new(Metadata::new(
+fn nested_gesture_observers_on_one_view_share_a_group() {
+    let env = test_environment();
+    let mut renderer = test_renderer();
+    let view = Metadata::new(
         Metadata::new(
-            ().size(20.0, 10.0),
+            ().size(20.0, 10.0).opacity(0.5),
             GestureObserver::new(DragGesture::new(8.0), || {}),
         ),
         GestureObserver::new(MagnificationGesture::new(1.0), || {}),
-    ));
-    let outer = view
-        .downcast_ref::<Metadata<GestureObserver>>()
-        .expect("expected outer gesture observer metadata");
-    let inner = outer
-        .content
-        .downcast_ref::<Metadata<GestureObserver>>()
-        .expect("expected inner gesture observer metadata");
+    );
+    let node = RenderNode::build(AnyView::new(view), &env, &mut renderer);
 
-    assert_eq!(
-        gesture_group_identity(&outer.content),
-        gesture_group_identity(&inner.content)
+    let (outer, inner) = node
+        .observed_gesture_group()
+        .expect("the outer gesture observer wraps the tree");
+    let (inner, observed) = inner
+        .observed_gesture_group()
+        .expect("the inner gesture observer wraps the view");
+    assert_eq!(outer, inner);
+    assert_ne!(
+        inner,
+        Rc::as_ptr(&observed.core().cell) as usize,
+        "the opacity wrapper is transparent to the group"
     );
 }
 
@@ -4318,4 +4322,28 @@ fn diagnostic_gpu() -> (
         },
     );
     (gpu, diagnostics)
+}
+
+/// A bar item's icon-only default reaches through an environment snapshot
+/// wrapping its content, which replaces the environment wholesale — as the
+/// navigation stack's retained environment wraps every bar slot.
+#[cfg(feature = "navigation")]
+#[test]
+fn a_toolbar_item_keeps_icon_only_labels_inside_an_environment_snapshot() {
+    let env = test_environment();
+    let mut renderer = test_renderer();
+    let item = AnyView::new(Metadata::new(text("Share"), Environment::new()));
+    let node = RenderNode::build(
+        crate::widgets::nav::navigation::toolbar_item_view(item, &env),
+        &env,
+        &mut renderer,
+    );
+
+    let scope = node
+        .leading_scope_env()
+        .expect("the item opens with its environment scope");
+    assert!(matches!(
+        scope.get::<LabelDisplayMode>(),
+        Some(LabelDisplayMode::IconOnly)
+    ));
 }

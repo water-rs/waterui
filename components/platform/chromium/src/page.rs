@@ -463,10 +463,6 @@ impl View for ChromiumView {
             AnyView::new(self.render())
         }
     }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::Both
-    }
 }
 
 /// Deferred visible Chromium component.
@@ -486,10 +482,6 @@ impl Chromium {
 impl View for Chromium {
     fn body(self, _env: &Environment) -> impl View {
         use_env(move |controller: ChromiumController| controller.open(self.configuration))
-    }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::Both
     }
 }
 

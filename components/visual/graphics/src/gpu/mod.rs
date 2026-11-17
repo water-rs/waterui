@@ -639,10 +639,6 @@ impl View for GpuView {
     fn body(self, _env: &Environment) -> impl View {
         Native::new(self)
     }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        NativeView::stretch_axis(self)
-    }
 }
 
 /// Shared access to a [`GpuContent`] after the engine took it.
