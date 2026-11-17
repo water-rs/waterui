@@ -21,11 +21,12 @@ use std::rc::{Rc, Weak};
 use nami::watcher::BoxWatcherGuard;
 use nami::{Binding, Computed, Signal};
 use wasm_bindgen::{JsCast, JsValue, closure::Closure};
-use waterui_core::{AnyView, Environment, Native, contract_violation};
+use waterui_core::{AnyView, Native, contract_violation};
 use waterui_video::video::{
-    AudioTrackSelection, ContentMode, Event, PlaybackConfiguration, PlaybackOutputPath,
-    PlaybackPowerPolicy, SubtitleSelection, SubtitleTrackInfo, SubtitleTrackOrigin, TrackCatalog,
-    VideoConfig, VideoPlayerConfig, VideoProjection, VideoTrackSelection,
+    AudioTrackSelection, BoundVideoEventHandler, ContentMode, Event, NativeVideoConfig,
+    NativeVideoPlayerConfig, PlaybackConfiguration, PlaybackOutputPath, PlaybackPowerPolicy,
+    SubtitleSelection, SubtitleTrackInfo, SubtitleTrackOrigin, TrackCatalog, VideoConfig,
+    VideoPlayerConfig, VideoProjection, VideoTrackSelection,
 };
 use waterui_video::{
     Delivery, LiveWindow, MediaItem, PlaybackMetrics, PlaybackPhase, PlayerController, RepeatMode,
@@ -39,40 +40,36 @@ use crate::{HostedContent, HostedObject, HostedOcclusion, HostedView};
 /// The MIME type an HLS playlist is offered to the element as.
 const HLS_MIME: &str = "application/vnd.apple.mpegurl";
 
-/// Installs the `Video` and `VideoPlayer` realizations.
-pub fn install(env: &mut Environment) {
-    env.insert_hook::<VideoConfig, AnyView>(|env, config| {
-        let VideoConfig {
-            playback,
-            content_mode,
-            projection,
-            loops,
-        } = config;
-        leaf(env, playback, content_mode, &projection, false, loops)
-    });
-    env.insert_hook::<VideoPlayerConfig, AnyView>(|env, config| {
-        let VideoPlayerConfig {
-            playback,
-            content_mode,
-            projection,
-            show_controls,
-        } = config;
-        leaf(
-            env,
-            playback,
-            content_mode,
-            &projection,
-            show_controls,
-            false,
-        )
-    });
+/// The playback contract as the leaves receive it, its event handler bound
+/// to the environment the view was realized in.
+type BoundPlayback = PlaybackConfiguration<Option<BoundVideoEventHandler>>;
+
+/// The `Video` realization.
+pub fn video(config: NativeVideoConfig) -> AnyView {
+    let VideoConfig {
+        playback,
+        content_mode,
+        projection,
+        loops,
+    } = config;
+    leaf(playback, content_mode, &projection, false, loops)
+}
+
+/// The `VideoPlayer` realization.
+pub fn video_player(config: NativeVideoPlayerConfig) -> AnyView {
+    let VideoPlayerConfig {
+        playback,
+        content_mode,
+        projection,
+        show_controls,
+    } = config;
+    leaf(playback, content_mode, &projection, show_controls, false)
 }
 
 /// One leaf: the element, the coordinator mirroring the playback contract
 /// into it, and the hosted view that places it.
 fn leaf(
-    env: &Environment,
-    playback: PlaybackConfiguration,
+    playback: BoundPlayback,
     content_mode: ContentMode,
     projection: &VideoProjection,
     controls: bool,
@@ -117,7 +114,7 @@ fn leaf(
     let Some(element) = video_element(object_fit, controls) else {
         return AnyView::new(());
     };
-    let player = Player::new(env, element, playback, loops);
+    let player = Player::new(element, playback, loops);
     let aspect = player.aspect.clone().into();
     let natural_width = player.natural_width.clone().into();
     let hosted = Native::new(HostedView::new(VideoContent { player }));
@@ -245,12 +242,7 @@ struct Player {
 }
 
 impl Player {
-    fn new(
-        env: &Environment,
-        element: HtmlVideoElement,
-        playback: PlaybackConfiguration,
-        loops: bool,
-    ) -> Rc<Self> {
+    fn new(element: HtmlVideoElement, playback: BoundPlayback, loops: bool) -> Rc<Self> {
         let bindings = Bindings {
             source: playback.source,
             subtitle_selection: playback.subtitle_selection,
@@ -282,7 +274,7 @@ impl Player {
             controller: playback.controller,
             emit: playback
                 .on_event
-                .map(|handler| handler.bind_callback(env.clone())),
+                .map(|handler| -> Rc<dyn Fn(Event)> { Rc::new(move |event| handler.call(event)) }),
             loops,
             source_key: RefCell::new(None),
             ready: Cell::new(false),

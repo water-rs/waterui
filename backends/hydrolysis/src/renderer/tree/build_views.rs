@@ -331,8 +331,8 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                     "hydrolysis android: a WebView handle that is not \
                      AndroidSystemWebViewHandle reached the backend; the \
                      Android system bridge only draws views `WebView::open` \
-                     made through its controller — another engine must \
-                     install its `Hook<WebView>` realization; the web view is not drawn"
+                     made through its controller — another engine's \
+                     `WebView` hook must be in scope; the web view is not drawn"
                 );
                 return Self::build_empty(renderer, env);
             };

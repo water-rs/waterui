@@ -240,9 +240,7 @@ use suiteki::Str;
 #[cfg(not(target_arch = "wasm32"))]
 use waterui_core::reactive::signal::IntoComputed;
 use waterui_core::{
-    AnyView, Binding, Computed, Environment, Native, Signal, View, binding,
-    layout::StretchAxis,
-    view::{Hook, ViewConfiguration},
+    Binding, Computed, Environment, Native, Signal, View, binding, layout::StretchAxis,
 };
 use waterui_layout::stack::vstack;
 
@@ -1286,31 +1284,12 @@ impl waterui_core::NativeView for WebView {
     }
 }
 
-/// The view a backend sees when nothing realized the component.
-///
-/// It is what `View::body` produces when the environment carries no
-/// [`Hook<WebView>`], and — because [`Hook`] strips its own type from the
-/// environment before calling the closure — it is also the recursion floor
-/// under one, which is why it must produce a view rather than abort.
-impl ViewConfiguration for WebView {
-    type View = Native<Self>;
-
-    fn render(self) -> Self::View {
-        Native::new(self)
-    }
-}
-
 impl View for WebView {
-    fn body(self, env: &Environment) -> impl View {
-        // A browser engine linked by the application installs a `Hook<WebView>`
-        // that draws the page — the same seam `video` and `map` use for their
-        // self-drawn realizations. A backend that bridges a platform engine
-        // never gets here: it takes the component by type first.
-        if let Some(hook) = env.get::<Hook<Self>>() {
-            AnyView::new(hook.apply(env, self))
-        } else {
-            AnyView::new(self.render())
-        }
+    /// A browser engine an application links realizes the payload through a
+    /// hook targeting `WebView`; a backend that bridges a platform engine
+    /// realizes it through its `web_view` method.
+    fn body(self, _env: &Environment) -> impl View {
+        Native::new(self)
     }
 }
 

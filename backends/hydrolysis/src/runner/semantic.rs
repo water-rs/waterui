@@ -273,8 +273,8 @@ impl SemanticRuntime {
         #[cfg(not(target_arch = "wasm32"))]
         waterui::inspector::install(&mut env, inspector);
         let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
-        #[cfg(any(test, hydrolysis_component_hooks))]
-        install_native_component_hooks(&mut env);
+        #[cfg(any(test, hydrolysis_platform_services))]
+        install_platform_services(&mut env);
         install_headless_window_managers::<crate::text::ParleyEngine>(
             &mut env,
             Rc::clone(&pending_window_queue),

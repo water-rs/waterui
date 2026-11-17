@@ -12,7 +12,6 @@ pub mod inspector;
 pub mod metadata;
 #[cfg(test)]
 mod parked_executor;
-pub mod realization;
 #[cfg(feature = "snackbar")]
 pub mod snackbar;
 pub mod task;

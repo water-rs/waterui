@@ -198,8 +198,8 @@ use executor_core::spawn_local;
 #[cfg(feature = "menu")]
 use waterui_core::handler::ReportExtraction;
 use waterui_core::handler::{BoxedAction, ExtractionError, Handler};
-use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
-use waterui_core::{AnyView, Environment, Native, NativeView, View, impl_debug};
+use waterui_core::view::{ConfigurableView, ViewConfiguration};
+use waterui_core::{Environment, Native, NativeView, View, impl_debug};
 use waterui_text::IntoText;
 
 use crate::label::{IntoLabel, Label, LabelDisplayMode};
@@ -332,8 +332,8 @@ pub struct ButtonConfig {
     /// The semantic label displayed on the button.
     ///
     /// [`Label`] carries both the visual chrome (text + icon + display mode)
-    /// and the spoken text used by assistive technology. Hooks receiving a
-    /// `ButtonConfig` get a typed `Label`, so they can wrap or restyle it but
+    /// and the spoken text used by assistive technology. A hook receiving a
+    /// `ButtonConfig` gets a typed `Label`, so it can wrap or restyle it but
     /// cannot strip away the semantic identity.
     label: Label,
     /// The action to execute when the button is clicked.
@@ -348,8 +348,8 @@ impl ButtonConfig {
     /// The semantic label displayed on the button.
     ///
     /// [`Label`] carries both the visual chrome (text + icon + display mode)
-    /// and the spoken text used by assistive technology. Hooks receiving a
-    /// `ButtonConfig` get a typed `Label`, so they can wrap or restyle it but
+    /// and the spoken text used by assistive technology. A hook receiving a
+    /// `ButtonConfig` gets a typed `Label`, so it can wrap or restyle it but
     /// cannot strip away the semantic identity.
     #[must_use]
     pub const fn label(&self) -> &Label {
@@ -434,12 +434,7 @@ where
     Action: FnMut(&Environment) -> Result<(), ExtractionError> + 'static,
 {
     fn body(self, env: &Environment) -> impl View {
-        let config = render_button_config(self);
-        if let Some(hook) = env.get::<Hook<ButtonConfig>>() {
-            AnyView::new(hook.apply(env, config))
-        } else {
-            AnyView::new(Native::new(config.resolve(env)))
-        }
+        Native::new(render_button_config(self).resolve(env))
     }
 }
 

@@ -7,8 +7,8 @@ use jiff::civil::Date;
 use nami::{Binding, Computed, Signal, SignalExt, signal::IntoComputed};
 use waterui_controls::label::Label;
 use waterui_controls::{IntoLabel, impl_label_style_methods};
-use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
-use waterui_core::{AnyView, Environment, Native, View};
+use waterui_core::view::{ConfigurableView, ViewConfiguration};
+use waterui_core::{Environment, Native, View};
 use waterui_locale::locale_binding;
 
 use crate::calendar::{
@@ -166,13 +166,8 @@ impl MultiDatePicker {
 impl_label_style_methods!(MultiDatePicker);
 
 impl View for MultiDatePicker {
-    fn body(self, env: &Environment) -> impl View {
-        let config = self.0;
-        if let Some(hook) = env.get::<Hook<MultiDatePickerConfig>>() {
-            AnyView::new(hook.apply(env, config))
-        } else {
-            AnyView::new(Native::new(config))
-        }
+    fn body(self, _env: &Environment) -> impl View {
+        Native::new(self.0)
     }
 }
 

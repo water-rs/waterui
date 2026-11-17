@@ -28,10 +28,12 @@ use cocoa_ui::uikit::HostView;
 use cocoa_ui::view::retain_base;
 use waterui::reactive::Signal;
 use waterui::reactive::watcher::Context;
+use waterui_backend_core::NativeBackend as _;
 use waterui_backend_core::{AnyView, Child, ChildView, Environment, Realize, View};
 use waterui_core::backend::{Backend, ChildSlot, DynBackend, ErasedPayload, cast};
 use waterui_core::layout::SubView;
 use waterui_core::metadata::MetadataKey;
+use waterui_core::view::hook::{ComposeErased, ErasedHooks, HookList, HookableView};
 use waterui_core::{Metadata, NativeView};
 
 use cocoa_ui::Retained;
@@ -757,6 +759,24 @@ impl Backend for ResolveEnvironment<'_> {
             .downcast::<(NativeLeaf, Environment)>()
             .expect("the erased path returns this probe's own output")
     }
+
+    /// A hook scope ends the leading environment chain.
+    fn scoped<H: HookList, V: View>(
+        &mut self,
+        hooks: H,
+        view: V,
+        env: &Environment,
+        (): (),
+    ) -> Self::Output {
+        (
+            Realize::new(self.0).scoped(hooks, view, env, ()),
+            env.clone(),
+        )
+    }
+
+    fn hookable<T: HookableView>(&mut self, view: T, env: &Environment, (): ()) -> Self::Output {
+        (Realize::new(self.0).hookable(view, env, ()), env.clone())
+    }
 }
 
 impl DynBackend for ResolveEnvironment<'_> {
@@ -790,5 +810,25 @@ impl DynBackend for ResolveEnvironment<'_> {
 
     fn erased_dyn(&mut self, view: AnyView, env: &Environment, _cx: Box<dyn Any>) -> Box<dyn Any> {
         Box::new(self.erased(view, env, ()))
+    }
+
+    fn scoped_dyn(
+        &mut self,
+        hooks: ErasedHooks,
+        view: AnyView,
+        env: &Environment,
+        _cx: Box<dyn Any>,
+    ) -> Box<dyn Any> {
+        Box::new((self.0.scoped_erased(&hooks, view, env, ()), env.clone()))
+    }
+
+    fn hookable_dyn(
+        &mut self,
+        view: ErasedPayload<'_>,
+        compose: ComposeErased,
+        env: &Environment,
+        _cx: Box<dyn Any>,
+    ) -> Box<dyn Any> {
+        Box::new((self.0.hookable_dyn(view, compose, env, ()), env.clone()))
     }
 }

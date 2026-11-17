@@ -19,13 +19,13 @@ use nami::{Computed, Signal, SignalExt, impl_constant, signal::IntoSignal};
 use waterui_core::{
     Native, NativeView,
     id::Identifiable,
-    view::{ConfigurableView, Hook, ViewConfiguration},
+    view::{ConfigurableView, ViewConfiguration},
     views::SharedAnyViews,
 };
 use waterui_locale::locale_binding;
 use waterui_text::{IntoText, Text};
 
-use crate::{AnyView, Environment, View, views::Views};
+use crate::{Environment, View, views::Views};
 
 /// Configuration for a table component.
 #[derive(Debug)]
@@ -97,11 +97,7 @@ impl ViewConfiguration for TableConfig {
 }
 
 fn render_table_config(config: TableConfig, env: &Environment) -> impl View {
-    if let Some(hook) = env.get::<Hook<TableConfig>>() {
-        AnyView::new(hook.apply(env, config))
-    } else {
-        AnyView::new(Native::new(config.resolve(env)))
-    }
+    Native::new(config.resolve(env))
 }
 
 impl<Col> View for Table<Col>

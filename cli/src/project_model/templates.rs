@@ -188,6 +188,9 @@ pub struct BrowserAnswers {
     /// video player is linked, and Android's backend realizes its decoder
     /// plane.
     pub video_gpu: bool,
+    /// The application's graph links `waterui-map-gpu` — Hydrolysis
+    /// realizes `Map` with the GPU map.
+    pub map_gpu: bool,
 }
 
 /// The Hydrolysis Android preview host scaffold's parameters: the managed
@@ -246,6 +249,9 @@ pub struct WebAnswers {
     /// Whether the application enables the standard `WebView`: an `<iframe>`
     /// realizes it (the `webview-system` Hydrolysis feature).
     pub webview: bool,
+    /// Whether the application links `waterui-map-gpu`: the GPU map
+    /// realizes `Map` (the `map-gpu` Hydrolysis feature).
+    pub map_gpu: bool,
 }
 
 impl WebAnswers {
@@ -257,6 +263,9 @@ impl WebAnswers {
         }
         if self.webview {
             features.push("webview-system");
+        }
+        if self.map_gpu {
+            features.push("map-gpu");
         }
         features
     }
@@ -844,6 +853,12 @@ impl TemplateContext {
             .android_answers()?
             .video_gpu
             .then_some("video-gpu"))
+    }
+
+    /// The backend feature the launcher's Android section selects for the
+    /// GPU map — `map-gpu` when the application's graph links it.
+    pub(crate) fn map_gpu_backend_feature(&self) -> io::Result<Option<&'static str>> {
+        Ok(self.browser.android_answers()?.map_gpu.then_some("map-gpu"))
     }
 
     /// The `cfg` predicate matching the OSes whose tables link the CEF
@@ -1670,6 +1685,7 @@ mod tests {
             webview_enabled,
             engine,
             video_gpu: false,
+            map_gpu: false,
         };
         ctx.with_browser(BrowserTemplateContext::desktop(
             answers, answers, answers, answers,
@@ -1799,8 +1815,8 @@ mod tests {
         // Preview runtimes reach `configure_environment!` through the
         // generated bindings: `app_environment()` hands the configured
         // environment to the application's `app(env)` composition root, which
-        // is what installs application-owned realizations such as
-        // `waterui_map_gpu::install` (#93). A runtime that built a bare
+        // is what installs application-owned values such as
+        // `waterui_map_gpu::MapGpuOptions` (#93). A runtime that built a bare
         // `Environment` would render components the app never could.
         for relative in [
             "src/preview_runtime.rs.tpl",
@@ -2642,16 +2658,19 @@ mod tests {
                 webview_enabled: true,
                 engine: Some(ResolvedWebViewBackend::Cef),
                 video_gpu: false,
+                map_gpu: false,
             },
             super::BrowserAnswers {
                 webview_enabled: true,
                 engine: Some(ResolvedWebViewBackend::Wpe),
                 video_gpu: false,
+                map_gpu: false,
             },
             super::BrowserAnswers {
                 webview_enabled: true,
                 engine: None,
                 video_gpu: false,
+                map_gpu: false,
             },
             super::BrowserAnswers::default(),
         ));
@@ -2761,23 +2780,34 @@ mod tests {
         assert_eq!(
             wasm_features(super::WebAnswers {
                 video: false,
-                webview: false
+                webview: false,
+                map_gpu: false,
             }),
             ["web"]
         );
         assert_eq!(
             wasm_features(super::WebAnswers {
                 video: true,
-                webview: false
+                webview: false,
+                map_gpu: false,
             }),
             ["web", "video"]
         );
         assert_eq!(
             wasm_features(super::WebAnswers {
                 video: true,
-                webview: true
+                webview: true,
+                map_gpu: false,
             }),
             ["web", "video", "webview-system"]
+        );
+        assert_eq!(
+            wasm_features(super::WebAnswers {
+                video: false,
+                webview: false,
+                map_gpu: true,
+            }),
+            ["web", "map-gpu"]
         );
     }
 
@@ -2923,6 +2953,7 @@ mod tests {
                 webview_enabled,
                 engine: None,
                 video_gpu,
+                map_gpu: false,
             };
             let ctx = project_ctx()
                 .with_browser(BrowserTemplateContext::desktop(
@@ -6557,7 +6588,7 @@ pub mod hydrolysis {
     }
 
     /// The engine-dependent pieces the shared native table cannot hold:
-    /// the `webview-system` Hydrolysis feature and the
+    /// the `webview-system` and `video-gpu` Hydrolysis features and the
     /// `waterui-browser-cef` dependency legitimately differ per OS —
     /// `waterui-browser-wpe` enters the application's graph on Linux only —
     /// so each OS's section renders from that OS's own answers while
@@ -6569,7 +6600,15 @@ pub mod hydrolysis {
         let mut tables = BTreeMap::new();
         for os in crate::platform::NativeOs::ALL {
             let mut dependencies = BTreeMap::new();
-            if let Some(feature) = browser.webview_backend_feature(os) {
+            // Hydrolysis bridges no native player, so an application linking
+            // the GPU video player has Hydrolysis realize `Video` with it.
+            let hydrolysis_features: Vec<&str> = browser
+                .webview_backend_feature(os)
+                .into_iter()
+                .chain(browser.for_os(os).video_gpu.then_some("video-gpu"))
+                .chain(browser.for_os(os).map_gpu.then_some("map-gpu"))
+                .collect();
+            if !hydrolysis_features.is_empty() {
                 dependencies.insert(
                     "hydrolysis".to_string(),
                     GeneratedDependencyValue::detailed(
@@ -6577,7 +6616,7 @@ pub mod hydrolysis {
                             ctx,
                             NativeBackendDependencySpec::new(
                                 "hydrolysis",
-                                &[feature],
+                                &hydrolysis_features,
                                 NativeBackendDependencySource::FrameworkMember(HYDROLYSIS),
                             ),
                         )?
@@ -6630,6 +6669,7 @@ pub mod hydrolysis {
         // through `hydrolysis_android_has_system_webview`.
         hydrolysis_features.extend(ctx.webview_backend_feature()?);
         hydrolysis_features.extend(ctx.video_gpu_backend_feature()?);
+        hydrolysis_features.extend(ctx.map_gpu_backend_feature()?);
         Ok(BTreeMap::from([
             (
                 "hydrolysis".to_string(),

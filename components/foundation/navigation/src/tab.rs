@@ -6,6 +6,7 @@ use core::fmt::Debug;
 use nami::collection::Collection;
 use nami::{Binding, Computed, SignalExt as _};
 use waterui_controls::{IntoLabel, label::Label};
+use waterui_core::backend::MapSlots;
 use waterui_core::{
     AnyView, Environment, IntoSignal, Native, NativeView, Str, View,
     backend::{Backend, ChildSlot},
@@ -608,6 +609,14 @@ impl<S: 'static> TabsLayout<S> {
             minimize_behavior,
             bottom_accessory,
         }
+    }
+}
+
+impl<S: 'static> MapSlots<S> for TabsLayout<S> {
+    type With<T: 'static> = TabsLayout<T>;
+
+    fn map_slots<T: 'static>(self, f: impl Fn(S) -> T + Clone + 'static) -> TabsLayout<T> {
+        Self::map_slots(self, f)
     }
 }
 

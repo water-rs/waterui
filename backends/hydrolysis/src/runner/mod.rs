@@ -29,15 +29,11 @@ use waterui::app::App;
 ))]
 use waterui::app::AppParts;
 use waterui::app::{WindowSink, Windows};
-#[cfg(feature = "table")]
-use waterui::component::table::TableConfig;
 use waterui::window::{AnyWindow, Window, WindowManager};
 use waterui_core::Environment;
 use waterui_core::Retain;
 use waterui_core::handler::ViewBuilder;
 use waterui_core::key::KeyPress;
-#[cfg(feature = "table")]
-use waterui_core::{Native, view::Hook};
 #[cfg(hydrolysis_cherenkov)]
 use waterui_text::FontCollection;
 
@@ -338,29 +334,16 @@ fn offscreen_scale_factor() -> f64 {
     parsed
 }
 
-/// Hooks for the platform services this renderer itself provides.
-///
-/// The self-drawn realizations of semantic components — the GPU video player,
-/// the vector map — are not among them: which realization draws a component is
-/// the application's choice, installed by `waterui::app::App` from the
-/// `video-gpu` / `map-gpu` features. What this renderer installs are the
-/// platform's own primitives it bridges: the system web view on macOS and the
-/// `<video>` element on the web.
-#[cfg(any(test, hydrolysis_component_hooks))]
-fn install_native_component_hooks(env: &mut Environment) {
+/// The environment the platform services this renderer provides need: the
+/// localization catalog and the system web view's controller.
+#[cfg(any(test, hydrolysis_platform_services))]
+fn install_platform_services(env: &mut Environment) {
     #[cfg(any(test, hydrolysis_localization))]
     crate::localization::install(env);
     // The only web engine this backend knows about is the platform's own: a
     // browser engine an application links installs its realization itself.
     #[cfg(hydrolysis_system_webview)]
     crate::widgets::platform::webview::install_controller(env);
-    // The page's own `<video>` element is the web's native player.
-    #[cfg(all(target_arch = "wasm32", feature = "web", feature = "video"))]
-    crate::widgets::platform::video::install(env);
-    #[cfg(feature = "table")]
-    env.insert(Hook::new(|_env: &Environment, config: TableConfig| {
-        Native::new(config)
-    }));
 }
 
 fn install_headless_window_managers<E: crate::text::TextEngine>(
@@ -474,8 +457,8 @@ pub fn run<W: Windows>(
     waterui::inspector::install(&mut env, inspector);
     let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
     let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
-    #[cfg(any(test, hydrolysis_component_hooks))]
-    install_native_component_hooks(&mut env);
+    #[cfg(any(test, hydrolysis_platform_services))]
+    install_platform_services(&mut env);
     install_headless_window_managers::<crate::text::ParleyEngine>(
         &mut env,
         Rc::clone(&pending_window_queue),

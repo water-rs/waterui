@@ -5,11 +5,13 @@
 //! `<iframe>` (`web`) — both mounted through Cherenkov `Hosted` content — and
 //! on Android `android.webkit.WebView`, mounted as a platform-view *instance*
 //! inside the host's view tree. Every other engine — CEF, WPE `WebKit` — is a
-//! crate the *application* links and installs as a `Hook<WebView>` realization,
-//! which intercepts the component before it reaches this backend.
+//! crate the *application* links, whose hook targeting `WebView` the
+//! application scopes over its views, claiming the component before it reaches
+//! this backend.
 //!
-//! Other engines must install their own hook; reaching the backend without one
-//! is a programmer error rather than a layout slot with no page behind it.
+//! Reaching the backend without such a hook where no platform engine is
+//! bridged is a programmer error rather than a layout slot with no page behind
+//! it.
 
 // Only macOS can act on this: there the feature names a bridge that exists and
 // the diagnostic tells the reader what is missing. On the web the feature
@@ -64,7 +66,7 @@ pub use web::WebSystemWebViewController;
 /// The hosted leaf showing `view`'s `WKWebView`, or `None` when there is no
 /// page to host: the controller failed to open the view (already reported by
 /// `waterui-webview`), or another engine opened a page that reaches the backend
-/// only when that engine's `Hook<WebView>` is missing — reported here.
+/// only when no hook for that engine is in scope — reported here.
 #[cfg(hydrolysis_macos_system_webview)]
 pub fn hosted(view: &WebView) -> Option<crate::HostedView> {
     let handle = view.handle();
@@ -74,7 +76,7 @@ pub fn hosted(view: &WebView) -> Option<crate::HostedView> {
     let Some(handle) = handle.downcast_ref::<macos::MacSystemWebViewHandle>() else {
         waterui_core::contract_violation!(
             "Hydrolysis hosts only pages the system WKWebView controller opened; \
-             install the custom engine's WebView hook; the web view is not drawn"
+             scope the custom engine's WebView hook over the view; the web view is not drawn"
         );
         return None;
     };
@@ -84,7 +86,7 @@ pub fn hosted(view: &WebView) -> Option<crate::HostedView> {
 /// The hosted leaf showing `view`'s `<iframe>`, or `None` when there is no
 /// page to host: the controller failed to open the view (already reported by
 /// `waterui-webview`), or another engine opened a page that reaches the backend
-/// only when that engine's `Hook<WebView>` is missing — reported here.
+/// only when no hook for that engine is in scope — reported here.
 #[cfg(hydrolysis_web_system_webview)]
 pub fn hosted(view: &WebView) -> Option<crate::HostedView> {
     let handle = view.handle();
@@ -94,7 +96,7 @@ pub fn hosted(view: &WebView) -> Option<crate::HostedView> {
     let Some(handle) = handle.downcast_ref::<web::WebIframeHandle>() else {
         waterui_core::contract_violation!(
             "Hydrolysis hosts only pages the web <iframe> controller opened; \
-             install the custom engine's WebView hook; the web view is not drawn"
+             scope the custom engine's WebView hook over the view; the web view is not drawn"
         );
         return None;
     };
@@ -147,7 +149,6 @@ pub fn install_controller(env: &mut Environment) {
 
 // No `install_controller` without a system bridge. A build that bridges no
 // platform engine installs no controller, so a `WebView` can only be created in
-// it under a controller the application installed itself — an engine crate's
-// `install`, which also installs the `Hook<WebView>` that intercepts the
-// component before this backend sees it. A `WebView` that still gets here has
-// nothing to draw it, and panics.
+// it under a controller the application installed itself — an engine crate's,
+// whose hook targeting `WebView` claims the component before this backend
+// sees it. A `WebView` that still gets here has nothing to draw it, and panics.

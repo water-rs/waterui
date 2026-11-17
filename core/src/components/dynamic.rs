@@ -20,7 +20,7 @@
 //! let content = watch(show_details, |show| {
 //!     if show { "Details" } else { "Summary" }
 //! });
-use crate::backend::{Backend, ChildSlot};
+use crate::backend::{Backend, ChildSlot, MapSlots};
 use crate::components::metadata::Retain;
 use crate::{
     AnyView, Environment, LatestDispatch, Metadata, Native, NativeView, SerialDispatch, View,
@@ -243,6 +243,19 @@ impl Dynamic {
 /// slot; the content it shows has its own stretch axis, answered by the
 /// realized node.
 impl<S: 'static> NativeView for Dynamic<S> {}
+
+impl<S: 'static> MapSlots<S> for Dynamic<S> {
+    type With<T: 'static> = Dynamic<T>;
+
+    fn map_slots<T: 'static>(self, f: impl Fn(S) -> T + Clone + 'static) -> Dynamic<T> {
+        let (handler, slots) = Dynamic::new();
+        self.connect(move |context| {
+            let (view, metadata) = context.into_parts();
+            handler.set_with_metadata(f(view), metadata);
+        });
+        slots
+    }
+}
 
 impl<V: View> View for Dynamic<V> {
     /// The erased form, for code that expands views by hand.

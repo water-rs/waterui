@@ -873,9 +873,6 @@ pub fn media_block_15(mut env: Environment) {
     env.insert(MapGpuOptions::new(waterui_url::Url::new(
         "https://tiles.openfreemap.org/styles/positron",
     )));
-    #[cfg(not(target_vendor = "apple"))]
-    // Apple bridges MapKit; keeps the GPU map out of Apple builds
-    waterui_map_gpu::install(&mut env);
 }
 
 // ---------------------------------------------------------------------------

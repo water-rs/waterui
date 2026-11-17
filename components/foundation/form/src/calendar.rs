@@ -22,7 +22,7 @@ use waterui_controls::label::Label;
 use waterui_controls::{IntoLabel, button, impl_label_style_methods};
 use waterui_core::interaction::Disabled;
 use waterui_core::layout::StretchAxis;
-use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
+use waterui_core::view::{ConfigurableView, ViewConfiguration};
 use waterui_core::{
     AnyView, Environment, Metadata, Native, NativeView, View, env::use_env, views::ForEach,
 };
@@ -45,7 +45,7 @@ const CALENDAR_CELL_SPACING: f32 = 8.0;
 const CALENDAR_WEEKDAY_HEIGHT: f32 = 24.0;
 
 /// Configuration for the [`Calendar`] component — what a backend realizes
-/// natively through `Hook<CalendarConfig>` or its own `Calendar` handler.
+/// through its `calendar` method, or a hook targeting `CalendarConfig`.
 #[derive(Debug)]
 pub struct CalendarConfig {
     label: Label,
@@ -198,13 +198,8 @@ pub fn calendar_next_month_label() -> Label {
 }
 
 impl View for Calendar {
-    fn body(self, env: &Environment) -> impl View {
-        let config = self.0;
-        if let Some(hook) = env.get::<Hook<CalendarConfig>>() {
-            AnyView::new(hook.apply(env, config))
-        } else {
-            AnyView::new(Native::new(config))
-        }
+    fn body(self, _env: &Environment) -> impl View {
+        Native::new(self.0)
     }
 }
 

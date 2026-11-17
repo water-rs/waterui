@@ -287,17 +287,17 @@ pub fn demo() -> impl View {
 /// Selecting the browser engine is the application's job, not the renderer's.
 /// Apple platforms, Android and GTK all bridge a system web engine, so nothing
 /// has to be linked there. Linux without `WebKitGTK` has none to bridge, so the
-/// app links `WaterUI`'s bundled WPE `WebKit` and installs it here — the same
+/// app links `WaterUI`'s bundled WPE `WebKit` and scopes it here — the same
 /// `WebView` code above then draws through it, unchanged.
-#[cfg_attr(
-    not(all(target_os = "linux", feature = "wpe")),
-    expect(
-        unused_mut,
-        reason = "only the platforms with no bridged web engine install one"
-    )
-)]
+#[cfg(all(target_os = "linux", feature = "wpe"))]
+#[must_use]
 pub fn app(mut env: Environment) -> App<impl Windows> {
-    #[cfg(all(target_os = "linux", feature = "wpe"))]
     waterui_browser_wpe::install(&mut env);
+    App::new(|| demo().hooks(waterui_browser_wpe::WpeWebView), env)
+}
+
+/// Builds the example on a platform whose `WebView` bridges a system engine.
+#[cfg(not(all(target_os = "linux", feature = "wpe")))]
+pub fn app(env: Environment) -> App<impl Windows> {
     App::new(demo, env)
 }

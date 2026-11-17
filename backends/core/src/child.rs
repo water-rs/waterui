@@ -24,6 +24,10 @@ pub trait NativeBackendFamily: 'static {
     type Ctx: 'static;
     /// The backend, borrowing for `'a`.
     type Backend<'a>: NativeBackend<Output = Self::Output, Ctx = Self::Ctx, Family = Self>;
+
+    /// The backend `backend` borrows, for as long as this borrow of it: what
+    /// a decorator holds by value while it decorates the backend.
+    fn reborrow<'r>(backend: &'r mut Self::Backend<'_>) -> Self::Backend<'r>;
 }
 
 /// A payload's child view, held for the [`NativeBackend`] family `F`.
@@ -38,6 +42,32 @@ impl<F: NativeBackendFamily> core::fmt::Debug for Child<F> {
 impl<F: NativeBackendFamily> ChildSlot for Child<F> {
     fn from_view<V: View>(view: V) -> Self {
         Self(Box::new(ViewChild(view)))
+    }
+}
+
+impl<F: NativeBackendFamily> Child<F> {
+    /// A child realized by `realize`, for a child that is not a view of its
+    /// own: one held in another family's slot, which `realize` re-enters.
+    pub fn from_fn(
+        realize: impl for<'a> FnOnce(&mut F::Backend<'a>, &Environment, F::Ctx) -> F::Output + 'static,
+    ) -> Self {
+        Self(Box::new(FnChild(realize)))
+    }
+}
+
+struct FnChild<R>(R);
+
+impl<F: NativeBackendFamily, R> ChildFn<F> for FnChild<R>
+where
+    R: for<'a> FnOnce(&mut F::Backend<'a>, &Environment, F::Ctx) -> F::Output,
+{
+    fn call(
+        self: Box<Self>,
+        backend: &mut F::Backend<'_>,
+        env: &Environment,
+        cx: F::Ctx,
+    ) -> F::Output {
+        (self.0)(backend, env, cx)
     }
 }
 

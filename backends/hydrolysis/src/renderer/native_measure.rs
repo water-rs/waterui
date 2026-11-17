@@ -16,21 +16,19 @@ pub fn unsupported_system_icon(icon: &SystemIcon) {
     );
 }
 
-/// Reaching `Native<MapConfig>` means `Map::body` found no `Hook<MapConfig>` —
-/// no map realization was installed — and this backend ships no map engine of
-/// its own. The map is not drawn and measures as zero.
-#[cfg(waterui_feature = "map")]
+/// Reports a `Map` reaching a build without the GPU map (`map-gpu`): this
+/// backend bridges no platform map. The map is not drawn and measures as zero.
+#[cfg(all(waterui_feature = "map", not(feature = "map-gpu")))]
 pub fn unsupported_map() {
     contract_violation!(
-        "Map is unsupported on Hydrolysis because the backend has no map engine; install a \
-         map realization such as `waterui_map_gpu::install` before rendering a `Map`; the map \
-         is not drawn"
+        "Map is unsupported on this Hydrolysis build because it has no map engine; link \
+         `waterui-map-gpu` so the backend draws a `Map` with it; the map is not drawn"
     );
 }
 
 /// Why a `WebView` cannot be drawn on a build without a bridged web engine:
-/// reaching `WebView` without a `Hook<WebView>` engine realization leaves the
-/// backend nothing to draw a page with. Reported as a contract violation by
+/// a `WebView` no engine's hook claimed leaves the backend nothing to draw a
+/// page with. Reported as a contract violation by
 /// the tree builder and the leaf's measure.
 #[cfg(waterui_feature = "webview")]
 #[cfg(not(any(hydrolysis_system_webview, hydrolysis_android_system_webview)))]

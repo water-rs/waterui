@@ -236,19 +236,6 @@ impl<S> UiBuilder<S> {
 
     fn mount_env(&self) -> Environment {
         let mut env = self.env.clone();
-        // The harness mounts views without going through `App::new`, which is
-        // where a real app installs the self-drawn realizations the facade
-        // carries. Install them here so a test binary that enables
-        // `waterui/video-gpu` exercises the same hooks an app would. A
-        // realization from a component crate of its own — `waterui-map-gpu` —
-        // is installed by the test itself, into the environment it passes here,
-        // exactly as an application installs it in `app(env)`.
-        waterui::realization::install(&mut env);
-        // Hydrolysis owns no platform media bridge, so the self-drawn video
-        // realization applies on every host OS, including the ones
-        // `realization::install` skips because their system backend would
-        // bridge a native player.
-        waterui::realization::install_video(&mut env);
         // An application's declared fonts are staged by the `water` CLI; a
         // test binary resolves the package under test's crate-local ones
         // itself, styled or not, as the application path loads them. A host
@@ -465,10 +452,6 @@ impl<S: Style> UiBuilder<Styled<S>> {
         // The app's environment is the composition root, so it layers over
         // the builder's — what the test installed applies underneath it.
         let mut env = app_env.layered_on(&self.env);
-        // As on `mount_env`, Hydrolysis owns no platform media bridge, so the
-        // self-drawn video realization applies even where `App::new`'s
-        // `realization::install` skipped it.
-        waterui::realization::install_video(&mut env);
         // As on `mount_env`, the package under test's crate-local declared
         // fonts resolve here unless the layered environment — the app's or
         // the test's — already carries a `DeclaredFonts`, as a CLI-launched

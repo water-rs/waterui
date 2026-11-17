@@ -51,6 +51,7 @@ pub mod child;
 pub mod frame_signals;
 #[cfg(feature = "gestures")]
 pub mod gesture;
+pub mod hooked;
 pub mod input;
 #[cfg(feature = "log")]
 pub mod log;
@@ -61,6 +62,7 @@ pub mod scroll;
 pub mod time;
 
 pub use child::{Child, ChildView, IntoChild, NativeBackendFamily};
+pub use hooked::{Hooked, HookedFamily};
 pub use native_backend::{NativeBackend, Realize, report_unprovided};
 
 // Re-export common types from waterui-core

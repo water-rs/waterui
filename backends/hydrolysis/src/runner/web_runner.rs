@@ -519,8 +519,8 @@ pub fn run<W: Windows>(app: App<W>, style: impl crate::Style) {
 
         let mut env = env.extending(waterui_graphics::backend::SceneViewMergeToParent);
         let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
-        #[cfg(any(test, hydrolysis_component_hooks))]
-        super::install_native_component_hooks(&mut env);
+        #[cfg(any(test, hydrolysis_platform_services))]
+        super::install_platform_services(&mut env);
         // Every runner seeds the chord table so mounted menus resolve
         // shortcuts through the same path (water-rs/hydrolysis#247).
         let _ = env.get_or_insert_with::<crate::renderer::WindowIdentities, _>(
