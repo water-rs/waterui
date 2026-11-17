@@ -790,13 +790,11 @@ mod tests {
         let env = Environment::new();
         let body = AnyView::new(image.body(&env));
         let container = body
-            .downcast::<FixedContainer>()
-            .unwrap_or_else(|_| panic!("a reactive image mounts inside a fixed container"));
-        let (_, mut contents) = container.into_inner();
-        let canvas = contents
-            .pop()
-            .and_then(|view| view.downcast::<Canvas>().ok())
-            .expect("a reactive image's only content is a canvas");
+            .downcast::<FixedContainer<(Canvas,)>>()
+            .unwrap_or_else(|_| {
+                panic!("a reactive image mounts a canvas inside a fixed container")
+            });
+        let (_, (canvas,)) = container.into_inner();
 
         (AnyView::new(canvas.body(&env))
             .downcast::<CanvasView>()

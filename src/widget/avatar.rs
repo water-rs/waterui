@@ -385,13 +385,14 @@ fn first_grapheme(word: &str) -> String {
 mod tests {
     use super::{Avatar, CapturedShape, avatar, initials};
     use crate::metadata::secure::{ColorSpace, HighDynamicRange, StandardDynamicRange};
-    use waterui_core::{Environment, Metadata, View};
+    use waterui_core::{AnyView, Environment, Metadata, View};
     use waterui_shape::{Circle, RoundedRectangle, ShapeKind};
 
-    /// `AnyView::new` unwraps an `AnyView` rather than nesting one, so this
-    /// hands back exactly the view `Avatar::body` produced.
-    fn realize(avatar: Avatar) -> waterui_core::AnyView {
-        waterui_core::AnyView::new(avatar.body(&Environment::new()))
+    /// The view `Avatar::body` produced, past the `OneOf2` its colour space
+    /// chooses: a `OneOf2`'s body is the chosen variant, erased.
+    fn realize(avatar: Avatar) -> AnyView {
+        let env = Environment::new();
+        AnyView::new(avatar.body(&env).body(&env))
     }
 
     #[test]

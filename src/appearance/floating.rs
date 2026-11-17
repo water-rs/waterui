@@ -111,7 +111,7 @@ mod tests {
 
     use nami::Binding;
     use waterui_core::{
-        AnyView, Dynamic, Environment, Metadata, Retain, View,
+        AnyView, Dynamic, Environment, Metadata, Native, Retain, View,
         interaction::{InteractionReport, InteractionState, StateValue},
     };
     use waterui_layout::container::FixedContainer;
@@ -125,6 +125,17 @@ mod tests {
     /// type-erased so intermediates keep their own names out of the test.
     fn render(view: impl View, env: &Environment) -> AnyView {
         AnyView::new(view.body(env))
+    }
+
+    /// The children of a fixed container, read from its erased form: a typed
+    /// `FixedContainer` expands to a native container of erased children.
+    fn container_children(container: AnyView, env: &Environment, role: &str) -> Vec<AnyView> {
+        render(container, env)
+            .downcast::<Native<FixedContainer>>()
+            .unwrap_or_else(|view| panic!("{role} resolves to a fixed container: {view:?}"))
+            .into_inner()
+            .into_inner()
+            .1
     }
 
     /// Explodes a `Floating` body into the pieces a backend sees: the binding
@@ -143,10 +154,7 @@ mod tests {
             Floating::with_style(Text::new("label"), style).body(&env),
             &env,
         );
-        let fixed = *surface
-            .downcast::<FixedContainer>()
-            .expect("a background modifier resolves to a fixed container");
-        let mut children = fixed.into_inner().1.into_iter();
+        let mut children = container_children(surface, &env, "a background modifier").into_iter();
         let shadows = children.next().expect("the shadow layer is the background");
         let clipped = children.next().expect("the clipped surface is the content");
 
@@ -158,10 +166,8 @@ mod tests {
         // Inside the clip is the fill background over the content; the
         // environment modifier `.interaction_state` installs carries the
         // InteractionReport plugin.
-        let inner = *render(clip.content, &env)
-            .downcast::<FixedContainer>()
-            .expect("the surface fill is a background layer");
-        let mut inner_children = inner.into_inner().1.into_iter();
+        let mut inner_children =
+            container_children(render(clip.content, &env), &env, "the surface fill").into_iter();
         let _fill = inner_children.next();
         let env_meta = *render(inner_children.next().expect("the styled content"), &env)
             .downcast::<Metadata<Environment>>()
