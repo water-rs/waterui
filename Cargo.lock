@@ -2212,7 +2212,7 @@ checksum = "af491d569909a7e4dee0ad7db7f5341fef5c614d5b8ec8cf765732aba3cff681"
 dependencies = [
  "serde",
  "termcolor",
- "unicode-width 0.1.14",
+ "unicode-width 0.2.2",
 ]
 
 [[package]]
@@ -8879,7 +8879,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "proc-macro2 1.0.107",
  "quote 1.0.47",
  "syn 2.0.119",
@@ -12927,7 +12927,7 @@ dependencies = [
 [[package]]
 name = "waterui-browser-cef"
 version = "0.1.0"
-source = "git+https://github.com/water-rs/browsers?branch=refactor%2Ftyped-hooks#a645923cb4913bdabe080b386586ef3530affdf4"
+source = "git+https://github.com/water-rs/browsers?branch=refactor%2Ftyped-hooks#d9e68e9350fc345bd258ba40803e97f464b6ad9d"
 dependencies = [
  "async-channel",
  "base64 0.23.1",
@@ -12967,7 +12967,7 @@ dependencies = [
 [[package]]
 name = "waterui-browser-wpe"
 version = "0.1.0"
-source = "git+https://github.com/water-rs/browsers?branch=refactor%2Ftyped-hooks#a645923cb4913bdabe080b386586ef3530affdf4"
+source = "git+https://github.com/water-rs/browsers?branch=refactor%2Ftyped-hooks#d9e68e9350fc345bd258ba40803e97f464b6ad9d"
 dependencies = [
  "cookie",
  "executor-core",
@@ -13521,7 +13521,7 @@ dependencies = [
 [[package]]
 name = "waterui-map-gpu"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/map-gpu?branch=refactor%2Ftyped-hooks#8d029a4187eb5705da73c76d15325547bbc11854"
+source = "git+https://github.com/water-rs/map-gpu?branch=refactor%2Ftyped-hooks#82e3f5557febab2bed2bfc5146460a8e890abe3a"
 dependencies = [
  "arc-swap",
  "blocking",
@@ -13869,7 +13869,7 @@ dependencies = [
 [[package]]
 name = "waterui-video-gpu"
 version = "0.4.0"
-source = "git+https://github.com/water-rs/video-gpu?branch=refactor%2Ftyped-hooks#a97add459e8e34d94bb788e97f396f174973d1d8"
+source = "git+https://github.com/water-rs/video-gpu?branch=refactor%2Ftyped-hooks#6a64357e8d561d8ecc7087e8abcc209867c403cd"
 dependencies = [
  "async-channel",
  "executor-core",

@@ -249,6 +249,9 @@ pub struct WebAnswers {
     /// Whether the application enables the standard `WebView`: an `<iframe>`
     /// realizes it (the `webview-system` Hydrolysis feature).
     pub webview: bool,
+    /// Whether the application links `waterui-map-gpu`: the GPU map
+    /// realizes `Map` (the `map-gpu` Hydrolysis feature).
+    pub map_gpu: bool,
 }
 
 impl WebAnswers {
@@ -260,6 +263,9 @@ impl WebAnswers {
         }
         if self.webview {
             features.push("webview-system");
+        }
+        if self.map_gpu {
+            features.push("map-gpu");
         }
         features
     }
@@ -2774,23 +2780,34 @@ mod tests {
         assert_eq!(
             wasm_features(super::WebAnswers {
                 video: false,
-                webview: false
+                webview: false,
+                map_gpu: false,
             }),
             ["web"]
         );
         assert_eq!(
             wasm_features(super::WebAnswers {
                 video: true,
-                webview: false
+                webview: false,
+                map_gpu: false,
             }),
             ["web", "video"]
         );
         assert_eq!(
             wasm_features(super::WebAnswers {
                 video: true,
-                webview: true
+                webview: true,
+                map_gpu: false,
             }),
             ["web", "video", "webview-system"]
+        );
+        assert_eq!(
+            wasm_features(super::WebAnswers {
+                video: false,
+                webview: false,
+                map_gpu: true,
+            }),
+            ["web", "map-gpu"]
         );
     }
 

@@ -234,10 +234,12 @@ the same types as the facade, including with dynamic linking. Maps have the faca
 feature `map` (`waterui::map`, the same types as a direct `waterui-map` dependency).
 Mermaid diagrams use a direct dependency on `waterui-mermaid`, which lives
 in its own repository (water-rs/mermaid) and is a git dependency until it can be
-published. Mermaid additionally needs one call at the root of the app: a
-```` ```mermaid ```` fence in Markdown stays plain code until the environment has
-`waterui_mermaid::install(&mut env)` (do it inside `use_env` at the root view, as the
-component repository's `examples/markdown` shows, so `water preview` gets it too). Keep
+published. Mermaid additionally needs one modifier at the root of the app: a
+```` ```mermaid ```` fence in Markdown stays plain code until its hook is scoped over it with
+`.hooks(waterui_mermaid::MermaidFences)` (on the root view, as the component repository's
+`examples/markdown` shows, so `water preview` gets it too). A hook
+(`waterui::view::hook::Hook`) realizes one payload type — `CodeConfig` here — or declines
+it; `.hooks(..)` takes one hook or a tuple, and the nearest scope is asked first. Keep
 the generated `dev = ["waterui/dynamic_linking"]` feature — it is what makes `water preview`
 and the fast dev loop link dynamically ([references/project.md](references/project.md)).
 

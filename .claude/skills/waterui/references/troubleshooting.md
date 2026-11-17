@@ -191,9 +191,9 @@ and place children with `PositionExt` / `.pin(..)`.
 not from unit-space path commands, which scale with the aspect ratio. Test shape code
 against a deliberately non-square rectangle.
 
-**A map renders nothing on a self-drawn backend.** Nothing installs a map realization for
-you off Apple: `app(env)` must both call `waterui_map_gpu::install(&mut env)` and put a
-`MapGpuOptions` tile source into the environment. See [media.md](media.md).
+**A map renders nothing on a self-drawn backend.** Hydrolysis draws a map only with
+`waterui-map-gpu`: the app must depend on it and put a `MapGpuOptions` tile source into the
+environment in `app(env)`. See [media.md](media.md).
 
 ## Build and run problems
 

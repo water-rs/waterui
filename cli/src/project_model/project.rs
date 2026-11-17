@@ -988,7 +988,7 @@ impl Project {
         section: GraphSection,
     ) -> eyre::Result<crate::templates::WebAnswers> {
         let targets = crate::platform::wasm_target_triples();
-        let (video, webview) = futures_util::future::try_join(
+        let (video, webview, map_gpu) = futures_util::future::try_join3(
             self.unanimous_graph_answer(
                 &targets,
                 "the video usage",
@@ -1003,9 +1003,20 @@ impl Project {
                 |enabled: &bool| enabled.to_string(),
                 |project, target| async move { project.uses_standard_webview(&target).await },
             ),
+            self.unanimous_graph_answer(
+                &targets,
+                "the GPU map usage",
+                section,
+                |enabled: &bool| enabled.to_string(),
+                |project, target| async move { project.uses_map_gpu(&target).await },
+            ),
         )
         .await?;
-        Ok(crate::templates::WebAnswers { video, webview })
+        Ok(crate::templates::WebAnswers {
+            video,
+            webview,
+            map_gpu,
+        })
     }
 
     /// The two `WebView` answers `os`'s generated-manifest table gets from
