@@ -1,5 +1,5 @@
 //! Rendered-flush twin of `waterui-webview`'s realization coverage: an
-//! installed `Hook<WebView>` realization draws the component, and its
+//! engine's `WebView` hook scoped over the view draws the component, and its
 //! published accessibility node covers the surface's own bounds on the
 //! rendered runtime. The semantic legs — realization dispatch, role, the
 //! navigation binding — live in the component crate's `e2e_semantics.rs`.
@@ -20,7 +20,8 @@ use waterui::ViewExt as _;
 use waterui::shape::{Rectangle, ShapeExt as _};
 use waterui::{Color, Environment, Str};
 use waterui_core::accessibility::{AccessibilityRole, default_role};
-use waterui_core::{AnyView, Metadata, Retain, Signal};
+use waterui_core::view::hook::Hook;
+use waterui_core::{Metadata, Retain, Signal, View};
 use waterui_webview::{
     BackendEvent, Cookie, CustomWebViewController, ScriptInjectionTime, ScriptMessageHandler, Url,
     WatcherGuard, WatcherSet, WebView, WebViewConfig, WebViewController, WebViewHandle,
@@ -151,28 +152,39 @@ impl WebViewHandle for TestHandle {
     }
 }
 
-/// The realization both tests install in place of a linked engine.
+/// The engine the test scopes in place of a linked one.
 ///
-/// It stands in for `waterui_browser_cef::install` / `..._wpe::install` the
-/// way those look from the tree: [`default_role`] wrapped around opaque
+/// It stands in for `waterui_browser_cef::CefWebView` / `..._wpe::WpeWebView`
+/// the way those look from the tree: [`default_role`] wrapped around opaque
 /// self-drawn content, holding the `WebView` alive for the surface's
 /// lifetime. A filled shape stands in for the surface because it reaches the
 /// renderer's self-drawn-graphics leaf the same way and needs no GPU device.
-fn realization(env: &Environment, webview: WebView) -> AnyView {
-    AnyView::new(Metadata::new(
-        default_role(
-            env,
-            Rectangle.fill(Color::srgb_hex("#3B82F6")),
-            AccessibilityRole::Group,
-        ),
-        Retain::new(webview),
-    ))
+#[derive(Clone)]
+struct TestEngine {
+    drawn: Rc<Cell<bool>>,
 }
 
-/// A browser engine the application links installs a `Hook<WebView>`, and that
-/// realization is what draws the component — including on a backend that
-/// bridges a platform engine of its own and would otherwise take the
-/// component by type before `body` ever ran.
+impl Hook for TestEngine {
+    type Target = WebView;
+
+    fn apply(&self, webview: WebView, env: &Environment) -> Result<impl View, WebView> {
+        self.drawn.set(true);
+        // The realization owns the semantic component for the surface's
+        // lifetime, the way every engine does.
+        Ok(Metadata::new(
+            default_role(
+                env,
+                Rectangle.fill(Color::srgb_hex("#3B82F6")),
+                AccessibilityRole::Group,
+            ),
+            Retain::new(webview),
+        ))
+    }
+}
+
+/// A browser engine's hook scoped over the views is what draws the
+/// component — including on a backend that bridges a platform engine of its
+/// own and would otherwise realize the component itself.
 ///
 /// The filled shape the hook returns also proves the accessibility half of
 /// the engine path: the node a screen reader gets when nothing in the host
@@ -183,15 +195,9 @@ fn an_installed_realization_draws_the_webview_and_keeps_its_node() {
     let drawn = Rc::new(Cell::new(false));
     let mut env = Environment::new();
     env.insert(WebViewController::new(TestController::new()));
-    env.insert_hook::<WebView, AnyView>({
-        let drawn = Rc::clone(&drawn);
-        move |env: &Environment, webview: WebView| {
-            drawn.set(true);
-            // The realization owns the semantic component for the surface's
-            // lifetime, the way every engine install does.
-            realization(env, webview)
-        }
-    });
+    let engine = TestEngine {
+        drawn: Rc::clone(&drawn),
+    };
 
     let mut app = mount_rendered(
         env,
@@ -199,6 +205,7 @@ fn an_installed_realization_draws_the_webview_and_keeps_its_node() {
             WebView::open(DOCS_URL)
                 .a11y_label("Docs WebView")
                 .size(WEBVIEW_WIDTH, WEBVIEW_HEIGHT)
+                .hooks(engine.clone())
         },
         420,
         420,

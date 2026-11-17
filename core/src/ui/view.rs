@@ -204,7 +204,6 @@ pub trait ViewConfiguration: 'static {
     fn render(self) -> Self::View;
 }
 
-
 macro_rules! impl_tuple_views {
     ($($ty:ident),*) => {
         #[allow(non_snake_case)]

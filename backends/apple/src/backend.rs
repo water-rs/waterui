@@ -29,7 +29,7 @@ impl NativeBackendFamily for AppleBackend {
     type Ctx = ();
     type Backend<'a> = Self;
 
-    fn reborrow<'r>(backend: &'r mut Self) -> Self {
+    fn reborrow(backend: &mut Self) -> Self {
         Self { mtm: backend.mtm }
     }
 }

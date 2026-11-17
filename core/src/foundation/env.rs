@@ -86,11 +86,7 @@ impl Default for Environment {
 }
 
 use crate::{
-    View,
-    components::Metadata,
-    extract::Extractor,
-    metadata::MetadataKey,
-    plugin::Plugin,
+    View, components::Metadata, extract::Extractor, metadata::MetadataKey, plugin::Plugin,
 };
 
 /// A type-indexed storage container for values in an environment.

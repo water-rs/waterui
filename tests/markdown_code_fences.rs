@@ -10,10 +10,8 @@
 #![cfg(feature = "flow-markdown")]
 
 use waterui::ViewExt as _;
-use waterui::env::use_env;
-use waterui::metadata::Metadata;
 use waterui::prelude::*;
-use waterui::view::ViewConfiguration as _;
+use waterui::view::hook::Hook;
 use waterui::widget::code::CodeConfig;
 use waterui::widget::{RichText, flow_markdown};
 use waterui_testing::UiBuilder;
@@ -40,24 +38,27 @@ fn an_unclaimed_fence_names_its_language(ui: UiBuilder) {
     app.query().label("Copy").assert_exists();
 }
 
+/// Claims the `puzzle` fences and declines every other.
+#[derive(Clone)]
+struct Puzzles;
+
+impl Hook for Puzzles {
+    type Target = CodeConfig;
+
+    fn apply(&self, config: CodeConfig, _env: &Environment) -> Result<impl View, CodeConfig> {
+        match config.info().map(core::ops::Deref::deref) {
+            Some("puzzle") => Ok(text("solved").a11y_label("claimed")),
+            _ => Err(config),
+        }
+    }
+}
+
 /// A hook sees the token as written and claims the one it recognises. The
-/// `rust` fence in the same document goes through the same hook, is declined,
-/// and comes back as the ordinary code block — `Hook::from` having removed the
-/// hook from the environment it handed the closure, so `render()` does not
-/// recurse.
+/// `rust` fence in the same document is offered to the same hook, is declined,
+/// and comes back as the ordinary code block.
 #[waterui::test(viewport = (700, 900))]
 fn a_hook_claims_only_the_token_it_recognises(ui: UiBuilder) {
-    let mut app = ui.mount(|| {
-        use_env(|mut env: Environment| {
-            env.insert_hook::<CodeConfig, AnyView>(|_env, config| {
-                match config.info().map(core::ops::Deref::deref) {
-                    Some("puzzle") => AnyView::new(text("solved").a11y_label("claimed")),
-                    _ => AnyView::new(config.render()),
-                }
-            });
-            Metadata::new(RichText::from_markdown(DOC), env)
-        })
-    });
+    let mut app = ui.mount(|| RichText::from_markdown(DOC).hooks(Puzzles));
 
     app.query().label("claimed").assert_exists();
     app.query().label("Rust").assert_exists();

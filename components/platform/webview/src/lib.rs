@@ -240,8 +240,7 @@ use suiteki::Str;
 #[cfg(not(target_arch = "wasm32"))]
 use waterui_core::reactive::signal::IntoComputed;
 use waterui_core::{
-    Binding, Computed, Environment, Native, Signal, View, binding,
-    layout::StretchAxis,
+    Binding, Computed, Environment, Native, Signal, View, binding, layout::StretchAxis,
 };
 use waterui_layout::stack::vstack;
 

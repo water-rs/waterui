@@ -263,16 +263,20 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         }
     }
 
-    // No hook in scope realized the map: no map realization is linked.
+    // This backend bridges no platform map: the GPU map (`map-gpu`) draws
+    // it, and a build without one draws no map.
     #[cfg(waterui_feature = "map")]
-    fn map(
-        &mut self,
-        _native: waterui::map::MapConfig,
-        env: &Environment,
-        (): (),
-    ) -> RenderNode<E> {
-        unsupported_map();
-        RenderNode::build_empty(self.renderer, env)
+    fn map(&mut self, native: waterui::map::MapConfig, env: &Environment, (): ()) -> RenderNode<E> {
+        #[cfg(feature = "map-gpu")]
+        {
+            self.build(waterui_map_gpu::map(env, native), env)
+        }
+        #[cfg(not(feature = "map-gpu"))]
+        {
+            let _ = native;
+            unsupported_map();
+            RenderNode::build_empty(self.renderer, env)
+        }
     }
 
     // This backend bridges the platform's own web engine. An application that

@@ -13,7 +13,7 @@ use waterui::app::{App, Windows};
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
-use waterui_browser_cef::install_chromium;
+use waterui_browser_cef::{CefChromium, install_chromium};
 use waterui_chromium::cdp::browser_protocol::page::GetNavigationHistoryParams;
 use waterui_chromium::{
     CdpError, ChromiumConfiguration, ChromiumController, ChromiumEvent, ChromiumPage,
@@ -399,11 +399,12 @@ pub fn demo() -> impl View {
 ///
 /// Which runtime backs `ChromiumView` is the application's choice: depending on
 /// `waterui-browser-cef` and calling `install_chromium` starts the packaged CEF
-/// runtime, supplies the `ChromiumController` the code above extracts from the
-/// environment, and registers the realization that draws a visible page.
+/// runtime and supplies the `ChromiumController` the code above extracts from
+/// the environment, and the `CefChromium` hook draws a visible page.
+#[must_use]
 pub fn app(mut env: Environment) -> App<impl Windows> {
     install_chromium(&mut env);
-    App::new(demo, env)
+    App::new(|| demo().hooks(CefChromium), env)
 }
 
 #[cfg(test)]

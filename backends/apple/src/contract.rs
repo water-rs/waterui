@@ -28,12 +28,12 @@ use cocoa_ui::uikit::HostView;
 use cocoa_ui::view::retain_base;
 use waterui::reactive::Signal;
 use waterui::reactive::watcher::Context;
+use waterui_backend_core::NativeBackend as _;
 use waterui_backend_core::{AnyView, Child, ChildView, Environment, Realize, View};
 use waterui_core::backend::{Backend, ChildSlot, DynBackend, ErasedPayload, cast};
 use waterui_core::layout::SubView;
 use waterui_core::metadata::MetadataKey;
 use waterui_core::view::hook::{ComposeErased, ErasedHooks, HookList, HookableView};
-use waterui_backend_core::NativeBackend as _;
 use waterui_core::{Metadata, NativeView};
 
 use cocoa_ui::Retained;
@@ -768,7 +768,10 @@ impl Backend for ResolveEnvironment<'_> {
         env: &Environment,
         (): (),
     ) -> Self::Output {
-        (Realize::new(self.0).scoped(hooks, view, env, ()), env.clone())
+        (
+            Realize::new(self.0).scoped(hooks, view, env, ()),
+            env.clone(),
+        )
     }
 
     fn hookable<T: HookableView>(&mut self, view: T, env: &Environment, (): ()) -> Self::Output {
@@ -816,10 +819,7 @@ impl DynBackend for ResolveEnvironment<'_> {
         env: &Environment,
         _cx: Box<dyn Any>,
     ) -> Box<dyn Any> {
-        Box::new((
-            self.0.scoped_erased(&hooks, view, env, ()),
-            env.clone(),
-        ))
+        Box::new((self.0.scoped_erased(&hooks, view, env, ()), env.clone()))
     }
 
     fn hookable_dyn(
@@ -829,9 +829,6 @@ impl DynBackend for ResolveEnvironment<'_> {
         env: &Environment,
         _cx: Box<dyn Any>,
     ) -> Box<dyn Any> {
-        Box::new((
-            self.0.hookable_dyn(view, compose, env, ()),
-            env.clone(),
-        ))
+        Box::new((self.0.hookable_dyn(view, compose, env, ()), env.clone()))
     }
 }

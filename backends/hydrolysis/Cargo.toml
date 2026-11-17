@@ -106,6 +106,8 @@ pollster = { workspace = true, optional = true }
 # Hosted content (Apple, Android and the web, the `hydrolysis_hosted` targets)
 # follows the occlusion rects through a watcher set, as does the web
 # platform's surface; no other target compiles either.
+# The GPU map realizing `Map` (the `map-gpu` feature).
+waterui-map-gpu = { workspace = true, optional = true }
 [target.'cfg(any(target_vendor = "apple", target_os = "android", target_arch = "wasm32"))'.dependencies]
 waterui-watcher-set = { workspace = true, optional = true }
 
@@ -117,6 +119,11 @@ accesskit_winit = { version = "0.34.1", optional = true }
 # only the winit runner reads one.
 png = { version = "0.18", optional = true }
 waterui-assets = { workspace = true, optional = true }
+
+# The GPU video player realizing `Video` off the web (the `video-gpu`
+# feature); the web realizes it with the page's `<video>` element.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+waterui-video-gpu = { workspace = true, optional = true }
 
 [build-dependencies]
 askama = { version = "0.16", default-features = false, features = ["derive", "std"], optional = true }
@@ -305,8 +312,6 @@ ndk = { version = "0.9.0", features = ["nativewindow", "api-level-33"] }
 # panics without it; published once in `nativeCreateSession`.
 ndk-context = "0.1"
 libc = "0.2"
-# The GPU video player's Android decoder plane (the `video-gpu` feature).
-waterui-video-gpu = { workspace = true, optional = true }
 # A pure-HWUI build (`--no-default-features --features hwui`,
 # water-rs/waterui#1811) selects the platform painter and links none of the
 # Cherenkov engine dependencies above; with `gpu` it composes (the painter is
@@ -549,7 +554,11 @@ hwui = [
 # web, with its Android decoder plane
 # (`AndroidVideoSurfaceHost`). The CLI enables it for an application that
 # selects `waterui/video-gpu`.
-video-gpu = ["gpu", "dep:waterui-video-gpu"]
+video-gpu = ["gpu", "dep:waterui-video-gpu", "waterui/video"]
+# The GPU vector map as the realization of `Map`: this backend bridges no
+# platform map. The CLI enables it for an application that links
+# `waterui-map-gpu`.
+map-gpu = ["gpu", "dep:waterui-map-gpu", "waterui/map"]
 # The platform's own web engine: `WKWebView` on macOS, an `<iframe>` on the web,
 # each hosted on a compositor plane, and `android.webkit.WebView` on Android,
 # mounted as a platform-view instance. Every other engine is a crate the
@@ -596,6 +605,7 @@ winit = [
 # selects nothing. The CLI enables it for an application that uses video.
 video = [
     "dep:waterui-video",
+    "waterui/video",
     "web-sys?/HtmlMediaElement",
     "web-sys?/HtmlTrackElement",
     "web-sys?/HtmlVideoElement",

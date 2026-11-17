@@ -1749,20 +1749,28 @@ fn a_container_with_an_explicit_label_still_consumes_its_text() {
 /// label, announced its own generated description instead.
 #[cfg(feature = "accessibility")]
 #[test]
-fn a_label_survives_the_environment_snapshot_a_view_hook_takes() {
+fn a_label_reaches_the_view_a_hook_realizes() {
     use waterui::map::{Coordinate, Map, MapConfig, Region};
-    use waterui_core::AnyView;
+    use waterui_core::view::hook::Hook;
 
-    let mut env = test_environment();
-    // The hooked body stands in for a real map realization — `Native<MapConfig>`
-    // is unreachable because the backend has no map engine and panics on it.
-    env.insert_hook::<MapConfig, AnyView>(|_env, _config| {
-        AnyView::new(text("map").a11y_role(AccessibilityRole::Image))
-    });
+    /// Stands in for a map realization: this build has no map engine.
+    #[derive(Clone)]
+    struct TextMap;
+
+    impl Hook for TextMap {
+        type Target = MapConfig;
+
+        fn apply(&self, _config: MapConfig, _env: &Environment) -> Result<impl View, MapConfig> {
+            Ok(text("map").a11y_role(AccessibilityRole::Image))
+        }
+    }
+
+    let env = test_environment();
     let mut renderer = test_renderer();
     // The frame puts the hooked map inside a layout container, one level below
     // the naming scope the build installs.
     let view = Map::new(Region::new(Coordinate::default(), 1.0, 1.0))
+        .hooks(TextMap)
         .a11y_label("City map")
         .size(120.0, 120.0);
 

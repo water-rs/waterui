@@ -18,8 +18,8 @@ use alloc::boxed::Box;
 use core::any::Any;
 
 use waterui_core::backend::{Backend, DynBackend, ErasedPayload, MapSlots, cast};
-use waterui_core::view::hook::{ComposeErased, ErasedHooks, HookList, HookableView};
 use waterui_core::metadata::MetadataKey;
+use waterui_core::view::hook::{ComposeErased, ErasedHooks, HookList, HookableView};
 use waterui_core::{AnyView, Environment, Metadata, NativeView, View, contract_violation};
 
 use crate::child::{Child, ChildView, NativeBackendFamily};
@@ -327,7 +327,7 @@ macro_rules! native_backend {
             type Ctx = ();
             type Backend<'a> = Self;
 
-            fn reborrow<'r>(backend: &'r mut Self) -> Self {
+            fn reborrow(backend: &mut Self) -> Self {
                 backend.clone()
             }
         }
@@ -484,7 +484,12 @@ impl<B: NativeBackend> Backend for Realize<'_, B> {
         })
     }
 
-    fn hookable<T: HookableView>(&mut self, view: T, env: &Environment, cx: Self::Ctx) -> Self::Output {
+    fn hookable<T: HookableView>(
+        &mut self,
+        view: T,
+        env: &Environment,
+        cx: Self::Ctx,
+    ) -> Self::Output {
         self.backend.hookable(view, env, cx)
     }
 
@@ -570,10 +575,7 @@ impl<B: NativeBackend> DynBackend for RealizeDyn<'_, B> {
         env: &Environment,
         cx: Box<dyn Any>,
     ) -> Box<dyn Any> {
-        Box::new(
-            self.backend
-                .hookable_dyn(view, compose, env, Self::cx(cx)),
-        )
+        Box::new(self.backend.hookable_dyn(view, compose, env, Self::cx(cx)))
     }
 }
 
@@ -908,7 +910,10 @@ mod tests {
     fn each_payload_reaches_its_method() {
         let mut recorder = Recorder::default();
         Realize::child(&mut recorder, tree(), &Environment::new(), ());
-        assert_eq!(recorder.reached.borrow().as_slice(), ["layout_priority", "spacer"]);
+        assert_eq!(
+            recorder.reached.borrow().as_slice(),
+            ["layout_priority", "spacer"]
+        );
     }
 
     #[derive(Debug)]
@@ -956,7 +961,10 @@ mod tests {
     fn an_erased_tree_reaches_the_same_methods() {
         let mut recorder = Recorder::default();
         Realize::child(&mut recorder, AnyView::new(tree()), &Environment::new(), ());
-        assert_eq!(recorder.reached.borrow().as_slice(), ["layout_priority", "spacer"]);
+        assert_eq!(
+            recorder.reached.borrow().as_slice(),
+            ["layout_priority", "spacer"]
+        );
     }
     /// Draws every spacer as a divider.
     #[derive(Clone)]
@@ -998,8 +1006,7 @@ mod tests {
     fn reached(view: impl View) -> Vec<&'static str> {
         let mut recorder = Recorder::default();
         Realize::child(&mut recorder, view, &Environment::new(), ());
-        let reached = recorder.reached.borrow().clone();
-        reached
+        recorder.reached.borrow().clone()
     }
 
     /// Inside a scope every child a payload holds is the decorator's own, so

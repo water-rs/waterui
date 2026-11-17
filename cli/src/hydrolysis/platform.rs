@@ -1169,6 +1169,7 @@ mod tests {
                 webview_enabled: true,
                 engine: Some(ResolvedWebViewBackend::Cef),
                 video_gpu: false,
+                map_gpu: false,
             },
         );
         let package_name = "demo-hydrolysis-deadbeef";
@@ -1313,6 +1314,7 @@ mod tests {
                 webview_enabled: false,
                 engine: Some(ResolvedWebViewBackend::Wpe),
                 video_gpu: false,
+                map_gpu: false,
             },
         );
         assert_eq!(rendered_bin_names(&ctx, package_name), [package_name]);

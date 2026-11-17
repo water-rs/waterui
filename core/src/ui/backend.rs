@@ -76,7 +76,12 @@ pub trait Backend {
 
     /// Realizes a [`HookableView`]: a hook in scope that targets it, or else
     /// its own composition.
-    fn hookable<T: HookableView>(&mut self, view: T, env: &Environment, cx: Self::Ctx) -> Self::Output;
+    fn hookable<T: HookableView>(
+        &mut self,
+        view: T,
+        env: &Environment,
+        cx: Self::Ctx,
+    ) -> Self::Output;
 }
 
 /// A native payload holding child views in a backend's slot `S`, which can
@@ -216,7 +221,12 @@ impl Backend for Erased<'_> {
             .scoped_dyn(ErasedHooks::new().with(hooks), AnyView::new(view), env, cx)
     }
 
-    fn hookable<T: HookableView>(&mut self, view: T, env: &Environment, cx: Self::Ctx) -> Self::Output {
+    fn hookable<T: HookableView>(
+        &mut self,
+        view: T,
+        env: &Environment,
+        cx: Self::Ctx,
+    ) -> Self::Output {
         self.inner.hookable_dyn(
             ErasedPayload::new(&mut Some(view)),
             compose_erased::<T>,

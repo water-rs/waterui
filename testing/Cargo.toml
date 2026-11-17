@@ -47,6 +47,9 @@ ts = ["waterui/ts"]
 # The GPU video player as Hydrolysis's realization of `Video`, as an
 # application selecting `waterui/video-gpu` gets it.
 video-gpu = ["hydrolysis/video-gpu", "waterui/video-gpu"]
+# The GPU map as Hydrolysis's realization of `Map`, as an application linking
+# `waterui-map-gpu` gets it.
+map-gpu = ["hydrolysis/map-gpu", "waterui/map"]
 
 [dev-dependencies]
 approx = "0.5"

@@ -101,7 +101,8 @@ impl<B: NativeBackend, H: HookList> Hooked<B, H> {
             payload
         } else {
             let mut slot = Some(payload);
-            if let Some((view, outer)) = self.erased.offer(&mut ErasedPayload::new(&mut slot), env) {
+            if let Some((view, outer)) = self.erased.offer(&mut ErasedPayload::new(&mut slot), env)
+            {
                 return Ok(Self::reentered(
                     &mut self.inner,
                     self.hooks.clone(),
@@ -159,7 +160,7 @@ impl<B: NativeBackend, H: HookList> Hooked<B, H> {
     }
 
     /// The backend this decorator wraps.
-    pub(crate) fn inner(&mut self) -> &mut B {
+    pub(crate) const fn inner(&mut self) -> &mut B {
         &mut self.inner
     }
 }

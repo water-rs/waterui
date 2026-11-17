@@ -24,9 +24,9 @@ use wasm_bindgen::{JsCast, JsValue, closure::Closure};
 use waterui_core::{AnyView, Native, contract_violation};
 use waterui_video::video::{
     AudioTrackSelection, BoundVideoEventHandler, ContentMode, Event, NativeVideoConfig,
-    NativeVideoPlayerConfig, PlaybackConfiguration, PlaybackOutputPath,
-    PlaybackPowerPolicy, SubtitleSelection, SubtitleTrackInfo, SubtitleTrackOrigin, TrackCatalog,
-    VideoConfig, VideoPlayerConfig, VideoProjection, VideoTrackSelection,
+    NativeVideoPlayerConfig, PlaybackConfiguration, PlaybackOutputPath, PlaybackPowerPolicy,
+    SubtitleSelection, SubtitleTrackInfo, SubtitleTrackOrigin, TrackCatalog, VideoConfig,
+    VideoPlayerConfig, VideoProjection, VideoTrackSelection,
 };
 use waterui_video::{
     Delivery, LiveWindow, MediaItem, PlaybackMetrics, PlaybackPhase, PlayerController, RepeatMode,
@@ -45,7 +45,7 @@ const HLS_MIME: &str = "application/vnd.apple.mpegurl";
 type BoundPlayback = PlaybackConfiguration<Option<BoundVideoEventHandler>>;
 
 /// The `Video` realization.
-pub(crate) fn video(config: NativeVideoConfig) -> AnyView {
+pub fn video(config: NativeVideoConfig) -> AnyView {
     let VideoConfig {
         playback,
         content_mode,
@@ -56,20 +56,14 @@ pub(crate) fn video(config: NativeVideoConfig) -> AnyView {
 }
 
 /// The `VideoPlayer` realization.
-pub(crate) fn video_player(config: NativeVideoPlayerConfig) -> AnyView {
+pub fn video_player(config: NativeVideoPlayerConfig) -> AnyView {
     let VideoPlayerConfig {
         playback,
         content_mode,
         projection,
         show_controls,
     } = config;
-    leaf(
-        playback,
-        content_mode,
-        &projection,
-        show_controls,
-        false,
-    )
+    leaf(playback, content_mode, &projection, show_controls, false)
 }
 
 /// One leaf: the element, the coordinator mirroring the playback contract
@@ -248,11 +242,7 @@ struct Player {
 }
 
 impl Player {
-    fn new(
-        element: HtmlVideoElement,
-        playback: BoundPlayback,
-        loops: bool,
-    ) -> Rc<Self> {
+    fn new(element: HtmlVideoElement, playback: BoundPlayback, loops: bool) -> Rc<Self> {
         let bindings = Bindings {
             source: playback.source,
             subtitle_selection: playback.subtitle_selection,
@@ -282,9 +272,9 @@ impl Player {
             element,
             bindings,
             controller: playback.controller,
-            emit: playback.on_event.map(|handler| -> Rc<dyn Fn(Event)> {
-                Rc::new(move |event| handler.call(event))
-            }),
+            emit: playback
+                .on_event
+                .map(|handler| -> Rc<dyn Fn(Event)> { Rc::new(move |event| handler.call(event)) }),
             loops,
             source_key: RefCell::new(None),
             ready: Cell::new(false),

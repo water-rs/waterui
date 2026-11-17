@@ -25,7 +25,7 @@ use waterui_core::{
 use waterui_locale::locale_binding;
 use waterui_text::{IntoText, Text};
 
-use crate::{AnyView, Environment, View, views::Views};
+use crate::{Environment, View, views::Views};
 
 /// Configuration for a table component.
 #[derive(Debug)]

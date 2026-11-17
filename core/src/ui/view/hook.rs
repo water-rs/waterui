@@ -41,8 +41,10 @@ pub trait Hook: Clone + 'static {
 }
 
 /// A payload with a realization of its own, composed from other views, that
-/// a hook may replace: a component that no backend realizes natively but an
-/// application may want to draw differently, such as a fenced code block.
+/// a hook may replace.
+///
+/// It is a component no backend realizes natively but an application may want
+/// to draw differently, such as a fenced code block.
 ///
 /// It reaches the backend through [`Backend::hookable`]: a backend offers it
 /// to the hooks in scope and, when none claims it, realizes
@@ -62,8 +64,10 @@ pub type ComposeErased = fn(&mut ErasedPayload<'_>, &Environment) -> AnyView;
 ///
 /// Panics when `payload` holds no `T`: the function travels with the payload
 /// it was made for.
-#[must_use]
-pub fn compose_erased<T: HookableView>(payload: &mut ErasedPayload<'_>, env: &Environment) -> AnyView {
+pub fn compose_erased<T: HookableView>(
+    payload: &mut ErasedPayload<'_>,
+    env: &Environment,
+) -> AnyView {
     let view = payload
         .take::<T>()
         .expect("a hookable payload's composer receives that payload");
@@ -108,7 +112,11 @@ impl HookList for () {
         Err((payload, cx))
     }
 
-    fn offer_erased(&self, _payload: &mut ErasedPayload<'_>, _env: &Environment) -> Option<AnyView> {
+    fn offer_erased(
+        &self,
+        _payload: &mut ErasedPayload<'_>,
+        _env: &Environment,
+    ) -> Option<AnyView> {
         None
     }
 

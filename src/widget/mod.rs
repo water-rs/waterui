@@ -13,7 +13,7 @@ pub use suspense::{Suspense, suspense};
 // pub use tree::{TreeNode, TreeView, tree_view};
 
 /// Syntax highlighted code widget. It lives in `waterui-text` so a component
-/// crate can claim a fence through `Hook<CodeConfig>` without depending on
+/// crate can claim a fence with a `CodeConfig` hook without depending on
 /// this crate; the path here is kept for application code.
 #[cfg(feature = "highlight")]
 pub use waterui_text::code;

@@ -66,7 +66,7 @@ pub use web::WebSystemWebViewController;
 /// The hosted leaf showing `view`'s `WKWebView`, or `None` when there is no
 /// page to host: the controller failed to open the view (already reported by
 /// `waterui-webview`), or another engine opened a page that reaches the backend
-/// only when that engine's `Hook<WebView>` is missing — reported here.
+/// only when no hook for that engine is in scope — reported here.
 #[cfg(hydrolysis_macos_system_webview)]
 pub fn hosted(view: &WebView) -> Option<crate::HostedView> {
     let handle = view.handle();
@@ -76,7 +76,7 @@ pub fn hosted(view: &WebView) -> Option<crate::HostedView> {
     let Some(handle) = handle.downcast_ref::<macos::MacSystemWebViewHandle>() else {
         waterui_core::contract_violation!(
             "Hydrolysis hosts only pages the system WKWebView controller opened; \
-             install the custom engine's WebView hook; the web view is not drawn"
+             scope the custom engine's WebView hook over the view; the web view is not drawn"
         );
         return None;
     };
@@ -86,7 +86,7 @@ pub fn hosted(view: &WebView) -> Option<crate::HostedView> {
 /// The hosted leaf showing `view`'s `<iframe>`, or `None` when there is no
 /// page to host: the controller failed to open the view (already reported by
 /// `waterui-webview`), or another engine opened a page that reaches the backend
-/// only when that engine's `Hook<WebView>` is missing — reported here.
+/// only when no hook for that engine is in scope — reported here.
 #[cfg(hydrolysis_web_system_webview)]
 pub fn hosted(view: &WebView) -> Option<crate::HostedView> {
     let handle = view.handle();
@@ -96,7 +96,7 @@ pub fn hosted(view: &WebView) -> Option<crate::HostedView> {
     let Some(handle) = handle.downcast_ref::<web::WebIframeHandle>() else {
         waterui_core::contract_violation!(
             "Hydrolysis hosts only pages the web <iframe> controller opened; \
-             install the custom engine's WebView hook; the web view is not drawn"
+             scope the custom engine's WebView hook over the view; the web view is not drawn"
         );
         return None;
     };
