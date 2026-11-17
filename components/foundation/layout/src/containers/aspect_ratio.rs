@@ -159,12 +159,6 @@ impl View for AspectRatio {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         FixedContainer::new(self.layout, (self.content,))
     }
-
-    /// Resolves to `FixedContainer` over the same layout and single child;
-    /// reports what that container would.
-    fn stretch_axis(&self) -> StretchAxis {
-        self.layout.stretch_axis(&[self.content.stretch_axis()])
-    }
 }
 
 /// Constrains `content` to `ratio`, shrinking to fit inside what is offered.

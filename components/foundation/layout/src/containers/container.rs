@@ -291,18 +291,9 @@ impl FixedContainer {
     }
 }
 
-impl FixedContainer {
-    /// What each child says about itself, in order, for the layout to answer from.
-    fn child_stretch_axes(&self) -> Vec<StretchAxis> {
-        self.contents.iter().map(View::stretch_axis).collect()
-    }
-}
-
-impl NativeView for FixedContainer {
-    fn stretch_axis(&self) -> StretchAxis {
-        self.layout.stretch_axis(&self.child_stretch_axes())
-    }
-}
+/// A container's axis is its layout's answer over its realized children,
+/// so backends answer it from the realized node.
+impl NativeView for FixedContainer {}
 
 impl View for FixedContainer {
     fn body(mut self, env: &waterui_core::Environment) -> impl View {
@@ -311,10 +302,6 @@ impl View for FixedContainer {
             waterui_core::layout::layout_direction(env),
         ));
         Native::new(self)
-    }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        self.layout.stretch_axis(&self.child_stretch_axes())
     }
 }
 
@@ -386,10 +373,6 @@ impl View for LazyContainer {
         // separate signal so placement can mirror without materializing items.
         self.direction = waterui_core::layout::layout_direction(env);
         Native::new(self)
-    }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        self.layout.stretch_axis(Self::child_stretch_axes())
     }
 }
 

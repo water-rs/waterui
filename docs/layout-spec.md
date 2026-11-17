@@ -75,8 +75,10 @@ Every child a container measures is a `SubView`:
   has no cache and never gains one.
 - `stretch_axis()` declares which axes the view fills when offered more than it
   measures: `None`, `Horizontal`, `Vertical`, `Both`, or the stack-relative
-  `MainAxis` / `CrossAxis`. It is read before `body` runs and without an
-  environment, so a view with a filling leaf inside declares it here.
+  `MainAxis` / `CrossAxis`. A `SubView` is a realized node, so the axis is
+  read after realization, with the environment available: a leaf answers
+  from its resolved payload, a container with its `Layout`'s answer over its
+  children's axes, and a layout-transparent wrapper with its content's.
 - `priority()` orders the compression bands (§4.3); ties share.
 - `resolve_extent(bounds, proposal)` answers where the view's answer to
   `proposal` sits when it is assigned `bounds`: a `ResolvedExtent` holding

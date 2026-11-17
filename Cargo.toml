@@ -749,7 +749,7 @@ wgpu-external-frame = { git = "https://github.com/water-rs/wgpu-external-frame",
 # Split component repositories, the waterkit family and suiteki follow their
 # `main` branch; `Cargo.lock` records the exact commit.
 waterui-barcode = { git = "https://github.com/water-rs/barcode", branch = "refactor/strict-metadata" }
-waterui-chart = { git = "https://github.com/water-rs/chart", branch = "main" }
+waterui-chart = { git = "https://github.com/water-rs/chart", branch = "refactor/realized-stretch-axis" }
 waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", branch = "refactor/strict-metadata" }
 waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", branch = "refactor/strict-metadata" }
 waterui-particle = { git = "https://github.com/water-rs/particle", branch = "main" }

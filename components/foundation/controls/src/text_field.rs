@@ -359,10 +359,6 @@ impl View for TextField {
             on_submit: self.0.on_submit,
         }))
     }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::Horizontal
-    }
 }
 
 impl_label_style_methods!(TextField);

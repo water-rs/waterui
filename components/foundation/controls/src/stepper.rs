@@ -266,15 +266,14 @@ pub fn stepper(label: impl IntoLabel, value: &Binding<i32>) -> Stepper {
 mod tests {
     use nami::Binding;
     use waterui_core::layout::StretchAxis;
-    use waterui_core::{Environment, NativeView, View};
+    use waterui_core::{Environment, NativeView};
     use waterui_locale::locales;
 
     use super::stepper;
     use crate::label::LabelDisplayMode;
 
-    /// `docs/layout-spec.md` §3 over label visibility, both as the static
-    /// answer a container reads before `body` and as the resolved payload a
-    /// backend receives — an environment-wide hidden mode included.
+    /// `docs/layout-spec.md` §3 over label visibility, on the resolved payload
+    /// a backend receives — an environment-wide hidden mode included.
     #[test]
     fn stretch_axis_follows_label_visibility() {
         let quantity = Binding::i32(0);
@@ -288,11 +287,6 @@ mod tests {
                     stepper.hide_label()
                 }
             };
-            assert_eq!(
-                View::stretch_axis(&make()),
-                expected,
-                "label visible: {visible} (static)"
-            );
             let resolved = make().0.resolve(&env);
             assert_eq!(
                 NativeView::stretch_axis(&resolved),

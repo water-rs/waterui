@@ -206,10 +206,6 @@ impl View for Calendar {
             AnyView::new(Native::new(config))
         }
     }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::None
-    }
 }
 
 /// The calendar composed from `WaterUI` views: how a self-drawn backend
@@ -343,13 +339,6 @@ impl<Content: View> View for CalendarBody<Content> {
             ))
             .spacing(8.0),
         )
-    }
-
-    /// Resolves to `Padding` around a `vstack` of `[header, weekdays,
-    /// content]`; the two headers are content-sized text, so the stack's —
-    /// and the padding's — axis is the content's own.
-    fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
-        self.content.stretch_axis()
     }
 }
 
