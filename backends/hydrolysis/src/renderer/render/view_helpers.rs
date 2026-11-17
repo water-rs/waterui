@@ -11,6 +11,7 @@ pub fn gesture_group_identity(view: &AnyView) -> usize {
     gesture_group_identity_with_budget(view, 64)
 }
 
+#[cfg(feature = "list")]
 pub fn flatten_environment_metadata_ref<'a>(
     mut view: &'a AnyView,
     env: &Environment,
@@ -417,6 +418,7 @@ fn is_layout_terminal(view: &AnyView) -> bool {
     super::is_hydro_native_view(view)
 }
 
+#[cfg(hydrolysis_cherenkov)]
 pub fn normalize_view_for_render(view: AnyView, env: &Environment) -> AnyView {
     normalize_layout_view(view, env)
 }

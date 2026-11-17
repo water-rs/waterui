@@ -45,28 +45,14 @@ pub const UNSUPPORTED_WEBVIEW: &str = "WebView is unsupported on this Hydrolysis
 /// [`gpu_device_view`](waterui_graphics::backend::gpu_device_view) names it —
 /// reaching a painter without one; `no_gpu` says why this runtime has none.
 /// The view is not drawn and measures as zero.
-#[cfg(any(not(hydrolysis_gpu), hydrolysis_cpu_painter))]
+#[cfg(any(
+    all(not(hydrolysis_gpu), waterui_feature = "gpu"),
+    all(hydrolysis_gpu, hydrolysis_cpu_painter)
+))]
 pub fn unsupported_gpu_device_view(view: &str, no_gpu: &str) {
     contract_violation!(
         "hydrolysis: {view} needs a GPU device, but {no_gpu}; the view is not drawn"
     );
-}
-
-/// Refuses `view` when it needs a GPU device, in a build without the GPU
-/// painter: such a build compiles no realization for these leaves, so measure
-/// and node build stop at them here instead of expanding their `body`.
-/// Returns whether `view` was refused; the caller then measures it as zero
-/// and builds it as an empty node.
-#[cfg(not(hydrolysis_gpu))]
-pub fn refuse_gpu_device_view(view: &AnyView) -> bool {
-    let Some(name) = waterui_graphics::backend::gpu_device_view(view) else {
-        return false;
-    };
-    unsupported_gpu_device_view(
-        name,
-        "this Hydrolysis build has no GPU painter: it was built without the `gpu` feature",
-    );
-    true
 }
 
 macro_rules! hydro_native_view_types {

@@ -120,8 +120,8 @@ pub use render::FrameRenderTarget;
 pub use render::WidgetRenderContext;
 pub use render::*;
 pub use render::{
-    anchor_point, gesture_group_identity, normalize_layout_view, normalize_view_for_render,
-    path_commands_to_path, resolved_shape_to_path, transformed_rect,
+    anchor_point, gesture_group_identity, normalize_layout_view, path_commands_to_path,
+    resolved_shape_to_path, transformed_rect,
 };
 use signals::LayoutDependencies;
 use std::any::Any;
@@ -200,9 +200,12 @@ use waterui::style::{Offset, Rotation, Scale, Shadow};
 use waterui::widget::Divider;
 #[cfg(any(feature = "menu", feature = "color-picker"))]
 use waterui::window::{Window, WindowState, WindowStyle};
-use waterui_controls::button::{Button, ButtonConfig};
+#[cfg(feature = "menu")]
+use waterui_controls::button::Button;
+use waterui_controls::button::ButtonConfig;
 #[cfg(feature = "accessibility")]
 use waterui_controls::input::ContentType;
+#[cfg(feature = "menu")]
 use waterui_controls::label::Label as SemanticLabel;
 #[cfg(feature = "menu")]
 use waterui_controls::menu::{CommandRole, ResolvedCommand, ResolvedMenu, ResolvedMenuItem};
@@ -222,9 +225,11 @@ use waterui_core::handler::{BoxedAction, SharedAction};
 #[cfg(any(feature = "menu", feature = "color-picker"))]
 use waterui_core::impl_extractor;
 use waterui_core::key::{KeyHandling, KeyPress, OnKeyPress};
+#[cfg(any(feature = "menu", feature = "color-picker"))]
+use waterui_core::layout::Point as LayoutPoint;
 use waterui_core::layout::{
-    HorizontalAlignment, Layout, Point as LayoutPoint, ProposalSize, Rect as LayoutRect,
-    Size as LayoutSize, StretchAxis, SubView, SubviewPlacement, VerticalAlignment, ViewDimensions,
+    HorizontalAlignment, Layout, ProposalSize, Rect as LayoutRect, Size as LayoutSize, StretchAxis,
+    SubView, SubviewPlacement, VerticalAlignment, ViewDimensions,
 };
 #[cfg(feature = "accessibility")]
 use waterui_core::metadata::MetadataKey;
@@ -258,8 +263,10 @@ use waterui_layout::scroll::Axis as ScrollAxis;
 use waterui_layout::scroll::ScrollView;
 use waterui_layout::spacer::Spacer;
 use waterui_shape::{ClipShape, PathCommand, ResolvedShape, ShapeKind};
+#[cfg(any(feature = "menu", all(feature = "list", feature = "accessibility")))]
+use waterui_text::Text;
+use waterui_text::TextConfig;
 use waterui_text::styled::StyledStr;
-use waterui_text::{Text, TextConfig};
 
 use crate::animation::{
     AnimatedScalarHandle, AnimationController, AnimationKey, PerpetualAnimation,

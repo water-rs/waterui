@@ -22,6 +22,13 @@ pub use compositor::FrameGeometry;
 pub use compositor::RasterWindow;
 #[cfg(hydrolysis_gpu_painter)]
 pub use compositor::{CherenkovWindow, FrameRenderTarget};
+#[cfg(any(
+    feature = "list",
+    feature = "navigation",
+    feature = "picker",
+    feature = "text-field",
+    feature = "secure-field"
+))]
 pub use measurement::*;
 pub use measurement_cache::{MeasurementCaches, MemoGate, NodeMeasureEntry};
 #[cfg(feature = "navigation")]
@@ -35,6 +42,6 @@ pub use render_context::{WidgetRenderContext, bounded_proposal};
 pub use state::HydroState;
 pub use view_helpers::*;
 pub use view_helpers::{
-    anchor_point, gesture_group_identity, normalize_layout_view, normalize_view_for_render,
-    path_commands_to_path, resolved_shape_to_path, transformed_rect, working_color_to_rgba8,
+    anchor_point, gesture_group_identity, normalize_layout_view, path_commands_to_path,
+    resolved_shape_to_path, transformed_rect, working_color_to_rgba8,
 };

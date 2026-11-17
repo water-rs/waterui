@@ -18,12 +18,15 @@ use waterui_layout::padding::EdgeInsets;
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::text::TextLayout as _;
+#[cfg(any(feature = "list", feature = "navigation", feature = "picker"))]
 use crate::theme::WidgetTheme;
 
 use std::rc::Rc;
+#[cfg(any(feature = "list", feature = "picker"))]
 use waterui_core::contract_violation;
-use waterui_core::layout::layout_direction;
 #[cfg(any(feature = "list", feature = "navigation"))]
+use waterui_core::layout::layout_direction;
+#[cfg(feature = "list")]
 use waterui_core::views::ViewSnapshot;
 #[cfg(feature = "picker")]
 use waterui_form::picker::PickerStyle;
