@@ -39,7 +39,7 @@ use waterui_core::interaction::{InteractionState, Selected};
 use waterui_core::layout::{
     ProposalSize, Size as LayoutSize, UnitPoint, ViewDimensions, layout_direction,
 };
-use waterui_core::views::{AnyViewsSnapshot, Views};
+use waterui_core::views::AnyViewsSnapshot;
 use waterui_layout::scroll::Axis as ScrollAxis;
 use waterui_text::Text;
 
@@ -57,7 +57,7 @@ use waterui_core::resolve::Resolvable as _;
 pub type ListItemId = RawId;
 
 /// A row as this backend holds it: its content a child the renderer builds.
-pub(crate) type Row<E> = ListItem<HeldChild<E>>;
+pub type Row<E> = ListItem<HeldChild<E>>;
 
 #[derive(Clone, Copy)]
 struct ListViewportAnchor {

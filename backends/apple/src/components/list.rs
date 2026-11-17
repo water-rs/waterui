@@ -36,7 +36,7 @@ use waterui::reactive::watcher::{BoxWatcherGuard, Metadata};
 #[cfg(target_os = "macos")]
 use waterui::resolve::Resolvable;
 use waterui::text::{StyledStr, Text};
-use waterui::views::{AnyViewsSnapshot, SharedAnyViews, Views};
+use waterui::views::{AnyViewsSnapshot, SharedAnyViews};
 use waterui_backend_core::Environment;
 use waterui_backend_core::scroll::animated_row_scroll_approach;
 use waterui_core::Computed;
@@ -48,12 +48,12 @@ use waterui_core::layout::{
 
 use crate::backend::AppleBackend;
 use crate::contract::{Held, NativeLeaf, RenderContext, Renderer};
-use waterui_backend_core::ChildView;
-use waterui_core::backend::MapSlots as _;
 use crate::proposal::{self, Placement};
 use crate::transition::ghost::Ghost;
 use crate::transition::live::{LiveChild, Removal};
 use crate::transition::slots::{GhostKey, Slot, SlotSequence};
+use waterui_backend_core::ChildView;
+use waterui_core::backend::MapSlots as _;
 
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::{

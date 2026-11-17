@@ -28,13 +28,8 @@ use cocoa_ui::uikit::HostView;
 use cocoa_ui::view::retain_base;
 use waterui::reactive::Signal;
 use waterui::reactive::watcher::Context;
-use waterui_backend_core::NativeBackend as _;
-use waterui_backend_core::{AnyView, Child, ChildView, Environment, Realize, View};
-use waterui_core::backend::{Backend, ChildSlot, DynBackend, ErasedPayload, cast};
+use waterui_backend_core::{Child, ChildView, Environment, View};
 use waterui_core::layout::SubView;
-use waterui_core::metadata::MetadataKey;
-use waterui_core::view::hook::{ComposeErased, ErasedHooks, HookList, HookableView};
-use waterui_core::{Metadata, NativeView};
 
 use cocoa_ui::Retained;
 
@@ -703,4 +698,3 @@ impl Renderer {
         RenderContext::new(&self.env, self.mtm)
     }
 }
-

@@ -26,8 +26,6 @@ use std::rc::Rc;
 use waterui_core::contract_violation;
 #[cfg(any(feature = "list", feature = "navigation"))]
 use waterui_core::layout::layout_direction;
-#[cfg(feature = "list")]
-use waterui_core::views::ViewSnapshot;
 #[cfg(feature = "picker")]
 use waterui_form::picker::PickerStyle;
 
@@ -511,7 +509,9 @@ pub fn materialize_list_item<E: crate::text::TextEngine>(
         contract_violation!(
             "ListConfig failed to materialize item at index {index}; the row is empty"
         );
-        ListItem::new(()).map_content(<crate::renderer::HeldChild<E> as waterui_core::backend::ChildSlot>::from_view)
+        ListItem::new(()).map_content(
+            <crate::renderer::HeldChild<E> as waterui_core::backend::ChildSlot>::from_view,
+        )
     })
 }
 
