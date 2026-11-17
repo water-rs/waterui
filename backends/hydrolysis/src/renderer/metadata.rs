@@ -248,10 +248,11 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// is `md.comp.menu.container.color` (`surface-container`), the extra-small
     /// 4 dp `md.sys.shape.corner.extra-small` shape and
     /// `md.comp.menu.container.elevation` level 2 — drawn by the panel part
-    /// of the theme's `MenuLook`, with the look's selected-row part over
-    /// `selected_row` (a picker popup's selected row, in the panel's own
-    /// space). The window leaves the panel's shadow room inside its own
-    /// bounds via `POPUP_MENU_PANEL_MARGIN`.
+    /// of the theme's `MenuLook`, recorded as the surface it states, with the
+    /// look's selected-row part over `selected_row` (a picker popup's
+    /// selected row, in the panel's own space). The window leaves the
+    /// panel's shadow room inside its own bounds: the panel's elevation
+    /// extent (`popup_menu_panel_margin`) on every side.
     #[cfg(feature = "menu")]
     pub(super) fn apply_popup_menu_surface(
         renderer: &mut Self,

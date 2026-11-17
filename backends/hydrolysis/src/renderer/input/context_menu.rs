@@ -335,9 +335,9 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         // keyboard focus still resolves them (water-rs/hydrolysis#247).
         register_popup_chords::<E>(&nodes, &group, env);
         let theme = self.theme();
-        let metrics = menu_look(&theme, env).layout();
-        let text = self.popup_menu_text_metrics(&nodes, metrics, env, &theme);
-        let (menu_width, menu_height) = popup_menu_size(&nodes, metrics, &text);
+        let look = menu_look(&theme, env);
+        let text = self.popup_menu_text_metrics(&nodes, look.layout(), env, &theme);
+        let (menu_width, menu_height) = popup_menu_size(&nodes, look.layout(), &text);
 
         let presentation = opened_by_hold
             || target.is_some_and(|target| {
@@ -386,7 +386,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             let menu_state = Binding::container(WindowState::Normal);
             group.push(menu_state.clone());
             let menu = RetainedSubview::new(AnyView::new(
-                popup_menu_content(nodes, 0, metrics, text, popup_origin, menu_width, &theme)
+                popup_menu_content(nodes, 0, &look, text, popup_origin, menu_width, &theme)
                     .with(group.clone()),
             ));
             self.popup_menu.context_menu_presentation = Some(ContextMenuPresentation {
@@ -431,7 +431,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 return false;
             };
             let (window, state) =
-                popup_menu_window(nodes, popup_origin, group.clone(), 0, metrics, text, &theme);
+                popup_menu_window(nodes, popup_origin, group.clone(), 0, &look, text, &theme);
             group.push(state);
             manager.show(window, env);
             self.popup_menu.active_popup_menu_group = Some(group);
