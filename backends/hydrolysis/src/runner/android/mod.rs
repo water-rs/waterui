@@ -70,13 +70,14 @@ pub(super) type AndroidTextEngine = crate::text::ParleyEngine;
 /// A factory is a plain `Fn()` — the app cdylib registers it once at
 /// `JNI_OnLoad`, and every `nativeCreateSession` calls it again so a
 /// recreated activity gets a fresh `App`, not a reused tree.
-type AppFactory = Box<
-    dyn Fn() -> (
-            AppParts<Vec<RootWindow<AndroidTextEngine>>>,
-            Rc<dyn crate::Style>,
-        ) + Send
-        + Sync,
->;
+type AppFactory = Box<dyn Fn() -> InstantiatedApp + Send + Sync>;
+
+/// One application the factory instantiated: its parts, with the windows
+/// already erased to the roots this host holds, and its style.
+pub(crate) type InstantiatedApp = (
+    AppParts<Vec<RootWindow<AndroidTextEngine>>>,
+    Rc<dyn crate::Style>,
+);
 
 static APP_FACTORY: OnceLock<AppFactory> = OnceLock::new();
 
@@ -194,10 +195,7 @@ fn android_log(message: &[u8]) {
 /// `None` after a [`contract_violation!`] when no app was registered: the
 /// app cdylib must call `hydrolysis::android::register_app` from
 /// `JNI_OnLoad`.
-pub(crate) fn instantiate_app() -> Option<(
-    AppParts<Vec<RootWindow<AndroidTextEngine>>>,
-    Rc<dyn crate::Style>,
-)> {
+pub(crate) fn instantiate_app() -> Option<InstantiatedApp> {
     let Some(factory) = APP_FACTORY.get() else {
         contract_violation!(
             "hydrolysis android: no app registered — the app cdylib must call \

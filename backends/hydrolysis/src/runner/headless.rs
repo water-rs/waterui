@@ -4,6 +4,7 @@ use super::*;
 use crate::animation::PerpetualAnimation;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::platform::PainterUnavailable;
+use waterui::window::WindowContent;
 
 #[cfg(feature = "accessibility")]
 use crate::renderer::accessibility::{
