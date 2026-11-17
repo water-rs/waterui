@@ -87,6 +87,8 @@
 //! This enables modular functionality like theming, localization, and platform-specific features.
 
 #![cfg_attr(not(feature = "std"), no_std)]
+extern crate self as waterui_core;
+
 extern crate alloc;
 
 #[macro_use]

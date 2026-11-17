@@ -88,8 +88,8 @@ fn runtime_paths() -> Result<Runtime, TokenStream2> {
         Some("waterui" | "waterui-internal")
     ) {
         return Ok(Runtime {
-            watch: quote!(crate::component::dynamic::watch),
-            root: quote!(crate),
+            watch: quote!(::waterui::component::dynamic::watch),
+            root: quote!(::waterui),
         });
     }
 
@@ -114,9 +114,16 @@ fn runtime_paths() -> Result<Runtime, TokenStream2> {
     })
 }
 
+/// The path an expansion names `package` by. Inside `package` itself that is
+/// still its own name, never `crate`: a doctest, example or integration test
+/// of the package is a crate of its own, and every crate these macros name
+/// declares `extern crate self` under its name so the library resolves it too.
 pub fn dependency_path(package: &str) -> Option<TokenStream2> {
     match crate_name(package) {
-        Ok(FoundCrate::Itself) => Some(quote!(crate)),
+        Ok(FoundCrate::Itself) => {
+            let ident = Ident::new(&package.replace('-', "_"), Span::call_site());
+            Some(quote!(::#ident))
+        }
         Ok(FoundCrate::Name(name)) => {
             let ident = Ident::new(&name, Span::call_site());
             Some(quote!(::#ident))

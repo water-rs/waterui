@@ -638,6 +638,10 @@ lto = "thin"
 nami = { git = "https://github.com/water-rs/nami", branch = "main" }
 nami-core = { git = "https://github.com/water-rs/nami", branch = "main" }
 nami-derive = { git = "https://github.com/water-rs/nami", branch = "main" }
+# The macro contract snapshots name a dependency's source as a registry path;
+# this normalizes a git checkout of the same package, such as the nami patch
+# above, to that form (dtolnay/trybuild has no such normalization).
+trybuild = { git = "https://github.com/lexoliu/trybuild", branch = "normalize-git-checkouts" }
 shaderloom = { git = "https://github.com/water-rs/shaderloom", branch = "main" }
 # Extracted crates on crates.io (waterui-chart #188, …) depend on the
 # registry `waterui-core` and `waterui-graphics`; the workspace must resolve
