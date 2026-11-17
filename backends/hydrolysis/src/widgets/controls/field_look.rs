@@ -96,6 +96,7 @@ pub fn field_spec(env: &Environment) -> TextFieldSpec {
 
 /// The look `theme` gives a field in `env`, for a measurement that holds
 /// none.
+#[cfg(feature = "date-picker")]
 pub fn field_look(theme: &Rc<dyn WidgetTheme>, env: &Environment) -> TextFieldLook {
     theme.text_field(&field_spec(env), env)
 }
