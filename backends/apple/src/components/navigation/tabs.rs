@@ -123,7 +123,6 @@ fn reconcile_tabs(
     selection: &waterui::reactive::Binding<Id>,
 ) -> Option<Id> {
     use waterui::reactive::Signal as _;
-    use waterui_core::views::ViewSnapshot as _;
     let selected = selection.snapshot();
     let old_index = mounted.iter().position(|tab| tab.id == selected);
     let mut old: alloc::collections::BTreeMap<Id, Mounted> =
@@ -529,7 +528,7 @@ mod platform {
     use waterui::navigation::{TabsLayout, tab::NativeTabStyle};
     use waterui::reactive::Signal;
     use waterui_core::id::Id;
-    use waterui_core::views::{ViewSnapshot as _, Views as _};
+    use waterui_core::views::Views as _;
 
     use crate::contract::KeepAlive;
 

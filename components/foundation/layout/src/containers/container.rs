@@ -8,15 +8,16 @@ use fmt::Debug;
 use alloc::{boxed::Box, vec::Vec};
 use nami::{Computed, Signal};
 use waterui_core::{
-    AnyView, Native, NativeView, View,
-    backend::Backend,
+    AnyView, Environment, Native, NativeView, View,
+    backend::{Backend, ChildSlot},
     layout::{
         HorizontalAlignment, LayoutDirection, LayoutError, LayoutInvalidationCallback,
         PlacedSubview, PlacementInput, Point, ProposalSize, Rect, ResolvedExtent, Size, SubView,
-        SubviewPlacement, VerticalAlignment, ViewDimensions, with_memoized_children,
+        SubviewPlacement, VerticalAlignment, ViewDimensions, layout_direction,
+        with_memoized_children,
     },
     view::ViewSequence,
-    views::{AnyViews, Views, ViewsExt},
+    views::{AnyViews, Views},
 };
 
 use crate::{Layout, StretchAxis};
@@ -341,36 +342,49 @@ impl<S: ViewSequence> View for FixedContainer<S> {
 ///
 /// Unlike [`FixedContainer`], this container stores views as an [`AnyViews`]
 /// collection, allowing backends to reconstruct views on-demand for efficient
-/// rendering of large lists.
+/// rendering of large lists. The collection keeps its item view type `V`,
+/// and a backend receives each item in its own child slot.
 #[derive(Debug)]
-pub struct LazyContainer {
+pub struct LazyContainer<V = AnyView> {
     layout: Box<dyn Layout>,
-    contents: AnyViews<AnyView>,
+    contents: AnyViews<V>,
     direction: Computed<LayoutDirection>,
 }
 
-impl LazyContainer {
+impl<V: View> LazyContainer<V> {
     /// Wraps the supplied layout object and views into a lazy container view.
-    pub fn new<V: View>(
-        layout: impl Layout + 'static,
-        contents: impl Views<View = V> + 'static,
-    ) -> Self {
+    pub fn new(layout: impl Layout + 'static, contents: impl Views<View = V> + 'static) -> Self {
         Self {
             layout: Box::new(layout),
-            contents: AnyViews::new(contents.map(|v| AnyView::new(v))),
+            contents: AnyViews::new(contents),
             direction: Computed::constant(LayoutDirection::default()),
         }
     }
 
+    /// The same container under `env`'s layout direction, each item in the
+    /// child slot `S`.
+    fn resolved<S: ChildSlot>(self, env: &Environment) -> LazyContainer<S> {
+        // Keep the concrete stack layout visible to backends: lazy-stack
+        // virtualization identifies its axis from that type. Direction is a
+        // separate signal so placement can mirror without materializing items.
+        LazyContainer {
+            layout: self.layout,
+            contents: self.contents.map_views(S::from_view),
+            direction: layout_direction(env),
+        }
+    }
+}
+
+impl<V> LazyContainer<V> {
     /// Returns the boxed layout object together with the collected child views.
     #[must_use]
-    pub fn into_inner(self) -> (Box<dyn Layout>, AnyViews<AnyView>) {
+    pub fn into_inner(self) -> (Box<dyn Layout>, AnyViews<V>) {
         (self.layout, self.contents)
     }
 
     /// Returns borrowed access to the boxed layout and lazy child collection.
     #[must_use]
-    pub fn as_parts(&self) -> (&dyn Layout, &AnyViews<AnyView>) {
+    pub fn as_parts(&self) -> (&dyn Layout, &AnyViews<V>) {
         (self.layout.as_ref(), &self.contents)
     }
 
@@ -379,9 +393,7 @@ impl LazyContainer {
     pub fn direction(&self) -> Computed<LayoutDirection> {
         self.direction.clone()
     }
-}
 
-impl LazyContainer {
     /// A lazy container cannot enumerate its children without materializing the
     /// collection, which is the one thing it exists to avoid, so its layout
     /// answers with no children. Every layout that virtualizes — the two stacks —
@@ -391,19 +403,21 @@ impl LazyContainer {
     }
 }
 
-impl NativeView for LazyContainer {
+impl<S: 'static> NativeView for LazyContainer<S> {
     fn stretch_axis(&self) -> StretchAxis {
         self.layout.stretch_axis(Self::child_stretch_axes())
     }
 }
 
-impl View for LazyContainer {
-    fn body(mut self, env: &waterui_core::Environment) -> impl View {
-        // Keep the concrete stack layout visible to backends: lazy-stack
-        // virtualization identifies its axis from that type. Direction is a
-        // separate signal so placement can mirror without materializing items.
-        self.direction = waterui_core::layout::layout_direction(env);
-        Native::new(self)
+impl<V: View> View for LazyContainer<V> {
+    /// The erased form, for code that expands views by hand.
+    fn body(self, env: &Environment) -> impl View {
+        Native::new(self.resolved::<AnyView>(env))
+    }
+
+    /// Reaches the backend with each item in the backend's child slot.
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        backend.native(self.resolved::<B::Slot>(env), env, cx)
     }
 }
 

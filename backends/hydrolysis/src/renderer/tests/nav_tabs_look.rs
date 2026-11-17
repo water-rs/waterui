@@ -10,7 +10,7 @@ use accesskit::{Action, ActionRequest, Role, TreeId};
 use waterui_core::AnyView;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::interaction::InteractionState;
-use waterui_core::views::{SharedAnyViews, ViewSnapshot as _, Views as _};
+use waterui_core::views::{SharedAnyViews, Views as _};
 use waterui_layout::stack::vstack;
 use waterui_navigation::tab::{Tab, TabsLayout};
 use waterui_navigation::{NavigationLink, NavigationStack, NavigationView};

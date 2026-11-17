@@ -5,7 +5,7 @@
 use super::*;
 use crate::theme::TabItemLayout;
 use waterui::navigation::tab::NativeTabStyle;
-use waterui_core::views::{SharedAnyViews, ViewSnapshot as _, Views as _};
+use waterui_core::views::{SharedAnyViews, Views as _};
 use waterui_navigation::tab::{Tab, TabsLayout, tab_style};
 
 fn tabs_view(count: usize) -> TabsLayout {

@@ -38,7 +38,7 @@ use waterui_core::interaction::{InteractionState, Selected};
 use waterui_core::layout::{
     ProposalSize, Size as LayoutSize, UnitPoint, ViewDimensions, layout_direction,
 };
-use waterui_core::views::{AnyViewsSnapshot, ViewSnapshot, Views};
+use waterui_core::views::{AnyViewsSnapshot, Views};
 use waterui_layout::scroll::Axis as ScrollAxis;
 use waterui_text::Text;
 
@@ -732,7 +732,9 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
         let mut item = materialize_list_item(contents, index);
         let content = item.take_content();
         let subtree_env = self.row_subtree_environment(row_id, &row_env);
-        let subview = cache.entry(row_id, move || content);
+        let subview = cache.entry(row_id, move || {
+            crate::renderer::RetainedSubview::new(content)
+        });
         // The row owns the transition its content root declares; it is
         // claimed before anything walks the row.
         subview.ensure_built(renderer, &subtree_env);
@@ -852,10 +854,10 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
     ) -> bool {
         self.consume_replaced_rows();
         let contents = self.rows_snapshot.borrow().clone();
-        let first = if contents.len() > 0 {
-            contents.get_id(0)
-        } else {
+        let first = if contents.is_empty() {
             None
+        } else {
+            contents.get_id(0)
         };
         let changed = self.item_cache.borrow().pinned().copied() != first;
         self.item_cache.borrow_mut().pin(first);

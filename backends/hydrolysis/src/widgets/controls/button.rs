@@ -387,7 +387,7 @@ impl<E: crate::text::TextEngine> ButtonRenderState<E> {
             .label_view
             .as_mut()
             .expect("the label sub-view was checked above");
-        subview.map_source(|_| button_label_view(color, AnyView::new(styled)));
+        *subview = RetainedSubview::new(button_label_view(color, AnyView::new(styled)));
         subview.ensure_built(renderer, env);
     }
 }
@@ -574,8 +574,13 @@ enum MenuLabel<E: crate::text::TextEngine> {
     /// A `Label` with `TitleOnly` display: rendered as centered styled text fresh
     /// each frame (cloneable, like a button title).
     Title(Label),
-    /// Any other label: re-flushed from a retained sub-view each frame.
-    View(Box<RetainedSubview<E>>),
+    /// Any other label: re-flushed from a retained sub-view each frame. The
+    /// label is kept to build the sub-view in the look's colour once a theme
+    /// exists.
+    View {
+        label: Label,
+        subview: Box<RetainedSubview<E>>,
+    },
 }
 
 #[cfg(feature = "menu")]
@@ -615,7 +620,10 @@ impl<E: crate::text::TextEngine> MenuRenderState<E> {
         let label = if renders_as_plain_title(&label) {
             MenuLabel::Title(label)
         } else {
-            MenuLabel::View(Box::new(RetainedSubview::new(AnyView::new(label))))
+            MenuLabel::View {
+                subview: Box::new(RetainedSubview::new(label.clone())),
+                label,
+            }
         };
         Self {
             label,
@@ -645,7 +653,7 @@ impl<E: crate::text::TextEngine> MenuRenderState<E> {
     ) {
         let theme = renderer.theme();
         let spec = self.spec(env);
-        let MenuLabel::View(subview) = &mut self.label else {
+        let MenuLabel::View { label, subview } = &mut self.label else {
             return;
         };
         if subview.is_built() {
@@ -653,7 +661,7 @@ impl<E: crate::text::TextEngine> MenuRenderState<E> {
         }
         let look = self.chrome.look(&theme, &spec, env).clone();
         let color = retained_label_color(&look, &self.chrome, env);
-        subview.map_source(|view| button_label_view(color, view));
+        **subview = RetainedSubview::new(button_label_view(color, AnyView::new(label.clone())));
         subview.ensure_built(renderer, env);
     }
 
@@ -662,7 +670,7 @@ impl<E: crate::text::TextEngine> MenuRenderState<E> {
     /// (water-rs/waterui#1957).
     pub(crate) fn take_layout_dirty(&mut self) -> bool {
         match &mut self.label {
-            MenuLabel::View(subview) => subview.take_layout_dirty_if_built(),
+            MenuLabel::View { subview, .. } => subview.take_layout_dirty_if_built(),
             MenuLabel::Title(_) => false,
         }
     }
@@ -778,7 +786,7 @@ pub fn measure_menu_node<E: crate::text::TextEngine>(
             let styled = styled_button_title(hydro, font, label, env);
             HydrolysisRenderer::measure_text_intrinsic_size(hydro, styled, env)
         }
-        MenuLabel::View(subview) => subview.measure_built(hydro, env, theme),
+        MenuLabel::View { subview, .. } => subview.measure_built(hydro, env, theme),
     };
     ViewDimensions::new(button_size(label_size, &look, proposal))
 }
@@ -1101,7 +1109,7 @@ pub fn render_menu_parts<E: crate::text::TextEngine>(
             MenuLabel::Title(label) => {
                 render_title(ctx, &rendered, label, env);
             }
-            MenuLabel::View(subview) => {
+            MenuLabel::View { subview, .. } => {
                 place_label_view(ctx, &rendered, subview, env);
             }
         }

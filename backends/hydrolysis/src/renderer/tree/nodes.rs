@@ -4,6 +4,7 @@
 use super::layout::resolved_or_collapsed;
 #[cfg(feature = "frame-profile")]
 use super::layout::{SignatureHasher, hash_size};
+use waterui_core::backend::ChildSlot;
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
@@ -37,8 +38,8 @@ pub struct RetainedSubview<E: crate::text::TextEngine> {
 /// The [`RetainedSubview`] lifecycle: the unbuilt source view, or the built
 /// node plus the layout bookkeeping its flushes own.
 enum RetainedSubviewState<E: crate::text::TextEngine> {
-    /// The source view, taken on first build (`AnyView` is move-only).
-    Unbuilt { source: AnyView },
+    /// The source view in the child slot, taken on first build.
+    Unbuilt { source: HeldChild<E> },
     /// The built sub-view: the node and the layout bookkeeping its flushes own.
     Built(Box<BuiltSubview<E>>),
 }
@@ -187,7 +188,12 @@ impl<E: crate::text::TextEngine> BuiltSubview<E> {
 }
 
 impl<E: crate::text::TextEngine> RetainedSubview<E> {
-    pub(crate) const fn new(source: AnyView) -> Self {
+    pub(crate) fn new(source: impl View) -> Self {
+        Self::held(HeldChild::from_view(source))
+    }
+
+    /// The sub-view of a child a payload held in its slot.
+    pub(in crate::renderer::tree) const fn held(source: HeldChild<E>) -> Self {
         Self {
             state: RetainedSubviewState::Unbuilt { source },
         }
@@ -221,8 +227,8 @@ impl<E: crate::text::TextEngine> RetainedSubview<E> {
         let RetainedSubviewState::Unbuilt { source } = &mut self.state else {
             return;
         };
-        let view = core::mem::replace(source, AnyView::new(()));
-        let node = RenderNode::build(view, env, renderer);
+        let source = core::mem::replace(source, HeldChild::from_view(()));
+        let node = RenderNode::build_held(source, env, renderer);
         let layout_dependencies = Some(LayoutDependencies::new(Rc::downgrade(&node.core().cell)));
         self.state = RetainedSubviewState::Built(Box::new(BuiltSubview {
             node,
@@ -269,18 +275,6 @@ impl<E: crate::text::TextEngine> RetainedSubview<E> {
         self.expect_built("accessibility_label")
             .node
             .accessibility_label(renderer)
-    }
-
-    /// Transform the still-unbuilt source view (e.g. apply a default foreground
-    /// color before build). Works only on [`RetainedSubviewState::Unbuilt`] —
-    /// the source is consumed at build, so running after it panics naming the
-    /// misuse.
-    pub(crate) fn map_source(&mut self, f: impl FnOnce(AnyView) -> AnyView) {
-        let RetainedSubviewState::Unbuilt { source } = &mut self.state else {
-            panic!("RetainedSubview::map_source ran after the sub-view was built");
-        };
-        let source = core::mem::replace(source, AnyView::new(()));
-        self.state = RetainedSubviewState::Unbuilt { source: f(source) };
     }
 
     /// Whether the sub-view's node has been built.
@@ -761,17 +755,15 @@ impl<K: Eq + core::hash::Hash + Clone, E: crate::text::TextEngine> VisibleSubvie
     }
 
     /// Get-or-build the retained sub-view for `key`, marking it visible this frame.
-    /// `build` produces the item's source view; it runs only the first time an id
-    /// becomes visible (or after it was evicted and scrolled back).
+    /// `build` produces the item's unbuilt sub-view; it runs only the first time
+    /// an id becomes visible (or after it was evicted and scrolled back).
     pub(crate) fn entry(
         &mut self,
         key: K,
-        build: impl FnOnce() -> AnyView,
+        build: impl FnOnce() -> RetainedSubview<E>,
     ) -> &mut RetainedSubview<E> {
         self.touched.insert(key.clone());
-        self.entries
-            .entry(key)
-            .or_insert_with(|| RetainedSubview::new(build()))
+        self.entries.entry(key).or_insert_with(build)
     }
 
     /// Insert the sub-view for `key` without marking it visible this frame —
@@ -780,11 +772,9 @@ impl<K: Eq + core::hash::Hash + Clone, E: crate::text::TextEngine> VisibleSubvie
     pub(crate) fn materialize(
         &mut self,
         key: K,
-        build: impl FnOnce() -> AnyView,
+        build: impl FnOnce() -> RetainedSubview<E>,
     ) -> &mut RetainedSubview<E> {
-        self.entries
-            .entry(key)
-            .or_insert_with(|| RetainedSubview::new(build()))
+        self.entries.entry(key).or_insert_with(build)
     }
 
     /// Marks the retained item for `key` visible this frame; `false` when
