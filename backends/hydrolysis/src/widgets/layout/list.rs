@@ -689,7 +689,7 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
             return;
         }
         let row_env = list_row_environment(env);
-        let mut item = materialize_list_item(contents, index, &row_env);
+        let mut item = materialize_list_item(contents, index);
         // The row's `ListItem` node claims whatever naming scope the content
         // carries: the metadata is hoisted off the content onto the row's
         // environment, or the first leaf inside the subtree would claim the

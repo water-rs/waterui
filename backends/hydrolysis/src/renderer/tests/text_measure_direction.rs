@@ -9,7 +9,7 @@ use super::*;
 
 fn measure_row(env: &Environment, proposal: ProposalSize) -> f32 {
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-    let view = normalize_layout_view(AnyView::new(text("Row")), env);
+    let view = AnyView::new(text("Row"));
     Realized::with_theme(view, env, &theme)
         .measure(proposal)
         .size

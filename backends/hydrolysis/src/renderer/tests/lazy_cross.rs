@@ -4,7 +4,7 @@
 //! `(cross, None)`.
 
 use super::*;
-use crate::renderer::normalize_layout_view;
+
 use waterui::prelude::*;
 use waterui_core::id::SelfId;
 
@@ -72,17 +72,14 @@ fn a_lazy_stack_answers_what_its_item_answers() {
     let mut mismatches = Vec::new();
     for (name, make_row) in shapes {
         let proposal = ProposalSize::new(Some(308.0), None);
-        let lazy = normalize_layout_view(
-            AnyView::new(VStack::for_each(
-                (0..40).map(SelfId::new).collect::<Vec<_>>(),
-                move |_| make_row(),
-            )),
-            &env,
-        );
+        let lazy = AnyView::new(VStack::for_each(
+            (0..40).map(SelfId::new).collect::<Vec<_>>(),
+            move |_| make_row(),
+        ));
         let lazy_answer = Realized::with_theme(lazy, &env, &theme)
             .measure(proposal)
             .size;
-        let row_view = normalize_layout_view(make_row(), &env);
+        let row_view = make_row();
         let item_answer = Realized::with_theme(row_view, &env, &theme)
             .measure(proposal)
             .size;
@@ -110,13 +107,10 @@ fn a_lazy_stack_answers_what_its_item_answers() {
 fn scroll_shell_answers_its_proposal() {
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-    let shell = normalize_layout_view(
-        AnyView::new(scroll(vstack((VStack::for_each(
-            (0..40).map(SelfId::new).collect::<Vec<_>>(),
-            move |_| row_long_wrap(),
-        ),)))),
-        &env,
-    );
+    let shell = AnyView::new(scroll(vstack((VStack::for_each(
+        (0..40).map(SelfId::new).collect::<Vec<_>>(),
+        move |_| row_long_wrap(),
+    ),))));
     let answer = Realized::with_theme(shell, &env, &theme)
         .measure(ProposalSize::new(Some(308.0), None))
         .size;

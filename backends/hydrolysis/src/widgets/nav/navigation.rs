@@ -349,7 +349,7 @@ impl<E: crate::text::TextEngine> NavigationViewRenderState<E> {
     }
 
     /// Eagerly build the bar/content sub-views (the measure path has no renderer to
-    /// build on), mirroring the dispatch path's normalization.
+    /// build on).
     pub(crate) fn prebuild(
         &mut self,
         renderer: &mut crate::renderer::SemanticCore<E>,

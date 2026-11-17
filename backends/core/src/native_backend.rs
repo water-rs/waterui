@@ -187,16 +187,27 @@ pub fn report_unprovided(backend: &str, payload: &str) {
     );
 }
 
+/// How many erased views may expand into one another before any payload is
+/// reached. Inherited from the recursion budget of Hydrolysis's former layout
+/// normalization, the pass this check replaces; a finite composition never
+/// comes near it, so only a body that erases itself again trips it.
+const ERASED_HOP_BUDGET: usize = 64;
+
 /// The core [`Backend`] a [`NativeBackend`] realizes a tree through.
 #[derive(Debug)]
 pub struct Realize<'a, B> {
     backend: &'a mut B,
+    /// Erased views expanded since the last payload this realization reached.
+    erased_hops: usize,
 }
 
 impl<'a, B: NativeBackend> Realize<'a, B> {
     /// Wraps `backend`.
     pub const fn new(backend: &'a mut B) -> Self {
-        Self { backend }
+        Self {
+            backend,
+            erased_hops: 0,
+        }
     }
 
     /// Realizes `view` through `backend`.
@@ -250,7 +261,18 @@ impl<B: NativeBackend> Backend for Realize<'_, B> {
     }
 
     fn erased(&mut self, view: AnyView, env: &Environment, cx: Self::Ctx) -> Self::Output {
-        let output = view.dispatch_dyn(&mut RealizeDyn(self.backend), env, Box::new(cx));
+        if self.erased_hops == ERASED_HOP_BUDGET {
+            contract_violation!(
+                "{} expanded through {ERASED_HOP_BUDGET} erased views without reaching a payload; its body erases itself, so it realizes as an empty view",
+                view.name()
+            );
+            return route_native(self.backend, (), env, cx);
+        }
+        let mut erased = RealizeDyn {
+            backend: self.backend,
+            erased_hops: self.erased_hops + 1,
+        };
+        let output = view.dispatch_dyn(&mut erased, env, Box::new(cx));
         *output
             .downcast::<B::Output>()
             .expect("the erased path returns the backend's own output")
@@ -259,7 +281,10 @@ impl<B: NativeBackend> Backend for Realize<'_, B> {
 
 /// The object-safe face of a [`NativeBackend`], for the leaves of an
 /// [`AnyView`].
-struct RealizeDyn<'a, B>(&'a mut B);
+struct RealizeDyn<'a, B> {
+    backend: &'a mut B,
+    erased_hops: usize,
+}
 
 impl<B: NativeBackend> RealizeDyn<'_, B> {
     fn cx(cx: Box<dyn Any>) -> B::Ctx {
@@ -275,7 +300,7 @@ impl<B: NativeBackend> DynBackend for RealizeDyn<'_, B> {
         env: &Environment,
         cx: Box<dyn Any>,
     ) -> Box<dyn Any> {
-        Box::new(route_native_dyn(self.0, native, env, Self::cx(cx)))
+        Box::new(route_native_dyn(self.backend, native, env, Self::cx(cx)))
     }
 
     fn metadata_dyn(
@@ -284,11 +309,20 @@ impl<B: NativeBackend> DynBackend for RealizeDyn<'_, B> {
         env: &Environment,
         cx: Box<dyn Any>,
     ) -> Box<dyn Any> {
-        Box::new(route_metadata_dyn(self.0, metadata, env, Self::cx(cx)))
+        Box::new(route_metadata_dyn(
+            self.backend,
+            metadata,
+            env,
+            Self::cx(cx),
+        ))
     }
 
     fn erased_dyn(&mut self, view: AnyView, env: &Environment, cx: Box<dyn Any>) -> Box<dyn Any> {
-        Box::new(Realize::new(self.0).erased(view, env, Self::cx(cx)))
+        let mut realize = Realize {
+            backend: &mut *self.backend,
+            erased_hops: self.erased_hops,
+        };
+        Box::new(realize.erased(view, env, Self::cx(cx)))
     }
 }
 
@@ -526,6 +560,26 @@ mod tests {
         let mut recorder = Recorder::default();
         Realize::child(&mut recorder, tree(), &Environment::new(), ());
         assert_eq!(recorder.reached, ["layout_priority", "spacer"]);
+    }
+
+    #[derive(Debug)]
+    struct ErasesItself;
+
+    impl View for ErasesItself {
+        fn body(self, _env: &Environment) -> impl View {
+            AnyView::new(self)
+        }
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "erased views without reaching a payload")
+    )]
+    fn a_body_that_erases_itself_realizes_as_an_empty_view() {
+        let mut recorder = Recorder::default();
+        Realize::child(&mut recorder, ErasesItself, &Environment::new(), ());
+        assert_eq!(recorder.reached, ["empty"]);
     }
 
     #[test]

@@ -217,11 +217,7 @@ impl Realized {
         env: &Environment,
         mut renderer: HydrolysisRenderer<ParleyEngine>,
     ) -> Self {
-        let node = RenderNode::build(
-            normalize_layout_view(AnyView::new(view), env),
-            env,
-            &mut renderer,
-        );
+        let node = RenderNode::build(AnyView::new(view), env, &mut renderer);
         Self {
             renderer,
             node,
@@ -547,15 +543,6 @@ pub fn capture_bytes(runtime: &crate::HeadlessRuntime) -> u64 {
 #[derive(Clone, Default)]
 pub struct BadgeDrawLog(pub Rc<RefCell<Vec<Rect>>>);
 
-#[derive(Clone, Copy)]
-struct RecursivelyErasedView;
-
-impl View for RecursivelyErasedView {
-    fn body(self, _env: &Environment) -> impl View {
-        AnyView::new(self)
-    }
-}
-
 #[derive(Clone)]
 struct EmitsDuringSignalSubscription<T> {
     subscribed: Rc<Cell<bool>>,
@@ -833,8 +820,8 @@ fn a_stack_collects_alignment_keys_from_wrapper_layouts() {
     );
 }
 
-/// A plain `FixedContainer` — normalization's form, before `body` wraps its
-/// layout in `DirectionalLayout` — must still resolve explicit horizontal
+/// A plain `FixedContainer` — before `body` wraps its layout in
+/// `DirectionalLayout` — must still resolve explicit horizontal
 /// guides against the placements `DirectionalLayout` produces: under RTL the
 /// leading-aligned child sits on the trailing edge, so a guide anchored in
 /// its frame mirrors to `width - offset`.
@@ -845,22 +832,19 @@ fn plain_fixed_container_measurement_mirrors_guides_under_rtl() {
     let mut env = test_environment();
     env.insert(LayoutDirection::RightToLeft);
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-    let view = normalize_layout_view(
-        AnyView::new(FixedContainer::new(
-            VStackLayout {
-                alignment: HorizontalAlignment::Leading,
-                spacing: Computed::constant(0.0),
-            },
-            vec![
-                AnyView::new(().size(20.0, 10.0).horizontal_alignment_guide(
-                    HorizontalAlignment::Leading,
-                    |dimensions: &ViewDimensions| dimensions.size.width * 0.5,
-                )),
-                AnyView::new(().size(100.0, 10.0)),
-            ],
-        )),
-        &env,
-    );
+    let view = AnyView::new(FixedContainer::new(
+        VStackLayout {
+            alignment: HorizontalAlignment::Leading,
+            spacing: Computed::constant(0.0),
+        },
+        vec![
+            AnyView::new(().size(20.0, 10.0).horizontal_alignment_guide(
+                HorizontalAlignment::Leading,
+                |dimensions: &ViewDimensions| dimensions.size.width * 0.5,
+            )),
+            AnyView::new(().size(100.0, 10.0)),
+        ],
+    ));
     let dimensions = Realized::with_theme(view, &env, &theme).measure(ProposalSize::UNSPECIFIED);
 
     // Under RTL the 20-wide leading child mirrors to the trailing edge —
@@ -870,34 +854,6 @@ fn plain_fixed_container_measurement_mirrors_guides_under_rtl() {
     assert_eq!(
         dimensions.explicit_horizontal(HorizontalAlignment::Leading),
         Some(dimensions.size.width - 10.0)
-    );
-}
-
-#[test]
-fn layout_normalization_does_not_charge_metadata_depth_to_component_recursion() {
-    let env = test_environment();
-    let mut view = AnyView::new(text("Leaf"));
-    for _ in 0..80 {
-        view = AnyView::new(view.opacity(1.0));
-    }
-
-    let normalized = normalize_layout_view(view, &env);
-
-    assert!(normalized.is::<Metadata<Opacity>>());
-}
-
-#[test]
-#[cfg_attr(
-    debug_assertions,
-    should_panic(expected = "hydrolysis layout normalization exceeded recursion budget")
-)]
-fn layout_normalization_reports_recursive_component_bodies_and_draws_nothing() {
-    let env = test_environment();
-
-    let view = normalize_layout_view(AnyView::new(RecursivelyErasedView), &env);
-    assert!(
-        view.is::<()>(),
-        "the recursive body is replaced by an empty view"
     );
 }
 
@@ -925,10 +881,7 @@ fn a_stretch_control_keeps_its_minimum_under_a_zero_width_proposal() {
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
     let value = Binding::f64(0.5);
-    let view = normalize_layout_view(
-        AnyView::new(slider("Playback position", &value).hide_label()),
-        &env,
-    );
+    let view = AnyView::new(slider("Playback position", &value).hide_label());
     let mut subview = Realized::with_theme(view, &env, &theme);
 
     let measured = subview.measure(ProposalSize::new(Some(0.0), None));
@@ -971,15 +924,12 @@ fn state_wrapped_button_remains_non_stretch_for_layout() {
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
     let expanded = Binding::bool(false);
-    let view = normalize_layout_view(
-        AnyView::new(
-            button("Toggle Bars")
-                .action(|waterui::State(value): waterui::State<Binding<bool>>| {
-                    value.toggle();
-                })
-                .state(&expanded),
-        ),
-        &env,
+    let view = AnyView::new(
+        button("Toggle Bars")
+            .action(|waterui::State(value): waterui::State<Binding<bool>>| {
+                value.toggle();
+            })
+            .state(&expanded),
     );
     let mut subview = Realized::with_theme(view, &env, &theme);
 
@@ -1787,9 +1737,9 @@ fn a_container_with_an_explicit_label_still_consumes_its_text() {
 }
 
 /// A view hook wraps whatever it returns in a snapshot of the environment it was
-/// called with, and layout normalization resolves that body before the naming
-/// scope exists — so the snapshot carries no label, and flattening it replaces
-/// the scoped environment the build installed. Every `Map` in a `map-gpu` build
+/// called with; when that body resolves before the naming scope exists, the
+/// snapshot carries no label, and flattening it replaces the scoped
+/// environment the build installed. Every `Map` in a `map-gpu` build
 /// and every `Video` in a `video-gpu` one sits under such a hook, and
 /// `.a11y_label()` on them named nothing at all: the engine, finding no ambient
 /// label, announced its own generated description instead.
@@ -1806,9 +1756,8 @@ fn a_label_survives_the_environment_snapshot_a_view_hook_takes() {
         AnyView::new(text("map").a11y_role(AccessibilityRole::Image))
     });
     let mut renderer = test_renderer();
-    // The frame matters: a layout container normalizes its children, and it is
-    // normalization that resolves the hooked body — one level above the naming
-    // scope the build installs.
+    // The frame puts the hooked map inside a layout container, one level below
+    // the naming scope the build installs.
     let view = Map::new(Region::new(Coordinate::default(), 1.0, 1.0))
         .a11y_label("City map")
         .size(120.0, 120.0);
@@ -4055,9 +4004,6 @@ fn every_view_answers_the_three_point_probe_consistently() {
     ];
 
     for (name, view) in cases {
-        // The layout path measures normalized views, so the contract is about
-        // those, not about raw bodies.
-        let view = normalize_layout_view(view, &env);
         let mut subview = Realized::new(view, &env);
 
         let ideal = subview.measure(ProposalSize::UNSPECIFIED).size;
@@ -4231,13 +4177,9 @@ fn tab_badge_draws_only_for_a_nonzero_count() {
 fn a_collapsed_naming_scope_reports_the_containers_resolved_extent() {
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-    let measured = Realized::with_theme(
-        normalize_layout_view(AnyView::new(button("OK").padding_with(8.0)), &env),
-        &env,
-        &theme,
-    )
-    .measure(ProposalSize::new(Some(160.0), Some(160.0)))
-    .size;
+    let measured = Realized::with_theme(AnyView::new(button("OK").padding_with(8.0)), &env, &theme)
+        .measure(ProposalSize::new(Some(160.0), Some(160.0)))
+        .size;
     let mut renderer = test_renderer();
     let view = button("OK").padding_with(8.0).a11y_label("Named");
     capture_root_window(&mut renderer, view, &env, Rect::new(0.0, 0.0, 160.0, 160.0));
@@ -4280,10 +4222,7 @@ fn a_collapsed_naming_scope_centres_the_resolved_extent_on_the_assigned_frame() 
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
     let measured = Realized::with_theme(
-        normalize_layout_view(
-            AnyView::new(button("OK").padding_with([0.0, 20.0, 0.0, 0.0])),
-            &env,
-        ),
+        AnyView::new(button("OK").padding_with([0.0, 20.0, 0.0, 0.0])),
         &env,
         &theme,
     )

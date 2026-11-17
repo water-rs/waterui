@@ -22,7 +22,7 @@ use crate::HeadlessRuntime;
 use crate::num_cast::{f64_as_f32, i32_as_f32, u32_as_f32};
 use crate::platform::{InputEvent, PointerButton, PointerKind};
 use crate::renderer::chrome::LiveChrome;
-use crate::renderer::normalize_layout_view;
+
 use crate::theme::{DragMapping, WidgetTheme};
 
 /// The slider's current value.
@@ -367,12 +367,7 @@ fn measurement_equals_drawing() {
             .min_value_label("Quiet")
             .max_value_label("Loud")
     };
-    let size = Realized::with_theme(
-        normalize_layout_view(AnyView::new(view()), &env),
-        &env,
-        &theme,
-    )
-    .intrinsic();
+    let size = Realized::with_theme(AnyView::new(view()), &env, &theme).intrinsic();
 
     let tracks = Rc::new(RefCell::new(Vec::new()));
     let mut renderer = super::test_renderer_with_theme(MinimalTestTheme {
@@ -411,10 +406,7 @@ fn no_band_is_reserved_for_a_label_the_look_does_not_draw() {
             ..Default::default()
         });
         Realized::with_theme(
-            normalize_layout_view(
-                AnyView::new(slider("Volume", &Binding::container(0.5)).range(0.0..=1.0)),
-                &env,
-            ),
+            AnyView::new(slider("Volume", &Binding::container(0.5)).range(0.0..=1.0)),
             &env,
             &theme,
         )
