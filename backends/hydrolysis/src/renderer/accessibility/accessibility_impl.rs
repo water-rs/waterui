@@ -2279,7 +2279,6 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         &self,
         env: &'env Environment,
     ) -> Cow<'env, Environment> {
-        #[cfg(feature = "accessibility")]
         if self.accessibility.semantics_scope_is_claimed(env)
             && let Some(child_env) = accessibility_container_child_environment(env)
         {

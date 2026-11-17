@@ -1345,10 +1345,12 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
 
     fn provided_metadata_dyn(
         &mut self,
-        mut metadata: ErasedPayload<'_>,
+        metadata: ErasedPayload<'_>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        #[cfg(any(feature = "menu", hydrolysis_video_plane))]
+        let mut metadata = metadata;
         #[cfg(feature = "menu")]
         if let Some(metadata) = metadata.take::<Metadata<PopupMenuSurface>>() {
             return self.popup_menu_surface(metadata, env);

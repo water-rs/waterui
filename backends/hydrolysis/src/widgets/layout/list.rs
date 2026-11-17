@@ -728,7 +728,7 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
         if self.realized_rows.borrow().contains_key(&row_id) && cache.touch(&row_id) {
             return;
         }
-        let mut row_env = list_row_environment(env);
+        let row_env = list_row_environment(env);
         let mut item = materialize_list_item(contents, index);
         let content = item.take_content();
         let subtree_env = self.row_subtree_environment(row_id, &row_env);
@@ -744,9 +744,13 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
         // opens with, or the first leaf inside the subtree would claim the
         // row's explicit label for itself.
         #[cfg(feature = "accessibility")]
-        if let Some(scope_env) = scope_env {
-            adopt_content_naming::<E>(&mut row_env, scope_env, &subtree_env);
-        }
+        let row_env = {
+            let mut row_env = row_env;
+            if let Some(scope_env) = scope_env {
+                adopt_content_naming::<E>(&mut row_env, scope_env, &subtree_env);
+            }
+            row_env
+        };
         self.transitions.track(row_id, subview, renderer);
         self.realized_rows.borrow_mut().insert(
             row_id,
