@@ -53,18 +53,7 @@ use crate::renderer::HydrolysisTextContextMenuMode;
 use crate::runner::android_executor::{AndroidMainThreadExecutor, UiThreadPoster};
 use crate::runner::android_methods::{HOST_METHODS, HostMethodId};
 use crate::runner::android_metrics::InsetsMetrics;
-#[cfg(any(
-    test,
-    feature = "text-field",
-    feature = "secure-field",
-    feature = "color-picker",
-    feature = "date-picker",
-    feature = "list",
-    feature = "navigation",
-    feature = "table",
-    hydrolysis_system_webview,
-    all(target_arch = "wasm32", feature = "web", feature = "video")
-))]
+#[cfg(any(test, hydrolysis_component_hooks))]
 use crate::runner::install_native_component_hooks;
 #[cfg(feature = "menu")]
 use crate::runner::menu_bar;
@@ -1206,18 +1195,7 @@ fn session_mounts(
         .extending(waterui_graphics::backend::SceneViewMergeToParent)
         .layered_on(&services.env);
     let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
-    #[cfg(any(
-        test,
-        feature = "text-field",
-        feature = "secure-field",
-        feature = "color-picker",
-        feature = "date-picker",
-        feature = "list",
-        feature = "navigation",
-        feature = "table",
-        hydrolysis_system_webview,
-        all(target_arch = "wasm32", feature = "web", feature = "video")
-    ))]
+    #[cfg(any(test, hydrolysis_component_hooks))]
     install_native_component_hooks(&mut env);
     install_headless_window_managers::<super::AndroidTextEngine>(
         &mut env,

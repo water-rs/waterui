@@ -744,18 +744,7 @@ pub fn run(
     waterui::inspector::install(&mut env, inspector);
     let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
     let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
-    #[cfg(any(
-        test,
-        feature = "text-field",
-        feature = "secure-field",
-        feature = "color-picker",
-        feature = "date-picker",
-        feature = "list",
-        feature = "navigation",
-        feature = "table",
-        hydrolysis_system_webview,
-        all(target_arch = "wasm32", feature = "web", feature = "video")
-    ))]
+    #[cfg(any(test, hydrolysis_component_hooks))]
     super::install_native_component_hooks(&mut env);
     #[cfg(unix)]
     let _termination_signals = install_termination_handler(&event_proxy);
