@@ -488,7 +488,8 @@ impl<R: GridRows> ViewSequence for GridCells<R> {
 /// ```rust
 /// # use waterui::layout::grid::{Grid, GridRow};
 /// # use waterui::prelude::*;
-/// # fn gallery(rows: Vec<GridRow>) -> impl View {
+/// # use waterui::text::Text;
+/// # fn gallery(rows: Vec<GridRow<(Text, Text, Text)>>) -> impl View {
 /// Grid::new(3, rows)
 ///     .spacing(16.0)
 ///     .alignment(Alignment::Leading)
