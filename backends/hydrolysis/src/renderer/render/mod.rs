@@ -22,6 +22,13 @@ pub use compositor::FrameGeometry;
 pub use compositor::RasterWindow;
 #[cfg(hydrolysis_gpu_painter)]
 pub use compositor::{CherenkovWindow, FrameRenderTarget};
+#[cfg(any(
+    feature = "list",
+    feature = "navigation",
+    feature = "picker",
+    feature = "text-field",
+    feature = "secure-field"
+))]
 pub use measurement::*;
 pub use measurement_cache::{MeasurementCaches, MemoGate, NodeMeasureEntry};
 #[cfg(feature = "navigation")]
