@@ -57,7 +57,7 @@ impl<T> ScrollRequest<T> {
 ///
 /// `at_start`/`at_end` report edge contact across every axis the view
 /// scrolls along: a view smaller than its viewport is both at start and at
-/// end. Follow-tail UIs read them through [`Computed::map`] — for example
+/// end. Follow-tail UIs read them through [`SignalExt::map`](nami::SignalExt::map) — for example
 /// `controller.position().map(|p| p.is_some_and(|p| p.at_end))`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[non_exhaustive]
@@ -218,7 +218,7 @@ impl<T: Clone + 'static> ScrollController<T> {
     /// read-only for the app — writing it does not scroll; use
     /// [`Self::scroll_to`] for that.
     ///
-    /// Read edge contact through [`Computed::map`], e.g.
+    /// Read edge contact through [`SignalExt::map`](nami::SignalExt::map), e.g.
     /// `controller.position().map(|p| p.is_some_and(|p| p.at_end))` for a
     /// follow-tail chat view.
     #[must_use]
