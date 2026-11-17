@@ -2,7 +2,7 @@
 
 use alloc::{vec, vec::Vec};
 use nami::collection::Collection;
-use waterui_core::{AnyView, View, id::Identifiable, view::ViewSequence, views::ForEach};
+use waterui_core::{View, id::Identifiable, view::ViewSequence, views::ForEach};
 
 use crate::{
     Layout, LayoutError, LazyContainer, PlacedSubview, PlacementInput, Point, ProposalSize, Rect,
@@ -315,12 +315,12 @@ impl<C: ViewSequence> ZStack<(C,)> {
     }
 }
 
-impl<V> FromIterator<V> for ZStack<(Vec<AnyView>,)>
+impl<V> FromIterator<V> for ZStack<(Vec<V>,)>
 where
     V: View,
 {
     fn from_iter<T: IntoIterator<Item = V>>(iter: T) -> Self {
-        let contents = iter.into_iter().map(AnyView::new).collect::<Vec<_>>();
+        let contents = iter.into_iter().collect::<Vec<_>>();
         Self::new(Alignment::default(), contents)
     }
 }

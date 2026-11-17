@@ -3,7 +3,7 @@
 use alloc::{vec, vec::Vec};
 use nami::{Computed, Signal, SignalExt, collection::Collection};
 use waterui_core::{
-    AnyView, IntoSignalF32, View, env::with, id::Identifiable, layout::LayoutInvalidationCallback,
+    IntoSignalF32, View, env::with, id::Identifiable, layout::LayoutInvalidationCallback,
     view::ViewSequence, views::ForEach,
 };
 
@@ -313,12 +313,12 @@ impl<C> HStack<C> {
 
 crate::stack::impl_stack_for_each!(HStack, HStackLayout);
 
-impl<V> FromIterator<V> for HStack<(Vec<AnyView>,)>
+impl<V> FromIterator<V> for HStack<(Vec<V>,)>
 where
     V: View,
 {
     fn from_iter<T: IntoIterator<Item = V>>(iter: T) -> Self {
-        let contents = iter.into_iter().map(AnyView::new).collect();
+        let contents = iter.into_iter().collect::<Vec<_>>();
         Self::new(VerticalAlignment::default(), 10.0, contents)
     }
 }
