@@ -148,6 +148,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// The environment the content of `self` resolves in below its leading
     /// environment scopes — `Env` nodes and `.material_group()` markers —
     /// or `None` when `self` opens with neither.
+    #[cfg(any(test, feature = "list"))]
     pub(crate) fn leading_scope_env(&self) -> Option<&Environment> {
         match self {
             Self::Env(node) => Some(node.child.leading_scope_env().unwrap_or(&node.env)),
