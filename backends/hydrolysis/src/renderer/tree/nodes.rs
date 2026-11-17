@@ -70,6 +70,10 @@ struct BuiltSubview<E: crate::text::TextEngine> {
     /// reach the sub-view again). `None` only while the set is lent to
     /// [`HydroState::layout_dependencies`] for the duration of a pass.
     layout_dependencies: Option<LayoutDependencies<E>>,
+    /// The size [`RetainedSubview::patch_and_measure`] last answered and the
+    /// proposal it answered: an unchanged sub-view answers it again on a
+    /// later frame without re-running its measure.
+    measured: Option<(ProposalSize, Size)>,
 }
 
 /// Writes `safe_area` into a node's stored-context slot, overwriting the
@@ -230,6 +234,7 @@ impl<E: crate::text::TextEngine> RetainedSubview<E> {
             laid_out_area: None,
             content_anchor: None,
             layout_dependencies,
+            measured: None,
         }));
         // The current reader — the record or layout pass this build runs
         // inside — is the owning widget's cell; a build with no reader
@@ -293,9 +298,9 @@ impl<E: crate::text::TextEngine> RetainedSubview<E> {
         }
     }
 
-    /// Measure the sub-view's intrinsic size (building it once if needed), the
-    /// node analogue of [`measure_view_intrinsic`] at the unspecified proposal.
-    /// For the render path, which has the renderer to build on first use.
+    /// Measure the sub-view's intrinsic size (building it once if needed), at
+    /// the unspecified proposal. For the render path, which has the renderer to
+    /// build on first use.
     pub(crate) fn measure_intrinsic(
         &mut self,
         renderer: &mut HydrolysisRenderer<E>,
@@ -361,6 +366,11 @@ impl<E: crate::text::TextEngine> RetainedSubview<E> {
     /// visible items so a connected `Dynamic` is measured through the retained
     /// node that owns its current content, rather than by re-measuring the
     /// already-connected source view.
+    ///
+    /// A sub-view that took no structural patch and no layout mark, and whose
+    /// last layout's signal dependencies are clean, answers the size it last
+    /// answered for the same proposal without measuring: nothing it measures
+    /// against has changed since.
     pub(crate) fn patch_and_measure(
         &mut self,
         renderer: &mut HydrolysisRenderer<E>,
@@ -369,16 +379,27 @@ impl<E: crate::text::TextEngine> RetainedSubview<E> {
     ) -> (Size, StretchAxis) {
         self.ensure_built(renderer, env);
         let built = self.expect_built_mut("patch_and_measure");
-        built.needs_layout |= Self::patch_built(&mut built.node, renderer);
+        let structural = Self::patch_built(&mut built.node, renderer);
+        built.needs_layout |= structural | built.node.take_layout_dirty();
+        let unchanged = !built.needs_layout
+            && !built
+                .layout_dependencies
+                .as_ref()
+                .is_some_and(LayoutDependencies::is_dirty);
+        if unchanged
+            && let Some((measured_proposal, size)) = built.measured
+            && measured_proposal == proposal
+        {
+            return (size, built.node.stretch());
+        }
         built.node.prepare_for_measure(renderer);
         let theme = renderer.theme();
-        (
-            built
-                .node
-                .measure(&mut renderer.state, env, &theme, proposal)
-                .size,
-            built.node.stretch(),
-        )
+        let size = built
+            .node
+            .measure(&mut renderer.state, env, &theme, proposal)
+            .size;
+        built.measured = Some((proposal, size));
+        (size, built.node.stretch())
     }
 
     /// Run the layout-time prepare pass over the sub-view's built node.
@@ -393,12 +414,6 @@ impl<E: crate::text::TextEngine> RetainedSubview<E> {
     /// Stretch contract of an already-built retained sub-view.
     pub(crate) fn stretch_axis(&self) -> StretchAxis {
         self.expect_built("stretch_axis").node.stretch()
-    }
-
-    fn collect_dynamic_identities_into(&self, out: &mut FxHashSet<usize>) {
-        self.expect_built("collect_dynamic_identities_into")
-            .node
-            .collect_dynamic_identities_into(out);
     }
 
     /// Emit this sub-view's accessibility nodes for the semantic walk: builds
@@ -443,7 +458,7 @@ impl<E: crate::text::TextEngine> RetainedSubview<E> {
     /// Unlike [`Self::patch_built`], this does not carry the change into another
     /// frame: the parent tree's current patch result already owns the structural
     /// bookkeeping and will lay out the updated child immediately.
-    fn patch_for_parent(&mut self, renderer: &mut SemanticCore<E>) -> bool {
+    pub(super) fn patch_for_parent(&mut self, renderer: &mut SemanticCore<E>) -> bool {
         let built = self.expect_built_mut("patch_for_parent");
         let structural = built.node.patch(renderer);
         built.needs_layout |= structural;
@@ -733,13 +748,11 @@ impl<K: Eq + core::hash::Hash + Clone, E: crate::text::TextEngine> VisibleSubvie
     /// Keeps `key` retained across frames that do not touch it, replacing the
     /// previously pinned key, which is evicted by the next [`Self::end_frame`]
     /// that does not touch it. `None` unpins.
-    #[cfg(feature = "list")]
     pub(crate) fn pin(&mut self, key: Option<K>) {
         self.pinned = key;
     }
 
     /// The key [`Self::pin`] keeps.
-    #[cfg(feature = "list")]
     pub(crate) const fn pinned(&self) -> Option<&K> {
         self.pinned.as_ref()
     }
@@ -837,13 +850,6 @@ impl<K: Eq + core::hash::Hash + Clone, E: crate::text::TextEngine> VisibleSubvie
         self.entries
             .values_mut()
             .fold(false, |dirty, entry| entry.take_layout_dirty() | dirty)
-    }
-
-    /// Add every connected `Dynamic` owned by a visible retained item.
-    pub(crate) fn collect_dynamic_identities_into(&self, out: &mut FxHashSet<usize>) {
-        for entry in self.entries.values() {
-            entry.collect_dynamic_identities_into(out);
-        }
     }
 
     /// Evict every sub-view not touched this frame (items scrolled out of view).
@@ -1704,12 +1710,6 @@ pub struct DynamicHostNode<E: crate::text::TextEngine> {
     /// The §7.1 context the host was last laid out against — the flush's
     /// mid-pass layout for a child that applied its pending reuses it.
     pub(super) safe_area: Option<Box<safe_area::SafeAreaLayout>>,
-    /// The source `Dynamic`, kept alive so its identity cannot be reused while
-    /// this node lives — otherwise a freed identity could be reallocated to a
-    /// different `Dynamic` and confused for this one. Also read by
-    /// [`RenderNode::collect_dynamic_identities`] to keep the measure-path dynamic
-    /// dimension cache pruned to the identities still live in the retained tree.
-    pub(super) source: waterui_core::dynamic::Dynamic,
     /// Latest content delivered by the `Dynamic`, awaiting a patch.
     pub(super) pending: Rc<RefCell<Option<AnyView>>>,
     /// Environment captured at build, used to rebuild the child on a change.
@@ -1717,10 +1717,7 @@ pub struct DynamicHostNode<E: crate::text::TextEngine> {
     /// The current expansion of the `Dynamic`'s content. Interior mutability
     /// lets a pass that runs under `&self` (flush, semantic emit) apply a
     /// pending structural change at this node's own entry, instead of waiting
-    /// for the next `patch` walk. The shared cell lets the measurement caches
-    /// hold a weak handle by `Dynamic` identity, so a dispatch measure that
-    /// meets the connected `Dynamic` can re-measure this child for the real
-    /// proposal.
+    /// for the next `patch` walk.
     pub(super) child: Rc<RefCell<RenderNode<E>>>,
     /// A mid-pass swap changed the child after the parent's layout already
     /// placed this host. Read through [`RenderNode::take_layout_dirty`], it

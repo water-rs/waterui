@@ -11,6 +11,7 @@ pub fn gesture_group_identity(view: &AnyView) -> usize {
     gesture_group_identity_with_budget(view, 64)
 }
 
+#[cfg(feature = "list")]
 pub fn flatten_environment_metadata_ref<'a>(
     mut view: &'a AnyView,
     env: &Environment,
@@ -410,48 +411,6 @@ pub fn passthrough_content(view: &AnyView) -> Option<&AnyView> {
     None
 }
 
-pub fn effective_stretch_axis(view: &AnyView) -> StretchAxis {
-    if let Some(content) = passthrough_content(view) {
-        return effective_stretch_axis(content);
-    }
-    if view.downcast_ref::<Divider>().is_some() {
-        return StretchAxis::CrossAxis;
-    }
-    view.stretch_axis()
-}
-
-/// Whether a view is the empty view `()`, possibly under layout-transparent
-/// wrappers or hosted by a `Dynamic`.
-///
-/// Layout-transparent wrappers forward the content's answer — the same
-/// delegation [`effective_stretch_axis`] walks. A `Dynamic` answers for its
-/// current snapshot, so a conditional flipping between `()` and content is a
-/// membership change the next layout pass sees. This is a semantic answer,
-/// not a measured size: a zero-size `Color` or a collapsed `Spacer` still
-/// renders and still answers `false`, and so does a structured container
-/// like `().size(w, h)` — it explicitly claims a slot. A stack treats a
-/// child answering `true` as a non-member (§4.4: no slot, no spacing).
-pub fn view_renders_nothing(view: &AnyView) -> bool {
-    if let Some(content) = passthrough_content(view) {
-        return view_renders_nothing(content);
-    }
-    if view.downcast_ref::<()>().is_some() || view.downcast_ref::<Native<()>>().is_some() {
-        return true;
-    }
-    if let Some(dynamic) = view.downcast_ref::<Dynamic>() {
-        return dynamic
-            .with_unconnected_view(|view| view.is_some_and(view_renders_nothing))
-            .unwrap_or(false);
-    }
-    if let Some(dynamic) = view.downcast_ref::<Native<Dynamic>>() {
-        return dynamic
-            .as_inner()
-            .with_unconnected_view(|view| view.is_some_and(view_renders_nothing))
-            .unwrap_or(false);
-    }
-    false
-}
-
 fn is_layout_terminal(view: &AnyView) -> bool {
     if view.downcast_ref::<Str>().is_some() || view.downcast_ref::<Divider>().is_some() {
         return true;
@@ -459,6 +418,7 @@ fn is_layout_terminal(view: &AnyView) -> bool {
     super::is_hydro_native_view(view)
 }
 
+#[cfg(hydrolysis_cherenkov)]
 pub fn normalize_view_for_render(view: AnyView, env: &Environment) -> AnyView {
     normalize_layout_view(view, env)
 }
@@ -717,23 +677,6 @@ fn normalize_layout_view_with_budget(
 
     view = AnyView::new(view.body(env));
     normalize_layout_view_with_budget(view, env, next_remaining)
-}
-
-pub fn estimate_layout_intrinsic<'a, E: crate::text::TextEngine>(
-    layout: &dyn Layout,
-    children: impl IntoIterator<Item = &'a AnyView>,
-    state: &mut HydroState<E>,
-    env: &Environment,
-    theme: &Rc<dyn crate::theme::WidgetTheme>,
-) -> LayoutSize {
-    let state = RefCell::new(state);
-    let children: Vec<&AnyView> = children.into_iter().collect();
-    let mut subviews = Vec::new();
-    for child in children {
-        subviews.push(HydroSubview::from_view(child, &state, env, theme));
-    }
-    let refs: Vec<&dyn SubView> = subviews.iter().map(|view| view as &dyn SubView).collect();
-    layout.size_that_fits(ProposalSize::UNSPECIFIED, &refs)
 }
 
 /// Resolves a shape into a concrete path for `bounds`.

@@ -11,9 +11,8 @@ use crate::renderer::lazy::{
 #[cfg(feature = "accessibility")]
 use crate::renderer::lazy::{VisibleColumnWindow, VisibleIndexWindow};
 use crate::renderer::{
-    HydroNativeView, HydroState, MeasuredTableMetrics, RenderContext, RetainedSubview,
-    VisibleCells, VisibleSubviewCache, WidgetRenderContext, measure_table_metrics,
-    table_data_cell_rect, table_header_cell_rect,
+    HydroState, MeasuredTableMetrics, RenderContext, RetainedSubview, VisibleCells,
+    VisibleSubviewCache, WidgetRenderContext, table_data_cell_rect, table_header_cell_rect,
 };
 use crate::scroll::ScrollHandle;
 use crate::theme::TableLook;
@@ -28,7 +27,7 @@ use waterui_core::contract_violation;
 use waterui_core::id::Identifiable;
 use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
 use waterui_core::views::{ViewSnapshot, Views};
-use waterui_core::{AnyView, Environment, Native};
+use waterui_core::{AnyView, Environment};
 use waterui_layout::scroll::Axis as ScrollAxis;
 
 use crate::widgets::{draw_scroll_indicators, inset_rect};
@@ -300,35 +299,6 @@ impl<E: crate::text::TextEngine> TableRenderState<E> {
             handle
         }
     }
-}
-
-impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<TableConfig> {
-    fn intrinsic(
-        state: &mut HydroState<E>,
-        view: &Self,
-        env: &Environment,
-        theme: &Rc<dyn crate::theme::WidgetTheme>,
-    ) -> LayoutSize {
-        measure_table_intrinsic(view.as_inner(), state, env, theme)
-    }
-}
-
-/// Measures a table's intrinsic size from its (reactive) columns.
-fn measure_table_intrinsic<E: crate::text::TextEngine>(
-    table: &TableConfig,
-    state: &mut HydroState<E>,
-    env: &Environment,
-    theme: &Rc<dyn crate::theme::WidgetTheme>,
-) -> LayoutSize {
-    let columns = state.measure_signal(&table.columns);
-    if columns.is_empty() {
-        return LayoutSize::zero();
-    }
-    let metrics = measure_table_metrics(&columns, state, env, theme, theme.table(env).metrics());
-    LayoutSize::new(
-        crate::num_cast::f64_as_f32(metrics.table_width),
-        crate::num_cast::f64_as_f32(metrics.table_height),
-    )
 }
 
 /// Emits a table's accessibility tree from its node-owned retained state.

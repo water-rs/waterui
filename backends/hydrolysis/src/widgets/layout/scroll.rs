@@ -1,47 +1,15 @@
 #[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
-use crate::renderer::{HydroNativeView, HydroState, WidgetRenderContext, measure_view_intrinsic};
+use crate::renderer::WidgetRenderContext;
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, NodeId as AccessibilityNodeId,
     Role as AccessibilityNodeRole,
 };
-use std::rc::Rc;
 use waterui_core::Environment;
-use waterui_core::Native;
 #[cfg(feature = "accessibility")]
 use waterui_core::contract_violation;
-use waterui_core::layout::{ProposalSize, Size as LayoutSize};
-use waterui_layout::scroll::{Axis as ScrollAxis, ScrollView};
-
-impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<ScrollView> {
-    fn intrinsic(
-        state: &mut HydroState<E>,
-        view: &Self,
-        env: &Environment,
-        theme: &Rc<dyn crate::theme::WidgetTheme>,
-    ) -> LayoutSize {
-        measure_view_intrinsic(view.as_inner().content(), state, env, theme)
-    }
-
-    fn dimensions(
-        state: &mut HydroState<E>,
-        view: &Self,
-        env: &Environment,
-        theme: &Rc<dyn crate::theme::WidgetTheme>,
-        proposal: ProposalSize,
-    ) -> waterui_core::layout::ViewDimensions {
-        // A scroll fills the offered extent on bounded axes — answering the
-        // content's intrinsic would report through the view path a width the
-        // viewport clips anyway (and can exceed the proposal when the content
-        // is wider, as in water-rs/waterui#1232).
-        let intrinsic = Self::intrinsic(state, view, env, theme);
-        waterui_core::layout::ViewDimensions::new(LayoutSize::new(
-            proposal.width.unwrap_or(intrinsic.width),
-            proposal.height.unwrap_or(intrinsic.height),
-        ))
-    }
-}
+use waterui_layout::scroll::Axis as ScrollAxis;
 
 #[cfg(feature = "accessibility")]
 pub fn register_scroll_accessibility_node<E: crate::text::TextEngine>(

@@ -517,18 +517,7 @@ pub fn run(app: App, style: impl crate::Style) {
 
         let mut env = env.extending(waterui_graphics::backend::SceneViewMergeToParent);
         let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
-        #[cfg(any(
-            test,
-            feature = "text-field",
-            feature = "secure-field",
-            feature = "color-picker",
-            feature = "date-picker",
-            feature = "list",
-            feature = "navigation",
-            feature = "table",
-            hydrolysis_system_webview,
-            all(target_arch = "wasm32", feature = "web", feature = "video")
-        ))]
+        #[cfg(any(test, hydrolysis_component_hooks))]
         super::install_native_component_hooks(&mut env);
         // Every runner seeds the chord table so mounted menus resolve
         // shortcuts through the same path (water-rs/hydrolysis#247).

@@ -1,9 +1,7 @@
 #[cfg(feature = "accessibility")]
 use crate::renderer::RenderContext;
 use crate::renderer::live_progress::LiveProgressParts;
-use crate::renderer::{
-    HydroNativeView, HydroState, RetainedSubview, WidgetRenderContext, measure_progress_intrinsic,
-};
+use crate::renderer::{HydroState, RetainedSubview, WidgetRenderContext};
 use crate::theme::{
     IndicatorLook, LinearProgressLook, ProgressControl, ProgressSpec, SpecTint, WidgetTheme,
 };
@@ -16,7 +14,6 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use waterui::component::progress::{ProgressConfig, ProgressStyle};
 use waterui_core::Environment;
-use waterui_core::Native;
 use waterui_core::contract_violation;
 use waterui_core::layout::Size as LayoutSize;
 use waterui_core::layout::{ProposalSize, ViewDimensions};
@@ -231,31 +228,6 @@ impl<E: crate::text::TextEngine> ProgressRenderState<E> {
             .cloned()
             .unwrap_or_else(|| ProgressLook::resolve(theme, spec, env))
     }
-}
-
-impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<ProgressConfig> {
-    fn intrinsic(
-        state: &mut HydroState<E>,
-        view: &Self,
-        env: &Environment,
-        theme: &Rc<dyn crate::theme::WidgetTheme>,
-    ) -> LayoutSize {
-        measure_progress_intrinsic(view.as_inner(), state, env, theme)
-    }
-}
-
-/// The measured size of the indicator `config` describes, from its labels'
-/// measured sizes.
-pub fn progress_size(
-    theme: &Rc<dyn WidgetTheme>,
-    style: ProgressStyle,
-    four_color: bool,
-    determinate: bool,
-    labels: (LayoutSize, LayoutSize),
-    env: &Environment,
-) -> LayoutSize {
-    let spec = progress_spec(style, four_color, determinate, labels, env);
-    ProgressLook::resolve(theme, &spec, env).size(ProgressLook::spec_bands(&spec, labels))
 }
 
 /// Emits a progress indicator's accessibility node, named by `default_label`

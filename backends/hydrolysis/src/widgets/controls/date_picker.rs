@@ -1,10 +1,7 @@
 #[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::chrome::{ChromeContent, LiveChromeParts};
-use crate::renderer::{
-    HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext,
-    measure_date_picker_intrinsic,
-};
+use crate::renderer::{HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext};
 use crate::theme::{MenuPickerLook, PickerSpec, SpecTint};
 #[cfg(feature = "accessibility")]
 use accesskit::{
@@ -18,7 +15,7 @@ use waterui_core::interaction::InteractionState;
 use waterui_core::layout::{
     HorizontalAlignment, ProposalSize, Size as LayoutSize, ViewDimensions, layout_direction,
 };
-use waterui_core::{AnyView, Environment, Native};
+use waterui_core::{AnyView, Environment};
 use waterui_form::picker::date::DatePickerConfig;
 use waterui_text::styled::StyledStr;
 
@@ -95,17 +92,6 @@ impl<E: crate::text::TextEngine> DatePickerRenderState<E> {
     }
 }
 
-impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<DatePickerConfig> {
-    fn intrinsic(
-        state: &mut HydroState<E>,
-        view: &Self,
-        env: &Environment,
-        theme: &Rc<dyn crate::theme::WidgetTheme>,
-    ) -> LayoutSize {
-        measure_date_picker_intrinsic(view.as_inner(), state, env, theme)
-    }
-}
-
 /// Emits a date picker's accessibility node from its config. Shared by the dispatch
 /// path ([`Native<DatePickerConfig>::accessibility`]) and the retained `Widget`-node
 /// path so both produce the same a11y tree.
@@ -178,8 +164,8 @@ pub fn date_picker_accessibility<E: crate::text::TextEngine>(
 }
 
 /// Measures a retained date-picker leaf from its [`DatePickerRenderState`],
-/// mirroring [`measure_date_picker_intrinsic`] but reading the label size from its
-/// already-built [`RetainedSubview`] so layout and render agree.
+/// reading the label size from its already-built [`RetainedSubview`] so layout
+/// and render agree.
 pub fn measure_date_picker_node<E: crate::text::TextEngine>(
     render_state: &DatePickerRenderState<E>,
     _proposal: ProposalSize,

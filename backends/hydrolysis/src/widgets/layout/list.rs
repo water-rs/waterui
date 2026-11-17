@@ -11,9 +11,9 @@ use crate::renderer::{
     accessibility_container_child_environment, hoist_accessibility_metadata,
 };
 use crate::renderer::{
-    HydroNativeView, HydroState, RenderContext, ScopeOperands, VisibleSubviewCache,
-    WidgetRenderContext, list_intrinsic_for_first_row, list_row_height_for_content,
-    list_row_horizontal_insets, list_spec, materialize_list_item, measure_list_intrinsic,
+    HydroState, RenderContext, ScopeOperands, VisibleSubviewCache, WidgetRenderContext,
+    list_intrinsic_for_first_row, list_row_height_for_content, list_row_horizontal_insets,
+    list_spec, materialize_list_item,
 };
 use crate::scroll::{ScrollHandle, ScrollRun, ScrollRunOutcome};
 use crate::theme::{Chrome, ListGestures, ListLook, ListSpec};
@@ -29,6 +29,7 @@ use waterui::component::list::{
 };
 use waterui::gesture::{DragEvent, DragGesture, Gesture, GesturePhase};
 use waterui_backend_core::scroll::{ScrollPositionReport, animated_row_scroll_approach};
+use waterui_core::Environment;
 use waterui_core::animation::Animation;
 use waterui_core::contract_violation;
 use waterui_core::handler::{BoxedAction, boxed_action};
@@ -38,7 +39,6 @@ use waterui_core::layout::{
     ProposalSize, Size as LayoutSize, UnitPoint, ViewDimensions, layout_direction,
 };
 use waterui_core::views::{AnyViewsSnapshot, ViewSnapshot, Views};
-use waterui_core::{Environment, Native};
 use waterui_layout::scroll::Axis as ScrollAxis;
 use waterui_text::Text;
 
@@ -1166,18 +1166,6 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
             offset_within_row: (metrics.offset_y - row_start).max(0.0),
             recorded_offset: metrics.offset_y,
         }));
-    }
-}
-
-impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<ListConfig> {
-    fn intrinsic(
-        state: &mut HydroState<E>,
-        view: &Self,
-        env: &Environment,
-        theme: &Rc<dyn crate::theme::WidgetTheme>,
-    ) -> LayoutSize {
-        let list = view.as_inner();
-        measure_list_intrinsic(list, &list.contents().snapshot(), None, state, env, theme)
     }
 }
 

@@ -276,10 +276,6 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// Build a viewport-virtualized lazy stack: store the collection and subscribe
     /// to membership changes (a change schedules a refresh so the visible window
     /// re-resolves). Items are materialized lazily at flush, not here.
-    #[expect(
-        clippy::needless_pass_by_ref_mut,
-        reason = "the mutable borrow is required by the shared signature even though this implementation does not mutate it"
-    )]
     fn build_lazy_stack(
         axis: LazyStackAxisConfig,
         views: &AnyViews<AnyView>,
@@ -347,7 +343,8 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         let env = item_env.as_ref().unwrap_or(env);
         *layout_mark.borrow_mut() = Rc::downgrade(&core.cell);
         let transitions = LazyTransitions::new(env, snapshot.borrow().clone(), membership);
-        Self::LazyStack(Box::new(LazyStackNode {
+        let first_snapshot = snapshot.borrow().clone();
+        let node = Box::new(LazyStackNode {
             memo_gate: Cell::default(),
             memo_slots: RefCell::default(),
             axis,
@@ -373,7 +370,9 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             _direction_guard: direction_guard,
             _layout_guards: layout_guards,
             transitions,
-        }))
+        });
+        node.realize_first_item(&first_snapshot, renderer);
+        Self::LazyStack(node)
     }
 
     /// Build a self-drawn scene node owning its `SceneContent` (no effect slot).
@@ -477,9 +476,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         env: &Environment,
         renderer: &mut SemanticCore<E>,
     ) -> Self {
-        let identity = dynamic.identity();
         let pending: Rc<RefCell<Option<AnyView>>> = Rc::new(RefCell::new(None));
-        let source = dynamic.clone();
         let signals = renderer.signals.clone();
         let core = renderer.new_core();
         let cell = Rc::downgrade(&core.cell);
@@ -514,16 +511,9 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             None => Self::build_view(AnyView::new(()), env, renderer),
         };
         let child = Rc::new(RefCell::new(child));
-        // The dispatch measure (`measure_dynamic`) reaches this child through
-        // the identity registry once the `Dynamic` has connected.
-        renderer
-            .state
-            .measurement
-            .register_dynamic_node(identity, &child);
         let host = DynamicHostNode {
             core,
             safe_area: None,
-            source,
             pending,
             env: env.clone(),
             child,

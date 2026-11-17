@@ -4,8 +4,8 @@ use crate::renderer::chrome::{ChromeContent, IndicatorContent, LiveChromeParts, 
 #[cfg(feature = "accessibility")]
 use crate::renderer::slider_step_for_range;
 use crate::renderer::{
-    GroupOpacity, HydroNativeView, HydroState, HydrolysisRenderer, RenderContext,
-    WidgetRenderContext, slider_value_epsilon,
+    GroupOpacity, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext,
+    slider_value_epsilon,
 };
 use crate::theme::{
     DragMapping, Inputs, SliderLayout, SliderLook, SliderSpec, SpecTint, WidgetTheme,
@@ -26,7 +26,6 @@ use waterui_controls::label::{Label, LabelDisplayMode};
 use waterui_controls::slider::{SliderConfig, ValueFormatter, snap};
 use waterui_core::AnyView;
 use waterui_core::Environment;
-use waterui_core::Native;
 use waterui_core::contract_violation;
 use waterui_core::interaction::InteractionState;
 use waterui_core::layout::Alignment;
@@ -213,43 +212,6 @@ fn slider_spec(
         value_labels,
         value_indicator,
     )
-}
-
-impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<SliderConfig> {
-    fn intrinsic(
-        state: &mut HydroState<E>,
-        view: &Self,
-        env: &Environment,
-        theme: &Rc<dyn crate::theme::WidgetTheme>,
-    ) -> LayoutSize {
-        measure_slider_intrinsic(view.as_inner(), state, env, theme)
-    }
-}
-
-/// Measures a slider from its config, without a retained node.
-pub fn measure_slider_intrinsic<E: crate::text::TextEngine>(
-    slider: &SliderConfig,
-    state: &mut HydroState<E>,
-    env: &Environment,
-    theme: &Rc<dyn crate::theme::WidgetTheme>,
-) -> LayoutSize {
-    let value_labels = !slider.min_value_label().is::<()>() || !slider.max_value_label().is::<()>();
-    let spec = slider_spec(
-        slider.label(),
-        slider.size(),
-        slider.range(),
-        slider.step(),
-        value_labels,
-        slider.value_indicator().is_some(),
-        env,
-    );
-    let look = theme.slider(&spec, env);
-    let measured = Measured {
-        label: crate::renderer::measure_label_intrinsic(slider.label(), state, env, theme),
-        min: crate::renderer::measure_view_intrinsic(slider.min_value_label(), state, env, theme),
-        max: crate::renderer::measure_view_intrinsic(slider.max_value_label(), state, env, theme),
-    };
-    intrinsic_size(&look, &spec, &measured)
 }
 
 /// The sizes of a slider's labels, as measured.

@@ -14,16 +14,14 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use waterui_core::Environment;
 use waterui_core::contract_violation;
-use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
-use waterui_core::{Environment, Native};
+use waterui_core::layout::{ProposalSize, ViewDimensions};
 
 use crate::platform_view::{
     PlatformView, PlatformViewPlacement, PlatformViewSink, PlatformViewSource,
 };
-use crate::renderer::{
-    HydroNativeView, HydroState, WidgetRenderContext, graphics_dimensions_from_proposal,
-};
+use crate::renderer::{HydroState, WidgetRenderContext, graphics_dimensions_from_proposal};
 
 /// Where a leaf's mounted view comes from — and, for an instance, the
 /// object whose lifetime keeps it alive: the invariant lives in the type.
@@ -106,27 +104,6 @@ impl PlatformViewRenderState {
             },
             sink,
         })
-    }
-}
-
-impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<PlatformView> {
-    fn intrinsic(
-        _state: &mut HydroState<E>,
-        _view: &Self,
-        _env: &Environment,
-        _theme: &Rc<dyn crate::theme::WidgetTheme>,
-    ) -> LayoutSize {
-        LayoutSize::zero()
-    }
-
-    fn dimensions(
-        _state: &mut HydroState<E>,
-        _view: &Self,
-        _env: &Environment,
-        _theme: &Rc<dyn crate::theme::WidgetTheme>,
-        proposal: ProposalSize,
-    ) -> ViewDimensions {
-        graphics_dimensions_from_proposal(proposal)
     }
 }
 

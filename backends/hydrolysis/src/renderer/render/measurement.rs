@@ -1,11 +1,9 @@
 #[cfg(feature = "list")]
-use crate::num_cast::f64_as_f32;
-#[cfg(feature = "list")]
 use crate::theme::ListMetrics;
 #[cfg(any(feature = "text-field", feature = "secure-field"))]
 use crate::theme::TextFieldLook;
 #[cfg(feature = "navigation")]
-use crate::theme::{NavigationBarLook, NavigationMetrics, NavigationSpec, TabsSpec};
+use crate::theme::{NavigationBarLook, NavigationMetrics, NavigationSpec};
 #[cfg(feature = "text-field")]
 use crate::widgets::controls::field_look::placeholder_text;
 #[cfg(any(feature = "text-field", feature = "secure-field"))]
@@ -19,31 +17,19 @@ use waterui_layout::padding::EdgeInsets;
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
-use crate::text::TextEngine;
 use crate::text::TextLayout as _;
+#[cfg(any(feature = "list", feature = "navigation", feature = "picker"))]
 use crate::theme::WidgetTheme;
-#[cfg(any(
-    feature = "text-field",
-    feature = "secure-field",
-    feature = "date-picker"
-))]
-use crate::widgets::controls::field_look::field_look;
-use crate::widgets::layout::container::resolve_lazy_container_extent;
-#[cfg(feature = "navigation")]
-use crate::widgets::nav::tabs::{tabs_decide_layout, tabs_item_natural_width};
+
 use std::rc::Rc;
-#[cfg(feature = "navigation")]
-use waterui::navigation::tab::TabIcon;
+#[cfg(any(feature = "list", feature = "picker"))]
 use waterui_core::contract_violation;
-use waterui_core::handler::BoxedAction;
-use waterui_core::layout::{LayoutError, ResolvedExtent, layout_direction, resolve_layout_extent};
 #[cfg(any(feature = "list", feature = "navigation"))]
+use waterui_core::layout::layout_direction;
+#[cfg(feature = "list")]
 use waterui_core::views::ViewSnapshot;
 #[cfg(feature = "picker")]
 use waterui_form::picker::PickerStyle;
-#[cfg(feature = "date-picker")]
-use waterui_form::picker::date::DatePickerConfig;
-use waterui_layout::container::resolve_directional_extent;
 
 #[cfg(feature = "table")]
 pub struct MeasuredTableMetrics {
@@ -95,37 +81,6 @@ pub fn navigation_look(theme: &Rc<dyn WidgetTheme>, env: &Environment) -> Naviga
     theme.navigation_bar(&NavigationSpec::new(layout_direction(env).snapshot()), env)
 }
 
-#[cfg(feature = "navigation")]
-fn navigation_bar_height<E: crate::text::TextEngine>(
-    view: &NavigationView,
-    state: &mut HydroState<E>,
-    metrics: NavigationMetrics,
-) -> f64 {
-    if state.measure_signal(&view.bar.hidden) {
-        0.0
-    } else {
-        let base = navigation_base_bar_height(view.bar.display_mode, metrics);
-        let search_extra = if view.bar.search.is_some() {
-            metrics
-                .search_vertical_inset
-                .mul_add(2.0, metrics.search_height)
-        } else {
-            0.0
-        };
-        let bottom_extra = if view.bar.toolbar.items().iter().any(|item| {
-            matches!(
-                item.placement(),
-                NavigationToolbarPlacement::BottomBar | NavigationToolbarPlacement::Status
-            )
-        }) {
-            metrics.inline_bar_height
-        } else {
-            0.0
-        };
-        base + search_extra + bottom_extra
-    }
-}
-
 /// The height of a bar showing its title in `display_mode`, under `metrics`.
 #[cfg(feature = "navigation")]
 pub const fn navigation_base_bar_height(
@@ -143,477 +98,6 @@ pub const fn navigation_base_bar_height(
 #[cfg(feature = "navigation")]
 pub fn split_compact_threshold(sidebar_width: f64) -> f64 {
     sidebar_width + 360.0
-}
-
-pub fn measure_view_intrinsic<E: crate::text::TextEngine>(
-    view: &AnyView,
-    state: &mut HydroState<E>,
-    env: &Environment,
-    theme: &Rc<dyn WidgetTheme>,
-) -> LayoutSize {
-    measure_view_dimensions(view, state, env, theme).size
-}
-
-/// Measures a view this measurement materialized rather than one the retained
-/// tree owns.
-///
-/// The intrinsic-measurement cache is keyed by heap address, which names a view
-/// only while that view is allocated, so a view built in order to be measured —
-/// and dropped the moment it has been — must not reach that cache: the next one
-/// materialized in the same frame is handed its address and reads its size back
-/// as its own. Use this at every site that measures a view it just built. See
-/// [`begin_transient_measurement`](MeasurementCaches::begin_transient_measurement).
-pub fn measure_transient_view_intrinsic<E: crate::text::TextEngine>(
-    view: &AnyView,
-    state: &mut HydroState<E>,
-    env: &Environment,
-    theme: &Rc<dyn WidgetTheme>,
-) -> LayoutSize {
-    measure_transient_view_with_proposal(view, ProposalSize::UNSPECIFIED, state, env, theme)
-}
-
-/// Measures a view this measurement materialized rather than one the retained
-/// tree owns, under `proposal`. Same contract as
-/// [`measure_transient_view_intrinsic`]; the proposal is the rect the layout
-/// hands the content, so bounded axes answer the proposal.
-pub fn measure_transient_view_with_proposal<E: crate::text::TextEngine>(
-    view: &AnyView,
-    proposal: ProposalSize,
-    state: &mut HydroState<E>,
-    env: &Environment,
-    theme: &Rc<dyn WidgetTheme>,
-) -> LayoutSize {
-    state.measurement.begin_transient_measurement();
-    let size = measure_view_dimensions_with_proposal(view, proposal, state, env, theme).size;
-    state.measurement.end_transient_measurement();
-    size
-}
-
-/// Measures the intrinsic visual size of a control's [`Label`].
-///
-/// The label is type-erased at this single boundary rather than at every call
-/// site. The `AnyView` exists only for the measurement, so this goes through
-/// [`measure_transient_view_intrinsic`]. The semantic identity of the label
-/// remains typed inside the control's config.
-pub fn measure_label_intrinsic<E: crate::text::TextEngine>(
-    label: &waterui_controls::label::Label,
-    state: &mut HydroState<E>,
-    env: &Environment,
-    theme: &Rc<dyn WidgetTheme>,
-) -> LayoutSize {
-    measure_transient_view_intrinsic(&AnyView::new(label.clone()), state, env, theme)
-}
-
-pub fn measure_view_dimensions<E: crate::text::TextEngine>(
-    view: &AnyView,
-    state: &mut HydroState<E>,
-    env: &Environment,
-    theme: &Rc<dyn WidgetTheme>,
-) -> ViewDimensions {
-    measure_view_dimensions_with_proposal(view, ProposalSize::UNSPECIFIED, state, env, theme)
-}
-
-pub fn measure_view_dimensions_with_proposal<E: crate::text::TextEngine>(
-    view: &AnyView,
-    proposal: ProposalSize,
-    state: &mut HydroState<E>,
-    env: &Environment,
-    theme: &Rc<dyn WidgetTheme>,
-) -> ViewDimensions {
-    let identity = view.stable_ptr() as usize;
-    let env_identity = env.identity();
-    if let Some(dimensions) = state
-        .measurement
-        .view_dimensions(identity, env_identity, proposal)
-    {
-        return dimensions;
-    }
-
-    let dimensions =
-        measure_view_dimensions_with_proposal_with_budget(view, proposal, state, env, theme, 256);
-    state
-        .measurement
-        .store_view_dimensions(identity, env_identity, proposal, dimensions.clone());
-    dimensions
-}
-
-#[expect(
-    clippy::too_many_lines,
-    reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
-)]
-fn measure_view_dimensions_with_proposal_with_budget<E: crate::text::TextEngine>(
-    view: &AnyView,
-    proposal: ProposalSize,
-    state: &mut HydroState<E>,
-    env: &Environment,
-    theme: &Rc<dyn WidgetTheme>,
-    remaining: usize,
-) -> ViewDimensions {
-    if remaining == 0 {
-        contract_violation!(
-            "hydrolysis view measurement exceeded recursion budget for {}; the view measures as zero",
-            view.name()
-        );
-        return ViewDimensions::new(LayoutSize::zero());
-    }
-    let (view, scoped_env) = flatten_environment_metadata_ref(view, env);
-
-    if let Some(content) = passthrough_content(view) {
-        return measure_view_dimensions_with_proposal_with_budget(
-            content,
-            proposal,
-            state,
-            &scoped_env,
-            theme,
-            remaining - 1,
-        );
-    }
-
-    if view.downcast_ref::<()>().is_some() {
-        return ViewDimensions::new(LayoutSize::zero());
-    }
-
-    if let Some(text) = view.downcast_ref::<Str>() {
-        return HydrolysisRenderer::measure_text_dimensions(
-            state,
-            StyledStr::plain(text.clone()),
-            HorizontalAlignment::Leading,
-            &scoped_env,
-            proposal.width,
-            None,
-        );
-    }
-    if let Some(text) = view.downcast_ref::<&'static str>() {
-        let body = AnyView::new((*text).body(&scoped_env));
-        return measure_view_dimensions_with_proposal_with_budget(
-            &body,
-            proposal,
-            state,
-            &scoped_env,
-            theme,
-            remaining - 1,
-        );
-    }
-    if let Some(text) = view.downcast_ref::<String>() {
-        let body = AnyView::new(text.clone().body(&scoped_env));
-        return measure_view_dimensions_with_proposal_with_budget(
-            &body,
-            proposal,
-            state,
-            &scoped_env,
-            theme,
-            remaining - 1,
-        );
-    }
-    if let Some(text) = view.downcast_ref::<Cow<'static, str>>() {
-        let body = AnyView::new(text.clone().body(&scoped_env));
-        return measure_view_dimensions_with_proposal_with_budget(
-            &body,
-            proposal,
-            state,
-            &scoped_env,
-            theme,
-            remaining - 1,
-        );
-    }
-    if let Some(text) = view.downcast_ref::<Text>() {
-        let resolved = text.resolve(&scoped_env);
-        let content = state.measure_signal(&resolved.content());
-        let alignment = state.measure_signal(resolved.paragraph_alignment());
-        return HydrolysisRenderer::measure_text_dimensions(
-            state,
-            content,
-            alignment,
-            &scoped_env,
-            proposal.width,
-            resolved.line_limit().map(core::num::NonZeroUsize::get),
-        );
-    }
-    if let Some(label) = view.downcast_ref::<SemanticLabel>() {
-        let body_env = scoped_env.clone();
-        let body = normalize_layout_view(AnyView::new(label.clone().body(&body_env)), &body_env);
-        return measure_view_dimensions_with_proposal_with_budget(
-            &body,
-            proposal,
-            state,
-            &body_env,
-            theme,
-            remaining - 1,
-        );
-    }
-    if let Some(button) = view.downcast_ref::<Button<BoxedAction<()>>>() {
-        return ViewDimensions::new(measure_button_view_intrinsic(
-            button,
-            state,
-            &scoped_env,
-            theme,
-        ));
-    }
-    // Normalization keeps a `FixedContainer` plain (its `body` runs at
-    // build); the estimator measures it like the body-produced Native form —
-    // `body` wraps the layout in `DirectionalLayout`, which mirrors the
-    // placements under RTL before explicit guides resolve against them.
-    if let Some(container) = view.downcast_ref::<FixedContainer>() {
-        let (layout, children) = container.as_parts();
-        return measure_layout_dimensions_mirrored(
-            layout,
-            children.iter(),
-            proposal,
-            state,
-            &scoped_env,
-            theme,
-            waterui_core::layout::layout_direction(&scoped_env)
-                .snapshot()
-                .is_right_to_left(),
-        );
-    }
-
-    if let Some(dimensions) =
-        dimensions_for_known_native_views(view, proposal, state, &scoped_env, theme)
-    {
-        return dimensions;
-    }
-
-    if view.downcast_ref::<Divider>().is_some() {
-        return ViewDimensions::new(LayoutSize::new(1.0, 1.0));
-    }
-
-    contract_violation!(
-        "hydrolysis dimensions estimation encountered unsupported view type {}; the view measures as zero",
-        view.name()
-    );
-    ViewDimensions::new(LayoutSize::zero())
-}
-
-/// The response geometry (water-rs/waterui#1323) of a view the estimator
-/// measures, dispatched like
-/// [`measure_view_dimensions_with_proposal_with_budget`] so the two cannot
-/// drift: environment scopes and passthrough metadata forward to their
-/// content with the same bounds and proposal, and a container answers its
-/// layout's rule over its children.
-///
-/// `None` means a leaf: the caller answers [`ResolvedExtent::centred`] with its
-/// own measured, stretch-applied answer.
-///
-/// # Errors
-///
-/// A [`LayoutError`] when the answer or `bounds` is not valid geometry, or a
-/// layout broke the response-extent identity.
-pub fn resolve_view_extent<E: TextEngine>(
-    view: &AnyView,
-    bounds: LayoutRect,
-    proposal: ProposalSize,
-    state: &mut HydroState<E>,
-    env: &Environment,
-    theme: &Rc<dyn WidgetTheme>,
-) -> Result<Option<ResolvedExtent>, LayoutError> {
-    let (view, scoped_env) = flatten_environment_metadata_ref(view, env);
-
-    if let Some(content) = passthrough_content(view) {
-        return resolve_view_extent(content, bounds, proposal, state, &scoped_env, theme);
-    }
-    // A plain `FixedContainer` has not run `body`, which wraps its layout for
-    // the layout direction; resolve it the way that wrapper does. The Native
-    // form already carries the wrapper.
-    if let Some(container) = view.downcast_ref::<FixedContainer>() {
-        let (layout, children) = container.as_parts();
-        let direction = layout_direction(&scoped_env).snapshot();
-        let state = RefCell::new(state);
-        let subviews: Vec<HydroSubview<'_, E>> = children
-            .iter()
-            .map(|child| HydroSubview::from_view(child, &state, &scoped_env, theme))
-            .collect();
-        let refs: Vec<&dyn SubView> = subviews.iter().map(|view| view as &dyn SubView).collect();
-        return resolve_directional_extent(layout, direction, bounds, proposal, &refs).map(Some);
-    }
-    if let Some(container) = view.downcast_ref::<Native<FixedContainer>>() {
-        let (layout, children) = container.as_inner().as_parts();
-        return resolve_layout_view_extent(
-            layout,
-            children.iter(),
-            bounds,
-            proposal,
-            state,
-            &scoped_env,
-            theme,
-        )
-        .map(Some);
-    }
-    if let Some(lazy) = view.downcast_ref::<Native<LazyContainer>>() {
-        return resolve_lazy_container_extent(state, lazy, &scoped_env, theme, bounds, proposal)
-            .map(Some);
-    }
-    Ok(None)
-}
-
-/// [`resolve_layout_extent`] over `children` seen through [`HydroSubview`]s.
-///
-/// # Errors
-///
-/// As [`resolve_layout_extent`].
-pub fn resolve_layout_view_extent<'a, E: TextEngine>(
-    layout: &dyn Layout,
-    children: impl IntoIterator<Item = &'a AnyView>,
-    bounds: LayoutRect,
-    proposal: ProposalSize,
-    state: &mut HydroState<E>,
-    env: &Environment,
-    theme: &Rc<dyn WidgetTheme>,
-) -> Result<ResolvedExtent, LayoutError> {
-    let state = RefCell::new(state);
-    let subviews: Vec<HydroSubview<'_, E>> = children
-        .into_iter()
-        .map(|child| HydroSubview::from_view(child, &state, env, theme))
-        .collect();
-    let refs: Vec<&dyn SubView> = subviews.iter().map(|view| view as &dyn SubView).collect();
-    resolve_layout_extent(layout, bounds, proposal, &refs)
-}
-
-pub fn measure_layout_dimensions<'a, E: crate::text::TextEngine>(
-    layout: &dyn Layout,
-    children: impl IntoIterator<Item = &'a AnyView>,
-    proposal: ProposalSize,
-    state: &mut HydroState<E>,
-    env: &Environment,
-    theme: &Rc<dyn WidgetTheme>,
-) -> ViewDimensions {
-    measure_layout_dimensions_mirrored(layout, children, proposal, state, env, theme, false)
-}
-
-/// `measure_layout_dimensions` with the `DirectionalLayout` mirror applied
-/// to the placements: a layout that never went through `body` (the plain
-/// `FixedContainer` normalization keeps) must still resolve its explicit
-/// horizontal guides against the frames the built tree sees, which
-/// `DirectionalLayout` mirrors under RTL.
-fn measure_layout_dimensions_mirrored<'a, E: crate::text::TextEngine>(
-    layout: &dyn Layout,
-    children: impl IntoIterator<Item = &'a AnyView>,
-    proposal: ProposalSize,
-    state: &mut HydroState<E>,
-    env: &Environment,
-    theme: &Rc<dyn WidgetTheme>,
-    mirror_placements: bool,
-) -> ViewDimensions {
-    let state = RefCell::new(state);
-    let children: Vec<&AnyView> = children.into_iter().collect();
-    let mut subviews = Vec::new();
-    for child in children {
-        subviews.push(HydroSubview::from_view(child, &state, env, theme));
-    }
-    let refs: Vec<&dyn SubView> = subviews.iter().map(|view| view as &dyn SubView).collect();
-    let size = layout.size_that_fits(proposal, &refs);
-    if size.width.is_infinite()
-        || size.height.is_infinite()
-        || can_skip_layout_alignment_measurement(layout, &subviews)
-    {
-        return ViewDimensions::new(size);
-    }
-
-    let bounds = LayoutRect::from_size(size);
-    let placements = layout.place(bounds, proposal, &refs);
-    let placements: Vec<SubviewPlacement> = if mirror_placements {
-        placements
-            .into_iter()
-            .map(|placement| {
-                SubviewPlacement::new(
-                    LayoutRect::new(
-                        LayoutPoint::new(
-                            bounds.min_x() + bounds.max_x() - placement.frame.max_x(),
-                            placement.frame.y(),
-                        ),
-                        *placement.frame.size(),
-                    ),
-                    placement.proposal,
-                )
-            })
-            .collect()
-    } else {
-        placements
-    };
-    let placed_subviews: Vec<PlacedSubview<'_>> = subviews
-        .iter()
-        .zip(placements)
-        .map(|(view, placement)| PlacedSubview::new(view as &dyn SubView, placement))
-        .collect();
-
-    let mut dimensions = ViewDimensions::new(size);
-    let mut horizontal_keys = Vec::new();
-    let mut vertical_keys = Vec::new();
-
-    for alignment in layout.explicit_horizontal_alignments() {
-        if !horizontal_keys.contains(&alignment) {
-            horizontal_keys.push(alignment);
-        }
-    }
-    for alignment in layout.explicit_vertical_alignments() {
-        if !vertical_keys.contains(&alignment) {
-            vertical_keys.push(alignment);
-        }
-    }
-
-    for child in &placed_subviews {
-        let child_dimensions = child.dimensions();
-        for (alignment, _) in child_dimensions.explicit_horizontal_guides() {
-            if !horizontal_keys.contains(&alignment) {
-                horizontal_keys.push(alignment);
-            }
-        }
-        for (alignment, _) in child_dimensions.explicit_vertical_guides() {
-            if !vertical_keys.contains(&alignment) {
-                vertical_keys.push(alignment);
-            }
-        }
-    }
-
-    for alignment in horizontal_keys {
-        if let Some(value) = layout.explicit_horizontal(alignment, bounds, &placed_subviews) {
-            dimensions.set_horizontal(alignment, value);
-        }
-    }
-    for alignment in vertical_keys {
-        if let Some(value) = layout.explicit_vertical(alignment, bounds, &placed_subviews) {
-            dimensions.set_vertical(alignment, value);
-        }
-    }
-
-    dimensions
-}
-
-fn can_skip_layout_alignment_measurement<E: crate::text::TextEngine>(
-    layout: &dyn Layout,
-    children: &[HydroSubview<'_, E>],
-) -> bool {
-    layout.explicit_horizontal_alignments().is_empty()
-        && layout.explicit_vertical_alignments().is_empty()
-        && children
-            .iter()
-            .all(|child| view_has_plain_alignment_dimensions(child.view()))
-}
-
-fn view_has_plain_alignment_dimensions(view: &AnyView) -> bool {
-    if let Some(content) = passthrough_content(view) {
-        return view_has_plain_alignment_dimensions(content);
-    }
-    // Normalization keeps a `FixedContainer` plain (its `body` runs at
-    // build), so both the modifier-time and the body-produced (Native) forms
-    // reach here.
-    if let Some(container) = view.downcast_ref::<FixedContainer>().or_else(|| {
-        view.downcast_ref::<Native<FixedContainer>>()
-            .map(Native::as_inner)
-    }) {
-        let (layout, children) = container.as_parts();
-        return layout.explicit_horizontal_alignments().is_empty()
-            && layout.explicit_vertical_alignments().is_empty()
-            && children.iter().all(view_has_plain_alignment_dimensions);
-    }
-    is_hydro_native_view(view)
-        || view.downcast_ref::<()>().is_some()
-        || view.downcast_ref::<Str>().is_some()
-        || view.downcast_ref::<&'static str>().is_some()
-        || view.downcast_ref::<String>().is_some()
-        || view.downcast_ref::<Cow<'static, str>>().is_some()
-        || view.downcast_ref::<Text>().is_some()
-        || view.downcast_ref::<Divider>().is_some()
 }
 
 impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
@@ -864,229 +348,6 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     }
 }
 
-#[expect(
-    clippy::option_if_let_else,
-    reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
-)]
-#[cfg(feature = "navigation")]
-pub fn measure_navigation_view_intrinsic<E: crate::text::TextEngine>(
-    navigation: &NavigationView,
-    state: &mut HydroState<E>,
-    env: &Environment,
-    theme: &Rc<dyn WidgetTheme>,
-) -> LayoutSize {
-    let metrics = navigation_look(theme, env).metrics();
-    let bar_height = navigation_bar_height(navigation, state, metrics);
-    let mut principal_width = 0.0_f64;
-    let mut principal_height = 0.0_f64;
-    let mut leading_width = 0.0_f64;
-    let mut leading_height = 0.0_f64;
-    let mut trailing_width = 0.0_f64;
-    let mut trailing_height = 0.0_f64;
-    let mut bottom_width = 0.0_f64;
-    let mut bottom_height = 0.0_f64;
-    for item in navigation.bar.toolbar.items() {
-        let (content, scoped) = flatten_environment_metadata_ref(item.content(), env);
-        let size = measure_view_intrinsic(
-            content,
-            state,
-            &crate::widgets::nav::navigation::toolbar_item_env(&scoped),
-            theme,
-        );
-        let (width, height) = match item.placement() {
-            NavigationToolbarPlacement::Principal => (&mut principal_width, &mut principal_height),
-            NavigationToolbarPlacement::Cancellation
-            | NavigationToolbarPlacement::TopBarLeading => {
-                (&mut leading_width, &mut leading_height)
-            }
-            NavigationToolbarPlacement::BottomBar | NavigationToolbarPlacement::Status => {
-                (&mut bottom_width, &mut bottom_height)
-            }
-            NavigationToolbarPlacement::PrimaryAction
-            | NavigationToolbarPlacement::SecondaryAction
-            | NavigationToolbarPlacement::Confirmation
-            | NavigationToolbarPlacement::TopBarTrailing => {
-                (&mut trailing_width, &mut trailing_height)
-            }
-        };
-        if *width > 0.0 {
-            *width += metrics.item_spacing;
-        }
-        *width += f64::from(size.width);
-        *height = (*height).max(f64::from(size.height));
-    }
-    let title_size = if bar_height > 0.0 && principal_width == 0.0 {
-        let title = measure_view_intrinsic(&navigation.bar.title, state, env, theme);
-        let subtitle = if navigation.bar.subtitle.is::<()>() {
-            LayoutSize::zero()
-        } else {
-            measure_view_intrinsic(&navigation.bar.subtitle, state, env, theme)
-        };
-        LayoutSize::new(
-            title.width.max(subtitle.width),
-            title.height + subtitle.height,
-        )
-    } else if bar_height > 0.0 {
-        LayoutSize::new(
-            crate::num_cast::f64_as_f32(principal_width),
-            crate::num_cast::f64_as_f32(principal_height),
-        )
-    } else {
-        LayoutSize::zero()
-    };
-    let leading_size = LayoutSize::new(
-        crate::num_cast::f64_as_f32(leading_width),
-        crate::num_cast::f64_as_f32(leading_height),
-    );
-    let trailing_size = LayoutSize::new(
-        crate::num_cast::f64_as_f32(trailing_width),
-        crate::num_cast::f64_as_f32(trailing_height),
-    );
-    let search_size = if let Some(search) = navigation.bar.search.as_ref() {
-        let body_env = env.clone();
-        // Mirrors the search field built in `widgets::nav::navigation`.
-        let search_field = TextField::new(search.prompt().clone(), search.text())
-            .hide_label()
-            .prompt(search.prompt().clone());
-        let search_body =
-            normalize_layout_view(AnyView::new(search_field.body(&body_env)), &body_env);
-        measure_transient_view_intrinsic(&search_body, state, &body_env, theme)
-    } else {
-        LayoutSize::zero()
-    };
-    let content_size = measure_view_intrinsic(&navigation.content, state, env, theme);
-    let width = f64::from(content_size.width)
-        .max(metrics.item_spacing.mul_add(
-            2.0,
-            metrics.horizontal_inset.mul_add(
-                2.0,
-                f64::from(leading_size.width)
-                    + f64::from(title_size.width)
-                    + f64::from(trailing_size.width),
-            ),
-        ))
-        .max(
-            metrics
-                .horizontal_inset
-                .mul_add(2.0, f64::from(search_size.width)),
-        )
-        .max(metrics.horizontal_inset.mul_add(2.0, bottom_width));
-    let height = f64::from(content_size.height) + bar_height;
-    LayoutSize::new(
-        crate::num_cast::f64_as_f32(width),
-        crate::num_cast::f64_as_f32(height),
-    )
-}
-
-/// Measures an owned `NavigationView` materialized for the probe — e.g. a
-/// split's detail column resolved from its selection — under `proposal`, the
-/// rect the container hands the column. The whole view dies with the call, so
-/// it is normalized and measured as transient: none of its parts may leave an
-/// entry under an address the next build is handed.
-#[cfg(feature = "navigation")]
-pub fn measure_owned_navigation_view_with_proposal<E: crate::text::TextEngine>(
-    navigation: NavigationView,
-    proposal: ProposalSize,
-    state: &mut HydroState<E>,
-    env: &Environment,
-    theme: &Rc<dyn WidgetTheme>,
-) -> LayoutSize {
-    let navigation = normalize_layout_view(AnyView::new(navigation), env);
-    measure_transient_view_with_proposal(&navigation, proposal, state, env, theme)
-}
-
-/// Measures a `TabsLayout` under `proposal`: each tab's content answers the
-/// proposal its rendered content rect hands it — the pane minus the tab bar —
-/// and the layout echoes bounded axes. `intrinsic` is the `UNSPECIFIED` call.
-#[cfg(feature = "navigation")]
-pub fn measure_tabs_layout<E: crate::text::TextEngine>(
-    tabs: &TabsLayout,
-    proposal: ProposalSize,
-    state: &mut HydroState<E>,
-    env: &Environment,
-    theme: &Rc<dyn WidgetTheme>,
-) -> LayoutSize {
-    // An empty set mounts: nothing answers but the bar's own metrics.
-    let snapshot = tabs.tabs().snapshot();
-    let tab_views: Vec<_> = (0..snapshot.len())
-        .filter_map(|index| {
-            let tab = snapshot.get_view(index);
-            if tab.is_none() {
-                contract_violation!(
-                    "hydrolysis tabs: tab {index} failed to materialize although it is in the snapshot's range; the tab is skipped"
-                );
-            }
-            tab
-        })
-        .collect();
-
-    // Labels measure title-only: the bar places the icon itself, so the label
-    // must not count it a second time.
-    let label_env = env.extending(waterui_controls::label::LabelDisplayMode::TitleOnly);
-    let item_sizes: Vec<(LayoutSize, Option<LayoutSize>)> = tab_views
-        .iter()
-        .map(|tab| {
-            let label_size = measure_view_intrinsic(&tab.label().build(), state, &label_env, theme);
-            let icon_size = tab.icon().as_ref().map(|icon| {
-                let icon_view = match icon {
-                    TabIcon::System(icon) => AnyView::new(icon.clone()),
-                    TabIcon::View(builder) => builder.build(),
-                };
-                measure_transient_view_with_proposal(
-                    &normalize_layout_view(icon_view, env),
-                    ProposalSize::UNSPECIFIED,
-                    state,
-                    env,
-                    theme,
-                )
-            });
-            (label_size, icon_size)
-        })
-        .collect();
-    // Decide the layout once from the bar's own extent so the measured bar
-    // and the drawn bar answer the same layout (see `tabs_decide_layout`).
-    let look = theme.tabs(&TabsSpec::new(tabs.get_style()), env);
-    let (layout, metrics) = tabs_decide_layout(
-        &look,
-        tabs.get_style(),
-        proposal.width.map(f64::from),
-        &item_sizes,
-    );
-    let content_proposal = tabs_content_proposal(proposal, tabs.get_style(), metrics.bar_height);
-    let mut max_content_width: f64 = 0.0;
-    let mut max_content_height: f64 = 0.0;
-    let mut bar_width = 0.0;
-    for (tab, (label_size, icon_size)) in tab_views.iter().zip(&item_sizes) {
-        bar_width += tabs_item_natural_width(*label_size, *icon_size, &metrics, layout);
-
-        let content = normalize_layout_view(AnyView::new(tab.content().build()), env);
-        let content_size =
-            measure_transient_view_with_proposal(&content, content_proposal, state, env, theme);
-        max_content_width = max_content_width.max(f64::from(content_size.width));
-        max_content_height = max_content_height.max(f64::from(content_size.height));
-    }
-
-    let (width, height) = match tabs.get_style() {
-        NativeTabStyle::Automatic | NativeTabStyle::TabBar => (
-            max_content_width.max(bar_width),
-            max_content_height + metrics.bar_height,
-        ),
-        NativeTabStyle::Sidebar => (
-            max_content_width + metrics.bar_height,
-            max_content_height
-                .max(metrics.button_min_width * crate::num_cast::usize_as_f64(tab_views.len())),
-        ),
-    };
-    LayoutSize::new(
-        proposal
-            .width
-            .unwrap_or_else(|| crate::num_cast::f64_as_f32(width)),
-        proposal
-            .height
-            .unwrap_or_else(|| crate::num_cast::f64_as_f32(height)),
-    )
-}
-
 /// The proposal a tab's content measures at: the pane minus the tab bar — a
 /// bottom strip for `Automatic`/`TabBar`, a leading strip for `Sidebar`.
 /// This is a *measurement* proposal, not the rendered content rect: the §7.1
@@ -1179,76 +440,6 @@ pub fn list_spec(env: &Environment) -> crate::theme::ListSpec {
     crate::theme::ListSpec::new(layout_direction(env).snapshot())
 }
 
-/// Measures a list row's content at the width the row lays it out at: the row
-/// width less the row's horizontal insets, with the height open. A row's
-/// height comes from this answer, so content that wraps is held at the lines it
-/// wraps to there. The content is a view this measurement materialized, so it
-/// goes through the transient path.
-#[cfg(feature = "list")]
-pub fn measure_list_row_content<E: TextEngine>(
-    content: &AnyView,
-    row_width: f64,
-    insets: Option<&EdgeInsets>,
-    state: &mut HydroState<E>,
-    env: &Environment,
-    theme: &Rc<dyn WidgetTheme>,
-    metrics: ListMetrics,
-) -> LayoutSize {
-    let (left, right) = list_row_horizontal_insets(insets, metrics, env);
-    let content_width = (row_width - left - right).max(0.0);
-    measure_transient_view_with_proposal(
-        content,
-        ProposalSize::new(Some(f64_as_f32(content_width)), None),
-        state,
-        env,
-        theme,
-    )
-}
-
-/// The list's own size. `width` is the width the list is laid out at when one
-/// is proposed: rows are then measured at it, so the height answers the
-/// wrapping that width causes; `None` is the ideal query, rows at their natural
-/// width.
-#[cfg(feature = "list")]
-pub fn measure_list_intrinsic<E: crate::text::TextEngine>(
-    list: &ListConfig,
-    contents: &AnyViewsSnapshot<ListItem>,
-    width: Option<f32>,
-    state: &mut HydroState<E>,
-    env: &Environment,
-    theme: &Rc<dyn WidgetTheme>,
-) -> LayoutSize {
-    // One immutable row set for the measure: the count, the sampled item, and
-    // the section-marker walk all read the same membership.
-    let row_count = contents.len();
-    if row_count == 0 {
-        return LayoutSize::zero();
-    }
-    let first_item = materialize_list_item(contents, 0, env);
-    let metrics = theme.list(&list_spec(env), env).metrics();
-    let content_size = match width {
-        Some(width) => measure_list_row_content(
-            first_item.content(),
-            f64::from(width),
-            first_item.get_insets(),
-            state,
-            env,
-            theme,
-            metrics,
-        ),
-        None => measure_transient_view_intrinsic(first_item.content(), state, env, theme),
-    };
-    list_intrinsic_for_first_row(
-        list,
-        contents,
-        content_size,
-        first_item.get_insets(),
-        state,
-        env,
-        theme,
-    )
-}
-
 /// The list's own size from its first row's measured content, which every
 /// row is estimated at: `insets` are that row's `ListItem::insets`.
 #[cfg(feature = "list")]
@@ -1333,9 +524,8 @@ pub fn materialize_list_item(
 /// `ListItem::insets` — `None` uses the theme's `vertical_inset` — and
 /// `min_height` is `ListConfig::min_row_height` — `None` uses the theme's
 /// `one_line_row_height`, so both unset reproduces the theme metrics exactly.
-/// The caller measures the content ([`measure_list_row_content`] on the
-/// materialized `ListItem`) and the section chrome height is added on top
-/// of what this returns.
+/// The caller measures the content (the realized row's node) and the
+/// section chrome height is added on top of what this returns.
 #[cfg(feature = "list")]
 pub fn list_row_height_for_content(
     content_height: f64,
@@ -1350,50 +540,9 @@ pub fn list_row_height_for_content(
     (content_height + vertical_insets).max(floor)
 }
 
-pub fn measure_progress_intrinsic<E: crate::text::TextEngine>(
-    progress: &ProgressConfig,
-    state: &mut HydroState<E>,
-    env: &Environment,
-    theme: &Rc<dyn WidgetTheme>,
-) -> LayoutSize {
-    let determinate = state.measure_signal(progress.value()).is_finite();
-    let labels = (
-        measure_view_intrinsic(progress.label(), state, env, theme),
-        measure_view_intrinsic(progress.value_label(), state, env, theme),
-    );
-    crate::widgets::controls::progress::progress_size(
-        theme,
-        progress.style(),
-        progress.four_color(),
-        determinate,
-        labels,
-        env,
-    )
-}
-
-#[cfg(feature = "text-field")]
-pub fn measure_text_field_intrinsic<E: crate::text::TextEngine>(
-    text_field: &ResolvedTextFieldConfig,
-    state: &mut HydroState<E>,
-    env: &Environment,
-    theme: &Rc<dyn WidgetTheme>,
-) -> LayoutSize {
-    let label_size = measure_label_intrinsic(text_field.label(), state, env, theme);
-    measure_text_field_size_with_label_size(
-        text_field,
-        label_size,
-        state,
-        env,
-        &field_look(theme, env),
-        ProposalSize::UNSPECIFIED,
-    )
-}
-
-/// Measures a text field's size under a concrete proposal, from a precomputed
-/// label size and the field's look. The dispatch path passes the label
-/// measured via `measure_label_intrinsic`; the retained-node path passes the
-/// label measured from its built `RetainedSubview`, so layout and the
-/// floating-label render agree on the label height.
+/// Measures a text field's size under a concrete proposal, from the label
+/// size measured from its built `RetainedSubview` and the field's look, so
+/// layout and the floating-label render agree on the label height.
 ///
 /// The field is a `Horizontal` leaf: it answers the proposal width floored at
 /// the label's extent, so the reported width never depends on the field's
@@ -1456,29 +605,9 @@ fn input_field_width(proposal: Option<f32>, ideal: f64, minimum: f64) -> f64 {
     proposal.map_or(ideal, |width| f64::from(width).max(minimum))
 }
 
-#[cfg(feature = "secure-field")]
-pub fn measure_secure_field_intrinsic<E: crate::text::TextEngine>(
-    secure_field: &SecureFieldConfig,
-    state: &mut HydroState<E>,
-    env: &Environment,
-    theme: &Rc<dyn WidgetTheme>,
-) -> LayoutSize {
-    let label_size = measure_label_intrinsic(secure_field.label(), state, env, theme);
-    measure_secure_field_size_with_label_size(
-        secure_field,
-        label_size,
-        state,
-        env,
-        &field_look(theme, env),
-        ProposalSize::UNSPECIFIED,
-    )
-}
-
-/// Measures a secure field's size under a concrete proposal, from a
-/// precomputed label size and the field's look. The dispatch path passes the
-/// label measured via `measure_label_intrinsic`; the retained-node path
-/// passes the label measured from its built `RetainedSubview`, so layout and
-/// the floating-label render agree on the label height. Same
+/// Measures a secure field's size under a concrete proposal, from the label
+/// size measured from its built `RetainedSubview` and the field's look, so
+/// layout and the floating-label render agree on the label height. Same
 /// `Horizontal`-leaf contract as the text field: the width answers the
 /// proposal floored at the label's extent and never the masked text; `None`
 /// answers the look's `min_width` ideal.
@@ -1548,39 +677,6 @@ fn measured_input_field_height(
     measured_height.max(metrics.min_height)
 }
 
-#[cfg(feature = "table")]
-pub fn measure_table_metrics<E: crate::text::TextEngine>(
-    columns: &[TableColumn],
-    state: &mut HydroState<E>,
-    env: &Environment,
-    theme: &Rc<dyn WidgetTheme>,
-    metrics: crate::theme::TableMetrics,
-) -> MeasuredTableMetrics {
-    let mut column_widths = Vec::with_capacity(columns.len());
-    let mut max_rows = 0usize;
-    for column in columns {
-        let mut width = metrics.min_column_width;
-        let label_view = normalize_layout_view(AnyView::new(column.label()), env);
-        let label_size = measure_transient_view_intrinsic(&label_view, state, env, theme);
-        width = width.max(f64::from(label_size.width) + metrics.cell_horizontal_padding);
-
-        let rows = column.rows();
-        max_rows = max_rows.max(state.measure_signal(&rows.len()));
-        column_widths.push(width);
-    }
-
-    let table_width: f64 = column_widths.iter().sum();
-    let table_height = metrics.row_height.mul_add(
-        crate::num_cast::usize_as_f64(max_rows),
-        metrics.header_height,
-    );
-    MeasuredTableMetrics {
-        column_widths,
-        table_width,
-        table_height,
-    }
-}
-
 /// The cells of a table a frame shows: the rows and columns in view.
 #[derive(Debug, Clone, Copy)]
 #[cfg(feature = "table")]
@@ -1597,77 +693,6 @@ fn resolved_text_styled<E: crate::text::TextEngine>(
 ) -> StyledStr {
     let resolved = text.resolve(env);
     state.measure_signal(&resolved.content())
-}
-
-#[cfg(feature = "date-picker")]
-pub fn measure_date_picker_intrinsic<E: crate::text::TextEngine>(
-    date_picker: &DatePickerConfig,
-    state: &mut HydroState<E>,
-    env: &Environment,
-    theme: &Rc<dyn WidgetTheme>,
-) -> LayoutSize {
-    let metrics = theme
-        .menu_picker(
-            &crate::widgets::controls::date_picker::date_picker_spec(env),
-            env,
-        )
-        .layout();
-    let label_floor = field_look(theme, env).metrics().label_height;
-    let label_size = measure_label_intrinsic(date_picker.label(), state, env, theme);
-    let has_label = label_size.width > 0.0 || label_size.height > 0.0;
-    let label_height = if has_label {
-        f64::from(label_size.height).max(label_floor)
-    } else {
-        0.0
-    };
-    let current = state
-        .measure_signal(date_picker.value())
-        .clamp(*date_picker.range().start(), *date_picker.range().end());
-    let candidates = [
-        date_picker.ty().format_value(*date_picker.range().start()),
-        date_picker.ty().format_value(current),
-        date_picker.ty().format_value(*date_picker.range().end()),
-    ];
-    let mut field_text_width: f64 = 0.0;
-    let mut field_text_height: f64 = 0.0;
-    for candidate in candidates {
-        let size = HydrolysisRenderer::measure_text_intrinsic_size(
-            state,
-            StyledStr::plain(candidate),
-            env,
-        );
-        field_text_width = field_text_width.max(f64::from(size.width));
-        field_text_height = field_text_height.max(f64::from(size.height));
-    }
-    let field_width = (metrics.horizontal_inset.mul_add(2.0, field_text_width)
-        + metrics.indicator_space)
-        .max(metrics.min_width);
-    let field_height = metrics
-        .vertical_inset
-        .mul_add(2.0, field_text_height)
-        .max(metrics.min_height);
-    let width = f64::from(label_size.width).max(field_width);
-    let height = label_height + field_height;
-    LayoutSize::new(
-        crate::num_cast::f64_as_f32(width),
-        crate::num_cast::f64_as_f32(height),
-    )
-}
-
-pub fn measure_button_view_intrinsic<E: crate::text::TextEngine>(
-    button: &Button<BoxedAction<()>>,
-    state: &mut HydroState<E>,
-    env: &Environment,
-    theme: &Rc<dyn WidgetTheme>,
-) -> LayoutSize {
-    crate::widgets::controls::button::measure_button_look_intrinsic(
-        button.button_style(),
-        button.button_size(),
-        button.label(),
-        state,
-        env,
-        theme,
-    )
 }
 
 /// Measures a segmented picker of `items` under `look` beneath a heading of
@@ -1703,24 +728,6 @@ pub fn measure_segmented_intrinsic<E: crate::text::TextEngine>(
         })
         .collect();
     crate::widgets::controls::picker::segmented_intrinsic(look.layout(), &sizes, label_size)
-}
-
-#[cfg(feature = "picker")]
-pub fn measure_picker_intrinsic<E: crate::text::TextEngine>(
-    picker: &PickerConfig,
-    state: &mut HydroState<E>,
-    env: &Environment,
-    theme: &Rc<dyn WidgetTheme>,
-) -> LayoutSize {
-    // The label view is materialized only for this measurement, so it goes
-    // through the transient path — see `measure_transient_view_intrinsic`.
-    let label_size = measure_transient_view_intrinsic(
-        &crate::widgets::controls::picker::menu_picker_label_view(picker.label()),
-        state,
-        env,
-        theme,
-    );
-    measure_picker_intrinsic_with_label_size(picker, label_size, state, env, theme)
 }
 
 /// The intrinsic size of a menu picker's field: the widest item value, the
@@ -1830,11 +837,9 @@ fn measure_radio_picker_intrinsic<E: crate::text::TextEngine>(
     )
 }
 
-/// Measures a picker's intrinsic size from a precomputed label size. The
-/// dispatch path passes the label measured via [`measure_picker_intrinsic`];
-/// the retained-node path passes the label measured from its built
-/// [`crate::renderer::RetainedSubview`], so layout and the in-field label
-/// render agree on the label height.
+/// Measures a picker's intrinsic size from the label size measured from its
+/// built [`crate::renderer::RetainedSubview`], so layout and the in-field
+/// label render agree on the label height.
 #[cfg(feature = "picker")]
 pub fn measure_picker_intrinsic_with_label_size<E: crate::text::TextEngine>(
     picker: &PickerConfig,
@@ -1883,10 +888,11 @@ pub fn measure_picker_intrinsic_with_label_size<E: crate::text::TextEngine>(
 
 #[cfg(test)]
 mod tests {
-    use super::{measure_view_dimensions, measured_input_field_height};
-    use crate::renderer::tests::{MinimalTestTheme, test_environment};
-    use crate::renderer::{HydroState, normalize_layout_view};
-    use crate::text::{FontFamilyResolution, ParleyEngine};
+    use super::measured_input_field_height;
+    use crate::renderer::normalize_layout_view;
+    use crate::renderer::tests::{MinimalTestTheme, Realized, test_environment};
+    use waterui_core::layout::ProposalSize;
+
     use crate::theme::InputFieldMetrics;
     use crate::theme::WidgetTheme;
     use std::rc::Rc;
@@ -1925,16 +931,18 @@ mod tests {
             MinimalTestTheme::default()
                 .with_input_metrics(InputFieldMetrics::new(16.0, 280.0, 40.0, 16.0, 8.0)),
         );
-        let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
-
         let value = Binding::container(Str::from("x"));
         let view = normalize_layout_view(AnyView::new(field("Label", &value)), &env);
-        let size = measure_view_dimensions(&view, &mut state, &env, &theme).size;
+        let size = Realized::with_theme(view, &env, &theme)
+            .measure(ProposalSize::UNSPECIFIED)
+            .size;
         approx::assert_relative_eq!(f64::from(size.height), 56.0);
 
         let secret = Binding::container(Secure::new(String::from("x")));
         let view = normalize_layout_view(AnyView::new(secure("Label", &secret)), &env);
-        let size = measure_view_dimensions(&view, &mut state, &env, &theme).size;
+        let size = Realized::with_theme(view, &env, &theme)
+            .measure(ProposalSize::UNSPECIFIED)
+            .size;
         approx::assert_relative_eq!(f64::from(size.height), 56.0);
     }
 

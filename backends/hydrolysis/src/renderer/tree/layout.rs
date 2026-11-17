@@ -74,7 +74,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         }
     }
 
-    pub(super) fn stretch(&self) -> StretchAxis {
+    pub(in crate::renderer) fn stretch(&self) -> StretchAxis {
         match self {
             Self::Color(_) => StretchAxis::Both,
             // §6: a scroll stretches on its scrolling axis and on the
@@ -132,8 +132,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     }
 
     /// Measure this node under a proposal (recursive). Text shaping runs through
-    /// the renderer's [`HydroState`] on the main thread. Visible crate-wide so
-    /// the `Dynamic` dispatch measure can re-measure the retained child.
+    /// the renderer's [`HydroState`] on the main thread.
     ///
     /// Memoized per frame on the node's own [`NodeMeasureEntry`], for
     /// container-like nodes only: a layout engine that re-probes a child
@@ -168,6 +167,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         let mut gate = memo_gate.get();
         if !gate.probe(frame, proposal) {
             memo_gate.set(gate);
+            state.measurement.record_miss();
             return self.measure_body(state, env, theme, proposal);
         }
         memo_gate.set(gate);
@@ -175,8 +175,10 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         let env_identity = env.identity();
         let hit = memo_slots.borrow().dims(env_identity, frame, proposal);
         if let Some(hit) = hit {
+            state.measurement.record_hit();
             return hit;
         }
+        state.measurement.record_miss();
         let dimensions = self.measure_body(state, env, theme, proposal);
         let mut memo = memo_slots.borrow_mut();
         memo.ensure_current(frame);
@@ -222,17 +224,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Self::Offset(node) => node.child.measure(state, env, theme, proposal),
             Self::Retain(node) => node.child.measure(state, env, theme, proposal),
             Self::Env(node) => node.child.measure(state, &node.env, theme, proposal),
-            Self::Dynamic(node) => {
-                let dimensions = node.child.borrow().measure(state, env, theme, proposal);
-                // The connected node's real per-proposal answers feed the
-                // dispatch measure of the same `Dynamic` (`measure_dynamic`).
-                state.measurement.store_dynamic_dimensions(
-                    node.source.identity(),
-                    proposal,
-                    dimensions.clone(),
-                );
-                dimensions
-            }
+            Self::Dynamic(node) => node.child.borrow().measure(state, env, theme, proposal),
             // Scene content that is naturally a size (an SVG's viewBox, a
             // formula's typeset box) answers with it on whichever axis the
             // container left open; content that is not fills the proposal.

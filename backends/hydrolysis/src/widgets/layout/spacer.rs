@@ -1,8 +1,8 @@
-use crate::renderer::{HydroNativeView, HydroState, WidgetRenderContext};
+use crate::renderer::{HydroState, WidgetRenderContext};
 use std::cell::RefCell;
 use std::rc::Rc;
+use waterui_core::Environment;
 use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
-use waterui_core::{Environment, Native};
 use waterui_layout::spacer::Spacer;
 use waterui_layout::stack::Axis;
 
@@ -18,28 +18,6 @@ fn spacer_intrinsic(spacer: &Spacer, env: &Environment) -> LayoutSize {
         Some(Axis::Horizontal) => LayoutSize::new(min_length, 0.0),
         Some(Axis::Vertical) => LayoutSize::new(0.0, min_length),
         _ => LayoutSize::zero(),
-    }
-}
-
-impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<()> {
-    fn intrinsic(
-        _state: &mut HydroState<E>,
-        _view: &Self,
-        _env: &Environment,
-        _theme: &Rc<dyn crate::theme::WidgetTheme>,
-    ) -> LayoutSize {
-        LayoutSize::zero()
-    }
-}
-
-impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<Spacer> {
-    fn intrinsic(
-        _state: &mut HydroState<E>,
-        view: &Self,
-        env: &Environment,
-        _theme: &Rc<dyn crate::theme::WidgetTheme>,
-    ) -> LayoutSize {
-        spacer_intrinsic(view.as_inner(), env)
     }
 }
 

@@ -222,7 +222,7 @@ pub enum RenderNode<E: crate::text::TextEngine> {
     /// marker, not a frame.
     Fill(Box<FillNode<E>>),
     /// A native widget leaf (button, toggle, slider, picker, text field, …) rendered
-    /// by its `HydroNativeView` handler **every flush** from a retained,
+    /// by its widget behavior **every flush** from a retained,
     /// signal-holding config — never baked. Its `builder` reconstructs the leaf view
     /// (actions retained as `Rc`, label/value signals kept) and the flush re-dispatches
     /// it, so the handler re-reads its live signals and reactive content (a `text!`

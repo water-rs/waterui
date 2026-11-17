@@ -7,27 +7,6 @@ struct HostedNode {
     runtime: Rc<crate::hosted::HostedRuntime>,
 }
 
-impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<crate::HostedView> {
-    fn intrinsic(
-        _state: &mut HydroState<E>,
-        _view: &Self,
-        _env: &Environment,
-        _theme: &Rc<dyn crate::theme::WidgetTheme>,
-    ) -> LayoutSize {
-        LayoutSize::new(0.0, 0.0)
-    }
-
-    fn dimensions(
-        _state: &mut HydroState<E>,
-        _view: &Self,
-        _env: &Environment,
-        _theme: &Rc<dyn crate::theme::WidgetTheme>,
-        proposal: ProposalSize,
-    ) -> ViewDimensions {
-        graphics_dimensions_from_proposal(proposal)
-    }
-}
-
 impl Drop for HostedNode {
     fn drop(&mut self) {
         self.runtime.content.unmount();

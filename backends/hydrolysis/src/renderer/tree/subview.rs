@@ -11,13 +11,12 @@ use std::rc::Rc;
 use waterui_core::layout::{LayoutError, ResolvedExtent};
 
 /// A [`SubView`] adapter that measures a child [`RenderNode`] **on demand** at
-/// whatever proposal the real [`Layout`] passes — the node analogue of
-/// [`HydroSubview`]. A fixed pre-measured size is wrong: layouts re-probe children
+/// whatever proposal the real [`Layout`] passes. A fixed pre-measured size is wrong: layouts re-probe children
 /// at refined proposals (e.g. `GridLayout` asks each cell its height at the column
 /// width; a `FrameLayout` with no height constraint would otherwise fill the whole
 /// proposed height), so the adapter must forward the live proposal.
 ///
-/// Like [`HydroSubview`], a text-leaf subtree is resolved at construction (reading
+/// A text-leaf subtree is resolved at construction (reading
 /// its signals and theme) into a shaping input, and `measure` then shapes it
 /// through the content-keyed `TextService` directly. Every other node
 /// measures by recursing through the renderer's `HydroState`, shared across one
@@ -132,8 +131,7 @@ impl<'a, E: crate::text::TextEngine> NodeSubView<'a, E> {
         }
     }
 
-    /// Apply this child's stretch axis to a measured size against the proposal,
-    /// matching [`HydroSubview::apply_stretch`] so both paths agree.
+    /// Apply this child's stretch axis to a measured size against the proposal.
     const fn apply_stretch(
         &self,
         mut dimensions: ViewDimensions,

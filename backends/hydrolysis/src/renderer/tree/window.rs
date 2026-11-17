@@ -215,53 +215,6 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         }
     }
 
-    /// Collect the identities of every live `DynamicHostNode` in this retained
-    /// subtree, so the measure-path dynamic dimension cache can be pruned to the
-    /// `Dynamic`s still present in the tree. Walks the same child-bearing variants
-    /// as [`RenderNode::patch`]. A set, not a list: the prune tests every cached
-    /// identity against it, which is quadratic over a linear scan.
-    pub(crate) fn collect_dynamic_identities(&self) -> FxHashSet<usize> {
-        let mut out = FxHashSet::default();
-        self.collect_dynamic_identities_into(&mut out);
-        out
-    }
-
-    pub(super) fn collect_dynamic_identities_into(&self, out: &mut FxHashSet<usize>) {
-        match self {
-            Self::Dynamic(node) => {
-                out.insert(node.source.identity());
-                node.child.borrow().collect_dynamic_identities_into(out);
-            }
-            Self::Container(container) => {
-                for child in &container.children {
-                    child.collect_dynamic_identities_into(out);
-                }
-            }
-            Self::Opacity(node) => node.child.collect_dynamic_identities_into(out),
-            Self::Scale(node) => node.child.collect_dynamic_identities_into(out),
-            Self::Rotation(node) => node.child.collect_dynamic_identities_into(out),
-            Self::Offset(node) => node.child.collect_dynamic_identities_into(out),
-            Self::Retain(node) => node.child.collect_dynamic_identities_into(out),
-            Self::Env(node) => node.child.collect_dynamic_identities_into(out),
-            Self::Wrapper(node) => node.child.collect_dynamic_identities_into(out),
-            Self::Collection(node) => {
-                for entry in &node.entries {
-                    entry.node.collect_dynamic_identities_into(out);
-                }
-            }
-            Self::Scroll(node) => node.child.collect_dynamic_identities_into(out),
-            Self::Filtered(node) => node.child.collect_dynamic_identities_into(out),
-            Self::Fill(node) => node.child.collect_dynamic_identities_into(out),
-            Self::Color(_) | Self::Text(_) | Self::SceneView(_) | Self::Widget(_) => {}
-            #[cfg(hydrolysis_gpu)]
-            Self::GpuContent(_) | Self::ExternalFrame(_) => {}
-            Self::LazyStack(node) => node
-                .item_cache
-                .borrow()
-                .collect_dynamic_identities_into(out),
-        }
-    }
-
     /// Consume the subtree's layout-invalidated marks: `true` when any
     /// `FixedContainer` in the subtree had a `Layout::watch_invalidation`
     /// subscription fire, or any text leaf's content or alignment changed, since
@@ -376,13 +329,12 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
 
     /// The emit-pass equivalent of the non-scene half of
     /// `HydrolysisRenderer::finish_rebuild_frame` — the build path: Retain
-    /// watcher rollover, the measurement-cache and animation-slot prunes,
-    /// focus validation, and the accessibility tree's publication.
+    /// watcher rollover, the animation-slot prune, focus validation, and the
+    /// accessibility tree's publication.
     /// `signals.finish_rebuild` stays with the caller — only a build entered
     /// one.
     #[cfg(hydrolysis_cherenkov)]
-    fn finish_semantic_rebuild_frame(&mut self, live_dynamics: &FxHashSet<usize>) {
-        self.prune_dynamic_measurements(live_dynamics);
+    fn finish_semantic_rebuild_frame(&mut self) {
         self.validate_focused_text_input_after_flush();
         self.retire_unbound_animation_slots();
         self.hit_test.finish_rebuild_frame(
@@ -405,7 +357,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// Releasing in the renderer's order is what exposes same-manager watcher
     /// re-entrancy (water-rs/waterui#1213) to `#[waterui::test]`.
     #[cfg(hydrolysis_cherenkov)]
-    fn finish_semantic_emit_frame(&mut self, tree: &RenderNode<E>, structural_change: bool) {
+    fn finish_semantic_emit_frame(&mut self, structural_change: bool) {
         self.frame_registries();
         self.hit_test.finish_rebuild_frame(
             #[cfg(any(feature = "text-field", feature = "secure-field"))]
@@ -415,11 +367,10 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         self.navigation.finish_rebuild_frame();
         self.finish_outside_read_frame();
         if structural_change {
-            // The emit re-bound every live animation slot; drop the slots and
-            // cached Dynamic measurements belonging to subtrees the patch
-            // removed, before the frame's retained subscriptions release.
+            // The emit re-bound every live animation slot; drop the slots
+            // belonging to subtrees the patch removed, before the frame's
+            // retained subscriptions release.
             self.retire_unbound_animation_slots();
-            self.prune_dynamic_measurements(&tree.collect_dynamic_identities());
         }
         self.validate_focused_text_input_after_flush();
         self.relocate_dropped_focus();
@@ -459,7 +410,6 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         // schedule more work.
         self.clear_all_marks();
         let _ = self.signals.take_patch_request();
-        let live_dynamics = tree.collect_dynamic_identities();
         #[cfg(feature = "accessibility")]
         {
             self.begin_emit_pass();
@@ -468,7 +418,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         }
         self.content_minimum = None;
         self.render_tree = Some(tree);
-        self.finish_semantic_rebuild_frame(&live_dynamics);
+        self.finish_semantic_rebuild_frame();
         self.finish_rebuild();
     }
 
@@ -511,7 +461,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             tree.emit_accessibility(self, _env);
             self.finish_emit_pass();
         }
-        self.finish_semantic_emit_frame(&tree, structural_change);
+        self.finish_semantic_emit_frame(structural_change);
         self.content_minimum = None;
         self.render_tree = Some(tree);
         true
@@ -814,10 +764,9 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         self.core.navigation.finish_rebuild_frame();
         self.core.finish_outside_read_frame();
         if structural_change {
-            // The flush re-bound every live animation. Drop slots and cached
-            // Dynamic measurements belonging to subtrees removed by the patch.
+            // The flush re-bound every live animation. Drop slots belonging
+            // to subtrees removed by the patch.
             self.core.retire_unbound_animation_slots();
-            self.prune_dynamic_measurements(&tree.collect_dynamic_identities());
         }
         // Drop focus or drag targets that are no longer emitted, relocate the
         // focus a dropped view released, then publish the refreshed

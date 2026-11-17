@@ -1,35 +1,12 @@
-//! Native-leaf measurement: the `HydroNativeView` measure trait, the native-view
-//! type list, and the measure-path entry points the layout system uses to size
-//! arbitrary sub-views.
+//! Native leaves: the native-view type list layout normalization stops at,
+//! and the reports for leaves this build has no realization for (system
+//! icons, maps, web views, views that need a GPU device).
 
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::platform_view::PlatformView;
-use crate::theme::WidgetTheme;
-use std::rc::Rc;
 use waterui_core::contract_violation;
-
-/// The measure half of a native leaf view. Rendering is owned by the retained
-/// [`RenderNode`](crate::renderer::tree::RenderNode) tree; this trait only sizes a
-/// leaf so the layout system can measure arbitrary sub-views through it.
-pub trait HydroNativeView<E: crate::text::TextEngine>: View + Sized + 'static {
-    fn intrinsic(
-        state: &mut HydroState<E>,
-        view: &Self,
-        env: &Environment,
-        theme: &Rc<dyn WidgetTheme>,
-    ) -> LayoutSize;
-    fn dimensions(
-        state: &mut HydroState<E>,
-        view: &Self,
-        env: &Environment,
-        theme: &Rc<dyn WidgetTheme>,
-        _proposal: ProposalSize,
-    ) -> ViewDimensions {
-        ViewDimensions::new(Self::intrinsic(state, view, env, theme))
-    }
-}
 
 /// Reports a `SystemIcon` the backend cannot draw; the icon is not drawn and
 /// measures as zero.
@@ -39,18 +16,6 @@ pub fn unsupported_system_icon(icon: &SystemIcon) {
          OS-supplied icon catalog; use a packaged WaterUI icon crate; the icon is not drawn",
         icon.name().as_str()
     );
-}
-
-impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<SystemIcon> {
-    fn intrinsic(
-        _state: &mut HydroState<E>,
-        view: &Self,
-        _env: &Environment,
-        _theme: &Rc<dyn WidgetTheme>,
-    ) -> LayoutSize {
-        unsupported_system_icon(view.as_inner());
-        LayoutSize::zero()
-    }
 }
 
 /// Reaching `Native<MapConfig>` means `Map::body` found no `Hook<MapConfig>` —
@@ -63,19 +28,6 @@ pub fn unsupported_map() {
          map realization such as `waterui_map_gpu::install` before rendering a `Map`; the map \
          is not drawn"
     );
-}
-
-#[cfg(waterui_feature = "map")]
-impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<MapConfig> {
-    fn intrinsic(
-        _state: &mut HydroState<E>,
-        _view: &Self,
-        _env: &Environment,
-        _theme: &Rc<dyn WidgetTheme>,
-    ) -> LayoutSize {
-        unsupported_map();
-        LayoutSize::zero()
-    }
 }
 
 /// Why a `WebView` cannot be drawn on a build without a bridged web engine:
@@ -93,39 +45,14 @@ pub const UNSUPPORTED_WEBVIEW: &str = "WebView is unsupported on this Hydrolysis
 /// [`gpu_device_view`](waterui_graphics::backend::gpu_device_view) names it —
 /// reaching a painter without one; `no_gpu` says why this runtime has none.
 /// The view is not drawn and measures as zero.
-#[cfg(any(not(hydrolysis_gpu), hydrolysis_cpu_painter))]
+#[cfg(any(
+    all(not(hydrolysis_gpu), waterui_feature = "gpu"),
+    all(hydrolysis_gpu, hydrolysis_cpu_painter)
+))]
 pub fn unsupported_gpu_device_view(view: &str, no_gpu: &str) {
     contract_violation!(
         "hydrolysis: {view} needs a GPU device, but {no_gpu}; the view is not drawn"
     );
-}
-
-/// Refuses `view` when it needs a GPU device, in a build without the GPU
-/// painter: such a build compiles no realization for these leaves, so measure
-/// and node build stop at them here instead of expanding their `body`.
-/// Returns whether `view` was refused; the caller then measures it as zero
-/// and builds it as an empty node.
-#[cfg(not(hydrolysis_gpu))]
-pub fn refuse_gpu_device_view(view: &AnyView) -> bool {
-    let Some(name) = waterui_graphics::backend::gpu_device_view(view) else {
-        return false;
-    };
-    unsupported_gpu_device_view(
-        name,
-        "this Hydrolysis build has no GPU painter: it was built without the `gpu` feature",
-    );
-    true
-}
-
-pub fn dimensions_for_native<V: HydroNativeView<E>, E: crate::text::TextEngine>(
-    view: &AnyView,
-    proposal: ProposalSize,
-    state: &mut HydroState<E>,
-    env: &Environment,
-    theme: &Rc<dyn WidgetTheme>,
-) -> Option<ViewDimensions> {
-    view.downcast_ref::<V>()
-        .map(|native| V::dimensions(state, native, env, theme, proposal))
 }
 
 macro_rules! hydro_native_view_types {
@@ -207,28 +134,4 @@ pub fn is_hydro_native_view(view: &AnyView) -> bool {
         return true;
     }
     false
-}
-
-pub fn dimensions_for_known_native_views<E: crate::text::TextEngine>(
-    view: &AnyView,
-    proposal: ProposalSize,
-    state: &mut HydroState<E>,
-    env: &Environment,
-    theme: &Rc<dyn WidgetTheme>,
-) -> Option<ViewDimensions> {
-    macro_rules! try_native_dimensions {
-        ($ty:ty) => {
-            if let Some(dimensions) =
-                dimensions_for_native::<$ty, E>(view, proposal, state, env, theme)
-            {
-                return Some(dimensions);
-            }
-        };
-    }
-    hydro_native_view_types!(try_native_dimensions);
-    #[cfg(not(hydrolysis_gpu))]
-    if refuse_gpu_device_view(view) {
-        return Some(ViewDimensions::new(LayoutSize::zero()));
-    }
-    None
 }
