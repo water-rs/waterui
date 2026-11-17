@@ -21,7 +21,7 @@ use waterui_core::layout::{
     ViewDimensions,
 };
 
-use crate::contract::{Mounted, NativeLeaf};
+use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;
 
 use crate::contract::RenderContext;
@@ -148,12 +148,15 @@ impl SubView for OffsetSubView {
 }
 
 /// The `offset` realization.
-pub fn realize_offset_metadata(metadata: Metadata<Offset>, ctx: &RenderContext<'_>) -> NativeLeaf {
+pub fn realize_offset_metadata(
+    metadata: Metadata<Offset, Held>,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
     let mtm = ctx.mtm();
     let host = HostView::new(mtm, Rect::ZERO);
     // A layer keeps the offset content composited rather than redrawn.
     cocoa_ui::layer::ensure_layer(&host);
-    let mounted = ctx.render(metadata.content).mount(&host);
+    let mounted = ctx.realize(metadata.content).mount(&host);
     crate::primary_content::forward(&host, mounted.view());
     #[cfg(target_os = "ios")]
     // This wrapper drives the content's bounds and center itself on

@@ -16,15 +16,16 @@ pub mod split;
 pub mod tab;
 mod transition;
 
-use alloc::{collections::BTreeMap, rc::Rc, vec, vec::Vec};
+use alloc::{boxed::Box, collections::BTreeMap, rc::Rc, vec, vec::Vec};
 use core::{
-    any::TypeId,
+    any::{Any, TypeId},
     cell::{Cell, RefCell},
     fmt::Debug,
 };
 
 use nami::{Binding, Computed, Signal as _, SignalExt as _};
 use waterui_controls::{ButtonStyle, IntoLabel, button};
+use waterui_core::backend::{Backend, DynBackend, ErasedPayload, cast};
 use waterui_core::handler::{AnyViewBuilder, BoxedAction, Handler, ReportExtraction, boxed_action};
 use waterui_core::{
     AnyView, Environment, Error, IntoSignal, Metadata, Native, NativeView, Retain, SerialDispatch,
@@ -577,31 +578,88 @@ fn navigation_view_with_environment(
 /// implementations must use this function before projecting the root into their
 /// native navigation container.
 #[doc(hidden)]
-pub fn resolve_navigation_root(mut root: AnyView, env: &Environment) -> NavigationView {
-    let mut resolved_env = env.clone();
-    loop {
-        if root.is::<NavigationView>() {
-            let root = *root
-                .downcast::<NavigationView>()
-                .expect("navigation root type must remain stable during downcast");
-            return navigation_view_with_environment(root, &resolved_env);
-        }
-        if root.is::<Native<NavigationView>>() {
-            let root = root
-                .downcast::<Native<NavigationView>>()
-                .expect("native navigation root type must remain stable during downcast")
-                .into_inner();
-            return navigation_view_with_environment(root, &resolved_env);
-        }
-        if root.is::<Metadata<Environment>>() {
-            let metadata = *root
-                .downcast::<Metadata<Environment>>()
-                .expect("navigation environment metadata type must remain stable during downcast");
-            resolved_env = metadata.value;
-            root = metadata.content;
-            continue;
-        }
-        root = AnyView::new(View::body(root, &resolved_env));
+pub fn resolve_navigation_root(root: AnyView, env: &Environment) -> NavigationView {
+    let (root, resolved_env) = root
+        .dispatch(&mut NavigationRoot, env, ())
+        .expect("a navigation stack's root resolves to a navigation view");
+    navigation_view_with_environment(root, &resolved_env)
+}
+
+/// The probe [`resolve_navigation_root`] walks a stack's root with: through
+/// the environment scopes around it to the [`NavigationView`], carrying the
+/// innermost scope's environment, and `None` past any other leaf.
+struct NavigationRoot;
+
+type ResolvedRoot = Option<(NavigationView, Environment)>;
+
+impl NavigationRoot {
+    fn scope(&mut self, metadata: Metadata<Environment, AnyView>) -> ResolvedRoot {
+        metadata.content.dispatch(self, &metadata.value, ())
+    }
+}
+
+impl Backend for NavigationRoot {
+    type Output = ResolvedRoot;
+    type Ctx = ();
+    type Slot = AnyView;
+
+    fn native<T: NativeView + 'static>(
+        &mut self,
+        native: T,
+        env: &Environment,
+        (): (),
+    ) -> ResolvedRoot {
+        cast::<T, NavigationView>(native)
+            .ok()
+            .map(|root| (root, env.clone()))
+    }
+
+    fn metadata<K: MetadataKey>(
+        &mut self,
+        metadata: Metadata<K, AnyView>,
+        _env: &Environment,
+        (): (),
+    ) -> ResolvedRoot {
+        cast::<_, Metadata<Environment, AnyView>>(metadata)
+            .ok()
+            .and_then(|metadata| self.scope(metadata))
+    }
+
+    fn erased(&mut self, view: AnyView, env: &Environment, (): ()) -> ResolvedRoot {
+        *view
+            .dispatch_dyn(self, env, Box::new(()))
+            .downcast::<ResolvedRoot>()
+            .expect("the erased path returns this probe's own output")
+    }
+}
+
+impl DynBackend for NavigationRoot {
+    fn native_dyn(
+        &mut self,
+        mut native: ErasedPayload<'_>,
+        env: &Environment,
+        _cx: Box<dyn Any>,
+    ) -> Box<dyn Any> {
+        let root: ResolvedRoot = native
+            .take::<NavigationView>()
+            .map(|root| (root, env.clone()));
+        Box::new(root)
+    }
+
+    fn metadata_dyn(
+        &mut self,
+        mut metadata: ErasedPayload<'_>,
+        _env: &Environment,
+        _cx: Box<dyn Any>,
+    ) -> Box<dyn Any> {
+        let root: ResolvedRoot = metadata
+            .take::<Metadata<Environment, AnyView>>()
+            .and_then(|metadata| self.scope(metadata));
+        Box::new(root)
+    }
+
+    fn erased_dyn(&mut self, view: AnyView, env: &Environment, _cx: Box<dyn Any>) -> Box<dyn Any> {
+        Box::new(Backend::erased(self, view, env, ()))
     }
 }
 
@@ -1723,11 +1781,11 @@ mod tests {
 
     use super::{
         CustomNavigationController, NavigationController, NavigationLink, NavigationPath,
-        NavigationTransaction, NavigationView, Navigator, shared_prefix_len,
-        subscribe_navigation_path,
+        NavigationTransaction, NavigationView, Navigator, resolve_navigation_root,
+        shared_prefix_len, subscribe_navigation_path,
     };
     use waterui_core::{
-        Environment, Metadata,
+        AnyView, Environment, Metadata,
         extract::{Extractor, State},
         handler::AnyViewBuilder,
     };
@@ -1742,6 +1800,32 @@ mod tests {
 
     fn equal<T: PartialEq>(left: &T, right: &T) -> bool {
         left == right
+    }
+
+    /// A stack root under an environment scope resolves to its navigation
+    /// view in that scope's environment, whether the scope keeps the root's
+    /// type or erases it.
+    #[test]
+    fn a_scoped_root_resolves_in_its_scope() {
+        let mut scope = Environment::new();
+        scope.insert(BaseMarker);
+        for root in [
+            AnyView::new(Metadata::new(
+                NavigationView::new("Typed", ()),
+                scope.clone(),
+            )),
+            AnyView::new(Metadata::new(
+                AnyView::new(NavigationView::new("Erased", ())),
+                scope.clone(),
+            )),
+        ] {
+            let root = resolve_navigation_root(root, &Environment::new());
+            let title = root
+                .content
+                .downcast::<Metadata<Environment, AnyView>>()
+                .expect("the resolved content carries the scope's environment");
+            assert!(title.value.get::<BaseMarker>().is_some());
+        }
     }
 
     #[test]
@@ -2091,7 +2175,7 @@ mod tests {
             .expect("pushed navigation view should be recorded");
         let metadata = nav_view
             .content
-            .downcast::<Metadata<Environment>>()
+            .downcast::<Metadata<Environment, AnyView>>()
             .expect("pushed content should carry retained navigation environment");
 
         assert!(metadata.value.get::<BaseMarker>().is_some());

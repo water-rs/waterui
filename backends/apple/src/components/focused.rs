@@ -26,7 +26,7 @@ use waterui_core::layout::{
     ViewDimensions,
 };
 
-use crate::contract::{Mounted, NativeLeaf};
+use crate::contract::{Held, Mounted, NativeLeaf};
 
 use crate::contract::RenderContext;
 #[cfg(target_os = "macos")]
@@ -142,13 +142,13 @@ impl SubView for FocusedSubView {
 /// maps to a transparent container that keeps the child's focus anchor
 /// and the `Binding<bool>` in sync both ways.
 pub fn realize_focused_metadata(
-    metadata: Metadata<Focused>,
+    metadata: Metadata<Focused, Held>,
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
     let mtm = ctx.mtm();
     let host = HostView::new(mtm, Rect::ZERO);
     let host_view: &PlatformView = &host;
-    let mounted = ctx.render(metadata.content).mount(host_view);
+    let mounted = ctx.realize(metadata.content).mount(host_view);
     // §7.1: the fill answer resolves through the `cocoaUiPrimaryContent`
     // chain — `Color.opacity(..)` in a background slot stays a fill.
     crate::primary_content::forward(&host, mounted.view());

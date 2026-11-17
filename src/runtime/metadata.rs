@@ -250,7 +250,7 @@ pub mod context_menu {
     mod tests {
         use nami::Signal;
         use waterui_controls::menu::CommandExt;
-        use waterui_core::{AnyView, Environment, Metadata, View};
+        use waterui_core::{Environment, backend::peel_metadata};
         use waterui_text::text::text;
 
         use super::{ContextMenu, DismissContextMenu, ResolvedContextMenu};
@@ -262,22 +262,20 @@ pub mod context_menu {
         #[test]
         fn accessory_environment_carries_dismiss_context_menu() {
             let env = Environment::new();
-            let resolved = AnyView::new(
+            let resolved = peel_metadata::<ResolvedContextMenu>(
                 text("target")
-                    .context_menu(ContextMenu::new("Reply".action(|| {})).accessory(text("like")))
-                    .body(&env),
+                    .context_menu(ContextMenu::new("Reply".action(|| {})).accessory(text("like"))),
+                &env,
             )
-            .downcast::<Metadata<ResolvedContextMenu>>()
             .expect("context_menu attaches ResolvedContextMenu")
             .value;
 
-            let accessory_env = AnyView::new(
+            let accessory_env = peel_metadata::<Environment>(
                 resolved
                     .accessory
-                    .expect("resolved menu keeps the accessory")
-                    .body(&env),
+                    .expect("resolved menu keeps the accessory"),
+                &env,
             )
-            .downcast::<Metadata<Environment>>()
             .expect("the accessory carries an extended environment")
             .value;
 

@@ -13,7 +13,7 @@ use suiteki::Str;
 
 use crate::layout::{PlacedGeometry, Rect};
 use crate::metadata::MetadataKey;
-use crate::{AnyView, Environment, Metadata, View};
+use crate::{Environment, Metadata, OneOf2, View};
 
 /// Overrides the spoken label for a component when the default text is not
 /// adequate.
@@ -206,11 +206,15 @@ impl MetadataKey for AccessibilityRole {}
 /// shows, and an invented label reads worse than none; a component with
 /// something true to say about its own contents attaches its own
 /// [`AccessibilityLabel`] on top.
-pub fn default_role(env: &Environment, view: impl View, role: AccessibilityRole) -> AnyView {
+pub fn default_role<V: View>(
+    env: &Environment,
+    view: V,
+    role: AccessibilityRole,
+) -> OneOf2<V, Metadata<AccessibilityRole, V>> {
     if env.get::<AccessibilityRole>().is_some() {
-        AnyView::new(view)
+        OneOf2::A(view)
     } else {
-        AnyView::new(Metadata::new(view, role))
+        OneOf2::B(Metadata::new(view, role))
     }
 }
 
@@ -532,7 +536,7 @@ impl AccessibilityStateSignal {
 #[cfg(test)]
 mod tests {
     use super::{AccessibilityRole, AccessibilityState, AccessibilityStateSignal, default_role};
-    use crate::{Environment, Metadata};
+    use crate::{Environment, OneOf2};
     use nami::Signal;
 
     /// A surface with nothing said about it publishes the role it was given.
@@ -540,9 +544,9 @@ mod tests {
     fn an_undescribed_surface_is_given_the_default_role() {
         let view = default_role(&Environment::new(), (), AccessibilityRole::Group);
 
-        let wrapper = view
-            .downcast_ref::<Metadata<AccessibilityRole>>()
-            .expect("the default role is attached as metadata");
+        let OneOf2::B(wrapper) = view else {
+            panic!("the default role is attached as metadata");
+        };
         assert_eq!(wrapper.value, AccessibilityRole::Group);
     }
 
@@ -555,7 +559,7 @@ mod tests {
         let view = default_role(&env, (), AccessibilityRole::Group);
 
         assert!(
-            view.downcast_ref::<Metadata<AccessibilityRole>>().is_none(),
+            matches!(view, OneOf2::A(())),
             "a view whose role the application chose must not be wrapped again"
         );
     }

@@ -8,7 +8,7 @@
 //! the child's own, so nested metadata wrappers reach the same view the
 //! Swift `accessibilityTarget` chain did.
 
-use crate::contract::{NativeLeaf, RenderContext};
+use crate::contract::{Held, NativeLeaf, RenderContext};
 use cocoa_ui::PlatformView;
 use cocoa_ui::accessibility as a11y;
 use cocoa_ui::view;
@@ -30,10 +30,10 @@ fn set_identifier(target: &PlatformView, identifier: &NSString) {
 
 /// The `accessibility_identifier` realization.
 pub fn realize_accessibility_identifier_metadata(
-    metadata: Metadata<AccessibilityIdentifier>,
+    metadata: Metadata<AccessibilityIdentifier, Held>,
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
-    let mut leaf = ctx.render(metadata.content);
+    let mut leaf = ctx.realize(metadata.content);
     let target = view::retain_base(leaf.view());
     set_identifier(&target, &NSString::from_str(metadata.value.as_str()));
     leaf.keep(target);

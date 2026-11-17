@@ -75,7 +75,7 @@ macro_rules! native_backend {
             $(
                 $(#[cfg($mcfg)])*
                 $(#[doc = $mdoc])*
-                fn $meta(&mut self, metadata: Metadata<$meta_ty>, env: &Environment, cx: Self::Ctx) -> Self::Output;
+                fn $meta<C: ChildView<Self>>(&mut self, metadata: Metadata<$meta_ty, C>, env: &Environment, cx: Self::Ctx) -> Self::Output;
             )*
 
             /// Realizes a native payload no method names: a component this
@@ -92,7 +92,7 @@ macro_rules! native_backend {
             /// Realizes a metadata wrapper no method names: a key this backend
             /// provides itself, or one it reports through
             /// [`report_unprovided`].
-            fn provided_metadata<K: MetadataKey>(&mut self, metadata: Metadata<K>, env: &Environment, cx: Self::Ctx) -> Self::Output;
+            fn provided_metadata<K: MetadataKey, C: ChildView<Self>>(&mut self, metadata: Metadata<K, C>, env: &Environment, cx: Self::Ctx) -> Self::Output;
 
             /// [`provided_metadata`](Self::provided_metadata) for a wrapper an
             /// [`AnyView`] handed back erased.
@@ -144,13 +144,13 @@ macro_rules! native_backend {
 
         fn route_metadata<B: NativeBackend, K: MetadataKey>(
             backend: &mut B,
-            metadata: Metadata<K>,
+            metadata: Metadata<K, Child<B::Family>>,
             env: &Environment,
             cx: B::Ctx,
         ) -> B::Output {
             $(
                 $(#[cfg($mcfg)])*
-                let metadata = match cast::<Metadata<K>, Metadata<$meta_ty>>(metadata) {
+                let metadata = match cast::<Metadata<K, Child<B::Family>>, Metadata<$meta_ty, Child<B::Family>>>(metadata) {
                     Ok(metadata) => return backend.$meta(metadata, env, cx),
                     Err(metadata) => metadata,
                 };
@@ -193,7 +193,7 @@ macro_rules! native_backend {
         ) -> B::Output {
             $(
                 $(#[cfg($mcfg)])*
-                if let Some(metadata) = metadata.take::<Metadata<$meta_ty>>() {
+                if let Some(metadata) = metadata.take::<Metadata<$meta_ty, AnyView>>() {
                     return backend.$meta(metadata, env, cx);
                 }
             )*
@@ -235,9 +235,9 @@ macro_rules! native_backend {
 
             $(
                 $(#[cfg($mcfg)])*
-                fn $meta(&mut self, metadata: Metadata<$meta_ty>, env: &Environment, (): ()) {
+                fn $meta<C: ChildView<Self>>(&mut self, metadata: Metadata<$meta_ty, C>, env: &Environment, (): ()) {
                     self.reached.push(stringify!($meta));
-                    Realize::child(self, metadata.content, env, ());
+                    metadata.content.realize(self, env, ());
                 }
             )*
 
@@ -249,9 +249,9 @@ macro_rules! native_backend {
                 self.reached.push(native.type_name());
             }
 
-            fn provided_metadata<K: MetadataKey>(&mut self, metadata: Metadata<K>, env: &Environment, (): ()) {
+            fn provided_metadata<K: MetadataKey, C: ChildView<Self>>(&mut self, metadata: Metadata<K, C>, env: &Environment, (): ()) {
                 self.reached.push(core::any::type_name::<K>());
-                Realize::child(self, metadata.content, env, ());
+                metadata.content.realize(self, env, ());
             }
 
             fn provided_metadata_dyn(&mut self, metadata: ErasedPayload<'_>, _env: &Environment, (): ()) {
@@ -336,7 +336,7 @@ impl<B: NativeBackend> Backend for Realize<'_, B> {
 
     fn metadata<K: MetadataKey>(
         &mut self,
-        metadata: Metadata<K>,
+        metadata: Metadata<K, Self::Slot>,
         env: &Environment,
         cx: Self::Ctx,
     ) -> Self::Output {

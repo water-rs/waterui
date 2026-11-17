@@ -22,7 +22,7 @@ use waterui_core::layout::{
     ViewDimensions,
 };
 
-use crate::contract::{Mounted, NativeLeaf};
+use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;
 
 use crate::contract::RenderContext;
@@ -249,13 +249,16 @@ impl SubView for ShadowSubView {
 }
 
 /// The `shadow` realization.
-pub fn realize_shadow_metadata(metadata: Metadata<Shadow>, ctx: &RenderContext<'_>) -> NativeLeaf {
+pub fn realize_shadow_metadata(
+    metadata: Metadata<Shadow, Held>,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
     let shadow = metadata.value;
 
     let mtm = ctx.mtm();
     let host = HostView::new(mtm, Rect::ZERO);
     layer::ensure_layer(&host);
-    let mounted = ctx.render(metadata.content).mount(&host);
+    let mounted = ctx.realize(metadata.content).mount(&host);
     crate::primary_content::forward(&host, mounted.view());
     view::set_translates_autoresizing(mounted.view(), true);
 

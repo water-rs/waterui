@@ -21,7 +21,7 @@ use waterui_core::layout::{
     ViewDimensions,
 };
 
-use crate::contract::{Mounted, NativeLeaf};
+use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;
 
 use crate::contract::RenderContext;
@@ -91,7 +91,7 @@ fn content_frame(host: &HostView, child: &PlatformView) -> Rect {
 /// maps to a transparent container that renders its content under the
 /// metadata's environment.
 pub fn realize_environment_metadata(
-    metadata: Metadata<Environment>,
+    metadata: Metadata<Environment, Held>,
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
     let mtm = ctx.mtm();
@@ -101,7 +101,7 @@ pub fn realize_environment_metadata(
     // The metadata's environment replaces the subtree's — `WuiWithEnv`
     // resolved `metadata.content` against `metadata.value` alone.
     let env = metadata.value;
-    let child = ctx.with_env(&env).render(metadata.content);
+    let child = ctx.with_env(&env).realize(metadata.content);
     // A handler around this wrapper resolves in the scope of the whole
     // env-only chain below it, so it sees every `.state(..)` install in
     // its own modifier chain.

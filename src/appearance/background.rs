@@ -30,7 +30,7 @@
 use nami::signal::IntoComputed;
 use std::sync::Arc;
 use suiteki::Str;
-use waterui_core::{AnyView, Computed, Metadata, View, metadata::MetadataKey};
+use waterui_core::{Computed, Metadata, View, metadata::MetadataKey};
 use waterui_graphics::color::{Color, Srgb};
 use waterui_graphics::gradient::Gradient;
 use waterui_layout::BackgroundView;
@@ -67,10 +67,10 @@ pub trait IntoBackground {
 }
 
 impl IntoBackground for Material {
-    type Output<Content: View> = Metadata<MaterialBackground>;
+    type Output<Content: View> = Metadata<MaterialBackground, Content>;
 
     fn apply_background<Content: View>(self, content: Content) -> Self::Output<Content> {
-        Metadata::new(AnyView::new(content), MaterialBackground(self))
+        Metadata::new(content, MaterialBackground(self))
     }
 }
 
@@ -93,10 +93,10 @@ pub struct GlassBackground(pub Glass);
 impl MetadataKey for GlassBackground {}
 
 impl IntoBackground for Glass {
-    type Output<Content: View> = Metadata<GlassBackground>;
+    type Output<Content: View> = Metadata<GlassBackground, Content>;
 
     fn apply_background<Content: View>(self, content: Content) -> Self::Output<Content> {
-        Metadata::new(AnyView::new(content), GlassBackground(self))
+        Metadata::new(content, GlassBackground(self))
     }
 }
 

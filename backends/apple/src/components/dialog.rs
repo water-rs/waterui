@@ -37,7 +37,7 @@ use waterui_core::layout::{
     LayoutError, ProposalSize, Rect, ResolvedExtent, StretchAxis, SubView, ViewDimensions,
 };
 
-use crate::contract::{Mounted, NativeLeaf};
+use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;
 
 use crate::contract::RenderContext;
@@ -452,12 +452,15 @@ pub fn install(env: &mut Environment) {
     env.insert(Rc::new(AlertQueue::default()));
 }
 
-pub fn realize_dialog_metadata(metadata: Metadata<Dialog>, ctx: &RenderContext<'_>) -> NativeLeaf {
+pub fn realize_dialog_metadata(
+    metadata: Metadata<Dialog, Held>,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
     let mtm = ctx.mtm();
     let host = HostView::new(mtm, KitRect::ZERO);
     let host_view: &PlatformView = &host;
 
-    let mounted = ctx.render(metadata.content).mount(host_view);
+    let mounted = ctx.realize(metadata.content).mount(host_view);
     view::set_translates_autoresizing(mounted.view(), true);
     crate::primary_content::forward(&host, mounted.view());
 

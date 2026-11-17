@@ -21,7 +21,7 @@ use waterui_core::layout::{
     ViewDimensions,
 };
 
-use crate::contract::{Mounted, NativeLeaf};
+use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;
 
 use objc2_core_foundation::CFRetained;
@@ -246,14 +246,14 @@ impl SubView for ClipShapeSubView {
 /// `Metadata<ClipShape>` maps to a transparent container whose backing
 /// layer masks its bounds to the shape.
 pub fn realize_clip_shape_metadata(
-    metadata: Metadata<ClipShape>,
+    metadata: Metadata<ClipShape, Held>,
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
     let mtm = ctx.mtm();
     let host = HostView::new(mtm, Rect::ZERO);
     let host_view: &PlatformView = &host;
 
-    let mounted = ctx.render(metadata.content).mount(host_view);
+    let mounted = ctx.realize(metadata.content).mount(host_view);
     crate::primary_content::forward(&host, mounted.view());
     view::set_translates_autoresizing(mounted.view(), true);
 

@@ -18,7 +18,7 @@ use waterui_core::layout::{
     ViewDimensions,
 };
 
-use crate::contract::{Mounted, NativeLeaf};
+use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;
 
 use crate::contract::RenderContext;
@@ -85,7 +85,10 @@ impl SubView for SecureSubView {
 /// The `secure` realization: `Metadata<Secure>` maps
 /// to a transparent container whose `UIKit` secure-field overlay marks the
 /// subtree as capture-protected.
-pub fn realize_secure_metadata(metadata: Metadata<Secure>, ctx: &RenderContext<'_>) -> NativeLeaf {
+pub fn realize_secure_metadata(
+    metadata: Metadata<Secure, Held>,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
     let mtm = ctx.mtm();
     let host = HostView::new(mtm, Rect::ZERO);
     let host_view: &PlatformView = &host;
@@ -103,7 +106,7 @@ pub fn realize_secure_metadata(metadata: Metadata<Secure>, ctx: &RenderContext<'
         field
     };
 
-    let mounted = ctx.render(metadata.content).mount(host_view);
+    let mounted = ctx.realize(metadata.content).mount(host_view);
     crate::primary_content::forward(&host, mounted.view());
     view::set_translates_autoresizing(mounted.view(), true);
 

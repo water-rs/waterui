@@ -15,7 +15,7 @@
 use waterui_core::Metadata;
 use waterui_structural_transition::TransitionSpec;
 
-use crate::contract::{NativeLeaf, RenderContext};
+use crate::contract::{Held, NativeLeaf, RenderContext};
 use crate::transition::adoption::AdoptionOffer;
 use crate::transition::{SnapshotDemand, TransitionClaim};
 
@@ -28,7 +28,7 @@ use crate::transition::{SnapshotDemand, TransitionClaim};
 /// produced by any view tree since `.transition(...)` lives on `View`
 /// itself, so no Cargo feature gates it.
 pub fn realize_transition_spec_metadata(
-    metadata: Metadata<TransitionSpec>,
+    metadata: Metadata<TransitionSpec, Held>,
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
     let claim = TransitionClaim::new(metadata.value, ctx.env());
@@ -40,7 +40,7 @@ pub fn realize_transition_spec_metadata(
     // it swaps in.
     let offer = AdoptionOffer::new(claim.clone());
     let env = ctx.env().extending(SnapshotDemand).extending(offer.clone());
-    let mut leaf = ctx.with_env(&env).render(metadata.content);
+    let mut leaf = ctx.with_env(&env).realize(metadata.content);
     if !offer.adopted() {
         leaf.set_transition(claim);
     }

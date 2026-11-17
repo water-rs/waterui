@@ -16,7 +16,7 @@ use waterui_core::IntoSignalF32;
 use waterui_core::handler::ReportExtraction;
 pub use waterui_core::view::*;
 use waterui_core::{
-    AnyView, Environment, Metadata, OneOf2, Retain,
+    Environment, Metadata, OneOf2, Retain,
     env::{Installed, With},
     extract::State,
     handler::{EventHandler, Handler, HandlerOnce},
@@ -99,7 +99,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `metadata` - The metadata to attach
-    fn metadata<T: MetadataKey>(self, metadata: T) -> Metadata<T> {
+    fn metadata<T: MetadataKey>(self, metadata: T) -> Metadata<T, Self> {
         Metadata::new(self, metadata)
     }
 
@@ -121,7 +121,7 @@ pub trait ViewExt: View + Sized {
     fn color_space(
         self,
         space: crate::metadata::secure::ColorSpace,
-    ) -> OneOf2<Metadata<StandardDynamicRange>, Metadata<HighDynamicRange>> {
+    ) -> OneOf2<Metadata<StandardDynamicRange, Self>, Metadata<HighDynamicRange, Self>> {
         use crate::metadata::secure::ColorSpace;
         match space {
             ColorSpace::Sdr => OneOf2::A(self.metadata(StandardDynamicRange::new())),
@@ -148,7 +148,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `amount` - The opacity value (0.0 = transparent, 1.0 = opaque). Can be reactive.
-    fn opacity(self, amount: impl IntoSignalF32) -> Metadata<Opacity> {
+    fn opacity(self, amount: impl IntoSignalF32) -> Metadata<Opacity, Self> {
         Metadata::new(self, Opacity::new(amount))
     }
 
@@ -172,7 +172,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `priority` - Higher keeps more space; ties share the shortfall.
-    fn layout_priority(self, priority: i32) -> Metadata<LayoutPriority> {
+    fn layout_priority(self, priority: i32) -> Metadata<LayoutPriority, Self> {
         Metadata::new(self, LayoutPriority::new(priority))
     }
 
@@ -223,7 +223,7 @@ pub trait ViewExt: View + Sized {
         self,
         value: &Binding<Option<T>>,
         equals: T,
-    ) -> Metadata<Focused> {
+    ) -> Metadata<Focused, Self> {
         Metadata::new(self, Focused::new(value, equals))
     }
 
@@ -268,7 +268,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `task` - The asynchronous task to run
-    fn task<Fut>(self, task: Fut) -> Metadata<Retain>
+    fn task<Fut>(self, task: Fut) -> Metadata<Retain, Self>
     where
         Fut: std::future::Future<Output = ()> + 'static,
     {
@@ -323,8 +323,8 @@ pub trait ViewExt: View + Sized {
     /// ))
     /// .material_group();
     /// ```
-    fn material_group(self) -> Metadata<crate::background::MaterialGroup> {
-        Metadata::new(AnyView::new(self), crate::background::MaterialGroup)
+    fn material_group(self) -> Metadata<crate::background::MaterialGroup, Self> {
+        Metadata::new(self, crate::background::MaterialGroup)
     }
 
     /// Sets the foreground color for this view and all its descendants.
@@ -417,7 +417,7 @@ pub trait ViewExt: View + Sized {
     /// # Arguments
     /// * `lifecycle` - The lifecycle event to listen for
     /// * `handler` - The action to execute when the event occurs (called once)
-    fn lifecycle<H, Args>(self, lifecycle: LifeCycle, handler: H) -> Metadata<LifeCycleHook>
+    fn lifecycle<H, Args>(self, lifecycle: LifeCycle, handler: H) -> Metadata<LifeCycleHook, Self>
     where
         H: HandlerOnce<Args, ()>,
     {
@@ -432,7 +432,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `handler` - The action to execute when the view disappears
-    fn on_disappear<H, Args>(self, handler: H) -> Metadata<LifeCycleHook>
+    fn on_disappear<H, Args>(self, handler: H) -> Metadata<LifeCycleHook, Self>
     where
         H: HandlerOnce<Args, ()>,
     {
@@ -462,7 +462,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `handler` - The action to execute when the view appears
-    fn on_appear<H, Args>(self, handler: H) -> Metadata<LifeCycleHook>
+    fn on_appear<H, Args>(self, handler: H) -> Metadata<LifeCycleHook, Self>
     where
         H: HandlerOnce<Args, ()>,
     {
@@ -476,7 +476,7 @@ pub trait ViewExt: View + Sized {
     /// # Arguments
     /// * `event` - The event to listen for
     /// * `handler` - The action to execute when the event occurs (can be called multiple times)
-    fn event<H, Args>(self, event: Event, handler: H) -> Metadata<OnEvent>
+    fn event<H, Args>(self, event: Event, handler: H) -> Metadata<OnEvent, Self>
     where
         H: Handler<Args, ()>,
     {
@@ -490,7 +490,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `handler` - The action to execute when hover starts
-    fn on_hover_enter<H, Args>(self, handler: H) -> Metadata<OnEvent>
+    fn on_hover_enter<H, Args>(self, handler: H) -> Metadata<OnEvent, Self>
     where
         H: Handler<Args, ()>,
     {
@@ -504,7 +504,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `handler` - The action to execute when hover ends
-    fn on_hover_exit<H, Args>(self, handler: H) -> Metadata<OnEvent>
+    fn on_hover_exit<H, Args>(self, handler: H) -> Metadata<OnEvent, Self>
     where
         H: Handler<Args, ()>,
     {
@@ -537,7 +537,7 @@ pub trait ViewExt: View + Sized {
     ///     },
     /// ).state(&open);
     /// ```
-    fn on_key_press<H, Args>(self, handler: H) -> Metadata<OnKeyPress>
+    fn on_key_press<H, Args>(self, handler: H) -> Metadata<OnKeyPress, Self>
     where
         H: Handler<Args, KeyHandling>,
     {
@@ -566,7 +566,7 @@ pub trait ViewExt: View + Sized {
     fn cursor(
         self,
         style: impl IntoComputed<crate::cursor::CursorStyle>,
-    ) -> Metadata<crate::cursor::Cursor> {
+    ) -> Metadata<crate::cursor::Cursor, Self> {
         Metadata::new(self, crate::cursor::Cursor::new(style))
     }
 
@@ -716,7 +716,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `secure` - The secure metadata to apply
-    fn secure(self) -> Metadata<Secure> {
+    fn secure(self) -> Metadata<Secure, Self> {
         Metadata::new(self, Secure::new())
     }
 
@@ -735,7 +735,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `label` - The accessibility label to apply, constant or reactive
-    fn a11y_label(self, label: impl IntoComputed<Str>) -> Metadata<AccessibilityLabel> {
+    fn a11y_label(self, label: impl IntoComputed<Str>) -> Metadata<AccessibilityLabel, Self> {
         Metadata::new(self, accessibility::AccessibilityLabel::new(label))
     }
 
@@ -752,7 +752,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `value` - The accessibility value to apply, constant or reactive
-    fn a11y_value(self, value: impl IntoComputed<Str>) -> Metadata<AccessibilityValue> {
+    fn a11y_value(self, value: impl IntoComputed<Str>) -> Metadata<AccessibilityValue, Self> {
         Metadata::new(self, accessibility::AccessibilityValue::new(value))
     }
 
@@ -760,7 +760,10 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `role` - The accessibility role to apply
-    fn a11y_role(self, role: accessibility::AccessibilityRole) -> Metadata<AccessibilityRole> {
+    fn a11y_role(
+        self,
+        role: accessibility::AccessibilityRole,
+    ) -> Metadata<AccessibilityRole, Self> {
         Metadata::new(self, role)
     }
 
@@ -769,7 +772,7 @@ pub trait ViewExt: View + Sized {
     /// Identifiers are invisible to end users and assistive technologies; they
     /// exist for `waterui-testing` selectors and native automation frameworks
     /// (`XCUITest` `accessibilityIdentifier`, Android `UiAutomator`).
-    fn a11y_id(self, identifier: impl Into<Str>) -> Metadata<AccessibilityIdentifier> {
+    fn a11y_id(self, identifier: impl Into<Str>) -> Metadata<AccessibilityIdentifier, Self> {
         Metadata::new(
             self,
             accessibility::AccessibilityIdentifier::new(identifier),
@@ -777,7 +780,7 @@ pub trait ViewExt: View + Sized {
     }
 
     /// Overrides whether this view is hidden from assistive technologies.
-    fn a11y_hidden(self, hidden: bool) -> Metadata<AccessibilityHidden> {
+    fn a11y_hidden(self, hidden: bool) -> Metadata<AccessibilityHidden, Self> {
         Metadata::new(self, accessibility::AccessibilityHidden::new(hidden))
     }
 
@@ -789,7 +792,10 @@ pub trait ViewExt: View + Sized {
     /// stack allocated to a spacer — and `AccessibilityGeometry::Region`
     /// an explicit rectangle in the view's own coordinates. Hit testing,
     /// focus and drawing are unaffected.
-    fn a11y_geometry(self, geometry: AccessibilityGeometry) -> Metadata<AccessibilityGeometry> {
+    fn a11y_geometry(
+        self,
+        geometry: AccessibilityGeometry,
+    ) -> Metadata<AccessibilityGeometry, Self> {
         Metadata::new(self, geometry)
     }
 
@@ -797,12 +803,15 @@ pub trait ViewExt: View + Sized {
     fn a11y_children(
         self,
         behavior: accessibility::AccessibilityChildren,
-    ) -> Metadata<AccessibilityChildren> {
+    ) -> Metadata<AccessibilityChildren, Self> {
         Metadata::new(self, behavior)
     }
 
     /// Applies explicit accessibility state metadata.
-    fn a11y_state(self, state: accessibility::AccessibilityState) -> Metadata<AccessibilityState> {
+    fn a11y_state(
+        self,
+        state: accessibility::AccessibilityState,
+    ) -> Metadata<AccessibilityState, Self> {
         Metadata::new(self, state)
     }
 
@@ -810,7 +819,7 @@ pub trait ViewExt: View + Sized {
     fn a11y_state_signal(
         self,
         state: impl IntoComputed<accessibility::AccessibilityState>,
-    ) -> Metadata<accessibility::AccessibilityStateSignal> {
+    ) -> Metadata<accessibility::AccessibilityStateSignal, Self> {
         Metadata::new(self, accessibility::AccessibilityStateSignal::new(state))
     }
 
@@ -824,7 +833,11 @@ pub trait ViewExt: View + Sized {
     /// # Arguments
     /// * `gesture` - The gesture to observe
     /// * `action` - The action to execute when the gesture is recognized
-    fn gesture<H, Args>(self, gesture: impl Into<Gesture>, action: H) -> Metadata<GestureObserver>
+    fn gesture<H, Args>(
+        self,
+        gesture: impl Into<Gesture>,
+        action: H,
+    ) -> Metadata<GestureObserver, Self>
     where
         H: Handler<Args, ()>,
     {
@@ -848,7 +861,7 @@ pub trait ViewExt: View + Sized {
     ///     )
     /// );
     /// ```
-    fn gesture_observer(self, observer: GestureObserver) -> Metadata<GestureObserver> {
+    fn gesture_observer(self, observer: GestureObserver) -> Metadata<GestureObserver, Self> {
         Metadata::new(self, observer)
     }
 
@@ -864,7 +877,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// text!("Click me").on_tap(|| {});
     /// ```
-    fn on_tap<H, Args>(self, action: H) -> Metadata<GestureObserver>
+    fn on_tap<H, Args>(self, action: H) -> Metadata<GestureObserver, Self>
     where
         H: Handler<Args, ()>,
     {
@@ -874,7 +887,7 @@ pub trait ViewExt: View + Sized {
     /// Adds a tap gesture recognizer to this view (`SwiftUI` naming style).
     ///
     /// Equivalent to [`ViewExt::on_tap`].
-    fn on_tap_gesture<H, Args>(self, action: H) -> Metadata<GestureObserver>
+    fn on_tap_gesture<H, Args>(self, action: H) -> Metadata<GestureObserver, Self>
     where
         H: Handler<Args, ()>,
     {
@@ -882,7 +895,7 @@ pub trait ViewExt: View + Sized {
     }
 
     /// Adds a tap gesture recognizer requiring an exact tap count.
-    fn on_tap_gesture_count<H, Args>(self, count: u32, action: H) -> Metadata<GestureObserver>
+    fn on_tap_gesture_count<H, Args>(self, count: u32, action: H) -> Metadata<GestureObserver, Self>
     where
         H: Handler<Args, ()>,
     {
@@ -896,7 +909,7 @@ pub trait ViewExt: View + Sized {
         self,
         minimum_duration_ms: u32,
         action: H,
-    ) -> Metadata<GestureObserver>
+    ) -> Metadata<GestureObserver, Self>
     where
         H: Handler<Args, ()>,
     {
@@ -905,7 +918,11 @@ pub trait ViewExt: View + Sized {
 
     /// Adds a tap gesture recognizer and triggers haptic impact feedback.
     #[cfg(feature = "std")]
-    fn on_tap_haptic<H, Args>(self, intensity: Intensity, action: H) -> Metadata<GestureObserver>
+    fn on_tap_haptic<H, Args>(
+        self,
+        intensity: Intensity,
+        action: H,
+    ) -> Metadata<GestureObserver, Self>
     where
         H: Handler<Args, ()>,
     {
@@ -918,7 +935,7 @@ pub trait ViewExt: View + Sized {
 
     /// Adds a tap gesture recognizer with medium haptic impact feedback.
     #[cfg(feature = "std")]
-    fn on_tap_haptic_default<H, Args>(self, action: H) -> Metadata<GestureObserver>
+    fn on_tap_haptic_default<H, Args>(self, action: H) -> Metadata<GestureObserver, Self>
     where
         H: Handler<Args, ()>,
     {
@@ -932,7 +949,7 @@ pub trait ViewExt: View + Sized {
         minimum_duration_ms: u32,
         intensity: Intensity,
         action: H,
-    ) -> Metadata<GestureObserver>
+    ) -> Metadata<GestureObserver, Self>
     where
         H: Handler<Args, ()>,
     {
@@ -952,7 +969,7 @@ pub trait ViewExt: View + Sized {
         self,
         minimum_duration_ms: u32,
         action: H,
-    ) -> Metadata<GestureObserver>
+    ) -> Metadata<GestureObserver, Self>
     where
         H: Handler<Args, ()>,
     {
@@ -960,7 +977,7 @@ pub trait ViewExt: View + Sized {
     }
 
     /// Applies a shadow effect to this view.
-    fn shadow(self, shadow: impl Into<Shadow>) -> Metadata<Shadow> {
+    fn shadow(self, shadow: impl Into<Shadow>) -> Metadata<Shadow, Self> {
         Metadata::new(self, shadow.into())
     }
 
@@ -998,7 +1015,7 @@ pub trait ViewExt: View + Sized {
     /// // Simple border on all edges
     /// text!("Hello").border(Color::red(), 2.0);
     /// ```
-    fn border(self, color: impl Into<Color>, width: f32) -> Metadata<Border> {
+    fn border(self, color: impl Into<Color>, width: f32) -> Metadata<Border, Self> {
         Metadata::new(self, Border::new(color, width))
     }
 
@@ -1021,7 +1038,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// text!("Custom").border_with(border);
     /// ```
-    fn border_with(self, border: Border) -> Metadata<Border> {
+    fn border_with(self, border: Border) -> Metadata<Border, Self> {
         Metadata::new(self, border)
     }
 
@@ -1048,7 +1065,7 @@ pub trait ViewExt: View + Sized {
     /// let y = binding::<f32>(1.0_f32).animated();
     /// let animated = text!("Hello").scale(x, y);
     /// ```
-    fn scale(self, x: impl IntoSignalF32, y: impl IntoSignalF32) -> Metadata<Scale> {
+    fn scale(self, x: impl IntoSignalF32, y: impl IntoSignalF32) -> Metadata<Scale, Self> {
         Metadata::new(self, Scale::xy(x, y))
     }
 
@@ -1073,7 +1090,7 @@ pub trait ViewExt: View + Sized {
         x: impl IntoSignalF32,
         y: impl IntoSignalF32,
         anchor: Anchor,
-    ) -> Metadata<Scale> {
+    ) -> Metadata<Scale, Self> {
         Metadata::new(self, Scale::xy_from(x, y, anchor))
     }
 
@@ -1096,7 +1113,7 @@ pub trait ViewExt: View + Sized {
     /// let angle = binding::<f32>(0.0_f32).animated();
     /// let spinning = text!("Hello").rotation(angle);
     /// ```
-    fn rotation(self, degrees: impl IntoSignalF32) -> Metadata<Rotation> {
+    fn rotation(self, degrees: impl IntoSignalF32) -> Metadata<Rotation, Self> {
         Metadata::new(self, Rotation::degrees(degrees))
     }
 
@@ -1115,7 +1132,11 @@ pub trait ViewExt: View + Sized {
     /// // Rotate around top-left corner
     /// let tilted = text!("Hello").rotation_from(45.0, Anchor::TOP_LEFT);
     /// ```
-    fn rotation_from(self, degrees: impl IntoSignalF32, anchor: Anchor) -> Metadata<Rotation> {
+    fn rotation_from(
+        self,
+        degrees: impl IntoSignalF32,
+        anchor: Anchor,
+    ) -> Metadata<Rotation, Self> {
         Metadata::new(self, Rotation::degrees_from(degrees, anchor))
     }
 
@@ -1139,7 +1160,7 @@ pub trait ViewExt: View + Sized {
     /// let x = binding::<f32>(0.0_f32).animated();
     /// let sliding = text!("Hello").offset(x, 0.0);
     /// ```
-    fn offset(self, x: impl IntoSignalF32, y: impl IntoSignalF32) -> Metadata<Offset> {
+    fn offset(self, x: impl IntoSignalF32, y: impl IntoSignalF32) -> Metadata<Offset, Self> {
         Metadata::new(self, Offset::new(x, y))
     }
 
@@ -1172,7 +1193,7 @@ pub trait ViewExt: View + Sized {
     ///     .close();
     /// Color::red().size(100.0, 100.0).clip(triangle);
     /// ```
-    fn clip(self, shape: impl Shape) -> Metadata<ClipShape> {
+    fn clip(self, shape: impl Shape) -> Metadata<ClipShape, Self> {
         Metadata::new(self, ClipShape::new(shape))
     }
 
@@ -1231,7 +1252,7 @@ pub trait ViewExt: View + Sized {
     fn anchored_overlay(
         self,
         overlay: crate::metadata::anchored_overlay::AnchoredOverlay,
-    ) -> Metadata<crate::metadata::anchored_overlay::AnchoredOverlay> {
+    ) -> Metadata<crate::metadata::anchored_overlay::AnchoredOverlay, Self> {
         Metadata::new(self, overlay)
     }
 
@@ -1265,7 +1286,7 @@ pub trait ViewExt: View + Sized {
     ///     );
     /// ```
     #[cfg(feature = "dialog")]
-    fn dialog(self, dialog: crate::dialog::Dialog) -> Metadata<crate::dialog::Dialog> {
+    fn dialog(self, dialog: crate::dialog::Dialog) -> Metadata<crate::dialog::Dialog, Self> {
         Metadata::new(self, dialog)
     }
 
@@ -1326,7 +1347,7 @@ pub trait ViewExt: View + Sized {
     /// let editor = text!("editor")
     ///     .ignore_safe_area(SafeAreaRegions::KEYBOARD.on(EdgeSet::BOTTOM));
     /// ```
-    fn ignore_safe_area(self, ignore: impl Into<IgnoreSafeArea>) -> Metadata<IgnoreSafeArea> {
+    fn ignore_safe_area(self, ignore: impl Into<IgnoreSafeArea>) -> Metadata<IgnoreSafeArea, Self> {
         Metadata::new(self, ignore.into())
     }
 
@@ -1358,7 +1379,7 @@ pub trait ViewExt: View + Sized {
     ///     text("Hello").retain(guard)
     /// }
     /// ```
-    fn retain<T: 'static>(self, value: T) -> Metadata<Retain> {
+    fn retain<T: 'static>(self, value: T) -> Metadata<Retain, Self> {
         Metadata::new(self, Retain::new(value))
     }
 
@@ -1382,7 +1403,7 @@ pub trait ViewExt: View + Sized {
     /// text!("Drag me")
     ///     .draggable(Str::from("Hello!"));
     /// ```
-    fn draggable<S>(self, payload: S) -> Metadata<Draggable>
+    fn draggable<S>(self, payload: S) -> Metadata<Draggable, Self>
     where
         S: waterui_core::Signal + Clone + 'static,
         S::Output: Transferable,
@@ -1424,7 +1445,7 @@ pub trait ViewExt: View + Sized {
     ///         },
     ///     );
     /// ```
-    fn drop_destination<T, H, Args>(self, on_drop: H) -> Metadata<DropDestination>
+    fn drop_destination<T, H, Args>(self, on_drop: H) -> Metadata<DropDestination, Self>
     where
         T: Transferable,
         H: EventHandler<T, Args>,
@@ -1454,7 +1475,7 @@ pub trait ViewExt: View + Sized {
     /// button("Click me").action(|| {})
     ///     .hittable(can_interact);
     /// ```
-    fn hittable(self, enabled: impl IntoComputed<bool>) -> Metadata<Hittable> {
+    fn hittable(self, enabled: impl IntoComputed<bool>) -> Metadata<Hittable, Self> {
         Metadata::new(self, Hittable::new(enabled))
     }
 
@@ -1533,7 +1554,7 @@ pub trait ViewExt: View + Sized {
     /// controls nested inside that control.
     ///
     /// [`InteractionState::SELECTED`]: waterui_core::interaction::InteractionState::SELECTED
-    fn selected(self, is_selected: impl IntoComputed<bool>) -> Metadata<Selected> {
+    fn selected(self, is_selected: impl IntoComputed<bool>) -> Metadata<Selected, Self> {
         Metadata::new(self, Selected(is_selected.into_computed()))
     }
 

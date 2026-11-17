@@ -965,6 +965,7 @@ impl ListItem {
 mod tests {
     use super::*;
     use crate::ViewExt;
+    use waterui_core::backend::peel_metadata;
     use waterui_macros::text;
 
     /// Renders `config` the way `List::body` does and returns the `Native`
@@ -981,12 +982,8 @@ mod tests {
     /// Unpacks the `Metadata<Environment>` an environment modifier emits —
     /// the same step a renderer runs before realizing the wrapped view.
     fn modifier_parts(view: impl View) -> (AnyView, Environment) {
-        let metadata = AnyView::new(view.body(&Environment::new()))
-            .downcast::<Metadata<Environment>>()
-            .map_or_else(
-                |_| panic!("the modifier did not emit environment metadata"),
-                |metadata| *metadata,
-            );
+        let metadata = peel_metadata::<Environment>(view, &Environment::new())
+            .expect("the modifier emits environment metadata");
         (metadata.content, metadata.value)
     }
 

@@ -332,7 +332,7 @@ mod tests {
     struct Probe(usize);
     impl MetadataKey for Probe {}
 
-    fn probe_of(view: &Metadata<Probe>) -> usize {
+    fn probe_of(view: &Metadata<Probe, ()>) -> usize {
         view.value.0
     }
 
@@ -413,11 +413,9 @@ mod tests {
             content,
             value: _retained,
         } = *body
-            .downcast::<Metadata<Retain>>()
-            .expect("the watched dynamic body carries its retain guard");
-        let dynamic = content
-            .downcast::<Dynamic<Metadata<Probe>>>()
-            .expect("the watched dynamic body resolves to a Dynamic");
+            .downcast::<Metadata<Retain, Dynamic<Metadata<Probe, ()>>>>()
+            .expect("the watched dynamic body is a retained Dynamic");
+        let dynamic = content;
         dynamic.connect({
             let delivered = Rc::clone(&delivered);
             move |context| {
@@ -451,11 +449,9 @@ mod tests {
             content,
             value: _retained,
         } = *body
-            .downcast::<Metadata<Retain>>()
-            .expect("the watched dynamic body carries its retain guard");
-        let dynamic = content
-            .downcast::<Dynamic<Metadata<Probe>>>()
-            .expect("the watched dynamic body resolves to a Dynamic");
+            .downcast::<Metadata<Retain, Dynamic<Metadata<Probe, ()>>>>()
+            .expect("the watched dynamic body is a retained Dynamic");
+        let dynamic = content;
         dynamic.connect({
             let seen = Rc::clone(&seen);
             move |context| {
