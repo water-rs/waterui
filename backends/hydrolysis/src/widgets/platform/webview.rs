@@ -46,6 +46,15 @@ pub use android::AndroidSystemWebViewHandle;
 #[cfg(hydrolysis_macos_system_webview)]
 pub use macos::MacSystemWebViewController;
 
+#[cfg(any(hydrolysis_macos_system_webview, hydrolysis_web_system_webview))]
+use waterui::webview::WebView;
+#[cfg(any(
+    hydrolysis_macos_system_webview,
+    hydrolysis_android_system_webview,
+    hydrolysis_web_system_webview
+))]
+use waterui_core::Environment;
+
 #[cfg(hydrolysis_web_system_webview)]
 mod web;
 
