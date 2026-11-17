@@ -34,11 +34,15 @@ compensate for it with an `hstack` that imitates a bar.
 
 ## Tabs
 
-`Tabs::new(&selection, tabs)` takes any `Views` collection of `Tab`s; the collection's
-element id is the tab's identity *and* the type `selection` binds, so you never name an
-`Id`. A fixed set is a `vec![Tab::container(..), ..]` selected by a `Binding<usize>`
-position. To key tabs by your own enum, build them with `ForEach` over a `List` of
-`SelfId`s:
+`Tabs::new(&selection, tabs)` takes a tab set, and each tab keeps the type of the
+builder that makes its root, so a tab reaches the backend without an `AnyView`. The set's
+id is the tab's identity *and* the type `selection` binds, so you never name an `Id`:
+
+- a tuple of tabs — `(Tab::container(..), Tab::container(..))`, up to twelve — holds tabs
+  whose roots differ and is selected by a `Binding<usize>` position;
+- a `Vec` or array of tabs sharing one builder type, also selected by position;
+- `ForEach` over a `List` of `SelfId`s keys tabs by your own enum. Its tabs share one
+  builder, so the builder returns the variant of one `OneOfN` its item picks:
 
 ```rust
 use waterui::{id::SelfId, reactive::collection::List, views::ForEach};
@@ -49,13 +53,27 @@ enum Pane { Inbox, Library, Settings, Search }
 let pane = binding(Pane::Inbox);
 let panes = [Pane::Inbox, Pane::Library, Pane::Settings, Pane::Search].map(SelfId::new);
 
-Tabs::new(&pane, ForEach::new(List::from(panes.to_vec()), move |pane: SelfId<Pane>| match *pane {
-    Pane::Inbox => Tab::container(label("Inbox").icon(mdi::inbox()), inbox_stack)
-        .badge(unread_count.clone()),
-    Pane::Library => Tab::container(label("Library").icon(mdi::image_album()), library_split),
-    Pane::Settings => Tab::container(label("Settings").icon(mdi::cog()), settings_stack),
-    Pane::Search => Tab::container(label("Search").icon(mdi::magnify()), search_stack)
-        .role(TabRole::Search),             // iOS: the trailing system search tab; elsewhere a regular tab
+Tabs::new(&pane, ForEach::new(List::from(panes.to_vec()), move |pane: SelfId<Pane>| {
+    let pane = *pane;
+    let tab = Tab::container(
+        match pane {
+            Pane::Inbox => label("Inbox").icon(mdi::inbox()),
+            Pane::Library => label("Library").icon(mdi::image_album()),
+            Pane::Settings => label("Settings").icon(mdi::cog()),
+            Pane::Search => label("Search").icon(mdi::magnify()),
+        },
+        move || match pane {
+            Pane::Inbox => OneOf4::A(inbox_stack()),
+            Pane::Library => OneOf4::B(library_split()),
+            Pane::Settings => OneOf4::C(settings_stack()),
+            Pane::Search => OneOf4::D(search_stack()),
+        },
+    );
+    match pane {
+        Pane::Inbox => tab.badge(unread_count.clone()),
+        Pane::Search => tab.role(TabRole::Search), // iOS: the trailing system search tab; elsewhere a regular tab
+        Pane::Library | Pane::Settings => tab,
+    }
 }))
 .style(tab_style::automatic())
 .minimize_behavior(TabBarMinimizeBehavior::OnScrollDown)   // iOS 26 collapses the bar while scrolling; ignored elsewhere
@@ -86,8 +104,8 @@ enum MailRoute { Message(u64), Compose }
 fn inbox_stack(mail: Mail) -> impl View {
     NavigationStack::with_path(NavigationPath::<MailRoute>::new(), inbox_root(mail.clone()))
         .destination(move |route| match route {
-            MailRoute::Message(id) => message_detail(mail.clone(), id),
-            MailRoute::Compose => compose_page(mail.clone()),
+            MailRoute::Message(id) => message_detail(mail.clone(), id).map_content(OneOf2::A),
+            MailRoute::Compose => compose_page(mail.clone()).map_content(OneOf2::B),
         })
 }
 ```
@@ -95,7 +113,11 @@ fn inbox_stack(mail: Mail) -> impl View {
 The stack's root and every destination are **`NavigationView`s** — give each page a
 `.title(..)` (which performs that conversion) or build it with
 `NavigationView::new(title, content)`; a helper returning plain `impl View` satisfies
-neither the root parameter nor the destination closure.
+neither the root parameter nor the destination closure. A `NavigationView<V>` keeps its
+content's type, so a helper returns `NavigationView<impl View>`, and destinations whose
+pages differ return the variants of one `OneOfN`:
+`message_detail(..).map_content(OneOf2::A)` and `compose_page(..).map_content(OneOf2::B)`.
+The stack builds each pushed page for its backend from the route, so no page is erased.
 
 Two ways to travel:
 
@@ -176,7 +198,7 @@ converts a plain view into the concrete **`NavigationView`** — which is theref
 return type of a helper that builds a destination:
 
 ```rust
-fn message_list_page(mail: Mail) -> NavigationView {
+fn message_list_page(mail: Mail) -> NavigationView<impl View> {
     message_list(mail)
         .title("Inbox")                             // or .title(text!("{subject}"))
         .large_title()                              // or .inline_title()

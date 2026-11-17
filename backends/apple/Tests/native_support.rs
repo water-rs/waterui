@@ -997,16 +997,17 @@ pub mod toolbar_reach {
 
     /// `Tabs` whose first tab is a `NavigationStack` over `inbox`, each tab
     /// a `Tab::container` — the picker sits in the window toolbar.
-    fn tabbed(inbox: impl Fn() -> NavigationView + 'static) -> impl waterui::View {
-        let inbox = std::rc::Rc::new(inbox);
+    fn tabbed<V: waterui::View>(
+        inbox: impl Fn() -> NavigationView<V> + 'static,
+    ) -> impl waterui::View {
         Tabs::new(
             &binding(0usize),
-            vec![
+            (
                 Tab::container("Inbox", move || NavigationStack::new(inbox())),
                 Tab::container("Settings", || {
                     NavigationStack::new(NavigationView::new("Settings", text("settings")))
                 }),
-            ],
+            ),
         )
     }
 
@@ -1052,7 +1053,7 @@ pub mod toolbar_reach {
         let content = std::rc::Rc::new(content);
         Tabs::new(
             &binding(0usize),
-            vec![
+            (
                 Tab::container("Inbox", move || {
                     NavigationStack::with_path(
                         NavigationPath::<u64>::new(),
@@ -1069,7 +1070,7 @@ pub mod toolbar_reach {
                 Tab::container("Settings", || {
                     NavigationStack::new(NavigationView::new("Settings", text("settings")))
                 }),
-            ],
+            ),
         )
         .style(tab_style::Automatic)
     }
@@ -2462,10 +2463,10 @@ pub mod chrome_top {
             || {
                 Tabs::new(
                     &binding(0usize),
-                    vec![
+                    (
                         Tab::container("First", || text(MARKER)),
                         Tab::container("Second", || text("second")),
-                    ],
+                    ),
                 )
                 .style(tab_style::Automatic)
             },

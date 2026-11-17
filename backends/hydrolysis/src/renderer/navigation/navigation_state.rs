@@ -65,7 +65,7 @@ pub struct StackPage<E: crate::text::TextEngine> {
 }
 
 impl<E: crate::text::TextEngine> StackPage<E> {
-    pub(crate) fn new(view: AnyView) -> Self {
+    pub(crate) fn new(view: impl View) -> Self {
         Self {
             content: RetainedSubview::new(view),
             transition: None,
@@ -133,7 +133,7 @@ pub struct HydroNavigationEntry<E: crate::text::TextEngine> {
 }
 
 impl<E: crate::text::TextEngine> HydroNavigationEntry<E> {
-    fn new(identity: u64, view: NavigationView) -> Self {
+    fn new(identity: u64, view: NavigationView<HeldChild<E>>) -> Self {
         let NavigationView {
             bar,
             content,
@@ -142,7 +142,7 @@ impl<E: crate::text::TextEngine> HydroNavigationEntry<E> {
         } = view;
         Self {
             identity,
-            content: StackPage::new(AnyView::new(NavigationView {
+            content: StackPage::new(waterui_core::Native::new(NavigationView {
                 bar,
                 content,
                 state: NavigationDestinationState::default(),
@@ -670,7 +670,9 @@ fn eased_progress(progress: f64, motion: NavigationMotion) -> f64 {
 }
 
 impl<E: crate::text::TextEngine> CustomNavigationController for HydroNavigationController<E> {
-    fn apply(&mut self, transaction: NavigationTransaction) {
+    type Slot = HeldChild<E>;
+
+    fn apply(&mut self, transaction: NavigationTransaction<HeldChild<E>>) {
         let NavigationTransaction {
             id: transaction_id,
             retained_prefix,

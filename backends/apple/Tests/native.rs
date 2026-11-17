@@ -1907,10 +1907,10 @@ mod tabs {
         let leaf = resolve::render(
             Tabs::new(
                 &pane,
-                vec![
+                (
                     Tab::container(label("One"), || text("pane one")),
                     Tab::container(label("Two"), || text("pane two")),
-                ],
+                ),
             )
             .bottom_accessory(accessory),
         );
@@ -2054,14 +2054,14 @@ mod tabs {
         let pane = binding(0usize);
         let leaf = resolve::render(Tabs::new(
             &pane,
-            vec![
+            (
                 Tab::container(label("One"), || {
                     scroll(vstack((text("one"), text("two"), text("three"))))
                 }),
                 Tab::container(label("Two"), || {
                     vstack((text("aside"), scroll(text("nested"))))
                 }),
-            ],
+            ),
         ));
         let controllers = tab_bar_controller(&leaf)
             .viewControllers()
@@ -2088,10 +2088,10 @@ mod tabs {
         let pane = binding(0usize);
         let leaf = resolve::render(Tabs::new(
             &pane,
-            vec![
+            (
                 Tab::container(label("One"), || scroll(text("scrollable"))),
                 Tab::container(label("Two"), || text("static")),
-            ],
+            ),
         ));
         let controllers = tab_bar_controller(&leaf)
             .viewControllers()
@@ -2633,7 +2633,7 @@ mod navigation {
         let detail = binding(Some(1_i32));
         let leaf = resolve::render(Tabs::new(
             &tab,
-            vec![
+            (
                 Tab::new("Inbox", move || {
                     NavigationView::new("Inbox", text("inbox")).navigation_toolbar(
                         NavigationToolbar::new(vec![NavigationToolbarItem::action(
@@ -2648,7 +2648,7 @@ mod navigation {
                         NavigationView::new(format!("Detail {id}"), text("detail"))
                     })
                 }),
-            ],
+            ),
         ));
         let window = super::mount_and_order_front(leaf.view());
         assert!(
@@ -7811,21 +7811,21 @@ mod safe_area {
         let inner_selection = binding(0usize);
         let mount = mount(Tabs::new(
             &selection,
-            vec![
+            (
                 Tab::new("Outer", move || {
                     NavigationView::new(
                         "Outer",
                         vstack((
                             Tabs::new(
                                 &inner_selection,
-                                vec![
+                                (
                                     Tab::new("Inner A", move || {
                                         NavigationView::new("A", text("a"))
                                     }),
                                     Tab::new("Inner B", move || {
                                         NavigationView::new("B", text("b"))
                                     }),
-                                ],
+                                ),
                             )
                             .size(390.0, 200.0),
                             card("below").a11y_id("below-inner"),
@@ -7834,7 +7834,7 @@ mod safe_area {
                     )
                 }),
                 Tab::new("Other", move || NavigationView::new("Other", text("other"))),
-            ],
+            ),
         ));
         // Two bars: the inner controller's inside its 200pt host and the
         // outer one docked at the window bottom — order them by where

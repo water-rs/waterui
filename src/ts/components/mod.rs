@@ -25,6 +25,7 @@ use nami::{Computed, SignalExt as _};
 use suiteki::Str;
 use waterui_controls::label::Label;
 use waterui_controls::{Button, Slider, Stepper, TextField, Toggle};
+use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::SelfId;
 use waterui_core::layout::{Alignment, HorizontalAlignment, VerticalAlignment};
 use waterui_core::views::ForEach;
@@ -414,9 +415,9 @@ fn navigation(
             let attributes = TabsAttributes::from_js(config, bridge)?;
             let pairs = children::content(bridge, children)?
                 .into_iter()
-                .map(|child| Carried::<(Str, Tab)>::take_from(child, "Tab", "Tabs"))
+                .map(|child| Carried::<(Str, ScriptTab)>::take_from(child, "Tab", "Tabs"))
                 .collect::<Result<Vec<_>, _>>()?;
-            let tabs: std::collections::BTreeMap<Str, Tab> = pairs.iter().cloned().collect();
+            let tabs: std::collections::BTreeMap<Str, ScriptTab> = pairs.iter().cloned().collect();
             let ids = pairs
                 .into_iter()
                 .map(|(value, _)| SelfId::new(value))
@@ -437,14 +438,22 @@ fn navigation(
             let title = title_of(title);
             AnyView::new(Carried::new((
                 value,
-                Tab::new(label, move || {
-                    NavigationView::new(title.clone(), content.build())
-                }),
+                Tab::new(
+                    label,
+                    AnyViewBuilder::new(move || {
+                        NavigationView::new(title.clone(), content.build())
+                    }),
+                ),
             )))
         }
         _ => return Ok(None),
     }))
 }
+
+/// A tab a script declares: its root is built by a closure the script's
+/// attributes chose at run time, so every scripted tab shares one builder
+/// type.
+type ScriptTab = Tab<AnyViewBuilder<NavigationView<AnyView>>>;
 
 /// A navigation title, which every destination carries whether or not the
 /// element named one.

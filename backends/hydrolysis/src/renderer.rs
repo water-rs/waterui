@@ -188,7 +188,7 @@ use waterui::metadata::context_menu::ResolvedContextMenu;
 use waterui::navigation::tab::{NativeTabStyle, TabsLayout};
 #[cfg(feature = "navigation")]
 use waterui::navigation::{
-    CustomNavigationController, NavigationController, NavigationSplitLayout, NavigationStack,
+    CustomNavigationController, NavigationController, NavigationSplitLayout, NavigationStackLayout,
     NavigationTransaction, NavigationView,
 };
 use waterui::style::{Offset, Rotation, Scale, Shadow};

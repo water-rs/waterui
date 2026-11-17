@@ -21,7 +21,7 @@ const NO_GPU_PAINTER: &str =
     "this Hydrolysis build has no GPU painter: it was built without the `gpu` feature";
 
 /// Builds retained nodes into one renderer.
-pub(in crate::renderer::tree) struct HydroBackend<'r, E: crate::text::TextEngine> {
+pub struct HydroBackend<'r, E: crate::text::TextEngine> {
     renderer: &'r mut SemanticCore<E>,
 }
 
@@ -91,7 +91,7 @@ macro_rules! accessibility_scopes {
 }
 
 /// [`HydroBackend`] with its renderer borrow left open.
-pub(in crate::renderer::tree) struct HydroFamily<E>(PhantomData<E>);
+pub struct HydroFamily<E>(PhantomData<E>);
 
 impl<E: crate::text::TextEngine> NativeBackendFamily for HydroFamily<E> {
     type Output = RenderNode<E>;
@@ -1013,7 +1013,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         (): (),
     ) -> RenderNode<E> {
         let renderer = &mut *self.renderer;
-        RenderNode::build_dynamic_host(native, <C as ChildView<Self>>::into_child, env, renderer)
+        RenderNode::build_dynamic_host(native, C::into_child, env, renderer)
     }
 
     // A native widget leaf: build a `Widget` node that re-renders it every flush
@@ -1234,12 +1234,14 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     // and reactive route/tab selection keeps driving updates, instead of
     // freezing in a one-shot `Captured` bake.
     #[cfg(waterui_feature = "navigation")]
-    fn navigation_view(
+    fn navigation_view<C: ChildView<Self>>(
         &mut self,
-        native: waterui::navigation::NavigationView,
+        native: waterui::navigation::NavigationView<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        let mut native = native.map_content(C::into_child);
+        native.resolve_native_fields(env);
         let renderer = &mut *self.renderer;
         RenderNode::build_navigation_view(native, env, renderer)
     }
@@ -1256,25 +1258,25 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     }
 
     #[cfg(waterui_feature = "navigation")]
-    fn navigation_stack(
+    fn navigation_stack<C: ChildView<Self>>(
         &mut self,
-        native: waterui::navigation::NavigationStack<(), ()>,
+        native: waterui::navigation::NavigationStackLayout<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
         let renderer = &mut *self.renderer;
-        RenderNode::build_navigation_stack(renderer, native, env)
+        RenderNode::build_navigation_stack(renderer, native.map_slot(C::into_child), env)
     }
 
     #[cfg(waterui_feature = "navigation")]
-    fn tabs(
+    fn tabs<C: ChildView<Self>>(
         &mut self,
-        native: waterui::navigation::tab::TabsLayout,
+        native: waterui::navigation::tab::TabsLayout<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
         let renderer = &mut *self.renderer;
-        RenderNode::build_tabs(native, env, renderer)
+        RenderNode::build_tabs(native.map_slots(C::into_child), env, renderer)
     }
 
     fn spacer(

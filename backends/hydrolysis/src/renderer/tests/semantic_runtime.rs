@@ -1090,10 +1090,10 @@ fn tabs_emit_tab_list_and_click_selects() {
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
         AnyView::new(Tabs::new(
             &selection_for_view,
-            vec![
+            (
                 Tab::new("First", || NavigationView::new("One", text("one"))),
                 Tab::new("Second", || NavigationView::new("Two", text("two"))),
-            ],
+            ),
         ))
     }));
 

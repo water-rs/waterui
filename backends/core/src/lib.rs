@@ -60,7 +60,7 @@ pub mod overlay;
 pub mod scroll;
 pub mod time;
 
-pub use child::{Child, ChildView, NativeBackendFamily};
+pub use child::{Child, ChildView, IntoChild, NativeBackendFamily};
 pub use native_backend::{NativeBackend, Realize, report_unprovided};
 
 // Re-export common types from waterui-core

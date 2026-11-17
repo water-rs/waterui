@@ -346,27 +346,27 @@ impl NativeBackend for AppleBackend {
     }
 
     #[cfg(waterui_feature = "navigation")]
-    fn navigation_view(
+    fn navigation_view<C: ChildView<Self>>(
         &mut self,
-        native: waterui::navigation::NavigationView,
+        native: waterui::navigation::NavigationView<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
         crate::components::navigation::nav_view::realize_navigation_view(
-            native,
+            native.map_content(C::into_child),
             &RenderContext::entry(env, self.mtm),
         )
     }
 
     #[cfg(waterui_feature = "navigation")]
-    fn navigation_stack(
+    fn navigation_stack<C: ChildView<Self>>(
         &mut self,
-        native: waterui::navigation::NavigationStack<(), ()>,
+        native: waterui::navigation::NavigationStackLayout<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
         crate::components::navigation::stack::realize_navigation_stack(
-            native,
+            native.map_slot(C::into_child),
             &RenderContext::entry(env, self.mtm),
         )
     }
@@ -385,14 +385,14 @@ impl NativeBackend for AppleBackend {
     }
 
     #[cfg(waterui_feature = "navigation")]
-    fn tabs(
+    fn tabs<C: ChildView<Self>>(
         &mut self,
-        native: waterui::navigation::tab::TabsLayout,
+        native: waterui::navigation::tab::TabsLayout<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
         crate::components::navigation::tabs::realize_tabs_layout(
-            native,
+            native.map_slots(C::into_child),
             &RenderContext::entry(env, self.mtm),
         )
     }

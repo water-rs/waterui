@@ -164,7 +164,7 @@ use waterui_layout::{Divider, scroll};
 #[cfg(feature = "accessibility")]
 use waterui_navigation::NavigationView;
 #[cfg(feature = "accessibility")]
-use waterui_navigation::tab::{NativeTabStyle, Tab, TabsLayout};
+use waterui_navigation::tab::{NativeTabStyle, Tab, Tabs};
 
 use crate::theme::WidgetTheme;
 use crate::theme::{
@@ -2211,14 +2211,13 @@ fn disabled_picker_family_and_tabs_expose_no_mutating_actions() {
     let picker_selection = Binding::container("Alpha");
     let date = Binding::container(Date::new(2025, 1, 10).expect("valid test date"));
     let color = Binding::container(Color::srgb(0, 0, 0));
-    let tab_items = waterui_core::views::SharedAnyViews::new(vec![
-        Tab::new("First tab", || NavigationView::new("First", text("One"))),
-        Tab::new("Second tab", || NavigationView::new("Second", text("Two"))),
-    ]);
-    let snapshot = waterui_core::views::Views::snapshot(&tab_items);
-    let first = waterui_core::views::ViewSnapshot::get_id(&snapshot, 0)
-        .expect("a non-empty tab set reports an id");
-    let tabs = TabsLayout::new(Binding::container(first), tab_items);
+    let tabs = Tabs::new(
+        &Binding::container(0usize),
+        (
+            Tab::new("First tab", || NavigationView::new("First", text("One"))),
+            Tab::new("Second tab", || NavigationView::new("Second", text("Two"))),
+        ),
+    );
     let view = vstack((
         Picker::new(
             "Letter",
@@ -4151,11 +4150,7 @@ fn tab_badge_draws_only_for_a_nonzero_count() {
             Some(count) => inbox.badge(count),
             None => inbox,
         };
-        let tab_items = waterui_core::views::SharedAnyViews::new(vec![inbox]);
-        let snapshot = waterui_core::views::Views::snapshot(&tab_items);
-        let first = waterui_core::views::ViewSnapshot::get_id(&snapshot, 0)
-            .expect("a non-empty tab set reports an id");
-        let tabs = TabsLayout::new(Binding::container(first), tab_items);
+        let tabs = Tabs::new(&Binding::container(0usize), vec![inbox]);
         let mut renderer = test_renderer_with_theme(MinimalTestTheme {
             badge_draws: Rc::clone(&log.0),
             ..Default::default()

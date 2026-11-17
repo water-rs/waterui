@@ -474,6 +474,70 @@ impl<V: 'static> AnyViews<V> {
     }
 }
 
+impl<V: Clone + 'static> AnyViews<V> {
+    /// A fixed collection of `items`, identified by index, together with the
+    /// mapping of those indices into the ids `get_id` returns: the erased form
+    /// of a `Vec` whose items need not be views, such as a payload's children
+    /// already in a backend's child slot.
+    #[must_use]
+    pub fn from_items(items: Vec<V>) -> (Self, Mapping<usize>) {
+        let ids = Mapping::new();
+        (
+            Self(Box::new(FixedItems {
+                items: Rc::from(items),
+                ids: ids.clone(),
+            })),
+            ids,
+        )
+    }
+}
+
+/// [`AnyViews::from_items`]: a fixed list keyed by index.
+struct FixedItems<V> {
+    items: Rc<[V]>,
+    ids: Mapping<usize>,
+}
+
+impl<V: Clone + 'static> AnyViewsImpl for FixedItems<V> {
+    type View = V;
+
+    fn len(&self) -> Computed<usize> {
+        Computed::constant(self.items.len())
+    }
+
+    fn snapshot(&self) -> AnyViewsSnapshot<V> {
+        AnyViewsSnapshot(Rc::new(Self {
+            items: Rc::clone(&self.items),
+            ids: self.ids.clone(),
+        }))
+    }
+
+    fn watch(
+        &self,
+        _range: (Bound<usize>, Bound<usize>),
+        _watcher: BoxAnyViewsWatcher<V>,
+    ) -> BoxWatcherGuard {
+        // A fixed list never changes.
+        Box::new(())
+    }
+}
+
+impl<V: Clone> AnyViewSnapshotImpl for FixedItems<V> {
+    type View = V;
+
+    fn range(&self) -> Range<usize> {
+        0..self.items.len()
+    }
+
+    fn get_id(&self, index: usize) -> Option<RawId> {
+        (index < self.items.len()).then(|| self.ids.to_id(index))
+    }
+
+    fn get_view(&self, index: usize) -> Option<V> {
+        self.items.get(index).cloned()
+    }
+}
+
 /// [`AnyViews::map_views`]: the erased collection with its items mapped.
 struct MapAnyViews<V, F> {
     inner: Box<dyn AnyViewsImpl<View = V>>,

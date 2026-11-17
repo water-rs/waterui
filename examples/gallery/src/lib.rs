@@ -461,7 +461,7 @@ fn item_row(index: usize, selected: &Binding<Option<usize>>) -> impl View + use<
 
 /// The detail pane for the selected control: its title (in the navigation bar)
 /// and its live demo, bound to the shared [`DemoState`].
-fn control_detail(index: usize, state: &DemoState) -> NavigationView {
+fn control_detail(index: usize, state: &DemoState) -> NavigationView<impl View + use<>> {
     let all = controls();
     let control = &all[index];
     NavigationView::new(control.title, (control.demo)(state).padding_with(20.0))

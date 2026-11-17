@@ -206,7 +206,10 @@ fn thread_row(thread: Thread) -> ListItem {
 
 /// The inbox column: the thread list under a titled bar that carries the
 /// search field, the compose action and the account avatar.
-fn inbox(selected: &Binding<Option<u64>>, query: &Binding<Str>) -> NavigationView {
+fn inbox(
+    selected: &Binding<Option<u64>>,
+    query: &Binding<Str>,
+) -> NavigationView<impl View + use<>> {
     let visible = SignalCollection::new(
         query
             .clone()
@@ -262,7 +265,7 @@ fn message_card(message: &'static Message) -> impl View {
 
 /// The reading pane: the subject as the navigation title, the message count
 /// as its subtitle, and the thread's overflow actions in the bar.
-fn detail(thread: &'static Thread) -> NavigationView {
+fn detail(thread: &'static Thread) -> NavigationView<impl View> {
     scroll(vstack(thread.messages.iter().map(message_card).collect::<Vec<_>>()).leading())
         .title(thread.subject)
         .navigation_subtitle(text!("{#count} Messages", count = thread.messages.len()))
@@ -301,7 +304,7 @@ fn empty_destination(name: &'static str) -> impl View {
 fn reply(selected: Binding<Option<u64>>, destination: &Binding<usize>) -> impl View + use<> {
     Tabs::new(
         destination,
-        vec![
+        (
             Tab::container(label("Mail").icon(email_outline()), move || {
                 mail(selected.clone())
             })
@@ -315,7 +318,7 @@ fn reply(selected: Binding<Option<u64>>, destination: &Binding<usize>) -> impl V
             Tab::container(label("Meet").icon(video_outline()), || {
                 empty_destination("Meet")
             }),
-        ],
+        ),
     )
     .style(tab_style::automatic())
 }

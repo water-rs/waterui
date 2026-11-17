@@ -475,17 +475,8 @@ native_backend! {
         /// A table.
         table: waterui::component::table::TableConfig,
         #[cfg(waterui_feature = "navigation")]
-        /// A navigation bar around its content.
-        navigation_view: waterui::navigation::NavigationView,
-        #[cfg(waterui_feature = "navigation")]
-        /// A navigation stack.
-        navigation_stack: waterui::navigation::NavigationStack<(), ()>,
-        #[cfg(waterui_feature = "navigation")]
         /// A split navigation layout.
         navigation_split: waterui::navigation::split::NavigationSplitLayout,
-        #[cfg(waterui_feature = "navigation")]
-        /// Tabs.
-        tabs: waterui::navigation::tab::TabsLayout,
         /// A canvas.
         canvas: waterui::graphics::canvas::CanvasView,
         #[cfg(waterui_feature = "effects")]
@@ -525,6 +516,15 @@ native_backend! {
         dynamic<C>: waterui_core::Dynamic<C>,
         /// A container whose children are produced lazily.
         lazy_container<C>: waterui::layout::container::LazyContainer<C>,
+        #[cfg(waterui_feature = "navigation")]
+        /// A navigation bar around its content.
+        navigation_view<C>: waterui::navigation::NavigationView<C>,
+        #[cfg(waterui_feature = "navigation")]
+        /// A navigation stack.
+        navigation_stack<C>: waterui::navigation::NavigationStackLayout<C>,
+        #[cfg(waterui_feature = "navigation")]
+        /// Tabs.
+        tabs<C>: waterui::navigation::tab::TabsLayout<C>,
     }
     metadata {
         /// An environment scope over its content.
@@ -664,6 +664,36 @@ mod tests {
             snapshot
                 .range()
                 .filter_map(|index| snapshot.get_view(index))
+                .collect()
+        }
+    }
+
+    #[cfg(waterui_feature = "navigation")]
+    impl<C> Parent<C> for waterui::navigation::NavigationView<C> {
+        fn children(self) -> Vec<C> {
+            alloc::vec![self.content]
+        }
+    }
+
+    /// A stack's child is its root page's content.
+    #[cfg(waterui_feature = "navigation")]
+    impl<C> Parent<C> for waterui::navigation::NavigationStackLayout<C> {
+        fn children(self) -> Vec<C> {
+            alloc::vec![self.resolve(&Environment::new()).content]
+        }
+    }
+
+    /// Tabs' children are each tab's root content and the accessory.
+    #[cfg(waterui_feature = "navigation")]
+    impl<C: 'static> Parent<C> for waterui::navigation::tab::TabsLayout<C> {
+        fn children(self) -> Vec<C> {
+            let (_, tabs, _, _, accessory) = self.into_parts();
+            let snapshot = tabs.snapshot();
+            snapshot
+                .range()
+                .filter_map(|index| snapshot.get_view(index))
+                .map(|tab| tab.content().build().content)
+                .chain(accessory)
                 .collect()
         }
     }

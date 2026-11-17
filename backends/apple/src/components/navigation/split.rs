@@ -13,7 +13,7 @@
 use core::cell::RefCell;
 
 use waterui::navigation::{
-    NavigationSplitLayout, split::NavigationSplitDetailBuilder as DetailBuilder,
+    NavigationSplitLayout, NavigationView, split::NavigationSplitDetailBuilder as DetailBuilder,
 };
 use waterui::reactive::{Binding, Signal};
 use waterui_backend_core::AnyView;
@@ -23,8 +23,12 @@ use waterui_core::layout::{
     LayoutError, ProposalSize, Rect, ResolvedExtent, StretchAxis, SubView, ViewDimensions,
 };
 
+#[cfg(target_os = "ios")]
+use crate::contract::Held;
 use crate::contract::KeepAlive;
 use crate::contract::{NativeLeaf, RenderContext};
+#[cfg(target_os = "ios")]
+use waterui_core::backend::ChildSlot;
 
 /// The `NavigationSplitLayout` realization.
 pub fn realize_navigation_split_layout(
@@ -83,9 +87,9 @@ struct Columns {
 impl Columns {
     /// The middle column's selected content (three columns), or `None`
     /// when nothing is selected or the split has two columns.
-    fn middle_destination(&self) -> Option<AnyView> {
+    fn middle_destination(&self) -> Option<NavigationView<AnyView>> {
         match (&self.content, self.primary.snapshot()) {
-            (Some(content), Some(id)) => Some(AnyView::new(content.build(id))),
+            (Some(content), Some(id)) => Some(content.build(id)),
             _ => None,
         }
     }
@@ -93,52 +97,42 @@ impl Columns {
     /// The detail column's selected content: the primary selection drives
     /// two-column splits; the secondary selection drives three-column
     /// splits. `None` when nothing is selected.
-    fn detail_destination(&self) -> Option<AnyView> {
+    fn detail_destination(&self) -> Option<NavigationView<AnyView>> {
         self.secondary
             .as_ref()
             .map_or_else(
                 || self.primary.snapshot(),
                 waterui::reactive::Signal::snapshot,
             )
-            .map(|id| AnyView::new(self.detail.build(id)))
+            .map(|id| self.detail.build(id))
     }
 
     /// The middle column's content, or the placeholder.
     #[cfg(target_os = "macos")]
     fn middle_view(&self) -> AnyView {
         self.middle_destination()
-            .unwrap_or_else(|| self.placeholder.build())
+            .map_or_else(|| self.placeholder.build(), AnyView::new)
     }
 
     /// The detail column's content, or the placeholder.
     #[cfg(target_os = "macos")]
     fn detail_view(&self) -> AnyView {
         self.detail_destination()
-            .unwrap_or_else(|| self.placeholder.build())
+            .map_or_else(|| self.placeholder.build(), AnyView::new)
     }
 
-    /// The root of a stack-driven column: a selected destination is
-    /// resolved to its `NavigationView`; the empty-selection placeholder
-    /// becomes the content of a `NavigationView` with the default,
-    /// untitled bar, since it is a plain view with no navigation root to
-    /// resolve.
+    /// The root of a stack-driven column: the selected destination, or the
+    /// empty-selection placeholder under the default, untitled bar.
     #[cfg(target_os = "ios")]
-    fn column_root(
-        &self,
-        destination: Option<AnyView>,
-    ) -> crate::components::navigation::stack::ColumnRoot {
-        use crate::components::navigation::stack::ColumnRoot;
-        destination.map_or_else(
-            || {
-                ColumnRoot::Resolved(Box::new(waterui::navigation::NavigationView {
-                    bar: waterui::navigation::Bar::default(),
-                    content: self.placeholder.build(),
-                    state: waterui::navigation::NavigationDestinationState::default(),
-                    transition: None,
-                }))
-            },
-            ColumnRoot::Destination,
-        )
+    fn column_root(&self, destination: Option<NavigationView<AnyView>>) -> NavigationView<Held> {
+        destination
+            .unwrap_or_else(|| NavigationView {
+                bar: waterui::navigation::Bar::default(),
+                content: self.placeholder.build(),
+                state: waterui::navigation::NavigationDestinationState::default(),
+                transition: None,
+            })
+            .map_content(<Held as ChildSlot>::from_view)
     }
 }
 
