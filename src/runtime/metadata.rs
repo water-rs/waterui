@@ -470,6 +470,7 @@ pub mod context_menu {
 pub mod anchored_overlay {
     use nami::Binding;
     use waterui_core::{
+        AnyView,
         handler::{AnyViewBuilder, ViewBuilder},
         metadata::MetadataKey,
     };
@@ -513,7 +514,7 @@ pub mod anchored_overlay {
     #[derive(Debug)]
     pub struct AnchoredOverlay {
         /// Builds a fresh view for each presentation next to the anchor.
-        pub content: AnyViewBuilder,
+        pub content: AnyViewBuilder<AnyView>,
         /// Whether the overlay is presented. The backend writes `false` when
         /// it dismisses the overlay itself, as [`dismissal`](Self::dismissal)
         /// allows.
