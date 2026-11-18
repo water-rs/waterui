@@ -323,7 +323,7 @@ pub fn components_block_12() {
     use waterui::animation::Animation;
     use waterui::layout::scroll::ScrollController;
 
-    fn row_view(r: Record) -> ListItem {
+    fn row_view(r: Record) -> ListItem<impl View> {
         ListItem::new(text(r.title))
     }
     let records = vec![Record {
