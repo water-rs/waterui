@@ -31,13 +31,20 @@ impl AppleBackend {
 
     /// Opens the [`RenderContext`] for a payload or metadata wrapper, ending
     /// any enclosing filter-fusion walk before its own children realize.
+    #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
     pub(crate) fn entry<'a>(&mut self, env: &'a Environment) -> RenderContext<'a> {
         self.end_filter_fusion();
         RenderContext::entry(env, self.mtm)
     }
 
+    /// Opens the [`RenderContext`] for a payload or metadata wrapper.
+    #[cfg(not(any(feature = "applied_filter", feature = "view_effect")))]
+    pub(crate) fn entry<'a>(&self, env: &'a Environment) -> RenderContext<'a> {
+        RenderContext::entry(env, self.mtm)
+    }
+
+    #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
     fn end_filter_fusion(&mut self) {
-        #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
         if let Some(fusion) = self.filter_fusion.take() {
             fusion.disarm();
         }
@@ -93,6 +100,7 @@ impl NativeBackend for AppleBackend {
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
+        #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
         self.end_filter_fusion();
         crate::dispatch::render(native.composed(env), env, self.mtm)
     }
