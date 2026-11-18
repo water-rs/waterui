@@ -13,14 +13,6 @@ pub fn install(env: &mut Environment) {
     let _ = env;
 }
 
-/// Stops filter-chain expansion at native leaves and metadata boundaries.
-#[cfg(any(feature = "applied_filter", feature = "view_effect"))]
-pub(crate) fn is_native_boundary(view: &waterui_backend_core::AnyView) -> bool {
-    let name = view.name();
-    name.starts_with("waterui_core::components::native::Native<")
-        || name.starts_with("waterui_core::components::metadata::Metadata<")
-}
-
 /// Renders `view` under `env` into the platform view it becomes.
 ///
 /// `mtm` proves the call is on the main thread, where platform views exist.
