@@ -401,7 +401,7 @@ fn set_accessory_item(state: &Rc<RefCell<ContextMenuState>>, menu: &appkit::Cont
     reason = "one component's whole realization, as the handler it replaces"
 )]
 pub fn realize_resolved_context_menu_metadata(
-    metadata: Metadata<ResolvedContextMenu, Held>,
+    metadata: Metadata<ResolvedContextMenu<Held>, Held>,
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
     let mtm = ctx.mtm();
@@ -410,12 +410,12 @@ pub fn realize_resolved_context_menu_metadata(
     crate::primary_content::forward(&host, mounted.view());
     view::set_translates_autoresizing(mounted.view(), true);
 
-    // `preview` is a `UIKit` primitive; on `AppKit` the `AnyView`
-    // drops unresolved.
-    let accessory = metadata.value.accessory.map(|view| ctx.render(view));
+    // `preview` is a `UIKit` primitive; on `AppKit` the child drops
+    // unrealized.
+    let accessory = metadata.value.accessory.map(|child| ctx.realize(child));
     #[cfg(target_os = "ios")]
-    let preview = metadata.value.preview.map(|view| {
-        let leaf = ctx.render(view);
+    let preview = metadata.value.preview.map(|child| {
+        let leaf = ctx.realize(child);
         // An accessory-bearing menu mounts the leaf into its own
         // panel; the canonical interaction alone takes a controller,
         // and only one controller may own the view at a time.
