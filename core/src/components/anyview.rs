@@ -18,7 +18,6 @@ use crate::backend::{Backend, DynBackend, Erased};
 use crate::{Environment, View};
 
 trait AnyViewImpl: 'static {
-    fn body(self: Box<Self>, env: Environment) -> AnyView;
     fn dispatch_dyn(
         self: Box<Self>,
         backend: &mut dyn DynBackend,
@@ -34,9 +33,6 @@ trait AnyViewImpl: 'static {
 }
 
 impl<T: View> AnyViewImpl for T {
-    fn body(self: Box<Self>, env: Environment) -> AnyView {
-        AnyView::new(View::body(*self, &env))
-    }
     fn dispatch_dyn(
         self: Box<Self>,
         backend: &mut dyn DynBackend,
@@ -50,6 +46,11 @@ impl<T: View> AnyViewImpl for T {
 /// A type-erased wrapper for a `View`.
 ///
 /// This allows storing and passing around different view types uniformly.
+///
+/// # Contract
+///
+/// An erased view expands through [`View::dispatch`], which reaches
+/// [`Backend::erased`]; `body` is unreachable, and reaching it panics.
 #[must_use]
 pub struct AnyView(Box<dyn AnyViewImpl>);
 
@@ -192,8 +193,8 @@ impl AnyView {
 }
 
 impl View for AnyView {
-    fn body(self, env: &Environment) -> impl View {
-        self.0.body(env.clone())
+    fn body(self, _env: &Environment) -> impl View {
+        never_expands(self.name());
     }
 
     fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
@@ -201,14 +202,51 @@ impl View for AnyView {
     }
 }
 
+fn never_expands(name: &'static str) {
+    unreachable!(
+        "erased view {name} reached `body`: an `AnyView` expands through `View::dispatch`"
+    );
+}
+
 #[cfg(test)]
 mod test {
     use core::any::TypeId;
+
+    use crate::backend::{Backend, peel_native};
+    use crate::{Environment, View};
 
     use super::AnyView;
 
     #[test]
     pub fn get_type_id() {
         assert_eq!(AnyView::new(()).type_id(), TypeId::of::<()>());
+    }
+
+    #[test]
+    #[should_panic(expected = "reached `body`")]
+    fn an_erased_view_never_expands() {
+        let _ = AnyView::new(()).body(&Environment::new());
+    }
+
+    struct DispatchedOnly;
+
+    fn body_must_not_run() {
+        panic!("erased dispatch must not call body");
+    }
+
+    impl View for DispatchedOnly {
+        fn body(self, _env: &Environment) -> impl View {
+            body_must_not_run();
+        }
+
+        fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+            ().dispatch(backend, env, cx)
+        }
+    }
+
+    #[test]
+    fn an_erased_view_dispatches_without_calling_body() {
+        let erased = AnyView::new(DispatchedOnly);
+        assert_eq!(peel_native::<()>(erased, &Environment::new()), Some(()));
     }
 }

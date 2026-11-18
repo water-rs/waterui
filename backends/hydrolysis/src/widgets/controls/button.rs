@@ -2,7 +2,6 @@
 use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::chrome::{ChromeContent, LiveChromeParts};
 #[cfg(feature = "menu")]
-#[cfg(feature = "menu")]
 use crate::renderer::popup_menu_nodes;
 use crate::renderer::{
     GroupOpacity, HydroState, HydrolysisRenderer, RenderContext, RetainedSubview,
@@ -1293,9 +1292,9 @@ pub fn label_styled(label: &LookLabel, styled: StyledStr) -> StyledStr {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        ButtonChromeState, MenuRenderState, button_size, look_color, retained_label_color,
-    };
+    #[cfg(feature = "menu")]
+    use super::MenuRenderState;
+    use super::{ButtonChromeState, button_size, look_color, retained_label_color};
     use crate::theme::{
         ButtonLook, Chrome, CornerShape, FocusIndicator, Label, Motion, PressFeedback, StateLayer,
         Surface,
@@ -1304,25 +1303,27 @@ mod tests {
     use kurbo::Rect;
     use nami::{Signal as _, SignalExt as _};
     use waterui::Color;
-    use waterui::{AnyView, View};
     use waterui_controls::ControlSize;
     use waterui_controls::button::ButtonStyle;
     #[cfg(feature = "menu")]
     use waterui_controls::menu::{Menu, ResolvedMenu};
     use waterui_core::Environment;
     use waterui_core::animation::Animation;
+    #[cfg(feature = "menu")]
+    use waterui_core::backend::peel_native;
     use waterui_core::interaction::{InteractionState, StateValue};
     use waterui_core::layout::{ProposalSize, Size};
 
     /// The trigger spec of `menu` resolved in `env`.
+    #[cfg(feature = "menu")]
     fn trigger_spec(menu: Menu, env: &Environment) -> crate::theme::ButtonSpec {
-        let resolved = AnyView::new(View::body(menu, env))
-            .downcast::<ResolvedMenu>()
-            .expect("a menu resolves to its native config");
-        MenuRenderState::<crate::text::ParleyEngine>::from_resolved(*resolved, env).spec(env)
+        let resolved =
+            peel_native::<ResolvedMenu>(menu, env).expect("a menu resolves to its native config");
+        MenuRenderState::<crate::text::ParleyEngine>::from_resolved(resolved, env).spec(env)
     }
 
     #[test]
+    #[cfg(feature = "menu")]
     fn menu_trigger_takes_the_menus_style_and_size() {
         let env = Environment::new();
         let plain = trigger_spec(Menu::new("Sort", ()), &env);
