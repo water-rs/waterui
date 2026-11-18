@@ -32,7 +32,7 @@ fn detail_line(n: u64, label: &'static str) -> impl View {
     text(text!("detail line {n} {label}")).caption().muted()
 }
 
-fn record_row(index: u64) -> ListItem {
+fn record_row(index: u64) -> ListItem<impl View> {
     let lines = index % 3 + 1;
     let header = hstack((
         Circle.fill(chip_color(index)).size(10.0, 10.0),

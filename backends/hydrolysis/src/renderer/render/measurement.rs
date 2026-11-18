@@ -26,8 +26,6 @@ use std::rc::Rc;
 use waterui_core::contract_violation;
 #[cfg(any(feature = "list", feature = "navigation"))]
 use waterui_core::layout::layout_direction;
-#[cfg(feature = "list")]
-use waterui_core::views::ViewSnapshot;
 #[cfg(feature = "picker")]
 use waterui_form::picker::PickerStyle;
 
@@ -443,9 +441,9 @@ pub fn list_spec(env: &Environment) -> crate::theme::ListSpec {
 /// The list's own size from its first row's measured content, which every
 /// row is estimated at: `insets` are that row's `ListItem::insets`.
 #[cfg(feature = "list")]
-pub fn list_intrinsic_for_first_row<E: crate::text::TextEngine>(
-    list: &ListConfig,
-    contents: &AnyViewsSnapshot<ListItem>,
+pub fn list_intrinsic_for_first_row<E: crate::text::TextEngine, C>(
+    list: &ListConfig<C>,
+    contents: &AnyViewsSnapshot<ListItem<C>>,
     content_size: LayoutSize,
     insets: Option<&EdgeInsets>,
     state: &mut HydroState<E>,
@@ -503,15 +501,17 @@ pub fn list_intrinsic_for_first_row<E: crate::text::TextEngine>(
 /// snapshot of the row collection, so the caller's whole pass (section walk,
 /// accessibility emit, or draw loop) reads one coherent membership.
 #[cfg(feature = "list")]
-pub fn materialize_list_item(
-    contents: &impl ViewSnapshot<View = ListItem>,
+pub fn materialize_list_item<E: crate::text::TextEngine>(
+    contents: &AnyViewsSnapshot<ListItem<crate::renderer::HeldChild<E>>>,
     index: usize,
-) -> ListItem {
+) -> ListItem<crate::renderer::HeldChild<E>> {
     contents.get_view(index).unwrap_or_else(|| {
         contract_violation!(
             "ListConfig failed to materialize item at index {index}; the row is empty"
         );
-        ListItem::new(())
+        ListItem::new(()).map_content(
+            <crate::renderer::HeldChild<E> as waterui_core::backend::ChildSlot>::from_view,
+        )
     })
 }
 

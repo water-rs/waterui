@@ -7,6 +7,7 @@
 //! Material section dividers — attached to whichever rows the section holds
 //! at the moment.
 
+use waterui_core::View;
 use waterui_text::{IntoText, Text};
 
 use super::ListSection;
@@ -105,12 +106,18 @@ impl<C> Section<C> {
 }
 
 impl<C: ListContent<SectionScope>> ListContent<ListScope> for Section<C> {
-    fn collect_items(self, sink: &mut ListItemSink) {
+    type Row = C::Row;
+
+    fn collect_items<R, W>(self, sink: &mut ListItemSink<R>, wrap: W)
+    where
+        R: View,
+        W: Fn(Self::Row) -> R + Clone + 'static,
+    {
         let mut chrome = ListSection::default();
         chrome.set_label(self.label);
         chrome.set_footer(self.footer);
         sink.begin_section(chrome);
-        self.content.collect_items(sink);
+        self.content.collect_items(sink, wrap);
         sink.end_section();
     }
 }

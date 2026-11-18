@@ -370,7 +370,7 @@ pub enum AccessibilityActionTarget<E: crate::text::TextEngine> {
         /// then writes the binding like a pointer click on the row, and
         /// arrow-key navigation moves the selection along with the focus
         /// (water-rs/waterui#1226).
-        selection: Option<Rc<crate::widgets::layout::list::ListRowSelection>>,
+        selection: Option<Rc<crate::widgets::layout::list::ListRowSelection<E>>>,
     },
 }
 
