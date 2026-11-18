@@ -929,13 +929,14 @@ impl NativeBackend for AppleBackend {
     }
 
     #[cfg(waterui_feature = "menu")]
-    fn resolved_context_menu<C: ChildView<Self>>(
+    fn resolved_context_menu<S: ChildView<Self>, C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::metadata::context_menu::ResolvedContextMenu, C>,
+        metadata: Metadata<waterui::metadata::context_menu::ResolvedContextMenu<S>, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
-        let metadata = metadata.map_content(C::into_child);
+        let Metadata { content, value } = metadata;
+        let metadata = Metadata::new(content.into_child(), value.map_slots(S::into_child));
         crate::components::context_menu::realize_resolved_context_menu_metadata(
             metadata,
             &self.entry(env),

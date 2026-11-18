@@ -14,9 +14,15 @@ pub use waterui_core::metadata::{Metadata, MetadataKey, Retain};
 #[cfg(feature = "menu")]
 pub mod context_menu {
     use alloc::vec::Vec;
+    use core::fmt;
     use nami::{Binding, Computed, SignalExt, binding};
     use waterui_controls::menu::{MenuItem, MenuView, ResolvedMenuItem, resolve_menu_items};
-    use waterui_core::{AnyView, Environment, Metadata, View, env::with, metadata::MetadataKey};
+    use waterui_core::{
+        AnyView, Environment, Metadata, View,
+        backend::{Backend, ChildSlot, MapSlots},
+        env::with,
+        metadata::MetadataKey,
+    };
 
     /// A context menu with an optional custom preview and an interactive
     /// accessory presented alongside its commands.
@@ -40,6 +46,9 @@ pub mod context_menu {
     /// open. On iOS, the accessory remains interactive and its intrinsic
     /// size can change while the popover is open.
     ///
+    /// `P` and `A` are the view types of the preview and accessory, `()` while
+    /// none is set.
+    ///
     /// # Example
     ///
     /// ```rust
@@ -56,21 +65,30 @@ pub mod context_menu {
     ///         ),
     ///     );
     /// ```
-    #[derive(Debug)]
     #[non_exhaustive]
-    pub struct ContextMenu {
+    pub struct ContextMenu<P, A> {
         /// The menu items to display in the context menu.
         items: Computed<Vec<MenuItem>>,
         /// The custom preview shown while the menu is open. `None` uses
         /// the platform's default presentation of the source view.
-        preview: Option<AnyView>,
+        preview: Option<P>,
         /// An interactive view presented alongside the menu — a
         /// pointer-interactive `NSMenuItem` view row on macOS, alongside
         /// the preview and commands in a native popover on iOS.
-        accessory: Option<AnyView>,
+        accessory: Option<A>,
     }
 
-    impl ContextMenu {
+    impl<P, A> fmt::Debug for ContextMenu<P, A> {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.debug_struct("ContextMenu")
+                .field("items", &self.items)
+                .field("preview", &self.preview.is_some())
+                .field("accessory", &self.accessory.is_some())
+                .finish_non_exhaustive()
+        }
+    }
+
+    impl<P, A> ContextMenu<P, A> {
         /// The menu items to display in the context menu.
         #[must_use]
         pub const fn items(&self) -> &Computed<Vec<MenuItem>> {
@@ -80,7 +98,7 @@ pub mod context_menu {
         /// The custom preview shown while the menu is open. `None` uses
         /// the platform's default presentation of the source view.
         #[must_use]
-        pub const fn get_preview(&self) -> Option<&AnyView> {
+        pub const fn get_preview(&self) -> Option<&P> {
             self.preview.as_ref()
         }
 
@@ -88,14 +106,14 @@ pub mod context_menu {
         /// pointer-interactive `NSMenuItem` view row on macOS, alongside
         /// the preview and commands in a native popover on iOS.
         #[must_use]
-        pub const fn get_accessory(&self) -> Option<&AnyView> {
+        pub const fn get_accessory(&self) -> Option<&A> {
             self.accessory.as_ref()
         }
     }
 
-    impl MetadataKey for ContextMenu {}
+    impl<P: 'static, A: 'static> MetadataKey for ContextMenu<P, A> {}
 
-    impl ContextMenu {
+    impl ContextMenu<(), ()> {
         /// Creates a context menu with the given items, lifting the source
         /// view and showing no accessory.
         #[must_use]
@@ -106,14 +124,19 @@ pub mod context_menu {
                 accessory: None,
             }
         }
+    }
 
+    impl<P, A> ContextMenu<P, A> {
         /// Shows `preview` while the menu is open, using the platform's
         /// presentation: a lifted preview for an iOS system context menu,
         /// or content inside its accessory-bearing popover.
         #[must_use]
-        pub fn preview(mut self, preview: impl View) -> Self {
-            self.preview = Some(AnyView::new(preview));
-            self
+        pub fn preview<NewP: View>(self, preview: NewP) -> ContextMenu<NewP, A> {
+            ContextMenu {
+                items: self.items,
+                preview: Some(preview),
+                accessory: self.accessory,
+            }
         }
 
         /// Presents an interactive `accessory` alongside the menu — as a
@@ -129,9 +152,32 @@ pub mod context_menu {
         /// [`DismissContextMenu`] to call when an action should close the
         /// menu.
         #[must_use]
-        pub fn accessory(mut self, accessory: impl View) -> Self {
-            self.accessory = Some(AnyView::new(accessory));
-            self
+        pub fn accessory<NewA: View>(self, accessory: NewA) -> ContextMenu<P, NewA> {
+            ContextMenu {
+                items: self.items,
+                preview: self.preview,
+                accessory: Some(accessory),
+            }
+        }
+    }
+
+    impl<P: View, A: View> ContextMenu<P, A> {
+        fn resolve<S: ChildSlot>(self, env: &Environment) -> ResolvedContextMenu<S> {
+            let Self {
+                items,
+                preview,
+                accessory,
+            } = self;
+            let requests = binding(0_i32);
+            let dismiss = DismissContextMenu {
+                requests: requests.clone(),
+            };
+            ResolvedContextMenu {
+                items: resolve_menu_items(&items, env),
+                preview: preview.map(S::from_view),
+                accessory: accessory.map(|accessory| S::from_view(with(accessory, dismiss))),
+                dismiss_requests: requests.computed(),
+            }
         }
     }
 
@@ -139,18 +185,29 @@ pub mod context_menu {
     /// or any [`MenuView`], which becomes a menu with no preview or
     /// accessory.
     pub trait IntoContextMenu {
+        /// The preview view type, `()` when the menu carries none.
+        type Preview: View;
+        /// The accessory view type, `()` when the menu carries none.
+        type Accessory: View;
+
         /// Performs the conversion.
-        fn into_context_menu(self) -> ContextMenu;
+        fn into_context_menu(self) -> ContextMenu<Self::Preview, Self::Accessory>;
     }
 
-    impl IntoContextMenu for ContextMenu {
-        fn into_context_menu(self) -> ContextMenu {
+    impl<P: View, A: View> IntoContextMenu for ContextMenu<P, A> {
+        type Preview = P;
+        type Accessory = A;
+
+        fn into_context_menu(self) -> Self {
             self
         }
     }
 
     impl<T: MenuView> IntoContextMenu for T {
-        fn into_context_menu(self) -> ContextMenu {
+        type Preview = ();
+        type Accessory = ();
+
+        fn into_context_menu(self) -> ContextMenu<(), ()> {
             ContextMenu::new(self)
         }
     }
@@ -173,40 +230,73 @@ pub mod context_menu {
         }
     }
 
-    /// Resolved context menu metadata consumed by the native backends.
+    /// Resolved context menu metadata consumed by the native backends, with
+    /// its preview and accessory in the backend's child slot `S`.
     #[doc(hidden)]
     #[derive(Debug)]
-    pub struct ResolvedContextMenu {
+    pub struct ResolvedContextMenu<S> {
         /// The resolved menu items for the current environment.
         pub items: Computed<Vec<ResolvedMenuItem>>,
         /// The custom preview shown while the menu is open; `None` uses
         /// the platform's default presentation of the source view.
-        pub preview: Option<AnyView>,
+        pub preview: Option<S>,
         /// The accessory presented alongside the menu, with
         /// [`DismissContextMenu`] installed in its environment.
-        pub accessory: Option<AnyView>,
+        pub accessory: Option<S>,
         /// Counts the accessory's dismiss requests, wrapping on overflow.
         /// Only a change matters: every change asks the backend to close the
         /// open menu.
         pub dismiss_requests: Computed<i32>,
     }
 
-    impl MetadataKey for ResolvedContextMenu {}
+    impl<S: 'static> MetadataKey for ResolvedContextMenu<S> {}
+
+    impl<S> ResolvedContextMenu<S> {
+        /// The same resolved menu with its preview and accessory mapped
+        /// through `f`: a backend holds them in its own slot.
+        #[must_use]
+        pub fn map_slots<T>(self, mut f: impl FnMut(S) -> T) -> ResolvedContextMenu<T> {
+            ResolvedContextMenu {
+                items: self.items,
+                preview: self.preview.map(&mut f),
+                accessory: self.accessory.map(f),
+                dismiss_requests: self.dismiss_requests,
+            }
+        }
+    }
+
+    impl<S> MapSlots<S> for ResolvedContextMenu<S> {
+        type With<T: 'static> = ResolvedContextMenu<T>;
+
+        fn map_slots<T: 'static>(
+            self,
+            f: impl Fn(S) -> T + Clone + 'static,
+        ) -> ResolvedContextMenu<T> {
+            Self::map_slots(self, f)
+        }
+    }
 
     /// View wrapper that resolves a context menu against the environment.
     #[doc(hidden)]
-    #[derive(Debug)]
     #[non_exhaustive]
-    pub struct ContextMenuView<Content> {
+    pub struct ContextMenuView<Content, P, A> {
         /// The wrapped content view.
         content: Content,
         /// The context menu to resolve.
-        menu: ContextMenu,
+        menu: ContextMenu<P, A>,
     }
 
-    impl<Content> ContextMenuView<Content> {
+    impl<Content, P, A> fmt::Debug for ContextMenuView<Content, P, A> {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.debug_struct("ContextMenuView")
+                .field("menu", &self.menu)
+                .finish_non_exhaustive()
+        }
+    }
+
+    impl<Content, P, A> ContextMenuView<Content, P, A> {
         /// Wraps `content` with the `menu` to resolve against the environment.
-        pub const fn new(content: Content, menu: ContextMenu) -> Self {
+        pub const fn new(content: Content, menu: ContextMenu<P, A>) -> Self {
             Self { content, menu }
         }
 
@@ -218,40 +308,43 @@ pub mod context_menu {
 
         /// The context menu to resolve.
         #[must_use]
-        pub const fn menu(&self) -> &ContextMenu {
+        pub const fn menu(&self) -> &ContextMenu<P, A> {
             &self.menu
         }
     }
 
-    impl<Content: View> View for ContextMenuView<Content> {
+    impl<Content: View, P: View, A: View> View for ContextMenuView<Content, P, A> {
+        /// The erased form, for code that expands views by hand.
         fn body(self, env: &Environment) -> impl View {
-            let ContextMenu {
-                items,
-                preview,
-                accessory,
-            } = self.menu;
-            let requests = binding(0_i32);
-            let dismiss = DismissContextMenu {
-                requests: requests.clone(),
-            };
-            Metadata::new(
-                self.content,
-                ResolvedContextMenu {
-                    items: resolve_menu_items(&items, env),
-                    preview,
-                    accessory: accessory.map(|accessory| AnyView::new(with(accessory, dismiss))),
-                    dismiss_requests: requests.computed(),
-                },
+            Metadata::new(self.content, self.menu.resolve::<AnyView>(env))
+        }
+
+        /// Reaches the backend with the content, preview, and accessory in the
+        /// backend's child slot.
+        fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+            backend.metadata(
+                Metadata::new(
+                    B::Slot::from_view(self.content),
+                    self.menu.resolve::<B::Slot>(env),
+                ),
+                env,
+                cx,
             )
         }
     }
 
     #[cfg(test)]
     mod tests {
+        use core::any::TypeId;
         use nami::Signal;
         use waterui_controls::menu::CommandExt;
-        use waterui_core::{Environment, backend::peel_metadata};
-        use waterui_text::text::text;
+        use waterui_core::{
+            AnyView, Environment, Metadata, View,
+            backend::{Backend, ChildSlot, peel_metadata},
+            metadata::MetadataKey,
+            view::hook::{HookList, HookableView},
+        };
+        use waterui_text::text::{Text, text};
 
         use super::{ContextMenu, DismissContextMenu, ResolvedContextMenu};
         use crate::ViewExt;
@@ -262,7 +355,7 @@ pub mod context_menu {
         #[test]
         fn accessory_environment_carries_dismiss_context_menu() {
             let env = Environment::new();
-            let resolved = peel_metadata::<ResolvedContextMenu>(
+            let resolved = peel_metadata::<ResolvedContextMenu<AnyView>>(
                 text("target")
                     .context_menu(ContextMenu::new("Reply".action(|| {})).accessory(text("like"))),
                 &env,
@@ -286,6 +379,89 @@ pub mod context_menu {
             let before = resolved.dismiss_requests.snapshot();
             dismiss.dismiss();
             assert_ne!(resolved.dismiss_requests.snapshot(), before);
+        }
+
+        /// Records the concrete view type handed to `ChildSlot::from_view`.
+        #[derive(Debug, PartialEq, Eq)]
+        struct RecordedSlot(TypeId);
+
+        impl ChildSlot for RecordedSlot {
+            fn from_view<V: View>(_view: V) -> Self {
+                Self(TypeId::of::<V>())
+            }
+        }
+
+        struct SlotProbe;
+
+        impl Backend for SlotProbe {
+            type Output = Option<ResolvedContextMenu<RecordedSlot>>;
+            type Ctx = ();
+            type Slot = RecordedSlot;
+
+            fn native<T: waterui_core::NativeView + 'static>(
+                &mut self,
+                _native: T,
+                _env: &Environment,
+                (): (),
+            ) -> Self::Output {
+                None
+            }
+
+            fn metadata<K: MetadataKey>(
+                &mut self,
+                metadata: Metadata<K, Self::Slot>,
+                _env: &Environment,
+                (): (),
+            ) -> Self::Output {
+                waterui_core::backend::cast(metadata.value).ok()
+            }
+
+            fn erased(&mut self, _view: AnyView, _env: &Environment, (): ()) -> Self::Output {
+                None
+            }
+
+            fn scoped<H: HookList, V: View>(
+                &mut self,
+                _hooks: H,
+                view: V,
+                env: &Environment,
+                (): (),
+            ) -> Self::Output {
+                view.dispatch(self, env, ())
+            }
+
+            fn hookable<T: HookableView>(
+                &mut self,
+                _view: T,
+                _env: &Environment,
+                (): (),
+            ) -> Self::Output {
+                None
+            }
+        }
+
+        #[test]
+        fn dispatch_keeps_preview_and_accessory_types_in_backend_slot() {
+            let menu = ContextMenu::new("Reply".action(|| {}))
+                .preview(text("preview"))
+                .accessory(());
+            let _: Option<&Text> = menu.get_preview();
+            let _: Option<&()> = menu.get_accessory();
+
+            let env = Environment::new();
+            let resolved = text("target")
+                .context_menu(menu)
+                .dispatch(&mut SlotProbe, &env, ())
+                .expect("context_menu dispatches ResolvedContextMenu<B::Slot>");
+
+            assert_eq!(resolved.preview, Some(RecordedSlot(TypeId::of::<Text>())));
+            assert_ne!(
+                resolved.preview,
+                Some(RecordedSlot(TypeId::of::<AnyView>()))
+            );
+            let accessory_id = resolved.accessory.expect("accessory present").0;
+            assert_ne!(accessory_id, TypeId::of::<AnyView>());
+            assert_eq!(accessory_id, TypeId::of::<Metadata<Environment, ()>>(),);
         }
     }
 }
