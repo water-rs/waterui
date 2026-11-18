@@ -1229,10 +1229,10 @@ pub trait ViewExt: View + Sized {
     ///     ]);
     /// ```
     #[cfg(feature = "menu")]
-    fn context_menu(
+    fn context_menu<M: crate::metadata::context_menu::IntoContextMenu>(
         self,
-        menu: impl crate::metadata::context_menu::IntoContextMenu,
-    ) -> crate::metadata::context_menu::ContextMenuView<Self> {
+        menu: M,
+    ) -> crate::metadata::context_menu::ContextMenuView<Self, M::Preview, M::Accessory> {
         crate::metadata::context_menu::ContextMenuView::new(self, menu.into_context_menu())
     }
 

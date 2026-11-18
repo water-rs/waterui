@@ -12,6 +12,7 @@ use accesskit::{Action, ActionRequest, Role, TreeId, TreeUpdate};
 use nami::Binding;
 use nami::Signal as _;
 use waterui::ViewExt as _;
+use waterui::metadata::context_menu::IntoContextMenu;
 use waterui::prelude::{ContextMenu, DismissContextMenu, Use};
 use waterui_controls::button::button;
 use waterui_controls::menu::{CommandExt as _, MenuItem};
@@ -73,9 +74,9 @@ fn primary_click(x: f32, y: f32) -> [InputEvent; 2] {
 /// what `bounds_of` returns is what the preview lifts and the menu clears.
 /// `menu` is a factory because the builder closure is `Fn`, and `ContextMenu`
 /// is not `Clone`.
-fn host_view_with_spacer(
+fn host_view_with_spacer<M: IntoContextMenu + 'static>(
     spacer: f32,
-    menu: impl Fn() -> ContextMenu + 'static,
+    menu: impl Fn() -> M + 'static,
 ) -> AnyViewBuilder<AnyView> {
     // The trailing spacer fills the window column, so the host sits `spacer`
     // points below the window's top edge rather than in a centred block
@@ -91,11 +92,13 @@ fn host_view_with_spacer(
     })
 }
 
-fn host_view(menu: impl Fn() -> ContextMenu + 'static) -> AnyViewBuilder<AnyView> {
+fn host_view<M: IntoContextMenu + 'static>(
+    menu: impl Fn() -> M + 'static,
+) -> AnyViewBuilder<AnyView> {
     host_view_with_spacer(110.0, menu)
 }
 
-fn runtime(menu: impl Fn() -> ContextMenu + 'static) -> HeadlessRuntime {
+fn runtime<M: IntoContextMenu + 'static>(menu: impl Fn() -> M + 'static) -> HeadlessRuntime {
     HeadlessRuntime::new_for_tests(
         test_environment(),
         host_view(menu),
@@ -109,10 +112,10 @@ fn runtime(menu: impl Fn() -> ContextMenu + 'static) -> HeadlessRuntime {
 /// every context menu with a divider and an "Inspect element" row, so the
 /// menu stands `3 * row_height + padding` tall — a `240`-high window leaves
 /// no room beside any source for the below/above placements to show.
-fn runtime_sized(
+fn runtime_sized<M: IntoContextMenu + 'static>(
     spacer: f32,
     window: (u32, u32),
-    menu: impl Fn() -> ContextMenu + 'static,
+    menu: impl Fn() -> M + 'static,
 ) -> HeadlessRuntime {
     let mut runtime = HeadlessRuntime::new_for_tests(
         test_environment(),
