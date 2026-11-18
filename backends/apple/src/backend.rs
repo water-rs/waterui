@@ -11,16 +11,36 @@ use waterui_core::{Metadata, NativeView};
 use crate::contract::{NativeLeaf, RenderContext};
 
 /// Realizes views into `AppKit`/`UIKit` leaves.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct AppleBackend {
     mtm: cocoa_ui::MainThreadMarker,
+    #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
+    pub(crate) filter_fusion: Option<crate::components::filtered::FilterFusion>,
 }
 
 impl AppleBackend {
     /// A backend on the main thread `mtm` proves.
     #[must_use]
     pub const fn new(mtm: cocoa_ui::MainThreadMarker) -> Self {
-        Self { mtm }
+        Self {
+            mtm,
+            #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
+            filter_fusion: None,
+        }
+    }
+
+    /// Opens the [`RenderContext`] for a payload or metadata wrapper, ending
+    /// any enclosing filter-fusion walk before its own children realize.
+    pub(crate) fn entry<'a>(&mut self, env: &'a Environment) -> RenderContext<'a> {
+        self.end_filter_fusion();
+        RenderContext::entry(env, self.mtm)
+    }
+
+    fn end_filter_fusion(&mut self) {
+        #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
+        if let Some(fusion) = self.filter_fusion.take() {
+            fusion.disarm();
+        }
     }
 }
 
@@ -30,7 +50,7 @@ impl NativeBackendFamily for AppleBackend {
     type Backend<'a> = Self;
 
     fn reborrow(backend: &mut Self) -> Self {
-        Self { mtm: backend.mtm }
+        backend.clone()
     }
 }
 
@@ -44,11 +64,11 @@ impl NativeBackend for AppleBackend {
     }
 
     fn empty(&mut self, native: (), env: &Environment, (): ()) -> NativeLeaf {
-        crate::components::empty::realize_empty(native, &RenderContext::entry(env, self.mtm))
+        crate::components::empty::realize_empty(native, &self.entry(env))
     }
 
     fn text(&mut self, native: waterui::text::TextConfig, env: &Environment, (): ()) -> NativeLeaf {
-        crate::components::text::realize_text_config(native, &RenderContext::entry(env, self.mtm))
+        crate::components::text::realize_text_config(native, &self.entry(env))
     }
 
     fn label(&mut self, native: waterui_core::Str, env: &Environment, (): ()) -> NativeLeaf {
@@ -56,18 +76,15 @@ impl NativeBackend for AppleBackend {
         let realize = crate::components::plain::realize_str;
         #[cfg(not(feature = "plain"))]
         let realize = crate::components::text::realize_str;
-        realize(native, &RenderContext::entry(env, self.mtm))
+        realize(native, &self.entry(env))
     }
 
     fn color(&mut self, native: waterui::Color, env: &Environment, (): ()) -> NativeLeaf {
-        crate::components::resolved_color::realize_color(
-            native,
-            &RenderContext::entry(env, self.mtm),
-        )
+        crate::components::resolved_color::realize_color(native, &self.entry(env))
     }
 
     fn spacer(&mut self, native: waterui::layout::Spacer, env: &Environment, (): ()) -> NativeLeaf {
-        crate::components::spacer::realize_spacer(native, &RenderContext::entry(env, self.mtm))
+        crate::components::spacer::realize_spacer(native, &self.entry(env))
     }
 
     fn divider(
@@ -76,6 +93,7 @@ impl NativeBackend for AppleBackend {
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
+        self.end_filter_fusion();
         crate::dispatch::render(native.composed(env), env, self.mtm)
     }
 
@@ -85,11 +103,11 @@ impl NativeBackend for AppleBackend {
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
-        let mtm = self.mtm;
+        let ctx = self.entry(env);
         crate::components::fixed_container::realize_fixed_container(
             native,
             |child| child.realize(self, env, ()),
-            &RenderContext::entry(env, mtm),
+            &ctx,
         )
     }
 
@@ -99,10 +117,7 @@ impl NativeBackend for AppleBackend {
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
-        crate::components::container::realize_lazy_container(
-            native,
-            &RenderContext::entry(env, self.mtm),
-        )
+        crate::components::container::realize_lazy_container(native, &self.entry(env))
     }
 
     fn scroll<C: ChildView<Self>>(
@@ -111,11 +126,11 @@ impl NativeBackend for AppleBackend {
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
-        let mtm = self.mtm;
+        let ctx = self.entry(env);
         crate::components::scroll::realize_scroll_view(
             native,
             |content| content.realize(self, env, ()),
-            &RenderContext::entry(env, mtm),
+            &ctx,
         )
     }
 
@@ -125,7 +140,7 @@ impl NativeBackend for AppleBackend {
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
-        crate::components::dynamic::realize_dynamic(native, &RenderContext::entry(env, self.mtm))
+        crate::components::dynamic::realize_dynamic(native, &self.entry(env))
     }
 
     fn shape(
@@ -134,14 +149,11 @@ impl NativeBackend for AppleBackend {
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
-        crate::components::resolved_shape::realize_resolved_shape(
-            native,
-            &RenderContext::entry(env, self.mtm),
-        )
+        crate::components::resolved_shape::realize_resolved_shape(native, &self.entry(env))
     }
 
     fn icon(&mut self, native: waterui::icon::SystemIcon, env: &Environment, (): ()) -> NativeLeaf {
-        crate::components::image::realize_system_icon(native, &RenderContext::entry(env, self.mtm))
+        crate::components::image::realize_system_icon(native, &self.entry(env))
     }
 
     fn gradient(
@@ -150,10 +162,7 @@ impl NativeBackend for AppleBackend {
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
-        crate::components::resolved_gradient::realize_gradient(
-            native,
-            &RenderContext::entry(env, self.mtm),
-        )
+        crate::components::resolved_gradient::realize_gradient(native, &self.entry(env))
     }
 
     fn button(
@@ -162,10 +171,7 @@ impl NativeBackend for AppleBackend {
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
-        crate::components::button::realize_button_config(
-            native,
-            &RenderContext::entry(env, self.mtm),
-        )
+        crate::components::button::realize_button_config(native, &self.entry(env))
     }
 
     fn badge(
@@ -174,7 +180,7 @@ impl NativeBackend for AppleBackend {
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
-        crate::components::badge::realize_badge_config(native, &RenderContext::entry(env, self.mtm))
+        crate::components::badge::realize_badge_config(native, &self.entry(env))
     }
 
     fn progress(
@@ -183,10 +189,7 @@ impl NativeBackend for AppleBackend {
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
-        crate::components::progress::realize_progress_config(
-            native,
-            &RenderContext::entry(env, self.mtm),
-        )
+        crate::components::progress::realize_progress_config(native, &self.entry(env))
     }
 
     #[cfg(waterui_feature = "toggle")]
@@ -196,10 +199,7 @@ impl NativeBackend for AppleBackend {
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
-        crate::components::toggle::realize_toggle_config(
-            native,
-            &RenderContext::entry(env, self.mtm),
-        )
+        crate::components::toggle::realize_toggle_config(native, &self.entry(env))
     }
 
     #[cfg(waterui_feature = "slider")]
@@ -209,10 +209,7 @@ impl NativeBackend for AppleBackend {
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
-        crate::components::slider::realize_slider_config(
-            native,
-            &RenderContext::entry(env, self.mtm),
-        )
+        crate::components::slider::realize_slider_config(native, &self.entry(env))
     }
 
     #[cfg(waterui_feature = "stepper")]
@@ -222,10 +219,7 @@ impl NativeBackend for AppleBackend {
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
-        crate::components::stepper::realize_stepper_config(
-            native,
-            &RenderContext::entry(env, self.mtm),
-        )
+        crate::components::stepper::realize_stepper_config(native, &self.entry(env))
     }
 
     #[cfg(waterui_feature = "text-field")]
@@ -235,10 +229,7 @@ impl NativeBackend for AppleBackend {
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
-        crate::components::text_field::realize_resolved_text_field_config(
-            native,
-            &RenderContext::entry(env, self.mtm),
-        )
+        crate::components::text_field::realize_resolved_text_field_config(native, &self.entry(env))
     }
 
     #[cfg(waterui_feature = "secure-field")]
@@ -248,10 +239,7 @@ impl NativeBackend for AppleBackend {
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
-        crate::components::secure_field::realize_secure_field_config(
-            native,
-            &RenderContext::entry(env, self.mtm),
-        )
+        crate::components::secure_field::realize_secure_field_config(native, &self.entry(env))
     }
 
     #[cfg(waterui_feature = "picker")]
@@ -261,10 +249,7 @@ impl NativeBackend for AppleBackend {
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
-        crate::components::picker::realize_picker_config(
-            native,
-            &RenderContext::entry(env, self.mtm),
-        )
+        crate::components::picker::realize_picker_config(native, &self.entry(env))
     }
 
     #[cfg(waterui_feature = "color-picker")]
@@ -274,10 +259,7 @@ impl NativeBackend for AppleBackend {
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
-        crate::components::color_picker::realize_color_picker_config(
-            native,
-            &RenderContext::entry(env, self.mtm),
-        )
+        crate::components::color_picker::realize_color_picker_config(native, &self.entry(env))
     }
 
     #[cfg(waterui_feature = "date-picker")]
@@ -287,10 +269,7 @@ impl NativeBackend for AppleBackend {
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
-        crate::components::date_picker::realize_date_picker_config(
-            native,
-            &RenderContext::entry(env, self.mtm),
-        )
+        crate::components::date_picker::realize_date_picker_config(native, &self.entry(env))
     }
 
     #[cfg(waterui_feature = "multi-date-picker")]
@@ -302,7 +281,7 @@ impl NativeBackend for AppleBackend {
     ) -> NativeLeaf {
         crate::components::multi_date_picker::realize_multi_date_picker_config(
             native,
-            &RenderContext::entry(env, self.mtm),
+            &self.entry(env),
         )
     }
 
@@ -313,10 +292,7 @@ impl NativeBackend for AppleBackend {
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
-        crate::components::calendar::realize_calendar_config(
-            native,
-            &RenderContext::entry(env, self.mtm),
-        )
+        crate::components::calendar::realize_calendar_config(native, &self.entry(env))
     }
 
     #[cfg(waterui_feature = "menu")]
@@ -326,7 +302,7 @@ impl NativeBackend for AppleBackend {
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
-        crate::components::menu::realize_resolved_menu(native, &RenderContext::entry(env, self.mtm))
+        crate::components::menu::realize_resolved_menu(native, &self.entry(env))
     }
 
     #[cfg(waterui_feature = "list")]
@@ -336,7 +312,7 @@ impl NativeBackend for AppleBackend {
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
-        crate::components::list::realize_list_config(native, &RenderContext::entry(env, self.mtm))
+        crate::components::list::realize_list_config(native, &self.entry(env))
     }
 
     #[cfg(waterui_feature = "table")]
@@ -346,7 +322,7 @@ impl NativeBackend for AppleBackend {
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
-        crate::components::table::realize_table_config(native, &RenderContext::entry(env, self.mtm))
+        crate::components::table::realize_table_config(native, &self.entry(env))
     }
 
     #[cfg(waterui_feature = "navigation")]
@@ -358,7 +334,7 @@ impl NativeBackend for AppleBackend {
     ) -> NativeLeaf {
         crate::components::navigation::nav_view::realize_navigation_view(
             native.map_content(C::into_child),
-            &RenderContext::entry(env, self.mtm),
+            &self.entry(env),
         )
     }
 
@@ -371,7 +347,7 @@ impl NativeBackend for AppleBackend {
     ) -> NativeLeaf {
         crate::components::navigation::stack::realize_navigation_stack(
             native.map_slot(C::into_child),
-            &RenderContext::entry(env, self.mtm),
+            &self.entry(env),
         )
     }
 
@@ -384,7 +360,7 @@ impl NativeBackend for AppleBackend {
     ) -> NativeLeaf {
         crate::components::navigation::split::realize_navigation_split_layout(
             native,
-            &RenderContext::entry(env, self.mtm),
+            &self.entry(env),
         )
     }
 
@@ -397,7 +373,7 @@ impl NativeBackend for AppleBackend {
     ) -> NativeLeaf {
         crate::components::navigation::tabs::realize_tabs_layout(
             native.map_slots(C::into_child),
-            &RenderContext::entry(env, self.mtm),
+            &self.entry(env),
         )
     }
 
@@ -410,10 +386,7 @@ impl NativeBackend for AppleBackend {
         (): (),
     ) -> NativeLeaf {
         #[cfg(feature = "canvas")]
-        return crate::components::canvas::realize_canvas_view(
-            native,
-            &RenderContext::entry(env, self.mtm),
-        );
+        return crate::components::canvas::realize_canvas_view(native, &self.entry(env));
         #[cfg(not(feature = "canvas"))]
         {
             drop(native);
@@ -426,24 +399,28 @@ impl NativeBackend for AppleBackend {
     }
 
     #[cfg(waterui_feature = "effects")]
-    fn filtered(
+    fn filtered<C: ChildView<Self>>(
         &mut self,
-        native: waterui::graphics::backend::FilteredView,
+        native: waterui::graphics::backend::FilteredView<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
-        crate::components::filtered::realize_filtered_view(
-            native,
-            &RenderContext::entry(env, self.mtm),
-        )
+        #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
+        return crate::components::filtered::realize_filtered_view(self, native, env);
+        #[cfg(not(any(feature = "applied_filter", feature = "view_effect")))]
+        {
+            drop(native);
+            report_unprovided(
+                "waterui-apple without its `applied_filter` or `view_effect` feature",
+                "waterui_graphics::FilteredView",
+            );
+            self.empty((), env, ())
+        }
     }
 
     #[cfg(waterui_feature = "gpu")]
     fn gpu(&mut self, native: waterui::GpuView, env: &Environment, (): ()) -> NativeLeaf {
-        crate::components::gpu_surface::realize_gpu_view(
-            native,
-            &RenderContext::entry(env, self.mtm),
-        )
+        crate::components::gpu_surface::realize_gpu_view(native, &self.entry(env))
     }
 
     #[cfg(waterui_feature = "gpu")]
@@ -453,10 +430,7 @@ impl NativeBackend for AppleBackend {
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
-        crate::components::gpu_surface::realize_external_frame_view(
-            native,
-            &RenderContext::entry(env, self.mtm),
-        )
+        crate::components::gpu_surface::realize_external_frame_view(native, &self.entry(env))
     }
 
     #[cfg(waterui_feature = "gpu")]
@@ -466,10 +440,7 @@ impl NativeBackend for AppleBackend {
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
-        crate::components::gpu_surface::realize_scene_view(
-            native,
-            &RenderContext::entry(env, self.mtm),
-        )
+        crate::components::gpu_surface::realize_scene_view(native, &self.entry(env))
     }
 
     #[cfg(waterui_feature = "gpu")]
@@ -479,7 +450,7 @@ impl NativeBackend for AppleBackend {
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
-        crate::components::picture::realize_picture(native, &RenderContext::entry(env, self.mtm))
+        crate::components::picture::realize_picture(native, &self.entry(env))
     }
 
     #[cfg(waterui_feature = "video")]
@@ -489,10 +460,7 @@ impl NativeBackend for AppleBackend {
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
-        crate::components::video::realize_native_video_config(
-            native,
-            &RenderContext::entry(env, self.mtm),
-        )
+        crate::components::video::realize_native_video_config(native, &self.entry(env))
     }
 
     #[cfg(waterui_feature = "video")]
@@ -502,10 +470,7 @@ impl NativeBackend for AppleBackend {
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
-        crate::components::video::realize_native_video_player_config(
-            native,
-            &RenderContext::entry(env, self.mtm),
-        )
+        crate::components::video::realize_native_video_player_config(native, &self.entry(env))
     }
 
     #[cfg(waterui_feature = "webview")]
@@ -515,12 +480,12 @@ impl NativeBackend for AppleBackend {
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
-        crate::components::webview::realize_web_view(native, &RenderContext::entry(env, self.mtm))
+        crate::components::webview::realize_web_view(native, &self.entry(env))
     }
 
     #[cfg(waterui_feature = "map")]
     fn map(&mut self, native: waterui::map::MapConfig, env: &Environment, (): ()) -> NativeLeaf {
-        crate::components::map::realize_map_config(native, &RenderContext::entry(env, self.mtm))
+        crate::components::map::realize_map_config(native, &self.entry(env))
     }
 
     fn environment<C: ChildView<Self>>(
@@ -530,10 +495,7 @@ impl NativeBackend for AppleBackend {
         (): (),
     ) -> NativeLeaf {
         let metadata = metadata.map_content(C::into_child);
-        crate::components::with_env::realize_environment_metadata(
-            metadata,
-            &RenderContext::entry(env, self.mtm),
-        )
+        crate::components::with_env::realize_environment_metadata(metadata, &self.entry(env))
     }
 
     fn retain<C: ChildView<Self>>(
@@ -543,10 +505,7 @@ impl NativeBackend for AppleBackend {
         (): (),
     ) -> NativeLeaf {
         let metadata = metadata.map_content(C::into_child);
-        crate::components::retain::realize_retain_metadata(
-            metadata,
-            &RenderContext::entry(env, self.mtm),
-        )
+        crate::components::retain::realize_retain_metadata(metadata, &self.entry(env))
     }
 
     fn layout_priority<C: ChildView<Self>>(
@@ -558,7 +517,7 @@ impl NativeBackend for AppleBackend {
         let metadata = metadata.map_content(C::into_child);
         crate::components::layout_priority::realize_layout_priority_metadata(
             metadata,
-            &RenderContext::entry(env, self.mtm),
+            &self.entry(env),
         )
     }
 
@@ -571,7 +530,7 @@ impl NativeBackend for AppleBackend {
         let metadata = metadata.map_content(C::into_child);
         crate::components::lifecycle_hook::realize_life_cycle_hook_metadata(
             metadata,
-            &RenderContext::entry(env, self.mtm),
+            &self.entry(env),
         )
     }
 
@@ -582,10 +541,7 @@ impl NativeBackend for AppleBackend {
         (): (),
     ) -> NativeLeaf {
         let metadata = metadata.map_content(C::into_child);
-        crate::components::on_event::realize_on_event_metadata(
-            metadata,
-            &RenderContext::entry(env, self.mtm),
-        )
+        crate::components::on_event::realize_on_event_metadata(metadata, &self.entry(env))
     }
 
     fn on_key_press<C: ChildView<Self>>(
@@ -595,10 +551,7 @@ impl NativeBackend for AppleBackend {
         (): (),
     ) -> NativeLeaf {
         let metadata = metadata.map_content(C::into_child);
-        crate::components::on_key_press::realize_on_key_press_metadata(
-            metadata,
-            &RenderContext::entry(env, self.mtm),
-        )
+        crate::components::on_key_press::realize_on_key_press_metadata(metadata, &self.entry(env))
     }
 
     fn gesture_observer<C: ChildView<Self>>(
@@ -608,10 +561,7 @@ impl NativeBackend for AppleBackend {
         (): (),
     ) -> NativeLeaf {
         let metadata = metadata.map_content(C::into_child);
-        crate::components::gesture::realize_gesture_observer_metadata(
-            metadata,
-            &RenderContext::entry(env, self.mtm),
-        )
+        crate::components::gesture::realize_gesture_observer_metadata(metadata, &self.entry(env))
     }
 
     fn selected<C: ChildView<Self>>(
@@ -623,7 +573,7 @@ impl NativeBackend for AppleBackend {
         let metadata = metadata.map_content(C::into_child);
         crate::components::accessibility_metadata::realize_selected_metadata(
             metadata,
-            &RenderContext::entry(env, self.mtm),
+            &self.entry(env),
         )
     }
 
@@ -636,7 +586,7 @@ impl NativeBackend for AppleBackend {
         let metadata = metadata.map_content(C::into_child);
         crate::components::accessibility_metadata::realize_accessibility_children_metadata(
             metadata,
-            &RenderContext::entry(env, self.mtm),
+            &self.entry(env),
         )
     }
 
@@ -649,7 +599,7 @@ impl NativeBackend for AppleBackend {
         let metadata = metadata.map_content(C::into_child);
         crate::components::accessibility_metadata::realize_accessibility_geometry_metadata(
             metadata,
-            &RenderContext::entry(env, self.mtm),
+            &self.entry(env),
         )
     }
 
@@ -662,7 +612,7 @@ impl NativeBackend for AppleBackend {
         let metadata = metadata.map_content(C::into_child);
         crate::components::accessibility_metadata::realize_accessibility_hidden_metadata(
             metadata,
-            &RenderContext::entry(env, self.mtm),
+            &self.entry(env),
         )
     }
 
@@ -675,7 +625,7 @@ impl NativeBackend for AppleBackend {
         let metadata = metadata.map_content(C::into_child);
         crate::components::accessibility_identifier::realize_accessibility_identifier_metadata(
             metadata,
-            &RenderContext::entry(env, self.mtm),
+            &self.entry(env),
         )
     }
 
@@ -688,7 +638,7 @@ impl NativeBackend for AppleBackend {
         let metadata = metadata.map_content(C::into_child);
         crate::components::accessibility_metadata::realize_accessibility_label_metadata(
             metadata,
-            &RenderContext::entry(env, self.mtm),
+            &self.entry(env),
         )
     }
 
@@ -701,7 +651,7 @@ impl NativeBackend for AppleBackend {
         let metadata = metadata.map_content(C::into_child);
         crate::components::accessibility_metadata::realize_accessibility_role_metadata(
             metadata,
-            &RenderContext::entry(env, self.mtm),
+            &self.entry(env),
         )
     }
 
@@ -714,7 +664,7 @@ impl NativeBackend for AppleBackend {
         let metadata = metadata.map_content(C::into_child);
         crate::components::accessibility_metadata::realize_accessibility_state_metadata(
             metadata,
-            &RenderContext::entry(env, self.mtm),
+            &self.entry(env),
         )
     }
 
@@ -727,7 +677,7 @@ impl NativeBackend for AppleBackend {
         let metadata = metadata.map_content(C::into_child);
         crate::components::accessibility_metadata::realize_accessibility_state_signal_metadata(
             metadata,
-            &RenderContext::entry(env, self.mtm),
+            &self.entry(env),
         )
     }
 
@@ -740,7 +690,7 @@ impl NativeBackend for AppleBackend {
         let metadata = metadata.map_content(C::into_child);
         crate::components::accessibility_metadata::realize_accessibility_value_metadata(
             metadata,
-            &RenderContext::entry(env, self.mtm),
+            &self.entry(env),
         )
     }
 
@@ -751,10 +701,7 @@ impl NativeBackend for AppleBackend {
         (): (),
     ) -> NativeLeaf {
         let metadata = metadata.map_content(C::into_child);
-        crate::components::transition::realize_transition_spec_metadata(
-            metadata,
-            &RenderContext::entry(env, self.mtm),
-        )
+        crate::components::transition::realize_transition_spec_metadata(metadata, &self.entry(env))
     }
 
     fn opacity<C: ChildView<Self>>(
@@ -764,10 +711,7 @@ impl NativeBackend for AppleBackend {
         (): (),
     ) -> NativeLeaf {
         let metadata = metadata.map_content(C::into_child);
-        crate::components::opacity::realize_opacity_metadata(
-            metadata,
-            &RenderContext::entry(env, self.mtm),
-        )
+        crate::components::opacity::realize_opacity_metadata(metadata, &self.entry(env))
     }
 
     fn scale<C: ChildView<Self>>(
@@ -777,10 +721,7 @@ impl NativeBackend for AppleBackend {
         (): (),
     ) -> NativeLeaf {
         let metadata = metadata.map_content(C::into_child);
-        crate::components::scale::realize_scale_metadata(
-            metadata,
-            &RenderContext::entry(env, self.mtm),
-        )
+        crate::components::scale::realize_scale_metadata(metadata, &self.entry(env))
     }
 
     fn rotation<C: ChildView<Self>>(
@@ -790,10 +731,7 @@ impl NativeBackend for AppleBackend {
         (): (),
     ) -> NativeLeaf {
         let metadata = metadata.map_content(C::into_child);
-        crate::components::rotation::realize_rotation_metadata(
-            metadata,
-            &RenderContext::entry(env, self.mtm),
-        )
+        crate::components::rotation::realize_rotation_metadata(metadata, &self.entry(env))
     }
 
     fn offset<C: ChildView<Self>>(
@@ -803,10 +741,7 @@ impl NativeBackend for AppleBackend {
         (): (),
     ) -> NativeLeaf {
         let metadata = metadata.map_content(C::into_child);
-        crate::components::offset::realize_offset_metadata(
-            metadata,
-            &RenderContext::entry(env, self.mtm),
-        )
+        crate::components::offset::realize_offset_metadata(metadata, &self.entry(env))
     }
 
     fn shadow<C: ChildView<Self>>(
@@ -816,10 +751,7 @@ impl NativeBackend for AppleBackend {
         (): (),
     ) -> NativeLeaf {
         let metadata = metadata.map_content(C::into_child);
-        crate::components::shadow::realize_shadow_metadata(
-            metadata,
-            &RenderContext::entry(env, self.mtm),
-        )
+        crate::components::shadow::realize_shadow_metadata(metadata, &self.entry(env))
     }
 
     fn border<C: ChildView<Self>>(
@@ -829,10 +761,7 @@ impl NativeBackend for AppleBackend {
         (): (),
     ) -> NativeLeaf {
         let metadata = metadata.map_content(C::into_child);
-        crate::components::border::realize_border_metadata(
-            metadata,
-            &RenderContext::entry(env, self.mtm),
-        )
+        crate::components::border::realize_border_metadata(metadata, &self.entry(env))
     }
 
     fn clip_shape<C: ChildView<Self>>(
@@ -842,10 +771,7 @@ impl NativeBackend for AppleBackend {
         (): (),
     ) -> NativeLeaf {
         let metadata = metadata.map_content(C::into_child);
-        crate::components::clip_shape::realize_clip_shape_metadata(
-            metadata,
-            &RenderContext::entry(env, self.mtm),
-        )
+        crate::components::clip_shape::realize_clip_shape_metadata(metadata, &self.entry(env))
     }
 
     fn material_background<C: ChildView<Self>>(
@@ -857,7 +783,7 @@ impl NativeBackend for AppleBackend {
         let metadata = metadata.map_content(C::into_child);
         crate::components::material_background::realize_material_background_metadata(
             metadata,
-            &RenderContext::entry(env, self.mtm),
+            &self.entry(env),
         )
     }
 
@@ -870,7 +796,7 @@ impl NativeBackend for AppleBackend {
         let metadata = metadata.map_content(C::into_child);
         crate::components::glass_background::realize_glass_background_metadata(
             metadata,
-            &RenderContext::entry(env, self.mtm),
+            &self.entry(env),
         )
     }
 
@@ -883,7 +809,7 @@ impl NativeBackend for AppleBackend {
         let metadata = metadata.map_content(C::into_child);
         crate::components::material_background::realize_material_group_metadata(
             metadata,
-            &RenderContext::entry(env, self.mtm),
+            &self.entry(env),
         )
     }
 
@@ -896,7 +822,7 @@ impl NativeBackend for AppleBackend {
         let metadata = metadata.map_content(C::into_child);
         crate::components::ignore_safe_area::realize_ignore_safe_area_metadata(
             metadata,
-            &RenderContext::entry(env, self.mtm),
+            &self.entry(env),
         )
     }
 
@@ -907,10 +833,7 @@ impl NativeBackend for AppleBackend {
         (): (),
     ) -> NativeLeaf {
         let metadata = metadata.map_content(C::into_child);
-        crate::components::cursor::realize_cursor_metadata(
-            metadata,
-            &RenderContext::entry(env, self.mtm),
-        )
+        crate::components::cursor::realize_cursor_metadata(metadata, &self.entry(env))
     }
 
     fn draggable<C: ChildView<Self>>(
@@ -920,10 +843,7 @@ impl NativeBackend for AppleBackend {
         (): (),
     ) -> NativeLeaf {
         let metadata = metadata.map_content(C::into_child);
-        crate::components::draggable::realize_draggable_metadata(
-            metadata,
-            &RenderContext::entry(env, self.mtm),
-        )
+        crate::components::draggable::realize_draggable_metadata(metadata, &self.entry(env))
     }
 
     fn drop_destination<C: ChildView<Self>>(
@@ -935,7 +855,7 @@ impl NativeBackend for AppleBackend {
         let metadata = metadata.map_content(C::into_child);
         crate::components::drop_destination::realize_drop_destination_metadata(
             metadata,
-            &RenderContext::entry(env, self.mtm),
+            &self.entry(env),
         )
     }
 
@@ -946,10 +866,7 @@ impl NativeBackend for AppleBackend {
         (): (),
     ) -> NativeLeaf {
         let metadata = metadata.map_content(C::into_child);
-        crate::components::hittable::realize_hittable_metadata(
-            metadata,
-            &RenderContext::entry(env, self.mtm),
-        )
+        crate::components::hittable::realize_hittable_metadata(metadata, &self.entry(env))
     }
 
     fn focused<C: ChildView<Self>>(
@@ -959,10 +876,7 @@ impl NativeBackend for AppleBackend {
         (): (),
     ) -> NativeLeaf {
         let metadata = metadata.map_content(C::into_child);
-        crate::components::focused::realize_focused_metadata(
-            metadata,
-            &RenderContext::entry(env, self.mtm),
-        )
+        crate::components::focused::realize_focused_metadata(metadata, &self.entry(env))
     }
 
     fn secure<C: ChildView<Self>>(
@@ -972,10 +886,7 @@ impl NativeBackend for AppleBackend {
         (): (),
     ) -> NativeLeaf {
         let metadata = metadata.map_content(C::into_child);
-        crate::components::secure::realize_secure_metadata(
-            metadata,
-            &RenderContext::entry(env, self.mtm),
-        )
+        crate::components::secure::realize_secure_metadata(metadata, &self.entry(env))
     }
 
     fn standard_dynamic_range<C: ChildView<Self>>(
@@ -987,7 +898,7 @@ impl NativeBackend for AppleBackend {
         let metadata = metadata.map_content(C::into_child);
         crate::components::dynamic_range::realize_standard_dynamic_range_metadata(
             metadata,
-            &RenderContext::entry(env, self.mtm),
+            &self.entry(env),
         )
     }
 
@@ -1000,7 +911,7 @@ impl NativeBackend for AppleBackend {
         let metadata = metadata.map_content(C::into_child);
         crate::components::dynamic_range::realize_high_dynamic_range_metadata(
             metadata,
-            &RenderContext::entry(env, self.mtm),
+            &self.entry(env),
         )
     }
 
@@ -1013,7 +924,7 @@ impl NativeBackend for AppleBackend {
         let metadata = metadata.map_content(C::into_child);
         crate::components::anchored_overlay::realize_anchored_overlay_metadata(
             metadata,
-            &RenderContext::entry(env, self.mtm),
+            &self.entry(env),
         )
     }
 
@@ -1027,7 +938,7 @@ impl NativeBackend for AppleBackend {
         let metadata = metadata.map_content(C::into_child);
         crate::components::context_menu::realize_resolved_context_menu_metadata(
             metadata,
-            &RenderContext::entry(env, self.mtm),
+            &self.entry(env),
         )
     }
 
@@ -1039,10 +950,7 @@ impl NativeBackend for AppleBackend {
         (): (),
     ) -> NativeLeaf {
         let metadata = metadata.map_content(C::into_child);
-        crate::components::dialog::realize_dialog_metadata(
-            metadata,
-            &RenderContext::entry(env, self.mtm),
-        )
+        crate::components::dialog::realize_dialog_metadata(metadata, &self.entry(env))
     }
 
     #[cfg(waterui_feature = "navigation")]
@@ -1055,7 +963,7 @@ impl NativeBackend for AppleBackend {
         let metadata = metadata.map_content(C::into_child);
         crate::components::navigation::metadata::realize_navigation_link_hint_metadata(
             metadata,
-            &RenderContext::entry(env, self.mtm),
+            &self.entry(env),
         )
     }
 
@@ -1069,7 +977,7 @@ impl NativeBackend for AppleBackend {
         let metadata = metadata.map_content(C::into_child);
         crate::components::navigation::metadata::realize_navigation_transition_source_metadata(
             metadata,
-            &RenderContext::entry(env, self.mtm),
+            &self.entry(env),
         )
     }
 
@@ -1083,7 +991,7 @@ impl NativeBackend for AppleBackend {
         let metadata = metadata.map_content(C::into_child);
         crate::components::navigation::metadata::realize_navigation_transition_destination_metadata(
             metadata,
-            &RenderContext::entry(env, self.mtm),
+            &self.entry(env),
         )
     }
 

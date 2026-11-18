@@ -5106,7 +5106,6 @@ mod capture_colour {
         use waterui::graphics::backend::filtrate::filters::Brightness;
         use waterui::graphics::backend::{AnyEffect, FilteredView, OutputSize, ParamGuards};
         use waterui::layout::{PinConstraints, PositionExt, absolute};
-        use waterui_backend_core::AnyView;
 
         let _mtm = mtm();
         let column_pin = |leading: f64| {
@@ -5117,7 +5116,7 @@ mod capture_colour {
                 .height(COLUMN_EDGE)
         };
         let filtered = FilteredView {
-            content: AnyView::new(column_subtree()),
+            content: column_subtree(),
             effect: AnyEffect::filter(Brightness(0.0_f32)),
             guards: ParamGuards::default(),
         }
@@ -5378,7 +5377,7 @@ mod capture_order {
         // reproduces it (#3528), so only the GPU column runs the nested
         // capture — the filtered output is its one resolved surface.
         let filtered = FilteredView {
-            content: AnyView::new(content(gpu_child())),
+            content: content(gpu_child()),
             effect: AnyEffect::filter(Brightness(0.0_f32)),
             guards: ParamGuards::default(),
         }

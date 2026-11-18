@@ -528,7 +528,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// its wrapped content as a persistent child [`RenderNode`], so reactive
     /// descendants inside the filtered subtree stay live.
     fn build_filtered(
-        filtered: FilteredView,
+        filtered: FilteredView<HeldChild<E>>,
         env: &Environment,
         renderer: &mut SemanticCore<E>,
     ) -> Self {
@@ -538,7 +538,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             guards,
         } = filtered;
         let runtime = Rc::new(RefCell::new(FilteredRuntime::new(effect, guards)));
-        let child = Self::build_view(content, env, renderer);
+        let child = Self::build_slot(content, env, renderer);
         Self::Filtered(Box::new(FilteredNode {
             core: renderer.new_core(),
             runtime,
