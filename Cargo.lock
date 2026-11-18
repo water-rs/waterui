@@ -13521,7 +13521,7 @@ dependencies = [
 [[package]]
 name = "waterui-map-gpu"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/map-gpu?branch=refactor%2Ftyped-hooks#82e3f5557febab2bed2bfc5146460a8e890abe3a"
+source = "git+https://github.com/water-rs/map-gpu?branch=main#b638b7ea0833a38d4cfb37ea7d649330613ff429"
 dependencies = [
  "arc-swap",
  "blocking",
@@ -13869,7 +13869,7 @@ dependencies = [
 [[package]]
 name = "waterui-video-gpu"
 version = "0.4.0"
-source = "git+https://github.com/water-rs/video-gpu?branch=refactor%2Ftyped-hooks#6a64357e8d561d8ecc7087e8abcc209867c403cd"
+source = "git+https://github.com/water-rs/video-gpu?branch=main#a2679b56c3746957bc03478eef75fb4acdbbf9de"
 dependencies = [
  "async-channel",
  "executor-core",
