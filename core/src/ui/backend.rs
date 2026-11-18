@@ -2,7 +2,7 @@
 //!
 //! [`View::dispatch`] turns a view into a backend's node through
 //! monomorphized code. A composite expands its `body` in place; a
-//! [`Native`] payload reaches [`Backend::native`] and a [`Metadata`]
+//! [`Native`](crate::components::Native) payload reaches [`Backend::native`] and a [`Metadata`]
 //! wrapper [`Backend::metadata`], each with its concrete type, so LLVM
 //! inlines across the tree and the linker drops what an application does
 //! not reach. Core names no component: the leaf entry is generic, and the

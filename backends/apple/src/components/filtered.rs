@@ -2414,21 +2414,19 @@ impl Drop for FilteredGuard {
 struct FuseFilters<'a> {
     backend: &'a mut AppleBackend,
     effects: Vec<(AnyEffect, ParamGuards)>,
-    #[cfg(all(target_os = "macos", feature = "applied_filter"))]
-    native_plan: Option<Vec<crate::components::native_filter::EffectPlan>>,
 }
 
-impl FuseFilters<'_> {
-    fn prepare_mount(&mut self, env: &Environment) -> bool {
-        #[cfg(all(target_os = "macos", feature = "applied_filter"))]
-        if env.get::<crate::transition::SnapshotDemand>().is_none()
-            && let Some(plan) = crate::components::native_filter::plan(&self.effects)
-        {
-            self.native_plan = Some(plan);
-            return true;
-        }
-        services(env).is_some()
+fn can_mount(effects: &[(AnyEffect, ParamGuards)], env: &Environment) -> bool {
+    if services(env).is_some() {
+        return true;
     }
+    #[cfg(all(target_os = "macos", feature = "applied_filter"))]
+    if env.get::<crate::transition::SnapshotDemand>().is_none() {
+        return crate::components::native_filter::plan(effects).is_some();
+    }
+    #[cfg(not(all(target_os = "macos", feature = "applied_filter")))]
+    let _ = effects;
+    false
 }
 
 impl Backend for FuseFilters<'_> {
@@ -2451,8 +2449,7 @@ impl Backend for FuseFilters<'_> {
                 self.effects.push((effect, guards));
                 content.dispatch(self, env, ())
             }
-            Err(native) => self
-                .prepare_mount(env)
+            Err(native) => can_mount(&self.effects, env)
                 .then(|| Realize::new(self.backend).native(native, env, ())),
         }
     }
@@ -2463,7 +2460,7 @@ impl Backend for FuseFilters<'_> {
         env: &Environment,
         (): (),
     ) -> Self::Output {
-        self.prepare_mount(env).then(|| {
+        can_mount(&self.effects, env).then(|| {
             Realize::new(self.backend).metadata(
                 metadata.map_content(<Child<AppleBackend> as ChildSlot>::from_view),
                 env,
@@ -2486,13 +2483,12 @@ impl Backend for FuseFilters<'_> {
         env: &Environment,
         (): (),
     ) -> Self::Output {
-        self.prepare_mount(env)
+        can_mount(&self.effects, env)
             .then(|| Realize::new(self.backend).scoped(hooks, view, env, ()))
     }
 
     fn hookable<T: HookableView>(&mut self, view: T, env: &Environment, (): ()) -> Self::Output {
-        self.prepare_mount(env)
-            .then(|| Realize::new(self.backend).hookable(view, env, ()))
+        can_mount(&self.effects, env).then(|| Realize::new(self.backend).hookable(view, env, ()))
     }
 }
 
@@ -2513,7 +2509,7 @@ impl DynBackend for FuseFilters<'_> {
             return Box::new(content.dispatch(self, env, ()));
         }
         Box::new(
-            self.prepare_mount(env)
+            can_mount(&self.effects, env)
                 .then(|| Realize::new(self.backend).native_dyn(native, env, ())),
         )
     }
@@ -2525,7 +2521,7 @@ impl DynBackend for FuseFilters<'_> {
         _cx: Box<dyn Any>,
     ) -> Box<dyn Any> {
         Box::new(
-            self.prepare_mount(env)
+            can_mount(&self.effects, env)
                 .then(|| Realize::new(self.backend).metadata_dyn(metadata, env, ())),
         )
     }
@@ -2542,7 +2538,7 @@ impl DynBackend for FuseFilters<'_> {
         _cx: Box<dyn Any>,
     ) -> Box<dyn Any> {
         Box::new(
-            self.prepare_mount(env)
+            can_mount(&self.effects, env)
                 .then(|| self.backend.scoped_erased(&hooks, view, env, ())),
         )
     }
@@ -2555,7 +2551,7 @@ impl DynBackend for FuseFilters<'_> {
         _cx: Box<dyn Any>,
     ) -> Box<dyn Any> {
         Box::new(
-            self.prepare_mount(env)
+            can_mount(&self.effects, env)
                 .then(|| self.backend.hookable_dyn(view, compose, env, ())),
         )
     }
@@ -2699,8 +2695,6 @@ pub fn realize_filtered_view(filtered: FilteredView, ctx: &RenderContext<'_>) ->
     let mut fuser = FuseFilters {
         backend: &mut backend,
         effects: vec![(effect, guards)],
-        #[cfg(all(target_os = "macos", feature = "applied_filter"))]
-        native_plan: None,
     };
     let Some(content_leaf) = content.dispatch(&mut fuser, ctx.env(), ()) else {
         return crate::gpu_runtime::unavailable_leaf(mtm, "filtered");
@@ -2714,7 +2708,12 @@ pub fn realize_filtered_view(filtered: FilteredView, ctx: &RenderContext<'_>) ->
     // realization: a `CAFilter`-backed native filter cannot hand off
     // a frozen GPU frame (§2.2, maintainer decision 10).
     #[cfg(all(target_os = "macos", feature = "applied_filter"))]
-    if let Some(plan) = fuser.native_plan {
+    if ctx
+        .env()
+        .get::<crate::transition::SnapshotDemand>()
+        .is_none()
+        && let Some(plan) = crate::components::native_filter::plan(&chained)
+    {
         return crate::components::native_filter::mount(mtm, ctx, content_leaf, chained, &plan);
     }
     let Some(services) = services(ctx.env()) else {
