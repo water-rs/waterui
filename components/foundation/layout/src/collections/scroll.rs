@@ -288,7 +288,7 @@ where
 /// The content keeps its own type, `C`, until the view reaches a backend,
 /// which receives it as its child slot and realizes it in place.
 #[derive(Debug)]
-pub struct ScrollView<C = AnyView> {
+pub struct ScrollView<C> {
     axis: Axis,
     content: C,
     controller: Option<ScrollController<Point>>,
@@ -299,7 +299,7 @@ pub struct ScrollView<C = AnyView> {
 /// hands them to a backend.
 #[derive(Debug)]
 #[non_exhaustive]
-pub struct ScrollViewParts<C = AnyView> {
+pub struct ScrollViewParts<C> {
     /// The axis or axes the view scrolls along.
     axis: Axis,
     /// The scrolled content.

@@ -5,6 +5,7 @@ use super::layout::resolved_or_collapsed;
 #[cfg(feature = "frame-profile")]
 use super::layout::{SignatureHasher, hash_size};
 use waterui_core::backend::ChildSlot;
+use waterui_core::handler::AnyViewBuilder;
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
@@ -1134,7 +1135,7 @@ impl<E: crate::text::TextEngine> WrapperEffect<E> {
 pub struct AnchoredOverlayEffect<E: crate::text::TextEngine> {
     /// Builds a fresh view for each presentation: a presentation started
     /// while an older exit is still animating gets its own instance.
-    pub(crate) builder: waterui_core::handler::AnyViewBuilder,
+    pub(crate) builder: AnyViewBuilder<AnyView>,
     /// The overlay's presentations: the one presented now, built from
     /// `builder` on each new presentation, and the dismissed ones still
     /// leaving the screen.

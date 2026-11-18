@@ -25,6 +25,7 @@ use std::rc::Rc;
 use nami::Binding;
 use waterui::metadata::anchored_overlay::{AnchorEdge, AnchorPlacement, Clamp, Dismissal};
 use waterui_core::Environment;
+use waterui_core::handler::AnyViewBuilder;
 use waterui_core::layout::layout_direction;
 use waterui_structural_transition::TransitionSpec;
 
@@ -60,7 +61,7 @@ pub struct RegisteredAnchoredOverlay<E: crate::text::TextEngine> {
     pub(crate) env: Environment,
     /// The overlay's view builder: every presentation calls it, so each one
     /// gets an independent view instance.
-    pub(crate) builder: waterui_core::handler::AnyViewBuilder,
+    pub(crate) builder: AnyViewBuilder<AnyView>,
     /// The presentations the owning effect keeps across frames.
     pub(crate) presentations: Rc<RefCell<AnchoredPresentations<E>>>,
     /// Identity shared between the effect and its registration, so the render
