@@ -7494,9 +7494,9 @@ mod safe_area {
             (0..40).map(SelfId::new).collect::<Vec<_>>(),
             move |item| {
                 if *item == field_row {
-                    ListItem::new(AnyView::new(field("Notes", &value).size(350.0, 44.0)))
+                    ListItem::new(waterui::OneOf2::A(field("Notes", &value).size(350.0, 44.0)))
                 } else {
-                    ListItem::new(text(format!("row-{}", *item)))
+                    ListItem::new(waterui::OneOf2::B(text(format!("row-{}", *item))))
                 }
             },
         ));
@@ -9074,9 +9074,12 @@ mod scroll {
 mod list_scroll {
     use std::time::Duration;
 
+    use waterui::OneOf2;
     use waterui::ViewExt;
     use waterui::animation::Animation;
     use waterui::component::list::ListItem;
+    use waterui::component::text::Text;
+    use waterui::layout::padding::Padding;
     use waterui::layout::scroll::ScrollController;
     use waterui::prelude::text;
     use waterui_apple::contract::NativeLeaf;
@@ -9163,14 +9166,17 @@ mod list_scroll {
         }
     }
 
+    /// A row of a list mixing plain and tall rows.
+    type MixedRow = ListItem<OneOf2<Text, Padding<Text>>>;
+
     /// A row taller than the rest — mixed heights keep the last row's
     /// offset an honest measure instead of a multiple of the first.
-    fn tall_row_item() -> ListItem {
+    fn tall_row_item() -> ListItem<Padding<Text>> {
         ListItem::new(text("row").padding_with(24.0))
     }
 
     /// Mounts `rows` in a list driven by a fresh `usize` controller.
-    fn mounted_with(rows: Vec<fn() -> ListItem>) -> Fixture {
+    fn mounted_with<V: waterui::View>(rows: Vec<fn() -> ListItem<V>>) -> Fixture {
         let controller = ScrollController::new(0usize);
         let (leaf, table) = row_list(rows, &controller);
         let window = mount_and_order_front(leaf.view());
@@ -9192,7 +9198,7 @@ mod list_scroll {
 
     /// Mounts a uniform list.
     fn mounted() -> Fixture {
-        mounted_with(vec![row_item as fn() -> ListItem; ROWS])
+        mounted_with(vec![row_item as fn() -> ListItem<Text>; ROWS])
     }
 
     /// Mounts a list whose rows differ in height — every fourth row
@@ -9202,9 +9208,9 @@ mod list_scroll {
             (0..ROWS)
                 .map(|index| {
                     if index % 4 == 0 {
-                        tall_row_item as fn() -> ListItem
+                        (|| tall_row_item().map_content(OneOf2::B)) as fn() -> MixedRow
                     } else {
-                        row_item as fn() -> ListItem
+                        (|| row_item().map_content(OneOf2::A)) as fn() -> MixedRow
                     }
                 })
                 .collect(),
@@ -9274,7 +9280,7 @@ mod list_scroll {
     /// through intermediate offsets from there; `Default` is the
     /// platform's wall-clock animation from the approach row.
     fn a_far_animation_jumps_to_the_approach_row_first(name: &'static str, animation: Animation) {
-        let fixture = mounted_with(vec![row_item as fn() -> ListItem; APPROACH_LIST_ROWS]);
+        let fixture = mounted_with(vec![row_item as fn() -> ListItem<Text>; APPROACH_LIST_ROWS]);
         let native = matches!(animation, Animation::Default);
         let request = || {
             fixture
@@ -10612,6 +10618,7 @@ mod list_ax {
     use objc2_app_kit::{NSAccessibilityChildrenAttribute, NSTableView};
     use objc2_foundation::{NSArray, NSIndexSet};
     use waterui::component::list::ListItem;
+    use waterui::component::text::Text;
     use waterui::layout::scroll::ScrollController;
     use waterui_apple::native_test_support::{row_item, row_list, sectioned_row_list};
 
@@ -10666,7 +10673,7 @@ mod list_ax {
 
     fn mounted() -> Fixture {
         let controller = ScrollController::new(0usize);
-        let (leaf, surface) = row_list(vec![row_item as fn() -> ListItem; ROWS], &controller);
+        let (leaf, surface) = row_list(vec![row_item as fn() -> ListItem<Text>; ROWS], &controller);
         let window = leaf::attach(mtm(), leaf.view());
         leaf.view().setNeedsLayout(true);
         leaf.view().layoutSubtreeIfNeeded();

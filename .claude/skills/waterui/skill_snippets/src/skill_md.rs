@@ -33,7 +33,7 @@ pub struct GlueRow {
 }
 
 /// Glue: the `row_view` free function rules 2 and 3 hand to a container.
-fn glue_row_view(row: GlueRow) -> ListItem {
+fn glue_row_view(row: GlueRow) -> ListItem<impl View> {
     ListItem::new(text(row.title))
 }
 

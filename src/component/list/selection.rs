@@ -157,18 +157,19 @@ impl ListSelection<ListTagId> {
     label = "rows not selected by `{T}`",
     note = "a `ForEach` row is selected by its item's id, a static row of `List::content` by the value given to `.tag(…)`; every selectable row of one list is selected by the same type"
 )]
-pub trait SelectableRows<T>: Views<View = ListItem> {
+pub trait SelectableRows<T>: Views {
     /// The value row `id` is selected by, or `None` when it is not
     /// selectable.
     fn row_tags(&self) -> impl Fn(&Self::Id) -> Option<T> + 'static;
 }
 
-impl<C, F> SelectableRows<C::Id> for ForEach<C, F, ListItem>
+impl<C, F, V> SelectableRows<C::Id> for ForEach<C, F, ListItem<V>>
 where
     C: Collection + Clone,
     C::Item: Clone,
     C::Id: 'static,
-    F: 'static + Fn(C::Item) -> ListItem,
+    F: 'static + Fn(C::Item) -> ListItem<V>,
+    V: waterui_core::View,
 {
     fn row_tags(&self) -> impl Fn(&C::Id) -> Option<C::Id> + 'static {
         |id: &C::Id| Some(id.clone())
