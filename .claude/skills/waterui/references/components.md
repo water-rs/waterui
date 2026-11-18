@@ -668,7 +668,7 @@ of another type does not compile, and neither does a selection over a `List::con
 whose rows are all untagged. Rows carrying the same value are selected together.
 At most one mode per list: a later call replaces an earlier one.
 `List::for_each` takes any collection whose items are `Clone`; `List::content` takes the
-structural tree above; `List::new(views)` takes pre-built `Views<View = ListItem>`. An
+structural tree above; `List::new(views)` takes pre-built `Views<View = ListItem<C>>`. An
 enum row type implements `Identifiable` by hand (`type Id; fn id(&self)`),
 keeping the id ranges of different variants disjoint.
 

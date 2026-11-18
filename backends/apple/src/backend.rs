@@ -306,9 +306,9 @@ impl NativeBackend for AppleBackend {
     }
 
     #[cfg(waterui_feature = "list")]
-    fn list(
+    fn list<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::list::ListConfig,
+        native: waterui::component::list::ListConfig<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {

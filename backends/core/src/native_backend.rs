@@ -638,9 +638,6 @@ native_backend! {
         #[cfg(waterui_feature = "menu")]
         /// A menu.
         menu: waterui::component::menu::ResolvedMenu,
-        #[cfg(waterui_feature = "list")]
-        /// A list.
-        list: waterui::component::list::ListConfig,
         #[cfg(waterui_feature = "table")]
         /// A table.
         table: waterui::component::table::TableConfig,
@@ -686,6 +683,9 @@ native_backend! {
         #[cfg(waterui_feature = "effects")]
         /// A view drawn through a filter.
         filtered<C>: waterui::graphics::backend::FilteredView<C>,
+        #[cfg(waterui_feature = "list")]
+        /// A list, each row's content a child.
+        list<C>: waterui::component::list::ListConfig<C>,
         #[cfg(waterui_feature = "navigation")]
         /// A navigation bar around its content.
         navigation_view<C>: waterui::navigation::NavigationView<C>,
@@ -843,6 +843,19 @@ mod tests {
     impl<C> Parent<C> for waterui::graphics::backend::FilteredView<C> {
         fn children(self) -> Vec<C> {
             alloc::vec![self.content]
+        }
+    }
+
+    /// A list's children are its rows' content.
+    #[cfg(waterui_feature = "list")]
+    impl<C: 'static> Parent<C> for waterui::component::list::ListConfig<C> {
+        fn children(self) -> Vec<C> {
+            let snapshot = self.contents().snapshot();
+            snapshot
+                .range()
+                .filter_map(|index| snapshot.get_view(index))
+                .map(waterui::component::list::ListItem::into_content)
+                .collect()
         }
     }
 

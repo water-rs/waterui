@@ -398,7 +398,7 @@ fn message_list(mail: Mail) -> impl View {
     .on_move(|list_move: ListMove, mail: Mail| move_message(list_move, &mail))
 }
 
-fn message_row(mail: &Mail, message: Message) -> ListItem {
+fn message_row(mail: &Mail, message: Message) -> ListItem<impl View + use<>> {
     let id = message.id;
     // The dot has to *derive* from the state that owns it. `List::for_each`
     // diffs membership by id, so marking every message read changes no ids and
@@ -806,7 +806,7 @@ fn settings_root(
     .large_title()
 }
 
-fn settings_link(title: &'static str, route: SettingsRoute) -> ListItem {
+fn settings_link(title: &'static str, route: SettingsRoute) -> ListItem<impl View> {
     // No disclosure indicator here: whether a row that pushes shows one is the
     // platform's own convention — iOS draws a chevron, a Mac does not — so the
     // link decides, not the application.

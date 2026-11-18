@@ -46,7 +46,7 @@ impl DemoState {
     }
 }
 
-fn record_row(record: Record) -> ListItem {
+fn record_row(record: Record) -> ListItem<impl View> {
     ListItem::new(
         vstack((
             text(text!("Record #{id:06}", id = record.id))

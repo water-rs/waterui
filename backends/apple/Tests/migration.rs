@@ -418,7 +418,11 @@ mod uikit_surface {
     /// The device fixture's row: `Label` wrapping
     /// `hstack(icon, vstack(hstack(text, spacer, flag), text, text))` —
     /// the nested-stack shape whose inner text lost its frames.
-    fn message_row(sender: &'static str, subject: &'static str, preview: &'static str) -> ListItem {
+    fn message_row(
+        sender: &'static str,
+        subject: &'static str,
+        preview: &'static str,
+    ) -> ListItem<impl View> {
         ListItem::new(Label::new(
             Str::from(format!("{sender}: {subject}")),
             move || {

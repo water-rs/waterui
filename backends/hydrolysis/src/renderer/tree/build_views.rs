@@ -123,7 +123,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// fill the proposal (`StretchAxis::Both`, read from the config).
     #[cfg(feature = "list")]
     pub(super) fn build_list(
-        config: ListConfig,
+        config: ListConfig<HeldChild<E>>,
         env: &Environment,
         renderer: &mut SemanticCore<E>,
     ) -> Self {

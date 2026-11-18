@@ -33,7 +33,7 @@ fn filtered(query: &Binding<Str>, all: &'static [&'static str]) -> Rows {
     )
 }
 
-fn reminder(title: SelfId<&'static str>) -> ListItem {
+fn reminder(title: SelfId<&'static str>) -> ListItem<impl waterui::View> {
     ListItem::new(text(title.into_inner()))
 }
 

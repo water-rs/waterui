@@ -26,7 +26,7 @@ use waterui::component::table::{TableColumn, TableConfig};
 use waterui_core::contract_violation;
 use waterui_core::id::Identifiable;
 use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
-use waterui_core::views::{ViewSnapshot, Views};
+use waterui_core::views::ViewSnapshot;
 use waterui_core::{AnyView, Environment};
 use waterui_layout::scroll::Axis as ScrollAxis;
 
