@@ -723,9 +723,6 @@ native_backend! {
         navigation_split: waterui::navigation::split::NavigationSplitLayout,
         /// A canvas.
         canvas: waterui::graphics::canvas::CanvasView,
-        #[cfg(waterui_feature = "effects")]
-        /// A view drawn through a filter.
-        filtered: waterui::graphics::backend::FilteredView,
         #[cfg(waterui_feature = "gpu")]
         /// GPU content.
         gpu: waterui::GpuView,
@@ -760,6 +757,9 @@ native_backend! {
         dynamic<C>: waterui_core::Dynamic<C>,
         /// A container whose children are produced lazily.
         lazy_container<C>: waterui::layout::container::LazyContainer<C>,
+        #[cfg(waterui_feature = "effects")]
+        /// A view drawn through a filter.
+        filtered<C>: waterui::graphics::backend::FilteredView<C>,
         #[cfg(waterui_feature = "list")]
         /// A list, each row's content a child.
         list<C>: waterui::component::list::ListConfig<C>,
@@ -918,6 +918,13 @@ mod tests {
         }
     }
 
+    #[cfg(waterui_feature = "effects")]
+    impl<C> Parent<C> for waterui::graphics::backend::FilteredView<C> {
+        fn children(self) -> Vec<C> {
+            alloc::vec![self.content]
+        }
+    }
+
     /// A list's children are its rows' content.
     #[cfg(waterui_feature = "list")]
     impl<C: 'static> Parent<C> for waterui::component::list::ListConfig<C> {
@@ -1052,6 +1059,25 @@ mod tests {
                 ["scroll", "typed child", "layout_priority", "spacer"],
                 ["scroll", "erased child", "layout_priority", "spacer"],
                 ["scroll", "typed child", "layout_priority", "spacer"],
+            ]
+            .concat()
+        );
+    }
+
+    #[cfg(waterui_feature = "effects")]
+    #[test]
+    fn a_filtered_view_keeps_its_content_typed() {
+        use waterui::graphics::FilterViewExt as _;
+
+        let env = Environment::new();
+        let mut recorder = Recorder::default();
+        Realize::child(&mut recorder, tree().blur(4.0_f32), &env, ());
+        Realize::child(&mut recorder, AnyView::new(tree().blur(4.0_f32)), &env, ());
+        assert_eq!(
+            recorder.reached.borrow().as_slice(),
+            [
+                ["filtered", "typed child", "layout_priority", "spacer"],
+                ["filtered", "erased child", "layout_priority", "spacer"],
             ]
             .concat()
         );

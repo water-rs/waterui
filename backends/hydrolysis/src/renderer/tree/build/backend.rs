@@ -1031,14 +1031,15 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     }
 
     #[cfg(waterui_feature = "effects")]
-    fn filtered(
+    fn filtered<C: ChildView<Self>>(
         &mut self,
-        native: waterui::graphics::backend::FilteredView,
+        native: waterui::graphics::backend::FilteredView<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        let filtered = native.map_content(C::into_child);
         let renderer = &mut *self.renderer;
-        RenderNode::build_filtered(native, env, renderer)
+        RenderNode::build_filtered(filtered, env, renderer)
     }
 
     fn dynamic<C: ChildView<Self>>(
