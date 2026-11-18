@@ -6,8 +6,8 @@ authors.workspace = true
 license.workspace = true
 readme = "README.md"
 repository.workspace = true
-description = "Form components for WaterUI (inputs, buttons, validation)"
-keywords = ["form", "input", "validation", "ui", "components"]
+description = "WaterUI foundation controls"
+keywords = ["waterui", "gui", "ui", "controls"]
 categories = ["gui"]
 
 

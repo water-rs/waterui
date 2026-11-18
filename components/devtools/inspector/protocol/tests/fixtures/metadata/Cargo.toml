@@ -1,4 +1,6 @@
 [package]
+publish = false
+publish = false
 name = "inspector-metadata-probe"
 version = "0.0.0"
 edition = "2024"
