@@ -492,6 +492,7 @@ mod scroll_animation {
     use super::{mtm, scene_window};
     use waterui::animation::Animation;
     use waterui::component::list::ListItem;
+    use waterui::component::text::Text;
     use waterui::layout::scroll::ScrollController;
     use waterui::reactive::binding;
     use waterui_apple::native_test_support::{
@@ -592,7 +593,7 @@ mod scroll_animation {
     fn a_default_list_request_lands_after_a_native_animation() {
         let mtm = mtm();
         let controller = ScrollController::new(0usize);
-        let (leaf, table) = row_list(vec![row_item as fn() -> ListItem; ROWS], &controller);
+        let (leaf, table) = row_list(vec![row_item as fn() -> ListItem<Text>; ROWS], &controller);
         let window = scene_window(mtm, leaf.view());
         table.layout_if_needed();
         let offset = || Point::from(table.contentOffset());
@@ -616,7 +617,7 @@ mod scroll_animation {
         let mtm = mtm();
         let controller = ScrollController::new(0usize);
         let (leaf, table) = row_list(
-            vec![row_item as fn() -> ListItem; APPROACH_LIST_ROWS],
+            vec![row_item as fn() -> ListItem<Text>; APPROACH_LIST_ROWS],
             &controller,
         );
         let window = scene_window(mtm, leaf.view());

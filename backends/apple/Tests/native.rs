@@ -7494,9 +7494,9 @@ mod safe_area {
             (0..40).map(SelfId::new).collect::<Vec<_>>(),
             move |item| {
                 if *item == field_row {
-                    ListItem::new(AnyView::new(field("Notes", &value).size(350.0, 44.0)))
+                    ListItem::new(waterui::OneOf2::A(field("Notes", &value).size(350.0, 44.0)))
                 } else {
-                    ListItem::new(text(format!("row-{}", *item)))
+                    ListItem::new(waterui::OneOf2::B(text(format!("row-{}", *item))))
                 }
             },
         ));
