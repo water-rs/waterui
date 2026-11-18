@@ -1211,14 +1211,17 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     }
 
     #[cfg(waterui_feature = "list")]
-    fn list(
+    fn list<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::list::ListConfig,
+        native: waterui::component::list::ListConfig<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        use waterui_core::backend::MapSlots as _;
         let renderer = &mut *self.renderer;
-        RenderNode::build_list(native, env, renderer)
+        // A function pointer, so the mapped rows do not borrow this backend.
+        let into_child: fn(C) -> HeldChild<E> = C::into_child;
+        RenderNode::build_list(native.map_slots(into_child), env, renderer)
     }
 
     #[cfg(waterui_feature = "table")]

@@ -90,7 +90,7 @@ fn rows(model: &Model, filter: &Binding<Str>) -> SignalCollection<Computed<Vec<T
 /// A node the application asked to inspect is marked, so that opening the
 /// inspector on an element lands the eye on that element rather than on the
 /// top of a long tree.
-fn row_view(row: TreeRow, revealed: Computed<bool>) -> ListItem {
+fn row_view(row: TreeRow, revealed: Computed<bool>) -> ListItem<impl View> {
     let (_, depth, role, label, value, bounds, hidden, enabled) = row.into_parts();
     #[expect(
         clippy::cast_precision_loss,

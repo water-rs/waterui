@@ -97,7 +97,7 @@ fn level_picker(minimum: &Binding<LogLevel>) -> impl View + use<> {
         .spacing(4.0)
 }
 
-fn row_view(row: LogRow) -> ListItem {
+fn row_view(row: LogRow) -> ListItem<impl View> {
     let (_, level, target, message, origin) = row.into_parts();
     ListItem::new(
         hstack((

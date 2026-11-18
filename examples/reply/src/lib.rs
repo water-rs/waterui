@@ -173,7 +173,7 @@ fn star() -> impl View {
         .label_style(LabelDisplayMode::IconOnly)
 }
 
-fn thread_row(thread: Thread) -> ListItem {
+fn thread_row(thread: Thread) -> ListItem<impl View> {
     ListItem::new(Label::new(thread.subject, move || {
         vstack((
             hstack((
