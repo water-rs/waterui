@@ -157,7 +157,7 @@ pub fn slot_root_window<E: crate::text::TextEngine>(
     window.map_content(|slot| Box::new(HeldWindowSlot(slot)) as Box<dyn WindowRoot<E>>)
 }
 
-pub(crate) type RootChannelConnector<E> = Box<dyn FnOnce(Rc<dyn Fn(RootWindow<E>)>)>;
+pub type RootChannelConnector<E> = Box<dyn FnOnce(Rc<dyn Fn(RootWindow<E>)>)>;
 
 /// Collects an application's startup windows and runtime window channels as a
 /// runner holds them.

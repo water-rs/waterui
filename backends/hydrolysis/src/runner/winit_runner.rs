@@ -1327,6 +1327,15 @@ impl WinitRunner {
         Some(platform)
     }
 
+    fn create_window_renderer(&self) -> HydrolysisRenderer<crate::text::ParleyEngine> {
+        let text = ParleyEngine::from_collection(&self.fonts, FontFamilyResolution::Lenient);
+        let mut renderer = HydrolysisRenderer::with_engine(Rc::clone(&self.theme), text);
+        renderer.set_window_opener(Rc::clone(&self.app_window_opener));
+        #[cfg(any(feature = "menu", feature = "color-picker"))]
+        renderer.set_popup_window_manager(self.popup_window_manager.clone());
+        renderer
+    }
+
     fn create_runtime_window(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -1387,11 +1396,7 @@ impl WinitRunner {
         }
         let mut platform = self.create_platform_window(native_window, &window)?;
         platform.apply_properties(&window);
-        let text = ParleyEngine::from_collection(&self.fonts, FontFamilyResolution::Lenient);
-        let mut renderer = HydrolysisRenderer::with_engine(Rc::clone(&self.theme), text);
-        renderer.set_window_opener(Rc::clone(&self.app_window_opener));
-        #[cfg(any(feature = "menu", feature = "color-picker"))]
-        renderer.set_popup_window_manager(self.popup_window_manager.clone());
+        let renderer = self.create_window_renderer();
         let closable = window.closable;
         window.arm_close_requests(&self.env);
         let mut runtime = RuntimeWindow::new_painted(

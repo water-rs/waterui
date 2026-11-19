@@ -910,7 +910,7 @@ impl<C: 'static> WindowManager<C> {
             state: RefCell::new(WindowChannelState::Unconnected(Vec::new())),
             dispatch: SerialDispatch::new(),
         }));
-        let channel = WindowChannel(Some(manager.clone()));
+        let channel = WindowChannel(manager.clone());
         (manager, channel)
     }
 
@@ -954,7 +954,7 @@ impl<C: 'static> WindowManager<C> {
 /// The runner's end of a [`WindowManager`]: a [`Windows`](crate::app::Windows)
 /// source that carries `C`'s concrete type to the runner without erasing to
 /// [`AnyWindow`].
-pub struct WindowChannel<C: 'static>(Option<WindowManager<C>>);
+pub struct WindowChannel<C: 'static>(WindowManager<C>);
 
 impl<C: 'static> Debug for WindowChannel<C> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -967,11 +967,7 @@ impl<C: 'static> WindowChannel<C> {
     /// it.
     #[must_use]
     pub fn queued_len(&self) -> usize {
-        let manager = self
-            .0
-            .as_ref()
-            .expect("a live WindowChannel holds its manager");
-        match &*manager.0.state.borrow() {
+        match &*self.0.0.state.borrow() {
             WindowChannelState::Unconnected(pending) => pending.len(),
             WindowChannelState::Connected(_) | WindowChannelState::Disconnected => 0,
         }
@@ -980,12 +976,8 @@ impl<C: 'static> WindowChannel<C> {
     /// Connects this channel to `receiver` for windows shown while the
     /// application runs, and returns any windows already queued before the
     /// connection, in call order.
-    pub fn connect(mut self, receiver: impl Fn(Window<C>) + 'static) -> Vec<Window<C>> {
-        let manager = self
-            .0
-            .take()
-            .expect("a live WindowChannel holds its manager");
-        let mut state = manager.0.state.borrow_mut();
+    pub fn connect(self, receiver: impl Fn(Window<C>) + 'static) -> Vec<Window<C>> {
+        let mut state = self.0.0.state.borrow_mut();
         let queued = match &mut *state {
             WindowChannelState::Unconnected(pending) => core::mem::take(pending),
             WindowChannelState::Connected(_) | WindowChannelState::Disconnected => {
@@ -999,12 +991,8 @@ impl<C: 'static> WindowChannel<C> {
     /// Consumes this channel without connecting a live receiver, returning any
     /// windows already queued on it.
     #[must_use]
-    pub fn drain(mut self) -> Vec<Window<C>> {
-        let manager = self
-            .0
-            .take()
-            .expect("a live WindowChannel holds its manager");
-        let mut state = manager.0.state.borrow_mut();
+    pub fn drain(self) -> Vec<Window<C>> {
+        let mut state = self.0.0.state.borrow_mut();
         let queued = match &mut *state {
             WindowChannelState::Unconnected(pending) => core::mem::take(pending),
             WindowChannelState::Connected(_) | WindowChannelState::Disconnected => Vec::new(),
@@ -1016,11 +1004,9 @@ impl<C: 'static> WindowChannel<C> {
 
 impl<C: 'static> Drop for WindowChannel<C> {
     fn drop(&mut self) {
-        if let Some(manager) = self.0.take() {
-            let mut state = manager.0.state.borrow_mut();
-            if matches!(*state, WindowChannelState::Unconnected(_)) {
-                *state = WindowChannelState::Disconnected;
-            }
+        let mut state = self.0.0.state.borrow_mut();
+        if matches!(*state, WindowChannelState::Unconnected(_)) {
+            *state = WindowChannelState::Disconnected;
         }
     }
 }
@@ -1833,8 +1819,12 @@ mod tests {
     /// and re-entrant `show` calls.
     #[test]
     fn window_channel_delivers_typed_windows_in_order() {
+        fn body(label: &'static str) -> impl super::ViewBuilder<Output = &'static str> {
+            move || label
+        }
+
         let (manager, channel) = WindowManager::new();
-        Window::new("first", Binding::container(WindowState::Normal), || "a").show(&manager);
+        Window::new("first", Binding::container(WindowState::Normal), body("a")).show(&manager);
         assert_eq!(channel.queued_len(), 1);
 
         let received = Rc::new(RefCell::new(Vec::new()));
@@ -1846,7 +1836,7 @@ mod tests {
                 let built: &'static str = window.build_content().0;
                 received.borrow_mut().push((window.title.snapshot(), built));
                 if !nested.replace(true) {
-                    Window::new("third", Binding::container(WindowState::Normal), || "c")
+                    Window::new("third", Binding::container(WindowState::Normal), body("c"))
                         .show(&manager);
                 }
             }
@@ -1855,7 +1845,7 @@ mod tests {
         assert_eq!(queued[0].title.snapshot().as_str(), "first");
         assert_eq!(queued[0].build_content().0, "a");
 
-        Window::new("second", Binding::container(WindowState::Normal), || "b").show(&manager);
+        Window::new("second", Binding::container(WindowState::Normal), body("b")).show(&manager);
         let log: Vec<_> = received
             .borrow()
             .iter()

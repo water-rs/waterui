@@ -488,24 +488,31 @@ pub struct PopupMenuContent<E: crate::text::TextEngine> {
     popup_opener: Option<PopupWindowManager<E>>,
 }
 
+/// Layout metrics and anchor placement passed to [`popup_menu_content`].
+#[cfg(feature = "menu")]
+#[derive(Clone, Copy)]
+pub struct PopupMenuPlacement {
+    pub depth: usize,
+    pub metrics: MenuLayout,
+    pub text: PopupMenuTextMetrics,
+    pub popup_origin: LayoutPoint,
+    pub width: f64,
+}
+
 #[cfg(feature = "menu")]
 pub fn popup_menu_content<E: crate::text::TextEngine>(
     nodes: Vec<PopupMenuNode>,
-    depth: usize,
-    metrics: MenuLayout,
-    text: PopupMenuTextMetrics,
-    popup_origin: LayoutPoint,
-    width: f64,
+    placement: PopupMenuPlacement,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
     popup_opener: Option<PopupWindowManager<E>>,
 ) -> PopupMenuContent<E> {
     PopupMenuContent {
         nodes,
-        depth,
-        metrics,
-        text,
-        popup_origin,
-        width,
+        depth: placement.depth,
+        metrics: placement.metrics,
+        text: placement.text,
+        popup_origin: placement.popup_origin,
+        width: placement.width,
         theme: Rc::clone(theme),
         popup_opener,
     }
@@ -681,11 +688,13 @@ pub fn popup_menu_window<E: crate::text::TextEngine>(
             Metadata::new(
                 popup_menu_content::<E>(
                     nodes_for_content.clone(),
-                    depth,
-                    metrics,
-                    text,
-                    origin,
-                    width,
+                    PopupMenuPlacement {
+                        depth,
+                        metrics,
+                        text,
+                        popup_origin: origin,
+                        width,
+                    },
                     &theme,
                     Some(popup_opener.clone()),
                 ),

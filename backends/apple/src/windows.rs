@@ -225,6 +225,7 @@ mod imp {
 
     /// Realizes `declaration` as a platform window and returns its host, see
     /// [`realize_root`].
+    #[cfg(feature = "native-test")]
     pub fn realize<C: ViewBuilder>(
         declaration: Window<C>,
         env: &Environment,

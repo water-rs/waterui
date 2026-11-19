@@ -1293,7 +1293,7 @@ mod tests {
         let hits = reached(waterui::window::Window::new(
             "Test",
             waterui::binding(waterui::window::WindowState::Normal),
-            || Spacer::flexible(),
+            Spacer::flexible,
         ));
         assert_eq!(hits[0], "window");
         assert_eq!(hits[1], "typed child");
