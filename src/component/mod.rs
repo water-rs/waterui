@@ -8,6 +8,7 @@ pub use waterui_controls::*;
 pub mod badge;
 pub mod focus;
 pub mod lazy;
+#[cfg(feature = "link")]
 pub mod link;
 #[cfg(feature = "list")]
 pub mod list;
@@ -22,11 +23,13 @@ pub mod table;
 #[doc(inline)]
 pub use waterui_core::{AnyView, Dynamic, anyview, dynamic};
 
+#[cfg(feature = "link")]
 #[doc(inline)]
 pub use link::{Link, link};
 #[cfg(feature = "media")]
 pub use media::*;
 pub use text::{Text, text::text};
+#[cfg(feature = "form")]
 #[doc(inline)]
 pub use waterui_form as form;
 #[doc(inline)]

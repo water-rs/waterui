@@ -1,4 +1,5 @@
 pub mod accordion;
+#[cfg(feature = "avatar")]
 pub mod avatar;
 pub mod card;
 pub mod condition;
@@ -7,6 +8,7 @@ pub mod suspense;
 // pub mod tree;
 
 pub use accordion::{Accordion, accordion};
+#[cfg(feature = "avatar")]
 pub use avatar::{Avatar, avatar};
 pub use card::{Card, CardStyle, CardStyleTokens, CardTheme, card};
 pub use suspense::{Suspense, suspense};
