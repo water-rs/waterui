@@ -428,7 +428,7 @@ pub fn demo() -> impl View {
 
 /// The application menu bar: a checked "Refuse Quit" command that makes
 /// `on_quit_request` cancel every quit answered while it is checked.
-fn quit_menu(refuse_quit: &Binding<bool>) -> Menu {
+fn quit_menu(refuse_quit: &Binding<bool>) -> impl waterui::component::MenuBarView + use<> {
     Menu::new(
         "Quitting",
         "Refuse Quit"
