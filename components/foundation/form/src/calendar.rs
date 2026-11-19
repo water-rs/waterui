@@ -23,7 +23,6 @@ use waterui_controls::{IntoLabel, button, impl_label_style_methods};
 use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::interaction::Disabled;
 use waterui_core::layout::StretchAxis;
-use waterui_core::view::{ConfigurableView, ViewConfiguration};
 use waterui_core::{
     AnyView, Environment, Metadata, Native, NativeView, View, env::use_env, views::ForEach,
 };
@@ -105,10 +104,10 @@ pub struct Calendar<L> {
     visible_month: Binding<Date>,
 }
 
-impl<L: LabelKind> ConfigurableView for Calendar<L> {
-    type Config = CalendarConfig<Label<L>>;
-
-    fn config(self) -> Self::Config {
+impl<L: LabelKind> Calendar<L> {
+    /// Returns the configuration for this calendar.
+    #[must_use]
+    pub fn config(self) -> CalendarConfig<Label<L>> {
         CalendarConfig {
             label: self.label.into_unscoped_control_label(),
             value: self.value,
@@ -119,24 +118,16 @@ impl<L: LabelKind> ConfigurableView for Calendar<L> {
     }
 }
 
-impl<S: View> ViewConfiguration for CalendarConfig<S> {
-    type View = Calendar<ControlLabel<S>>;
-
-    fn render(self) -> Self::View {
-        let mode = self.label.display_mode_preference();
-        Calendar {
-            label: Label::from_control_label(self.label, mode),
-            value: self.value,
-            range: self.range,
-            decorated: self.decorated,
-            visible_month: self.visible_month,
-        }
-    }
-}
-
 impl<S: View> From<CalendarConfig<S>> for Calendar<ControlLabel<S>> {
     fn from(value: CalendarConfig<S>) -> Self {
-        value.render()
+        let mode = value.label.display_mode_preference();
+        Self {
+            label: Label::from_control_label(value.label, mode),
+            value: value.value,
+            range: value.range,
+            decorated: value.decorated,
+            visible_month: value.visible_month,
+        }
     }
 }
 

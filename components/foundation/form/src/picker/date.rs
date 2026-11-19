@@ -8,7 +8,6 @@ use nami::Binding;
 use waterui_controls::label::{ControlLabel, Label, LabelKind};
 use waterui_controls::{IntoLabel, impl_label_style_methods};
 use waterui_core::backend::{Backend, ChildSlot, MapSlots};
-use waterui_core::view::{ConfigurableView, ViewConfiguration};
 use waterui_core::{AnyView, Environment, Native, NativeView, View};
 
 /// Configuration for the `DatePicker` component.
@@ -164,10 +163,10 @@ pub struct DatePicker<L> {
     ty: DatePickerType,
 }
 
-impl<L: LabelKind> ConfigurableView for DatePicker<L> {
-    type Config = DatePickerConfig<Label<L>>;
-
-    fn config(self) -> Self::Config {
+impl<L: LabelKind> DatePicker<L> {
+    /// Returns the configuration for this date picker.
+    #[must_use]
+    pub fn config(self) -> DatePickerConfig<Label<L>> {
         DatePickerConfig {
             label: self.label.into_unscoped_control_label(),
             value: self.value,
@@ -177,23 +176,15 @@ impl<L: LabelKind> ConfigurableView for DatePicker<L> {
     }
 }
 
-impl<S: View> ViewConfiguration for DatePickerConfig<S> {
-    type View = DatePicker<ControlLabel<S>>;
-
-    fn render(self) -> Self::View {
-        let mode = self.label.display_mode_preference();
-        DatePicker {
-            label: Label::from_control_label(self.label, mode),
-            value: self.value,
-            range: self.range,
-            ty: self.ty,
-        }
-    }
-}
-
 impl<S: View> From<DatePickerConfig<S>> for DatePicker<ControlLabel<S>> {
     fn from(value: DatePickerConfig<S>) -> Self {
-        value.render()
+        let mode = value.label.display_mode_preference();
+        Self {
+            label: Label::from_control_label(value.label, mode),
+            value: value.value,
+            range: value.range,
+            ty: value.ty,
+        }
     }
 }
 

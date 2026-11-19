@@ -1345,7 +1345,7 @@ fn a_segmented_picker_takes_the_width_it_is_offered() {
     let mut measure = |style, width: Option<f32>| {
         let mut node = crate::widgets::controls::picker::PickerRenderState::from_config(
             waterui_core::backend::MapSlots::map_slots(
-                waterui_core::view::ConfigurableView::config(picker(style)),
+                picker(style).config(),
                 waterui_core::backend::ChildSlot::from_view,
             ),
         );

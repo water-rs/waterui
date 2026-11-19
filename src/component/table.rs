@@ -16,12 +16,7 @@ use core::any::type_name;
 
 use alloc::{rc::Rc, vec::Vec};
 use nami::{Computed, Signal, SignalExt, impl_constant, signal::IntoSignal};
-use waterui_core::{
-    Native, NativeView,
-    id::Identifiable,
-    view::{ConfigurableView, ViewConfiguration},
-    views::SharedAnyViews,
-};
+use waterui_core::{Native, NativeView, id::Identifiable, views::SharedAnyViews};
 use waterui_locale::locale_binding;
 use waterui_text::{IntoText, Text};
 
@@ -75,24 +70,22 @@ where
     }
 }
 
-impl<Col> ConfigurableView for Table<Col>
+impl<Col> Table<Col>
 where
     Col: Signal<Output = Vec<TableColumn>> + 'static,
 {
-    type Config = TableConfig;
-
-    fn config(self) -> Self::Config {
-        Self::Config {
+    /// Returns the configuration for this table.
+    #[must_use]
+    pub fn config(self) -> TableConfig {
+        TableConfig {
             columns: self.columns.computed(),
         }
     }
 }
 
-impl ViewConfiguration for TableConfig {
-    type View = Table<Computed<Vec<TableColumn>>>;
-
-    fn render(self) -> Self::View {
-        Table::new(Computed::new(self.columns))
+impl From<TableConfig> for Table<Computed<Vec<TableColumn>>> {
+    fn from(value: TableConfig) -> Self {
+        Self::new(Computed::new(value.columns))
     }
 }
 
@@ -105,7 +98,7 @@ where
     Col: Signal<Output = Vec<TableColumn>> + 'static,
 {
     fn body(self, env: &Environment) -> impl View {
-        render_table_config(ConfigurableView::config(self), env)
+        render_table_config(self.config(), env)
     }
 }
 

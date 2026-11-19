@@ -27,12 +27,15 @@
 //!     .background(Material::UltraThin);
 //! ```
 
-use std::{fmt::Debug, future::Future, rc::Rc, sync::Arc};
+use std::{cell::RefCell, fmt::Debug, future::Future, rc::Rc, sync::Arc};
 
 use nami::{Binding, Computed, Signal, SignalExt as _, impl_constant, signal::IntoComputed};
 use suiteki::Str;
+use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::handler::{AnyViewBuilder, Handler, ViewBuilder, boxed_action};
-use waterui_core::{AnyView, Dynamic, Environment, OneOf2, View, flatten_signal};
+use waterui_core::{
+    AnyView, Dynamic, Environment, Native, NativeView, OneOf2, SerialDispatch, View, flatten_signal,
+};
 use waterui_graphics::{Color, color::WorkingColor};
 use waterui_layout::{Point, Rect, Size};
 
@@ -228,9 +231,45 @@ pub struct Window<C> {
     focus_request: FocusRequest,
 }
 
-/// A window whose content type is erased: what a runner holds for windows
-/// opened while the application runs, through [`WindowManager`].
+/// A window whose content type is explicitly erased via [`Window::erase`] or
+/// [`Windows::erase`](crate::app::Windows::erase).
 pub type AnyWindow = Window<AnyViewBuilder<AnyView>>;
+
+/// Builds a window's content into its backend's child slot each time the
+/// backend mounts it.
+pub struct WindowSlot<S>(Rc<dyn Fn() -> S>);
+
+impl<S> WindowSlot<S> {
+    fn new(build: impl Fn() -> S + 'static) -> Self {
+        Self(Rc::new(build))
+    }
+
+    /// Builds the window's content in the backend's slot.
+    #[must_use]
+    pub fn build(&self) -> S {
+        (self.0)()
+    }
+}
+
+impl<S: 'static> WindowSlot<S> {
+    /// The same slot builder with each built child mapped through `f`.
+    #[must_use]
+    pub fn map<T>(self, f: impl Fn(S) -> T + 'static) -> WindowSlot<T> {
+        WindowSlot::new(move || f(self.build()))
+    }
+}
+
+impl<S> Clone for WindowSlot<S> {
+    fn clone(&self) -> Self {
+        Self(Rc::clone(&self.0))
+    }
+}
+
+impl<S> Debug for WindowSlot<S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("WindowSlot")
+    }
+}
 
 impl<C> Debug for Window<C> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -816,25 +855,159 @@ impl From<Material> for WindowBackgroundInput {
     }
 }
 
-/// Manages the display of windows.
-#[derive(Clone)]
-pub struct WindowManager(Rc<dyn Fn(AnyWindow)>);
+/// Sends windows of content type `C` to the runner owning the paired
+/// [`WindowChannel`].
+///
+/// Created with [`WindowManager::new`]; pass the returned [`WindowChannel`] to
+/// [`App::new_with_windows`](crate::app::App::new_with_windows) or
+/// [`App::window`](crate::app::App::window), and show windows from handlers
+/// through [`Self::show`] or [`Window::show`].
+///
+/// Extracts through `State<Self>`, so `.state(&manager)` on
+/// [`App`](crate::app::App) or a view makes `manager: WindowManager<C>`
+/// available to handlers; cloning `manager` into a closure works directly as
+/// well.
+#[waterui_macros::state]
+pub struct WindowManager<C: 'static>(Rc<WindowManagerInner<C>>);
 
-impl Debug for WindowManager {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("WindowManager").finish()
+impl<C: 'static> Clone for WindowManager<C> {
+    fn clone(&self) -> Self {
+        Self(Rc::clone(&self.0))
     }
 }
 
-impl WindowManager {
-    /// Create a new `WindowManager` with the specified show function.
-    pub fn new<F: 'static + Fn(AnyWindow)>(show: F) -> Self {
-        Self(Rc::new(show))
+impl<C: 'static> waterui_core::plugin::Plugin for WindowManager<C> {}
+
+impl<C: 'static> Debug for WindowManager<C> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WindowManager").finish_non_exhaustive()
+    }
+}
+
+struct WindowManagerInner<C> {
+    state: RefCell<WindowChannelState<C>>,
+    /// Windows shown while a receiver call is in flight are delivered after it
+    /// returns, in order, rather than re-entering the receiver.
+    dispatch: SerialDispatch<Window<C>>,
+}
+
+enum WindowChannelState<C> {
+    /// Connected to the runner's receiver.
+    Connected(Rc<dyn Fn(Window<C>)>),
+    /// Not yet connected; holds windows shown before the runner connected, in
+    /// call order.
+    Unconnected(Vec<Window<C>>),
+    /// The paired [`WindowChannel`] was dropped without connecting.
+    Disconnected,
+}
+
+impl<C: 'static> WindowManager<C> {
+    /// Creates a typed window manager and the [`WindowChannel`] a runner
+    /// receives its windows from.
+    #[must_use]
+    pub fn new() -> (Self, WindowChannel<C>) {
+        let manager = Self(Rc::new(WindowManagerInner {
+            state: RefCell::new(WindowChannelState::Unconnected(Vec::new())),
+            dispatch: SerialDispatch::new(),
+        }));
+        let channel = WindowChannel(manager.clone());
+        (manager, channel)
     }
 
-    /// Show a window using the window manager.
-    pub fn show<C: ViewBuilder>(&self, window: Window<C>) {
-        (self.0)(window.erase());
+    /// Shows `window` on the runner connected to this manager's
+    /// [`WindowChannel`].
+    ///
+    /// Windows shown before the runner connects are queued in call order and
+    /// opened when the application starts.
+    ///
+    /// # Contract
+    ///
+    /// Showing a window after the paired [`WindowChannel`] was dropped without
+    /// connecting to a runner breaks the contract: a debug build panics, and a
+    /// release build logs the error and shows nothing.
+    pub fn show(&self, window: Window<C>)
+    where
+        C: ViewBuilder,
+    {
+        self.0.dispatch.deliver(window, |window| {
+            let receiver = {
+                let mut state = self.0.state.borrow_mut();
+                match &mut *state {
+                    WindowChannelState::Connected(receiver) => Rc::clone(receiver),
+                    WindowChannelState::Unconnected(pending) => {
+                        pending.push(window);
+                        return;
+                    }
+                    WindowChannelState::Disconnected => {
+                        crate::contract_violation!(
+                            "WindowChannel was dropped without being connected to a runner, so the window is not shown"
+                        );
+                        return;
+                    }
+                }
+            };
+            receiver(window);
+        });
+    }
+}
+
+/// The runner's end of a [`WindowManager`]: a [`Windows`](crate::app::Windows)
+/// source that carries `C`'s concrete type to the runner without erasing to
+/// [`AnyWindow`].
+pub struct WindowChannel<C: 'static>(WindowManager<C>);
+
+impl<C: 'static> Debug for WindowChannel<C> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WindowChannel").finish_non_exhaustive()
+    }
+}
+
+impl<C: 'static> WindowChannel<C> {
+    /// How many windows were queued on this channel before a runner connected
+    /// it.
+    #[must_use]
+    pub fn queued_len(&self) -> usize {
+        match &*self.0.0.state.borrow() {
+            WindowChannelState::Unconnected(pending) => pending.len(),
+            WindowChannelState::Connected(_) | WindowChannelState::Disconnected => 0,
+        }
+    }
+
+    /// Connects this channel to `receiver` for windows shown while the
+    /// application runs, and returns any windows already queued before the
+    /// connection, in call order.
+    pub fn connect(self, receiver: impl Fn(Window<C>) + 'static) -> Vec<Window<C>> {
+        let mut state = self.0.0.state.borrow_mut();
+        let queued = match &mut *state {
+            WindowChannelState::Unconnected(pending) => core::mem::take(pending),
+            WindowChannelState::Connected(_) | WindowChannelState::Disconnected => {
+                unreachable!("WindowChannel is single-consumer and connects once")
+            }
+        };
+        *state = WindowChannelState::Connected(Rc::new(receiver));
+        queued
+    }
+
+    /// Consumes this channel without connecting a live receiver, returning any
+    /// windows already queued on it.
+    #[must_use]
+    pub fn drain(self) -> Vec<Window<C>> {
+        let mut state = self.0.0.state.borrow_mut();
+        let queued = match &mut *state {
+            WindowChannelState::Unconnected(pending) => core::mem::take(pending),
+            WindowChannelState::Connected(_) | WindowChannelState::Disconnected => Vec::new(),
+        };
+        *state = WindowChannelState::Disconnected;
+        queued
+    }
+}
+
+impl<C: 'static> Drop for WindowChannel<C> {
+    fn drop(&mut self) {
+        let mut state = self.0.0.state.borrow_mut();
+        if matches!(*state, WindowChannelState::Unconnected(_)) {
+            *state = WindowChannelState::Disconnected;
+        }
     }
 }
 
@@ -1282,39 +1455,59 @@ impl<C> Window<C> {
         }
     }
 
-    /// Show the window on screen.
+    /// Show the window on screen through `manager`.
     ///
     /// The window opens independently of any view's lifetime, which makes
     /// this the way to show a window that must outlive every other window —
     /// for example one reopened under
     /// [`LastWindowPolicy::StayResident`](crate::app::LastWindowPolicy::StayResident)
-    /// after the last window closed. For window presentation tied to a
+    /// after the last window closed. Pass `manager`'s paired [`WindowChannel`]
+    /// to [`App::new_with_windows`](crate::app::App::new_with_windows) or
+    /// [`App::window`](crate::app::App::window) so the runner receives the
+    /// window with its content type intact. For window presentation tied to a
     /// mounted view, see [`conditional_window`].
     ///
     /// # Contract
     ///
-    /// An environment without a `WindowManager` breaks the contract: a debug
-    /// build panics, and a release build logs the error and shows nothing.
-    pub fn show(self, env: &Environment)
+    /// Showing a window after `manager`'s [`WindowChannel`] was dropped
+    /// without connecting to a runner breaks the contract: a debug build
+    /// panics, and a release build logs the error and shows nothing.
+    pub fn show(self, manager: &WindowManager<C>)
     where
         C: ViewBuilder,
     {
-        let Some(manager) = env.get::<WindowManager>() else {
-            crate::contract_violation!(
-                "WindowManager not found in environment, so the window is not shown"
-            );
-            return;
-        };
         manager.show(self);
+    }
+
+    fn into_slot<S: ChildSlot>(self) -> Window<WindowSlot<S>>
+    where
+        C: ViewBuilder,
+    {
+        self.map_content(|content| WindowSlot::new(move || S::from_view(content.build())))
     }
 }
 
-// Implement View for Window to allow reactive window display.
-// When a Window is rendered as a View, it shows itself via WindowManager.
+impl<S: 'static> NativeView for Window<WindowSlot<S>> {}
+
+impl<S: 'static> MapSlots<S> for Window<WindowSlot<S>> {
+    type With<T: 'static> = Window<WindowSlot<T>>;
+
+    fn map_slots<T: 'static>(self, f: impl Fn(S) -> T + Clone + 'static) -> Window<WindowSlot<T>> {
+        self.map_content(|slot| slot.map(f))
+    }
+}
+
 impl<C: ViewBuilder> View for Window<C> {
-    fn body(self, env: &Environment) -> impl View {
-        self.show(env);
-        // Return empty view - the window is shown separately
+    /// The erased form, for code that expands views by hand.
+    fn body(self, _env: &Environment) -> impl View {
+        Native::new(self.into_slot::<AnyView>())
+    }
+
+    /// Reaches the backend with the window's content in the backend's child
+    /// slot, so a window declared in the tree — [`conditional_window`]
+    /// included — keeps its content type up to the backend.
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        backend.native(self.into_slot::<B::Slot>(), env, cx)
     }
 }
 
@@ -1514,7 +1707,7 @@ mod tests {
 
     use super::{
         ResolvedWindowBackground, Window, WindowBackground, WindowIcon, WindowIconError,
-        WindowState, resolve_background,
+        WindowManager, WindowState, resolve_background,
     };
     use crate::background::Material;
     use crate::theme::{
@@ -1610,13 +1803,58 @@ mod tests {
         assert_eq!(color(resolved.snapshot()), red);
     }
 
-    /// Showing a window in an environment without a manager shows nothing.
+    /// Showing a window after its channel was dropped shows nothing.
     #[test]
-    #[cfg_attr(debug_assertions, should_panic(expected = "WindowManager not found"))]
-    fn showing_a_window_without_a_manager_is_dropped() {
+    #[cfg_attr(debug_assertions, should_panic(expected = "WindowChannel was dropped"))]
+    fn showing_a_window_on_a_dropped_channel_is_dropped() {
         let state = Binding::container(WindowState::Closed);
-        Window::new("Orphan", state.clone(), || ()).show(&Environment::new());
+        let (manager, channel) = WindowManager::new();
+        drop(channel);
+        Window::new("Orphan", state.clone(), || ()).show(&manager);
         assert_eq!(state.snapshot(), WindowState::Closed);
+    }
+
+    /// `WindowManager` and `WindowChannel` carry the concrete content builder
+    /// type to the runner, preserving FIFO order across pre-connect queueing
+    /// and re-entrant `show` calls.
+    #[test]
+    fn window_channel_delivers_typed_windows_in_order() {
+        fn body(label: &'static str) -> impl super::ViewBuilder<Output = &'static str> {
+            move || label
+        }
+
+        let (manager, channel) = WindowManager::new();
+        Window::new("first", Binding::container(WindowState::Normal), body("a")).show(&manager);
+        assert_eq!(channel.queued_len(), 1);
+
+        let received = Rc::new(RefCell::new(Vec::new()));
+        let nested = std::cell::Cell::new(false);
+        let queued = channel.connect({
+            let received = Rc::clone(&received);
+            let manager = manager.clone();
+            move |window| {
+                let built: &'static str = window.build_content().0;
+                received.borrow_mut().push((window.title.snapshot(), built));
+                if !nested.replace(true) {
+                    Window::new("third", Binding::container(WindowState::Normal), body("c"))
+                        .show(&manager);
+                }
+            }
+        });
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].title.snapshot().as_str(), "first");
+        assert_eq!(queued[0].build_content().0, "a");
+
+        Window::new("second", Binding::container(WindowState::Normal), body("b")).show(&manager);
+        let log: Vec<_> = received
+            .borrow()
+            .iter()
+            .map(|(title, body)| (title.as_str().to_owned(), *body))
+            .collect();
+        assert_eq!(
+            log,
+            vec![("second".to_owned(), "b"), ("third".to_owned(), "c")]
+        );
     }
 
     /// The icon validates its pixel buffer against its size.
