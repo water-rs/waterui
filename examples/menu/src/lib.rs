@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use waterui::app::{App, QuitReply, Windows};
 use waterui::color::Srgb;
+use waterui::component::MenuBarView;
 use waterui::log::info;
 use waterui::prelude::*;
 use waterui::preview;
@@ -428,7 +429,7 @@ pub fn demo() -> impl View {
 
 /// The application menu bar: a checked "Refuse Quit" command that makes
 /// `on_quit_request` cancel every quit answered while it is checked.
-fn quit_menu(refuse_quit: &Binding<bool>) -> Menu {
+fn quit_menu(refuse_quit: &Binding<bool>) -> impl MenuBarView + use<> {
     Menu::new(
         "Quitting",
         "Refuse Quit"
