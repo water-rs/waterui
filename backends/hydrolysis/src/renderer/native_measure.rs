@@ -26,16 +26,14 @@ pub fn unsupported_map() {
     );
 }
 
-/// Why a `WebView` cannot be drawn on a build without a bridged web engine:
-/// a `WebView` no engine's hook claimed leaves the backend nothing to draw a
-/// page with. Reported as a contract violation by
-/// the tree builder and the leaf's measure.
+/// Why a `WebView` cannot be drawn on a build without a selected web engine.
+/// Reported as a contract violation by the tree builder and the leaf's measure.
 #[cfg(waterui_feature = "webview")]
-#[cfg(not(any(hydrolysis_system_webview, hydrolysis_android_system_webview)))]
+#[cfg(not(any(hydrolysis_webview_engine, hydrolysis_android_system_webview)))]
 pub const UNSUPPORTED_WEBVIEW: &str = "WebView is unsupported on this Hydrolysis build because no web engine is bridged; \
-     link a browser engine crate (`waterui-browser-cef`, `waterui-browser-wpe`), enable \
-     the `webview-system` and `winit` features on macOS, the `webview-system` and \
-     `web` features on the web, or the `webview-system` feature on Android";
+     enable the `webview-cef` or `webview-wpe` feature, the `webview-system` and `winit` \
+     features on macOS, the `webview-system` and `web` features on the web, or the \
+     `webview-system` feature on Android";
 
 /// Reports a leaf that needs a GPU device — `view` names it — reaching a
 /// painter without one; `no_gpu` says why this runtime has none.
