@@ -18,7 +18,7 @@ use cocoa_ui::{PlatformView, Rect as KitRect, Retained, view};
 use waterui::component::button::{ButtonConfig, ButtonStyle};
 use waterui::reactive::Computed;
 use waterui::text::StyledStr;
-use waterui_backend_core::{AnyView, Environment};
+use waterui_backend_core::Environment;
 use waterui_core::handler::{BoxedAction, ReportExtraction};
 use waterui_core::interaction::Disabled;
 use waterui_core::layout::{
@@ -26,7 +26,7 @@ use waterui_core::layout::{
 };
 
 use crate::components::button_chrome;
-use crate::contract::NativeLeaf;
+use crate::contract::{Held, NativeLeaf};
 use crate::proposal;
 
 #[cfg(target_os = "macos")]
@@ -159,7 +159,7 @@ impl SubView for ButtonSubView {
 }
 
 /// The `button` realization.
-pub fn realize_button_config(config: ButtonConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
+pub fn realize_button_config(config: ButtonConfig<Held>, ctx: &RenderContext<'_>) -> NativeLeaf {
     let mtm = ctx.mtm();
     let style = config.style();
 
@@ -181,7 +181,7 @@ pub fn realize_button_config(config: ButtonConfig, ctx: &RenderContext<'_>) -> N
 
     let (label, action, ..) = config.into_parts();
     let accessibility_label = label.accessibility_label();
-    let label_leaf = ctx.with_env(&label_env).render(AnyView::new(label));
+    let label_leaf = ctx.with_env(&label_env).realize(label.build());
     let child_view = view::retain_base(label_leaf.view());
     let mounted = label_leaf.mount(&label_container);
 

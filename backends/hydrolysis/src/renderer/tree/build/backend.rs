@@ -54,11 +54,40 @@ impl<'r, E: crate::text::TextEngine> HydroBackend<'r, E> {
     /// environment the wrapper's value installs, held by an `Env` node so
     /// emission reads it every flush and the content stays live.
     fn accessibility_scope(&mut self, content: HeldChild<E>, scoped: Environment) -> RenderNode<E> {
+        self.env_scope(content, scoped)
+    }
+
+    pub(in crate::renderer::tree) fn env_scope(
+        &mut self,
+        content: HeldChild<E>,
+        scoped: Environment,
+    ) -> RenderNode<E> {
         let child = RenderNode::build_slot(content, &scoped, self.renderer);
         RenderNode::Env(Box::new(EnvNode {
             core: self.renderer.new_core(),
             env: scoped,
             child,
+        }))
+    }
+
+    #[cfg(any(waterui_feature = "calendar", waterui_feature = "multi-date-picker"))]
+    fn build_vertical_pair<C: ChildView<Self>>(
+        &mut self,
+        label: &waterui_controls::label::ControlLabel<C>,
+        body: impl View,
+        env: &Environment,
+    ) -> RenderNode<E> {
+        let mut child_env = env.clone();
+        child_env.insert(waterui::layout::stack::Axis::Vertical);
+        let container = waterui::layout::container::FixedContainer::new(
+            waterui::layout::stack::VStackLayout::default(),
+            vec![label.build().into_child(), HeldChild::from_view(body)],
+        );
+        let node = self.fixed_container(container, &child_env, ());
+        RenderNode::Env(Box::new(EnvNode {
+            core: self.renderer.new_core(),
+            env: child_env,
+            child: node,
         }))
     }
 
@@ -88,6 +117,21 @@ macro_rules! accessibility_scopes {
             }
         )+
     };
+}
+
+/// Wraps a held child view in an environment scope overriding `Foreground` to `color`.
+pub fn held_with_foreground<E: crate::text::TextEngine>(
+    content: HeldChild<E>,
+    color: waterui::Color,
+) -> HeldChild<E> {
+    HeldChild::from_fn(move |backend, env, ()| {
+        let mut scoped = env.clone();
+        waterui_core::plugin::Plugin::install(
+            waterui::theme::ForegroundOverride::new(color),
+            &mut scoped,
+        );
+        backend.env_scope(content, scoped)
+    })
 }
 
 /// [`HydroBackend`] with its renderer borrow left open.
@@ -1056,159 +1100,181 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     // from a retained, signal-holding config (action retained behind `Rc`), so
     // its handler re-reads live signals — reactive labels/values stay live
     // instead of freezing in a one-shot `Captured` bake.
-    fn button(
+    fn button<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::button::ButtonConfig,
+        native: waterui::component::button::ButtonConfig<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        use waterui_core::backend::MapSlots as _;
         let renderer = &mut *self.renderer;
-        RenderNode::build_button(renderer, native, env)
+        let into_child: fn(C) -> HeldChild<E> = C::into_child;
+        RenderNode::build_button(renderer, native.map_slots(into_child), env)
     }
 
     #[cfg(waterui_feature = "menu")]
-    fn menu(
+    fn menu<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::menu::ResolvedMenu,
+        native: waterui::component::menu::ResolvedMenu<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        use waterui_core::backend::MapSlots as _;
         let renderer = &mut *self.renderer;
-        RenderNode::build_menu(renderer, native, env)
+        let into_child: fn(C) -> HeldChild<E> = C::into_child;
+        RenderNode::build_menu(renderer, native.map_slots(into_child), env)
     }
 
     #[cfg(waterui_feature = "toggle")]
-    fn toggle(
+    fn toggle<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::toggle::ToggleConfig,
+        native: waterui::component::toggle::ToggleConfig<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        use waterui_core::backend::MapSlots as _;
         let renderer = &mut *self.renderer;
-        RenderNode::build_toggle(native, env, renderer)
+        let into_child: fn(C) -> HeldChild<E> = C::into_child;
+        RenderNode::build_toggle(native.map_slots(into_child), env, renderer)
     }
 
     #[cfg(waterui_feature = "slider")]
-    fn slider(
+    fn slider<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::slider::SliderConfig,
+        native: waterui::component::slider::SliderConfig<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        use waterui_core::backend::MapSlots as _;
         let renderer = &mut *self.renderer;
-        RenderNode::build_slider(native, env, renderer)
+        let into_child: fn(C) -> HeldChild<E> = C::into_child;
+        RenderNode::build_slider(native.map_slots(into_child), env, renderer)
     }
 
     #[cfg(waterui_feature = "stepper")]
-    fn stepper(
+    fn stepper<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::stepper::StepperConfig,
+        native: waterui::component::stepper::StepperConfig<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        use waterui_core::backend::MapSlots as _;
         let renderer = &mut *self.renderer;
-        RenderNode::build_stepper(native, env, renderer)
+        let into_child: fn(C) -> HeldChild<E> = C::into_child;
+        RenderNode::build_stepper(native.map_slots(into_child), env, renderer)
     }
 
-    fn progress(
+    fn progress<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::progress::ProgressConfig,
+        native: waterui::component::progress::ProgressConfig<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        use waterui_core::backend::MapSlots as _;
         let renderer = &mut *self.renderer;
-        RenderNode::build_progress(native, env, renderer)
+        let into_child: fn(C) -> HeldChild<E> = C::into_child;
+        RenderNode::build_progress(native.map_slots(into_child), env, renderer)
     }
 
     // Hydrolysis realizes the calendar and the multi-date picker with
     // their grids composed from `WaterUI` views.
     #[cfg(waterui_feature = "calendar")]
-    fn calendar(
+    fn calendar<C: ChildView<Self>>(
         &mut self,
-        native: waterui::form::calendar::CalendarConfig,
+        native: waterui::form::calendar::CalendarConfig<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
-        let renderer = &mut *self.renderer;
-        let grid = CalendarGrid::new(native);
-        RenderNode::build_view(AnyView::new(grid), env, renderer)
+        let (label, calendar) = CalendarGrid::new(native).into_parts(env);
+        self.build_vertical_pair(&label, calendar, env)
     }
 
     #[cfg(waterui_feature = "multi-date-picker")]
-    fn multi_date_picker(
+    fn multi_date_picker<C: ChildView<Self>>(
         &mut self,
-        native: waterui::form::picker::multi_date::MultiDatePickerConfig,
+        native: waterui::form::picker::multi_date::MultiDatePickerConfig<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
-        let renderer = &mut *self.renderer;
-        let grid = MultiDatePickerGrid::new(native, env);
-        RenderNode::build_view(AnyView::new(grid), env, renderer)
+        let (label, calendar) = MultiDatePickerGrid::new(native, env).into_parts(env);
+        self.build_vertical_pair(&label, calendar, env)
     }
 
     #[cfg(waterui_feature = "date-picker")]
-    fn date_picker(
+    fn date_picker<C: ChildView<Self>>(
         &mut self,
-        native: waterui::form::picker::date::DatePickerConfig,
+        native: waterui::form::picker::date::DatePickerConfig<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        use waterui_core::backend::MapSlots as _;
         let renderer = &mut *self.renderer;
-        RenderNode::build_date_picker(native, env, renderer)
+        let into_child: fn(C) -> HeldChild<E> = C::into_child;
+        RenderNode::build_date_picker(native.map_slots(into_child), env, renderer)
     }
 
     #[cfg(waterui_feature = "color-picker")]
-    fn color_picker(
+    fn color_picker<C: ChildView<Self>>(
         &mut self,
-        native: waterui::form::picker::color::ColorPickerConfig,
+        native: waterui::form::picker::color::ColorPickerConfig<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        use waterui_core::backend::MapSlots as _;
         let renderer = &mut *self.renderer;
-        RenderNode::build_color_picker(native, env, renderer)
+        let into_child: fn(C) -> HeldChild<E> = C::into_child;
+        RenderNode::build_color_picker(native.map_slots(into_child), env, renderer)
     }
 
     #[cfg(waterui_feature = "picker")]
-    fn picker(
+    fn picker<C: ChildView<Self>>(
         &mut self,
-        native: waterui::form::picker::PickerConfig,
+        native: waterui::form::picker::PickerConfig<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        use waterui_core::backend::MapSlots as _;
         let renderer = &mut *self.renderer;
-        RenderNode::build_picker(native, env, renderer)
+        let into_child: fn(C) -> HeldChild<E> = C::into_child;
+        RenderNode::build_picker(native.map_slots(into_child), env, renderer)
     }
 
     #[cfg(waterui_feature = "text-field")]
-    fn text_field(
+    fn text_field<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::text_field::ResolvedTextFieldConfig,
+        native: waterui::component::text_field::ResolvedTextFieldConfig<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        use waterui_core::backend::MapSlots as _;
         let renderer = &mut *self.renderer;
-        RenderNode::build_text_field(native, env, renderer)
+        let into_child: fn(C) -> HeldChild<E> = C::into_child;
+        RenderNode::build_text_field(native.map_slots(into_child), env, renderer)
     }
 
     #[cfg(waterui_feature = "secure-field")]
-    fn secure_field(
+    fn secure_field<C: ChildView<Self>>(
         &mut self,
-        native: waterui::form::secure::SecureFieldConfig,
+        native: waterui::form::secure::SecureFieldConfig<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        use waterui_core::backend::MapSlots as _;
         let renderer = &mut *self.renderer;
-        RenderNode::build_secure_field(native, env, renderer)
+        let into_child: fn(C) -> HeldChild<E> = C::into_child;
+        RenderNode::build_secure_field(native.map_slots(into_child), env, renderer)
     }
 
-    fn badge(
+    fn badge<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::badge::BadgeConfig,
+        native: waterui::component::badge::BadgeConfig<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        use waterui_core::backend::MapSlots as _;
         let renderer = &mut *self.renderer;
-        RenderNode::build_badge(native, env, renderer)
+        let into_child: fn(C) -> HeldChild<E> = C::into_child;
+        RenderNode::build_badge(native.map_slots(into_child), env, renderer)
     }
 
     #[cfg(waterui_feature = "list")]

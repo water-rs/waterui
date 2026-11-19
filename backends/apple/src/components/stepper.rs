@@ -24,7 +24,7 @@ use waterui_core::layout::{
     ViewDimensions,
 };
 
-use crate::contract::{Mounted, NativeLeaf};
+use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;
 
 #[cfg(target_os = "macos")]
@@ -258,7 +258,7 @@ fn accessibility_value(formatted: Option<&String>, value: i32) -> String {
 /// maps to a container view with the platform stepper, the label child and,
 /// when a `value_formatter` is present, a text child showing the formatted
 /// value.
-pub fn realize_stepper_config(config: StepperConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
+pub fn realize_stepper_config(config: StepperConfig<Held>, ctx: &RenderContext<'_>) -> NativeLeaf {
     let mtm = ctx.mtm();
     let stretch = waterui_core::NativeView::stretch_axis(&config);
     let host = HostView::new(mtm, Rect::ZERO);
@@ -280,14 +280,10 @@ pub fn realize_stepper_config(config: StepperConfig, ctx: &RenderContext<'_>) ->
 
     let host_view: &PlatformView = &host;
     let children = Children {
-        label: ctx
-            .render(waterui_backend_core::AnyView::new(label))
-            .mount(host_view),
+        label: ctx.realize(label.build()).mount(host_view),
         formatted: value_formatter.clone().map(|formatter| {
-            ctx.render(waterui_backend_core::AnyView::new(
-                waterui_core::Native::new(TextConfig::new(formatter)),
-            ))
-            .mount(host_view)
+            ctx.render(waterui_core::Native::new(TextConfig::new(formatter)))
+                .mount(host_view)
         }),
     };
     cocoa_ui::view::hide_from_accessibility(children.label.view());

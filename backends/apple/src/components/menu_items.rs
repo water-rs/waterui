@@ -336,12 +336,15 @@ mod tests {
     /// ⌘W command.
     #[test]
     fn a_command_binding_command_w_moves_the_close_window_item_to_shift_command_w() {
-        let menu_bar = Computed::constant(vec![Menu::new(
-            "File",
-            (Command::builder("Close Tab")
-                .action(|| {})
-                .shortcut(Shortcut::new('w').command()),),
-        )]);
+        let menu_bar = Computed::constant(vec![
+            Menu::new(
+                "File",
+                (Command::builder("Close Tab")
+                    .action(|| {})
+                    .shortcut(Shortcut::new('w').command()),),
+            )
+            .into_semantic(),
+        ]);
         let mut env = Environment::new();
         env.insert(CloseWindowChord::new(&menu_bar, &env));
         let nodes = tree_nodes(&[ResolvedMenuItem::CloseWindow], &env);

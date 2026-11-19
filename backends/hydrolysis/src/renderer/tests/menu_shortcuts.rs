@@ -436,12 +436,15 @@ fn menu_bar_chord_fires_without_a_mounted_menu() {
     let fired = Binding::container(0_i32);
     let menu_bar = {
         let fired = fired.clone();
-        nami::Computed::constant(vec![Menu::new(
-            "App",
-            "Quit"
-                .action(move || fired.set(fired.snapshot() + 1))
-                .shortcut(Shortcut::new('w').control()),
-        )])
+        nami::Computed::constant(vec![
+            Menu::new(
+                "App",
+                "Quit"
+                    .action(move || fired.set(fired.snapshot() + 1))
+                    .shortcut(Shortcut::new('w').control()),
+            )
+            .into_semantic(),
+        ])
     };
     let env = test_environment();
     let _menu_bar_items =
@@ -478,7 +481,7 @@ fn command() -> Modifiers {
 
 /// A headless runtime whose app menu bar declares only `MenuItem::Quit`.
 fn runtime_with_declared_quit(env: Environment) -> HeadlessRuntime {
-    let menu_bar = nami::Computed::constant(vec![Menu::new("App", MenuItem::Quit)]);
+    let menu_bar = nami::Computed::constant(vec![Menu::new("App", MenuItem::Quit).into_semantic()]);
     let _menu_bar_items =
         crate::runner::menu_bar::register_menu_bar::<crate::text::ParleyEngine>(&menu_bar, &env);
     let mut runtime = HeadlessRuntime::new_for_tests(
@@ -550,7 +553,9 @@ fn a_declared_quit_arms_no_chord_where_nothing_can_quit() {
 /// A headless runtime whose app menu bar declares only
 /// `MenuItem::CloseWindow`.
 fn runtime_with_declared_close_window(env: Environment) -> HeadlessRuntime {
-    let menu_bar = nami::Computed::constant(vec![Menu::new("Window", MenuItem::CloseWindow)]);
+    let menu_bar = nami::Computed::constant(vec![
+        Menu::new("Window", MenuItem::CloseWindow).into_semantic(),
+    ]);
     let _menu_bar_items =
         crate::runner::menu_bar::register_menu_bar::<crate::text::ParleyEngine>(&menu_bar, &env);
     let mut runtime = HeadlessRuntime::new_for_tests(
@@ -744,12 +749,15 @@ fn a_mounted_close_window_follows_the_application_decided_chord() {
     let bar_fired = Binding::container(0_i32);
     let menu_bar = {
         let bar_fired = bar_fired.clone();
-        nami::Computed::constant(vec![Menu::new(
-            "File",
-            "Close Tab"
-                .action(move || bar_fired.set(bar_fired.snapshot() + 1))
-                .shortcut(Shortcut::new('w').command()),
-        )])
+        nami::Computed::constant(vec![
+            Menu::new(
+                "File",
+                "Close Tab"
+                    .action(move || bar_fired.set(bar_fired.snapshot() + 1))
+                    .shortcut(Shortcut::new('w').command()),
+            )
+            .into_semantic(),
+        ])
     };
     // What `App::into_parts` installs for this bar: tests reach the
     // decision through the same environment value.
@@ -810,12 +818,15 @@ fn a_mounted_menu_wins_the_app_bars_chord_while_mounted() {
     let menu_fired = Binding::container(0_i32);
     let menu_bar = {
         let bar_fired = bar_fired.clone();
-        nami::Computed::constant(vec![Menu::new(
-            "App",
-            "Quit"
-                .action(move || bar_fired.set(bar_fired.snapshot() + 1))
-                .shortcut(Shortcut::new('w').control()),
-        )])
+        nami::Computed::constant(vec![
+            Menu::new(
+                "App",
+                "Quit"
+                    .action(move || bar_fired.set(bar_fired.snapshot() + 1))
+                    .shortcut(Shortcut::new('w').control()),
+            )
+            .into_semantic(),
+        ])
     };
     let mounted = Binding::container(false);
     let env = test_environment();

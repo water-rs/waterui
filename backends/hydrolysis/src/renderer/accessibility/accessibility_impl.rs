@@ -2649,22 +2649,17 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     }
 
     /// Resolves the spoken accessibility text directly from a typed
-    /// [`Label`](waterui_controls::label::Label) without any view-tree
+    /// [`ControlLabel`](waterui_controls::label::ControlLabel) without any view-tree
     /// traversal. Backends should prefer this over `accessibility_label_from_view`
     /// when the source is already a known label, so that `LabelDisplayMode::Hidden`
     /// labels still surface their semantic text in the accessibility tree.
     #[cfg(feature = "accessibility")]
-    pub(crate) fn accessibility_label_from_label(
-        label: &waterui_controls::label::Label,
-        env: &Environment,
+    pub(crate) fn accessibility_label_from_label<S>(
+        label: &waterui_controls::label::ControlLabel<S>,
+        _env: &Environment,
     ) -> Option<String> {
         use waterui_core::Signal;
-        let plain = label
-            .clone()
-            .resolve(env)
-            .accessibility_label()
-            .snapshot()
-            .to_semantic();
+        let plain = label.accessibility_label().snapshot().to_semantic();
         let trimmed = plain.as_str().trim();
         if trimmed.is_empty() {
             None

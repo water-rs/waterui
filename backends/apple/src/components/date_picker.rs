@@ -24,7 +24,7 @@ use waterui_core::layout::{
     ViewDimensions,
 };
 
-use crate::contract::{Mounted, NativeLeaf, RenderContext};
+use crate::contract::{Held, Mounted, NativeLeaf, RenderContext};
 use crate::proposal;
 
 #[cfg(target_os = "macos")]
@@ -467,7 +467,10 @@ impl SubView for DatePickerSubView {
     clippy::needless_pass_by_value,
     reason = "NativeBackend hands each payload by value"
 )]
-pub fn realize_date_picker_config(config: DatePickerConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
+pub fn realize_date_picker_config(
+    config: DatePickerConfig<Held>,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
     let mtm = ctx.mtm();
     let host = HostView::new(mtm, Rect::ZERO);
     let host_view: &PlatformView = &host;
@@ -482,9 +485,7 @@ pub fn realize_date_picker_config(config: DatePickerConfig, ctx: &RenderContext<
     );
     cocoa_ui::view::add_subview(host_view, as_view(&picker));
 
-    let label = ctx
-        .render(waterui_backend_core::AnyView::new(config.label().clone()))
-        .mount(host_view);
+    let label = ctx.realize(config.label().build()).mount(host_view);
     cocoa_ui::view::hide_from_accessibility(label.view());
 
     let state = Rc::new(RefCell::new(DatePickerState {
@@ -577,7 +578,7 @@ pub fn realize_date_picker_config(config: DatePickerConfig, ctx: &RenderContext<
 /// that mirror `WuiDatePicker`'s observations.
 fn wire(
     leaf: &mut NativeLeaf,
-    config: &DatePickerConfig,
+    config: &DatePickerConfig<Held>,
     state: &Rc<RefCell<DatePickerState>>,
     ctx: &RenderContext<'_>,
     mtm: cocoa_ui::MainThreadMarker,

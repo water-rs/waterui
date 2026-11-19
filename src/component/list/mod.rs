@@ -1055,6 +1055,7 @@ impl<C: View> ListItem<C> {
 mod tests {
     use super::*;
     use crate::ViewExt;
+    use waterui_controls::label::TitleLabel;
     use waterui_core::backend::peel_metadata;
     use waterui_macros::text;
 
@@ -1081,7 +1082,12 @@ mod tests {
             List::content((row("Alice", "joined"), row("Hello", ""))).list_min_row_height(0.0),
         );
         let list = *content
-            .downcast::<List<ContentRows<(Row, Row), OneOf2<RowContent, RowContent>>>>()
+            .downcast::<List<
+                ContentRows<
+                    (Row<TitleLabel>, Row<TitleLabel>),
+                    OneOf2<RowContent<TitleLabel>, RowContent<TitleLabel>>,
+                >,
+            >>()
             .unwrap_or_else(|_| panic!("the metadata did not wrap the list"));
         let with_floor = render_config(ConfigurableView::config(list), &env);
         assert_eq!(with_floor.min_row_height, Some(0.0));

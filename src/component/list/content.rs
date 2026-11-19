@@ -36,7 +36,7 @@ use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::TaggedView;
 use waterui_core::{Environment, OneOf2, View};
 
-use waterui_controls::label::{IntoLabel, Label};
+use waterui_controls::label::{IntoLabel, Label, LabelKind};
 use waterui_layout::{
     padding::EdgeInsets,
     spacer::spacer,
@@ -473,15 +473,15 @@ pub enum RowLayout {
 /// the customizations callers actually need (value foreground color, layout
 /// switch, deletability).
 #[derive(Clone)]
-pub struct Row {
-    label: Label,
+pub struct Row<L> {
+    label: Label<L>,
     value: Text,
     layout: RowLayout,
     value_color: Option<Color>,
     deletable: Option<bool>,
 }
 
-impl core::fmt::Debug for Row {
+impl<L> core::fmt::Debug for Row<L> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Row")
             .field("layout", &self.layout)
@@ -491,7 +491,7 @@ impl core::fmt::Debug for Row {
     }
 }
 
-impl Row {
+impl<L> Row<L> {
     /// Switches this row to the two-line [`RowLayout::Detail`] layout, where
     /// the value renders below the label and stretches to the full row width.
     #[must_use]
@@ -530,9 +530,11 @@ impl Row {
     pub const fn tag<T>(self, tag: T) -> TaggedView<T, Self> {
         TaggedView { tag, content: self }
     }
+}
 
+impl<L: LabelKind> Row<L> {
     /// The row the list builds whenever it realizes this one.
-    fn build_item(&self) -> ListItem<RowContent> {
+    fn build_item(&self) -> ListItem<RowContent<L>> {
         let item = ListItem::new(RowContent {
             label: self.label.clone(),
             value: self.value.clone(),
@@ -549,14 +551,14 @@ impl Row {
 /// The content of a [`Row`]: its label and value laid out as its
 /// [`RowLayout`] says.
 #[derive(Debug, Clone)]
-pub struct RowContent {
-    label: Label,
+pub struct RowContent<L> {
+    label: Label<L>,
     value: Text,
     layout: RowLayout,
     value_color: Option<Color>,
 }
 
-impl View for RowContent {
+impl<L: LabelKind> View for RowContent<L> {
     fn body(self, _env: &Environment) -> impl View {
         let value = match self.value_color {
             Some(color) => OneOf2::A(self.value.foreground(color)),
@@ -578,8 +580,8 @@ impl View for RowContent {
     }
 }
 
-impl<S> ListContent<S> for Row {
-    type Row = RowContent;
+impl<S, L: LabelKind> ListContent<S> for Row<L> {
+    type Row = RowContent<L>;
 
     fn collect_items<R, W>(self, sink: &mut ListItemSink<R>, wrap: W)
     where
@@ -592,13 +594,13 @@ impl<S> ListContent<S> for Row {
 
 /// An untagged [`Row`] is not selectable, so it fits a list selected by any
 /// type and gives it nothing to select.
-impl<T> ContentTags<T> for Row {
+impl<T, L> ContentTags<T> for Row<L> {
     type Presence = Untagged;
 }
 
 /// A [`Row`] tagged with [`Row::tag`] is selected by its tag.
-impl<S, T: 'static> ListContent<S> for TaggedView<T, Row> {
-    type Row = RowContent;
+impl<S, T: 'static, L: LabelKind> ListContent<S> for TaggedView<T, Row<L>> {
+    type Row = RowContent<L>;
 
     fn collect_items<R, W>(self, sink: &mut ListItemSink<R>, wrap: W)
     where
@@ -610,7 +612,7 @@ impl<S, T: 'static> ListContent<S> for TaggedView<T, Row> {
     }
 }
 
-impl<T> ContentTags<T> for TaggedView<T, Row> {
+impl<T, L> ContentTags<T> for TaggedView<T, Row<L>> {
     type Presence = Tagged;
 }
 
@@ -624,7 +626,7 @@ impl<T> ContentTags<T> for TaggedView<T, Row> {
 /// [`Row::detail`] to switch to the multi-line layout used for free-form
 /// payloads such as truncating timestamps or backtraces.
 #[must_use]
-pub fn row(label: impl IntoLabel, value: impl IntoText) -> Row {
+pub fn row<L: IntoLabel>(label: L, value: impl IntoText) -> Row<L::Kind> {
     Row {
         label: label.into_label(),
         value: value.into_text(),
@@ -637,6 +639,6 @@ pub fn row(label: impl IntoLabel, value: impl IntoText) -> Row {
 /// Builds a two-line [`Row`] with the value stacked below the label and
 /// stretched to the full row width. Equivalent to [`Row::detail`].
 #[must_use]
-pub fn detail_row(label: impl IntoLabel, value: impl IntoText) -> Row {
+pub fn detail_row<L: IntoLabel>(label: L, value: impl IntoText) -> Row<L::Kind> {
     row(label, value).detail()
 }

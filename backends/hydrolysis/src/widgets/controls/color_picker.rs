@@ -9,14 +9,13 @@ use kurbo::Rect;
 use nami::Signal;
 use std::cell::RefCell;
 use std::rc::Rc;
+use waterui_core::Environment;
 use waterui_core::layout::{HorizontalAlignment, ProposalSize, Size as LayoutSize, ViewDimensions};
-use waterui_core::{AnyView, Environment};
 use waterui_form::picker::color::ColorPickerConfig;
 use waterui_graphics::color::Color;
 use waterui_text::styled::StyledStr;
 
-use crate::renderer::RetainedSubview;
-use crate::renderer::{HydroState, RenderContext, WidgetRenderContext};
+use crate::renderer::{HeldChild, HydroState, RenderContext, RetainedSubview, WidgetRenderContext};
 use crate::widgets::controls::field_look::FieldChrome;
 use crate::widgets::util::inset_rect;
 #[cfg(feature = "accessibility")]
@@ -31,7 +30,7 @@ const COLOR_PICKER_MIN_WIDTH: f32 = 160.0;
 /// [`RetainedSubview`] built once and re-flushed each frame so reactive label
 /// content stays live.
 pub struct ColorPickerRenderState<E: crate::text::TextEngine> {
-    config: ColorPickerConfig,
+    config: ColorPickerConfig<HeldChild<E>>,
     label_view: RetainedSubview<E>,
     /// The field container the picker wears: its look and live chrome.
     field: FieldChrome,
@@ -49,9 +48,9 @@ impl<E: crate::text::TextEngine> ColorPickerRenderState<E> {
         crate::renderer::SemanticCore::<E>::accessibility_label_from_label(self.config.label(), env)
     }
 
-    pub(crate) fn from_config(config: ColorPickerConfig) -> Self {
+    pub(crate) fn from_config(config: ColorPickerConfig<HeldChild<E>>) -> Self {
         Self {
-            label_view: RetainedSubview::new(AnyView::new(config.label().clone())),
+            label_view: RetainedSubview::held(config.label().build()),
             config,
             field: FieldChrome::new(),
         }
@@ -80,10 +79,10 @@ impl<E: crate::text::TextEngine> ColorPickerRenderState<E> {
 /// `Widget`-node path so both produce the same a11y tree.
 // empty when the accessibility feature is off
 #[cfg_attr(not(feature = "accessibility"), allow(clippy::missing_const_for_fn))]
-pub fn color_picker_accessibility<E: crate::text::TextEngine>(
+pub fn color_picker_accessibility<E: crate::text::TextEngine, S>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     ctx: Option<RenderContext>,
-    color_picker: &ColorPickerConfig,
+    color_picker: &ColorPickerConfig<S>,
     env: &Environment,
     focus_keys: &[crate::renderer::InteractionKey],
 ) {

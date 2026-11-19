@@ -4,7 +4,7 @@ use crate::renderer::chrome::{ChromeContent, IndicatorContent, LiveChromeParts, 
 #[cfg(feature = "accessibility")]
 use crate::renderer::slider_step_for_range;
 use crate::renderer::{
-    GroupOpacity, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext,
+    GroupOpacity, HeldChild, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext,
     slider_value_epsilon,
 };
 use crate::theme::{
@@ -22,9 +22,8 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use waterui::ViewExt as _;
 use waterui_controls::ControlSize;
-use waterui_controls::label::{Label, LabelDisplayMode};
+use waterui_controls::label::{ControlLabel, LabelDisplayMode};
 use waterui_controls::slider::{SliderConfig, ValueFormatter, snap};
-use waterui_core::AnyView;
 use waterui_core::Environment;
 use waterui_core::contract_violation;
 use waterui_core::interaction::InteractionState;
@@ -42,7 +41,7 @@ use crate::widgets::util::{label_beside_control_bounds, widget_disabled};
 /// `Widget` node holds them as [`RetainedSubview`]s built once and re-flushed each
 /// frame; the cloneable `label`/`range`/`value` drive the track and accessibility.
 pub struct SliderRenderState<E: crate::text::TextEngine> {
-    label: Label,
+    label: ControlLabel<HeldChild<E>>,
     /// The main label as a retained node sub-view, re-flushed each frame at its
     /// rect (reactive content stays live through the node's own re-flush). The
     /// cloneable `label` is kept alongside for accessibility resolution.
@@ -97,7 +96,7 @@ impl<E: crate::text::TextEngine> SliderRenderState<E> {
         crate::renderer::SemanticCore::<E>::accessibility_label_from_label(&self.label, env)
     }
 
-    pub(crate) fn from_config(config: SliderConfig) -> Self {
+    pub(crate) fn from_config(config: SliderConfig<HeldChild<E>>) -> Self {
         let (label, min_value_label, max_value_label, range, value, size, value_indicator, step) =
             config.into_parts();
         let range = valid_range(range);
@@ -107,10 +106,10 @@ impl<E: crate::text::TextEngine> SliderRenderState<E> {
             value.map(move |value: f64| (value.clamp(start, end) - start) / (end - start)),
         );
         Self {
-            label_view: RetainedSubview::new(AnyView::new(label.clone())),
+            label_view: RetainedSubview::held(label.build()),
             label,
-            min_value_label: RetainedSubview::new(min_value_label),
-            max_value_label: RetainedSubview::new(max_value_label),
+            min_value_label: RetainedSubview::held(min_value_label),
+            max_value_label: RetainedSubview::held(max_value_label),
             range,
             step,
             value,
@@ -198,8 +197,8 @@ impl<E: crate::text::TextEngine> SliderRenderState<E> {
 }
 
 /// The spec of a slider in `env`.
-fn slider_spec(
-    label: &Label,
+fn slider_spec<S>(
+    label: &ControlLabel<S>,
     size: ControlSize,
     range: &RangeInclusive<f64>,
     step: Option<f64>,
@@ -368,10 +367,10 @@ fn place(look: &SliderLook, spec: &SliderSpec, measured: &Measured, bounds: Rect
     clippy::too_many_arguments,
     reason = "the node's fields, passed apart because the caller holds the state borrowed"
 )]
-fn slider_accessibility_parts<E: crate::text::TextEngine>(
+fn slider_accessibility_parts<E: crate::text::TextEngine, S>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     ctx: Option<RenderContext>,
-    label: &Label,
+    label: &ControlLabel<S>,
     range: &RangeInclusive<f64>,
     step: Option<f64>,
     value: &Binding<f64>,
@@ -766,9 +765,7 @@ pub fn render_slider_parts<E: crate::text::TextEngine>(
         let text = Rc::clone(text);
         let styled: Computed<StyledStr> =
             Computed::new(value_binding.map(move |value: f64| text(value)));
-        let mut subview = RetainedSubview::new(AnyView::new(
-            styled.into_text().alignment(Alignment::Center),
-        ));
+        let mut subview = RetainedSubview::new(styled.into_text().alignment(Alignment::Center));
         subview.ensure_built(ctx.renderer_mut(), env);
         indicator_text = Some(subview);
     }

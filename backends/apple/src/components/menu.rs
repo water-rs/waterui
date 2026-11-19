@@ -34,7 +34,7 @@ use waterui_core::layout::{
 };
 
 use crate::components::button_chrome;
-use crate::contract::{Mounted, NativeLeaf};
+use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal::{self, Placement};
 
 #[cfg(target_os = "macos")]
@@ -306,7 +306,7 @@ impl SubView for MenuSubView {
     clippy::too_many_lines,
     reason = "one component's whole realization, as the handler it replaces"
 )]
-pub fn realize_resolved_menu(config: ResolvedMenu, ctx: &RenderContext<'_>) -> NativeLeaf {
+pub fn realize_resolved_menu(config: &ResolvedMenu<Held>, ctx: &RenderContext<'_>) -> NativeLeaf {
     let mtm = ctx.mtm();
     let host = HostView::new(mtm, Rect::ZERO);
     let button = MenuButton::new(mtm);
@@ -334,7 +334,7 @@ pub fn realize_resolved_menu(config: ResolvedMenu, ctx: &RenderContext<'_>) -> N
     let padding = label_padding(style, mtm);
     let label_env = button_chrome::label_environment(style, config.size, ctx.env());
 
-    let label_leaf = ctx.with_env(&label_env).render(config.label);
+    let label_leaf = ctx.with_env(&label_env).realize(config.label.build());
     let child_view = view::retain_base(label_leaf.view());
     let mounted = label_leaf.mount(&label_container);
     {

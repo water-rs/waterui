@@ -17,7 +17,7 @@ use waterui::component::form::picker::multi_date::MultiDatePickerConfig;
 use waterui::reactive::{Binding, Signal, SignalExt};
 
 use super::calendar::{CalendarSelection, CalendarSpec, render_calendar};
-use crate::contract::{NativeLeaf, RenderContext};
+use crate::contract::{Held, NativeLeaf, RenderContext};
 
 /// The toggle a pick applies to the date-ordered selection: `day` leaves
 /// it when present, else joins it in order.
@@ -49,7 +49,7 @@ impl CalendarSelection for Binding<Vec<Date>> {
     clippy::needless_pass_by_value,
     reason = "NativeBackend hands each payload by value"
 )]
-fn render(config: MultiDatePickerConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
+fn render(config: MultiDatePickerConfig<Held>, ctx: &RenderContext<'_>) -> NativeLeaf {
     render_calendar(
         CalendarSpec {
             label: config.label().clone(),
@@ -66,15 +66,12 @@ fn render(config: MultiDatePickerConfig, ctx: &RenderContext<'_>) -> NativeLeaf 
     )
 }
 
-/// The `multi_date_picker` realization: the composer claim plus the
-/// `Native<MultiDatePickerConfig>` claim for hook-produced payloads.
-/// `Native<MultiDatePickerConfig>`: the label resolves, then the platform
-/// picker renders.
+/// The `multi_date_picker` realization: `Native<MultiDatePickerConfig>` maps
+/// to the platform multi-date calendar.
 pub fn realize_multi_date_picker_config(
-    mut config: MultiDatePickerConfig,
+    config: MultiDatePickerConfig<Held>,
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
-    config.label_mut().resolve_in_place(ctx.env());
     render(config, ctx)
 }
 
