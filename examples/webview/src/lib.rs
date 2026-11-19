@@ -282,22 +282,16 @@ pub fn demo() -> impl View {
     WebViewDemo
 }
 
+#[cfg(all(target_os = "linux", feature = "wpe"))]
+use waterui_browser_wpe as _;
+
 /// Builds the example with whichever engine this platform's `WebView` needs.
 ///
-/// Selecting the browser engine is the application's job, not the renderer's.
-/// Apple platforms, Android and GTK all bridge a system web engine, so nothing
-/// has to be linked there. Linux without `WebKitGTK` has none to bridge, so the
-/// app links `WaterUI`'s bundled WPE `WebKit` and scopes it here — the same
-/// `WebView` code above then draws through it, unchanged.
-#[cfg(all(target_os = "linux", feature = "wpe"))]
+/// Selecting the browser engine is the application's dependency choice, not
+/// view code's: Apple, Android, and GTK bridge their platform web engine, and
+/// Linux without `WebKitGTK` enables the `wpe` feature linking
+/// `waterui-browser-wpe` so the backend selects WPE at compile time.
 #[must_use]
-pub fn app(mut env: Environment) -> App<impl Windows> {
-    waterui_browser_wpe::install(&mut env);
-    App::new(|| demo().hooks(waterui_browser_wpe::WpeWebView), env)
-}
-
-/// Builds the example on a platform whose `WebView` bridges a system engine.
-#[cfg(not(all(target_os = "linux", feature = "wpe")))]
 pub fn app(env: Environment) -> App<impl Windows> {
     App::new(demo, env)
 }

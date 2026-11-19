@@ -323,9 +323,6 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         }
     }
 
-    // This backend bridges the platform's own web engine. An application that
-    // linked a browser engine of its own scopes that engine's hook over its
-    // views, which claims the payload before it reaches here.
     #[cfg(waterui_feature = "webview")]
     fn web_view(
         &mut self,
@@ -333,7 +330,24 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
-        RenderNode::build_webview(&native, env, self.renderer)
+        #[cfg(hydrolysis_cef_webview)]
+        {
+            if native.handle().is_unavailable() {
+                return RenderNode::build_empty(self.renderer, env);
+            }
+            self.build(waterui_browser_cef::webview(native, env), env)
+        }
+        #[cfg(hydrolysis_wpe_webview)]
+        {
+            if native.handle().is_unavailable() {
+                return RenderNode::build_empty(self.renderer, env);
+            }
+            self.build(waterui_browser_wpe::webview(native, env), env)
+        }
+        #[cfg(not(any(hydrolysis_cef_webview, hydrolysis_wpe_webview)))]
+        {
+            RenderNode::build_webview(&native, env, self.renderer)
+        }
     }
 
     fn color(&mut self, native: waterui::Color, env: &Environment, (): ()) -> RenderNode<E> {
