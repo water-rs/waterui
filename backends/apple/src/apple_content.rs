@@ -536,31 +536,6 @@ mod tests {
             shape: waterui::shape::ResolvedShape,
             icon: waterui::icon::SystemIcon,
             gradient: waterui::graphics::Gradient,
-            button: waterui::component::button::ButtonConfig,
-            badge: waterui::component::badge::BadgeConfig,
-            progress: waterui::component::progress::ProgressConfig,
-            #[cfg(waterui_feature = "toggle")]
-            toggle: waterui::component::toggle::ToggleConfig,
-            #[cfg(waterui_feature = "slider")]
-            slider: waterui::component::slider::SliderConfig,
-            #[cfg(waterui_feature = "stepper")]
-            stepper: waterui::component::stepper::StepperConfig,
-            #[cfg(waterui_feature = "text-field")]
-            text_field: waterui::component::text_field::ResolvedTextFieldConfig,
-            #[cfg(waterui_feature = "secure-field")]
-            secure_field: waterui::form::secure::SecureFieldConfig,
-            #[cfg(waterui_feature = "picker")]
-            picker: waterui::form::picker::PickerConfig,
-            #[cfg(waterui_feature = "color-picker")]
-            color_picker: waterui::form::picker::color::ColorPickerConfig,
-            #[cfg(waterui_feature = "date-picker")]
-            date_picker: waterui::form::picker::date::DatePickerConfig,
-            #[cfg(waterui_feature = "multi-date-picker")]
-            multi_date_picker: waterui::form::picker::multi_date::MultiDatePickerConfig,
-            #[cfg(waterui_feature = "calendar")]
-            calendar: waterui::form::calendar::CalendarConfig,
-            #[cfg(waterui_feature = "menu")]
-            menu: waterui::component::menu::ResolvedMenu,
             #[cfg(waterui_feature = "table")]
             table: waterui::component::table::TableConfig,
             #[cfg(waterui_feature = "navigation")]
@@ -585,6 +560,31 @@ mod tests {
         }
 
         stub_parents! {
+            button<C>: waterui::component::button::ButtonConfig<C>,
+            badge<C>: waterui::component::badge::BadgeConfig<C>,
+            progress<C>: waterui::component::progress::ProgressConfig<C>,
+            #[cfg(waterui_feature = "toggle")]
+            toggle<C>: waterui::component::toggle::ToggleConfig<C>,
+            #[cfg(waterui_feature = "slider")]
+            slider<C>: waterui::component::slider::SliderConfig<C>,
+            #[cfg(waterui_feature = "stepper")]
+            stepper<C>: waterui::component::stepper::StepperConfig<C>,
+            #[cfg(waterui_feature = "text-field")]
+            text_field<C>: waterui::component::text_field::ResolvedTextFieldConfig<C>,
+            #[cfg(waterui_feature = "secure-field")]
+            secure_field<C>: waterui::form::secure::SecureFieldConfig<C>,
+            #[cfg(waterui_feature = "picker")]
+            picker<C>: waterui::form::picker::PickerConfig<C>,
+            #[cfg(waterui_feature = "color-picker")]
+            color_picker<C>: waterui::form::picker::color::ColorPickerConfig<C>,
+            #[cfg(waterui_feature = "date-picker")]
+            date_picker<C>: waterui::form::picker::date::DatePickerConfig<C>,
+            #[cfg(waterui_feature = "multi-date-picker")]
+            multi_date_picker<C>: waterui::form::picker::multi_date::MultiDatePickerConfig<C>,
+            #[cfg(waterui_feature = "calendar")]
+            calendar<C>: waterui::form::calendar::CalendarConfig<C>,
+            #[cfg(waterui_feature = "menu")]
+            menu<C>: waterui::component::menu::ResolvedMenu<C>,
             scroll<C>: waterui::layout::scroll::ScrollView<C>,
             fixed_container<C>: waterui::layout::container::FixedContainer<alloc::vec::Vec<C>>,
             dynamic<C>: waterui_core::Dynamic<C>,
