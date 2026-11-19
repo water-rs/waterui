@@ -30,7 +30,7 @@ use core::time::Duration;
 
 use nami::SignalExt as _;
 
-use crate::{Binding, Computed, Environment};
+use waterui_core::{Binding, Computed, Environment};
 
 /// The record of content the views of one captured subtree still owe.
 ///
