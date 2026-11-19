@@ -10,6 +10,7 @@ use alloc::rc::Rc;
 use alloc::vec::Vec;
 use core::fmt;
 use core::num::NonZeroU32;
+#[cfg(feature = "image-decode")]
 use std::path::Path;
 
 use crate::draw::kurbo::Affine;
@@ -22,6 +23,7 @@ use cherenkov::{
 use cherenkov_cpu::{Raster, RasterConfig};
 #[cfg(feature = "gpu")]
 use cherenkov_gpu::{Gpu, GpuConfig};
+#[cfg(feature = "image-decode")]
 use image::ImageEncoder as _;
 
 use waterui_core::contract_violation;
@@ -180,6 +182,7 @@ impl OffscreenImage {
     ///
     /// # Errors
     /// When the file cannot be created or the encoder rejects the data.
+    #[cfg(feature = "image-decode")]
     pub fn save_png(&self, path: impl AsRef<Path>) -> Result<(), image::ImageError> {
         let file = std::fs::File::create(path)?;
         image::codecs::png::PngEncoder::new(std::io::BufWriter::new(file)).write_image(
