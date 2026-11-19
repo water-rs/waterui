@@ -173,6 +173,15 @@ macro_rules! native_backend {
             $(
                 $(#[cfg($pcfg)])*
                 fn $parent<$child: ChildView<Self>>(&mut self, native: $parent_ty, env: &Environment, cx: Self::Ctx) -> Self::Output {
+                    let native = match cast::<$parent_ty, waterui::component::button::ButtonConfig<$child>>(native) {
+                        Ok(config) => return self.hook_button(config, env, cx),
+                        Err(native) => native,
+                    };
+                    #[cfg(waterui_feature = "toggle")]
+                    let native = match cast::<$parent_ty, waterui::component::toggle::ToggleConfig<$child>>(native) {
+                        Ok(config) => return self.hook_toggle(config, env, cx),
+                        Err(native) => native,
+                    };
                     let native = MapSlots::map_slots(native, self.rehooker::<$child>());
                     self.inner().$parent(native, env, cx)
                 }
@@ -199,6 +208,10 @@ macro_rules! native_backend {
             )*
 
             fn provided<T: NativeView + 'static>(&mut self, native: T, env: &Environment, cx: Self::Ctx) -> Self::Output {
+                let native = match cast::<T, $crate::hooked::SlotView<B::Family>>(native) {
+                    Ok(slot) => return slot.into_child().realize(self.inner(), env, cx),
+                    Err(native) => native,
+                };
                 match self.offer(native, env, cx) {
                     Ok(output) => output,
                     Err((native, cx)) => self.inner().provided(native, env, cx),
@@ -206,6 +219,9 @@ macro_rules! native_backend {
             }
 
             fn provided_dyn(&mut self, mut native: ErasedPayload<'_>, env: &Environment, cx: Self::Ctx) -> Self::Output {
+                if let Some(slot) = native.take::<$crate::hooked::SlotView<B::Family>>() {
+                    return slot.into_child().realize(self.inner(), env, cx);
+                }
                 match self.offer_erased(&mut native, env, cx) {
                     Ok(output) => output,
                     Err(cx) => self.inner().provided_dyn(native, env, cx),
@@ -246,6 +262,10 @@ macro_rules! native_backend {
             env: &Environment,
             cx: B::Ctx,
         ) -> B::Output {
+            let native = match cast::<T, $crate::hooked::SlotView<B::Family>>(native) {
+                Ok(slot) => return slot.into_child().realize(backend, env, cx),
+                Err(native) => native,
+            };
             $(
                 $(#[cfg($ncfg)])*
                 let native = match cast::<T, $native_ty>(native) {
@@ -335,6 +355,9 @@ macro_rules! native_backend {
             env: &Environment,
             cx: B::Ctx,
         ) -> B::Output {
+            if let Some(slot) = native.take::<$crate::hooked::SlotView<B::Family>>() {
+                return slot.into_child().realize(backend, env, cx);
+            }
             $(
                 $(#[cfg($ncfg)])*
                 if let Some(native) = native.take::<$native_ty>() {
@@ -1481,5 +1504,215 @@ mod tests {
                 ]
             );
         }
+    }
+
+    #[test]
+    fn subtree_button_styles_apply_across_containers_and_anyview() {
+        use alloc::rc::Rc;
+        use core::cell::RefCell;
+        use waterui::ViewExt as _;
+        use waterui::component::badge::Badge;
+        use waterui::component::button::{
+            ButtonRole, ButtonStyleConfiguration, ButtonStyleTarget, CustomButtonStyle,
+            PrimitiveButtonStyle, PrimitiveButtonStyleConfiguration, button,
+        };
+        use waterui::component::label::Label;
+
+        struct TaggedButtonStyle {
+            seen_roles: Rc<RefCell<Vec<Option<ButtonRole>>>>,
+        }
+
+        impl CustomButtonStyle for TaggedButtonStyle {
+            fn make_body<L: View>(&self, configuration: ButtonStyleConfiguration<L>) -> impl View {
+                self.seen_roles.borrow_mut().push(configuration.role());
+                scroll(configuration.label)
+            }
+        }
+
+        struct TaggedPrimitiveStyle;
+
+        impl PrimitiveButtonStyle for TaggedPrimitiveStyle {
+            fn make_body<L: View>(
+                &self,
+                configuration: PrimitiveButtonStyleConfiguration<L>,
+            ) -> impl View {
+                configuration.label
+            }
+        }
+
+        #[derive(Clone)]
+        struct DecliningButtonStyleHook;
+
+        impl Hook for DecliningButtonStyleHook {
+            type Target = ButtonStyleTarget;
+
+            fn apply(
+                &self,
+                target: Self::Target,
+                _env: &Environment,
+            ) -> Result<impl View, Self::Target> {
+                if false {
+                    return Ok(());
+                }
+                Err(target)
+            }
+        }
+
+        // A declining button-style hook preserves the typed child slot ("typed child").
+        assert_eq!(
+            reached(Hooks::new(
+                Badge::new(1, button(Label::new("Save", Spacer::flexible))),
+                DecliningButtonStyleHook,
+            )),
+            ["badge", "typed child", "button", "typed child", "spacer"]
+        );
+
+        // Subtree `.button_style(...)` reaches buttons nested in containers and AnyView hops,
+        // and inner hooks like `SpacerAsDivider` still re-enter the button's label.
+        let roles = Rc::new(RefCell::new(Vec::new()));
+        let tree = scroll(AnyView::new(
+            button(Label::new("Delete", Spacer::flexible)).role(ButtonRole::Destructive),
+        ))
+        .button_style(TaggedButtonStyle {
+            seen_roles: Rc::clone(&roles),
+        });
+        assert_eq!(
+            reached(Hooks::new(tree, SpacerAsDivider)),
+            [
+                "scroll",
+                "typed child",
+                "environment",
+                "accessibility_role",
+                "accessibility_label",
+                "gesture_observer",
+                "scroll",
+                "typed child",
+                "divider"
+            ]
+        );
+        assert_eq!(*roles.borrow(), alloc::vec![Some(ButtonRole::Destructive)]);
+
+        // Primitive style also installs cleanly via `.button_style(...)`.
+        let primitive_tree = AnyView::new(button("Go").button_style(TaggedPrimitiveStyle));
+        assert_eq!(
+            reached(primitive_tree),
+            [
+                "environment",
+                "accessibility_role",
+                "accessibility_label",
+                "text"
+            ]
+        );
+    }
+
+    #[test]
+    fn subtree_button_explicit_style_and_inner_builtin_override_win() {
+        use alloc::rc::Rc;
+        use core::cell::RefCell;
+        use waterui::ViewExt as _;
+        use waterui::component::button::{
+            ButtonStyle, ButtonStyleConfiguration, CustomButtonStyle, button,
+        };
+        use waterui::component::label::Label;
+
+        struct TaggedButtonStyle {
+            seen: Rc<RefCell<u32>>,
+        }
+
+        impl CustomButtonStyle for TaggedButtonStyle {
+            fn make_body<L: View>(&self, configuration: ButtonStyleConfiguration<L>) -> impl View {
+                *self.seen.borrow_mut() += 1;
+                scroll(configuration.label)
+            }
+        }
+
+        // Explicit `.style(ButtonStyle::Bordered)` wins over outer `.button_style(...)`.
+        let seen_explicit = Rc::new(RefCell::new(0));
+        let explicit = button(Label::new("Save", Spacer::flexible))
+            .style(ButtonStyle::Bordered)
+            .button_style(TaggedButtonStyle {
+                seen: Rc::clone(&seen_explicit),
+            });
+        assert_eq!(reached(explicit), ["button", "typed child", "spacer"]);
+        assert_eq!(*seen_explicit.borrow(), 0);
+
+        // Inner `.button_style(ButtonStyle::Bordered)` overrides outer `.button_style(Custom)`.
+        let seen_override = Rc::new(RefCell::new(0));
+        let overridden = button(Label::new("Save", Spacer::flexible))
+            .button_style(ButtonStyle::Bordered)
+            .button_style(TaggedButtonStyle {
+                seen: Rc::clone(&seen_override),
+            });
+        assert_eq!(
+            reached(Hooks::new(overridden, SpacerAsDivider)),
+            ["button", "typed child", "divider"]
+        );
+        assert_eq!(*seen_override.borrow(), 0);
+    }
+
+    #[cfg(waterui_feature = "toggle")]
+    #[test]
+    fn subtree_toggle_styles_apply_across_containers_and_respect_overrides() {
+        use alloc::rc::Rc;
+        use core::cell::RefCell;
+        use nami::Binding;
+        use waterui::ViewExt as _;
+        use waterui::component::label::Label;
+        use waterui::component::toggle::{
+            CustomToggleStyle, Toggle, ToggleStyle, ToggleStyleConfiguration,
+        };
+
+        struct CustomToggleMarkerStyle {
+            seen: Rc<RefCell<u32>>,
+        }
+
+        impl CustomToggleStyle for CustomToggleMarkerStyle {
+            fn make_body<L: View>(&self, configuration: ToggleStyleConfiguration<L>) -> impl View {
+                *self.seen.borrow_mut() += 1;
+                scroll(configuration.label)
+            }
+        }
+
+        let on = Binding::bool(false);
+        let seen = Rc::new(RefCell::new(0));
+        let toggle_tree = Hooks::new(
+            scroll(AnyView::new(Toggle::new(
+                Label::new("Wi-Fi", Spacer::flexible),
+                &on,
+            )))
+            .toggle_style(CustomToggleMarkerStyle {
+                seen: Rc::clone(&seen),
+            }),
+            SpacerAsDivider,
+        );
+        assert_eq!(
+            reached(toggle_tree),
+            [
+                "scroll",
+                "typed child",
+                "environment",
+                "accessibility_role",
+                "accessibility_label",
+                "accessibility_state_signal",
+                "gesture_observer",
+                "scroll",
+                "typed child",
+                "divider"
+            ]
+        );
+        assert_eq!(*seen.borrow(), 1);
+
+        // Inner `.toggle_style(ToggleStyle::Checkbox)` overrides outer custom toggle style.
+        let seen_override = Rc::new(RefCell::new(0));
+        let toggle_override = Toggle::new(Label::new("Sync", Spacer::flexible), &on)
+            .toggle_style(ToggleStyle::Checkbox)
+            .toggle_style(CustomToggleMarkerStyle {
+                seen: Rc::clone(&seen_override),
+            });
+        assert_eq!(
+            reached(toggle_override),
+            ["toggle", "typed child", "spacer"]
+        );
+        assert_eq!(*seen_override.borrow(), 0);
     }
 }

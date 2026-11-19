@@ -532,6 +532,83 @@ pub fn components_button_style_shorthands() {
 }
 
 // ---------------------------------------------------------------------------
+// components.md § "### Custom button and toggle styles"
+// ---------------------------------------------------------------------------
+pub fn components_custom_control_styles() {
+    let enabled = Binding::bool(true);
+
+    use waterui::gesture::TapGesture;
+    use waterui::prelude::theme_color::{Accent, Error, SurfaceVariant};
+    use waterui::shape::Capsule;
+
+    struct PillButtonStyle;
+
+    impl CustomButtonStyle for PillButtonStyle {
+        fn make_body<L: View>(&self, configuration: ButtonStyleConfiguration<L>) -> impl View {
+            let base = if configuration.role() == Some(ButtonRole::Destructive) {
+                Color::new(Error)
+            } else {
+                Color::new(SurfaceVariant)
+            };
+            let bg = configuration.is_pressed().select(Color::new(Accent), base);
+            configuration
+                .label
+                .padding_with((8.0, 16.0))
+                .background(signal_color(bg))
+                .clip(Capsule)
+        }
+    }
+
+    struct DoubleTapButtonStyle;
+
+    impl PrimitiveButtonStyle for DoubleTapButtonStyle {
+        fn make_body<L: View>(
+            &self,
+            configuration: PrimitiveButtonStyleConfiguration<L>,
+        ) -> impl View {
+            let trigger = configuration.trigger.clone();
+            configuration
+                .label
+                .padding_with((8.0, 16.0))
+                .gesture(TapGesture::repeat(2), move || trigger.trigger())
+        }
+    }
+
+    struct PillToggleStyle;
+
+    impl CustomToggleStyle for PillToggleStyle {
+        fn make_body<L: View>(&self, configuration: ToggleStyleConfiguration<L>) -> impl View {
+            hstack((
+                configuration.label,
+                spacer(),
+                signal_color(
+                    configuration
+                        .is_on
+                        .select(Color::new(Accent), Color::new(SurfaceVariant)),
+                )
+                .size(44.0, 26.0)
+                .clip(Capsule),
+            ))
+        }
+    }
+
+    let styled = button("Delete")
+        .role(ButtonRole::Destructive)
+        .style(PillButtonStyle)
+        .action(|| {});
+
+    let scoped = vstack((
+        button("Save").action(|| {}),
+        button("Reset").style(DoubleTapButtonStyle).action(|| {}),
+        toggle("Wi-Fi", &enabled),
+    ))
+    .button_style(PillButtonStyle)
+    .toggle_style(PillToggleStyle);
+
+    let _ = (styled, scoped);
+}
+
+// ---------------------------------------------------------------------------
 // components.md § "## Controls" — rust block 15/39
 // ---------------------------------------------------------------------------
 // components.md writes `mdi::` qualified so the icon set stays visible.

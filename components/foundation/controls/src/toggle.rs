@@ -2,11 +2,21 @@
 //!
 //! ![Toggle](https://raw.githubusercontent.com/water-rs/waterui/dev/docs/illustrations/toggle.svg)
 
-use nami::Binding;
+use core::fmt;
+
+use nami::{Binding, Computed, Signal as _, SignalExt as _};
+use waterui_core::accessibility::{
+    AccessibilityRole, AccessibilityState, AccessibilityStateSignal, default_role,
+};
 use waterui_core::backend::{Backend, ChildSlot, MapSlots};
+use waterui_core::env::Installed;
+use waterui_core::gesture::{GestureObserver, TapGesture};
+use waterui_core::interaction::{Disabled, InteractionReport, InteractionState};
 use waterui_core::layout::StretchAxis;
+use waterui_core::view::hook::Hook;
 use waterui_core::view::{ConfigurableView, ViewConfiguration};
-use waterui_core::{AnyView, Environment, Native, NativeView, View};
+use waterui_core::{AnyView, Environment, Metadata, Native, NativeView, View};
+use waterui_text::styled::StyledStr;
 
 use crate::label::{
     ControlLabel, IntoLabel, Label, LabelDisplayMode, LabelKind, impl_label_style_methods,
@@ -50,6 +60,369 @@ impl ToggleStyle {
     }
 }
 
+/// The label view passed to a custom [`Toggle`] style.
+pub struct ToggleLabel(AnyView);
+
+impl fmt::Debug for ToggleLabel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("ToggleLabel")
+    }
+}
+
+impl View for ToggleLabel {
+    fn body(self, _env: &Environment) -> impl View {
+        self.0
+    }
+}
+
+/// Semantic configuration passed to [`CustomToggleStyle::make_body`].
+pub struct ToggleStyleConfiguration<L = ToggleLabel> {
+    /// The toggle's label view.
+    pub label: L,
+    /// Reactive binding to the toggle's on/off state.
+    pub is_on: Binding<bool>,
+    size: ControlSize,
+    interaction: Computed<InteractionState>,
+}
+
+impl<L> fmt::Debug for ToggleStyleConfiguration<L> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ToggleStyleConfiguration")
+            .field("size", &self.size)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<L> ToggleStyleConfiguration<L> {
+    /// The control size requested for this toggle.
+    #[must_use]
+    pub const fn size(&self) -> ControlSize {
+        self.size
+    }
+
+    /// Reactive interaction state flags for this toggle
+    /// (hovered, focused, pressed, disabled, etc.).
+    #[must_use]
+    pub const fn interaction_state(&self) -> &Computed<InteractionState> {
+        &self.interaction
+    }
+
+    /// Whether a pointer or key is currently pressing the toggle.
+    #[must_use]
+    pub fn is_pressed(&self) -> Computed<bool> {
+        self.interaction
+            .map(|state| state.contains(InteractionState::PRESSED))
+            .computed()
+    }
+
+    /// Whether a pointer is hovering over the toggle.
+    #[must_use]
+    pub fn is_hovered(&self) -> Computed<bool> {
+        self.interaction
+            .map(|state| state.contains(InteractionState::HOVERED))
+            .computed()
+    }
+
+    /// Whether the toggle currently shows keyboard focus.
+    #[must_use]
+    pub fn is_focused(&self) -> Computed<bool> {
+        self.interaction
+            .map(|state| state.contains(InteractionState::FOCUSED))
+            .computed()
+    }
+
+    /// Whether the toggle is currently disabled.
+    #[must_use]
+    pub fn is_disabled(&self) -> Computed<bool> {
+        self.interaction
+            .map(|state| state.contains(InteractionState::DISABLED))
+            .computed()
+    }
+}
+
+/// A custom toggle style that defines visual appearance while preserving
+/// standard tap-to-toggle behavior, disabled gating, interaction reporting,
+/// and checked accessibility semantics.
+///
+/// Apply a custom style to one toggle with [`Toggle::style`] or to an entire
+/// view subtree with `ViewExt::toggle_style`.
+pub trait CustomToggleStyle: 'static {
+    /// Builds the visual body of a toggle from its semantic `configuration`.
+    fn make_body<L: View>(&self, configuration: ToggleStyleConfiguration<L>) -> impl View;
+}
+
+mod sealed {
+    pub trait Sealed {}
+}
+
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct BuiltinStyleMarker;
+
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct CustomStyleMarker;
+
+/// Wrapper applying a [`CustomToggleStyle`].
+#[derive(Debug, Clone)]
+pub struct CustomToggle<S>(S);
+
+impl sealed::Sealed for ToggleStyle {}
+impl<S: CustomToggleStyle> sealed::Sealed for CustomToggle<S> {}
+
+/// Types accepted by [`Toggle::style`] and `ViewExt::toggle_style`:
+/// built-in [`ToggleStyle`] or [`CustomToggleStyle`].
+pub trait IntoToggleStyle<Marker>: Sized + 'static {
+    /// Concrete stored style representation.
+    #[doc(hidden)]
+    type Style: SealedToggleStyle;
+
+    /// Converts this value into the stored style representation.
+    #[doc(hidden)]
+    fn into_toggle_style(self) -> Self::Style;
+}
+
+impl IntoToggleStyle<BuiltinStyleMarker> for ToggleStyle {
+    type Style = Self;
+
+    fn into_toggle_style(self) -> Self::Style {
+        self
+    }
+}
+
+impl<S: CustomToggleStyle> IntoToggleStyle<CustomStyleMarker> for S {
+    type Style = CustomToggle<Self>;
+
+    fn into_toggle_style(self) -> Self::Style {
+        CustomToggle(self)
+    }
+}
+
+#[doc(hidden)]
+pub trait SealedToggleStyle: sealed::Sealed + Sized + 'static {
+    type Body: View;
+
+    fn toggle_body<L: LabelKind>(toggle: Toggle<L, Self>, env: &Environment) -> Self::Body;
+
+    fn dispatch_toggle<B: Backend, L: LabelKind>(
+        toggle: Toggle<L, Self>,
+        backend: &mut B,
+        env: &Environment,
+        cx: B::Ctx,
+    ) -> B::Output;
+
+    fn hook_apply(
+        &self,
+        target: ToggleStyleTarget,
+        env: &Environment,
+    ) -> Result<AnyView, ToggleStyleTarget>;
+}
+
+fn compose_custom_toggle<L: View>(
+    style: &impl CustomToggleStyle,
+    label: L,
+    accessibility_label: &Computed<StyledStr>,
+    toggle: &Binding<bool>,
+    size: ControlSize,
+    env: &Environment,
+) -> impl View {
+    let (report, interaction) = crate::button::interaction_signals(env);
+    let body = style.make_body(ToggleStyleConfiguration {
+        label,
+        is_on: toggle.clone(),
+        size,
+        interaction,
+    });
+    let tap_toggle = toggle.clone();
+    let gesture = GestureObserver::new(TapGesture::new(), move |action_env: Environment| {
+        if !Disabled::resolve(&action_env, false).snapshot() {
+            tap_toggle.set(!tap_toggle.snapshot());
+        }
+    });
+    let with_gesture = Metadata::new(body, gesture);
+    let checked_state = AccessibilityStateSignal::resolve(
+        env,
+        toggle.map(|on| AccessibilityState::new().checked(Some(on))),
+    );
+    let with_state = Metadata::new(with_gesture, checked_state);
+    let with_label =
+        crate::button::wrap_default_accessibility_label(env, with_state, accessibility_label);
+    let with_role = default_role(env, with_label, AccessibilityRole::Switch);
+    Installed::new(with_role, InteractionReport(report))
+}
+
+impl SealedToggleStyle for ToggleStyle {
+    type Body = Native<ToggleConfig<AnyView>>;
+
+    fn toggle_body<L: LabelKind>(toggle: Toggle<L, Self>, env: &Environment) -> Self::Body {
+        Native::new(toggle.into_config::<AnyView>(env))
+    }
+
+    fn dispatch_toggle<B: Backend, L: LabelKind>(
+        toggle: Toggle<L, Self>,
+        backend: &mut B,
+        env: &Environment,
+        cx: B::Ctx,
+    ) -> B::Output {
+        backend.native(toggle.into_config::<B::Slot>(env), env, cx)
+    }
+
+    fn hook_apply(
+        &self,
+        target: ToggleStyleTarget,
+        _env: &Environment,
+    ) -> Result<AnyView, ToggleStyleTarget> {
+        let data = *target.0;
+        let mode = data.label.display_mode_preference();
+        let toggle = Toggle {
+            label: Label::from_control_label(data.label, mode),
+            toggle: data.toggle,
+            style: *self,
+            explicit_style: true,
+            size: data.size,
+        };
+        Ok(AnyView::new(toggle))
+    }
+}
+
+impl<S: CustomToggleStyle> SealedToggleStyle for CustomToggle<S> {
+    type Body = AnyView;
+
+    fn toggle_body<L: LabelKind>(toggle: Toggle<L, Self>, env: &Environment) -> Self::Body {
+        let label = toggle.label.resolve(env);
+        let a11y_label = label.accessibility_label();
+        AnyView::new(compose_custom_toggle(
+            &toggle.style.0,
+            label,
+            &a11y_label,
+            &toggle.toggle,
+            toggle.size,
+            env,
+        ))
+    }
+
+    fn dispatch_toggle<B: Backend, L: LabelKind>(
+        toggle: Toggle<L, Self>,
+        backend: &mut B,
+        env: &Environment,
+        cx: B::Ctx,
+    ) -> B::Output {
+        let label = toggle.label.resolve(env);
+        let a11y_label = label.accessibility_label();
+        compose_custom_toggle(
+            &toggle.style.0,
+            label,
+            &a11y_label,
+            &toggle.toggle,
+            toggle.size,
+            env,
+        )
+        .dispatch(backend, env, cx)
+    }
+
+    fn hook_apply(
+        &self,
+        target: ToggleStyleTarget,
+        env: &Environment,
+    ) -> Result<AnyView, ToggleStyleTarget> {
+        let data = *target.0;
+        let a11y_label = data.label.accessibility_label();
+        let label = ToggleLabel(AnyView::new(data.label));
+        Ok(AnyView::new(compose_custom_toggle(
+            &self.0,
+            label,
+            &a11y_label,
+            &data.toggle,
+            data.size,
+            env,
+        )))
+    }
+}
+
+struct ToggleStyleTargetData {
+    label: ControlLabel<AnyView>,
+    toggle: Binding<bool>,
+    size: ControlSize,
+}
+
+/// Internal hook target representing a [`Toggle`] eligible for subtree
+/// styling via `ViewExt::toggle_style`.
+#[doc(hidden)]
+pub struct ToggleStyleTarget(alloc::boxed::Box<ToggleStyleTargetData>);
+
+impl fmt::Debug for ToggleStyleTarget {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ToggleStyleTarget")
+            .field("size", &self.0.size)
+            .finish_non_exhaustive()
+    }
+}
+
+impl NativeView for ToggleStyleTarget {}
+
+/// Hook that applies a toggle style to every non-explicitly-styled [`Toggle`]
+/// in a subtree.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct ToggleStyleHook<S>(alloc::rc::Rc<S>);
+
+impl<S> Clone for ToggleStyleHook<S> {
+    fn clone(&self) -> Self {
+        Self(alloc::rc::Rc::clone(&self.0))
+    }
+}
+
+impl<S: SealedToggleStyle> ToggleStyleHook<S> {
+    /// Creates a subtree toggle-style hook.
+    #[must_use]
+    pub fn new(style: S) -> Self {
+        Self(alloc::rc::Rc::new(style))
+    }
+}
+
+impl<S: SealedToggleStyle> Hook for ToggleStyleHook<S> {
+    type Target = ToggleStyleTarget;
+
+    fn apply(&self, target: Self::Target, env: &Environment) -> Result<impl View, Self::Target> {
+        self.0.hook_apply(target, env)
+    }
+}
+
+/// Pending toggle configuration saved while offering [`ToggleStyleTarget`] to hooks,
+/// allowing exact restoration without type erasure if every hook declines.
+#[doc(hidden)]
+pub struct ToggleStylePending<S> {
+    label: ControlLabel<S>,
+    toggle: Binding<bool>,
+    style: ToggleStyle,
+    explicit_style: bool,
+    size: ControlSize,
+}
+
+impl<S> fmt::Debug for ToggleStylePending<S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ToggleStylePending")
+            .field("style", &self.style)
+            .field("explicit_style", &self.explicit_style)
+            .field("size", &self.size)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<S: 'static> ToggleStylePending<S> {
+    /// Restores the original [`ToggleConfig<S>`] after all hooks declined.
+    #[must_use]
+    pub fn restore(self) -> ToggleConfig<S> {
+        ToggleConfig {
+            label: self.label,
+            toggle: self.toggle,
+            style: self.style,
+            explicit_style: self.explicit_style,
+            size: self.size,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 /// Configuration for the `Toggle` component.
@@ -69,6 +442,8 @@ pub struct ToggleConfig<S> {
     /// [`ToggleStyle::Automatic`], and its label's display mode is the
     /// effective one.
     style: ToggleStyle,
+    /// Whether the visual style was set explicitly on the toggle.
+    explicit_style: bool,
     /// How large the toggle is drawn.
     size: ControlSize,
 }
@@ -118,6 +493,13 @@ impl<S> ToggleConfig<S> {
         (self.label, self.toggle, self.style, self.size)
     }
 
+    /// Whether the toggle chose its style explicitly.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn has_explicit_style(&self) -> bool {
+        self.explicit_style
+    }
+
     /// `docs/layout-spec.md` §3: a toggle is `Horizontal` when it draws the
     /// switch style with a visible label, and `None` otherwise. Backends ask
     /// the resolved payload, whose label carries an environment-wide
@@ -135,6 +517,32 @@ impl<S> ToggleConfig<S> {
     }
 }
 
+impl<S: 'static> ToggleConfig<S> {
+    /// Splits this configuration into a [`ToggleStyleTarget`] for subtree hooks
+    /// and a [`ToggleStylePending<S>`] to restore the typed configuration if all
+    /// hooks decline.
+    #[doc(hidden)]
+    pub fn into_style_pending(
+        self,
+        map_slot: impl Fn(S) -> AnyView + Clone + 'static,
+    ) -> (ToggleStyleTarget, ToggleStylePending<S>) {
+        let erased_label = self.label.clone().map_slots(map_slot);
+        let target = ToggleStyleTarget(alloc::boxed::Box::new(ToggleStyleTargetData {
+            label: erased_label,
+            toggle: self.toggle.clone(),
+            size: self.size,
+        }));
+        let pending = ToggleStylePending {
+            label: self.label,
+            toggle: self.toggle,
+            style: self.style,
+            explicit_style: self.explicit_style,
+            size: self.size,
+        };
+        (target, pending)
+    }
+}
+
 impl<S: 'static> NativeView for ToggleConfig<S> {
     fn stretch_axis(&self) -> StretchAxis {
         self.layout_stretch_axis()
@@ -149,6 +557,7 @@ impl<S: 'static> MapSlots<S> for ToggleConfig<S> {
             label: self.label.map_slots(f),
             toggle: self.toggle,
             style: self.style,
+            explicit_style: self.explicit_style,
             size: self.size,
         }
     }
@@ -202,14 +611,15 @@ impl<S: 'static> MapSlots<S> for ToggleConfig<S> {
     clippy::struct_field_names,
     reason = "stores the boolean toggle binding for `Toggle`"
 )]
-pub struct Toggle<L> {
+pub struct Toggle<L, Style = ToggleStyle> {
     label: Label<L>,
     toggle: Binding<bool>,
-    style: ToggleStyle,
+    style: Style,
+    explicit_style: bool,
     size: ControlSize,
 }
 
-impl<L> Toggle<L> {
+impl<L> Toggle<L, ToggleStyle> {
     /// Creates a new `Toggle` with the specified label and binding for the
     /// toggle state.
     ///
@@ -220,18 +630,48 @@ impl<L> Toggle<L> {
             label: label.into_label(),
             toggle: toggle.clone(),
             style: ToggleStyle::default(),
+            explicit_style: false,
             size: ControlSize::Small,
         }
     }
 
+    /// Changes the toggle to switch style.
+    pub const fn switch(mut self) -> Self {
+        self.style = ToggleStyle::Switch;
+        self.explicit_style = true;
+        self
+    }
+
+    /// Changes the toggle to checkbox style.
+    pub const fn checkbox(mut self) -> Self {
+        self.style = ToggleStyle::Checkbox;
+        self.explicit_style = true;
+        self
+    }
+}
+
+impl<L, Style> Toggle<L, Style> {
     pub(crate) const fn label_mut(&mut self) -> &mut Label<L> {
         &mut self.label
     }
 
     /// Sets the visual style of the toggle.
-    pub const fn style(mut self, style: ToggleStyle) -> Self {
-        self.style = style;
-        self
+    ///
+    /// Accepts a built-in [`ToggleStyle`] or a [`CustomToggleStyle`].
+    pub fn style<NewStyle, Marker>(
+        self,
+        style: NewStyle,
+    ) -> Toggle<L, <NewStyle as IntoToggleStyle<Marker>>::Style>
+    where
+        NewStyle: IntoToggleStyle<Marker>,
+    {
+        Toggle {
+            label: self.label,
+            toggle: self.toggle,
+            style: style.into_toggle_style(),
+            explicit_style: true,
+            size: self.size,
+        }
     }
 
     /// Sets how large the toggle is drawn. A toggle is
@@ -241,30 +681,21 @@ impl<L> Toggle<L> {
         self.size = size;
         self
     }
-
-    /// Changes the toggle to switch style.
-    pub const fn switch(self) -> Self {
-        self.style(ToggleStyle::Switch)
-    }
-
-    /// Changes the toggle to checkbox style.
-    pub const fn checkbox(self) -> Self {
-        self.style(ToggleStyle::Checkbox)
-    }
 }
 
-impl<L: LabelKind> Toggle<L> {
+impl<L: LabelKind> Toggle<L, ToggleStyle> {
     fn into_config<S: ChildSlot>(self, env: &Environment) -> ToggleConfig<S> {
         ToggleConfig {
             label: self.label.into_control_label::<S>(env),
             toggle: self.toggle,
             style: self.style.resolved(),
+            explicit_style: self.explicit_style,
             size: self.size,
         }
     }
 }
 
-impl<L: LabelKind> ConfigurableView for Toggle<L> {
+impl<L: LabelKind> ConfigurableView for Toggle<L, ToggleStyle> {
     type Config = ToggleConfig<Label<L>>;
 
     fn config(self) -> Self::Config {
@@ -272,6 +703,7 @@ impl<L: LabelKind> ConfigurableView for Toggle<L> {
             label: self.label.into_unscoped_control_label(),
             toggle: self.toggle,
             style: self.style,
+            explicit_style: self.explicit_style,
             size: self.size,
         }
     }
@@ -286,6 +718,7 @@ impl<S: View> ViewConfiguration for ToggleConfig<S> {
             label: Label::from_control_label(self.label, mode),
             toggle: self.toggle,
             style: self.style,
+            explicit_style: self.explicit_style,
             size: self.size,
         }
     }
@@ -297,17 +730,17 @@ impl<S: View> From<ToggleConfig<S>> for Toggle<ControlLabel<S>> {
     }
 }
 
-impl<L: LabelKind> View for Toggle<L> {
+impl<L: LabelKind, Style: SealedToggleStyle> View for Toggle<L, Style> {
     fn body(self, env: &Environment) -> impl View {
-        Native::new(self.into_config::<AnyView>(env))
+        Style::toggle_body(self, env)
     }
 
     fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
-        backend.native(self.into_config::<B::Slot>(env), env, cx)
+        Style::dispatch_toggle(self, backend, env, cx)
     }
 }
 
-impl_label_style_methods!(Toggle<L>);
+impl_label_style_methods!(Toggle<L, Style>);
 
 /// Creates a new `Toggle` with the specified label and binding for the toggle state.
 pub fn toggle<L: IntoLabel>(label: L, toggle: &Binding<bool>) -> Toggle<L::Kind> {
@@ -398,5 +831,116 @@ mod tests {
         let mut env = Environment::new();
         env.insert(locales::EN);
         env
+    }
+}
+
+#[cfg(test)]
+mod custom_style_tests {
+    use alloc::rc::Rc;
+    use core::cell::RefCell;
+    use nami::{Binding, Signal as _, binding};
+    use waterui_core::accessibility::{
+        AccessibilityChecked, AccessibilityLabel, AccessibilityRole, AccessibilityStateSignal,
+    };
+    use waterui_core::backend::peel_metadata;
+    use waterui_core::gesture::GestureObserver;
+    use waterui_core::interaction::{Disabled, InteractionReport, InteractionState};
+    use waterui_core::{AnyView, Environment, View};
+
+    use super::{CustomToggleStyle, Toggle, ToggleStyleConfiguration};
+    use crate::size::ControlSize;
+
+    struct RecordedToggleConfig {
+        is_on: Binding<bool>,
+        size: ControlSize,
+        disabled: nami::Computed<bool>,
+        interaction: nami::Computed<InteractionState>,
+    }
+
+    struct RecordingToggleStyle {
+        recorded: Rc<RefCell<Option<RecordedToggleConfig>>>,
+    }
+
+    impl CustomToggleStyle for RecordingToggleStyle {
+        fn make_body<L: View>(&self, configuration: ToggleStyleConfiguration<L>) -> impl View {
+            *self.recorded.borrow_mut() = Some(RecordedToggleConfig {
+                is_on: configuration.is_on.clone(),
+                size: configuration.size(),
+                disabled: configuration.is_disabled(),
+                interaction: configuration.interaction_state().clone(),
+            });
+            configuration.label
+        }
+    }
+
+    #[test]
+    fn custom_toggle_style_exposes_binding_and_toggles_on_tap() {
+        let on = Binding::bool(false);
+        let recorded = Rc::new(RefCell::new(None));
+        let disabled_binding = binding(false);
+        let mut env = Environment::new();
+        Disabled::install(&mut env, disabled_binding.clone());
+
+        let view = Toggle::new("Airplane Mode", &on)
+            .size(ControlSize::Large)
+            .hide_label()
+            .style(RecordingToggleStyle {
+                recorded: Rc::clone(&recorded),
+            });
+
+        let body = View::body(view, &env);
+        let recorded_cfg = recorded.borrow_mut().take().expect("toggle style must run");
+        assert_eq!(recorded_cfg.size, ControlSize::Large);
+        assert!(!recorded_cfg.is_on.snapshot());
+        assert!(!recorded_cfg.disabled.snapshot());
+
+        disabled_binding.set(true);
+        assert!(recorded_cfg.disabled.snapshot());
+        assert!(
+            recorded_cfg
+                .interaction
+                .snapshot()
+                .contains(InteractionState::DISABLED)
+        );
+        disabled_binding.set(false);
+
+        let env_view = peel_metadata::<Environment>(AnyView::new(body), &env)
+            .expect("custom-styled toggle installs InteractionReport");
+        assert!(env_view.value.get::<InteractionReport>().is_some());
+
+        let role_view = peel_metadata::<AccessibilityRole>(env_view.content, &env_view.value)
+            .expect("custom-styled toggle attaches AccessibilityRole::Switch");
+        assert_eq!(role_view.value, AccessibilityRole::Switch);
+
+        let a11y_label = peel_metadata::<AccessibilityLabel>(role_view.content, &env)
+            .expect("custom-styled toggle keeps hidden label in accessibility tree");
+        assert_eq!(
+            a11y_label.value.signal().snapshot().as_str(),
+            "Airplane Mode"
+        );
+
+        let state_signal = peel_metadata::<AccessibilityStateSignal>(a11y_label.content, &env)
+            .expect("custom-styled toggle publishes checked AccessibilityStateSignal");
+        assert_eq!(
+            state_signal.value.state().snapshot().checked_state(),
+            Some(AccessibilityChecked::False)
+        );
+
+        let observer = peel_metadata::<GestureObserver>(state_signal.content, &env)
+            .expect("custom-styled toggle attaches TapGesture observer");
+        let (_, mut action) = observer.value.into_parts();
+
+        let mut action_env = env.clone();
+        action(&action_env).expect("toggle tap succeeds");
+        assert!(on.snapshot());
+        assert_eq!(
+            state_signal.value.state().snapshot().checked_state(),
+            Some(AccessibilityChecked::True)
+        );
+
+        // Disabled toggle does not flip on tap.
+        Disabled::install(&mut action_env, true);
+        action(&action_env).expect("disabled toggle tap check succeeds");
+        assert!(on.snapshot());
     }
 }

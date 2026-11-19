@@ -215,6 +215,54 @@ pub trait ViewExt: View + Sized {
         hook::Hooks::new(self, hooks)
     }
 
+    /// Styles all [`Button`](crate::component::button::Button) views in this subtree
+    /// that did not specify an explicit `.style(...)`.
+    ///
+    /// Accepts a built-in [`ButtonStyle`](crate::component::ButtonStyle), a
+    /// [`CustomButtonStyle`](crate::component::CustomButtonStyle), or a
+    /// [`PrimitiveButtonStyle`](crate::component::PrimitiveButtonStyle).
+    fn button_style<S, Marker>(
+        self,
+        style: S,
+    ) -> hook::Hooks<
+        Self,
+        waterui_controls::button::ButtonStyleHook<
+            <S as waterui_controls::button::IntoButtonStyle<Marker>>::Style,
+        >,
+    >
+    where
+        S: waterui_controls::button::IntoButtonStyle<Marker>,
+    {
+        hook::Hooks::new(
+            self,
+            waterui_controls::button::ButtonStyleHook::new(style.into_button_style()),
+        )
+    }
+
+    /// Styles all [`Toggle`](crate::component::toggle::Toggle) views in this subtree
+    /// that did not specify an explicit `.style(...)`.
+    ///
+    /// Accepts a built-in [`ToggleStyle`](crate::component::ToggleStyle) or a
+    /// [`CustomToggleStyle`](crate::component::CustomToggleStyle).
+    #[cfg(feature = "toggle")]
+    fn toggle_style<S, Marker>(
+        self,
+        style: S,
+    ) -> hook::Hooks<
+        Self,
+        waterui_controls::toggle::ToggleStyleHook<
+            <S as waterui_controls::toggle::IntoToggleStyle<Marker>>::Style,
+        >,
+    >
+    where
+        S: waterui_controls::toggle::IntoToggleStyle<Marker>,
+    {
+        hook::Hooks::new(
+            self,
+            waterui_controls::toggle::ToggleStyleHook::new(style.into_toggle_style()),
+        )
+    }
+
     /// Sets this view as the content of a navigation view with the specified title.
     ///
     /// # Arguments
