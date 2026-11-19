@@ -18,6 +18,15 @@ compile_error!(
      (windows presenting `cpu` frames are water-rs/waterui#4064)"
 );
 
+#[cfg(any(
+    all(feature = "webview-system", feature = "webview-cef"),
+    all(feature = "webview-system", feature = "webview-wpe"),
+    all(feature = "webview-cef", feature = "webview-wpe"),
+))]
+compile_error!(
+    "hydrolysis: enable at most one webview engine feature (`webview-system`, `webview-cef`, `webview-wpe`)"
+);
+
 #[cfg(hydrolysis_runtime)]
 mod animation;
 #[cfg(hydrolysis_cherenkov)]

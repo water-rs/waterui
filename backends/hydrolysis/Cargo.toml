@@ -106,8 +106,13 @@ pollster = { workspace = true, optional = true }
 # Hosted content (Apple, Android and the web, the `hydrolysis_hosted` targets)
 # follows the occlusion rects through a watcher set, as does the web
 # platform's surface; no other target compiles either.
-# The GPU map realizing `Map` (the `map-gpu` feature).
+# The GPU vector map as the realization of `Map` (the `map-gpu` feature).
 waterui-map-gpu = { workspace = true, optional = true }
+
+# Desktop browser engines for standard `WebView`.
+[target.'cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))'.dependencies]
+waterui-browser-cef = { workspace = true, optional = true }
+
 [target.'cfg(any(target_vendor = "apple", target_os = "android", target_arch = "wasm32"))'.dependencies]
 waterui-watcher-set = { workspace = true, optional = true }
 
@@ -264,6 +269,7 @@ wayland-protocols = { version = "0.32", features = ["client", "staging"], option
 # never blocks on D-Bus. `futures-core` names the `Stream` trait the signal
 # subscription is consumed through.
 [target.'cfg(target_os = "linux")'.dependencies]
+waterui-browser-wpe = { workspace = true, optional = true }
 zbus = { version = "5.19", default-features = false, features = ["async-io"], optional = true }
 futures-core = { version = "0.3", optional = true }
 
@@ -561,8 +567,8 @@ video-gpu = ["gpu", "dep:waterui-video-gpu", "waterui/video"]
 map-gpu = ["gpu", "dep:waterui-map-gpu", "waterui/map"]
 # The platform's own web engine: `WKWebView` on macOS, an `<iframe>` on the web,
 # each hosted on a compositor plane, and `android.webkit.WebView` on Android,
-# mounted as a platform-view instance. Every other engine is a crate the
-# application links and installs; this backend never names one.
+# mounted as a platform-view instance. Mutually exclusive with `webview-cef` and
+# `webview-wpe`.
 webview-system = [
     "waterui/webview",
     "dep:block2",
@@ -575,6 +581,22 @@ webview-system = [
     "web-sys?/MouseEvent",
     "web-sys?/PointerEventInit",
     "web-sys?/WheelEventInit",
+]
+# The bundled CEF engine as the realization of `WebView` on macOS, Linux, and
+# Windows. Mutually exclusive with `webview-system` and `webview-wpe`.
+webview-cef = [
+    "gpu",
+    "waterui/webview",
+    "dep:waterui-browser-cef",
+    "waterui-browser-cef?/webview",
+]
+# The bundled WPE WebKit engine as the realization of `WebView` on Linux.
+# Mutually exclusive with `webview-system` and `webview-cef`.
+webview-wpe = [
+    "gpu",
+    "waterui/webview",
+    "dep:waterui-browser-wpe",
+    "waterui-browser-wpe?/webview",
 ]
 winit = [
     "accessibility",

@@ -18,27 +18,40 @@
 //! size is `WuiWebViewComponent.sizeThatFits`: the proposal's axes where
 //! given, 320×480 otherwise; the leaf stretches both ways.
 
+#[cfg(feature = "webview")]
 use alloc::boxed::Box;
+#[cfg(feature = "webview")]
 use alloc::collections::BTreeMap;
+#[cfg(feature = "webview")]
 use alloc::format;
+#[cfg(feature = "webview")]
 use alloc::rc::Rc;
+#[cfg(feature = "webview")]
 use alloc::string::{String, ToString};
+#[cfg(feature = "webview")]
 use alloc::sync::Arc;
+#[cfg(feature = "webview")]
 use alloc::vec::Vec;
+#[cfg(feature = "webview")]
 use core::cell::{Cell, OnceCell, RefCell};
 
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::HostView;
 #[cfg(target_os = "ios")]
 use cocoa_ui::uikit::HostView;
+#[cfg(feature = "webview")]
 use cocoa_ui::{MainThreadMarker, web_kit};
+#[cfg(feature = "webview")]
 use waterui::Str;
+#[cfg(feature = "webview")]
 use waterui::reactive::watcher::BoxWatcherGuard;
+#[cfg(feature = "webview")]
 use waterui::reactive::{Computed, Signal};
 use waterui_backend_core::Environment;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
 };
+#[cfg(feature = "webview")]
 use waterui_webview::{
     ASSET_HOST, ASSET_ORIGIN, ASSET_SCHEME, AnsweredNavigations, BackendEvent, Cookie,
     CustomWebViewController, DOCUMENT_START_SCRIPT, DocumentScripts, NavigationPolicy,
@@ -51,6 +64,7 @@ use crate::contract::{NativeLeaf, RenderContext};
 
 /// The page-visible global the bridge script calls — `bridge::SEND_FUNCTION`,
 /// which is also the name the script-message transport registers under.
+#[cfg(feature = "webview")]
 const SEND_FUNCTION: &str = bridge::SEND_FUNCTION;
 
 /// What the handle and the kit's delegate closures share.
@@ -59,6 +73,7 @@ const SEND_FUNCTION: &str = bridge::SEND_FUNCTION;
 /// web view has no state left to touch, which is exactly what upgrading
 /// answers. `view` is a `OnceCell`: the controller is constructed with
 /// closures that already point at this state, so it arrives last.
+#[cfg(feature = "webview")]
 struct Shared {
     /// The kit controller; set once the `Handlers` closing over this state
     /// exist, before any callback can fire.
@@ -101,6 +116,7 @@ struct Shared {
     scripts: RefCell<DocumentScripts>,
 }
 
+#[cfg(feature = "webview")]
 impl Shared {
     /// The kit controller.
     fn view(&self) -> &web_kit::WebViewController {
@@ -309,16 +325,19 @@ impl Shared {
 
 /// The `WebViewHandle` a `WkWebViewHandle` hands out — the `WebViewWrapper`
 /// FFI surface, implemented directly on the kit controller.
+#[cfg(feature = "webview")]
 pub struct WkWebViewHandle {
     shared: Rc<Shared>,
 }
 
+#[cfg(feature = "webview")]
 impl core::fmt::Debug for WkWebViewHandle {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("WkWebViewHandle").finish_non_exhaustive()
     }
 }
 
+#[cfg(feature = "webview")]
 impl WkWebViewHandle {
     /// Creates a handle owning a fresh kit controller.
     ///
@@ -402,6 +421,7 @@ impl WkWebViewHandle {
 }
 
 /// `decidePolicyForNavigationAction`.
+#[cfg(feature = "webview")]
 impl Shared {
     /// A load the application issued is recorded by the `WKNavigation` the
     /// call returned — the same object its action later reports as
@@ -595,6 +615,7 @@ impl Shared {
     }
 }
 
+#[cfg(feature = "webview")]
 impl WebViewHandle for WkWebViewHandle {
     fn go_back(&self) {
         self.shared.app_load(self.controller().go_back().as_deref());
@@ -731,6 +752,7 @@ impl WebViewHandle for WkWebViewHandle {
 
 /// A `CookieRecord` as a `cookie::Cookie` — the same conversion WPE writes,
 /// with unknown `SameSite` values dropped like it does.
+#[cfg(feature = "webview")]
 mod cookie_record {
     use super::{Cookie, web_kit};
 
@@ -772,14 +794,17 @@ mod cookie_record {
 
 /// The platform `WebViewController` the late install puts into the
 /// environment — `installWebViewController`'s `WebViewWrapper` factory.
+#[cfg(feature = "webview")]
 struct AppleWebViewController;
 
+#[cfg(feature = "webview")]
 impl core::fmt::Debug for AppleWebViewController {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("AppleWebViewController").finish()
     }
 }
 
+#[cfg(feature = "webview")]
 impl CustomWebViewController for AppleWebViewController {
     fn open(&self, config: WebViewConfig) -> Result<impl WebViewHandle, WebViewOpenError> {
         let mtm = MainThreadMarker::new().ok_or(WebViewOpenError::MainThreadRequired)?;
@@ -803,6 +828,7 @@ impl CustomWebViewController for AppleWebViewController {
 }
 
 /// The kit's spelling of an injection time.
+#[cfg(feature = "webview")]
 const fn injection_time(time: ScriptInjectionTime) -> web_kit::InjectionTime {
     match time {
         ScriptInjectionTime::DocumentStart => web_kit::InjectionTime::DocumentStart,
@@ -812,6 +838,7 @@ const fn injection_time(time: ScriptInjectionTime) -> web_kit::InjectionTime {
 
 /// A URL the event payloads carry. A string the web engine reports that does
 /// not parse is logged and answers `None`: the event it belongs to is dropped.
+#[cfg(feature = "webview")]
 fn parse_url(string: &str) -> Option<Url> {
     match string.parse() {
         Ok(url) => Some(url),
@@ -857,17 +884,22 @@ impl SubView for WebViewSubView {
     }
 }
 
-/// The `webview` realization: `Native<WebView>` mounts the kit view the
-/// handle owns, keeping the `WebView` — and with it the event, navigation
-/// and signal subscriptions — alive for the leaf's life.
+fn realize_unavailable(webview: waterui_webview::WebView, ctx: &RenderContext<'_>) -> NativeLeaf {
+    let host = HostView::new(ctx.mtm(), cocoa_ui::Rect::ZERO);
+    let mut leaf = NativeLeaf::new(&*host, WebViewSubView);
+    leaf.keep(webview);
+    leaf
+}
+
+/// The `webview` realization: `Native<WebView>` mounts the selected engine's
+/// view, keeping the `WebView` — and with it the event, navigation and signal
+/// subscriptions — alive for the leaf's life.
+#[cfg(feature = "webview")]
 pub fn realize_web_view(webview: waterui_webview::WebView, ctx: &RenderContext<'_>) -> NativeLeaf {
     // The controller failed to open this view and `waterui-webview`
     // already reported it: mount an empty host where the page would be.
     if webview.handle().is_unavailable() {
-        let host = HostView::new(ctx.mtm(), cocoa_ui::Rect::ZERO);
-        let mut leaf = NativeLeaf::new(&*host, WebViewSubView);
-        leaf.keep(webview);
-        return leaf;
+        return realize_unavailable(webview, ctx);
     }
     let handle = webview.handle().downcast_ref::<WkWebViewHandle>().expect(
         "a WebView leaf was handed a handle from another engine; the \
@@ -881,9 +913,20 @@ pub fn realize_web_view(webview: waterui_webview::WebView, ctx: &RenderContext<'
     leaf
 }
 
+/// The `webview-cef` realization on macOS: renders the CEF page directly as GPU
+/// content through `waterui-browser-cef`.
+#[cfg(all(target_os = "macos", feature = "webview-cef"))]
+pub fn realize_web_view(webview: waterui_webview::WebView, ctx: &RenderContext<'_>) -> NativeLeaf {
+    if webview.handle().is_unavailable() {
+        return realize_unavailable(webview, ctx);
+    }
+    ctx.render(waterui_browser_cef::webview(webview, ctx.env()))
+}
+
 /// The `SchemeHandler` an `asset_origin` view registers — `AssetSchemeHandler`,
 /// routing through `assets::dispatch` so method enforcement and traversal
 /// refusal are the shared implementation's.
+#[cfg(feature = "webview")]
 fn asset_scheme(server: &assets::AssetServer) -> web_kit::SchemeHandler {
     let server = Arc::clone(server);
     web_kit::SchemeHandler {
@@ -909,22 +952,21 @@ fn asset_scheme(server: &assets::AssetServer) -> web_kit::SchemeHandler {
     }
 }
 
-/// Installs the platform `WebViewController` into `env` when the application
-/// left the slot empty — the late fill `waterui_swift_install_webview` /
-/// `installWebViewController` performed, so an application bundling its own
-/// engine keeps the controller it installed during `app(env)`.
-///
+/// Installs the compile-time selected `WebViewController` into `env`.
 pub fn install_service(env: &mut Environment) {
     if env.get::<waterui_webview::WebViewController>().is_none() {
-        env.insert(waterui_webview::WebViewController::new(
-            AppleWebViewController,
-        ));
+        #[cfg(all(target_os = "macos", feature = "webview-cef"))]
+        let controller = waterui_browser_cef::webview_controller();
+        #[cfg(feature = "webview")]
+        let controller = waterui_webview::WebViewController::new(AppleWebViewController);
+        env.insert(controller);
     }
 }
 
 /// The `scheme://host[:port]` candidate `frame_may_use_bridge` matches —
 /// `WebViewWrapper.frameMayUseBridge`'s formatting: the port only when the
 /// engine reports a non-default one.
+#[cfg(feature = "webview")]
 fn origin_candidate(scheme: &str, host: &str, port: i64) -> String {
     if port == 0 {
         format!("{scheme}://{host}")
@@ -933,7 +975,7 @@ fn origin_candidate(scheme: &str, host: &str, port: i64) -> String {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "webview"))]
 mod tests {
     use super::*;
 
