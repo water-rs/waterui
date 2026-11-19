@@ -412,6 +412,7 @@ mod imp {
         // First-paint marking happens on the leaf the fallback produced.
         crate::first_paint::mark(&leaf_view, env);
 
+        #[cfg(feature = "inspector")]
         crate::inspector::install(&host, env, &mut keepalive);
         host.set_layout_handler(move |host| {
             let host_view: &cocoa_ui::PlatformView = host;
@@ -1243,6 +1244,7 @@ mod imp {
         // The root host places the content before the content joins the live
         // window and before any of its controllers is adopted
         // (water-rs/waterui#3744).
+        #[cfg(feature = "inspector")]
         crate::inspector::install(&host, env, &mut keepalive);
         crate::embedding::place_then_join(
             &host,
