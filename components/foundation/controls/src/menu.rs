@@ -21,11 +21,10 @@ use waterui_core::{
     backend::{Backend, ChildSlot, MapSlots},
     contract_violation,
     extract::State,
-    handler::{Handler, SharedAction, shared_action},
+    handler::{AnyViewBuilder, Handler, SharedAction, shared_action},
     interaction::Disabled,
     key::Key,
 };
-use waterui_icon::SystemIcon;
 use waterui_layout::Divider;
 use waterui_locale::locale_binding;
 use waterui_text::{TextConfig, styled::StyledStr};
@@ -479,7 +478,7 @@ impl<L: LabelKind> Menu<L> {
     fn resolve(self, env: &Environment) -> ResolvedNestedMenu {
         let label = self.label.into_semantic();
         let resolved_label = label.semantic_text().resolve(env);
-        let icon = label.semantic_icon();
+        let icon = label.icon_view();
         let semantic_label = label.resolve(env);
         ResolvedNestedMenu {
             label: resolved_label,
@@ -622,7 +621,7 @@ impl Command {
     pub fn resolve(self, env: &Environment) -> ResolvedCommand {
         let label = self.label;
         let resolved_label = label.semantic_text().resolve(env);
-        let icon = label.semantic_icon();
+        let icon = label.icon_view();
         let semantic_label = label.resolve(env);
         let action = self.action;
         let captured_env = self.captured_env;
@@ -1152,8 +1151,8 @@ pub struct ResolvedCommand {
     pub label: TextConfig,
     /// The full semantic label retained for self-drawn menu renderers.
     pub semantic_label: Label<SemanticLabel>,
-    /// Optional platform icon shown alongside the label.
-    pub icon: Option<SystemIcon>,
+    /// Optional icon view lifted out of the label for platform chrome.
+    pub icon: Option<AnyViewBuilder<AnyView>>,
     /// Shared action invoked by the native backend.
     pub action: SharedAction<()>,
     /// Whether the command is currently disabled.
@@ -1229,8 +1228,8 @@ pub struct ResolvedNestedMenu {
     pub label: TextConfig,
     /// The full semantic label retained for self-drawn menu renderers.
     pub semantic_label: Label<SemanticLabel>,
-    /// Optional platform icon shown alongside the title.
-    pub icon: Option<SystemIcon>,
+    /// Optional icon view lifted out of the label for platform chrome.
+    pub icon: Option<AnyViewBuilder<AnyView>>,
     /// Resolved nested menu items.
     pub items: Computed<Vec<ResolvedMenuItem>>,
     identity: Rc<()>,
@@ -1441,7 +1440,6 @@ mod tests {
     use alloc::rc::Rc;
     use core::cell::Cell;
     use nami::Signal;
-    use waterui_icon::system_icon;
 
     #[test]
     fn shortcut_key_parses_characters_and_w3c_named_keys() {
@@ -1558,7 +1556,7 @@ mod tests {
     #[test]
     fn menu_view_accepts_plain_buttons() {
         crate::init_test_executor();
-        let items = button(crate::label::label("Search").system_icon(system_icon::search()))
+        let items = button(crate::label::label("Search").icon("Q"))
             .action(|| {})
             .into_menu_items()
             .snapshot();

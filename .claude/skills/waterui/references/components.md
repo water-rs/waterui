@@ -371,10 +371,11 @@ label("Mode").icon(mdi::tune()).display_mode(LabelDisplayMode::TitleAndIcon)
 Label::new(text!("{sender}, {subject}"), move || message_row(message.clone()))
 ```
 
-`.icon(..)` accepts any cloneable view, not only an icon-set glyph.
-`label("Home").system_icon(SystemIcon::new("house"))` (`waterui::icon::SystemIcon`) names an
-SF Symbol: it renders on Apple platforms only and is deliberately unsupported elsewhere
-(styling.md, Icons), so portable code uses `.icon(..)`. It panics on a `Label::new` label.
+`.icon(..)` accepts any cloneable view, not only an icon-set glyph. On Apple
+platforms, `waterui_apple::SfSymbol::HOUSE` (and the rest of Apple's typed
+catalog) is realized natively by the Apple backend and projected directly into
+menus, toolbars, and tab bars; other icons are rasterized when placed in
+platform chrome. `.icon(..)` panics on a `Label::new` label.
 
 ## Menus, commands, context menus
 

@@ -287,7 +287,6 @@ waterui-browser-cef = { version = "0.1.0", git = "https://github.com/water-rs/br
 waterui-browser-wpe = { version = "0.1.0", git = "https://github.com/water-rs/browsers", branch = "refactor/webview-engine", default-features = false }
 wgpu-external-frame = "0.4.0"
 waterui-icon = { version = "0.5.1", path = "components/foundation/icon" }
-waterui-icons-sf-symbol = { version = "0.5.1", path = "components/icon/sf_symbol" }
 waterui-icons-material-icon = { version = "0.5.1", path = "components/icon/material" }
 waterui-icons-lucide = { version = "0.5.1", path = "components/icon/lucide" }
 waterui-locale = { version = "0.5.1", path = "utils/locale" }

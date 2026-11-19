@@ -568,9 +568,6 @@ pub fn components_block_15() {
 
     // `.leading()` — the default side, named in the trailing comment.
     let _ = label("Compose").icon(mdi::pencil()).leading();
-
-    // Prose (not counted): `label("Home").system_icon(SystemIcon::new("house"))`.
-    let _ = label("Home").system_icon(waterui::icon::SystemIcon::new("house"));
 }
 
 // ---------------------------------------------------------------------------

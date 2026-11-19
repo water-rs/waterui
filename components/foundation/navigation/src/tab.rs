@@ -18,7 +18,6 @@ use waterui_core::{
     layout::StretchAxis,
     views::{AnyViews, ForEach, Views},
 };
-use waterui_icon::SystemIcon;
 
 use super::NavigationView;
 
@@ -99,34 +98,6 @@ pub mod tab_style {
     }
 }
 
-/// A tab's icon, kept apart from its title.
-///
-/// A native tab bar item is an image next to a title rather than one composed
-/// view, so the icon has to reach the backend on its own. The two forms are not
-/// interchangeable: a platform that recognizes the symbol renders it at whatever
-/// size and weight its chrome calls for, while a view has to be rasterized at a
-/// chosen size.
-#[derive(Clone)]
-#[expect(
-    clippy::exhaustive_enums,
-    reason = "backends realize each tab icon source variant by variant; a new tab icon source must fail their build instead of falling into a wildcard arm"
-)]
-pub enum TabIcon {
-    /// A symbol the platform knows by name.
-    System(SystemIcon),
-    /// A view the backend renders itself.
-    View(AnyViewBuilder<AnyView>),
-}
-
-impl Debug for TabIcon {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::System(icon) => f.debug_tuple("System").field(icon).finish(),
-            Self::View(_) => f.write_str("View"),
-        }
-    }
-}
-
 /// The part a tab plays in the container's chrome.
 ///
 /// A role is an attribute of a tab, not a different kind of tab: the tab keeps
@@ -175,8 +146,8 @@ pub enum TabBarMinimizeBehavior {
 pub struct Tab<C> {
     /// Semantic tab label.
     label: Label<ErasedLabel>,
-    /// The label's icon, lifted out so native chrome can place it itself.
-    icon: Option<TabIcon>,
+    /// The label's icon, lifted out so native chrome can place or inspect it itself.
+    icon: Option<AnyViewBuilder<AnyView>>,
     /// Stable lazily built tab root.
     content: Rc<C>,
     /// Optional reactive badge count.
@@ -223,10 +194,7 @@ where
         let label = label.into_label();
         // Lift the icon out: a tab bar item wants it separately, and once the
         // label is drawn nothing can tell which part of it was the icon.
-        let icon = label.semantic_icon().map_or_else(
-            || label.icon_view().map(TabIcon::View),
-            |icon| Some(TabIcon::System(icon)),
-        );
+        let icon = label.icon_view();
         Self {
             label: label.erase(),
             icon,
@@ -294,9 +262,9 @@ impl<C> Tab<C> {
         &self.label
     }
 
-    /// The label's icon, lifted out so native chrome can place it itself.
+    /// The label's icon, lifted out so native chrome can place or inspect it itself.
     #[must_use]
-    pub const fn icon(&self) -> Option<&TabIcon> {
+    pub const fn icon(&self) -> Option<&AnyViewBuilder<AnyView>> {
         self.icon.as_ref()
     }
 
@@ -390,8 +358,8 @@ impl<T> Debug for SlotBuilder<T> {
 pub struct TabItem<S> {
     /// Semantic tab label.
     label: SlotBuilder<S>,
-    /// The label's icon, lifted out so native chrome can place it itself.
-    icon: Option<TabIcon>,
+    /// The label's icon, lifted out so native chrome can place or inspect it itself.
+    icon: Option<AnyViewBuilder<AnyView>>,
     /// Stable lazily built tab root.
     content: SlotBuilder<NavigationView<S>>,
     /// Optional reactive badge count.
@@ -455,9 +423,9 @@ impl<S> TabItem<S> {
         &self.label
     }
 
-    /// The label's icon, lifted out so native chrome can place it itself.
+    /// The label's icon, lifted out so native chrome can place or inspect it itself.
     #[must_use]
-    pub const fn icon(&self) -> Option<&TabIcon> {
+    pub const fn icon(&self) -> Option<&AnyViewBuilder<AnyView>> {
         self.icon.as_ref()
     }
 
@@ -495,7 +463,7 @@ impl<S> TabItem<S> {
         self,
     ) -> (
         SlotBuilder<S>,
-        Option<TabIcon>,
+        Option<AnyViewBuilder<AnyView>>,
         SlotBuilder<NavigationView<S>>,
         Option<Computed<i32>>,
         Computed<bool>,
@@ -758,7 +726,7 @@ impl<T: TabSet> Tabs<T, ()> {
     /// Creates a tab container driven by a caller-owned selection.
     ///
     /// `tabs` is a [`TabSet`]: a `Vec` for a fixed set, a tuple for tabs whose
-    /// roots differ, `ForEach` over a reactive [`nami::List`] for a set that
+    /// roots differ, `ForEach` over a reactive [`nami::collection::List`] for a set that
     /// changes at runtime. The set's id is the tab's identity — it is also
     /// the type `selection` binds.
     pub fn new(selection: &Binding<T::Id>, tabs: T) -> Self {

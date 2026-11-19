@@ -892,7 +892,7 @@ mod key_commands {
                     fired.set(label);
                 });
             (
-                Menu::new(mtm, "", None, false, &[MenuElement::Action(action)]),
+                Menu::new(mtm, "", None, None, false, &[MenuElement::Action(action)]),
                 key_commands,
             )
         };
@@ -1499,18 +1499,19 @@ mod navigation {
     use cocoa_ui::{PlatformView, Rect, Retained, view};
     use waterui::background::Material;
     use waterui::component::{ButtonStyle, button, label};
-    use waterui::icon::SystemIcon;
     use waterui::navigation::{
         NavigationSplitView, NavigationToolbar, NavigationToolbarItem, NavigationToolbarPlacement,
-        NavigationView, ToolbarItemIcon,
+        NavigationView,
     };
     use waterui::prelude::text;
     use waterui::reactive::binding;
-    use waterui::{Str, ViewExt as _};
+    use waterui::{AnyView, Str, ViewExt as _};
+    use waterui_apple::SfSymbol;
     use waterui_apple::native_test_support::{
         MAIN_QUEUE_DEADLINE, content_frame, pump_main_until, realize_into_shown_scene, render,
         render_environment,
     };
+    use waterui_core::handler::AnyViewBuilder;
 
     use super::mtm;
 
@@ -1566,7 +1567,7 @@ mod navigation {
                     NavigationToolbarPlacement::PrimaryAction,
                     button("").style(ButtonStyle::Plain),
                 );
-                item.set_icon(Some(ToolbarItemIcon::System(SystemIcon::new("plus"))));
+                item.set_icon(Some(AnyViewBuilder::new(|| AnyView::new(SfSymbol::PLUS))));
                 NavigationView::new("Today", text("detail").background(Material::Regular))
                     .searchable(&query, "Search reminders")
                     .navigation_toolbar(NavigationToolbar::new(vec![

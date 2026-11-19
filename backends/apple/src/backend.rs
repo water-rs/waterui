@@ -160,10 +160,6 @@ impl NativeBackend for AppleBackend {
         crate::components::resolved_shape::realize_resolved_shape(native, &self.entry(env))
     }
 
-    fn icon(&mut self, native: waterui::icon::SystemIcon, env: &Environment, (): ()) -> NativeLeaf {
-        crate::components::image::realize_system_icon(native, &self.entry(env))
-    }
-
     fn gradient(
         &mut self,
         native: waterui::graphics::Gradient,
@@ -1043,20 +1039,28 @@ impl NativeBackend for AppleBackend {
         )
     }
 
-    // waterui-apple provides no components of its own yet: every payload
-    // outside `NativeBackend` is a contract violation.
-
     fn provided<T: NativeView + 'static>(
         &mut self,
-        _native: T,
+        native: T,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
+        if let Some(&symbol) = (&native as &dyn core::any::Any).downcast_ref::<crate::SfSymbol>() {
+            return crate::components::image::realize_sf_symbol(symbol, &self.entry(env));
+        }
         report_unprovided("waterui-apple", core::any::type_name::<T>());
         self.empty((), env, ())
     }
 
-    fn provided_dyn(&mut self, native: ErasedPayload<'_>, env: &Environment, (): ()) -> NativeLeaf {
+    fn provided_dyn(
+        &mut self,
+        mut native: ErasedPayload<'_>,
+        env: &Environment,
+        (): (),
+    ) -> NativeLeaf {
+        if let Some(symbol) = native.take::<crate::SfSymbol>() {
+            return crate::components::image::realize_sf_symbol(symbol, &self.entry(env));
+        }
         report_unprovided("waterui-apple", native.type_name());
         self.empty((), env, ())
     }

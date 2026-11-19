@@ -1316,17 +1316,6 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         RenderNode::build_table(renderer, native, env)
     }
 
-    fn icon(
-        &mut self,
-        native: waterui::icon::SystemIcon,
-        env: &Environment,
-        (): (),
-    ) -> RenderNode<E> {
-        let renderer = &mut *self.renderer;
-        unsupported_system_icon(&native);
-        RenderNode::build_empty(renderer, env)
-    }
-
     fn gradient(
         &mut self,
         native: waterui::graphics::Gradient,

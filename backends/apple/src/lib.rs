@@ -33,6 +33,9 @@ mod native_log;
 #[cfg(preview_entry)]
 pub mod preview;
 pub mod resources;
+mod sf_symbol;
+
+pub use sf_symbol::SfSymbol;
 
 mod animation;
 #[cfg(feature = "gpu_surface")]

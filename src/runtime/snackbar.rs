@@ -469,8 +469,8 @@ impl Snackbar {
     /// Adds a leading icon to the snackbar.
     ///
     /// Any view works; for portable apps prefer a packaged icon crate such as
-    /// `waterui-icons-material-icon` (`SystemIcon` is only available on Apple
-    /// backends).
+    /// `waterui-icons-material-icon` (`waterui_apple::SfSymbol` is only
+    /// available on Apple backends).
     #[must_use]
     pub fn icon(mut self, icon: impl View + Clone + 'static) -> Self {
         self.icon = Some(SnackbarIcon(AnyViewBuilder::new(move || {

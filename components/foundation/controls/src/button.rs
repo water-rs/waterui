@@ -793,11 +793,18 @@ mod tests {
     use super::*;
     use waterui_core::Signal;
 
+    #[derive(Clone, Copy)]
+    struct SearchIcon;
+
+    impl View for SearchIcon {
+        fn body(self, _env: &Environment) -> impl View {}
+    }
+
     #[test]
     fn menu_command_preserves_label_through_config_render_roundtrip() {
         crate::init_test_executor();
         let rendered = Button::from(
-            button(crate::label::label("Edit").icon(waterui_icon::system_icon::search()))
+            button(crate::label::label("Edit").icon(SearchIcon))
                 .action(|| {})
                 .config(),
         );
@@ -815,9 +822,9 @@ mod tests {
         );
         let icon = command
             .label()
-            .semantic_icon()
-            .expect("semantic label icon should be preserved");
-        assert_eq!(icon.name().as_str(), "magnifyingglass");
+            .icon_view()
+            .expect("label icon view should be preserved");
+        assert!(icon.build().downcast_ref::<SearchIcon>().is_some());
     }
 
     #[test]
@@ -826,7 +833,7 @@ mod tests {
         // Calling .accessibility_label("X") must rewrite the spoken text
         // while preserving the visible text and icon attached at construction time.
         let rendered = Button::from(
-            button(crate::label::label("Edit").icon(waterui_icon::system_icon::search()))
+            button(crate::label::label("Edit").icon(SearchIcon))
                 .accessibility_label("Edit document")
                 .action(|| {})
                 .config(),
@@ -856,8 +863,8 @@ mod tests {
         );
         let icon = command
             .label()
-            .semantic_icon()
+            .icon_view()
             .expect("icon should be preserved when only the spoken text is overridden");
-        assert_eq!(icon.name().as_str(), "magnifyingglass");
+        assert!(icon.build().downcast_ref::<SearchIcon>().is_some());
     }
 }
