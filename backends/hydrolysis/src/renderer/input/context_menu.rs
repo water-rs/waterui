@@ -378,65 +378,112 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         };
 
         if presentation {
-            // The drawn menu: no borderless window, so no transparent corner
-            // wedges can stray over the dim. Its surface and rows are encoded
-            // into the source window's scene by
-            // `render_context_menu_presentation`; `menu_state` is the group's
-            // close handle exactly as a popup window's would be.
-            let menu_state = Binding::container(WindowState::Normal);
-            group.push(menu_state.clone());
-            let menu = RetainedSubview::new(AnyView::new(
-                popup_menu_content(nodes, 0, metrics, text, popup_origin, menu_width, &theme)
-                    .with(group.clone()),
-            ));
-            self.popup_menu.context_menu_presentation = Some(ContextMenuPresentation {
+            self.present_context_menu_overlay(
+                nodes,
+                target,
                 source_bounds,
-                menu,
-                preview: target.and_then(|target| target.preview.borrow_mut().take()),
-                accessory: target.and_then(|target| target.accessory.borrow_mut().take()),
-                preview_slot: target.map_or_else(
-                    || Rc::new(RefCell::new(None)),
-                    |target| Rc::clone(&target.preview),
-                ),
-                accessory_slot: target.map_or_else(
-                    || Rc::new(RefCell::new(None)),
-                    |target| Rc::clone(&target.accessory),
-                ),
-                dismiss_requests: target.map_or_else(
-                    || nami::Computed::constant(0),
-                    |target| target.dismiss_requests.clone(),
-                ),
-                last_dismiss_requests: target
-                    .map_or(0, |target| target.dismiss_requests.snapshot()),
-                menu_state,
-                menu_frame: kurbo::Rect::new(
-                    f64::from(menu_origin.x),
-                    f64::from(menu_origin.y),
-                    f64::from(menu_origin.x) + menu_width,
-                    f64::from(menu_origin.y) + menu_height,
-                ),
-                menu_size: (menu_width, menu_height),
-                lift_frame: source_bounds,
-                lift_cropped: false,
-                accessory_frame: None,
-                // `env` is the menu's layered environment (the declaring
-                // view's over the dispatch's) — the same env the popup opens
-                // inside is the one its sub-views build and flush in.
-                env: env.clone(),
-            });
-            self.popup_menu.active_popup_menu_group = Some(group);
-            self.context_mark_layout();
+                menu_origin,
+                (menu_width, menu_height),
+                crate::renderer::input::popup_menu::PopupMenuPlacement {
+                    depth: 0,
+                    metrics,
+                    text,
+                    popup_origin,
+                    width: menu_width,
+                },
+                &theme,
+                group,
+                env,
+            );
         } else {
-            let Some(manager) = popup_window_manager(env, "popup menus") else {
+            let Some(manager) = self.popup_window_manager("popup menus") else {
                 return false;
             };
-            let (window, state) =
-                popup_menu_window(nodes, popup_origin, group.clone(), 0, metrics, text, &theme);
+            let (window, state) = popup_menu_window::<E>(
+                nodes,
+                popup_origin,
+                group.clone(),
+                0,
+                metrics,
+                text,
+                &theme,
+                manager.clone(),
+            );
             group.push(state);
             manager.show(window, env);
             self.popup_menu.active_popup_menu_group = Some(group);
         }
         true
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "overlay presentation takes resolved geometry, placement metrics, optional target slots, theme, group, and layered env"
+    )]
+    fn present_context_menu_overlay(
+        &mut self,
+        nodes: Vec<PopupMenuNode>,
+        target: Option<&ContextMenuTarget<E>>,
+        source_bounds: kurbo::Rect,
+        menu_origin: LayoutPoint,
+        menu_size: (f64, f64),
+        placement: crate::renderer::input::popup_menu::PopupMenuPlacement,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
+        group: PopupMenuStateGroup,
+        env: &Environment,
+    ) {
+        // The drawn menu: no borderless window, so no transparent corner
+        // wedges can stray over the dim. Its surface and rows are encoded
+        // into the source window's scene by
+        // `render_context_menu_presentation`; `menu_state` is the group's
+        // close handle exactly as a popup window's would be.
+        let menu_state = Binding::container(WindowState::Normal);
+        group.push(menu_state.clone());
+        let menu = RetainedSubview::new(
+            popup_menu_content::<E>(
+                nodes,
+                placement,
+                theme,
+                self.popup_menu.popup_opener.clone(),
+            )
+            .with(group.clone()),
+        );
+        self.popup_menu.context_menu_presentation = Some(ContextMenuPresentation {
+            source_bounds,
+            menu,
+            preview: target.and_then(|target| target.preview.borrow_mut().take()),
+            accessory: target.and_then(|target| target.accessory.borrow_mut().take()),
+            preview_slot: target.map_or_else(
+                || Rc::new(RefCell::new(None)),
+                |target| Rc::clone(&target.preview),
+            ),
+            accessory_slot: target.map_or_else(
+                || Rc::new(RefCell::new(None)),
+                |target| Rc::clone(&target.accessory),
+            ),
+            dismiss_requests: target.map_or_else(
+                || nami::Computed::constant(0),
+                |target| target.dismiss_requests.clone(),
+            ),
+            last_dismiss_requests: target.map_or(0, |target| target.dismiss_requests.snapshot()),
+            menu_state,
+            menu_frame: kurbo::Rect::new(
+                f64::from(menu_origin.x),
+                f64::from(menu_origin.y),
+                f64::from(menu_origin.x) + menu_size.0,
+                f64::from(menu_origin.y) + menu_size.1,
+            ),
+            menu_size,
+            lift_frame: source_bounds,
+            lift_cropped: false,
+            accessory_frame: None,
+            // `env` is the menu's layered environment (the declaring
+            // view's over the dispatch's) — the same env the popup opens
+            // inside is the one its sub-views build and flush in.
+            env: env.clone(),
+        });
+        self.popup_menu.active_popup_menu_group = Some(group);
+        self.context_mark_layout();
     }
 }
 
