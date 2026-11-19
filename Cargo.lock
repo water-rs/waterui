@@ -2212,7 +2212,7 @@ checksum = "af491d569909a7e4dee0ad7db7f5341fef5c614d5b8ec8cf765732aba3cff681"
 dependencies = [
  "serde",
  "termcolor",
- "unicode-width 0.2.2",
+ "unicode-width 0.1.14",
 ]
 
 [[package]]
@@ -4770,6 +4770,8 @@ dependencies = [
  "waterui-assets",
  "waterui-assets-core",
  "waterui-backend-core",
+ "waterui-browser-cef",
+ "waterui-browser-wpe",
  "waterui-controls",
  "waterui-core",
  "waterui-form",
@@ -8879,7 +8881,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.13.0",
  "proc-macro2 1.0.107",
  "quote 1.0.47",
  "syn 2.0.119",
@@ -12820,6 +12822,7 @@ dependencies = [
  "waterkit-build",
  "waterui",
  "waterui-backend-core",
+ "waterui-browser-cef",
  "waterui-core",
  "waterui-graphics",
  "waterui-locale",
@@ -12927,7 +12930,7 @@ dependencies = [
 [[package]]
 name = "waterui-browser-cef"
 version = "0.1.0"
-source = "git+https://github.com/water-rs/browsers?branch=refactor%2Ftyped-hooks#d9e68e9350fc345bd258ba40803e97f464b6ad9d"
+source = "git+https://github.com/water-rs/browsers?branch=refactor%2Fwebview-engine#3b6b3b287c274e2785568289b680e407af06312a"
 dependencies = [
  "async-channel",
  "base64 0.23.1",
@@ -12967,7 +12970,7 @@ dependencies = [
 [[package]]
 name = "waterui-browser-wpe"
 version = "0.1.0"
-source = "git+https://github.com/water-rs/browsers?branch=refactor%2Ftyped-hooks#d9e68e9350fc345bd258ba40803e97f464b6ad9d"
+source = "git+https://github.com/water-rs/browsers?branch=refactor%2Fwebview-engine#3b6b3b287c274e2785568289b680e407af06312a"
 dependencies = [
  "cookie",
  "executor-core",
@@ -13022,6 +13025,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tracing",
  "waterui-core",
+ "waterui-graphics",
  "waterui-layout",
  "waterui-macros",
  "waterui-url",
@@ -13455,7 +13459,6 @@ dependencies = [
  "num-traits",
  "smallvec",
  "waterui",
- "waterui-color",
  "waterui-contract",
  "waterui-core",
  "waterui-testing",

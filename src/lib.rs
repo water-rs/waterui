@@ -174,7 +174,11 @@ pub use waterui_particle as particle;
 
 #[cfg(feature = "assets")]
 pub use waterui_assets as assets;
-pub use waterui_layout as layout;
+pub mod layout {
+    //! Layout primitives re-exported from [`waterui_layout`], together with [`Divider`].
+    pub use crate::widget::Divider;
+    pub use waterui_layout::*;
+}
 pub use waterui_locale as locale;
 pub use waterui_locale::regional;
 /// The UI-test attribute, written qualified as `#[waterui::test(...)]`.

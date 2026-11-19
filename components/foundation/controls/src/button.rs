@@ -199,7 +199,6 @@ use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 #[cfg(feature = "menu")]
 use waterui_core::handler::ReportExtraction;
 use waterui_core::handler::{BoxedAction, ExtractionError, Handler};
-use waterui_core::view::{ConfigurableView, ViewConfiguration};
 use waterui_core::{AnyView, Environment, Native, NativeView, View};
 use waterui_text::IntoText;
 
@@ -322,7 +321,7 @@ impl waterui_core::plugin::Plugin for ButtonStyle {}
 /// Configuration for a button component.
 ///
 /// This struct contains all the data needed to render a button on native platforms.
-/// It is produced by [`ConfigurableView::config`] and consumed by the native backend.
+/// It is produced by [`Button::config`] and consumed by the native backend.
 ///
 /// # Layout Behavior
 ///
@@ -453,28 +452,26 @@ where
     }
 }
 
-impl<S: View> ViewConfiguration for ButtonConfig<S> {
-    type View = Button<ControlLabel<S>, BoxedAction<()>>;
-
-    fn render(self) -> Self::View {
-        let mode = self.label.display_mode_preference();
-        Button {
-            label: Label::from_control_label(self.label, mode),
-            action: self.action,
-            style: self.style,
-            size: self.size,
+impl<S: View> From<ButtonConfig<S>> for Button<ControlLabel<S>, BoxedAction<()>> {
+    fn from(value: ButtonConfig<S>) -> Self {
+        let mode = value.label.display_mode_preference();
+        Self {
+            label: Label::from_control_label(value.label, mode),
+            action: value.action,
+            style: value.style,
+            size: value.size,
         }
     }
 }
 
-impl<L, Action> ConfigurableView for Button<L, Action>
+impl<L, Action> Button<L, Action>
 where
     L: LabelKind,
     Action: FnMut(&Environment) -> Result<(), ExtractionError> + 'static,
 {
-    type Config = ButtonConfig<Label<L>>;
-
-    fn config(self) -> Self::Config {
+    /// Returns the configuration for this button.
+    #[must_use]
+    pub fn config(self) -> ButtonConfig<Label<L>> {
         ButtonConfig {
             label: self.label.into_unscoped_control_label(),
             action: Box::new(self.action),
@@ -795,16 +792,15 @@ pub fn button<L: IntoLabel>(label: L) -> Button<L::Kind, NoAction> {
 mod tests {
     use super::*;
     use waterui_core::Signal;
-    use waterui_core::view::{ConfigurableView, ViewConfiguration};
 
     #[test]
     fn menu_command_preserves_label_through_config_render_roundtrip() {
         crate::init_test_executor();
-        let rendered =
+        let rendered = Button::from(
             button(crate::label::label("Edit").icon(waterui_icon::system_icon::search()))
                 .action(|| {})
-                .config()
-                .render();
+                .config(),
+        );
         let command: crate::menu::Command = rendered.into();
         assert_eq!(
             command
@@ -829,12 +825,12 @@ mod tests {
         crate::init_test_executor();
         // Calling .accessibility_label("X") must rewrite the spoken text
         // while preserving the visible text and icon attached at construction time.
-        let rendered =
+        let rendered = Button::from(
             button(crate::label::label("Edit").icon(waterui_icon::system_icon::search()))
                 .accessibility_label("Edit document")
                 .action(|| {})
-                .config()
-                .render();
+                .config(),
+        );
         let command: crate::menu::Command = rendered.into();
         assert_eq!(
             command
