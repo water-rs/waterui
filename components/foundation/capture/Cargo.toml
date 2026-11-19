@@ -1,0 +1,24 @@
+[package]
+name = "waterui-capture"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+readme = "../../../README.md"
+repository.workspace = true
+description = "Offscreen view capture and async content settlement for WaterUI"
+keywords = ["capture", "render", "snapshot", "ui", "waterui"]
+categories = ["gui", "no-std"]
+
+[dependencies]
+nami.workspace = true
+thiserror = { version = "2.0.21", default-features = false }
+waterui-core = { workspace = true, default-features = false }
+
+[features]
+default = []
+std = ["waterui-core/std"]
+
+[lints]
+workspace = true

@@ -587,17 +587,6 @@ pub fn run<W: Windows>(app: App<W>, style: impl crate::Style) {
         // backgrounds reach under the browser and system chrome around it.
         env.insert(crate::platform::WindowSafeArea(platform.safe_area()));
         fonts.collection().clone().install(&mut env);
-        // The capture service mounts its subtree under a snapshot of the
-        // assembled environment — the theme tokens, hooks and font
-        // collection a window's subtree resolves — so it must be installed
-        // last (water-rs/waterui#2703).
-        env.insert(waterui_core::ViewRenderer::new(
-            crate::view_renderer::HydrolysisViewRenderer::new(
-                Rc::clone(&theme),
-                env.clone(),
-                FontFamilyResolution::Lenient,
-            ),
-        ));
         let mut renderer = HydrolysisRenderer::with_engine(
             theme,
             ParleyEngine::from_collection(fonts.collection(), FontFamilyResolution::Lenient),

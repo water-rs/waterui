@@ -261,6 +261,8 @@ thiserror = "2.0.21"
 url = "2.5"
 uuid = { version = "1.28.0", default-features = false, features = ["v4", "std"] }
 waterui-core = { version = "0.5.1", path = "core" }
+waterui-capture = { version = "0.5.1", path = "components/foundation/capture", default-features = false }
+waterui-resources = { version = "0.5.1", path = "utils/resources" }
 # Renamed and extracted to water-rs/suiteki.
 suiteki = { version = "0.1", features = ["nami"] }
 waterui-url = { version = "0.5.1", path = "utils/url" }

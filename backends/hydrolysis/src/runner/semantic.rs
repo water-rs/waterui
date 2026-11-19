@@ -269,7 +269,7 @@ impl SemanticRuntime {
         };
         let mut env = env.extending(waterui_graphics::backend::SceneViewMergeToParent);
         #[cfg(not(target_arch = "wasm32"))]
-        waterui_core::install_application_resources(&mut env);
+        waterui::install_application_resources(&mut env);
         #[cfg(not(target_arch = "wasm32"))]
         waterui::inspector::install(&mut env, inspector);
         let pending_window_queue = Rc::new(RefCell::new(Vec::new()));

@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use waterui_core::ResourceContext;
+use waterui_resources::ResourceContext;
 
 #[cfg(any(feature = "media", feature = "video"))]
 use waterui_core::{Environment, View};

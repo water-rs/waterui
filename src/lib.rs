@@ -215,7 +215,7 @@ pub use waterui_assets::VideoAsset;
 #[cfg(all(feature = "assets", not(target_arch = "wasm32")))]
 pub use waterui_assets::{
     AssetError, AssetKind, AudioAsset, Bundle, Data, DataAsset, FontAsset, LargeFile,
-    LargeFileAsset, ResourceContext,
+    LargeFileAsset,
 };
 #[cfg(all(feature = "assets", target_arch = "wasm32"))]
 pub use waterui_assets::{AssetError, AssetKind, Data};
@@ -228,12 +228,18 @@ pub use waterui_assets_macros::include_web;
 #[doc(inline)]
 #[cfg(feature = "assets")]
 pub use waterui_assets_macros::{asset, assets, include_bundle};
+pub use waterui_resources::ResourceContext;
 pub use waterui_url::Url;
 
 #[doc(inline)]
+pub use waterui_capture::{
+    ContentLedger, CustomViewRenderer, RenderError, RenderRequest, RenderResult, ViewRenderer,
+    content_ledger, view_renderer,
+};
+#[doc(inline)]
 pub use waterui_core::{
-    AnyView, ContentLedger, Error, OneOf2, OneOf3, OneOf4, OneOf5, OneOf6, OneOf7, OneOf8, Str,
-    animation, contract_violation,
+    AnyView, Error, OneOf2, OneOf3, OneOf4, OneOf5, OneOf6, OneOf7, OneOf8, Str, animation,
+    contract_violation,
     easing::{self, EasingCurve, Interpolatable},
     env::{self, Environment},
     event,
@@ -297,6 +303,41 @@ macro_rules! __export_preview {
 #[doc(hidden)]
 pub use pastey;
 
-// `configure_environment!` lives in `waterui-core` so generated backend crates
-// that do not depend on the facade can still install the app catalog.
-pub use waterui_core::configure_environment;
+/// Capture standalone resource roots once when creating an application environment.
+///
+/// # Contract
+/// When the native executable's location cannot be determined a debug build
+/// panics, and a release build logs the error and installs a context rooted
+/// at `waterui_assets` and `fonts` in the working directory.
+#[doc(hidden)]
+#[cfg_attr(target_arch = "wasm32", allow(clippy::missing_const_for_fn))]
+pub fn install_application_resources(env: &mut Environment) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if env.get::<ResourceContext>().is_none() {
+        let context = ResourceContext::application().unwrap_or_else(|error| {
+            contract_violation!(
+                "application resources could not be located ({error}); resolving them against the working directory"
+            );
+            ResourceContext::new("waterui_assets", "fonts")
+        });
+        env.insert(context);
+    }
+    #[cfg(target_arch = "wasm32")]
+    let _ = env;
+}
+
+/// Configures a freshly-created environment with compile-time discovered app plugins.
+///
+/// This currently installs the runtime translation catalog generated from the caller's
+/// `i18n/*.toml` files — or the directory `WATERUI_I18N_DIR` names when the caller is a
+/// CLI-generated backend crate without an `i18n/` of its own. It is intended to be used
+/// at environment creation boundaries such as backend entry points.
+#[macro_export]
+macro_rules! configure_environment {
+    ($env:expr) => {{
+        let mut __waterui_env = $env;
+        $crate::install_application_resources(&mut __waterui_env);
+        $crate::Plugin::install($crate::catalog!(), &mut __waterui_env);
+        __waterui_env
+    }};
+}

@@ -66,7 +66,7 @@ pub use waterui_assets_core::{AtomicWriteOutcome, write_bytes_atomically};
 #[cfg(feature = "std")]
 pub use waterui_assets_core::{ensure_http_allowed, is_loopback_http_url, is_remote_url};
 #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
-pub use waterui_core::ResourceContext;
+pub use waterui_resources::ResourceContext;
 
 /// Prelude for common imports.
 pub mod prelude {

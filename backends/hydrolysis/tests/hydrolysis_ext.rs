@@ -294,7 +294,7 @@ fn render(view: impl View, width: u32, height: u32) -> Snapshot {
     let height = height.max(1);
     let style = TestStyle::new();
     let mut env = Environment::new();
-    waterui_core::install_application_resources(&mut env);
+    waterui::install_application_resources(&mut env);
     hydrolysis::theme::install_default_tokens(&mut env);
     hydrolysis::Style::install_tokens(&style, &mut env);
     let fonts = hydrolysis::native_collection(&env);

@@ -4254,7 +4254,7 @@ mod gpu_surface {
             GpuRuntime, HostedLayerError, install_service, scene_engine,
         };
         use waterui_backend_core::AnyView;
-        use waterui_core::view_renderer::{RenderError, RenderRequest, ViewRenderer};
+        use waterui_capture::view_renderer::{RenderError, RenderRequest, ViewRenderer};
         use waterui_graphics::backend::cherenkov::SurfaceError;
 
         let (runtime, mut env) = pollster::block_on(async {
@@ -4331,7 +4331,7 @@ mod gpu_surface {
         use waterui_apple::native_test_support::gpu_surface::{fixture_env, fixture_scene_view};
         use waterui_apple::native_test_support::view_renderer::{GpuRuntime, install_service};
         use waterui_backend_core::AnyView;
-        use waterui_core::view_renderer::{RenderRequest, ViewRenderer};
+        use waterui_capture::view_renderer::{RenderRequest, ViewRenderer};
 
         let (_runtime, mut env) = pollster::block_on(async {
             let runtime = GpuRuntime::new().await.map_err(|error| error.to_string())?;

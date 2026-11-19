@@ -742,7 +742,7 @@ pub fn run<W: Windows>(
         .map(waterui::inspector::InspectorRuntime::observe_signals);
 
     let mut env = env.extending(waterui_graphics::backend::SceneViewMergeToParent);
-    waterui_core::install_application_resources(&mut env);
+    waterui::install_application_resources(&mut env);
     waterui::inspector::install(&mut env, inspector);
     let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
     let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
@@ -826,7 +826,7 @@ pub fn run<W: Windows>(
     // `native_collection` above reports an environment without a
     // `ResourceContext`; with none there is no bundle to stage an icon in.
     let window_icon =
-        waterui_core::ResourceContext::from_environment(&env).and_then(load_staged_window_icon);
+        waterui::ResourceContext::from_environment(&env).and_then(load_staged_window_icon);
     // The machine installs `Quit` into the composition-root environment and
     // hands its hooks that environment as it stands now; their futures run
     // on the local executor the first `resumed` installs.
@@ -873,17 +873,6 @@ pub fn run<W: Windows>(
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     #[cfg(feature = "menu")]
     super::menu_bar::register_menu_bar::<crate::text::ParleyEngine>(&menu_bar, &env);
-    // The capture service mounts its subtree under a snapshot of the
-    // assembled environment — the theme tokens, hooks and font collection a
-    // window's subtree resolves — so it must be installed last
-    // (water-rs/waterui#2703).
-    env.insert(waterui_core::ViewRenderer::new(
-        crate::view_renderer::HydrolysisViewRenderer::new(
-            Rc::clone(&theme),
-            env.clone(),
-            FontFamilyResolution::Lenient,
-        ),
-    ));
     let mut runner = WinitRunner {
         env,
         theme,
@@ -1022,9 +1011,7 @@ struct WinitRunner {
 ///
 /// Absence is a legitimate state (bare `cargo run`, tests, previews without
 /// staging); a present-but-undecodable icon is reported and skipped.
-fn load_staged_window_icon(
-    resources: &waterui_core::ResourceContext,
-) -> Option<winit::window::Icon> {
+fn load_staged_window_icon(resources: &waterui::ResourceContext) -> Option<winit::window::Icon> {
     let root = waterui_assets::bundle_root(resources);
     let path = root.join(waterui_assets::WINDOW_ICON_FILE);
     let file = std::fs::File::open(&path).ok()?;

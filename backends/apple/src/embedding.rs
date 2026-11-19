@@ -236,7 +236,6 @@ impl Drop for Mount {
 
 pub(crate) fn install_services(env: &mut Environment) {
     crate::windows::install_manager(env);
-    crate::components::view_renderer::install_service(env);
 }
 
 /// Initializes process services and returns one owned runtime through `ready`.
