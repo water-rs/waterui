@@ -509,17 +509,28 @@ use waterui::window::{WindowBackground, WindowState, WindowStyle};
 #[cfg(target_os = "macos")]
 use waterui_core::layout::{Point, Rect, Size};
 
-/// Checks that native service installation provides a window manager.
-///
-/// Uses the embedding runtime's installer after installing the dispatcher.
+/// Checks that connecting a `WindowChannel` drains pre-queued windows as
+/// typed `RootWindow` declarations without erasing through `Environment`.
 ///
 /// # Panics
-/// Panics if service installation does not provide a window manager.
-pub fn manager_installs_into_the_environment(_mtm: MainThreadMarker) {
+/// Panics if the queued window declaration is lost or altered.
+pub fn channel_connects_typed_declarations(_mtm: MainThreadMarker) {
     let mut env = Environment::new();
     crate::dispatch::install(&mut env);
     crate::embedding::install_services(&mut env);
-    assert!(env.get::<WindowManager>().is_some());
+    let (manager, channel) = WindowManager::new();
+    waterui::window::Window::new(
+        "Queued Root",
+        waterui::reactive::binding(waterui::window::WindowState::Closed),
+        || (),
+    )
+    .show(&manager);
+    let declarations = crate::windows::connect_windows(channel, &env);
+    assert_eq!(declarations.len(), 1);
+    assert_eq!(
+        waterui::reactive::Signal::snapshot(&declarations[0].title).as_str(),
+        "Queued Root"
+    );
 }
 
 /// The environment `embedding` prepares for a window's mount on macOS.
