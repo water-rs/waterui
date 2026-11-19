@@ -1799,7 +1799,7 @@ fn a_label_reaches_the_view_a_hook_realizes() {
 /// controller permits it — but on a build bridging no engine there is nothing
 /// to draw it with, and the backend fails rather than occupying a layout slot
 /// with no page behind it.
-#[cfg(not(hydrolysis_system_webview))]
+#[cfg(not(any(hydrolysis_webview_engine, hydrolysis_android_system_webview)))]
 #[test]
 #[cfg_attr(debug_assertions, should_panic(expected = "no web engine is bridged"))]
 fn a_webview_with_no_engine_to_draw_it_is_reported_and_not_drawn() {
