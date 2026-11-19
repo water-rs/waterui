@@ -215,7 +215,7 @@ fn drive(
                 let env = &mut *env_ptr;
                 crate::embedding::install_services(env);
                 let env = compose(env.clone());
-                #[cfg(feature = "webview")]
+                #[cfg(any(feature = "webview", all(target_os = "macos", feature = "webview-cef")))]
                 let env = {
                     let mut env = env;
                     crate::components::webview::install_service(&mut env);

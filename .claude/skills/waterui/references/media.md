@@ -234,23 +234,23 @@ synchronous method with arguments is a compile error.
 macro only writes what `.handler(name, closure)` and `.expose(name, signal)` express by
 hand.
 
-Which browser engine draws a `WebView` follows the app's own dependencies, not a project
-setting. Link nothing and the platform's engine is used (`WKWebView`, Android `WebView`,
-`WebKitGTK`). To pick one of WaterUI's bundled engines instead, add `waterui-browser-cef`
-(with its `webview` feature) or `waterui-browser-wpe` as a dependency, call its
-`install(&mut env)` in `app` before `App::new` — it starts the engine and supplies the
-`WebViewController` — and scope the engine's hook over the views it draws:
-`App::new(|| root().hooks(waterui_browser_cef::CefWebView), env)` (`WpeWebView` for WPE).
-The `WebView` code above is unchanged either way. One app, one engine: a hook realizing a
-page another engine's controller opened panics. Linux outside GTK bridges no system
-engine, so a `WebView` there needs one of these crates.
+Which browser engine draws a `WebView` is selected at compile time from the app's own
+dependencies, not a project setting or runtime hook. Link neither engine crate and the
+platform's engine is used (`WKWebView`, Android `WebView`, `WebKitGTK`). To pick one of
+WaterUI's bundled engines instead, add `waterui-browser-cef` (with its `webview` feature)
+or `waterui-browser-wpe` (with its `webview` feature) as a dependency; the backend
+enables `webview-cef` or `webview-wpe` at compile time, installs its `WebViewController`,
+and realizes every `WebView` through that engine with plain `App::new(root, env)`. The
+`WebView` code above is unchanged either way. Linux outside GTK bridges no system engine,
+so a `WebView` there needs one of these crates.
 
 `waterui-chromium` is the separate, heavier component for a full Chromium surface,
 headless pages, screenshots, and DevTools Protocol access. It is a direct crate
 dependency (not a `waterui` feature), paired with `waterui-browser-cef`'s `chromium`
-feature; calling `waterui_browser_cef::install_chromium(&mut env)` in `app` installs a
+feature; starting `let runtime = waterui_browser_cef::CefRuntime::packaged()` in `app`
+and inserting `runtime.chromium_controller()` and `runtime` into `env` installs a
 `ChromiumController` into the environment (`env.get::<ChromiumController>()`), and
-`.hooks(waterui_browser_cef::CefChromium)` over the root draws its pages;
+`ChromiumView` draws its GPU surface directly without any hook;
 `controller.open(ChromiumConfiguration::new(url))` (`.profile(..)`, `.proxy(..)`,
 `.language(..)`, `.user_agent(..)`) returns a value that is both a `View` and a handle (`.page()` — clone the page out *before* the
 view moves into the layout); `page.watch(|event: ChromiumEvent| ..)` observes lifecycle
