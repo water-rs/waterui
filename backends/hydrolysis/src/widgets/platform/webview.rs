@@ -1,17 +1,15 @@
-//! The `WebView` leaf, as this backend bridges it.
+//! The `WebView` leaf and its compile-time selected engine.
 //!
-//! Hydrolysis bridges exactly one web engine: the platform's own, selected by
-//! the `webview-system` feature. On macOS that is `WKWebView`, on the web an
-//! `<iframe>` (`web`) — both mounted through Cherenkov `Hosted` content — and
-//! on Android `android.webkit.WebView`, mounted as a platform-view *instance*
-//! inside the host's view tree. Every other engine — CEF, WPE `WebKit` — is a
-//! crate the *application* links, whose hook targeting `WebView` the
-//! application scopes over its views, claiming the component before it reaches
-//! this backend.
+//! Hydrolysis realizes `WebView` through one compile-time engine feature:
+//! - `webview-system` for the platform's own engine (`WKWebView` on macOS, an
+//!   `<iframe>` on the web, `android.webkit.WebView` on Android),
+//! - `webview-cef` for the bundled CEF runtime (`waterui-browser-cef`), or
+//! - `webview-wpe` for the bundled WPE `WebKit` runtime (`waterui-browser-wpe`)
+//!   on Linux.
 //!
-//! Reaching the backend without such a hook where no platform engine is
-//! bridged is a programmer error rather than a layout slot with no page behind
-//! it.
+//! Enabling more than one engine feature fails to compile. Reaching the backend
+//! where no engine is enabled is a programmer error rather than a layout slot
+//! with no page behind it.
 
 // Only macOS can act on this: there the feature names a bridge that exists and
 // the diagnostic tells the reader what is missing. On the web the feature
@@ -53,7 +51,9 @@ use waterui::webview::WebView;
 #[cfg(any(
     hydrolysis_macos_system_webview,
     hydrolysis_android_system_webview,
-    hydrolysis_web_system_webview
+    hydrolysis_web_system_webview,
+    hydrolysis_cef_webview,
+    hydrolysis_wpe_webview
 ))]
 use waterui_core::Environment;
 
@@ -147,8 +147,21 @@ pub fn install_controller(env: &mut Environment) {
     web::install(env);
 }
 
-// No `install_controller` without a system bridge. A build that bridges no
-// platform engine installs no controller, so a `WebView` can only be created in
-// it under a controller the application installed itself — an engine crate's,
-// whose hook targeting `WebView` claims the component before this backend
-// sees it. A `WebView` that still gets here has nothing to draw it, and panics.
+#[cfg(hydrolysis_cef_webview)]
+pub fn install_controller(env: &mut Environment) {
+    if env.get::<waterui::webview::WebViewController>().is_some() {
+        return;
+    }
+    env.insert(waterui_browser_cef::webview_controller());
+}
+
+#[cfg(hydrolysis_wpe_webview)]
+pub fn install_controller(env: &mut Environment) {
+    if env.get::<waterui::webview::WebViewController>().is_some() {
+        return;
+    }
+    env.insert(waterui_browser_wpe::webview_controller());
+}
+
+// No `install_controller` when no web engine is enabled. A `WebView` that
+// reaches a build with no engine reports a missing realization.

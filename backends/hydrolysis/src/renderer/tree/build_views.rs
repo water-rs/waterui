@@ -4,10 +4,10 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
-// Only the Android bridge and a build with no bridged engine report a WebView.
+// Only the Android bridge and a build with no selected engine report a WebView.
 #[cfg(all(
     waterui_feature = "webview",
-    any(hydrolysis_android_system_webview, not(hydrolysis_system_webview))
+    any(hydrolysis_android_system_webview, not(hydrolysis_webview_engine))
 ))]
 use waterui_core::contract_violation;
 
@@ -299,7 +299,10 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// long as the leaf that embeds it. Where no engine is bridged at all a
     /// `WebView` that still reaches the backend has nothing to draw it — a
     /// missing realization, not a drawable stand-in.
-    #[cfg(waterui_feature = "webview")]
+    #[cfg(all(
+        waterui_feature = "webview",
+        not(any(hydrolysis_cef_webview, hydrolysis_wpe_webview))
+    ))]
     pub(super) fn build_webview(
         webview: &WebView,
         env: &Environment,
@@ -331,8 +334,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                     "hydrolysis android: a WebView handle that is not \
                      AndroidSystemWebViewHandle reached the backend; the \
                      Android system bridge only draws views `WebView::open` \
-                     made through its controller — another engine's \
-                     `WebView` hook must be in scope; the web view is not drawn"
+                     made through its controller; the web view is not drawn"
                 );
                 return Self::build_empty(renderer, env);
             };

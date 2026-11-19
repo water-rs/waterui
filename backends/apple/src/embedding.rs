@@ -237,6 +237,8 @@ impl Drop for Mount {
 pub(crate) fn install_services(env: &mut Environment) {
     crate::windows::install_manager(env);
     crate::components::view_renderer::install_service(env);
+    #[cfg(any(feature = "webview", all(target_os = "macos", feature = "webview-cef")))]
+    crate::components::webview::install_service(env);
 }
 
 /// Initializes process services and returns one owned runtime through `ready`.
@@ -343,7 +345,7 @@ pub unsafe fn mount<W: Windows>(
     let _ = parts.termination;
     #[allow(unused_mut)]
     let mut env = parts.env;
-    #[cfg(feature = "webview")]
+    #[cfg(any(feature = "webview", all(target_os = "macos", feature = "webview-cef")))]
     crate::components::webview::install_service(&mut env);
     let mut windows = crate::windows::root_windows(parts.windows).into_iter();
     let Some(declaration) = windows.next() else {
