@@ -81,16 +81,15 @@ mod imp {
         // SAFETY: `run` lent `env` for the process and never returned.
         let env = unsafe { &mut *launch.env };
         crate::windows::install_manager(env);
+        #[cfg(any(feature = "webview", all(target_os = "macos", feature = "webview-cef")))]
+        crate::components::webview::install_service(env);
         let parts = app(env.clone()).into_parts();
         // Content renders under the environment `app` returned: its own
-        // installs (`install_chromium`, `.state(..)` chains) landed as
-        // overlays on the clone it was handed, which the host env cannot
-        // see — `insert` never propagates between clones.
+        // installs (`.state(..)` chains) landed as overlays on the clone it
+        // was handed, which the host env cannot see — `insert` never
+        // propagates between clones.
         let mut app_env = parts.env;
-        // The web view controller fills its slot late and only when the
-        // `webview` port is enabled — an application bundling its own
-        // engine installed it during `app(env)`.
-        #[cfg(feature = "webview")]
+        #[cfg(any(feature = "webview", all(target_os = "macos", feature = "webview-cef")))]
         crate::components::webview::install_service(&mut app_env);
         // The machine installs the `Quit` service into `app_env` before the
         // menus and windows realize under it, so a `|quit: Quit|` action
@@ -244,6 +243,8 @@ mod imp {
         // SAFETY: `run` lent `env` for the process and never returned.
         let env = unsafe { &mut *launch.env };
         crate::windows::install_manager(env);
+        #[cfg(any(feature = "webview", all(target_os = "macos", feature = "webview-cef")))]
+        crate::components::webview::install_service(env);
         let parts = app(env.clone()).into_parts();
         if parts.windows.is_empty() {
             waterui::contract_violation!(
@@ -260,10 +261,7 @@ mod imp {
         // nothing borrows `app_env` mutably.
         #[allow(unused_mut)]
         let mut app_env = parts.env;
-        // The web view controller fills its slot late and only when the
-        // `webview` port is enabled — an application bundling its own
-        // engine installed it during `app(env)`.
-        #[cfg(feature = "webview")]
+        #[cfg(any(feature = "webview", all(target_os = "macos", feature = "webview-cef")))]
         crate::components::webview::install_service(&mut app_env);
         // `installMenuBar`: `declared` feeds the `build_menus` handler the
         // delegate registered at launch; the watch rebuilds on every change.

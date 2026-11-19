@@ -166,13 +166,13 @@ impl WebViewHandle for TestHandle {
     }
 }
 
-/// The engine the tests scope in place of a linked one.
+/// The engine the tests scope in place of a backend-selected engine.
 ///
-/// It stands in for `waterui_browser_cef::CefWebView` / `..._wpe::WpeWebView`
-/// the way those look from the tree: [`default_role`] wrapped around opaque
-/// self-drawn content, holding the `WebView` alive for the surface's
-/// lifetime. A filled shape stands in for the surface because it reaches the
-/// renderer's self-drawn-graphics leaf the same way and needs no GPU device.
+/// It stands in for a GPU-backed engine realization the way it looks from the
+/// tree: [`default_role`] wrapped around opaque self-drawn content, holding the
+/// `WebView` alive for the surface's lifetime. A filled shape stands in for the
+/// surface because it reaches the renderer's self-drawn-graphics leaf the same
+/// way and needs no GPU device.
 #[derive(Clone, Default)]
 struct TestEngine {
     drawn: Rc<Cell<bool>>,
