@@ -6,7 +6,6 @@ use waterui_controls::label::{ControlLabel, Label, LabelKind};
 use waterui_controls::{ControlSize, IntoLabel, impl_label_style_methods};
 use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::layout::StretchAxis;
-use waterui_core::view::{ConfigurableView, ViewConfiguration};
 use waterui_core::{AnyView, Environment, Native, NativeView, View};
 
 use waterui_core::id::{Id, Mapping, TaggedView};
@@ -254,10 +253,10 @@ impl<L: LabelKind> Picker<L> {
     }
 }
 
-impl<L: LabelKind> ConfigurableView for Picker<L> {
-    type Config = PickerConfig<Label<L>>;
-
-    fn config(self) -> Self::Config {
+impl<L: LabelKind> Picker<L> {
+    /// Returns the configuration for this picker.
+    #[must_use]
+    pub fn config(self) -> PickerConfig<Label<L>> {
         PickerConfig {
             label: self.label.into_unscoped_control_label(),
             items: self.items,
@@ -268,24 +267,16 @@ impl<L: LabelKind> ConfigurableView for Picker<L> {
     }
 }
 
-impl<S: View> ViewConfiguration for PickerConfig<S> {
-    type View = Picker<ControlLabel<S>>;
-
-    fn render(self) -> Self::View {
-        let mode = self.label.display_mode_preference();
-        Picker {
-            label: Label::from_control_label(self.label, mode),
-            items: self.items,
-            selection: self.selection,
-            style: self.style,
-            size: self.size,
-        }
-    }
-}
-
 impl<S: View> From<PickerConfig<S>> for Picker<ControlLabel<S>> {
     fn from(value: PickerConfig<S>) -> Self {
-        value.render()
+        let mode = value.label.display_mode_preference();
+        Self {
+            label: Label::from_control_label(value.label, mode),
+            items: value.items,
+            selection: value.selection,
+            style: value.style,
+            size: value.size,
+        }
     }
 }
 
@@ -316,7 +307,6 @@ mod tests {
     use nami::Binding;
     use waterui_core::NativeView;
     use waterui_core::layout::StretchAxis;
-    use waterui_core::view::ConfigurableView;
     use waterui_text::Text;
 
     use super::{Picker, PickerStyle, TaggedView};

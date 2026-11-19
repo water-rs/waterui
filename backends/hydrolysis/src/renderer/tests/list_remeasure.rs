@@ -255,7 +255,6 @@ fn retained_list_measurement_reuses_the_watcher_snapshot() {
     use nami::watcher::Context;
     use waterui_core::backend::{ChildSlot, MapSlots as _};
     use waterui_core::layout::ProposalSize;
-    use waterui_core::view::ConfigurableView as _;
     use waterui_core::views::{ForEach, Views};
 
     use crate::renderer::WidgetBehavior as _;
@@ -329,7 +328,6 @@ fn specified_list_viewport_does_not_materialize_rows() {
 
     use waterui_core::backend::{ChildSlot, MapSlots as _};
     use waterui_core::layout::ProposalSize;
-    use waterui_core::view::ConfigurableView as _;
 
     use crate::renderer::WidgetBehavior as _;
     use crate::widgets::layout::list::ListRenderState;
