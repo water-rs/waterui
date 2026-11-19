@@ -14,7 +14,6 @@
 
 use nami::{Computed, Signal, signal::IntoComputed};
 use waterui_core::backend::{Backend, ChildSlot, MapSlots};
-use waterui_core::view::{ConfigurableView, ViewConfiguration};
 use waterui_core::{AnyView, Environment, Native, NativeView, View};
 use waterui_graphics::color::Color;
 
@@ -91,19 +90,11 @@ impl<C: View> Badge<C> {
     }
 }
 
-impl<C: View> ConfigurableView for Badge<C> {
-    type Config = BadgeConfig<C>;
-
-    fn config(self) -> Self::Config {
+impl<C: View> Badge<C> {
+    /// Returns the configuration for this badge.
+    #[must_use]
+    pub fn config(self) -> BadgeConfig<C> {
         self.0
-    }
-}
-
-impl<S: View> ViewConfiguration for BadgeConfig<S> {
-    type View = Badge<S>;
-
-    fn render(self) -> Self::View {
-        Badge(self)
     }
 }
 

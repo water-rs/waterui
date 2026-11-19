@@ -4,7 +4,6 @@ use nami::Binding;
 use waterui_controls::label::{ControlLabel, Label, LabelKind};
 use waterui_controls::{IntoLabel, impl_label_style_methods};
 use waterui_core::backend::{Backend, ChildSlot, MapSlots};
-use waterui_core::view::{ConfigurableView, ViewConfiguration};
 use waterui_core::{AnyView, Environment, Native, NativeView, View};
 use waterui_graphics::color::Color;
 
@@ -134,10 +133,10 @@ impl<L: LabelKind> ColorPicker<L> {
     }
 }
 
-impl<L: LabelKind> ConfigurableView for ColorPicker<L> {
-    type Config = ColorPickerConfig<Label<L>>;
-
-    fn config(self) -> Self::Config {
+impl<L: LabelKind> ColorPicker<L> {
+    /// Returns the configuration for this color picker.
+    #[must_use]
+    pub fn config(self) -> ColorPickerConfig<Label<L>> {
         ColorPickerConfig {
             label: self.label.into_unscoped_control_label(),
             value: self.value,
@@ -147,23 +146,15 @@ impl<L: LabelKind> ConfigurableView for ColorPicker<L> {
     }
 }
 
-impl<S: View> ViewConfiguration for ColorPickerConfig<S> {
-    type View = ColorPicker<ControlLabel<S>>;
-
-    fn render(self) -> Self::View {
-        let mode = self.label.display_mode_preference();
-        ColorPicker {
-            label: Label::from_control_label(self.label, mode),
-            value: self.value,
-            support_alpha: self.support_alpha,
-            support_hdr: self.support_hdr,
-        }
-    }
-}
-
 impl<S: View> From<ColorPickerConfig<S>> for ColorPicker<ControlLabel<S>> {
     fn from(value: ColorPickerConfig<S>) -> Self {
-        value.render()
+        let mode = value.label.display_mode_preference();
+        Self {
+            label: Label::from_control_label(value.label, mode),
+            value: value.value,
+            support_alpha: value.support_alpha,
+            support_hdr: value.support_hdr,
+        }
     }
 }
 

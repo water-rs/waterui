@@ -1,8 +1,8 @@
-//! Ergonomic conversion traits for f32 computed signals.
+//! Ergonomic conversion traits for `f32` signals.
 //!
-//! This module provides [`IntoComputedF32`] which allows functions to accept
-//! both raw numeric literals (`0.5`, `1`, `2.0`) and reactive signals that
-//! produce numeric values, converting them uniformly to `Computed<f32>`.
+//! This module provides [`IntoSignalF32`] and [`IntoF32`], allowing functions to
+//! accept both raw numeric literals (`0.5`, `1`, `2.0`) and reactive signals
+//! that produce numeric values, converting them uniformly to an `f32` signal.
 
 use nami::{Signal, SignalExt};
 use num_traits::ToPrimitive;
