@@ -12,7 +12,6 @@ use waterui_controls::label::{ControlLabel, Label, LabelKind};
 use waterui_controls::{IntoLabel, impl_label_style_methods};
 use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::layout::StretchAxis;
-use waterui_core::view::{ConfigurableView, ViewConfiguration};
 use waterui_core::{AnyView, Environment, Native, NativeView, View};
 use zeroize::Zeroize;
 
@@ -193,10 +192,10 @@ impl<L: LabelKind> SecureField<L> {
     }
 }
 
-impl<L: LabelKind> ConfigurableView for SecureField<L> {
-    type Config = SecureFieldConfig<Label<L>>;
-
-    fn config(self) -> Self::Config {
+impl<L: LabelKind> SecureField<L> {
+    /// Returns the configuration for this secure field.
+    #[must_use]
+    pub fn config(self) -> SecureFieldConfig<Label<L>> {
         SecureFieldConfig {
             label: self.label.into_unscoped_control_label(),
             value: self.value,
@@ -204,21 +203,13 @@ impl<L: LabelKind> ConfigurableView for SecureField<L> {
     }
 }
 
-impl<S: View> ViewConfiguration for SecureFieldConfig<S> {
-    type View = SecureField<ControlLabel<S>>;
-
-    fn render(self) -> Self::View {
-        let mode = self.label.display_mode_preference();
-        SecureField {
-            label: Label::from_control_label(self.label, mode),
-            value: self.value,
-        }
-    }
-}
-
 impl<S: View> From<SecureFieldConfig<S>> for SecureField<ControlLabel<S>> {
     fn from(value: SecureFieldConfig<S>) -> Self {
-        value.render()
+        let mode = value.label.display_mode_preference();
+        Self {
+            label: Label::from_control_label(value.label, mode),
+            value: value.value,
+        }
     }
 }
 
