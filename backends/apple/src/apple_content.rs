@@ -588,6 +588,7 @@ mod tests {
             scroll<C>: waterui::layout::scroll::ScrollView<C>,
             fixed_container<C>: waterui::layout::container::FixedContainer<alloc::vec::Vec<C>>,
             dynamic<C>: waterui_core::Dynamic<C>,
+            window<C>: waterui::window::Window<waterui::window::WindowSlot<C>, Option<C>>,
             lazy_container<C>: waterui::layout::container::LazyContainer<C>,
             #[cfg(waterui_feature = "effects")]
             filtered<C>: waterui::graphics::backend::FilteredView<C>,
