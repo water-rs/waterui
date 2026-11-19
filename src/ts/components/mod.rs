@@ -32,8 +32,8 @@ use waterui_core::views::ForEach;
 use waterui_core::{AnyView, Environment, Error, View};
 use waterui_form::picker::{Picker, PickerItem};
 use waterui_layout::ScrollView;
+use waterui_layout::Spacer;
 use waterui_layout::stack::{HStack, HStackLayout, VStack, VStackLayout, ZStack};
-use waterui_layout::{Divider, Spacer};
 use waterui_navigation::tab::{Tab, Tabs};
 use waterui_navigation::{NavigationLink, NavigationStack, NavigationView};
 
@@ -41,6 +41,7 @@ use crate::component::badge::Badge;
 use crate::component::link::Link;
 use crate::component::progress::Progress;
 use crate::component::table::{TableColumn, table};
+use crate::widget::Divider;
 use crate::widget::accordion::Accordion;
 use crate::widget::avatar::Avatar;
 use crate::widget::card::Card;

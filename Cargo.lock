@@ -13460,7 +13460,6 @@ dependencies = [
  "num-traits",
  "smallvec",
  "waterui",
- "waterui-color",
  "waterui-contract",
  "waterui-core",
  "waterui-testing",

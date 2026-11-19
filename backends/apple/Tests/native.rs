@@ -328,8 +328,8 @@ fn trials() -> Vec<Trial> {
     #[cfg(all(target_os = "macos", feature = "native-test"))]
     {
         tests.extend([
-            Trial::test("window::manager_installs_into_the_environment", || {
-                window::manager_installs_into_the_environment(mtm());
+            Trial::test("window::channel_connects_typed_declarations", || {
+                window::channel_connects_typed_declarations(mtm());
                 Ok(())
             }),
             Trial::test("window::a_declared_window_realizes_its_declaration", || {
@@ -2367,7 +2367,7 @@ mod tabs {
 #[cfg(all(target_os = "macos", feature = "native-test"))]
 mod window {
     pub use waterui_apple::native_test_support::{
-        a_declared_window_realizes_its_declaration, manager_installs_into_the_environment,
+        a_declared_window_realizes_its_declaration, channel_connects_typed_declarations,
     };
 }
 

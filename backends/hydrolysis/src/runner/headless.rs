@@ -241,7 +241,7 @@ impl PlatformWindow for HeadlessPlatformWindow {
         self.inner.content_size()
     }
 
-    fn apply_properties<C>(&mut self, window: &Window<C>) {
+    fn apply_properties<C, T>(&mut self, window: &Window<C, T>) {
         self.inner.apply_properties(window);
     }
 
@@ -500,7 +500,7 @@ impl HeadlessPumpResult {
 pub struct HeadlessRuntime {
     env: Environment,
     runtime: RuntimeWindow<HeadlessPlatformWindow, crate::text::ParleyEngine>,
-    pending_window_queue: Rc<RefCell<Vec<AnyWindow>>>,
+    pending_window_queue: Rc<RefCell<Vec<RootWindow<crate::text::ParleyEngine>>>>,
     popup_windows: Vec<RuntimeWindow<HeadlessPlatformWindow, crate::text::ParleyEngine>>,
     /// The style the runtime was launched with, kept so popup windows'
     /// renderers measure and encode with the same widget theme.
@@ -607,9 +607,9 @@ impl HeadlessRuntime {
     ///
     /// # Errors
     /// [`PainterUnavailable`], as [`Self::new`].
-    pub fn new_with_window(
+    pub fn new_with_window<C: ViewBuilder, T: waterui::window::WindowToolbar>(
         env: Environment,
-        window: Window<impl ViewBuilder>,
+        window: Window<C, T>,
         width: u32,
         height: u32,
         style: impl crate::Style,
@@ -709,9 +709,9 @@ impl HeadlessRuntime {
     /// [`Self::new_for_tests`].
     #[cfg(any(test, feature = "testing"))]
     #[must_use]
-    pub fn new_for_tests_with_window(
+    pub fn new_for_tests_with_window<C: ViewBuilder, T: waterui::window::WindowToolbar>(
         env: Environment,
-        window: Window<impl ViewBuilder>,
+        window: Window<C, T>,
         width: u32,
         height: u32,
         style: impl crate::Style,
@@ -783,10 +783,7 @@ impl HeadlessRuntime {
         let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
         #[cfg(any(test, hydrolysis_platform_services))]
         install_platform_services(&mut env);
-        install_headless_window_managers::<crate::text::ParleyEngine>(
-            &mut env,
-            Rc::clone(&pending_window_queue),
-        );
+        install_window_registries::<crate::text::ParleyEngine>(&mut env);
         #[cfg(any(feature = "text-field", feature = "secure-field"))]
         env.insert(HydrolysisTextContextMenuMode::Overlay);
         // A headless host has no platform appearance: the scheme is Light
@@ -853,10 +850,11 @@ impl HeadlessRuntime {
         );
         renderer.set_window_id(
             env.get::<crate::renderer::WindowIdentities>()
-                .expect("install_headless_window_managers seeds WindowIdentities")
+                .expect("install_window_registries seeds WindowIdentities")
                 .mint_window_id(),
         );
         renderer.set_window_closable(window.closable);
+        install_core_window_openers(&mut renderer, queue_window_opener(&pending_window_queue));
         let runtime = RuntimeWindow::new_painted(
             window,
             platform,
@@ -886,7 +884,7 @@ impl HeadlessRuntime {
 
     fn create_popup_runtime(
         &self,
-        window: AnyWindow,
+        window: RootWindow<crate::text::ParleyEngine>,
     ) -> RuntimeWindow<HeadlessPlatformWindow, crate::text::ParleyEngine> {
         let frame = crate::platform::validated_window_frame(window.frame.snapshot());
         let width = crate::num_cast::f32_as_u32(frame.width().max(1.0));
@@ -909,13 +907,17 @@ impl HeadlessRuntime {
         renderer.set_window_id(
             self.env
                 .get::<crate::renderer::WindowIdentities>()
-                .expect("install_headless_window_managers seeds WindowIdentities")
+                .expect("install_window_registries seeds WindowIdentities")
                 .mint_window_id(),
         );
         renderer.set_window_closable(window.closable);
+        install_core_window_openers(
+            &mut renderer,
+            queue_window_opener(&self.pending_window_queue),
+        );
         window.arm_close_requests(&self.env);
         RuntimeWindow::new_painted(
-            root_window(window),
+            window,
             platform,
             renderer,
             RenderDiagnosticsConfig {

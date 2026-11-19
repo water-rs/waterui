@@ -58,8 +58,9 @@ remove the nested one. Recognizers on the *same* view combine (see interaction.m
 **The app quits when its last window closes, or an on-demand window cannot reopen.** The
 default `LastWindowPolicy::Quit` ends the app with its last window. A tray, resident or
 on-demand-window app sets `App::on_last_window_closed(LastWindowPolicy::StayResident)`
-(iOS and Android reject an app that declares no window) and opens windows with
-`window.show(&env)` (`Window::show`): a `conditional_window` lives only as long as the
+(iOS and Android reject an app that declares no window), registers a `WindowChannel` from
+`WindowManager::new()` with `App::new_with_windows` or `App::window`, and opens windows with
+`window.show(&windows)` (`Window::show`): a `conditional_window` lives only as long as the
 window hosting it.
 
 **A snackbar shown from a callback does nothing.** `SnackbarManager` reaches handlers as a
