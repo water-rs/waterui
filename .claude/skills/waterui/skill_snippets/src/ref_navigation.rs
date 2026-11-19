@@ -509,7 +509,7 @@ pub fn navigation_block_12(env: Environment) -> App<impl Windows> {
     fn scene() -> impl View {
         text("scene")
     }
-    fn window_toolbar(_status: &Binding<Str>) -> impl View {
+    fn window_toolbar(_status: &Binding<Str>) -> impl View + use<> {
         hstack((button("Refresh"), Divider))
     }
     let status = Binding::container(Str::from("ready"));
@@ -692,18 +692,19 @@ pub fn navigation_block_16(env: Environment) -> App<impl Windows> {
     }
 
     use waterui::app::{App, LastWindowPolicy, QuitReply, Windows};
-    use waterui::window::{Window, WindowState};
+    use waterui::window::{Window, WindowManager, WindowState};
 
     fn app(env: Environment) -> App<impl Windows> {
-        App::new_with_windows((), env)
+        let (windows, channel) = WindowManager::new();
+        App::new_with_windows(channel, env)
             .on_last_window_closed(LastWindowPolicy::StayResident)
             .on_quit_request(|| async { QuitReply::Quit })
             .on_terminate(|| async {})
             .menu_bar(Menu::new(
                 "App",
-                "New Window".action(|env: Environment| {
+                "New Window".action(move || {
                     Window::new("Scratch", binding(WindowState::Normal), scratch_content)
-                        .show(&env);
+                        .show(&windows);
                 }),
             ))
     }

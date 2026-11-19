@@ -48,7 +48,7 @@ pub(crate) mod video_plane;
 use std::rc::Rc;
 use std::sync::OnceLock;
 
-use super::window::{RootWindow, RootWindows};
+use super::window::RootWindows;
 use tracing::level_filters::LevelFilter;
 use tracing_log::AsLog;
 use waterui::app::{App, AppParts, Windows};
@@ -73,9 +73,9 @@ pub(super) type AndroidTextEngine = crate::text::ParleyEngine;
 type AppFactory = Box<dyn Fn() -> InstantiatedApp + Send + Sync>;
 
 /// One application the factory instantiated: its parts, with the windows
-/// already erased to the roots this host holds, and its style.
+/// already collected into the roots this host holds, and its style.
 pub(crate) type InstantiatedApp = (
-    AppParts<Vec<RootWindow<AndroidTextEngine>>>,
+    AppParts<RootWindows<AndroidTextEngine>>,
     Rc<dyn crate::Style>,
 );
 
