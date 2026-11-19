@@ -1343,7 +1343,10 @@ fn a_segmented_picker_takes_the_width_it_is_offered() {
     let mut hydro = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
     let mut measure = |style, width: Option<f32>| {
         let mut node = crate::widgets::controls::picker::PickerRenderState::from_config(
-            waterui_core::view::ConfigurableView::config(picker(style)),
+            waterui_core::backend::MapSlots::map_slots(
+                waterui_core::view::ConfigurableView::config(picker(style)),
+                waterui_core::backend::ChildSlot::from_view,
+            ),
         );
         node.prebuild(&mut renderer, &env);
         crate::widgets::controls::picker::measure_picker_node(
@@ -4101,7 +4104,7 @@ fn badge_indicator_anchors_to_the_content_trailing_edge() {
 
     // The renderer retains badge state by node, so each variant captures on a
     // fresh renderer.
-    let capture = |view: Badge, env: &Environment| {
+    let capture = |view: Badge<FillAnchor>, env: &Environment| {
         log.0.borrow_mut().clear();
         let mut renderer = test_renderer_with_theme(MinimalTestTheme {
             badge_draws: Rc::clone(&log.0),

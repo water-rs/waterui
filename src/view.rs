@@ -584,10 +584,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `value` - The numeric value to display in the badge
-    fn badge(self, value: impl IntoComputed<i32>) -> Badge
-    where
-        Self: Clone,
-    {
+    fn badge(self, value: impl IntoComputed<i32>) -> Badge<Self> {
         Badge::new(value, self)
     }
 

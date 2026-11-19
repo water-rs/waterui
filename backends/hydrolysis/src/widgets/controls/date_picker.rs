@@ -1,7 +1,9 @@
 #[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::chrome::{ChromeContent, LiveChromeParts};
-use crate::renderer::{HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext};
+use crate::renderer::{
+    HeldChild, HydroState, HydrolysisRenderer, RenderContext, RetainedSubview, WidgetRenderContext,
+};
 use crate::theme::{MenuPickerLook, PickerSpec, SpecTint};
 #[cfg(feature = "accessibility")]
 use accesskit::{
@@ -11,15 +13,14 @@ use nami::{Binding, Signal as _};
 use std::cell::RefCell;
 use std::rc::Rc;
 use waterui_controls::ControlSize;
+use waterui_core::Environment;
 use waterui_core::interaction::InteractionState;
 use waterui_core::layout::{
     HorizontalAlignment, ProposalSize, Size as LayoutSize, ViewDimensions, layout_direction,
 };
-use waterui_core::{AnyView, Environment};
 use waterui_form::picker::date::DatePickerConfig;
 use waterui_text::styled::StyledStr;
 
-use crate::renderer::RetainedSubview;
 use crate::widgets::controls::button::label_styled;
 use crate::widgets::controls::field_look::field_look;
 #[cfg(feature = "accessibility")]
@@ -42,7 +43,7 @@ pub fn date_picker_spec(env: &Environment) -> PickerSpec {
 /// [`RetainedSubview`] built once and re-flushed each frame so reactive label
 /// content stays live.
 pub struct DatePickerRenderState<E: crate::text::TextEngine> {
-    config: DatePickerConfig,
+    config: DatePickerConfig<HeldChild<E>>,
     label_view: RetainedSubview<E>,
     /// The field's look, held while its spec is.
     look: Option<(PickerSpec, MenuPickerLook)>,
@@ -64,9 +65,9 @@ impl<E: crate::text::TextEngine> DatePickerRenderState<E> {
         crate::renderer::SemanticCore::<E>::accessibility_label_from_label(self.config.label(), env)
     }
 
-    pub(crate) fn from_config(config: DatePickerConfig) -> Self {
+    pub(crate) fn from_config(config: DatePickerConfig<HeldChild<E>>) -> Self {
         Self {
-            label_view: RetainedSubview::new(AnyView::new(config.label().clone())),
+            label_view: RetainedSubview::held(config.label().build()),
             config,
             look: None,
             parts: None,
@@ -97,10 +98,10 @@ impl<E: crate::text::TextEngine> DatePickerRenderState<E> {
 /// path so both produce the same a11y tree.
 // empty when the accessibility feature is off
 #[cfg_attr(not(feature = "accessibility"), allow(clippy::missing_const_for_fn))]
-pub fn date_picker_accessibility<E: crate::text::TextEngine>(
+pub fn date_picker_accessibility<E: crate::text::TextEngine, S>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     ctx: Option<RenderContext>,
-    date_picker: &DatePickerConfig,
+    date_picker: &DatePickerConfig<S>,
     env: &Environment,
     focus_keys: &[crate::renderer::InteractionKey],
 ) {

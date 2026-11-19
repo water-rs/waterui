@@ -934,11 +934,15 @@ impl StackedSnackbarView {
         let has_trailing_controls = snackbar.action.is_some() || snackbar.closeable;
         // Message with optional icon using Label component
         let label_view = if let Some(icon) = snackbar.icon {
-            label(snackbar.message)
-                .icon(icon)
-                .font(theme.supporting_text_font.clone())
+            waterui_core::OneOf2::A(
+                label(snackbar.message)
+                    .icon(icon)
+                    .font(theme.supporting_text_font.clone()),
+            )
         } else {
-            label(snackbar.message).font(theme.supporting_text_font.clone())
+            waterui_core::OneOf2::B(
+                label(snackbar.message).font(theme.supporting_text_font.clone()),
+            )
         }
         .foreground(theme.supporting_text_color.clone());
 

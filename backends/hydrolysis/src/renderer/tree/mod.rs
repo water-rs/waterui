@@ -114,6 +114,7 @@ mod subview;
 pub(super) mod transition;
 mod window;
 
+pub use build::backend::held_with_foreground;
 pub use collection::*;
 
 /// A child view held for Hydrolysis to build later: a payload's child in

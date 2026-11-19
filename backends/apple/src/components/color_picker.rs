@@ -24,7 +24,7 @@ use waterui_core::layout::{
     ViewDimensions,
 };
 
-use crate::contract::{Mounted, NativeLeaf};
+use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;
 
 #[cfg(target_os = "macos")]
@@ -350,7 +350,7 @@ fn bind_value_well(
     reason = "NativeBackend hands each payload by value"
 )]
 pub fn realize_color_picker_config(
-    config: ColorPickerConfig,
+    config: ColorPickerConfig<Held>,
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
     let mtm = ctx.mtm();
@@ -386,9 +386,7 @@ pub fn realize_color_picker_config(
 
     // The label is always mounted — a hidden one collapses to zero
     // size, matching `WuiColorPicker`'s always-present `labelView`.
-    let label = ctx
-        .render(waterui_backend_core::AnyView::new(config.label().clone()))
-        .mount(host_view);
+    let label = ctx.realize(config.label().build()).mount(host_view);
     // The semantic text is announced on the well itself.
     cocoa_ui::view::hide_from_accessibility(label.view());
 

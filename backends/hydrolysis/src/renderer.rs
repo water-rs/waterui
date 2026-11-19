@@ -82,6 +82,7 @@ pub use recording::check_well_formed_image;
 pub use recording::working_color;
 #[cfg(hydrolysis_cherenkov)]
 pub use recording::{Glyph, GlyphRun};
+pub use tree::held_with_foreground;
 #[cfg(any(feature = "list", feature = "text-field", feature = "secure-field"))]
 pub use tree::safe_area::ScrollSurfaceArea;
 #[cfg(any(feature = "list", feature = "navigation"))]
@@ -201,7 +202,7 @@ use waterui_controls::button::ButtonConfig;
 #[cfg(feature = "accessibility")]
 use waterui_controls::input::ContentType;
 #[cfg(feature = "menu")]
-use waterui_controls::label::Label as SemanticLabel;
+use waterui_controls::label::{ErasedLabel, Label as SemanticLabel};
 #[cfg(feature = "menu")]
 use waterui_controls::menu::{CommandRole, ResolvedCommand, ResolvedMenu, ResolvedMenuItem};
 #[cfg(feature = "slider")]
