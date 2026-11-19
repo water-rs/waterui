@@ -615,7 +615,7 @@ impl PlatformWindow for AndroidHostWindow {
         (self.metrics.width_px, self.metrics.height_px)
     }
 
-    fn apply_properties<C>(&mut self, window: &waterui::window::Window<C>) {
+    fn apply_properties<C, T>(&mut self, window: &waterui::window::Window<C, T>) {
         if window.state.snapshot() == WindowState::Closed {
             return;
         }

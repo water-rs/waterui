@@ -1071,7 +1071,7 @@ fn load_staged_window_icon(resources: &waterui::ResourceContext) -> Option<winit
 /// activation-token request, as the handle's docs say. The hook holds the
 /// native window weakly, so a request filed through a handle that outlived
 /// the window's teardown is a no-op.
-fn arm_window_focus_requests<C>(window: &Window<C>, native_window: &Arc<NativeWindow>) {
+fn arm_window_focus_requests<C, T>(window: &Window<C, T>, native_window: &Arc<NativeWindow>) {
     let native = Arc::downgrade(native_window);
     window.arm_focus_requests(move || {
         if let Some(native) = native.upgrade() {
@@ -1080,8 +1080,8 @@ fn arm_window_focus_requests<C>(window: &Window<C>, native_window: &Arc<NativeWi
     });
 }
 
-fn native_window_attributes<C>(
-    window: &Window<C>,
+fn native_window_attributes<C, T>(
+    window: &Window<C, T>,
     env: &Environment,
     activates: bool,
     icon: Option<winit::window::Icon>,
@@ -1184,7 +1184,7 @@ fn native_window_attributes<C>(
 /// when the window and the application both leave the identity unset, so
 /// winit's default (the executable name) applies.
 #[cfg(hydrolysis_wayland_platform)]
-fn window_desktop_identity<C>(window: &Window<C>) -> Option<(Str, Str)> {
+fn window_desktop_identity<C, T>(window: &Window<C, T>) -> Option<(Str, Str)> {
     let class = window.display_app_id();
     (!class.is_empty()).then(|| (class, window.display_instance_name()))
 }
@@ -1277,10 +1277,10 @@ impl WinitRunner {
     /// a context yet — the host has no GPU Hydrolysis can render on — the
     /// app cannot show anything: the error is logged and the process exits
     /// with a failure status.
-    fn create_platform_window<C>(
+    fn create_platform_window<C, T>(
         &mut self,
         native_window: Arc<NativeWindow>,
-        window: &Window<C>,
+        window: &Window<C, T>,
     ) -> Option<WinitWindow> {
         let wake = {
             let event_proxy = self.event_proxy.clone();

@@ -250,8 +250,8 @@ use crate::time::Instant;
 /// `env` must carry the installed theme — colour scheme and colour slots —
 /// the resolved background reads; every runner installs it before mounting
 /// a window.
-fn subscribe_window_declaration_signals<E: crate::text::TextEngine, C>(
-    window: &Window<C>,
+fn subscribe_window_declaration_signals<E: crate::text::TextEngine, C, T>(
+    window: &Window<C, T>,
     env: &Environment,
     core: &SemanticCore<E>,
 ) -> Vec<Retain> {
