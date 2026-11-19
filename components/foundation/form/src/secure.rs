@@ -8,9 +8,12 @@ use core::{fmt::Debug, str::FromStr};
 
 use alloc::string::{String, ToString};
 use nami::Binding;
-use waterui_controls::label::Label;
+use waterui_controls::label::{ControlLabel, Label, LabelKind};
 use waterui_controls::{IntoLabel, impl_label_style_methods};
-use waterui_core::{Environment, configurable, layout::StretchAxis};
+use waterui_core::backend::{Backend, ChildSlot, MapSlots};
+use waterui_core::layout::StretchAxis;
+use waterui_core::view::{ConfigurableView, ViewConfiguration};
+use waterui_core::{AnyView, Environment, Native, NativeView, View};
 use zeroize::Zeroize;
 
 /// A wrapper type for securely handling sensitive string data.
@@ -87,29 +90,29 @@ impl Drop for Secure {
 }
 
 /// Configuration for a secure field component.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
-pub struct SecureFieldConfig {
+pub struct SecureFieldConfig<S> {
     /// The label displayed for the secure field.
-    label: Label,
+    label: ControlLabel<S>,
     /// The binding to the secure value being edited.
     value: Binding<Secure>,
 }
 
-impl SecureFieldConfig {
+impl<S> SecureFieldConfig<S> {
     /// The label displayed for the secure field.
     #[must_use]
-    pub const fn label(&self) -> &Label {
+    pub const fn label(&self) -> &ControlLabel<S> {
         &self.label
     }
 
     /// Sets the `label`.
-    pub fn set_label(&mut self, label: Label) {
+    pub fn set_label(&mut self, label: ControlLabel<S>) {
         self.label = label;
     }
 
     /// The label displayed for the control, for editing it in place.
-    pub const fn label_mut(&mut self) -> &mut Label {
+    pub const fn label_mut(&mut self) -> &mut ControlLabel<S> {
         &mut self.label
     }
 
@@ -121,49 +124,44 @@ impl SecureFieldConfig {
 
     /// Takes the value apart into its fields, in declaration order.
     #[must_use]
-    pub fn into_parts(self) -> (Label, Binding<Secure>) {
+    pub fn into_parts(self) -> (ControlLabel<S>, Binding<Secure>) {
         (self.label, self.value)
     }
 }
 
-configurable!(
-    /// A secure text entry field for passwords and sensitive data.
-    ///
-    /// SecureField masks input and securely stores values with automatic memory zeroing.
-    ///
-    /// # Layout Behavior
-    ///
-    /// SecureField **expands horizontally** to fill available space, but has a fixed height.
-    /// In an `HStack`, it will take up all remaining width after other views are sized.
-    //
-    // ═══════════════════════════════════════════════════════════════════════════
-    // INTERNAL: Layout Contract for Backend Implementers
-    // ═══════════════════════════════════════════════════════════════════════════
-    //
-
-    // Height: Fixed intrinsic (platform-determined)
-    // Width: Reports minimum usable width, expands during layout phase
-    //
-    // Same layout behavior as TextField.
-    //
-    // ═══════════════════════════════════════════════════════════════════════════
-    //
-    SecureField,
-    SecureFieldConfig,
-    StretchAxis::Horizontal,
-    resolve | config,
-    env | config.resolve(env)
-);
-
-impl SecureFieldConfig {
-    #[must_use]
-    fn resolve(mut self, env: &Environment) -> Self {
-        self.label = self.label.resolve(env);
-        self
+impl<S: 'static> NativeView for SecureFieldConfig<S> {
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::Horizontal
     }
 }
 
-impl SecureField {
+impl<S: 'static> MapSlots<S> for SecureFieldConfig<S> {
+    type With<T: 'static> = SecureFieldConfig<T>;
+
+    fn map_slots<T: 'static>(self, f: impl Fn(S) -> T + Clone + 'static) -> SecureFieldConfig<T> {
+        SecureFieldConfig {
+            label: self.label.map_slots(f),
+            value: self.value,
+        }
+    }
+}
+
+/// A secure text entry field for passwords and sensitive data.
+///
+/// `SecureField` masks input and securely stores values with automatic memory zeroing.
+///
+/// # Layout Behavior
+///
+/// `SecureField` **expands horizontally** to fill available space, but has a fixed height.
+/// In an `HStack`, it will take up all remaining width after other views are sized.
+#[derive(Debug, Clone)]
+#[must_use]
+pub struct SecureField<L> {
+    label: Label<L>,
+    value: Binding<Secure>,
+}
+
+impl<L> SecureField<L> {
     /// Creates a new `SecureField` instance.
     ///
     /// # Arguments
@@ -174,20 +172,70 @@ impl SecureField {
     /// # Returns
     ///
     /// A new `SecureField` instance configured with the provided label and value binding.
-    #[must_use]
-    pub fn new(label: impl IntoLabel, value: &Binding<Secure>) -> Self {
-        Self(SecureFieldConfig {
+    pub fn new<I: IntoLabel<Kind = L>>(label: I, value: &Binding<Secure>) -> Self {
+        Self {
             label: label.into_label(),
             value: value.clone(),
-        })
+        }
+    }
+
+    pub(crate) const fn label_mut(&mut self) -> &mut Label<L> {
+        &mut self.label
     }
 }
 
-impl_label_style_methods!(SecureField);
+impl<L: LabelKind> SecureField<L> {
+    fn into_config<S: ChildSlot>(self, env: &Environment) -> SecureFieldConfig<S> {
+        SecureFieldConfig {
+            label: self.label.into_control_label::<S>(env),
+            value: self.value,
+        }
+    }
+}
+
+impl<L: LabelKind> ConfigurableView for SecureField<L> {
+    type Config = SecureFieldConfig<Label<L>>;
+
+    fn config(self) -> Self::Config {
+        SecureFieldConfig {
+            label: self.label.into_unscoped_control_label(),
+            value: self.value,
+        }
+    }
+}
+
+impl<S: View> ViewConfiguration for SecureFieldConfig<S> {
+    type View = SecureField<ControlLabel<S>>;
+
+    fn render(self) -> Self::View {
+        let mode = self.label.display_mode_preference();
+        SecureField {
+            label: Label::from_control_label(self.label, mode),
+            value: self.value,
+        }
+    }
+}
+
+impl<S: View> From<SecureFieldConfig<S>> for SecureField<ControlLabel<S>> {
+    fn from(value: SecureFieldConfig<S>) -> Self {
+        value.render()
+    }
+}
+
+impl<L: LabelKind> View for SecureField<L> {
+    fn body(self, env: &Environment) -> impl View {
+        Native::new(self.into_config::<AnyView>(env))
+    }
+
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        backend.native(self.into_config::<B::Slot>(env), env, cx)
+    }
+}
+
+impl_label_style_methods!(SecureField<L>);
 
 /// Creates a new `SecureField` instance.
 /// See [`SecureField::new`] for more details.
-#[must_use]
-pub fn secure(label: impl IntoLabel, value: &Binding<Secure>) -> SecureField {
+pub fn secure<L: IntoLabel>(label: L, value: &Binding<Secure>) -> SecureField<L::Kind> {
     SecureField::new(label, value)
 }

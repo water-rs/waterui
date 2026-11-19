@@ -7,7 +7,7 @@ use waterui_core::layout::{HorizontalAlignment, ProposalSize, ViewDimensions};
 use waterui_text::styled::StyledStr;
 
 use crate::renderer::{
-    HydroState, HydrolysisRenderer, RenderContext, RetainedSubview, WidgetRenderContext,
+    HeldChild, HydroState, HydrolysisRenderer, RenderContext, RetainedSubview, WidgetRenderContext,
 };
 use crate::theme::BadgeLook;
 #[cfg(feature = "accessibility")]
@@ -24,11 +24,11 @@ pub struct BadgeRenderState<E: crate::text::TextEngine> {
 }
 
 impl<E: crate::text::TextEngine> BadgeRenderState<E> {
-    pub(crate) fn from_config(config: BadgeConfig) -> Self {
+    pub(crate) fn from_config(config: BadgeConfig<HeldChild<E>>) -> Self {
         let BadgeConfig { value, content, .. } = config;
         Self {
             value,
-            content: RetainedSubview::new(content.build()),
+            content: RetainedSubview::held(content),
         }
     }
 

@@ -7,8 +7,9 @@ use crate::renderer::measure_secure_field_size_with_label_size;
 use crate::renderer::measure_text_field_size_with_label_size;
 use crate::renderer::text_editing::CaretPaints;
 use crate::renderer::{
-    HydroState, HydrolysisRenderer, RetainedSubview, TextInputModel, TextInputTargetRegistration,
-    TextSelectionSlot, WidgetRenderContext, clamp_to_char_boundary, transformed_rect,
+    HeldChild, HydroState, HydrolysisRenderer, RetainedSubview, TextInputModel,
+    TextInputTargetRegistration, TextSelectionSlot, WidgetRenderContext, clamp_to_char_boundary,
+    transformed_rect,
 };
 use crate::text::{TextLayout as _, TextPosition};
 use crate::theme::{ModalInteraction, TextFieldLook};
@@ -43,7 +44,7 @@ use waterui_text::styled::StyledStr;
 /// riding the look's float operands, so reactive label content stays live.
 #[cfg(feature = "text-field")]
 pub struct TextFieldRenderState<E: crate::text::TextEngine> {
-    config: ResolvedTextFieldConfig,
+    config: ResolvedTextFieldConfig<HeldChild<E>>,
     label_view: RetainedSubview<E>,
     /// The look the field was requested for, its container's live chrome and
     /// the operands its label floats on.
@@ -67,10 +68,10 @@ impl<E: crate::text::TextEngine> TextFieldRenderState<E> {
         crate::renderer::SemanticCore::<E>::accessibility_label_from_label(self.config.label(), env)
     }
 
-    pub(crate) fn from_config(config: ResolvedTextFieldConfig) -> Self {
+    pub(crate) fn from_config(config: ResolvedTextFieldConfig<HeldChild<E>>) -> Self {
         let field = FieldChrome::new();
         Self {
-            label_view: RetainedSubview::new(field.label_view(config.label().clone())),
+            label_view: RetainedSubview::held(field.label_view(config.label().build())),
             config,
             field,
             selection_slot: Rc::new(RefCell::new(TextSelectionSlot::default())),
@@ -101,7 +102,7 @@ impl<E: crate::text::TextEngine> TextFieldRenderState<E> {
 /// label transform so reactive label content stays live.
 #[cfg(feature = "secure-field")]
 pub struct SecureFieldRenderState<E: crate::text::TextEngine> {
-    config: SecureFieldConfig,
+    config: SecureFieldConfig<HeldChild<E>>,
     label_view: RetainedSubview<E>,
     /// The look and live parts the field realizes; see [`TextFieldRenderState::field`].
     field: FieldChrome,
@@ -122,10 +123,10 @@ impl<E: crate::text::TextEngine> SecureFieldRenderState<E> {
         crate::renderer::SemanticCore::<E>::accessibility_label_from_label(self.config.label(), env)
     }
 
-    pub(crate) fn from_config(config: SecureFieldConfig) -> Self {
+    pub(crate) fn from_config(config: SecureFieldConfig<HeldChild<E>>) -> Self {
         let field = FieldChrome::new();
         Self {
-            label_view: RetainedSubview::new(field.label_view(config.label().clone())),
+            label_view: RetainedSubview::held(field.label_view(config.label().build())),
             config,
             field,
             selection_slot: Rc::new(RefCell::new(TextSelectionSlot::default())),

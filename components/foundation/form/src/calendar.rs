@@ -18,8 +18,9 @@ use jiff::{
 use nami::{
     Binding, Computed, Signal, SignalExt, collection::SignalCollection, signal::IntoComputed,
 };
-use waterui_controls::label::Label;
+use waterui_controls::label::{ControlLabel, Label, LabelKind, TitleLabel};
 use waterui_controls::{IntoLabel, button, impl_label_style_methods};
+use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::interaction::Disabled;
 use waterui_core::layout::StretchAxis;
 use waterui_core::view::{ConfigurableView, ViewConfiguration};
@@ -46,24 +47,24 @@ const CALENDAR_WEEKDAY_HEIGHT: f32 = 24.0;
 
 /// Configuration for the [`Calendar`] component — what a backend realizes
 /// through its `calendar` method, or a hook targeting `CalendarConfig`.
-#[derive(Debug)]
-pub struct CalendarConfig {
-    label: Label,
+#[derive(Debug, Clone)]
+pub struct CalendarConfig<S> {
+    label: ControlLabel<S>,
     value: Binding<Date>,
     range: RangeInclusive<Date>,
     decorated: Computed<BTreeSet<Date>>,
     visible_month: Binding<Date>,
 }
 
-impl CalendarConfig {
+impl<S> CalendarConfig<S> {
     /// The label announced for the calendar and displayed above it.
     #[must_use]
-    pub const fn label(&self) -> &Label {
+    pub const fn label(&self) -> &ControlLabel<S> {
         &self.label
     }
 
     /// The label, for editing it in place.
-    pub const fn label_mut(&mut self) -> &mut Label {
+    pub const fn label_mut(&mut self) -> &mut ControlLabel<S> {
         &mut self.label
     }
 
@@ -94,78 +95,116 @@ impl CalendarConfig {
 }
 
 /// A calendar-style control for selecting a single date.
-#[derive(Debug)]
-pub struct Calendar(CalendarConfig);
+#[derive(Debug, Clone)]
+#[must_use]
+pub struct Calendar<L> {
+    label: Label<L>,
+    value: Binding<Date>,
+    range: RangeInclusive<Date>,
+    decorated: Computed<BTreeSet<Date>>,
+    visible_month: Binding<Date>,
+}
 
-impl ConfigurableView for Calendar {
-    type Config = CalendarConfig;
+impl<L: LabelKind> ConfigurableView for Calendar<L> {
+    type Config = CalendarConfig<Label<L>>;
 
     fn config(self) -> Self::Config {
-        self.0
+        CalendarConfig {
+            label: self.label.into_unscoped_control_label(),
+            value: self.value,
+            range: self.range,
+            decorated: self.decorated,
+            visible_month: self.visible_month,
+        }
     }
 }
 
-impl ViewConfiguration for CalendarConfig {
-    type View = Calendar;
+impl<S: View> ViewConfiguration for CalendarConfig<S> {
+    type View = Calendar<ControlLabel<S>>;
 
     fn render(self) -> Self::View {
-        Calendar(self)
+        let mode = self.label.display_mode_preference();
+        Calendar {
+            label: Label::from_control_label(self.label, mode),
+            value: self.value,
+            range: self.range,
+            decorated: self.decorated,
+            visible_month: self.visible_month,
+        }
     }
 }
 
-impl From<CalendarConfig> for Calendar {
-    fn from(value: CalendarConfig) -> Self {
-        Self(value)
+impl<S: View> From<CalendarConfig<S>> for Calendar<ControlLabel<S>> {
+    fn from(value: CalendarConfig<S>) -> Self {
+        value.render()
     }
 }
 
-impl NativeView for CalendarConfig {
+impl<S: 'static> NativeView for CalendarConfig<S> {
     fn stretch_axis(&self) -> StretchAxis {
         StretchAxis::None
     }
 }
 
-impl Calendar {
+impl<S: 'static> MapSlots<S> for CalendarConfig<S> {
+    type With<T: 'static> = CalendarConfig<T>;
+
+    fn map_slots<T: 'static>(self, f: impl Fn(S) -> T + Clone + 'static) -> CalendarConfig<T> {
+        CalendarConfig {
+            label: self.label.map_slots(f),
+            value: self.value,
+            range: self.range,
+            decorated: self.decorated,
+            visible_month: self.visible_month,
+        }
+    }
+}
+
+impl<L> Calendar<L> {
     /// Creates a new `Calendar` with the given semantic label, selected date
     /// binding, and visible month binding.
     ///
     /// The label is required so screen readers always have meaningful text to
     /// announce. Use [`hide_label`](Self::hide_label) to omit it visually
     /// while keeping it in the accessibility tree.
-    #[must_use]
-    pub fn new(label: impl IntoLabel, date: &Binding<Date>, visible_month: &Binding<Date>) -> Self {
+    pub fn new<I: IntoLabel<Kind = L>>(
+        label: I,
+        date: &Binding<Date>,
+        visible_month: &Binding<Date>,
+    ) -> Self {
         let range = Date::MIN..=Date::MAX;
-        Self(CalendarConfig {
+        Self {
             label: label.into_label(),
             value: date.clone(),
             range,
             decorated: Computed::constant(BTreeSet::new()),
             visible_month: visible_month.clone(),
-        })
+        }
+    }
+
+    pub(crate) const fn label_mut(&mut self) -> &mut Label<L> {
+        &mut self.label
     }
 
     /// Sets the valid date range.
-    #[must_use]
     pub fn range(mut self, range: RangeInclusive<Date>) -> Self {
-        let visible = VisibleMonth::from_date(self.0.visible_month.snapshot());
+        let visible = VisibleMonth::from_date(self.visible_month.snapshot());
         if !visible_month_in_range(visible, &range) {
-            self.0
-                .visible_month
-                .set(initial_visible_month(Some(self.0.value.snapshot()), &range).first_day());
+            self.visible_month
+                .set(initial_visible_month(Some(self.value.snapshot()), &range).first_day());
         }
-        self.0.range = range;
+        self.range = range;
         self
     }
 
     /// Marks calendar days with a passive decoration dot.
-    #[must_use]
     pub fn decorated(mut self, decorated: impl IntoComputed<BTreeSet<Date>>) -> Self {
-        self.0.decorated = decorated.into_computed();
+        self.decorated = decorated.into_computed();
         self
     }
 }
 
-impl_label_style_methods!(Calendar);
+impl_label_style_methods!(Calendar<L>);
 
 /// Translation key for the control that shows the month before.
 pub const CALENDAR_PREVIOUS_MONTH_LABEL_KEY: &str = "waterui.calendar.previous_month";
@@ -179,45 +218,60 @@ pub const CALENDAR_NEXT_MONTH_LABEL_KEY: &str = "waterui.calendar.next_month";
 /// Backends that draw month navigation speak these labels rather than
 /// strings of their own, so one catalog entry translates them everywhere.
 #[must_use]
-pub fn calendar_previous_month_label() -> Label {
+pub fn calendar_previous_month_label() -> Label<TitleLabel> {
     Text::localized_or(CALENDAR_PREVIOUS_MONTH_LABEL_KEY, "Previous Month").into_label()
 }
 
 /// Semantic label for a calendar's control that returns to the month of the
 /// selection. See [`calendar_previous_month_label`].
 #[must_use]
-pub fn calendar_selected_month_label() -> Label {
+pub fn calendar_selected_month_label() -> Label<TitleLabel> {
     Text::localized_or(CALENDAR_SELECTED_MONTH_LABEL_KEY, "Selected Month").into_label()
 }
 
 /// Semantic label for a calendar's next-month control. See
 /// [`calendar_previous_month_label`].
 #[must_use]
-pub fn calendar_next_month_label() -> Label {
+pub fn calendar_next_month_label() -> Label<TitleLabel> {
     Text::localized_or(CALENDAR_NEXT_MONTH_LABEL_KEY, "Next Month").into_label()
 }
 
-impl View for Calendar {
-    fn body(self, _env: &Environment) -> impl View {
-        Native::new(self.0)
+impl<L: LabelKind> Calendar<L> {
+    fn into_config<S: ChildSlot>(self, env: &Environment) -> CalendarConfig<S> {
+        CalendarConfig {
+            label: self.label.into_control_label::<S>(env),
+            value: self.value,
+            range: self.range,
+            decorated: self.decorated,
+            visible_month: self.visible_month,
+        }
+    }
+}
+
+impl<L: LabelKind> View for Calendar<L> {
+    fn body(self, env: &Environment) -> impl View {
+        Native::new(self.into_config::<AnyView>(env))
+    }
+
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        backend.native(self.into_config::<B::Slot>(env), env, cx)
     }
 }
 
 /// The calendar composed from `WaterUI` views: how a self-drawn backend
 /// realizes [`CalendarConfig`].
 #[derive(Debug)]
-pub struct CalendarGrid(CalendarConfig);
+pub struct CalendarGrid<S>(CalendarConfig<S>);
 
-impl CalendarGrid {
+impl<S> CalendarGrid<S> {
     /// The grid for `config`.
     #[must_use]
-    pub const fn new(config: CalendarConfig) -> Self {
+    pub const fn new(config: CalendarConfig<S>) -> Self {
         Self(config)
     }
-}
 
-impl View for CalendarGrid {
-    fn body(self, env: &Environment) -> impl View {
+    /// Splits this grid into its resolved label and its composed calendar body.
+    pub fn into_parts(self, env: &Environment) -> (ControlLabel<S>, impl View + use<S>) {
         let CalendarConfig {
             label,
             value: selection,
@@ -235,7 +289,13 @@ impl View for CalendarGrid {
             single_day_cell_content(cell, &cell_range, cell_selection.clone(), &cell_decorated)
         });
         let calendar = CalendarBody::new(locale, range, visible_month, rows);
+        (label, calendar)
+    }
+}
 
+impl<S: View> View for CalendarGrid<S> {
+    fn body(self, env: &Environment) -> impl View {
+        let (label, calendar) = self.into_parts(env);
         vstack((label, calendar)).spacing(10.0)
     }
 }

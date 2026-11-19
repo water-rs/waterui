@@ -4,7 +4,7 @@ use crate::renderer::chrome::{ChromeContent, LabelPaint, LiveChromeParts};
 use crate::renderer::live_segmented::{LiveSegmented, LiveSegmentedParts, SegmentedFrames};
 use crate::renderer::live_toggle::LiveToggleParts;
 use crate::renderer::{
-    GroupOpacity, HydroState, HydrolysisRenderer, PickerMenuEntry, PickerMenuRequest,
+    GroupOpacity, HeldChild, HydroState, HydrolysisRenderer, PickerMenuEntry, PickerMenuRequest,
     RenderContext, RetainedSubview, WidgetRenderContext, measure_picker_intrinsic_with_label_size,
 };
 use crate::renderer::{InteractionKey, Track, TrackAction, measure_segmented_intrinsic, menu_look};
@@ -27,9 +27,7 @@ use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::Rc;
-use waterui::ViewExt as _;
-use waterui_controls::label::Label;
-use waterui_core::AnyView;
+use waterui_controls::label::ControlLabel;
 use waterui_core::Environment;
 use waterui_core::contract_violation;
 use waterui_core::id::Id;
@@ -51,7 +49,7 @@ use crate::widgets::util::{label_beside_control_bounds, widget_disabled};
 /// label is held as a [`RetainedSubview`] built once and re-flushed each frame
 /// so reactive label content stays live.
 pub struct PickerRenderState<E: crate::text::TextEngine> {
-    pub(crate) config: PickerConfig,
+    pub(crate) config: PickerConfig<HeldChild<E>>,
     label_view: RetainedSubview<E>,
     menu_open: Rc<Cell<bool>>,
     /// The menu picker's field look, held while its spec is.
@@ -126,9 +124,9 @@ impl<E: crate::text::TextEngine> PickerRenderState<E> {
         crate::renderer::SemanticCore::<E>::accessibility_label_from_label(self.config.label(), env)
     }
 
-    pub(crate) fn from_config(config: PickerConfig) -> Self {
+    pub(crate) fn from_config(config: PickerConfig<HeldChild<E>>) -> Self {
         Self {
-            label_view: RetainedSubview::new(menu_picker_label_view(config.label())),
+            label_view: RetainedSubview::held(menu_picker_label_view(config.label())),
             config,
             menu_open: Rc::new(Cell::new(false)),
             menu: None,
@@ -259,13 +257,14 @@ impl<E: crate::text::TextEngine> PickerRenderState<E> {
 /// named size or colour. A hidden label keeps its zero-size body: it draws
 /// nothing and takes no space. A custom-content label owns its own styling, so
 /// only the colour token is applied to it.
-pub fn menu_picker_label_view(label: &Label) -> AnyView {
-    let styled = if label.has_custom_content() {
-        label.clone()
-    } else {
-        label.clone().font(waterui_text::font::Caption)
-    };
-    AnyView::new(styled.muted())
+pub fn menu_picker_label_view<E: crate::text::TextEngine>(
+    label: &ControlLabel<HeldChild<E>>,
+) -> HeldChild<E> {
+    let font = (!label.has_custom_content()).then(|| Font::from(waterui_text::font::Caption));
+    crate::renderer::held_with_foreground(
+        label.build_with_font(font),
+        waterui::Color::new(waterui::theme::color::MutedForeground),
+    )
 }
 
 /// Emits a picker's accessibility tree from its retained state. The rendered
@@ -484,7 +483,7 @@ pub fn picker_accessibility<E: crate::text::TextEngine>(
                 }
             }
             PickerStyle::Segmented => {
-                let mut group = option_group::<E>(renderer, picker, env);
+                let mut group = option_group(renderer, picker, env);
                 // The rendered tree follows the selection live: the render
                 // path reads it unwatched, and the watcher's flag publishes
                 // each change. The semantic walk has no render to skip.
@@ -564,7 +563,7 @@ pub fn picker_accessibility<E: crate::text::TextEngine>(
                 }
             }
             PickerStyle::Radio => {
-                let mut group = option_group::<E>(renderer, picker, env);
+                let mut group = option_group(renderer, picker, env);
                 let geometry = ctx
                     .as_ref()
                     .zip(theme)
@@ -667,9 +666,9 @@ fn option_key<E: crate::text::TextEngine>(
 
 /// The group node a radio or segmented picker's options hang under.
 #[cfg(feature = "accessibility")]
-fn option_group<E: crate::text::TextEngine>(
+fn option_group<E: crate::text::TextEngine, S>(
     renderer: &mut crate::renderer::SemanticCore<E>,
-    picker: &PickerConfig,
+    picker: &PickerConfig<S>,
     env: &Environment,
 ) -> AccessibilityNode {
     let mut group = AccessibilityNode::new(
@@ -697,11 +696,11 @@ fn option_group<E: crate::text::TextEngine>(
     clippy::too_many_arguments,
     reason = "one option's independent facts: its group, identity, selection, label, state and place"
 )]
-fn register_option<E: crate::text::TextEngine>(
+fn register_option<E: crate::text::TextEngine, S>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     group: &mut AccessibilityNode,
     key: &InteractionKey,
-    picker: &PickerConfig,
+    picker: &PickerConfig<S>,
     tag: Id,
     label: String,
     is_selected: bool,
@@ -872,7 +871,7 @@ fn selected_option_text<T: Clone + Default>(texts: &[T], selected: Option<usize>
 
 /// The picker request `config` makes of the theme: its control size, the
 /// layout direction of `env` and its tint.
-pub fn picker_spec(config: &PickerConfig, env: &Environment) -> PickerSpec {
+pub fn picker_spec<S>(config: &PickerConfig<S>, env: &Environment) -> PickerSpec {
     PickerSpec::new(
         config.size(),
         layout_direction(env).snapshot(),
@@ -883,9 +882,9 @@ pub fn picker_spec(config: &PickerConfig, env: &Environment) -> PickerSpec {
 /// The measures of the menu picker `config` is laid out by and of the menu
 /// its popup draws, requested from `theme` for `env`.
 #[cfg(feature = "accessibility")]
-fn menu_picker_layouts(
+fn menu_picker_layouts<S>(
     theme: &Rc<dyn WidgetTheme>,
-    config: &PickerConfig,
+    config: &PickerConfig<S>,
     env: &Environment,
 ) -> (MenuPickerLayout, MenuLayout) {
     (
@@ -1179,7 +1178,11 @@ pub fn radio_group_label_area(
 
 /// The spec of the segmented picker `config` describes, with `count`
 /// segments, in `env`.
-pub fn segmented_spec(config: &PickerConfig, count: usize, env: &Environment) -> SegmentedSpec {
+pub fn segmented_spec<S>(
+    config: &PickerConfig<S>,
+    count: usize,
+    env: &Environment,
+) -> SegmentedSpec {
     SegmentedSpec::new(
         config.size(),
         count,
@@ -1762,8 +1765,8 @@ fn select(selection: &Binding<Id>, tag: Id) -> bool {
 /// The watchers a segmented picker keeps: the items', which has the labels
 /// built again, and the selection's, which has the accessibility tree
 /// publish the change. Each skips the emission its registration makes.
-fn segmented_watches<E: crate::text::TextEngine>(
-    config: &PickerConfig,
+fn segmented_watches<E: crate::text::TextEngine, S>(
+    config: &PickerConfig<S>,
     state: &SegmentedState<E>,
     frames: crate::renderer::FrameSignals,
 ) -> Vec<Box<dyn Any>> {
@@ -1794,7 +1797,7 @@ fn segmented_watches<E: crate::text::TextEngine>(
 /// while `config`'s selection names the item at the segment's index. Each
 /// notifies only when its value changes, so a selection change reaches the
 /// two segments it changes and no other.
-fn segment_selected_flags(config: &PickerConfig, count: usize) -> Rc<[Computed<bool>]> {
+fn segment_selected_flags<S>(config: &PickerConfig<S>, count: usize) -> Rc<[Computed<bool>]> {
     let selection = config.selection();
     let items = config.items();
     (0..count)
@@ -1820,7 +1823,7 @@ fn segment_label_view(
     item: &PickerItem<Id>,
     is_selected: &Computed<bool>,
     env: &Environment,
-) -> AnyView {
+) -> impl waterui_core::View {
     let unselected = segment_font(look, segment, false);
     let selected = segment_font(look, segment, true);
     let content = item.content.resolve(env).content();
@@ -1833,7 +1836,7 @@ fn segment_label_view(
             })
         },
     ));
-    AnyView::new(styled.into_text())
+    styled.into_text()
 }
 
 /// The handler of a segment's press: a press on the selected segment that

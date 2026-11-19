@@ -61,12 +61,11 @@ fn popup_menu_node(
             let plain_label = styled.to_plain().to_string();
             let semantic_text = menu.semantic_label.semantic_text().clone();
             let label = SemanticLabel::new(semantic_text, move || {
-                AnyView::new(
-                    waterui_layout::frame::Frame::new(Text::new(styled.clone()))
-                        .alignment(waterui_layout::alignment::Leading)
-                        .max_width(f32::INFINITY),
-                )
-            });
+                waterui_layout::frame::Frame::new(Text::new(styled.clone()))
+                    .alignment(waterui_layout::alignment::Leading)
+                    .max_width(f32::INFINITY)
+            })
+            .erase();
             Some(PopupMenuNode::Menu {
                 label,
                 plain_label,
@@ -101,7 +100,7 @@ fn command_node(command: ResolvedCommand) -> PopupMenuNode {
     let shortcut = command.shortcut.clone();
     let label = SemanticLabel::new(semantic_text, move || {
         let leading = match subtitle.clone() {
-            Some(subtitle) => AnyView::new(
+            Some(subtitle) => waterui_core::OneOf2::A(
                 waterui_layout::stack::vstack((
                     Text::new(styled.clone()),
                     waterui_text::text(subtitle).caption().muted(),
@@ -109,14 +108,13 @@ fn command_node(command: ResolvedCommand) -> PopupMenuNode {
                 .alignment(HorizontalAlignment::Leading)
                 .spacing(0.0),
             ),
-            None => AnyView::new(Text::new(styled.clone())),
+            None => waterui_core::OneOf2::B(Text::new(styled.clone())),
         };
-        AnyView::new(
-            waterui_layout::frame::Frame::new(leading)
-                .alignment(waterui_layout::alignment::Leading)
-                .max_width(f32::INFINITY),
-        )
-    });
+        waterui_layout::frame::Frame::new(leading)
+            .alignment(waterui_layout::alignment::Leading)
+            .max_width(f32::INFINITY)
+    })
+    .erase();
     PopupMenuNode::Command {
         label,
         plain_label,

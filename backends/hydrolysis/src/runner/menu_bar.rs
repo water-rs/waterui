@@ -45,6 +45,7 @@
 //! the registry uses for chords.
 
 use nami::Computed;
+use waterui_controls::label::SemanticLabel;
 use waterui_controls::menu::{Menu, ResolvedMenuItem, resolve_menu_bar_items};
 use waterui_core::Environment;
 
@@ -58,7 +59,7 @@ use crate::renderer::menu_shortcut_registry;
 /// `NativeMenuBar::install` on macOS and Windows; runners with no menu-bar
 /// surface just arm the chords and drop it.
 pub fn register_menu_bar<E: crate::text::TextEngine>(
-    menu_bar: &Computed<Vec<Menu>>,
+    menu_bar: &Computed<Vec<Menu<SemanticLabel>>>,
     env: &Environment,
 ) -> Computed<Vec<ResolvedMenuItem>> {
     let items = resolve_menu_bar_items(menu_bar, env);
