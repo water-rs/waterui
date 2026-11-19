@@ -5,9 +5,7 @@
 //! The primary types include:
 //! - `View`: The fundamental trait for UI components
 //! - `IntoView`: A trait for converting values into views
-//! - `TupleViews`: A trait for working with collections of views
-//! - `ConfigurableView`: A trait for views that can be configured
-//! - `Modifier`: A type for modifying configurable views
+//! - `ViewSequence`: A trait for sequences of child views (tuples, arrays, `Vec`)
 //!
 //! These abstractions support a declarative and composable approach to UI building, allowing
 //! for flexible combinations of views and transformations.
@@ -168,40 +166,6 @@ impl<V: View, const N: usize> ViewSequence for [V; N] {
     fn push_slots<S: ChildSlot>(self, slots: &mut Vec<S>) {
         slots.extend(self.into_iter().map(S::from_view));
     }
-}
-
-/// A trait for views that can be configured with additional parameters.
-///
-/// This trait extends the basic `View` trait to support views that can be
-/// customized with a configuration object, allowing for more flexible and
-/// reusable UI components.
-pub trait ConfigurableView: View {
-    /// The configuration type associated with this view.
-    ///
-    /// This type defines the structure of configuration data that can be
-    /// applied to the view.
-    type Config: ViewConfiguration;
-
-    /// Returns the configuration for this view.
-    ///
-    /// This method extracts the configuration data from the view, which can
-    /// then be modified and applied to create customized versions of the view.
-    ///
-    /// # Returns
-    ///
-    /// The configuration object for this view.
-    fn config(self) -> Self::Config;
-}
-
-/// A trait for types that can be used to configure views.
-///
-/// View configurations are used by hooks to modify how views are rendered.
-pub trait ViewConfiguration: 'static {
-    // Note: the result would ignore any hook in the environment, to avoid infinite recursion.
-    /// The view type that this configuration produces.
-    type View: View;
-    /// Renders this configuration into a view.
-    fn render(self) -> Self::View;
 }
 
 macro_rules! impl_tuple_views {
