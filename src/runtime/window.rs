@@ -32,7 +32,9 @@ use std::{cell::RefCell, fmt::Debug, future::Future, rc::Rc, sync::Arc};
 use nami::{Binding, Computed, Signal, SignalExt as _, impl_constant, signal::IntoComputed};
 use suiteki::Str;
 use waterui_core::backend::{Backend, ChildSlot, MapSlots};
+use waterui_core::env::Installed;
 use waterui_core::handler::{AnyViewBuilder, Handler, ViewBuilder, boxed_action};
+use waterui_core::plugin::Plugin;
 use waterui_core::{
     AnyView, Dynamic, Environment, Native, NativeView, OneOf2, SerialDispatch, View, flatten_signal,
 };
@@ -55,8 +57,10 @@ use crate::{
 ///
 /// `C` builds the window's content; [`Window::new`] wraps the application's
 /// builder in a [`WindowContent`], so the content keeps its type up to the
-/// backend that realizes it.
-pub struct Window<C> {
+/// backend that realizes it. `T` holds the window's optional toolbar (`()`
+/// until [`Window::toolbar`] attaches one), keeping the toolbar view type
+/// intact up to the backend as well.
+pub struct Window<C, T = ()> {
     /// The title of the window.
     ///
     /// Notice that it may not be displayed on all platforms.
@@ -84,8 +88,10 @@ pub struct Window<C> {
     pub state: Binding<WindowState>,
     /// Optional toolbar content for the window.
     ///
-    /// Notice that it may not be supported on all platforms.
-    pub toolbar: Option<AnyView>,
+    /// `()` when unset; [`Window::toolbar`] stores the toolbar view wrapped in
+    /// [`LabelDisplayMode::IconOnly`]. Notice that it may not be supported on
+    /// all platforms.
+    pub toolbar: T,
     /// The visual style of the window.
     ///
     /// Reactive: backends observe the binding and re-apply the style when it
@@ -231,9 +237,67 @@ pub struct Window<C> {
     focus_request: FocusRequest,
 }
 
-/// A window whose content type is explicitly erased via [`Window::erase`] or
-/// [`Windows::erase`](crate::app::Windows::erase).
-pub type AnyWindow = Window<AnyViewBuilder<AnyView>>;
+/// A window whose content and toolbar types are explicitly erased via
+/// [`Window::erase`] or [`Windows::erase`](crate::app::Windows::erase).
+pub type AnyWindow = Window<AnyViewBuilder<AnyView>, Option<AnyView>>;
+
+/// A window's declared toolbar: `()` when unset, or a view subtree whose
+/// concrete type stays intact up to the backend.
+pub trait WindowToolbar: 'static {
+    /// The concrete view type of a configured toolbar.
+    type View: View;
+
+    /// Extracts the toolbar view if one was configured.
+    fn into_view(self) -> Option<Self::View>;
+
+    /// Builds the toolbar into a backend child slot if one was configured.
+    fn into_slot<S: ChildSlot>(self) -> Option<S>
+    where
+        Self: Sized,
+    {
+        self.into_view().map(S::from_view)
+    }
+
+    /// Erases a configured toolbar into [`AnyView`].
+    fn erase(self) -> Option<AnyView>
+    where
+        Self: Sized,
+    {
+        self.into_view().map(AnyView::new)
+    }
+}
+
+impl WindowToolbar for () {
+    type View = ();
+
+    fn into_view(self) -> Option<Self::View> {
+        None
+    }
+
+    fn into_slot<S: ChildSlot>(self) -> Option<S> {
+        None
+    }
+
+    fn erase(self) -> Option<AnyView> {
+        None
+    }
+}
+
+impl<V: View, P: Plugin> WindowToolbar for Installed<V, P> {
+    type View = Self;
+
+    fn into_view(self) -> Option<Self::View> {
+        Some(self)
+    }
+}
+
+impl<V: View> WindowToolbar for Option<V> {
+    type View = V;
+
+    fn into_view(self) -> Option<Self::View> {
+        self
+    }
+}
 
 /// Builds a window's content into its backend's child slot each time the
 /// backend mounts it.
@@ -271,7 +335,7 @@ impl<S> Debug for WindowSlot<S> {
     }
 }
 
-impl<C> Debug for Window<C> {
+impl<C, T> Debug for Window<C, T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Window")
             .field("title", &self.title)
@@ -855,8 +919,8 @@ impl From<Material> for WindowBackgroundInput {
     }
 }
 
-/// Sends windows of content type `C` to the runner owning the paired
-/// [`WindowChannel`].
+/// Sends windows of content type `C` and toolbar type `T` to the runner
+/// owning the paired [`WindowChannel`].
 ///
 /// Created with [`WindowManager::new`]; pass the returned [`WindowChannel`] to
 /// [`App::new_with_windows`](crate::app::App::new_with_windows) or
@@ -864,48 +928,48 @@ impl From<Material> for WindowBackgroundInput {
 /// through [`Self::show`] or [`Window::show`].
 ///
 /// Extracts through `State<Self>`, so `.state(&manager)` on
-/// [`App`](crate::app::App) or a view makes `manager: WindowManager<C>`
+/// [`App`](crate::app::App) or a view makes `manager: WindowManager<C, T>`
 /// available to handlers; cloning `manager` into a closure works directly as
 /// well.
 #[waterui_macros::state]
-pub struct WindowManager<C: 'static>(Rc<WindowManagerInner<C>>);
+pub struct WindowManager<C: 'static, T: 'static = ()>(Rc<WindowManagerInner<C, T>>);
 
-impl<C: 'static> Clone for WindowManager<C> {
+impl<C: 'static, T: 'static> Clone for WindowManager<C, T> {
     fn clone(&self) -> Self {
         Self(Rc::clone(&self.0))
     }
 }
 
-impl<C: 'static> waterui_core::plugin::Plugin for WindowManager<C> {}
+impl<C: 'static, T: 'static> Plugin for WindowManager<C, T> {}
 
-impl<C: 'static> Debug for WindowManager<C> {
+impl<C: 'static, T: 'static> Debug for WindowManager<C, T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WindowManager").finish_non_exhaustive()
     }
 }
 
-struct WindowManagerInner<C> {
-    state: RefCell<WindowChannelState<C>>,
+struct WindowManagerInner<C, T> {
+    state: RefCell<WindowChannelState<C, T>>,
     /// Windows shown while a receiver call is in flight are delivered after it
     /// returns, in order, rather than re-entering the receiver.
-    dispatch: SerialDispatch<Window<C>>,
+    dispatch: SerialDispatch<Window<C, T>>,
 }
 
-enum WindowChannelState<C> {
+enum WindowChannelState<C, T> {
     /// Connected to the runner's receiver.
-    Connected(Rc<dyn Fn(Window<C>)>),
+    Connected(Rc<dyn Fn(Window<C, T>)>),
     /// Not yet connected; holds windows shown before the runner connected, in
     /// call order.
-    Unconnected(Vec<Window<C>>),
+    Unconnected(Vec<Window<C, T>>),
     /// The paired [`WindowChannel`] was dropped without connecting.
     Disconnected,
 }
 
-impl<C: 'static> WindowManager<C> {
+impl<C: 'static, T: 'static> WindowManager<C, T> {
     /// Creates a typed window manager and the [`WindowChannel`] a runner
     /// receives its windows from.
     #[must_use]
-    pub fn new() -> (Self, WindowChannel<C>) {
+    pub fn new() -> (Self, WindowChannel<C, T>) {
         let manager = Self(Rc::new(WindowManagerInner {
             state: RefCell::new(WindowChannelState::Unconnected(Vec::new())),
             dispatch: SerialDispatch::new(),
@@ -925,9 +989,10 @@ impl<C: 'static> WindowManager<C> {
     /// Showing a window after the paired [`WindowChannel`] was dropped without
     /// connecting to a runner breaks the contract: a debug build panics, and a
     /// release build logs the error and shows nothing.
-    pub fn show(&self, window: Window<C>)
+    pub fn show(&self, window: Window<C, T>)
     where
         C: ViewBuilder,
+        T: WindowToolbar,
     {
         self.0.dispatch.deliver(window, |window| {
             let receiver = {
@@ -952,17 +1017,17 @@ impl<C: 'static> WindowManager<C> {
 }
 
 /// The runner's end of a [`WindowManager`]: a [`Windows`](crate::app::Windows)
-/// source that carries `C`'s concrete type to the runner without erasing to
-/// [`AnyWindow`].
-pub struct WindowChannel<C: 'static>(WindowManager<C>);
+/// source that carries `C` and `T`'s concrete types to the runner without
+/// erasing to [`AnyWindow`].
+pub struct WindowChannel<C: 'static, T: 'static = ()>(WindowManager<C, T>);
 
-impl<C: 'static> Debug for WindowChannel<C> {
+impl<C: 'static, T: 'static> Debug for WindowChannel<C, T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WindowChannel").finish_non_exhaustive()
     }
 }
 
-impl<C: 'static> WindowChannel<C> {
+impl<C: 'static, T: 'static> WindowChannel<C, T> {
     /// How many windows were queued on this channel before a runner connected
     /// it.
     #[must_use]
@@ -976,7 +1041,7 @@ impl<C: 'static> WindowChannel<C> {
     /// Connects this channel to `receiver` for windows shown while the
     /// application runs, and returns any windows already queued before the
     /// connection, in call order.
-    pub fn connect(self, receiver: impl Fn(Window<C>) + 'static) -> Vec<Window<C>> {
+    pub fn connect(self, receiver: impl Fn(Window<C, T>) + 'static) -> Vec<Window<C, T>> {
         let mut state = self.0.0.state.borrow_mut();
         let queued = match &mut *state {
             WindowChannelState::Unconnected(pending) => core::mem::take(pending),
@@ -991,7 +1056,7 @@ impl<C: 'static> WindowChannel<C> {
     /// Consumes this channel without connecting a live receiver, returning any
     /// windows already queued on it.
     #[must_use]
-    pub fn drain(self) -> Vec<Window<C>> {
+    pub fn drain(self) -> Vec<Window<C, T>> {
         let mut state = self.0.0.state.borrow_mut();
         let queued = match &mut *state {
             WindowChannelState::Unconnected(pending) => core::mem::take(pending),
@@ -1002,7 +1067,7 @@ impl<C: 'static> WindowChannel<C> {
     }
 }
 
-impl<C: 'static> Drop for WindowChannel<C> {
+impl<C: 'static, T: 'static> Drop for WindowChannel<C, T> {
     fn drop(&mut self) {
         let mut state = self.0.0.state.borrow_mut();
         if matches!(*state, WindowChannelState::Unconnected(_)) {
@@ -1043,7 +1108,7 @@ impl<B: ViewBuilder> Window<WindowContent<B>> {
             frame: Binding::container(default_frame),
             content,
             state,
-            toolbar: None,
+            toolbar: (),
             style: Binding::container(WindowStyle::default()),
             background: Binding::container(WindowBackground::default()),
             min_size: None,
@@ -1062,19 +1127,25 @@ impl<B: ViewBuilder> Window<WindowContent<B>> {
     }
 }
 
-impl<C> Window<C> {
+impl<C, T> Window<C, T> {
     /// The same window showing `content` instead, wrapped as
     /// [`Window::new`] wraps it.
     ///
     /// For content that needs the window itself, such as its
     /// [`handle`](Self::handle), which exists only once the window does.
     #[must_use]
-    pub fn content<B: ViewBuilder>(self, content: B) -> Window<WindowContent<B>> {
+    pub fn content<B: ViewBuilder>(self, content: B) -> Window<WindowContent<B>, T> {
         self.map_content(|_| WindowContent(content))
     }
 
     /// The same window with its content builder replaced by `f(content)`.
-    pub fn map_content<D>(self, f: impl FnOnce(C) -> D) -> Window<D> {
+    pub fn map_content<D>(self, f: impl FnOnce(C) -> D) -> Window<D, T> {
+        self.map(f, |toolbar| toolbar)
+    }
+
+    /// The same window with its content builder replaced by `f(content)` and
+    /// its toolbar replaced by `g(toolbar)`.
+    pub fn map<D, U>(self, f: impl FnOnce(C) -> D, g: impl FnOnce(T) -> U) -> Window<D, U> {
         let Self {
             title,
             closable,
@@ -1105,7 +1176,7 @@ impl<C> Window<C> {
             frame,
             content: f(content),
             state,
-            toolbar,
+            toolbar: g(toolbar),
             style,
             background,
             min_size,
@@ -1234,9 +1305,11 @@ impl<C> Window<C> {
     /// accessibility text. Individual labels can opt back into
     /// [`LabelDisplayMode::TitleOnly`] or [`LabelDisplayMode::TitleAndIcon`].
     #[must_use]
-    pub fn toolbar(mut self, toolbar: impl View) -> Self {
-        self.toolbar = Some(AnyView::new(toolbar.install(LabelDisplayMode::IconOnly)));
-        self
+    pub fn toolbar<V: View>(self, toolbar: V) -> Window<C, Installed<V, LabelDisplayMode>> {
+        self.map(
+            |content| content,
+            |_| Installed::new(toolbar, LabelDisplayMode::IconOnly),
+        )
     }
 
     /// Set the visual style of the window.
@@ -1293,12 +1366,17 @@ impl<C> Window<C> {
         self.content.build()
     }
 
-    /// The same window with its content type erased, see [`AnyWindow`].
+    /// The same window with its content and toolbar types erased, see
+    /// [`AnyWindow`].
     pub fn erase(self) -> AnyWindow
     where
         C: ViewBuilder,
+        T: WindowToolbar,
     {
-        self.map_content(|content| AnyViewBuilder::new(move || AnyView::new(content.build())))
+        self.map(
+            |content| AnyViewBuilder::new(move || AnyView::new(content.build())),
+            WindowToolbar::erase,
+        )
     }
 
     /// Set the title of the window.
@@ -1472,40 +1550,50 @@ impl<C> Window<C> {
     /// Showing a window after `manager`'s [`WindowChannel`] was dropped
     /// without connecting to a runner breaks the contract: a debug build
     /// panics, and a release build logs the error and shows nothing.
-    pub fn show(self, manager: &WindowManager<C>)
+    pub fn show(self, manager: &WindowManager<C, T>)
     where
         C: ViewBuilder,
+        T: WindowToolbar,
     {
         manager.show(self);
     }
 
-    fn into_slot<S: ChildSlot>(self) -> Window<WindowSlot<S>>
+    fn into_slot<S: ChildSlot>(self) -> Window<WindowSlot<S>, Option<S>>
     where
         C: ViewBuilder,
+        T: WindowToolbar,
     {
-        self.map_content(|content| WindowSlot::new(move || S::from_view(content.build())))
+        self.map(
+            |content| WindowSlot::new(move || S::from_view(content.build())),
+            WindowToolbar::into_slot,
+        )
     }
 }
 
-impl<S: 'static> NativeView for Window<WindowSlot<S>> {}
+impl<S: 'static> NativeView for Window<WindowSlot<S>, Option<S>> {}
 
-impl<S: 'static> MapSlots<S> for Window<WindowSlot<S>> {
-    type With<T: 'static> = Window<WindowSlot<T>>;
+impl<S: 'static> MapSlots<S> for Window<WindowSlot<S>, Option<S>> {
+    type With<T: 'static> = Window<WindowSlot<T>, Option<T>>;
 
-    fn map_slots<T: 'static>(self, f: impl Fn(S) -> T + Clone + 'static) -> Window<WindowSlot<T>> {
-        self.map_content(|slot| slot.map(f))
+    fn map_slots<T: 'static>(
+        self,
+        f: impl Fn(S) -> T + Clone + 'static,
+    ) -> Window<WindowSlot<T>, Option<T>> {
+        let f_toolbar = f.clone();
+        self.map(|slot| slot.map(f), |toolbar| toolbar.map(f_toolbar))
     }
 }
 
-impl<C: ViewBuilder> View for Window<C> {
+impl<C: ViewBuilder, T: WindowToolbar> View for Window<C, T> {
     /// The erased form, for code that expands views by hand.
     fn body(self, _env: &Environment) -> impl View {
         Native::new(self.into_slot::<AnyView>())
     }
 
-    /// Reaches the backend with the window's content in the backend's child
-    /// slot, so a window declared in the tree — [`conditional_window`]
-    /// included — keeps its content type up to the backend.
+    /// Reaches the backend with the window's content and toolbar in the
+    /// backend's child slot, so a window declared in the tree —
+    /// [`conditional_window`] included — keeps its content and toolbar types
+    /// up to the backend.
     fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
         backend.native(self.into_slot::<B::Slot>(), env, cx)
     }
@@ -1552,13 +1640,14 @@ impl WindowPresentation {
 /// must outlive every other window — for example one reopened under
 /// [`LastWindowPolicy::StayResident`](crate::app::LastWindowPolicy::StayResident)
 /// after the last window closed — is opened with [`Window::show`] instead.
-pub fn conditional_window<F, C>(
+pub fn conditional_window<F, C, T>(
     presentation: &WindowPresentation,
     creator: F,
-) -> impl View + use<F, C>
+) -> impl View + use<F, C, T>
 where
-    F: Fn(Binding<WindowState>) -> Window<C> + 'static,
+    F: Fn(Binding<WindowState>) -> Window<C, T> + 'static,
     C: ViewBuilder,
+    T: WindowToolbar,
 {
     let state = presentation.state.clone();
     let presented = presentation.presented.clone();
@@ -1814,9 +1903,9 @@ mod tests {
         assert_eq!(state.snapshot(), WindowState::Closed);
     }
 
-    /// `WindowManager` and `WindowChannel` carry the concrete content builder
-    /// type to the runner, preserving FIFO order across pre-connect queueing
-    /// and re-entrant `show` calls.
+    /// `WindowManager` and `WindowChannel` carry the concrete content and
+    /// toolbar types to the runner, preserving FIFO order across pre-connect
+    /// queueing and re-entrant `show` calls.
     #[test]
     fn window_channel_delivers_typed_windows_in_order() {
         fn body(label: &'static str) -> impl super::ViewBuilder<Output = &'static str> {
@@ -1855,6 +1944,30 @@ mod tests {
             log,
             vec![("second".to_owned(), "b"), ("third".to_owned(), "c")]
         );
+    }
+
+    #[test]
+    fn window_toolbar_keeps_concrete_type_without_erasing() {
+        use super::WindowToolbar as _;
+
+        let unset = Window::new("Plain", Binding::container(WindowState::Normal), || ());
+        let _: () = unset.toolbar;
+        assert!(().into_view().is_none());
+        assert!(().erase().is_none());
+        assert!(().into_slot::<super::AnyView>().is_none());
+
+        let (manager, channel) = WindowManager::new();
+        Window::new(
+            "With Toolbar",
+            Binding::container(WindowState::Normal),
+            || (),
+        )
+        .toolbar(crate::widget::Divider)
+        .show(&manager);
+        let mut queued = channel.drain();
+        assert_eq!(queued.len(), 1);
+        let delivered = queued.pop().expect("one queued window");
+        assert!(delivered.toolbar.into_view().is_some());
     }
 
     /// The icon validates its pixel buffer against its size.

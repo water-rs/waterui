@@ -153,7 +153,7 @@ impl NativeBackend for AppleBackend {
 
     fn window<C: ChildView<Self>>(
         &mut self,
-        native: waterui::window::Window<waterui::window::WindowSlot<C>>,
+        native: waterui::window::Window<waterui::window::WindowSlot<C>, Option<C>>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
