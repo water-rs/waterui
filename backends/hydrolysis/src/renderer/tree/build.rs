@@ -1,6 +1,7 @@
-//! Building the retained tree: [`RenderNode::build`] downcasts a dispatched
-//! `View` onto the closed node set, plus the structural builders (wrapper,
-//! env scope, collection, lazy stack, scene/GPU/effect, `Dynamic` host).
+//! Building the retained tree: [`RenderNode::build`] dispatches a `View`
+//! statically through [`backend::HydroBackend`] (`View::dispatch` and
+//! `NativeBackend`) onto the closed node set, plus the structural builders
+//! (wrapper, env scope, collection, lazy stack, scene/GPU/effect, `Dynamic` host).
 
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 use super::collection::{item_id, item_view_or_empty};
@@ -43,11 +44,13 @@ fn layout_invalidation<E: crate::text::TextEngine>(
 }
 
 impl<E: crate::text::TextEngine> RenderNode<E> {
-    /// Builds a node from a view, capturing live reactive inputs. Native
-    /// leaves and layout containers map to concrete nodes; composite views
-    /// expand via `body()` once and recurse. Then it wires the subtree's cell
-    /// parent links (`attach_subtree`): the tree root attaches to the
-    /// window's root cell, every other node to its structural parent's cell.
+    /// Builds a node from a view, capturing live reactive inputs. It dispatches
+    /// statically through [`backend::HydroBackend`] (`View::dispatch` and
+    /// `NativeBackend`), so native leaves and layout containers map to concrete
+    /// nodes while composite views expand and recurse. Then it wires the
+    /// subtree's cell parent links (`attach_subtree`): the tree root attaches
+    /// to the window's root cell, every other node to its structural parent's
+    /// cell.
     pub(crate) fn build(
         view: impl View,
         env: &Environment,
