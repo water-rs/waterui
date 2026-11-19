@@ -18,7 +18,6 @@ use nami::{Binding, Computed, signal::IntoComputed};
 use crate::views::{AnyViews, ForEach, SharedAnyViews, ViewSnapshot, Views};
 use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::id::Mapping;
-use waterui_core::view::{ConfigurableView, ViewConfiguration};
 use waterui_core::{
     AnyView, Environment, Metadata, Native, NativeView, OneOf2, View,
     handler::{Handler, shared_action},
@@ -420,32 +419,24 @@ impl<C: ListContent> List<ContentRows<C, C::Row>> {
     }
 }
 
-impl<V, C> ConfigurableView for List<V>
+impl<V, C> List<V>
 where
     V: Views<View = ListItem<C>> + 'static,
     C: View,
 {
-    type Config = ListConfig<C>;
-
-    fn config(self) -> Self::Config {
+    /// Returns the configuration for this list.
+    #[must_use]
+    pub fn config(self) -> ListConfig<C> {
         self.builder().config()
-    }
-}
-
-impl<C: View> ViewConfiguration for ListConfig<C> {
-    type View = List<SharedAnyViews<ListItem<C>>>;
-
-    fn render(self) -> Self::View {
-        List {
-            contents: self.contents,
-            sections: RowSections::from_erased(self.sections),
-        }
     }
 }
 
 impl<C: View> From<ListConfig<C>> for List<SharedAnyViews<ListItem<C>>> {
     fn from(value: ListConfig<C>) -> Self {
-        value.render()
+        Self {
+            contents: value.contents,
+            sections: RowSections::from_erased(value.sections),
+        }
     }
 }
 
@@ -686,11 +677,11 @@ where
     C: View,
 {
     fn body(self, env: &Environment) -> impl View {
-        erased_list(ConfigurableView::config(self), env)
+        erased_list(self.config(), env)
     }
 
     fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
-        dispatch_list(ConfigurableView::config(self), backend, env, cx)
+        dispatch_list(self.config(), backend, env, cx)
     }
 }
 
@@ -789,14 +780,14 @@ where
     }
 }
 
-impl<V, C> ConfigurableView for ListBuilder<V>
+impl<V, C> ListBuilder<V>
 where
     V: Views<View = ListItem<C>> + 'static,
     C: View,
 {
-    type Config = ListConfig<C>;
-
-    fn config(self) -> Self::Config {
+    /// Returns the configuration for this list builder.
+    #[must_use]
+    pub fn config(self) -> ListConfig<C> {
         let (contents, ids) = AnyViews::new_with_ids(self.contents);
         ListConfig {
             contents: SharedAnyViews::from(contents),
@@ -818,11 +809,11 @@ where
     C: View,
 {
     fn body(self, env: &Environment) -> impl View {
-        erased_list(ConfigurableView::config(self), env)
+        erased_list(self.config(), env)
     }
 
     fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
-        dispatch_list(ConfigurableView::config(self), backend, env, cx)
+        dispatch_list(self.config(), backend, env, cx)
     }
 }
 
@@ -1089,14 +1080,15 @@ mod tests {
                 >,
             >>()
             .unwrap_or_else(|_| panic!("the metadata did not wrap the list"));
-        let with_floor = render_config(ConfigurableView::config(list), &env);
+        let with_floor = render_config(list.config(), &env);
         assert_eq!(with_floor.min_row_height, Some(0.0));
 
         let without = render_config(
-            ConfigurableView::config(List::content((
+            List::content((
                 || ListItem::new(text!("Alice joined")),
                 || ListItem::new(text!("Hello")),
-            ))),
+            ))
+            .config(),
             &Environment::new(),
         );
         assert_eq!(without.min_row_height, None);
@@ -1108,13 +1100,12 @@ mod tests {
     fn row_insets_survive_the_section_and_selection_transform() {
         let selection = nami::Binding::container(Option::<i32>::None);
         let config = render_config(
-            ConfigurableView::config(
-                List::content((
-                    (|| ListItem::new(text!("Alice joined")).insets(EdgeInsets::all(4.0))).tag(1),
-                    (|| ListItem::new(text!("Hello"))).tag(2),
-                ))
-                .selection(&selection),
-            ),
+            List::content((
+                (|| ListItem::new(text!("Alice joined")).insets(EdgeInsets::all(4.0))).tag(1),
+                (|| ListItem::new(text!("Hello"))).tag(2),
+            ))
+            .selection(&selection)
+            .config(),
             &Environment::new(),
         );
         let contents = config.contents.snapshot();

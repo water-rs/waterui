@@ -14,7 +14,6 @@ use waterui_core::gesture::{GestureObserver, TapGesture};
 use waterui_core::interaction::{Disabled, InteractionReport, InteractionState};
 use waterui_core::layout::StretchAxis;
 use waterui_core::view::hook::Hook;
-use waterui_core::view::{ConfigurableView, ViewConfiguration};
 use waterui_core::{AnyView, Environment, Metadata, Native, NativeView, View};
 use waterui_text::styled::StyledStr;
 
@@ -76,11 +75,9 @@ impl View for ToggleLabel {
 }
 
 /// Semantic configuration passed to [`CustomToggleStyle::make_body`].
-pub struct ToggleStyleConfiguration<L = ToggleLabel> {
-    /// The toggle's label view.
-    pub label: L,
-    /// Reactive binding to the toggle's on/off state.
-    pub is_on: Binding<bool>,
+pub struct ToggleStyleConfiguration<L> {
+    label: L,
+    is_on: Binding<bool>,
     size: ControlSize,
     interaction: Computed<InteractionState>,
 }
@@ -94,6 +91,30 @@ impl<L> fmt::Debug for ToggleStyleConfiguration<L> {
 }
 
 impl<L> ToggleStyleConfiguration<L> {
+    /// Borrows the toggle's label view.
+    #[must_use]
+    pub const fn label(&self) -> &L {
+        &self.label
+    }
+
+    /// Extracts the toggle's label view.
+    #[must_use]
+    pub fn into_label(self) -> L {
+        self.label
+    }
+
+    /// Borrows the reactive binding controlling the toggle's on/off state.
+    #[must_use]
+    pub const fn is_on(&self) -> &Binding<bool> {
+        &self.is_on
+    }
+
+    /// Takes the configuration apart into `(label, is_on, size, interaction_state)`.
+    #[must_use]
+    pub fn into_parts(self) -> (L, Binding<bool>, ControlSize, Computed<InteractionState>) {
+        (self.label, self.is_on, self.size, self.interaction)
+    }
+
     /// The control size requested for this toggle.
     #[must_use]
     pub const fn size(&self) -> ControlSize {
@@ -148,7 +169,10 @@ impl<L> ToggleStyleConfiguration<L> {
 /// view subtree with `ViewExt::toggle_style`.
 pub trait CustomToggleStyle: 'static {
     /// Builds the visual body of a toggle from its semantic `configuration`.
-    fn make_body<L: View>(&self, configuration: ToggleStyleConfiguration<L>) -> impl View;
+    fn make_body<L: View>(
+        &self,
+        configuration: ToggleStyleConfiguration<L>,
+    ) -> impl View + use<Self, L>;
 }
 
 mod sealed {
@@ -200,9 +224,7 @@ impl<S: CustomToggleStyle> IntoToggleStyle<CustomStyleMarker> for S {
 
 #[doc(hidden)]
 pub trait SealedToggleStyle: sealed::Sealed + Sized + 'static {
-    type Body: View;
-
-    fn toggle_body<L: LabelKind>(toggle: Toggle<L, Self>, env: &Environment) -> Self::Body;
+    fn toggle_body<L: LabelKind>(toggle: Toggle<L, Self>, env: &Environment) -> impl View;
 
     fn dispatch_toggle<B: Backend, L: LabelKind>(
         toggle: Toggle<L, Self>,
@@ -215,17 +237,17 @@ pub trait SealedToggleStyle: sealed::Sealed + Sized + 'static {
         &self,
         target: ToggleStyleTarget,
         env: &Environment,
-    ) -> Result<AnyView, ToggleStyleTarget>;
+    ) -> Result<impl View, ToggleStyleTarget>;
 }
 
-fn compose_custom_toggle<L: View>(
-    style: &impl CustomToggleStyle,
+fn compose_custom_toggle<L: View, S: CustomToggleStyle>(
+    style: &S,
     label: L,
     accessibility_label: &Computed<StyledStr>,
     toggle: &Binding<bool>,
     size: ControlSize,
     env: &Environment,
-) -> impl View {
+) -> impl View + use<L, S> {
     let (report, interaction) = crate::button::interaction_signals(env);
     let body = style.make_body(ToggleStyleConfiguration {
         label,
@@ -252,9 +274,7 @@ fn compose_custom_toggle<L: View>(
 }
 
 impl SealedToggleStyle for ToggleStyle {
-    type Body = Native<ToggleConfig<AnyView>>;
-
-    fn toggle_body<L: LabelKind>(toggle: Toggle<L, Self>, env: &Environment) -> Self::Body {
+    fn toggle_body<L: LabelKind>(toggle: Toggle<L, Self>, env: &Environment) -> impl View {
         Native::new(toggle.into_config::<AnyView>(env))
     }
 
@@ -271,34 +291,31 @@ impl SealedToggleStyle for ToggleStyle {
         &self,
         target: ToggleStyleTarget,
         _env: &Environment,
-    ) -> Result<AnyView, ToggleStyleTarget> {
+    ) -> Result<impl View, ToggleStyleTarget> {
         let data = *target.0;
         let mode = data.label.display_mode_preference();
-        let toggle = Toggle {
+        Ok(Toggle {
             label: Label::from_control_label(data.label, mode),
             toggle: data.toggle,
             style: *self,
             explicit_style: true,
             size: data.size,
-        };
-        Ok(AnyView::new(toggle))
+        })
     }
 }
 
 impl<S: CustomToggleStyle> SealedToggleStyle for CustomToggle<S> {
-    type Body = AnyView;
-
-    fn toggle_body<L: LabelKind>(toggle: Toggle<L, Self>, env: &Environment) -> Self::Body {
+    fn toggle_body<L: LabelKind>(toggle: Toggle<L, Self>, env: &Environment) -> impl View {
         let label = toggle.label.resolve(env);
         let a11y_label = label.accessibility_label();
-        AnyView::new(compose_custom_toggle(
+        compose_custom_toggle(
             &toggle.style.0,
             label,
             &a11y_label,
             &toggle.toggle,
             toggle.size,
             env,
-        ))
+        )
     }
 
     fn dispatch_toggle<B: Backend, L: LabelKind>(
@@ -324,18 +341,18 @@ impl<S: CustomToggleStyle> SealedToggleStyle for CustomToggle<S> {
         &self,
         target: ToggleStyleTarget,
         env: &Environment,
-    ) -> Result<AnyView, ToggleStyleTarget> {
+    ) -> Result<impl View, ToggleStyleTarget> {
         let data = *target.0;
         let a11y_label = data.label.accessibility_label();
         let label = ToggleLabel(AnyView::new(data.label));
-        Ok(AnyView::new(compose_custom_toggle(
+        Ok(compose_custom_toggle(
             &self.0,
             label,
             &a11y_label,
             &data.toggle,
             data.size,
             env,
-        )))
+        ))
     }
 }
 
@@ -695,10 +712,10 @@ impl<L: LabelKind> Toggle<L, ToggleStyle> {
     }
 }
 
-impl<L: LabelKind> ConfigurableView for Toggle<L, ToggleStyle> {
-    type Config = ToggleConfig<Label<L>>;
-
-    fn config(self) -> Self::Config {
+impl<L: LabelKind> Toggle<L> {
+    /// Returns the configuration for this toggle.
+    #[must_use]
+    pub fn config(self) -> ToggleConfig<Label<L>> {
         ToggleConfig {
             label: self.label.into_unscoped_control_label(),
             toggle: self.toggle,
@@ -709,24 +726,16 @@ impl<L: LabelKind> ConfigurableView for Toggle<L, ToggleStyle> {
     }
 }
 
-impl<S: View> ViewConfiguration for ToggleConfig<S> {
-    type View = Toggle<ControlLabel<S>>;
-
-    fn render(self) -> Self::View {
-        let mode = self.label.display_mode_preference();
-        Toggle {
-            label: Label::from_control_label(self.label, mode),
-            toggle: self.toggle,
-            style: self.style,
-            explicit_style: self.explicit_style,
-            size: self.size,
-        }
-    }
-}
-
 impl<S: View> From<ToggleConfig<S>> for Toggle<ControlLabel<S>> {
     fn from(value: ToggleConfig<S>) -> Self {
-        value.render()
+        let mode = value.label.display_mode_preference();
+        Self {
+            label: Label::from_control_label(value.label, mode),
+            toggle: value.toggle,
+            style: value.style,
+            explicit_style: value.explicit_style,
+            size: value.size,
+        }
     }
 }
 
@@ -862,14 +871,17 @@ mod custom_style_tests {
     }
 
     impl CustomToggleStyle for RecordingToggleStyle {
-        fn make_body<L: View>(&self, configuration: ToggleStyleConfiguration<L>) -> impl View {
+        fn make_body<L: View>(
+            &self,
+            configuration: ToggleStyleConfiguration<L>,
+        ) -> impl View + use<L> {
             *self.recorded.borrow_mut() = Some(RecordedToggleConfig {
-                is_on: configuration.is_on.clone(),
+                is_on: configuration.is_on().clone(),
                 size: configuration.size(),
                 disabled: configuration.is_disabled(),
                 interaction: configuration.interaction_state().clone(),
             });
-            configuration.label
+            configuration.into_label()
         }
     }
 

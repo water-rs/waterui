@@ -206,7 +206,6 @@ use waterui_core::handler::ReportExtraction;
 use waterui_core::handler::{BoxedAction, ExtractionError, Handler};
 use waterui_core::interaction::{Disabled, InteractionReport, InteractionState};
 use waterui_core::view::hook::Hook;
-use waterui_core::view::{ConfigurableView, ViewConfiguration};
 use waterui_core::{AnyView, Environment, Metadata, Native, NativeView, OneOf2, View};
 use waterui_text::IntoText;
 use waterui_text::styled::StyledStr;
@@ -353,9 +352,8 @@ impl View for ButtonLabel {
 }
 
 /// Semantic configuration passed to [`CustomButtonStyle::make_body`].
-pub struct ButtonStyleConfiguration<L = ButtonLabel> {
-    /// The button's label view.
-    pub label: L,
+pub struct ButtonStyleConfiguration<L> {
+    label: L,
     role: Option<ButtonRole>,
     size: ControlSize,
     interaction: Computed<InteractionState>,
@@ -371,6 +369,31 @@ impl<L> fmt::Debug for ButtonStyleConfiguration<L> {
 }
 
 impl<L> ButtonStyleConfiguration<L> {
+    /// Borrows the button's label view.
+    #[must_use]
+    pub const fn label(&self) -> &L {
+        &self.label
+    }
+
+    /// Extracts the button's label view.
+    #[must_use]
+    pub fn into_label(self) -> L {
+        self.label
+    }
+
+    /// Takes the configuration apart into `(label, role, size, interaction_state)`.
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        L,
+        Option<ButtonRole>,
+        ControlSize,
+        Computed<InteractionState>,
+    ) {
+        (self.label, self.role, self.size, self.interaction)
+    }
+
     /// The semantic role assigned to this button, if any.
     #[must_use]
     pub const fn role(&self) -> Option<ButtonRole> {
@@ -458,11 +481,9 @@ impl ButtonTrigger {
 }
 
 /// Semantic configuration passed to [`PrimitiveButtonStyle::make_body`].
-pub struct PrimitiveButtonStyleConfiguration<L = ButtonLabel> {
-    /// The button's label view.
-    pub label: L,
-    /// Handle that runs the button's action when triggered by the style.
-    pub trigger: ButtonTrigger,
+pub struct PrimitiveButtonStyleConfiguration<L> {
+    label: L,
+    trigger: ButtonTrigger,
     role: Option<ButtonRole>,
     size: ControlSize,
     interaction: Computed<InteractionState>,
@@ -478,6 +499,44 @@ impl<L> fmt::Debug for PrimitiveButtonStyleConfiguration<L> {
 }
 
 impl<L> PrimitiveButtonStyleConfiguration<L> {
+    /// Borrows the button's label view.
+    #[must_use]
+    pub const fn label(&self) -> &L {
+        &self.label
+    }
+
+    /// Extracts the button's label view.
+    #[must_use]
+    pub fn into_label(self) -> L {
+        self.label
+    }
+
+    /// Borrows the handle that triggers the button's action.
+    #[must_use]
+    pub const fn trigger(&self) -> &ButtonTrigger {
+        &self.trigger
+    }
+
+    /// Takes the configuration apart into `(label, trigger, role, size, interaction_state)`.
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        L,
+        ButtonTrigger,
+        Option<ButtonRole>,
+        ControlSize,
+        Computed<InteractionState>,
+    ) {
+        (
+            self.label,
+            self.trigger,
+            self.role,
+            self.size,
+            self.interaction,
+        )
+    }
+
     /// The semantic role assigned to this button, if any.
     #[must_use]
     pub const fn role(&self) -> Option<ButtonRole> {
@@ -538,7 +597,10 @@ impl<L> PrimitiveButtonStyleConfiguration<L> {
 /// view subtree with `ViewExt::button_style`.
 pub trait CustomButtonStyle: 'static {
     /// Builds the visual body of a button from its semantic `configuration`.
-    fn make_body<L: View>(&self, configuration: ButtonStyleConfiguration<L>) -> impl View;
+    fn make_body<L: View>(
+        &self,
+        configuration: ButtonStyleConfiguration<L>,
+    ) -> impl View + use<Self, L>;
 }
 
 /// A custom button style that controls both visual appearance and activation
@@ -548,7 +610,10 @@ pub trait CustomButtonStyle: 'static {
 /// entire view subtree with `ViewExt::button_style`.
 pub trait PrimitiveButtonStyle: 'static {
     /// Builds the interactive body of a button from its semantic `configuration`.
-    fn make_body<L: View>(&self, configuration: PrimitiveButtonStyleConfiguration<L>) -> impl View;
+    fn make_body<L: View>(
+        &self,
+        configuration: PrimitiveButtonStyleConfiguration<L>,
+    ) -> impl View + use<Self, L>;
 }
 
 mod sealed {
@@ -617,9 +682,7 @@ impl<S: PrimitiveButtonStyle> IntoButtonStyle<PrimitiveStyleMarker> for S {
 
 #[doc(hidden)]
 pub trait SealedButtonStyle: sealed::Sealed + Sized + 'static {
-    type Body: View;
-
-    fn button_body<L, Action>(button: Button<L, Action, Self>, env: &Environment) -> Self::Body
+    fn button_body<L, Action>(button: Button<L, Action, Self>, env: &Environment) -> impl View
     where
         L: LabelKind,
         Action: FnMut(&Environment) -> Result<(), ExtractionError> + 'static;
@@ -639,7 +702,7 @@ pub trait SealedButtonStyle: sealed::Sealed + Sized + 'static {
         &self,
         target: ButtonStyleTarget,
         env: &Environment,
-    ) -> Result<AnyView, ButtonStyleTarget>;
+    ) -> Result<impl View, ButtonStyleTarget>;
 }
 
 pub(crate) fn interaction_signals(
@@ -679,15 +742,15 @@ pub(crate) fn wrap_default_accessibility_label<V: View>(
     }
 }
 
-fn compose_custom_button<L: View>(
-    style: &impl CustomButtonStyle,
+fn compose_custom_button<L: View, S: CustomButtonStyle>(
+    style: &S,
     label: L,
     accessibility_label: &Computed<StyledStr>,
     action: Rc<RefCell<BoxedAction<()>>>,
     role: Option<ButtonRole>,
     size: ControlSize,
     env: &Environment,
-) -> impl View {
+) -> impl View + use<L, S> {
     let (report, interaction) = interaction_signals(env);
     let body = style.make_body(ButtonStyleConfiguration {
         label,
@@ -706,15 +769,15 @@ fn compose_custom_button<L: View>(
     Installed::new(with_role, InteractionReport(report))
 }
 
-fn compose_primitive_button<L: View>(
-    style: &impl PrimitiveButtonStyle,
+fn compose_primitive_button<L: View, S: PrimitiveButtonStyle>(
+    style: &S,
     label: L,
     accessibility_label: &Computed<StyledStr>,
     action: Rc<RefCell<BoxedAction<()>>>,
     role: Option<ButtonRole>,
     size: ControlSize,
     env: &Environment,
-) -> impl View {
+) -> impl View + use<L, S> {
     let (report, interaction) = interaction_signals(env);
     let trigger = ButtonTrigger {
         action,
@@ -744,9 +807,7 @@ fn resolve_custom_label<L: LabelKind>(
 }
 
 impl SealedButtonStyle for ButtonStyle {
-    type Body = Native<ButtonConfig<AnyView>>;
-
-    fn button_body<L, Action>(button: Button<L, Action, Self>, env: &Environment) -> Self::Body
+    fn button_body<L, Action>(button: Button<L, Action, Self>, env: &Environment) -> impl View
     where
         L: LabelKind,
         Action: FnMut(&Environment) -> Result<(), ExtractionError> + 'static,
@@ -772,33 +833,30 @@ impl SealedButtonStyle for ButtonStyle {
         &self,
         target: ButtonStyleTarget,
         _env: &Environment,
-    ) -> Result<AnyView, ButtonStyleTarget> {
+    ) -> Result<impl View, ButtonStyleTarget> {
         let data = *target.0;
         let mode = data.label.display_mode_preference();
         let action = data.action;
-        let button = Button {
+        Ok(Button {
             label: Label::from_control_label(data.label, mode),
             action: move |env: &Environment| (action.borrow_mut())(env),
             style: *self,
             explicit_style: true,
             role: data.role,
             size: data.size,
-        };
-        Ok(AnyView::new(button))
+        })
     }
 }
 
 impl<S: CustomButtonStyle> SealedButtonStyle for CustomButton<S> {
-    type Body = AnyView;
-
-    fn button_body<L, Action>(button: Button<L, Action, Self>, env: &Environment) -> Self::Body
+    fn button_body<L, Action>(button: Button<L, Action, Self>, env: &Environment) -> impl View
     where
         L: LabelKind,
         Action: FnMut(&Environment) -> Result<(), ExtractionError> + 'static,
     {
         let (label, a11y_label) = resolve_custom_label(button.label, env);
         let action: Rc<RefCell<BoxedAction<()>>> = Rc::new(RefCell::new(Box::new(button.action)));
-        AnyView::new(compose_custom_button(
+        compose_custom_button(
             &button.style.0,
             label,
             &a11y_label,
@@ -806,7 +864,7 @@ impl<S: CustomButtonStyle> SealedButtonStyle for CustomButton<S> {
             button.role,
             button.size,
             env,
-        ))
+        )
     }
 
     fn dispatch_button<B, L, Action>(
@@ -838,11 +896,11 @@ impl<S: CustomButtonStyle> SealedButtonStyle for CustomButton<S> {
         &self,
         target: ButtonStyleTarget,
         env: &Environment,
-    ) -> Result<AnyView, ButtonStyleTarget> {
+    ) -> Result<impl View, ButtonStyleTarget> {
         let data = *target.0;
         let a11y_label = data.label.accessibility_label();
         let label = ButtonLabel(AnyView::new(data.label));
-        Ok(AnyView::new(compose_custom_button(
+        Ok(compose_custom_button(
             &self.0,
             label,
             &a11y_label,
@@ -850,21 +908,19 @@ impl<S: CustomButtonStyle> SealedButtonStyle for CustomButton<S> {
             data.role,
             data.size,
             env,
-        )))
+        ))
     }
 }
 
 impl<S: PrimitiveButtonStyle> SealedButtonStyle for PrimitiveButton<S> {
-    type Body = AnyView;
-
-    fn button_body<L, Action>(button: Button<L, Action, Self>, env: &Environment) -> Self::Body
+    fn button_body<L, Action>(button: Button<L, Action, Self>, env: &Environment) -> impl View
     where
         L: LabelKind,
         Action: FnMut(&Environment) -> Result<(), ExtractionError> + 'static,
     {
         let (label, a11y_label) = resolve_custom_label(button.label, env);
         let action: Rc<RefCell<BoxedAction<()>>> = Rc::new(RefCell::new(Box::new(button.action)));
-        AnyView::new(compose_primitive_button(
+        compose_primitive_button(
             &button.style.0,
             label,
             &a11y_label,
@@ -872,7 +928,7 @@ impl<S: PrimitiveButtonStyle> SealedButtonStyle for PrimitiveButton<S> {
             button.role,
             button.size,
             env,
-        ))
+        )
     }
 
     fn dispatch_button<B, L, Action>(
@@ -904,11 +960,11 @@ impl<S: PrimitiveButtonStyle> SealedButtonStyle for PrimitiveButton<S> {
         &self,
         target: ButtonStyleTarget,
         env: &Environment,
-    ) -> Result<AnyView, ButtonStyleTarget> {
+    ) -> Result<impl View, ButtonStyleTarget> {
         let data = *target.0;
         let a11y_label = data.label.accessibility_label();
         let label = ButtonLabel(AnyView::new(data.label));
-        Ok(AnyView::new(compose_primitive_button(
+        Ok(compose_primitive_button(
             &self.0,
             label,
             &a11y_label,
@@ -916,7 +972,7 @@ impl<S: PrimitiveButtonStyle> SealedButtonStyle for PrimitiveButton<S> {
             data.role,
             data.size,
             env,
-        )))
+        ))
     }
 }
 
@@ -1017,7 +1073,7 @@ impl<S: 'static> ButtonStylePending<S> {
 /// Configuration for a button component.
 ///
 /// This struct contains all the data needed to render a button on native platforms.
-/// It is produced by [`ConfigurableView::config`] and consumed by the native backend.
+/// It is produced by [`Button::config`] and consumed by the native backend.
 ///
 /// # Layout Behavior
 ///
@@ -1199,30 +1255,28 @@ where
     }
 }
 
-impl<S: View> ViewConfiguration for ButtonConfig<S> {
-    type View = Button<ControlLabel<S>, BoxedAction<()>>;
-
-    fn render(self) -> Self::View {
-        let mode = self.label.display_mode_preference();
-        Button {
-            label: Label::from_control_label(self.label, mode),
-            action: self.action,
-            style: self.style,
-            explicit_style: self.explicit_style,
-            role: self.role,
-            size: self.size,
+impl<S: View> From<ButtonConfig<S>> for Button<ControlLabel<S>, BoxedAction<()>> {
+    fn from(value: ButtonConfig<S>) -> Self {
+        let mode = value.label.display_mode_preference();
+        Self {
+            label: Label::from_control_label(value.label, mode),
+            action: value.action,
+            style: value.style,
+            explicit_style: value.explicit_style,
+            role: value.role,
+            size: value.size,
         }
     }
 }
 
-impl<L, Action> ConfigurableView for Button<L, Action, ButtonStyle>
+impl<L, Action> Button<L, Action>
 where
     L: LabelKind,
     Action: FnMut(&Environment) -> Result<(), ExtractionError> + 'static,
 {
-    type Config = ButtonConfig<Label<L>>;
-
-    fn config(self) -> Self::Config {
+    /// Returns the configuration for this button.
+    #[must_use]
+    pub fn config(self) -> ButtonConfig<Label<L>> {
         ButtonConfig {
             label: self.label.into_unscoped_control_label(),
             action: Box::new(self.action),
@@ -1590,16 +1644,15 @@ pub fn button<L: IntoLabel>(label: L) -> Button<L::Kind, NoAction> {
 mod tests {
     use super::*;
     use waterui_core::Signal;
-    use waterui_core::view::{ConfigurableView, ViewConfiguration};
 
     #[test]
     fn menu_command_preserves_label_through_config_render_roundtrip() {
         crate::init_test_executor();
-        let rendered =
+        let rendered = Button::from(
             button(crate::label::label("Edit").icon(waterui_icon::system_icon::search()))
                 .action(|| {})
-                .config()
-                .render();
+                .config(),
+        );
         let command: crate::menu::Command = rendered.into();
         assert_eq!(
             command
@@ -1624,12 +1677,12 @@ mod tests {
         crate::init_test_executor();
         // Calling .accessibility_label("X") must rewrite the spoken text
         // while preserving the visible text and icon attached at construction time.
-        let rendered =
+        let rendered = Button::from(
             button(crate::label::label("Edit").icon(waterui_icon::system_icon::search()))
                 .accessibility_label("Edit document")
                 .action(|| {})
-                .config()
-                .render();
+                .config(),
+        );
         let command: crate::menu::Command = rendered.into();
         assert_eq!(
             command
@@ -1694,7 +1747,10 @@ mod custom_style_tests {
     }
 
     impl CustomButtonStyle for RecordingCustomStyle {
-        fn make_body<L: View>(&self, configuration: ButtonStyleConfiguration<L>) -> impl View {
+        fn make_body<L: View>(
+            &self,
+            configuration: ButtonStyleConfiguration<L>,
+        ) -> impl View + use<L> {
             *self.recorded.borrow_mut() = Some(RecordedConfig {
                 role: configuration.role(),
                 size: configuration.size(),
@@ -1704,7 +1760,7 @@ mod custom_style_tests {
                 focused: configuration.is_focused(),
                 interaction: configuration.interaction_state().clone(),
             });
-            configuration.label
+            configuration.into_label()
         }
     }
 
@@ -1723,14 +1779,14 @@ mod custom_style_tests {
         fn make_body<L: View>(
             &self,
             configuration: PrimitiveButtonStyleConfiguration<L>,
-        ) -> impl View {
+        ) -> impl View + use<L> {
             *self.recorded.borrow_mut() = Some(RecordedPrimitiveConfig {
                 role: configuration.role(),
                 size: configuration.size(),
                 disabled: configuration.is_disabled(),
             });
-            *self.trigger_slot.borrow_mut() = Some(configuration.trigger.clone());
-            configuration.label
+            *self.trigger_slot.borrow_mut() = Some(configuration.trigger().clone());
+            configuration.into_label()
         }
     }
 

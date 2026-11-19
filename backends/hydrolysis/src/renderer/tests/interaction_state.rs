@@ -411,10 +411,10 @@ impl waterui::component::button::CustomButtonStyle for TestButtonStyle {
     fn make_body<L: waterui::View>(
         &self,
         configuration: waterui::component::button::ButtonStyleConfiguration<L>,
-    ) -> impl waterui::View {
+    ) -> impl waterui::View + use<L> {
         *self.state_out.borrow_mut() = Some(configuration.interaction_state().clone());
         configuration
-            .label
+            .into_label()
             .width(120.0)
             .height(44.0)
             .background(Color::srgb_hex("#2563EB"))
@@ -429,17 +429,18 @@ impl waterui::component::toggle::CustomToggleStyle for TestToggleStyle {
     fn make_body<L: waterui::View>(
         &self,
         configuration: waterui::component::toggle::ToggleStyleConfiguration<L>,
-    ) -> impl waterui::View {
+    ) -> impl waterui::View + use<L> {
         *self.state_out.borrow_mut() = Some(configuration.interaction_state().clone());
+        let bg = waterui::color::signal_color(nami::SignalExt::select(
+            configuration.is_on(),
+            Color::srgb_hex("#16A34A"),
+            Color::srgb_hex("#52525B"),
+        ));
         configuration
-            .label
+            .into_label()
             .width(120.0)
             .height(44.0)
-            .background(waterui::color::signal_color(nami::SignalExt::select(
-                &configuration.is_on,
-                Color::srgb_hex("#16A34A"),
-                Color::srgb_hex("#52525B"),
-            )))
+            .background(bg)
     }
 }
 

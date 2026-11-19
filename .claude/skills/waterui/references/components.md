@@ -359,10 +359,10 @@ hidden label are content-sized.
 Implement `CustomButtonStyle`, `PrimitiveButtonStyle`, or `CustomToggleStyle`, and pass an
 instance either to a single control with `.style(..)` or to an entire subtree with
 `.button_style(..)` / `.toggle_style(..)`. `CustomButtonStyle` and `CustomToggleStyle`
-receive the semantic `configuration.label`, interaction-state signals (`is_pressed()`,
-`is_hovered()`, `is_focused()`, `is_disabled()`, `interaction_state()`), `role()` / `is_on`,
+receive the semantic `label()` / `into_label()`, interaction-state signals (`is_pressed()`,
+`is_hovered()`, `is_focused()`, `is_disabled()`, `interaction_state()`), `role()` / `is_on()`,
 and automatically preserve tap activation, disabled gating, and accessibility semantics;
-`PrimitiveButtonStyle` receives `configuration.trigger` so the style owns its gesture.
+`PrimitiveButtonStyle` receives `trigger()` so the style owns its gesture.
 An explicit `.style(..)` on a control wins over an enclosing subtree hook, and an inner
 `.button_style(ButtonStyle::Bordered)` or `.toggle_style(ToggleStyle::Checkbox)` overrides
 an outer custom style.
@@ -375,7 +375,7 @@ use waterui::shape::Capsule;
 struct PillButtonStyle;
 
 impl CustomButtonStyle for PillButtonStyle {
-    fn make_body<L: View>(&self, configuration: ButtonStyleConfiguration<L>) -> impl View {
+    fn make_body<L: View>(&self, configuration: ButtonStyleConfiguration<L>) -> impl View + use<L> {
         let base = if configuration.role() == Some(ButtonRole::Destructive) {
             Color::new(Error)
         } else {
@@ -385,7 +385,7 @@ impl CustomButtonStyle for PillButtonStyle {
             .is_pressed()
             .select(Color::new(Accent), base);
         configuration
-            .label
+            .into_label()
             .padding_with((8.0, 16.0))
             .background(signal_color(bg))
             .clip(Capsule)
@@ -398,10 +398,10 @@ impl PrimitiveButtonStyle for DoubleTapButtonStyle {
     fn make_body<L: View>(
         &self,
         configuration: PrimitiveButtonStyleConfiguration<L>,
-    ) -> impl View {
-        let trigger = configuration.trigger.clone();
+    ) -> impl View + use<L> {
+        let trigger = configuration.trigger().clone();
         configuration
-            .label
+            .into_label()
             .padding_with((8.0, 16.0))
             .gesture(TapGesture::repeat(2), move || trigger.trigger())
     }
@@ -410,17 +410,16 @@ impl PrimitiveButtonStyle for DoubleTapButtonStyle {
 struct PillToggleStyle;
 
 impl CustomToggleStyle for PillToggleStyle {
-    fn make_body<L: View>(&self, configuration: ToggleStyleConfiguration<L>) -> impl View {
+    fn make_body<L: View>(&self, configuration: ToggleStyleConfiguration<L>) -> impl View + use<L> {
+        let bg = configuration
+            .is_on()
+            .select(Color::new(Accent), Color::new(SurfaceVariant));
         hstack((
-            configuration.label,
+            configuration.into_label(),
             spacer(),
-            signal_color(
-                configuration
-                    .is_on
-                    .select(Color::new(Accent), Color::new(SurfaceVariant)),
-            )
-            .size(44.0, 26.0)
-            .clip(Capsule),
+            signal_color(bg)
+                .size(44.0, 26.0)
+                .clip(Capsule),
         ))
     }
 }

@@ -68,6 +68,9 @@ use crate::{
 };
 #[cfg(feature = "std")]
 use waterkit_haptic::{Haptic, Intensity};
+use waterui_controls::button::{ButtonStyleHook, IntoButtonStyle};
+#[cfg(feature = "toggle")]
+use waterui_controls::toggle::{IntoToggleStyle, ToggleStyleHook};
 use waterui_core::event::{Event, LifeCycle, LifeCycleHook, OnChange, OnEvent};
 use waterui_core::id::TaggedView;
 use waterui_core::interaction::{Disabled, InteractionReport, InteractionState, Selected};
@@ -224,19 +227,11 @@ pub trait ViewExt: View + Sized {
     fn button_style<S, Marker>(
         self,
         style: S,
-    ) -> hook::Hooks<
-        Self,
-        waterui_controls::button::ButtonStyleHook<
-            <S as waterui_controls::button::IntoButtonStyle<Marker>>::Style,
-        >,
-    >
+    ) -> hook::Hooks<Self, ButtonStyleHook<<S as IntoButtonStyle<Marker>>::Style>>
     where
-        S: waterui_controls::button::IntoButtonStyle<Marker>,
+        S: IntoButtonStyle<Marker>,
     {
-        hook::Hooks::new(
-            self,
-            waterui_controls::button::ButtonStyleHook::new(style.into_button_style()),
-        )
+        hook::Hooks::new(self, ButtonStyleHook::new(style.into_button_style()))
     }
 
     /// Styles all [`Toggle`](crate::component::toggle::Toggle) views in this subtree
@@ -248,19 +243,11 @@ pub trait ViewExt: View + Sized {
     fn toggle_style<S, Marker>(
         self,
         style: S,
-    ) -> hook::Hooks<
-        Self,
-        waterui_controls::toggle::ToggleStyleHook<
-            <S as waterui_controls::toggle::IntoToggleStyle<Marker>>::Style,
-        >,
-    >
+    ) -> hook::Hooks<Self, ToggleStyleHook<<S as IntoToggleStyle<Marker>>::Style>>
     where
-        S: waterui_controls::toggle::IntoToggleStyle<Marker>,
+        S: IntoToggleStyle<Marker>,
     {
-        hook::Hooks::new(
-            self,
-            waterui_controls::toggle::ToggleStyleHook::new(style.into_toggle_style()),
-        )
+        hook::Hooks::new(self, ToggleStyleHook::new(style.into_toggle_style()))
     }
 
     /// Sets this view as the content of a navigation view with the specified title.

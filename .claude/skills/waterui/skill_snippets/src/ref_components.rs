@@ -544,7 +544,10 @@ pub fn components_custom_control_styles() {
     struct PillButtonStyle;
 
     impl CustomButtonStyle for PillButtonStyle {
-        fn make_body<L: View>(&self, configuration: ButtonStyleConfiguration<L>) -> impl View {
+        fn make_body<L: View>(
+            &self,
+            configuration: ButtonStyleConfiguration<L>,
+        ) -> impl View + use<L> {
             let base = if configuration.role() == Some(ButtonRole::Destructive) {
                 Color::new(Error)
             } else {
@@ -552,7 +555,7 @@ pub fn components_custom_control_styles() {
             };
             let bg = configuration.is_pressed().select(Color::new(Accent), base);
             configuration
-                .label
+                .into_label()
                 .padding_with((8.0, 16.0))
                 .background(signal_color(bg))
                 .clip(Capsule)
@@ -565,10 +568,10 @@ pub fn components_custom_control_styles() {
         fn make_body<L: View>(
             &self,
             configuration: PrimitiveButtonStyleConfiguration<L>,
-        ) -> impl View {
-            let trigger = configuration.trigger.clone();
+        ) -> impl View + use<L> {
+            let trigger = configuration.trigger().clone();
             configuration
-                .label
+                .into_label()
                 .padding_with((8.0, 16.0))
                 .gesture(TapGesture::repeat(2), move || trigger.trigger())
         }
@@ -577,17 +580,17 @@ pub fn components_custom_control_styles() {
     struct PillToggleStyle;
 
     impl CustomToggleStyle for PillToggleStyle {
-        fn make_body<L: View>(&self, configuration: ToggleStyleConfiguration<L>) -> impl View {
+        fn make_body<L: View>(
+            &self,
+            configuration: ToggleStyleConfiguration<L>,
+        ) -> impl View + use<L> {
+            let (label, is_on, _, _) = configuration.into_parts();
             hstack((
-                configuration.label,
+                label,
                 spacer(),
-                signal_color(
-                    configuration
-                        .is_on
-                        .select(Color::new(Accent), Color::new(SurfaceVariant)),
-                )
-                .size(44.0, 26.0)
-                .clip(Capsule),
+                signal_color(is_on.select(Color::new(Accent), Color::new(SurfaceVariant)))
+                    .size(44.0, 26.0)
+                    .clip(Capsule),
             ))
         }
     }

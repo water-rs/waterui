@@ -1523,9 +1523,12 @@ mod tests {
         }
 
         impl CustomButtonStyle for TaggedButtonStyle {
-            fn make_body<L: View>(&self, configuration: ButtonStyleConfiguration<L>) -> impl View {
+            fn make_body<L: View>(
+                &self,
+                configuration: ButtonStyleConfiguration<L>,
+            ) -> impl View + use<L> {
                 self.seen_roles.borrow_mut().push(configuration.role());
-                scroll(configuration.label)
+                scroll(configuration.into_label())
             }
         }
 
@@ -1535,8 +1538,8 @@ mod tests {
             fn make_body<L: View>(
                 &self,
                 configuration: PrimitiveButtonStyleConfiguration<L>,
-            ) -> impl View {
-                configuration.label
+            ) -> impl View + use<L> {
+                configuration.into_label()
             }
         }
 
@@ -1620,9 +1623,12 @@ mod tests {
         }
 
         impl CustomButtonStyle for TaggedButtonStyle {
-            fn make_body<L: View>(&self, configuration: ButtonStyleConfiguration<L>) -> impl View {
+            fn make_body<L: View>(
+                &self,
+                configuration: ButtonStyleConfiguration<L>,
+            ) -> impl View + use<L> {
                 *self.seen.borrow_mut() += 1;
-                scroll(configuration.label)
+                scroll(configuration.into_label())
             }
         }
 
@@ -1667,9 +1673,12 @@ mod tests {
         }
 
         impl CustomToggleStyle for CustomToggleMarkerStyle {
-            fn make_body<L: View>(&self, configuration: ToggleStyleConfiguration<L>) -> impl View {
+            fn make_body<L: View>(
+                &self,
+                configuration: ToggleStyleConfiguration<L>,
+            ) -> impl View + use<L> {
                 *self.seen.borrow_mut() += 1;
-                scroll(configuration.label)
+                scroll(configuration.into_label())
             }
         }
 
