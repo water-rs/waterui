@@ -213,6 +213,10 @@ fn drive(
                 // `drive` lent `env` for its frame; this closure is the
                 // only consumer and runs once, on the main thread.
                 let env = &mut *env_ptr;
+                #[cfg(any(
+                    feature = "webview",
+                    all(target_os = "macos", feature = "webview-cef")
+                ))]
                 crate::embedding::install_services(env);
                 let env = compose(env.clone());
                 #[cfg(any(feature = "webview", all(target_os = "macos", feature = "webview-cef")))]

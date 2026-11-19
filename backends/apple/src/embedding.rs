@@ -234,9 +234,8 @@ impl Drop for Mount {
     }
 }
 
+#[cfg(any(feature = "webview", all(target_os = "macos", feature = "webview-cef")))]
 pub(crate) fn install_services(env: &mut Environment) {
-    let _ = env;
-    #[cfg(any(feature = "webview", all(target_os = "macos", feature = "webview-cef")))]
     crate::components::webview::install_service(env);
 }
 
@@ -329,6 +328,7 @@ pub unsafe fn mount<W: Windows>(
     runtime.fonts.borrow_mut().register_bundle_fonts(&resources);
     env.insert(resources);
     crate::dispatch::install(&mut env);
+    #[cfg(any(feature = "webview", all(target_os = "macos", feature = "webview-cef")))]
     install_services(&mut env);
 
     let mut keepalive = KeepAlive::default();
