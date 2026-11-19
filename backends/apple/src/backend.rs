@@ -161,6 +161,23 @@ impl NativeBackend for AppleBackend {
         crate::components::dynamic::realize_dynamic(native, &self.entry(env))
     }
 
+    fn window<C: ChildView<Self>>(
+        &mut self,
+        native: waterui::window::Window<waterui::window::WindowSlot<C>, Option<C>>,
+        env: &Environment,
+        (): (),
+    ) -> NativeLeaf {
+        mark_reached!("window");
+        #[cfg(target_os = "macos")]
+        crate::windows::show_from_tree(native, env, self.mtm);
+        #[cfg(target_os = "ios")]
+        {
+            let _ = native;
+            crate::windows::show_unsupported_on_ios();
+        }
+        crate::components::empty::realize_empty((), &RenderContext::entry(env, self.mtm))
+    }
+
     fn shape(
         &mut self,
         native: waterui::shape::ResolvedShape,

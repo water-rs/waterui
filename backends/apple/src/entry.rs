@@ -80,17 +80,15 @@ mod imp {
             .expect("GPU completion must run exactly once");
         // SAFETY: `run` lent `env` for the process and never returned.
         let env = unsafe { &mut *launch.env };
-        crate::windows::install_manager(env);
+        #[cfg(any(feature = "webview", all(target_os = "macos", feature = "webview-cef")))]
+        crate::components::webview::install_service(env);
         let parts = app(env.clone()).into_parts();
         // Content renders under the environment `app` returned: its own
-        // installs (`install_chromium`, `.state(..)` chains) landed as
-        // overlays on the clone it was handed, which the host env cannot
-        // see — `insert` never propagates between clones.
+        // installs (`.state(..)` chains) landed as overlays on the clone it
+        // was handed, which the host env cannot see — `insert` never
+        // propagates between clones.
         let mut app_env = parts.env;
-        // The web view controller fills its slot late and only when the
-        // `webview` port is enabled — an application bundling its own
-        // engine installed it during `app(env)`.
-        #[cfg(feature = "webview")]
+        #[cfg(any(feature = "webview", all(target_os = "macos", feature = "webview-cef")))]
         crate::components::webview::install_service(&mut app_env);
         // The machine installs the `Quit` service into `app_env` before the
         // menus and windows realize under it, so a `|quit: Quit|` action
@@ -98,6 +96,7 @@ mod imp {
         // renders as the standard Quit item, whose `terminate:` reaches the
         // machine through `applicationShouldTerminate:`.
         let session = Session::start(parts.termination, &mut app_env, parts.last_window, mtm);
+        crate::windows::install_root_environment(&mut app_env);
         assert!(
             launch.termination.set(session).is_ok(),
             "`prepared` consumes the one-shot `Launch`, so the termination slot is still empty"
@@ -115,11 +114,12 @@ mod imp {
             &parts.menu_bar,
             &app_env,
         ));
-        if parts.windows.is_empty() {
+        let initial = crate::windows::connect_windows(parts.windows, &app_env);
+        if initial.is_empty() {
             // A zero-window application acts on its policy at launch.
             session.no_window_left();
         } else {
-            for window in crate::windows::root_windows(parts.windows) {
+            for window in initial {
                 let host = crate::windows::realize_root(window, &app_env, mtm);
                 crate::windows::track(host);
             }
@@ -171,6 +171,7 @@ mod imp {
                 // Install native services only after the GPU context is ready.
                 unsafe {
                     crate::gpu_runtime::prepare(env_ptr, move || {
+                        #[cfg(any(feature = "webview", all(target_os = "macos", feature = "webview-cef")))]
                         crate::embedding::install_services(&mut *env_ptr);
                         prepared::<F, W>(Box::into_raw(launch).cast::<c_void>());
                     });
@@ -243,13 +244,9 @@ mod imp {
             .expect("GPU completion must run exactly once");
         // SAFETY: `run` lent `env` for the process and never returned.
         let env = unsafe { &mut *launch.env };
-        crate::windows::install_manager(env);
+        #[cfg(any(feature = "webview", all(target_os = "macos", feature = "webview-cef")))]
+        crate::components::webview::install_service(env);
         let parts = app(env.clone()).into_parts();
-        if parts.windows.is_empty() {
-            waterui::contract_violation!(
-                "an iOS application must declare at least one window; the app shows no window"
-            );
-        }
         // iOS ends the process without notice, so `on_quit_request` and
         // `on_terminate` are never called: the machine is never started and
         // no `Quit` is installed, so extracting `Quit` fails here.
@@ -260,11 +257,14 @@ mod imp {
         // nothing borrows `app_env` mutably.
         #[allow(unused_mut)]
         let mut app_env = parts.env;
-        // The web view controller fills its slot late and only when the
-        // `webview` port is enabled — an application bundling its own
-        // engine installed it during `app(env)`.
-        #[cfg(feature = "webview")]
+        #[cfg(any(feature = "webview", all(target_os = "macos", feature = "webview-cef")))]
         crate::components::webview::install_service(&mut app_env);
+        let initial = crate::windows::connect_windows(parts.windows, &app_env);
+        if initial.is_empty() {
+            waterui::contract_violation!(
+                "an iOS application must declare at least one window; the app shows no window"
+            );
+        }
         // `installMenuBar`: `declared` feeds the `build_menus` handler the
         // delegate registered at launch; the watch rebuilds on every change.
         // The guard lives for the process.
@@ -274,13 +274,7 @@ mod imp {
             &app_env,
             &launch.declared,
         ));
-        crate::windows::declare(
-            &launch.scenes.state,
-            crate::windows::root_windows(parts.windows),
-            &app_env,
-            0,
-            mtm,
-        );
+        crate::windows::declare(&launch.scenes.state, initial, &app_env, 0, mtm);
         core::mem::forget(launch);
     }
 
@@ -335,6 +329,10 @@ mod imp {
             // Install native services only after the GPU context is ready.
             unsafe {
                 crate::gpu_runtime::prepare(env_ptr, move || {
+                    #[cfg(any(
+                        feature = "webview",
+                        all(target_os = "macos", feature = "webview-cef")
+                    ))]
                     crate::embedding::install_services(&mut *env_ptr);
                     prepared::<F, W>(Box::into_raw(launch).cast::<c_void>());
                 });

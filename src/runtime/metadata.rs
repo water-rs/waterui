@@ -341,6 +341,7 @@ pub mod context_menu {
         use waterui_core::{
             AnyView, Environment, Metadata, View,
             backend::{Backend, ChildSlot, peel_metadata},
+            env::With,
             metadata::MetadataKey,
             view::hook::{HookList, HookableView},
         };
@@ -461,7 +462,7 @@ pub mod context_menu {
             );
             let accessory_id = resolved.accessory.expect("accessory present").0;
             assert_ne!(accessory_id, TypeId::of::<AnyView>());
-            assert_eq!(accessory_id, TypeId::of::<Metadata<Environment, ()>>(),);
+            assert_eq!(accessory_id, TypeId::of::<With<(), DismissContextMenu>>());
         }
     }
 }

@@ -15,7 +15,7 @@ use crate::component::{
     label::SemanticLabel,
     menu::{CloseWindowChord, Menu, MenuBarView},
 };
-use crate::window::{AnyWindow, Window, WindowContent};
+use crate::window::{AnyWindow, Window, WindowChannel, WindowContent, WindowToolbar};
 
 pub use crate::runtime::termination::{
     Quit, Termination, TerminationHandle, TerminationHost, TerminationKind,
@@ -78,33 +78,42 @@ pub enum LastWindowPolicy {
     StayResident,
 }
 
-/// The windows an application declares, in declaration order, each keeping
-/// its content's type up to the runner that opens it.
+/// The windows and runtime window channels an application declares, in
+/// declaration order, each keeping its content's type up to the runner that
+/// opens it.
 ///
-/// A single [`Window`], a tuple of windows (nesting included, which is what
-/// [`App::window`] builds), an array or a `Vec` of windows of one type, and
-/// `()` for none are window sets.
+/// A single [`Window`], a [`WindowChannel`] paired with a
+/// [`WindowManager`](crate::window::WindowManager), a tuple of window sets
+/// (nesting included, which is what [`App::window`] builds), an array or a
+/// `Vec` of windows of one type, and `()` for none are window sets.
 pub trait Windows: 'static {
-    /// How many windows the set holds.
+    /// How many startup windows the set currently holds.
     fn len(&self) -> usize;
 
-    /// Whether the set holds no window.
+    /// Whether the set holds no startup window.
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
-    /// Hands each window to `sink`, in declaration order.
+    /// Hands each window and runtime window channel to `sink`, in declaration
+    /// order.
     fn for_each<S: WindowSink>(self, sink: &mut S);
 
-    /// The windows with their content types erased, in declaration order.
+    /// The startup windows with their content types erased, in declaration
+    /// order.
     fn erase(self) -> Vec<AnyWindow>
     where
         Self: Sized,
     {
         struct Erase(Vec<AnyWindow>);
         impl WindowSink for Erase {
-            fn window<C: ViewBuilder>(&mut self, window: Window<C>) {
+            fn window<C: ViewBuilder, T: WindowToolbar>(&mut self, window: Window<C, T>) {
                 self.0.push(window.erase());
+            }
+
+            fn channel<C: ViewBuilder, T: WindowToolbar>(&mut self, channel: WindowChannel<C, T>) {
+                self.0
+                    .extend(channel.drain().into_iter().map(Window::erase));
             }
         }
         let mut erase = Erase(Vec::with_capacity(self.len()));
@@ -113,14 +122,17 @@ pub trait Windows: 'static {
     }
 }
 
-/// Receives an application's windows one at a time, each with its own
-/// content type.
+/// Receives an application's startup windows and runtime window channels, each
+/// with its own content and toolbar types.
 ///
-/// A runner implements it to turn each window into the form it holds, so the
-/// content dispatches statically below the window.
+/// A runner implements it to turn each window and channel into the form it
+/// holds, so the content and toolbar dispatch statically below the window.
 pub trait WindowSink {
-    /// Receives the next window.
-    fn window<C: ViewBuilder>(&mut self, window: Window<C>);
+    /// Receives the next startup window.
+    fn window<C: ViewBuilder, T: WindowToolbar>(&mut self, window: Window<C, T>);
+
+    /// Connects a channel of windows opened while the application runs.
+    fn channel<C: ViewBuilder, T: WindowToolbar>(&mut self, channel: WindowChannel<C, T>);
 }
 
 impl Windows for () {
@@ -131,7 +143,7 @@ impl Windows for () {
     fn for_each<S: WindowSink>(self, _sink: &mut S) {}
 }
 
-impl<C: ViewBuilder> Windows for Window<C> {
+impl<C: ViewBuilder, T: WindowToolbar> Windows for Window<C, T> {
     fn len(&self) -> usize {
         1
     }
@@ -141,7 +153,17 @@ impl<C: ViewBuilder> Windows for Window<C> {
     }
 }
 
-impl<C: ViewBuilder> Windows for Vec<Window<C>> {
+impl<C: ViewBuilder, T: WindowToolbar> Windows for WindowChannel<C, T> {
+    fn len(&self) -> usize {
+        self.queued_len()
+    }
+
+    fn for_each<S: WindowSink>(self, sink: &mut S) {
+        sink.channel(self);
+    }
+}
+
+impl<C: ViewBuilder, T: WindowToolbar> Windows for Vec<Window<C, T>> {
     fn len(&self) -> usize {
         self.as_slice().len()
     }
@@ -153,7 +175,7 @@ impl<C: ViewBuilder> Windows for Vec<Window<C>> {
     }
 }
 
-impl<C: ViewBuilder, const N: usize> Windows for [Window<C>; N] {
+impl<C: ViewBuilder, T: WindowToolbar, const N: usize> Windows for [Window<C, T>; N] {
     fn len(&self) -> usize {
         N
     }
@@ -320,11 +342,11 @@ impl<W: Windows> App<W> {
         &mut self.windows
     }
 
-    /// Add a window to the application.
+    /// Add a window or [`WindowChannel`] to the application.
     ///
     /// Use this for multi-window applications on platforms that support it.
     #[must_use]
-    pub fn window<C: ViewBuilder>(self, window: Window<C>) -> App<(W, Window<C>)> {
+    pub fn window<N: Windows>(self, window: N) -> App<(W, N)> {
         let Self {
             windows,
             last_window,

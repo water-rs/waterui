@@ -50,7 +50,10 @@ fn main() {
     // `--cfg trybuild -A dead_code`, so a `dead_code` expectation cannot be
     // fulfilled there.
     println!("cargo:rustc-check-cfg=cfg(trybuild)");
+    configure_cfg_aliases();
+}
 
+fn configure_cfg_aliases() {
     cfg_aliases! {
         // Where hosted content exists: the targets on which `cherenkov-gpu`
         // implements `HostedLayers`, whose plane shows a platform object.
@@ -120,6 +123,19 @@ fn main() {
         hydrolysis_system_webview: {
             any(hydrolysis_macos_system_webview, hydrolysis_web_system_webview)
         },
+        // Bundled CEF engine realizing `WebView` on desktop targets.
+        hydrolysis_cef_webview: {
+            all(feature = "webview-cef", any(target_os = "macos", target_os = "linux", target_os = "windows"))
+        },
+        // Bundled WPE WebKit engine realizing `WebView` on Linux.
+        hydrolysis_wpe_webview: {
+            all(feature = "webview-wpe", target_os = "linux")
+        },
+        // Any non-Android web engine wired into `install_platform_services` and
+        // `NativeBackend::web_view`.
+        hydrolysis_webview_engine: {
+            any(hydrolysis_system_webview, hydrolysis_cef_webview, hydrolysis_wpe_webview)
+        },
         // The built-in localized strings: the controls that draw them, and the
         // list and navigation chrome that name accessibility nodes with them.
         hydrolysis_localization: {
@@ -144,7 +160,7 @@ fn main() {
             all(feature = "video-gpu", not(target_arch = "wasm32"))
         },
         hydrolysis_platform_services: {
-            any(hydrolysis_localization, hydrolysis_system_webview)
+            any(hydrolysis_localization, hydrolysis_webview_engine)
         },
         // The persistent pipeline cache serialises through `std::fs` into a
         // platform cache directory; targets without that filesystem contract

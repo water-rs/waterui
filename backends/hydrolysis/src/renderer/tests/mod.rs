@@ -148,6 +148,7 @@ use waterui::gesture::{DragGesture, GestureObserver, MagnificationGesture};
 use waterui::interaction::InteractionState;
 use waterui::prelude::text;
 use waterui::style::FloatingStyle;
+use waterui::widget::Divider;
 use waterui::{Binding, Color, Computed, Signal, SignalExt as _, ViewExt as _};
 use waterui_controls::button::button;
 use waterui_controls::label::{LabelDisplayMode, label};
@@ -159,8 +160,8 @@ use waterui_form::picker::PickerStyle;
 #[cfg(feature = "accessibility")]
 use waterui_form::picker::{Picker, color::ColorPicker, date::DatePicker};
 use waterui_graphics::canvas::Canvas;
+use waterui_layout::scroll;
 use waterui_layout::stack::{VStackLayout, hstack, vstack, zstack};
-use waterui_layout::{Divider, scroll};
 #[cfg(feature = "accessibility")]
 use waterui_navigation::NavigationView;
 #[cfg(feature = "accessibility")]
@@ -1344,7 +1345,7 @@ fn a_segmented_picker_takes_the_width_it_is_offered() {
     let mut measure = |style, width: Option<f32>| {
         let mut node = crate::widgets::controls::picker::PickerRenderState::from_config(
             waterui_core::backend::MapSlots::map_slots(
-                waterui_core::view::ConfigurableView::config(picker(style)),
+                picker(style).config(),
                 waterui_core::backend::ChildSlot::from_view,
             ),
         );
@@ -1799,7 +1800,7 @@ fn a_label_reaches_the_view_a_hook_realizes() {
 /// controller permits it — but on a build bridging no engine there is nothing
 /// to draw it with, and the backend fails rather than occupying a layout slot
 /// with no page behind it.
-#[cfg(not(hydrolysis_system_webview))]
+#[cfg(not(any(hydrolysis_webview_engine, hydrolysis_android_system_webview)))]
 #[test]
 #[cfg_attr(debug_assertions, should_panic(expected = "no web engine is bridged"))]
 fn a_webview_with_no_engine_to_draw_it_is_reported_and_not_drawn() {

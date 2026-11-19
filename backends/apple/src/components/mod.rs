@@ -108,6 +108,6 @@ pub mod transition;
 #[cfg(any(feature = "video", feature = "video_player"))]
 pub mod video;
 pub mod view_renderer;
-#[cfg(feature = "webview")]
+#[cfg(any(feature = "webview", all(target_os = "macos", feature = "webview-cef")))]
 pub mod webview;
 pub mod with_env;

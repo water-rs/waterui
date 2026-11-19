@@ -328,8 +328,8 @@ fn trials() -> Vec<Trial> {
     #[cfg(all(target_os = "macos", feature = "native-test"))]
     {
         tests.extend([
-            Trial::test("window::manager_installs_into_the_environment", || {
-                window::manager_installs_into_the_environment(mtm());
+            Trial::test("window::channel_connects_typed_declarations", || {
+                window::channel_connects_typed_declarations(mtm());
                 Ok(())
             }),
             Trial::test("window::a_declared_window_realizes_its_declaration", || {
@@ -2366,7 +2366,7 @@ mod tabs {
 #[cfg(all(target_os = "macos", feature = "native-test"))]
 mod window {
     pub use waterui_apple::native_test_support::{
-        a_declared_window_realizes_its_declaration, manager_installs_into_the_environment,
+        a_declared_window_realizes_its_declaration, channel_connects_typed_declarations,
     };
 }
 
@@ -4254,7 +4254,7 @@ mod gpu_surface {
             GpuRuntime, HostedLayerError, install_service, scene_engine,
         };
         use waterui_backend_core::AnyView;
-        use waterui_core::view_renderer::{RenderError, RenderRequest, ViewRenderer};
+        use waterui_capture::view_renderer::{RenderError, RenderRequest, ViewRenderer};
         use waterui_graphics::backend::cherenkov::SurfaceError;
 
         let (runtime, mut env) = pollster::block_on(async {
@@ -4331,7 +4331,7 @@ mod gpu_surface {
         use waterui_apple::native_test_support::gpu_surface::{fixture_env, fixture_scene_view};
         use waterui_apple::native_test_support::view_renderer::{GpuRuntime, install_service};
         use waterui_backend_core::AnyView;
-        use waterui_core::view_renderer::{RenderRequest, ViewRenderer};
+        use waterui_capture::view_renderer::{RenderRequest, ViewRenderer};
 
         let (_runtime, mut env) = pollster::block_on(async {
             let runtime = GpuRuntime::new().await.map_err(|error| error.to_string())?;
