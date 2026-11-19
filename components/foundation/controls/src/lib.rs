@@ -12,7 +12,10 @@ pub(crate) fn init_test_executor() {
 
 pub mod input;
 pub mod label;
-pub use label::{IconPosition, IntoLabel, Label, LabelDisplayMode, label};
+pub use label::{
+    Built, ControlLabel, CustomLabel, ErasedLabel, IconLabel, IconPosition, IntoLabel, Label,
+    LabelDisplayMode, LabelKind, SemanticLabel, TitleLabel, label,
+};
 #[cfg(feature = "menu")]
 pub mod menu;
 #[cfg(feature = "menu")]

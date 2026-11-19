@@ -353,14 +353,21 @@ struct TwoColumnForm {
 }
 
 impl FormBuilder for TwoColumnForm {
-    type View = AnyView;
+    type View<L: waterui_controls::LabelKind> = waterui::component::stack::HStack<((
+        waterui_controls::TextField<waterui_controls::TitleLabel>,
+        waterui_controls::TextField<waterui_controls::TitleLabel>,
+    ),)>;
 
-    fn view<L: IntoLabel>(binding: &Binding<Self>, _label: L, _placeholder: Str) -> Self::View {
+    fn view<L: IntoLabel>(
+        binding: &Binding<Self>,
+        _label: L,
+        _placeholder: Str,
+    ) -> Self::View<L::Kind> {
         let projected = binding.project();
-        AnyView::new(hstack((
+        hstack((
             field("Left", &projected.left_field),
             field("Right", &projected.right_field),
-        )))
+        ))
     }
 }
 ```

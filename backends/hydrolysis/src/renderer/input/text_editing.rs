@@ -349,12 +349,11 @@ fn text_context_menu_builtin_node(
     let content = label.clone();
     PopupMenuNode::Command {
         label: waterui_controls::label::Label::new(semantic_text, move || {
-            AnyView::new(
-                waterui_layout::frame::Frame::new(Text::new(StyledStr::plain(content.clone())))
-                    .alignment(waterui_layout::alignment::Leading)
-                    .max_width(f32::INFINITY),
-            )
-        }),
+            waterui_layout::frame::Frame::new(Text::new(StyledStr::plain(content.clone())))
+                .alignment(waterui_layout::alignment::Leading)
+                .max_width(f32::INFINITY)
+        })
+        .erase(),
         plain_label: label,
         action: SharedAction::new(move |env: Environment| {
             let _ = execute_text_context_menu_action(action, &model, &selection, &env);

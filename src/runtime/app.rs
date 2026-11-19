@@ -11,7 +11,10 @@ use waterui_core::{
 };
 
 #[cfg(feature = "menu")]
-use crate::component::menu::{CloseWindowChord, Menu, MenuBarView};
+use crate::component::{
+    label::SemanticLabel,
+    menu::{CloseWindowChord, Menu, MenuBarView},
+};
 use crate::window::{AnyWindow, Window, WindowChannel, WindowContent};
 
 pub use crate::runtime::termination::{
@@ -32,7 +35,7 @@ pub struct App<W> {
     last_window: LastWindowPolicy,
     /// Optional system menu bar menus.
     #[cfg(feature = "menu")]
-    pub menu_bar: Computed<Vec<Menu>>,
+    pub menu_bar: Computed<Vec<Menu<SemanticLabel>>>,
     /// The application environment containing injected services. Values
     /// installed with [`App::state`] are layered over it when the runner
     /// takes the application apart with [`App::into_parts`].
@@ -218,7 +221,7 @@ pub struct AppParts<W> {
     pub windows: W,
     /// The application menu bar.
     #[cfg(feature = "menu")]
-    pub menu_bar: Computed<Vec<Menu>>,
+    pub menu_bar: Computed<Vec<Menu<SemanticLabel>>>,
     /// The application environment, the composition root every window renders
     /// under.
     pub env: Environment,

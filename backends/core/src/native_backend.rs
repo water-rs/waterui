@@ -676,45 +676,6 @@ native_backend! {
         icon: waterui::icon::SystemIcon,
         /// A gradient fill.
         gradient: waterui::graphics::Gradient,
-        /// A button.
-        button: waterui::component::button::ButtonConfig,
-        /// A badge.
-        badge: waterui::component::badge::BadgeConfig,
-        /// A progress indicator.
-        progress: waterui::component::progress::ProgressConfig,
-        #[cfg(waterui_feature = "toggle")]
-        /// A toggle.
-        toggle: waterui::component::toggle::ToggleConfig,
-        #[cfg(waterui_feature = "slider")]
-        /// A slider.
-        slider: waterui::component::slider::SliderConfig,
-        #[cfg(waterui_feature = "stepper")]
-        /// A stepper.
-        stepper: waterui::component::stepper::StepperConfig,
-        #[cfg(waterui_feature = "text-field")]
-        /// A text field.
-        text_field: waterui::component::text_field::ResolvedTextFieldConfig,
-        #[cfg(waterui_feature = "secure-field")]
-        /// A secure text field.
-        secure_field: waterui::form::secure::SecureFieldConfig,
-        #[cfg(waterui_feature = "picker")]
-        /// A picker.
-        picker: waterui::form::picker::PickerConfig,
-        #[cfg(waterui_feature = "color-picker")]
-        /// A color picker.
-        color_picker: waterui::form::picker::color::ColorPickerConfig,
-        #[cfg(waterui_feature = "date-picker")]
-        /// A date picker.
-        date_picker: waterui::form::picker::date::DatePickerConfig,
-        #[cfg(waterui_feature = "multi-date-picker")]
-        /// A picker of several dates.
-        multi_date_picker: waterui::form::picker::multi_date::MultiDatePickerConfig,
-        #[cfg(waterui_feature = "calendar")]
-        /// A calendar.
-        calendar: waterui::form::calendar::CalendarConfig,
-        #[cfg(waterui_feature = "menu")]
-        /// A menu.
-        menu: waterui::component::menu::ResolvedMenu,
         #[cfg(waterui_feature = "table")]
         /// A table.
         table: waterui::component::table::TableConfig,
@@ -749,6 +710,45 @@ native_backend! {
         map: waterui::map::MapConfig,
     }
     parents {
+        /// A button.
+        button<C>: waterui::component::button::ButtonConfig<C>,
+        /// A badge.
+        badge<C>: waterui::component::badge::BadgeConfig<C>,
+        /// A progress indicator.
+        progress<C>: waterui::component::progress::ProgressConfig<C>,
+        #[cfg(waterui_feature = "toggle")]
+        /// A toggle.
+        toggle<C>: waterui::component::toggle::ToggleConfig<C>,
+        #[cfg(waterui_feature = "slider")]
+        /// A slider.
+        slider<C>: waterui::component::slider::SliderConfig<C>,
+        #[cfg(waterui_feature = "stepper")]
+        /// A stepper.
+        stepper<C>: waterui::component::stepper::StepperConfig<C>,
+        #[cfg(waterui_feature = "text-field")]
+        /// A text field.
+        text_field<C>: waterui::component::text_field::ResolvedTextFieldConfig<C>,
+        #[cfg(waterui_feature = "secure-field")]
+        /// A secure text field.
+        secure_field<C>: waterui::form::secure::SecureFieldConfig<C>,
+        #[cfg(waterui_feature = "picker")]
+        /// A picker.
+        picker<C>: waterui::form::picker::PickerConfig<C>,
+        #[cfg(waterui_feature = "color-picker")]
+        /// A color picker.
+        color_picker<C>: waterui::form::picker::color::ColorPickerConfig<C>,
+        #[cfg(waterui_feature = "date-picker")]
+        /// A date picker.
+        date_picker<C>: waterui::form::picker::date::DatePickerConfig<C>,
+        #[cfg(waterui_feature = "multi-date-picker")]
+        /// A picker of several dates.
+        multi_date_picker<C>: waterui::form::picker::multi_date::MultiDatePickerConfig<C>,
+        #[cfg(waterui_feature = "calendar")]
+        /// A calendar.
+        calendar<C>: waterui::form::calendar::CalendarConfig<C>,
+        #[cfg(waterui_feature = "menu")]
+        /// A menu.
+        menu<C>: waterui::component::menu::ResolvedMenu<C>,
         /// A scroll view.
         scroll<C>: waterui::layout::scroll::ScrollView<C>,
         /// A container with a fixed child list and a layout.
@@ -894,6 +894,103 @@ mod tests {
     /// A payload that holds child views, taken apart into them.
     pub(super) trait Parent<C> {
         fn children(self) -> Vec<C>;
+    }
+
+    impl<C> Parent<C> for waterui::component::button::ButtonConfig<C> {
+        fn children(self) -> Vec<C> {
+            alloc::vec![self.label().build()]
+        }
+    }
+
+    impl<C> Parent<C> for waterui::component::badge::BadgeConfig<C> {
+        fn children(self) -> Vec<C> {
+            alloc::vec![self.content]
+        }
+    }
+
+    impl<C> Parent<C> for waterui::component::progress::ProgressConfig<C> {
+        fn children(self) -> Vec<C> {
+            let (label, value_label, ..) = self.into_parts();
+            alloc::vec![label, value_label]
+        }
+    }
+
+    #[cfg(waterui_feature = "toggle")]
+    impl<C> Parent<C> for waterui::component::toggle::ToggleConfig<C> {
+        fn children(self) -> Vec<C> {
+            alloc::vec![self.label().build()]
+        }
+    }
+
+    #[cfg(waterui_feature = "slider")]
+    impl<C> Parent<C> for waterui::component::slider::SliderConfig<C> {
+        fn children(self) -> Vec<C> {
+            let (label, min_value_label, max_value_label, ..) = self.into_parts();
+            alloc::vec![label.build(), min_value_label, max_value_label]
+        }
+    }
+
+    #[cfg(waterui_feature = "stepper")]
+    impl<C> Parent<C> for waterui::component::stepper::StepperConfig<C> {
+        fn children(self) -> Vec<C> {
+            alloc::vec![self.label().build()]
+        }
+    }
+
+    #[cfg(waterui_feature = "text-field")]
+    impl<C> Parent<C> for waterui::component::text_field::ResolvedTextFieldConfig<C> {
+        fn children(self) -> Vec<C> {
+            alloc::vec![self.label().build()]
+        }
+    }
+
+    #[cfg(waterui_feature = "secure-field")]
+    impl<C> Parent<C> for waterui::form::secure::SecureFieldConfig<C> {
+        fn children(self) -> Vec<C> {
+            alloc::vec![self.label().build()]
+        }
+    }
+
+    #[cfg(waterui_feature = "picker")]
+    impl<C> Parent<C> for waterui::form::picker::PickerConfig<C> {
+        fn children(self) -> Vec<C> {
+            alloc::vec![self.label().build()]
+        }
+    }
+
+    #[cfg(waterui_feature = "color-picker")]
+    impl<C> Parent<C> for waterui::form::picker::color::ColorPickerConfig<C> {
+        fn children(self) -> Vec<C> {
+            alloc::vec![self.label().build()]
+        }
+    }
+
+    #[cfg(waterui_feature = "date-picker")]
+    impl<C> Parent<C> for waterui::form::picker::date::DatePickerConfig<C> {
+        fn children(self) -> Vec<C> {
+            alloc::vec![self.label().build()]
+        }
+    }
+
+    #[cfg(waterui_feature = "multi-date-picker")]
+    impl<C> Parent<C> for waterui::form::picker::multi_date::MultiDatePickerConfig<C> {
+        fn children(self) -> Vec<C> {
+            alloc::vec![self.label().build()]
+        }
+    }
+
+    #[cfg(waterui_feature = "calendar")]
+    impl<C> Parent<C> for waterui::form::calendar::CalendarConfig<C> {
+        fn children(self) -> Vec<C> {
+            alloc::vec![self.label().build()]
+        }
+    }
+
+    #[cfg(waterui_feature = "menu")]
+    impl<C> Parent<C> for waterui::component::menu::ResolvedMenu<C> {
+        fn children(self) -> Vec<C> {
+            alloc::vec![self.label.build()]
+        }
     }
 
     impl<C> Parent<C> for waterui::layout::container::FixedContainer<Vec<C>> {
@@ -1351,5 +1448,59 @@ mod tests {
                 "divider",
             ]
         );
+    }
+
+    #[test]
+    fn control_labels_stay_typed_and_reenter_hooks() {
+        use waterui::component::badge::Badge;
+        use waterui::component::button::button;
+        use waterui::component::label::Label;
+        use waterui::component::progress::Progress;
+
+        let authored = || Badge::new(1, button(Label::new("Save", Spacer::flexible)));
+
+        assert_eq!(
+            reached(authored()),
+            ["badge", "typed child", "button", "typed child", "spacer",]
+        );
+        assert_eq!(
+            reached(AnyView::new(authored())),
+            ["badge", "erased child", "button", "erased child", "spacer",]
+        );
+        assert_eq!(
+            reached(Hooks::new(authored(), SpacerAsDivider)),
+            ["badge", "typed child", "button", "typed child", "divider",]
+        );
+
+        let progress = || Progress::new(0.5).label(Label::new("Progress", Spacer::flexible));
+        assert_eq!(
+            reached(Hooks::new(progress(), SpacerAsDivider)),
+            ["progress", "typed child", "divider", "typed child", "text",]
+        );
+
+        #[cfg(waterui_feature = "slider")]
+        {
+            use nami::Binding;
+            use waterui::component::slider::slider;
+
+            let value = Binding::f64(0.5);
+            let slider_view = || {
+                slider(Label::new("Volume", Spacer::flexible), &value)
+                    .min_value_label(Label::new("Min", Spacer::flexible))
+                    .max_value_label(Label::new("Max", Spacer::flexible))
+            };
+            assert_eq!(
+                reached(Hooks::new(slider_view(), SpacerAsDivider)),
+                [
+                    "slider",
+                    "typed child",
+                    "divider",
+                    "typed child",
+                    "divider",
+                    "typed child",
+                    "divider",
+                ]
+            );
+        }
     }
 }

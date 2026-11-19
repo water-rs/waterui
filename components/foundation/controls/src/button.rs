@@ -195,14 +195,15 @@ use fmt::Debug;
 
 use alloc::boxed::Box;
 use executor_core::spawn_local;
+use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 #[cfg(feature = "menu")]
 use waterui_core::handler::ReportExtraction;
 use waterui_core::handler::{BoxedAction, ExtractionError, Handler};
 use waterui_core::view::{ConfigurableView, ViewConfiguration};
-use waterui_core::{Environment, Native, NativeView, View, impl_debug};
+use waterui_core::{AnyView, Environment, Native, NativeView, View};
 use waterui_text::IntoText;
 
-use crate::label::{IntoLabel, Label, LabelDisplayMode};
+use crate::label::{ControlLabel, IntoLabel, Label, LabelDisplayMode, LabelKind};
 
 // ============================================================================
 // Macros for reducing boilerplate
@@ -328,14 +329,14 @@ impl waterui_core::plugin::Plugin for ButtonStyle {}
 /// Buttons size themselves to fit their label content and never stretch to fill
 /// extra space. In a stack, they take only the space they need.
 #[non_exhaustive]
-pub struct ButtonConfig {
+pub struct ButtonConfig<S> {
     /// The semantic label displayed on the button.
     ///
-    /// [`Label`] carries both the visual chrome (text + icon + display mode)
+    /// [`ControlLabel`] carries both the visual chrome (text + icon + display mode)
     /// and the spoken text used by assistive technology. A hook receiving a
-    /// `ButtonConfig` gets a typed `Label`, so it can wrap or restyle it but
-    /// cannot strip away the semantic identity.
-    label: Label,
+    /// `ButtonConfig` gets a typed [`ControlLabel`], so it can wrap or restyle it
+    /// without stripping away the semantic identity.
+    label: ControlLabel<S>,
     /// The action to execute when the button is clicked.
     action: BoxedAction<()>,
     /// The visual style of the button.
@@ -344,15 +345,10 @@ pub struct ButtonConfig {
     size: ControlSize,
 }
 
-impl ButtonConfig {
+impl<S> ButtonConfig<S> {
     /// The semantic label displayed on the button.
-    ///
-    /// [`Label`] carries both the visual chrome (text + icon + display mode)
-    /// and the spoken text used by assistive technology. A hook receiving a
-    /// `ButtonConfig` gets a typed `Label`, so it can wrap or restyle it but
-    /// cannot strip away the semantic identity.
     #[must_use]
-    pub const fn label(&self) -> &Label {
+    pub const fn label(&self) -> &ControlLabel<S> {
         &self.label
     }
 
@@ -368,7 +364,7 @@ impl ButtonConfig {
     }
 
     /// Splits the value into its label, action, style and size.
-    pub fn into_parts(self) -> (Label, BoxedAction<()>, ButtonStyle, ControlSize) {
+    pub fn into_parts(self) -> (ControlLabel<S>, BoxedAction<()>, ButtonStyle, ControlSize) {
         (self.label, self.action, self.style, self.size)
     }
 
@@ -385,16 +381,24 @@ impl ButtonConfig {
     }
 }
 
-impl_debug!(ButtonConfig);
+impl<S> Debug for ButtonConfig<S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("ButtonConfig")
+    }
+}
 
-impl NativeView for ButtonConfig {}
+impl<S: 'static> NativeView for ButtonConfig<S> {}
 
-impl ButtonConfig {
-    #[must_use]
-    fn resolve(mut self, env: &Environment) -> Self {
-        self.label = self.label.resolve(env);
-        self.style = self.style.resolve(env);
-        self
+impl<S: 'static> MapSlots<S> for ButtonConfig<S> {
+    type With<T: 'static> = ButtonConfig<T>;
+
+    fn map_slots<T: 'static>(self, f: impl Fn(S) -> T + Clone + 'static) -> ButtonConfig<T> {
+        ButtonConfig {
+            label: self.label.map_slots(f),
+            action: self.action,
+            style: self.style,
+            size: self.size,
+        }
     }
 }
 
@@ -411,9 +415,14 @@ impl ButtonStyle {
     }
 }
 
-fn render_button_config<Action>(button: Button<Action>) -> ButtonConfig
+fn render_button_config<L, Action, S>(
+    button: Button<L, Action>,
+    env: &Environment,
+) -> ButtonConfig<S>
 where
+    L: LabelKind,
     Action: FnMut(&Environment) -> Result<(), ExtractionError> + 'static,
+    S: ChildSlot,
 {
     ButtonConfig {
         // A button label stays one truncated line — the SwiftUI and Material
@@ -422,28 +431,35 @@ where
         // explicit `Text::line_limit` from the application still wins.
         label: button
             .label
-            .default_text_line_limit(core::num::NonZeroUsize::MIN),
+            .default_text_line_limit(core::num::NonZeroUsize::MIN)
+            .into_control_label::<S>(env),
         action: Box::new(button.action),
-        style: button.style,
+        style: button.style.resolve(env),
         size: button.size,
     }
 }
 
-impl<Action> View for Button<Action>
+impl<L, Action> View for Button<L, Action>
 where
+    L: LabelKind,
     Action: FnMut(&Environment) -> Result<(), ExtractionError> + 'static,
 {
     fn body(self, env: &Environment) -> impl View {
-        Native::new(render_button_config(self).resolve(env))
+        Native::new(render_button_config::<_, _, AnyView>(self, env))
+    }
+
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        backend.native(render_button_config::<_, _, B::Slot>(self, env), env, cx)
     }
 }
 
-impl ViewConfiguration for ButtonConfig {
-    type View = Button<BoxedAction<()>>;
+impl<S: View> ViewConfiguration for ButtonConfig<S> {
+    type View = Button<ControlLabel<S>, BoxedAction<()>>;
 
     fn render(self) -> Self::View {
+        let mode = self.label.display_mode_preference();
         Button {
-            label: self.label,
+            label: Label::from_control_label(self.label, mode),
             action: self.action,
             style: self.style,
             size: self.size,
@@ -451,15 +467,16 @@ impl ViewConfiguration for ButtonConfig {
     }
 }
 
-impl<Action> ConfigurableView for Button<Action>
+impl<L, Action> ConfigurableView for Button<L, Action>
 where
+    L: LabelKind,
     Action: FnMut(&Environment) -> Result<(), ExtractionError> + 'static,
 {
-    type Config = ButtonConfig;
+    type Config = ButtonConfig<Label<L>>;
 
     fn config(self) -> Self::Config {
         ButtonConfig {
-            label: self.label,
+            label: self.label.into_unscoped_control_label(),
             action: Box::new(self.action),
             style: self.style,
             size: self.size,
@@ -481,17 +498,17 @@ where
 /// - `ViewExt::state` - Inject local cloneable state for later extraction
 ///
 /// See the [module documentation](self) for detailed examples.
-pub struct Button<Action> {
-    label: Label,
+pub struct Button<L, Action> {
+    label: Label<L>,
     action: Action,
     style: ButtonStyle,
     size: ControlSize,
 }
 
-impl<Action> Button<Action> {
+impl<L, Action> Button<L, Action> {
     /// Returns the semantic label displayed by this button.
     #[must_use]
-    pub const fn label(&self) -> &Label {
+    pub const fn label(&self) -> &Label<L> {
         &self.label
     }
 
@@ -516,7 +533,7 @@ impl<Action> Button<Action> {
     }
 }
 
-impl<Action> Debug for Button<Action> {
+impl<L: Debug, Action> Debug for Button<L, Action> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Button")
             .field("label", &self.label)
@@ -526,7 +543,7 @@ impl<Action> Debug for Button<Action> {
     }
 }
 
-impl<Action: Clone> Clone for Button<Action> {
+impl<L: Clone, Action: Clone> Clone for Button<L, Action> {
     fn clone(&self) -> Self {
         Self {
             label: self.label.clone(),
@@ -540,7 +557,7 @@ impl<Action: Clone> Clone for Button<Action> {
 /// The action of a button that has none configured yet.
 pub type NoAction = fn(&Environment) -> Result<(), ExtractionError>;
 
-impl Button<NoAction> {
+impl<L> Button<L, NoAction> {
     /// Creates a new button with the specified semantic label.
     ///
     /// The button has no action by default. Use [`action`](Self::action) or
@@ -561,7 +578,7 @@ impl Button<NoAction> {
     /// # }
     /// ```
     #[must_use]
-    pub fn new(label: Label) -> Self {
+    pub fn new(label: Label<L>) -> Self {
         Self {
             label,
             action: noop,
@@ -571,7 +588,7 @@ impl Button<NoAction> {
     }
 }
 
-impl<Action> Button<Action> {
+impl<L, Action> Button<L, Action> {
     /// Sets the visual style of the button.
     ///
     /// # Arguments
@@ -650,7 +667,7 @@ impl<Action> Button<Action> {
     pub fn action<F, Args>(
         self,
         action: F,
-    ) -> Button<impl FnMut(&Environment) -> Result<(), ExtractionError>>
+    ) -> Button<L, impl FnMut(&Environment) -> Result<(), ExtractionError>>
     where
         F: Handler<Args, ()> + 'static,
     {
@@ -692,7 +709,7 @@ impl<Action> Button<Action> {
     pub fn action_async<F, Fut, Args>(
         self,
         action: F,
-    ) -> Button<impl FnMut(&Environment) -> Result<(), ExtractionError>>
+    ) -> Button<L, impl FnMut(&Environment) -> Result<(), ExtractionError>>
     where
         F: Handler<Args, Fut> + 'static,
         Fut: Future<Output = ()> + 'static,
@@ -722,29 +739,29 @@ const fn noop(_env: &Environment) -> Result<(), ExtractionError> {
 }
 
 #[cfg(feature = "menu")]
-impl<Action> From<Button<Action>> for crate::menu::Command
+impl<L: LabelKind, Action> From<Button<L, Action>> for crate::menu::Command
 where
     Action: FnMut(&Environment) -> Result<(), ExtractionError> + 'static,
 {
-    fn from(value: Button<Action>) -> Self {
+    fn from(value: Button<L, Action>) -> Self {
         let Button {
             label,
             mut action,
             style: _,
             size: _,
         } = value;
-        Self::builder(label).action(move |env: Environment| {
+        Self::from_semantic_label(label.into_semantic()).action(move |env: Environment| {
             action(&env).report_extraction();
         })
     }
 }
 
 #[cfg(feature = "menu")]
-impl<Action> From<Button<Action>> for crate::menu::MenuItem
+impl<L: LabelKind, Action> From<Button<L, Action>> for crate::menu::MenuItem
 where
     Action: FnMut(&Environment) -> Result<(), ExtractionError> + 'static,
 {
-    fn from(value: Button<Action>) -> Self {
+    fn from(value: Button<L, Action>) -> Self {
         Self::Command(value.into())
     }
 }
@@ -770,7 +787,7 @@ where
 /// button("Click me").action(|| {});
 /// # }
 /// ```
-pub fn button(label: impl IntoLabel) -> Button<NoAction> {
+pub fn button<L: IntoLabel>(label: L) -> Button<L::Kind, NoAction> {
     Button::new(label.into_label())
 }
 

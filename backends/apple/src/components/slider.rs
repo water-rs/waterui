@@ -29,7 +29,7 @@ use waterui_core::layout::{
 
 use crate::components::button_chrome;
 use crate::components::control_size::platform_control_size;
-use crate::contract::{Mounted, NativeLeaf};
+use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;
 
 #[cfg(target_os = "macos")]
@@ -324,7 +324,7 @@ fn as_view(slider: &Slider) -> &PlatformView {
 /// The `slider` realization: `Native<SliderConfig>`
 /// maps to a container view with the platform slider and the three label
 /// children mounted in it.
-pub fn realize_slider_config(config: SliderConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
+pub fn realize_slider_config(config: SliderConfig<Held>, ctx: &RenderContext<'_>) -> NativeLeaf {
     let mtm = ctx.mtm();
     let host = HostView::new(mtm, Rect::ZERO);
     let slider = Slider::new(mtm);
@@ -372,11 +372,9 @@ pub fn realize_slider_config(config: SliderConfig, ctx: &RenderContext<'_>) -> N
     let host_view: &PlatformView = &host;
     let (label, min_value_label, max_value_label, _, value, ..) = config.into_parts();
     let children = Children {
-        label: ctx
-            .render(waterui_backend_core::AnyView::new(label))
-            .mount(host_view),
-        min_label: ctx.render(min_value_label).mount(host_view),
-        max_label: ctx.render(max_value_label).mount(host_view),
+        label: ctx.realize(label.build()).mount(host_view),
+        min_label: ctx.realize(min_value_label).mount(host_view),
+        max_label: ctx.realize(max_value_label).mount(host_view),
     };
     cocoa_ui::view::hide_from_accessibility(children.label.view());
 

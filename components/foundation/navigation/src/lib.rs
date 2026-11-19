@@ -2022,7 +2022,8 @@ pub const NAVIGATION_BACK_LABEL_KEY: &str = "waterui.navigation.back";
 /// Backends must render and speak this rather than a string of their own, so a
 /// single catalog entry translates the back button on every platform at once.
 #[must_use]
-pub fn navigation_back_label() -> waterui_controls::label::Label {
+pub fn navigation_back_label() -> waterui_controls::label::Label<waterui_controls::label::TitleLabel>
+{
     waterui_text::Text::localized_or(NAVIGATION_BACK_LABEL_KEY, "Back").into_label()
 }
 

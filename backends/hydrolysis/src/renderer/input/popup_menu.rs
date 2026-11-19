@@ -139,7 +139,7 @@ pub struct ContextMenuTarget<E: crate::text::TextEngine> {
 #[cfg(feature = "menu")]
 pub enum PopupMenuNode {
     Command {
-        label: SemanticLabel,
+        label: SemanticLabel<ErasedLabel>,
         plain_label: String,
         action: SharedAction<()>,
         /// The live disabled signal — the row draws the snapshot it was built
@@ -155,7 +155,7 @@ pub enum PopupMenuNode {
     },
     Divider,
     Menu {
-        label: SemanticLabel,
+        label: SemanticLabel<ErasedLabel>,
         plain_label: String,
         items: Vec<Self>,
     },
@@ -407,7 +407,7 @@ pub fn popup_menu_size(
 /// return also gates it).
 #[cfg(feature = "menu")]
 fn popup_menu_command_row(
-    label: SemanticLabel,
+    label: SemanticLabel<ErasedLabel>,
     action: SharedAction<()>,
     disabled: bool,
 ) -> impl View + use<> {
@@ -1156,7 +1156,11 @@ pub fn color_picker_window(
 }
 
 #[cfg(feature = "date-picker")]
-fn time_part_binding(value: &Binding<i32>, range: RangeInclusive<i32>, label: String) -> Stepper {
+fn time_part_binding(
+    value: &Binding<i32>,
+    range: RangeInclusive<i32>,
+    label: String,
+) -> Stepper<waterui_controls::label::TitleLabel> {
     stepper(label, value)
         .range(range)
         .value_formatter(|part| format!("{part:02}"))
@@ -1414,7 +1418,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         }
         let plain_label = String::from("Inspect element");
         items.push(PopupMenuNode::Command {
-            label: waterui_controls::label::label(plain_label.clone()),
+            label: waterui_controls::label::label(plain_label.clone()).erase(),
             plain_label,
             action: waterui_core::handler::SharedAction::new(
                 move |env: waterui_core::Environment| {

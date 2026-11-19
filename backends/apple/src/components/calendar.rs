@@ -23,7 +23,7 @@ use core::ops::RangeInclusive;
 use cocoa_ui::date::{CalendarSelectionMode, DateParts, YearMonth};
 use cocoa_ui::{PlatformView, Rect};
 use waterui::component::form::picker::date::Date;
-use waterui::component::label::Label;
+use waterui::component::label::ControlLabel;
 use waterui::reactive::{Binding, Computed, Signal};
 #[cfg(target_os = "ios")]
 use waterui::resolve::Resolvable;
@@ -32,7 +32,7 @@ use waterui_core::layout::{
     ViewDimensions,
 };
 
-use crate::contract::{Mounted, NativeLeaf, RenderContext};
+use crate::contract::{Held, Mounted, NativeLeaf, RenderContext};
 use crate::proposal;
 
 #[cfg(target_os = "macos")]
@@ -116,7 +116,7 @@ impl CalendarSelection for Binding<Date> {
 /// Everything a calendar leaf realizes.
 pub(super) struct CalendarSpec<S> {
     /// The label above the calendar, already resolved.
-    pub(super) label: Label,
+    pub(super) label: ControlLabel<Held>,
     /// The bound selection.
     pub(super) selection: S,
     /// The selectable days.
@@ -381,7 +381,7 @@ mod appearance {
     /// The spoken text of each navigation button, in the environment's
     /// locale.
     fn labels(env: &waterui::Environment) -> [(CalendarNavigation, Computed<StyledStr>); 3] {
-        let spoken = |mut label: Label| {
+        let spoken = |mut label: Label<waterui::component::label::TitleLabel>| {
             label.resolve_in_place(env);
             label.accessibility_label()
         };
@@ -487,9 +487,7 @@ pub(super) fn render_calendar<S: CalendarSelection>(
     let host_view: &PlatformView = &host;
 
     let accessibility_label = label.accessibility_label();
-    let mounted_label = ctx
-        .render(waterui_backend_core::AnyView::new(label))
-        .mount(host_view);
+    let mounted_label = ctx.realize(label.build()).mount(host_view);
     cocoa_ui::view::hide_from_accessibility(mounted_label.view());
 
     let locale = waterui_locale::locale_binding(env);
@@ -588,14 +586,14 @@ pub(super) fn render_calendar<S: CalendarSelection>(
 mod component {
     use waterui::component::form::calendar::CalendarConfig;
 
-    use super::{CalendarSpec, NativeLeaf, RenderContext, render_calendar};
+    use super::{CalendarSpec, Held, NativeLeaf, RenderContext, render_calendar};
 
     /// Renders `Calendar`'s config.
     #[expect(
         clippy::needless_pass_by_value,
         reason = "NativeBackend hands each payload by value"
     )]
-    fn render(config: CalendarConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
+    fn render(config: CalendarConfig<Held>, ctx: &RenderContext<'_>) -> NativeLeaf {
         render_calendar(
             CalendarSpec {
                 label: config.label().clone(),
@@ -608,13 +606,11 @@ mod component {
         )
     }
 
-    /// `Native<CalendarConfig>`: the label resolves, then the platform
-    /// calendar renders.
+    /// `Native<CalendarConfig>`: renders the platform calendar.
     pub fn realize_calendar_config(
-        mut config: CalendarConfig,
+        config: CalendarConfig<Held>,
         ctx: &RenderContext<'_>,
     ) -> NativeLeaf {
-        config.label_mut().resolve_in_place(ctx.env());
         render(config, ctx)
     }
 }

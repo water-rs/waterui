@@ -3,9 +3,14 @@
 //! ![Toggle](https://raw.githubusercontent.com/water-rs/waterui/dev/docs/illustrations/toggle.svg)
 
 use nami::Binding;
-use waterui_core::{Environment, configurable, layout::StretchAxis};
+use waterui_core::backend::{Backend, ChildSlot, MapSlots};
+use waterui_core::layout::StretchAxis;
+use waterui_core::view::{ConfigurableView, ViewConfiguration};
+use waterui_core::{AnyView, Environment, Native, NativeView, View};
 
-use crate::label::{IntoLabel, Label, LabelDisplayMode, impl_label_style_methods};
+use crate::label::{
+    ControlLabel, IntoLabel, Label, LabelDisplayMode, LabelKind, impl_label_style_methods,
+};
 use crate::size::ControlSize;
 
 /// Visual style options for toggle controls.
@@ -45,17 +50,17 @@ impl ToggleStyle {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 /// Configuration for the `Toggle` component.
-pub struct ToggleConfig {
+pub struct ToggleConfig<S> {
     /// The label displayed for the toggle.
     ///
     /// Always present: it is required at construction so assistive technology
     /// has a name to announce, even when
     /// [`LabelDisplayMode::Hidden`](crate::label::LabelDisplayMode::Hidden)
     /// removes the visible chrome.
-    label: Label,
+    label: ControlLabel<S>,
     /// The binding to the toggle state.
     toggle: Binding<bool>,
     /// The visual style of the toggle.
@@ -68,25 +73,20 @@ pub struct ToggleConfig {
     size: ControlSize,
 }
 
-impl ToggleConfig {
+impl<S> ToggleConfig<S> {
     /// The label displayed for the toggle.
-    ///
-    /// Always present: it is required at construction so assistive technology
-    /// has a name to announce, even when
-    /// [`LabelDisplayMode::Hidden`](crate::label::LabelDisplayMode::Hidden)
-    /// removes the visible chrome.
     #[must_use]
-    pub const fn label(&self) -> &Label {
+    pub const fn label(&self) -> &ControlLabel<S> {
         &self.label
     }
 
     /// Sets the `label`.
-    pub fn set_label(&mut self, label: Label) {
+    pub fn set_label(&mut self, label: ControlLabel<S>) {
         self.label = label;
     }
 
     /// The label displayed for the control, for editing it in place.
-    pub const fn label_mut(&mut self) -> &mut Label {
+    pub const fn label_mut(&mut self) -> &mut ControlLabel<S> {
         &mut self.label
     }
 
@@ -114,85 +114,8 @@ impl ToggleConfig {
 
     /// Takes the value apart into its fields, in declaration order.
     #[must_use]
-    pub fn into_parts(self) -> (Label, Binding<bool>, ToggleStyle, ControlSize) {
+    pub fn into_parts(self) -> (ControlLabel<S>, Binding<bool>, ToggleStyle, ControlSize) {
         (self.label, self.toggle, self.style, self.size)
-    }
-}
-
-configurable!(
-    /// A control that toggles between on and off states.
-    ///
-    /// Toggle displays a switch or a checkbox with a label. It's commonly
-    /// used for settings that can be turned on or off.
-    ///
-    /// The label is required at construction; see
-    /// [the label module](crate::label) for why. Use
-    /// [`Self::hide_label`] when the surrounding context already explains the
-    /// control — the label stays in the accessibility tree.
-    ///
-    /// # Layout Behavior
-    ///
-    /// A switch with a visible label expands horizontally to fill the
-    /// available width, placing the label at the leading edge and the switch
-    /// at the trailing edge with the free space between. A checkbox (box,
-    /// then label) and a toggle with a hidden label are content-sized.
-    /// [`ToggleStyle::Automatic`] takes the platform's default style first —
-    /// a switch on iOS and Android, a checkbox on macOS.
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// # use waterui::prelude::*;
-    /// # use waterui_controls::{Toggle, toggle};
-    /// # fn labelled(is_enabled: Binding<bool>) -> impl View {
-    /// // Simple toggle with label
-    /// toggle("Wi-Fi", &is_enabled)
-    /// # }
-    ///
-    /// # fn hidden_label(dark_mode: Binding<bool>) -> impl View {
-    /// // Toggle whose label is announced but not drawn
-    /// Toggle::new("Dark mode", &dark_mode).hide_label()
-    /// # }
-    ///
-    /// # fn settings(notifications: Binding<bool>, sound: Binding<bool>) -> impl View {
-    /// // In a settings list
-    /// vstack((
-    ///     toggle("Notifications", &notifications),
-    ///     toggle("Sound", &sound),
-    /// ))
-    /// # }
-    /// ```
-    //
-    // ═══════════════════════════════════════════════════════════════════════════
-    // INTERNAL: Layout Contract for Backend Implementers
-    // ═══════════════════════════════════════════════════════════════════════════
-    //
-    // - The payload arrives resolved: `style` is `Switch` or `Checkbox`, never
-    //   `Automatic`, and the label's display mode is the effective one.
-    // - Switch with a visible label: stretchAxis `.horizontal`; sizeThatFits
-    //   answers the proposed width (never below the row's intrinsic width)
-    //   and the intrinsic height; label leading, switch trailing, flexible
-    //   space between.
-    // - Checkbox, or any toggle with a hidden label: stretchAxis `.none`;
-    //   sizeThatFits answers the intrinsic size; box first, then the label.
-    // - Read the axis from `NativeView::stretch_axis` on the payload; do not
-    //   restate the rule in the backend.
-    //
-    // ═══════════════════════════════════════════════════════════════════════════
-    //
-    Toggle,
-    ToggleConfig,
-    |config| config.layout_stretch_axis(),
-    resolve | config,
-    env | config.resolve(env)
-);
-
-impl ToggleConfig {
-    #[must_use]
-    fn resolve(mut self, env: &Environment) -> Self {
-        self.label = self.label.resolve(env);
-        self.style = self.style.resolved();
-        self
     }
 
     /// `docs/layout-spec.md` §3: a toggle is `Horizontal` when it draws the
@@ -212,55 +135,182 @@ impl ToggleConfig {
     }
 }
 
-impl Toggle {
-    #[must_use]
+impl<S: 'static> NativeView for ToggleConfig<S> {
+    fn stretch_axis(&self) -> StretchAxis {
+        self.layout_stretch_axis()
+    }
+}
+
+impl<S: 'static> MapSlots<S> for ToggleConfig<S> {
+    type With<T: 'static> = ToggleConfig<T>;
+
+    fn map_slots<T: 'static>(self, f: impl Fn(S) -> T + Clone + 'static) -> ToggleConfig<T> {
+        ToggleConfig {
+            label: self.label.map_slots(f),
+            toggle: self.toggle,
+            style: self.style,
+            size: self.size,
+        }
+    }
+}
+
+/// A control that toggles between on and off states.
+///
+/// Toggle displays a switch or a checkbox with a label. It's commonly
+/// used for settings that can be turned on or off.
+///
+/// The label is required at construction; see
+/// [the label module](mod@crate::label) for why. Use
+/// [`Self::hide_label`] when the surrounding context already explains the
+/// control — the label stays in the accessibility tree.
+///
+/// # Layout Behavior
+///
+/// A switch with a visible label expands horizontally to fill the
+/// available width, placing the label at the leading edge and the switch
+/// at the trailing edge with the free space between. A checkbox (box,
+/// then label) and a toggle with a hidden label are content-sized.
+/// [`ToggleStyle::Automatic`] takes the platform's default style first —
+/// a switch on iOS and Android, a checkbox on macOS.
+///
+/// # Examples
+///
+/// ```rust
+/// # use waterui::prelude::*;
+/// # use waterui_controls::{Toggle, toggle};
+/// # fn labelled(is_enabled: Binding<bool>) -> impl View {
+/// // Simple toggle with label
+/// toggle("Wi-Fi", &is_enabled)
+/// # }
+///
+/// # fn hidden_label(dark_mode: Binding<bool>) -> impl View {
+/// // Toggle whose label is announced but not drawn
+/// Toggle::new("Dark mode", &dark_mode).hide_label()
+/// # }
+///
+/// # fn settings(notifications: Binding<bool>, sound: Binding<bool>) -> impl View {
+/// // In a settings list
+/// vstack((
+///     toggle("Notifications", &notifications),
+///     toggle("Sound", &sound),
+/// ))
+/// # }
+/// ```
+#[derive(Debug, Clone)]
+#[must_use]
+#[expect(
+    clippy::struct_field_names,
+    reason = "stores the boolean toggle binding for `Toggle`"
+)]
+pub struct Toggle<L> {
+    label: Label<L>,
+    toggle: Binding<bool>,
+    style: ToggleStyle,
+    size: ControlSize,
+}
+
+impl<L> Toggle<L> {
     /// Creates a new `Toggle` with the specified label and binding for the
     /// toggle state.
     ///
     /// The label is mandatory. To keep it out of the visual chrome without
     /// losing its accessibility name, chain [`Self::hide_label`].
-    pub fn new(label: impl IntoLabel, toggle: &Binding<bool>) -> Self {
-        Self(ToggleConfig {
+    pub fn new<I: IntoLabel<Kind = L>>(label: I, toggle: &Binding<bool>) -> Self {
+        Self {
             label: label.into_label(),
             toggle: toggle.clone(),
             style: ToggleStyle::default(),
             size: ControlSize::Small,
-        })
+        }
     }
-    #[must_use]
+
+    pub(crate) const fn label_mut(&mut self) -> &mut Label<L> {
+        &mut self.label
+    }
+
     /// Sets the visual style of the toggle.
     pub const fn style(mut self, style: ToggleStyle) -> Self {
-        self.0.style = style;
+        self.style = style;
         self
     }
 
     /// Sets how large the toggle is drawn. A toggle is
     /// [`ControlSize::Small`], like a [`Button`](crate::button::Button), when
     /// none is chosen; a theme decides what each size changes.
-    #[must_use]
     pub const fn size(mut self, size: ControlSize) -> Self {
-        self.0.size = size;
+        self.size = size;
         self
     }
 
     /// Changes the toggle to switch style.
-    #[must_use]
     pub const fn switch(self) -> Self {
         self.style(ToggleStyle::Switch)
     }
 
     /// Changes the toggle to checkbox style.
-    #[must_use]
     pub const fn checkbox(self) -> Self {
         self.style(ToggleStyle::Checkbox)
     }
 }
 
-impl_label_style_methods!(Toggle);
+impl<L: LabelKind> Toggle<L> {
+    fn into_config<S: ChildSlot>(self, env: &Environment) -> ToggleConfig<S> {
+        ToggleConfig {
+            label: self.label.into_control_label::<S>(env),
+            toggle: self.toggle,
+            style: self.style.resolved(),
+            size: self.size,
+        }
+    }
+}
+
+impl<L: LabelKind> ConfigurableView for Toggle<L> {
+    type Config = ToggleConfig<Label<L>>;
+
+    fn config(self) -> Self::Config {
+        ToggleConfig {
+            label: self.label.into_unscoped_control_label(),
+            toggle: self.toggle,
+            style: self.style,
+            size: self.size,
+        }
+    }
+}
+
+impl<S: View> ViewConfiguration for ToggleConfig<S> {
+    type View = Toggle<ControlLabel<S>>;
+
+    fn render(self) -> Self::View {
+        let mode = self.label.display_mode_preference();
+        Toggle {
+            label: Label::from_control_label(self.label, mode),
+            toggle: self.toggle,
+            style: self.style,
+            size: self.size,
+        }
+    }
+}
+
+impl<S: View> From<ToggleConfig<S>> for Toggle<ControlLabel<S>> {
+    fn from(value: ToggleConfig<S>) -> Self {
+        value.render()
+    }
+}
+
+impl<L: LabelKind> View for Toggle<L> {
+    fn body(self, env: &Environment) -> impl View {
+        Native::new(self.into_config::<AnyView>(env))
+    }
+
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        backend.native(self.into_config::<B::Slot>(env), env, cx)
+    }
+}
+
+impl_label_style_methods!(Toggle<L>);
 
 /// Creates a new `Toggle` with the specified label and binding for the toggle state.
-#[must_use]
-pub fn toggle(label: impl IntoLabel, toggle: &Binding<bool>) -> Toggle {
+pub fn toggle<L: IntoLabel>(label: L, toggle: &Binding<bool>) -> Toggle<L::Kind> {
     Toggle::new(label, toggle)
 }
 
@@ -268,7 +318,7 @@ pub fn toggle(label: impl IntoLabel, toggle: &Binding<bool>) -> Toggle {
 mod tests {
     use nami::Binding;
     use waterui_core::layout::StretchAxis;
-    use waterui_core::{Environment, NativeView};
+    use waterui_core::{AnyView, Environment, NativeView};
     use waterui_locale::locales;
 
     use super::{Toggle, ToggleConfig, ToggleStyle};
@@ -304,7 +354,7 @@ mod tests {
                 let toggle = Toggle::new("Wi-Fi", &on).style(style);
                 if visible { toggle } else { toggle.hide_label() }
             };
-            let resolved = make().0.resolve(&env);
+            let resolved = make().into_config::<AnyView>(&env);
             assert_eq!(
                 NativeView::stretch_axis(&resolved),
                 expected,
@@ -327,7 +377,7 @@ mod tests {
             assert_eq!(style.resolved(), style);
         }
         let on = Binding::bool(false);
-        let resolved: ToggleConfig = Toggle::new("Wi-Fi", &on).0.resolve(&test_env());
+        let resolved: ToggleConfig<AnyView> = Toggle::new("Wi-Fi", &on).into_config(&test_env());
         assert_eq!(resolved.style, expected);
     }
 
@@ -338,7 +388,9 @@ mod tests {
         let on = Binding::bool(false);
         let mut env = test_env();
         env.insert(LabelDisplayMode::Hidden);
-        let resolved = Toggle::new("Wi-Fi", &on).switch().0.resolve(&env);
+        let resolved = Toggle::new("Wi-Fi", &on)
+            .switch()
+            .into_config::<AnyView>(&env);
         assert_eq!(NativeView::stretch_axis(&resolved), StretchAxis::None);
     }
 

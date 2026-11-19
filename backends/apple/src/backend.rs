@@ -4,7 +4,7 @@
 use waterui_backend_core::{
     ChildView, Environment, NativeBackend, NativeBackendFamily, report_unprovided,
 };
-use waterui_core::backend::ErasedPayload;
+use waterui_core::backend::{ErasedPayload, MapSlots};
 use waterui_core::metadata::MetadataKey;
 use waterui_core::{Metadata, NativeView};
 
@@ -189,144 +189,183 @@ impl NativeBackend for AppleBackend {
         crate::components::resolved_gradient::realize_gradient(native, &self.entry(env))
     }
 
-    fn button(
+    fn button<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::button::ButtonConfig,
+        native: waterui::component::button::ButtonConfig<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
-        crate::components::button::realize_button_config(native, &self.entry(env))
+        crate::components::button::realize_button_config(
+            native.map_slots(C::into_child),
+            &self.entry(env),
+        )
     }
 
-    fn badge(
+    fn badge<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::badge::BadgeConfig,
+        native: waterui::component::badge::BadgeConfig<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
-        crate::components::badge::realize_badge_config(native, &self.entry(env))
+        crate::components::badge::realize_badge_config(
+            native.map_slots(C::into_child),
+            &self.entry(env),
+        )
     }
 
-    fn progress(
+    fn progress<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::progress::ProgressConfig,
+        native: waterui::component::progress::ProgressConfig<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
-        crate::components::progress::realize_progress_config(native, &self.entry(env))
+        crate::components::progress::realize_progress_config(
+            native.map_slots(C::into_child),
+            &self.entry(env),
+        )
     }
 
     #[cfg(waterui_feature = "toggle")]
-    fn toggle(
+    fn toggle<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::toggle::ToggleConfig,
+        native: waterui::component::toggle::ToggleConfig<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
-        crate::components::toggle::realize_toggle_config(native, &self.entry(env))
+        crate::components::toggle::realize_toggle_config(
+            native.map_slots(C::into_child),
+            &self.entry(env),
+        )
     }
 
     #[cfg(waterui_feature = "slider")]
-    fn slider(
+    fn slider<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::slider::SliderConfig,
+        native: waterui::component::slider::SliderConfig<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
-        crate::components::slider::realize_slider_config(native, &self.entry(env))
+        crate::components::slider::realize_slider_config(
+            native.map_slots(C::into_child),
+            &self.entry(env),
+        )
     }
 
     #[cfg(waterui_feature = "stepper")]
-    fn stepper(
+    fn stepper<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::stepper::StepperConfig,
+        native: waterui::component::stepper::StepperConfig<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
-        crate::components::stepper::realize_stepper_config(native, &self.entry(env))
+        crate::components::stepper::realize_stepper_config(
+            native.map_slots(C::into_child),
+            &self.entry(env),
+        )
     }
 
     #[cfg(waterui_feature = "text-field")]
-    fn text_field(
+    fn text_field<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::text_field::ResolvedTextFieldConfig,
+        native: waterui::component::text_field::ResolvedTextFieldConfig<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
-        crate::components::text_field::realize_resolved_text_field_config(native, &self.entry(env))
+        crate::components::text_field::realize_resolved_text_field_config(
+            native.map_slots(C::into_child),
+            &self.entry(env),
+        )
     }
 
     #[cfg(waterui_feature = "secure-field")]
-    fn secure_field(
+    fn secure_field<C: ChildView<Self>>(
         &mut self,
-        native: waterui::form::secure::SecureFieldConfig,
+        native: waterui::form::secure::SecureFieldConfig<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
-        crate::components::secure_field::realize_secure_field_config(native, &self.entry(env))
+        crate::components::secure_field::realize_secure_field_config(
+            native.map_slots(C::into_child),
+            &self.entry(env),
+        )
     }
 
     #[cfg(waterui_feature = "picker")]
-    fn picker(
+    fn picker<C: ChildView<Self>>(
         &mut self,
-        native: waterui::form::picker::PickerConfig,
+        native: waterui::form::picker::PickerConfig<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
-        crate::components::picker::realize_picker_config(native, &self.entry(env))
+        crate::components::picker::realize_picker_config(
+            native.map_slots(C::into_child),
+            &self.entry(env),
+        )
     }
 
     #[cfg(waterui_feature = "color-picker")]
-    fn color_picker(
+    fn color_picker<C: ChildView<Self>>(
         &mut self,
-        native: waterui::form::picker::color::ColorPickerConfig,
+        native: waterui::form::picker::color::ColorPickerConfig<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
-        crate::components::color_picker::realize_color_picker_config(native, &self.entry(env))
+        crate::components::color_picker::realize_color_picker_config(
+            native.map_slots(C::into_child),
+            &self.entry(env),
+        )
     }
 
     #[cfg(waterui_feature = "date-picker")]
-    fn date_picker(
+    fn date_picker<C: ChildView<Self>>(
         &mut self,
-        native: waterui::form::picker::date::DatePickerConfig,
+        native: waterui::form::picker::date::DatePickerConfig<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
-        crate::components::date_picker::realize_date_picker_config(native, &self.entry(env))
+        crate::components::date_picker::realize_date_picker_config(
+            native.map_slots(C::into_child),
+            &self.entry(env),
+        )
     }
 
     #[cfg(waterui_feature = "multi-date-picker")]
-    fn multi_date_picker(
+    fn multi_date_picker<C: ChildView<Self>>(
         &mut self,
-        native: waterui::form::picker::multi_date::MultiDatePickerConfig,
+        native: waterui::form::picker::multi_date::MultiDatePickerConfig<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
         crate::components::multi_date_picker::realize_multi_date_picker_config(
-            native,
+            native.map_slots(C::into_child),
             &self.entry(env),
         )
     }
 
     #[cfg(waterui_feature = "calendar")]
-    fn calendar(
+    fn calendar<C: ChildView<Self>>(
         &mut self,
-        native: waterui::form::calendar::CalendarConfig,
+        native: waterui::form::calendar::CalendarConfig<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
-        crate::components::calendar::realize_calendar_config(native, &self.entry(env))
+        crate::components::calendar::realize_calendar_config(
+            native.map_slots(C::into_child),
+            &self.entry(env),
+        )
     }
 
     #[cfg(waterui_feature = "menu")]
-    fn menu(
+    fn menu<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::menu::ResolvedMenu,
+        native: waterui::component::menu::ResolvedMenu<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
-        crate::components::menu::realize_resolved_menu(native, &self.entry(env))
+        crate::components::menu::realize_resolved_menu(
+            &native.map_slots(C::into_child),
+            &self.entry(env),
+        )
     }
 
     #[cfg(waterui_feature = "list")]

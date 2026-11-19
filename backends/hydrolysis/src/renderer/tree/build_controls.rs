@@ -180,7 +180,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// shared cell), and re-render it every flush so a reactive label stays live.
     pub(super) fn build_button(
         renderer: &SemanticCore<E>,
-        config: ButtonConfig,
+        config: ButtonConfig<HeldChild<E>>,
         env: &Environment,
     ) -> Self {
         use crate::widgets::controls::button::ButtonRenderState;
@@ -204,7 +204,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// and taps inside it would hit nothing (water-rs/waterui#2241).
     #[cfg(feature = "toggle")]
     pub(super) fn build_toggle(
-        config: ToggleConfig,
+        config: ToggleConfig<HeldChild<E>>,
         env: &Environment,
         renderer: &mut SemanticCore<E>,
     ) -> Self {
@@ -222,13 +222,13 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         Self::build_widget_with_core(state, stretch, env, core)
     }
 
-    /// Build a persistent slider node: its value-end labels are move-only
-    /// `AnyView`s, so they are pre-built into [`RetainedSubview`]s (the measure
-    /// path has only `&mut HydroState`, no renderer to build on); the `value`
-    /// binding is read through `read_signal` so a change schedules a frame.
+    /// Build a persistent slider node: its value-end labels are held child
+    /// slots pre-built into [`RetainedSubview`]s (the measure path has only
+    /// `&mut HydroState`, no renderer to build on); the `value` binding is
+    /// read through `read_signal` so a change schedules a frame.
     #[cfg(feature = "slider")]
     pub(super) fn build_slider(
-        config: SliderConfig,
+        config: SliderConfig<HeldChild<E>>,
         env: &Environment,
         renderer: &mut SemanticCore<E>,
     ) -> Self {
@@ -258,7 +258,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// (water-rs/waterui#2364).
     #[cfg(feature = "stepper")]
     pub(super) fn build_stepper(
-        config: StepperConfig,
+        config: StepperConfig<HeldChild<E>>,
         env: &Environment,
         renderer: &mut SemanticCore<E>,
     ) -> Self {
@@ -276,12 +276,12 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         Self::build_widget_with_core(state, stretch, env, core)
     }
 
-    /// Build a persistent progress node: its label/value labels are move-only
-    /// `AnyView`s pre-built into [`RetainedSubview`]s; the `value` is read through
+    /// Build a persistent progress node: its label/value labels are held child
+    /// slots pre-built into [`RetainedSubview`]s; the `value` is read through
     /// `read_signal` so a change schedules a frame. Stretch is style-dependent
     /// (Linear → Horizontal, Circular → None), read from the config.
     pub(super) fn build_progress(
-        config: ProgressConfig,
+        config: ProgressConfig<HeldChild<E>>,
         env: &Environment,
         renderer: &mut SemanticCore<E>,
     ) -> Self {
@@ -299,17 +299,17 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         Self::build_widget_with_core(state, stretch, env, core)
     }
 
-    /// Build a persistent menu node: its trigger label is a move-only `AnyView`
+    /// Build a persistent menu node: its trigger label is a held child slot
     /// pre-built into a [`RetainedSubview`]; its `accessibility_label` and `items`
     /// signals are read through `read_signal` so a change schedules a frame.
     #[cfg(feature = "menu")]
     pub(super) fn build_menu(
         renderer: &SemanticCore<E>,
-        menu: ResolvedMenu,
+        menu: ResolvedMenu<HeldChild<E>>,
         env: &Environment,
     ) -> Self {
         use crate::widgets::controls::button::MenuRenderState;
-        let stretch = <ResolvedMenu as waterui_core::NativeView>::stretch_axis(&menu);
+        let stretch = <ResolvedMenu<HeldChild<E>> as waterui_core::NativeView>::stretch_axis(&menu);
         // The label sub-view (created by `from_resolved`) is painted with the
         // theme and built by the layout-time prepare pass before first measure.
         let state = Rc::new(RefCell::new(MenuRenderState::from_resolved(menu, env)));
@@ -323,7 +323,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// content-sized (read from the config).
     #[cfg(feature = "date-picker")]
     pub(super) fn build_date_picker(
-        config: DatePickerConfig,
+        config: DatePickerConfig<HeldChild<E>>,
         env: &Environment,
         renderer: &mut SemanticCore<E>,
     ) -> Self {
@@ -348,7 +348,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// content-sized (read from the config).
     #[cfg(feature = "color-picker")]
     pub(super) fn build_color_picker(
-        config: ColorPickerConfig,
+        config: ColorPickerConfig<HeldChild<E>>,
         env: &Environment,
         renderer: &mut SemanticCore<E>,
     ) -> Self {
@@ -375,7 +375,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// segmented picker, content-sized otherwise.
     #[cfg(feature = "picker")]
     pub(super) fn build_picker(
-        config: PickerConfig,
+        config: PickerConfig<HeldChild<E>>,
         env: &Environment,
         renderer: &mut SemanticCore<E>,
     ) -> Self {
@@ -403,7 +403,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// horizontal (read from the config).
     #[cfg(feature = "text-field")]
     pub(super) fn build_text_field(
-        config: ResolvedTextFieldConfig,
+        config: ResolvedTextFieldConfig<HeldChild<E>>,
         env: &Environment,
         renderer: &mut SemanticCore<E>,
     ) -> Self {
@@ -430,7 +430,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// preserving cursor/focus/IME state. Stretch is horizontal (read from the config).
     #[cfg(feature = "secure-field")]
     pub(super) fn build_secure_field(
-        config: SecureFieldConfig,
+        config: SecureFieldConfig<HeldChild<E>>,
         env: &Environment,
         renderer: &mut SemanticCore<E>,
     ) -> Self {
@@ -448,12 +448,12 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         Self::build_widget_with_core(state, stretch, env, core)
     }
 
-    /// Build a persistent badge node: its wrapped content is a move-only `AnyView`
+    /// Build a persistent badge node: its wrapped content is a held child slot
     /// pre-built into a [`RetainedSubview`]; the `value` is read through
     /// `read_signal` so a change schedules a frame. Badge sizes to its content and
     /// never stretches (`StretchAxis::None`, read from the config).
     pub(super) fn build_badge(
-        config: BadgeConfig,
+        config: BadgeConfig<HeldChild<E>>,
         env: &Environment,
         renderer: &mut SemanticCore<E>,
     ) -> Self {

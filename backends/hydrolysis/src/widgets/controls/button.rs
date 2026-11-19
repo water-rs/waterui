@@ -4,7 +4,7 @@ use crate::renderer::chrome::{ChromeContent, LiveChromeParts};
 #[cfg(feature = "menu")]
 use crate::renderer::popup_menu_nodes;
 use crate::renderer::{
-    GroupOpacity, HydroState, HydrolysisRenderer, RenderContext, RetainedSubview,
+    GroupOpacity, HeldChild, HydroState, HydrolysisRenderer, RenderContext, RetainedSubview,
     WidgetRenderContext,
 };
 use crate::theme::{
@@ -19,19 +19,18 @@ use kurbo::Rect;
 use nami::{Signal, SignalExt};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use waterui::ViewExt as _;
 use waterui::floating::FloatingScope;
 use waterui::style::FloatingStyle;
 use waterui_controls::ControlSize;
 use waterui_controls::button::{ButtonConfig, ButtonStyle};
-use waterui_controls::label::{Label, LabelDisplayMode};
+use waterui_controls::label::{ControlLabel, LabelDisplayMode};
 #[cfg(feature = "menu")]
 use waterui_controls::menu::ResolvedMenu;
+use waterui_core::Environment;
 use waterui_core::handler::ReportExtraction as _;
 use waterui_core::interaction::InteractionState;
 use waterui_core::layout::Size as LayoutSize;
 use waterui_core::layout::{ProposalSize, ViewDimensions};
-use waterui_core::{AnyView, Environment};
 use waterui_graphics::color::Color;
 use waterui_text::font::Font;
 use waterui_text::styled::StyledStr;
@@ -290,7 +289,7 @@ fn retained_label_color(
 /// frame. The `config` is kept for the value/style/action and for
 /// accessibility resolution.
 pub struct ButtonRenderState<E: crate::text::TextEngine> {
-    config: ButtonConfig,
+    config: ButtonConfig<HeldChild<E>>,
     /// `Some` for a non-title (general) label held as a retained sub-view; `None`
     /// for a `TitleOnly` label rendered as styled text from `config.label`.
     label_view: Option<RetainedSubview<E>>,
@@ -309,7 +308,7 @@ impl<E: crate::text::TextEngine> ButtonRenderState<E> {
         crate::renderer::SemanticCore::<E>::accessibility_label_from_label(self.config.label(), env)
     }
 
-    pub(crate) fn from_config(config: ButtonConfig) -> Self {
+    pub(crate) fn from_config(config: ButtonConfig<HeldChild<E>>) -> Self {
         Self {
             config,
             label_view: None,
@@ -341,9 +340,7 @@ impl<E: crate::text::TextEngine> ButtonRenderState<E> {
         if renders_as_plain_title(self.config.label()) {
             return;
         }
-        self.label_view = Some(RetainedSubview::new(AnyView::new(
-            self.config.label().clone(),
-        )));
+        self.label_view = Some(RetainedSubview::held(self.config.label().build()));
     }
 
     fn spec(&self, env: &Environment) -> ButtonSpec {
@@ -381,12 +378,12 @@ impl<E: crate::text::TextEngine> ButtonRenderState<E> {
             self.chrome.label_state.snapshot(),
             self.chrome.frame.get(),
         );
-        let styled = styled_button_label(font, self.config.label().clone());
+        let child = held_label_view(color, self.config.label().build_with_font(font));
         let subview = self
             .label_view
             .as_mut()
             .expect("the label sub-view was checked above");
-        *subview = RetainedSubview::new(button_label_view(color, AnyView::new(styled)));
+        *subview = RetainedSubview::held(child);
         subview.ensure_built(renderer, env);
     }
 }
@@ -570,14 +567,14 @@ pub struct MenuRenderState<E: crate::text::TextEngine> {
 /// label.
 #[cfg(feature = "menu")]
 enum MenuLabel<E: crate::text::TextEngine> {
-    /// A `Label` with `TitleOnly` display: rendered as centered styled text fresh
+    /// A `ControlLabel` with `TitleOnly` display: rendered as centered styled text fresh
     /// each frame (cloneable, like a button title).
-    Title(Label),
+    Title(ControlLabel<HeldChild<E>>),
     /// Any other label: re-flushed from a retained sub-view each frame. The
     /// label is kept to build the sub-view in the look's colour once a theme
     /// exists.
     View {
-        label: Label,
+        label: ControlLabel<HeldChild<E>>,
         subview: Box<RetainedSubview<E>>,
     },
 }
@@ -604,7 +601,7 @@ impl<E: crate::text::TextEngine> MenuRenderState<E> {
         )
     }
 
-    pub(crate) fn from_resolved(menu: ResolvedMenu, env: &Environment) -> Self {
+    pub(crate) fn from_resolved(menu: ResolvedMenu<HeldChild<E>>, env: &Environment) -> Self {
         let ResolvedMenu {
             label,
             items,
@@ -619,10 +616,8 @@ impl<E: crate::text::TextEngine> MenuRenderState<E> {
         let label = if renders_as_plain_title(&label) {
             MenuLabel::Title(label)
         } else {
-            MenuLabel::View {
-                subview: Box::new(RetainedSubview::new(label.clone())),
-                label,
-            }
+            let subview = Box::new(RetainedSubview::held(label.build()));
+            MenuLabel::View { label, subview }
         };
         Self {
             label,
@@ -660,7 +655,7 @@ impl<E: crate::text::TextEngine> MenuRenderState<E> {
         }
         let look = self.chrome.look(&theme, &spec, env).clone();
         let color = retained_label_color(&look, &self.chrome, env);
-        **subview = RetainedSubview::new(button_label_view(color, AnyView::new(label.clone())));
+        **subview = RetainedSubview::held(held_label_view(color, label.build()));
         subview.ensure_built(renderer, env);
     }
 
@@ -997,10 +992,10 @@ fn label_scale(rendered: &RenderedChrome) -> Option<crate::theme::live::Operand<
 /// Renders a title label: centred styled text in the look's font, over the
 /// look's colour for the reported state — live, following the chrome's
 /// label colour operand, when that colour varies between renders.
-fn render_title<E: crate::text::TextEngine>(
+fn render_title<E: crate::text::TextEngine, S>(
     ctx: &mut WidgetRenderContext<'_, E>,
     rendered: &RenderedChrome,
-    label: &Label,
+    label: &ControlLabel<S>,
     env: &Environment,
 ) {
     let target = rendered.label_target;
@@ -1148,9 +1143,12 @@ pub fn render_menu_parts<E: crate::text::TextEngine>(
         );
 }
 
-fn button_label_view(color: Option<Color>, label: AnyView) -> AnyView {
+fn held_label_view<E: crate::text::TextEngine>(
+    color: Option<Color>,
+    label: HeldChild<E>,
+) -> HeldChild<E> {
     match color {
-        Some(color) => AnyView::new(label.foreground(color)),
+        Some(color) => crate::renderer::held_with_foreground(label, color),
         None => label,
     }
 }
@@ -1171,7 +1169,7 @@ pub struct ListRowChrome;
 /// resolved — it has no icon — so the display mode alone is not the question;
 /// answering it with the mode alone drew the spoken text in place of the
 /// content.
-const fn renders_as_plain_title(label: &Label) -> bool {
+const fn renders_as_plain_title<S>(label: &ControlLabel<S>) -> bool {
     matches!(label.display_mode_preference(), LabelDisplayMode::TitleOnly)
         && !label.has_custom_content()
 }
@@ -1181,17 +1179,17 @@ const fn renders_as_plain_title(label: &Label) -> bool {
 /// preference, the `LabelDisplayMode` it inherits from the environment, and
 /// whether it carries an icon — so the chrome agrees with what the label
 /// draws without inspecting rendered children.
-pub fn label_resolves_icon_only(label: &Label, env: &Environment) -> bool {
+pub fn label_resolves_icon_only<S>(label: &ControlLabel<S>, env: &Environment) -> bool {
     matches!(
         label.effective_display_mode(env),
         LabelDisplayMode::IconOnly
     )
 }
 
-fn styled_button_title<E: crate::text::TextEngine>(
+fn styled_button_title<E: crate::text::TextEngine, S>(
     state: &mut HydroState<E>,
     font: Option<Font>,
-    label: &Label,
+    label: &ControlLabel<S>,
     env: &Environment,
 ) -> StyledStr {
     let title = label.semantic_text().clone();
@@ -1207,9 +1205,9 @@ fn styled_button_title<E: crate::text::TextEngine>(
 /// Subscribes to a label's reactive title content so a change schedules a frame
 /// (the persistent `Widget` node then re-renders it live). The returned value is
 /// ignored; the side effect is the watch registration.
-fn watch_button_title<E: crate::text::TextEngine>(
+fn watch_button_title<E: crate::text::TextEngine, S>(
     renderer: &mut HydrolysisRenderer<E>,
-    label: &Label,
+    label: &ControlLabel<S>,
     env: &Environment,
 ) {
     let _ = renderer.read_signal(&label.semantic_text().resolve(env).content());
@@ -1231,20 +1229,6 @@ pub fn styled_with_default_foreground(styled: StyledStr, color: Color) -> Styled
         out.push(chunk.clone(), style);
     }
     out
-}
-
-/// Applies the look's label font to a label that owns its text. A label
-/// built from caller-supplied views carries its own typography, and
-/// `Label::font` rejects it outright.
-pub fn styled_button_label(font: Option<Font>, label: Label) -> Label {
-    if label.has_custom_content() {
-        return label;
-    }
-    if let Some(font) = font {
-        label.font(font)
-    } else {
-        label
-    }
 }
 
 /// Emits a retained button's accessibility node for the semantic walk — the
@@ -1316,9 +1300,14 @@ mod tests {
 
     /// The trigger spec of `menu` resolved in `env`.
     #[cfg(feature = "menu")]
-    fn trigger_spec(menu: Menu, env: &Environment) -> crate::theme::ButtonSpec {
-        let resolved =
-            peel_native::<ResolvedMenu>(menu, env).expect("a menu resolves to its native config");
+    fn trigger_spec<L: waterui_controls::label::LabelKind>(
+        menu: Menu<L>,
+        env: &Environment,
+    ) -> crate::theme::ButtonSpec {
+        use waterui_core::backend::{ChildSlot as _, MapSlots as _};
+        let resolved = peel_native::<ResolvedMenu<waterui_core::AnyView>>(menu, env)
+            .expect("a menu resolves to its native config")
+            .map_slots(crate::renderer::HeldChild::from_view);
         MenuRenderState::<crate::text::ParleyEngine>::from_resolved(resolved, env).spec(env)
     }
 

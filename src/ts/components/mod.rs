@@ -23,7 +23,7 @@ use core::cell::RefCell;
 
 use nami::{Computed, SignalExt as _};
 use suiteki::Str;
-use waterui_controls::label::Label;
+use waterui_controls::label::{Label, TitleLabel};
 use waterui_controls::{Button, Slider, Stepper, TextField, Toggle};
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::SelfId;
@@ -544,15 +544,18 @@ fn controls(
 /// one, and the two carry different styles: `loading` is indeterminate, so it
 /// has no meaning beside a total and the pair is refused rather than silently
 /// dropping one of them.
-fn progress_of(attributes: ProgressAttributes, label: Option<Label>) -> Result<AnyView, JsError> {
+fn progress_of(
+    attributes: ProgressAttributes,
+    label: Option<Label<TitleLabel>>,
+) -> Result<AnyView, JsError> {
     let (value, total, style) = attributes.into_parts();
     let style = style.unwrap_or_default();
     let Some(value) = value else {
         let progress = Progress::infinity();
-        return Ok(AnyView::new(match label {
-            Some(label) => progress.label(label),
-            None => progress,
-        }));
+        return Ok(match label {
+            Some(label) => AnyView::new(progress.label(label)),
+            None => AnyView::new(progress),
+        });
     };
     if let Some(total) = total {
         let progress = Progress::new(value).total(total);
@@ -566,10 +569,10 @@ fn progress_of(attributes: ProgressAttributes, label: Option<Label>) -> Result<A
                 ));
             }
         };
-        return Ok(AnyView::new(match label {
-            Some(label) => progress.label(label),
-            None => progress,
-        }));
+        return Ok(match label {
+            Some(label) => AnyView::new(progress.label(label)),
+            None => AnyView::new(progress),
+        });
     }
     let progress = Progress::new(value);
     let progress = match style {
@@ -577,10 +580,10 @@ fn progress_of(attributes: ProgressAttributes, label: Option<Label>) -> Result<A
         ProgressStyleValue::Circular => progress.circular(),
         ProgressStyleValue::Loading => progress.loading(),
     };
-    Ok(AnyView::new(match label {
-        Some(label) => progress.label(label),
-        None => progress,
-    }))
+    Ok(match label {
+        Some(label) => AnyView::new(progress.label(label)),
+        None => AnyView::new(progress),
+    })
 }
 
 /// A JavaScript builder used where the framework takes a view it may build
