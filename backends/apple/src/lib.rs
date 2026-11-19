@@ -6,6 +6,7 @@
 
 extern crate alloc;
 
+pub mod apple_content;
 pub mod backend;
 /// The offscreen capture shared by `view_renderer` and the `preview`
 /// entry — nothing else references it. With `gpu_surface` the captures go
@@ -25,6 +26,15 @@ mod native_log;
 #[cfg(preview_entry)]
 pub mod preview;
 pub mod resources;
+
+#[cfg(target_os = "macos")]
+pub use apple_content::objc2_app_kit;
+#[cfg(target_os = "ios")]
+pub use apple_content::objc2_ui_kit;
+pub use apple_content::{
+    AppleContent, AppleInvalidator, AppleMount, AppleView, MainThreadMarker, PlatformView,
+    Retained, objc2,
+};
 
 mod animation;
 #[cfg(feature = "gpu_surface")]

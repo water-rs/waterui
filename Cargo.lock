@@ -12827,6 +12827,7 @@ dependencies = [
  "waterui-meta",
  "waterui-preview-protocol",
  "waterui-structural-transition",
+ "waterui-testing",
  "waterui-video",
  "waterui-webview",
  "wgpu-hal",
