@@ -457,7 +457,7 @@ pub fn run<W: Windows>(
         termination: _,
     } = app.into_parts();
     let mut env = env.extending(waterui_graphics::backend::SceneViewMergeToParent);
-    waterui_core::install_application_resources(&mut env);
+    waterui::install_application_resources(&mut env);
     waterui::inspector::install(&mut env, inspector);
     let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
     let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
@@ -480,19 +480,7 @@ pub fn run<W: Windows>(
     // system's fonts for itself.
     let fonts = crate::text::fonts::native_collection(&env);
     fonts.clone().install(&mut env);
-    // The capture service mounts its subtree under a snapshot of the
-    // assembled environment — the theme tokens, hooks and font collection a
-    // window's subtree resolves — so it must be installed last
-    // (water-rs/waterui#2703).
     let painter = OffscreenPainter::select().unwrap_or_else(|error| exit_without_gpu(error));
-    env.insert(waterui_core::ViewRenderer::new(
-        crate::view_renderer::HydrolysisViewRenderer::on_painter(
-            &painter,
-            Rc::clone(&theme),
-            env.clone(),
-            FontFamilyResolution::Lenient,
-        ),
-    ));
     let identities = env
         .get::<crate::renderer::WindowIdentities>()
         .expect("install_window_registries seeds WindowIdentities")

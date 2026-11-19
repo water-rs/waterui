@@ -5,7 +5,5 @@ pub mod id;
 pub mod main_thread;
 pub mod plugin;
 pub mod resolve;
-#[cfg(feature = "std")]
-pub mod resources;
 pub mod serial;
 pub mod signal;

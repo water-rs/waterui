@@ -12,9 +12,9 @@ use hydrolysis::{
 };
 use waterui::app::{App, AppParts, WindowSink, Windows};
 use waterui::window::{Window, WindowChannel, WindowToolbar};
-use waterui::{Plugin, ViewExt as _};
+use waterui::{ContentLedger, Plugin, ViewExt as _};
 use waterui_core::handler::{AnyViewBuilder, ViewBuilder};
-use waterui_core::{AnyView, ContentLedger, Environment, View};
+use waterui_core::{AnyView, Environment, View};
 
 use crate::artifacts::{CapturedSnapshot, TestArtifacts};
 use crate::driver::{
