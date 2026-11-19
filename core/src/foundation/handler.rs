@@ -64,9 +64,6 @@ pub type BoxedAction<T = ()> = Box<dyn FnMut(&Environment) -> Result<T, Extracti
 /// This is essentially `Box<dyn FnOnce(&Environment) -> Result<T, ExtractionError>>`.
 pub type BoxedActionOnce<T = ()> = Box<dyn FnOnce(&Environment) -> Result<T, ExtractionError>>;
 
-/// Type alias for a boxed action handler (backwards compatibility).
-pub type ActionObject = BoxedAction<()>;
-
 fn extract<T: Extractor>(
     env: &Environment,
     state: &mut ExtractionState,
