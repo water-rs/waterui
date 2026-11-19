@@ -10,7 +10,7 @@ use waterui_browser_cef as _;
 
 /// Creates the standard `WebView` example drawn by the bundled CEF engine.
 ///
-/// Linking `waterui-browser-cef` tells the WaterUI CLI to select the backend's
+/// Linking `waterui-browser-cef` tells the `WaterUI` CLI to select the backend's
 /// `webview-cef` feature at compile time. Nothing in the shared example code
 /// mentions an engine or installs a hook.
 #[must_use]

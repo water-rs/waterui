@@ -50,7 +50,10 @@ fn main() {
     // `--cfg trybuild -A dead_code`, so a `dead_code` expectation cannot be
     // fulfilled there.
     println!("cargo:rustc-check-cfg=cfg(trybuild)");
+    configure_cfg_aliases();
+}
 
+fn configure_cfg_aliases() {
     cfg_aliases! {
         // Where hosted content exists: the targets on which `cherenkov-gpu`
         // implements `HostedLayers`, whose plane shows a platform object.

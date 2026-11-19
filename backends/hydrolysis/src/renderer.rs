@@ -246,7 +246,10 @@ use waterui_graphics::gpu::RedrawHandle;
 #[cfg(hydrolysis_gpu)]
 use waterui_graphics::{ExternalFrameView, GpuView};
 
-#[cfg(waterui_feature = "webview")]
+#[cfg(all(
+    waterui_feature = "webview",
+    not(any(hydrolysis_cef_webview, hydrolysis_wpe_webview))
+))]
 use waterui::webview::WebView;
 use waterui_icon::SystemIcon;
 #[cfg(feature = "accessibility")]

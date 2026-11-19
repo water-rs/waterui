@@ -312,7 +312,7 @@ const fn webview_backend_feature(answers: BrowserAnswers) -> Option<&'static str
         return None;
     }
     match answers.engine {
-        None => Some("webview-system"),
+        None | Some(ResolvedWebViewBackend::System) => Some("webview-system"),
         Some(ResolvedWebViewBackend::Cef) => Some("webview-cef"),
         Some(ResolvedWebViewBackend::Wpe) => Some("webview-wpe"),
     }
@@ -321,7 +321,9 @@ const fn webview_backend_feature(answers: BrowserAnswers) -> Option<&'static str
 /// The `waterui-gtk` backend feature `answers` selects — `webview-system` when
 /// the application enables `WebView` without an engine crate of its own.
 const fn system_webview_backend_feature(answers: BrowserAnswers) -> Option<&'static str> {
-    if answers.webview_enabled && answers.engine.is_none() {
+    if answers.webview_enabled
+        && matches!(answers.engine, None | Some(ResolvedWebViewBackend::System))
+    {
         Some("webview-system")
     } else {
         None
