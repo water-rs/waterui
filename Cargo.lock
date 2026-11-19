@@ -4776,7 +4776,6 @@ dependencies = [
  "waterui-core",
  "waterui-form",
  "waterui-graphics",
- "waterui-icon",
  "waterui-image",
  "waterui-inspector-protocol",
  "waterui-layout",

@@ -7,7 +7,7 @@
 //! The selection binding is two-way: native selection writes back, external
 //! writes select the matching tab.
 
-use alloc::vec::Vec;
+use alloc::{string::String, vec::Vec};
 
 use crate::contract::{Held, NativeLeaf};
 use waterui::navigation::{
@@ -95,7 +95,7 @@ fn mount_tab(id: Id, tab: TabItem<Held>, renderer: &crate::contract::Renderer) -
             let icon_view = builder.build();
             let symbol = icon_view
                 .downcast_ref::<crate::SfSymbol>()
-                .map(|symbol| alloc::string::String::from(symbol.as_str()));
+                .map(|symbol| String::from(symbol.as_str()));
             symbol.map_or_else(
                 || (None, Some(renderer.render(icon_view))),
                 |name| (Some(name), None),
@@ -522,7 +522,7 @@ mod platform {
 
 #[cfg(target_os = "macos")]
 mod platform {
-    use super::{Fill, Mounted, reconcile_tabs};
+    use super::{Fill, Mounted, ProposalSize, reconcile_tabs};
     use alloc::rc::Rc;
     use alloc::vec::Vec;
     use core::cell::RefCell;
@@ -544,13 +544,7 @@ mod platform {
             .iter()
             .map(|tab| {
                 let image = tab.icon_leaf.as_ref().and_then(|icon_leaf| {
-                    let size = icon_leaf
-                        .layout()
-                        .measure(waterui_core::layout::ProposalSize {
-                            width: None,
-                            height: None,
-                        })
-                        .size;
+                    let size = icon_leaf.layout().measure(ProposalSize::UNSPECIFIED).size;
                     view::set_frame(
                         icon_leaf.view(),
                         Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height)),
