@@ -776,7 +776,7 @@ impl HeadlessRuntime {
         let inspector = init_main_thread_executors();
         let inspector_probe = inspector
             .as_ref()
-            .map(waterui::inspector::InspectorRuntime::runtime_probe);
+            .map(|inspector| inspector.task_probe() as Arc<dyn waterui::task::RuntimeProbe>);
         let mut env = env.extending(waterui_graphics::backend::SceneViewMergeToParent);
         waterui_core::install_application_resources(&mut env);
         waterui::inspector::install(&mut env, inspector);

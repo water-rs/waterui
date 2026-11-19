@@ -33,7 +33,7 @@ struct Client {
 }
 
 /// Runs the accept loop until the listener fails.
-pub(super) fn accept_loop(
+pub fn accept_loop(
     listener: &TcpListener,
     hub: &Arc<EventHub>,
     token: &str,
@@ -204,7 +204,7 @@ fn read_control_messages(hub: &EventHub, client: ClientId, mut socket: TcpStream
 }
 
 /// Owns every client and performs all socket writes.
-pub(super) fn dispatch_loop(
+pub fn dispatch_loop(
     hub: &Arc<EventHub>,
     receiver: &async_channel::Receiver<Dispatch>,
     target: &TargetInfo,

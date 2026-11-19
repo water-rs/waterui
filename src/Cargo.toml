@@ -45,7 +45,6 @@ waterkit-deeplink.workspace = true
 # Grapheme clusters for the avatar monogram: a name's first "letter" is a
 # cluster, not a `char`, wherever a combining mark or an emoji sequence is one.
 unicode-segmentation = "1.13"
-tracing-subscriber = { workspace = true, optional = true }
 async-channel.workspace = true
 web-time.workspace = true
 pulldown-cmark = { version = "0.13", optional = true }
@@ -61,7 +60,6 @@ waterui-particle = { workspace = true, optional = true }
 waterui-math = { workspace = true, optional = true }
 waterui-assets = { workspace = true, optional = true }
 waterui-assets-macros = { workspace = true, optional = true }
-waterui-inspector-protocol = { workspace = true, optional = true }
 waterui-ts = { workspace = true, optional = true }
 waterkit-haptic = { workspace = true, optional = true }
 pastey.workspace = true
@@ -72,9 +70,9 @@ tree-sitter = { version = "0.27", optional = true }
 tree-sitter-md = { version = "0.5.3", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-# Inspector session tokens come from the OS RNG; the endpoint exists only on
-# native targets, so the entropy source is declared beside it.
-getrandom = { workspace = true, optional = true }
+# The inspector endpoint is a TCP server that also launches the inspector
+# application on the developer's machine; a browser page can do neither.
+waterui-inspector-runtime = { workspace = true, optional = true }
 
 # CPU-time profiling (cpu-time) needs a per-thread CPU clock; the runtime guard
 # uses a zero-cost stand-in where there is none.
@@ -138,12 +136,12 @@ highlight = ["waterui-text/highlight"]
 # stack out, and embedded firmware disables it anyway — the hub is desktop
 # tooling, and its 64-bit sequence counters do not even exist on RV32
 # targets.
-inspector = ["dep:getrandom", "dep:waterui-inspector-protocol", "dep:tracing-subscriber"]
+inspector = ["dep:waterui-inspector-runtime"]
 # Reactive-graph tracing for the Inspector's `signals` channel. Development
 # only: it attributes every state-owning signal node and reports every
 # notification. Off by default so release builds pay nothing — see
 # `nami_core::observe`.
-inspector-signals = ["inspector", "nami/observability"]
+inspector-signals = ["inspector", "waterui-inspector-runtime/signals"]
 # Window-modal confirmation / alert dialogs: the `Dialog` semantic and its
 # composed card realization for self-drawn backends.
 dialog = []

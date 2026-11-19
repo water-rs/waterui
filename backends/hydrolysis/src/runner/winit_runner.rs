@@ -1475,7 +1475,7 @@ impl WinitRunner {
             refresh_rate,
             self.env
                 .get::<waterui::inspector::InspectorRuntime>()
-                .map(waterui::inspector::InspectorRuntime::runtime_probe),
+                .map(|inspector| inspector.task_probe() as Arc<dyn waterui::task::RuntimeProbe>),
         ));
         // Locale changes reach views through a mailbox, whose pump needs the
         // executor installed just above.
