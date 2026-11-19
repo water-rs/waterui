@@ -165,14 +165,15 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
 
     fn window<C: ChildView<Self>>(
         &mut self,
-        native: waterui::window::Window<waterui::window::WindowSlot<C>>,
+        native: waterui::window::Window<waterui::window::WindowSlot<C>, Option<C>>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
         self.renderer
-            .open_window(crate::runner::window::slot_root_window(
-                native.map_content(|slot| slot.map(C::into_child)),
-            ));
+            .open_window(crate::runner::window::slot_root_window(native.map(
+                |slot| slot.map(C::into_child),
+                |toolbar| toolbar.map(C::into_child),
+            )));
         RenderNode::build_empty(self.renderer, env)
     }
 

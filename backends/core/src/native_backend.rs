@@ -758,7 +758,7 @@ native_backend! {
         /// A container whose children are produced lazily.
         lazy_container<C>: waterui::layout::container::LazyContainer<C>,
         /// A window opened from the view tree.
-        window<C>: waterui::window::Window<waterui::window::WindowSlot<C>>,
+        window<C>: waterui::window::Window<waterui::window::WindowSlot<C>, Option<C>>,
         #[cfg(waterui_feature = "effects")]
         /// A view drawn through a filter.
         filtered<C>: waterui::graphics::backend::FilteredView<C>,
@@ -1087,9 +1087,11 @@ mod tests {
         }
     }
 
-    impl<C> Parent<C> for waterui::window::Window<waterui::window::WindowSlot<C>> {
+    impl<C> Parent<C> for waterui::window::Window<waterui::window::WindowSlot<C>, Option<C>> {
         fn children(self) -> Vec<C> {
-            alloc::vec![self.content.build()]
+            let mut children = alloc::vec![self.content.build()];
+            children.extend(self.toolbar);
+            children
         }
     }
 
@@ -1396,6 +1398,38 @@ mod tests {
         assert_eq!(hits[1], "typed child");
         assert!(!hits.contains(&"erased child"));
         assert!(hits.contains(&"spacer"));
+    }
+
+    #[test]
+    fn a_window_with_a_toolbar_reaches_its_backend_with_both_typed() {
+        let hits = reached(
+            waterui::window::Window::new(
+                "Test",
+                waterui::binding(waterui::window::WindowState::Normal),
+                Spacer::flexible,
+            )
+            .toolbar(waterui::layout::Divider),
+        );
+        assert!(!hits.contains(&"erased child"));
+        assert_eq!(
+            hits,
+            [
+                "window",
+                "typed child",
+                "environment",
+                "environment",
+                "fixed_container",
+                "typed child",
+                "spacer",
+                "typed child",
+                "dynamic",
+                "typed child",
+                "empty",
+                "typed child",
+                "environment",
+                "divider",
+            ]
+        );
     }
 
     #[cfg(waterui_feature = "menu")]

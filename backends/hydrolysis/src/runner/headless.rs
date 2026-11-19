@@ -241,7 +241,7 @@ impl PlatformWindow for HeadlessPlatformWindow {
         self.inner.content_size()
     }
 
-    fn apply_properties<C>(&mut self, window: &Window<C>) {
+    fn apply_properties<C, T>(&mut self, window: &Window<C, T>) {
         self.inner.apply_properties(window);
     }
 
@@ -607,9 +607,9 @@ impl HeadlessRuntime {
     ///
     /// # Errors
     /// [`PainterUnavailable`], as [`Self::new`].
-    pub fn new_with_window(
+    pub fn new_with_window<C: ViewBuilder, T: waterui::window::WindowToolbar>(
         env: Environment,
-        window: Window<impl ViewBuilder>,
+        window: Window<C, T>,
         width: u32,
         height: u32,
         style: impl crate::Style,
@@ -709,9 +709,9 @@ impl HeadlessRuntime {
     /// [`Self::new_for_tests`].
     #[cfg(any(test, feature = "testing"))]
     #[must_use]
-    pub fn new_for_tests_with_window(
+    pub fn new_for_tests_with_window<C: ViewBuilder, T: waterui::window::WindowToolbar>(
         env: Environment,
-        window: Window<impl ViewBuilder>,
+        window: Window<C, T>,
         width: u32,
         height: u32,
         style: impl crate::Style,
