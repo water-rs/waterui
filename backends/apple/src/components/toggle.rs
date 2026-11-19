@@ -22,7 +22,7 @@ use waterui_core::layout::{
 #[cfg(target_os = "ios")]
 use crate::components::button_chrome;
 use crate::components::control_size::platform_control_size;
-use crate::contract::{Mounted, NativeLeaf};
+use crate::contract::{Held, Mounted, NativeLeaf};
 
 #[cfg(target_os = "macos")]
 mod platform {
@@ -182,7 +182,7 @@ impl SubView for ToggleSubView {
 /// The `toggle` realization: `Native<ToggleConfig>`
 /// maps to a kit row whose binding, enabled state, and accessibility name
 /// stay live through watchers.
-pub fn realize_toggle_config(config: ToggleConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
+pub fn realize_toggle_config(config: ToggleConfig<Held>, ctx: &RenderContext<'_>) -> NativeLeaf {
     let mtm = ctx.mtm();
     let stretch = waterui_core::NativeView::stretch_axis(&config);
     let (label, binding, style, size) = config.into_parts();
@@ -201,7 +201,7 @@ pub fn realize_toggle_config(config: ToggleConfig, ctx: &RenderContext<'_>) -> N
     let accessibility_label = label.accessibility_label();
 
     // The label renders as a mounted child of the row's container.
-    let child = ctx.render(waterui_backend_core::AnyView::new(label));
+    let child = ctx.realize(label.build());
     let mounted = child.mount(toggle.container());
     toggle.set_label(mounted.view());
     cocoa_ui::view::hide_from_accessibility(mounted.view());

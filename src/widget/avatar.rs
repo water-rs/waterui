@@ -14,7 +14,7 @@ use crate::theme::color::{MutedForeground, SurfaceVariant};
 #[cfg(feature = "media")]
 use nami::signal::IntoComputed;
 use unicode_segmentation::UnicodeSegmentation as _;
-use waterui_controls::{IntoLabel, Label};
+use waterui_controls::{IntoLabel, Label, SemanticLabel};
 use waterui_core::accessibility::{AccessibilityChildren, AccessibilityRole};
 use waterui_core::handler::{AnyViewBuilder, ViewBuilder};
 #[cfg(feature = "media")]
@@ -144,7 +144,7 @@ struct Ring {
 /// ```
 #[derive(Debug)]
 pub struct Avatar {
-    label: Label,
+    label: Label<SemanticLabel>,
     fallback: Option<AnyViewBuilder<AnyView>>,
     #[cfg(feature = "media")]
     image: Option<Computed<Url>>,
@@ -185,7 +185,7 @@ impl Avatar {
     /// The shared constructor: `None` means "derive a monogram from the name".
     fn with_fallback(name: impl IntoLabel, fallback: Option<AnyViewBuilder<AnyView>>) -> Self {
         Self {
-            label: name.into_label(),
+            label: name.into_label().into_semantic(),
             fallback,
             #[cfg(feature = "media")]
             image: None,

@@ -8,13 +8,13 @@
 //! operands and records nothing.
 
 #[cfg(any(feature = "text-field", feature = "secure-field"))]
-use crate::renderer::{RetainedSubview, SemanticCore};
+use crate::renderer::{HeldChild, RetainedSubview, SemanticCore};
 #[cfg(any(feature = "text-field", feature = "secure-field"))]
 use crate::theme::live::Operand;
 #[cfg(any(feature = "text-field", feature = "secure-field"))]
 use crate::theme::{Inputs, ValueMotion};
 #[cfg(any(feature = "text-field", feature = "secure-field"))]
-use crate::widgets::controls::button::{LIVE_STATES, styled_button_label};
+use crate::widgets::controls::button::LIVE_STATES;
 #[cfg(any(feature = "text-field", feature = "secure-field"))]
 use cherenkov_record::WorkingColor;
 #[cfg(any(feature = "text-field", feature = "secure-field"))]
@@ -27,11 +27,9 @@ use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 #[cfg(any(feature = "text-field", feature = "secure-field"))]
-use waterui_controls::label::Label;
+use waterui_controls::label::ControlLabel;
 #[cfg(any(feature = "text-field", feature = "secure-field"))]
 use waterui_core::animation::{Animation, ChangeAnimation};
-#[cfg(any(feature = "text-field", feature = "secure-field"))]
-use waterui_core::{AnyView, View};
 #[cfg(any(feature = "text-field", feature = "secure-field"))]
 use waterui_graphics::color::{Color, signal_color};
 #[cfg(any(feature = "text-field", feature = "secure-field"))]
@@ -56,8 +54,6 @@ use kurbo::Rect;
 ))]
 use nami::Binding;
 use nami::Signal as _;
-#[cfg(any(feature = "text-field", feature = "secure-field"))]
-use waterui::ViewExt as _;
 use waterui_core::Environment;
 #[cfg(any(
     feature = "text-field",
@@ -250,7 +246,10 @@ impl FieldChrome {
     /// colour for the field's reported state as its default, else the
     /// ordinary foreground, and follows the state without rebuilding.
     #[cfg(any(feature = "text-field", feature = "secure-field"))]
-    pub(crate) fn label_view(&self, label: impl View + 'static) -> AnyView {
+    pub(crate) fn label_view<E: crate::text::TextEngine>(
+        &self,
+        label: HeldChild<E>,
+    ) -> HeldChild<E> {
         let color = Rc::clone(&self.label_color);
         let color = signal_color(self.report.clone().map(move |state| {
             color.borrow().as_ref().map_or_else(
@@ -258,7 +257,7 @@ impl FieldChrome {
                 |color| color.target(&Inputs::at_rest(Rect::ZERO, state, &())),
             )
         }));
-        AnyView::new(label.foreground(color))
+        crate::renderer::held_with_foreground(label, color)
     }
 
     /// Gives the inside label view the font of the look the field took last.
@@ -272,7 +271,7 @@ impl FieldChrome {
     pub(crate) fn apply_label_font<E: crate::text::TextEngine>(
         &mut self,
         label_view: &mut RetainedSubview<E>,
-        label: &Label,
+        label: &ControlLabel<HeldChild<E>>,
         renderer: &mut SemanticCore<E>,
         env: &Environment,
     ) {
@@ -292,8 +291,7 @@ impl FieldChrome {
             return;
         }
         self.label_font_set = font.is_some();
-        *label_view =
-            RetainedSubview::new(self.label_view(styled_button_label(font, label.clone())));
+        *label_view = RetainedSubview::held(self.label_view(label.build_with_font(font)));
         label_view.ensure_built(renderer, env);
         renderer.context_mark_layout();
     }
