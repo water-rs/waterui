@@ -15,7 +15,6 @@ use nami::Binding;
 use waterui_core::Str;
 use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::layout::StretchAxis;
-use waterui_core::view::ViewConfiguration;
 use waterui_core::{AnyView, Environment, Native, NativeView, View, contract_violation};
 
 /// Configuration for the [`Slider`] widget.
@@ -395,27 +394,19 @@ impl<L: LabelKind, Min: View, Max: View> Slider<L, Min, Max> {
     }
 }
 
-impl<S: View> ViewConfiguration for SliderConfig<S> {
-    type View = Slider<ControlLabel<S>, S, S>;
-
-    fn render(self) -> Self::View {
-        let mode = self.label.display_mode_preference();
-        Slider {
-            label: Label::from_control_label(self.label, mode),
-            min_value_label: self.min_value_label,
-            max_value_label: self.max_value_label,
-            range: self.range,
-            value: self.value,
-            size: self.size,
-            value_indicator: self.value_indicator,
-            step: self.step,
-        }
-    }
-}
-
 impl<S: View> From<SliderConfig<S>> for Slider<ControlLabel<S>, S, S> {
     fn from(value: SliderConfig<S>) -> Self {
-        value.render()
+        let mode = value.label.display_mode_preference();
+        Self {
+            label: Label::from_control_label(value.label, mode),
+            min_value_label: value.min_value_label,
+            max_value_label: value.max_value_label,
+            range: value.range,
+            value: value.value,
+            size: value.size,
+            value_indicator: value.value_indicator,
+            step: value.step,
+        }
     }
 }
 
