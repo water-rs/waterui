@@ -36,7 +36,7 @@ impl FontRegistrations {
     /// logged and the font stays unregistered, so text that names its family
     /// resolves as it does without it. A missing directory means the bundle
     /// declares no fonts.
-    pub fn register_bundle_fonts(&mut self, resources: &waterui_core::ResourceContext) {
+    pub fn register_bundle_fonts(&mut self, resources: &waterui_resources::ResourceContext) {
         let entries = match std::fs::read_dir(resources.fonts()) {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,

@@ -2,9 +2,11 @@
 
 use std::path::{Path, PathBuf};
 
+use waterui_core::Environment;
+
 /// The resource roots of one native application or embedded instance.
 ///
-/// Install this value into the instance's [`crate::Environment`] before
+/// Install this value into the instance's [`Environment`] before
 /// constructing its app. Asset handles resolve against this value; no
 /// process-global resource root is changed when another instance starts.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,7 +97,7 @@ impl ResourceContext {
     /// A host installs it before constructing the app, so an absent context is
     /// a host contract violation for the caller to report where it matters.
     #[must_use]
-    pub fn from_environment(env: &crate::Environment) -> Option<&Self> {
+    pub fn from_environment(env: &Environment) -> Option<&Self> {
         env.get()
     }
 }
@@ -121,7 +123,7 @@ mod tests {
 
     #[test]
     fn separate_environments_keep_their_resource_roots() {
-        let mut first = crate::Environment::new();
+        let mut first = Environment::new();
         first.insert(ResourceContext::new("/first/assets", "/first/fonts"));
         let mut second = first.clone();
         second.insert(ResourceContext::new("/second/assets", "/second/fonts"));
@@ -137,9 +139,6 @@ mod tests {
 
     #[test]
     fn an_environment_without_a_resource_context_has_none() {
-        assert_eq!(
-            ResourceContext::from_environment(&crate::Environment::new()),
-            None
-        );
+        assert_eq!(ResourceContext::from_environment(&Environment::new()), None);
     }
 }

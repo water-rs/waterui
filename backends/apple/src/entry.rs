@@ -171,6 +171,7 @@ mod imp {
                 // Install native services only after the GPU context is ready.
                 unsafe {
                     crate::gpu_runtime::prepare(env_ptr, move || {
+                        #[cfg(any(feature = "webview", all(target_os = "macos", feature = "webview-cef")))]
                         crate::embedding::install_services(&mut *env_ptr);
                         prepared::<F, W>(Box::into_raw(launch).cast::<c_void>());
                     });
@@ -328,6 +329,10 @@ mod imp {
             // Install native services only after the GPU context is ready.
             unsafe {
                 crate::gpu_runtime::prepare(env_ptr, move || {
+                    #[cfg(any(
+                        feature = "webview",
+                        all(target_os = "macos", feature = "webview-cef")
+                    ))]
                     crate::embedding::install_services(&mut *env_ptr);
                     prepared::<F, W>(Box::into_raw(launch).cast::<c_void>());
                 });

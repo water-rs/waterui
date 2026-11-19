@@ -12823,12 +12823,14 @@ dependencies = [
  "waterui",
  "waterui-backend-core",
  "waterui-browser-cef",
+ "waterui-capture",
  "waterui-core",
  "waterui-graphics",
  "waterui-locale",
  "waterui-map",
  "waterui-meta",
  "waterui-preview-protocol",
+ "waterui-resources",
  "waterui-structural-transition",
  "waterui-testing",
  "waterui-video",
@@ -12857,6 +12859,7 @@ dependencies = [
  "waterui-assets-core",
  "waterui-core",
  "waterui-media",
+ "waterui-resources",
  "waterui-url",
  "waterui-video",
 ]
@@ -12994,6 +12997,15 @@ dependencies = [
  "wgpu",
  "wgpu-external-frame",
  "xkeysym",
+]
+
+[[package]]
+name = "waterui-capture"
+version = "0.5.1"
+dependencies = [
+ "nami",
+ "thiserror 2.0.21",
+ "waterui-core",
 ]
 
 [[package]]
@@ -13424,6 +13436,7 @@ dependencies = [
  "waterui-assets-macros",
  "waterui-assets-planner",
  "waterui-barcode",
+ "waterui-capture",
  "waterui-chart",
  "waterui-controls",
  "waterui-core",
@@ -13440,6 +13453,7 @@ dependencies = [
  "waterui-meta",
  "waterui-navigation",
  "waterui-particle",
+ "waterui-resources",
  "waterui-shape",
  "waterui-structural-transition",
  "waterui-svg",
@@ -13627,6 +13641,7 @@ dependencies = [
  "waterkit-dialog",
  "waterkit-fs",
  "waterui",
+ "waterui-capture",
  "waterui-controls",
  "waterui-core",
  "waterui-image",
@@ -13686,6 +13701,13 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "waterui-resources"
+version = "0.5.1"
+dependencies = [
+ "waterui-core",
 ]
 
 [[package]]

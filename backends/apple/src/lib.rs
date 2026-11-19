@@ -101,6 +101,21 @@ pub(crate) mod windows;
 #[path = "../Tests/native_support.rs"]
 pub mod native_test_support;
 
+/// Installs the backend's [`ViewRenderer`](waterui_capture::ViewRenderer)
+/// capture service into `env`.
+///
+/// Not installed by default at launch so applications that never capture views
+/// offscreen do not link type-erased view dispatch; callers that request
+/// [`ViewRenderer`](waterui_capture::ViewRenderer) from the environment opt in
+/// explicitly here.
+///
+/// # Panics
+///
+/// Panics if called off the main thread.
+pub fn install_view_renderer(env: &mut waterui_backend_core::Environment) {
+    crate::components::view_renderer::install_service(env);
+}
+
 /// Generates the `waterui_apple_main` entry point for the application
 /// crate that calls it.
 ///

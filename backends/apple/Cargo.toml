@@ -114,6 +114,8 @@ native-test = [
 [dependencies]
 waterui = { workspace = true, features = ["inspector", "assets", "snackbar", "highlight", "locale-datetime", "locale-list"] }
 waterui-core = { workspace = true }
+waterui-capture = { workspace = true }
+waterui-resources = { workspace = true }
 waterui-structural-transition.workspace = true
 thiserror.workspace = true
 waterui-backend-core = { workspace = true, default-features = true, features = [
