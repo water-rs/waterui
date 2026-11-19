@@ -17,13 +17,13 @@ use nami::{
 use waterui_core::Str;
 pub use waterui_core::key::NamedKey;
 use waterui_core::{
-    AnyView, Environment, View, contract_violation,
+    AnyView, Environment, Native, NativeView, View,
+    backend::{Backend, ChildSlot, MapSlots},
+    contract_violation,
     extract::State,
     handler::{Handler, SharedAction, shared_action},
     interaction::Disabled,
     key::Key,
-    layout::StretchAxis,
-    raw_view,
 };
 use waterui_icon::SystemIcon;
 use waterui_layout::Divider;
@@ -32,7 +32,7 @@ use waterui_text::{TextConfig, styled::StyledStr};
 
 use crate::{
     button::{Button, ButtonStyle},
-    label::{IntoLabel, Label},
+    label::{ControlLabel, IntoLabel, Label, LabelKind, SemanticLabel},
     size::ControlSize,
 };
 
@@ -422,8 +422,8 @@ impl_constant!(Shortcut, ShortcutModifiers);
 
 /// A semantic menu that can be rendered as a popup button or nested inside other menus.
 #[derive(Debug, Clone)]
-pub struct Menu {
-    label: Label,
+pub struct Menu<L> {
+    label: Label<L>,
     /// The menu items to display when the menu is opened.
     pub items: Computed<Vec<MenuItem>>,
     identity: Rc<()>,
@@ -431,12 +431,12 @@ pub struct Menu {
     size: ControlSize,
 }
 
-impl Menu {
+impl<L> Menu<L> {
     /// Creates a menu with a semantic label. Its trigger is drawn as an
     /// [`Automatic`](ButtonStyle::Automatic) button of
     /// [`ControlSize::Small`], like a [`Button`].
     #[must_use]
-    pub fn new(label: impl IntoLabel, items: impl MenuView) -> Self {
+    pub fn new<I: IntoLabel<Kind = L>>(label: I, items: impl MenuView) -> Self {
         Self {
             label: label.into_label(),
             items: items.into_menu_items(),
@@ -459,10 +459,25 @@ impl Menu {
         self.size = size;
         self
     }
+}
+
+impl<L: LabelKind> Menu<L> {
+    /// Strips any custom trigger visual view, leaving the semantic menu item
+    /// used inside nested menus and menu bars.
+    #[must_use]
+    pub fn into_semantic(self) -> Menu<SemanticLabel> {
+        Menu {
+            label: self.label.into_semantic(),
+            items: self.items,
+            identity: self.identity,
+            style: self.style,
+            size: self.size,
+        }
+    }
 
     #[must_use]
     fn resolve(self, env: &Environment) -> ResolvedNestedMenu {
-        let label = self.label;
+        let label = self.label.into_semantic();
         let resolved_label = label.semantic_text().resolve(env);
         let icon = label.semantic_icon();
         let semantic_label = label.resolve(env);
@@ -474,19 +489,27 @@ impl Menu {
             identity: self.identity,
         }
     }
-}
 
-impl View for Menu {
-    fn body(self, env: &Environment) -> impl View {
-        let label = self.label.resolve(env);
+    fn into_resolved<S: ChildSlot>(self, env: &Environment) -> ResolvedMenu<S> {
+        let label = self.label.into_control_label::<S>(env);
         let accessibility_label = label.accessibility_label();
-        AnyView::new(ResolvedMenu {
+        ResolvedMenu {
             label,
             items: resolve_menu_items(&self.items, env),
             accessibility_label,
             style: self.style.resolve(env),
             size: self.size,
-        })
+        }
+    }
+}
+
+impl<L: LabelKind> View for Menu<L> {
+    fn body(self, env: &Environment) -> impl View {
+        Native::new(self.into_resolved::<AnyView>(env))
+    }
+
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        backend.native(self.into_resolved::<B::Slot>(env), env, cx)
     }
 }
 
@@ -510,7 +533,7 @@ pub enum CommandRole {
 #[non_exhaustive]
 pub struct Command {
     /// The semantic label for the command.
-    label: Label,
+    label: Label<SemanticLabel>,
     /// The action to perform when the command is selected.
     action: SharedAction<()>,
     /// Whether the command is currently disabled.
@@ -531,7 +554,7 @@ pub struct Command {
 impl Command {
     /// The semantic label for the command.
     #[must_use]
-    pub const fn label(&self) -> &Label {
+    pub const fn label(&self) -> &Label<SemanticLabel> {
         &self.label
     }
 
@@ -584,9 +607,11 @@ impl Command {
     /// Creates a command builder with the given label.
     #[must_use]
     pub fn builder(label: impl IntoLabel) -> CommandBuilder {
-        CommandBuilder {
-            label: label.into_label(),
-        }
+        Self::from_semantic_label(label.into_label().into_semantic())
+    }
+
+    pub(crate) const fn from_semantic_label(label: Label<SemanticLabel>) -> CommandBuilder {
+        CommandBuilder { label }
     }
 
     /// Resolves the command against `env` into the payload backends render
@@ -686,7 +711,7 @@ impl<T: IntoLabel> CommandExt for T {}
 /// Builder for creating commands.
 #[derive(Debug, Clone)]
 pub struct CommandBuilder {
-    label: Label,
+    label: Label<SemanticLabel>,
 }
 
 impl CommandBuilder {
@@ -716,7 +741,7 @@ pub enum MenuItem {
     /// A divider separating adjacent commands or menus.
     Divider,
     /// A nested menu.
-    Menu(Menu),
+    Menu(Menu<SemanticLabel>),
     /// The application's own Quit item.
     ///
     /// Declaring it is how an application relocates the standard Quit — it
@@ -831,9 +856,9 @@ impl From<Divider> for MenuItem {
     }
 }
 
-impl From<Menu> for MenuItem {
-    fn from(value: Menu) -> Self {
-        Self::Menu(value)
+impl<L: LabelKind> From<Menu<L>> for MenuItem {
+    fn from(value: Menu<L>) -> Self {
+        Self::Menu(value.into_semantic())
     }
 }
 
@@ -850,7 +875,7 @@ pub trait MenuView {
 /// Converts top-level system menu bar content into menus.
 pub trait MenuBarView {
     /// Converts this value into reactive top-level menus.
-    fn into_menus(self) -> Computed<Vec<Menu>>;
+    fn into_menus(self) -> Computed<Vec<Menu<SemanticLabel>>>;
 }
 
 impl MenuView for () {
@@ -883,9 +908,9 @@ impl MenuView for Command {
     }
 }
 
-impl MenuView for Menu {
+impl<L: LabelKind> MenuView for Menu<L> {
     fn into_menu_items(self) -> Computed<Vec<MenuItem>> {
-        Computed::constant(vec![MenuItem::Menu(self)])
+        Computed::constant(vec![MenuItem::Menu(self.into_semantic())])
     }
 }
 
@@ -895,7 +920,7 @@ impl MenuView for Divider {
     }
 }
 
-impl<Action> MenuView for Button<Action>
+impl<L: LabelKind, Action> MenuView for Button<L, Action>
 where
     Action: FnMut(&Environment) -> Result<(), waterui_core::handler::ExtractionError> + 'static,
 {
@@ -905,38 +930,39 @@ where
 }
 
 impl MenuBarView for () {
-    fn into_menus(self) -> Computed<Vec<Menu>> {
+    fn into_menus(self) -> Computed<Vec<Menu<SemanticLabel>>> {
         Computed::constant(Vec::new())
     }
 }
 
 impl<T: MenuBarView> MenuBarView for Option<T> {
-    fn into_menus(self) -> Computed<Vec<Menu>> {
+    fn into_menus(self) -> Computed<Vec<Menu<SemanticLabel>>> {
         self.map_or_else(|| Computed::constant(Vec::new()), MenuBarView::into_menus)
     }
 }
 
-impl MenuBarView for Computed<Vec<Menu>> {
-    fn into_menus(self) -> Computed<Vec<Menu>> {
-        self
+impl<L: LabelKind + Clone> MenuBarView for Computed<Vec<Menu<L>>> {
+    fn into_menus(self) -> Computed<Vec<Menu<SemanticLabel>>> {
+        self.map(|menus| menus.into_iter().map(Menu::into_semantic).collect())
+            .computed()
     }
 }
 
-impl MenuBarView for Menu {
-    fn into_menus(self) -> Computed<Vec<Menu>> {
-        Computed::constant(vec![self])
+impl<L: LabelKind> MenuBarView for Menu<L> {
+    fn into_menus(self) -> Computed<Vec<Menu<SemanticLabel>>> {
+        Computed::constant(vec![self.into_semantic()])
     }
 }
 
-impl MenuBarView for Vec<Menu> {
-    fn into_menus(self) -> Computed<Vec<Menu>> {
-        Computed::constant(self)
+impl<L: LabelKind> MenuBarView for Vec<Menu<L>> {
+    fn into_menus(self) -> Computed<Vec<Menu<SemanticLabel>>> {
+        Computed::constant(self.into_iter().map(Menu::into_semantic).collect())
     }
 }
 
-impl<const N: usize> MenuBarView for [Menu; N] {
-    fn into_menus(self) -> Computed<Vec<Menu>> {
-        Computed::constant(self.into_iter().collect())
+impl<L: LabelKind, const N: usize> MenuBarView for [Menu<L>; N] {
+    fn into_menus(self) -> Computed<Vec<Menu<SemanticLabel>>> {
+        Computed::constant(self.into_iter().map(Menu::into_semantic).collect())
     }
 }
 
@@ -1063,7 +1089,7 @@ menu_tuples!(impl_tuple_menu_view);
 macro_rules! impl_tuple_menu_bar_view {
     ($T0:ident) => {
         impl<$T0: MenuBarView> MenuBarView for ($T0,) {
-            fn into_menus(self) -> Computed<Vec<Menu>> {
+            fn into_menus(self) -> Computed<Vec<Menu<SemanticLabel>>> {
                 self.0.into_menus()
             }
         }
@@ -1071,7 +1097,7 @@ macro_rules! impl_tuple_menu_bar_view {
     ($T0:ident, $($T:ident),+) => {
         #[allow(non_snake_case)]
         impl<$T0: MenuBarView, $($T: MenuBarView),+> MenuBarView for ($T0, $($T,)+) {
-            fn into_menus(self) -> Computed<Vec<Menu>> {
+            fn into_menus(self) -> Computed<Vec<Menu<SemanticLabel>>> {
                 let ($T0, $($T),+) = self;
                 concat_vec_children(vec![$T0.into_menus(), $($T.into_menus()),+])
             }
@@ -1101,8 +1127,8 @@ pub fn resolve_menu_items(
 
 #[doc(hidden)]
 #[must_use]
-pub fn resolve_menu_bar_items(
-    menus: &Computed<Vec<Menu>>,
+pub fn resolve_menu_bar_items<L: LabelKind + Clone>(
+    menus: &Computed<Vec<Menu<L>>>,
     env: &Environment,
 ) -> Computed<Vec<ResolvedMenuItem>> {
     let locale = locale_binding(env);
@@ -1112,7 +1138,7 @@ pub fn resolve_menu_bar_items(
         .map(move |(menus, _locale)| {
             menus
                 .into_iter()
-                .map(|menu| ResolvedMenuItem::Menu(menu.resolve(&env)))
+                .map(|menu| ResolvedMenuItem::Menu(menu.into_semantic().resolve(&env)))
                 .collect()
         })
         .computed()
@@ -1125,7 +1151,7 @@ pub struct ResolvedCommand {
     /// Resolved text config for native menu presentation.
     pub label: TextConfig,
     /// The full semantic label retained for self-drawn menu renderers.
-    pub semantic_label: Label,
+    pub semantic_label: Label<SemanticLabel>,
     /// Optional platform icon shown alongside the label.
     pub icon: Option<SystemIcon>,
     /// Shared action invoked by the native backend.
@@ -1202,7 +1228,7 @@ pub struct ResolvedNestedMenu {
     /// Resolved text config for the nested menu title.
     pub label: TextConfig,
     /// The full semantic label retained for self-drawn menu renderers.
-    pub semantic_label: Label,
+    pub semantic_label: Label<SemanticLabel>,
     /// Optional platform icon shown alongside the title.
     pub icon: Option<SystemIcon>,
     /// Resolved nested menu items.
@@ -1311,7 +1337,7 @@ impl CloseWindowChord {
     /// The decision over `menu_bar`, resolved under `env` — a signal, so a
     /// menu bar whose items change re-decides the chord.
     #[must_use]
-    pub fn new(menu_bar: &Computed<Vec<Menu>>, env: &Environment) -> Self {
+    pub fn new(menu_bar: &Computed<Vec<Menu<SemanticLabel>>>, env: &Environment) -> Self {
         Self(
             resolve_menu_bar_items(menu_bar, env)
                 .map(|items| ResolvedMenuItem::close_window_chord(&items))
@@ -1367,10 +1393,10 @@ impl_constant!(ResolvedMenuItem);
 
 /// Raw native popup menu config resolved against the environment locale.
 #[doc(hidden)]
-#[derive(Debug)]
-pub struct ResolvedMenu {
+#[derive(Debug, Clone)]
+pub struct ResolvedMenu<S> {
     /// The label displayed on the menu button.
-    pub label: Label,
+    pub label: ControlLabel<S>,
     /// The fully resolved menu items.
     pub items: Computed<Vec<ResolvedMenuItem>>,
     /// Semantic accessibility label for the menu trigger.
@@ -1382,7 +1408,31 @@ pub struct ResolvedMenu {
     pub size: ControlSize,
 }
 
-raw_view!(ResolvedMenu, StretchAxis::None);
+impl<S: 'static> NativeView for ResolvedMenu<S> {}
+
+impl<S: 'static> MapSlots<S> for ResolvedMenu<S> {
+    type With<T: 'static> = ResolvedMenu<T>;
+
+    fn map_slots<T: 'static>(self, f: impl Fn(S) -> T + Clone + 'static) -> ResolvedMenu<T> {
+        ResolvedMenu {
+            label: self.label.map_slots(f),
+            items: self.items,
+            accessibility_label: self.accessibility_label,
+            style: self.style,
+            size: self.size,
+        }
+    }
+}
+
+impl<S: View> View for ResolvedMenu<S> {
+    fn body(self, _env: &Environment) -> impl View {
+        Native::new(self.map_slots(AnyView::new))
+    }
+
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        backend.native(self.map_slots(B::Slot::from_view), env, cx)
+    }
+}
 
 #[cfg(test)]
 mod tests {

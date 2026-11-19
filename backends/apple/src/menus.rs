@@ -20,11 +20,12 @@ use alloc::vec::Vec;
 #[cfg(target_os = "macos")]
 use waterui::component::menu::{CloseWindowChord, CloseWindowPlacement};
 use waterui::component::menu::{
-    CommandRole, Menu as DeclaredMenu, NamedKey, ResolvedCommand, ResolvedMenuItem,
-    ResolvedNestedMenu, ShortcutKey,
+    CommandRole, Menu, NamedKey, ResolvedCommand, ResolvedMenuItem, ResolvedNestedMenu, ShortcutKey,
 };
 use waterui::reactive::{Computed, Signal};
 use waterui_backend_core::Environment;
+
+type DeclaredMenu = Menu<waterui::component::label::SemanticLabel>;
 
 /// Resolves `menu_bar` against `env` — items live-resolve under the
 /// environment's locale.
@@ -318,13 +319,11 @@ mod imp {
 
     use cocoa_ui::MainThreadMarker;
     use cocoa_ui::appkit::{Application, KeyModifiers, Menu, MenuAction, MenuItem};
-    use waterui::component::menu::{
-        CloseWindowChord, CommandRole, Menu as DeclaredMenu, ResolvedMenuItem, Shortcut,
-    };
+    use waterui::component::menu::{CloseWindowChord, CommandRole, ResolvedMenuItem, Shortcut};
     use waterui::reactive::{Computed, Signal};
     use waterui_backend_core::Environment;
 
-    use super::{CloseWindowPlacement, kit_command_fields, menu_tree, resolve};
+    use super::{CloseWindowPlacement, DeclaredMenu, kit_command_fields, menu_tree, resolve};
 
     /// What this application calls itself in its own menu: the display name a
     /// bundle chooses for people to read, then the bundle name, then the
@@ -578,11 +577,11 @@ mod imp {
 
     use cocoa_ui::MainThreadMarker;
     use cocoa_ui::uikit::MenuBuilder;
-    use waterui::component::menu::{Menu as DeclaredMenu, ResolvedMenuItem};
+    use waterui::component::menu::ResolvedMenuItem;
     use waterui::reactive::{Computed, Signal};
     use waterui_backend_core::Environment;
 
-    use super::{kit_command_for_menu, menu_tree, resolve};
+    use super::{DeclaredMenu, kit_command_for_menu, menu_tree, resolve};
 
     /// What `install_declared` shares with the `build_menus` handler: the
     /// resolved items plus the environment their actions run under, filled
@@ -666,7 +665,7 @@ mod tests {
     use waterui::reactive::{Computed, Signal};
     use waterui_backend_core::Environment;
 
-    use super::{NamedKey, ShortcutKey, key_equivalent_for, menu_tree, resolve};
+    use super::{NamedKey, ShortcutKey, key_equivalent_for, menu_tree};
 
     fn function_key(code: u32) -> String {
         String::from(char::from_u32(code).expect("function keys are scalar values"))
@@ -703,8 +702,14 @@ mod tests {
     }
 
     /// `menus` resolved as the declared menu bar.
-    fn declared(menus: Vec<Menu>) -> Vec<ResolvedMenuItem> {
-        resolve(&Computed::constant(menus), &Environment::new()).snapshot()
+    fn declared<L: waterui::component::label::LabelKind + Clone>(
+        menus: Vec<Menu<L>>,
+    ) -> Vec<ResolvedMenuItem> {
+        waterui::component::menu::resolve_menu_bar_items(
+            &Computed::constant(menus),
+            &Environment::new(),
+        )
+        .snapshot()
     }
 
     /// A bare environment with the application's decided chord installed,

@@ -5,7 +5,10 @@ use core::fmt::Debug;
 
 use nami::collection::Collection;
 use nami::{Binding, Computed, SignalExt as _};
-use waterui_controls::{IntoLabel, label::Label};
+use waterui_controls::{
+    IntoLabel,
+    label::{ErasedLabel, Label},
+};
 use waterui_core::backend::MapSlots;
 use waterui_core::{
     AnyView, Environment, IntoSignal, Native, NativeView, Str, View,
@@ -171,7 +174,7 @@ pub enum TabBarMinimizeBehavior {
 #[non_exhaustive]
 pub struct Tab<C> {
     /// Semantic tab label.
-    label: Label,
+    label: Label<ErasedLabel>,
     /// The label's icon, lifted out so native chrome can place it itself.
     icon: Option<TabIcon>,
     /// Stable lazily built tab root.
@@ -225,7 +228,7 @@ where
             |icon| Some(TabIcon::System(icon)),
         );
         Self {
-            label,
+            label: label.erase(),
             icon,
             content: Rc::new(content),
             badge: None,
@@ -287,7 +290,7 @@ impl<B: ViewBuilder> Tab<ContainerPage<B>> {
 impl<C> Tab<C> {
     /// Semantic tab label.
     #[must_use]
-    pub const fn label(&self) -> &Label {
+    pub const fn label(&self) -> &Label<ErasedLabel> {
         &self.label
     }
 

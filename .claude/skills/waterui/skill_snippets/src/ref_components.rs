@@ -1151,13 +1151,14 @@ pub mod components_block_32 {
         let _ = Picker::new("Size", sizes(), &choice).segmented();
 
         // Keep the other picker imports live so they are proven to resolve.
-        let _: Option<ColorPicker> = None;
+        use waterui::component::label::TitleLabel;
+        let _: Option<ColorPicker<TitleLabel>> = None;
         let _: Option<DatePickerType> = None;
-        let _: Option<FilePicker> = None;
+        let _: Option<FilePicker<TitleLabel>> = None;
         let _ = (
-            core::marker::PhantomData::<DatePicker>,
-            core::marker::PhantomData::<MultiDatePicker>,
-            core::marker::PhantomData::<Calendar>,
+            core::marker::PhantomData::<DatePicker<TitleLabel>>,
+            core::marker::PhantomData::<MultiDatePicker<TitleLabel>>,
+            core::marker::PhantomData::<Calendar<TitleLabel>>,
         );
     }
 }

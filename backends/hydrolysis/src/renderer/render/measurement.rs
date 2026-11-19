@@ -546,8 +546,8 @@ pub fn list_row_height_for_content(
 /// look's `min_width` floored at the label. Height is the intrinsic height,
 /// whose text line an empty field measures too.
 #[cfg(feature = "text-field")]
-pub fn measure_text_field_size_with_label_size<E: crate::text::TextEngine>(
-    text_field: &ResolvedTextFieldConfig,
+pub fn measure_text_field_size_with_label_size<E: crate::text::TextEngine, S>(
+    text_field: &ResolvedTextFieldConfig<S>,
     label_size: LayoutSize,
     state: &mut HydroState<E>,
     env: &Environment,
@@ -608,8 +608,8 @@ fn input_field_width(proposal: Option<f32>, ideal: f64, minimum: f64) -> f64 {
 /// proposal floored at the label's extent and never the masked text; `None`
 /// answers the look's `min_width` ideal.
 #[cfg(feature = "secure-field")]
-pub fn measure_secure_field_size_with_label_size<E: crate::text::TextEngine>(
-    secure_field: &SecureFieldConfig,
+pub fn measure_secure_field_size_with_label_size<E: crate::text::TextEngine, S>(
+    secure_field: &SecureFieldConfig<S>,
     label_size: LayoutSize,
     state: &mut HydroState<E>,
     env: &Environment,
@@ -837,8 +837,8 @@ fn measure_radio_picker_intrinsic<E: crate::text::TextEngine>(
 /// built [`crate::renderer::RetainedSubview`], so layout and the in-field
 /// label render agree on the label height.
 #[cfg(feature = "picker")]
-pub fn measure_picker_intrinsic_with_label_size<E: crate::text::TextEngine>(
-    picker: &PickerConfig,
+pub fn measure_picker_intrinsic_with_label_size<E: crate::text::TextEngine, S>(
+    picker: &PickerConfig<S>,
     label_size: LayoutSize,
     state: &mut HydroState<E>,
     env: &Environment,
