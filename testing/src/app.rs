@@ -11,7 +11,7 @@ use hydrolysis::{
     PainterUnavailable, PointerKind, SemanticRuntime, Style,
 };
 use waterui::app::{App, AppParts, WindowSink, Windows};
-use waterui::window::Window;
+use waterui::window::{Window, WindowChannel};
 use waterui::{Plugin, ViewExt as _};
 use waterui_core::handler::{AnyViewBuilder, ViewBuilder};
 use waterui_core::{AnyView, ContentLedger, Environment, View};
@@ -330,6 +330,15 @@ impl<S: Style> WindowSink for FirstWindow<S> {
             .take()
             .expect("the first window takes the environment once");
         self.mounted = Some(builder.mount_rendered_window(env, window));
+    }
+
+    fn channel<C: ViewBuilder>(&mut self, channel: WindowChannel<C>) {
+        let mut queued = channel.drain().into_iter();
+        if self.builder.is_some()
+            && let Some(first) = queued.next()
+        {
+            self.window(first);
+        }
     }
 }
 

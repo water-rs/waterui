@@ -11,7 +11,6 @@ use alloc::rc::Rc;
 use nami::{Binding, Computed, SignalExt, signal::IntoComputed};
 use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::layout::StretchAxis;
-use waterui_core::view::{ConfigurableView, ViewConfiguration};
 use waterui_core::{AnyView, Environment, Native, NativeView, View};
 use waterui_text::styled::StyledStr;
 
@@ -266,10 +265,10 @@ impl<L: LabelKind> Stepper<L> {
     }
 }
 
-impl<L: LabelKind> ConfigurableView for Stepper<L> {
-    type Config = StepperConfig<Label<L>>;
-
-    fn config(self) -> Self::Config {
+impl<L: LabelKind> Stepper<L> {
+    /// Returns the configuration for this stepper.
+    #[must_use]
+    pub fn config(self) -> StepperConfig<Label<L>> {
         StepperConfig {
             value: self.value,
             step: self.step,
@@ -280,24 +279,16 @@ impl<L: LabelKind> ConfigurableView for Stepper<L> {
     }
 }
 
-impl<S: View> ViewConfiguration for StepperConfig<S> {
-    type View = Stepper<ControlLabel<S>>;
-
-    fn render(self) -> Self::View {
-        let mode = self.label.display_mode_preference();
-        Stepper {
-            value: self.value,
-            step: self.step,
-            label: Label::from_control_label(self.label, mode),
-            value_formatter: self.value_formatter,
-            range: self.range,
-        }
-    }
-}
-
 impl<S: View> From<StepperConfig<S>> for Stepper<ControlLabel<S>> {
     fn from(value: StepperConfig<S>) -> Self {
-        value.render()
+        let mode = value.label.display_mode_preference();
+        Self {
+            value: value.value,
+            step: value.step,
+            label: Label::from_control_label(value.label, mode),
+            value_formatter: value.value_formatter,
+            range: value.range,
+        }
     }
 }
 
