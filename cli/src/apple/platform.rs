@@ -235,6 +235,7 @@ pub(crate) async fn apple_dependency_features(
         features.push("chromium".to_string());
     }
     if browser_runtime.cef_webview() {
+        features.retain(|feature| feature != "webview");
         features.push("webview-cef".to_string());
     }
     Ok(features)

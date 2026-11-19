@@ -299,21 +299,28 @@ impl DesktopBrowserContext {
         }
     }
 
-    /// The backend feature that bridges `os`'s own web engine.
-    ///
-    /// An application that linked an engine of its own draws through that
-    /// instead, and the bridge would take the component by type before the
-    /// application's realization was ever consulted — so the backend compiles
-    /// no web engine at all.
+    /// The `hydrolysis` webview engine feature `os` selects.
     const fn webview_backend_feature(&self, os: crate::platform::NativeOs) -> Option<&'static str> {
         webview_backend_feature(self.for_os(os))
     }
 }
 
-/// The backend feature `answers`'s section selects — `webview-system`
-/// when the application enables `WebView` without an engine crate of its
-/// own.
+/// The `hydrolysis` backend feature `answers`'s section selects — `webview-cef`,
+/// `webview-wpe`, or `webview-system`.
 const fn webview_backend_feature(answers: BrowserAnswers) -> Option<&'static str> {
+    if !answers.webview_enabled {
+        return None;
+    }
+    match answers.engine {
+        None => Some("webview-system"),
+        Some(ResolvedWebViewBackend::Cef) => Some("webview-cef"),
+        Some(ResolvedWebViewBackend::Wpe) => Some("webview-wpe"),
+    }
+}
+
+/// The `waterui-gtk` backend feature `answers` selects — `webview-system` when
+/// the application enables `WebView` without an engine crate of its own.
+const fn system_webview_backend_feature(answers: BrowserAnswers) -> Option<&'static str> {
     if answers.webview_enabled && answers.engine.is_none() {
         Some("webview-system")
     } else {
@@ -2709,24 +2716,26 @@ mod tests {
             features_of("cfg(all(not(target_arch = \"wasm32\"), not(target_os = \"android\")))"),
             ["winit"],
         );
-        // macOS answers CEF: the bridge is suppressed for an application
-        // that linked its own engine, and the helper's crate rides the
-        // macOS section.
-        assert!(!features_of("cfg(target_os = \"macos\")").contains(&"webview-system".to_string()),);
-        assert!(
-            target["cfg(target_os = \"macos\")"]
-                .get("dependencies")
-                .and_then(|deps| deps.get("waterui-browser-cef"))
-                .is_some(),
-            "the macOS section carries the CEF engine crate",
+        // macOS answers CEF: Hydrolysis selects `webview-cef`, and the helper's
+        // crate rides the macOS section with `cef-runtime`.
+        assert_eq!(features_of("cfg(target_os = \"macos\")"), ["webview-cef"],);
+        let macos_cef = target["cfg(target_os = \"macos\")"]
+            .get("dependencies")
+            .and_then(|deps| deps.get("waterui-browser-cef"))
+            .expect("the macOS section carries the CEF engine crate");
+        assert_eq!(macos_cef["default-features"].as_bool(), Some(false));
+        assert_eq!(
+            macos_cef["features"]
+                .as_array()
+                .expect("CEF features should be an array")
+                .iter()
+                .filter_map(toml::Value::as_str)
+                .collect::<Vec<_>>(),
+            ["cef-runtime"],
         );
-        // Linux answers `wpe`: no bridge, no CEF — and no other content, so
-        // its section is not written at all.
-        assert!(
-            target.get("cfg(target_os = \"linux\")").is_none(),
-            "an OS section with nothing engine-dependent is not written: {cargo_toml}"
-        );
-        // Windows answers no engine: the bridge renders.
+        // Linux answers `wpe`: Hydrolysis selects `webview-wpe`.
+        assert_eq!(features_of("cfg(target_os = \"linux\")"), ["webview-wpe"]);
+        // Windows answers no engine: the system bridge renders.
         assert_eq!(features_of("cfg(windows)"), ["webview-system"],);
         // The subprocess helper bin is declared once for the manifest, and
         // its source gates the Chromium dispatch on the macOS section that
@@ -6007,7 +6016,7 @@ pub mod gtk4 {
         package_name: &str,
     ) -> io::Result<Vec<(std::path::PathBuf, Vec<u8>)>> {
         let mut outputs = super::render_dir_outputs(TemplateNamespace::Gtk4, &embedded::GTK4, ctx)?;
-        let features = super::webview_backend_feature(ctx.browser.linux_answers()?)
+        let features = super::system_webview_backend_feature(ctx.browser.linux_answers()?)
             .into_iter()
             .collect::<Vec<_>>();
         let dependencies = gtk4_dependencies(&features);
@@ -6025,7 +6034,7 @@ pub mod gtk4 {
         ctx: &TemplateContext,
         package_name: &str,
     ) -> io::Result<()> {
-        let features = super::webview_backend_feature(ctx.browser.linux_answers()?)
+        let features = super::system_webview_backend_feature(ctx.browser.linux_answers()?)
             .into_iter()
             .collect::<Vec<_>>();
         let dependencies = gtk4_dependencies(&features);
@@ -6633,14 +6642,17 @@ pub mod hydrolysis {
             if crate::project_model::project_types::declares_cef_helper(browser.for_os(os).engine) {
                 dependencies.insert(
                     "waterui-browser-cef".to_string(),
-                    GeneratedDependencyValue::detailed(super::generated_dependency_from_spec(
-                        ctx,
-                        NativeBackendDependencySpec::new(
-                            "waterui-browser-cef",
-                            &[],
-                            NativeBackendDependencySource::WorkspaceDependency,
-                        ),
-                    )?),
+                    GeneratedDependencyValue::detailed(
+                        super::generated_dependency_from_spec(
+                            ctx,
+                            NativeBackendDependencySpec::new(
+                                "waterui-browser-cef",
+                                &["cef-runtime"],
+                                NativeBackendDependencySource::WorkspaceDependency,
+                            ),
+                        )?
+                        .with_default_features(false),
+                    ),
                 );
             }
             if !dependencies.is_empty() {
@@ -7912,6 +7924,7 @@ const BACKEND_FEATURE_FORWARDS: &[(&str, &str, &str)] = &[
     ("webview", "waterui-apple", "webview"),
     ("chromium", "waterui-browser-cef", "chromium"),
     ("webview-cef", "waterui-browser-cef", "webview"),
+    ("webview-cef", "waterui-apple", "webview-cef"),
 ];
 
 /// The selectable features that also reach the `waterui` facade crate — the

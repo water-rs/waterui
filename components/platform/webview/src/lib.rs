@@ -1275,9 +1275,9 @@ impl View for WebViewOpen {
     }
 }
 
-// `WebView` is a raw view for a backend that bridges a platform web engine: it
-// intercepts the component by type before `View::body` ever runs. `raw_view!` is
-// not used because reaching `body` must not abort — see [`WebView::render`].
+// `WebView` is realized by the backend through `NativeBackend::web_view`
+// using the compile-time selected web engine. `raw_view!` is not used because
+// reaching `body` must not abort.
 impl waterui_core::NativeView for WebView {
     fn stretch_axis(&self) -> StretchAxis {
         StretchAxis::Both
@@ -1285,9 +1285,7 @@ impl waterui_core::NativeView for WebView {
 }
 
 impl View for WebView {
-    /// A browser engine an application links realizes the payload through a
-    /// hook targeting `WebView`; a backend that bridges a platform engine
-    /// realizes it through its `web_view` method.
+    /// Realized by the backend through `NativeBackend::web_view`.
     fn body(self, _env: &Environment) -> impl View {
         Native::new(self)
     }

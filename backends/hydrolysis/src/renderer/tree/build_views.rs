@@ -4,10 +4,10 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
-// Only the Android bridge and a build with no bridged engine report a WebView.
+// Only the Android bridge and a build with no selected engine report a WebView.
 #[cfg(all(
     waterui_feature = "webview",
-    any(hydrolysis_android_system_webview, not(hydrolysis_system_webview))
+    any(hydrolysis_android_system_webview, not(hydrolysis_webview_engine))
 ))]
 use waterui_core::contract_violation;
 
@@ -344,7 +344,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             let state = Rc::new(RefCell::new(state));
             Self::build_widget(renderer, state, stretch, env)
         }
-        #[cfg(not(any(hydrolysis_system_webview, hydrolysis_android_system_webview)))]
+        #[cfg(not(any(hydrolysis_webview_engine, hydrolysis_android_system_webview)))]
         {
             let _ = webview;
             contract_violation!("{UNSUPPORTED_WEBVIEW}; the web view is not drawn");
