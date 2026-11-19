@@ -4,18 +4,16 @@
 //! engine this crate links and scopes differs, proving that the standard
 //! semantic component does not change when the browser engine changes.
 
+use waterui::Environment;
 use waterui::app::{App, Windows};
-use waterui::{Environment, ViewExt as _};
-use waterui_browser_cef::{CefWebView, install};
+use waterui_browser_cef as _;
 
 /// Creates the standard `WebView` example drawn by the bundled CEF engine.
 ///
-/// `install` starts the packaged Chromium runtime and supplies the
-/// `WebViewController` that opens CEF pages, and the `CefWebView` hook scoped
-/// over the shared example draws them. Nothing in the shared example code
-/// mentions an engine.
+/// Linking `waterui-browser-cef` tells the `WaterUI` CLI to select the backend's
+/// `webview-cef` feature at compile time. Nothing in the shared example code
+/// mentions an engine or installs a hook.
 #[must_use]
-pub fn app(mut env: Environment) -> App<impl Windows> {
-    install(&mut env);
-    App::new(|| webview_example::demo().hooks(CefWebView), env)
+pub fn app(env: Environment) -> App<impl Windows> {
+    App::new(webview_example::demo, env)
 }

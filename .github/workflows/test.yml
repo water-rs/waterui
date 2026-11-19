@@ -318,7 +318,17 @@ jobs:
             --exclude waterui-core \
             --exclude filtrate \
             --exclude cherenkov-bench \
+            --exclude hydrolysis \
             -- -D warnings >> "${CARGO_MESSAGES}"
+      - name: Clippy (hydrolysis, every non-webview feature + webview-system)
+        if: inputs.full
+        run: cargo clippy --timings --locked --profile ci-check -p hydrolysis --all-targets --features all-controls,accessibility,testing,frame-profile,gpu,cpu,inspector-signals,hwui,video-gpu,map-gpu,winit,video,web,webview-system --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
+      - name: Clippy (hydrolysis, webview-cef)
+        if: inputs.full
+        run: cargo clippy --timings --locked --profile ci-check -p hydrolysis --all-targets --features all-controls,accessibility,testing,gpu,winit,webview-cef --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
+      - name: Clippy (hydrolysis, webview-wpe)
+        if: inputs.full
+        run: cargo clippy --timings --locked --profile ci-check -p hydrolysis --all-targets --features all-controls,accessibility,testing,gpu,winit,webview-wpe --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
       # `waterui-core`'s `nightly` feature turns on `feature(never_type)`, which
       # is a hard E0554 on the stable channel this job pins. Everything else the
       # crate has, it gets here.
@@ -728,7 +738,14 @@ jobs:
             --exclude skill_snippets \
             --exclude filtrate \
             --exclude cherenkov-bench \
+            --exclude hydrolysis \
             -E 'not binary(/^trybuild_/)'
+      - name: Test (hydrolysis, every non-webview feature + webview-system)
+        run: cargo nextest run --timings --locked -p hydrolysis --features all-controls,accessibility,testing,frame-profile,gpu,cpu,inspector-signals,hwui,video-gpu,map-gpu,winit,video,web,webview-system --profile ci
+      - name: Test (hydrolysis, webview-cef)
+        run: cargo nextest run --timings --locked -p hydrolysis --features all-controls,accessibility,testing,gpu,winit,webview-cef --profile ci
+      - name: Test (hydrolysis, webview-wpe)
+        run: cargo nextest run --timings --locked -p hydrolysis --features all-controls,accessibility,testing,gpu,winit,webview-wpe --profile ci
       # `nightly` is `feature(never_type)`, a hard E0554 on stable.
       - name: Test (waterui-core, every stable feature)
         run: cargo nextest run --timings --locked -p waterui-core --features std,serde --profile ci
@@ -816,7 +833,16 @@ jobs:
             --exclude waterui-core \
             --exclude skill_snippets \
             --exclude filtrate \
+            --exclude hydrolysis \
             -E 'not binary(/^trybuild_/)'
+      - name: Test (hydrolysis, every non-webview feature + webview-system)
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "27.0"
+        run: cargo nextest run --timings --locked -p hydrolysis --features all-controls,accessibility,testing,frame-profile,gpu,cpu,inspector-signals,hwui,video-gpu,map-gpu,winit,video,web,webview-system --profile ci
+      - name: Test (hydrolysis, webview-cef)
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "27.0"
+        run: cargo nextest run --timings --locked -p hydrolysis --features all-controls,accessibility,testing,gpu,winit,webview-cef --profile ci
       - name: Test (waterui-core, every stable feature)
         run: cargo nextest run --timings --locked -p waterui-core --features std,serde --profile ci
       - name: Upload Test Snapshots
