@@ -34,7 +34,7 @@ const STEP: Duration = Duration::from_secs(1);
 /// `Dynamic` swap, a navigation destination or any other rebuild takes.
 pub struct Remount {
     runtime: SemanticRuntime,
-    handler: DynamicHandler,
+    handler: DynamicHandler<AnyView>,
     at: Instant,
 }
 

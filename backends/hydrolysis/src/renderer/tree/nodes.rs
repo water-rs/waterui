@@ -5,6 +5,7 @@ use super::layout::resolved_or_collapsed;
 #[cfg(feature = "frame-profile")]
 use super::layout::{SignatureHasher, hash_size};
 use waterui_core::backend::ChildSlot;
+use waterui_core::handler::AnyViewBuilder;
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
@@ -16,13 +17,11 @@ use waterui_layout::safe_area::IgnoreSafeArea;
 use waterui_structural_transition::TransitionSpec;
 use waterui_text::styled::TapSpan;
 
-/// A retained sub-view a native widget owns and re-renders every flush — the
-/// solution for a widget's move-only `AnyView` label sub-views (slider min/max
-/// labels, menu label, progress label/value label) which cannot be re-dispatched
-/// twice. The source `AnyView` is built into a persistent [`RenderNode`] once
-/// (going through the same dispatcher path as everything else, so a reactive label
-/// inside it reaches its dedicated `Dynamic`/`Text` node and stays live), then
-/// laid out and flushed at the label's rect each frame.
+/// A retained sub-view a native widget or wrapper owns and re-renders every
+/// flush — holding a move-only child view (a widget label, a navigation slot,
+/// or a context menu's preview and accessory) in the backend's [`Child`] slot
+/// until it is first realized into a persistent [`RenderNode`], then laid out
+/// and flushed at its rect each frame so reactive state inside it stays live.
 ///
 /// The lifecycle is [`RetainedSubviewState::Unbuilt`] — the move-only source is
 /// held — until [`Self::ensure_built`] transitions it to
@@ -1136,7 +1135,7 @@ impl<E: crate::text::TextEngine> WrapperEffect<E> {
 pub struct AnchoredOverlayEffect<E: crate::text::TextEngine> {
     /// Builds a fresh view for each presentation: a presentation started
     /// while an older exit is still animating gets its own instance.
-    pub(crate) builder: waterui_core::handler::AnyViewBuilder,
+    pub(crate) builder: AnyViewBuilder<AnyView>,
     /// The overlay's presentations: the one presented now, built from
     /// `builder` on each new presentation, and the dismissed ones still
     /// leaving the screen.

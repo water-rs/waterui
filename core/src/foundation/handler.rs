@@ -343,7 +343,7 @@ where
 }
 
 /// A builder for creating views from handler functions.
-pub struct AnyViewBuilder<V = AnyView>(Rc<dyn ViewBuilder<Output = V>>);
+pub struct AnyViewBuilder<V>(Rc<dyn ViewBuilder<Output = V>>);
 
 impl<V> Clone for AnyViewBuilder<V> {
     fn clone(&self) -> Self {

@@ -68,7 +68,7 @@ use objc2_quartz_core::{
     CACurrentMediaTime, CAKeyframeAnimation, CALayer, CAMediaTiming, CAMediaTimingFunction,
     CATransaction, kCAAnimationLinear, kCAMediaTimingFunctionLinear,
 };
-use waterui_backend_core::{AnyView, Environment};
+use waterui_backend_core::Environment;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect, ResolvedExtent, StretchAxis, SubView, ViewDimensions,
 };
@@ -2016,13 +2016,13 @@ impl Drop for NativeFilterGuard {
 pub fn mount(
     mtm: MainThreadMarker,
     ctx: &RenderContext<'_>,
-    content: AnyView,
+    content: NativeLeaf,
     chained: Vec<(AnyEffect, ParamGuards)>,
     plan: &[EffectPlan],
 ) -> NativeLeaf {
     let view = cocoa_ui::appkit::HostView::new(mtm, cocoa_ui::Rect::ZERO);
     cocoa_ui::view::ensure_layer_backed(&view);
-    let mounted = ctx.render(content).mount(&view);
+    let mounted = content.mount(&view);
     crate::primary_content::forward(&view, mounted.view());
     let content_view = cocoa_ui::view::retain_base(mounted.view());
     // The visible filtered content — `layerUsesCoreImageFilters` must be

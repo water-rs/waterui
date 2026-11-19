@@ -172,7 +172,7 @@ where
 /// let env = Environment::new().with(DefaultLoadingView::new(|| Text::new("Loading...")));
 /// ```
 #[derive(Debug)]
-pub struct DefaultLoadingView(AnyViewBuilder);
+pub struct DefaultLoadingView(AnyViewBuilder<AnyView>);
 
 impl DefaultLoadingView {
     /// Creates a new default loading view from any view builder.
@@ -182,7 +182,7 @@ impl DefaultLoadingView {
 
     /// Wraps an existing `AnyViewBuilder` as a default loading view.
     #[must_use]
-    pub const fn from_builder(builder: AnyViewBuilder) -> Self {
+    pub const fn from_builder(builder: AnyViewBuilder<AnyView>) -> Self {
         Self(builder)
     }
 }

@@ -38,6 +38,9 @@ macro_rules! native_backend {
         metadata {
             $( $(#[cfg($mcfg:meta)])* $(#[doc = $mdoc:literal])* $meta:ident: $meta_ty:ty, )*
         }
+        parent_metadata {
+            $( $(#[cfg($pmcfg:meta)])* $(#[doc = $pmdoc:literal])* $pmeta:ident<$pmchild:ident>: $pmeta_ty:ty, )*
+        }
     ) => {
         /// A backend's realization of every native component and every
         /// metadata key that needs the platform.
@@ -78,6 +81,12 @@ macro_rules! native_backend {
                 $(#[cfg($mcfg)])*
                 $(#[doc = $mdoc])*
                 fn $meta<C: ChildView<Self>>(&mut self, metadata: Metadata<$meta_ty, C>, env: &Environment, cx: Self::Ctx) -> Self::Output;
+            )*
+
+            $(
+                $(#[cfg($pmcfg)])*
+                $(#[doc = $pmdoc])*
+                fn $pmeta<$pmchild: ChildView<Self>, C: ChildView<Self>>(&mut self, metadata: Metadata<$pmeta_ty, C>, env: &Environment, cx: Self::Ctx) -> Self::Output;
             )*
 
             /// Realizes a native payload no method names: a component this
@@ -174,6 +183,18 @@ macro_rules! native_backend {
                 fn $meta<C: ChildView<Self>>(&mut self, metadata: Metadata<$meta_ty, C>, env: &Environment, cx: Self::Ctx) -> Self::Output {
                     let metadata = metadata.map_content(|content| self.rehook(content));
                     self.inner().$meta(metadata, env, cx)
+                }
+            )*
+
+            $(
+                $(#[cfg($pmcfg)])*
+                fn $pmeta<$pmchild: ChildView<Self>, C: ChildView<Self>>(&mut self, metadata: Metadata<$pmeta_ty, C>, env: &Environment, cx: Self::Ctx) -> Self::Output {
+                    let Metadata { content, value } = metadata;
+                    let metadata = Metadata::new(
+                        self.rehook(content),
+                        MapSlots::map_slots(value, self.rehooker::<$pmchild>()),
+                    );
+                    self.inner().$pmeta(metadata, env, cx)
                 }
             )*
 
@@ -275,6 +296,36 @@ macro_rules! native_backend {
                     Err(metadata) => metadata,
                 };
             )*
+            $(
+                $(#[cfg($pmcfg)])*
+                let metadata = {
+                    // The metadata key with its children in the slot `$pmchild`.
+                    fn route<B: NativeBackend, $pmchild: ChildView<B>, K: MetadataKey>(
+                        backend: &mut B,
+                        metadata: Metadata<K, Child<B::Family>>,
+                        env: &Environment,
+                        cx: B::Ctx,
+                    ) -> Result<B::Output, (Metadata<K, Child<B::Family>>, B::Ctx)>
+                    where
+                        $pmeta_ty: MetadataKey,
+                    {
+                        match cast::<Metadata<K, Child<B::Family>>, Metadata<$pmeta_ty, Child<B::Family>>>(metadata) {
+                            Ok(metadata) => Ok(backend.$pmeta(metadata, env, cx)),
+                            Err(metadata) => Err((metadata, cx)),
+                        }
+                    }
+                    let (metadata, cx_) = match route::<B, Child<B::Family>, K>(backend, metadata, env, cx) {
+                        Ok(output) => return output,
+                        Err(unmatched) => unmatched,
+                    };
+                    match route::<B, AnyView, K>(backend, metadata, env, cx_) {
+                        Ok(output) => return output,
+                        Err(unmatched) => unmatched,
+                    }
+                };
+                $(#[cfg($pmcfg)])*
+                let (metadata, cx) = metadata;
+            )*
             backend.provided_metadata(metadata, env, cx)
         }
 
@@ -315,6 +366,23 @@ macro_rules! native_backend {
                 $(#[cfg($mcfg)])*
                 if let Some(metadata) = metadata.take::<Metadata<$meta_ty, AnyView>>() {
                     return backend.$meta(metadata, env, cx);
+                }
+            )*
+            $(
+                $(#[cfg($pmcfg)])*
+                {
+                    // The metadata key with its children and content in the erased slot.
+                    fn take<$pmchild: 'static>(
+                        metadata: &mut ErasedPayload<'_>,
+                    ) -> Option<Metadata<$pmeta_ty, AnyView>>
+                    where
+                        $pmeta_ty: MetadataKey,
+                    {
+                        metadata.take::<Metadata<$pmeta_ty, AnyView>>()
+                    }
+                    if let Some(metadata) = take::<AnyView>(&mut metadata) {
+                        return backend.$pmeta(metadata, env, cx);
+                    }
                 }
             )*
             backend.provided_metadata_dyn(metadata, env, cx)
@@ -362,6 +430,15 @@ macro_rules! native_backend {
                 fn $meta<C: ChildView<Self>>(&mut self, metadata: Metadata<$meta_ty, C>, env: &Environment, (): ()) {
                     self.reached.borrow_mut().push(stringify!($meta));
                     metadata.content.realize(self, env, ());
+                }
+            )*
+
+            $(
+                $(#[cfg($pmcfg)])*
+                fn $pmeta<$pmchild: ChildView<Self>, C: ChildView<Self>>(&mut self, metadata: Metadata<$pmeta_ty, C>, env: &Environment, (): ()) {
+                    self.reached.borrow_mut().push(stringify!($pmeta));
+                    metadata.content.realize(self, env, ());
+                    tests::Recorder::realize_children(self, tests::Parent::children(metadata.value), env);
                 }
             )*
 
@@ -646,9 +723,6 @@ native_backend! {
         navigation_split: waterui::navigation::split::NavigationSplitLayout,
         /// A canvas.
         canvas: waterui::graphics::canvas::CanvasView,
-        #[cfg(waterui_feature = "effects")]
-        /// A view drawn through a filter.
-        filtered: waterui::graphics::backend::FilteredView,
         #[cfg(waterui_feature = "gpu")]
         /// GPU content.
         gpu: waterui::GpuView,
@@ -685,6 +759,9 @@ native_backend! {
         lazy_container<C>: waterui::layout::container::LazyContainer<C>,
         /// A window opened from the view tree.
         window<C>: waterui::window::Window<waterui::window::WindowSlot<C>>,
+        #[cfg(waterui_feature = "effects")]
+        /// A view drawn through a filter.
+        filtered<C>: waterui::graphics::backend::FilteredView<C>,
         #[cfg(waterui_feature = "list")]
         /// A list, each row's content a child.
         list<C>: waterui::component::list::ListConfig<C>,
@@ -775,9 +852,6 @@ native_backend! {
         high_dynamic_range: waterui::metadata::secure::HighDynamicRange,
         /// An anchored overlay.
         anchored_overlay: waterui::metadata::anchored_overlay::AnchoredOverlay,
-        #[cfg(waterui_feature = "menu")]
-        /// A resolved context menu.
-        resolved_context_menu: waterui::metadata::context_menu::ResolvedContextMenu,
         #[cfg(waterui_feature = "dialog")]
         /// A dialog.
         dialog: waterui::dialog::Dialog,
@@ -790,6 +864,11 @@ native_backend! {
         #[cfg(waterui_feature = "navigation")]
         /// A navigation transition destination.
         navigation_transition_destination: waterui::navigation::NavigationTransitionDestination,
+    }
+    parent_metadata {
+        #[cfg(waterui_feature = "menu")]
+        /// A resolved context menu.
+        resolved_context_menu<S>: waterui::metadata::context_menu::ResolvedContextMenu<S>,
     }
 }
 
@@ -841,6 +920,13 @@ mod tests {
         }
     }
 
+    #[cfg(waterui_feature = "effects")]
+    impl<C> Parent<C> for waterui::graphics::backend::FilteredView<C> {
+        fn children(self) -> Vec<C> {
+            alloc::vec![self.content]
+        }
+    }
+
     /// A list's children are its rows' content.
     #[cfg(waterui_feature = "list")]
     impl<C: 'static> Parent<C> for waterui::component::list::ListConfig<C> {
@@ -881,6 +967,14 @@ mod tests {
                 .map(|tab| tab.content().build().content)
                 .chain(accessory)
                 .collect()
+        }
+    }
+
+    /// A context menu's children are its preview and accessory.
+    #[cfg(waterui_feature = "menu")]
+    impl<C> Parent<C> for waterui::metadata::context_menu::ResolvedContextMenu<C> {
+        fn children(self) -> Vec<C> {
+            self.preview.into_iter().chain(self.accessory).collect()
         }
     }
 
@@ -973,6 +1067,25 @@ mod tests {
                 ["scroll", "typed child", "layout_priority", "spacer"],
                 ["scroll", "erased child", "layout_priority", "spacer"],
                 ["scroll", "typed child", "layout_priority", "spacer"],
+            ]
+            .concat()
+        );
+    }
+
+    #[cfg(waterui_feature = "effects")]
+    #[test]
+    fn a_filtered_view_keeps_its_content_typed() {
+        use waterui::graphics::FilterViewExt as _;
+
+        let env = Environment::new();
+        let mut recorder = Recorder::default();
+        Realize::child(&mut recorder, tree().blur(4.0_f32), &env, ());
+        Realize::child(&mut recorder, AnyView::new(tree().blur(4.0_f32)), &env, ());
+        assert_eq!(
+            recorder.reached.borrow().as_slice(),
+            [
+                ["filtered", "typed child", "layout_priority", "spacer"],
+                ["filtered", "erased child", "layout_priority", "spacer"],
             ]
             .concat()
         );
@@ -1186,5 +1299,57 @@ mod tests {
         assert_eq!(hits[1], "typed child");
         assert!(!hits.contains(&"erased child"));
         assert!(hits.contains(&"spacer"));
+    }
+
+    #[cfg(waterui_feature = "menu")]
+    #[test]
+    fn context_menu_preview_and_accessory_stay_typed_and_reenter_hooks() {
+        use waterui::ViewExt as _;
+        use waterui::metadata::context_menu::ContextMenu;
+
+        let authored = || {
+            ().context_menu(
+                ContextMenu::new(())
+                    .preview(Spacer::flexible())
+                    .accessory(Spacer::flexible()),
+            )
+        };
+
+        assert_eq!(
+            reached(authored()),
+            [
+                "resolved_context_menu",
+                "empty",
+                "typed child",
+                "spacer",
+                "typed child",
+                "environment",
+                "spacer",
+            ]
+        );
+        assert_eq!(
+            reached(AnyView::new(authored())),
+            [
+                "resolved_context_menu",
+                "empty",
+                "erased child",
+                "spacer",
+                "erased child",
+                "environment",
+                "spacer",
+            ]
+        );
+        assert_eq!(
+            reached(Hooks::new(authored(), SpacerAsDivider)),
+            [
+                "resolved_context_menu",
+                "empty",
+                "typed child",
+                "divider",
+                "typed child",
+                "environment",
+                "divider",
+            ]
+        );
     }
 }

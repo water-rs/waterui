@@ -865,27 +865,30 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     }
 
     #[cfg(waterui_feature = "menu")]
-    fn resolved_context_menu<C: ChildView<Self>>(
+    fn resolved_context_menu<S: ChildView<Self>, C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::metadata::context_menu::ResolvedContextMenu, C>,
+        metadata: Metadata<waterui::metadata::context_menu::ResolvedContextMenu<S>, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
-        let metadata = metadata.map_content(C::into_child);
+        let content = metadata.content.into_child();
         let renderer = &mut *self.renderer;
-        let Metadata { content, value } = metadata;
         let ResolvedContextMenu {
             items,
             preview,
             accessory,
             dismiss_requests,
-        } = value;
+        } = metadata.value;
         RenderNode::build_wrapper(
             WrapperEffect::ContextMenu(ContextMenuEffect {
                 items,
                 dismiss_requests,
-                preview: Rc::new(RefCell::new(preview.map(RetainedSubview::new))),
-                accessory: Rc::new(RefCell::new(accessory.map(RetainedSubview::new))),
+                preview: Rc::new(RefCell::new(
+                    preview.map(|child| RetainedSubview::held(child.into_child())),
+                )),
+                accessory: Rc::new(RefCell::new(
+                    accessory.map(|child| RetainedSubview::held(child.into_child())),
+                )),
             }),
             content,
             env,
@@ -1041,14 +1044,15 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     }
 
     #[cfg(waterui_feature = "effects")]
-    fn filtered(
+    fn filtered<C: ChildView<Self>>(
         &mut self,
-        native: waterui::graphics::backend::FilteredView,
+        native: waterui::graphics::backend::FilteredView<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        let filtered = native.map_content(C::into_child);
         let renderer = &mut *self.renderer;
-        RenderNode::build_filtered(native, env, renderer)
+        RenderNode::build_filtered(filtered, env, renderer)
     }
 
     fn dynamic<C: ChildView<Self>>(

@@ -8,7 +8,8 @@
 //! below the [`Hooks`](waterui_core::view::hook::Hooks) modifier, however
 //! the backend places or defers those children.
 //!
-//! A payload the decorator hands on carries its children re-wrapped through
+//! A payload or metadata key holding child views that the decorator hands on
+//! carries its children re-wrapped through
 //! [`MapSlots`](waterui_core::backend::MapSlots) into the inner family's
 //! slot, each re-entering the decorator when the inner backend realizes it.
 

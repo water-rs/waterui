@@ -17,7 +17,7 @@ use waterui_macros::state;
 #[state]
 #[derive(Clone)]
 pub struct FullScreenOverlayManager {
-    handler: DynamicHandler,
+    handler: DynamicHandler<AnyView>,
 }
 
 impl Plugin for FullScreenOverlayManager {}

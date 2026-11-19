@@ -125,7 +125,7 @@ mod tests {
     /// The children of a fixed container, read from its erased form: a typed
     /// `FixedContainer` expands to a native container of erased children.
     fn container_children(container: impl View, env: &Environment, role: &str) -> Vec<AnyView> {
-        peel_native::<FixedContainer>(container, env)
+        peel_native::<FixedContainer<Vec<AnyView>>>(container, env)
             .unwrap_or_else(|| panic!("{role} resolves to a fixed container"))
             .into_inner()
             .1
@@ -173,7 +173,7 @@ mod tests {
         // watcher guard alive, so it is handed back to the caller.
         let retained =
             peel_metadata::<Retain>(shadows, &env).expect("the shadow layer is a watched Dynamic");
-        let dynamic = peel_native::<Dynamic>(retained.content, &env)
+        let dynamic = peel_native::<Dynamic<AnyView>>(retained.content, &env)
             .expect("the retained view is the Dynamic");
         let layers = Rc::new(RefCell::new(Vec::new()));
         let sink = Rc::clone(&layers);
