@@ -1383,6 +1383,38 @@ fn hwui_runtime_window(
     )))
 }
 
+fn android_host_window(
+    metrics: MetricsSnapshot,
+    #[cfg(hydrolysis_gpu_painter)] gpu: &AndroidGpuContext,
+    bridge: Arc<HostBridge>,
+    executor: &AndroidMainThreadExecutor,
+    platform_view_focus: crate::platform_view::PlatformViewFocus,
+) -> AndroidHostWindow {
+    AndroidHostWindow {
+        metrics,
+        events: Vec::new(),
+        host_attached: false,
+        #[cfg(hydrolysis_gpu_painter)]
+        surface: AndroidSurface::new(gpu.clone(), executor.clone()),
+        #[cfg(hydrolysis_gpu_painter)]
+        bands: std::collections::BTreeMap::new(),
+        bridge,
+        ui_poster: executor.poster(),
+        redraw_pending: Arc::new(AtomicBool::new(false)),
+        started: false,
+        cursor_style: CursorStyle::default(),
+        soft_input: None,
+        platform_view_focus,
+        translucent: false,
+        #[cfg(not(hydrolysis_hwui))]
+        blur_behind: None,
+        // The session mounts parked — hidden until `onStart` and the
+        // surface attach report it visible — so the wake's gate opens
+        // on the first occlusion sync, not at construction.
+        frame_transaction: FrameTransaction::default(),
+    }
+}
+
 impl AndroidSession {
     /// Mounts the registered app on the host view: builds the environment,
     /// GPU context and the runtime window. `services` is the UI-thread
@@ -1444,29 +1476,14 @@ impl AndroidSession {
         let insets_direction = waterui_core::layout::layout_direction(&env).snapshot();
         safe_area.set(metrics.container_metrics(insets_direction).logical());
         keyboard_area.set(metrics.keyboard_metrics(insets_direction).logical());
-        let mut platform = AndroidHostWindow {
+        let mut platform = android_host_window(
             metrics,
-            events: Vec::new(),
-            host_attached: false,
             #[cfg(hydrolysis_gpu_painter)]
-            surface: AndroidSurface::new(gpu.clone(), executor.clone()),
-            #[cfg(hydrolysis_gpu_painter)]
-            bands: std::collections::BTreeMap::new(),
+            &gpu,
             bridge,
-            ui_poster: executor.poster(),
-            redraw_pending: Arc::new(AtomicBool::new(false)),
-            started: false,
-            cursor_style: CursorStyle::default(),
-            soft_input: None,
+            &executor,
             platform_view_focus,
-            translucent: false,
-            #[cfg(not(hydrolysis_hwui))]
-            blur_behind: None,
-            // The session mounts parked — hidden until `onStart` and the
-            // surface attach report it visible — so the wake's gate opens
-            // on the first occlusion sync, not at construction.
-            frame_transaction: FrameTransaction::default(),
-        };
+        );
         platform.apply_properties(&window);
         #[cfg(hydrolysis_gpu_painter)]
         let mut runtime =
