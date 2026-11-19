@@ -64,7 +64,8 @@ use crate::runner::window::{
 #[cfg(hydrolysis_gpu_painter)]
 use crate::runner::window::{WindowFrame, render_window};
 use crate::runner::{
-    RenderDiagnosticsConfig, init_main_thread_executors, install_headless_window_managers,
+    RenderDiagnosticsConfig, init_main_thread_executors, install_core_window_openers,
+    install_window_registries, queue_window_opener,
 };
 #[cfg(hydrolysis_gpu_painter)]
 use crate::text::ParleyEngine;
@@ -981,7 +982,8 @@ pub struct AndroidSession {
     /// Extra windows the app asks for while mounted: on Android one session
     /// mounts exactly one host view, so a second window is an explicit
     /// unsupported-feature error, not a silently dropped request.
-    pending_window_queue: Rc<RefCell<Vec<waterui::window::AnyWindow>>>,
+    pending_window_queue:
+        Rc<RefCell<Vec<super::super::window::RootWindow<super::AndroidTextEngine>>>>,
     /// The published accessibility snapshot — read only by the
     /// `accessibility` feature's publish/query paths.
     #[cfg_attr(
@@ -1144,7 +1146,8 @@ struct SessionMounts {
     #[cfg(hydrolysis_gpu_painter)]
     fonts: waterui_text::FontCollection,
     window_id: crate::renderer::WindowId,
-    pending_window_queue: Rc<RefCell<Vec<waterui::window::AnyWindow>>>,
+    pending_window_queue:
+        Rc<RefCell<Vec<super::super::window::RootWindow<super::AndroidTextEngine>>>>,
     platform_views: crate::platform_view::PlatformViewSink,
     platform_view_focus: crate::platform_view::PlatformViewFocus,
     safe_area: nami::Binding<waterui_layout::padding::EdgeInsets>,
@@ -1197,10 +1200,7 @@ fn session_mounts(
     let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
     #[cfg(any(test, hydrolysis_platform_services))]
     install_platform_services(&mut env);
-    install_headless_window_managers::<super::AndroidTextEngine>(
-        &mut env,
-        Rc::clone(&pending_window_queue),
-    );
+    install_window_registries::<super::AndroidTextEngine>(&mut env);
     #[cfg(feature = "menu")]
     menu_bar::register_menu_bar::<super::AndroidTextEngine>(&menu_bar, &env);
     #[cfg(any(feature = "text-field", feature = "secure-field"))]
@@ -1222,7 +1222,7 @@ fn session_mounts(
     fonts.clone().install(&mut env);
     let Some(identities) = env.get::<crate::renderer::WindowIdentities>().cloned() else {
         contract_violation!(
-            "hydrolysis android: install_headless_window_managers did not seed \
+            "hydrolysis android: install_window_registries did not seed \
              WindowIdentities; no session is created"
         );
         return Ok(None);
@@ -1254,6 +1254,12 @@ fn session_mounts(
     #[cfg(hydrolysis_gpu_painter)]
     install_view_renderer(&mut env, &theme);
 
+    let super::super::window::RootWindows {
+        initial: windows,
+        channels,
+    } = windows;
+    let opener = queue_window_opener(&pending_window_queue);
+    super::super::window::RootWindows::connect_channels(channels, &opener);
     let mut windows = VecDeque::from(windows);
     let Some(window) = windows.pop_front() else {
         contract_violation!(
@@ -1471,6 +1477,10 @@ impl AndroidSession {
         else {
             return Ok(None);
         };
+        install_core_window_openers(
+            &mut runtime.renderer,
+            queue_window_opener(&pending_window_queue),
+        );
         // The session mounts parked: the activity's `onStart` and the
         // surface band's attach are the reports that unpark it.
         runtime.set_hidden(runtime.platform.is_occluded());

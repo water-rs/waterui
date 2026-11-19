@@ -1445,13 +1445,21 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         ) else {
             return;
         };
-        let Some(manager) = popup_window_manager(env, "text selection menus") else {
+        let Some(manager) = self.popup_window_manager("text selection menus") else {
             return;
         };
         let group = overlay.menu_group.clone();
         group.truncate(1);
-        let (window, state) =
-            popup_menu_window(items, origin, group.clone(), 1, metrics, text, &theme);
+        let (window, state) = popup_menu_window::<E>(
+            items,
+            origin,
+            group.clone(),
+            1,
+            metrics,
+            text,
+            &theme,
+            manager.clone(),
+        );
         group.push(state);
         manager.show(window, env);
         self.popup_menu.active_popup_menu_group = Some(group);

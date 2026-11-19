@@ -4,9 +4,8 @@
 //! whose title, frame, state, size limits, background and toolbar are all
 //! wired two-way — declared signals drive the platform, platform events
 //! publish back — and whose content is a dispatched leaf laid out inside a
-//! host view. iOS has no multi-window surface: the service is installed so
-//! `Window::show` finds it, and it fails exactly as the Swift implementation
-//! did.
+//! host view. iOS has no runtime multi-window surface: opening a window at
+//! runtime reports the unsupported-feature contract violation.
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -16,9 +15,15 @@ use cocoa_ui::MainThreadMarker;
 use cocoa_ui::geometry::{Rect, Size};
 use waterui::app::{WindowSink, Windows};
 use waterui::handler::ViewBuilder;
-use waterui::window::Window;
+#[cfg(target_os = "macos")]
+use waterui::window::WindowSlot;
+use waterui::window::{Window, WindowChannel};
 use waterui_backend_core::Environment;
+#[cfg(target_os = "macos")]
+use waterui_backend_core::{ChildView as _, IntoChild};
 
+#[cfg(target_os = "macos")]
+use crate::backend::AppleBackend;
 use crate::contract::NativeLeaf;
 
 /// A window's content as this backend holds it: the content builder's type
@@ -36,17 +41,47 @@ pub fn root_window<C: ViewBuilder>(window: Window<C>) -> RootWindow {
     })
 }
 
-/// `windows` as this backend holds them, in declaration order.
-pub fn root_windows(windows: impl Windows) -> Vec<RootWindow> {
-    struct Collect(Vec<RootWindow>);
-    impl WindowSink for Collect {
+/// A window dispatched from the view tree as this backend holds it.
+#[cfg(target_os = "macos")]
+pub fn slot_root_window<C: IntoChild<AppleBackend>>(window: Window<WindowSlot<C>>) -> RootWindow {
+    window.map_content(|slot| -> Root {
+        Box::new(move |env, mtm| {
+            slot.build()
+                .into_child()
+                .realize(&mut AppleBackend::new(mtm), env, ())
+        })
+    })
+}
+
+/// Collects startup [`RootWindow`]s from `windows` and connects every
+/// [`WindowChannel`] to this backend's runtime window presenter.
+pub fn connect_windows(windows: impl Windows, env: &Environment) -> Vec<RootWindow> {
+    struct Collect<'a> {
+        initial: Vec<RootWindow>,
+        env: &'a Environment,
+    }
+    impl WindowSink for Collect<'_> {
         fn window<C: ViewBuilder>(&mut self, window: Window<C>) {
-            self.0.push(root_window(window));
+            self.initial.push(root_window(window));
+        }
+
+        fn channel<C: ViewBuilder>(&mut self, channel: WindowChannel<C>) {
+            #[cfg(target_os = "macos")]
+            let queued = imp::connect_channel(channel, self.env);
+            #[cfg(target_os = "ios")]
+            let queued = {
+                let _ = self.env;
+                channel.connect(|_| imp::show_unsupported_on_ios())
+            };
+            self.initial.extend(queued.into_iter().map(root_window));
         }
     }
-    let mut collect = Collect(Vec::with_capacity(windows.len()));
+    let mut collect = Collect {
+        initial: Vec::with_capacity(windows.len()),
+        env,
+    };
     windows.for_each(&mut collect);
-    collect.0
+    collect.initial
 }
 #[cfg(target_os = "macos")]
 use waterui_core::layout::{Point as WPoint, Rect as WRect, Size as WSize};
@@ -127,18 +162,50 @@ mod imp {
         static HOSTS: RefCell<Vec<WindowHost>> = const { RefCell::new(Vec::new()) };
     }
 
-    /// Installs the `WindowManager` service: `window.show(env)` realizes the
-    /// declaration on a fresh platform window, deferred to the next main-queue
-    /// turn exactly as the Swift `show` dispatch was.
-    pub fn install_manager(env: &mut Environment) {
-        let inner = env.clone();
-        let manager = waterui::window::WindowManager::new(move |window| {
-            let inner = inner.clone();
+    /// The application-level environment snapshot under which windows opened
+    /// from the view tree realize, so a window opened by `conditional_window`
+    /// renders under the application's root environment rather than its host
+    /// window's chrome/navigation scopes.
+    #[derive(Clone)]
+    struct RootEnvironment(Environment);
+
+    /// Records `env` as the root environment for windows opened later from a
+    /// view tree.
+    pub fn install_root_environment(env: &mut Environment) {
+        let root = env.clone();
+        env.insert(RootEnvironment(root));
+    }
+
+    /// Connects `channel` so each window shown through its manager realizes on
+    /// a fresh platform window, deferred to the next main-queue turn.
+    pub(super) fn connect_channel<C: ViewBuilder>(
+        channel: super::WindowChannel<C>,
+        env: &Environment,
+    ) -> Vec<Window<C>> {
+        let env = env.clone();
+        channel.connect(move |window| {
+            let declaration = super::root_window(window);
+            let env = env.clone();
             cocoa_ui::main_queue::enqueue_local(mtm(), move |mtm| {
-                track(realize(window, &inner, mtm));
+                track(realize_root(declaration, &env, mtm));
             });
+        })
+    }
+
+    /// Realizes a window dispatched from the view tree (`conditional_window`)
+    /// on a fresh platform window, deferred to the next main-queue turn.
+    pub fn show_from_tree<C: super::IntoChild<super::AppleBackend>>(
+        declaration: Window<super::WindowSlot<C>>,
+        env: &Environment,
+        mtm: MainThreadMarker,
+    ) {
+        let root_env = env
+            .get::<RootEnvironment>()
+            .map_or_else(|| env.clone(), |root| root.0.clone());
+        let declaration = super::slot_root_window(declaration);
+        cocoa_ui::main_queue::enqueue_local(mtm, move |mtm| {
+            track(realize_root(declaration, &root_env, mtm));
         });
-        env.insert(manager);
     }
 
     /// Keeps `host` — the window the startup path realized — in the open set.
@@ -964,15 +1031,12 @@ mod imp {
             .to_string()
     }
 
-    /// Installs the `WindowManager` service: `Window::show` resolves the
-    /// service, and invoking it on a surface with no multi-window support
-    /// fails the way the Swift implementation did.
-    pub fn install_manager(env: &mut Environment) {
-        env.insert(waterui::window::WindowManager::new(|_| {
-            waterui::contract_violation!(
-                "WaterUI multi-window is unsupported on iOS; the window is not shown"
-            );
-        }));
+    /// Reports that opening a secondary window at run time is unsupported on
+    /// iOS.
+    pub fn show_unsupported_on_ios() {
+        waterui::contract_violation!(
+            "WaterUI multi-window is unsupported on iOS; the window is not shown"
+        );
     }
 
     /// Connects `scene`: the platform window must exist at connection time,
@@ -1272,17 +1336,18 @@ mod imp {
     }
 }
 
-#[cfg(target_os = "ios")]
-pub use imp::bind_background;
-pub use imp::install_manager;
 #[cfg(all(target_os = "macos", feature = "native-test"))]
 pub use imp::realize;
 #[cfg(all(target_os = "ios", feature = "native-test"))]
 pub use imp::{Pending, Veil, WindowHost, realize};
 #[cfg(target_os = "ios")]
-pub use imp::{Scenes, connect, connect_embedded, declare};
+pub use imp::{
+    Scenes, bind_background, connect, connect_embedded, declare, show_unsupported_on_ios,
+};
 #[cfg(target_os = "macos")]
-pub use imp::{bind_background, close_all, realize_root, track};
+pub use imp::{
+    bind_background, close_all, install_root_environment, realize_root, show_from_tree, track,
+};
 
 /// A waterui layout rect, as the kit sees it.
 #[cfg(target_os = "macos")]

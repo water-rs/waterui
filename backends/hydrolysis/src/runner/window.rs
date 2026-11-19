@@ -117,6 +117,31 @@ impl<E: crate::text::TextEngine, C: ViewBuilder> WindowRoot<E> for C {
     }
 }
 
+struct HeldWindowSlot<E: crate::text::TextEngine>(
+    waterui::window::WindowSlot<crate::renderer::HeldChild<E>>,
+);
+
+impl<E: crate::text::TextEngine> WindowRoot<E> for HeldWindowSlot<E> {
+    fn capture_tree(
+        &self,
+        renderer: &mut HydrolysisRenderer<E>,
+        env: &Environment,
+        bounds: kurbo::Rect,
+        transform: kurbo::Affine,
+        hit_transform: kurbo::Affine,
+        built: &mut dyn FnMut(),
+    ) {
+        let child = self.0.build();
+        built();
+        renderer.capture_held_window_tree(child, env, bounds, transform, hit_transform);
+    }
+
+    #[cfg(hydrolysis_cherenkov)]
+    fn capture_semantics(&self, core: &mut SemanticCore<E>, env: &Environment) {
+        core.capture_held_window_semantics(self.0.build(), env);
+    }
+}
+
 /// A window as a runner holds it, see [`WindowRoot`].
 pub type RootWindow<E> = Window<Box<dyn WindowRoot<E>>>;
 
@@ -125,21 +150,80 @@ pub fn root_window<E: crate::text::TextEngine, C: ViewBuilder>(window: Window<C>
     window.map_content(|content| Box::new(content) as Box<dyn WindowRoot<E>>)
 }
 
-/// Collects an application's windows as a runner holds them.
-pub struct RootWindows<E: crate::text::TextEngine>(pub(crate) Vec<RootWindow<E>>);
+/// A window dispatched from the view tree as a runner holds it.
+pub fn slot_root_window<E: crate::text::TextEngine>(
+    window: Window<waterui::window::WindowSlot<crate::renderer::HeldChild<E>>>,
+) -> RootWindow<E> {
+    window.map_content(|slot| Box::new(HeldWindowSlot(slot)) as Box<dyn WindowRoot<E>>)
+}
+
+pub(crate) type RootChannelConnector<E> = Box<dyn FnOnce(Rc<dyn Fn(RootWindow<E>)>)>;
+
+/// Collects an application's startup windows and runtime window channels as a
+/// runner holds them.
+pub struct RootWindows<E: crate::text::TextEngine> {
+    pub(crate) initial: Vec<RootWindow<E>>,
+    pub(crate) channels: Vec<RootChannelConnector<E>>,
+}
 
 impl<E: crate::text::TextEngine> RootWindows<E> {
     /// `windows` as a runner holds them, in declaration order.
-    pub(crate) fn collect(windows: impl Windows) -> Vec<RootWindow<E>> {
-        let mut sink = Self(Vec::with_capacity(windows.len()));
+    pub(crate) fn collect(windows: impl Windows) -> Self {
+        let mut sink = Self {
+            initial: Vec::with_capacity(windows.len()),
+            channels: Vec::new(),
+        };
         windows.for_each(&mut sink);
-        sink.0
+        sink
     }
+
+    /// Connects every collected [`WindowChannel`](waterui::window::WindowChannel)
+    /// to `opener`.
+    pub(crate) fn connect_channels(
+        channels: Vec<RootChannelConnector<E>>,
+        opener: &Rc<dyn Fn(RootWindow<E>)>,
+    ) {
+        for connect in channels {
+            connect(Rc::clone(opener));
+        }
+    }
+}
+
+enum ChannelTarget<E: crate::text::TextEngine> {
+    Pending(Vec<RootWindow<E>>),
+    Connected(Rc<dyn Fn(RootWindow<E>)>),
 }
 
 impl<E: crate::text::TextEngine> WindowSink for RootWindows<E> {
     fn window<C: ViewBuilder>(&mut self, window: Window<C>) {
-        self.0.push(root_window(window));
+        self.initial.push(root_window(window));
+    }
+
+    fn channel<C: ViewBuilder>(&mut self, channel: waterui::window::WindowChannel<C>) {
+        let target = Rc::new(RefCell::new(ChannelTarget::Pending(Vec::new())));
+        let receiver_target = Rc::clone(&target);
+        let queued = channel.connect(move |window| {
+            let root = root_window(window);
+            let opener = match &mut *receiver_target.borrow_mut() {
+                ChannelTarget::Pending(pending) => {
+                    pending.push(root);
+                    return;
+                }
+                ChannelTarget::Connected(opener) => Rc::clone(opener),
+            };
+            opener(root);
+        });
+        self.initial.extend(queued.into_iter().map(root_window));
+        self.channels.push(Box::new(move |opener| {
+            let pending = match &mut *target.borrow_mut() {
+                ChannelTarget::Pending(pending) => core::mem::take(pending),
+                ChannelTarget::Connected(_) => Vec::new(),
+            };
+            *target.borrow_mut() = ChannelTarget::Connected(Rc::clone(&opener));
+            for window in pending {
+                opener(window);
+            }
+        }));
     }
 }
 

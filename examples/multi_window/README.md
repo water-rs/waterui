@@ -96,51 +96,52 @@ water run --platform macos
 ### Creating a Window
 
 ```rust
-Window::new("Window Title", content)
+let (windows, channel) = WindowManager::new();
+// Register `channel` with `App::window(channel)` or `App::new_with_windows(channel, env)`.
+Window::new("Window Title", binding(WindowState::Normal), content)
     .style(WindowStyle::Titled)
     .resizable(true)
-    .show(env);
+    .show(&windows);
 ```
 
 ### Window with Material Blur
 
 ```rust
-Window::new("Frosted Glass", content)
+Window::new("Frosted Glass", binding(WindowState::Normal), content)
     .style(WindowStyle::Titled)
     .background(Material::Regular)
-    .show(env);
+    .show(&windows);
 ```
 
 ### Window with Custom Color
 
 ```rust
 let color = Color::srgb_f32(0.2, 0.4, 0.8).with_opacity(0.85);
-Window::new("Colored Window", content)
+Window::new("Colored Window", binding(WindowState::Normal), content)
     .background(color)
-    .show(env);
+    .show(&windows);
 ```
 
 ### Managing Window State
 
 ```rust
-let handle = binding(None::<WindowHandle>);
+let state = binding(WindowState::Closed);
+let presentation = WindowPresentation::new(&state);
 
-// Show window and save handle
-let window = Window::new("My Window", content);
-let new_handle = window.handle();
-handle.set(Some(new_handle));
-window.show(env);
+// Declarative window in the view tree
+conditional_window(&presentation, |state| {
+    Window::new("My Window", state, content)
+})
 
-// Close window later
-if let Some(h) = handle.snapshot() {
-    h.close();
-}
+// Open or close reactively
+state.set(WindowState::Normal);
+state.set(WindowState::Closed);
 ```
 
 ## Architecture Notes
 
-- Windows are managed by the `WindowManager` in the environment
-- Each window can have its own reactive state via `WindowHandle`
+- Windows declared in the view tree (`Window`, `conditional_window`) reach their backend through static `View::dispatch`; imperative windows use a typed `(WindowManager<C>, WindowChannel<C>)` pair registered on `App`
+- Each window tracks its lifecycle reactively through its `Binding<WindowState>`
 - Window backgrounds are composited by the native platform
 - Material effects leverage platform-native blur APIs for best performance
 

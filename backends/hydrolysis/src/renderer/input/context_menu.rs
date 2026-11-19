@@ -385,10 +385,19 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             // close handle exactly as a popup window's would be.
             let menu_state = Binding::container(WindowState::Normal);
             group.push(menu_state.clone());
-            let menu = RetainedSubview::new(AnyView::new(
-                popup_menu_content(nodes, 0, metrics, text, popup_origin, menu_width, &theme)
-                    .with(group.clone()),
-            ));
+            let menu = RetainedSubview::new(
+                popup_menu_content::<E>(
+                    nodes,
+                    0,
+                    metrics,
+                    text,
+                    popup_origin,
+                    menu_width,
+                    &theme,
+                    self.popup_menu.popup_opener.clone(),
+                )
+                .with(group.clone()),
+            );
             self.popup_menu.context_menu_presentation = Some(ContextMenuPresentation {
                 source_bounds,
                 menu,
@@ -427,11 +436,19 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             self.popup_menu.active_popup_menu_group = Some(group);
             self.context_mark_layout();
         } else {
-            let Some(manager) = popup_window_manager(env, "popup menus") else {
+            let Some(manager) = self.popup_window_manager("popup menus") else {
                 return false;
             };
-            let (window, state) =
-                popup_menu_window(nodes, popup_origin, group.clone(), 0, metrics, text, &theme);
+            let (window, state) = popup_menu_window::<E>(
+                nodes,
+                popup_origin,
+                group.clone(),
+                0,
+                metrics,
+                text,
+                &theme,
+                manager.clone(),
+            );
             group.push(state);
             manager.show(window, env);
             self.popup_menu.active_popup_menu_group = Some(group);
