@@ -25,7 +25,6 @@ use waterui_core::{
     interaction::Disabled,
     key::Key,
 };
-use waterui_layout::Divider;
 use waterui_locale::locale_binding;
 use waterui_text::{TextConfig, styled::StyledStr};
 
@@ -849,12 +848,6 @@ impl From<Command> for MenuItem {
     }
 }
 
-impl From<Divider> for MenuItem {
-    fn from(_: Divider) -> Self {
-        Self::Divider
-    }
-}
-
 impl<L: LabelKind> From<Menu<L>> for MenuItem {
     fn from(value: Menu<L>) -> Self {
         Self::Menu(value.into_semantic())
@@ -864,7 +857,7 @@ impl<L: LabelKind> From<Menu<L>> for MenuItem {
 /// Converts semantic menu content into menu items.
 ///
 /// This trait is implemented for the supported menu content building blocks:
-/// [`Command`], [`Menu`], [`Divider`], ordinary [`Button`] values, and
+/// [`Command`], [`Menu`], `Divider` (in `waterui`), ordinary [`Button`] values, and
 /// containers such as tuples, arrays, vectors, and [`Option`].
 pub trait MenuView {
     /// Converts this value into reactive menu items.
@@ -910,12 +903,6 @@ impl MenuView for Command {
 impl<L: LabelKind> MenuView for Menu<L> {
     fn into_menu_items(self) -> Computed<Vec<MenuItem>> {
         Computed::constant(vec![MenuItem::Menu(self.into_semantic())])
-    }
-}
-
-impl MenuView for Divider {
-    fn into_menu_items(self) -> Computed<Vec<MenuItem>> {
-        Computed::constant(vec![MenuItem::Divider])
     }
 }
 
@@ -1581,7 +1568,7 @@ mod tests {
     fn menu_view_flattens_vectors_of_supported_items() {
         let items: Vec<MenuItem> = vec![
             button("Edit").action(|| {}).into(),
-            Divider.into(),
+            MenuItem::Divider,
             Menu::new("More", (button("Duplicate").action(|| {}),)).into(),
         ];
         let items = items.into_menu_items().snapshot();

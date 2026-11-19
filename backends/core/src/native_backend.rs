@@ -755,6 +755,8 @@ native_backend! {
         dynamic<C>: waterui_core::Dynamic<C>,
         /// A container whose children are produced lazily.
         lazy_container<C>: waterui::layout::container::LazyContainer<C>,
+        /// A window opened from the view tree.
+        window<C>: waterui::window::Window<waterui::window::WindowSlot<C>>,
         #[cfg(waterui_feature = "effects")]
         /// A view drawn through a filter.
         filtered<C>: waterui::graphics::backend::FilteredView<C>,
@@ -1083,6 +1085,12 @@ mod tests {
         }
     }
 
+    impl<C> Parent<C> for waterui::window::Window<waterui::window::WindowSlot<C>> {
+        fn children(self) -> Vec<C> {
+            alloc::vec![self.content.build()]
+        }
+    }
+
     impl Recorder {
         /// Realizes each child view a payload held, recording whether it
         /// arrived typed or erased.
@@ -1373,6 +1381,19 @@ mod tests {
             reached(AnyView::new(Hooks::new(Fence, FenceAsDivider))),
             ["divider"]
         );
+    }
+
+    #[test]
+    fn a_window_in_the_tree_reaches_its_backend_with_its_content_typed() {
+        let hits = reached(waterui::window::Window::new(
+            "Test",
+            waterui::binding(waterui::window::WindowState::Normal),
+            Spacer::flexible,
+        ));
+        assert_eq!(hits[0], "window");
+        assert_eq!(hits[1], "typed child");
+        assert!(!hits.contains(&"erased child"));
+        assert!(hits.contains(&"spacer"));
     }
 
     #[cfg(waterui_feature = "menu")]
