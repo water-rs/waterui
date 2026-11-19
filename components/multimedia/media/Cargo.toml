@@ -17,8 +17,8 @@ waterui-macros.workspace = true
 waterui-url.workspace = true
 waterui-image.workspace = true
 waterui-layout.workspace = true
-waterui-controls.workspace = true
-waterui-text.workspace = true
+waterui-controls = { workspace = true, optional = true }
+waterui-text = { workspace = true, optional = true }
 waterui-video = { workspace = true, optional = true }
 waterkit-dialog = { workspace = true, optional = true }
 filtrate-core.workspace = true
@@ -43,8 +43,12 @@ zenwave = { workspace = true, optional = true }
 waterkit-fs.workspace = true
 
 [features]
-default = ["std"]
-std = ["waterui-core/std", "dep:waterkit-dialog"]
+default = ["std", "media-picker"]
+std = ["waterui-core/std"]
+# Platform-native media selection (`MediaPicker`): pulls UI controls, text,
+# and native picker dialogs. Off with `default-features = false` so image-only
+# consumers (`Photo`, `Image`) carry no control, text, or locale stack.
+media-picker = ["std", "dep:waterui-controls", "dep:waterui-text", "dep:waterkit-dialog"]
 # Video playback (`Video`, `VideoPlayer`, `LivePhoto`, video picks in the media
 # picker) re-exports `waterui-video`. Off by default so an image-only
 # application carries no video graph.
