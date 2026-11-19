@@ -1,13 +1,16 @@
 # waterui-meta
 
-The metadata-directory record format every `waterui_meta_*` artifact channel
-shares — a `static` parked in a dedicated linker section (`.wmeta`;
-`__DATA,__wmeta` on Apple targets) whose bytes are a self-describing
-`name\0payload\0` record.
+Artifact linker-section channels shared across WaterUI crates and tooling:
 
-The section exists because a symbol table cannot be trusted to survive
-linking: a linked PE image keeps no COFF symbol table at all, so a static
-findable only by symbol name is unreachable there — the record's own name
-field is what identifies it, in objects, rlibs, and linked images alike.
+- **`.wmeta` (`__DATA,__wmeta` / `__DWARF,__wmeta` on Apple)**: `#[used]`
+  `name\0payload\0` records emitted by procedural macros (`waterui_meta_*`) for
+  the `water` CLI and build tooling.
+- **`.wreach` (`__DATA,__wreach` on Apple)**: un-`#[used]` `name\0`
+  reachability markers referenced via `core::hint::black_box` at realization
+  and erased-dispatch entries, retained in the linked image if and only if the
+  referencing code survives dead-code elimination.
+
+Both channels identify records from section bytes rather than the symbol
+table, which linked PE images omit and `strip = true` release builds remove.
 
 Zero dependencies, `no_std` + `alloc`.

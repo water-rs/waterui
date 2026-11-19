@@ -64,6 +64,7 @@ pub mod time;
 pub use child::{Child, ChildView, IntoChild, NativeBackendFamily};
 pub use hooked::{Hooked, HookedFamily};
 pub use native_backend::{NativeBackend, Realize, report_unprovided};
+pub use waterui_meta::mark_reached;
 
 // Re-export common types from waterui-core
 pub use waterui_core::{AnyView, Environment, Native, View};

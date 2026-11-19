@@ -114,6 +114,7 @@ impl AnyView {
         env: &Environment,
         cx: Box<dyn Any>,
     ) -> Box<dyn Any> {
+        waterui_meta::mark_reached!("erased");
         self.0.dispatch_dyn(backend, env, cx)
     }
 

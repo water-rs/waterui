@@ -4,7 +4,7 @@
 use core::marker::PhantomData;
 
 use waterui_backend_core::{
-    ChildView, NativeBackend, NativeBackendFamily, Realize, report_unprovided,
+    ChildView, NativeBackend, NativeBackendFamily, Realize, mark_reached, report_unprovided,
 };
 #[cfg(any(feature = "menu", hydrolysis_video_plane))]
 use waterui_core::backend::ChildSlot;
@@ -82,6 +82,7 @@ macro_rules! accessibility_scopes {
     ($( $method:ident: $ty:ty => $install:expr; )+) => {
         $(
             fn $method<C: ChildView<Self>>(&mut self, metadata: Metadata<$ty, C>, env: &Environment, (): ()) -> RenderNode<E> {
+                mark_reached!(stringify!($method));
                 let install: fn(&Environment, &$ty) -> Environment = $install;
                 let scoped = install(env, &metadata.value);
                 self.accessibility_scope(metadata.content.into_child(), scoped)
@@ -116,6 +117,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
 
     // `Native<()>` carries no data.
     fn empty(&mut self, (): (), env: &Environment, (): ()) -> RenderNode<E> {
+        mark_reached!("empty");
         RenderNode::build_empty(self.renderer, env)
     }
 
@@ -132,6 +134,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("fixed_container");
         let background_slot = native.background_slot();
         let (layout, children) = native.into_inner();
         let core = self.renderer.new_core();
@@ -177,6 +180,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     // and a per-frame re-flush re-binds the *same* runtime.
     #[cfg(waterui_feature = "gpu")]
     fn gpu(&mut self, native: waterui::GpuView, env: &Environment, (): ()) -> RenderNode<E> {
+        mark_reached!("gpu");
         #[cfg(hydrolysis_gpu)]
         return RenderNode::build_gpu_content(native, self.renderer, env);
         #[cfg(not(hydrolysis_gpu))]
@@ -194,6 +198,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("external_frame");
         #[cfg(hydrolysis_gpu)]
         return RenderNode::build_external_frame(native, self.renderer, env);
         #[cfg(not(hydrolysis_gpu))]
@@ -214,6 +219,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("picture");
         self.unrealized("a `Picture` outside `SceneViewMergeToParent`", env)
     }
 
@@ -226,6 +232,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("video");
         #[cfg(hydrolysis_web_video)]
         {
             self.build(crate::widgets::platform::video::video(native), env)
@@ -248,6 +255,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("video_player");
         #[cfg(hydrolysis_web_video)]
         {
             self.build(crate::widgets::platform::video::video_player(native), env)
@@ -267,6 +275,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     // it, and a build without one draws no map.
     #[cfg(waterui_feature = "map")]
     fn map(&mut self, native: waterui::map::MapConfig, env: &Environment, (): ()) -> RenderNode<E> {
+        mark_reached!("map");
         #[cfg(feature = "map-gpu")]
         {
             self.build(waterui_map_gpu::map(env, native), env)
@@ -289,10 +298,12 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("web_view");
         RenderNode::build_webview(&native, env, self.renderer)
     }
 
     fn color(&mut self, native: waterui::Color, env: &Environment, (): ()) -> RenderNode<E> {
+        mark_reached!("color");
         let renderer = &mut *self.renderer;
         RenderNode::Color(ColorNode {
             bounds: nami::Binding::container(kurbo::Rect::ZERO),
@@ -307,6 +318,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         _env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("text");
         let renderer = &mut *self.renderer;
         let (content, alignment, line_limit) = native.into_parts();
         let core = renderer.new_core();
@@ -339,6 +351,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("lazy_container");
         let renderer = &mut *self.renderer;
         let direction = native.direction();
         let (layout, children) = native.into_inner();
@@ -395,6 +408,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("opacity");
         let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
@@ -409,6 +423,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("scale");
         let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
@@ -423,6 +438,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("rotation");
         let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
@@ -437,6 +453,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("offset");
         let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
@@ -451,6 +468,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("environment");
         let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
@@ -477,6 +495,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("retain");
         let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, mut value } = metadata;
@@ -502,6 +521,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("transition");
         let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
@@ -529,6 +549,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("selected");
         let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
@@ -550,6 +571,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("secure");
         let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         RenderNode::build_slot(metadata.content, env, renderer)
@@ -564,6 +586,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("standard_dynamic_range");
         let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         RenderNode::build_slot(metadata.content, env, renderer)
@@ -575,6 +598,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("high_dynamic_range");
         let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         RenderNode::build_slot(metadata.content, env, renderer)
@@ -586,6 +610,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("ignore_safe_area");
         let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
@@ -602,6 +627,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("navigation_link_hint");
         let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         RenderNode::build_slot(metadata.content, env, renderer)
@@ -614,6 +640,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("navigation_transition_source");
         let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
@@ -632,6 +659,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("navigation_transition_destination");
         let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
@@ -649,6 +677,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("material_background");
         let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata {
@@ -667,6 +696,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("glass_background");
         let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata {
@@ -687,6 +717,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("material_group");
         let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         RenderNode::build_wrapper(
@@ -708,6 +739,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("clip_shape");
         let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
@@ -720,6 +752,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("border");
         let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
@@ -732,6 +765,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("shadow");
         let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
@@ -744,6 +778,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("anchored_overlay");
         let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
@@ -777,6 +812,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("dialog");
         let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
@@ -799,6 +835,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("layout_priority");
         let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
@@ -811,6 +848,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("cursor");
         let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
@@ -823,6 +861,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("draggable");
         let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
@@ -840,6 +879,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("drop_destination");
         let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
@@ -858,6 +898,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("resolved_context_menu");
         let content = metadata.content.into_child();
         let renderer = &mut *self.renderer;
         let ResolvedContextMenu {
@@ -889,6 +930,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("hittable");
         let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
@@ -901,6 +943,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("on_event");
         let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
@@ -918,6 +961,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("on_key_press");
         let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
@@ -935,6 +979,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("gesture_observer");
         let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
@@ -959,6 +1004,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("focused");
         let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
@@ -971,6 +1017,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("lifecycle_hook");
         let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
@@ -983,6 +1030,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("scroll");
         let (axis, content, controller, offset) = native.into_inner().into_parts();
         let core = self.renderer.new_core();
         let child = self.build_child(content, env);
@@ -1016,6 +1064,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         _env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("scene");
         let renderer = &mut *self.renderer;
         RenderNode::build_scene_view_node(native.into_content(), renderer)
     }
@@ -1027,6 +1076,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         _env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("canvas");
         RenderNode::build_scene_view_node(Box::new(native), self.renderer)
     }
 
@@ -1037,6 +1087,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("filtered");
         let filtered = native.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         RenderNode::build_filtered(filtered, env, renderer)
@@ -1048,6 +1099,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("dynamic");
         let renderer = &mut *self.renderer;
         RenderNode::build_dynamic_host(native, C::into_child, env, renderer)
     }
@@ -1062,6 +1114,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("button");
         let renderer = &mut *self.renderer;
         RenderNode::build_button(renderer, native, env)
     }
@@ -1073,6 +1126,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("menu");
         let renderer = &mut *self.renderer;
         RenderNode::build_menu(renderer, native, env)
     }
@@ -1084,6 +1138,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("toggle");
         let renderer = &mut *self.renderer;
         RenderNode::build_toggle(native, env, renderer)
     }
@@ -1095,6 +1150,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("slider");
         let renderer = &mut *self.renderer;
         RenderNode::build_slider(native, env, renderer)
     }
@@ -1106,6 +1162,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("stepper");
         let renderer = &mut *self.renderer;
         RenderNode::build_stepper(native, env, renderer)
     }
@@ -1116,6 +1173,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("progress");
         let renderer = &mut *self.renderer;
         RenderNode::build_progress(native, env, renderer)
     }
@@ -1129,6 +1187,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("calendar");
         let renderer = &mut *self.renderer;
         let grid = CalendarGrid::new(native);
         RenderNode::build_view(AnyView::new(grid), env, renderer)
@@ -1141,6 +1200,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("multi_date_picker");
         let renderer = &mut *self.renderer;
         let grid = MultiDatePickerGrid::new(native, env);
         RenderNode::build_view(AnyView::new(grid), env, renderer)
@@ -1153,6 +1213,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("date_picker");
         let renderer = &mut *self.renderer;
         RenderNode::build_date_picker(native, env, renderer)
     }
@@ -1164,6 +1225,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("color_picker");
         let renderer = &mut *self.renderer;
         RenderNode::build_color_picker(native, env, renderer)
     }
@@ -1175,6 +1237,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("picker");
         let renderer = &mut *self.renderer;
         RenderNode::build_picker(native, env, renderer)
     }
@@ -1186,6 +1249,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("text_field");
         let renderer = &mut *self.renderer;
         RenderNode::build_text_field(native, env, renderer)
     }
@@ -1197,6 +1261,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("secure_field");
         let renderer = &mut *self.renderer;
         RenderNode::build_secure_field(native, env, renderer)
     }
@@ -1207,6 +1272,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("badge");
         let renderer = &mut *self.renderer;
         RenderNode::build_badge(native, env, renderer)
     }
@@ -1219,6 +1285,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         (): (),
     ) -> RenderNode<E> {
         use waterui_core::backend::MapSlots as _;
+        mark_reached!("list");
         let renderer = &mut *self.renderer;
         // A function pointer, so the mapped rows do not borrow this backend.
         let into_child: fn(C) -> HeldChild<E> = C::into_child;
@@ -1232,6 +1299,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("table");
         let renderer = &mut *self.renderer;
         RenderNode::build_table(renderer, native, env)
     }
@@ -1242,6 +1310,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("icon");
         let renderer = &mut *self.renderer;
         unsupported_system_icon(&native);
         RenderNode::build_empty(renderer, env)
@@ -1253,6 +1322,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("gradient");
         let renderer = &mut *self.renderer;
         RenderNode::build_gradient(renderer, native, env)
     }
@@ -1263,6 +1333,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("shape");
         let renderer = &mut *self.renderer;
         RenderNode::build_shape(renderer, native, env)
     }
@@ -1279,6 +1350,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("navigation_view");
         let mut native = native.map_content(C::into_child);
         native.resolve_native_fields(env);
         let renderer = &mut *self.renderer;
@@ -1292,6 +1364,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("navigation_split");
         let renderer = &mut *self.renderer;
         RenderNode::build_navigation_split(native, env, renderer)
     }
@@ -1303,6 +1376,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("navigation_stack");
         let renderer = &mut *self.renderer;
         RenderNode::build_navigation_stack(renderer, native.map_slot(C::into_child), env)
     }
@@ -1314,6 +1388,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("tabs");
         let renderer = &mut *self.renderer;
         RenderNode::build_tabs(native.map_slots(C::into_child), env, renderer)
     }
@@ -1324,6 +1399,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("spacer");
         let renderer = &mut *self.renderer;
         RenderNode::build_spacer(renderer, native, env)
     }
@@ -1337,11 +1413,13 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("divider");
         let renderer = &mut *self.renderer;
         RenderNode::build_divider(renderer, native, env)
     }
 
     fn label(&mut self, native: waterui_core::Str, env: &Environment, (): ()) -> RenderNode<E> {
+        mark_reached!("label");
         let renderer = &mut *self.renderer;
         RenderNode::build_str(renderer, native, env)
     }
@@ -1359,19 +1437,24 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         // the host's work.
         let native = match cast::<T, PlatformView>(native) {
             Ok(platform_view) => {
+                mark_reached!("platform_view");
                 return RenderNode::build_platform_view(self.renderer, &platform_view, env);
             }
             Err(native) => native,
         };
         #[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
         let native = match cast::<T, crate::hosted::HostedView>(native) {
-            Ok(hosted) => return RenderNode::build_hosted(hosted, env, self.renderer),
+            Ok(hosted) => {
+                mark_reached!("hosted");
+                return RenderNode::build_hosted(hosted, env, self.renderer);
+            }
             Err(native) => native,
         };
         // The GPU video player's host.
         #[cfg(hydrolysis_video_plane)]
         let native = match cast::<T, waterui_video_gpu::AndroidVideoSurfaceHost>(native) {
             Ok(host) => {
+                mark_reached!("android_video_surface_host");
                 let picture = crate::runner::android::video_plane::unwrap_host(Native::new(host));
                 return RenderNode::build_view(picture, env, self.renderer);
             }
@@ -1388,14 +1471,17 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         (): (),
     ) -> RenderNode<E> {
         if let Some(platform_view) = native.take::<PlatformView>() {
+            mark_reached!("platform_view");
             return RenderNode::build_platform_view(self.renderer, &platform_view, env);
         }
         #[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
         if let Some(hosted) = native.take::<crate::hosted::HostedView>() {
+            mark_reached!("hosted");
             return RenderNode::build_hosted(hosted, env, self.renderer);
         }
         #[cfg(hydrolysis_video_plane)]
         if let Some(host) = native.take::<waterui_video_gpu::AndroidVideoSurfaceHost>() {
+            mark_reached!("android_video_surface_host");
             let picture = crate::runner::android::video_plane::unwrap_host(Native::new(host));
             return RenderNode::build_view(picture, env, self.renderer);
         }
@@ -1462,6 +1548,7 @@ impl<E: crate::text::TextEngine> HydroBackend<'_, E> {
         metadata: Metadata<PopupMenuSurface, HeldChild<E>>,
         env: &Environment,
     ) -> RenderNode<E> {
+        mark_reached!("popup_menu_surface");
         RenderNode::build_wrapper(
             WrapperEffect::PopupMenuSurface(metadata.value.selected_row),
             metadata.content,
@@ -1476,6 +1563,7 @@ impl<E: crate::text::TextEngine> HydroBackend<'_, E> {
         metadata: Metadata<crate::runner::android::video_plane::VideoPlaneHost, HeldChild<E>>,
         env: &Environment,
     ) -> RenderNode<E> {
+        mark_reached!("video_plane_host");
         let Metadata { content, value } = metadata;
         let planes = crate::runner::android::video_plane::VideoPlanes::in_environment(env);
         RenderNode::Retain(Box::new(RetainNode {

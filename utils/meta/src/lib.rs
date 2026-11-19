@@ -1,25 +1,27 @@
-//! The metadata-directory record format every `waterui_meta_*` artifact
-//! channel shares.
+//! Artifact linker-section channels: `.wmeta` metadata records and `.wreach`
+//! reachability markers.
 //!
-//! A proc macro that must convey metadata to tooling (the `water` CLI, a
-//! test, a packager) emits a `static` whose item name starts with
-//! `waterui_meta_`, parks it in a dedicated linker section — `.wmeta` on
-//! COFF and ELF, `__DATA,__wmeta` for an Apple debug build and
-//! `__DWARF,__wmeta,regular,debug` for an Apple release build — and makes
-//! its bytes a self-describing record: the item's name, NUL, the payload,
-//! NUL.
+//! Two channels live here because neither can rely on a shipped binary's
+//! symbol table (a linked PE image keeps no COFF symbol table at all, and
+//! release builds set `strip = true`):
 //!
-//! The two Apple placements split retention: `__DWARF` content is stripped
-//! with the rest of the debug data when `ld` links a final image, so a
-//! release binary ships no record while its rlib still carries one, and a
-//! debug build's `__DATA,__wmeta` keeps the record in the linked image a
-//! harness reads.
-//!
-//! The section exists because a symbol table cannot be trusted to: a linked
-//! PE image keeps no COFF symbol table at all (the header's symbol fields
-//! are deprecated and linkers write them as zero), so a static findable
-//! only by symbol name is unreachable there — the record's own name field
-//! is what identifies it, in objects, rlibs, and linked images alike.
+//! - **Metadata directory (`.wmeta`)**: a proc macro that conveys metadata to
+//!   tooling (the `water` CLI, a test, a packager) emits a `#[used] static`
+//!   whose item name starts with `waterui_meta_`, parks it in `.wmeta` on
+//!   COFF and ELF (`__DATA,__wmeta` for an Apple debug build and
+//!   `__DWARF,__wmeta,regular,debug` for an Apple release build), and makes
+//!   its bytes `name`, NUL, `payload`, NUL. `__DWARF` content is stripped
+//!   with the rest of the debug data when `ld` links a final image, so a
+//!   release binary ships no `.wmeta` record while its rlib still carries one.
+//! - **Reachability markers (`.wreach`)**: each `NativeBackend` realization
+//!   entry and the erased dispatch entry reference, through
+//!   [`core::hint::black_box`], a `static` marker in `.wreach`
+//!   (`__DATA,__wreach` on Apple) carrying the realization's NUL-terminated
+//!   name and **no** `#[used]`. Because the section stays in the final image
+//!   while the static itself is not forced live, LTO inlining preserves a
+//!   reached marker's reference, `strip = true` leaves section bytes intact,
+//!   and `--gc-sections` / `-dead_strip` / `/OPT:REF` removes a marker
+//!   exactly when it removes the code that references it.
 //!
 //! `no_std` plus `alloc`, with zero dependencies.
 
@@ -161,6 +163,137 @@ macro_rules! dir_static {
     };
 }
 
+/// The section name reachability markers are parked in on COFF and ELF
+/// targets.
+///
+/// On Mach-O, readers match `__wreach` in `__DATA` (see [`is_reach_section`]).
+pub const REACH_SECTION: &str = ".wreach";
+
+/// Whether `name` is the reachability marker section on any supported object
+/// format (`.wreach` on COFF and ELF, `__wreach` on Mach-O).
+#[must_use]
+pub fn is_reach_section(name: &str) -> bool {
+    matches!(name, REACH_SECTION | "__wreach")
+}
+
+/// Builds one reachability marker record — `name`, NUL — in const context
+/// for an emitted static's bytes.
+///
+/// The record ends with its own terminator, so runs of NUL in the section
+/// are only the terminators and any padding the linker inserted between
+/// records.
+///
+/// # Panics
+/// Fails const evaluation when `name` is empty, contains a NUL byte, or `M`
+/// is not `name.len() + 1`.
+#[must_use]
+pub const fn reach_entry<const M: usize>(name: &[u8]) -> [u8; M] {
+    assert!(
+        !name.is_empty(),
+        "a reachability record name cannot be empty"
+    );
+    assert!(M == name.len() + 1, "a reachability record is `name`, NUL");
+    let mut record = [0u8; M];
+    let mut i = 0;
+    while i < name.len() {
+        assert!(
+            name[i] != 0,
+            "a reachability record name cannot contain a NUL byte"
+        );
+        record[i] = name[i];
+        i += 1;
+    }
+    record
+}
+
+/// The same record [`reach_entry`] builds, as owned bytes.
+///
+/// # Panics
+/// Panics when `name` is empty or contains a NUL byte.
+#[must_use]
+pub fn reach_record(name: &[u8]) -> Vec<u8> {
+    assert!(
+        !name.is_empty(),
+        "a reachability record name cannot be empty"
+    );
+    assert!(
+        !name.contains(&0),
+        "a reachability record name cannot contain a NUL byte"
+    );
+    let mut record = Vec::with_capacity(name.len() + 1);
+    record.extend_from_slice(name);
+    record.push(0);
+    record
+}
+
+/// An iterator over the NUL-terminated realization names in one `.wreach`
+/// (`__wreach` on Mach-O) section's bytes.
+///
+/// Runs of NUL are skipped before each record — they are only the previous
+/// record's terminator and any padding the linker inserted — and a
+/// truncated record without a terminating NUL ends iteration rather than
+/// guessing at bytes it cannot frame.
+#[derive(Debug, Clone)]
+pub struct ReachRecords<'a> {
+    rest: &'a [u8],
+}
+
+impl<'a> Iterator for ReachRecords<'a> {
+    type Item = &'a [u8];
+
+    fn next(&mut self) -> Option<&'a [u8]> {
+        let first = self.rest.iter().position(|byte| *byte != 0)?;
+        self.rest = &self.rest[first..];
+        let end = self.rest.iter().position(|byte| *byte == 0)?;
+        let (name, tail) = self.rest.split_at(end);
+        self.rest = &tail[1..];
+        Some(name)
+    }
+}
+
+/// Walks the records of one `.wreach` (`__wreach` on Mach-O) section's bytes.
+#[must_use]
+pub const fn reach_records(data: &[u8]) -> ReachRecords<'_> {
+    ReachRecords { rest: data }
+}
+
+/// Emits a reachability marker static in `.wreach` (`__DATA,__wreach` on
+/// Apple targets) **without** `#[used]`.
+///
+/// Because the static carries no `#[used]` while the section stays in the
+/// linked image, linker garbage collection (`--gc-sections`, `-dead_strip`,
+/// `/OPT:REF`) drops the marker if and only if the code referencing it is
+/// removed.
+#[macro_export]
+macro_rules! reach_static {
+    ($(#[$attr:meta])* $vis:vis static $name:ident: [u8; $len:expr] = $value:expr;) => {
+        $(#[$attr])*
+        #[cfg_attr(target_vendor = "apple", unsafe(link_section = "__DATA,__wreach"))]
+        #[cfg_attr(not(target_vendor = "apple"), unsafe(link_section = ".wreach"))]
+        $vis static $name: [u8; $len] = $value;
+    };
+}
+
+/// Marks the enclosing realization or dispatch entry as reached when its
+/// code survives into the linked artifact.
+///
+/// Emits a NUL-terminated `name` record via [`reach_static!`] and references
+/// its address through [`core::hint::black_box`], so LTO inlining keeps the
+/// reference while dead-code elimination drops both the code and the marker
+/// together.
+#[macro_export]
+macro_rules! mark_reached {
+    ($name:expr) => {{
+        const NAME_STR: &str = $name;
+        const NAME: &[u8] = NAME_STR.as_bytes();
+        const LEN: usize = NAME.len() + 1;
+        $crate::reach_static! {
+            static MARKER: [u8; LEN] = $crate::reach_entry::<LEN>(NAME);
+        }
+        ::core::hint::black_box(&MARKER);
+    }};
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,5 +352,43 @@ mod tests {
     fn dir_records_skips_a_nul_only_section() {
         assert_eq!(dir_records(&[0, 0, 0]).next(), None);
         assert_eq!(dir_records(&[]).next(), None);
+    }
+
+    #[test]
+    fn reach_entry_and_reach_record_agree() {
+        const ENTRY: [u8; 7] = reach_entry::<7>(b"button");
+        assert_eq!(ENTRY, *b"button\0");
+        assert_eq!(reach_record(b"button"), ENTRY.to_vec());
+    }
+
+    #[test]
+    fn reach_static_and_mark_reached_build_walkable_records() {
+        const NAME: &[u8] = b"test_reach_static";
+        const LEN: usize = NAME.len() + 1;
+        crate::reach_static! {
+            static MARKER: [u8; LEN] = reach_entry::<LEN>(NAME);
+        }
+        crate::mark_reached!("test_mark_reached");
+        assert_eq!(reach_records(&MARKER).collect::<Vec<_>>(), [NAME]);
+    }
+
+    #[test]
+    fn reach_records_walks_a_padded_section_and_stops_at_truncation() {
+        let mut section = reach_record(b"text");
+        section.extend_from_slice(&[0, 0, 0]);
+        section.extend_from_slice(&reach_record(b"button"));
+        section.extend_from_slice(b"truncated_without_nul");
+        let records: Vec<_> = reach_records(&section).collect();
+        assert_eq!(records, [&b"text"[..], &b"button"[..]]);
+        assert_eq!(reach_records(&[0, 0, 0]).next(), None);
+        assert_eq!(reach_records(&[]).next(), None);
+    }
+
+    #[test]
+    fn is_reach_section_matches_elf_coff_and_macho_names() {
+        assert!(is_reach_section(".wreach"));
+        assert!(is_reach_section("__wreach"));
+        assert!(!is_reach_section(".wmeta"));
+        assert!(!is_reach_section("__wmeta"));
     }
 }

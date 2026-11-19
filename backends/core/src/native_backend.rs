@@ -571,6 +571,7 @@ impl<B: NativeBackend> Backend for Realize<'_, B> {
     }
 
     fn erased(&mut self, view: AnyView, env: &Environment, cx: Self::Ctx) -> Self::Output {
+        waterui_meta::mark_reached!("erased");
         if self.erased_hops == ERASED_HOP_BUDGET {
             contract_violation!(
                 "{} expanded through {ERASED_HOP_BUDGET} erased views without reaching a payload; its body erases itself, so it realizes as an empty view",

@@ -9264,6 +9264,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "reachability-app"
+version = "0.1.0"
+dependencies = [
+ "waterui",
+]
+
+[[package]]
 name = "read-fonts"
 version = "0.41.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12907,6 +12914,7 @@ dependencies = [
  "waterui",
  "waterui-core",
  "waterui-layout",
+ "waterui-meta",
  "waterui-structural-transition",
  "web-time",
 ]
@@ -13177,6 +13185,7 @@ dependencies = [
  "waterui-contract",
  "waterui-easing",
  "waterui-macros",
+ "waterui-meta",
 ]
 
 [[package]]

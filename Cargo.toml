@@ -52,6 +52,7 @@ members = [
     "graphics/filtrate/core",
     "graphics/filtrate/derive",
     "tests/layout-twins/waterui",
+    "tests/reachability",
     "components/icon/*",
 ]
 exclude = [
