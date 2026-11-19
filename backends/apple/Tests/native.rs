@@ -17072,10 +17072,7 @@ mod apple_content {
 
     #[cfg(target_os = "ios")]
     fn control_title(control: &ControlView) -> String {
-        control
-            .text()
-            .map(|text| text.to_string())
-            .unwrap_or_default()
+        control.text().map_or_default(|text| text.to_string())
     }
 
     struct DropCounter(Rc<Cell<usize>>);
