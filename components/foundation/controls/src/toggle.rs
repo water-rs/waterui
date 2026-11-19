@@ -5,7 +5,6 @@
 use nami::Binding;
 use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::layout::StretchAxis;
-use waterui_core::view::{ConfigurableView, ViewConfiguration};
 use waterui_core::{AnyView, Environment, Native, NativeView, View};
 
 use crate::label::{
@@ -264,10 +263,10 @@ impl<L: LabelKind> Toggle<L> {
     }
 }
 
-impl<L: LabelKind> ConfigurableView for Toggle<L> {
-    type Config = ToggleConfig<Label<L>>;
-
-    fn config(self) -> Self::Config {
+impl<L: LabelKind> Toggle<L> {
+    /// Returns the configuration for this toggle.
+    #[must_use]
+    pub fn config(self) -> ToggleConfig<Label<L>> {
         ToggleConfig {
             label: self.label.into_unscoped_control_label(),
             toggle: self.toggle,
@@ -277,23 +276,15 @@ impl<L: LabelKind> ConfigurableView for Toggle<L> {
     }
 }
 
-impl<S: View> ViewConfiguration for ToggleConfig<S> {
-    type View = Toggle<ControlLabel<S>>;
-
-    fn render(self) -> Self::View {
-        let mode = self.label.display_mode_preference();
-        Toggle {
-            label: Label::from_control_label(self.label, mode),
-            toggle: self.toggle,
-            style: self.style,
-            size: self.size,
-        }
-    }
-}
-
 impl<S: View> From<ToggleConfig<S>> for Toggle<ControlLabel<S>> {
     fn from(value: ToggleConfig<S>) -> Self {
-        value.render()
+        let mode = value.label.display_mode_preference();
+        Self {
+            label: Label::from_control_label(value.label, mode),
+            toggle: value.toggle,
+            style: value.style,
+            size: value.size,
+        }
     }
 }
 

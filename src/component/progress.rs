@@ -28,7 +28,6 @@ use nami::signal::IntoComputed;
 use waterui_controls::{IntoLabel, Label};
 use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::layout::StretchAxis;
-use waterui_core::view::{ConfigurableView, ViewConfiguration};
 use waterui_core::{Environment, Native, NativeView, View};
 use waterui_macros::text;
 use waterui_text::Text;
@@ -348,25 +347,11 @@ impl<L: View, V: View> Progress<L, V> {
     }
 }
 
-impl<S: View> ConfigurableView for Progress<S, S> {
-    type Config = ProgressConfig<S>;
-
-    fn config(self) -> Self::Config {
+impl<S: View> Progress<S, S> {
+    /// Returns the configuration for this progress view.
+    #[must_use]
+    pub fn config(self) -> ProgressConfig<S> {
         ProgressConfig {
-            label: self.label,
-            value_label: self.value_label,
-            value: self.value,
-            style: self.style,
-            four_color: self.four_color,
-        }
-    }
-}
-
-impl<S: View> ViewConfiguration for ProgressConfig<S> {
-    type View = Progress<S, S>;
-
-    fn render(self) -> Self::View {
-        Progress {
             label: self.label,
             value_label: self.value_label,
             value: self.value,
@@ -378,7 +363,13 @@ impl<S: View> ViewConfiguration for ProgressConfig<S> {
 
 impl<S: View> From<ProgressConfig<S>> for Progress<S, S> {
     fn from(value: ProgressConfig<S>) -> Self {
-        value.render()
+        Self {
+            label: value.label,
+            value_label: value.value_label,
+            value: value.value,
+            style: value.style,
+            four_color: value.four_color,
+        }
     }
 }
 
