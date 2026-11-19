@@ -13408,13 +13408,10 @@ dependencies = [
  "native-executor",
  "object 0.40.0",
  "pastey 0.2.3",
- "pulldown-cmark",
  "suiteki",
  "thiserror 2.0.21",
  "tracing",
  "tracing-subscriber",
- "tree-sitter",
- "tree-sitter-md",
  "unicode-segmentation",
  "waterkit-deeplink",
  "waterkit-haptic",
@@ -13434,7 +13431,7 @@ dependencies = [
  "waterui-locale",
  "waterui-macros",
  "waterui-map",
- "waterui-math",
+ "waterui-markdown",
  "waterui-media",
  "waterui-meta",
  "waterui-navigation",
@@ -13558,6 +13555,28 @@ dependencies = [
  "waterui-url",
  "web-time",
  "zenwave 0.6.1",
+]
+
+[[package]]
+name = "waterui-markdown"
+version = "0.5.1"
+dependencies = [
+ "executor-core",
+ "nami",
+ "native-executor",
+ "pulldown-cmark",
+ "suiteki",
+ "tracing",
+ "tree-sitter",
+ "tree-sitter-md",
+ "waterkit-deeplink",
+ "waterui-color",
+ "waterui-controls",
+ "waterui-core",
+ "waterui-layout",
+ "waterui-math",
+ "waterui-media",
+ "waterui-text",
 ]
 
 [[package]]
