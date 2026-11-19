@@ -294,7 +294,12 @@ jobs:
             --exclude layout-twins `
             --exclude ios-test-host `
             --exclude filtrate `
+            --exclude hydrolysis `
             -E 'not binary(/^trybuild_/)'
+      - name: Test (hydrolysis, every non-webview feature + webview-system)
+        run: cargo nextest run --timings --locked -p hydrolysis --features all-controls,accessibility,testing,frame-profile,gpu,cpu,inspector-signals,hwui,video-gpu,map-gpu,winit,video,web,webview-system --profile ci
+      - name: Test (hydrolysis, webview-cef)
+        run: cargo nextest run --timings --locked -p hydrolysis --features all-controls,accessibility,testing,gpu,winit,webview-cef --profile ci
       - name: Test (waterui-core, every stable feature)
         run: cargo nextest run --timings --locked -p waterui-core --features std,serde --profile ci
       - name: Upload Test Snapshots

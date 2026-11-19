@@ -340,9 +340,7 @@ fn offscreen_scale_factor() -> f64 {
 fn install_platform_services(env: &mut Environment) {
     #[cfg(any(test, hydrolysis_localization))]
     crate::localization::install(env);
-    // The only web engine this backend knows about is the platform's own: a
-    // browser engine an application links installs its realization itself.
-    #[cfg(hydrolysis_system_webview)]
+    #[cfg(hydrolysis_webview_engine)]
     crate::widgets::platform::webview::install_controller(env);
 }
 

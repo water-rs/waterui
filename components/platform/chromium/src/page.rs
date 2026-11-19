@@ -4,10 +4,11 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::rc::Rc;
 
+use waterui_core::accessibility::{AccessibilityRole, default_role};
 use waterui_core::env::use_env;
 use waterui_core::extract::{ExtractionState, Extractor};
-use waterui_core::layout::StretchAxis;
-use waterui_core::{Environment, Error, Native, NativeView, View, impl_debug};
+use waterui_core::{Environment, Error, Metadata, Retain, View, impl_debug};
+use waterui_graphics::gpu::ExternalFrameView;
 use waterui_macros::state;
 use waterui_url::Url;
 
@@ -174,6 +175,8 @@ pub trait ChromiumPageHandle: Clone + 'static {
     ) -> impl Future<Output = Result<Vec<u8>, CdpError>> + 'static;
     /// Closes the page and resolves after CEF confirms destruction.
     fn close(&self) -> impl Future<Output = Result<(), CdpError>> + 'static;
+    /// Builds the GPU surface view presenting a visible page.
+    fn gpu_view(&self) -> ExternalFrameView;
 }
 
 trait ChromiumPageHandleImpl: Any {
@@ -191,6 +194,7 @@ trait ChromiumPageHandleImpl: Any {
         format: ScreenshotFormat,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, CdpError>>>>;
     fn close(&self) -> Pin<Box<dyn Future<Output = Result<(), CdpError>>>>;
+    fn gpu_view(&self) -> ExternalFrameView;
 }
 
 impl<T: ChromiumPageHandle> ChromiumPageHandleImpl for T {
@@ -240,6 +244,10 @@ impl<T: ChromiumPageHandle> ChromiumPageHandleImpl for T {
     fn close(&self) -> Pin<Box<dyn Future<Output = Result<(), CdpError>>>> {
         Box::pin(ChromiumPageHandle::close(self))
     }
+
+    fn gpu_view(&self) -> ExternalFrameView {
+        ChromiumPageHandle::gpu_view(self)
+    }
 }
 
 /// Type-erased page handle used by renderer integrations.
@@ -263,6 +271,12 @@ impl AnyChromiumPageHandle {
     #[must_use]
     pub fn downcast_ref<T: ChromiumPageHandle>(&self) -> Option<&T> {
         (self.inner.as_ref() as &dyn Any).downcast_ref::<T>()
+    }
+
+    /// Builds the GPU surface view presenting a visible page.
+    #[must_use]
+    pub fn gpu_view(&self) -> ExternalFrameView {
+        self.inner.gpu_view()
     }
 }
 
@@ -431,17 +445,20 @@ impl ChromiumView {
     }
 }
 
-impl NativeView for ChromiumView {
-    fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::Both
-    }
-}
-
 impl View for ChromiumView {
-    /// A Chromium runtime an application links realizes the payload through a
-    /// hook targeting `ChromiumView`.
-    fn body(self, _env: &Environment) -> impl View {
-        Native::new(self)
+    fn body(self, env: &Environment) -> impl View {
+        assert_eq!(
+            self.page.mode(),
+            PageMode::Visible,
+            "a headless Chromium page cannot be rendered as a ChromiumView"
+        );
+        let surface = self.page.handle().gpu_view();
+        // The page is drawn into a texture the host tree cannot see into, so
+        // the view publishes the accessibility node itself.
+        Metadata::new(
+            default_role(env, surface, AccessibilityRole::Group),
+            Retain::new(self.page),
+        )
     }
 }
 

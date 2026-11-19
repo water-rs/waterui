@@ -80,16 +80,15 @@ mod imp {
             .expect("GPU completion must run exactly once");
         // SAFETY: `run` lent `env` for the process and never returned.
         let env = unsafe { &mut *launch.env };
+        #[cfg(any(feature = "webview", all(target_os = "macos", feature = "webview-cef")))]
+        crate::components::webview::install_service(env);
         let parts = app(env.clone()).into_parts();
         // Content renders under the environment `app` returned: its own
-        // installs (`install_chromium`, `.state(..)` chains) landed as
-        // overlays on the clone it was handed, which the host env cannot
-        // see — `insert` never propagates between clones.
+        // installs (`.state(..)` chains) landed as overlays on the clone it
+        // was handed, which the host env cannot see — `insert` never
+        // propagates between clones.
         let mut app_env = parts.env;
-        // The web view controller fills its slot late and only when the
-        // `webview` port is enabled — an application bundling its own
-        // engine installed it during `app(env)`.
-        #[cfg(feature = "webview")]
+        #[cfg(any(feature = "webview", all(target_os = "macos", feature = "webview-cef")))]
         crate::components::webview::install_service(&mut app_env);
         // The machine installs the `Quit` service into `app_env` before the
         // menus and windows realize under it, so a `|quit: Quit|` action
@@ -244,6 +243,8 @@ mod imp {
             .expect("GPU completion must run exactly once");
         // SAFETY: `run` lent `env` for the process and never returned.
         let env = unsafe { &mut *launch.env };
+        #[cfg(any(feature = "webview", all(target_os = "macos", feature = "webview-cef")))]
+        crate::components::webview::install_service(env);
         let parts = app(env.clone()).into_parts();
         // iOS ends the process without notice, so `on_quit_request` and
         // `on_terminate` are never called: the machine is never started and
@@ -255,10 +256,7 @@ mod imp {
         // nothing borrows `app_env` mutably.
         #[allow(unused_mut)]
         let mut app_env = parts.env;
-        // The web view controller fills its slot late and only when the
-        // `webview` port is enabled — an application bundling its own
-        // engine installed it during `app(env)`.
-        #[cfg(feature = "webview")]
+        #[cfg(any(feature = "webview", all(target_os = "macos", feature = "webview-cef")))]
         crate::components::webview::install_service(&mut app_env);
         let initial = crate::windows::connect_windows(parts.windows, &app_env);
         if initial.is_empty() {
