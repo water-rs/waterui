@@ -22,8 +22,7 @@ use waterui::preview;
 use waterui::reactive::binding;
 #[cfg(not(target_arch = "wasm32"))]
 use waterui::webview::{Json, ScriptInjectionTime, serde_json};
-use waterui::webview::{Url, WebView, WebViewController, WebViewEvent, WebViewProxy};
-use waterui::widget::condition::when;
+use waterui::webview::{Url, WebView, WebViewEvent, WebViewProxy};
 
 #[cfg(not(target_arch = "wasm32"))]
 /// What the `greet` handler answers with.
@@ -214,16 +213,6 @@ fn bridge_controls(allow_redirects: &Binding<bool>) -> impl View + use<> {
     .spacing(5.0)
 }
 
-fn missing_controller_view() -> impl View {
-    vstack((
-        text("WebView not available on this backend.").title(),
-        "The native runtime did not install a WebViewController.",
-        "Run this example on a backend with WebView support.",
-    ))
-    .spacing(8.0)
-    .padding()
-}
-
 fn webview_playground() -> impl View {
     let status: Binding<Str> = binding("Idle");
     let progress_value = Binding::f64(0.0);
@@ -266,20 +255,10 @@ fn webview_playground() -> impl View {
     open.with_proxy(move || toolbar(&status, progress_value, &address, bridge))
 }
 
-#[derive(Debug)]
-struct WebViewDemo;
-
-impl View for WebViewDemo {
-    fn body(self, env: &Environment) -> impl View {
-        when(env.get::<WebViewController>().is_some(), webview_playground)
-            .otherwise(missing_controller_view)
-    }
-}
-
 /// The web view demo: a playground page with navigation, history and JavaScript controls.
 #[preview]
 pub fn demo() -> impl View {
-    WebViewDemo
+    webview_playground()
 }
 
 #[cfg(all(target_os = "linux", feature = "wpe"))]

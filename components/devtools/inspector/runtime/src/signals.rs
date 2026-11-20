@@ -19,13 +19,14 @@ use waterui_inspector_protocol::{Channel, InspectorEvent, SignalEvent, SignalId,
 use super::hub::EventHub;
 
 /// Forwards `nami` graph events to the inspector.
-pub(super) struct SignalBridge {
+#[derive(Debug)]
+pub struct SignalBridge {
     hub: Arc<EventHub>,
 }
 
 impl SignalBridge {
     /// Creates a bridge publishing to `hub`.
-    pub(super) const fn new(hub: Arc<EventHub>) -> Self {
+    pub const fn new(hub: Arc<EventHub>) -> Self {
         Self { hub }
     }
 

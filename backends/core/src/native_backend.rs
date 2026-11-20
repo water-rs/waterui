@@ -60,6 +60,10 @@ macro_rules! native_backend {
             /// This backend type with its lifetimes left open, for the
             /// [`Child`] views of the payloads it receives.
             type Family: NativeBackendFamily<Output = Self::Output, Ctx = Self::Ctx>;
+            #[cfg(waterui_feature = "webview")]
+            /// The compile-time selected [`waterui::webview::WebViewController`]
+            /// used to realize [`waterui::webview::WebViewOpen`].
+            type WebViewController: waterui::webview::WebViewController;
 
             /// The backend's offscreen view-to-RGBA renderer.
             type Offscreen: OffscreenRenderer;
@@ -71,6 +75,10 @@ macro_rules! native_backend {
                 &mut self,
                 f: impl for<'a> FnOnce(&mut <Self::Family as NativeBackendFamily>::Backend<'a>) -> R,
             ) -> R;
+
+            #[cfg(waterui_feature = "webview")]
+            /// Returns the backend's [`WebViewController`](Self::WebViewController).
+            fn web_view_controller(&self) -> Self::WebViewController;
 
             /// Creates an offscreen renderer configured from `env`.
             fn offscreen(&self, env: &Environment) -> Self::Offscreen;
@@ -180,6 +188,8 @@ macro_rules! native_backend {
             type Output = B::Output;
             type Ctx = B::Ctx;
             type Family = HookedFamily<B::Family, H>;
+            #[cfg(waterui_feature = "webview")]
+            type WebViewController = B::WebViewController;
             type Offscreen = B::Offscreen;
 
             fn with_family<R>(
@@ -196,6 +206,11 @@ macro_rules! native_backend {
                         erased,
                     ))
                 })
+            }
+
+            #[cfg(waterui_feature = "webview")]
+            fn web_view_controller(&self) -> Self::WebViewController {
+                self.inner_ref().web_view_controller()
             }
 
             fn offscreen(&self, env: &Environment) -> Self::Offscreen {
@@ -519,10 +534,17 @@ macro_rules! native_backend {
             type Output = ();
             type Ctx = ();
             type Family = Self;
+            #[cfg(waterui_feature = "webview")]
+            type WebViewController = waterui::webview::UnavailableWebViewController;
             type Offscreen = tests::RecorderOffscreen;
 
             fn with_family<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
                 f(self)
+            }
+
+            #[cfg(waterui_feature = "webview")]
+            fn web_view_controller(&self) -> Self::WebViewController {
+                waterui::webview::UnavailableWebViewController
             }
 
             fn offscreen(&self, _env: &Environment) -> Self::Offscreen {
@@ -837,7 +859,7 @@ native_backend! {
         video_player: waterui::video::video::NativeVideoPlayerConfig,
         #[cfg(waterui_feature = "webview")]
         /// A web view.
-        web_view: waterui::webview::WebView,
+        web_view: waterui::webview::WebViewOpen,
         #[cfg(waterui_feature = "map")]
         /// A map.
         map: waterui::map::MapConfig,

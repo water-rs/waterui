@@ -61,14 +61,28 @@ impl NativeBackendFamily for AppleBackend {
     }
 }
 
+#[cfg(waterui_feature = "webview")]
+#[doc(hidden)]
+pub use crate::components::webview::SelectedWebViewController;
+#[cfg(feature = "webview")]
+#[doc(hidden)]
+pub use crate::components::webview::{AppleWebViewController, WkWebViewHandle};
+
 impl NativeBackend for AppleBackend {
     type Output = NativeLeaf;
     type Ctx = ();
     type Family = Self;
+    #[cfg(waterui_feature = "webview")]
+    type WebViewController = crate::components::webview::SelectedWebViewController;
     type Offscreen = crate::components::view_renderer::AppleOffscreenRenderer;
 
     fn with_family<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
         f(self)
+    }
+
+    #[cfg(waterui_feature = "webview")]
+    fn web_view_controller(&self) -> Self::WebViewController {
+        crate::components::webview::selected_controller()
     }
 
     fn offscreen(&self, _env: &Environment) -> Self::Offscreen {
@@ -545,7 +559,7 @@ impl NativeBackend for AppleBackend {
     #[cfg(waterui_feature = "webview")]
     fn web_view(
         &mut self,
-        native: waterui::webview::WebView,
+        native: waterui::webview::WebViewOpen,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {

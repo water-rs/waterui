@@ -2212,7 +2212,7 @@ checksum = "af491d569909a7e4dee0ad7db7f5341fef5c614d5b8ec8cf765732aba3cff681"
 dependencies = [
  "serde",
  "termcolor",
- "unicode-width 0.2.2",
+ "unicode-width 0.1.14",
 ]
 
 [[package]]
@@ -8882,7 +8882,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.13.0",
  "proc-macro2 1.0.107",
  "quote 1.0.47",
  "syn 2.0.119",
@@ -12949,7 +12949,7 @@ dependencies = [
 [[package]]
 name = "waterui-browser-cef"
 version = "0.1.0"
-source = "git+https://github.com/water-rs/browsers?branch=refactor%2F4770-slim-core-ui#bb6a70e567ea1cddbeb6abea5d6a3bdb89c860bf"
+source = "git+https://github.com/water-rs/browsers?branch=refactor%2F4770-slim-core-ui#94995351b747b303fa3259804a7cd8ae066ffc25"
 dependencies = [
  "async-channel",
  "base64 0.23.1",
@@ -12990,7 +12990,7 @@ dependencies = [
 [[package]]
 name = "waterui-browser-wpe"
 version = "0.1.0"
-source = "git+https://github.com/water-rs/browsers?branch=refactor%2F4770-slim-core-ui#bb6a70e567ea1cddbeb6abea5d6a3bdb89c860bf"
+source = "git+https://github.com/water-rs/browsers?branch=refactor%2F4770-slim-core-ui#94995351b747b303fa3259804a7cd8ae066ffc25"
 dependencies = [
  "cookie",
  "executor-core",
@@ -13414,6 +13414,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "waterui-inspector-runtime"
+version = "0.5.1"
+dependencies = [
+ "async-channel",
+ "getrandom 0.4.3",
+ "nami",
+ "tracing",
+ "tracing-subscriber",
+ "waterui-core",
+ "waterui-inspector-protocol",
+]
+
+[[package]]
 name = "waterui-interaction"
 version = "0.5.1"
 dependencies = [
@@ -13431,7 +13444,6 @@ dependencies = [
  "cpu-time",
  "executor-core",
  "futures",
- "getrandom 0.4.3",
  "nami",
  "native-executor",
  "object 0.40.0",
@@ -13456,7 +13468,7 @@ dependencies = [
  "waterui-form",
  "waterui-graphics",
  "waterui-icon",
- "waterui-inspector-protocol",
+ "waterui-inspector-runtime",
  "waterui-interaction",
  "waterui-layout",
  "waterui-locale",

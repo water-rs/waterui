@@ -7,8 +7,10 @@
 //! mailbox pump needs the executor that was just installed).
 
 use alloc::boxed::Box;
+use alloc::sync::Arc;
 
 use waterui::inspector::InspectorRuntime;
+use waterui::task::RuntimeProbe;
 
 use waterui_backend_core::log::{LOG_LEVEL_ENV, env_filter};
 
@@ -64,7 +66,7 @@ fn initialize_inner(stderr: bool) -> Option<InspectorRuntime> {
         display_refresh_rate(),
         inspector
             .as_ref()
-            .map(waterui::inspector::InspectorRuntime::runtime_probe),
+            .map(|inspector| inspector.task_probe() as Arc<dyn RuntimeProbe>),
     ));
 
     // The listener's mailbox pump needs the executor installed above.
