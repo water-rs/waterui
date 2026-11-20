@@ -1253,7 +1253,6 @@ pub fn components_block_34() {
     button("Save").action(|m: SnackbarManager| {
         m.show(
             Snackbar::new("Item moved to trash")
-                .icon(mdi::delete())
                 .action("Undo", || restore())
                 .position(SnackbarPosition::BottomCenter) // BottomCenter | TopCenter | BottomLeading | BottomTrailing
                 .closeable()
@@ -1264,11 +1263,13 @@ pub fn components_block_34() {
 
 // ---------------------------------------------------------------------------
 // components.md § "## Overlays: snackbars, cards, suspense, full screen" (prose): the other snackbar placements,
-// `.state`, `.on_dismiss`, `SnackbarManager::dismiss` and the full-screen
+// `.icon`, `.state`, `.on_dismiss`, `SnackbarManager::dismiss` and the full-screen
 // overlay manager. Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn components_snackbar_prose() {
-    use waterui::snackbar::{Snackbar, SnackbarDismissReason, SnackbarManager, SnackbarPosition};
+    use waterui::snackbar::{
+        Snackbar, SnackbarDismissReason, SnackbarIcon, SnackbarManager, SnackbarPosition,
+    };
 
     let value = Binding::i32(0);
 
@@ -1276,12 +1277,18 @@ pub fn components_snackbar_prose() {
     let _ = SnackbarPosition::BottomLeading;
     let _ = SnackbarPosition::BottomTrailing;
     let _ = Snackbar::new("x")
+        .icon(mdi::delete())
         .state(&value)
         .on_dismiss(|reason: SnackbarDismissReason| {
             let _ = reason;
         });
+    let _ = SnackbarManager::with_icons::<mdi::Svg>();
+    let _ = button("x").action(|m: SnackbarManager<SnackbarIcon<mdi::Svg>>| {
+        m.show(Snackbar::new("x").icon(mdi::delete()));
+    });
     let _ = button("x").action(|manager: SnackbarManager| manager.dismiss());
-    let _ = button("x").action(|overlay: FullScreenOverlayManager| {
+    let (_overlay_mgr, _overlay_view) = FullScreenOverlayManager::<Text>::new();
+    let _ = button("x").action(|overlay: FullScreenOverlayManager<Text>| {
         overlay.show(text("modal"));
         overlay.hide();
     });

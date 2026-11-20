@@ -369,7 +369,7 @@ impl<V: View> View for WindowRoot<V> {
         // Overlay and snackbar state are created per built instance, so each
         // owns its own managers: a `Dynamic` is single-consumer and cannot be
         // mounted by more than one scene.
-        let (overlay_manager, overlay_view) = FullScreenOverlayManager::new();
+        let (overlay_manager, overlay_view) = FullScreenOverlayManager::<()>::new();
         let content = self
             .0
             .overlay(overlay_view)
