@@ -97,10 +97,6 @@ pub use navigation::{NavigationDecision, NavigationPolicy, NavigationRequest, st
 mod origins;
 #[cfg(not(target_arch = "wasm32"))]
 pub use origins::{BridgeOrigins, IntoBridgeOrigins, OriginPolicy, OriginRule};
-#[cfg(any(target_os = "macos", target_os = "ios"))]
-mod webkit;
-#[cfg(any(target_os = "macos", target_os = "ios"))]
-pub use webkit::AnsweredNavigations;
 
 #[cfg(not(target_arch = "wasm32"))]
 /// An object whose methods and state are exposed to the page.

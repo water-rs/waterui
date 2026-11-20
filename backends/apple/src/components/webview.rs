@@ -53,11 +53,10 @@ use waterui_core::layout::{
 };
 #[cfg(feature = "webview")]
 use waterui_webview::{
-    ASSET_HOST, ASSET_ORIGIN, ASSET_SCHEME, AnsweredNavigations, BackendEvent, Cookie,
-    CustomWebViewController, DOCUMENT_START_SCRIPT, DocumentScripts, NavigationPolicy,
-    NavigationRequest, OriginPolicy, ScriptInjectionTime, ScriptMessageHandler, Url, UserScript,
-    WatcherGuard, WatcherSet, WebViewConfig, WebViewError, WebViewEvent, WebViewHandle,
-    WebViewOpenError, assets, bridge,
+    ASSET_HOST, ASSET_ORIGIN, ASSET_SCHEME, BackendEvent, Cookie, CustomWebViewController,
+    DOCUMENT_START_SCRIPT, DocumentScripts, NavigationPolicy, NavigationRequest, OriginPolicy,
+    ScriptInjectionTime, ScriptMessageHandler, Url, UserScript, WatcherGuard, WatcherSet,
+    WebViewConfig, WebViewError, WebViewEvent, WebViewHandle, WebViewOpenError, assets, bridge,
 };
 
 use crate::contract::{NativeLeaf, RenderContext};
@@ -97,7 +96,7 @@ struct Shared {
     /// `WKNavigation` each one started, and every navigation the policy
     /// allows joins them — the policy never sees a load the application
     /// issued nor a redirect a decided navigation follows.
-    answered: AnsweredNavigations,
+    answered: web_kit::AnsweredNavigations,
     /// The redirect signal and its guard, for `set_redirects_enabled`.
     redirects: RefCell<Option<(Computed<bool>, BoxWatcherGuard)>>,
     /// Whether the `__wateruiSend` script-message handler is registered —
@@ -361,7 +360,7 @@ impl WkWebViewHandle {
             // `WebViewWrapper`'s default: redirects allowed.
             redirects_enabled: Cell::new(true),
             navigation_policy,
-            answered: AnsweredNavigations::new(),
+            answered: web_kit::AnsweredNavigations::new(),
             redirects: RefCell::new(None),
             transport_registered: Cell::new(false),
             bridge_admitted: Cell::new(false),
