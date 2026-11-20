@@ -7,9 +7,13 @@
 //! mailbox pump needs the executor that was just installed).
 
 use alloc::boxed::Box;
+#[cfg(feature = "inspector")]
+use alloc::sync::Arc;
 
 #[cfg(feature = "inspector")]
 use waterui::inspector::InspectorRuntime;
+#[cfg(feature = "inspector")]
+use waterui::task::RuntimeProbe;
 
 #[cfg(feature = "inspector")]
 use waterui_backend_core::log::{LOG_LEVEL_ENV, env_filter};
@@ -70,7 +74,9 @@ fn install_executors(#[cfg(feature = "inspector")] inspector: Option<&InspectorR
     let local_executor = waterui::task::monitored_local_executor_with_probes(
         main_executor,
         display_refresh_rate(),
-        inspector.map(InspectorRuntime::runtime_probe),
+        inspector
+            .as_ref()
+            .map(|inspector| inspector.task_probe() as Arc<dyn RuntimeProbe>),
     );
     #[cfg(not(feature = "inspector"))]
     let local_executor =

@@ -186,6 +186,7 @@ objc2 = { workspace = true }
 objc2-foundation = { version = "0.3", default-features = false, features = [
     "NSAttributedString",
     "NSDate",
+    "NSKeyValueCoding",
     "NSValue",
 ] }
 objc2-core-foundation = { version = "0.3", default-features = false, features = [

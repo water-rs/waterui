@@ -1307,7 +1307,7 @@ impl UiThreadServices {
         let inspector = init_main_thread_executors();
         let inspector_probe = inspector
             .as_ref()
-            .map(waterui::inspector::InspectorRuntime::runtime_probe);
+            .map(|inspector| inspector.task_probe() as Arc<dyn waterui::task::RuntimeProbe>);
         // SAFETY: NONBLOCK + CLOEXEC keep a saturated counter from stalling
         // the looper and the fd out of child processes.
         let fd = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC) };
