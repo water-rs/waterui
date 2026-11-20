@@ -137,6 +137,7 @@ impl SemanticWindow {
         fonts: &FontCollection,
         window_id: WindowId,
         family_resolution: FontFamilyResolution,
+        opener: Rc<dyn Fn(RootWindow<crate::text::ParleyEngine>)>,
         env: &Environment,
     ) -> Self {
         let mut core = SemanticCore::new(
@@ -145,6 +146,7 @@ impl SemanticWindow {
         );
         core.set_window_id(window_id);
         core.set_window_closable(window.closable);
+        install_core_window_openers(&mut core, opener);
         // The semantic pump is driven explicitly by the harness — a request
         // recorded on the frame signals is consumed by the next `pump` the
         // test calls, so the host wake does nothing.
@@ -184,7 +186,7 @@ impl SemanticWindow {
 pub struct SemanticRuntime {
     env: Environment,
     window: SemanticWindow,
-    pending_window_queue: Rc<RefCell<Vec<AnyWindow>>>,
+    pending_window_queue: Rc<RefCell<Vec<RootWindow<crate::text::ParleyEngine>>>>,
     popup_windows: Vec<SemanticWindow>,
     /// The application's font collection: popup windows' cores are seeded
     /// from it so they shape with the same faces as the main window.
@@ -269,16 +271,13 @@ impl SemanticRuntime {
         };
         let mut env = env.extending(waterui_graphics::backend::SceneViewMergeToParent);
         #[cfg(not(target_arch = "wasm32"))]
-        waterui_core::install_application_resources(&mut env);
+        waterui::install_application_resources(&mut env);
         #[cfg(not(target_arch = "wasm32"))]
         waterui::inspector::install(&mut env, inspector);
         let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
         #[cfg(any(test, hydrolysis_platform_services))]
         install_platform_services(&mut env);
-        install_headless_window_managers::<crate::text::ParleyEngine>(
-            &mut env,
-            Rc::clone(&pending_window_queue),
-        );
+        install_window_registries::<crate::text::ParleyEngine>(&mut env);
         #[cfg(any(feature = "text-field", feature = "secure-field"))]
         env.insert(HydrolysisTextContextMenuMode::Overlay);
         // Framework tokens only: the semantic runtime has no `Style`, so no
@@ -315,11 +314,17 @@ impl SemanticRuntime {
 
         let window_id = env
             .get::<crate::renderer::WindowIdentities>()
-            .expect("install_headless_window_managers seeds WindowIdentities")
+            .expect("install_window_registries seeds WindowIdentities")
             .mint_window_id();
         window.arm_close_requests(&env);
-        let semantic_window =
-            SemanticWindow::new(window, &fonts, window_id, family_resolution, &env);
+        let semantic_window = SemanticWindow::new(
+            window,
+            &fonts,
+            window_id,
+            family_resolution,
+            queue_window_opener(&pending_window_queue),
+            &env,
+        );
         Self {
             env,
             window: semantic_window,
@@ -561,14 +566,15 @@ impl SemanticRuntime {
             let window_id = self
                 .env
                 .get::<crate::renderer::WindowIdentities>()
-                .expect("install_headless_window_managers seeds WindowIdentities")
+                .expect("install_window_registries seeds WindowIdentities")
                 .mint_window_id();
             window.arm_close_requests(&self.env);
             self.popup_windows.push(SemanticWindow::new(
-                root_window(window),
+                window,
                 &fonts,
                 window_id,
                 self.family_resolution,
+                queue_window_opener(&self.pending_window_queue),
                 &self.env,
             ));
         }

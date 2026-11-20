@@ -78,6 +78,14 @@ name = "waterui-easing"
 version_group = "waterui"
 
 [[package]]
+name = "waterui-resources"
+version_group = "waterui"
+
+[[package]]
+name = "waterui-capture"
+version_group = "waterui"
+
+[[package]]
 name = "waterui-testing"
 version_group = "waterui"
 

@@ -14,7 +14,7 @@
 //! producer to its new layer. Transient (capture) windows never install it at
 //! all: a capture cannot consume the one install the producer gets.
 
-use waterui_graphics::gpu::{ExternalFrameView, FrameReceiver, GpuView};
+use waterui_graphics::gpu::{ExternalFrameView, FrameReceiver, GpuContent, GpuView};
 
 /// The `GpuView` a [`crate::renderer::tree::GpuContentNode`] owns, and
 /// its engine producer once installed.
@@ -22,7 +22,7 @@ use waterui_graphics::gpu::{ExternalFrameView, FrameReceiver, GpuView};
 /// `producer` is set when the node's install layer first commits through the
 /// window's mount (`LayerTarget::mount_gpu_content`).
 pub struct GpuContentRuntime {
-    pub(crate) view: GpuView,
+    pub(crate) view: GpuView<Box<dyn GpuContent>>,
     /// The size and scale the view's input handler was last told about.
     pub(crate) resize: crate::renderer::ResizeTracker,
     /// The engine producer the content was registered as: `Some` once
@@ -112,12 +112,12 @@ impl HostedGpuView for ExternalFrameRuntime {
 }
 
 impl GpuContentRuntime {
-    pub(crate) const fn new(
-        view: GpuView,
+    pub(crate) fn new<T: GpuContent>(
+        view: GpuView<T>,
         #[cfg(hydrolysis_hwui_gpu)] hosted: crate::runner::android::hosted_gpu::HostedLayer,
     ) -> Self {
         Self {
-            view,
+            view: view.into_boxed(),
             resize: crate::renderer::ResizeTracker::new(),
             producer: None,
             binding: None,

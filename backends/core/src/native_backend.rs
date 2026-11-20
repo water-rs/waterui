@@ -686,7 +686,7 @@ native_backend! {
         canvas: waterui::graphics::canvas::CanvasView,
         #[cfg(waterui_feature = "gpu")]
         /// GPU content.
-        gpu: waterui::GpuView,
+        gpu: waterui::GpuView<alloc::boxed::Box<dyn waterui::graphics::GpuContent>>,
         #[cfg(waterui_feature = "gpu")]
         /// Frames from an external source.
         external_frame: waterui::graphics::gpu::external::ExternalFrameView,
@@ -757,6 +757,8 @@ native_backend! {
         dynamic<C>: waterui_core::Dynamic<C>,
         /// A container whose children are produced lazily.
         lazy_container<C>: waterui::layout::container::LazyContainer<C>,
+        /// A window opened from the view tree.
+        window<C>: waterui::window::Window<waterui::window::WindowSlot<C>, Option<C>>,
         #[cfg(waterui_feature = "effects")]
         /// A view drawn through a filter.
         filtered<C>: waterui::graphics::backend::FilteredView<C>,
@@ -1085,6 +1087,14 @@ mod tests {
         }
     }
 
+    impl<C> Parent<C> for waterui::window::Window<waterui::window::WindowSlot<C>, Option<C>> {
+        fn children(self) -> Vec<C> {
+            let mut children = alloc::vec![self.content.build()];
+            children.extend(self.toolbar);
+            children
+        }
+    }
+
     impl Recorder {
         /// Realizes each child view a payload held, recording whether it
         /// arrived typed or erased.
@@ -1377,6 +1387,51 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_window_in_the_tree_reaches_its_backend_with_its_content_typed() {
+        let hits = reached(waterui::window::Window::new(
+            "Test",
+            waterui::binding(waterui::window::WindowState::Normal),
+            Spacer::flexible,
+        ));
+        assert_eq!(hits[0], "window");
+        assert_eq!(hits[1], "typed child");
+        assert!(!hits.contains(&"erased child"));
+        assert!(hits.contains(&"spacer"));
+    }
+
+    #[test]
+    fn a_window_with_a_toolbar_reaches_its_backend_with_both_typed() {
+        let hits = reached(
+            waterui::window::Window::new(
+                "Test",
+                waterui::binding(waterui::window::WindowState::Normal),
+                Spacer::flexible,
+            )
+            .toolbar(waterui::layout::Divider),
+        );
+        assert!(!hits.contains(&"erased child"));
+        assert_eq!(
+            hits,
+            [
+                "window",
+                "typed child",
+                "environment",
+                "environment",
+                "fixed_container",
+                "typed child",
+                "spacer",
+                "typed child",
+                "dynamic",
+                "typed child",
+                "empty",
+                "typed child",
+                "environment",
+                "divider",
+            ]
+        );
+    }
+
     #[cfg(waterui_feature = "menu")]
     #[test]
     fn context_menu_preview_and_accessory_stay_typed_and_reenter_hooks() {
@@ -1481,5 +1536,22 @@ mod tests {
                 ]
             );
         }
+    }
+
+    #[cfg(waterui_feature = "gpu")]
+    #[test]
+    fn typed_gpu_view_reaches_native_backend_on_static_and_erased_paths() {
+        use waterui::graphics::{Context, Frame, GpuContent, GpuView};
+
+        struct ProbeContent;
+
+        impl GpuContent for ProbeContent {
+            fn setup(&mut self, _gpu: &Context<'_>) {}
+
+            fn render(&mut self, _frame: &mut Frame<'_>) {}
+        }
+
+        assert_eq!(reached(GpuView::new(ProbeContent)), ["gpu"]);
+        assert_eq!(reached(AnyView::new(GpuView::new(ProbeContent))), ["gpu"]);
     }
 }

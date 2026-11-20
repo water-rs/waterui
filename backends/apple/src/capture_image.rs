@@ -840,7 +840,7 @@ async fn capture_attempts(
 
 /// Where a capture failure meets a caller with no error channel.
 ///
-/// `render_to_rgba` returns its typed [`RenderError`](waterui_core::view_renderer::RenderError)
+/// `render_to_rgba` returns its typed [`RenderError`](waterui_capture::view_renderer::RenderError)
 /// instead; [`template_image`] and [`drag_image`] remain here because
 /// `AppKit` and `UIKit` give their icon/drag paths no error channel at all —
 /// so the failure is logged with its whole `source()` chain and the caller

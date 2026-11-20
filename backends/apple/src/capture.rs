@@ -7,7 +7,7 @@
 //! bitmap, so with `gpu_surface` the readback is `capture_image`'s
 //! `ViewCapture` instead.
 
-use waterui_core::view_renderer::RenderResult;
+use waterui_capture::view_renderer::RenderResult;
 
 /// Why the platform capture produced no bitmap.
 #[derive(Debug, thiserror::Error)]

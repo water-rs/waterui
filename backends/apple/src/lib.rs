@@ -14,6 +14,7 @@ compile_error!(
 #[cfg(all(feature = "webview-cef", not(target_os = "macos")))]
 compile_error!("waterui-apple: `webview-cef` is only supported on macOS");
 
+pub mod apple_content;
 pub mod backend;
 /// The offscreen capture shared by `view_renderer` and the `preview`
 /// entry — nothing else references it. With `gpu_surface` the captures go
@@ -33,6 +34,15 @@ mod native_log;
 #[cfg(preview_entry)]
 pub mod preview;
 pub mod resources;
+
+#[cfg(target_os = "macos")]
+pub use apple_content::objc2_app_kit;
+#[cfg(target_os = "ios")]
+pub use apple_content::objc2_ui_kit;
+pub use apple_content::{
+    AppleContent, AppleInvalidator, AppleMount, AppleView, MainThreadMarker, PlatformView,
+    Retained, objc2,
+};
 
 mod animation;
 #[cfg(feature = "gpu_surface")]
@@ -90,6 +100,21 @@ pub(crate) mod windows;
 #[doc(hidden)]
 #[path = "../Tests/native_support.rs"]
 pub mod native_test_support;
+
+/// Installs the backend's [`ViewRenderer`](waterui_capture::ViewRenderer)
+/// capture service into `env`.
+///
+/// Not installed by default at launch so applications that never capture views
+/// offscreen do not link type-erased view dispatch; callers that request
+/// [`ViewRenderer`](waterui_capture::ViewRenderer) from the environment opt in
+/// explicitly here.
+///
+/// # Panics
+///
+/// Panics if called off the main thread.
+pub fn install_view_renderer(env: &mut waterui_backend_core::Environment) {
+    crate::components::view_renderer::install_service(env);
+}
 
 /// Generates the `waterui_apple_main` entry point for the application
 /// crate that calls it.
