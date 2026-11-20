@@ -216,7 +216,7 @@ use waterui_controls::toggle::ToggleConfig;
 use waterui_core::dynamic::DynamicInitialContent;
 use waterui_core::event::{Event, HoverEvent, LifeCycle, LifeCycleHook, OnEvent};
 #[cfg(any(feature = "menu", feature = "color-picker"))]
-use waterui_core::handler::AnyViewBuilder;
+use waterui_core::handler::ViewBuilder;
 use waterui_core::handler::{BoxedAction, SharedAction};
 #[cfg(any(feature = "menu", feature = "color-picker"))]
 use waterui_core::impl_extractor;
@@ -583,6 +583,10 @@ pub struct SemanticCore<E: crate::text::TextEngine> {
     /// mount, so a menu's Close Window row reads it when the row is built
     /// and needs no signal.
     window_closable: bool,
+    /// The runner's callback for opening windows declared inside this
+    /// window's view tree (`conditional_window`). `None` on standalone test
+    /// cores no runner claimed.
+    window_opener: Option<Rc<dyn Fn(crate::runner::window::RootWindow<E>)>>,
     /// The window's declared logical frame — the semantic walk's only
     /// geometry fact. The semantic runner writes it at mount and on every
     /// move/resize, so emit paths that resolve a viewport-dependent
@@ -889,6 +893,26 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         self.window_closable = closable;
     }
 
+    /// Installs the runner's callback for opening windows dispatched from this
+    /// window's view tree.
+    pub(crate) fn set_window_opener(
+        &mut self,
+        opener: Rc<dyn Fn(crate::runner::window::RootWindow<E>)>,
+    ) {
+        self.window_opener = Some(opener);
+    }
+
+    /// Hands a window dispatched from this window's view tree to the runner.
+    pub(crate) fn open_window(&self, window: crate::runner::window::RootWindow<E>) {
+        let Some(opener) = self.window_opener.as_ref() else {
+            waterui_core::contract_violation!(
+                "hydrolysis renderer has no attached window runner; the window is not shown"
+            );
+            return;
+        };
+        opener(window);
+    }
+
     /// The `closable` the runner's window was declared with.
     #[cfg(feature = "menu")]
     pub(crate) const fn window_closable(&self) -> bool {
@@ -991,6 +1015,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             popup_menu: PopupMenuState::default(),
             window_id: WindowId::Orphan,
             window_closable: true,
+            window_opener: None,
             #[cfg(all(
                 feature = "accessibility",
                 any(hydrolysis_cherenkov, feature = "navigation")

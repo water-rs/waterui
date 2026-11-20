@@ -276,7 +276,7 @@ pub(super) fn is_font_file(path: &std::path::Path) -> bool {
 /// path shared beside it (water-rs/waterui#2348), so the build stages the
 /// faces inside that bundle and they are read from there.
 #[cfg(not(target_arch = "wasm32"))]
-fn staged_fonts_dir(resources: &waterui_core::ResourceContext) -> std::path::PathBuf {
+fn staged_fonts_dir(resources: &waterui::ResourceContext) -> std::path::PathBuf {
     #[cfg(target_os = "android")]
     return resources
         .assets()
@@ -298,7 +298,7 @@ fn staged_fonts_dir(resources: &waterui_core::ResourceContext) -> std::path::Pat
 /// every target.
 ///
 /// The fonts directory is `staged_fonts_dir` of the environment's
-/// [`waterui_core::ResourceContext`] and is never probed from the process's
+/// [`waterui::ResourceContext`] and is never probed from the process's
 /// working directory or executable location, so an embedded host's fonts come
 /// from the roots it installed. An environment without one breaks the host's
 /// contract: a debug build panics, a release build logs it and loads only the
@@ -310,7 +310,7 @@ fn staged_fonts_dir(resources: &waterui_core::ResourceContext) -> std::path::Pat
 #[cfg(not(target_arch = "wasm32"))]
 #[must_use]
 pub fn native_collection(env: &waterui_core::Environment) -> FontCollection {
-    let root = waterui_core::ResourceContext::from_environment(env).map(staged_fonts_dir);
+    let root = waterui::ResourceContext::from_environment(env).map(staged_fonts_dir);
     if root.is_none() {
         waterui_core::contract_violation!(
             "the host installed no ResourceContext, so only the declared and system fonts load"
@@ -451,7 +451,7 @@ mod tests {
             std::fs::write(fonts.join(name), bytes).expect("a staged file is written");
         }
         let mut env = waterui_core::Environment::new();
-        env.insert(waterui_core::ResourceContext::new(
+        env.insert(waterui::ResourceContext::new(
             dir.join("waterui_assets"),
             &fonts,
         ));
@@ -522,7 +522,7 @@ mod tests {
     fn the_platform_s_own_faces_are_always_there() {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut env = waterui_core::Environment::new();
-        env.insert(waterui_core::ResourceContext::new(
+        env.insert(waterui::ResourceContext::new(
             dir.path().join("waterui_assets"),
             dir.path().join("fonts"),
         ));
