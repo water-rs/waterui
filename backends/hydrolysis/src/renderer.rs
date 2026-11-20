@@ -759,6 +759,8 @@ pub struct SemanticCore<E: crate::text::TextEngine> {
     /// consumes it, so a material view flush sees the scope the window
     /// declares (always `None` — the window's own backdrop mounts solo).
     pub(crate) window_material: Option<mount::program::MaterialRequest>,
+    /// Offscreen renderer vended by [`HydroBackend::offscreen`](crate::renderer::tree::build::backend::HydroBackend).
+    offscreen: crate::view_renderer::HydrolysisOffscreenRenderer,
 }
 
 // The state members are engine internals (gesture/hit-test/executor state)
@@ -1067,7 +1069,30 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             record_seq: 0,
             materialized_epoch: 0,
             window_material: None,
+            offscreen: crate::view_renderer::HydrolysisOffscreenRenderer::unavailable(
+                "hydrolysis semantic core has no widget theme or painter for offscreen capture",
+            ),
         }
+    }
+
+    #[cfg(hydrolysis_cherenkov)]
+    pub(crate) fn offscreen_renderer(&self) -> crate::view_renderer::HydrolysisOffscreenRenderer {
+        self.offscreen.clone_for_dispatch()
+    }
+
+    #[cfg(not(hydrolysis_cherenkov))]
+    pub(crate) const fn offscreen_renderer(
+        &self,
+    ) -> crate::view_renderer::HydrolysisOffscreenRenderer {
+        self.offscreen.clone_for_dispatch()
+    }
+
+    #[cfg(hydrolysis_cherenkov)]
+    pub(crate) fn set_offscreen_renderer(
+        &mut self,
+        offscreen: crate::view_renderer::HydrolysisOffscreenRenderer,
+    ) {
+        self.offscreen = offscreen;
     }
 
     /// The window's root cell — what `mark`s escalate to when no node is
@@ -2064,10 +2089,30 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
         fonts: &waterui_text::FontCollection,
         family_resolution: FontFamilyResolution,
     ) -> Self {
-        Self::with_engine(
+        let mut renderer = Self::with_engine(
             theme,
             crate::text::ParleyEngine::from_collection(fonts, family_resolution),
-        )
+        );
+        renderer
+            .core
+            .offscreen
+            .set_family_resolution(family_resolution);
+        renderer
+    }
+
+    #[cfg(all(not(target_arch = "wasm32"), hydrolysis_cherenkov))]
+    pub(crate) fn set_offscreen_painter(
+        &mut self,
+        painter: &crate::platform::OffscreenPainter,
+        family_resolution: FontFamilyResolution,
+    ) {
+        self.core.set_offscreen_renderer(
+            crate::view_renderer::HydrolysisOffscreenRenderer::on_painter(
+                painter,
+                Rc::clone(&self.theme),
+                family_resolution,
+            ),
+        );
     }
 }
 
@@ -2215,8 +2260,17 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         let frame_instant = Instant::now();
         let mut material_registry = cherenkov_record::MaterialRegistry::default();
         theme.register_backdrop_shaders(&mut material_registry);
+        #[cfg(hydrolysis_cherenkov)]
+        let mut core = SemanticCore::new(frame_instant, text);
+        #[cfg(not(hydrolysis_cherenkov))]
+        let core = SemanticCore::new(frame_instant, text);
+        #[cfg(hydrolysis_cherenkov)]
+        core.set_offscreen_renderer(crate::view_renderer::HydrolysisOffscreenRenderer::new(
+            Rc::clone(&theme),
+            FontFamilyResolution::Lenient,
+        ));
         Self {
-            core: SemanticCore::new(frame_instant, text),
+            core,
             theme,
             window_bounds: kurbo::Rect::ZERO,
             window_display_transform: kurbo::Affine::IDENTITY,

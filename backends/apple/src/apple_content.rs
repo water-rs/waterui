@@ -517,13 +517,33 @@ mod tests {
         };
     }
 
+    struct OtherOffscreen;
+
+    impl waterui_capture::OffscreenRenderer for OtherOffscreen {
+        fn render_to_rgba<V: View>(
+            &self,
+            _view: V,
+            _env: &Environment,
+            _request: waterui_capture::RenderRequest,
+        ) -> impl core::future::Future<
+            Output = Result<waterui_capture::RenderResult, waterui_capture::RenderError>,
+        > {
+            core::future::ready(Ok(waterui_capture::RenderResult::new(Vec::new(), 1, 1)))
+        }
+    }
+
     impl NativeBackend for OtherBackend {
         type Output = ();
         type Ctx = ();
         type Family = Self;
+        type Offscreen = OtherOffscreen;
 
         fn with_family<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
             f(self)
+        }
+
+        fn offscreen(&self, _env: &Environment) -> Self::Offscreen {
+            OtherOffscreen
         }
 
         stub_natives! {

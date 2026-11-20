@@ -34,6 +34,7 @@ use waterui_graphics::color::Color;
 pub use waterui_graphics::filter_view::FilterViewExt;
 
 use suiteki::Str;
+use waterui_capture::{CaptureHandle, CaptureScope};
 use waterui_layout::{
     AspectRatio, ContentMode, HorizontalAlignmentGuide, IgnoreSafeArea, LayoutPriority, Overlay,
     VerticalAlignmentGuide,
@@ -1609,6 +1610,15 @@ pub trait ViewExt: View + Sized {
     /// ```
     fn state<T: Clone + 'static>(self, state: &T) -> With<Self, State<T>> {
         With::new(self, State(state.clone()))
+    }
+
+    /// Wires `handle` to the active backend's offscreen renderer when this view
+    /// dispatches, without altering the view's layout or appearance.
+    ///
+    /// Views of type `V` rendered through `handle` retain their concrete type
+    /// across backend dispatch instead of erasing to [`AnyView`](waterui_core::AnyView).
+    fn capture<V: View>(self, handle: &CaptureHandle<V>) -> CaptureScope<V, Self> {
+        handle.attach(self)
     }
 }
 

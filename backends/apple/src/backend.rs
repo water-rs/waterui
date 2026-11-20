@@ -65,9 +65,14 @@ impl NativeBackend for AppleBackend {
     type Output = NativeLeaf;
     type Ctx = ();
     type Family = Self;
+    type Offscreen = crate::components::view_renderer::AppleOffscreenRenderer;
 
     fn with_family<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
         f(self)
+    }
+
+    fn offscreen(&self, _env: &Environment) -> Self::Offscreen {
+        crate::components::view_renderer::AppleOffscreenRenderer::new(self.mtm)
     }
 
     fn empty(&mut self, native: (), env: &Environment, (): ()) -> NativeLeaf {
