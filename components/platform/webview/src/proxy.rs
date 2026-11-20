@@ -11,9 +11,9 @@
 //! handler in `children` can extract it the same way it would extract
 //! `State<T>` for [`Button::action`].
 
-use std::any::type_name;
+use std::{any::type_name, cell::OnceCell, rc::Rc};
 #[cfg(not(target_arch = "wasm32"))]
-use std::pin::Pin;
+use std::{future::ready, pin::Pin};
 
 #[cfg(not(target_arch = "wasm32"))]
 use suiteki::Str;
@@ -52,17 +52,39 @@ use crate::handler::ScriptInjectionTime;
 /// ```
 #[derive(Clone)]
 pub struct WebViewProxy {
-    handle: AnyWebViewHandle,
+    handle: Rc<OnceCell<AnyWebViewHandle>>,
 }
 
 impl_debug!(WebViewProxy);
 
 impl WebViewProxy {
     /// Constructs a proxy from a typed handle. Native backends and the
-    /// `WebView::open(url).with_proxy` scope uses this internally.
+    /// `WebView::proxy_scope` helper use this internally.
     #[must_use]
-    pub const fn new(handle: AnyWebViewHandle) -> Self {
-        Self { handle }
+    pub fn new(handle: AnyWebViewHandle) -> Self {
+        Self {
+            handle: Rc::new(OnceCell::from(handle)),
+        }
+    }
+
+    pub(crate) fn deferred() -> (Self, Rc<OnceCell<AnyWebViewHandle>>) {
+        let slot = Rc::new(OnceCell::new());
+        (
+            Self {
+                handle: Rc::clone(&slot),
+            },
+            slot,
+        )
+    }
+
+    fn resolve(&self) -> Option<&AnyWebViewHandle> {
+        let resolved = self.handle.get();
+        if resolved.is_none() {
+            waterui_core::contract_violation!(
+                "WebViewProxy was used before its WebViewOpen was realized"
+            );
+        }
+        resolved
     }
 
     /// Navigates to the specified URL.
@@ -70,31 +92,41 @@ impl WebViewProxy {
     /// Takes the same input as [`WebView::go_to`](crate::WebView::go_to): a
     /// literal or a [`Url`](waterui_url::Url), never unparsed runtime text.
     pub fn go_to(&self, url: impl waterui_url::IntoUrl) {
-        self.handle.go_to(&url.into_url());
+        if let Some(handle) = self.resolve() {
+            handle.go_to(&url.into_url());
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     /// Refreshes the current page.
     pub fn refresh(&self) {
-        self.handle.refresh();
+        if let Some(handle) = self.resolve() {
+            handle.refresh();
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     /// Stops the current loading operation.
     pub fn stop(&self) {
-        self.handle.stop();
+        if let Some(handle) = self.resolve() {
+            handle.stop();
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     /// Navigates back in the web view's history.
     pub fn go_back(&self) {
-        self.handle.go_back();
+        if let Some(handle) = self.resolve() {
+            handle.go_back();
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     /// Navigates forward in the web view's history.
     pub fn go_forward(&self) {
-        self.handle.go_forward();
+        if let Some(handle) = self.resolve() {
+            handle.go_forward();
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -109,13 +141,20 @@ impl WebViewProxy {
         &'a self,
         script: &'a str,
     ) -> Pin<Box<dyn 'a + Future<Output = Result<Str, Str>>>> {
-        Box::pin(self.handle.run_javascript(script))
+        let Some(handle) = self.resolve() else {
+            return Box::pin(ready(Err(Str::from_static(
+                "WebViewProxy was used before its WebViewOpen was realized",
+            ))));
+        };
+        Box::pin(handle.run_javascript(script))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     /// Sets a cookie in the scoped web view.
     pub fn set_cookie(&self, cookie: Cookie<'static>) {
-        self.handle.set_cookie(cookie);
+        if let Some(handle) = self.resolve() {
+            handle.set_cookie(cookie);
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -128,14 +167,19 @@ impl WebViewProxy {
         clippy::future_not_send,
         reason = "native web views and cookie stores are main-thread-affine"
     )]
-    pub fn get_cookies(&self) -> impl Future<Output = Result<Vec<Cookie<'static>>, Error>> + '_ {
-        self.handle.get_cookies()
+    pub async fn get_cookies(&self) -> Result<Vec<Cookie<'static>>, Error> {
+        let Some(handle) = self.resolve() else {
+            return Ok(Vec::new());
+        };
+        handle.get_cookies().await
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     /// Sets the user agent string for the web view.
     pub fn set_user_agent(&self, user_agent: &str) {
-        self.handle.set_user_agent(user_agent);
+        if let Some(handle) = self.resolve() {
+            handle.set_user_agent(user_agent);
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -150,19 +194,17 @@ impl WebViewProxy {
     /// for its life, on every backend alike. A debug build panics, a release
     /// build logs it and ignores the call.
     pub fn inject_script(&self, key: &str, script: &str, time: ScriptInjectionTime) {
-        self.handle.inject_script(key, script, time);
+        if let Some(handle) = self.resolve() {
+            handle.inject_script(key, script, time);
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     /// Enables or disables redirect following.
     pub fn set_redirects_enabled(&self, enabled: impl IntoComputed<bool>) {
-        self.handle.set_redirects_enabled(enabled);
-    }
-
-    /// Returns the inner type-erased handle for downcast or low-level access.
-    #[must_use]
-    pub const fn handle(&self) -> &AnyWebViewHandle {
-        &self.handle
+        if let Some(handle) = self.resolve() {
+            handle.set_redirects_enabled(enabled);
+        }
     }
 }
 

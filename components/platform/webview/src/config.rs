@@ -18,7 +18,7 @@ use crate::{AssetServer, NavigationPolicy, OriginPolicy, ScriptInjectionTime, St
 /// Creation-time configuration for a web view.
 ///
 /// The input to
-/// [`CustomWebViewController::open`](crate::CustomWebViewController::open).
+/// [`WebViewController::open`](crate::WebViewController::open).
 /// [`WebView::open`](crate::WebView::open) and
 /// [`WebView::open_assets`](crate::WebView::open_assets) resolve it — the
 /// admission rules against the URL the view opens at, which for bundled assets

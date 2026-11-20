@@ -6,7 +6,7 @@
 //!
 //! - [`WebViewHandle`] - Imperative trait that native backends implement
 //! - [`AnyWebViewHandle`] - Type-erased wrapper with downcast support
-//! - [`WebViewController`] - Factory injected into Environment by native backends
+//! - [`WebViewController`] - Engine-specific factory exposed through `NativeBackend::WebViewController`
 //! - [`WebView`] - Reactive wrapper with `Binding<T>` state
 //!
 //! # Platform behaviour
@@ -54,13 +54,20 @@ pub use controller::*;
 pub use cookie::Cookie;
 #[cfg(not(target_arch = "wasm32"))]
 pub use cookies::cookie_expiry;
-use std::{cell::Cell, fmt, rc::Rc};
+use std::{
+    cell::{Cell, OnceCell},
+    fmt,
+    rc::Rc,
+};
 #[macro_use]
 mod handle_layers;
 mod handler;
-pub use handler::*;
+pub use handler::{AnyWebViewHandle, WeakWebViewHandle, WebViewHandle};
+#[cfg(not(target_arch = "wasm32"))]
+pub use handler::{HandlerFuture, HandlerResult, ScriptInjectionTime, ScriptMessageHandler};
+use handler::{Opened, opened_handle};
 mod unavailable;
-pub use unavailable::WebViewOpenError;
+pub use unavailable::{UnavailableWebViewController, UnavailableWebViewHandle, WebViewOpenError};
 #[cfg(all(feature = "conformance", not(target_arch = "wasm32")))]
 pub mod conformance;
 mod proxy;
@@ -469,6 +476,7 @@ impl WebView {
             bridge_origins: BridgeOrigins::default(),
             #[cfg(not(target_arch = "wasm32"))]
             navigation_policy: None,
+            proxy_slot: None,
         }
     }
 
@@ -489,7 +497,7 @@ impl WebView {
     ///
     /// # Contract violation
     ///
-    /// At render time, when the installed [`WebViewController`]'s engine has no
+    /// At render time, when the selected [`WebViewController`]'s engine has no
     /// interception facility to stand an asset origin on: a debug build
     /// panics, a release build logs it and the view is not opened.
     pub fn open_assets(
@@ -509,6 +517,7 @@ impl WebView {
             state: Vec::new(),
             bridge_origins: BridgeOrigins::default(),
             navigation_policy: None,
+            proxy_slot: None,
         }
     }
 
@@ -529,7 +538,6 @@ impl WebView {
     /// use waterui::prelude::*;
     /// use waterui_webview::{WebView, WebViewProxy};
     ///
-    /// let webview = controller.open();
     /// let toolbar = webview.proxy_scope(|| {
     ///     hstack((
     ///         button("←").action(|p: WebViewProxy| p.go_back()),
@@ -537,7 +545,7 @@ impl WebView {
     ///         button("⟳").action(|p: WebViewProxy| p.refresh()),
     ///     ))
     /// });
-    /// vstack((toolbar, webview))   // or hstack, or zstack — your choice
+    /// vstack((toolbar, backend_surface))   // or hstack, or zstack — your choice
     /// ```
     pub fn proxy_scope<V, F>(&self, content: F) -> impl View + use<V, F>
     where
@@ -853,10 +861,10 @@ impl fmt::Debug for WebViewTarget {
 
 /// A deferred web view created by [`WebView::open`].
 ///
-/// The native handle is created when this view is rendered, once its
-/// [`WebViewController`] can be extracted from the live environment. Everything
-/// configured here is applied to that handle the moment it exists, so a web view
-/// can be fully described before a backend is anywhere in sight.
+/// Native creation happens when the backend realizes this view through its
+/// [`WebViewController`]. Everything configured here is applied to the opened
+/// handle the moment it exists, so a web view can be fully described before a
+/// backend is anywhere in sight.
 #[must_use = "a WebViewOpen must be rendered to create its native web view"]
 pub struct WebViewOpen {
     target: WebViewTarget,
@@ -875,6 +883,43 @@ pub struct WebViewOpen {
     bridge_origins: BridgeOrigins,
     #[cfg(not(target_arch = "wasm32"))]
     navigation_policy: Option<NavigationPolicy>,
+    proxy_slot: Option<Rc<OnceCell<AnyWebViewHandle>>>,
+}
+
+/// The result of realizing a [`WebViewOpen`] with a concrete
+/// [`WebViewController`], carrying both the typed backend handle and the
+/// reactive [`WebView`] keeping subscriptions alive.
+pub struct OpenedWebView<H: WebViewHandle> {
+    typed: Rc<Opened<H>>,
+    webview: WebView,
+}
+
+impl<H: WebViewHandle> fmt::Debug for OpenedWebView<H> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OpenedWebView")
+            .field("webview", &self.webview)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<H: WebViewHandle> OpenedWebView<H> {
+    /// Returns the concrete backend handle opened for this web view.
+    #[must_use]
+    pub fn handle(&self) -> &H {
+        opened_handle(&self.typed)
+    }
+
+    /// Returns the reactive [`WebView`] wrapper owning subscriptions for this view.
+    #[must_use]
+    pub const fn webview(&self) -> &WebView {
+        &self.webview
+    }
+
+    /// Consumes this wrapper and returns the reactive [`WebView`].
+    #[must_use]
+    pub fn into_webview(self) -> WebView {
+        self.webview
+    }
 }
 
 impl fmt::Debug for WebViewOpen {
@@ -893,7 +938,9 @@ impl fmt::Debug for WebViewOpen {
             .field("state_fields", &self.state.len())
             .field("bridge_origins", &self.bridge_origins)
             .field("navigation_policy", &self.navigation_policy.is_some());
-        debug.finish()
+        debug
+            .field("proxy_slot", &self.proxy_slot.is_some())
+            .finish()
     }
 }
 
@@ -1085,48 +1132,37 @@ impl WebViewOpen {
     /// extracted [`WebViewProxy`] targets the handle displayed by this view.
     ///
     /// The web view is placed below `content`. When you need any other
-    /// arrangement, open the web view yourself and use
-    /// [`WebView::proxy_scope`], which attaches the proxy without placing
+    /// arrangement, open the web view yourself with
+    /// [`WebViewOpen::open_with`] or [`open_webview`] and
+    /// use [`WebView::proxy_scope`], which attaches the proxy without placing
     /// anything.
-    ///
-    /// # Missing controller
-    ///
-    /// Rendered without a [`WebViewController`] in the environment, a debug
-    /// build panics, a release build logs the contract violation, and the
-    /// view renders nothing.
-    pub fn with_proxy<V, F>(self, content: F) -> impl View
+    pub fn with_proxy<V, F>(mut self, content: F) -> impl View
     where
         V: View,
         F: FnOnce() -> V + 'static,
     {
-        use waterui_core::env::with;
-        waterui_core::env::UseEnv::new(move |env: &Environment| {
-            let controller = web_view_controller(env)?;
-            let webview = self.create(&controller, env)?;
-            let scoped = with(content(), WebViewProxy::new(webview.handle().clone()));
-            Some(vstack((scoped, webview)))
-        })
+        let (proxy, slot) = WebViewProxy::deferred();
+        self.proxy_slot = Some(slot);
+        vstack((waterui_core::env::with(content(), proxy), self))
     }
 
+    /// Opens this deferred web view with `controller`, wiring its initial URL,
+    /// scripts, handlers, event watchers, and any [`WebViewProxy`] scope.
+    ///
+    /// Returns `None` after reporting a contract violation if the engine failed
+    /// to open the view or had no asset origin for `WebView::open_assets`.
     #[cfg_attr(
         target_arch = "wasm32",
         expect(
-            clippy::unnecessary_wraps,
-            reason = "only a native asset view can fail to resolve its entry URL; the web build has no asset views"
+            unused_variables,
+            reason = "the environment reaches only the page's handlers, which the web has none of"
         )
     )]
-    fn create(
+    pub fn open_with<C: WebViewController>(
         self,
-        controller: &WebViewController,
-        #[cfg_attr(
-            target_arch = "wasm32",
-            expect(
-                unused_variables,
-                reason = "the environment reaches only the page's handlers, which the web has none of"
-            )
-        )]
+        controller: &C,
         environment: &Environment,
-    ) -> Option<WebView> {
+    ) -> Option<OpenedWebView<C::Handle>> {
         let Self {
             target,
             #[cfg(not(target_arch = "wasm32"))]
@@ -1144,6 +1180,7 @@ impl WebViewOpen {
             bridge_origins,
             #[cfg(not(target_arch = "wasm32"))]
             navigation_policy,
+            proxy_slot,
         } = self;
         // Everything a document may receive before its first line of script
         // is resolved here, before the engine creates anything: the URL the
@@ -1155,7 +1192,13 @@ impl WebViewOpen {
             WebViewTarget::Assets { server, entry } => {
                 // The origin is the engine's answer, not a constant the shared
                 // layer guesses: it differs across engines by design.
-                (asset_entry_url(controller, &entry)?, None, Some(server))
+                let Some(entry_url) = asset_entry_url(controller, &entry) else {
+                    if let Some(slot) = proxy_slot {
+                        let _ = slot.set(AnyWebViewHandle::unavailable());
+                    }
+                    return None;
+                };
+                (entry_url, None, Some(server))
             }
         };
         #[cfg(target_arch = "wasm32")]
@@ -1174,7 +1217,20 @@ impl WebViewOpen {
         );
         #[cfg(target_arch = "wasm32")]
         let config = WebViewConfig::default();
-        let webview = controller.open_with(config);
+        let (handle, typed) =
+            match AnyWebViewHandle::open_typed(config, |config| controller.open(config)) {
+                Ok(opened) => opened,
+                Err(unavailable) => {
+                    if let Some(slot) = proxy_slot {
+                        let _ = slot.set(unavailable);
+                    }
+                    return None;
+                }
+            };
+        if let Some(slot) = proxy_slot {
+            let _ = slot.set(handle.clone());
+        }
+        let webview = WebView::from_handle(handle);
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(enabled) = redirects_enabled {
             webview.set_redirects_enabled(enabled);
@@ -1218,7 +1274,7 @@ impl WebViewOpen {
         } else {
             webview
         };
-        Some(webview)
+        Some(OpenedWebView { typed, webview })
     }
 }
 
@@ -1226,7 +1282,7 @@ impl WebViewOpen {
 /// serves bundled assets from, or `None` after reporting that the engine has
 /// none.
 #[cfg(not(target_arch = "wasm32"))]
-fn asset_entry_url(controller: &WebViewController, entry: &str) -> Option<Url> {
+fn asset_entry_url<C: WebViewController>(controller: &C, entry: &str) -> Option<Url> {
     // The origin is the engine's answer, not a constant the shared layer
     // guesses: it differs across engines by design.
     let Some(origin) = controller.asset_origin() else {
@@ -1253,34 +1309,16 @@ fn asset_entry_url(controller: &WebViewController, entry: &str) -> Option<Url> {
     Some(url)
 }
 
-/// The host's [`WebViewController`], or `None` after reporting that the
-/// environment carries none — a web view cannot render without one.
-fn web_view_controller(env: &Environment) -> Option<WebViewController> {
-    let controller = env.get::<WebViewController>().cloned();
-    if controller.is_none() {
-        waterui_core::contract_violation!("a WebView needs a WebViewController in its environment");
-    }
-    controller
-}
-
-impl View for WebViewOpen {
-    fn body(self, _env: &Environment) -> impl View {
-        waterui_core::env::UseEnv::new(move |env: &Environment| {
-            web_view_controller(env).and_then(|controller| self.create(&controller, env))
-        })
-    }
-}
-
-// `WebView` is realized by the backend through `NativeBackend::web_view`
-// using the compile-time selected web engine. `raw_view!` is not used because
+// `WebViewOpen` is realized by the backend through `NativeBackend::web_view`
+// using `NativeBackend::WebViewController`. `raw_view!` is not used because
 // reaching `body` must not abort.
-impl waterui_core::NativeView for WebView {
+impl waterui_core::NativeView for WebViewOpen {
     fn stretch_axis(&self) -> StretchAxis {
         StretchAxis::Both
     }
 }
 
-impl View for WebView {
+impl View for WebViewOpen {
     /// Realized by the backend through `NativeBackend::web_view`.
     fn body(self, _env: &Environment) -> impl View {
         Native::new(self)

@@ -12,12 +12,15 @@ pub use interaction_support::{cursor, drag_drop, gesture, interaction};
 mod runtime;
 #[cfg(feature = "dialog")]
 pub use runtime::dialog;
-#[cfg(all(feature = "inspector", not(target_arch = "wasm32")))]
-pub use runtime::inspector;
 #[cfg(feature = "snackbar")]
 pub use runtime::snackbar;
 pub use runtime::{app, entry, fullscreen, metadata, task, window};
 pub use widget::error;
+// Inspection is a TCP endpoint that also launches the inspector application on
+// the developer's machine; a browser page can do neither, so on wasm the
+// endpoint is absent rather than present and permanently unable to work.
+#[cfg(all(feature = "inspector", not(target_arch = "wasm32")))]
+pub use waterui_inspector_runtime as inspector;
 /// Task management utilities and async support.
 pub mod view;
 /// Widget components for building complex UI elements.

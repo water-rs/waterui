@@ -12,14 +12,14 @@
 //! A backend takes the pieces it can feed and ignores the rest:
 //!
 //! ```rust
-//! let Some(inspector) = waterui::inspector::maybe_init_from_env("my-backend") else {
+//! let Some(inspector) = waterui_inspector_runtime::maybe_init_from_env("my-backend") else {
 //!     return;
 //! };
-//! let probe = inspector.runtime_probe();          // main-thread occupancy
+//! let probe = inspector.task_probe();             // main-thread occupancy
 //! let frames = inspector.frame_recorder();        // per-frame timings
 //! let trees = inspector.tree_recorder();          // accessibility tree
 //! let layer = inspector.tracing_layer();          // tracing records
-//! # #[cfg(feature = "inspector-signals")]
+//! # #[cfg(feature = "signals")]
 //! let _scope = inspector.observe_signals();       // reactive graph, main thread
 //! ```
 
@@ -36,15 +36,13 @@ use waterui_core::Environment;
 use waterui_inspector_protocol::discovery::Advertisement;
 use waterui_inspector_protocol::{ChannelSet, TargetInfo};
 
-use crate::task::RuntimeProbe;
-
 mod hub;
 mod logs;
 mod recorder;
 mod server;
 /// The reactive-graph bridge only exists when `nami` is built with graph
 /// observability; without it there is no observer trait to implement.
-#[cfg(feature = "inspector-signals")]
+#[cfg(feature = "signals")]
 mod signals;
 mod tasks;
 
@@ -58,6 +56,7 @@ pub use waterui_inspector_protocol as protocol;
 
 pub use logs::InspectorLayer;
 pub use recorder::{FrameRecorder, TreeRecorder};
+pub use tasks::TaskProbe;
 
 /// How long a connecting peer has to complete the handshake.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -441,11 +440,11 @@ impl InspectorServerConfig {
 /// give, and is said to be unnamed rather than being given a name that would
 /// look like every other application's in the list.
 fn advertised_application_name() -> String {
-    let name = crate::app::application_name();
+    let name = std::env::var("WATERUI_APP_NAME").unwrap_or_default();
     if name.is_empty() {
         String::from("Unnamed WaterUI application")
     } else {
-        name.to_string()
+        name
     }
 }
 
@@ -568,8 +567,8 @@ impl InspectorRuntime {
 
     /// The probe that reports main-thread occupancy.
     #[must_use]
-    pub fn runtime_probe(&self) -> Arc<dyn RuntimeProbe> {
-        Arc::clone(&self.task_probe) as Arc<dyn RuntimeProbe>
+    pub fn task_probe(&self) -> Arc<TaskProbe> {
+        Arc::clone(&self.task_probe)
     }
 
     /// Reveals `node` in an inspector, opening one if none is attached.
@@ -657,7 +656,7 @@ impl InspectorRuntime {
     ///
     /// Must be called on the thread that owns the UI: the reactive graph is
     /// thread-confined, and so is its observer.
-    #[cfg(feature = "inspector-signals")]
+    #[cfg(feature = "signals")]
     #[must_use = "observation lasts only as long as the returned scope is held; dropping it immediately stops it"]
     pub fn observe_signals(&self) -> nami::observe::ObserverScope {
         use std::rc::Rc;
@@ -731,7 +730,7 @@ fn water_cli_path() -> Option<PathBuf> {
 fn available_channels() -> ChannelSet {
     let mut available =
         ChannelSet::FRAMES | ChannelSet::TREE | ChannelSet::TASKS | ChannelSet::LOGS;
-    if cfg!(feature = "inspector-signals") {
+    if cfg!(feature = "signals") {
         available |= ChannelSet::SIGNALS;
     }
     available

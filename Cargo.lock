@@ -12934,7 +12934,7 @@ dependencies = [
 [[package]]
 name = "waterui-browser-cef"
 version = "0.1.0"
-source = "git+https://github.com/water-rs/browsers?branch=main#559dabbc11467b2fd5aacd802d979e7e4355d0dc"
+source = "git+https://github.com/water-rs/browsers?branch=refactor%2F4814-typed-webview-controller#78cd8c4c2a9378ab2fb27b847b1bf71094901581"
 dependencies = [
  "async-channel",
  "base64 0.23.1",
@@ -12974,7 +12974,7 @@ dependencies = [
 [[package]]
 name = "waterui-browser-wpe"
 version = "0.1.0"
-source = "git+https://github.com/water-rs/browsers?branch=main#559dabbc11467b2fd5aacd802d979e7e4355d0dc"
+source = "git+https://github.com/water-rs/browsers?branch=refactor%2F4814-typed-webview-controller#78cd8c4c2a9378ab2fb27b847b1bf71094901581"
 dependencies = [
  "cookie",
  "executor-core",
@@ -13393,6 +13393,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "waterui-inspector-runtime"
+version = "0.5.1"
+dependencies = [
+ "async-channel",
+ "getrandom 0.4.3",
+ "nami",
+ "tracing",
+ "tracing-subscriber",
+ "waterui-core",
+ "waterui-inspector-protocol",
+]
+
+[[package]]
 name = "waterui-internal"
 version = "0.5.1"
 dependencies = [
@@ -13400,7 +13413,6 @@ dependencies = [
  "cpu-time",
  "executor-core",
  "futures",
- "getrandom 0.4.3",
  "nami",
  "native-executor",
  "object 0.40.0",
@@ -13424,7 +13436,7 @@ dependencies = [
  "waterui-form",
  "waterui-graphics",
  "waterui-icon",
- "waterui-inspector-protocol",
+ "waterui-inspector-runtime",
  "waterui-layout",
  "waterui-locale",
  "waterui-macros",

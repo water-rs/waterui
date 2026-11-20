@@ -202,6 +202,10 @@ version_group = "waterui"
 git_tag_name = "inspector-protocol-v{{ version }}"
 
 [[package]]
+name = "waterui-inspector-runtime"
+version_group = "waterui"
+
+[[package]]
 name = "waterui-inspector-app"
 version_group = "waterui"
 

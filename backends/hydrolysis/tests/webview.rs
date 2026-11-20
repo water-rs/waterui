@@ -23,9 +23,9 @@ use waterui_core::accessibility::{AccessibilityRole, default_role};
 use waterui_core::view::hook::Hook;
 use waterui_core::{Metadata, Retain, Signal, View};
 use waterui_webview::{
-    BackendEvent, Cookie, CustomWebViewController, ScriptInjectionTime, ScriptMessageHandler, Url,
+    BackendEvent, Cookie, OpenedWebView, ScriptInjectionTime, ScriptMessageHandler, Url,
     WatcherGuard, WatcherSet, WebView, WebViewConfig, WebViewController, WebViewHandle,
-    WebViewOpenError,
+    WebViewOpen, WebViewOpenError,
 };
 
 const DOCS_URL: &str = "https://waterui.dev/docs";
@@ -56,8 +56,10 @@ impl TestController {
     }
 }
 
-impl CustomWebViewController for TestController {
-    fn open(&self, _config: WebViewConfig) -> Result<impl WebViewHandle, WebViewOpenError> {
+impl WebViewController for TestController {
+    type Handle = TestHandle;
+
+    fn open(&self, _config: WebViewConfig) -> Result<Self::Handle, WebViewOpenError> {
         self.opens.set(self.opens.get() + 1);
         Ok(TestHandle {
             navigations: Rc::clone(&self.navigations),
@@ -161,14 +163,16 @@ impl WebViewHandle for TestHandle {
 /// way and needs no GPU device.
 #[derive(Clone)]
 struct TestEngine {
+    controller: TestController,
     drawn: Rc<Cell<bool>>,
 }
 
 impl Hook for TestEngine {
-    type Target = WebView;
+    type Target = WebViewOpen;
 
-    fn apply(&self, webview: WebView, env: &Environment) -> Result<impl View, WebView> {
+    fn apply(&self, open: WebViewOpen, env: &Environment) -> Result<impl View, WebViewOpen> {
         self.drawn.set(true);
+        let opened = open.open_with(&self.controller, env);
         // The realization owns the semantic component for the surface's
         // lifetime, the way every engine does.
         Ok(Metadata::new(
@@ -177,7 +181,7 @@ impl Hook for TestEngine {
                 Rectangle.fill(Color::srgb_hex("#3B82F6")),
                 AccessibilityRole::Group,
             ),
-            Retain::new(webview),
+            Retain::new(opened.map(OpenedWebView::into_webview)),
         ))
     }
 }
@@ -193,9 +197,9 @@ impl Hook for TestEngine {
 #[test]
 fn an_installed_realization_draws_the_webview_and_keeps_its_node() {
     let drawn = Rc::new(Cell::new(false));
-    let mut env = Environment::new();
-    env.insert(WebViewController::new(TestController::new()));
+    let env = Environment::new();
     let engine = TestEngine {
+        controller: TestController::new(),
         drawn: Rc::clone(&drawn),
     };
 
