@@ -426,6 +426,10 @@ mod tests {
         assert_eq!((first.get(), second.get()), (1, 0));
     }
 
+    #[cfg_attr(
+        feature = "erased-dispatch",
+        allow(clippy::extra_unused_type_parameters)
+    )]
     fn watch_dynamic_from_body<V: View>(
         view: impl View,
         env: &Environment,
