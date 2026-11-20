@@ -28,10 +28,11 @@ use crate::render::glyph::{self, Atlas, FontData, MaskCell, PathEmit, PendingRas
 use crate::render::gpu_cov::CoverageLimit;
 use crate::render::instance::{
     BLEND_CODE_SHIFT, ELLIPSE_TIER16_MIN_AREA, ELLIPSE_TIER32_MIN_AREA, FLAG_BLEND_SRC,
-    FLAG_HAS_CLIP, FLAG_HAS_INNER, FLAG_HAS_MASK, FLAG_MASK_TEXTURE, FLAG_TEX_SRGB, FLAG_UNION,
-    Globals, Instance, KIND_FILL, KIND_GLYPH, KIND_POLYGON, KIND_REGION, KIND_SHADOW, KIND_SPAN,
-    KIND_STROKE_DIST, KIND_STROKE_OFFSET, PAINT_IMAGE, PAINT_LINEAR, PAINT_PROJECTIVE,
-    PAINT_RADIAL, PAINT_SOLID, PAINT_SWEEP, PAINT_TEXTURE, Shape, Stop, affine, blend_code,
+    FLAG_HAS_CLIP, FLAG_HAS_INNER, FLAG_HAS_MASK, FLAG_MASK_TEXTURE, FLAG_PICTURE_TILE,
+    FLAG_TEX_SRGB, FLAG_UNION, Globals, Instance, KIND_FILL, KIND_GLYPH, KIND_POLYGON, KIND_REGION,
+    KIND_SHADOW, KIND_SPAN, KIND_STROKE_DIST, KIND_STROKE_OFFSET, PAINT_IMAGE, PAINT_LINEAR,
+    PAINT_PROJECTIVE, PAINT_RADIAL, PAINT_SOLID, PAINT_SWEEP, PAINT_TEXTURE, Shape, Stop, affine,
+    blend_code,
 };
 use crate::render::path;
 use crate::render::projective::{LocalKey, Placement};
@@ -744,7 +745,7 @@ impl ContentData {
         self.storage.geometry.flag_reconcile();
     }
 
-    pub fn gpu_input_bytes(&self) -> u64 {
+    pub fn gpu_input_bytes(&self, shared: &mut crate::render::projective::Memory) -> u64 {
         (self.storage.templates.capacity() * size_of::<InstanceTemplate>()
             + self.storage.covers.capacity() * size_of::<Cover>()
             + self.storage.instances.capacity() * size_of::<RetainedInstance>()
@@ -764,7 +765,7 @@ impl ContentData {
                 .storage
                 .picture_domains
                 .values()
-                .map(picture::PreparedDomain::source_bytes)
+                .map(|domain| domain.source_bytes(shared))
                 .sum::<u64>()
     }
 
@@ -1134,9 +1135,8 @@ impl GeometryCache {
 
 impl EmissionStorage {
     fn retain_gpu_paths(&mut self, ops: &[Op]) {
-        self.picture_domains.retain(|index, entry| {
-            matches!(ops.get(*index), Some(Op::BeginPicture { picture, .. }) if entry.matches_source(picture))
-        });
+        self.picture_domains
+            .retain(|index, _| matches!(ops.get(*index), Some(Op::BeginPicture { .. })));
         self.gpu_paths
             .retain(|index, _| matches!(ops.get(*index), Some(Op::Path { .. })));
     }
@@ -1826,7 +1826,7 @@ pub struct PictureInputs<'a> {
     /// Asked what a picture image will commit before it is admitted.
     device: &'a wgpu::Device,
     pub available: u64,
-    selected: Option<FxHashSet<LocalKey>>,
+    selected: Option<FxHashMap<LocalKey, bool>>,
     /// Picture images this walk realizes, in realization order.
     pub realize: Vec<super::projective::Realize>,
     /// Picture images this walk composes.
@@ -4574,6 +4574,9 @@ impl<'a> Lowering<'a> {
         inst.grad[1] = y0 as f32;
         inst.meta[2] = self.frame.stops.len() as u32;
         self.frame.stops.extend(placement.record());
+        if placement.tile.is_some() {
+            inst.meta[3] |= FLAG_PICTURE_TILE << 24;
+        }
         inst.meta[3] |= code << BLEND_CODE_SHIFT;
         // An image storing encoded values samples in that space: a
         // retained picture realized in an encoded pass.

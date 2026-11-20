@@ -54,13 +54,93 @@ pub struct Commands {
     previous: FxHashMap<(Key, usize), Footprint>,
     prepared: FxHashMap<(Key, usize), Footprint>,
     previous_targets: Vec<Target>,
-    previous_states: Vec<u64>,
-    states: Vec<u64>,
+    previous_states: Vec<Option<u64>>,
+    states: Vec<Option<u64>>,
     targets: Vec<Target>,
     spans: Vec<(Range<usize>, usize, u64)>,
     regions: Vec<Region>,
     last_order: Vec<usize>,
     pending: bool,
+    correspondence: Correspondence,
+}
+
+/// Pass indices are frame-local. Independent single-write attachments retain
+/// their history when unrelated realizations enter or leave the frame.
+#[derive(Default)]
+struct Correspondence {
+    stable: bool,
+    before: Vec<Option<usize>>,
+    after: Vec<Option<usize>>,
+    targets: FxHashMap<Target, (Option<usize>, Option<usize>)>,
+}
+
+impl Correspondence {
+    fn prepare(&mut self, frame: &Frame, previous: &[Target], current: &[Target]) {
+        self.stable = previous == current;
+        if self.stable {
+            return;
+        }
+        self.before.clear();
+        self.before.resize(current.len(), None);
+        self.after.clear();
+        self.after.resize(previous.len(), None);
+        self.targets.clear();
+        for (index, target) in previous.iter().enumerate() {
+            self.targets
+                .entry(*target)
+                .and_modify(|indices| indices.0 = None)
+                .or_insert((Some(index), None));
+        }
+        for (index, target) in current.iter().enumerate() {
+            let Some((before, after)) = self.targets.get_mut(target) else {
+                continue;
+            };
+            if after.is_some() {
+                // Multiple writes depend on their relative position among
+                // captures and composites. They need a new dependency walk.
+                *before = None;
+            }
+            *after = Some(index);
+        }
+        for &(before, after) in self.targets.values() {
+            let (Some(before), Some(after)) = (before, after) else {
+                continue;
+            };
+            let pass = &frame.passes[after];
+            if matches!(
+                pass.target,
+                Target::Part(_) | Target::Plane(_) | Target::Projected(_)
+            ) && pass.clear.is_some()
+                && pass.capture.is_none()
+                && pass.backdrop_copy.is_none()
+                && pass.ranges.iter().all(|range| range.source.is_none())
+            {
+                self.before[after] = Some(before);
+                self.after[before] = Some(after);
+            }
+        }
+    }
+
+    fn before(&self, index: usize) -> Option<usize> {
+        if self.stable {
+            Some(index)
+        } else {
+            self.before[index]
+        }
+    }
+
+    fn after(&self, index: usize) -> Option<usize> {
+        if self.stable {
+            Some(index)
+        } else {
+            self.after[index]
+        }
+    }
+
+    fn bytes(&self) -> usize {
+        (self.before.capacity() + self.after.capacity()) * size_of::<Option<usize>>()
+            + self.targets.capacity() * size_of::<(Target, (Option<usize>, Option<usize>))>()
+    }
 }
 
 impl Commands {
@@ -71,14 +151,26 @@ impl Commands {
         self.pending = false;
     }
 
+    /// Replacement storage has no retained pixels, including its clear color.
+    /// Keep other attachments' submitted footprints and preserve this invalidation
+    /// across preparations that never reach submission.
+    pub fn forget_target(&mut self, target: Target) {
+        for (previous, state) in self.previous_targets.iter().zip(&mut self.previous_states) {
+            if *previous == target {
+                *state = None;
+            }
+        }
+    }
+
     pub fn bytes(&self) -> u64 {
         ((self.previous.capacity() + self.prepared.capacity())
             * size_of::<((Key, usize), Footprint)>()
             + (self.previous_targets.capacity() + self.targets.capacity()) * size_of::<Target>()
-            + (self.previous_states.capacity() + self.states.capacity()) * size_of::<u64>()
+            + (self.previous_states.capacity() + self.states.capacity()) * size_of::<Option<u64>>()
             + self.spans.capacity() * size_of::<(Range<usize>, usize, u64)>()
             + self.regions.capacity() * size_of::<Region>()
-            + self.last_order.capacity() * size_of::<usize>()) as u64
+            + self.last_order.capacity() * size_of::<usize>()
+            + self.correspondence.bytes()) as u64
             + self
                 .regions
                 .iter()
@@ -102,20 +194,20 @@ impl Commands {
     pub fn update_resources(&mut self, frame: &Frame, version: impl Fn(&DrawRange) -> u64) {
         self.begin(frame, &version);
         self.collect(frame);
-        if self.targets != self.previous_targets {
-            for (region, pass) in self.regions.iter_mut().zip(&frame.passes) {
-                let [x, y, width, height] = pass.region;
-                region.add(x, y, width, height);
-            }
-            return;
-        }
-        for (index, (before, now)) in self.previous_states.iter().zip(&self.states).enumerate() {
-            if before != now {
+        for (index, now) in self.states.iter().enumerate() {
+            let before = self
+                .correspondence
+                .before(index)
+                .and_then(|old| self.previous_states[old]);
+            if before != *now {
                 add(&mut self.regions[index], frame.passes[index].region);
             }
         }
         for (key, now) in &self.prepared {
-            let before = self.previous.get(key);
+            let before = self
+                .correspondence
+                .before(key.1)
+                .and_then(|index| self.previous.get(&(key.0, index)));
             if before.is_none_or(|old| old.bounds != now.bounds || old.signature != now.signature) {
                 add(&mut self.regions[key.1], now.bounds);
                 if let Some(before) = before {
@@ -124,8 +216,10 @@ impl Commands {
             }
         }
         for (key, before) in &self.previous {
-            if !self.prepared.contains_key(key) {
-                add(&mut self.regions[key.1], before.bounds);
+            if let Some(index) = self.correspondence.after(key.1)
+                && !self.prepared.contains_key(&(key.0, index))
+            {
+                add(&mut self.regions[index], before.bounds);
             }
         }
     }
@@ -138,9 +232,11 @@ impl Commands {
         self.targets.clear();
         self.targets
             .extend(frame.passes.iter().map(|pass| pass.target));
+        self.correspondence
+            .prepare(frame, &self.previous_targets, &self.targets);
         self.states.clear();
         self.states
-            .extend((0..frame.passes.len()).map(|index| pass_state(frame, index, version)));
+            .extend((0..frame.passes.len()).map(|index| Some(pass_state(frame, index, version))));
         self.spans.clear();
         for (pass, data) in frame.passes.iter().enumerate() {
             self.spans.extend(data.ranges.iter().map(|range| {
@@ -205,7 +301,11 @@ impl Commands {
                         ),
                         signature: signature(command, source, &instances[0], *binding),
                     };
-                    if let Some(before) = self.previous.get(&(key, *pass)) {
+                    if let Some(before) = self
+                        .correspondence
+                        .before(*pass)
+                        .and_then(|index| self.previous.get(&(key, index)))
+                    {
                         if before.order + 1 < self.last_order[*pass] {
                             // Reordering changes overlap even when each command's
                             // own pixels are unchanged. Insertions/removals alone
@@ -363,14 +463,9 @@ fn range_state(range: &DrawRange, version: u64) -> u64 {
     hash.finish()
 }
 
-/// Keep one conservative scissor per pass: replaying a geometry batch for
-/// every disjoint damage rectangle multiplies vertex and tiler work.
+/// Preserve disjoint damage so distant updates do not redraw the clean gap.
 pub(super) fn add(region: &mut Region, bounds: [u32; 4]) {
-    let [x, y, width, height] = region
-        .rectangles()
-        .iter()
-        .fold(bounds, |bounds, rect| cover(bounds, rect.xywh().into()));
-    region.clear();
+    let [x, y, width, height] = bounds;
     region.add(x, y, width, height);
 }
 

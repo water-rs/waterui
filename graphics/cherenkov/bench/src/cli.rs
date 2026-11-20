@@ -1682,6 +1682,10 @@ fn check_completion(
 /// With `gpu_counters` the loop waits for the GPU to go idle and samples
 /// the hardware counters as the window opens and after every measured
 /// frame's submit, so each frame's sample holds exactly its own GPU work.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the measured window keeps pacing, timed intervals and post-frame sampling in order"
+)]
 fn run_frames(
     engine: &mut dyn Engine,
     input: &EncodeInput<'_>,
@@ -1774,6 +1778,7 @@ fn run_frames(
                 passes: Vec::new(),
                 phases: submit.phases,
                 composition: submit.composition.clone(),
+                damage: engine.damage(),
                 gpu_counters: frame_counters,
                 completed_seconds: None,
                 completion_interval_seconds: None,
@@ -3038,6 +3043,7 @@ mod completion_tests {
             passes: Vec::new(),
             phases: Vec::new(),
             composition: None,
+            damage: None,
             gpu_counters: None,
         };
         let start = Instant::now();

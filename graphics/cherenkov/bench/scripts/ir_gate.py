@@ -748,6 +748,18 @@ def one_symbol(symbols, suffix, parts, tag, what):
     return hits[0]
 
 
+def gpu_roots(symbols, tag):
+    """Profile the ordinary adapter, excluding the picture-cache experiment.
+
+    Rust v0 encodes `Adapter<true>` as `7AdapterKb1_`; the false
+    instantiation and baseline binaries without the experiment remain eligible.
+    The discriminator also occurs in the transaction closure's symbol.
+    """
+    ordinary = [symbol for symbol in symbols if '7AdapterKb1_' not in symbol]
+    return {phase: one_symbol(ordinary, suffix, parts, tag, phase)
+            for phase, (suffix, parts) in ROOTS.items()}
+
+
 def cpu_roots(symbols, tag):
     """The CPU leg's symbols in a binary; none of its roots may be a subtracted function."""
     roots = CpuRoots(marker=one_symbol(symbols, *CPU_MARKER, tag, 'submit'),
@@ -838,7 +850,7 @@ def profile(binary, tag, scene, repo, out, pause_at, warmup, icd=None, phases=No
     prefix = out / f'{tag}-{scene}'
     assert not [p for p in out.glob(prefix.name + '.*') if not p.name.endswith('.progress.log')], f'existing run: {prefix}'
     symbols = symbols_of(binary)
-    roots = {phase: one_symbol(symbols, suffix, parts, tag, phase) for phase, (suffix, parts) in ROOTS.items()}
+    roots = gpu_roots(symbols, tag)
     # The joined geometry batch finishes before lower_content returns. With
     # one pool worker its entire computation is below this worker root.
     workers = tuple(s for s in symbols if s.endswith('22prepare_geometry_batch') and 'cherenkov_gpu' in s)
@@ -1012,7 +1024,7 @@ def tag_report(out, tag, pause_at, leg):
 def compare(out, base, head, leg=LEGS['gpu']):
     """The gate's verdict on `head` against `base`: the report and whether it failed."""
     lines = [f'# {leg.title}: Rust Ir and allocator calls: `{base}` → `{head}`', '',
-             'Second steady frame. Fails when Rust Ir rises more than 1% or any allocator or memory-primitive call count rises.', '',
+             'Second steady frame. Fails when Rust Ir rises more than 1% or any allocator call count rises. Memory-primitive calls are diagnostic: compiler inlining changes whether the same copy is counted.', '',
              '| Scene | Phase | Rust Ir base | Rust Ir head | Δ | allocs | reallocs | deallocs | mem calls | |', '|---|---|---:|---:|---:|---:|---:|---:|---:|---|']
     failed = False
     for scene, phases in leg.scenes.items():
@@ -1020,7 +1032,7 @@ def compare(out, base, head, leg=LEGS['gpu']):
         for phase in phases:
             x, y = a[phase]['second'], b[phase]['second']
             delta = 100 * (y['rust_ir'] / x['rust_ir'] - 1)
-            ok = delta <= 1 and all(y[k] <= x[k] for k in ('allocs', 'reallocs', 'deallocs', 'mem_calls'))
+            ok = delta <= 1 and all(y[k] <= x[k] for k in ('allocs', 'reallocs', 'deallocs'))
             failed |= not ok
             counts = [f"{x[k]} → {y[k]}" for k in ('allocs', 'reallocs', 'deallocs', 'mem_calls')]
             lines.append(f"| {scene} | {phase} | {x['rust_ir']:,} | {y['rust_ir']:,} | {delta:+.3f}% | {' | '.join(counts)} | {'ok' if ok else 'FAIL'} |")

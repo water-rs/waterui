@@ -232,6 +232,12 @@ impl Region {
         let Some(added) = self.clip(x, y, width, height) else {
             return;
         };
+        // The first rectangle is already disjoint and normalized. Insert
+        // it directly instead of allocating scratch and copying it back.
+        if self.rects.is_empty() {
+            self.rects.push(added);
+            return;
+        }
         if self.rects.iter().any(|r| r.contains(added)) {
             return;
         }

@@ -8,6 +8,7 @@ mod composite;
 pub mod composition;
 mod content_range;
 mod damage;
+pub mod damage_debug;
 pub mod diag;
 #[cfg(target_os = "linux")]
 pub mod dmabuf_export;
@@ -700,7 +701,7 @@ impl SurfaceState {
         }
     }
 
-    fn lowering_bytes(&self) -> u64 {
+    fn lowering_bytes(&self, shared: &mut projective::Memory) -> u64 {
         #[cfg(target_os = "android")]
         let damage_bytes = (self.part_damage.capacity()
             * std::mem::size_of::<cherenkov::damage::Region>()) as u64
@@ -727,12 +728,12 @@ impl SurfaceState {
                 .projective
                 .values()
                 .flatten()
-                .map(projective::Entry::cpu_bytes)
+                .map(|entry| entry.cpu_bytes(shared))
                 .sum::<u64>()
             + self
                 .layers
                 .values()
-                .map(ContentData::gpu_input_bytes)
+                .map(|content| content.gpu_input_bytes(shared))
                 .sum::<u64>()
     }
 
@@ -4614,6 +4615,7 @@ impl Renderer for GpuRenderer {
     }
 
     fn memory(&self) -> MemoryUsage {
+        let mut shared = projective::Memory::default();
         let glyph_cache =
             self.atlas.cpu_bytes() + self.fonts.values().map(FontData::bounds_bytes).sum::<u64>();
         let cpu = glyph_cache
@@ -4627,7 +4629,7 @@ impl Renderer for GpuRenderer {
             + self
                 .surfaces
                 .values()
-                .map(SurfaceState::lowering_bytes)
+                .map(|surface| surface.lowering_bytes(&mut shared))
                 .sum::<u64>()
             + self
                 .surfaces
@@ -6610,7 +6612,7 @@ impl GpuRenderer {
                 .projective
                 .get(&r.key.layer)
                 .and_then(|entries| entries.iter().find(|entry| entry.matches(r.key)));
-            if old.is_some_and(|entry| entry.fits(r.levels[0])) {
+            if old.is_some_and(|entry| entry.fits(&r.levels)) {
                 continue;
             }
             let growth = r
@@ -6630,14 +6632,14 @@ impl GpuRenderer {
             let entries = surf.projective.entry(r.key.layer).or_default();
             let slot = entries.iter().position(|e| e.matches(r.key));
             if let Some(entry) = slot.map(|i| &mut entries[i])
-                && entry.fits(r.levels[0])
+                && entry.fits(&r.levels)
             {
                 entry.key = None;
                 entry.picture.clone_from(&r.picture);
                 continue;
             }
             let pipelines = self.projective.as_ref().expect("built above");
-            surf.command_damage.forget();
+            surf.command_damage.forget_target(Target::Projected(r.key));
             let mut entry =
                 projective::Entry::new(&self.device, pipelines, r.key.bucket, &r.levels, r.bytes());
             if r.picture.is_some() {
@@ -8647,6 +8649,16 @@ impl GpuRenderer {
         stats.projective_composed +=
             u32::try_from(composed.iter().filter(|key| key.picture.is_none()).count())
                 .unwrap_or(u32::MAX);
+        stats.picture_tiles_invalidated += u32::try_from(
+            realize
+                .iter()
+                .filter(|image| image.key.picture.is_some())
+                .count(),
+        )
+        .expect("frame tile count fits u32");
+        stats.picture_tiles_composed +=
+            u32::try_from(composed.iter().filter(|key| key.picture.is_some()).count())
+                .expect("frame tile count fits u32");
         #[cfg(not(target_arch = "wasm32"))]
         {
             self.picture_commands_pending |=
@@ -8769,6 +8781,8 @@ impl GpuRenderer {
                     required.add(x, y, w, h);
                 }
             });
+        stats.surface_pixels += u64::from(surf.size.0) * u64::from(surf.size.1);
+        stats.damaged_surface_pixels += surf.draw_demand.surface_pixels(&surf.frame, surf.size);
         surf.repaint_clears
             .prepare(&mut surf.frame, &surf.draw_demand);
         let region_max: Vec<_> = surf
@@ -9618,6 +9632,14 @@ impl GpuRenderer {
         let Some(surf) = self.surfaces.get_mut(&id) else {
             return Ok(());
         };
+        if let Some(sender) = &self.config.damage_diag {
+            let report =
+                damage_debug::capture(frame, id, surf.size, &surf.frame, &surf.draw_demand);
+            if sender.send(report).is_err() {
+                tracing::warn!("damage diagnostic receiver disconnected");
+                self.config.damage_diag = None;
+            }
+        }
         #[cfg(target_os = "android")]
         {
             surf.part_damage.resize_with(surf.plan.parts(), || {
@@ -9777,6 +9799,7 @@ impl GpuRenderer {
                 .epoch_at(i)
                 .map_or(i + 1, |epoch| epoch.passes.end);
             if (i..end).all(|pass| surf.draw_demand.pass(pass).is_empty()) {
+                stats.passes_culled += u32::try_from(end - i).expect("frame pass count fits u32");
                 reduce_slot += surf
                     .frame
                     .reduces

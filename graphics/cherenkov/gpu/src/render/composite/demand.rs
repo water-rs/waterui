@@ -16,12 +16,16 @@ use crate::render::{
 pub struct Demand {
     passes: Vec<Region>,
     staging: rustc_hash::FxHashMap<usize, Region>,
+    surface_union: Option<Region>,
 }
 
 impl Demand {
     pub fn bytes(&self) -> u64 {
-        (self.passes.capacity() * size_of::<Region>()
-            + self.staging.capacity() * size_of::<(usize, Region)>()) as u64
+        self.surface_union
+            .as_ref()
+            .map_or(0, |region| region.heap_bytes().0)
+            + (self.passes.capacity() * size_of::<Region>()
+                + self.staging.capacity() * size_of::<(usize, Region)>()) as u64
             + self
                 .staging
                 .values()
@@ -56,6 +60,36 @@ impl Demand {
         outputs.values().map(Region::pixel_area).sum()
     }
 
+    /// Root-output coverage, with overlapping compositor parts counted once.
+    /// A single root pass already owns the union, so it needs no scratch.
+    pub fn surface_pixels(&mut self, frame: &Frame, extent: (u32, u32)) -> u64 {
+        let mut roots =
+            frame.passes.iter().enumerate().filter_map(|(index, pass)| {
+                matches!(pass.target, Target::Part(_)).then_some(index)
+            });
+        let Some(first) = roots.next() else {
+            return 0;
+        };
+        let Some(second) = roots.next() else {
+            return self.pass(first).pixel_area();
+        };
+        let union = self
+            .surface_union
+            .get_or_insert_with(|| Region::new(extent));
+        if union.extent() == extent {
+            union.clear();
+        } else {
+            *union = Region::new(extent);
+        }
+        for index in [first, second].into_iter().chain(roots) {
+            for rect in self.passes[index].rectangles() {
+                let (x, y, width, height) = rect.xywh();
+                union.add(x, y, width, height);
+            }
+        }
+        union.pixel_area()
+    }
+
     pub fn raster_pass(&self, index: usize) -> &Region {
         self.staging.get(&index).unwrap_or_else(|| self.pass(index))
     }
@@ -88,9 +122,6 @@ impl Demand {
             if self.passes[index].is_empty() {
                 continue;
             }
-            // Enclose before following reads: the pixels between separate
-            // changes will also be rasterized and need valid input images.
-            add(&mut self.passes[index], [0; 4]);
             // The filter/shadow executors currently produce their whole
             // bounded image. Demand their entire input until their kernels
             // accept a restricted output and its sampling apron.
@@ -115,6 +146,14 @@ impl Demand {
             }
             for (read, range) in plan.reads[index].iter().zip(&frame.passes[index].ranges) {
                 if let Some(read) = read {
+                    if matches!(
+                        range.source,
+                        Some(crate::render::lower::Source::Projected(_))
+                    ) {
+                        // Persistent images are valid outside their seeded changes.
+                        // Sampling them does not require rewriting unchanged texels.
+                        continue;
+                    }
                     let whole = read.kind != ReadKind::CorrespondingPixel
                         || !super::plan::corresponds(
                             frame,
@@ -233,7 +272,6 @@ impl Changes {
         self.regions.reset(frame);
         for index in 0..frame.passes.len() {
             changed(index, &mut self.regions.passes[index]);
-            add(&mut self.regions.passes[index], [0; 4]);
             for read in [&plan.loads[index], &plan.backdrops[index]]
                 .into_iter()
                 .flatten()
@@ -248,6 +286,13 @@ impl Changes {
             }
             for (read, range) in plan.reads[index].iter().zip(&frame.passes[index].ranges) {
                 if let Some(read) = read {
+                    if let Some(writer) = read.writer
+                        && matches!(range.source, Some(crate::render::lower::Source::Projected(key)) if key.picture.is_some())
+                    {
+                        let (before, after) = self.regions.passes.split_at_mut(index);
+                        picture_changes(frame, range, &before[writer], &mut after[0]);
+                        continue;
+                    }
                     let whole = read.kind != ReadKind::CorrespondingPixel
                         || !super::plan::corresponds(
                             frame,
@@ -291,6 +336,81 @@ impl Changes {
                 if x0 < x1 && y0 < y1 {
                     add(destination, [x0, y0, x1 - x0, y1 - y0]);
                 }
+            }
+        }
+    }
+}
+
+/// Tile texels map through the exact common inverse uploaded to the shader.
+/// The stored apron bounds all reconstruction taps, including mip filtering.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "mapped bounds are clipped to the destination's integer extent"
+)]
+fn picture_changes(
+    frame: &Frame,
+    range: &crate::render::lower::DrawRange,
+    source: &Region,
+    destination: &mut Region,
+) {
+    use cherenkov::kurbo::{Affine, Rect, Vec2};
+    for instance in &frame.instances[range.instances.start as usize..range.instances.end as usize] {
+        let first = instance.meta[2] as usize;
+        let stops = &frame.stops[first..first + 3];
+        let w = f64::from(stops[2].color[2]);
+        let inverse = Affine::new([
+            f64::from(stops[0].color[0]) / w,
+            f64::from(stops[1].color[0]) / w,
+            f64::from(stops[0].color[1]) / w,
+            f64::from(stops[1].color[1]) / w,
+            f64::from(stops[0].color[2]) / w,
+            f64::from(stops[1].color[2]) / w,
+        ]);
+        let core = Rect::new(
+            f64::from(stops[0].offset),
+            f64::from(stops[0].pad[0]),
+            f64::from(stops[0].pad[1]),
+            f64::from(stops[0].pad[2]),
+        );
+        let origin = Vec2::new(f64::from(stops[1].offset), f64::from(stops[1].pad[0]));
+        let margin = core.origin().to_vec2() - origin;
+        let forward = inverse.inverse();
+        let [x0, y0, x1, y1] = instance.bounds.map(f64::from);
+        let (width, height) = destination.extent();
+        let bounds = Rect::new(x0, y0, x1, y1).intersect(Rect::new(
+            0.0,
+            0.0,
+            f64::from(width),
+            f64::from(height),
+        ));
+        for rect in source.rectangles() {
+            let changed = (Rect::new(
+                f64::from(rect.x0()),
+                f64::from(rect.y0()),
+                f64::from(rect.x1()),
+                f64::from(rect.y1()),
+            )
+            .inflate(margin.x, margin.y)
+                + origin)
+                .intersect(core);
+            if changed.is_zero_area() {
+                continue;
+            }
+            let mapped = forward
+                .transform_rect_bbox(changed)
+                .expand()
+                .intersect(bounds);
+            if !mapped.is_zero_area() {
+                add(
+                    destination,
+                    [
+                        mapped.x0 as u32,
+                        mapped.y0 as u32,
+                        (mapped.x1 - mapped.x0) as u32,
+                        (mapped.y1 - mapped.y0) as u32,
+                    ],
+                );
             }
         }
     }

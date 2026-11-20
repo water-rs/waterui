@@ -102,6 +102,9 @@ pub struct FrameSample {
     /// the run collected no attribution.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub composition: Option<crate::Composition>,
+    /// This frame's raster damage, where the engine exposes it.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub damage: Option<crate::DamageSample>,
     /// The Mali hardware counters this frame's GPU work added
     /// (`measure --gpu-counters`, [`crate::gpu_counters`]); omitted when
     /// the run read none.

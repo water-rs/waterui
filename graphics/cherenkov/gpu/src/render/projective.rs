@@ -7,6 +7,10 @@
 //! layer whose content, density and layout are unchanged draws only that
 //! quad: no local passes and no mip builds.
 
+mod memory;
+pub(super) mod tiles;
+pub(super) use memory::Memory;
+
 use cherenkov::LayerId;
 use cherenkov::lowering::projective::{Homography, Limits, LocalImage};
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -27,16 +31,16 @@ pub struct LocalKey {
     pub bucket: i32,
 }
 
-/// A nested picture's identity: the address of its immutable display list,
-/// which the retained snapshot keeps alive for as long as its pixels.
+/// A cell allocation owned by the grid and its retained image snapshots.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PictureId(std::num::NonZeroUsize);
 
 impl PictureId {
-    /// The identity of `picture`'s display list.
+    /// A cell keeps its allocation across picture replacements. The prepared
+    /// grid and every image snapshot own the allocation while its key is live.
     #[must_use]
-    pub fn of(picture: &cherenkov::Picture) -> Self {
-        Self(std::ptr::NonNull::from(picture.display_list()).addr())
+    pub fn cell(cell: &std::sync::Arc<[i32; 2]>) -> Self {
+        Self(std::ptr::NonNull::from(cell.as_ref()).addr())
     }
 }
 
@@ -63,6 +67,16 @@ pub struct Placement {
     pub bounds: [u32; 4],
     /// Texels per layer unit.
     pub density: f64,
+    /// Picture-texel ownership and texture origin. With a tile, `inverse`
+    /// maps absolute parent pixels to the common picture texel grid.
+    pub tile: Option<TilePlacement>,
+}
+
+/// The interior owns samples; the texture also holds its filtering apron.
+#[derive(Clone, Copy, Debug)]
+pub struct TilePlacement {
+    pub interior: kurbo::Rect,
+    pub origin: kurbo::Point,
 }
 
 impl Placement {
@@ -75,6 +89,7 @@ impl Placement {
             to_parent: image.to_parent,
             bounds: image.bounds,
             density: image.density,
+            tile: None,
         }
     }
 
@@ -90,7 +105,14 @@ impl Placement {
     )]
     pub fn record(&self) -> [Stop; 3] {
         let m = self.inverse.0;
-        let (ox, oy) = (f64::from(self.bounds[0]), f64::from(self.bounds[1]));
+        let (ox, oy) = if self.tile.is_some() {
+            // Every tile evaluates the same rounded coefficients at the
+            // same absolute point, so adjacent half-open cells cannot
+            // disagree on ownership through independent origin rounding.
+            (0.0, 0.0)
+        } else {
+            (f64::from(self.bounds[0]), f64::from(self.bounds[1]))
+        };
         let rows = m.map(|r| [r[0], r[1], r[2] + r[0].mul_add(ox, r[1] * oy)]);
         let max = rows
             .iter()
@@ -101,7 +123,7 @@ impl Placement {
         } else {
             1.0
         };
-        rows.map(|r| Stop {
+        let mut records = rows.map(|r| Stop {
             color: [
                 (r[0] * scale) as f32,
                 (r[1] * scale) as f32,
@@ -110,7 +132,18 @@ impl Placement {
             ],
             offset: 0.0,
             pad: [0.0; 3],
-        })
+        });
+        if let Some(tile) = self.tile {
+            records[0].offset = tile.interior.x0 as f32;
+            records[0].pad = [
+                tile.interior.y0 as f32,
+                tile.interior.x1 as f32,
+                tile.interior.y1 as f32,
+            ];
+            records[1].offset = tile.origin.x as f32;
+            records[1].pad[0] = tile.origin.y as f32;
+        }
+        records
     }
 }
 
@@ -293,12 +326,14 @@ pub struct Inputs {
 #[derive(Clone, Debug)]
 pub struct PictureImage {
     pub source: cherenkov::Picture,
-    pub domain: super::planes::static_layer::Domain,
+    pub grid: tiles::Grid,
+    pub anchor: kurbo::Vec2,
+    pub cell: std::sync::Arc<[i32; 2]>,
 }
 
 impl PictureImage {
     pub fn identity(&self) -> PictureId {
-        PictureId::of(&self.source)
+        PictureId::cell(&self.cell)
     }
 }
 
@@ -347,9 +382,8 @@ impl Entry {
         }
     }
 
-    /// CPU allocations retained by an image, including the immutable source.
-    /// Shared source allocations follow Content's per-retain accounting.
-    pub fn cpu_bytes(&self) -> u64 {
+    /// CPU allocations retained by an image, counting shared sources once.
+    pub fn cpu_bytes(&self, shared: &mut Memory) -> u64 {
         (std::mem::size_of::<Self>()
             + self.levels.capacity() * std::mem::size_of::<wgpu::TextureView>()
             + self.mips.capacity() * std::mem::size_of::<wgpu::BindGroup>()
@@ -357,10 +391,7 @@ impl Entry {
                 * std::mem::size_of::<((Option<usize>, Option<u64>), wgpu::BindGroup)>())
             as u64
             + self.picture.as_ref().map_or(0, |picture| {
-                picture
-                    .source
-                    .display_list()
-                    .heap_bytes(cherenkov::lowering::memory::command_bytes)
+                shared.source(&picture.source) + shared.cell(&picture.cell)
             })
     }
 
@@ -427,11 +458,11 @@ impl Entry {
         }
     }
 
-    /// Whether the texture's base level is `size`.
+    /// Whether the texture has the requested base size and mip chain.
     #[must_use]
-    pub fn fits(&self, size: (u32, u32)) -> bool {
+    pub fn fits(&self, levels: &[(u32, u32)]) -> bool {
         let s = self.texture.size();
-        (s.width, s.height) == size
+        (s.width, s.height) == levels[0] && self.levels.len() == levels.len()
     }
 
     /// Release obsolete texture views even while this cached image is undrawn.
@@ -698,6 +729,41 @@ mod tests {
     use cherenkov::kurbo::Affine;
 
     #[test]
+    fn neighboring_tiles_share_ownership_coordinates() {
+        let inverse = Homography::affine(Affine::new([1.1, 0.2, -0.3, 0.9, 0.25, -0.75]));
+        let mut placement = Placement {
+            key: LocalKey {
+                layer: LayerId::new(1),
+                picture: None,
+                bucket: 0,
+            },
+            inverse,
+            to_parent: Homography::affine(Affine::IDENTITY),
+            bounds: [0, 0, 90, 60],
+            density: 1.0,
+            tile: Some(TilePlacement {
+                interior: kurbo::Rect::new(0.0, 0.0, 64.0, 64.0),
+                origin: (-2.0, -2.0).into(),
+            }),
+        };
+        let left = placement.record();
+        placement.bounds = [40, 24, 150, 100];
+        placement.tile = Some(TilePlacement {
+            interior: kurbo::Rect::new(64.0, 0.0, 128.0, 64.0),
+            origin: (62.0, -2.0).into(),
+        });
+        let right = placement.record();
+        // These are classifier coefficients, not rendered pixels: both
+        // draws must evaluate precisely the same point at a shared edge.
+        for (left, right) in left.iter().zip(&right) {
+            assert_eq!(left.color.map(f32::to_bits), right.color.map(f32::to_bits));
+        }
+        assert_eq!(left[0].pad[1].to_bits(), right[0].offset.to_bits());
+        assert_eq!(left[1].offset.to_bits(), (-2.0_f32).to_bits());
+        assert_eq!(right[1].offset.to_bits(), 62.0_f32.to_bits());
+    }
+
+    #[test]
     fn records_evaluate_relative_to_the_region_origin_with_a_positive_scale() {
         let inverse = Homography([[2.0, 0.5, -30.0], [0.25, 3.0, 12.0], [0.001, 0.0, 1.5]]);
         let placement = Placement {
@@ -710,6 +776,7 @@ mod tests {
             to_parent: Homography::affine(Affine::IDENTITY),
             bounds: [40, 24, 90, 60],
             density: 1.0,
+            tile: None,
         };
         let rows = placement.record();
         let (x, y) = (57.5, 31.5);

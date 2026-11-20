@@ -36,6 +36,8 @@ mod render;
 /// The composition-attribution diagnostic: what each epoch keeps on chip
 /// and why the rest is materialized (issue #2547).
 pub use render::composition;
+/// Per-surface damage reports and drawable diagnostic overlays.
+pub use render::damage_debug;
 /// The allocation-event diagnostic sink (issue #169).
 pub use render::diag;
 /// The registered-effect module text the renderer compiles; exposed for
@@ -311,6 +313,11 @@ pub struct GpuConfig {
     /// this sink. Diagnostics only; the per-event allocator snapshot is
     /// deliberately expensive, so keep it out of timed runs.
     pub alloc_diag: Option<diag::Sink>,
+    /// Sends a report for each prepared surface. The receiver owns draining
+    /// reports; use their overlays on a separate diagnostic surface. No
+    /// report is allocated when disabled. A disconnected receiver disables
+    /// collection and emits a warning.
+    pub damage_diag: Option<std::sync::mpsc::Sender<damage_debug::Report>>,
     /// When set, each encoded surface records one
     /// [`composition::FrameReport`]: the frame's tile epochs, every
     /// materialized logical image with the reason the planner decided,
@@ -343,6 +350,7 @@ impl Default for GpuConfig {
             pipeline_cache: None,
             scratch_format: ScratchFormat::default(),
             alloc_diag: None,
+            damage_diag: None,
             composition_diag: None,
             creation_probe: None,
         }
