@@ -499,6 +499,7 @@ pub fn run<W: Windows>(
             Rc::clone(&theme),
             ParleyEngine::from_collection(&fonts, FontFamilyResolution::Lenient),
         );
+        renderer.set_offscreen_painter(&painter, FontFamilyResolution::Lenient);
         renderer.set_window_id(identities.mint_window_id());
         renderer.set_window_closable(window.closable);
         install_core_window_openers(&mut renderer, Rc::clone(&opener));

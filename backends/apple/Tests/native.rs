@@ -4241,7 +4241,7 @@ mod gpu_surface {
         );
     }
 
-    /// `ViewRenderer::render` over a GPU child on a sealed-failure
+    /// `OffscreenRenderer::render_to_rgba` over a GPU child on a sealed-failure
     /// generation resolves `Err(RenderError::Gpu(_))` — the Arc'd
     /// `HostedLayerError` stays in `source()` — instead of hanging or
     /// panicking: the central capture's terminal `Failed` arm answers
@@ -4252,10 +4252,10 @@ mod gpu_surface {
         use waterui_apple::dispatch;
         use waterui_apple::native_test_support::gpu_surface::{fixture_env, fixture_scene_view};
         use waterui_apple::native_test_support::view_renderer::{
-            GpuRuntime, HostedLayerError, install_service, scene_engine,
+            AppleBackend, GpuRuntime, HostedLayerError, scene_engine,
         };
-        use waterui_backend_core::AnyView;
-        use waterui_capture::view_renderer::{RenderError, RenderRequest, ViewRenderer};
+        use waterui_backend_core::NativeBackend as _;
+        use waterui_capture::view_renderer::{OffscreenRenderer as _, RenderError, RenderRequest};
         use waterui_graphics::backend::cherenkov::SurfaceError;
 
         let (runtime, mut env) = pollster::block_on(async {
@@ -4265,7 +4265,6 @@ mod gpu_surface {
         })
         .map_err(|error| format!("the fixture environment: {error}"))?;
         dispatch::install(&mut env);
-        install_service(&mut env);
 
         // Seal the shared generation the rendered leaf's `SceneView`
         // mounts on — the same typed carrier a real surface rejection
@@ -4283,16 +4282,15 @@ mod gpu_surface {
             max,
         }));
 
-        let renderer = env
-            .get::<ViewRenderer>()
-            .ok_or("the installed ViewRenderer service")?;
+        let renderer = AppleBackend::new(super::mtm()).offscreen(&env);
         // `block_on_main`, not `pollster`: the capture's completions
         // land on `DispatchQueue::main()`, which only a turning run
         // loop services.
         let Err(RenderError::Gpu(cause)) = waterui_apple::native_test_support::block_on_main(
             30.0,
-            renderer.render(
-                AnyView::new(fixture_scene_view()),
+            renderer.render_to_rgba(
+                fixture_scene_view(),
+                &env,
                 RenderRequest::new(
                     waterui_core::layout::Size::new(64.0, 64.0),
                     std::time::Duration::from_secs(10),
@@ -4322,7 +4320,7 @@ mod gpu_surface {
         Ok(())
     }
 
-    /// A windowless `ViewRenderer::render` over a healthy `SceneView`
+    /// A windowless `OffscreenRenderer::render_to_rgba` over a healthy `SceneView`
     /// resolves `Ok` with real pixels: the offscreen capture window
     /// declares `DynamicRange::Standard` for the hosted subtree (the
     /// render target is RGBA8), so the leaf's GPU surface resolves a
@@ -4330,9 +4328,9 @@ mod gpu_surface {
     pub fn view_render_succeeds_over_a_healthy_gpu_child() -> Result<(), libtest_mimic::Failed> {
         use waterui_apple::dispatch;
         use waterui_apple::native_test_support::gpu_surface::{fixture_env, fixture_scene_view};
-        use waterui_apple::native_test_support::view_renderer::{GpuRuntime, install_service};
-        use waterui_backend_core::AnyView;
-        use waterui_capture::view_renderer::{RenderRequest, ViewRenderer};
+        use waterui_apple::native_test_support::view_renderer::{AppleBackend, GpuRuntime};
+        use waterui_backend_core::NativeBackend as _;
+        use waterui_capture::view_renderer::{OffscreenRenderer as _, RenderRequest};
 
         let (_runtime, mut env) = pollster::block_on(async {
             let runtime = GpuRuntime::new().await.map_err(|error| error.to_string())?;
@@ -4341,15 +4339,13 @@ mod gpu_surface {
         })
         .map_err(|error| format!("the fixture environment: {error}"))?;
         dispatch::install(&mut env);
-        install_service(&mut env);
 
-        let renderer = env
-            .get::<ViewRenderer>()
-            .ok_or("the installed ViewRenderer service")?;
+        let renderer = AppleBackend::new(super::mtm()).offscreen(&env);
         let result = waterui_apple::native_test_support::block_on_main(
             30.0,
-            renderer.render(
-                AnyView::new(fixture_scene_view()),
+            renderer.render_to_rgba(
+                fixture_scene_view(),
+                &env,
                 RenderRequest::new(
                     waterui_core::layout::Size::new(64.0, 64.0),
                     std::time::Duration::from_secs(10),

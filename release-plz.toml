@@ -141,6 +141,10 @@ name = "waterui-graphics"
 version_group = "waterui"
 git_tag_name = "graphics-v{{ version }}"
 
+[[package]]
+name = "waterui-markdown"
+version_group = "waterui"
+
 # Multimedia components
 
 [[package]]

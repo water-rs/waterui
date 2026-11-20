@@ -2,7 +2,7 @@
 //!
 //! Used only by snapshot/export consumers — the headless runtime's
 //! [`HeadlessSnapshot`](crate::HeadlessSnapshot) capture,
-//! [`HydrolysisViewRenderer`](crate::HydrolysisViewRenderer)'s
+//! [`HydrolysisOffscreenRenderer`](crate::HydrolysisOffscreenRenderer)'s
 //! `render_to_rgba` and `waterui-testing`'s snapshots — never by the
 //! interactive frame loop, which stays GPU-resident end to end.
 

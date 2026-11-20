@@ -1,60 +1,51 @@
-//! The `view_renderer` service: the environment's `ViewRenderer` —
-//! `WuiViewRenderer.swift`'s `renderViewToRGBA`, ported.
+//! Offscreen capture through [`AppleOffscreenRenderer`] — `WuiViewRenderer.swift`'s
+//! `renderViewToRGBA`, ported onto [`OffscreenRenderer`].
 //!
 //! The rendered leaf mounts under a fresh [`ContentLedger`], joins its
 //! capture window and is laid out under the request's proposal; the
 //! capture then awaits the content the leaf's views owe, lays the leaf out
 //! again at the size that content gives it and captures it once into
 //! premultiplied RGBA8 — through the central native+GPU capture under
-//! `gpu_surface`, the plain offscreen bitmap path in a native-only build —
-//! the `CustomViewRenderer` contract.
+//! `gpu_surface`, the plain offscreen bitmap path in a native-only build.
 
-use waterui_backend_core::Environment;
+use waterui_backend_core::{Environment, View};
 use waterui_capture::ContentLedger;
-use waterui_capture::view_renderer::{
-    CustomViewRenderer, RenderError, RenderRequest, RenderResult, ViewRenderer,
-};
-use waterui_core::AnyView;
+use waterui_capture::view_renderer::{OffscreenRenderer, RenderError, RenderRequest, RenderResult};
 use waterui_core::env::With;
 use waterui_core::layout::{ProposalSize, Size};
 
-use crate::contract::{NativeLeaf, Renderer};
+use crate::contract::NativeLeaf;
 
-/// The backend's `CustomViewRenderer`: a `'static` `Renderer` carrying an
-/// environment clone and the main-thread proof.
-struct AppleViewRenderer {
-    renderer: Renderer,
+/// The Apple backend's [`OffscreenRenderer`]: renders a typed view under a
+/// fresh [`ContentLedger`] into premultiplied RGBA8 on the main thread.
+#[derive(Debug, Clone)]
+pub struct AppleOffscreenRenderer {
     mtm: cocoa_ui::MainThreadMarker,
 }
 
-impl core::fmt::Debug for AppleViewRenderer {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("AppleViewRenderer").finish_non_exhaustive()
+impl AppleOffscreenRenderer {
+    /// Creates an offscreen renderer on the main thread `mtm` proves.
+    #[must_use]
+    pub const fn new(mtm: cocoa_ui::MainThreadMarker) -> Self {
+        Self { mtm }
     }
 }
 
-impl CustomViewRenderer for AppleViewRenderer {
+impl OffscreenRenderer for AppleOffscreenRenderer {
     #[expect(
         clippy::future_not_send,
         reason = "view rendering runs on the main thread; the future borrows the non-Send native leaf and `MainThreadMarker` across the capture await"
     )]
-    async fn render_to_rgba(
+    async fn render_to_rgba<V: View>(
         &self,
-        view: AnyView,
+        view: V,
+        env: &Environment,
         request: RenderRequest,
     ) -> Result<RenderResult, RenderError> {
         let ledger = ContentLedger::new();
-        let leaf = self
-            .renderer
-            .render(AnyView::new(With::new(view, ledger.clone())));
-        let (pixels, width, height) = capture_leaf_to_rgba(
-            &leaf,
-            self.renderer.context().env(),
-            &ledger,
-            request,
-            self.mtm,
-        )
-        .await?;
+        let leaf = crate::dispatch::render(With::new(view, ledger.clone()), env, self.mtm);
+        let (pixels, width, height) =
+            capture_leaf_to_rgba(&leaf, env, &ledger, request, self.mtm).await?;
         Ok(RenderResult::new(pixels, width, height))
     }
 }
@@ -77,21 +68,6 @@ fn render_error(failure: crate::capture_image::CaptureFailure) -> RenderError {
         #[cfg(target_os = "ios")]
         CaptureFailure::NoWindowScene => RenderError::Capture(Box::new(failure)),
     }
-}
-
-/// The environment's `ViewRenderer`, replacing
-/// `waterui_env_install_view_renderer`.
-///
-/// Installs the native snapshot renderer into this environment.
-///
-/// # Panics
-///
-/// Off the main thread: the backend installs its services while starting on it.
-pub fn install_service(env: &mut Environment) {
-    let mtm = cocoa_ui::MainThreadMarker::new()
-        .expect("the backend installs its services on the main thread");
-    let renderer = crate::contract::RenderContext::new(env, mtm).renderer();
-    env.insert(ViewRenderer::new(AppleViewRenderer { renderer, mtm }));
 }
 
 /// Captures `leaf` into premultiplied RGBA8 under `request`'s proposal once

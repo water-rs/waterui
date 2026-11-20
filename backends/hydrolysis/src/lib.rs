@@ -66,7 +66,7 @@ pub mod testing;
 #[cfg(hydrolysis_runtime)]
 mod text;
 pub mod theme;
-#[cfg(hydrolysis_cherenkov)]
+#[cfg(hydrolysis_runtime)]
 mod view_renderer;
 #[cfg(hydrolysis_runtime)]
 mod widgets;
@@ -183,8 +183,8 @@ pub use text::ParleyEngine;
 pub use text::fonts::native_collection;
 #[cfg(hydrolysis_runtime)]
 pub use text::{DeclaredFonts, FontFamilyResolution};
-#[cfg(hydrolysis_cherenkov)]
-pub use view_renderer::HydrolysisViewRenderer;
+#[cfg(hydrolysis_runtime)]
+pub use view_renderer::HydrolysisOffscreenRenderer;
 #[cfg(hydrolysis_macos_system_webview)]
 pub use widgets::platform::webview::MacSystemWebViewController;
 #[cfg(hydrolysis_macos_system_webview)]

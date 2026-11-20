@@ -1151,14 +1151,15 @@ pub mod transition {
     pub use crate::transition::clock::ManualTransitionClock;
 }
 
-/// Re-exports the pieces a `ViewRenderer::render` trial needs.
+/// Re-exports the pieces an [`OffscreenRenderer`](waterui_capture::OffscreenRenderer) trial needs.
 ///
-/// The service installer, the shared-runtime handles a sealed generation
-/// is reached through, and the failure carriers the cause chain asserts
-/// on.
+/// The Apple backend/offscreen renderer, the shared-runtime handles a sealed
+/// generation is reached through, and the failure carriers the cause chain
+/// asserts on.
 #[cfg(all(target_os = "macos", feature = "gpu_surface"))]
 pub mod view_renderer {
-    pub use crate::components::view_renderer::install_service;
+    pub use crate::backend::AppleBackend;
+    pub use crate::components::view_renderer::AppleOffscreenRenderer;
     pub use crate::gpu_runtime::{EngineGeneration, SceneEngine, scene_engine};
     pub use waterui_graphics::gpu::GpuRuntime;
     pub use waterui_graphics::gpu::runtime::HostedLayerError;
@@ -1366,7 +1367,6 @@ pub fn install_gpu(
         env,
         objc2::MainThreadMarker::new().expect("GPU owners install on the main thread"),
     );
-    crate::components::view_renderer::install_service(env);
     // The dispatcher captures the environment at install time — re-run
     // the install so its root env sees the GPU services just inserted
     // (`handler.set`-driven remounts render through it).
