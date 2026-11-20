@@ -11,7 +11,6 @@
 use waterui::app::{App, Windows};
 use waterui::background::Glass;
 use waterui::handler::ViewBuilder;
-use waterui::icon::SystemIcon;
 use waterui::id::SelfId;
 use waterui::navigation::{TabBarMinimizeBehavior, TabRole};
 use waterui::prelude::theme_color::Accent;
@@ -21,6 +20,7 @@ use waterui::reactive::binding;
 use waterui::reactive::collection::List;
 use waterui::shape::{Circle, RoundedRectangle, ShapeExt};
 use waterui::views::ForEach;
+use waterui_apple::SfSymbol;
 
 /// Tab identity. `Tabs` is generic over it, so no `Id` reaches app code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -55,20 +55,17 @@ pub fn main() -> impl View {
 /// variant of one `OneOf4` its pane picks.
 fn pane_tab(pane: Pane) -> Tab<impl ViewBuilder<Output = NavigationView<impl View>>> {
     let (title, symbol) = match pane {
-        Pane::Surfaces => ("Surfaces", "square.on.square"),
-        Pane::Controls => ("Controls", "button.horizontal"),
-        Pane::About => ("About", "info.circle"),
-        Pane::Search => ("Search", "magnifyingglass"),
+        Pane::Surfaces => ("Surfaces", SfSymbol::SQUARE_ON_SQUARE),
+        Pane::Controls => ("Controls", SfSymbol::BUTTON_HORIZONTAL),
+        Pane::About => ("About", SfSymbol::INFO_CIRCLE),
+        Pane::Search => ("Search", SfSymbol::MAGNIFYINGGLASS),
     };
-    let tab = Tab::container(
-        label(title).icon(SystemIcon::new(symbol)),
-        move || match pane {
-            Pane::Surfaces => OneOf4::A(surfaces_page()),
-            Pane::Controls => OneOf4::B(controls_page()),
-            Pane::About => OneOf4::C(about_page()),
-            Pane::Search => OneOf4::D(search_page()),
-        },
-    );
+    let tab = Tab::container(label(title).icon(symbol), move || match pane {
+        Pane::Surfaces => OneOf4::A(surfaces_page()),
+        Pane::Controls => OneOf4::B(controls_page()),
+        Pane::About => OneOf4::C(about_page()),
+        Pane::Search => OneOf4::D(search_page()),
+    });
     // The role, not a different kind of tab: iOS places it trailing as the
     // system search tab with its own glass and presentation.
     if pane == Pane::Search {
@@ -84,7 +81,7 @@ fn pane_tab(pane: Pane) -> Tab<impl ViewBuilder<Output = NavigationView<impl Vie
 /// its subtitle stacked at the sizes a now-playing bar uses.
 fn now_playing() -> impl View {
     hstack((
-        label("Play").icon(SystemIcon::new("play.fill")),
+        label("Play").icon(SfSymbol::PLAY_FILL),
         vstack((
             text("Now Playing").bold().size(15.0),
             text("Liquid Glass — Surfaces").size(12.0),
@@ -170,9 +167,9 @@ fn controls_root() -> NavigationView<impl View> {
                 .spacing(12.0),
                 caption("Labels with symbols get the same capsule."),
                 hstack((
-                    button(label("Share").icon(SystemIcon::new("square.and.arrow.up")))
+                    button(label("Share").icon(SfSymbol::SQUARE_AND_ARROW_UP))
                         .style(ButtonStyle::Glass),
-                    button(label("Play").icon(SystemIcon::new("play.fill")))
+                    button(label("Play").icon(SfSymbol::PLAY_FILL))
                         .style(ButtonStyle::GlassProminent),
                 ))
                 .spacing(12.0),

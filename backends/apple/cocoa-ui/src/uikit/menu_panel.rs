@@ -1187,9 +1187,10 @@ fn row_configuration(
     } else {
         config.setBaseForegroundColor(Some(&palette.label));
     }
-    if let Some(name) = leading_symbol
-        && let Some(image) = UIImage::systemImageNamed(&NSString::from_str(name))
-    {
+    let image = leading_symbol
+        .and_then(|name| UIImage::systemImageNamed(&NSString::from_str(name)))
+        .or_else(|| command.image.clone());
+    if let Some(image) = image {
         config.setImage(Some(&image));
         config.setImagePlacement(NSDirectionalRectEdge::Leading);
         config.setImagePadding(8.0);

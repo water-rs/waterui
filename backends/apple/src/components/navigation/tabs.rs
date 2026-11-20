@@ -7,12 +7,12 @@
 //! The selection binding is two-way: native selection writes back, external
 //! writes select the matching tab.
 
-use alloc::vec::Vec;
+use alloc::{string::String, vec::Vec};
 
 use crate::contract::{Held, NativeLeaf};
 use waterui::navigation::{
     TabsLayout,
-    tab::{TabIcon, TabItem, TabRole},
+    tab::{TabItem, TabRole},
 };
 use waterui_core::id::Id;
 use waterui_core::layout::{
@@ -89,11 +89,19 @@ fn mount_tab(id: Id, tab: TabItem<Held>, renderer: &crate::contract::Renderer) -
     let pane = super::nav_view::realize_navigation_view(content.build(), &renderer.context());
     let label_leaf = renderer.realize(label.build());
     let label = extract_title_text(label_leaf.view());
-    let (symbol, icon_leaf) = match icon {
-        Some(TabIcon::System(icon)) => (Some(icon.name().to_string()), None),
-        Some(TabIcon::View(icon)) => (None, Some(renderer.render(icon.build()))),
-        None => (None, None),
-    };
+    let (symbol, icon_leaf) = icon.map_or_else(
+        || (None, None),
+        |builder| {
+            let icon_view = builder.build();
+            let symbol = icon_view
+                .downcast_ref::<crate::SfSymbol>()
+                .map(|symbol| String::from(symbol.as_str()));
+            symbol.map_or_else(
+                || (None, Some(renderer.render(icon_view))),
+                |name| (Some(name), None),
+            )
+        },
+    );
 
     Mounted {
         id,
@@ -514,7 +522,7 @@ mod platform {
 
 #[cfg(target_os = "macos")]
 mod platform {
-    use super::{Fill, Mounted, reconcile_tabs};
+    use super::{Fill, Mounted, ProposalSize, reconcile_tabs};
     use alloc::rc::Rc;
     use alloc::vec::Vec;
     use core::cell::RefCell;
@@ -534,13 +542,23 @@ mod platform {
     fn segments(mounted: &[Mounted]) -> Vec<Segment> {
         mounted
             .iter()
-            .map(|tab| Segment {
-                label: tab.label.clone(),
-                symbol: tab.symbol.clone(),
-                image: None,
-                enabled: tab.enabled.snapshot(),
-                badge: tab.badge.as_ref().map(|badge| badge.snapshot().to_string()),
-                is_search: tab.is_search,
+            .map(|tab| {
+                let image = tab.icon_leaf.as_ref().and_then(|icon_leaf| {
+                    let size = icon_leaf.layout().measure(ProposalSize::UNSPECIFIED).size;
+                    view::set_frame(
+                        icon_leaf.view(),
+                        Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height)),
+                    );
+                    cocoa_ui::bitmap::view_template_image(icon_leaf.view(), 18.0)
+                });
+                Segment {
+                    label: tab.label.clone(),
+                    symbol: tab.symbol.clone(),
+                    image,
+                    enabled: tab.enabled.snapshot(),
+                    badge: tab.badge.as_ref().map(|badge| badge.snapshot().to_string()),
+                    is_search: tab.is_search,
+                }
             })
             .collect()
     }

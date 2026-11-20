@@ -810,8 +810,6 @@ native_backend! {
         divider: waterui::layout::Divider,
         /// A resolved shape.
         shape: waterui::shape::ResolvedShape,
-        /// A system icon.
-        icon: waterui::icon::SystemIcon,
         /// A gradient fill.
         gradient: waterui::graphics::Gradient,
         #[cfg(waterui_feature = "table")]

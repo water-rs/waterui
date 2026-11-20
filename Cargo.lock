@@ -4776,7 +4776,6 @@ dependencies = [
  "waterui-core",
  "waterui-form",
  "waterui-graphics",
- "waterui-icon",
  "waterui-image",
  "waterui-inspector-protocol",
  "waterui-layout",
@@ -4971,9 +4970,9 @@ name = "icons-example"
 version = "0.1.0"
 dependencies = [
  "waterui",
+ "waterui-apple",
  "waterui-icons-lucide",
  "waterui-icons-material-icon",
- "waterui-icons-sf-symbol",
 ]
 
 [[package]]
@@ -6167,6 +6166,7 @@ name = "liquid-glass-example"
 version = "0.1.0"
 dependencies = [
  "waterui",
+ "waterui-apple",
 ]
 
 [[package]]
@@ -13170,7 +13170,6 @@ dependencies = [
  "thiserror 2.0.21",
  "waterui",
  "waterui-core",
- "waterui-icon",
  "waterui-layout",
  "waterui-locale",
  "waterui-macros",
@@ -13283,7 +13282,6 @@ dependencies = [
 name = "waterui-icon"
 version = "0.5.1"
 dependencies = [
- "suiteki",
  "waterui",
  "waterui-core",
  "waterui-graphics",
@@ -13342,22 +13340,6 @@ dependencies = [
  "waterui-icons-codegen",
  "waterui-svg",
  "waterui-testing",
-]
-
-[[package]]
-name = "waterui-icons-native"
-version = "0.5.1"
-dependencies = [
- "suiteki",
- "waterui-icon",
-]
-
-[[package]]
-name = "waterui-icons-sf-symbol"
-version = "0.5.1"
-dependencies = [
- "suiteki",
- "waterui-icon",
 ]
 
 [[package]]
@@ -13692,7 +13674,6 @@ dependencies = [
  "waterui-controls",
  "waterui-core",
  "waterui-graphics",
- "waterui-icon",
  "waterui-icons-lucide",
  "waterui-testing",
  "waterui-text",

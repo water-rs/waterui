@@ -256,7 +256,7 @@ mod tests {
                     .line_limit(2)
                     .font(Font::system(17.0, FontWeight::Semibold)),
             ),
-            Node::Image(Image::system("figure.walk").color(Color::ACCENT)),
+            Node::Image(Image::sf_symbol("figure.walk").color(Color::ACCENT)),
             Node::Image(Image::data([1_u8, 2, 3])),
             Node::Stack(hstack((text("a"), text("b"))).into()),
             Node::Shape(Shape::rounded_rectangle(12.0).fill(Color::SECONDARY)),

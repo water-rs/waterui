@@ -181,10 +181,6 @@ impl NativeBackend for AppleBackend {
         crate::components::resolved_shape::realize_resolved_shape(native, &self.entry(env))
     }
 
-    fn icon(&mut self, native: waterui::icon::SystemIcon, env: &Environment, (): ()) -> NativeLeaf {
-        crate::components::image::realize_system_icon(native, &self.entry(env))
-    }
-
     fn gradient(
         &mut self,
         native: waterui::graphics::Gradient,
@@ -1069,7 +1065,7 @@ impl NativeBackend for AppleBackend {
         )
     }
 
-    // `AppleView<T>` is the component `waterui-apple` provides outside
+    // `AppleView<T>` and `SfSymbol` are components `waterui-apple` provides outside
     // `NativeBackend`; every other payload outside `NativeBackend` is a
     // contract violation.
 
@@ -1079,6 +1075,9 @@ impl NativeBackend for AppleBackend {
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
+        if let Some(&symbol) = (&native as &dyn core::any::Any).downcast_ref::<crate::SfSymbol>() {
+            return crate::components::image::realize_sf_symbol(symbol, &self.entry(env));
+        }
         let _ = self.entry(env);
         let mut slot = crate::apple_content::AppleProvidedSlot {
             mtm: self.mtm,
@@ -1099,6 +1098,9 @@ impl NativeBackend for AppleBackend {
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
+        if let Some(symbol) = native.take::<crate::SfSymbol>() {
+            return crate::components::image::realize_sf_symbol(symbol, &self.entry(env));
+        }
         let _ = self.entry(env);
         let mut slot = crate::apple_content::AppleProvidedSlot {
             mtm: self.mtm,
