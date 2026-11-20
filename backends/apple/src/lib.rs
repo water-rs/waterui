@@ -14,6 +14,7 @@ compile_error!(
 #[cfg(all(feature = "webview-cef", not(target_os = "macos")))]
 compile_error!("waterui-apple: `webview-cef` is only supported on macOS");
 
+pub mod apple_content;
 pub mod backend;
 /// The offscreen capture shared by `view_renderer` and the `preview`
 /// entry — nothing else references it. With `gpu_surface` the captures go
@@ -36,6 +37,15 @@ pub mod resources;
 mod sf_symbol;
 
 pub use sf_symbol::SfSymbol;
+
+#[cfg(target_os = "macos")]
+pub use apple_content::objc2_app_kit;
+#[cfg(target_os = "ios")]
+pub use apple_content::objc2_ui_kit;
+pub use apple_content::{
+    AppleContent, AppleInvalidator, AppleMount, AppleView, MainThreadMarker, PlatformView,
+    Retained, objc2,
+};
 
 mod animation;
 #[cfg(feature = "gpu_surface")]

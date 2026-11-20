@@ -351,8 +351,8 @@ mod tests {
     fn a_shader_view_is_a_stretching_gpu_view() {
         let view = ShaderPaintView::new(FRAGMENT);
         let body = AnyView::new(view.body(&Environment::new()))
-            .downcast::<GpuView>()
-            .expect("a shader view's body is a GpuView");
+            .downcast::<GpuView<ShaderContent>>()
+            .expect("a shader view's body is a GpuView<ShaderContent>");
         assert_eq!(
             waterui_core::NativeView::stretch_axis(&*body),
             waterui_core::layout::StretchAxis::Both

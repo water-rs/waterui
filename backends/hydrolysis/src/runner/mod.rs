@@ -250,8 +250,8 @@ use crate::time::Instant;
 /// `env` must carry the installed theme — colour scheme and colour slots —
 /// the resolved background reads; every runner installs it before mounting
 /// a window.
-fn subscribe_window_declaration_signals<E: crate::text::TextEngine, C>(
-    window: &Window<C>,
+fn subscribe_window_declaration_signals<E: crate::text::TextEngine, C, T>(
+    window: &Window<C, T>,
     env: &Environment,
     core: &SemanticCore<E>,
 ) -> Vec<Retain> {
@@ -457,7 +457,7 @@ pub fn run<W: Windows>(
         termination: _,
     } = app.into_parts();
     let mut env = env.extending(waterui_graphics::backend::SceneViewMergeToParent);
-    waterui_core::install_application_resources(&mut env);
+    waterui::install_application_resources(&mut env);
     waterui::inspector::install(&mut env, inspector);
     let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
     let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
@@ -480,19 +480,7 @@ pub fn run<W: Windows>(
     // system's fonts for itself.
     let fonts = crate::text::fonts::native_collection(&env);
     fonts.clone().install(&mut env);
-    // The capture service mounts its subtree under a snapshot of the
-    // assembled environment — the theme tokens, hooks and font collection a
-    // window's subtree resolves — so it must be installed last
-    // (water-rs/waterui#2703).
     let painter = OffscreenPainter::select().unwrap_or_else(|error| exit_without_gpu(error));
-    env.insert(waterui_core::ViewRenderer::new(
-        crate::view_renderer::HydrolysisViewRenderer::on_painter(
-            &painter,
-            Rc::clone(&theme),
-            env.clone(),
-            FontFamilyResolution::Lenient,
-        ),
-    ));
     let identities = env
         .get::<crate::renderer::WindowIdentities>()
         .expect("install_window_registries seeds WindowIdentities")
@@ -514,6 +502,7 @@ pub fn run<W: Windows>(
             Rc::clone(&theme),
             ParleyEngine::from_collection(&fonts, FontFamilyResolution::Lenient),
         );
+        renderer.set_offscreen_painter(&painter, FontFamilyResolution::Lenient);
         renderer.set_window_id(identities.mint_window_id());
         renderer.set_window_closable(window.closable);
         install_core_window_openers(&mut renderer, Rc::clone(&opener));

@@ -745,7 +745,7 @@ pub fn run<W: Windows>(
         .map(waterui::inspector::InspectorRuntime::observe_signals);
 
     let mut env = env.extending(waterui_graphics::backend::SceneViewMergeToParent);
-    waterui_core::install_application_resources(&mut env);
+    waterui::install_application_resources(&mut env);
     waterui::inspector::install(&mut env, inspector);
     let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
     let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
@@ -830,7 +830,7 @@ pub fn run<W: Windows>(
     // `native_collection` above reports an environment without a
     // `ResourceContext`; with none there is no bundle to stage an icon in.
     let window_icon =
-        waterui_core::ResourceContext::from_environment(&env).and_then(load_staged_window_icon);
+        waterui::ResourceContext::from_environment(&env).and_then(load_staged_window_icon);
     // The machine installs `Quit` into the composition-root environment and
     // hands its hooks that environment as it stands now; their futures run
     // on the local executor the first `resumed` installs.
@@ -877,17 +877,6 @@ pub fn run<W: Windows>(
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     #[cfg(feature = "menu")]
     super::menu_bar::register_menu_bar::<crate::text::ParleyEngine>(&menu_bar, &env);
-    // The capture service mounts its subtree under a snapshot of the
-    // assembled environment — the theme tokens, hooks and font collection a
-    // window's subtree resolves — so it must be installed last
-    // (water-rs/waterui#2703).
-    env.insert(waterui_core::ViewRenderer::new(
-        crate::view_renderer::HydrolysisViewRenderer::new(
-            Rc::clone(&theme),
-            env.clone(),
-            FontFamilyResolution::Lenient,
-        ),
-    ));
     let mut runner = WinitRunner {
         env,
         theme,
@@ -1032,9 +1021,7 @@ struct WinitRunner {
 ///
 /// Absence is a legitimate state (bare `cargo run`, tests, previews without
 /// staging); a present-but-undecodable icon is reported and skipped.
-fn load_staged_window_icon(
-    resources: &waterui_core::ResourceContext,
-) -> Option<winit::window::Icon> {
+fn load_staged_window_icon(resources: &waterui::ResourceContext) -> Option<winit::window::Icon> {
     let root = waterui_assets::bundle_root(resources);
     let path = root.join(waterui_assets::WINDOW_ICON_FILE);
     let file = std::fs::File::open(&path).ok()?;
@@ -1084,7 +1071,7 @@ fn load_staged_window_icon(
 /// activation-token request, as the handle's docs say. The hook holds the
 /// native window weakly, so a request filed through a handle that outlived
 /// the window's teardown is a no-op.
-fn arm_window_focus_requests<C>(window: &Window<C>, native_window: &Arc<NativeWindow>) {
+fn arm_window_focus_requests<C, T>(window: &Window<C, T>, native_window: &Arc<NativeWindow>) {
     let native = Arc::downgrade(native_window);
     window.arm_focus_requests(move || {
         if let Some(native) = native.upgrade() {
@@ -1093,8 +1080,8 @@ fn arm_window_focus_requests<C>(window: &Window<C>, native_window: &Arc<NativeWi
     });
 }
 
-fn native_window_attributes<C>(
-    window: &Window<C>,
+fn native_window_attributes<C, T>(
+    window: &Window<C, T>,
     env: &Environment,
     activates: bool,
     icon: Option<winit::window::Icon>,
@@ -1197,7 +1184,7 @@ fn native_window_attributes<C>(
 /// when the window and the application both leave the identity unset, so
 /// winit's default (the executable name) applies.
 #[cfg(hydrolysis_wayland_platform)]
-fn window_desktop_identity<C>(window: &Window<C>) -> Option<(Str, Str)> {
+fn window_desktop_identity<C, T>(window: &Window<C, T>) -> Option<(Str, Str)> {
     let class = window.display_app_id();
     (!class.is_empty()).then(|| (class, window.display_instance_name()))
 }
@@ -1290,10 +1277,10 @@ impl WinitRunner {
     /// a context yet — the host has no GPU Hydrolysis can render on — the
     /// app cannot show anything: the error is logged and the process exits
     /// with a failure status.
-    fn create_platform_window<C>(
+    fn create_platform_window<C, T>(
         &mut self,
         native_window: Arc<NativeWindow>,
-        window: &Window<C>,
+        window: &Window<C, T>,
     ) -> Option<WinitWindow> {
         let wake = {
             let event_proxy = self.event_proxy.clone();

@@ -1,27 +1,44 @@
 use std::{mem, num::NonZeroUsize, ops::Range, str::FromStr};
 
+use executor_core::spawn_local;
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, Options, Parser, Tag};
 use suiteki::Str;
-use waterui_core::{AnyView, Environment, View};
-use waterui_graphics::color::{AccentColor, Blue, Color};
+use waterui_color::{AccentColor, Blue, BorderColor, Color, Srgb};
+use waterui_controls::button::{ButtonStyle, button};
+use waterui_core::{AnyView, Environment, View, contract_violation, plugin::Plugin};
 use waterui_layout::{
     Layout, LayoutError, PlacementInput, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
     SubviewPlacement, UnitPoint, ViewDimensions,
     container::FixedContainer,
+    frame::Frame,
     stack::{HStack, HorizontalAlignment, VStack, hstack},
 };
 #[cfg(feature = "media")]
 use waterui_media::{Url, photo::photo as media_photo};
 use waterui_text::{
     Text,
+    code::{OnCopied, code as code_widget},
     highlight::Language,
     styled::{MarkdownInlineBuilder, Style, StyledStr, heading_style},
     text,
 };
 
-#[cfg(feature = "snackbar")]
-use crate::snackbar::{Snackbar, SnackbarManager};
-use crate::{ViewExt, component::link::open_url, widget::Divider};
+/// Feedback hook installed by a host window when copying a fenced code block
+/// inside [`RichText`] should notify the user (for example via a snackbar).
+#[derive(Debug, Clone)]
+pub struct CodeCopyFeedback(pub OnCopied);
+
+impl Plugin for CodeCopyFeedback {}
+
+fn open_url(url: &str) {
+    let url = url.to_owned();
+    spawn_local(async move {
+        if let Err(e) = waterkit_deeplink::open_url(&url).await {
+            tracing::error!("Failed to open URL '{}': {:?}", url, e);
+        }
+    })
+    .detach();
+}
 
 /// Rich text widget for displaying formatted content.
 #[derive(Debug, Default, Clone)]
@@ -33,7 +50,7 @@ pub struct RichText {
 #[macro_export]
 macro_rules! include_markdown {
     ($path:expr) => {
-        $crate::widget::rich_text::RichText::from_markdown(::core::include_str!($path))
+        $crate::RichText::from_markdown(::core::include_str!($path))
     };
 }
 
@@ -85,9 +102,9 @@ pub enum RichTextElement {
     Divider,
     /// A mathematical formula, as LaTeX source.
     ///
-    /// Only produced when the `markdown-math` feature is on, because that is
+    /// Only produced when the `math` feature is on, because that is
     /// what enables the parser extension that recognises `$…$`.
-    #[cfg(feature = "markdown-math")]
+    #[cfg(feature = "math")]
     Math {
         /// The LaTeX between the delimiters.
         source: Str,
@@ -174,14 +191,16 @@ pub enum MarkdownTableAlignment {
 }
 
 impl View for RichTextElement {
-    fn body(self, _env: &Environment) -> impl View {
+    fn body(self, env: &Environment) -> impl View {
         match self {
             Self::Text(s) => AnyView::new(text(s)),
-            Self::Link { label, url } => {
-                AnyView::new(crate::component::link::link(text(label), url))
-            }
+            Self::Link { label, url } => AnyView::new(
+                button(text(label))
+                    .style(ButtonStyle::Link)
+                    .action(move || open_url(&url)),
+            ),
             Self::Image { src, alt: _ } => AnyView::new(render_image(&src)),
-            #[cfg(feature = "markdown-math")]
+            #[cfg(feature = "math")]
             Self::Math { source, block } => AnyView::new(render_math(source, block)),
             Self::Table {
                 headers,
@@ -198,24 +217,18 @@ impl View for RichTextElement {
                 info,
                 language,
             } => {
-                let view = crate::widget::code(language, code);
+                let view = code_widget(language, code);
                 let view = match info {
                     Some(info) => view.info(info),
                     None => view,
                 };
-                // Copy feedback goes through the window's `SnackbarManager`, a
-                // semantic object the runtime owns. `Code` cannot name it — it
-                // lives in `waterui-text` — and this is the one place a fence
-                // is rendered from Markdown, so the snackbar coupling is here.
-                #[cfg(feature = "snackbar")]
-                let view = view.on_copied(|env| {
-                    match env.extract::<SnackbarManager>() {
-                        Ok(snackbar) => snackbar.show(Snackbar::new("Copied to clipboard")),
-                        Err(error) => crate::contract_violation!(
-                            "the window's environment carries no SnackbarManager, so the copy shows no feedback: {error}"
-                        ),
-                    }
-                });
+                // Copy feedback goes through the host-installed `CodeCopyFeedback`
+                // plugin (for example the window's `SnackbarManager`), keeping
+                // `waterui-markdown` independent of runtime overlays.
+                let view = match env.get::<CodeCopyFeedback>().cloned() {
+                    Some(feedback) => view.on_copied(move |env| feedback.0.call(env)),
+                    None => view,
+                };
                 AnyView::new(view)
             }
             Self::Quote { content } => AnyView::new(quote(content)),
@@ -228,7 +241,7 @@ impl View for RichTextElement {
                     AnyView::new(VStack::from_iter(elements))
                 }
             }
-            Self::Divider => AnyView::new(Divider),
+            Self::Divider => AnyView::new(Frame::new(Color::new(BorderColor)).height(1.0)),
         }
     }
 }
@@ -238,11 +251,11 @@ impl View for RichTextElement {
 /// Left on in a build with no math renderer, every dollar sign in prose would
 /// start a formula that nothing could draw — so the extension is enabled with
 /// the renderer and not otherwise.
-#[cfg(feature = "markdown-math")]
+#[cfg(feature = "math")]
 const MATH_OPTIONS: Options = Options::ENABLE_MATH;
 
 /// The Markdown parser recognises no math without a renderer for it.
-#[cfg(not(feature = "markdown-math"))]
+#[cfg(not(feature = "math"))]
 const MATH_OPTIONS: Options = Options::empty();
 
 /// Typesets a formula parsed out of Markdown.
@@ -250,7 +263,7 @@ const MATH_OPTIONS: Options = Options::empty();
 /// `$$…$$` is set in display style, which is what gives a summation its
 /// full-height limits and a fraction its wider spacing; `$…$` is set inline so
 /// it sits at the size of the surrounding prose.
-#[cfg(feature = "markdown-math")]
+#[cfg(feature = "math")]
 fn render_math(source: Str, block: bool) -> AnyView {
     let formula = waterui_math::view::Math::new(source);
     AnyView::new(if block {
@@ -276,7 +289,7 @@ fn render_image(src: &Str) -> AnyView {
 
     #[cfg(not(feature = "media"))]
     {
-        crate::contract_violation!(
+        contract_violation!(
             "RichText image rendering requires the `media` feature, so the image renders nothing: {src}"
         );
         AnyView::default()
@@ -308,7 +321,7 @@ fn render_list(items: &[RichTextElement], ordered: bool, start: usize) -> impl V
 
 fn quote(content: Vec<RichTextElement>) -> impl View {
     // Quote marker: fixed width, stretch to fill height (use max_height to trigger stretch)
-    let quote_marker = Blue.width(4.0).max_height(f32::MAX);
+    let quote_marker = Frame::new(Blue).width(4.0).max_height(f32::MAX);
     hstack((
         quote_marker,
         VStack::from_iter(content).alignment(HorizontalAlignment::Leading),
@@ -336,7 +349,9 @@ fn render_table(
                 .bold(),
         )
     }));
-    cells.push(AnyView::new(Divider));
+    cells.push(AnyView::new(
+        Frame::new(Color::new(BorderColor)).height(1.0),
+    ));
 
     for row in rows {
         cells.extend((0..col_count).map(|col_idx| {
@@ -576,7 +591,7 @@ fn finite_or_zero(value: f32, what: &str) -> f32 {
     if value.is_finite() {
         return value;
     }
-    crate::contract_violation!("{what} is {value}, which is not finite, so it counts as 0");
+    contract_violation!("{what} is {value}, which is not finite, so it counts as 0");
     0.0
 }
 
@@ -897,7 +912,7 @@ fn parse_markdown(markdown: &str) -> Vec<RichTextElement> {
             // `$…$` and `$$…$$`. These only arrive when the parser is built
             // with `ENABLE_MATH`, which happens only under this feature, so
             // without it a dollar sign stays ordinary text.
-            #[cfg(feature = "markdown-math")]
+            #[cfg(feature = "math")]
             Event::InlineMath(source) => {
                 push_inline_element(
                     &mut stack,
@@ -907,7 +922,7 @@ fn parse_markdown(markdown: &str) -> Vec<RichTextElement> {
                     },
                 );
             }
-            #[cfg(feature = "markdown-math")]
+            #[cfg(feature = "math")]
             Event::DisplayMath(source) => {
                 push_inline_element(
                     &mut stack,
@@ -921,11 +936,11 @@ fn parse_markdown(markdown: &str) -> Vec<RichTextElement> {
             // so these cannot be produced. Saying so is better than a silent
             // arm that would quietly render a formula as its own source if the
             // options above ever changed.
-            #[cfg(not(feature = "markdown-math"))]
+            #[cfg(not(feature = "math"))]
             Event::InlineMath(_) | Event::DisplayMath(_) => {
                 unreachable!(
                     "pulldown-cmark emitted a math event, but the parser is built without \
-                     ENABLE_MATH; enable the `markdown-math` feature to render formulas"
+                     ENABLE_MATH; enable the `math` feature to render formulas"
                 )
             }
             Event::Html(text) | Event::FootnoteReference(text) | Event::InlineHtml(text) => {
@@ -1001,7 +1016,7 @@ fn inline_code_style() -> Style {
     Style::default()
         .font(waterui_text::font::Body)
         .monospaced()
-        .background(waterui_graphics::color::Srgb::new_u8(236, 239, 241))
+        .background(Srgb::new_u8(236, 239, 241))
 }
 
 fn ordered_list_start(start: Option<u64>) -> usize {
@@ -1400,7 +1415,7 @@ mod tests {
     }
 
     /// With the renderer present, `$…$` becomes a formula rather than prose.
-    #[cfg(feature = "markdown-math")]
+    #[cfg(feature = "math")]
     #[test]
     fn inline_and_display_math_become_math_elements() {
         fn count(elements: &[RichTextElement], inline: &mut usize, block: &mut usize) {
@@ -1429,7 +1444,7 @@ mod tests {
 
     /// The formula's LaTeX must not also appear as prose. Rendering the source
     /// alongside, or instead of, the formula is the defect this replaces.
-    #[cfg(feature = "markdown-math")]
+    #[cfg(feature = "math")]
     #[test]
     fn math_source_does_not_leak_into_the_text() {
         let elements = parse_markdown("value $x^2$ end");
@@ -1442,7 +1457,7 @@ mod tests {
 
     /// Without the renderer the parser has no math extension, so a dollar sign
     /// is an ordinary character and nothing panics on prose that contains one.
-    #[cfg(not(feature = "markdown-math"))]
+    #[cfg(not(feature = "math"))]
     #[test]
     fn a_dollar_sign_is_ordinary_text_without_the_math_feature() {
         let elements = parse_markdown("it costs $5 and $10, or $x$ if you prefer");

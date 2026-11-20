@@ -261,6 +261,8 @@ thiserror = "2.0.21"
 url = "2.5"
 uuid = { version = "1.28.0", default-features = false, features = ["v4", "std"] }
 waterui-core = { version = "0.5.1", path = "core" }
+waterui-capture = { version = "0.5.1", path = "components/foundation/capture", default-features = false }
+waterui-resources = { version = "0.5.1", path = "utils/resources" }
 # Renamed and extracted to water-rs/suiteki.
 suiteki = { version = "0.1", features = ["nami"] }
 waterui-url = { version = "0.5.1", path = "utils/url" }
@@ -283,14 +285,15 @@ waterui-navigation = { version = "0.5.1", path = "components/foundation/navigati
 waterui-webview = { version = "0.5.1", path = "components/platform/webview" }
 waterui-widgets = { version = "0.5.1", path = "components/platform/widgets" }
 waterui-chromium = { version = "0.5.1", path = "components/platform/chromium" }
-waterui-browser-cef = { version = "0.1.0", git = "https://github.com/water-rs/browsers", branch = "refactor/webview-engine", default-features = false }
-waterui-browser-wpe = { version = "0.1.0", git = "https://github.com/water-rs/browsers", branch = "refactor/webview-engine", default-features = false }
+waterui-browser-cef = { version = "0.1.0", git = "https://github.com/water-rs/browsers", branch = "main", default-features = false }
+waterui-browser-wpe = { version = "0.1.0", git = "https://github.com/water-rs/browsers", branch = "main", default-features = false }
 wgpu-external-frame = "0.4.0"
 waterui-icon = { version = "0.5.1", path = "components/foundation/icon" }
 waterui-icons-material-icon = { version = "0.5.1", path = "components/icon/material" }
 waterui-icons-lucide = { version = "0.5.1", path = "components/icon/lucide" }
 waterui-locale = { version = "0.5.1", path = "utils/locale" }
 waterui-map = { version = "0.5.1", path = "components/data/map" }
+waterui-markdown = { version = "0.5.1", path = "components/visual/markdown", default-features = false }
 waterui-meta = { version = "0.5.1", path = "utils/meta" }
 waterui-git-head = { version = "0.5.1", path = "utils/git-head" }
 waterui-contract = { version = "0.5.1", path = "utils/contract" }
@@ -387,6 +390,9 @@ sysinfo = { version = "0.39", default-features = false, features = ["system"] }
 sys-locale = "0.3"
 iana-time-zone = "0.1"
 dirs = "7"
+pulldown-cmark = "0.13"
+tree-sitter = "0.27"
+tree-sitter-md = "0.5.3"
 
 
 [dependencies]
@@ -505,7 +511,11 @@ flow-markdown = ["waterui-internal/flow-markdown", "waterui-dylib?/flow-markdown
 # layout engine, an OpenType `MATH` table reader, a LaTeX parser and MathCAT's
 # speech rules — about 2.7 MiB — and a bundled math font for the asset pipeline,
 # and `all` is what every full-feature CI leg builds on every platform.
-markdown-math = ["waterui-internal/markdown-math", "waterui-dylib?/markdown-math"]
+markdown-math = [
+    "flow-markdown",
+    "waterui-internal/markdown-math",
+    "waterui-dylib?/markdown-math",
+]
 std = ["waterui-internal/std", "waterui-dylib?/std"]
 dynamic_linking = ["dep:waterui-dylib"]
 canvas = ["waterui-internal/canvas", "waterui-dylib?/canvas"]
@@ -758,7 +768,7 @@ wgpu-external-frame = { git = "https://github.com/water-rs/wgpu-external-frame",
 # `main` branch; `Cargo.lock` records the exact commit.
 waterui-barcode = { git = "https://github.com/water-rs/barcode", branch = "main" }
 waterui-chart = { git = "https://github.com/water-rs/chart", branch = "main" }
-waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", branch = "main" }
+waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", branch = "refactor/4816-static-gpu-view" }
 waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", branch = "main" }
 waterui-particle = { git = "https://github.com/water-rs/particle", branch = "main" }
 waterui-image = { git = "https://github.com/water-rs/image", branch = "main" }

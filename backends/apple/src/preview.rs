@@ -6,7 +6,7 @@
 //! does — startup, the GPU runtime, native services — under the main run
 //! loop rather than the platform's application run loop, mounts the view
 //! on a root `HostView` inside a capture window under a fresh
-//! [`ContentLedger`](waterui_core::ContentLedger), waits for the content
+//! [`ContentLedger`](waterui_capture::ContentLedger), waits for the content
 //! its views owe — bounded by the run's content deadline — and for GPU
 //! surfaces to present, captures the whole subtree and writes the PNG. The
 //! process answers only through `main`'s return — no Dock icon, no focus,
@@ -35,8 +35,8 @@ use cocoa_ui::MainThreadMarker;
 use cocoa_ui::appkit::{ActivationPolicy, Application};
 use cocoa_ui::objc2_core_foundation::CFRunLoop;
 use waterui_backend_core::Environment;
-use waterui_core::ResourceContext;
 use waterui_preview_protocol::run::{Alpha, PreviewRunConfig, PreviewRunMode};
+use waterui_resources::ResourceContext;
 
 /// The capture failure a preview run reports — `ViewCapture`'s with
 /// `gpu_surface`, the bitmap readback's without it.
@@ -91,7 +91,7 @@ pub enum PreviewError {
     /// A view still owed content when the run's content deadline passed, or
     /// its content failed to load.
     #[error(transparent)]
-    Content(#[from] waterui_core::content_ledger::ContentError),
+    Content(#[from] waterui_capture::content_ledger::ContentError),
     /// Encoding or writing the capture PNG failed.
     #[error(transparent)]
     Write(#[from] waterui_preview_protocol::run::PngError),
@@ -213,6 +213,10 @@ fn drive(
                 // `drive` lent `env` for its frame; this closure is the
                 // only consumer and runs once, on the main thread.
                 let env = &mut *env_ptr;
+                #[cfg(any(
+                    feature = "webview",
+                    all(target_os = "macos", feature = "webview-cef")
+                ))]
                 crate::embedding::install_services(env);
                 let env = compose(env.clone());
                 #[cfg(any(feature = "webview", all(target_os = "macos", feature = "webview-cef")))]
@@ -363,7 +367,7 @@ struct Capture<'a> {
 /// its views owe, captures the presented subtree and writes its PNG — the
 /// one tail [`run`] runs and every capture the entry performs ends in.
 ///
-/// The view mounts under a fresh [`ContentLedger`](waterui_core::ContentLedger):
+/// The view mounts under a fresh [`ContentLedger`](waterui_capture::ContentLedger):
 /// the capture rasterizes only once a full drain leaves nothing owed.
 /// Apple's bitmap context reads premultiplied RGBA8 — the convention the
 /// writer declares for the capture.
@@ -386,7 +390,7 @@ async fn render_and_write(
     capture: Capture<'_>,
 ) -> Result<(), PreviewError> {
     let render_started = Instant::now();
-    let ledger = waterui_core::ContentLedger::new();
+    let ledger = waterui_capture::ContentLedger::new();
     let content_env = env.extending(ledger.clone());
     let stage = Stage::mount(&content_env, mtm, host, view, capture.size);
     crate::content::await_content(&ledger, &stage.root, capture.content_deadline).await?;
@@ -565,7 +569,9 @@ impl Stage {
         clippy::future_not_send,
         reason = "the capture runs on the main thread; the Retained native objects it holds across the wait are not Send"
     )]
-    async fn capture(&self) -> Result<waterui_core::view_renderer::RenderResult, CaptureFailure> {
+    async fn capture(
+        &self,
+    ) -> Result<waterui_capture::view_renderer::RenderResult, CaptureFailure> {
         // The window is never ordered in, so its display pass never runs on
         // its own: run it explicitly — it draws the backing stores and
         // attaches every subview's backing layer into the root layer tree
@@ -573,7 +579,7 @@ impl Stage {
         #[cfg(target_os = "macos")]
         self.window.displayIfNeeded();
         let result = self.drive.capture_rgba().await?;
-        Ok(waterui_core::view_renderer::RenderResult::new(
+        Ok(waterui_capture::view_renderer::RenderResult::new(
             result.pixels,
             result.width,
             result.height,
@@ -588,7 +594,9 @@ impl Stage {
         clippy::future_not_send,
         reason = "the capture runs on the main thread; the Retained native objects it holds across the wait are not Send"
     )]
-    async fn capture(&self) -> Result<waterui_core::view_renderer::RenderResult, CaptureFailure> {
+    async fn capture(
+        &self,
+    ) -> Result<waterui_capture::view_renderer::RenderResult, CaptureFailure> {
         crate::capture::capture_presented(&self.root).await
     }
 }

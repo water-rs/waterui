@@ -241,7 +241,7 @@ impl PlatformWindow for HeadlessPlatformWindow {
         self.inner.content_size()
     }
 
-    fn apply_properties<C>(&mut self, window: &Window<C>) {
+    fn apply_properties<C, T>(&mut self, window: &Window<C, T>) {
         self.inner.apply_properties(window);
     }
 
@@ -607,9 +607,9 @@ impl HeadlessRuntime {
     ///
     /// # Errors
     /// [`PainterUnavailable`], as [`Self::new`].
-    pub fn new_with_window(
+    pub fn new_with_window<C: ViewBuilder, T: waterui::window::WindowToolbar>(
         env: Environment,
-        window: Window<impl ViewBuilder>,
+        window: Window<C, T>,
         width: u32,
         height: u32,
         style: impl crate::Style,
@@ -709,9 +709,9 @@ impl HeadlessRuntime {
     /// [`Self::new_for_tests`].
     #[cfg(any(test, feature = "testing"))]
     #[must_use]
-    pub fn new_for_tests_with_window(
+    pub fn new_for_tests_with_window<C: ViewBuilder, T: waterui::window::WindowToolbar>(
         env: Environment,
-        window: Window<impl ViewBuilder>,
+        window: Window<C, T>,
         width: u32,
         height: u32,
         style: impl crate::Style,
@@ -778,7 +778,7 @@ impl HeadlessRuntime {
             .as_ref()
             .map(waterui::inspector::InspectorRuntime::runtime_probe);
         let mut env = env.extending(waterui_graphics::backend::SceneViewMergeToParent);
-        waterui_core::install_application_resources(&mut env);
+        waterui::install_application_resources(&mut env);
         waterui::inspector::install(&mut env, inspector);
         let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
         #[cfg(any(test, hydrolysis_platform_services))]
@@ -802,18 +802,6 @@ impl HeadlessRuntime {
         // environment instead of enumerating the system's fonts for itself.
         let fonts = crate::text::fonts::native_collection(&env);
         fonts.clone().install(&mut env);
-        // The capture service mounts its subtree under a snapshot of the
-        // assembled environment — the theme tokens, hooks and font
-        // collection a window's subtree resolves — so it must be installed
-        // last (water-rs/waterui#2703).
-        env.insert(waterui_core::ViewRenderer::new(
-            crate::view_renderer::HydrolysisViewRenderer::on_painter(
-                &painter,
-                Rc::clone(&theme),
-                env.clone(),
-                family_resolution,
-            ),
-        ));
 
         // Headless binaries (preview, tests) have no platform runner to install
         // a tracing subscriber; honor `RUST_LOG` and `WATERUI_LOG` here so they
@@ -848,6 +836,7 @@ impl HeadlessRuntime {
             Rc::clone(&theme),
             ParleyEngine::from_collection(&fonts, family_resolution),
         );
+        renderer.set_offscreen_painter(&painter, family_resolution);
         renderer.set_window_id(
             env.get::<crate::renderer::WindowIdentities>()
                 .expect("install_window_registries seeds WindowIdentities")
@@ -904,6 +893,7 @@ impl HeadlessRuntime {
             Rc::clone(&self.theme),
             ParleyEngine::from_collection(&self.fonts, self.family_resolution),
         );
+        renderer.set_offscreen_painter(&self.painter, self.family_resolution);
         renderer.set_window_id(
             self.env
                 .get::<crate::renderer::WindowIdentities>()

@@ -78,6 +78,14 @@ name = "waterui-easing"
 version_group = "waterui"
 
 [[package]]
+name = "waterui-resources"
+version_group = "waterui"
+
+[[package]]
+name = "waterui-capture"
+version_group = "waterui"
+
+[[package]]
 name = "waterui-testing"
 version_group = "waterui"
 
@@ -132,6 +140,10 @@ git_tag_name = "navigation-v{{ version }}"
 name = "waterui-graphics"
 version_group = "waterui"
 git_tag_name = "graphics-v{{ version }}"
+
+[[package]]
+name = "waterui-markdown"
+version_group = "waterui"
 
 # Multimedia components
 

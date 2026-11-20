@@ -15,7 +15,7 @@ use crate::component::{
     label::SemanticLabel,
     menu::{CloseWindowChord, Menu, MenuBarView},
 };
-use crate::window::{AnyWindow, Window, WindowChannel, WindowContent};
+use crate::window::{AnyWindow, Window, WindowChannel, WindowContent, WindowToolbar};
 
 pub use crate::runtime::termination::{
     Quit, Termination, TerminationHandle, TerminationHost, TerminationKind,
@@ -107,11 +107,11 @@ pub trait Windows: 'static {
     {
         struct Erase(Vec<AnyWindow>);
         impl WindowSink for Erase {
-            fn window<C: ViewBuilder>(&mut self, window: Window<C>) {
+            fn window<C: ViewBuilder, T: WindowToolbar>(&mut self, window: Window<C, T>) {
                 self.0.push(window.erase());
             }
 
-            fn channel<C: ViewBuilder>(&mut self, channel: WindowChannel<C>) {
+            fn channel<C: ViewBuilder, T: WindowToolbar>(&mut self, channel: WindowChannel<C, T>) {
                 self.0
                     .extend(channel.drain().into_iter().map(Window::erase));
             }
@@ -123,16 +123,16 @@ pub trait Windows: 'static {
 }
 
 /// Receives an application's startup windows and runtime window channels, each
-/// with its own content type.
+/// with its own content and toolbar types.
 ///
 /// A runner implements it to turn each window and channel into the form it
-/// holds, so the content dispatches statically below the window.
+/// holds, so the content and toolbar dispatch statically below the window.
 pub trait WindowSink {
     /// Receives the next startup window.
-    fn window<C: ViewBuilder>(&mut self, window: Window<C>);
+    fn window<C: ViewBuilder, T: WindowToolbar>(&mut self, window: Window<C, T>);
 
     /// Connects a channel of windows opened while the application runs.
-    fn channel<C: ViewBuilder>(&mut self, channel: WindowChannel<C>);
+    fn channel<C: ViewBuilder, T: WindowToolbar>(&mut self, channel: WindowChannel<C, T>);
 }
 
 impl Windows for () {
@@ -143,7 +143,7 @@ impl Windows for () {
     fn for_each<S: WindowSink>(self, _sink: &mut S) {}
 }
 
-impl<C: ViewBuilder> Windows for Window<C> {
+impl<C: ViewBuilder, T: WindowToolbar> Windows for Window<C, T> {
     fn len(&self) -> usize {
         1
     }
@@ -153,7 +153,7 @@ impl<C: ViewBuilder> Windows for Window<C> {
     }
 }
 
-impl<C: ViewBuilder> Windows for WindowChannel<C> {
+impl<C: ViewBuilder, T: WindowToolbar> Windows for WindowChannel<C, T> {
     fn len(&self) -> usize {
         self.queued_len()
     }
@@ -163,7 +163,7 @@ impl<C: ViewBuilder> Windows for WindowChannel<C> {
     }
 }
 
-impl<C: ViewBuilder> Windows for Vec<Window<C>> {
+impl<C: ViewBuilder, T: WindowToolbar> Windows for Vec<Window<C, T>> {
     fn len(&self) -> usize {
         self.as_slice().len()
     }
@@ -175,7 +175,7 @@ impl<C: ViewBuilder> Windows for Vec<Window<C>> {
     }
 }
 
-impl<C: ViewBuilder, const N: usize> Windows for [Window<C>; N] {
+impl<C: ViewBuilder, T: WindowToolbar, const N: usize> Windows for [Window<C, T>; N] {
     fn len(&self) -> usize {
         N
     }
