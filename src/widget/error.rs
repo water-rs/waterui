@@ -34,7 +34,7 @@
 //!
 //! let view = ErrorView::with_builder(
 //!     io::Error::other("connection reset"),
-//!     |err: io::Error| text!("Request failed: {err}"),
+//!     |err: io::Error| text(format!("Request failed: {err}")),
 //! );
 //! # let _ = view;
 //! ```
@@ -52,7 +52,7 @@
 //! fn my_view() -> impl View {
 //!     load_data()
 //!         .map(text)
-//!         .error_view(|err| text!("Failed to load: {err}"))
+//!         .error_view(|err| text(format!("Failed to load: {err}")))
 //! }
 //! ```
 
