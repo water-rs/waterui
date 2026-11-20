@@ -65,9 +65,14 @@ impl NativeBackend for AppleBackend {
     type Output = NativeLeaf;
     type Ctx = ();
     type Family = Self;
+    type Offscreen = crate::components::view_renderer::AppleOffscreenRenderer;
 
     fn with_family<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
         f(self)
+    }
+
+    fn offscreen(&self, _env: &Environment) -> Self::Offscreen {
+        crate::components::view_renderer::AppleOffscreenRenderer::new(self.mtm)
     }
 
     fn empty(&mut self, native: (), env: &Environment, (): ()) -> NativeLeaf {
@@ -153,7 +158,7 @@ impl NativeBackend for AppleBackend {
 
     fn window<C: ChildView<Self>>(
         &mut self,
-        native: waterui::window::Window<waterui::window::WindowSlot<C>>,
+        native: waterui::window::Window<waterui::window::WindowSlot<C>, Option<C>>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -482,7 +487,12 @@ impl NativeBackend for AppleBackend {
     }
 
     #[cfg(waterui_feature = "gpu")]
-    fn gpu(&mut self, native: waterui::GpuView, env: &Environment, (): ()) -> NativeLeaf {
+    fn gpu(
+        &mut self,
+        native: waterui::GpuView<alloc::boxed::Box<dyn waterui::graphics::GpuContent>>,
+        env: &Environment,
+        (): (),
+    ) -> NativeLeaf {
         crate::components::gpu_surface::realize_gpu_view(native, &self.entry(env))
     }
 
@@ -1059,20 +1069,46 @@ impl NativeBackend for AppleBackend {
         )
     }
 
-    // waterui-apple provides no components of its own yet: every payload
-    // outside `NativeBackend` is a contract violation.
+    // `AppleView<T>` is the component `waterui-apple` provides outside
+    // `NativeBackend`; every other payload outside `NativeBackend` is a
+    // contract violation.
 
     fn provided<T: NativeView + 'static>(
         &mut self,
-        _native: T,
+        native: T,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
+        let _ = self.entry(env);
+        let mut slot = crate::apple_content::AppleProvidedSlot {
+            mtm: self.mtm,
+            leaf: None,
+        };
+        if native.realize_provided(&mut slot, env).is_ok() {
+            return slot
+                .leaf
+                .expect("AppleProvidedSlot claims return Ok only after setting `leaf`");
+        }
         report_unprovided("waterui-apple", core::any::type_name::<T>());
         self.empty((), env, ())
     }
 
-    fn provided_dyn(&mut self, native: ErasedPayload<'_>, env: &Environment, (): ()) -> NativeLeaf {
+    fn provided_dyn(
+        &mut self,
+        mut native: ErasedPayload<'_>,
+        env: &Environment,
+        (): (),
+    ) -> NativeLeaf {
+        let _ = self.entry(env);
+        let mut slot = crate::apple_content::AppleProvidedSlot {
+            mtm: self.mtm,
+            leaf: None,
+        };
+        if native.realize_provided(&mut slot, env) {
+            return slot
+                .leaf
+                .expect("AppleProvidedSlot claims return true only after setting `leaf`");
+        }
         report_unprovided("waterui-apple", native.type_name());
         self.empty((), env, ())
     }

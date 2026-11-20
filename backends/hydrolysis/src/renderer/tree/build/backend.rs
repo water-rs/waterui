@@ -151,9 +151,14 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     type Output = RenderNode<E>;
     type Ctx = ();
     type Family = HydroFamily<E>;
+    type Offscreen = crate::view_renderer::HydrolysisOffscreenRenderer;
 
     fn with_family<R>(&mut self, f: impl for<'a> FnOnce(&mut HydroBackend<'a, E>) -> R) -> R {
         f(self)
+    }
+
+    fn offscreen(&self, _env: &Environment) -> Self::Offscreen {
+        self.renderer.offscreen_renderer()
     }
 
     accessibility_scope_table!(accessibility_scopes);
@@ -165,14 +170,15 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
 
     fn window<C: ChildView<Self>>(
         &mut self,
-        native: waterui::window::Window<waterui::window::WindowSlot<C>>,
+        native: waterui::window::Window<waterui::window::WindowSlot<C>, Option<C>>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
         self.renderer
-            .open_window(crate::runner::window::slot_root_window(
-                native.map_content(|slot| slot.map(C::into_child)),
-            ));
+            .open_window(crate::runner::window::slot_root_window(native.map(
+                |slot| slot.map(C::into_child),
+                |toolbar| toolbar.map(C::into_child),
+            )));
         RenderNode::build_empty(self.renderer, env)
     }
 
@@ -233,7 +239,12 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     // setup state, redraw handle), so a reactive swap renders the new content
     // and a per-frame re-flush re-binds the *same* runtime.
     #[cfg(waterui_feature = "gpu")]
-    fn gpu(&mut self, native: waterui::GpuView, env: &Environment, (): ()) -> RenderNode<E> {
+    fn gpu(
+        &mut self,
+        native: waterui::GpuView<Box<dyn waterui::graphics::GpuContent>>,
+        env: &Environment,
+        (): (),
+    ) -> RenderNode<E> {
         #[cfg(hydrolysis_gpu)]
         return RenderNode::build_gpu_content(native, self.renderer, env);
         #[cfg(not(hydrolysis_gpu))]
@@ -1421,9 +1432,9 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         RenderNode::build_spacer(renderer, native, env)
     }
 
-    // `Divider` and `Str` are registered renderers (not `Native<…>` leaves), so
-    // they are downcast as their value type directly and built into persistent
-    // `Widget` nodes that re-render from a retained cell each flush.
+    // `Divider` and `Str` are `NativeView` leaves routed directly to
+    // `NativeBackend::divider` and `NativeBackend::label`, and built into
+    // persistent `Widget` nodes that re-render from a retained cell each flush.
     fn divider(
         &mut self,
         native: waterui::layout::Divider,
@@ -1470,6 +1481,24 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
             }
             Err(native) => native,
         };
+        #[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
+        if self.renderer.semantic_walk {
+            let stretch = waterui_core::NativeView::stretch_axis(&native);
+            let mut semantics = waterui_backend_core::ProvidedSemantics::default();
+            let native = match native.realize_provided(&mut semantics, env) {
+                Ok(()) => {
+                    return RenderNode::build_provided_semantics(
+                        self.renderer,
+                        semantics,
+                        stretch,
+                        env,
+                    );
+                }
+                Err(native) => native,
+            };
+            drop(native);
+            return self.unrealized(core::any::type_name::<T>(), env);
+        }
         drop(native);
         self.unrealized(core::any::type_name::<T>(), env)
     }
@@ -1491,6 +1520,18 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         if let Some(host) = native.take::<waterui_video_gpu::AndroidVideoSurfaceHost>() {
             let picture = crate::runner::android::video_plane::unwrap_host(Native::new(host));
             return RenderNode::build_view(picture, env, self.renderer);
+        }
+        #[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
+        if self.renderer.semantic_walk {
+            let mut semantics = waterui_backend_core::ProvidedSemantics::default();
+            if native.realize_provided(&mut semantics, env) {
+                return RenderNode::build_provided_semantics(
+                    self.renderer,
+                    semantics,
+                    StretchAxis::None,
+                    env,
+                );
+            }
         }
         self.unrealized(native.type_name(), env)
     }

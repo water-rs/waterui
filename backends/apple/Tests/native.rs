@@ -382,6 +382,7 @@ fn trials() -> Vec<Trial> {
     tests.extend(owner_lifetimes::trials());
     tests.extend(scroll::trials());
     tests.extend(list_scroll::trials());
+    tests.extend(apple_content::trials());
     #[cfg(all(feature = "native-test", feature = "gpu_surface"))]
     tests.extend(capture_colour::trials());
     #[cfg(feature = "webview")]
@@ -4240,7 +4241,7 @@ mod gpu_surface {
         );
     }
 
-    /// `ViewRenderer::render` over a GPU child on a sealed-failure
+    /// `OffscreenRenderer::render_to_rgba` over a GPU child on a sealed-failure
     /// generation resolves `Err(RenderError::Gpu(_))` — the Arc'd
     /// `HostedLayerError` stays in `source()` — instead of hanging or
     /// panicking: the central capture's terminal `Failed` arm answers
@@ -4251,10 +4252,10 @@ mod gpu_surface {
         use waterui_apple::dispatch;
         use waterui_apple::native_test_support::gpu_surface::{fixture_env, fixture_scene_view};
         use waterui_apple::native_test_support::view_renderer::{
-            GpuRuntime, HostedLayerError, install_service, scene_engine,
+            AppleBackend, GpuRuntime, HostedLayerError, scene_engine,
         };
-        use waterui_backend_core::AnyView;
-        use waterui_core::view_renderer::{RenderError, RenderRequest, ViewRenderer};
+        use waterui_backend_core::NativeBackend as _;
+        use waterui_capture::view_renderer::{OffscreenRenderer as _, RenderError, RenderRequest};
         use waterui_graphics::backend::cherenkov::SurfaceError;
 
         let (runtime, mut env) = pollster::block_on(async {
@@ -4264,7 +4265,6 @@ mod gpu_surface {
         })
         .map_err(|error| format!("the fixture environment: {error}"))?;
         dispatch::install(&mut env);
-        install_service(&mut env);
 
         // Seal the shared generation the rendered leaf's `SceneView`
         // mounts on — the same typed carrier a real surface rejection
@@ -4282,16 +4282,15 @@ mod gpu_surface {
             max,
         }));
 
-        let renderer = env
-            .get::<ViewRenderer>()
-            .ok_or("the installed ViewRenderer service")?;
+        let renderer = AppleBackend::new(super::mtm()).offscreen(&env);
         // `block_on_main`, not `pollster`: the capture's completions
         // land on `DispatchQueue::main()`, which only a turning run
         // loop services.
         let Err(RenderError::Gpu(cause)) = waterui_apple::native_test_support::block_on_main(
             30.0,
-            renderer.render(
-                AnyView::new(fixture_scene_view()),
+            renderer.render_to_rgba(
+                fixture_scene_view(),
+                &env,
                 RenderRequest::new(
                     waterui_core::layout::Size::new(64.0, 64.0),
                     std::time::Duration::from_secs(10),
@@ -4321,7 +4320,7 @@ mod gpu_surface {
         Ok(())
     }
 
-    /// A windowless `ViewRenderer::render` over a healthy `SceneView`
+    /// A windowless `OffscreenRenderer::render_to_rgba` over a healthy `SceneView`
     /// resolves `Ok` with real pixels: the offscreen capture window
     /// declares `DynamicRange::Standard` for the hosted subtree (the
     /// render target is RGBA8), so the leaf's GPU surface resolves a
@@ -4329,9 +4328,9 @@ mod gpu_surface {
     pub fn view_render_succeeds_over_a_healthy_gpu_child() -> Result<(), libtest_mimic::Failed> {
         use waterui_apple::dispatch;
         use waterui_apple::native_test_support::gpu_surface::{fixture_env, fixture_scene_view};
-        use waterui_apple::native_test_support::view_renderer::{GpuRuntime, install_service};
-        use waterui_backend_core::AnyView;
-        use waterui_core::view_renderer::{RenderRequest, ViewRenderer};
+        use waterui_apple::native_test_support::view_renderer::{AppleBackend, GpuRuntime};
+        use waterui_backend_core::NativeBackend as _;
+        use waterui_capture::view_renderer::{OffscreenRenderer as _, RenderRequest};
 
         let (_runtime, mut env) = pollster::block_on(async {
             let runtime = GpuRuntime::new().await.map_err(|error| error.to_string())?;
@@ -4340,15 +4339,13 @@ mod gpu_surface {
         })
         .map_err(|error| format!("the fixture environment: {error}"))?;
         dispatch::install(&mut env);
-        install_service(&mut env);
 
-        let renderer = env
-            .get::<ViewRenderer>()
-            .ok_or("the installed ViewRenderer service")?;
+        let renderer = AppleBackend::new(super::mtm()).offscreen(&env);
         let result = waterui_apple::native_test_support::block_on_main(
             30.0,
-            renderer.render(
-                AnyView::new(fixture_scene_view()),
+            renderer.render_to_rgba(
+                fixture_scene_view(),
+                &env,
                 RenderRequest::new(
                     waterui_core::layout::Size::new(64.0, 64.0),
                     std::time::Duration::from_secs(10),
@@ -16972,5 +16969,331 @@ mod border_modifier {
                 "a border strokes only and never clips its content"
             );
         });
+    }
+}
+
+/// Embedding `AppKit` (`NSView`) and `UIKit` (`UIView`) views through
+/// `AppleContent` and `AppleView` (#4659): static and erased dispatch, subview
+/// mounting, leaf-rule measurement and placement, and signal-guard lifetime.
+mod apple_content {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use cocoa_ui::objc2_foundation::NSString;
+    use cocoa_ui::view;
+    use libtest_mimic::Trial;
+    use waterui::Str;
+    use waterui::reactive::{Binding, Signal, binding};
+    use waterui_apple::{
+        AppleContent, AppleMount, AppleView, MainThreadMarker, PlatformView, Retained,
+    };
+    use waterui_backend_core::{AnyView, View};
+    use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
+
+    use super::{HostView, mtm};
+
+    pub fn trials() -> Vec<Trial> {
+        vec![
+            Trial::test(
+                "apple_content::static_and_erased_dispatch_mount_the_platform_view_as_a_subview",
+                || {
+                    static_and_erased_dispatch_mount_the_platform_view_as_a_subview();
+                    Ok(())
+                },
+            ),
+            Trial::test(
+                "apple_content::signal_guards_live_with_the_mounted_view_and_stop_on_drop",
+                || {
+                    signal_guards_live_with_the_mounted_view_and_stop_on_drop();
+                    Ok(())
+                },
+            ),
+            Trial::test(
+                "apple_content::horizontal_stretcher_expands_width_and_centres_fitting_height",
+                || {
+                    horizontal_stretcher_expands_width_and_centres_fitting_height();
+                    Ok(())
+                },
+            ),
+            Trial::test(
+                "apple_content::custom_measure_override_drives_layout",
+                || {
+                    custom_measure_override_drives_layout();
+                    Ok(())
+                },
+            ),
+        ]
+    }
+
+    #[cfg(target_os = "macos")]
+    type ControlView = waterui_apple::objc2_app_kit::NSButton;
+    #[cfg(target_os = "ios")]
+    type ControlView = waterui_apple::objc2_ui_kit::UILabel;
+
+    #[cfg(target_os = "macos")]
+    fn make_control(title: &str, mtm: MainThreadMarker) -> Retained<ControlView> {
+        // SAFETY: `target` and `action` are `None`, so the button stores no
+        // pointer that could dangle.
+        unsafe {
+            waterui_apple::objc2_app_kit::NSButton::buttonWithTitle_target_action(
+                &NSString::from_str(title),
+                None,
+                None,
+                mtm,
+            )
+        }
+    }
+
+    #[cfg(target_os = "ios")]
+    fn make_control(title: &str, mtm: MainThreadMarker) -> Retained<ControlView> {
+        let label = waterui_apple::objc2_ui_kit::UILabel::new(mtm);
+        label.setText(Some(&NSString::from_str(title)));
+        label
+    }
+
+    #[cfg(target_os = "macos")]
+    fn set_control_title(control: &ControlView, title: &str) {
+        control.setTitle(&NSString::from_str(title));
+    }
+
+    #[cfg(target_os = "ios")]
+    fn set_control_title(control: &ControlView, title: &str) {
+        control.setText(Some(&NSString::from_str(title)));
+    }
+
+    #[cfg(target_os = "macos")]
+    fn control_title(control: &ControlView) -> String {
+        control.title().to_string()
+    }
+
+    #[cfg(target_os = "ios")]
+    fn control_title(control: &ControlView) -> String {
+        control.text().map_or_default(|text| text.to_string())
+    }
+
+    struct DropCounter(Rc<Cell<usize>>);
+
+    impl Drop for DropCounter {
+        fn drop(&mut self) {
+            self.0.set(self.0.get() + 1);
+        }
+    }
+
+    struct ReactiveControl {
+        title: Binding<Str>,
+        stretch: StretchAxis,
+        updates: Rc<Cell<usize>>,
+        dropped: Rc<Cell<usize>>,
+        created: Rc<Cell<Option<usize>>>,
+    }
+
+    impl AppleContent for ReactiveControl {
+        type View = ControlView;
+
+        fn make_view(&mut self, mount: &mut AppleMount<'_>) -> Retained<Self::View> {
+            let control = make_control(self.title.snapshot().as_str(), mount.mtm());
+            let base: &PlatformView = control.as_ref();
+            self.created
+                .set(Some(core::ptr::from_ref(base).cast::<u8>() as usize));
+            let invalidator = mount.invalidator();
+            let updates = Rc::clone(&self.updates);
+            let target = control.clone();
+            mount.watch(&self.title, move |change| {
+                updates.set(updates.get() + 1);
+                set_control_title(&target, change.value().as_str());
+                invalidator.invalidate_layout();
+            });
+            mount.keep(DropCounter(Rc::clone(&self.dropped)));
+            control
+        }
+
+        fn stretch_axis(&self) -> StretchAxis {
+            self.stretch
+        }
+    }
+
+    fn render_static(view: impl View) -> waterui_apple::contract::NativeLeaf {
+        let env = super::resolve::env();
+        waterui_apple::dispatch::render(view, &env, mtm())
+    }
+
+    fn static_and_erased_dispatch_mount_the_platform_view_as_a_subview() {
+        for erased in [false, true] {
+            let title = binding(Str::from_static("Buy"));
+            let updates = Rc::new(Cell::new(0));
+            let dropped = Rc::new(Cell::new(0));
+            let created = Rc::new(Cell::new(None));
+            let apple_view = AppleView::new(ReactiveControl {
+                title,
+                stretch: StretchAxis::None,
+                updates,
+                dropped,
+                created: Rc::clone(&created),
+            });
+            let leaf = if erased {
+                render_static(AnyView::new(apple_view))
+            } else {
+                render_static(apple_view)
+            };
+
+            let subviews = view::subviews(leaf.view());
+            assert_eq!(
+                subviews.len(),
+                1,
+                "AppleView mounts its platform view as a subview"
+            );
+            let subview_ptr = core::ptr::from_ref(&*subviews[0]).cast::<u8>() as usize;
+            assert_eq!(
+                Some(subview_ptr),
+                created.get(),
+                "the subview is the exact object `AppleContent::make_view` returned"
+            );
+
+            let parent = HostView::new(mtm(), cocoa_ui::Rect::new(0.0, 0.0, 300.0, 120.0));
+            let _window = super::leaf::attach(mtm(), &parent);
+            let mounted = leaf.mount(&parent);
+            let host_view = view::retain_base(mounted.view());
+            parent.set_layout_handler(move |parent| {
+                view::set_frame(&host_view, view::bounds(parent));
+            });
+            parent.set_needs_layout();
+            parent.layout_if_needed();
+            mounted
+                .view()
+                .downcast_ref::<HostView>()
+                .expect("AppleView mounts inside HostView")
+                .layout_if_needed();
+
+            let fit = view::fitting_size(&subviews[0]);
+            assert!(fit.width > 0.0 && fit.height > 0.0);
+            let placed = view::to_layout_space(mounted.view(), view::frame(&subviews[0]));
+            let parent_bounds = view::bounds(mounted.view());
+            assert!((placed.size.width - fit.width).abs() < 1.0);
+            assert!((placed.size.height - fit.height).abs() < 1.0);
+            assert!(
+                (placed.origin.x - (parent_bounds.size.width - fit.width) / 2.0).abs() < 1.0,
+                "leaf rule centres a non-stretching AppleView horizontally in its allocation"
+            );
+            assert!(
+                (placed.origin.y - (parent_bounds.size.height - fit.height) / 2.0).abs() < 1.0,
+                "leaf rule centres a non-stretching AppleView vertically in its allocation"
+            );
+        }
+    }
+
+    fn signal_guards_live_with_the_mounted_view_and_stop_on_drop() {
+        let title = binding(Str::from_static("Pay"));
+        let updates = Rc::new(Cell::new(0));
+        let dropped = Rc::new(Cell::new(0));
+        let created = Rc::new(Cell::new(None));
+        let leaf = render_static(AppleView::new(ReactiveControl {
+            title: title.clone(),
+            stretch: StretchAxis::None,
+            updates: Rc::clone(&updates),
+            dropped: Rc::clone(&dropped),
+            created,
+        }));
+
+        let initial_width = leaf.layout().measure(ProposalSize::UNSPECIFIED).size.width;
+        let subview = view::subviews(leaf.view())
+            .into_iter()
+            .next()
+            .expect("subview mounted");
+        let control: &ControlView = subview
+            .downcast_ref::<ControlView>()
+            .expect("subview is ControlView");
+        assert_eq!(control_title(control), "Pay");
+
+        title.set(Str::from_static("Subscribe with Apple Pay — Annual Plan"));
+        assert_eq!(updates.get(), 1);
+        assert_eq!(
+            control_title(control),
+            "Subscribe with Apple Pay — Annual Plan"
+        );
+        let expanded_width = leaf.layout().measure(ProposalSize::UNSPECIFIED).size.width;
+        assert!(
+            expanded_width > initial_width,
+            "invalidator.invalidate_layout() refreshes memoized fitting-size measurement ({expanded_width} <= {initial_width})"
+        );
+        assert_eq!(dropped.get(), 0);
+
+        drop(leaf);
+        assert_eq!(dropped.get(), 1, "kept guards drop with the leaf");
+        title.set(Str::from_static("After drop"));
+        assert_eq!(
+            updates.get(),
+            1,
+            "signal watcher stops firing once the mounted view's leaf drops"
+        );
+    }
+
+    fn horizontal_stretcher_expands_width_and_centres_fitting_height() {
+        let leaf = render_static(AppleView::new(ReactiveControl {
+            title: binding(Str::from_static("Buy")),
+            stretch: StretchAxis::Horizontal,
+            updates: Rc::new(Cell::new(0)),
+            dropped: Rc::new(Cell::new(0)),
+            created: Rc::new(Cell::new(None)),
+        }));
+
+        let ideal = leaf.layout().measure(ProposalSize::UNSPECIFIED).size;
+        let stretched = leaf
+            .layout()
+            .measure(ProposalSize::new(Some(360.0), Some(120.0)))
+            .size;
+        assert!(ideal.width > 0.0 && ideal.width < 360.0);
+        assert!((stretched.width - 360.0).abs() < 0.01);
+        assert!((stretched.height - ideal.height).abs() < 0.01);
+
+        let parent = HostView::new(mtm(), cocoa_ui::Rect::new(0.0, 0.0, 360.0, 120.0));
+        let _window = super::leaf::attach(mtm(), &parent);
+        let subview = view::subviews(leaf.view())
+            .into_iter()
+            .next()
+            .expect("subview mounted");
+        let mounted = leaf.mount(&parent);
+        let host_view = view::retain_base(mounted.view());
+        parent.set_layout_handler(move |parent| {
+            let bounds = cocoa_ui::Rect::new(0.0, 0.0, 360.0, 120.0);
+            view::set_frame(parent, bounds);
+            view::set_frame(&host_view, view::bounds(parent));
+        });
+        parent.set_needs_layout();
+        parent.layout_if_needed();
+        mounted
+            .view()
+            .downcast_ref::<HostView>()
+            .expect("AppleView mounts inside HostView")
+            .layout_if_needed();
+
+        let placed = view::to_layout_space(mounted.view(), view::frame(&subview));
+        let host_width = view::bounds(mounted.view()).size.width;
+        let host_height = view::bounds(mounted.view()).size.height;
+        assert!((placed.size.width - host_width).abs() < 1.0);
+        assert!((placed.size.height - f64::from(ideal.height)).abs() < 1.0);
+        assert!((placed.origin.y - (host_height - f64::from(ideal.height)) / 2.0).abs() < 1.0);
+    }
+
+    struct CustomSizedBox;
+
+    impl AppleContent for CustomSizedBox {
+        type View = PlatformView;
+
+        fn make_view(&mut self, mount: &mut AppleMount<'_>) -> Retained<Self::View> {
+            let host = HostView::new(mount.mtm(), cocoa_ui::Rect::ZERO);
+            view::retain_base(&*host)
+        }
+
+        fn measure(&self, _view: &Self::View, _proposal: ProposalSize) -> ViewDimensions {
+            ViewDimensions::new(Size::new(96.0, 44.0))
+        }
+    }
+
+    fn custom_measure_override_drives_layout() {
+        let leaf = render_static(AppleView::new(CustomSizedBox));
+        assert_eq!(
+            leaf.layout().measure(ProposalSize::UNSPECIFIED).size,
+            Size::new(96.0, 44.0)
+        );
     }
 }

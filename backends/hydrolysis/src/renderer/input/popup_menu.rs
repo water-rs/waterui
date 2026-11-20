@@ -83,7 +83,11 @@ impl<E: crate::text::TextEngine> PopupWindowManager<E> {
     /// opened the popup (water-rs/hydrolysis#140), so its `.state(&value)`
     /// and `.with(...)` overlays reach the item actions' extractors exactly
     /// as they do for inline views.
-    pub(crate) fn show<C: ViewBuilder>(&self, window: Window<C>, env: &Environment) {
+    pub(crate) fn show<C: ViewBuilder, T: waterui::window::WindowToolbar>(
+        &self,
+        window: Window<C, T>,
+        env: &Environment,
+    ) {
         (self.0)(crate::runner::window::root_window(
             window_in_opening_environment(window, env),
         ));
@@ -100,10 +104,10 @@ impl<E: crate::text::TextEngine> PopupWindowManager<E> {
 /// value the input dispatcher installs for a root window, so a nested popup
 /// opened from this window anchors to it.
 #[cfg(any(feature = "menu", feature = "color-picker"))]
-pub fn window_in_opening_environment<C: ViewBuilder>(
-    window: Window<C>,
+pub fn window_in_opening_environment<C: ViewBuilder, T>(
+    window: Window<C, T>,
     env: &Environment,
-) -> Window<impl ViewBuilder<Output = Metadata<Environment, C::Output>>> {
+) -> Window<impl ViewBuilder<Output = Metadata<Environment, C::Output>>, T> {
     let frame = window.frame.snapshot();
     let content_env = env.extending(HydrolysisWindowOrigin {
         x: frame.x(),

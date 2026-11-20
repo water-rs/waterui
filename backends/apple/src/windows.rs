@@ -17,7 +17,7 @@ use waterui::app::{WindowSink, Windows};
 use waterui::handler::ViewBuilder;
 #[cfg(target_os = "macos")]
 use waterui::window::WindowSlot;
-use waterui::window::{Window, WindowChannel};
+use waterui::window::{Window, WindowChannel, WindowToolbar};
 use waterui_backend_core::Environment;
 #[cfg(target_os = "macos")]
 use waterui_backend_core::{ChildView as _, IntoChild};
@@ -31,26 +31,51 @@ use crate::contract::NativeLeaf;
 /// everything below the window dispatches statically.
 pub type Root = Box<dyn Fn(&Environment, MainThreadMarker) -> NativeLeaf>;
 
-/// A window as this backend holds it, see [`Root`].
-pub type RootWindow = Window<Root>;
+/// A window's toolbar as this backend holds it: the toolbar view's type is
+/// erased behind the one call that renders it, so everything below the toolbar
+/// dispatches statically.
+pub type ToolbarRoot = Box<dyn FnOnce(&Environment, MainThreadMarker) -> NativeLeaf>;
+
+/// A window as this backend holds it, see [`Root`] and [`ToolbarRoot`].
+pub type RootWindow = Window<Root, Option<ToolbarRoot>>;
 
 /// `window` as this backend holds it.
-pub fn root_window<C: ViewBuilder>(window: Window<C>) -> RootWindow {
-    window.map_content(|content| -> Root {
-        Box::new(move |env, mtm| crate::dispatch::render(content.build(), env, mtm))
-    })
+pub fn root_window<C: ViewBuilder, T: WindowToolbar>(window: Window<C, T>) -> RootWindow {
+    window.map(
+        |content| -> Root {
+            Box::new(move |env, mtm| crate::dispatch::render(content.build(), env, mtm))
+        },
+        |toolbar| {
+            toolbar.into_view().map(|view| -> ToolbarRoot {
+                Box::new(move |env, mtm| crate::dispatch::render(view, env, mtm))
+            })
+        },
+    )
 }
 
 /// A window dispatched from the view tree as this backend holds it.
 #[cfg(target_os = "macos")]
-pub fn slot_root_window<C: IntoChild<AppleBackend>>(window: Window<WindowSlot<C>>) -> RootWindow {
-    window.map_content(|slot| -> Root {
-        Box::new(move |env, mtm| {
-            slot.build()
-                .into_child()
-                .realize(&mut AppleBackend::new(mtm), env, ())
-        })
-    })
+pub fn slot_root_window<C: IntoChild<AppleBackend>>(
+    window: Window<WindowSlot<C>, Option<C>>,
+) -> RootWindow {
+    window.map(
+        |slot| -> Root {
+            Box::new(move |env, mtm| {
+                slot.build()
+                    .into_child()
+                    .realize(&mut AppleBackend::new(mtm), env, ())
+            })
+        },
+        |toolbar| {
+            toolbar.map(|child| -> ToolbarRoot {
+                Box::new(move |env, mtm| {
+                    child
+                        .into_child()
+                        .realize(&mut AppleBackend::new(mtm), env, ())
+                })
+            })
+        },
+    )
 }
 
 /// Collects startup [`RootWindow`]s from `windows` and connects every
@@ -61,11 +86,11 @@ pub fn connect_windows(windows: impl Windows, env: &Environment) -> Vec<RootWind
         env: &'a Environment,
     }
     impl WindowSink for Collect<'_> {
-        fn window<C: ViewBuilder>(&mut self, window: Window<C>) {
+        fn window<C: ViewBuilder, T: WindowToolbar>(&mut self, window: Window<C, T>) {
             self.initial.push(root_window(window));
         }
 
-        fn channel<C: ViewBuilder>(&mut self, channel: WindowChannel<C>) {
+        fn channel<C: ViewBuilder, T: WindowToolbar>(&mut self, channel: WindowChannel<C, T>) {
             #[cfg(target_os = "macos")]
             let queued = imp::connect_channel(channel, self.env);
             #[cfg(target_os = "ios")]
@@ -102,7 +127,7 @@ mod imp {
     use waterui::window::Window;
     use waterui::window::{
         ResolvedWindowBackground, UserAttention, WindowHandle, WindowLevel, WindowState,
-        WindowStyle as WuiStyle,
+        WindowStyle as WuiStyle, WindowToolbar,
     };
     use waterui_backend_core::Environment;
 
@@ -178,10 +203,10 @@ mod imp {
 
     /// Connects `channel` so each window shown through its manager realizes on
     /// a fresh platform window, deferred to the next main-queue turn.
-    pub(super) fn connect_channel<C: ViewBuilder>(
-        channel: super::WindowChannel<C>,
+    pub(super) fn connect_channel<C: ViewBuilder, T: WindowToolbar>(
+        channel: super::WindowChannel<C, T>,
         env: &Environment,
-    ) -> Vec<Window<C>> {
+    ) -> Vec<Window<C, T>> {
         let env = env.clone();
         channel.connect(move |window| {
             let declaration = super::root_window(window);
@@ -195,7 +220,7 @@ mod imp {
     /// Realizes a window dispatched from the view tree (`conditional_window`)
     /// on a fresh platform window, deferred to the next main-queue turn.
     pub fn show_from_tree<C: super::IntoChild<super::AppleBackend>>(
-        declaration: Window<super::WindowSlot<C>>,
+        declaration: Window<super::WindowSlot<C>, Option<C>>,
         env: &Environment,
         mtm: MainThreadMarker,
     ) {
@@ -226,8 +251,8 @@ mod imp {
     /// Realizes `declaration` as a platform window and returns its host, see
     /// [`realize_root`].
     #[cfg(feature = "native-test")]
-    pub fn realize<C: ViewBuilder>(
-        declaration: Window<C>,
+    pub fn realize<C: ViewBuilder, T: WindowToolbar>(
+        declaration: Window<C, T>,
         env: &Environment,
         mtm: MainThreadMarker,
     ) -> WindowHost {
@@ -455,7 +480,7 @@ mod imp {
         // system's capsule, spacing and overflow.
         if let Some(toolbar) = declaration.toolbar {
             let toolbar_env = crate::toolbar_chrome::toolbar_environment(env);
-            let toolbar_leaf = crate::dispatch::render(toolbar, &toolbar_env, mtm);
+            let toolbar_leaf = toolbar(&toolbar_env, mtm);
             install_toolbar(
                 window.native(),
                 toolbar_leaf.view(),
@@ -1386,5 +1411,24 @@ fn into_kit_size(size: WSize) -> Size {
     Size {
         width: f64::from(size.width),
         height: f64::from(size.height),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::root_window;
+    use waterui::reactive::binding;
+    use waterui::window::{Window, WindowState};
+
+    #[test]
+    fn root_window_preserves_absent_and_present_toolbars() {
+        let plain = root_window(Window::new("Plain", binding(WindowState::Closed), || ()));
+        assert!(plain.toolbar.is_none());
+
+        let with_toolbar = root_window(
+            Window::new("Toolbar", binding(WindowState::Closed), || ())
+                .toolbar(waterui::layout::Divider),
+        );
+        assert!(with_toolbar.toolbar.is_some());
     }
 }

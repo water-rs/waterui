@@ -615,7 +615,7 @@ impl PlatformWindow for AndroidHostWindow {
         (self.metrics.width_px, self.metrics.height_px)
     }
 
-    fn apply_properties<C>(&mut self, window: &waterui::window::Window<C>) {
+    fn apply_properties<C, T>(&mut self, window: &waterui::window::Window<C, T>) {
         if window.state.snapshot() == WindowState::Closed {
             return;
         }
@@ -1099,20 +1099,6 @@ impl UiThreadServices {
     }
 }
 
-/// Installs the capture service. It mounts its subtree under a snapshot of
-/// `env` — the theme tokens, hooks and font collection a window's subtree
-/// resolves — so it must be installed once the session environment is
-/// otherwise complete (water-rs/waterui#2703).
-#[cfg(hydrolysis_gpu_painter)]
-fn install_view_renderer(env: &mut Environment, theme: &Rc<dyn WidgetTheme>) {
-    let renderer = crate::view_renderer::HydrolysisViewRenderer::new(
-        Rc::clone(theme),
-        env.clone(),
-        FontFamilyResolution::Lenient,
-    );
-    env.insert(waterui_core::ViewRenderer::new(renderer));
-}
-
 /// Installs the platform-view sink and the surface producers that publish into it.
 fn install_platform_view_surfaces(env: &mut Environment) -> crate::platform_view::PlatformViewSink {
     // The platform-view sink `PlatformView` leaves record their frames
@@ -1250,9 +1236,6 @@ fn session_mounts(
         jni_env,
         Arc::clone(&bridge.host_view),
     )?;
-
-    #[cfg(hydrolysis_gpu_painter)]
-    install_view_renderer(&mut env, &theme);
 
     let super::super::window::RootWindows {
         initial: windows,

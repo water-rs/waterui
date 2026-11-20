@@ -2734,7 +2734,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
 }
 
 #[cfg(feature = "accessibility")]
-fn accessibility_role_to_accesskit_role(role: AccessibilityRole) -> AccessibilityNodeRole {
+pub fn accessibility_role_to_accesskit_role(role: AccessibilityRole) -> AccessibilityNodeRole {
     match role {
         AccessibilityRole::Button => AccessibilityNodeRole::Button,
         AccessibilityRole::Link => AccessibilityNodeRole::Link,

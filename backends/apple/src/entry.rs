@@ -171,6 +171,11 @@ mod imp {
 
         let handlers = ApplicationHandlers::new()
             .did_finish_launching(move |_| {
+                #[cfg(any(
+                    feature = "gpu_surface",
+                    feature = "webview",
+                    all(target_os = "macos", feature = "webview-cef")
+                ))]
                 let env_ptr = launch.env;
                 // SAFETY: `launch` is consumed by `prepared` exactly once —
                 // this handler runs once — and `env` is `run`'s borrow, lent
@@ -181,6 +186,10 @@ mod imp {
                     // this handler runs once — and `env` is `run`'s borrow, lent
                     // for the process.
                     unsafe {
+                        #[cfg(any(
+                            feature = "webview",
+                            all(target_os = "macos", feature = "webview-cef")
+                        ))]
                         crate::embedding::install_services(&mut *env_ptr);
                         prepared::<F, W>(Box::into_raw(launch).cast::<c_void>());
                     }
@@ -345,6 +354,11 @@ mod imp {
         #[cfg(waterui_feature = "menu")]
         let handlers = handlers.build_menus(build_menus);
         let handlers = handlers.did_finish_launching(move |_| {
+            #[cfg(any(
+                feature = "gpu_surface",
+                feature = "webview",
+                all(target_os = "macos", feature = "webview-cef")
+            ))]
             let env_ptr = launch.env;
             // SAFETY: `launch` is consumed by `prepared` exactly once, and
             // `env` is `run`'s borrow, lent for the process.
@@ -353,6 +367,10 @@ mod imp {
                 // SAFETY: `launch` is consumed by `prepared` exactly once, and
                 // `env` is `run`'s borrow, lent for the process.
                 unsafe {
+                    #[cfg(any(
+                        feature = "webview",
+                        all(target_os = "macos", feature = "webview-cef")
+                    ))]
                     crate::embedding::install_services(&mut *env_ptr);
                     prepared::<F, W>(Box::into_raw(launch).cast::<c_void>());
                 }

@@ -26,13 +26,14 @@ use futures::StreamExt;
 use std::path::Path;
 #[cfg(target_arch = "wasm32")]
 use waterkit_fs::WaterFs;
-use waterui_core::content_ledger::OwedContent;
+use waterui_capture::ContentLedger;
+use waterui_capture::content_ledger::OwedContent;
 use waterui_core::contract_violation;
 use waterui_core::event::{LifeCycle, LifeCycleHook};
 use waterui_core::handler::ReportExtraction as _;
 use waterui_core::reactive::signal::IntoComputed;
 use waterui_core::reactive::watcher::BoxWatcherGuard;
-use waterui_core::{AnyView, Computed, ContentLedger, Environment, Metadata, Retain, Signal, View};
+use waterui_core::{AnyView, Computed, Environment, Metadata, Retain, Signal, View};
 use waterui_image::{
     ContentMode, Image, ImageStatus, ReactiveImage, ReactiveImageHandle, reactive_image,
 };
@@ -623,10 +624,9 @@ mod tests {
         SceneContent, SceneResources,
     };
     use waterui::graphics::canvas::{Canvas, CanvasView};
+    use waterui_capture::ContentLedger;
     use waterui_core::handler::BoxedEventAction;
-    use waterui_core::{
-        AnyView, Binding, ContentLedger, Environment, Signal, View, reactive::watcher::Context,
-    };
+    use waterui_core::{AnyView, Binding, Environment, Signal, View, reactive::watcher::Context};
     use waterui_image::{DecodePath, Image, ReactiveImage, ReactiveImageHandle, reactive_image};
     use waterui_layout::container::FixedContainer;
 
