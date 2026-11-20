@@ -171,6 +171,14 @@ object HydrolysisEmbedding {
                 session.setVisible(true)
             }
 
+            override fun onResume(owner: LifecycleOwner) {
+                session.setResumed(true)
+            }
+
+            override fun onPause(owner: LifecycleOwner) {
+                session.setResumed(false)
+            }
+
             override fun onStop(owner: LifecycleOwner) {
                 session.setVisible(false)
             }

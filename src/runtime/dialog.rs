@@ -39,7 +39,7 @@ use waterui_controls::{ButtonStyle, button};
 use waterui_core::accessibility::AccessibilityRole;
 use waterui_core::handler::{Handler, SharedAction, shared_action};
 use waterui_core::metadata::MetadataKey;
-use waterui_core::{Environment, View};
+use waterui_core::{Environment, OneOf2, View};
 use waterui_layout::alignment;
 use waterui_layout::frame::Frame;
 use waterui_layout::padding::EdgeInsets;
@@ -48,7 +48,7 @@ use waterui_text::text::{IntoText, Text, text};
 
 use crate::shape::{FixedRoundedRectangle, ShapeExt};
 use crate::theme::color::{Accent, Error, Foreground, MutedForeground, Scrim, Surface};
-use crate::{AnyView, Computed, SignalExt as _, Str, ViewExt};
+use crate::{Computed, SignalExt as _, Str, ViewExt};
 use waterui_graphics::color::Color;
 
 /// M3 `dialog.container.min-width`: the narrowest a card gets, in dp.
@@ -386,18 +386,17 @@ impl Dialog {
 /// The primary action (the first `Default`) draws with the `Accent` emphasis;
 /// `Destructive` draws with `Error`; everything else keeps the theme's default
 /// text colour.
-fn action_button(action: DialogAction, dialog: &Dialog, primary: bool) -> AnyView {
+fn action_button(action: DialogAction, dialog: &Dialog, primary: bool) -> impl View + use<> {
+    let title = text(action.title().clone());
     let label = match action.role() {
-        DialogRole::Destructive => text(action.title().clone()).color(Color::new(Error)),
-        _ if primary => text(action.title().clone()).color(Color::new(Accent)),
-        _ => text(action.title().clone()),
+        DialogRole::Destructive => title.color(Color::new(Error)),
+        _ if primary => title.color(Color::new(Accent)),
+        _ => title,
     };
     let dialog = dialog.clone();
-    AnyView::new(
-        button(label)
-            .style(ButtonStyle::Plain)
-            .action(move |env: Environment| dialog.run_action(&action, &env)),
-    )
+    button(label)
+        .style(ButtonStyle::Plain)
+        .action(move |env: Environment| dialog.run_action(&action, &env))
 }
 
 /// The alert card the Hydrolysis modal layer draws: `Surface` container,
@@ -424,7 +423,7 @@ impl View for DialogCard {
 fn dialog_card(dialog: &Dialog, label: Computed<Str>) -> impl View + use<> {
     let actions = dialog.resolved_actions();
     let mut seen_default = false;
-    let buttons: Vec<AnyView> = actions
+    let buttons: Vec<_> = actions
         .into_iter()
         .map(|action| {
             let primary = action.role() == DialogRole::Default && !seen_default;
@@ -432,32 +431,37 @@ fn dialog_card(dialog: &Dialog, label: Computed<Str>) -> impl View + use<> {
             action_button(action, dialog, primary)
         })
         .collect();
-    let mut contents: Vec<AnyView> = vec![AnyView::new(
-        text(dialog.title.clone())
-            .headline()
-            .color(Color::new(Foreground)),
-    )];
-    if let Some(message) = &dialog.message {
-        contents.push(AnyView::new(
-            text(message.clone()).color(Color::new(MutedForeground)),
-        ));
-    }
+    let headline = text(dialog.title.clone())
+        .headline()
+        .color(Color::new(Foreground));
     // The action row hugs the trailing edge (M3): a trailing-aligned full-width
     // frame carries the content-sized button stack.
-    contents.push(AnyView::new(
-        Frame::new(
-            hstack(buttons)
-                .spacing(ACTIONS_SPACING)
-                .padding_with(EdgeInsets::new(ACTIONS_TOP_PADDING, 0.0, 0.0, 0.0)),
-        )
-        .max_width(f32::INFINITY)
-        .alignment(alignment::Trailing),
-    ));
+    let actions_row = Frame::new(
+        hstack(buttons)
+            .spacing(ACTIONS_SPACING)
+            .padding_with(EdgeInsets::new(ACTIONS_TOP_PADDING, 0.0, 0.0, 0.0)),
+    )
+    .max_width(f32::INFINITY)
+    .alignment(alignment::Trailing);
+    let contents = match &dialog.message {
+        Some(message) => OneOf2::A(
+            vstack((
+                headline,
+                text(message.clone()).color(Color::new(MutedForeground)),
+                actions_row,
+            ))
+            .alignment(HorizontalAlignment::Leading)
+            .spacing(CARD_CONTENT_SPACING),
+        ),
+        None => OneOf2::B(
+            vstack((headline, actions_row))
+                .alignment(HorizontalAlignment::Leading)
+                .spacing(CARD_CONTENT_SPACING),
+        ),
+    };
 
     Frame::new(
-        vstack(contents)
-            .alignment(HorizontalAlignment::Leading)
-            .spacing(CARD_CONTENT_SPACING)
+        contents
             .padding_with(EdgeInsets::all(CARD_PADDING))
             .background(FixedRoundedRectangle::new(CARD_CORNER_RADIUS).fill(Color::new(Surface)))
             .a11y_label(label)

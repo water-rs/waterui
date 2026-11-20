@@ -113,9 +113,10 @@ pub mod project_block_04 {
 
 // ---------------------------------------------------------------------------
 // project.md § "## Platforms and backends" (prose)
-// `waterui-apple` (`AppleContent`, `AppleMount`, `AppleView`) and
-// `waterui-apple-os` (`apple_available!`) are Apple-only backend/OS crates not
-// linked into this cross-platform compile gate (README rule 6).
+// `waterui-apple` (`AppleContent`, `AppleMount`, `AppleView`),
+// `waterui-apple-os` (`apple_available!`), and Android-only `hydrolysis`
+// (`AndroidContent`, `AndroidMount`, `AndroidView`) are backend/OS-specific
+// types not linked into this cross-platform compile gate (README rule 6).
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------

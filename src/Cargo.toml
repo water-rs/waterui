@@ -26,7 +26,7 @@ waterui-media = { workspace = true, optional = true }
 waterui-video = { workspace = true, optional = true }
 native-executor.workspace = true
 waterui-navigation = { workspace = true, optional = true }
-waterui-form.workspace = true
+waterui-form = { workspace = true, optional = true }
 waterui-controls.workspace = true
 waterui-webview = { workspace = true, optional = true }
 waterui-map = { workspace = true, optional = true }
@@ -43,15 +43,15 @@ futures.workspace = true
 tracing.workspace = true
 thiserror = { version = "2.0.21", default-features = false }
 # `Link` opens its URL in the system handler.
-waterkit-deeplink.workspace = true
+waterkit-deeplink = { workspace = true, optional = true }
 # Grapheme clusters for the avatar monogram: a name's first "letter" is a
 # cluster, not a `char`, wherever a combining mark or an emoji sequence is one.
-unicode-segmentation = "1.13"
+unicode-segmentation = { version = "1.13", optional = true }
 tracing-subscriber = { workspace = true, optional = true }
 async-channel.workspace = true
 web-time.workspace = true
 waterui-macros.workspace = true
-waterui-graphics = { workspace = true, default-features = false }
+waterui-graphics = { workspace = true, default-features = false, features = ["text"] }
 waterui-icon.workspace = true
 waterui-shape = { workspace = true, default-features = false }
 waterui-structural-transition.workspace = true
@@ -75,26 +75,33 @@ getrandom = { workspace = true, optional = true }
 # CPU-time profiling (cpu-time) needs a per-thread CPU clock; the runtime guard
 # uses a zero-cost stand-in where there is none.
 [target.'cfg(any(unix, windows))'.dependencies]
-cpu-time.workspace = true
+cpu-time = { workspace = true, optional = true }
 
 [features]
+form = ["dep:waterui-form"]
+link = ["dep:waterkit-deeplink"]
+avatar = ["dep:unicode-segmentation"]
+cpu-time = ["dep:cpu-time"]
 list = []
 table = ["list"]
 navigation = ["dep:waterui-navigation"]
 menu = ["waterui-controls/menu"]
-calendar = ["waterui-form/calendar"]
-color-picker = ["waterui-form/color-picker"]
-date-picker = ["waterui-form/date-picker"]
-file-picker = ["waterui-form/file-picker"]
+calendar = ["form", "waterui-form/calendar"]
+color-picker = ["form", "waterui-form/color-picker"]
+date-picker = ["form", "waterui-form/date-picker"]
+file-picker = ["form", "waterui-form/file-picker"]
 multi-date-picker = ["calendar", "waterui-form/multi-date-picker"]
-picker = ["waterui-form/picker"]
-secure-field = ["waterui-form/secure-field"]
-slider = ["waterui-form/slider"]
-stepper = ["waterui-form/stepper"]
-text-field = ["menu", "waterui-form/text-field"]
-toggle = ["waterui-form/toggle"]
+picker = ["form", "waterui-form/picker"]
+secure-field = ["form", "waterui-form/secure-field"]
+slider = ["form", "waterui-form/slider"]
+stepper = ["form", "waterui-form/stepper"]
+text-field = ["menu", "form", "waterui-form/text-field"]
+toggle = ["form", "waterui-form/toggle"]
 validation = ["text-field", "waterui-form/validation"]
 default = [
+    "avatar",
+    "cpu-time",
+    "link",
     "list",
     "table",
     "navigation",
@@ -167,7 +174,7 @@ cpu = ["effects", "waterui-graphics/cpu"]
 # `waterui::video` (`VideoAsset`, behind `waterui-assets`' `video` feature);
 # each is enabled only when both sides are present.
 assets = ["dep:waterui-assets", "dep:waterui-assets-macros", "dep:waterui-meta"]
-media = ["dep:waterui-media", "waterui-assets?/media", "waterui-markdown?/media"]
+media = ["dep:waterui-media", "waterui-assets?/media", "waterui-graphics/image-decode", "waterui-markdown?/media"]
 video = ["dep:waterui-video", "waterui-media?/video", "waterui-assets?/video"]
 # Remote fetching (`Url::fetch`, `Data::from_remote`, remote `Photo` sources)
 # links the `zenwave` HTTP client through `waterui-url`/`waterui-media`. Off by
@@ -200,7 +207,7 @@ widgets = ["dep:waterui-widgets", "waterui-macros/widgets"]
 # links a JavaScript engine. An application that writes no `tsx!` and leaves
 # this off links none of it — `waterui-ts` is an optional dependency and no
 # other feature pulls it in.
-ts = ["dep:waterui-ts", "navigation", "table", "picker", "slider", "stepper", "text-field", "toggle"]
+ts = ["dep:waterui-ts", "avatar", "link", "navigation", "table", "picker", "slider", "stepper", "text-field", "toggle"]
 # The over-the-air update client for TypeScript view bundles: fetches a
 # signed manifest and bundle, verifies them, and caches them for the next
 # launch. Separate from `ts` because it links an HTTP client, a signature
@@ -240,6 +247,9 @@ particle = ["dep:waterui-particle"]
 # modules opts in explicitly rather than paying for them through the
 # full-feature set — the same reasoning `markdown-math` carries above.
 all = [
+    "avatar",
+    "cpu-time",
+    "link",
     "list",
     "table",
     "navigation",
