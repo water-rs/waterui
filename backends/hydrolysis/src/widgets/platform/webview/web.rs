@@ -17,32 +17,23 @@ use std::rc::Rc;
 use nami::{Binding, Computed};
 use wasm_bindgen::{JsCast, closure::Closure};
 use waterui::webview::{
-    BackendEvent, CustomWebViewController, Url, WatcherGuard, WatcherSet, WebViewConfig,
-    WebViewController, WebViewEvent, WebViewHandle, WebViewOpenError,
+    BackendEvent, Url, WatcherGuard, WatcherSet, WebViewConfig, WebViewController, WebViewEvent,
+    WebViewHandle, WebViewOpenError,
 };
-use waterui_core::Environment;
 use web_sys::{HtmlElement, HtmlIFrameElement};
 
 use crate::{HostedContent, HostedObject, HostedOcclusion};
 
-/// The controller behind this backend's web views on the web. The backend
-/// installs it as the default controller.
-#[derive(Debug, Clone, Copy)]
+/// The controller behind this backend's web views on the web.
+#[derive(Debug, Clone, Copy, Default)]
 pub struct WebSystemWebViewController;
 
-impl CustomWebViewController for WebSystemWebViewController {
-    fn open(&self, _config: WebViewConfig) -> Result<impl WebViewHandle, WebViewOpenError> {
+impl WebViewController for WebSystemWebViewController {
+    type Handle = WebIframeHandle;
+
+    fn open(&self, _config: WebViewConfig) -> Result<Self::Handle, WebViewOpenError> {
         WebIframeHandle::new()
     }
-}
-
-/// Installs the `<iframe>` controller, unless the application installed one of
-/// its own.
-pub fn install(env: &mut Environment) {
-    if env.get::<WebViewController>().is_some() {
-        return;
-    }
-    env.insert(WebViewController::new(WebSystemWebViewController));
 }
 
 /// A DOM event listener, registered while it is held.

@@ -189,14 +189,14 @@ open.with_proxy(move || hstack((
 
 `proxy.run_javascript(expr)` is async (`Result<Str, Str>`, the JSON of the value) — await
 it in `.action_async`. The proxy also has `go_forward`, `refresh`, `stop`, `set_cookie`,
-`get_cookies().await` and `set_user_agent`. On a `WebView` handle (not the proxy) — the
-value `WebViewController::open()` returns, the controller being an extractor —
+`get_cookies().await` and `set_user_agent`. Inside a backend realization or test that holds
+an opened `WebView` handle (not the proxy),
 `eval!(webview, "expr @{value}").await` decodes the result into a Rust type and
 `exec!(webview, "program").await` runs for effect (`exec_file!(webview, "scripts/setup.js")`
 is the fused `webview.exec(&js_file!(..))`, awaited the same way); `@{..}` holes are passed as bound
-arguments, never spliced into the source. `with_proxy` always places the page below the
-content; on such a handle `webview.proxy_scope(|| controls)` attaches the proxy and leaves
-placement to you.
+arguments, never spliced into the source. Application views use `WebView::open(url).with_proxy(|| controls)`
+(placing the page below the content); backend realizations with an opened handle can also use
+`webview.proxy_scope(|| controls)` to attach the proxy alongside a custom surface.
 
 The Rust↔page bridge is declared with `#[js_api]` on an impl block and served on the
 builder; the method's *asyncness* is the discriminator:
@@ -239,9 +239,9 @@ dependencies, not a project setting or runtime hook. Link neither engine crate a
 platform's engine is used (`WKWebView`, Android `WebView`, `WebKitGTK`). To pick one of
 WaterUI's bundled engines instead, add `waterui-browser-cef` (with its `webview` feature)
 or `waterui-browser-wpe` (with its `webview` feature) as a dependency; the backend
-enables `webview-cef` or `webview-wpe` at compile time, installs its `WebViewController`,
-and realizes every `WebView` through that engine with plain `App::new(root, env)`. The
-`WebView` code above is unchanged either way. Linux outside GTK bridges no system engine,
+enables `webview-cef` or `webview-wpe` at compile time, uses its `WebViewController`
+through `NativeBackend`, and realizes every `WebView` through that engine with plain
+`App::new(root, env)`. The `WebView` code above is unchanged either way. Linux outside GTK bridges no system engine,
 so a `WebView` there needs one of these crates.
 
 `waterui-chromium` is the separate, heavier component for a full Chromium surface,

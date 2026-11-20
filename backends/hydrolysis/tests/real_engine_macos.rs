@@ -62,9 +62,9 @@ mod real {
     use tiny_http::{Header, Response, Server};
     use waterui_core::MainThreadBound;
     use waterui_webview::{
-        BackendEvent, BridgeOrigins, CustomWebViewController as _, IntoJsReply, JsReply, Json,
-        OriginPolicy, ScriptInjectionTime, ScriptMessageHandler, Url, UserScript, WatcherGuard,
-        WebViewConfig, WebViewEvent, WebViewHandle,
+        BackendEvent, BridgeOrigins, IntoJsReply, JsReply, Json, OriginPolicy, ScriptInjectionTime,
+        ScriptMessageHandler, Url, UserScript, WatcherGuard, WebViewConfig, WebViewController as _,
+        WebViewEvent, WebViewHandle,
     };
 
     /// How long one wait may take before a scenario gives up.
@@ -757,10 +757,9 @@ mod real {
     /// ticks — bounded by [`CONFORMANCE_TIMEOUT`], which covers the whole
     /// multi-navigation scenario rather than one wait.
     fn mirrored_state_reaches_only_admitted_documents(executor: &TestExecutor) {
-        let controller = waterui_webview::WebViewController::new(MacSystemWebViewController);
         let mut future = pin!(
             waterui_webview::conformance::mirrored_state_reaches_only_admitted_documents(
-                &controller
+                &MacSystemWebViewController
             )
         );
         let mut context = Context::from_waker(Waker::noop());
