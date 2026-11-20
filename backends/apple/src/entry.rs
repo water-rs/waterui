@@ -85,16 +85,12 @@ mod imp {
             .expect("GPU completion must run exactly once");
         // SAFETY: `run` lent `env` for the process and never returned.
         let env = unsafe { &mut *launch.env };
-        #[cfg(any(feature = "webview", all(target_os = "macos", feature = "webview-cef")))]
-        crate::components::webview::install_service(env);
         let parts = app(env.clone()).into_parts();
         // Content renders under the environment `app` returned: its own
         // installs (`.state(..)` chains) landed as overlays on the clone it
         // was handed, which the host env cannot see — `insert` never
         // propagates between clones.
         let mut app_env = parts.env;
-        #[cfg(any(feature = "webview", all(target_os = "macos", feature = "webview-cef")))]
-        crate::components::webview::install_service(&mut app_env);
         // The machine installs the `Quit` service into `app_env` before the
         // menus and windows realize under it, so a `|quit: Quit|` action
         // finds it. A declared `MenuItem::Quit` does not use the service: it
@@ -171,11 +167,7 @@ mod imp {
 
         let handlers = ApplicationHandlers::new()
             .did_finish_launching(move |_| {
-                #[cfg(any(
-                    feature = "gpu_surface",
-                    feature = "webview",
-                    all(target_os = "macos", feature = "webview-cef")
-                ))]
+                #[cfg(feature = "gpu_surface")]
                 let env_ptr = launch.env;
                 // SAFETY: `launch` is consumed by `prepared` exactly once —
                 // this handler runs once — and `env` is `run`'s borrow, lent
@@ -186,11 +178,6 @@ mod imp {
                     // this handler runs once — and `env` is `run`'s borrow, lent
                     // for the process.
                     unsafe {
-                        #[cfg(any(
-                            feature = "webview",
-                            all(target_os = "macos", feature = "webview-cef")
-                        ))]
-                        crate::embedding::install_services(&mut *env_ptr);
                         prepared::<F, W>(Box::into_raw(launch).cast::<c_void>());
                     }
                 };
@@ -270,8 +257,6 @@ mod imp {
             .expect("GPU completion must run exactly once");
         // SAFETY: `run` lent `env` for the process and never returned.
         let env = unsafe { &mut *launch.env };
-        #[cfg(any(feature = "webview", all(target_os = "macos", feature = "webview-cef")))]
-        crate::components::webview::install_service(env);
         let parts = app(env.clone()).into_parts();
         // iOS ends the process without notice, so `on_quit_request` and
         // `on_terminate` are never called: the machine is never started and
@@ -279,12 +264,7 @@ mod imp {
         let _ = parts.termination;
         // Same hand-off as macOS: content renders under the env `app`
         // returned — its installs are invisible to the host env.
-        // `mut` only serves the `webview` install below; without the port
-        // nothing borrows `app_env` mutably.
-        #[allow(unused_mut)]
-        let mut app_env = parts.env;
-        #[cfg(any(feature = "webview", all(target_os = "macos", feature = "webview-cef")))]
-        crate::components::webview::install_service(&mut app_env);
+        let app_env = parts.env;
         let initial = crate::windows::connect_windows(parts.windows, &app_env);
         if initial.is_empty() {
             waterui::contract_violation!(
@@ -354,11 +334,7 @@ mod imp {
         #[cfg(waterui_feature = "menu")]
         let handlers = handlers.build_menus(build_menus);
         let handlers = handlers.did_finish_launching(move |_| {
-            #[cfg(any(
-                feature = "gpu_surface",
-                feature = "webview",
-                all(target_os = "macos", feature = "webview-cef")
-            ))]
+            #[cfg(feature = "gpu_surface")]
             let env_ptr = launch.env;
             // SAFETY: `launch` is consumed by `prepared` exactly once, and
             // `env` is `run`'s borrow, lent for the process.
@@ -367,11 +343,6 @@ mod imp {
                 // SAFETY: `launch` is consumed by `prepared` exactly once, and
                 // `env` is `run`'s borrow, lent for the process.
                 unsafe {
-                    #[cfg(any(
-                        feature = "webview",
-                        all(target_os = "macos", feature = "webview-cef")
-                    ))]
-                    crate::embedding::install_services(&mut *env_ptr);
                     prepared::<F, W>(Box::into_raw(launch).cast::<c_void>());
                 }
             };

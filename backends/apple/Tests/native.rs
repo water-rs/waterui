@@ -1021,9 +1021,9 @@ mod resolve {
     use waterui::component::text_field::TextField;
     use waterui::component::toggle::Toggle;
     use waterui::filter::Opacity;
-    use waterui::icon::SystemIcon;
     use waterui::layout::Spacer;
     use waterui::reactive::binding;
+    use waterui_apple::SfSymbol;
     use waterui_apple::contract::NativeLeaf;
     use waterui_apple::native_test_support::transition::ManualTransitionClock;
     use waterui_backend_core::{AnyView, View};
@@ -1512,7 +1512,7 @@ mod resolve {
     /// icon and its title — the `SwiftUI` `Label` and Material 3 default
     /// the composition reproduces on every backend.
     pub fn a_label_leaves_8pt_between_icon_and_title() {
-        let leaf = render(label("Play").icon(SystemIcon::new("play.fill")));
+        let leaf = render(label("Play").icon(SfSymbol::PLAY_FILL));
         let size = leaf.layout().measure(ProposalSize::UNSPECIFIED).size;
         let row = leaf.view();
         cocoa_ui::view::set_frame(
@@ -2823,13 +2823,13 @@ mod navigation {
     pub fn toolbar_labels_default_to_icons_and_preserve_explicit_titles() {
         use cocoa_ui::appkit::first_symbol_view;
         use waterui::component::{ButtonStyle, button, label};
-        use waterui::icon::SystemIcon;
         use waterui::navigation::NavigationStack;
+        use waterui_apple::SfSymbol;
 
         const LEADING: &str = "dev.cocoaui.navigation.leading";
         const TRAILING: &str = "dev.cocoaui.navigation.trailing";
 
-        let icon = || SystemIcon::new("plus");
+        let icon = || SfSymbol::PLUS;
         let leaf = resolve::render(NavigationStack::new(
             NavigationView::new("Inbox", text("root")).navigation_toolbar(NavigationToolbar::new(
                 vec![
@@ -9695,21 +9695,23 @@ mod navigation {
     use cocoa_ui::uikit::view_controller::owning_controller;
     use cocoa_ui::uikit::{NavContentController, NavPage};
     use cocoa_ui::{PlatformView, Retained, view};
+    use waterui::AnyView;
     use waterui::Str;
     use waterui::ViewExt as _;
     use waterui::component::toggle::toggle;
     use waterui::component::{ButtonStyle, button};
     use waterui::graphics::color::WorkingColor;
-    use waterui::icon::SystemIcon;
     use waterui::navigation::{
         NavigationStack, NavigationToolbar, NavigationToolbarItem, NavigationToolbarPlacement,
-        NavigationView, ToolbarItemIcon,
+        NavigationView,
     };
     use waterui::prelude::text;
     use waterui::reactive::{Signal as _, SignalExt as _, binding};
     use waterui::resolve::Resolvable as _;
     use waterui::theme::color::{Accent, Foreground};
+    use waterui_apple::SfSymbol;
     use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, pump_main_until};
+    use waterui_core::handler::AnyViewBuilder;
 
     use super::{mtm, resolve};
 
@@ -9829,7 +9831,7 @@ mod navigation {
         use waterui::component::label;
         use waterui_core::layout::ProposalSize;
 
-        let icon = || SystemIcon::new("plus");
+        let icon = || SfSymbol::PLUS;
         let icon_leaf = resolve::render(icon());
         let icon_width = f64::from(
             icon_leaf
@@ -9989,7 +9991,7 @@ mod navigation {
         use cocoa_ui::{Point, Rect};
         use waterui_core::layout::ProposalSize;
 
-        let leaf = resolve::render(SystemIcon::new("plus"));
+        let leaf = resolve::render(SfSymbol::PLUS);
         let measured = leaf.layout().measure(ProposalSize::UNSPECIFIED).size;
         let (width, height) = (f64::from(measured.width), f64::from(measured.height));
         view::set_frame(leaf.view(), Rect::new(0.0, 0.0, width, height));
@@ -10077,7 +10079,9 @@ mod navigation {
                 .style(ButtonStyle::Plain)
                 .disabled(disabled.clone()),
         );
-        item.set_icon(Some(ToolbarItemIcon::System(SystemIcon::new("checkmark"))));
+        item.set_icon(Some(AnyViewBuilder::new(|| {
+            AnyView::new(SfSymbol::CHECKMARK)
+        })));
         let leaf = resolve::render(NavigationStack::new(
             NavigationView::new("Inbox", text("root"))
                 .navigation_toolbar(NavigationToolbar::new(vec![item])),
@@ -10113,7 +10117,9 @@ mod navigation {
                 .checkbox()
                 .disabled(disabled.clone()),
         );
-        item.set_icon(Some(ToolbarItemIcon::System(SystemIcon::new("checkmark"))));
+        item.set_icon(Some(AnyViewBuilder::new(|| {
+            AnyView::new(SfSymbol::CHECKMARK)
+        })));
         let leaf = resolve::render(NavigationStack::new(
             NavigationView::new("Inbox", text("root"))
                 .navigation_toolbar(NavigationToolbar::new(vec![item])),
@@ -10506,7 +10512,8 @@ mod webview {
     /// and the record of its loads.
     fn probed_view(origins: BridgeOrigins) -> (AnyWebViewHandle, Loads) {
         let initial: Url = "https://waterui.dev".parse().expect("parses");
-        let webview = waterui_apple::native_test_support::webview::controller(mtm()).open_with(
+        let webview = waterui_webview::open_webview_with(
+            &waterui_apple::native_test_support::webview::controller(mtm()),
             WebViewConfig::default()
                 .with_bridge_origins(OriginPolicy::new(origins, &initial))
                 .with_scripts(vec![UserScript::new(
@@ -10911,13 +10918,13 @@ mod a11y_frame {
     use waterui::component::list::{List, ListItem};
     use waterui::component::toggle::Toggle;
     use waterui::graphics::color::Srgb;
-    use waterui::icon::SystemIcon;
     use waterui::layout::container::LazyContainer;
     use waterui::layout::padding::EdgeInsets;
     use waterui::layout::stack::HStackLayout;
     use waterui::prelude::{scroll, text};
     use waterui::reactive::binding;
     use waterui::views::ForEach;
+    use waterui_apple::SfSymbol;
     use waterui_apple::contract::NativeLeaf;
     use waterui_apple::dispatch;
     use waterui_backend_core::{AnyView, View};
@@ -11135,7 +11142,7 @@ mod a11y_frame {
     /// the symbol unscaled at the centre of that frame — its response — and
     /// announces that rectangle.
     fn an_image_draws_and_reports_its_response() {
-        let (leaf, _window) = attached(SystemIcon::new("star.fill").a11y_label("Favourite"));
+        let (leaf, _window) = attached(SfSymbol::STAR_FILL.a11y_label("Favourite"));
         let view = leaf.view();
         let image = view
             .downcast_ref::<ImageView>()
@@ -11308,11 +11315,10 @@ mod a11y_frame {
     #[cfg(feature = "webview")]
     fn a_region_on_a_web_view_reports_the_named_region() {
         use cocoa_ui::web_kit::LeafWebView;
-        use waterui_apple::native_test_support::webview::controller;
-        use waterui_webview::WebViewConfig;
+        use waterui_webview::WebView;
 
         let region = Rect::new(Point::new(8.0, 12.0), Size::new(40.0, 24.0));
-        let page = controller(mtm()).open_with(WebViewConfig::default());
+        let page = WebView::open("about:blank");
         let (leaf, _window) = attached(
             page.a11y_label("Page")
                 .a11y_geometry(AccessibilityGeometry::Region(region)),

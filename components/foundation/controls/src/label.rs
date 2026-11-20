@@ -39,7 +39,7 @@
 //! - [`Label::hide_label`] / [`Label::display_mode`] for per-label control
 
 use alloc::rc::Rc;
-use core::{any::Any, fmt};
+use core::fmt;
 use nami::{Binding, Computed, SignalExt};
 use waterui_core::{
     AnyView, Environment, IntoSignalF32, View,
@@ -48,7 +48,6 @@ use waterui_core::{
     handler::{AnyViewBuilder, ViewBuilder},
     plugin::Plugin,
 };
-use waterui_icon::SystemIcon;
 use waterui_layout::stack::hstack;
 use waterui_text::{IntoText, Text, font::Font, styled::StyledStr};
 
@@ -77,14 +76,13 @@ nami::impl_constant!(IconPosition);
 /// Install this as a plugin on a subtree to adapt labels for chrome such as
 /// toolbars or compact layouts:
 ///
-/// ```rust
+/// ```rust,ignore
 /// # use waterui::prelude::*;
 /// # use waterui_controls::{LabelDisplayMode, button, label};
-/// # use waterui_icon::system_icon;
-/// # fn toolbar() -> impl View {
+/// # fn toolbar(search_icon: impl View + Clone, settings_icon: impl View + Clone) -> impl View {
 /// hstack((
-///     button(label("Search").system_icon(system_icon::search())).action(|| {}),
-///     button(label("Settings").system_icon(system_icon::settings())).action(|| {}),
+///     button(label("Search").icon(search_icon)).action(|| {}),
+///     button(label("Settings").icon(settings_icon)).action(|| {}),
 /// ))
 /// .install(LabelDisplayMode::IconOnly)
 /// # }
@@ -190,16 +188,10 @@ pub trait LabelKind: sealed::Sealed + Clone + 'static {
     fn has_custom_content(&self) -> bool;
     /// Whether this label carries an icon.
     fn has_icon(&self) -> bool;
-    /// Semantic [`SystemIcon`], if one was attached.
-    fn semantic_icon(&self) -> Option<SystemIcon>;
     /// Lifts the icon into an erased builder for chrome that places icons separately.
     fn icon_view(&self) -> Option<AnyViewBuilder<AnyView>>;
-    /// Attaches `icon` (`system_icon` is `Some` when `I` is [`SystemIcon`]).
-    fn with_icon<I: View + Clone>(
-        self,
-        icon: I,
-        system_icon: Option<SystemIcon>,
-    ) -> Self::WithIcon<I>;
+    /// Attaches `icon`.
+    fn with_icon<I: View + Clone>(self, icon: I) -> Self::WithIcon<I>;
     /// Sets icon placement (`Leading` or `Trailing`), or reports a contract violation on custom content.
     fn set_icon_position(&mut self, position: IconPosition, method: &'static str);
     /// Sets spacing between icon and text, or reports a contract violation on custom content.
@@ -208,7 +200,7 @@ pub trait LabelKind: sealed::Sealed + Clone + 'static {
     fn set_font(&mut self, font: Font);
     /// Caps semantic text line count unless already set.
     fn set_default_text_line_limit(&mut self, limit: core::num::NonZeroUsize);
-    /// Strips any visual icon/custom view, keeping semantic text and [`SystemIcon`].
+    /// Strips any custom view/visual layout, keeping semantic text and optional icon view.
     fn into_semantic(self) -> SemanticLabel;
     /// Erases any visual icon/custom view for runtime-open heterogeneous collections.
     fn into_erased(self) -> ErasedLabel;
@@ -259,19 +251,14 @@ impl LabelKind for TitleLabel {
         false
     }
 
-    fn semantic_icon(&self) -> Option<SystemIcon> {
-        None
-    }
-
     fn icon_view(&self) -> Option<AnyViewBuilder<AnyView>> {
         None
     }
 
-    fn with_icon<I: View + Clone>(self, icon: I, system_icon: Option<SystemIcon>) -> IconLabel<I> {
+    fn with_icon<I: View + Clone>(self, icon: I) -> IconLabel<I> {
         IconLabel {
             text: self.text,
             icon,
-            system_icon,
             icon_position: self.icon_position,
             spacing: self.spacing,
             font: self.font,
@@ -297,7 +284,7 @@ impl LabelKind for TitleLabel {
     fn into_semantic(self) -> SemanticLabel {
         SemanticLabel {
             text: self.text,
-            system_icon: None,
+            icon: None,
             icon_position: self.icon_position,
             spacing: self.spacing,
             font: self.font,
@@ -308,7 +295,6 @@ impl LabelKind for TitleLabel {
         ErasedLabel::Semantic {
             text: self.text,
             icon: None,
-            system_icon: None,
             icon_position: self.icon_position,
             spacing: self.spacing,
             font: self.font,
@@ -369,7 +355,6 @@ impl LabelKind for TitleLabel {
 pub struct IconLabel<I> {
     text: Text,
     icon: I,
-    system_icon: Option<SystemIcon>,
     icon_position: IconPosition,
     spacing: Computed<f32>,
     font: Option<Font>,
@@ -396,24 +381,15 @@ impl<I: View + Clone> LabelKind for IconLabel<I> {
         true
     }
 
-    fn semantic_icon(&self) -> Option<SystemIcon> {
-        self.system_icon.clone()
-    }
-
     fn icon_view(&self) -> Option<AnyViewBuilder<AnyView>> {
         let icon = self.icon.clone();
         Some(AnyViewBuilder::new(move || AnyView::new(icon.clone())))
     }
 
-    fn with_icon<NewI: View + Clone>(
-        self,
-        icon: NewI,
-        system_icon: Option<SystemIcon>,
-    ) -> IconLabel<NewI> {
+    fn with_icon<NewI: View + Clone>(self, icon: NewI) -> IconLabel<NewI> {
         IconLabel {
             text: self.text,
             icon,
-            system_icon,
             icon_position: self.icon_position,
             spacing: self.spacing,
             font: self.font,
@@ -437,9 +413,10 @@ impl<I: View + Clone> LabelKind for IconLabel<I> {
     }
 
     fn into_semantic(self) -> SemanticLabel {
+        let icon = self.icon;
         SemanticLabel {
             text: self.text,
-            system_icon: self.system_icon,
+            icon: Some(AnyViewBuilder::new(move || AnyView::new(icon.clone()))),
             icon_position: self.icon_position,
             spacing: self.spacing,
             font: self.font,
@@ -451,7 +428,6 @@ impl<I: View + Clone> LabelKind for IconLabel<I> {
         ErasedLabel::Semantic {
             text: self.text,
             icon: Some(AnyViewBuilder::new(move || AnyView::new(icon.clone()))),
-            system_icon: self.system_icon,
             icon_position: self.icon_position,
             spacing: self.spacing,
             font: self.font,
@@ -572,24 +548,14 @@ impl<V: View + Clone> LabelKind for CustomLabel<V> {
         false
     }
 
-    fn semantic_icon(&self) -> Option<SystemIcon> {
-        None
-    }
-
     fn icon_view(&self) -> Option<AnyViewBuilder<AnyView>> {
         None
     }
 
-    fn with_icon<I: View + Clone>(self, _icon: I, system_icon: Option<SystemIcon>) -> Self {
-        if system_icon.is_some() {
-            contract_violation!(
-                "Label::system_icon requires a semantic text label; compose icons inside Label::new content; the call is ignored"
-            );
-        } else {
-            contract_violation!(
-                "Label::icon requires a semantic text label; compose icons inside Label::new content; the call is ignored"
-            );
-        }
+    fn with_icon<I: View + Clone>(self, _icon: I) -> Self {
+        contract_violation!(
+            "Label::icon requires a semantic text label; compose icons inside Label::new content; the call is ignored"
+        );
         self
     }
 
@@ -616,7 +582,7 @@ impl<V: View + Clone> LabelKind for CustomLabel<V> {
     fn into_semantic(self) -> SemanticLabel {
         SemanticLabel {
             text: self.semantic_text,
-            system_icon: None,
+            icon: None,
             icon_position: IconPosition::Leading,
             spacing: Computed::constant(8.0),
             font: None,
@@ -664,11 +630,12 @@ impl<V: View + Clone> LabelKind for CustomLabel<V> {
 }
 
 /// Semantic-only label metadata retained by menu commands and submenus (never
-/// dispatches [`SystemIcon`] as a view unless explicitly attached again).
+/// dispatches an icon view in its own semantic text slot unless a host chrome
+/// projects [`Self::icon_view`] separately).
 #[derive(Debug, Clone)]
 pub struct SemanticLabel {
     text: Text,
-    system_icon: Option<SystemIcon>,
+    icon: Option<AnyViewBuilder<AnyView>>,
     icon_position: IconPosition,
     spacing: Computed<f32>,
     font: Option<Font>,
@@ -692,25 +659,17 @@ impl LabelKind for SemanticLabel {
     }
 
     fn has_icon(&self) -> bool {
-        self.system_icon.is_some()
-    }
-
-    fn semantic_icon(&self) -> Option<SystemIcon> {
-        self.system_icon.clone()
+        self.icon.is_some()
     }
 
     fn icon_view(&self) -> Option<AnyViewBuilder<AnyView>> {
-        self.system_icon.as_ref().map(|sys| {
-            let sys = sys.clone();
-            AnyViewBuilder::new(move || AnyView::new(sys.clone()))
-        })
+        self.icon.clone()
     }
 
-    fn with_icon<I: View + Clone>(self, icon: I, system_icon: Option<SystemIcon>) -> IconLabel<I> {
+    fn with_icon<I: View + Clone>(self, icon: I) -> IconLabel<I> {
         IconLabel {
             text: self.text,
             icon,
-            system_icon,
             icon_position: self.icon_position,
             spacing: self.spacing,
             font: self.font,
@@ -738,14 +697,9 @@ impl LabelKind for SemanticLabel {
     }
 
     fn into_erased(self) -> ErasedLabel {
-        let icon = self
-            .system_icon
-            .clone()
-            .map(|sys| AnyViewBuilder::new(move || AnyView::new(sys.clone())));
         ErasedLabel::Semantic {
             text: self.text,
-            icon,
-            system_icon: self.system_icon,
+            icon: self.icon,
             icon_position: self.icon_position,
             spacing: self.spacing,
             font: self.font,
@@ -812,8 +766,6 @@ pub enum ErasedLabel {
         text: Text,
         /// Optional erased icon builder.
         icon: Option<AnyViewBuilder<AnyView>>,
-        /// Optional semantic system icon.
-        system_icon: Option<SystemIcon>,
         /// Icon position.
         icon_position: IconPosition,
         /// Spacing between icon and text.
@@ -857,13 +809,6 @@ impl LabelKind for ErasedLabel {
         matches!(self, Self::Semantic { icon: Some(_), .. })
     }
 
-    fn semantic_icon(&self) -> Option<SystemIcon> {
-        match self {
-            Self::Semantic { system_icon, .. } => system_icon.clone(),
-            Self::Custom { .. } => None,
-        }
-    }
-
     fn icon_view(&self) -> Option<AnyViewBuilder<AnyView>> {
         match self {
             Self::Semantic { icon, .. } => icon.clone(),
@@ -871,26 +816,15 @@ impl LabelKind for ErasedLabel {
         }
     }
 
-    fn with_icon<I: View + Clone>(mut self, icon: I, new_system_icon: Option<SystemIcon>) -> Self {
+    fn with_icon<I: View + Clone>(mut self, icon: I) -> Self {
         match &mut self {
-            Self::Semantic {
-                icon: slot,
-                system_icon,
-                ..
-            } => {
+            Self::Semantic { icon: slot, .. } => {
                 *slot = Some(AnyViewBuilder::new(move || AnyView::new(icon.clone())));
-                *system_icon = new_system_icon;
             }
             Self::Custom { .. } => {
-                if new_system_icon.is_some() {
-                    contract_violation!(
-                        "Label::system_icon requires a semantic text label; compose icons inside Label::new content; the call is ignored"
-                    );
-                } else {
-                    contract_violation!(
-                        "Label::icon requires a semantic text label; compose icons inside Label::new content; the call is ignored"
-                    );
-                }
+                contract_violation!(
+                    "Label::icon requires a semantic text label; compose icons inside Label::new content; the call is ignored"
+                );
             }
         }
         self
@@ -939,21 +873,20 @@ impl LabelKind for ErasedLabel {
         match self {
             Self::Semantic {
                 text,
-                system_icon,
+                icon,
                 icon_position,
                 spacing,
                 font,
-                ..
             } => SemanticLabel {
                 text,
-                system_icon,
+                icon,
                 icon_position,
                 spacing,
                 font,
             },
             Self::Custom { semantic_text, .. } => SemanticLabel {
                 text: semantic_text,
-                system_icon: None,
+                icon: None,
                 icon_position: IconPosition::Leading,
                 spacing: Computed::constant(8.0),
                 font: None,
@@ -1044,7 +977,7 @@ impl LabelKind for ErasedLabel {
 pub struct ControlLabel<S> {
     build: Rc<dyn Fn(Option<Font>) -> S>,
     semantic_text: Text,
-    semantic_icon: Option<SystemIcon>,
+    icon_view: Option<AnyViewBuilder<AnyView>>,
     accessibility_text: Option<Text>,
     accessibility_label: Option<Computed<StyledStr>>,
     display_mode: LabelDisplayMode,
@@ -1057,7 +990,7 @@ impl<S> Clone for ControlLabel<S> {
         Self {
             build: Rc::clone(&self.build),
             semantic_text: self.semantic_text.clone(),
-            semantic_icon: self.semantic_icon.clone(),
+            icon_view: self.icon_view.clone(),
             accessibility_text: self.accessibility_text.clone(),
             accessibility_label: self.accessibility_label.clone(),
             display_mode: self.display_mode,
@@ -1140,7 +1073,7 @@ impl<S: 'static> ControlLabel<S> {
         ControlLabel {
             build: Rc::new(move |font| f(build(font))),
             semantic_text: self.semantic_text,
-            semantic_icon: self.semantic_icon,
+            icon_view: self.icon_view,
             accessibility_text: self.accessibility_text,
             accessibility_label: self.accessibility_label,
             display_mode: self.display_mode,
@@ -1181,19 +1114,14 @@ impl<V: View> LabelKind for ControlLabel<V> {
         self.has_icon
     }
 
-    fn semantic_icon(&self) -> Option<SystemIcon> {
-        self.semantic_icon.clone()
-    }
-
     fn icon_view(&self) -> Option<AnyViewBuilder<AnyView>> {
-        None
+        self.icon_view.clone()
     }
 
-    fn with_icon<I: View + Clone>(self, icon: I, system_icon: Option<SystemIcon>) -> IconLabel<I> {
+    fn with_icon<I: View + Clone>(self, icon: I) -> IconLabel<I> {
         IconLabel {
             text: self.semantic_text,
             icon,
-            system_icon,
             icon_position: IconPosition::Leading,
             spacing: Computed::constant(8.0),
             font: None,
@@ -1214,7 +1142,7 @@ impl<V: View> LabelKind for ControlLabel<V> {
     fn into_semantic(self) -> SemanticLabel {
         SemanticLabel {
             text: self.semantic_text,
-            system_icon: self.semantic_icon,
+            icon: self.icon_view,
             icon_position: IconPosition::Leading,
             spacing: Computed::constant(8.0),
             font: None,
@@ -1573,52 +1501,21 @@ impl<K: LabelKind> Label<K> {
     /// The icon is treated as visual chrome while the label text remains the
     /// accessibility name announced by assistive technology.
     ///
-    /// If the icon is a direct [`SystemIcon`], native menus can reuse its
-    /// semantic representation. Other icon views remain fully supported for
-    /// ordinary UI rendering and hydrolysis popup menus, but native semantic
-    /// menus currently only project [`SystemIcon`].
+    /// `icon` is a value rather than a builder so platform chrome (menus,
+    /// toolbars, tab bars) can inspect backend-specific icon types such as
+    /// `waterui_apple::SfSymbol` directly and render any other icon view into
+    /// a platform image. Size an icon by choosing the icon's own size, or wrap
+    /// the whole label with [`Label::new`], which does take a builder.
     ///
     /// # Contract violation
     ///
     /// Calling it on a [`Label::new`] label with arbitrary visual content is
     /// a contract violation: a debug build panics, a release build logs it
     /// and ignores the call.
-    /// `icon` is a value rather than a builder so a [`SystemIcon`] stays
-    /// recognizable: the semantic identity of an SF Symbol is what lets Apple
-    /// chrome render it natively, and a closure would erase it. Size an icon by
-    /// choosing the icon's own size, or wrap the whole label with
-    /// [`Label::new`], which does take a builder.
     #[must_use]
     pub fn icon<I: View + Clone>(self, icon: I) -> Label<K::WithIcon<I>> {
-        let system_icon = (&icon as &dyn Any).downcast_ref::<SystemIcon>().cloned();
         Label {
-            content: self.content.with_icon(icon, system_icon),
-            display_mode: self.display_mode,
-            accessibility_text: self.accessibility_text,
-            accessibility_label: self.accessibility_label,
-        }
-    }
-
-    /// Adds a semantic system icon to the label.
-    ///
-    /// `SystemIcon` is platform-asymmetric: it renders SF Symbols on Apple
-    /// platforms (iOS / iPadOS / macOS / tvOS / visionOS) and is
-    /// **intentionally unsupported on Android, Linux, Web**. For portable,
-    /// cross-platform icons, prefer [`Label::icon`] with an icon-pack crate
-    /// such as `waterui-icons-lucide`, `waterui-icons-material-icon`, or
-    /// `waterui-icons-fontawesome7`. See [`SystemIcon`] for the full
-    /// rationale.
-    ///
-    /// # Contract violation
-    ///
-    /// Calling it on a [`Label::new`] label with arbitrary visual content is
-    /// a contract violation: a debug build panics, a release build logs it
-    /// and ignores the call.
-    #[must_use]
-    pub fn system_icon(self, icon: SystemIcon) -> Label<K::WithIcon<SystemIcon>> {
-        let semantic = Some(icon.clone());
-        Label {
-            content: self.content.with_icon(icon, semantic),
+            content: self.content.with_icon(icon),
             display_mode: self.display_mode,
             accessibility_text: self.accessibility_text,
             accessibility_label: self.accessibility_label,
@@ -1734,21 +1631,11 @@ impl<K: LabelKind> Label<K> {
             .unwrap_or_else(|| self.semantic_text().content())
     }
 
-    /// Returns the semantic system icon carried by this label.
-    ///
-    /// Custom icon views are visual-only and therefore return `None` here.
-    #[must_use]
-    pub fn semantic_icon(&self) -> Option<SystemIcon> {
-        self.content.semantic_icon()
-    }
-
     /// Returns the label's icon as a view builder, whatever kind it is.
     ///
-    /// Chrome that hosts an icon apart from its title — a tab bar item is an
-    /// image plus a title, not one composed view — needs the icon on its own.
-    /// Ask [`Self::semantic_icon`] first: a platform that recognizes the symbol
-    /// draws it natively at any size, while this is a view the host has to
-    /// render for itself.
+    /// Chrome that hosts an icon apart from its title — a menu item, toolbar
+    /// action, or tab bar item — extracts this view and either recognizes a
+    /// backend-provided symbol type directly or rasterizes it for its chrome.
     #[must_use]
     pub fn icon_view(&self) -> Option<AnyViewBuilder<AnyView>> {
         self.content.icon_view()
@@ -1787,9 +1674,8 @@ impl<K: LabelKind> Label<K> {
         self.accessibility_label = Some(accessibility_text.resolve(env).into_content());
     }
 
-    /// Strips any caller-supplied custom visual view or custom icon, keeping
-    /// the semantic text, any [`SystemIcon`], display mode, and accessibility
-    /// overrides.
+    /// Strips any caller-supplied custom layout, keeping the semantic text,
+    /// optional icon view, display mode, and accessibility overrides.
     #[must_use]
     pub fn into_semantic(self) -> Label<SemanticLabel> {
         Label {
@@ -1819,7 +1705,7 @@ impl<K: LabelKind> Label<K> {
         let resolved = self.resolve(env);
         let mode = resolved.display_mode;
         let semantic_text = resolved.content.semantic_text().clone();
-        let semantic_icon = resolved.content.semantic_icon();
+        let icon_view = resolved.content.icon_view();
         let accessibility_text = resolved.accessibility_text.clone();
         let accessibility_label = resolved.accessibility_label();
         let has_custom_content = resolved.content.has_custom_content();
@@ -1828,7 +1714,7 @@ impl<K: LabelKind> Label<K> {
         ControlLabel {
             build,
             semantic_text,
-            semantic_icon,
+            icon_view,
             accessibility_text,
             accessibility_label: Some(accessibility_label),
             display_mode: mode,
@@ -1843,7 +1729,7 @@ impl<K: LabelKind> Label<K> {
     pub fn into_unscoped_control_label(self) -> ControlLabel<Self> {
         let mode = self.display_mode;
         let semantic_text = self.content.semantic_text().clone();
-        let semantic_icon = self.content.semantic_icon();
+        let icon_view = self.content.icon_view();
         let accessibility_text = self.accessibility_text.clone();
         let accessibility_label = self.accessibility_label.clone();
         let has_custom_content = self.content.has_custom_content();
@@ -1855,7 +1741,7 @@ impl<K: LabelKind> Label<K> {
         ControlLabel {
             build,
             semantic_text,
-            semantic_icon,
+            icon_view,
             accessibility_text,
             accessibility_label,
             display_mode: mode,

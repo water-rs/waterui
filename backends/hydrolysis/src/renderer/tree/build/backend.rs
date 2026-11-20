@@ -151,10 +151,46 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     type Output = RenderNode<E>;
     type Ctx = ();
     type Family = HydroFamily<E>;
+    #[cfg(waterui_feature = "webview")]
+    type WebViewController = crate::widgets::platform::webview::SelectedWebViewController;
     type Offscreen = crate::view_renderer::HydrolysisOffscreenRenderer;
 
     fn with_family<R>(&mut self, f: impl for<'a> FnOnce(&mut HydroBackend<'a, E>) -> R) -> R {
         f(self)
+    }
+
+    #[cfg(waterui_feature = "webview")]
+    fn web_view_controller(&self) -> Self::WebViewController {
+        #[cfg(hydrolysis_macos_system_webview)]
+        {
+            crate::widgets::platform::webview::MacSystemWebViewController
+        }
+        #[cfg(hydrolysis_android_system_webview)]
+        {
+            self.renderer.android_webview_controller()
+        }
+        #[cfg(hydrolysis_web_system_webview)]
+        {
+            crate::widgets::platform::webview::WebSystemWebViewController
+        }
+        #[cfg(hydrolysis_cef_webview)]
+        {
+            waterui_browser_cef::webview_controller()
+        }
+        #[cfg(hydrolysis_wpe_webview)]
+        {
+            waterui_browser_wpe::webview_controller()
+        }
+        #[cfg(not(any(
+            hydrolysis_macos_system_webview,
+            hydrolysis_android_system_webview,
+            hydrolysis_web_system_webview,
+            hydrolysis_cef_webview,
+            hydrolysis_wpe_webview,
+        )))]
+        {
+            waterui::webview::UnavailableWebViewController
+        }
     }
 
     fn offscreen(&self, _env: &Environment) -> Self::Offscreen {
@@ -350,27 +386,29 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     #[cfg(waterui_feature = "webview")]
     fn web_view(
         &mut self,
-        native: waterui::webview::WebView,
+        native: waterui::webview::WebViewOpen,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        let controller = self.web_view_controller();
         #[cfg(hydrolysis_cef_webview)]
         {
-            if native.handle().is_unavailable() {
+            let Some(opened) = native.open_with(&controller, env) else {
                 return RenderNode::build_empty(self.renderer, env);
-            }
-            self.build(waterui_browser_cef::webview(native, env), env)
+            };
+            self.build(waterui_browser_cef::webview(opened, env), env)
         }
         #[cfg(hydrolysis_wpe_webview)]
         {
-            if native.handle().is_unavailable() {
+            let Some(opened) = native.open_with(&controller, env) else {
                 return RenderNode::build_empty(self.renderer, env);
-            }
-            self.build(waterui_browser_wpe::webview(native, env), env)
+            };
+            self.build(waterui_browser_wpe::webview(opened, env), env)
         }
         #[cfg(not(any(hydrolysis_cef_webview, hydrolysis_wpe_webview)))]
         {
-            RenderNode::build_webview(&native, env, self.renderer)
+            let _ = controller;
+            RenderNode::build_webview(native, env, self.renderer)
         }
     }
 
@@ -1338,17 +1376,6 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     ) -> RenderNode<E> {
         let renderer = &mut *self.renderer;
         RenderNode::build_table(renderer, native, env)
-    }
-
-    fn icon(
-        &mut self,
-        native: waterui::icon::SystemIcon,
-        env: &Environment,
-        (): (),
-    ) -> RenderNode<E> {
-        let renderer = &mut *self.renderer;
-        unsupported_system_icon(&native);
-        RenderNode::build_empty(renderer, env)
     }
 
     fn gradient(

@@ -218,15 +218,7 @@ fn drive(
             // only consumer and runs once, on the main thread.
             // SAFETY: `env_ptr` stays live until `render_and_write` completes.
             let env = unsafe { &mut *env_ptr };
-            #[cfg(any(feature = "webview", all(target_os = "macos", feature = "webview-cef")))]
-            crate::embedding::install_services(env);
             let env = compose(env.clone());
-            #[cfg(any(feature = "webview", all(target_os = "macos", feature = "webview-cef")))]
-            let env = {
-                let mut env = env;
-                crate::components::webview::install_service(&mut env);
-                env
-            };
             tracing::info!(
                 phase = "load",
                 elapsed_ms = load_started.elapsed().as_millis(),

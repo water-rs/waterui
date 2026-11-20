@@ -61,14 +61,28 @@ impl NativeBackendFamily for AppleBackend {
     }
 }
 
+#[cfg(waterui_feature = "webview")]
+#[doc(hidden)]
+pub use crate::components::webview::SelectedWebViewController;
+#[cfg(feature = "webview")]
+#[doc(hidden)]
+pub use crate::components::webview::{AppleWebViewController, WkWebViewHandle};
+
 impl NativeBackend for AppleBackend {
     type Output = NativeLeaf;
     type Ctx = ();
     type Family = Self;
+    #[cfg(waterui_feature = "webview")]
+    type WebViewController = crate::components::webview::SelectedWebViewController;
     type Offscreen = crate::components::view_renderer::AppleOffscreenRenderer;
 
     fn with_family<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
         f(self)
+    }
+
+    #[cfg(waterui_feature = "webview")]
+    fn web_view_controller(&self) -> Self::WebViewController {
+        crate::components::webview::selected_controller()
     }
 
     fn offscreen(&self, _env: &Environment) -> Self::Offscreen {
@@ -179,10 +193,6 @@ impl NativeBackend for AppleBackend {
         (): (),
     ) -> NativeLeaf {
         crate::components::resolved_shape::realize_resolved_shape(native, &self.entry(env))
-    }
-
-    fn icon(&mut self, native: waterui::icon::SystemIcon, env: &Environment, (): ()) -> NativeLeaf {
-        crate::components::image::realize_system_icon(native, &self.entry(env))
     }
 
     fn gradient(
@@ -549,7 +559,7 @@ impl NativeBackend for AppleBackend {
     #[cfg(waterui_feature = "webview")]
     fn web_view(
         &mut self,
-        native: waterui::webview::WebView,
+        native: waterui::webview::WebViewOpen,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -1069,7 +1079,7 @@ impl NativeBackend for AppleBackend {
         )
     }
 
-    // `AppleView<T>` is the component `waterui-apple` provides outside
+    // `AppleView<T>` and `SfSymbol` are components `waterui-apple` provides outside
     // `NativeBackend`; every other payload outside `NativeBackend` is a
     // contract violation.
 
@@ -1079,6 +1089,9 @@ impl NativeBackend for AppleBackend {
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
+        if let Some(&symbol) = (&native as &dyn core::any::Any).downcast_ref::<crate::SfSymbol>() {
+            return crate::components::image::realize_sf_symbol(symbol, &self.entry(env));
+        }
         let _ = self.entry(env);
         let mut slot = crate::apple_content::AppleProvidedSlot {
             mtm: self.mtm,
@@ -1099,6 +1112,9 @@ impl NativeBackend for AppleBackend {
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
+        if let Some(symbol) = native.take::<crate::SfSymbol>() {
+            return crate::components::image::realize_sf_symbol(symbol, &self.entry(env));
+        }
         let _ = self.entry(env);
         let mut slot = crate::apple_content::AppleProvidedSlot {
             mtm: self.mtm,
