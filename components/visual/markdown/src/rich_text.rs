@@ -353,7 +353,9 @@ impl ViewSequence for MarkdownTableCells {
 
     fn push_slots<S: ChildSlot>(self, slots: &mut Vec<S>) {
         slots.extend(self.headers.into_iter().map(S::from_view));
-        slots.push(S::from_view(Frame::new(Color::new(BorderColor)).height(1.0)));
+        slots.push(S::from_view(
+            Frame::new(Color::new(BorderColor)).height(1.0),
+        ));
         slots.extend(self.rows.into_iter().map(S::from_view));
     }
 }
