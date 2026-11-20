@@ -195,7 +195,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// `Both` (read from the config).
     #[cfg(feature = "navigation")]
     pub(super) fn build_navigation_split(
-        split: NavigationSplitLayout,
+        split: NavigationSplitLayout<HeldChild<E>>,
         env: &Environment,
         renderer: &mut SemanticCore<E>,
     ) -> Self {
