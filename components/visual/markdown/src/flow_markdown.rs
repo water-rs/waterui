@@ -18,15 +18,14 @@ use suiteki::Str;
 use tree_sitter::{InputEdit, Parser, Point, Tree};
 use waterui_core::{
     AnyView, Metadata, Retain, SerialDispatch, View,
+    animation::Animation,
     dynamic::{Dynamic, DynamicHandler},
+    id::Identifiable,
 };
 use waterui_layout::stack::{HorizontalAlignment, VStack};
 use waterui_text::styled::StyledStr;
 
-use crate::{
-    animation::Animation,
-    widget::rich_text::{RichText, RichTextElement},
-};
+use crate::rich_text::{RichText, RichTextElement};
 
 /// Flow-optimized Markdown view for LLM streaming output.
 #[derive(Debug, Clone)]
@@ -419,11 +418,18 @@ struct FlowUpdate {
     typewriter: Option<TypewriterRun>,
 }
 
-#[derive(Clone, PartialEq, crate::Identifiable)]
+#[derive(Clone, PartialEq)]
 struct FlowBlockSlot {
-    #[id]
     identity: u64,
     content: FlowBlockContent,
+}
+
+impl Identifiable for FlowBlockSlot {
+    type Id = u64;
+
+    fn id(&self) -> Self::Id {
+        self.identity
+    }
 }
 
 #[derive(Clone)]
@@ -1588,7 +1594,7 @@ fn rich_text_element_text_len(element: &RichTextElement) -> usize {
         }
         // A formula's LaTeX source is not prose, so it does not count toward
         // the visible character budget the streaming renderer meters.
-        #[cfg(feature = "markdown-math")]
+        #[cfg(feature = "math")]
         RichTextElement::Math { .. } => 0,
         RichTextElement::Divider => 0,
     }
@@ -1690,7 +1696,7 @@ fn truncate_rich_text_element(
         // A formula reveals whole or not at all: there is no meaningful way to
         // show the first few characters of one, and typing out its LaTeX would
         // show the reader the source rather than the formula.
-        #[cfg(feature = "markdown-math")]
+        #[cfg(feature = "math")]
         RichTextElement::Math { .. } => (*remaining > 0).then_some(element.clone()),
         // For non-textual structures we only show them after at least one text character
         // from this typewriter window has been revealed.
