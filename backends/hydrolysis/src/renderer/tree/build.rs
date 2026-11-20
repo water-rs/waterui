@@ -489,8 +489,8 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// producer inside is taken exactly once, when the node's install layer
     /// first commits it on the window's engine.
     #[cfg(hydrolysis_gpu)]
-    fn build_gpu_content(
-        view: GpuView,
+    fn build_gpu_content<T: waterui_graphics::gpu::GpuContent>(
+        view: GpuView<T>,
         renderer: &SemanticCore<E>,
         #[cfg_attr(not(hydrolysis_hwui_gpu), expect(unused_variables))] env: &Environment,
     ) -> Self {

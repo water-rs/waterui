@@ -1838,7 +1838,7 @@ impl<K: LabelKind> Label<K> {
     }
 
     /// Converts an un-resolved label into a [`ControlLabel<Label<K>>`] for
-    /// `ConfigurableView::config`.
+    /// component configuration extraction.
     #[must_use]
     pub fn into_unscoped_control_label(self) -> ControlLabel<Self> {
         let mode = self.display_mode;

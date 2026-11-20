@@ -1,4 +1,4 @@
-//! `HydrolysisViewRenderer` captures await the content a view owes: a
+//! `HydrolysisOffscreenRenderer` captures await the content a view owes: a
 //! loader the test resolves by hand stands in for a `Photo` decode, and the
 //! render future runs on the pump-driven executor, driven on its wake edge.
 
@@ -10,15 +10,14 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Instant;
 
-use waterui_core::view_renderer::{
-    CustomViewRenderer as _, RenderError, RenderRequest, RenderResult,
-};
-use waterui_core::{AnyView, ContentLedger, Environment, View, layout::Size};
+use waterui::ContentLedger;
+use waterui::view_renderer::{OffscreenRenderer as _, RenderError, RenderRequest, RenderResult};
+use waterui_core::{AnyView, Environment, View, layout::Size};
 
 use super::executor::HeadlessMainThreadExecutor;
 use crate::renderer::FontFamilyResolution;
 use crate::renderer::tests::MinimalTestTheme;
-use crate::view_renderer::HydrolysisViewRenderer;
+use crate::view_renderer::HydrolysisOffscreenRenderer;
 
 /// How a [`Gate`] resolves.
 type Outcome = Result<(), String>;
@@ -94,7 +93,7 @@ struct Capture {
 }
 
 /// The environment a capture mounts under: the assembled runner environment
-/// a [`HydrolysisViewRenderer`] is installed with — theme tokens, so `text`
+/// a [`HydrolysisOffscreenRenderer`] runs against — theme tokens, so `text`
 /// resolves its `Body` slot, and the shared font collection its text engine
 /// shapes from.
 fn capture_environment() -> Environment {
@@ -132,7 +131,7 @@ fn isolated_collection(blobs: &[&[u8]]) -> waterui_text::FontCollection {
 }
 
 impl Capture {
-    fn start(view: AnyView, content_deadline: Duration) -> Self {
+    fn start(view: impl View, content_deadline: Duration) -> Self {
         Self::start_in(
             view,
             content_deadline,
@@ -142,17 +141,16 @@ impl Capture {
     }
 
     fn start_in(
-        view: AnyView,
+        view: impl View,
         content_deadline: Duration,
         env: Environment,
         family_resolution: FontFamilyResolution,
     ) -> Self {
         let executor = HeadlessMainThreadExecutor::thread_shared();
         let _ = executor_core::try_init_local_executor(executor.clone());
-        let renderer = HydrolysisViewRenderer::on_painter(
+        let renderer = HydrolysisOffscreenRenderer::on_painter(
             &crate::platform::OffscreenPainter::for_tests(),
             Rc::new(MinimalTestTheme::default()),
-            env,
             family_resolution,
         );
         let result: Rc<RefCell<Option<Result<RenderResult, RenderError>>>> = Rc::default();
@@ -162,6 +160,7 @@ impl Capture {
                 let capture = renderer
                     .render_to_rgba(
                         view,
+                        &env,
                         RenderRequest::new(Size::new(64.0, 32.0), content_deadline),
                     )
                     .await;
@@ -173,11 +172,11 @@ impl Capture {
     }
 
     fn start_loader(gate: &Gate, content_deadline: Duration) -> Self {
-        Self::start(AnyView::new(FakeLoader(gate.clone())), content_deadline)
+        Self::start(FakeLoader(gate.clone()), content_deadline)
     }
 
     /// Renders `view` to completion, driving the executor on its wake edges.
-    fn render(view: AnyView) -> Result<RenderResult, RenderError> {
+    fn render(view: impl View) -> Result<RenderResult, RenderError> {
         Self::start(view, Duration::from_secs(30)).finish()
     }
 
@@ -337,4 +336,53 @@ fn a_capture_reports_a_failed_load() {
         core::error::Error::source(&error).map(ToString::to_string),
         Some("decode failed".into())
     );
+}
+
+#[test]
+fn a_capture_handle_renders_a_typed_view_through_the_headless_backend() {
+    use waterui::{CaptureHandle, ViewExt as _};
+
+    let handle = CaptureHandle::new();
+    let gate = Gate::default();
+    let env = capture_environment();
+    let mut runtime = crate::runner::HeadlessRuntime::new_for_tests(
+        env.clone(),
+        {
+            let handle = handle.clone();
+            move || ().capture(&handle)
+        },
+        64,
+        32,
+        MinimalTestTheme::default(),
+    );
+    let _ = runtime.pump_offscreen();
+    assert!(handle.is_wired());
+
+    let executor = HeadlessMainThreadExecutor::thread_shared();
+    let _ = executor_core::try_init_local_executor(executor.clone());
+    let result: Rc<RefCell<Option<Result<RenderResult, RenderError>>>> = Rc::default();
+    let loader = FakeLoader(gate.clone());
+    let capture_future = handle.render_to_rgba_in(
+        loader,
+        &env,
+        RenderRequest::new(Size::new(48.0, 24.0), Duration::from_secs(30)),
+    );
+    executor_core::spawn_local({
+        let result = Rc::clone(&result);
+        async move {
+            *result.borrow_mut() = Some(capture_future.await);
+        }
+    })
+    .detach();
+    let capture = Capture { executor, result };
+    assert!(!capture.drain());
+    gate.open(Ok(()));
+    let rendered = capture
+        .finish()
+        .expect("CaptureHandle renders a concrete view through HeadlessRuntime");
+    assert_eq!((rendered.width(), rendered.height()), (48, 24));
+    // Explicit dynamic callers can still invoke render_to_rgba::<AnyView>.
+    let erased = Capture::render(AnyView::new(waterui::prelude::text("erased")))
+        .expect("render_to_rgba::<AnyView> continues to work for explicit AnyView callers");
+    assert_eq!((erased.width(), erased.height()), (64, 32));
 }

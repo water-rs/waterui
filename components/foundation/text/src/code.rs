@@ -23,7 +23,6 @@ use waterui_core::backend::Backend;
 use waterui_core::gesture::{GestureObserver, TapGesture};
 use waterui_core::resolve::Resolvable;
 use waterui_core::view::hook::HookableView;
-use waterui_core::view::{ConfigurableView, ViewConfiguration};
 use waterui_core::{Environment, Metadata, NativeView, View, contract_violation};
 use waterui_layout::{
     background::background,
@@ -86,6 +85,11 @@ fn copy_to_clipboard(_text: &str) {}
 pub struct OnCopied(Rc<dyn Fn(&Environment)>);
 
 impl OnCopied {
+    /// Creates a new copy-feedback callback.
+    pub fn new(callback: impl Fn(&Environment) + 'static) -> Self {
+        Self(Rc::new(callback))
+    }
+
     /// Runs the callback against the environment the copy happened in.
     pub fn call(&self, env: &Environment) {
         (self.0)(env);
@@ -195,23 +199,21 @@ impl CodeConfig {
     }
 }
 
-impl ViewConfiguration for CodeConfig {
-    type View = Code;
-
-    fn render(self) -> Self::View {
-        Code {
-            info: self.info,
-            language: self.language,
-            content: self.content,
-            on_copied: self.on_copied,
+impl From<CodeConfig> for Code {
+    fn from(value: CodeConfig) -> Self {
+        Self {
+            info: value.info,
+            language: value.language,
+            content: value.content,
+            on_copied: value.on_copied,
         }
     }
 }
 
-impl ConfigurableView for Code {
-    type Config = CodeConfig;
-
-    fn config(self) -> Self::Config {
+impl Code {
+    /// Returns the configuration for this code block.
+    #[must_use]
+    pub fn config(self) -> CodeConfig {
         CodeConfig {
             info: self.info,
             language: self.language,

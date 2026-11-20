@@ -1,6 +1,6 @@
 # Embedding resource ownership
 
-Each native application environment owns a `waterui_core::ResourceContext`.
+Each native application environment owns a `waterui::ResourceContext`.
 It contains the asset root and font directory supplied by the host. Cloning
 an environment preserves that context; installing a different context in
 the clone does not change the original instance.

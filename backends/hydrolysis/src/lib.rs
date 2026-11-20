@@ -18,6 +18,15 @@ compile_error!(
      (windows presenting `cpu` frames are water-rs/waterui#4064)"
 );
 
+#[cfg(any(
+    all(feature = "webview-system", feature = "webview-cef"),
+    all(feature = "webview-system", feature = "webview-wpe"),
+    all(feature = "webview-cef", feature = "webview-wpe"),
+))]
+compile_error!(
+    "hydrolysis: enable at most one webview engine feature (`webview-system`, `webview-cef`, `webview-wpe`)"
+);
+
 #[cfg(hydrolysis_runtime)]
 mod animation;
 #[cfg(hydrolysis_cherenkov)]
@@ -57,7 +66,7 @@ pub mod testing;
 #[cfg(hydrolysis_runtime)]
 mod text;
 pub mod theme;
-#[cfg(hydrolysis_cherenkov)]
+#[cfg(hydrolysis_runtime)]
 mod view_renderer;
 #[cfg(hydrolysis_runtime)]
 mod widgets;
@@ -174,8 +183,8 @@ pub use text::ParleyEngine;
 pub use text::fonts::native_collection;
 #[cfg(hydrolysis_runtime)]
 pub use text::{DeclaredFonts, FontFamilyResolution};
-#[cfg(hydrolysis_cherenkov)]
-pub use view_renderer::HydrolysisViewRenderer;
+#[cfg(hydrolysis_runtime)]
+pub use view_renderer::HydrolysisOffscreenRenderer;
 #[cfg(hydrolysis_macos_system_webview)]
 pub use widgets::platform::webview::MacSystemWebViewController;
 #[cfg(hydrolysis_web_system_webview)]

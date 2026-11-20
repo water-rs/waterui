@@ -11,10 +11,10 @@ use hydrolysis::{
     PainterUnavailable, PointerKind, SemanticRuntime, Style,
 };
 use waterui::app::{App, AppParts, WindowSink, Windows};
-use waterui::window::Window;
-use waterui::{Plugin, ViewExt as _};
+use waterui::window::{Window, WindowChannel, WindowToolbar};
+use waterui::{ContentLedger, Plugin, ViewExt as _};
 use waterui_core::handler::{AnyViewBuilder, ViewBuilder};
-use waterui_core::{AnyView, ContentLedger, Environment, View};
+use waterui_core::{AnyView, Environment, View};
 
 use crate::artifacts::{CapturedSnapshot, TestArtifacts};
 use crate::driver::{
@@ -314,7 +314,7 @@ struct FirstWindow<S: Style> {
 }
 
 impl<S: Style> WindowSink for FirstWindow<S> {
-    fn window<C: ViewBuilder>(&mut self, window: Window<C>) {
+    fn window<C: ViewBuilder, T: WindowToolbar>(&mut self, window: Window<C, T>) {
         let Some(mut builder) = self.builder.take() else {
             return;
         };
@@ -330,6 +330,15 @@ impl<S: Style> WindowSink for FirstWindow<S> {
             .take()
             .expect("the first window takes the environment once");
         self.mounted = Some(builder.mount_rendered_window(env, window));
+    }
+
+    fn channel<C: ViewBuilder, T: WindowToolbar>(&mut self, channel: WindowChannel<C, T>) {
+        let mut queued = channel.drain().into_iter();
+        if self.builder.is_some()
+            && let Some(first) = queued.next()
+        {
+            self.window(first);
+        }
     }
 }
 
@@ -506,10 +515,10 @@ impl<S: Style> UiBuilder<Styled<S>> {
     /// app's `frame` binding at its initial value, so every signal derived
     /// from it — a `max_width` computed from the frame, a `when()` keyed on
     /// width — would resolve against a size the mounted viewport never had.
-    fn mount_rendered_window(
+    fn mount_rendered_window<C: ViewBuilder, T: WindowToolbar>(
         self,
         mut env: Environment,
-        window: Window<impl ViewBuilder>,
+        window: Window<C, T>,
     ) -> OffscreenApp {
         let Self {
             width,

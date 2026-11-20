@@ -67,6 +67,14 @@ text_field = ["waterui/text-field"]
 toggle = ["waterui/toggle"]
 view_effect = ["gpu_surface", "waterui/effects"]
 webview = ["dep:waterui-webview", "dep:cookie", "cocoa-ui/webview", "waterui/webview"]
+webview-cef = [
+    "gpu_surface",
+    "picture",
+    "dep:waterui-webview",
+    "dep:waterui-browser-cef",
+    "waterui/webview",
+    "waterui-browser-cef?/webview",
+]
 # `media` is the name the `water` CLI's capability mechanism (`waterui-video`
 # in the app's resolved graph) forwards to this crate; it turns on both
 # leaves the media semantic needs.
@@ -106,6 +114,8 @@ native-test = [
 [dependencies]
 waterui = { workspace = true, features = ["inspector", "assets", "snackbar", "highlight", "locale-datetime", "locale-list"] }
 waterui-core = { workspace = true }
+waterui-capture = { workspace = true }
+waterui-resources = { workspace = true }
 waterui-structural-transition.workspace = true
 thiserror.workspace = true
 waterui-backend-core = { workspace = true, default-features = true, features = [
@@ -206,6 +216,7 @@ waterkit-build = { workspace = true, default-features = false, optional = true }
 # macOS-only, gated by `applied_filter` so no-filter artifacts link none
 # of it.
 [target.'cfg(target_os = "macos")'.dependencies]
+waterui-browser-cef = { workspace = true, optional = true }
 objc2-core-image = { version = "0.3", default-features = false, features = [
     "CIContext",
     "CIFilter",
@@ -250,6 +261,7 @@ waterui-preview-protocol = { workspace = true, optional = true }
 # `NSWorkspace` — the feature lands on cocoa-ui's same-version
 # `objc2-app-kit` edge, so `cocoa_ui::objc2_app_kit` sees it.
 [target.'cfg(target_os = "macos")'.dev-dependencies]
+waterui-testing = { workspace = true, default-features = false, features = ["cpu"] }
 objc2-core-graphics = { version = "0.3", default-features = false, features = [
     "std",
     "CGEvent",

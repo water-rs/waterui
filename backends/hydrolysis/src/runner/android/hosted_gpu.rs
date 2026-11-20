@@ -38,9 +38,9 @@ use waterui::Environment;
 use waterui_graphics::OffscreenSize;
 use waterui_graphics::gpu::interop::GpuContentBox;
 use waterui_graphics::gpu::{
-    Display, ExternalFrameRenderer, ExternalFrameView, FrameTime, GpuContentRenderer, GpuRuntime,
-    GpuRuntimeError, GpuView, HostedFrame, HostedLayerError, RedrawHandle, RenderedFrame,
-    SharedGpuContext, preferred_surface_format, wgpu,
+    Display, ExternalFrameRenderer, ExternalFrameView, FrameTime, GpuContent, GpuContentRenderer,
+    GpuRuntime, GpuRuntimeError, GpuView, HostedFrame, HostedLayerError, RedrawHandle,
+    RenderedFrame, SharedGpuContext, preferred_surface_format, wgpu,
 };
 
 use super::native_window::AndroidWindow;
@@ -365,7 +365,7 @@ pub trait HostedSource {
     fn before_frame(&self);
 }
 
-impl HostedSource for GpuView {
+impl<T: GpuContent> HostedSource for GpuView<T> {
     fn renderer(
         &mut self,
         runtime: GpuRuntime,

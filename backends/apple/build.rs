@@ -133,12 +133,13 @@ fn facade_features() {
         ("table", &["table"]),
         ("navigation", &["navigation"]),
         ("dialog", &["dialog"]),
-        ("webview", &["webview"]),
         ("map", &["map"]),
         ("video", &["video", "video_player"]),
         ("gpu", &["gpu_surface", "picture"]),
         ("effects", &["applied_filter"]),
     ];
+    // Each facade feature satisfied when any of the listed crate features is enabled.
+    const REALIZED_BY_ANY: &[(&str, &[&str])] = &[("webview", &["webview", "webview-cef"])];
 
     println!("cargo::rustc-check-cfg=cfg(waterui_feature, values(any()))");
     let features = std::env::var("DEP_WATERUI_FEATURES")
@@ -157,6 +158,12 @@ fn facade_features() {
             assert!(
                 missing.is_empty(),
                 "the application enables the `waterui` feature `{feature}`; enable waterui-apple's {missing:?} to realize it"
+            );
+        }
+        if let Some((_, alternatives)) = REALIZED_BY_ANY.iter().find(|(name, _)| *name == feature) {
+            assert!(
+                alternatives.iter().any(|own| enabled(own)),
+                "the application enables the `waterui` feature `{feature}`; enable one of waterui-apple's {alternatives:?} to realize it"
             );
         }
     }
