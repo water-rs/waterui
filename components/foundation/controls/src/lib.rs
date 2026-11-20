@@ -39,7 +39,10 @@ pub use text_selection::{CustomTextSelection, TextSelection};
 #[cfg(feature = "toggle")]
 pub mod toggle;
 #[cfg(feature = "toggle")]
-pub use toggle::{Toggle, ToggleStyle, toggle};
+pub use toggle::{
+    CustomToggleStyle, IntoToggleStyle, Toggle, ToggleLabel, ToggleStyle, ToggleStyleConfiguration,
+    toggle,
+};
 
 #[cfg(feature = "stepper")]
 pub mod stepper;
@@ -48,4 +51,8 @@ pub use stepper::{Stepper, stepper};
 
 /// Button component and related utilities.
 pub mod button;
-pub use button::{Button, ButtonStyle, button};
+pub use button::{
+    Button, ButtonLabel, ButtonRole, ButtonStyle, ButtonStyleConfiguration, ButtonTrigger,
+    CustomButtonStyle, IntoButtonStyle, PrimitiveButtonStyle, PrimitiveButtonStyleConfiguration,
+    button,
+};

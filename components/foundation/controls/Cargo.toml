@@ -13,13 +13,13 @@ categories = ["gui"]
 
 [dependencies]
 waterui-core.workspace = true
-waterui-interaction = { workspace = true, optional = true }
+waterui-accessibility.workspace = true
+waterui-interaction.workspace = true
 waterui-macros.workspace = true
 waterui-layout.workspace = true
 nami.workspace = true
 waterui-text.workspace = true
 waterui-locale.workspace = true
-waterui-icon.workspace = true
 executor-core.workspace = true
 serde = { workspace = true, optional = true, features = ["derive"] }
 thiserror = { version = "2.0.21", default-features = false }
@@ -28,7 +28,7 @@ thiserror = { version = "2.0.21", default-features = false }
 [features]
 default = ["all"]
 all = ["menu", "slider", "stepper", "text-field", "toggle"]
-menu = ["dep:waterui-interaction"]
+menu = []
 slider = []
 stepper = []
 text-field = ["menu"]

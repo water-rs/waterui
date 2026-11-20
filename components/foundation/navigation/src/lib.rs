@@ -35,7 +35,6 @@ use waterui_core::{
     flatten_signal, handler::ViewBuilder, impl_extractor, layout::StretchAxis,
 };
 use waterui_graphics::color::{Color, WorkingColor};
-use waterui_icon::SystemIcon;
 use waterui_text::IntoText;
 use waterui_text::Text;
 
@@ -970,7 +969,7 @@ pub struct NavigationToolbarItem {
     /// each platform draws what its own chrome calls for.
     title: Option<Text>,
     /// The item's icon, when it was declared as a semantic label.
-    icon: Option<ToolbarItemIcon>,
+    icon: Option<AnyViewBuilder<AnyView>>,
 }
 
 impl NavigationToolbarItem {
@@ -981,7 +980,7 @@ impl NavigationToolbarItem {
         NavigationToolbarPlacement,
         AnyView,
         Option<Text>,
-        Option<ToolbarItemIcon>,
+        Option<AnyViewBuilder<AnyView>>,
     ) {
         (self.placement, self.content, self.title, self.icon)
     }
@@ -1009,7 +1008,7 @@ impl NavigationToolbarItem {
     }
 
     /// Sets the item's icon.
-    pub fn set_icon(&mut self, icon: Option<ToolbarItemIcon>) {
+    pub fn set_icon(&mut self, icon: Option<AnyViewBuilder<AnyView>>) {
         self.icon = icon;
     }
 
@@ -1029,33 +1028,8 @@ impl NavigationToolbarItem {
 
     /// The item's icon, when it was declared as a semantic label.
     #[must_use]
-    pub const fn icon(&self) -> Option<&ToolbarItemIcon> {
+    pub const fn icon(&self) -> Option<&AnyViewBuilder<AnyView>> {
         self.icon.as_ref()
-    }
-}
-
-/// A toolbar item's icon, kept apart from its name.
-///
-/// The two forms are not interchangeable: a platform that recognizes the symbol
-/// draws it at whatever size and weight its chrome calls for, while a view has
-/// to be rendered into an image at a chosen size.
-#[expect(
-    clippy::exhaustive_enums,
-    reason = "backends realize each toolbar icon source variant by variant; a new toolbar icon source must fail their build instead of falling into a wildcard arm"
-)]
-pub enum ToolbarItemIcon {
-    /// A symbol the platform knows by name.
-    System(SystemIcon),
-    /// A view the backend renders itself.
-    View(AnyViewBuilder<AnyView>),
-}
-
-impl Debug for ToolbarItemIcon {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::System(icon) => formatter.debug_tuple("System").field(icon).finish(),
-            Self::View(_) => formatter.write_str("View"),
-        }
     }
 }
 
@@ -1098,10 +1072,7 @@ impl NavigationToolbarItem {
     ) -> Self {
         let label = label.into_label();
         let title = Some(label.semantic_text().clone());
-        let icon = label.semantic_icon().map_or_else(
-            || label.icon_view().map(ToolbarItemIcon::View),
-            |icon| Some(ToolbarItemIcon::System(icon)),
-        );
+        let icon = label.icon_view();
         Self {
             placement,
             content: AnyView::new(button(label).style(ButtonStyle::Plain).action(handler)),

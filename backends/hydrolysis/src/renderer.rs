@@ -74,6 +74,15 @@ pub use gpu_profile::{FrameStageTimes, GpuIdentity};
 pub use identity::*;
 pub use mount::{Dirty, NodeCell, NodeCore, Placement, PlacementClock, ProducerKey};
 use mount::{HitClasses, HitGate, ScopeDelta};
+#[cfg(any(
+    all(waterui_feature = "map", not(feature = "map-gpu")),
+    all(
+        waterui_feature = "webview",
+        not(any(hydrolysis_webview_engine, hydrolysis_android_system_webview))
+    ),
+    all(not(hydrolysis_gpu), waterui_feature = "gpu"),
+    all(hydrolysis_gpu, hydrolysis_cpu_painter)
+))]
 pub use native_measure::*;
 pub use recording::Recording;
 #[cfg(test)]
@@ -252,7 +261,6 @@ use waterui_interaction::key::{KeyHandling, KeyPress, OnKeyPress};
     not(any(hydrolysis_cef_webview, hydrolysis_wpe_webview))
 ))]
 use waterui::webview::WebView;
-use waterui_icon::SystemIcon;
 #[cfg(feature = "accessibility")]
 use waterui_layout::scroll::Axis as ScrollAxis;
 use waterui_layout::spacer::Spacer;

@@ -4776,7 +4776,6 @@ dependencies = [
  "waterui-core",
  "waterui-form",
  "waterui-graphics",
- "waterui-icon",
  "waterui-image",
  "waterui-inspector-protocol",
  "waterui-interaction",
@@ -4972,9 +4971,9 @@ name = "icons-example"
 version = "0.1.0"
 dependencies = [
  "waterui",
+ "waterui-apple",
  "waterui-icons-lucide",
  "waterui-icons-material-icon",
- "waterui-icons-sf-symbol",
 ]
 
 [[package]]
@@ -6168,6 +6167,7 @@ name = "liquid-glass-example"
 version = "0.1.0"
 dependencies = [
  "waterui",
+ "waterui-apple",
 ]
 
 [[package]]
@@ -12935,7 +12935,7 @@ dependencies = [
 [[package]]
 name = "waterui-barcode"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/barcode?branch=refactor%2F4770-slim-core-ui#6b81bab281790806bf443453087561f85907ca98"
+source = "git+https://github.com/water-rs/barcode?branch=refactor%2F4770-slim-core-ui#8af122518fddfe9f22a6c50b85ea8bec6d2ab691"
 dependencies = [
  "barcoders",
  "fast_qr",
@@ -12949,7 +12949,7 @@ dependencies = [
 [[package]]
 name = "waterui-browser-cef"
 version = "0.1.0"
-source = "git+https://github.com/water-rs/browsers?branch=refactor%2F4770-slim-core-ui#d9a197fd941b4b22d08574056f434f43e32f14b3"
+source = "git+https://github.com/water-rs/browsers?branch=refactor%2F4770-slim-core-ui#bb6a70e567ea1cddbeb6abea5d6a3bdb89c860bf"
 dependencies = [
  "async-channel",
  "base64 0.23.1",
@@ -12990,7 +12990,7 @@ dependencies = [
 [[package]]
 name = "waterui-browser-wpe"
 version = "0.1.0"
-source = "git+https://github.com/water-rs/browsers?branch=refactor%2F4770-slim-core-ui#d9a197fd941b4b22d08574056f434f43e32f14b3"
+source = "git+https://github.com/water-rs/browsers?branch=refactor%2F4770-slim-core-ui#bb6a70e567ea1cddbeb6abea5d6a3bdb89c860bf"
 dependencies = [
  "cookie",
  "executor-core",
@@ -13028,7 +13028,7 @@ dependencies = [
 [[package]]
 name = "waterui-chart"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/chart?branch=refactor%2F4770-slim-core-ui#c8c9ace6c6d977f4c102da4d87d65838499bd757"
+source = "git+https://github.com/water-rs/chart?branch=refactor%2F4770-slim-core-ui#1c042c6d2259e7f1af4af17dd496cb3d3f5af506"
 dependencies = [
  "bytemuck",
  "nami",
@@ -13189,8 +13189,8 @@ dependencies = [
  "serde",
  "thiserror 2.0.21",
  "waterui",
+ "waterui-accessibility",
  "waterui-core",
- "waterui-icon",
  "waterui-interaction",
  "waterui-layout",
  "waterui-locale",
@@ -13303,7 +13303,6 @@ dependencies = [
 name = "waterui-icon"
 version = "0.5.1"
 dependencies = [
- "suiteki",
  "waterui",
  "waterui-core",
  "waterui-graphics",
@@ -13362,22 +13361,6 @@ dependencies = [
  "waterui-icons-codegen",
  "waterui-svg",
  "waterui-testing",
-]
-
-[[package]]
-name = "waterui-icons-native"
-version = "0.5.1"
-dependencies = [
- "suiteki",
- "waterui-icon",
-]
-
-[[package]]
-name = "waterui-icons-sf-symbol"
-version = "0.5.1"
-dependencies = [
- "suiteki",
- "waterui-icon",
 ]
 
 [[package]]
@@ -13727,7 +13710,6 @@ dependencies = [
  "waterui-controls",
  "waterui-core",
  "waterui-graphics",
- "waterui-icon",
  "waterui-icons-lucide",
  "waterui-testing",
  "waterui-text",

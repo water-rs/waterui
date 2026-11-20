@@ -554,7 +554,6 @@ mod tests {
             spacer: waterui::layout::Spacer,
             divider: waterui::layout::Divider,
             shape: waterui::shape::ResolvedShape,
-            icon: waterui::icon::SystemIcon,
             gradient: waterui::graphics::Gradient,
             #[cfg(waterui_feature = "table")]
             table: waterui::component::table::TableConfig,

@@ -13,7 +13,7 @@ use std::{
     time::Duration,
 };
 
-#[cfg(any(unix, windows))]
+#[cfg(all(feature = "cpu-time", any(unix, windows)))]
 use cpu_time::ThreadTime;
 use executor_core::LocalExecutor;
 use web_time::Instant;
@@ -67,35 +67,35 @@ impl RefreshRate {
     }
 }
 
-#[cfg(any(unix, windows))]
+#[cfg(all(feature = "cpu-time", any(unix, windows)))]
 type CpuClockSample = ThreadTime;
 
-/// Stands in for [`ThreadTime`] on targets with no per-thread CPU clock, so the
-/// sample a poll carries is a named "this platform cannot measure CPU time"
-/// rather than a bare `()`.
-#[cfg(not(any(unix, windows)))]
+/// Stands in for `ThreadTime` on targets with no per-thread CPU clock or when
+/// `cpu-time` is disabled, so the sample a poll carries is a named "no CPU
+/// clock" type rather than a bare `()`.
+#[cfg(not(all(feature = "cpu-time", any(unix, windows))))]
 #[derive(Debug, Clone, Copy)]
 struct NoCpuClock;
 
-#[cfg(not(any(unix, windows)))]
+#[cfg(not(all(feature = "cpu-time", any(unix, windows))))]
 type CpuClockSample = NoCpuClock;
 
-#[cfg(any(unix, windows))]
+#[cfg(all(feature = "cpu-time", any(unix, windows)))]
 fn cpu_clock_now() -> CpuClockSample {
     ThreadTime::now()
 }
 
-#[cfg(not(any(unix, windows)))]
+#[cfg(not(all(feature = "cpu-time", any(unix, windows))))]
 const fn cpu_clock_now() -> CpuClockSample {
     NoCpuClock
 }
 
-#[cfg(any(unix, windows))]
+#[cfg(all(feature = "cpu-time", any(unix, windows)))]
 fn cpu_clock_elapsed(start: CpuClockSample) -> Duration {
     start.elapsed()
 }
 
-#[cfg(not(any(unix, windows)))]
+#[cfg(not(all(feature = "cpu-time", any(unix, windows))))]
 const fn cpu_clock_elapsed(_start: CpuClockSample) -> Duration {
     Duration::ZERO
 }

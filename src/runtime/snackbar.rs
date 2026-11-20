@@ -479,7 +479,8 @@ impl<I> Snackbar<I> {
     /// Adds a leading icon to the snackbar.
     ///
     /// Any view works; for portable apps prefer a packaged icon crate such as
-    /// `waterui-icons-material-icon`. Pair with
+    /// `waterui-icons-material-icon` (`waterui_apple::SfSymbol` is only
+    /// available on Apple backends). Pair with
     /// [`SnackbarManager::with_icons`] when showing snackbars that carry an icon
     /// of type `V`.
     #[must_use]
