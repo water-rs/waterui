@@ -509,17 +509,28 @@ use waterui::window::{WindowBackground, WindowState, WindowStyle};
 #[cfg(target_os = "macos")]
 use waterui_core::layout::{Point, Rect, Size};
 
-/// Checks that native service installation provides a window manager.
-///
-/// Uses the embedding runtime's installer after installing the dispatcher.
+/// Checks that connecting a `WindowChannel` drains pre-queued windows as
+/// typed `RootWindow` declarations without erasing through `Environment`.
 ///
 /// # Panics
-/// Panics if service installation does not provide a window manager.
-pub fn manager_installs_into_the_environment(_mtm: MainThreadMarker) {
+/// Panics if the queued window declaration is lost or altered.
+pub fn channel_connects_typed_declarations(_mtm: MainThreadMarker) {
     let mut env = Environment::new();
     crate::dispatch::install(&mut env);
     crate::embedding::install_services(&mut env);
-    assert!(env.get::<WindowManager>().is_some());
+    let (manager, channel) = WindowManager::new();
+    waterui::window::Window::new(
+        "Queued Root",
+        waterui::reactive::binding(waterui::window::WindowState::Closed),
+        || (),
+    )
+    .show(&manager);
+    let declarations = crate::windows::connect_windows(channel, &env);
+    assert_eq!(declarations.len(), 1);
+    assert_eq!(
+        waterui::reactive::Signal::snapshot(&declarations[0].title).as_str(),
+        "Queued Root"
+    );
 }
 
 /// The environment `embedding` prepares for a window's mount on macOS.
@@ -1142,14 +1153,15 @@ pub mod transition {
     pub use crate::transition::clock::ManualTransitionClock;
 }
 
-/// Re-exports the pieces a `ViewRenderer::render` trial needs.
+/// Re-exports the pieces an [`OffscreenRenderer`](waterui_capture::OffscreenRenderer) trial needs.
 ///
-/// The service installer, the shared-runtime handles a sealed generation
-/// is reached through, and the failure carriers the cause chain asserts
-/// on.
+/// The Apple backend/offscreen renderer, the shared-runtime handles a sealed
+/// generation is reached through, and the failure carriers the cause chain
+/// asserts on.
 #[cfg(all(target_os = "macos", feature = "gpu_surface"))]
 pub mod view_renderer {
-    pub use crate::components::view_renderer::install_service;
+    pub use crate::backend::AppleBackend;
+    pub use crate::components::view_renderer::AppleOffscreenRenderer;
     pub use crate::gpu_runtime::{EngineGeneration, SceneEngine, scene_engine};
     pub use waterui_graphics::gpu::GpuRuntime;
     pub use waterui_graphics::gpu::runtime::HostedLayerError;
@@ -1366,7 +1378,6 @@ pub fn install_gpu(
         env,
         objc2::MainThreadMarker::new().expect("GPU owners install on the main thread"),
     );
-    crate::components::view_renderer::install_service(env);
     // The dispatcher captures the environment at install time — re-run
     // the install so its root env sees the GPU services just inserted
     // (`handler.set`-driven remounts render through it).

@@ -395,4 +395,100 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         let text = Rc::new(RefCell::new(text));
         Self::build_widget(renderer, text, StretchAxis::None, env)
     }
+
+    /// Build a semantic-only leaf for a backend-provided component (`AppleView`,
+    /// `AndroidView`, …) that answered [`waterui_backend_core::ProvidedSemantics`]
+    /// on [`crate::SemanticRuntime`]. Never constructed on rendered runtimes.
+    #[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
+    pub(super) fn build_provided_semantics(
+        renderer: &SemanticCore<E>,
+        semantics: waterui_backend_core::ProvidedSemantics,
+        stretch: StretchAxis,
+        env: &Environment,
+    ) -> Self {
+        let state = Rc::new(ProvidedSemanticsNode { semantics });
+        Self::build_widget(renderer, state, stretch, env)
+    }
+}
+
+#[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
+struct ProvidedSemanticsNode {
+    semantics: waterui_backend_core::ProvidedSemantics,
+}
+
+#[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
+impl<E: crate::text::TextEngine> WidgetBehavior<E> for ProvidedSemanticsNode {
+    fn measure(
+        &self,
+        _state: &mut HydroState<E>,
+        _proposal: ProposalSize,
+        _env: &Environment,
+        _theme: &Rc<dyn crate::theme::WidgetTheme>,
+    ) -> ViewDimensions {
+        ViewDimensions::new(Size::zero())
+    }
+
+    fn render(
+        self: Rc<Self>,
+        _renderer: &mut HydrolysisRenderer<E>,
+        _ctx: RenderContext,
+        _env: &Environment,
+        _safe_area: Option<safe_area::SafeAreaLayout>,
+    ) {
+        unreachable!("ProvidedSemanticsNode is built only on SemanticRuntime (`semantic_walk`)");
+    }
+
+    fn emit_accessibility(self: Rc<Self>, renderer: &mut SemanticCore<E>, env: &Environment) {
+        if env
+            .get::<AccessibilityHidden>()
+            .is_some_and(AccessibilityHidden::is_hidden)
+        {
+            return;
+        }
+        let default_label = self
+            .semantics
+            .label
+            .as_ref()
+            .map(|signal| renderer.read_signal(signal).as_str().to_owned());
+        let label = renderer.resolve_accessibility_label(env, default_label);
+        let value = renderer.resolve_accessibility_value(env, None);
+        if env.get::<AccessibilityRole>().is_none()
+            && self.semantics.role.is_none()
+            && label.is_none()
+            && value.is_none()
+        {
+            return;
+        }
+        let default_role =
+            self.semantics
+                .role
+                .as_ref()
+                .map_or(AccessibilityNodeRole::Group, |role| {
+                    crate::renderer::accessibility::accessibility_role_to_accesskit_role(
+                        role.clone(),
+                    )
+                });
+        let mut node = AccessibilityNode::new(SemanticCore::<E>::resolve_accessibility_role(
+            env,
+            default_role,
+        ));
+        if let Some(label) = label {
+            node.set_label(label);
+        }
+        if let Some(value) = value {
+            node.set_value(value);
+        }
+        let _ = renderer.register_accessibility_leaf(None, node, env, None);
+    }
+
+    fn accessibility_label(
+        &self,
+        renderer: &mut SemanticCore<E>,
+        _env: &Environment,
+    ) -> Option<String> {
+        self.semantics
+            .label
+            .as_ref()
+            .map(|signal| renderer.read_signal(signal).as_str().to_owned())
+    }
 }

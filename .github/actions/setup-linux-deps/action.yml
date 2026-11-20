@@ -112,10 +112,10 @@ runs:
         # the runner user.
         sudo chown -R "$(id -u):$(id -g)" "$ARCHIVES"
 
-    # Pull requests restore what dev and main pushes saved; they never save,
-    # so cache capacity stays with the compile caches.
+    # Pull requests and merge groups restore what dev and main pushes saved;
+    # they never save, so cache capacity stays with the compile caches.
     - name: Save package archives
-      if: steps.restore.outputs.cache-hit != 'true' && github.event_name != 'pull_request'
+      if: steps.restore.outputs.cache-hit != 'true' && github.event_name != 'pull_request' && github.event_name != 'merge_group'
       uses: actions/cache/save@v4
       with:
         path: ${{ steps.archives.outputs.dir }}

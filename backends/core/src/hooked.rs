@@ -263,6 +263,11 @@ impl<B: NativeBackend, H: HookList> Hooked<B, H> {
     pub(crate) const fn inner(&mut self) -> &mut B {
         &mut self.inner
     }
+
+    /// Shared reference to the backend this decorator wraps.
+    pub(crate) const fn inner_ref(&self) -> &B {
+        &self.inner
+    }
 }
 
 /// View wrapper keeping a backend child slot typed across subtree style hooks.

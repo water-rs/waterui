@@ -234,10 +234,8 @@ impl Drop for Mount {
     }
 }
 
+#[cfg(any(feature = "webview", all(target_os = "macos", feature = "webview-cef")))]
 pub(crate) fn install_services(env: &mut Environment) {
-    crate::windows::install_manager(env);
-    crate::components::view_renderer::install_service(env);
-    #[cfg(any(feature = "webview", all(target_os = "macos", feature = "webview-cef")))]
     crate::components::webview::install_service(env);
 }
 
@@ -330,6 +328,7 @@ pub unsafe fn mount<W: Windows>(
     runtime.fonts.borrow_mut().register_bundle_fonts(&resources);
     env.insert(resources);
     crate::dispatch::install(&mut env);
+    #[cfg(any(feature = "webview", all(target_os = "macos", feature = "webview-cef")))]
     install_services(&mut env);
 
     let mut keepalive = KeepAlive::default();
@@ -347,7 +346,9 @@ pub unsafe fn mount<W: Windows>(
     let mut env = parts.env;
     #[cfg(any(feature = "webview", all(target_os = "macos", feature = "webview-cef")))]
     crate::components::webview::install_service(&mut env);
-    let mut windows = crate::windows::root_windows(parts.windows).into_iter();
+    #[cfg(target_os = "macos")]
+    crate::windows::install_root_environment(&mut env);
+    let mut windows = crate::windows::connect_windows(parts.windows, &env).into_iter();
     let Some(declaration) = windows.next() else {
         waterui::contract_violation!(
             "an embedded app must declare a root window; nothing is mounted and the host shows no content"

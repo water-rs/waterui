@@ -1,0 +1,18 @@
+[package]
+name = "waterui-resources"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+readme = "../../README.md"
+repository.workspace = true
+description = "Application resource directory discovery for WaterUI"
+keywords = ["assets", "fonts", "resources", "ui", "waterui"]
+categories = ["gui", "filesystem"]
+
+[dependencies]
+waterui-core = { workspace = true, default-features = false }
+
+[lints]
+workspace = true

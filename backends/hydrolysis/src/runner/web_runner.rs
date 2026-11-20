@@ -505,7 +505,17 @@ pub fn run<W: Windows>(app: App<W>, style: impl crate::Style) {
             last_window: _,
             termination: _,
         } = app.into_parts();
-        let windows = RootWindows::<crate::text::ParleyEngine>::collect(windows);
+        let RootWindows {
+            initial: windows,
+            channels,
+        } = RootWindows::<crate::text::ParleyEngine>::collect(windows);
+        let unsupported_opener: Rc<dyn Fn(RootWindow<crate::text::ParleyEngine>)> = Rc::new(|_| {
+            contract_violation!(
+                "hydrolysis web runner: secondary windows are unsupported — a browser \
+                 page is the application's only window; the window is not shown"
+            );
+        });
+        RootWindows::connect_channels(channels, &unsupported_opener);
         let window_count = windows.len();
         let Ok([window]) = <[RootWindow<crate::text::ParleyEngine>; 1]>::try_from(windows) else {
             let message = format!(
@@ -587,17 +597,6 @@ pub fn run<W: Windows>(app: App<W>, style: impl crate::Style) {
         // backgrounds reach under the browser and system chrome around it.
         env.insert(crate::platform::WindowSafeArea(platform.safe_area()));
         fonts.collection().clone().install(&mut env);
-        // The capture service mounts its subtree under a snapshot of the
-        // assembled environment — the theme tokens, hooks and font
-        // collection a window's subtree resolves — so it must be installed
-        // last (water-rs/waterui#2703).
-        env.insert(waterui_core::ViewRenderer::new(
-            crate::view_renderer::HydrolysisViewRenderer::new(
-                Rc::clone(&theme),
-                env.clone(),
-                FontFamilyResolution::Lenient,
-            ),
-        ));
         let mut renderer = HydrolysisRenderer::with_engine(
             theme,
             ParleyEngine::from_collection(fonts.collection(), FontFamilyResolution::Lenient),
@@ -608,6 +607,7 @@ pub fn run<W: Windows>(app: App<W>, style: impl crate::Style) {
                 .mint_window_id(),
         );
         renderer.set_window_closable(window.closable);
+        super::install_core_window_openers(&mut renderer, unsupported_opener);
         let runtime =
             RuntimeWindow::new_painted(window, platform, renderer, render_diagnostics_config, &env);
         let accessibility_actions = Rc::new(RefCell::new(VecDeque::new()));
