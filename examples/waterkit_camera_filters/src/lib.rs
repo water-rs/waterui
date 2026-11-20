@@ -279,7 +279,7 @@ impl SyntheticCameraPreviewRenderer {
         }
     }
 
-    fn into_view(self) -> GpuView {
+    fn into_view(self) -> GpuView<SyntheticCameraPreviewContent> {
         let uniforms = Arc::new(Mutex::new(FilterUniforms(filter_params(0, 0.75))));
         let bridge = std::cell::RefCell::new(self);
         GpuView::new(SyntheticCameraPreviewContent {
@@ -360,7 +360,7 @@ impl CameraFilterRenderer {
         }
     }
 
-    fn into_view(self) -> GpuView {
+    fn into_view(self) -> GpuView<CameraFilterContent> {
         let shared = Arc::clone(&self.shared);
         let bridge = std::cell::RefCell::new(self);
         GpuView::new(CameraFilterContent {

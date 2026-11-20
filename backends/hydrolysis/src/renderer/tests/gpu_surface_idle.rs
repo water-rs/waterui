@@ -121,9 +121,9 @@ fn runtime_with(
 
 /// The same window, with the probe surface's view supplied by the test so it
 /// can carry `on_input` / `on_ime_caret` handlers.
-fn runtime_with_probe_view(
+fn runtime_with_probe_view<T: GpuContent>(
     driver: &RenderCounter,
-    probe_view: GpuView,
+    probe_view: GpuView<T>,
     probe_width: &Binding<f32>,
 ) -> HeadlessRuntime {
     let views = RefCell::new(Some((driver.clone(), probe_view, probe_width.clone())));
