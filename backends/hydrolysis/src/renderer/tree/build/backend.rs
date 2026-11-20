@@ -165,14 +165,15 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
 
     fn window<C: ChildView<Self>>(
         &mut self,
-        native: waterui::window::Window<waterui::window::WindowSlot<C>>,
+        native: waterui::window::Window<waterui::window::WindowSlot<C>, Option<C>>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
         self.renderer
-            .open_window(crate::runner::window::slot_root_window(
-                native.map_content(|slot| slot.map(C::into_child)),
-            ));
+            .open_window(crate::runner::window::slot_root_window(native.map(
+                |slot| slot.map(C::into_child),
+                |toolbar| toolbar.map(C::into_child),
+            )));
         RenderNode::build_empty(self.renderer, env)
     }
 
@@ -1470,6 +1471,24 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
             }
             Err(native) => native,
         };
+        #[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
+        if self.renderer.semantic_walk {
+            let stretch = waterui_core::NativeView::stretch_axis(&native);
+            let mut semantics = waterui_backend_core::ProvidedSemantics::default();
+            let native = match native.realize_provided(&mut semantics, env) {
+                Ok(()) => {
+                    return RenderNode::build_provided_semantics(
+                        self.renderer,
+                        semantics,
+                        stretch,
+                        env,
+                    );
+                }
+                Err(native) => native,
+            };
+            drop(native);
+            return self.unrealized(core::any::type_name::<T>(), env);
+        }
         drop(native);
         self.unrealized(core::any::type_name::<T>(), env)
     }
@@ -1491,6 +1510,18 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         if let Some(host) = native.take::<waterui_video_gpu::AndroidVideoSurfaceHost>() {
             let picture = crate::runner::android::video_plane::unwrap_host(Native::new(host));
             return RenderNode::build_view(picture, env, self.renderer);
+        }
+        #[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
+        if self.renderer.semantic_walk {
+            let mut semantics = waterui_backend_core::ProvidedSemantics::default();
+            if native.realize_provided(&mut semantics, env) {
+                return RenderNode::build_provided_semantics(
+                    self.renderer,
+                    semantics,
+                    StretchAxis::None,
+                    env,
+                );
+            }
         }
         self.unrealized(native.type_name(), env)
     }

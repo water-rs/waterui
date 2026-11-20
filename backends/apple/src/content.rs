@@ -10,8 +10,8 @@
 //! size — is in the layer tree the capture reads.
 
 use cocoa_ui::PlatformView;
-use waterui_core::ContentLedger;
-use waterui_core::content_ledger::ContentError;
+use waterui_capture::ContentLedger;
+use waterui_capture::content_ledger::ContentError;
 
 /// Awaits `ledger` for the subtree rooted at `root`, bounded by `deadline`.
 ///

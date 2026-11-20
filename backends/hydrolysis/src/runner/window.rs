@@ -146,15 +146,30 @@ impl<E: crate::text::TextEngine> WindowRoot<E> for HeldWindowSlot<E> {
 pub type RootWindow<E> = Window<Box<dyn WindowRoot<E>>>;
 
 /// `window` as a runner holds it.
-pub fn root_window<E: crate::text::TextEngine, C: ViewBuilder>(window: Window<C>) -> RootWindow<E> {
-    window.map_content(|content| Box::new(content) as Box<dyn WindowRoot<E>>)
+pub fn root_window<
+    E: crate::text::TextEngine,
+    C: ViewBuilder,
+    T: waterui::window::WindowToolbar,
+>(
+    window: Window<C, T>,
+) -> RootWindow<E> {
+    window.map(
+        |content| Box::new(content) as Box<dyn WindowRoot<E>>,
+        |_| (),
+    )
 }
 
 /// A window dispatched from the view tree as a runner holds it.
 pub fn slot_root_window<E: crate::text::TextEngine>(
-    window: Window<waterui::window::WindowSlot<crate::renderer::HeldChild<E>>>,
+    window: Window<
+        waterui::window::WindowSlot<crate::renderer::HeldChild<E>>,
+        Option<crate::renderer::HeldChild<E>>,
+    >,
 ) -> RootWindow<E> {
-    window.map_content(|slot| Box::new(HeldWindowSlot(slot)) as Box<dyn WindowRoot<E>>)
+    window.map(
+        |slot| Box::new(HeldWindowSlot(slot)) as Box<dyn WindowRoot<E>>,
+        |_| (),
+    )
 }
 
 pub type RootChannelConnector<E> = Box<dyn FnOnce(Rc<dyn Fn(RootWindow<E>)>)>;
@@ -195,11 +210,14 @@ enum ChannelTarget<E: crate::text::TextEngine> {
 }
 
 impl<E: crate::text::TextEngine> WindowSink for RootWindows<E> {
-    fn window<C: ViewBuilder>(&mut self, window: Window<C>) {
+    fn window<C: ViewBuilder, T: waterui::window::WindowToolbar>(&mut self, window: Window<C, T>) {
         self.initial.push(root_window(window));
     }
 
-    fn channel<C: ViewBuilder>(&mut self, channel: waterui::window::WindowChannel<C>) {
+    fn channel<C: ViewBuilder, T: waterui::window::WindowToolbar>(
+        &mut self,
+        channel: waterui::window::WindowChannel<C, T>,
+    ) {
         let target = Rc::new(RefCell::new(ChannelTarget::Pending(Vec::new())));
         let receiver_target = Rc::clone(&target);
         let queued = channel.connect(move |window| {
@@ -1235,7 +1253,7 @@ pub(super) struct SurfaceBackground(ResolvedWindowBackground);
 
 impl SurfaceBackground {
     /// `window`'s background as it resolves now.
-    pub(super) fn of<C>(window: &Window<C>, env: &Environment) -> Self {
+    pub(super) fn of<C, T>(window: &Window<C, T>, env: &Environment) -> Self {
         Self(window.resolved_background(env).snapshot())
     }
 
@@ -1325,7 +1343,7 @@ pub(super) fn apply_window_background<P: PaintedWindow, E: crate::text::TextEngi
 }
 
 #[cfg(hydrolysis_winit)]
-pub fn window_requires_transparency<C>(window: &Window<C>, env: &Environment) -> bool {
+pub fn window_requires_transparency<C, T>(window: &Window<C, T>, env: &Environment) -> bool {
     SurfaceBackground::of(window, env).transparent()
 }
 

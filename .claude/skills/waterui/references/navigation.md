@@ -345,7 +345,7 @@ The windows are a window set, and `fn app(env: Environment) -> App<impl Windows>
 `waterui::app::{App, Windows}`) returns it unnamed: one `Window`, a tuple of windows whose
 contents each keep their own type, an array or `Vec` of windows with one content type, or
 `()` for none. `App::new(view, env)` declares one window, and `.window(w)` appends another.
-Each window's content keeps its type up to the backend, so nothing in the tree is erased.
+Each window's content and toolbar keep their types up to the backend, so nothing in the tree is erased.
 
 The `Window` builder, precisely:
 
