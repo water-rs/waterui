@@ -12764,6 +12764,6 @@ mod tests {
             .iter()
             .map(|rect| rect.xywh().into())
             .collect();
-        assert_eq!(rects.len(), 2);
+        assert_eq!(rects, [[10, 5, 20, 10], [60, 200, 40, 12]]);
     }
 }
