@@ -20,10 +20,14 @@ pub mod backend;
 /// entry — nothing else references it. With `gpu_surface` the captures go
 /// through `capture_image`'s `ViewCapture` instead, so the
 /// bitmap-readback half only exists without it.
-#[cfg(not(feature = "gpu_surface"))]
+#[cfg(all(
+    not(feature = "gpu_surface"),
+    any(waterui_feature = "capture", preview_entry, feature = "native-test")
+))]
 pub(crate) mod capture;
 /// Awaiting the content a captured subtree owes — shared by the same two
 /// captures.
+#[cfg(any(waterui_feature = "capture", preview_entry, feature = "native-test"))]
 pub(crate) mod content;
 pub mod contract;
 pub mod dispatch;

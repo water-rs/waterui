@@ -34,6 +34,7 @@ use waterui_graphics::color::Color;
 pub use waterui_graphics::filter_view::FilterViewExt;
 
 use suiteki::Str;
+#[cfg(feature = "capture")]
 use waterui_capture::{CaptureHandle, CaptureScope};
 use waterui_layout::{
     AspectRatio, ContentMode, HorizontalAlignmentGuide, IgnoreSafeArea, LayoutPriority, Overlay,
@@ -1652,6 +1653,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// Views of type `V` rendered through `handle` retain their concrete type
     /// across backend dispatch instead of erasing to [`AnyView`](waterui_core::AnyView).
+    #[cfg(feature = "capture")]
     fn capture<V: View>(self, handle: &CaptureHandle<V>) -> CaptureScope<V, Self> {
         handle.attach(self)
     }

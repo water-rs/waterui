@@ -2,8 +2,18 @@
 
 use std::{cell::RefCell, fmt, rc::Rc};
 
-use waterui_core::{Computed, NativeView, layout::StretchAxis};
+use waterui_core::{
+    Computed, Environment, NativeView,
+    layout::{ProposalSize, StretchAxis, ViewDimensions},
+};
 use waterui_watcher_set::{WatcherGuard, WatcherSet};
+
+#[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
+use crate::renderer::HydroProvidedA11yHost;
+use crate::renderer::{
+    HydroProvidedBehavior, HydroProvidedRenderHost, HydroProvidedSlot, RenderContext,
+    graphics_dimensions_from_proposal,
+};
 
 /// The engine's platform-selected hosted object: an `NSView` on macOS, a
 /// `CALayer` on iOS, a `SurfaceControl` on Android and an `HtmlElement` on
@@ -113,9 +123,54 @@ impl fmt::Debug for HostedView {
     }
 }
 
+struct HostedNode {
+    runtime: Rc<HostedRuntime>,
+}
+
+impl Drop for HostedNode {
+    fn drop(&mut self) {
+        self.runtime.content.unmount();
+    }
+}
+
+impl HydroProvidedBehavior for HostedNode {
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+        graphics_dimensions_from_proposal(proposal)
+    }
+
+    fn render(
+        self: Rc<Self>,
+        host: &mut dyn HydroProvidedRenderHost,
+        ctx: RenderContext,
+        env: &Environment,
+    ) {
+        host.register_hosted_surface(Rc::clone(&self.runtime), ctx, env);
+    }
+
+    #[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
+    fn emit_accessibility(self: Rc<Self>, host: &mut dyn HydroProvidedA11yHost, env: &Environment) {
+        host.emit_graphics_image_accessibility(env, true);
+    }
+}
+
 impl NativeView for HostedView {
     fn stretch_axis(&self) -> StretchAxis {
         StretchAxis::Both
+    }
+
+    fn realize_provided(
+        self,
+        context: &mut dyn core::any::Any,
+        _env: &Environment,
+    ) -> Result<(), Self> {
+        if let Some(slot) = context.downcast_mut::<HydroProvidedSlot>() {
+            let node = Rc::new(HostedNode {
+                runtime: HostedRuntime::new(self),
+            });
+            slot.realized = Some((node, StretchAxis::Both));
+            return Ok(());
+        }
+        Err(self)
     }
 }
 

@@ -250,9 +250,12 @@ pub use waterui_resources::ResourceContext;
 pub use waterui_url::Url;
 
 #[doc(inline)]
+#[cfg(feature = "capture")]
+pub use waterui_capture::{CaptureHandle, CaptureScope, UnwiredCaptureError};
+#[doc(inline)]
 pub use waterui_capture::{
-    CaptureHandle, CaptureScope, ContentLedger, OffscreenRenderer, RenderError, RenderFuture,
-    RenderRequest, RenderResult, UnwiredCaptureError, content_ledger, view_renderer,
+    ContentLedger, OffscreenRenderer, RenderError, RenderFuture, RenderRequest, RenderResult,
+    content_ledger, view_renderer,
 };
 #[doc(inline)]
 pub use waterui_core::{

@@ -103,12 +103,11 @@ mod build_controls;
 mod build_views;
 mod collection;
 mod flush;
-#[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
-mod hosted;
 #[cfg(feature = "accessibility")]
 mod label;
 mod layout;
 mod nodes;
+mod provided;
 pub(super) mod safe_area;
 mod subview;
 pub(super) mod transition;
@@ -116,6 +115,9 @@ mod window;
 
 pub use build::backend::held_with_foreground;
 pub use collection::*;
+#[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
+pub use provided::HydroProvidedA11yHost;
+pub use provided::{HydroProvidedBehavior, HydroProvidedRenderHost, HydroProvidedSlot};
 
 /// A child view held for Hydrolysis to build later: a payload's child in
 /// Hydrolysis's child slot.

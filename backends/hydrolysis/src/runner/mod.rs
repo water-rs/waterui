@@ -502,6 +502,7 @@ pub fn run<W: Windows>(
             Rc::clone(&theme),
             ParleyEngine::from_collection(&fonts, FontFamilyResolution::Lenient),
         );
+        #[cfg(waterui_feature = "capture")]
         renderer.set_offscreen_painter(&painter, FontFamilyResolution::Lenient);
         renderer.set_window_id(identities.mint_window_id());
         renderer.set_window_closable(window.closable);

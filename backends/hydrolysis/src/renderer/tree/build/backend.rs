@@ -6,9 +6,9 @@ use core::marker::PhantomData;
 use waterui_backend_core::{
     ChildView, NativeBackend, NativeBackendFamily, Realize, report_unprovided,
 };
+use waterui_core::backend::ErasedPayload;
 #[cfg(any(feature = "menu", hydrolysis_video_plane))]
-use waterui_core::backend::ChildSlot;
-use waterui_core::backend::{ErasedPayload, cast};
+use waterui_core::backend::{ChildSlot, cast};
 use waterui_core::metadata::MetadataKey;
 use waterui_core::{NativeView, View};
 
@@ -151,12 +151,14 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     type Output = RenderNode<E>;
     type Ctx = ();
     type Family = HydroFamily<E>;
+    #[cfg(waterui_feature = "capture")]
     type Offscreen = crate::view_renderer::HydrolysisOffscreenRenderer;
 
     fn with_family<R>(&mut self, f: impl for<'a> FnOnce(&mut HydroBackend<'a, E>) -> R) -> R {
         f(self)
     }
 
+    #[cfg(waterui_feature = "capture")]
     fn offscreen(&self, _env: &Environment) -> Self::Offscreen {
         self.renderer.offscreen_renderer()
     }
@@ -1447,21 +1449,16 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
-        // A platform-view embedding leaf records its frame onto the host's
-        // `PlatformViewSink` each flush; mounting the real native child is
-        // the host's work.
-        let native = match cast::<T, PlatformView>(native) {
-            Ok(platform_view) => {
-                return RenderNode::build_platform_view(self.renderer, &platform_view, env);
-            }
+        // Backend-owned leaves (`PlatformView`, `HostedView`) claim
+        // `HydroProvidedSlot` inside `NativeView::realize_provided`, so only
+        // constructed leaves stay reachable and `provided` / `provided_dyn`
+        // carry no hardcoded downcasts for them.
+        let mut slot = provided::HydroProvidedSlot::default();
+        let native = match native.realize_provided(&mut slot, env) {
+            Ok(()) => return provided::realize_hydro_provided_slot(self.renderer, slot, env),
             Err(native) => native,
         };
-        #[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
-        let native = match cast::<T, crate::hosted::HostedView>(native) {
-            Ok(hosted) => return RenderNode::build_hosted(hosted, env, self.renderer),
-            Err(native) => native,
-        };
-        // The GPU video player's host.
+        // The GPU video player's host (owned by external `waterui-video-gpu`).
         #[cfg(hydrolysis_video_plane)]
         let native = match cast::<T, waterui_video_gpu::AndroidVideoSurfaceHost>(native) {
             Ok(host) => {
@@ -1521,12 +1518,9 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
-        if let Some(platform_view) = native.take::<PlatformView>() {
-            return RenderNode::build_platform_view(self.renderer, &platform_view, env);
-        }
-        #[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
-        if let Some(hosted) = native.take::<crate::hosted::HostedView>() {
-            return RenderNode::build_hosted(hosted, env, self.renderer);
+        let mut slot = provided::HydroProvidedSlot::default();
+        if native.realize_provided(&mut slot, env) {
+            return provided::realize_hydro_provided_slot(self.renderer, slot, env);
         }
         #[cfg(hydrolysis_video_plane)]
         if let Some(host) = native.take::<waterui_video_gpu::AndroidVideoSurfaceHost>() {

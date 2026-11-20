@@ -265,6 +265,7 @@ impl<B: NativeBackend, H: HookList> Hooked<B, H> {
     }
 
     /// Shared reference to the backend this decorator wraps.
+    #[cfg(waterui_feature = "capture")]
     pub(crate) const fn inner_ref(&self) -> &B {
         &self.inner
     }

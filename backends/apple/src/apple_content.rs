@@ -517,8 +517,10 @@ mod tests {
         };
     }
 
+    #[cfg(waterui_feature = "capture")]
     struct OtherOffscreen;
 
+    #[cfg(waterui_feature = "capture")]
     impl waterui_capture::OffscreenRenderer for OtherOffscreen {
         fn render_to_rgba<V: View>(
             &self,
@@ -536,12 +538,14 @@ mod tests {
         type Output = ();
         type Ctx = ();
         type Family = Self;
+        #[cfg(waterui_feature = "capture")]
         type Offscreen = OtherOffscreen;
 
         fn with_family<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
             f(self)
         }
 
+        #[cfg(waterui_feature = "capture")]
         fn offscreen(&self, _env: &Environment) -> Self::Offscreen {
             OtherOffscreen
         }
