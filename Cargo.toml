@@ -328,6 +328,7 @@ waterui-assets-core = { version = "0.5.1", path = "components/assets/core" }
 waterui-assets-planner = { version = "0.5.1", path = "components/assets/planner" }
 waterui-assets-macros = { version = "0.5.1", path = "components/assets/macros" }
 waterui-inspector-protocol = { version = "0.5.1", path = "components/devtools/inspector/protocol" }
+waterui-inspector-runtime = { version = "0.5.1", path = "components/devtools/inspector/runtime" }
 waterui-preview-protocol = { version = "0.5.1", path = "components/devtools/preview/protocol" }
 waterui-mcp-protocol = { version = "0.5.1", path = "components/devtools/mcp/protocol" }
 waterui-testing = { path = "testing" }
@@ -688,6 +689,7 @@ waterui-backend-core = { path = "backends/core" }
 waterui-form = { path = "components/foundation/form" }
 waterui-icon = { path = "components/foundation/icon" }
 waterui-inspector-protocol = { path = "components/devtools/inspector/protocol" }
+waterui-inspector-runtime = { path = "components/devtools/inspector/runtime" }
 waterui-locale = { path = "utils/locale" }
 waterui-navigation = { path = "components/foundation/navigation" }
 waterui-webview = { path = "components/platform/webview" }

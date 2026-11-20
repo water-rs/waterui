@@ -419,7 +419,7 @@ pub fn run<W: Windows>(
     let app = app(env);
     let inspector_probe = inspector
         .as_ref()
-        .map(waterui::inspector::InspectorRuntime::runtime_probe);
+        .map(|inspector| inspector.task_probe() as std::sync::Arc<dyn waterui::task::RuntimeProbe>);
     // This path renders each window once offscreen and returns; it owns no event
     // loop, so it supplies the headless executor rather than a platform one.
     // Keep a handle on the executor: the render loop below has to drive it, or

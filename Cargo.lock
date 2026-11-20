@@ -13393,6 +13393,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "waterui-inspector-runtime"
+version = "0.5.1"
+dependencies = [
+ "async-channel",
+ "getrandom 0.4.3",
+ "nami",
+ "tracing",
+ "tracing-subscriber",
+ "waterui-core",
+ "waterui-inspector-protocol",
+]
+
+[[package]]
 name = "waterui-internal"
 version = "0.5.1"
 dependencies = [
@@ -13400,7 +13413,6 @@ dependencies = [
  "cpu-time",
  "executor-core",
  "futures",
- "getrandom 0.4.3",
  "nami",
  "native-executor",
  "object 0.40.0",
@@ -13424,7 +13436,7 @@ dependencies = [
  "waterui-form",
  "waterui-graphics",
  "waterui-icon",
- "waterui-inspector-protocol",
+ "waterui-inspector-runtime",
  "waterui-layout",
  "waterui-locale",
  "waterui-macros",
