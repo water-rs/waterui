@@ -836,6 +836,7 @@ impl HeadlessRuntime {
             Rc::clone(&theme),
             ParleyEngine::from_collection(&fonts, family_resolution),
         );
+        renderer.set_offscreen_painter(&painter, family_resolution);
         renderer.set_window_id(
             env.get::<crate::renderer::WindowIdentities>()
                 .expect("install_window_registries seeds WindowIdentities")
@@ -892,6 +893,7 @@ impl HeadlessRuntime {
             Rc::clone(&self.theme),
             ParleyEngine::from_collection(&self.fonts, self.family_resolution),
         );
+        renderer.set_offscreen_painter(&self.painter, self.family_resolution);
         renderer.set_window_id(
             self.env
                 .get::<crate::renderer::WindowIdentities>()
