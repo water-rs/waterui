@@ -645,7 +645,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     // control's `SELECTED` flag and a11y selected state read it.
     fn selected<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_core::interaction::Selected, C>,
+        metadata: Metadata<waterui_interaction::interaction::Selected, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -1017,7 +1017,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
 
     fn on_event<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_core::event::OnEvent, C>,
+        metadata: Metadata<waterui_interaction::event::OnEvent, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -1034,7 +1034,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
 
     fn on_key_press<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_core::key::OnKeyPress, C>,
+        metadata: Metadata<waterui_interaction::key::OnKeyPress, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -1051,7 +1051,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
 
     fn gesture_observer<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_core::gesture::GestureObserver, C>,
+        metadata: Metadata<waterui_interaction::gesture::GestureObserver, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -1067,7 +1067,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
             gesture_target: Cell::new(None),
             chrome: RefCell::new(None),
             chrome_state: nami::Binding::container(
-                waterui_core::interaction::InteractionState::empty(),
+                waterui_interaction::interaction::InteractionState::empty(),
             ),
         };
         RenderNode::wrap(WrapperEffect::GestureObserver(effect), child, env, renderer)
@@ -1087,7 +1087,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
 
     fn lifecycle_hook<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_core::event::LifeCycleHook, C>,
+        metadata: Metadata<waterui_interaction::event::LifeCycleHook, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {

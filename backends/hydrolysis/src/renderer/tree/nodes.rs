@@ -1242,7 +1242,7 @@ pub struct GestureObserverEffect {
     /// bounds stay the same.
     pub(crate) chrome: RefCell<Option<crate::renderer::chrome::LiveChromeParts>>,
     /// The state the tap's live chrome reports between flushes.
-    pub(crate) chrome_state: nami::Binding<waterui_core::interaction::InteractionState>,
+    pub(crate) chrome_state: nami::Binding<waterui_interaction::interaction::InteractionState>,
 }
 
 pub struct ColorNode<E: crate::text::TextEngine> {
@@ -2083,7 +2083,7 @@ impl<E: crate::text::TextEngine> TextNode<E> {
             return;
         }
         let disabled = env
-            .get::<waterui_core::interaction::Disabled>()
+            .get::<waterui_interaction::interaction::Disabled>()
             .is_some_and(|disabled| renderer.read_signal(disabled.signal()));
         if let Some(parent) = parent {
             renderer.push_accessibility_parent(parent);
@@ -2154,7 +2154,7 @@ impl<E: crate::text::TextEngine> TextNode<E> {
             return;
         }
         let disabled = env
-            .get::<waterui_core::interaction::Disabled>()
+            .get::<waterui_interaction::interaction::Disabled>()
             .is_some_and(|disabled| renderer.read_signal(disabled.signal()));
         // The recording's origin is the bounds' top-left: a layout-space
         // rectangle lands there offset into this node's local space.

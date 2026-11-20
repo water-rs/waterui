@@ -20,10 +20,10 @@ use waterui::reactive::Computed;
 use waterui::text::StyledStr;
 use waterui_backend_core::Environment;
 use waterui_core::handler::{BoxedAction, ReportExtraction};
-use waterui_core::interaction::Disabled;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
 };
+use waterui_interaction::interaction::Disabled;
 
 use crate::components::button_chrome;
 use crate::contract::{Held, NativeLeaf};

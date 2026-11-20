@@ -38,7 +38,7 @@ use waterui::accessibility::{
 use waterui::reactive::Computed;
 use waterui_core::Metadata;
 use waterui_core::SignalExt;
-use waterui_core::interaction::Selected;
+use waterui_interaction::interaction::Selected;
 
 use crate::contract::{Held, NativeLeaf, RenderContext};
 use crate::proposal::in_view;

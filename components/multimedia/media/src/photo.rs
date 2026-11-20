@@ -29,7 +29,6 @@ use waterkit_fs::WaterFs;
 use waterui_capture::ContentLedger;
 use waterui_capture::content_ledger::OwedContent;
 use waterui_core::contract_violation;
-use waterui_core::event::{LifeCycle, LifeCycleHook};
 use waterui_core::handler::ReportExtraction as _;
 use waterui_core::reactive::signal::IntoComputed;
 use waterui_core::reactive::watcher::BoxWatcherGuard;
@@ -37,6 +36,7 @@ use waterui_core::{AnyView, Computed, Environment, Metadata, Retain, Signal, Vie
 use waterui_image::{
     ContentMode, Image, ImageStatus, ReactiveImage, ReactiveImageHandle, reactive_image,
 };
+use waterui_interaction::event::{LifeCycle, LifeCycleHook};
 #[cfg(feature = "remote")]
 use zenwave::{Client, Method};
 

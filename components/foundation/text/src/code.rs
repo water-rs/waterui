@@ -15,15 +15,15 @@ use core::fmt;
 
 use nami::SignalExt;
 use suiteki::Str;
+use waterui_accessibility::AccessibilityRole;
 use waterui_color::{
     AccentColor, Color, CurrentColorScheme, MutedForegroundColor, SurfaceVariantColor,
 };
-use waterui_core::accessibility::AccessibilityRole;
 use waterui_core::backend::Backend;
-use waterui_core::gesture::{GestureObserver, TapGesture};
 use waterui_core::resolve::Resolvable;
 use waterui_core::view::hook::HookableView;
 use waterui_core::{Environment, Metadata, NativeView, View, contract_violation};
+use waterui_interaction::gesture::{GestureObserver, TapGesture};
 use waterui_layout::{
     background::background,
     padding::{EdgeInsets, Padding},

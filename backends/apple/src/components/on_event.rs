@@ -13,11 +13,11 @@ use cocoa_ui::Rect;
 use cocoa_ui::view;
 use waterui_backend_core::Environment;
 use waterui_core::Metadata;
-use waterui_core::event::{Event, HoverEvent, OnEvent};
 use waterui_core::layout::{
     LayoutError, Point, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
     ViewDimensions,
 };
+use waterui_interaction::event::{Event, HoverEvent, OnEvent};
 
 use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;

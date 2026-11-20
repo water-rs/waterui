@@ -96,6 +96,14 @@ version_group = "waterui"
 # Foundation components
 
 [[package]]
+name = "waterui-accessibility"
+version_group = "waterui"
+
+[[package]]
+name = "waterui-interaction"
+version_group = "waterui"
+
+[[package]]
 name = "waterui-text"
 version_group = "waterui"
 git_tag_name = "text-v{{ version }}"

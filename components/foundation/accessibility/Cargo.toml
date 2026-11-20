@@ -1,0 +1,20 @@
+[package]
+name = "waterui-accessibility"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+readme = "../../../README.md"
+repository.workspace = true
+description = "Accessibility metadata and role semantics for WaterUI"
+keywords = ["accessibility", "a11y", "ui", "waterui"]
+categories = ["gui", "accessibility"]
+
+[dependencies]
+nami.workspace = true
+suiteki.workspace = true
+waterui-core = { workspace = true, default-features = false }
+
+[lints]
+workspace = true

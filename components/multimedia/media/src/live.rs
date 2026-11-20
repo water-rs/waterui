@@ -1,7 +1,6 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use waterui_core::gesture::{GestureObserver, LongPressGesture};
 use waterui_core::handler::{
     BoxedEventAction, EventHandler, ReportExtraction, boxed_event_handler,
 };
@@ -9,6 +8,7 @@ use waterui_core::{
     AnyView, Binding, Computed, Dynamic, Environment, Metadata, SerialDispatch, Signal, SignalExt,
     View, reactive::signal::IntoComputed,
 };
+use waterui_interaction::gesture::{GestureObserver, LongPressGesture};
 use waterui_layout::overlay;
 
 use crate::{

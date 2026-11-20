@@ -16,10 +16,10 @@ use nami::{Binding, Signal as _, SignalExt as _};
 use waterui::ViewExt as _;
 use waterui::animation::Animation;
 use waterui_core::handler::AnyViewBuilder;
-use waterui_core::interaction::InteractionState;
 use waterui_core::layout::LayoutDirection;
 use waterui_core::{AnyView, Environment};
 use waterui_form::picker::{PickerStyle, picker};
+use waterui_interaction::interaction::InteractionState;
 use waterui_text::text;
 
 use super::{MinimalTestTheme, pumped_test_environment};
