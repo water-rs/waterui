@@ -528,7 +528,7 @@ web, graphics, and data rows live in [references/media.md](references/media.md).
 | Media | `Photo` `Image` `VideoPlayer` `PlaybackSession` `MediaPicker` |
 | Data | `waterui::chart` (13 kinds: `line_chart` `bar_chart` `pie_chart` …) `Map` |
 | Graphics | `Canvas` `Barcode::qr()` `Svg` `shader!` `ParticleSystem` `GpuView` `ExternalFrameView` icon sets |
-| Platform | `WebView` `#[js_api]` `waterui-chromium` |
+| Platform | `WebView` `#[js_api]` `waterui-chromium` `waterui_apple::AppleView` `hydrolysis::AndroidView` |
 
 ## Verify before declaring done
 

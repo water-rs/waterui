@@ -460,6 +460,8 @@ pub struct Band {
     /// The engine part the band's latest image shows; `None` before its
     /// first image and once its region is empty.
     shown: Option<usize>,
+    /// The device-pixel rectangles shown in the latest band update.
+    shown_rects: Vec<[u32; 4]>,
 }
 
 impl Band {
@@ -480,13 +482,14 @@ impl Band {
         Ok(Self {
             window,
             shown: None,
+            shown_rects: Vec::new(),
         })
     }
 }
 
 /// What a band's host does with one band when it applies a
 /// [`BandCommit`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BandUpdate {
     /// The host's id for the window whose band changed.
     pub window: u64,
@@ -495,6 +498,9 @@ pub struct BandUpdate {
     /// the swapchain negotiated. `None`: the region is empty — show
     /// nothing.
     pub image: Option<wgpu::SurfaceColorSpace>,
+    /// Disjoint `[x, y, width, height]` device-pixel rectangles painted in
+    /// this band (`Vec::new()` when `image` is `None`).
+    pub painted_rects: Vec<[u32; 4]>,
 }
 
 /// A frame that changed bands, handed to the host once the GPU finished
@@ -1098,16 +1104,26 @@ impl Planes {
             let part = regions
                 .iter()
                 .find(|&&(marked, _)| marked == window)
-                .and_then(|&(_, part)| part);
+                .and_then(|&(_, part)| part)
+                .filter(|&part| !composition.parts[part].painted.is_empty());
             match part {
                 Some(part) => {
-                    if band.shown == Some(part) && composition.parts[part].damage.is_empty() {
+                    let painted_rects: Vec<[u32; 4]> = composition.parts[part]
+                        .painted
+                        .rectangles()
+                        .iter()
+                        .map(|rect| rect.xywh().into())
+                        .collect();
+                    if band.shown == Some(part)
+                        && composition.parts[part].damage.is_empty()
+                        && band.shown_rects == painted_rects
+                    {
                         continue;
                     }
                     let Some(image) = band.window.acquire(device)? else {
                         return Ok(Presentation::Retry);
                     };
-                    band_images.push((window, part, image));
+                    band_images.push((window, part, image, painted_rects));
                 }
                 None if band.shown.is_some() => band_clears.push(window),
                 None => {}
@@ -1115,10 +1131,13 @@ impl Planes {
         }
         let mut band_updates = Vec::with_capacity(band_images.len() + band_clears.len());
         for window in band_clears {
-            self.bands.get_mut(&window).expect("listed above").shown = None;
+            let band = self.bands.get_mut(&window).expect("listed above");
+            band.shown = None;
+            band.shown_rects.clear();
             band_updates.push(BandUpdate {
                 window,
                 image: None,
+                painted_rects: Vec::new(),
             });
         }
         // Parts the plan no longer splits off leave in this frame's
@@ -1270,7 +1289,7 @@ impl Planes {
             // queued image — so the completion it reports covers them,
             // and the host never samples a band image the GPU is still
             // writing.
-            for (window, part, image) in band_images {
+            for (window, part, image, painted_rects) in band_images {
                 let band = self.bands.get_mut(&window).expect("acquired above");
                 presenter.texture_in(
                     device,
@@ -1280,9 +1299,11 @@ impl Planes {
                 );
                 queue.present(image);
                 band.shown = Some(part);
+                band.shown_rects.clone_from(&painted_rects);
                 band_updates.push(BandUpdate {
                     window,
                     image: Some(band.window.selection().color_space),
+                    painted_rects,
                 });
             }
             // SAFETY: `queue` is the engine's Vulkan queue, and the waits

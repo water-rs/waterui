@@ -66,6 +66,20 @@ pub use hooked::{Hooked, HookedFamily};
 pub use native_backend::{NativeBackend, Realize, report_unprovided};
 pub use waterui_meta::mark_reached;
 
+/// Declared accessibility semantics for a backend-provided [`NativeView`](waterui_core::NativeView).
+///
+/// Extracted through
+/// [`NativeView::realize_provided`](waterui_core::NativeView::realize_provided)
+/// by semantic runtimes that build an accessibility tree without mounting a
+/// platform view.
+#[derive(Debug, Default, Clone)]
+pub struct ProvidedSemantics {
+    /// The component's declared default accessibility role, if any.
+    pub role: Option<waterui::accessibility::AccessibilityRole>,
+    /// The component's declared default reactive accessibility label, if any.
+    pub label: Option<waterui_core::Computed<waterui_core::Str>>,
+}
+
 // Re-export common types from waterui-core
 pub use waterui_core::{AnyView, Environment, Native, View};
 

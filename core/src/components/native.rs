@@ -79,6 +79,29 @@ pub trait NativeView {
     fn stretch_axis(&self) -> StretchAxis {
         StretchAxis::None
     }
+
+    /// Hands this payload to `context` when `Self` is a component a backend
+    /// itself provides outside `NativeBackend`.
+    ///
+    /// Non-generic payloads leave the default; generic backend-provided leaves
+    /// downcast `context` to their backend's receiver so `Self` stays
+    /// monomorphized without naming its type parameter in the backend, returning
+    /// `Err(self)` on any receiver that does not claim it.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(self)` unchanged when `context` does not claim this payload.
+    fn realize_provided(
+        self,
+        context: &mut dyn core::any::Any,
+        env: &Environment,
+    ) -> Result<(), Self>
+    where
+        Self: Sized,
+    {
+        let _ = (context, env);
+        Err(self)
+    }
 }
 
 #[cfg(test)]

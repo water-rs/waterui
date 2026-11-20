@@ -15,6 +15,7 @@ use nami::watcher::{BoxWatcherGuard, Context};
 use nami::{Computed, Signal, SignalExt as _};
 use waterui_core::layout::{Affine2, Rect, Size};
 use waterui_core::{Environment, contract_violation};
+#[cfg(feature = "text")]
 use waterui_text::styled::StyledStr;
 
 use crate::canvas::cell::SignalCell;
@@ -23,6 +24,7 @@ use crate::canvas::geometry::Shape;
 use crate::canvas::operand::Operand;
 use crate::canvas::paint::{IntoPaint, Layer, Paint, Sampling, Shadow, StrokeStyle};
 use crate::canvas::resource::{GlyphRun, ImageSource};
+#[cfg(feature = "text")]
 use crate::canvas::text::TextPlacement;
 use crate::color::{Color, WorkingColor};
 use crate::draw::{Recorder, Region, ShapeData};
@@ -201,6 +203,7 @@ pub enum Node {
         run: Computed<GlyphRun>,
         paint: Computed<Paint>,
     },
+    #[cfg(feature = "text")]
     Text {
         text: Computed<StyledStr>,
         placement: Computed<TextPlacement>,
@@ -446,6 +449,7 @@ impl Cx {
     /// a signal of placements whose alignment or width changed; one whose
     /// origin alone changed moves the laid-out text, animated when the
     /// change carries an animation.
+    #[cfg(feature = "text")]
     pub fn text(
         &mut self,
         text: impl Into<Operand<StyledStr>>,

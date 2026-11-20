@@ -369,7 +369,7 @@ impl<V: View> View for WindowRoot<V> {
         // Overlay and snackbar state are created per built instance, so each
         // owns its own managers: a `Dynamic` is single-consumer and cannot be
         // mounted by more than one scene.
-        let (overlay_manager, overlay_view) = FullScreenOverlayManager::new();
+        let (overlay_manager, overlay_view) = FullScreenOverlayManager::<()>::new();
         let content = self
             .0
             .overlay(overlay_view)
@@ -382,6 +382,17 @@ impl<V: View> View for WindowRoot<V> {
             .overlay(snackbar_view)
             .with(snackbar_manager.clone())
             .state(&snackbar_manager);
+        #[cfg(all(feature = "snackbar", feature = "flow-markdown"))]
+        let content = content.with(waterui_markdown::CodeCopyFeedback(
+            waterui_text::code::OnCopied::new(|env| match env.extract::<SnackbarManager>() {
+                Ok(snackbar) => {
+                    snackbar.show(crate::snackbar::Snackbar::new("Copied to clipboard"));
+                }
+                Err(error) => crate::contract_violation!(
+                    "the window's environment carries no SnackbarManager, so the copy shows no feedback: {error}"
+                ),
+            }),
+        ));
         content
     }
 }

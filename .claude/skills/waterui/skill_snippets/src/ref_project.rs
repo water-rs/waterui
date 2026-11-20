@@ -112,6 +112,14 @@ pub mod project_block_04 {
 }
 
 // ---------------------------------------------------------------------------
+// project.md § "## Platforms and backends" (prose)
+// `waterui-apple` (`AppleContent`, `AppleMount`, `AppleView`),
+// `waterui-apple-os` (`apple_available!`), and Android-only `hydrolysis`
+// (`AndroidContent`, `AndroidMount`, `AndroidView`) are backend/OS-specific
+// types not linked into this cross-platform compile gate (README rule 6).
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // project.md § "## Logging and debugging" — rust block 5/5
 // ---------------------------------------------------------------------------
 pub fn project_block_05() {

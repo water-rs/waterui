@@ -43,7 +43,7 @@ default = [
 applied_filter = ["gpu_surface", "dep:objc2-core-image", "waterui/effects"]
 calendar = ["waterui/calendar"]
 # The Core Animation realization of `Canvas`.
-canvas = ["dep:block2", "dep:skrifa"]
+canvas = ["dep:block2", "dep:skrifa", "waterui-graphics/text"]
 gpu_surface = ["dep:block2", "objc2-metal/block2", "waterui/gpu"]
 color_picker = ["waterui/color-picker"]
 context_menu = ["waterui/menu"]
@@ -261,6 +261,7 @@ waterui-preview-protocol = { workspace = true, optional = true }
 # `NSWorkspace` — the feature lands on cocoa-ui's same-version
 # `objc2-app-kit` edge, so `cocoa_ui::objc2_app_kit` sees it.
 [target.'cfg(target_os = "macos")'.dev-dependencies]
+waterui-testing = { workspace = true, default-features = false, features = ["cpu"] }
 objc2-core-graphics = { version = "0.3", default-features = false, features = [
     "std",
     "CGEvent",
