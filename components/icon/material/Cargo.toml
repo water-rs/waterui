@@ -12,11 +12,12 @@ readme = "../../../README.md"
 
 [features]
 default = ["svg"]
-svg = ["waterui-icon/svg"]
-webfont = []
+svg = ["dep:waterui-svg"]
+webfont = ["dep:waterui-icon"]
 
 [dependencies]
-waterui-icon.workspace = true
+waterui-svg = { workspace = true, optional = true }
+waterui-icon = { workspace = true, optional = true }
 
 [build-dependencies]
 serde = { version = "1.0", features = ["derive"] }
@@ -39,3 +40,7 @@ required-feature = "webfont"
 [dev-dependencies]
 waterui = { path = "../../.." }
 waterui-testing = { path = "../../../testing" }
+
+[[test]]
+name = "e2e_semantics"
+required-features = ["svg"]
