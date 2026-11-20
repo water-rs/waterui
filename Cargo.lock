@@ -13326,6 +13326,7 @@ dependencies = [
  "waterui",
  "waterui-icon",
  "waterui-icons-codegen",
+ "waterui-svg",
  "waterui-testing",
 ]
 
@@ -13339,6 +13340,7 @@ dependencies = [
  "waterui",
  "waterui-icon",
  "waterui-icons-codegen",
+ "waterui-svg",
  "waterui-testing",
 ]
 
