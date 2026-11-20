@@ -487,7 +487,12 @@ impl NativeBackend for AppleBackend {
     }
 
     #[cfg(waterui_feature = "gpu")]
-    fn gpu(&mut self, native: waterui::GpuView, env: &Environment, (): ()) -> NativeLeaf {
+    fn gpu(
+        &mut self,
+        native: waterui::GpuView<alloc::boxed::Box<dyn waterui::graphics::GpuContent>>,
+        env: &Environment,
+        (): (),
+    ) -> NativeLeaf {
         crate::components::gpu_surface::realize_gpu_view(native, &self.entry(env))
     }
 

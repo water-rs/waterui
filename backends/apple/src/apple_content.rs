@@ -562,7 +562,7 @@ mod tests {
             navigation_split: waterui::navigation::split::NavigationSplitLayout,
             canvas: waterui::graphics::canvas::CanvasView,
             #[cfg(waterui_feature = "gpu")]
-            gpu: waterui::GpuView,
+            gpu: waterui::GpuView<alloc::boxed::Box<dyn waterui::graphics::GpuContent>>,
             #[cfg(waterui_feature = "gpu")]
             external_frame: waterui::graphics::gpu::external::ExternalFrameView,
             #[cfg(waterui_feature = "gpu")]
