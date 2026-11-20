@@ -761,7 +761,7 @@ wgpu-external-frame = { git = "https://github.com/water-rs/wgpu-external-frame",
 # `main` branch; `Cargo.lock` records the exact commit.
 waterui-barcode = { git = "https://github.com/water-rs/barcode", branch = "main" }
 waterui-chart = { git = "https://github.com/water-rs/chart", branch = "main" }
-waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", branch = "main" }
+waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", branch = "refactor/4816-static-gpu-view" }
 waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", branch = "main" }
 waterui-particle = { git = "https://github.com/water-rs/particle", branch = "main" }
 waterui-image = { git = "https://github.com/water-rs/image", branch = "main" }

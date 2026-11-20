@@ -77,11 +77,19 @@ RELEASE_DOWNLOAD = re.compile(
 )
 
 
+USER_AGENT = "waterui-test-fonts/1.0"
+
+
 def github_request(url: str, token: str, accept: str) -> urllib.request.Request:
     """A request to `url` carrying `token`. The token is unredirected, so the
     signed storage URL an asset download redirects to never receives it."""
     request = urllib.request.Request(
-        url, headers={"Accept": accept, "X-GitHub-Api-Version": "2022-11-28"}
+        url,
+        headers={
+            "Accept": accept,
+            "User-Agent": USER_AGENT,
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
     )
     request.add_unredirected_header("Authorization", f"Bearer {token}")
     return request
@@ -97,7 +105,7 @@ class RefuseRedirect(urllib.request.HTTPRedirectHandler):
         raise SystemExit(f"{req.full_url} redirects to {newurl}; pin the repository's current path")
 
 
-def download_request(url: str) -> str | urllib.request.Request:
+def download_request(url: str) -> urllib.request.Request:
     """What downloads `url`. With `GITHUB_TOKEN` set — every CI job exports
     its job token — GitHub-hosted files are fetched as authenticated traffic:
     a release download through the REST asset endpoint, a raw file with the
@@ -105,7 +113,7 @@ def download_request(url: str) -> str | urllib.request.Request:
     machine."""
     token = os.environ.get("GITHUB_TOKEN")
     if not token:
-        return url
+        return urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     if release := RELEASE_DOWNLOAD.fullmatch(url):
         owner, repo, tag, name = (urllib.parse.unquote(part) for part in release.groups())
         api = f"https://api.github.com/repos/{owner}/{repo}"
@@ -124,7 +132,7 @@ def download_request(url: str) -> str | urllib.request.Request:
         )
     if url.startswith("https://raw.githubusercontent.com/"):
         return github_request(url, token, "*/*")
-    return url
+    return urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
 
 
 def fetch(url: str, expected_sha256: str) -> bytes:

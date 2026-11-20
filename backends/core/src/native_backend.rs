@@ -686,7 +686,7 @@ native_backend! {
         canvas: waterui::graphics::canvas::CanvasView,
         #[cfg(waterui_feature = "gpu")]
         /// GPU content.
-        gpu: waterui::GpuView,
+        gpu: waterui::GpuView<alloc::boxed::Box<dyn waterui::graphics::GpuContent>>,
         #[cfg(waterui_feature = "gpu")]
         /// Frames from an external source.
         external_frame: waterui::graphics::gpu::external::ExternalFrameView,
@@ -1536,5 +1536,22 @@ mod tests {
                 ]
             );
         }
+    }
+
+    #[cfg(waterui_feature = "gpu")]
+    #[test]
+    fn typed_gpu_view_reaches_native_backend_on_static_and_erased_paths() {
+        use waterui::graphics::{Context, Frame, GpuContent, GpuView};
+
+        struct ProbeContent;
+
+        impl GpuContent for ProbeContent {
+            fn setup(&mut self, _gpu: &Context<'_>) {}
+
+            fn render(&mut self, _frame: &mut Frame<'_>) {}
+        }
+
+        assert_eq!(reached(GpuView::new(ProbeContent)), ["gpu"]);
+        assert_eq!(reached(AnyView::new(GpuView::new(ProbeContent))), ["gpu"]);
     }
 }
