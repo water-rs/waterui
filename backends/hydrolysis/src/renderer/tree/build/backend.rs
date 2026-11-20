@@ -151,9 +151,14 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     type Output = RenderNode<E>;
     type Ctx = ();
     type Family = HydroFamily<E>;
+    type Offscreen = crate::view_renderer::HydrolysisOffscreenRenderer;
 
     fn with_family<R>(&mut self, f: impl for<'a> FnOnce(&mut HydroBackend<'a, E>) -> R) -> R {
         f(self)
+    }
+
+    fn offscreen(&self, _env: &Environment) -> Self::Offscreen {
+        self.renderer.offscreen_renderer()
     }
 
     accessibility_scope_table!(accessibility_scopes);
@@ -234,7 +239,12 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     // setup state, redraw handle), so a reactive swap renders the new content
     // and a per-frame re-flush re-binds the *same* runtime.
     #[cfg(waterui_feature = "gpu")]
-    fn gpu(&mut self, native: waterui::GpuView, env: &Environment, (): ()) -> RenderNode<E> {
+    fn gpu(
+        &mut self,
+        native: waterui::GpuView<Box<dyn waterui::graphics::GpuContent>>,
+        env: &Environment,
+        (): (),
+    ) -> RenderNode<E> {
         #[cfg(hydrolysis_gpu)]
         return RenderNode::build_gpu_content(native, self.renderer, env);
         #[cfg(not(hydrolysis_gpu))]
