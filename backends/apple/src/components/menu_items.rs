@@ -100,18 +100,17 @@ fn shortcut_parts(shortcut: &Shortcut) -> (String, cocoa_ui::menu::KeyModifiers)
 
 /// A `ResolvedCommand` as a kit `Command` — every presentation field
 /// snapshotted; the shortcut's key equivalent travels cross-platform.
-fn kit_command(command: &ResolvedCommand) -> KitCommand {
+fn kit_command(command: &ResolvedCommand, env: &Environment) -> KitCommand {
     let (key_equivalent, modifiers) = command.shortcut.as_ref().map_or_else(
         || (String::new(), cocoa_ui::menu::KeyModifiers::empty()),
         shortcut_parts,
     );
+    let (symbol, image) = crate::menus::resolve_menu_icon(command.icon.as_ref(), env);
     KitCommand {
         label: item_title(&command.label.content().snapshot()),
         subtitle: command.subtitle.as_ref().map(ToString::to_string),
-        symbol: command
-            .icon
-            .as_ref()
-            .map(|icon| String::from(icon.name().as_str())),
+        symbol,
+        image,
         destructive: matches!(command.role, CommandRole::Destructive),
         enabled: !command.disabled.snapshot(),
         selected: command.selected.snapshot(),
@@ -134,7 +133,7 @@ pub(super) fn tree_nodes(items: &[ResolvedMenuItem], env: &Environment) -> Vec<M
                 let action = command.action.clone();
                 let env = env.clone();
                 nodes.push(MenuTreeNode::Command(
-                    kit_command(command),
+                    kit_command(command, &env),
                     Rc::new(move || {
                         action.run(&env);
                     }),
@@ -150,20 +149,21 @@ pub(super) fn tree_nodes(items: &[ResolvedMenuItem], env: &Environment) -> Vec<M
                     CloseWindowChord::of(env).as_ref(),
                 ));
             }
-            ResolvedMenuItem::Menu(submenu) => nodes.push(MenuTreeNode::Submenu(
-                KitCommand {
-                    label: item_title(&submenu.label.content().snapshot()),
-                    symbol: submenu
-                        .icon
-                        .as_ref()
-                        .map(|icon| String::from(icon.name().as_str())),
-                    // A submenu is a container: always activatable, like
-                    // the `NSMenuItem`/`UIMenu` the canonical paths build.
-                    enabled: true,
-                    ..KitCommand::default()
-                },
-                tree_nodes(&submenu.items.snapshot(), env),
-            )),
+            ResolvedMenuItem::Menu(submenu) => {
+                let (symbol, image) = crate::menus::resolve_menu_icon(submenu.icon.as_ref(), env);
+                nodes.push(MenuTreeNode::Submenu(
+                    KitCommand {
+                        label: item_title(&submenu.label.content().snapshot()),
+                        symbol,
+                        image,
+                        // A submenu is a container: always activatable, like
+                        // the `NSMenuItem`/`UIMenu` the canonical paths build.
+                        enabled: true,
+                        ..KitCommand::default()
+                    },
+                    tree_nodes(&submenu.items.snapshot(), env),
+                ));
+            }
         }
     }
     nodes
@@ -177,7 +177,7 @@ fn command_item(
     command: &ResolvedCommand,
     env: &Environment,
 ) -> platform::MenuItem {
-    let kit = kit_command(command);
+    let kit = kit_command(command, env);
     let mut item = platform::MenuItem::new(mtm, &kit.label, None, &kit.key_equivalent)
         .with_key_modifiers(kit.modifiers)
         .with_enabled(kit.enabled)
@@ -192,6 +192,8 @@ fn command_item(
     }
     if let Some(symbol) = &kit.symbol {
         item = item.with_icon(symbol.as_str());
+    } else if let Some(image) = &kit.image {
+        item = item.with_image(image);
     }
     let action = command.action.clone();
     let env = env.clone();
@@ -227,8 +229,11 @@ pub(super) fn append_items(
                 let nested = platform::Menu::new(mtm, &title);
                 append_items(mtm, &nested, &submenu.items.snapshot(), env);
                 let mut item = platform::MenuItem::new(mtm, &title, None, "");
-                if let Some(icon) = &submenu.icon {
-                    item = item.with_icon(icon.name().as_str());
+                let (symbol, image) = crate::menus::resolve_menu_icon(submenu.icon.as_ref(), env);
+                if let Some(symbol) = &symbol {
+                    item = item.with_icon(symbol.as_str());
+                } else if let Some(image) = &image {
+                    item = item.with_image(image);
                 }
                 menu.add_item(item.with_submenu(&nested));
             }
@@ -245,6 +250,7 @@ pub(super) fn build_menu(
     key_commands: &cocoa_ui::uikit::KeyCommands,
     title: &str,
     icon: Option<&str>,
+    image: Option<&cocoa_ui::objc2_ui_kit::UIImage>,
     items: &[ResolvedMenuItem],
     env: &Environment,
 ) -> platform::Menu {
@@ -266,13 +272,14 @@ pub(super) fn build_menu(
                     mtm,
                     "",
                     None,
+                    None,
                     true,
                     &menu_elements(group, env, mtm, key_commands),
                 ))
             })
             .collect()
     };
-    platform::Menu::new(mtm, title, icon, false, &children)
+    platform::Menu::new(mtm, title, icon, image, false, &children)
 }
 
 /// `buildUIKitMenuElements`: one element per item — `UIAction`s, or
@@ -295,7 +302,7 @@ fn menu_elements(
                 None
             }
             ResolvedMenuItem::Command(command) => {
-                let kit = kit_command(command);
+                let kit = kit_command(command, env);
                 let action = command.action.clone();
                 let env = env.clone();
                 Some(platform::MenuElement::Action(
@@ -306,11 +313,13 @@ fn menu_elements(
             }
             ResolvedMenuItem::Menu(submenu) => {
                 let title = item_title(&submenu.label.content().snapshot());
+                let (symbol, image) = crate::menus::resolve_menu_icon(submenu.icon.as_ref(), env);
                 Some(platform::MenuElement::Submenu(build_menu(
                     mtm,
                     key_commands,
                     &title,
-                    submenu.icon.as_ref().map(|icon| icon.name().as_str()),
+                    symbol.as_deref(),
+                    image.as_deref(),
                     &submenu.items.snapshot(),
                     env,
                 )))

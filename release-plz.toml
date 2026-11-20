@@ -231,10 +231,6 @@ name = "waterui-icons-codegen"
 version_group = "waterui"
 
 [[package]]
-name = "waterui-icons-sf-symbol"
-version_group = "waterui"
-
-[[package]]
 name = "waterui-icons-material-icon"
 version_group = "waterui"
 
@@ -244,10 +240,6 @@ version_group = "waterui"
 
 [[package]]
 name = "waterui-icons-lucide"
-version_group = "waterui"
-
-[[package]]
-name = "waterui-icons-native"
 version_group = "waterui"
 
 # Backends

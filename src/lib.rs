@@ -1,6 +1,7 @@
 #![doc = include_str!("README.md")]
 extern crate alloc;
 extern crate self as waterui;
+#[cfg(feature = "table")]
 #[macro_use]
 mod macros;
 mod appearance;
@@ -13,7 +14,8 @@ mod runtime;
 pub use runtime::dialog;
 #[cfg(feature = "snackbar")]
 pub use runtime::snackbar;
-pub use runtime::{app, entry, error, fullscreen, metadata, task, window};
+pub use runtime::{app, entry, fullscreen, metadata, task, window};
+pub use widget::error;
 // Inspection is a TCP endpoint that also launches the inspector application on
 // the developer's machine; a browser page can do neither, so on wasm the
 // endpoint is absent rather than present and permanently unable to work.
@@ -80,13 +82,15 @@ pub mod prelude {
     pub use super::fullscreen::*;
     #[cfg(feature = "snackbar")]
     pub use super::snackbar::{
-        Snackbar, SnackbarDismissReason, SnackbarManager, SnackbarPosition, SnackbarTheme,
+        Snackbar, SnackbarDismissReason, SnackbarIcon, SnackbarManager, SnackbarPosition,
+        SnackbarTheme,
     };
 
     pub use super::gesture::GestureObserver;
 
     pub use super::border::Border;
     pub use super::component::*;
+    #[cfg(feature = "form")]
     pub use super::form::*;
     pub use super::layout::padding::*;
     pub use super::layout::*;
@@ -101,6 +105,7 @@ pub mod prelude {
 
     pub use super::text::{TextConfig, font, highlight, styled};
 
+    #[cfg(feature = "link")]
     pub use super::component::link::{Link, LinkTarget, link};
     #[cfg(feature = "list")]
     pub use super::component::list::{
@@ -117,9 +122,9 @@ pub mod prelude {
     // Drag and drop extension traits
     pub use super::drag_drop::DropDestinationExt;
 
-    pub use super::widget::{
-        Avatar, Card, CardStyle, CardStyleTokens, CardTheme, Divider, avatar, card, suspense,
-    };
+    #[cfg(feature = "avatar")]
+    pub use super::widget::{Avatar, avatar};
+    pub use super::widget::{Card, CardStyle, CardStyleTokens, CardTheme, Divider, card, suspense};
     #[cfg(feature = "flow-markdown")]
     pub use super::widget::{
         FlowAnimationPolicy, FlowAnimationPreset, FlowElementKind, FlowMarkdown, FlowStreamMode,
@@ -154,6 +159,7 @@ pub mod prelude {
     pub use waterui_macros::*;
 }
 pub use color::Color;
+#[cfg(feature = "form")]
 pub use form::FormBuilder;
 #[cfg(feature = "effects")]
 #[doc(inline)]
@@ -164,13 +170,16 @@ pub use view::ViewExt;
 pub use waterui_barcode as barcode;
 #[cfg(feature = "chart")]
 pub use waterui_chart as chart;
+#[cfg(feature = "form")]
 pub use waterui_form as form;
 #[cfg(feature = "canvas")]
 pub use waterui_graphics::canvas;
 pub use waterui_graphics::color;
 pub use waterui_graphics::gradient;
+#[cfg(feature = "media")]
+pub use waterui_graphics::image_decode;
 #[cfg(feature = "gpu")]
-pub use waterui_graphics::{GpuContent, GpuView, RedrawHandle, ShaderPaintView, image_decode};
+pub use waterui_graphics::{GpuContent, GpuView, RedrawHandle, ShaderPaintView};
 pub use waterui_icon as icon;
 #[cfg(feature = "particle")]
 pub use waterui_particle as particle;

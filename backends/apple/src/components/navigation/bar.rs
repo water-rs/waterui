@@ -14,7 +14,7 @@ use core::fmt;
 use waterui::component::LabelDisplayMode;
 use waterui::navigation::{
     Bar, BarColor, NavigationSearch, NavigationTitleDisplayMode, NavigationToolbarItem,
-    NavigationToolbarPlacement, ToolbarItemIcon,
+    NavigationToolbarPlacement,
 };
 use waterui::reactive::Computed;
 use waterui_backend_core::Environment;
@@ -233,9 +233,15 @@ fn bar_item(item: NavigationToolbarItem, ctx: &RenderContext<'_>) -> BarItem {
 
     let leaf = ctx.render(content);
     let title = title.map(|title| title.resolve(ctx.env()).into_content());
-    let icon = icon.map(|icon| match icon {
-        ToolbarItemIcon::System(icon) => BarItemIcon::System(icon.name().to_string()),
-        ToolbarItemIcon::View(builder) => BarItemIcon::View(ctx.render(builder.build())),
+    let icon = icon.map(|builder| {
+        let icon_view = builder.build();
+        let symbol = icon_view
+            .downcast_ref::<crate::SfSymbol>()
+            .map(|symbol| String::from(symbol.as_str()));
+        symbol.map_or_else(
+            || BarItemIcon::View(ctx.render(icon_view)),
+            BarItemIcon::System,
+        )
     });
     BarItem {
         placement,

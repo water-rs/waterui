@@ -630,7 +630,7 @@ mod suite {
         ),
         progress(0.35).label("Downloading"),
         hstack((
-            waterui::icon::SystemIcon::new("star.fill").size(48.0, 48.0),
+            waterui_apple::SfSymbol::STAR_FILL.size(48.0, 48.0),
             waterui::ImageAsset::new(waterui::Bundle::main(), "image.png").size(48.0, 48.0),
             Circle.fill(Color::srgb_hex("#3B82F6")).size(48.0, 48.0),
             Rectangle.fill(Color::srgb_hex("#10B981")).size(64.0, 48.0),

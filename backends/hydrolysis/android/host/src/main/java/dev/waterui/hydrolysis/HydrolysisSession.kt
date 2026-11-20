@@ -1,6 +1,7 @@
 package dev.waterui.hydrolysis
 
 import android.content.Context
+import android.content.MutableContextWrapper
 import android.content.res.Configuration
 import android.graphics.ColorSpace
 import android.os.Handler
@@ -230,6 +231,22 @@ class HydrolysisSession internal constructor(
      * [unregisterPlatformViewInstance].
      */
     private val platformViewInstances = HashMap<Long, View>()
+    private val instanceContexts = HashMap<Long, MutableContextWrapper>()
+
+    /**
+     * Acquires a [MutableContextWrapper] over [boundContext] for a Rust-owned
+     * `AndroidContent` view under placement [id]. Rebinding updates its base
+     * context cleanly so retained Views never leak a destroyed Activity across
+     * configuration changes.
+     */
+    fun acquireInstanceContext(id: Long): Context {
+        val base =
+            boundContext
+                ?: throw IllegalStateException(
+                    "hydrolysis: cannot acquire AndroidView Context for $id on an unbound session",
+                )
+        return MutableContextWrapper(base).also { instanceContexts[id] = it }
+    }
 
     /**
      * Registers `view` as the platform-view instance `id` and requests a
@@ -251,6 +268,7 @@ class HydrolysisSession internal constructor(
      */
     fun unregisterPlatformViewInstance(id: Long) {
         platformViewInstances.remove(id)
+        instanceContexts.remove(id)
         hostView?.platformViewRegistry?.onInstanceUnregistered(id)
     }
 
@@ -294,19 +312,22 @@ class HydrolysisSession internal constructor(
         // `onConfigurationChanged`, so the bind itself reports the scheme.
         setNightMode(view.resources.configuration.isNightMode)
         // The new binding owns the Activity the instances draw on: each
-        // `HostRebindAware` retargets its own context wrapper and re-observes
-        // what the old binding's context owned (the WebView's Lifecycle).
+        // `AndroidContent` context wrapper and `HostRebindAware` retargets its
+        // base context and re-observes what the old binding's context owned.
+        for (wrapper in instanceContexts.values) {
+            wrapper.baseContext = view.context
+        }
         for (instance in platformViewInstances.values) {
             (instance as? HostRebindAware)?.onHostRebound(view.context)
         }
-        // A session can bind after `onStart` already fired — a late mount
-        // or a config-change rebind — and no later `setVisible` would ever
-        // recover a false parked state. The mounted lifecycle's current
-        // state is the truth; `onStart`/`onStop` keep updating it.
-        setVisible(
+        // A session can bind after `onStart`/`onResume` already fired — a late
+        // mount or a config-change rebind — and no later callback would ever
+        // recover a false parked state. The mounted lifecycle's current state
+        // is the truth; `onStart`/`onResume`/`onPause`/`onStop` keep updating it.
+        val currentState =
             (view.findViewTreeLifecycleOwner() ?: view.context as? LifecycleOwner)?.lifecycle?.currentState
-                ?.isAtLeast(Lifecycle.State.STARTED) == true,
-        )
+        setVisible(currentState?.isAtLeast(Lifecycle.State.STARTED) == true)
+        setResumed(currentState?.isAtLeast(Lifecycle.State.RESUMED) == true)
     }
 
     internal fun unbind(view: HydrolysisHostView) {
@@ -323,9 +344,12 @@ class HydrolysisSession internal constructor(
             }
         }
         hostView = null
-        // A detached view is invisible, so park the pump before a pending
+        // A detached view is paused and invisible, so park before a pending
         // teardown runs below.
-        if (!destroyed) setVisible(false)
+        if (!destroyed) {
+            setResumed(false)
+            setVisible(false)
+        }
         if (destroyRequested) requestTearDown()
     }
 
@@ -355,6 +379,17 @@ class HydrolysisSession internal constructor(
         if (destroyRequested) return
         withNativePtr(NativeBridge::nativeSetVisible.name) { ptr ->
             NativeBridge.nativeSetVisible(ptr, visible)
+        }
+    }
+
+    /**
+     * The owning lifecycle's resumed state (`onResume`/`onPause`), forwarded
+     * to mounted `AndroidContent` views.
+     */
+    internal fun setResumed(resumed: Boolean) {
+        if (destroyRequested) return
+        withNativePtr(NativeBridge::nativeSetResumed.name) { ptr ->
+            NativeBridge.nativeSetResumed(ptr, resumed)
         }
     }
 
@@ -613,8 +648,8 @@ class HydrolysisSession internal constructor(
      * native.
      */
     @CalledFromNative
-    fun onNativeBandShow(view: Long, colorSpace: String) {
-        bandAbove(view).show(ColorSpace.get(ColorSpace.Named.valueOf(colorSpace)))
+    fun onNativeBandShow(view: Long, colorSpace: String, paintedRects: IntArray) {
+        bandAbove(view).show(ColorSpace.get(ColorSpace.Named.valueOf(colorSpace)), paintedRects)
     }
 
     /**

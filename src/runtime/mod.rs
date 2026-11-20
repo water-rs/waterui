@@ -2,7 +2,6 @@ pub mod app;
 #[cfg(feature = "dialog")]
 pub mod dialog;
 mod entry;
-pub mod error;
 pub mod fullscreen;
 pub mod metadata;
 #[cfg(test)]
