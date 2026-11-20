@@ -29,7 +29,7 @@
 mod accessibility;
 #[cfg(hydrolysis_gpu_painter)]
 mod gpu;
-mod host;
+pub(crate) mod host;
 #[cfg(hydrolysis_hwui_gpu)]
 pub(crate) mod hosted_gpu;
 #[cfg(hydrolysis_hwui)]
