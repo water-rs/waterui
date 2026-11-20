@@ -345,7 +345,7 @@ The windows are a window set, and `fn app(env: Environment) -> App<impl Windows>
 `waterui::app::{App, Windows}`) returns it unnamed: one `Window`, a tuple of windows whose
 contents each keep their own type, an array or `Vec` of windows with one content type, or
 `()` for none. `App::new(view, env)` declares one window, and `.window(w)` appends another.
-Each window's content keeps its type up to the backend, so nothing in the tree is erased.
+Each window's content and toolbar keep their types up to the backend, so nothing in the tree is erased.
 
 The `Window` builder, precisely:
 
@@ -503,31 +503,35 @@ an app that opens windows on demand). iOS and Android have no windowless foregro
 their runners reject an app that declares no window whatever its policy.
 
 `conditional_window` lives only as long as the window hosting it, so it cannot reopen a
-window after the last one closed. `window.show(&env)` opens one independently of any
-view — from any handler that takes `Environment`, including `App::menu_bar` commands, which
-run under the application environment:
+window after the last one closed. `WindowManager::new()` returns a `(WindowManager<C>, WindowChannel<C>)`
+pair: pass `channel` to `App::new_with_windows` (or `App::window(channel)` alongside initial
+windows) so the runner monomorphizes `C` directly into its root window type, and call
+`window.show(&windows)` from any handler — including `App::menu_bar` commands, or nested
+handlers when `.state(&windows)` is attached:
 
 ```rust
 use waterui::app::{App, LastWindowPolicy, QuitReply, Windows};
-use waterui::window::{Window, WindowState};
+use waterui::window::{Window, WindowManager, WindowState};
 
 fn app(env: Environment) -> App<impl Windows> {
-    App::new_with_windows((), env)
+    let (windows, channel) = WindowManager::new();
+    App::new_with_windows(channel, env)
         .on_last_window_closed(LastWindowPolicy::StayResident)
         .on_quit_request(|| async { QuitReply::Quit })
         .on_terminate(|| async {})
         .menu_bar(Menu::new(
             "App",
-            "New Window".action(|env: Environment| {
-                Window::new("Scratch", binding(WindowState::Normal), scratch_content).show(&env);
+            "New Window".action(move || {
+                Window::new("Scratch", binding(WindowState::Normal), scratch_content)
+                    .show(&windows);
             }),
         ))
 }
 ```
 
-The window's state binding must start at `Normal` here: `show` opens it as declared. An
-environment with no window manager is a contract violation (a debug panic, a logged error
-in release).
+The window's state binding must start at `Normal` here: `show` opens it as declared. Showing a
+window after its `WindowChannel` was dropped without being handed to a runner is a contract
+violation (a debug panic, a logged error in release).
 
 Quitting: `App::on_quit_request(handler)` is asked on a *cancellable* quit (menu Quit,
 the platform quit gesture, `MenuItem::Quit`, `Quit::request`) and its future must return

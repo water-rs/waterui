@@ -216,7 +216,7 @@ use waterui_controls::toggle::ToggleConfig;
 use waterui_core::dynamic::DynamicInitialContent;
 use waterui_core::event::{Event, HoverEvent, LifeCycle, LifeCycleHook, OnEvent};
 #[cfg(any(feature = "menu", feature = "color-picker"))]
-use waterui_core::handler::AnyViewBuilder;
+use waterui_core::handler::ViewBuilder;
 use waterui_core::handler::{BoxedAction, SharedAction};
 #[cfg(any(feature = "menu", feature = "color-picker"))]
 use waterui_core::impl_extractor;
@@ -583,6 +583,10 @@ pub struct SemanticCore<E: crate::text::TextEngine> {
     /// mount, so a menu's Close Window row reads it when the row is built
     /// and needs no signal.
     window_closable: bool,
+    /// The runner's callback for opening windows declared inside this
+    /// window's view tree (`conditional_window`). `None` on standalone test
+    /// cores no runner claimed.
+    window_opener: Option<Rc<dyn Fn(crate::runner::window::RootWindow<E>)>>,
     /// The window's declared logical frame — the semantic walk's only
     /// geometry fact. The semantic runner writes it at mount and on every
     /// move/resize, so emit paths that resolve a viewport-dependent
@@ -755,6 +759,8 @@ pub struct SemanticCore<E: crate::text::TextEngine> {
     /// consumes it, so a material view flush sees the scope the window
     /// declares (always `None` — the window's own backdrop mounts solo).
     pub(crate) window_material: Option<mount::program::MaterialRequest>,
+    /// Offscreen renderer vended by [`HydroBackend::offscreen`](crate::renderer::tree::build::backend::HydroBackend).
+    offscreen: crate::view_renderer::HydrolysisOffscreenRenderer,
 }
 
 // The state members are engine internals (gesture/hit-test/executor state)
@@ -889,6 +895,26 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         self.window_closable = closable;
     }
 
+    /// Installs the runner's callback for opening windows dispatched from this
+    /// window's view tree.
+    pub(crate) fn set_window_opener(
+        &mut self,
+        opener: Rc<dyn Fn(crate::runner::window::RootWindow<E>)>,
+    ) {
+        self.window_opener = Some(opener);
+    }
+
+    /// Hands a window dispatched from this window's view tree to the runner.
+    pub(crate) fn open_window(&self, window: crate::runner::window::RootWindow<E>) {
+        let Some(opener) = self.window_opener.as_ref() else {
+            waterui_core::contract_violation!(
+                "hydrolysis renderer has no attached window runner; the window is not shown"
+            );
+            return;
+        };
+        opener(window);
+    }
+
     /// The `closable` the runner's window was declared with.
     #[cfg(feature = "menu")]
     pub(crate) const fn window_closable(&self) -> bool {
@@ -991,6 +1017,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             popup_menu: PopupMenuState::default(),
             window_id: WindowId::Orphan,
             window_closable: true,
+            window_opener: None,
             #[cfg(all(
                 feature = "accessibility",
                 any(hydrolysis_cherenkov, feature = "navigation")
@@ -1042,7 +1069,30 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             record_seq: 0,
             materialized_epoch: 0,
             window_material: None,
+            offscreen: crate::view_renderer::HydrolysisOffscreenRenderer::unavailable(
+                "hydrolysis semantic core has no widget theme or painter for offscreen capture",
+            ),
         }
+    }
+
+    #[cfg(hydrolysis_cherenkov)]
+    pub(crate) fn offscreen_renderer(&self) -> crate::view_renderer::HydrolysisOffscreenRenderer {
+        self.offscreen.clone_for_dispatch()
+    }
+
+    #[cfg(not(hydrolysis_cherenkov))]
+    pub(crate) const fn offscreen_renderer(
+        &self,
+    ) -> crate::view_renderer::HydrolysisOffscreenRenderer {
+        self.offscreen.clone_for_dispatch()
+    }
+
+    #[cfg(hydrolysis_cherenkov)]
+    pub(crate) fn set_offscreen_renderer(
+        &mut self,
+        offscreen: crate::view_renderer::HydrolysisOffscreenRenderer,
+    ) {
+        self.offscreen = offscreen;
     }
 
     /// The window's root cell — what `mark`s escalate to when no node is
@@ -2039,10 +2089,30 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
         fonts: &waterui_text::FontCollection,
         family_resolution: FontFamilyResolution,
     ) -> Self {
-        Self::with_engine(
+        let mut renderer = Self::with_engine(
             theme,
             crate::text::ParleyEngine::from_collection(fonts, family_resolution),
-        )
+        );
+        renderer
+            .core
+            .offscreen
+            .set_family_resolution(family_resolution);
+        renderer
+    }
+
+    #[cfg(all(not(target_arch = "wasm32"), hydrolysis_cherenkov))]
+    pub(crate) fn set_offscreen_painter(
+        &mut self,
+        painter: &crate::platform::OffscreenPainter,
+        family_resolution: FontFamilyResolution,
+    ) {
+        self.core.set_offscreen_renderer(
+            crate::view_renderer::HydrolysisOffscreenRenderer::on_painter(
+                painter,
+                Rc::clone(&self.theme),
+                family_resolution,
+            ),
+        );
     }
 }
 
@@ -2190,8 +2260,17 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         let frame_instant = Instant::now();
         let mut material_registry = cherenkov_record::MaterialRegistry::default();
         theme.register_backdrop_shaders(&mut material_registry);
+        #[cfg(hydrolysis_cherenkov)]
+        let mut core = SemanticCore::new(frame_instant, text);
+        #[cfg(not(hydrolysis_cherenkov))]
+        let core = SemanticCore::new(frame_instant, text);
+        #[cfg(hydrolysis_cherenkov)]
+        core.set_offscreen_renderer(crate::view_renderer::HydrolysisOffscreenRenderer::new(
+            Rc::clone(&theme),
+            FontFamilyResolution::Lenient,
+        ));
         Self {
-            core: SemanticCore::new(frame_instant, text),
+            core,
             theme,
             window_bounds: kurbo::Rect::ZERO,
             window_display_transform: kurbo::Affine::IDENTITY,

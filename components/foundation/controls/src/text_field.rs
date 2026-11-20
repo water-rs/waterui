@@ -11,7 +11,6 @@ use waterui_core::Str;
 use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::handler::{Handler, SharedAction};
 use waterui_core::layout::StretchAxis;
-use waterui_core::view::ViewConfiguration;
 use waterui_core::{AnyView, Environment, Native, NativeView, View, contract_violation};
 use waterui_text::{IntoText, Text, TextConfig, styled::StyledStr};
 
@@ -262,14 +261,6 @@ impl<S: 'static> MapSlots<S> for ResolvedTextFieldConfig<S> {
 #[derive(Debug)]
 #[must_use]
 pub struct ResolvedTextField<S>(pub ResolvedTextFieldConfig<S>);
-
-impl<S: View> ViewConfiguration for ResolvedTextFieldConfig<S> {
-    type View = ResolvedTextField<S>;
-
-    fn render(self) -> Self::View {
-        ResolvedTextField(self)
-    }
-}
 
 impl<S: View> From<ResolvedTextFieldConfig<S>> for ResolvedTextField<S> {
     fn from(value: ResolvedTextFieldConfig<S>) -> Self {

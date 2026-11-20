@@ -5,8 +5,7 @@
 use std::time::Duration;
 
 use waterui::task::spawn_local;
-use waterui::{Binding, Environment, View};
-use waterui_core::ContentLedger;
+use waterui::{Binding, ContentLedger, Environment, View};
 use waterui_testing::ui;
 
 /// A view whose label lands after a wall-clock timer and which owes it
