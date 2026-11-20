@@ -220,12 +220,17 @@ pub async fn build_hydrolysis_with_envs_and_features(
             }
         })?;
 
+    let strategy_feature = (options.uses_erased_dispatch()
+        && crate::templates::generated_manifest_declares(&cargo_toml, "erased-dispatch")?)
+    .then_some("erased-dispatch");
+
     let mut build = RustBuild::for_project(project, &backend_path, platform.triple())
         .with_target_dir(project.water_target_dir(options.linkage()).await?)
         .with_features(
             render_features
                 .into_iter()
-                .chain(extra_features.iter().copied()),
+                .chain(extra_features.iter().copied())
+                .chain(strategy_feature),
         )
         .with_linkage(
             options.linkage(),

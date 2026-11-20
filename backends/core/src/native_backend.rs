@@ -429,9 +429,12 @@ macro_rules! native_backend {
             $(
                 $(#[cfg($pcfg)])*
                 {
-                    // The payload with its children in the erased slot.
+                    // The payload with its children in `Child<B::Family>` or `AnyView`.
                     fn take<$child: 'static>(native: &mut ErasedPayload<'_>) -> Option<$parent_ty> {
                         native.take::<$parent_ty>()
+                    }
+                    if let Some(native) = take::<Child<B::Family>>(&mut native) {
+                        return backend.$parent(native, env, cx);
                     }
                     if let Some(native) = take::<AnyView>(&mut native) {
                         return backend.$parent(native, env, cx);
@@ -457,22 +460,34 @@ macro_rules! native_backend {
                 }
             )*
             $(
+                $(#[cfg($mcfg)])*
+                if let Some(metadata) = metadata.take::<Metadata<$meta_ty, Child<B::Family>>>() {
+                    return backend.$meta(metadata, env, cx);
+                }
+            )*
+            $(
                 $(#[cfg($pmcfg)])*
                 {
-                    // The metadata key with its children and content in the erased slot.
-                    fn take<$pmchild: 'static>(
+                    // The metadata key with its children and content in the erased or family slot.
+                    fn take<$pmchild: 'static, C: 'static>(
                         metadata: &mut ErasedPayload<'_>,
-                    ) -> Option<Metadata<$pmeta_ty, AnyView>>
+                    ) -> Option<Metadata<$pmeta_ty, C>>
                     where
                         $pmeta_ty: MetadataKey,
                     {
-                        metadata.take::<Metadata<$pmeta_ty, AnyView>>()
+                        metadata.take::<Metadata<$pmeta_ty, C>>()
                     }
-                    if let Some(metadata) = take::<AnyView>(&mut metadata) {
+                    if let Some(metadata) = take::<Child<B::Family>, Child<B::Family>>(&mut metadata) {
+                        return backend.$pmeta(metadata, env, cx);
+                    }
+                    if let Some(metadata) = take::<AnyView, AnyView>(&mut metadata) {
                         return backend.$pmeta(metadata, env, cx);
                     }
                 }
             )*
+            if let Some(metadata) = metadata.take::<Metadata<CaptureBinder<Child<B::Family>>, Child<B::Family>>>() {
+                return backend.capture_binder(metadata, env, cx);
+            }
             if let Some(metadata) = metadata.take::<Metadata<CaptureBinder<AnyView>, AnyView>>() {
                 return backend.capture_binder(metadata, env, cx);
             }
@@ -610,7 +625,7 @@ impl<'a, B: NativeBackend> Realize<'a, B> {
 
     /// Realizes `view` through `backend`.
     pub fn child<V: View>(backend: &mut B, view: V, env: &Environment, cx: B::Ctx) -> B::Output {
-        view.dispatch(&mut Realize::new(backend), env, cx)
+        waterui_core::backend::dispatch(view, &mut Realize::new(backend), env, cx)
     }
 
     /// Realizes the native payload an [`AnyView`] handed back through a
@@ -1306,6 +1321,11 @@ mod tests {
         assert_eq!(recorder.reached.borrow().as_slice(), ["empty"]);
     }
 
+    #[cfg(not(feature = "erased-dispatch"))]
+    const UNHOOKED_CHILD: &str = "typed child";
+    #[cfg(feature = "erased-dispatch")]
+    const UNHOOKED_CHILD: &str = "erased child";
+
     #[test]
     fn a_payload_child_realizes_through_the_same_backend() {
         let mut recorder = Recorder::default();
@@ -1313,15 +1333,14 @@ mod tests {
         Realize::child(&mut recorder, scroll(tree()), &env, ());
         Realize::child(&mut recorder, AnyView::new(scroll(tree())), &env, ());
         Realize::child(&mut recorder, scroll(AnyView::new(tree())), &env, ());
-        // A typed tree's child stays typed; only an erased scroll's payload
-        // carries an erased child. Content erased by hand stays erased
-        // inside the typed slot.
+        // A typed tree's child stays typed unless `erased-dispatch` is
+        // enabled; an erased scroll's payload always carries an erased child.
         assert_eq!(
             recorder.reached.borrow().as_slice(),
             [
-                ["scroll", "typed child", "layout_priority", "spacer"],
+                ["scroll", UNHOOKED_CHILD, "layout_priority", "spacer"],
                 ["scroll", "erased child", "layout_priority", "spacer"],
-                ["scroll", "typed child", "layout_priority", "spacer"],
+                ["scroll", UNHOOKED_CHILD, "layout_priority", "spacer"],
             ]
             .concat()
         );
@@ -1339,7 +1358,7 @@ mod tests {
         assert_eq!(
             recorder.reached.borrow().as_slice(),
             [
-                ["filtered", "typed child", "layout_priority", "spacer"],
+                ["filtered", UNHOOKED_CHILD, "layout_priority", "spacer"],
                 ["filtered", "erased child", "layout_priority", "spacer"],
             ]
             .concat()
@@ -1551,8 +1570,11 @@ mod tests {
             Spacer::flexible,
         ));
         assert_eq!(hits[0], "window");
-        assert_eq!(hits[1], "typed child");
+        assert_eq!(hits[1], UNHOOKED_CHILD);
+        #[cfg(not(feature = "erased-dispatch"))]
         assert!(!hits.contains(&"erased child"));
+        #[cfg(feature = "erased-dispatch")]
+        assert!(!hits.contains(&"typed child"));
         assert!(hits.contains(&"spacer"));
     }
 
@@ -1566,22 +1588,25 @@ mod tests {
             )
             .toolbar(waterui::layout::Divider),
         );
+        #[cfg(not(feature = "erased-dispatch"))]
         assert!(!hits.contains(&"erased child"));
+        #[cfg(feature = "erased-dispatch")]
+        assert!(!hits.contains(&"typed child"));
         assert_eq!(
             hits,
             [
                 "window",
-                "typed child",
+                UNHOOKED_CHILD,
                 "environment",
                 "environment",
                 "fixed_container",
-                "typed child",
+                UNHOOKED_CHILD,
                 "spacer",
-                "typed child",
+                UNHOOKED_CHILD,
                 "dynamic",
-                "typed child",
+                UNHOOKED_CHILD,
                 "empty",
-                "typed child",
+                UNHOOKED_CHILD,
                 "environment",
                 "divider",
             ]
@@ -1607,9 +1632,9 @@ mod tests {
             [
                 "resolved_context_menu",
                 "empty",
-                "typed child",
+                UNHOOKED_CHILD,
                 "spacer",
-                "typed child",
+                UNHOOKED_CHILD,
                 "environment",
                 "spacer",
             ]
@@ -1651,7 +1676,7 @@ mod tests {
 
         assert_eq!(
             reached(authored()),
-            ["badge", "typed child", "button", "typed child", "spacer",]
+            ["badge", UNHOOKED_CHILD, "button", UNHOOKED_CHILD, "spacer",]
         );
         assert_eq!(
             reached(AnyView::new(authored())),
@@ -1712,11 +1737,11 @@ mod tests {
             reached(authored()),
             [
                 "navigation_split",
-                "typed child",
+                UNHOOKED_CHILD,
                 "spacer",
-                "typed child",
+                UNHOOKED_CHILD,
                 "spacer",
-                "typed child",
+                UNHOOKED_CHILD,
                 "spacer",
             ]
         );

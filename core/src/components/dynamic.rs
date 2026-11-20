@@ -202,7 +202,11 @@ impl<V: View> Dynamic<V> {
         let (handler, slots) = Dynamic::new();
         self.connect(move |context| {
             let (view, metadata) = context.into_parts();
-            handler.set_with_metadata(S::from_view(view), metadata);
+            #[cfg(feature = "erased-dispatch")]
+            let slot = S::from_view(AnyView::new(view));
+            #[cfg(not(feature = "erased-dispatch"))]
+            let slot = S::from_view(view);
+            handler.set_with_metadata(slot, metadata);
         });
         slots
     }
@@ -284,32 +288,54 @@ where
     V: View + 'static,
 {
     fn body(self, _env: &Environment) -> impl View {
-        let (handle, dynamic) = Dynamic::new();
-        let f = Rc::new(self.f);
-
-        handle.set_with_metadata(
-            f(self.value.snapshot()),
-            WatcherMetadata::new().with(DynamicInitialContent),
-        );
-
-        let guard = self.value.watch({
-            let f = Rc::clone(&f);
-            // A write the builder makes right now lands here re-entrantly;
-            // keep the latest value and let the dispatch in flight drain it
-            // once the builder and the receiver return. The change's metadata
-            // (`NoAnimation`, an explicit animation) travels with its value to
-            // the receiver, so the structural site can honor it.
-            let updates = LatestDispatch::new();
-            move |context: Context<T>| {
-                updates.deliver(context, |next| {
-                    let (value, metadata) = next.into_parts();
-                    handle.set_with_metadata(f(value), metadata);
-                });
-            }
-        });
-
-        Metadata::new(dynamic, Retain::new((guard, self.value)))
+        #[cfg(feature = "erased-dispatch")]
+        {
+            watch_dynamic(self.value, self.f, AnyView::new)
+        }
+        #[cfg(not(feature = "erased-dispatch"))]
+        {
+            watch_dynamic(self.value, self.f, |view| view)
+        }
     }
+}
+
+fn watch_dynamic<T, S, F, V, Slot>(
+    value: S,
+    f: F,
+    into_slot: fn(V) -> Slot,
+) -> Metadata<Retain, Dynamic<Slot>>
+where
+    T: 'static,
+    S: Signal<Output = T> + 'static,
+    F: Fn(T) -> V + 'static,
+    V: View + 'static,
+    Slot: View + 'static,
+{
+    let (handle, dynamic) = Dynamic::new();
+    let f = Rc::new(f);
+
+    handle.set_with_metadata(
+        into_slot(f(value.snapshot())),
+        WatcherMetadata::new().with(DynamicInitialContent),
+    );
+
+    let guard = value.watch({
+        let f = Rc::clone(&f);
+        // A write the builder makes right now lands here re-entrantly;
+        // keep the latest value and let the dispatch in flight drain it
+        // once the builder and the receiver return. The change's metadata
+        // (`NoAnimation`, an explicit animation) travels with its value to
+        // the receiver, so the structural site can honor it.
+        let updates = LatestDispatch::new();
+        move |context: Context<T>| {
+            updates.deliver(context, |next| {
+                let (value, metadata) = next.into_parts();
+                handle.set_with_metadata(into_slot(f(value)), metadata);
+            });
+        }
+    });
+
+    Metadata::new(dynamic, Retain::new((guard, value)))
 }
 
 /// Creates a view that watches structural reactive state.
@@ -400,12 +426,33 @@ mod tests {
         assert_eq!((first.get(), second.get()), (1, 0));
     }
 
+    fn watch_dynamic_from_body<V: View>(
+        view: impl View,
+        env: &Environment,
+    ) -> Metadata<Retain, Dynamic<AnyView>> {
+        let body = AnyView::new(view.body(env));
+        #[cfg(feature = "erased-dispatch")]
+        {
+            *body
+                .downcast::<Metadata<Retain, Dynamic<AnyView>>>()
+                .expect("the watched dynamic body is a retained Dynamic")
+        }
+        #[cfg(not(feature = "erased-dispatch"))]
+        {
+            let Metadata { content, value } = *body
+                .downcast::<Metadata<Retain, Dynamic<V>>>()
+                .expect("the watched dynamic body is a retained Dynamic");
+            Metadata::new(content.into_slots::<AnyView>(), value)
+        }
+    }
+
     /// A `Dynamic::watch` builder that writes the watched signal queues that
     /// write as the pending value and runs again once it has returned.
     #[test]
     fn watch_drains_a_nested_write_after_the_builder_returns() {
         let source = Binding::i32(1);
         let delivered = Rc::new(RefCell::new(Vec::new()));
+        let env = Environment::new();
         let view = Dynamic::watch(source.clone(), {
             let source = source.clone();
             move |value| {
@@ -419,20 +466,16 @@ mod tests {
             }
         });
 
-        let body = AnyView::new(view.body(&Environment::new()));
-        // The retain value owns the watcher guard; it must outlive the
-        // notifications this test drives.
         let Metadata {
-            content,
+            content: dynamic,
             value: _retained,
-        } = *body
-            .downcast::<Metadata<Retain, Dynamic<Metadata<Probe, ()>>>>()
-            .expect("the watched dynamic body is a retained Dynamic");
-        let dynamic = content;
+        } = watch_dynamic_from_body::<Metadata<Probe, ()>>(view, &env);
         dynamic.connect({
             let delivered = Rc::clone(&delivered);
             move |context| {
-                delivered.borrow_mut().push(probe_of(&context.into_value()));
+                let probe = crate::backend::peel_metadata::<Probe>(context.into_value(), &env)
+                    .expect("each delivered view carries Probe metadata");
+                delivered.borrow_mut().push(probe.value.0);
             }
         });
 
@@ -451,20 +494,17 @@ mod tests {
 
         let source = Binding::i32(1);
         let seen = Rc::new(RefCell::new(Vec::new()));
+        let env = Environment::new();
         let view = Dynamic::watch(source.with(NoAnimation), |value| {
             Metadata::new(
                 (),
                 Probe(usize::try_from(value).expect("watch values are non-negative")),
             )
         });
-        let body = AnyView::new(view.body(&Environment::new()));
         let Metadata {
-            content,
+            content: dynamic,
             value: _retained,
-        } = *body
-            .downcast::<Metadata<Retain, Dynamic<Metadata<Probe, ()>>>>()
-            .expect("the watched dynamic body is a retained Dynamic");
-        let dynamic = content;
+        } = watch_dynamic_from_body::<Metadata<Probe, ()>>(view, &env);
         dynamic.connect({
             let seen = Rc::clone(&seen);
             move |context| {
