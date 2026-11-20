@@ -976,6 +976,35 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             .and_then(|link| link.parent.clone());
     }
 
+    fn build_presentation_hosts(
+        signals: &FrameSignals,
+        placement_clock: &Rc<PlacementClock>,
+        root: &Rc<NodeCell<E>>,
+        window_placement: &Rc<Placement>,
+        cells: &RefCell<Vec<Weak<NodeCell<E>>>>,
+    ) -> PresentationHosts<E> {
+        let mut host_index = 1;
+        let mut host = || {
+            let core = NodeCore::new(signals.clone(), Placement::new(placement_clock));
+            core.cell.set_parent(root);
+            core.cell
+                .placement()
+                .set_parent(Some(Rc::clone(window_placement)));
+            core.cell.placement().set_index(host_index);
+            host_index += 1;
+            cells.borrow_mut().push(Rc::downgrade(&core.cell));
+            core
+        };
+        PresentationHosts {
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
+            text_overlay: host(),
+            #[cfg(feature = "menu")]
+            context_menu: host(),
+            anchored: host(),
+            dialog: host(),
+        }
+    }
+
     pub(crate) fn new(frame_instant: Instant, text: E) -> Self {
         let signals = FrameSignals::new(frame_instant);
         let placement_clock = PlacementClock::new();
@@ -1000,26 +1029,13 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         for _ in 0..4 {
             let _ = window_placement.take_item();
         }
-        let mut host_index = 1;
-        let mut host = || {
-            let core = NodeCore::new(signals.clone(), Placement::new(&placement_clock));
-            core.cell.set_parent(&root);
-            core.cell
-                .placement()
-                .set_parent(Some(Rc::clone(&window_placement)));
-            core.cell.placement().set_index(host_index);
-            host_index += 1;
-            cells.borrow_mut().push(Rc::downgrade(&core.cell));
-            core
-        };
-        let presentation_hosts = PresentationHosts {
-            #[cfg(any(feature = "text-field", feature = "secure-field"))]
-            text_overlay: host(),
-            #[cfg(feature = "menu")]
-            context_menu: host(),
-            anchored: host(),
-            dialog: host(),
-        };
+        let presentation_hosts = Self::build_presentation_hosts(
+            &signals,
+            &placement_clock,
+            &root,
+            &window_placement,
+            &cells,
+        );
         Self {
             state: HydroState::new(text),
             hit_test: HitTestState::default(),
