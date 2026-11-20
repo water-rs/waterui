@@ -287,8 +287,8 @@ waterui-navigation = { version = "0.5.1", path = "components/foundation/navigati
 waterui-webview = { version = "0.5.1", path = "components/platform/webview" }
 waterui-widgets = { version = "0.5.1", path = "components/platform/widgets" }
 waterui-chromium = { version = "0.5.1", path = "components/platform/chromium" }
-waterui-browser-cef = { version = "0.1.0", git = "https://github.com/water-rs/browsers", branch = "main", default-features = false }
-waterui-browser-wpe = { version = "0.1.0", git = "https://github.com/water-rs/browsers", branch = "main", default-features = false }
+waterui-browser-cef = { version = "0.1.0", git = "https://github.com/water-rs/browsers", branch = "refactor/4770-slim-core-ui", default-features = false }
+waterui-browser-wpe = { version = "0.1.0", git = "https://github.com/water-rs/browsers", branch = "refactor/4770-slim-core-ui", default-features = false }
 wgpu-external-frame = "0.4.0"
 waterui-icon = { version = "0.5.1", path = "components/foundation/icon" }
 waterui-icons-sf-symbol = { version = "0.5.1", path = "components/icon/sf_symbol" }
@@ -692,7 +692,7 @@ waterui-watcher-set = { path = "utils/watcher-set" }
 # and the split tabs-bar surface and divider calls (#1982). Drop the git pin
 # once a release has these changes.
 hydrolysis = { path = "backends/hydrolysis" }
-hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", branch = "refactor/typed-control-labels" }
+hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", branch = "refactor/4770-slim-core-ui" }
 # The waterkit family follows waterkit's `dev` so the framework consumes its
 # unreleased changes; the patches apply only while the `[workspace.dependencies]`
 # requirements admit `dev`'s version (0.3). Every waterkit crate the
@@ -763,10 +763,10 @@ wgpu-external-frame = { git = "https://github.com/water-rs/wgpu-external-frame",
 
 # Split component repositories, the waterkit family and suiteki follow their
 # `main` branch; `Cargo.lock` records the exact commit.
-waterui-barcode = { git = "https://github.com/water-rs/barcode", branch = "main" }
-waterui-chart = { git = "https://github.com/water-rs/chart", branch = "main" }
-waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", branch = "refactor/4816-static-gpu-view" }
-waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", branch = "main" }
+waterui-barcode = { git = "https://github.com/water-rs/barcode", branch = "refactor/4770-slim-core-ui" }
+waterui-chart = { git = "https://github.com/water-rs/chart", branch = "refactor/4770-slim-core-ui" }
+waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", branch = "refactor/4770-slim-core-ui" }
+waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", branch = "refactor/4770-slim-core-ui" }
 waterui-particle = { git = "https://github.com/water-rs/particle", branch = "main" }
 waterui-image = { git = "https://github.com/water-rs/image", branch = "main" }
 waterui-svg = { git = "https://github.com/water-rs/svg", branch = "main" }
@@ -813,3 +813,9 @@ clipboard-rs = { git = "https://github.com/water-rs/clipboard-rs", branch = "win
 # for the web (water-rs/waterui#1349). Drop it once a `tree-sitter-md`
 # release includes the fix.
 tree-sitter-md = { git = "https://github.com/lexoliu/tree-sitter-markdown", branch = "wasm-tree-sitter-0.27" }
+
+# Companion split-repo PRs temporarily depend on the new foundation crates from git;
+# resolve them to the in-tree workspace crates so only one copy exists in the graph.
+[patch."https://github.com/water-rs/waterui"]
+waterui-accessibility = { path = "components/foundation/accessibility" }
+waterui-interaction = { path = "components/foundation/interaction" }
