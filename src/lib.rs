@@ -1,6 +1,7 @@
 #![doc = include_str!("README.md")]
 extern crate alloc;
 extern crate self as waterui;
+#[cfg(feature = "table")]
 #[macro_use]
 mod macros;
 mod appearance;
@@ -15,7 +16,8 @@ pub use runtime::dialog;
 pub use runtime::inspector;
 #[cfg(feature = "snackbar")]
 pub use runtime::snackbar;
-pub use runtime::{app, entry, error, fullscreen, metadata, task, window};
+pub use runtime::{app, entry, fullscreen, metadata, task, window};
+pub use widget::error;
 /// Task management utilities and async support.
 pub mod view;
 /// Widget components for building complex UI elements.
@@ -77,7 +79,8 @@ pub mod prelude {
     pub use super::fullscreen::*;
     #[cfg(feature = "snackbar")]
     pub use super::snackbar::{
-        Snackbar, SnackbarDismissReason, SnackbarManager, SnackbarPosition, SnackbarTheme,
+        Snackbar, SnackbarDismissReason, SnackbarIcon, SnackbarManager, SnackbarPosition,
+        SnackbarTheme,
     };
 
     pub use super::gesture::GestureObserver;
@@ -166,8 +169,10 @@ pub use waterui_form as form;
 pub use waterui_graphics::canvas;
 pub use waterui_graphics::color;
 pub use waterui_graphics::gradient;
+#[cfg(feature = "media")]
+pub use waterui_graphics::image_decode;
 #[cfg(feature = "gpu")]
-pub use waterui_graphics::{GpuContent, GpuView, RedrawHandle, ShaderPaintView, image_decode};
+pub use waterui_graphics::{GpuContent, GpuView, RedrawHandle, ShaderPaintView};
 pub use waterui_icon as icon;
 #[cfg(feature = "particle")]
 pub use waterui_particle as particle;

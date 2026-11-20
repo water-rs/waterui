@@ -410,7 +410,7 @@ fn signature(command: &Command, source: &CommandSource, instance: &Instance, bin
     clippy::cast_possible_truncation,
     reason = "GPU bounds are f32; clip math uses f64 before returning to that representation"
 )]
-fn clipped_bounds(instance: &Instance) -> [f32; 4] {
+pub(super) fn clipped_bounds(instance: &Instance) -> [f32; 4] {
     let bounds = super::lower::device_bbox(instance);
     if instance.meta[3] & (FLAG_HAS_CLIP << 24) == 0 {
         return bounds;

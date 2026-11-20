@@ -7,6 +7,7 @@ name: Version boundary
 # so they pass without the label.
 
 on:
+  merge_group:
   pull_request:
     branches: [main]
     # `labeled`/`unlabeled` are not in the default trigger set; they must be

@@ -10,11 +10,14 @@ use alloc::vec::Vec;
 use core::cell::RefCell;
 use std::collections::HashMap;
 
+#[cfg(feature = "text")]
+use nami::SignalExt as _;
 use nami::watcher::{BoxWatcherGuard, Context, Metadata};
-use nami::{Computed, Signal, SignalExt as _};
+use nami::{Computed, Signal};
 use waterui_core::animation::Animation;
 use waterui_core::layout::{Affine2, Size};
 use waterui_core::{Environment, Str};
+#[cfg(feature = "text")]
 use waterui_text::styled::StyledStr;
 
 use crate::animation::engine_animation;
@@ -26,11 +29,14 @@ use crate::canvas::names::Names;
 use crate::canvas::paint::{Paint, affine};
 use crate::canvas::resource::{Font, ImageSource, ImageStatus, Pixels};
 use crate::canvas::size::Claim;
+#[cfg(feature = "text")]
 use crate::canvas::text::TextPlacement;
 use crate::draw::{
     self, Draw as _, FontId, ImageId, Instant, Recorder, ResourceError, ShapeData, kurbo,
 };
-use crate::scene::resources::{HeldResources, RecordingResources, RegisteredText, SceneResources};
+#[cfg(feature = "text")]
+use crate::scene::resources::RegisteredText;
+use crate::scene::resources::{HeldResources, RecordingResources, SceneResources};
 use crate::scene_view::{NextFrame, SceneContent, SceneFrame, SceneInvalidator, SceneUpdate};
 
 /// A change's metadata as the recorder reads it: an app animation the
@@ -323,6 +329,7 @@ impl Replay<'_, '_> {
 
     /// A watcher that records this part again when `changed` holds for a
     /// new value of the operand.
+    #[cfg(feature = "text")]
     fn restale_if<T: 'static>(
         &self,
         changed: impl Fn(&T) -> bool + 'static,
@@ -343,6 +350,7 @@ impl Replay<'_, '_> {
     /// text has nothing to draw, or the target cannot lay the text out (it
     /// has no text stack, or a font of the text is refused), which is
     /// logged.
+    #[cfg(feature = "text")]
     fn text(&self, text: StyledStr, placement: TextPlacement) -> Option<RegisteredText> {
         let env = self.session.shared.upgrade()?.env.clone();
         match self.resources.text(text, placement, env) {
@@ -362,6 +370,7 @@ impl Replay<'_, '_> {
     /// part records again rather than update a slot. The watches live as
     /// long as this recording of the part; a moved origin alone follows the
     /// transform.
+    #[cfg(feature = "text")]
     fn record_text(
         &mut self,
         recorder: &mut Recorder,
@@ -461,6 +470,7 @@ fn replay(recording: &Recording, recorder: &mut Recorder, cx: &mut Replay<'_, '_
                 });
                 recorder.glyphs(run, paint);
             }
+            #[cfg(feature = "text")]
             Node::Text { text, placement } => cx.record_text(recorder, text, placement),
             Node::Draw { drawing, transform } => {
                 if let Some(picture) = cx.drawing(drawing) {

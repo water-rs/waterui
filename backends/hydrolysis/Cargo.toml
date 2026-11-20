@@ -62,7 +62,7 @@ waterui-inspector-protocol.workspace = true
 # vocabulary resolves under every painter (the HWUI and CPU mounts name
 # their refusal); the GPU halves arrive with the `gpu` feature.
 waterui = { workspace = true, features = ["dialog", "inspector", "effects"] }
-waterui-graphics = { workspace = true, features = ["effects"] }
+waterui-graphics = { workspace = true, features = ["effects", "text", "input"] }
 # `engine` (selected by `gpu` and `cpu`) for the `parley` font context the
 # Cherenkov painters build and install into the environment; the faces come
 # from the resource loader and the system source `parley/system` provides, so

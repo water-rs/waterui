@@ -5,7 +5,10 @@ use pulldown_cmark::{Alignment, CodeBlockKind, Event, Options, Parser, Tag};
 use suiteki::Str;
 use waterui_color::{AccentColor, Blue, BorderColor, Color, Srgb};
 use waterui_controls::button::{ButtonStyle, button};
-use waterui_core::{AnyView, Environment, View, contract_violation, plugin::Plugin};
+use waterui_core::{
+    Environment, OneOf2, OneOf8, View, backend::ChildSlot, contract_violation, plugin::Plugin,
+    view::ViewSequence,
+};
 use waterui_layout::{
     Layout, LayoutError, PlacementInput, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
     SubviewPlacement, UnitPoint, ViewDimensions,
@@ -193,25 +196,23 @@ pub enum MarkdownTableAlignment {
 impl View for RichTextElement {
     fn body(self, env: &Environment) -> impl View {
         match self {
-            Self::Text(s) => AnyView::new(text(s)),
-            Self::Link { label, url } => AnyView::new(
+            Self::Text(s) => OneOf8::A(text(s)),
+            Self::Link { label, url } => OneOf8::B(
                 button(text(label))
                     .style(ButtonStyle::Link)
                     .action(move || open_url(&url)),
             ),
-            Self::Image { src, alt: _ } => AnyView::new(render_image(&src)),
-            #[cfg(feature = "math")]
-            Self::Math { source, block } => AnyView::new(render_math(source, block)),
+            Self::Image { src, alt: _ } => OneOf8::C(render_image(&src)),
             Self::Table {
                 headers,
                 rows,
                 alignments,
-            } => render_table(&headers, &rows, &alignments),
+            } => OneOf8::D(render_table(&headers, &rows, &alignments)),
             Self::List {
                 items,
                 ordered,
                 start,
-            } => AnyView::new(render_list(items.as_slice(), ordered, start)),
+            } => OneOf8::E(render_list(items.as_slice(), ordered, start)),
             Self::Code {
                 code,
                 info,
@@ -229,20 +230,33 @@ impl View for RichTextElement {
                     Some(feedback) => view.on_copied(move |env| feedback.0.call(env)),
                     None => view,
                 };
-                AnyView::new(view)
+                OneOf8::F(view)
             }
-            Self::Quote { content } => AnyView::new(quote(content)),
-            Self::Group { elements, inline } => {
-                if inline {
-                    // Inline content already contains explicit whitespace in the source text.
-                    // Use zero stack spacing to avoid double-spacing between adjacent spans.
-                    AnyView::new(elements.into_iter().collect::<HStack<_>>().spacing(0.0))
-                } else {
-                    AnyView::new(VStack::from_iter(elements))
-                }
+            Self::Quote { content } => OneOf8::G(quote(content)),
+            #[cfg(feature = "math")]
+            Self::Math { source, block } => OneOf8::H(OneOf2::A(render_math(source, block))),
+            other => {
+                #[cfg(feature = "math")]
+                let view = OneOf2::B(render_tail(other));
+                #[cfg(not(feature = "math"))]
+                let view = render_tail(other);
+                OneOf8::H(view)
             }
-            Self::Divider => AnyView::new(Frame::new(Color::new(BorderColor)).height(1.0)),
         }
+    }
+}
+
+fn render_tail(element: RichTextElement) -> impl View {
+    match element {
+        RichTextElement::Group { elements, inline } => OneOf2::A(if inline {
+            // Inline content already contains explicit whitespace in the source text.
+            // Use zero stack spacing to avoid double-spacing between adjacent spans.
+            OneOf2::A(elements.into_iter().collect::<HStack<_>>().spacing(0.0))
+        } else {
+            OneOf2::B(VStack::from_iter(elements))
+        }),
+        RichTextElement::Divider => OneOf2::B(Frame::new(Color::new(BorderColor)).height(1.0)),
+        _ => unreachable!("handled by RichTextElement::body"),
     }
 }
 
@@ -264,16 +278,16 @@ const MATH_OPTIONS: Options = Options::empty();
 /// full-height limits and a fraction its wider spacing; `$…$` is set inline so
 /// it sits at the size of the surrounding prose.
 #[cfg(feature = "math")]
-fn render_math(source: Str, block: bool) -> AnyView {
+fn render_math(source: Str, block: bool) -> impl View {
     let formula = waterui_math::view::Math::new(source);
-    AnyView::new(if block {
-        formula.display()
+    if block {
+        OneOf2::A(formula.display())
     } else {
-        formula.inline()
-    })
+        OneOf2::B(formula.inline())
+    }
 }
 
-fn render_image(src: &Str) -> AnyView {
+fn render_image(src: &Str) -> impl View + use<> {
     #[cfg(feature = "media")]
     {
         // The source is document content, not the app's own contract: an
@@ -282,9 +296,9 @@ fn render_image(src: &Str) -> AnyView {
             tracing::warn!(
                 "RichText image source is not a valid URL, so the image renders nothing: {src}"
             );
-            return AnyView::default();
+            return None;
         };
-        AnyView::new(media_photo(url))
+        Some(media_photo(url))
     }
 
     #[cfg(not(feature = "media"))]
@@ -292,7 +306,6 @@ fn render_image(src: &Str) -> AnyView {
         contract_violation!(
             "RichText image rendering requires the `media` feature, so the image renders nothing: {src}"
         );
-        AnyView::default()
     }
 }
 
@@ -328,37 +341,50 @@ fn quote(content: Vec<RichTextElement>) -> impl View {
     ))
 }
 
+struct MarkdownTableCells {
+    headers: Vec<Text>,
+    rows: Vec<Text>,
+}
+
+impl ViewSequence for MarkdownTableCells {
+    fn len(&self) -> usize {
+        self.headers.len() + 1 + self.rows.len()
+    }
+
+    fn push_slots<S: ChildSlot>(self, slots: &mut Vec<S>) {
+        slots.extend(self.headers.into_iter().map(S::from_view));
+        slots.push(S::from_view(
+            Frame::new(Color::new(BorderColor)).height(1.0),
+        ));
+        slots.extend(self.rows.into_iter().map(S::from_view));
+    }
+}
+
 fn render_table(
     headers: &[RichTextElement],
     rows: &[Vec<RichTextElement>],
     alignments: &[MarkdownTableAlignment],
-) -> AnyView {
+) -> impl View + use<> {
     let col_count = headers
         .len()
         .max(rows.iter().map(Vec::len).max().unwrap_or_default());
     if col_count == 0 {
-        return AnyView::new(());
+        return OneOf2::A(());
     }
 
-    let mut cells = Vec::with_capacity(col_count * (rows.len() + 1) + 1);
-    cells.extend((0..col_count).map(|col_idx| {
-        AnyView::new(
+    let header_cells = (0..col_count)
+        .map(|col_idx| {
             headers
                 .get(col_idx)
                 .map_or_else(|| Text::from(""), element_to_text)
-                .bold(),
-        )
-    }));
-    cells.push(AnyView::new(
-        Frame::new(Color::new(BorderColor)).height(1.0),
-    ));
-
+                .bold()
+        })
+        .collect();
+    let mut row_cells = Vec::with_capacity(col_count * rows.len());
     for row in rows {
-        cells.extend((0..col_count).map(|col_idx| {
-            AnyView::new(
-                row.get(col_idx)
-                    .map_or_else(|| Text::from(""), element_to_text),
-            )
+        row_cells.extend((0..col_count).map(|col_idx| {
+            row.get(col_idx)
+                .map_or_else(|| Text::from(""), element_to_text)
         }));
     }
 
@@ -374,7 +400,13 @@ fn render_table(
         NonZeroUsize::new(col_count).expect("a zero column count returned an empty view above"),
         resolved_alignments,
     );
-    AnyView::new(FixedContainer::new(layout, cells))
+    OneOf2::B(FixedContainer::new(
+        layout,
+        MarkdownTableCells {
+            headers: header_cells,
+            rows: row_cells,
+        },
+    ))
 }
 
 const MARKDOWN_TABLE_COLUMN_SPACING: f32 = 12.0;
@@ -1406,7 +1438,10 @@ mod tests {
     #[cfg(feature = "media")]
     fn an_invalid_image_url_renders_nothing() {
         let view = render_image(&Str::from("not a url"));
-        assert!(view.is::<()>());
+        assert_eq!(
+            waterui_core::backend::peel_native::<()>(view, &Environment::new()),
+            Some(())
+        );
     }
 
     /// Collects a document's elements into a shape that is easy to assert on.

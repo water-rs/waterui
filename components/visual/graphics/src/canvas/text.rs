@@ -67,6 +67,7 @@ impl TextPlacement {
 
     /// Where the top-left corner of a text box `box_width` wide lands: the
     /// origin, moved left by the share of the box its alignment anchors.
+    #[cfg(feature = "text")]
     pub(crate) fn corner(&self, box_width: f32) -> Point {
         let shift = if self.alignment == HorizontalAlignment::Center {
             box_width / 2.0
@@ -81,6 +82,7 @@ impl TextPlacement {
     /// Whether `other` lays the same text out the same way: only the
     /// origin may differ, which moves a laid-out text without laying it
     /// out again.
+    #[cfg(feature = "text")]
     pub(crate) fn same_layout(&self, other: &Self) -> bool {
         self.alignment == other.alignment && self.width == other.width
     }
