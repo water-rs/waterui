@@ -17,9 +17,9 @@ use std::rc::Rc;
 use accesskit::Role as AccessibilityRole_;
 use support::mount_rendered;
 use waterui::ViewExt as _;
+use waterui::accessibility::{AccessibilityRole, default_role};
 use waterui::shape::{Rectangle, ShapeExt as _};
 use waterui::{Color, Environment, Str};
-use waterui_core::accessibility::{AccessibilityRole, default_role};
 use waterui_core::view::hook::Hook;
 use waterui_core::{Metadata, Retain, Signal, View};
 use waterui_webview::{

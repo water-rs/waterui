@@ -4779,6 +4779,7 @@ dependencies = [
  "waterui-icon",
  "waterui-image",
  "waterui-inspector-protocol",
+ "waterui-interaction",
  "waterui-layout",
  "waterui-locale",
  "waterui-map-gpu",
@@ -12783,6 +12784,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "waterui-accessibility"
+version = "0.5.1"
+dependencies = [
+ "nami",
+ "suiteki",
+ "waterui-core",
+]
+
+[[package]]
 name = "waterui-apple"
 version = "0.1.0"
 dependencies = [
@@ -12821,11 +12831,13 @@ dependencies = [
  "waterkit-audio",
  "waterkit-build",
  "waterui",
+ "waterui-accessibility",
  "waterui-backend-core",
  "waterui-browser-cef",
  "waterui-capture",
  "waterui-core",
  "waterui-graphics",
+ "waterui-interaction",
  "waterui-locale",
  "waterui-map",
  "waterui-meta",
@@ -12912,7 +12924,9 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "waterui",
+ "waterui-accessibility",
  "waterui-core",
+ "waterui-interaction",
  "waterui-layout",
  "waterui-structural-transition",
  "web-time",
@@ -13037,6 +13051,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "tracing",
+ "waterui-accessibility",
  "waterui-core",
  "waterui-graphics",
  "waterui-layout",
@@ -13171,6 +13186,7 @@ dependencies = [
  "waterui",
  "waterui-core",
  "waterui-icon",
+ "waterui-interaction",
  "waterui-layout",
  "waterui-locale",
  "waterui-macros",
@@ -13183,8 +13199,6 @@ name = "waterui-core"
 version = "0.5.1"
 dependencies = [
  "anyhow",
- "bitflags 2.13.2",
- "keyboard-types",
  "nami",
  "num-traits",
  "serde",
@@ -13223,6 +13237,7 @@ dependencies = [
  "waterui-core",
  "waterui-form",
  "waterui-graphics",
+ "waterui-interaction",
  "waterui-layout",
  "waterui-locale",
  "waterui-macros",
@@ -13411,6 +13426,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "waterui-interaction"
+version = "0.5.1"
+dependencies = [
+ "bitflags 2.13.2",
+ "keyboard-types",
+ "nami",
+ "waterui-core",
+]
+
+[[package]]
 name = "waterui-internal"
 version = "0.5.1"
 dependencies = [
@@ -13434,6 +13459,7 @@ dependencies = [
  "waterkit-deeplink",
  "waterkit-haptic",
  "waterui",
+ "waterui-accessibility",
  "waterui-assets",
  "waterui-assets-macros",
  "waterui-assets-planner",
@@ -13446,6 +13472,7 @@ dependencies = [
  "waterui-graphics",
  "waterui-icon",
  "waterui-inspector-protocol",
+ "waterui-interaction",
  "waterui-layout",
  "waterui-locale",
  "waterui-macros",
@@ -13647,6 +13674,7 @@ dependencies = [
  "waterui-controls",
  "waterui-core",
  "waterui-image",
+ "waterui-interaction",
  "waterui-layout",
  "waterui-macros",
  "waterui-media",
@@ -13781,8 +13809,10 @@ dependencies = [
  "two-face",
  "waterkit-clipboard",
  "waterui",
+ "waterui-accessibility",
  "waterui-color",
  "waterui-core",
+ "waterui-interaction",
  "waterui-layout",
  "waterui-locale",
  "waterui-macros",

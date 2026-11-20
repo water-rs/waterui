@@ -15,17 +15,17 @@ use nami::{
     watcher::{BoxWatcherGuard, Context, WatcherGuard},
 };
 use waterui_core::Str;
-pub use waterui_core::key::NamedKey;
 use waterui_core::{
     AnyView, Environment, Native, NativeView, View,
     backend::{Backend, ChildSlot, MapSlots},
     contract_violation,
     extract::State,
     handler::{Handler, SharedAction, shared_action},
-    interaction::Disabled,
-    key::Key,
 };
 use waterui_icon::SystemIcon;
+use waterui_interaction::interaction::Disabled;
+use waterui_interaction::key::Key;
+pub use waterui_interaction::key::NamedKey;
 use waterui_locale::locale_binding;
 use waterui_text::{TextConfig, styled::StyledStr};
 

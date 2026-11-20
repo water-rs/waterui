@@ -14,7 +14,7 @@ use std::rc::{Rc, Weak};
 use cherenkov_record::Recorder;
 use kurbo::{Affine, Rect, Vec2};
 use waterui_core::animation::Animation;
-use waterui_core::interaction::InteractionState;
+use waterui_interaction::interaction::InteractionState;
 
 use crate::renderer::chrome::LiveSource;
 use crate::renderer::recording::{LoweredResources, SceneResources};

@@ -13,8 +13,8 @@ use waterui_backend_core::gesture::GesturePlacement;
 #[cfg(feature = "menu")]
 use waterui_backend_core::gesture::LONG_PRESS_SLOP;
 use waterui_core::contract_violation;
-use waterui_core::interaction::{InteractionReport, InteractionState, Selected};
 use waterui_graphics::input::{Code, GesturePhase, ScrollPhase, ScrollUnit};
+use waterui_interaction::interaction::{InteractionReport, InteractionState, Selected};
 use waterui_layout::scroll::Axis as ScrollAxis;
 
 #[derive(Clone, Copy, PartialEq, Eq)]

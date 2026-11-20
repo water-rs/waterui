@@ -421,7 +421,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         // `captured_env.layered_on(runtime_env)` rule.
         let bounds = ctx.bounds();
         let disabled = env
-            .get::<waterui_core::interaction::Disabled>()
+            .get::<waterui_interaction::interaction::Disabled>()
             .is_some_and(|disabled| renderer.read_signal(disabled.signal()));
         #[cfg(feature = "accessibility")]
         let mut claimed_naming_node = None;
@@ -717,7 +717,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             return None;
         }
         let disabled = env
-            .get::<waterui_core::interaction::Disabled>()
+            .get::<waterui_interaction::interaction::Disabled>()
             .is_some_and(|disabled| renderer.read_signal(disabled.signal()));
         // A hidden subtree publishes nothing, the claim included.
         if env

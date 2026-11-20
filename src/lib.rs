@@ -22,7 +22,7 @@ pub mod view;
 pub mod widget;
 #[doc(inline)]
 pub use view::View;
-pub use waterui_core::accessibility;
+pub use waterui_accessibility as accessibility;
 
 /// The shared `waterui_meta_*` record emitters — `dir_static!` lands its
 /// section and retention cfg at the invoking crate's profile — re-exported
@@ -246,14 +246,15 @@ pub use waterui_core::{
     contract_violation,
     easing::{self, EasingCurve, Interpolatable},
     env::{self, Environment},
-    event,
     extract::{self, Extractor, State, Use},
     handler::{self, Handler, HandlerOnce},
     id::{self, Identifiable},
-    impl_extractor, key, raw_view,
+    impl_extractor, raw_view,
     resolve::{self, AnyResolvable, Resolvable},
     views,
 };
+#[doc(inline)]
+pub use waterui_interaction::{event, key};
 
 // Selective re-exports only: `waterui::transition` stays free for the
 // `waterui-transition` pixel-effects crate re-export (#1389).

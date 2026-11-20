@@ -13,6 +13,7 @@ categories = ["gui"]
 
 [dependencies]
 waterui-core.workspace = true
+waterui-interaction = { workspace = true, optional = true }
 waterui-macros.workspace = true
 waterui-layout.workspace = true
 nami.workspace = true
@@ -27,7 +28,7 @@ thiserror = { version = "2.0.21", default-features = false }
 [features]
 default = ["all"]
 all = ["menu", "slider", "stepper", "text-field", "toggle"]
-menu = []
+menu = ["dep:waterui-interaction"]
 slider = []
 stepper = []
 text-field = ["menu"]

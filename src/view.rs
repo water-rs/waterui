@@ -68,10 +68,10 @@ use crate::{
 };
 #[cfg(feature = "std")]
 use waterkit_haptic::{Haptic, Intensity};
-use waterui_core::event::{Event, LifeCycle, LifeCycleHook, OnChange, OnEvent};
 use waterui_core::id::TaggedView;
-use waterui_core::interaction::{Disabled, InteractionReport, InteractionState, Selected};
-use waterui_core::key::{KeyHandling, OnKeyPress};
+use waterui_interaction::event::{Event, LifeCycle, LifeCycleHook, OnChange, OnEvent};
+use waterui_interaction::interaction::{Disabled, InteractionReport, InteractionState, Selected};
+use waterui_interaction::key::{KeyHandling, OnKeyPress};
 use waterui_structural_transition::{Transition, Transitioned};
 
 /// Plays an impact haptic. `Haptic::impact` is async; the event that
@@ -1488,7 +1488,7 @@ pub trait ViewExt: View + Sized {
 
     /// Disables every interactive control in this view subtree.
     ///
-    /// Installs a [`waterui_core::interaction::Disabled`] scope into the
+    /// Installs a [`waterui_interaction::interaction::Disabled`] scope into the
     /// subtree's environment, so controls (toggles, buttons, sliders, …)
     /// render their platform-correct disabled appearance and stop responding
     /// to input. Nested `.disabled(...)` scopes OR-combine: a control stays
@@ -1560,7 +1560,7 @@ pub trait ViewExt: View + Sized {
     /// announces it as selected. It applies to the control it modifies, not to
     /// controls nested inside that control.
     ///
-    /// [`InteractionState::SELECTED`]: waterui_core::interaction::InteractionState::SELECTED
+    /// [`InteractionState::SELECTED`]: waterui_interaction::interaction::InteractionState::SELECTED
     fn selected(self, is_selected: impl IntoComputed<bool>) -> Metadata<Selected, Self> {
         Metadata::new(self, Selected(is_selected.into_computed()))
     }
@@ -1626,7 +1626,8 @@ impl Plugin for DisabledScope {
 
 #[cfg(test)]
 mod tests {
-    use waterui_core::{AnyView, Binding, View, interaction::InteractionState};
+    use waterui_core::{AnyView, Binding, View};
+    use waterui_interaction::interaction::InteractionState;
 
     use super::ViewExt;
 

@@ -278,6 +278,8 @@ waterui-color = { version = "0.5.1", path = "components/foundation/color" }
 waterui-graphics = { version = "0.5.1", path = "components/visual/graphics", default-features = false }
 waterui-shape = { version = "0.5.1", path = "components/foundation/shape", default-features = false }
 waterui-structural-transition = { version = "0.5.1", path = "components/foundation/transition" }
+waterui-accessibility = { version = "0.5.1", path = "components/foundation/accessibility" }
+waterui-interaction = { version = "0.5.1", path = "components/foundation/interaction" }
 waterui-svg = "0.4.0"
 waterui-math = "0.2.0"
 waterui-layout = { version = "0.5.1", path = "components/foundation/layout" }
@@ -651,6 +653,8 @@ shaderloom = { git = "https://github.com/water-rs/shaderloom", branch = "main" }
 # is a different type on either side. Publishing ignores this table, so the
 # published crates keep their registry pins.
 waterui-core = { path = "core" }
+waterui-accessibility = { path = "components/foundation/accessibility" }
+waterui-interaction = { path = "components/foundation/interaction" }
 waterui-graphics = { path = "components/visual/graphics" }
 waterui-layout = { path = "components/foundation/layout" }
 waterui-shape = { path = "components/foundation/shape" }

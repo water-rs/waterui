@@ -26,10 +26,10 @@ use waterui_controls::label::{ControlLabel, LabelDisplayMode};
 use waterui_controls::slider::{SliderConfig, ValueFormatter, snap};
 use waterui_core::Environment;
 use waterui_core::contract_violation;
-use waterui_core::interaction::InteractionState;
 use waterui_core::layout::Alignment;
 use waterui_core::layout::Size as LayoutSize;
 use waterui_core::layout::{HorizontalAlignment, LayoutDirection, ProposalSize, ViewDimensions};
+use waterui_interaction::interaction::InteractionState;
 use waterui_text::IntoText as _;
 use waterui_text::styled::StyledStr;
 

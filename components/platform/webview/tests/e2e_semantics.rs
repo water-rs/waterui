@@ -20,11 +20,11 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use waterui::ViewExt as _;
+use waterui::accessibility::{AccessibilityRole, default_role};
 use waterui::component::vstack;
 use waterui::shape::{Rectangle, ShapeExt as _};
 use waterui::text;
 use waterui::{Color, Environment, SignalExt as _, Str};
-use waterui_core::accessibility::{AccessibilityRole, default_role};
 use waterui_core::view::hook::Hook;
 use waterui_core::{Metadata, Retain, Signal, View, binding};
 use waterui_testing::{Role, UiBuilder};

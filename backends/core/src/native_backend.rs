@@ -783,33 +783,33 @@ native_backend! {
         /// A layout priority.
         layout_priority: waterui_core::layout::LayoutPriority,
         /// A lifecycle hook.
-        lifecycle_hook: waterui_core::event::LifeCycleHook,
+        lifecycle_hook: waterui_interaction::event::LifeCycleHook,
         /// An event handler.
-        on_event: waterui_core::event::OnEvent,
+        on_event: waterui_interaction::event::OnEvent,
         /// A key-press handler.
-        on_key_press: waterui_core::key::OnKeyPress,
+        on_key_press: waterui_interaction::key::OnKeyPress,
         /// A gesture observer.
-        gesture_observer: waterui_core::gesture::GestureObserver,
+        gesture_observer: waterui_interaction::gesture::GestureObserver,
         /// Selection state.
-        selected: waterui_core::interaction::Selected,
+        selected: waterui_interaction::interaction::Selected,
         /// The accessibility children.
-        accessibility_children: waterui_core::accessibility::AccessibilityChildren,
+        accessibility_children: waterui_accessibility::AccessibilityChildren,
         /// The accessibility geometry.
-        accessibility_geometry: waterui_core::accessibility::AccessibilityGeometry,
+        accessibility_geometry: waterui_accessibility::AccessibilityGeometry,
         /// Hidden from accessibility.
-        accessibility_hidden: waterui_core::accessibility::AccessibilityHidden,
+        accessibility_hidden: waterui_accessibility::AccessibilityHidden,
         /// An accessibility identifier.
-        accessibility_identifier: waterui_core::accessibility::AccessibilityIdentifier,
+        accessibility_identifier: waterui_accessibility::AccessibilityIdentifier,
         /// An accessibility label.
-        accessibility_label: waterui_core::accessibility::AccessibilityLabel,
+        accessibility_label: waterui_accessibility::AccessibilityLabel,
         /// An accessibility role.
-        accessibility_role: waterui_core::accessibility::AccessibilityRole,
+        accessibility_role: waterui_accessibility::AccessibilityRole,
         /// Accessibility state.
-        accessibility_state: waterui_core::accessibility::AccessibilityState,
+        accessibility_state: waterui_accessibility::AccessibilityState,
         /// Accessibility state from a signal.
-        accessibility_state_signal: waterui_core::accessibility::AccessibilityStateSignal,
+        accessibility_state_signal: waterui_accessibility::AccessibilityStateSignal,
         /// An accessibility value.
-        accessibility_value: waterui_core::accessibility::AccessibilityValue,
+        accessibility_value: waterui_accessibility::AccessibilityValue,
         /// A structural transition.
         transition: waterui_structural_transition::TransitionSpec,
         /// Opacity.

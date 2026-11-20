@@ -8,12 +8,16 @@
 //! defaults whenever possible and use these helpers as the final step to ensure
 //! assistive technologies convey the intended experience.
 
+#![no_std]
+
+extern crate alloc;
+
 use nami::{Computed, SignalExt, impl_constant, signal::IntoComputed, zip::zip};
 use suiteki::Str;
 
-use crate::layout::{PlacedGeometry, Rect};
-use crate::metadata::MetadataKey;
-use crate::{Environment, Metadata, OneOf2, View};
+use waterui_core::layout::{PlacedGeometry, Rect};
+use waterui_core::metadata::MetadataKey;
+use waterui_core::{Environment, Metadata, OneOf2, View};
 
 /// Overrides the spoken label for a component when the default text is not
 /// adequate.
@@ -33,7 +37,7 @@ impl AccessibilityLabel {
     /// Accepts a constant or any signal of [`Str`].
     ///
     /// ```
-    /// # use waterui_core::accessibility::AccessibilityLabel;
+    /// # use waterui_accessibility::AccessibilityLabel;
     /// let label = AccessibilityLabel::new("Delete draft");
     /// ```
     pub fn new(label: impl IntoComputed<Str>) -> Self {
@@ -69,7 +73,7 @@ impl AccessibilityValue {
     /// Accepts a constant or any signal of [`Str`].
     ///
     /// ```
-    /// # use waterui_core::accessibility::AccessibilityValue;
+    /// # use waterui_accessibility::AccessibilityValue;
     /// let value = AccessibilityValue::new("e raised to i pi plus one equals zero");
     /// ```
     pub fn new(value: impl IntoComputed<Str>) -> Self {
@@ -99,7 +103,7 @@ impl AccessibilityIdentifier {
     /// Creates a stable automation identifier.
     ///
     /// ```
-    /// # use waterui_core::accessibility::AccessibilityIdentifier;
+    /// # use waterui_accessibility::AccessibilityIdentifier;
     /// let id = AccessibilityIdentifier::new("login.submit");
     /// ```
     pub fn new(identifier: impl Into<Str>) -> Self {
@@ -536,8 +540,8 @@ impl AccessibilityStateSignal {
 #[cfg(test)]
 mod tests {
     use super::{AccessibilityRole, AccessibilityState, AccessibilityStateSignal, default_role};
-    use crate::{Environment, OneOf2};
     use nami::Signal;
+    use waterui_core::{Environment, OneOf2};
 
     /// A surface with nothing said about it publishes the role it was given.
     #[test]

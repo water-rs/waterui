@@ -33,7 +33,7 @@ use waterui::window::Window;
 use waterui_core::Environment;
 use waterui_core::Retain;
 use waterui_core::handler::ViewBuilder;
-use waterui_core::key::KeyPress;
+use waterui_interaction::key::KeyPress;
 #[cfg(hydrolysis_cherenkov)]
 use waterui_text::FontCollection;
 

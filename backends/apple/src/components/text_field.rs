@@ -43,11 +43,11 @@ use waterui::text::font::Body;
 use waterui::text::font::ResolvedFont;
 use waterui::theme::color::Foreground;
 use waterui_backend_core::Environment;
-use waterui_core::interaction::Disabled;
 use waterui_core::layout::{
     HorizontalAlignment, LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size,
     StretchAxis, SubView, ViewDimensions,
 };
+use waterui_interaction::interaction::Disabled;
 
 use super::font::platform_font;
 use crate::contract::{Held, Mounted, NativeLeaf};

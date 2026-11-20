@@ -1,6 +1,6 @@
 use nami::Computed;
 use waterui_core::Environment;
-use waterui_core::interaction::Disabled;
+use waterui_interaction::interaction::Disabled;
 
 /// The disabled state in force at this point in the view tree.
 ///
