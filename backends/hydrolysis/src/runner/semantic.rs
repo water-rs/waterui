@@ -21,7 +21,6 @@ use crate::renderer::accessibility::{
 };
 use crate::renderer::{SemanticCore, WindowId};
 use std::rc::Rc;
-#[cfg(target_arch = "wasm32")]
 use std::sync::Arc;
 use waterui_core::contract_violation;
 
@@ -263,7 +262,7 @@ impl SemanticRuntime {
         #[cfg(not(target_arch = "wasm32"))]
         let inspector_probe = inspector
             .as_ref()
-            .map(waterui::inspector::InspectorRuntime::runtime_probe);
+            .map(|inspector| inspector.task_probe() as Arc<dyn waterui::task::RuntimeProbe>);
         #[cfg(target_arch = "wasm32")]
         let inspector_probe: Option<Arc<dyn waterui::task::RuntimeProbe>> = {
             init_global_executor();
@@ -1188,7 +1187,7 @@ mod tests {
     use crate::platform::{KeyCode, Modifiers};
     use keyboard_types::Code;
     use waterui_core::extract::Use;
-    use waterui_core::key::{Key, KeyHandling, KeyPress, NamedKey};
+    use waterui_interaction::key::{Key, KeyHandling, KeyPress, NamedKey};
 
     /// A synthetic press of a named key, carrying both the legacy `KeyCode`
     /// the editor matches on and the W3C pair the bubble handlers read.

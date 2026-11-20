@@ -6,7 +6,7 @@ use crate::renderer::interaction_layers::MAX_PRESS_WAVES;
 use crate::theme::InteractionMotion;
 use nami::Signal as _;
 use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
-use waterui_core::interaction::{InteractionReport, InteractionState, Selected};
+use waterui_interaction::interaction::{InteractionReport, InteractionState, Selected};
 
 const INTERACTION_STATE_LAYER_KEY: usize = 1;
 /// Scalar key of the physical-press morph progress.

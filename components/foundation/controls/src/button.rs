@@ -198,15 +198,15 @@ use alloc::boxed::Box;
 use alloc::rc::Rc;
 use executor_core::spawn_local;
 use nami::{Binding, Computed, Signal as _, SignalExt as _, binding, zip::zip};
-use waterui_core::accessibility::{AccessibilityLabel, AccessibilityRole, default_role};
+use waterui_accessibility::{AccessibilityLabel, AccessibilityRole, default_role};
 use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::env::Installed;
-use waterui_core::gesture::{GestureObserver, TapGesture};
 use waterui_core::handler::ReportExtraction;
 use waterui_core::handler::{BoxedAction, ExtractionError, Handler};
-use waterui_core::interaction::{Disabled, InteractionReport, InteractionState};
 use waterui_core::view::hook::Hook;
 use waterui_core::{AnyView, Environment, Metadata, Native, NativeView, OneOf2, View};
+use waterui_interaction::gesture::{GestureObserver, TapGesture};
+use waterui_interaction::interaction::{Disabled, InteractionReport, InteractionState};
 use waterui_text::IntoText;
 use waterui_text::styled::StyledStr;
 
@@ -1726,11 +1726,11 @@ mod custom_style_tests {
     use alloc::rc::Rc;
     use core::cell::{Cell, RefCell};
     use nami::{Signal as _, binding};
-    use waterui_core::accessibility::{AccessibilityLabel, AccessibilityRole};
+    use waterui_accessibility::{AccessibilityLabel, AccessibilityRole};
     use waterui_core::backend::peel_metadata;
-    use waterui_core::gesture::GestureObserver;
-    use waterui_core::interaction::{Disabled, InteractionReport, InteractionState};
     use waterui_core::{AnyView, Environment, View};
+    use waterui_interaction::gesture::GestureObserver;
+    use waterui_interaction::interaction::{Disabled, InteractionReport, InteractionState};
 
     use super::{
         ButtonRole, ButtonStyleConfiguration, CustomButtonStyle, PrimitiveButtonStyle,

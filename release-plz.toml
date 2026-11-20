@@ -96,6 +96,14 @@ version_group = "waterui"
 # Foundation components
 
 [[package]]
+name = "waterui-accessibility"
+version_group = "waterui"
+
+[[package]]
+name = "waterui-interaction"
+version_group = "waterui"
+
+[[package]]
 name = "waterui-text"
 version_group = "waterui"
 git_tag_name = "text-v{{ version }}"
@@ -200,6 +208,10 @@ version_group = "waterui"
 name = "waterui-inspector-protocol"
 version_group = "waterui"
 git_tag_name = "inspector-protocol-v{{ version }}"
+
+[[package]]
+name = "waterui-inspector-runtime"
+version_group = "waterui"
 
 [[package]]
 name = "waterui-inspector-app"

@@ -137,7 +137,7 @@ pub async fn raw_evaluation_answers_json(evaluate: impl AsyncFn(&str) -> Result<
     clippy::future_not_send,
     reason = "web views are confined to the UI thread, and so is the suite that drives them"
 )]
-pub async fn asset_origin_serves_bundled_content(controller: &WebViewController) {
+pub async fn asset_origin_serves_bundled_content<C: WebViewController>(controller: &C) {
     asset_origin_serves_bundled_content_with(controller, bundled_site_server()).await;
 }
 
@@ -155,14 +155,14 @@ pub async fn asset_origin_serves_bundled_content(controller: &WebViewController)
     clippy::future_not_send,
     reason = "web views are confined to the UI thread, and so is the suite that drives them"
 )]
-pub async fn asset_origin_serves_bundled_content_with(
-    controller: &WebViewController,
+pub async fn asset_origin_serves_bundled_content_with<C: WebViewController>(
+    controller: &C,
     server: AssetServer,
 ) {
     let origin = controller
         .asset_origin()
         .expect("an engine that serves bundled assets reports the origin it serves them under");
-    let webview = controller.open_with({
+    let webview = crate::open_webview_with(controller, {
         let mut literal = WebViewConfig::default();
         literal.set_asset_server(Some(server));
         literal
@@ -469,7 +469,7 @@ fn describe_error(error: &WebViewError) -> String {
     clippy::future_not_send,
     reason = "web views are confined to the UI thread, and so is the suite that drives them"
 )]
-pub async fn mirrored_state_reaches_only_admitted_documents(controller: &WebViewController) {
+pub async fn mirrored_state_reaches_only_admitted_documents<C: WebViewController>(controller: &C) {
     let admitted = PageServer::start(&[
         ("/admitted.js", "text/javascript", STATE_ADMITTED_JS),
         ("/witness", "text/html", STATE_ADMITTED_HTML),
@@ -631,8 +631,8 @@ const STATE_HOSTILE_HTML: &str = include_str!("conformance/state/hostile.html");
     clippy::future_not_send,
     reason = "web views are confined to the UI thread, and so is the suite that drives them"
 )]
-async fn state_view(
-    controller: &WebViewController,
+async fn state_view<C: WebViewController>(
+    controller: &C,
     origin: &str,
     count: &Binding<i64>,
     reports: &Rc<Reports>,
@@ -668,8 +668,9 @@ async fn state_view(
             async {}
         })
         .handler("hold", hold_handler)
-        .create(controller, &waterui_core::Environment::new())
-        .expect("a conformance engine exposes the asset origin its page opens under");
+        .open_with(controller, &waterui_core::Environment::new())
+        .expect("a conformance engine exposes the asset origin its page opens under")
+        .into_webview();
     // The installs above are commands nobody awaits; an evaluation answered
     // after them orders them before the first navigation.
     let _ = raw_eval(view.handle(), "0").await;

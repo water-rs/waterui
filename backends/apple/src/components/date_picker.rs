@@ -18,11 +18,11 @@ use cocoa_ui::{PlatformView, Rect, Retained, view};
 use waterui::component::form::picker::date::{DatePickerConfig, DatePickerType, DateTime};
 use waterui::reactive::{Binding, Signal};
 use waterui::resolve::Resolvable;
-use waterui_core::interaction::Disabled;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size, StretchAxis, SubView,
     ViewDimensions,
 };
+use waterui_interaction::interaction::Disabled;
 
 use crate::contract::{Held, Mounted, NativeLeaf, RenderContext};
 use crate::proposal;

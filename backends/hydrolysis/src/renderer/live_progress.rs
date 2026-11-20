@@ -20,7 +20,7 @@ use cherenkov_record::Recorder;
 use kurbo::{Rect, Vec2};
 use nami::{Computed, Signal};
 use waterui_core::animation::{Animation, ChangeAnimation};
-use waterui_core::interaction::InteractionState;
+use waterui_interaction::interaction::InteractionState;
 
 use crate::renderer::chrome::LiveSource;
 use crate::renderer::recording::{LoweredResources, SceneResources};

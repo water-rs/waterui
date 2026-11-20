@@ -24,7 +24,7 @@ use kurbo::{Point, Rect, Vec2};
 use nami::Binding;
 use nami::Signal;
 use waterui_core::animation::{Animation, ChangeAnimation};
-use waterui_core::interaction::InteractionState;
+use waterui_interaction::interaction::InteractionState;
 
 #[cfg(feature = "toggle")]
 use crate::renderer::chrome::varies_live;

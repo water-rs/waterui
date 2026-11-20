@@ -61,15 +61,29 @@ impl NativeBackendFamily for AppleBackend {
     }
 }
 
+#[cfg(waterui_feature = "webview")]
+#[doc(hidden)]
+pub use crate::components::webview::SelectedWebViewController;
+#[cfg(feature = "webview")]
+#[doc(hidden)]
+pub use crate::components::webview::{AppleWebViewController, WkWebViewHandle};
+
 impl NativeBackend for AppleBackend {
     type Output = NativeLeaf;
     type Ctx = ();
     type Family = Self;
+    #[cfg(waterui_feature = "webview")]
+    type WebViewController = crate::components::webview::SelectedWebViewController;
     #[cfg(waterui_feature = "capture")]
     type Offscreen = crate::components::view_renderer::AppleOffscreenRenderer;
 
     fn with_family<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
         f(self)
+    }
+
+    #[cfg(waterui_feature = "webview")]
+    fn web_view_controller(&self) -> Self::WebViewController {
+        crate::components::webview::selected_controller()
     }
 
     #[cfg(waterui_feature = "capture")]
@@ -547,7 +561,7 @@ impl NativeBackend for AppleBackend {
     #[cfg(waterui_feature = "webview")]
     fn web_view(
         &mut self,
-        native: waterui::webview::WebView,
+        native: waterui::webview::WebViewOpen,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -594,7 +608,7 @@ impl NativeBackend for AppleBackend {
 
     fn lifecycle_hook<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_core::event::LifeCycleHook, C>,
+        metadata: Metadata<waterui_interaction::event::LifeCycleHook, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -607,7 +621,7 @@ impl NativeBackend for AppleBackend {
 
     fn on_event<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_core::event::OnEvent, C>,
+        metadata: Metadata<waterui_interaction::event::OnEvent, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -617,7 +631,7 @@ impl NativeBackend for AppleBackend {
 
     fn on_key_press<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_core::key::OnKeyPress, C>,
+        metadata: Metadata<waterui_interaction::key::OnKeyPress, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -627,7 +641,7 @@ impl NativeBackend for AppleBackend {
 
     fn gesture_observer<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_core::gesture::GestureObserver, C>,
+        metadata: Metadata<waterui_interaction::gesture::GestureObserver, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -637,7 +651,7 @@ impl NativeBackend for AppleBackend {
 
     fn selected<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_core::interaction::Selected, C>,
+        metadata: Metadata<waterui_interaction::interaction::Selected, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -650,7 +664,7 @@ impl NativeBackend for AppleBackend {
 
     fn accessibility_children<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_core::accessibility::AccessibilityChildren, C>,
+        metadata: Metadata<waterui_accessibility::AccessibilityChildren, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -663,7 +677,7 @@ impl NativeBackend for AppleBackend {
 
     fn accessibility_geometry<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_core::accessibility::AccessibilityGeometry, C>,
+        metadata: Metadata<waterui_accessibility::AccessibilityGeometry, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -676,7 +690,7 @@ impl NativeBackend for AppleBackend {
 
     fn accessibility_hidden<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_core::accessibility::AccessibilityHidden, C>,
+        metadata: Metadata<waterui_accessibility::AccessibilityHidden, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -689,7 +703,7 @@ impl NativeBackend for AppleBackend {
 
     fn accessibility_identifier<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_core::accessibility::AccessibilityIdentifier, C>,
+        metadata: Metadata<waterui_accessibility::AccessibilityIdentifier, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -702,7 +716,7 @@ impl NativeBackend for AppleBackend {
 
     fn accessibility_label<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_core::accessibility::AccessibilityLabel, C>,
+        metadata: Metadata<waterui_accessibility::AccessibilityLabel, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -715,7 +729,7 @@ impl NativeBackend for AppleBackend {
 
     fn accessibility_role<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_core::accessibility::AccessibilityRole, C>,
+        metadata: Metadata<waterui_accessibility::AccessibilityRole, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -728,7 +742,7 @@ impl NativeBackend for AppleBackend {
 
     fn accessibility_state<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_core::accessibility::AccessibilityState, C>,
+        metadata: Metadata<waterui_accessibility::AccessibilityState, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -741,7 +755,7 @@ impl NativeBackend for AppleBackend {
 
     fn accessibility_state_signal<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_core::accessibility::AccessibilityStateSignal, C>,
+        metadata: Metadata<waterui_accessibility::AccessibilityStateSignal, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -754,7 +768,7 @@ impl NativeBackend for AppleBackend {
 
     fn accessibility_value<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_core::accessibility::AccessibilityValue, C>,
+        metadata: Metadata<waterui_accessibility::AccessibilityValue, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {

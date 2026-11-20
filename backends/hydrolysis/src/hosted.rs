@@ -125,11 +125,25 @@ impl fmt::Debug for HostedView {
 
 struct HostedNode {
     runtime: Rc<HostedRuntime>,
+    _retained: Option<Box<dyn core::any::Any>>,
 }
 
 impl Drop for HostedNode {
     fn drop(&mut self) {
         self.runtime.content.unmount();
+    }
+}
+
+impl HostedView {
+    #[cfg(hydrolysis_system_webview)]
+    pub(crate) fn into_behavior_retained(
+        self,
+        retained: impl core::any::Any,
+    ) -> Rc<dyn HydroProvidedBehavior> {
+        Rc::new(HostedNode {
+            runtime: HostedRuntime::new(self),
+            _retained: Some(Box::new(retained)),
+        })
     }
 }
 
@@ -166,6 +180,7 @@ impl NativeView for HostedView {
         if let Some(slot) = context.downcast_mut::<HydroProvidedSlot>() {
             let node = Rc::new(HostedNode {
                 runtime: HostedRuntime::new(self),
+                _retained: None,
             });
             slot.realized = Some((node, StretchAxis::Both));
             return Ok(());

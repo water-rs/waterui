@@ -40,11 +40,11 @@ use waterui::views::{AnyViewsSnapshot, SharedAnyViews};
 use waterui_backend_core::Environment;
 use waterui_backend_core::scroll::animated_row_scroll_approach;
 use waterui_core::Computed;
-use waterui_core::interaction::Disabled;
 use waterui_core::layout::{
     LayoutDirection, LayoutError, Point, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis,
     SubView, UnitPoint, ViewDimensions, layout_direction,
 };
+use waterui_interaction::interaction::Disabled;
 
 use crate::backend::AppleBackend;
 use crate::contract::{Held, NativeLeaf, RenderContext, Renderer};

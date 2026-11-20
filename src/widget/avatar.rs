@@ -14,8 +14,8 @@ use crate::theme::color::{MutedForeground, SurfaceVariant};
 #[cfg(feature = "media")]
 use nami::signal::IntoComputed;
 use unicode_segmentation::UnicodeSegmentation as _;
+use waterui_accessibility::{AccessibilityChildren, AccessibilityRole};
 use waterui_controls::{IntoLabel, Label, SemanticLabel};
-use waterui_core::accessibility::{AccessibilityChildren, AccessibilityRole};
 use waterui_core::handler::{AnyViewBuilder, ViewBuilder};
 #[cfg(feature = "media")]
 use waterui_layout::ContentMode;

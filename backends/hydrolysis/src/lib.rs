@@ -193,5 +193,17 @@ pub use text::{DeclaredFonts, FontFamilyResolution};
 pub use view_renderer::HydrolysisOffscreenRenderer;
 #[cfg(hydrolysis_macos_system_webview)]
 pub use widgets::platform::webview::MacSystemWebViewController;
+#[cfg(hydrolysis_macos_system_webview)]
+#[doc(hidden)]
+pub use widgets::platform::webview::MacSystemWebViewHandle;
+#[cfg(waterui_feature = "webview")]
+#[doc(hidden)]
+pub use widgets::platform::webview::SelectedWebViewController;
+#[cfg(hydrolysis_web_system_webview)]
+#[doc(hidden)]
+pub use widgets::platform::webview::WebIframeHandle;
 #[cfg(hydrolysis_web_system_webview)]
 pub use widgets::platform::webview::WebSystemWebViewController;
+#[cfg(hydrolysis_android_system_webview)]
+#[doc(hidden)]
+pub use widgets::platform::webview::{AndroidSystemWebViewController, AndroidSystemWebViewHandle};

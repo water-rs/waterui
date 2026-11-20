@@ -5,16 +5,16 @@
 use core::fmt;
 
 use nami::{Binding, Computed, Signal as _, SignalExt as _};
-use waterui_core::accessibility::{
+use waterui_accessibility::{
     AccessibilityRole, AccessibilityState, AccessibilityStateSignal, default_role,
 };
 use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::env::Installed;
-use waterui_core::gesture::{GestureObserver, TapGesture};
-use waterui_core::interaction::{Disabled, InteractionReport, InteractionState};
 use waterui_core::layout::StretchAxis;
 use waterui_core::view::hook::Hook;
 use waterui_core::{AnyView, Environment, Metadata, Native, NativeView, View};
+use waterui_interaction::gesture::{GestureObserver, TapGesture};
+use waterui_interaction::interaction::{Disabled, InteractionReport, InteractionState};
 use waterui_text::styled::StyledStr;
 
 use crate::label::{
@@ -848,13 +848,13 @@ mod custom_style_tests {
     use alloc::rc::Rc;
     use core::cell::RefCell;
     use nami::{Binding, Signal as _, binding};
-    use waterui_core::accessibility::{
+    use waterui_accessibility::{
         AccessibilityChecked, AccessibilityLabel, AccessibilityRole, AccessibilityStateSignal,
     };
     use waterui_core::backend::peel_metadata;
-    use waterui_core::gesture::GestureObserver;
-    use waterui_core::interaction::{Disabled, InteractionReport, InteractionState};
     use waterui_core::{AnyView, Environment, View};
+    use waterui_interaction::gesture::GestureObserver;
+    use waterui_interaction::interaction::{Disabled, InteractionReport, InteractionState};
 
     use super::{CustomToggleStyle, Toggle, ToggleStyleConfiguration};
     use crate::size::ControlSize;

@@ -223,13 +223,11 @@ use waterui_controls::text_field::ResolvedTextFieldConfig;
 #[cfg(feature = "toggle")]
 use waterui_controls::toggle::ToggleConfig;
 use waterui_core::dynamic::DynamicInitialContent;
-use waterui_core::event::{Event, HoverEvent, LifeCycle, LifeCycleHook, OnEvent};
 #[cfg(any(feature = "menu", feature = "color-picker"))]
 use waterui_core::handler::ViewBuilder;
 use waterui_core::handler::{BoxedAction, SharedAction};
 #[cfg(any(feature = "menu", feature = "color-picker"))]
 use waterui_core::impl_extractor;
-use waterui_core::key::{KeyHandling, KeyPress, OnKeyPress};
 #[cfg(any(feature = "menu", feature = "color-picker"))]
 use waterui_core::layout::Point as LayoutPoint;
 use waterui_core::layout::{
@@ -255,12 +253,9 @@ use waterui_graphics::color::Color;
 use waterui_graphics::gpu::RedrawHandle;
 #[cfg(hydrolysis_gpu)]
 use waterui_graphics::{ExternalFrameView, GpuView};
+use waterui_interaction::event::{Event, HoverEvent, LifeCycle, LifeCycleHook, OnEvent};
+use waterui_interaction::key::{KeyHandling, KeyPress, OnKeyPress};
 
-#[cfg(all(
-    waterui_feature = "webview",
-    not(any(hydrolysis_cef_webview, hydrolysis_wpe_webview))
-))]
-use waterui::webview::WebView;
 #[cfg(feature = "accessibility")]
 use waterui_layout::scroll::Axis as ScrollAxis;
 use waterui_layout::spacer::Spacer;
@@ -767,6 +762,10 @@ pub struct SemanticCore<E: crate::text::TextEngine> {
     /// consumes it, so a material view flush sees the scope the window
     /// declares (always `None` — the window's own backdrop mounts solo).
     pub(crate) window_material: Option<mount::program::MaterialRequest>,
+    /// The session's Android system `WebViewController`, attached when
+    /// `AndroidSession::create` initializes the session on the JNI thread.
+    #[cfg(hydrolysis_android_system_webview)]
+    android_webview: crate::widgets::platform::webview::AndroidSystemWebViewController,
     /// Offscreen renderer vended by [`HydroBackend::offscreen`](crate::renderer::tree::build::backend::HydroBackend).
     #[cfg(waterui_feature = "capture")]
     offscreen: crate::view_renderer::HydrolysisOffscreenRenderer,
@@ -930,6 +929,21 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         self.window_closable
     }
 
+    #[cfg(hydrolysis_android_system_webview)]
+    pub(crate) fn set_android_webview(
+        &mut self,
+        controller: crate::widgets::platform::webview::AndroidSystemWebViewController,
+    ) {
+        self.android_webview = controller;
+    }
+
+    #[cfg(hydrolysis_android_system_webview)]
+    pub(crate) fn android_webview_controller(
+        &self,
+    ) -> crate::widgets::platform::webview::AndroidSystemWebViewController {
+        self.android_webview.clone()
+    }
+
     /// Assigns the window's declared logical frame — the semantic runner
     /// writes it at mount and on every move/resize, so emit paths that
     /// resolve a viewport-dependent decision (a navigation split's
@@ -971,6 +985,35 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             .and_then(|link| link.parent.clone());
     }
 
+    fn build_presentation_hosts(
+        signals: &FrameSignals,
+        placement_clock: &Rc<PlacementClock>,
+        root: &Rc<NodeCell<E>>,
+        window_placement: &Rc<Placement>,
+        cells: &RefCell<Vec<Weak<NodeCell<E>>>>,
+    ) -> PresentationHosts<E> {
+        let mut host_index = 1;
+        let mut host = || {
+            let core = NodeCore::new(signals.clone(), Placement::new(placement_clock));
+            core.cell.set_parent(root);
+            core.cell
+                .placement()
+                .set_parent(Some(Rc::clone(window_placement)));
+            core.cell.placement().set_index(host_index);
+            host_index += 1;
+            cells.borrow_mut().push(Rc::downgrade(&core.cell));
+            core
+        };
+        PresentationHosts {
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
+            text_overlay: host(),
+            #[cfg(feature = "menu")]
+            context_menu: host(),
+            anchored: host(),
+            dialog: host(),
+        }
+    }
+
     pub(crate) fn new(frame_instant: Instant, text: E) -> Self {
         let signals = FrameSignals::new(frame_instant);
         let placement_clock = PlacementClock::new();
@@ -995,26 +1038,13 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         for _ in 0..4 {
             let _ = window_placement.take_item();
         }
-        let mut host_index = 1;
-        let mut host = || {
-            let core = NodeCore::new(signals.clone(), Placement::new(&placement_clock));
-            core.cell.set_parent(&root);
-            core.cell
-                .placement()
-                .set_parent(Some(Rc::clone(&window_placement)));
-            core.cell.placement().set_index(host_index);
-            host_index += 1;
-            cells.borrow_mut().push(Rc::downgrade(&core.cell));
-            core
-        };
-        let presentation_hosts = PresentationHosts {
-            #[cfg(any(feature = "text-field", feature = "secure-field"))]
-            text_overlay: host(),
-            #[cfg(feature = "menu")]
-            context_menu: host(),
-            anchored: host(),
-            dialog: host(),
-        };
+        let presentation_hosts = Self::build_presentation_hosts(
+            &signals,
+            &placement_clock,
+            &root,
+            &window_placement,
+            &cells,
+        );
         Self {
             state: HydroState::new(text),
             hit_test: HitTestState::default(),
@@ -1078,6 +1108,9 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             record_seq: 0,
             materialized_epoch: 0,
             window_material: None,
+            #[cfg(hydrolysis_android_system_webview)]
+            android_webview:
+                crate::widgets::platform::webview::AndroidSystemWebViewController::default(),
             #[cfg(waterui_feature = "capture")]
             offscreen: crate::view_renderer::HydrolysisOffscreenRenderer::unavailable(
                 "hydrolysis semantic core has no widget theme or painter for offscreen capture",

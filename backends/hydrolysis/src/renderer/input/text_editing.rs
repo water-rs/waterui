@@ -31,7 +31,7 @@ impl CaretPaints {
     ) -> cherenkov_record::Paint {
         paint.target(&crate::theme::Inputs::at_rest(
             frame,
-            waterui_core::interaction::InteractionState::FOCUSED,
+            waterui_interaction::interaction::InteractionState::FOCUSED,
             &(),
         ))
     }

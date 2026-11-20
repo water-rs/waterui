@@ -63,6 +63,10 @@ macro_rules! native_backend {
             /// This backend type with its lifetimes left open, for the
             /// [`Child`] views of the payloads it receives.
             type Family: NativeBackendFamily<Output = Self::Output, Ctx = Self::Ctx>;
+            #[cfg(waterui_feature = "webview")]
+            /// The compile-time selected [`waterui::webview::WebViewController`]
+            /// used to realize [`waterui::webview::WebViewOpen`].
+            type WebViewController: waterui::webview::WebViewController;
 
             /// The backend's offscreen view-to-RGBA renderer.
             #[cfg(waterui_feature = "capture")]
@@ -75,6 +79,10 @@ macro_rules! native_backend {
                 &mut self,
                 f: impl for<'a> FnOnce(&mut <Self::Family as NativeBackendFamily>::Backend<'a>) -> R,
             ) -> R;
+
+            #[cfg(waterui_feature = "webview")]
+            /// Returns the backend's [`WebViewController`](Self::WebViewController).
+            fn web_view_controller(&self) -> Self::WebViewController;
 
             /// Creates an offscreen renderer configured from `env`.
             #[cfg(waterui_feature = "capture")]
@@ -186,6 +194,8 @@ macro_rules! native_backend {
             type Output = B::Output;
             type Ctx = B::Ctx;
             type Family = HookedFamily<B::Family, H>;
+            #[cfg(waterui_feature = "webview")]
+            type WebViewController = B::WebViewController;
             #[cfg(waterui_feature = "capture")]
             type Offscreen = B::Offscreen;
 
@@ -203,6 +213,11 @@ macro_rules! native_backend {
                         erased,
                     ))
                 })
+            }
+
+            #[cfg(waterui_feature = "webview")]
+            fn web_view_controller(&self) -> Self::WebViewController {
+                self.inner_ref().web_view_controller()
             }
 
             #[cfg(waterui_feature = "capture")]
@@ -532,11 +547,18 @@ macro_rules! native_backend {
             type Output = ();
             type Ctx = ();
             type Family = Self;
+            #[cfg(waterui_feature = "webview")]
+            type WebViewController = waterui::webview::UnavailableWebViewController;
             #[cfg(waterui_feature = "capture")]
             type Offscreen = tests::RecorderOffscreen;
 
             fn with_family<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
                 f(self)
+            }
+
+            #[cfg(waterui_feature = "webview")]
+            fn web_view_controller(&self) -> Self::WebViewController {
+                waterui::webview::UnavailableWebViewController
             }
 
             #[cfg(waterui_feature = "capture")]
@@ -856,7 +878,7 @@ native_backend! {
         video_player: waterui::video::video::NativeVideoPlayerConfig,
         #[cfg(waterui_feature = "webview")]
         /// A web view.
-        web_view: waterui::webview::WebView,
+        web_view: waterui::webview::WebViewOpen,
         #[cfg(waterui_feature = "map")]
         /// A map.
         map: waterui::map::MapConfig,
@@ -938,33 +960,33 @@ native_backend! {
         /// A layout priority.
         layout_priority: waterui_core::layout::LayoutPriority,
         /// A lifecycle hook.
-        lifecycle_hook: waterui_core::event::LifeCycleHook,
+        lifecycle_hook: waterui_interaction::event::LifeCycleHook,
         /// An event handler.
-        on_event: waterui_core::event::OnEvent,
+        on_event: waterui_interaction::event::OnEvent,
         /// A key-press handler.
-        on_key_press: waterui_core::key::OnKeyPress,
+        on_key_press: waterui_interaction::key::OnKeyPress,
         /// A gesture observer.
-        gesture_observer: waterui_core::gesture::GestureObserver,
+        gesture_observer: waterui_interaction::gesture::GestureObserver,
         /// Selection state.
-        selected: waterui_core::interaction::Selected,
+        selected: waterui_interaction::interaction::Selected,
         /// The accessibility children.
-        accessibility_children: waterui_core::accessibility::AccessibilityChildren,
+        accessibility_children: waterui_accessibility::AccessibilityChildren,
         /// The accessibility geometry.
-        accessibility_geometry: waterui_core::accessibility::AccessibilityGeometry,
+        accessibility_geometry: waterui_accessibility::AccessibilityGeometry,
         /// Hidden from accessibility.
-        accessibility_hidden: waterui_core::accessibility::AccessibilityHidden,
+        accessibility_hidden: waterui_accessibility::AccessibilityHidden,
         /// An accessibility identifier.
-        accessibility_identifier: waterui_core::accessibility::AccessibilityIdentifier,
+        accessibility_identifier: waterui_accessibility::AccessibilityIdentifier,
         /// An accessibility label.
-        accessibility_label: waterui_core::accessibility::AccessibilityLabel,
+        accessibility_label: waterui_accessibility::AccessibilityLabel,
         /// An accessibility role.
-        accessibility_role: waterui_core::accessibility::AccessibilityRole,
+        accessibility_role: waterui_accessibility::AccessibilityRole,
         /// Accessibility state.
-        accessibility_state: waterui_core::accessibility::AccessibilityState,
+        accessibility_state: waterui_accessibility::AccessibilityState,
         /// Accessibility state from a signal.
-        accessibility_state_signal: waterui_core::accessibility::AccessibilityStateSignal,
+        accessibility_state_signal: waterui_accessibility::AccessibilityStateSignal,
         /// An accessibility value.
-        accessibility_value: waterui_core::accessibility::AccessibilityValue,
+        accessibility_value: waterui_accessibility::AccessibilityValue,
         /// A structural transition.
         transition: waterui_structural_transition::TransitionSpec,
         /// Opacity.

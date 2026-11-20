@@ -162,3 +162,21 @@ pub(super) fn realize_hydro_provided_slot<E: crate::text::TextEngine>(
         env,
     )
 }
+
+#[cfg(all(hydrolysis_hosted, hydrolysis_gpu, hydrolysis_system_webview))]
+impl<E: crate::text::TextEngine> RenderNode<E> {
+    pub(super) fn build_hosted_retained(
+        view: crate::hosted::HostedView,
+        env: &Environment,
+        renderer: &SemanticCore<E>,
+        retained: impl core::any::Any,
+    ) -> Self {
+        let behavior = view.into_behavior_retained(retained);
+        Self::build_widget(
+            renderer,
+            Rc::new(HydroProvidedWidgetAdapter(behavior)),
+            StretchAxis::Both,
+            env,
+        )
+    }
+}

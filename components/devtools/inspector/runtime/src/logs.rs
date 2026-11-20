@@ -22,7 +22,7 @@ pub struct InspectorLayer {
 
 impl InspectorLayer {
     /// Creates a layer publishing to `hub`.
-    pub(super) const fn new(hub: Arc<EventHub>) -> Self {
+    pub const fn new(hub: Arc<EventHub>) -> Self {
         Self { hub }
     }
 }

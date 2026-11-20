@@ -151,11 +151,47 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     type Output = RenderNode<E>;
     type Ctx = ();
     type Family = HydroFamily<E>;
+    #[cfg(waterui_feature = "webview")]
+    type WebViewController = crate::widgets::platform::webview::SelectedWebViewController;
     #[cfg(waterui_feature = "capture")]
     type Offscreen = crate::view_renderer::HydrolysisOffscreenRenderer;
 
     fn with_family<R>(&mut self, f: impl for<'a> FnOnce(&mut HydroBackend<'a, E>) -> R) -> R {
         f(self)
+    }
+
+    #[cfg(waterui_feature = "webview")]
+    fn web_view_controller(&self) -> Self::WebViewController {
+        #[cfg(hydrolysis_macos_system_webview)]
+        {
+            crate::widgets::platform::webview::MacSystemWebViewController
+        }
+        #[cfg(hydrolysis_android_system_webview)]
+        {
+            self.renderer.android_webview_controller()
+        }
+        #[cfg(hydrolysis_web_system_webview)]
+        {
+            crate::widgets::platform::webview::WebSystemWebViewController
+        }
+        #[cfg(hydrolysis_cef_webview)]
+        {
+            waterui_browser_cef::webview_controller()
+        }
+        #[cfg(hydrolysis_wpe_webview)]
+        {
+            waterui_browser_wpe::webview_controller()
+        }
+        #[cfg(not(any(
+            hydrolysis_macos_system_webview,
+            hydrolysis_android_system_webview,
+            hydrolysis_web_system_webview,
+            hydrolysis_cef_webview,
+            hydrolysis_wpe_webview,
+        )))]
+        {
+            waterui::webview::UnavailableWebViewController
+        }
     }
 
     #[cfg(waterui_feature = "capture")]
@@ -352,27 +388,29 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     #[cfg(waterui_feature = "webview")]
     fn web_view(
         &mut self,
-        native: waterui::webview::WebView,
+        native: waterui::webview::WebViewOpen,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        let controller = self.web_view_controller();
         #[cfg(hydrolysis_cef_webview)]
         {
-            if native.handle().is_unavailable() {
+            let Some(opened) = native.open_with(&controller, env) else {
                 return RenderNode::build_empty(self.renderer, env);
-            }
-            self.build(waterui_browser_cef::webview(native, env), env)
+            };
+            self.build(waterui_browser_cef::webview(opened, env), env)
         }
         #[cfg(hydrolysis_wpe_webview)]
         {
-            if native.handle().is_unavailable() {
+            let Some(opened) = native.open_with(&controller, env) else {
                 return RenderNode::build_empty(self.renderer, env);
-            }
-            self.build(waterui_browser_wpe::webview(native, env), env)
+            };
+            self.build(waterui_browser_wpe::webview(opened, env), env)
         }
         #[cfg(not(any(hydrolysis_cef_webview, hydrolysis_wpe_webview)))]
         {
-            RenderNode::build_webview(&native, env, self.renderer)
+            let _ = controller;
+            RenderNode::build_webview(native, env, self.renderer)
         }
     }
 
@@ -609,7 +647,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     // control's `SELECTED` flag and a11y selected state read it.
     fn selected<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_core::interaction::Selected, C>,
+        metadata: Metadata<waterui_interaction::interaction::Selected, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -981,7 +1019,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
 
     fn on_event<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_core::event::OnEvent, C>,
+        metadata: Metadata<waterui_interaction::event::OnEvent, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -998,7 +1036,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
 
     fn on_key_press<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_core::key::OnKeyPress, C>,
+        metadata: Metadata<waterui_interaction::key::OnKeyPress, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -1015,7 +1053,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
 
     fn gesture_observer<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_core::gesture::GestureObserver, C>,
+        metadata: Metadata<waterui_interaction::gesture::GestureObserver, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -1031,7 +1069,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
             gesture_target: Cell::new(None),
             chrome: RefCell::new(None),
             chrome_state: nami::Binding::container(
-                waterui_core::interaction::InteractionState::empty(),
+                waterui_interaction::interaction::InteractionState::empty(),
             ),
         };
         RenderNode::wrap(WrapperEffect::GestureObserver(effect), child, env, renderer)
@@ -1051,7 +1089,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
 
     fn lifecycle_hook<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_core::event::LifeCycleHook, C>,
+        metadata: Metadata<waterui_interaction::event::LifeCycleHook, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {

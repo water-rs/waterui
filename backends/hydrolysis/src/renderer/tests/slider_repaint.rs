@@ -15,8 +15,8 @@ use waterui::{Binding, Environment, ViewExt};
 use waterui_controls::slider::slider;
 use waterui_core::AnyView;
 use waterui_core::handler::AnyViewBuilder;
-use waterui_core::interaction::InteractionState;
 use waterui_core::layout::LayoutDirection;
+use waterui_interaction::interaction::InteractionState;
 
 #[cfg(hydrolysis_gpu_painter)]
 use super::toggle_glass::{GLASS, GLASS_SHADER, plan};

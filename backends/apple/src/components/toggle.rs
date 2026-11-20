@@ -14,10 +14,10 @@ use waterui::component::ControlSize;
 use waterui::component::toggle::{ToggleConfig, ToggleStyle};
 use waterui::reactive::Signal;
 use waterui::reactive::watcher::Metadata;
-use waterui_core::interaction::Disabled;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
 };
+use waterui_interaction::interaction::Disabled;
 
 #[cfg(target_os = "ios")]
 use crate::components::button_chrome;
