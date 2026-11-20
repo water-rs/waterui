@@ -29,6 +29,7 @@ on:
   # the whole gate twice for one commit.
   push:
     branches: [main]
+  merge_group:
   pull_request:
     branches: [main]
     # No `edited`: a run on the same commit replaces the one before it in
@@ -36,13 +37,13 @@ on:
     # edit would hide the source run's results and block the merge (#3825).
     types: [opened, reopened, synchronize]
 
-# A pull request cancels its superseded run. A `main` push queues instead:
-# its lint job is the cache writer for that ref, and a writer cancelled
-# mid-sweep or mid-save leaves no archive for the runs after it (#2338).
-# The group still drops a queued run that a newer push supersedes.
+# A pull request or merge group cancels its superseded run. A `main` push
+# queues instead: its lint job is the cache writer for that ref, and a writer
+# cancelled mid-sweep or mid-save leaves no archive for the runs after it
+# (#2338). The group still drops a queued run that a newer push supersedes.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -119,7 +120,7 @@ jobs:
       - uses: dorny/paths-filter@v3
         id: filter
         with:
-          base: ${{ github.ref_name }}
+          base: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.ref_name }}
           filters: |
             deps:
               - "**/Cargo.toml"
@@ -160,7 +161,7 @@ jobs:
         id: android-metadata
         if: steps.filter.outputs.android_metadata == 'true'
         env:
-          BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
+          BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.before }}
           EVENT: ${{ github.event_name }}
         run: |
           if [ "$EVENT" = pull_request ]; then
@@ -170,7 +171,7 @@ jobs:
       - uses: dorny/paths-filter@v3
         id: prose
         with:
-          base: ${{ github.ref_name }}
+          base: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.ref_name }}
           predicate-quantifier: every
           filters: |
             code:
@@ -202,7 +203,7 @@ jobs:
     if: needs.bump.result == 'success'
     uses: ./.github/workflows/affected.yml
     with:
-      base: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
+      base: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.before }}
 
   # The release scripts derive the certified `framework.json` from the root
   # manifest; their tests pin that derivation to the tree, so they run whenever
@@ -674,7 +675,7 @@ jobs:
   # certified `nightly-*` prerelease on `main`.
   nightly-healthy:
     name: Nightly healthy
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
