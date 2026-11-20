@@ -148,6 +148,7 @@ use waterui::gesture::{DragGesture, GestureObserver, MagnificationGesture};
 use waterui::interaction::InteractionState;
 use waterui::prelude::text;
 use waterui::style::FloatingStyle;
+use waterui::widget::Divider;
 use waterui::{Binding, Color, Computed, Signal, SignalExt as _, ViewExt as _};
 use waterui_controls::button::button;
 use waterui_controls::label::{LabelDisplayMode, label};
@@ -159,8 +160,8 @@ use waterui_form::picker::PickerStyle;
 #[cfg(feature = "accessibility")]
 use waterui_form::picker::{Picker, color::ColorPicker, date::DatePicker};
 use waterui_graphics::canvas::Canvas;
+use waterui_layout::scroll;
 use waterui_layout::stack::{VStackLayout, hstack, vstack, zstack};
-use waterui_layout::{Divider, scroll};
 #[cfg(feature = "accessibility")]
 use waterui_navigation::NavigationView;
 #[cfg(feature = "accessibility")]

@@ -16,6 +16,8 @@ path = "lib.rs"
 [dependencies]
 nami.workspace = true
 waterui-core.workspace = true
+waterui-capture.workspace = true
+waterui-resources.workspace = true
 suiteki.workspace = true
 waterui-url.workspace = true
 waterui-layout.workspace = true
@@ -47,7 +49,6 @@ waterkit-deeplink.workspace = true
 unicode-segmentation = "1.13"
 async-channel.workspace = true
 web-time.workspace = true
-pulldown-cmark = { version = "0.13", optional = true }
 waterui-macros.workspace = true
 waterui-graphics = { workspace = true, default-features = false }
 waterui-icon.workspace = true
@@ -57,17 +58,12 @@ waterui-svg = { workspace = true, optional = true }
 waterui-chart = { workspace = true, optional = true }
 waterui-barcode = { workspace = true, optional = true }
 waterui-particle = { workspace = true, optional = true }
-waterui-math = { workspace = true, optional = true }
+waterui-markdown = { workspace = true, optional = true }
 waterui-assets = { workspace = true, optional = true }
 waterui-assets-macros = { workspace = true, optional = true }
 waterui-ts = { workspace = true, optional = true }
 waterkit-haptic = { workspace = true, optional = true }
 pastey.workspace = true
-# The document parser `FlowMarkdown` re-parses incrementally as a stream
-# arrives. Only the Markdown grammar: fenced code is highlighted by the `Code`
-# widget through syntect, not by a per-language tree-sitter grammar.
-tree-sitter = { version = "0.27", optional = true }
-tree-sitter-md = { version = "0.5.3", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The inspector endpoint is a TCP server that also launches the inspector
@@ -169,7 +165,7 @@ cpu = ["effects", "waterui-graphics/cpu"]
 # `waterui::video` (`VideoAsset`, behind `waterui-assets`' `video` feature);
 # each is enabled only when both sides are present.
 assets = ["dep:waterui-assets", "dep:waterui-assets-macros", "dep:waterui-meta"]
-media = ["dep:waterui-media", "waterui-assets?/media"]
+media = ["dep:waterui-media", "waterui-assets?/media", "waterui-markdown?/media"]
 video = ["dep:waterui-video", "waterui-media?/video", "waterui-assets?/video"]
 # Remote fetching (`Url::fetch`, `Data::from_remote`, remote `Photo` sources)
 # links the `zenwave` HTTP client through `waterui-url`/`waterui-media`. Off by
@@ -216,12 +212,9 @@ navigation-restoration = ["navigation", "waterui-navigation/serde"]
 # Off by default — a CommonMark parser and a document grammar are a lot of
 # binary for an application that shows no Markdown.
 flow-markdown = [
-    "dep:pulldown-cmark",
-    "waterui-text/markdown",
+    "dep:waterui-markdown",
     # A fenced code block in a `RichText` renders through the `Code` widget.
     "highlight",
-    "dep:tree-sitter",
-    "dep:tree-sitter-md",
 ]
 # Mathematical formulas in Markdown: `$…$` and `$$…$$` are parsed and typeset
 # through `waterui-math`. Off by default, and deliberately so — it brings a
@@ -232,7 +225,7 @@ flow-markdown = [
 #
 # With this off the Markdown parser is built without `ENABLE_MATH`, so a dollar
 # sign in prose stays a dollar sign, exactly as it does today.
-markdown-math = ["flow-markdown", "dep:waterui-math"]
+markdown-math = ["flow-markdown", "waterui-markdown?/math"]
 std = ["dep:waterkit-haptic"]
 # `waterui::canvas`: the target-neutral drawing API, `waterui_graphics::canvas`.
 # It costs no dependency; the feature only exposes the re-export.
