@@ -821,17 +821,14 @@ modal, window-filling content: `overlay.show(view)` and `overlay.hide()`.
 iOS backend enforces it today; macOS and Hydrolysis (Android included) render the content
 unprotected.
 
-An error an author wants rendered as a view uses `waterui::widget::error`: `Error::new(err)`
-or `Error::from_view(view)` is itself a `View`, so a body may return `Result<impl View,
-Error>`; `result.error_view(|e| text(e.to_string()))` (`ResultExt`) turns a `Result`'s error
-into one. `Error::new(err)` and `UseDefaultErrorView::new(err)` render through the
-environment entry `DefaultErrorView::new(|e: BoxedStdError| view)` installed above them, and
-draw nothing when none is installed; `Error::from_view` draws its own view. A separate
-`waterui::error::{ErrorView, ErrorViewBuilder}` pair — not the same-named items inside
-`widget::error` — is an independent mechanism: `ErrorView::from(err)` renders through an
-installed `ErrorViewBuilder::new(|e: Box<dyn std::error::Error>, env: &Environment| AnyView::new(view))`,
-or as plain text without one. The two do not read each other's environment entry, so pick
-one per app.
+An error an author wants rendered as a view uses `waterui::error` (re-exported as
+`waterui::widget::error`): `ErrorView::new(err)` (or `ErrorView::from(err)` /
+`error_view(err)`) renders the error's `Display` text by default through
+`DefaultErrorView`, and `.builder(|err| view)` or `ErrorView::with_builder(err, |err| view)`
+customizes it statically with no `Environment` lookup or type erasure;
+`result.error_view(|e| text(e.to_string()))` (`ResultExt`) turns a `Result`'s error into a
+typed `View`, and `result.default_error_view()` turns it into an `ErrorView<E>`, so a
+body can return `Result<impl View, ErrorView<_>>` or `Result<impl View, impl View>`.
 
 ## Badges, avatars, tables, focus
 

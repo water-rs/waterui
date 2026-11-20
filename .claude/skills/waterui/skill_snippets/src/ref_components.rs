@@ -1360,29 +1360,19 @@ pub fn components_overlay_extras_prose() {
 // ---------------------------------------------------------------------------
 pub fn components_secure_and_error_prose() -> impl View {
     use std::io;
-    use waterui::widget::error::{
-        BoxedStdError, DefaultErrorView, Error, ResultExt, UseDefaultErrorView,
-    };
+    use waterui::error::{ErrorView, ResultExt, error_view};
 
     let _ = Divider.secure();
 
-    let _ = Error::new(io::Error::other("failed"));
-    let _ = Error::from_view(text("failed"));
+    let _ = ErrorView::new(io::Error::other("failed"));
+    let _ = ErrorView::from(io::Error::other("failed"));
+    let _ = error_view(io::Error::other("failed")).builder(|e| text(e.to_string()));
+    let _ = ErrorView::with_builder(io::Error::other("failed"), |e| text(e.to_string()));
     let loaded: Result<Str, io::Error> = Ok(Str::from("data"));
-    let _: Result<Str, Error> = loaded.error_view(|e| text(e.to_string()));
-    let _ = Environment::new().with(DefaultErrorView::new(|e: BoxedStdError| {
-        text(e.to_string())
-    }));
-    let _ = UseDefaultErrorView::new(io::Error::other("failed"));
+    let _: Result<Str, Text> = loaded.error_view(|e| text(e.to_string()));
 
-    // The independent runtime pair.
-    let _ = waterui::error::ErrorView::from(io::Error::other("failed"));
-    let _ = waterui::error::ErrorViewBuilder::new(
-        |e: Box<dyn std::error::Error>, _env: &Environment| AnyView::new(text(e.to_string())),
-    );
-
-    // A body may return `Result<impl View, Error>`.
-    let body: Result<_, Error> = Ok(text("ok"));
+    // A body may return `Result<impl View, ErrorView<_>>`.
+    let body: Result<_, ErrorView<io::Error>> = Ok(text("ok"));
     body
 }
 

@@ -1,6 +1,7 @@
 #![doc = include_str!("README.md")]
 extern crate alloc;
 extern crate self as waterui;
+#[cfg(feature = "table")]
 #[macro_use]
 mod macros;
 mod appearance;
@@ -15,7 +16,8 @@ pub use runtime::dialog;
 pub use runtime::inspector;
 #[cfg(feature = "snackbar")]
 pub use runtime::snackbar;
-pub use runtime::{app, entry, error, fullscreen, metadata, task, window};
+pub use runtime::{app, entry, fullscreen, metadata, task, window};
+pub use widget::error;
 /// Task management utilities and async support.
 pub mod view;
 /// Widget components for building complex UI elements.
