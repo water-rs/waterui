@@ -13,6 +13,7 @@ categories = ["gui", "caching"]
 [dependencies]
 waterui-assets-core.workspace = true
 waterui-core.workspace = true
+waterui-resources.workspace = true
 waterui-url = { workspace = true, features = ["std"] }
 waterui-media = { workspace = true, optional = true }
 waterui-video = { workspace = true, optional = true }

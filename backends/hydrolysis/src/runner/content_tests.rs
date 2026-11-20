@@ -10,10 +10,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Instant;
 
-use waterui_core::view_renderer::{
-    CustomViewRenderer as _, RenderError, RenderRequest, RenderResult,
-};
-use waterui_core::{AnyView, ContentLedger, Environment, View, layout::Size};
+use waterui::ContentLedger;
+use waterui::view_renderer::{CustomViewRenderer as _, RenderError, RenderRequest, RenderResult};
+use waterui_core::{AnyView, Environment, View, layout::Size};
 
 use super::executor::HeadlessMainThreadExecutor;
 use crate::renderer::FontFamilyResolution;

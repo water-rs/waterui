@@ -21,6 +21,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use cherenkov_record::Recorder;
+use waterui::widget::Divider;
 use waterui::{AnyView, Color, View, ViewExt as _};
 use waterui_core::Environment;
 use waterui_core::id::SelfId;
@@ -37,7 +38,7 @@ use waterui_graphics::input::SurfaceInputEvent;
 use waterui_graphics::{GpuContent, GpuView};
 use waterui_layout::LazyContainer;
 use waterui_layout::stack::hstack;
-use waterui_layout::{Divider, ProposalSize, Size, SubView};
+use waterui_layout::{ProposalSize, Size, SubView};
 
 use super::{test_environment, test_renderer};
 use crate::renderer::HydroState;

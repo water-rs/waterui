@@ -5,7 +5,8 @@ use std::{
     os::unix::ffi::OsStrExt,
     path::PathBuf,
 };
-use waterui_core::{Environment, ResourceContext};
+use waterui_core::Environment;
+use waterui_resources::ResourceContext;
 
 /// Copies the host's asset and font directories into this instance.
 ///

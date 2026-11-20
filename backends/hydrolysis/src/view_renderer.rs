@@ -2,8 +2,9 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use waterui_core::view_renderer::{CustomViewRenderer, RenderError, RenderRequest, RenderResult};
-use waterui_core::{AnyView, ContentLedger, Environment};
+use waterui::ContentLedger;
+use waterui::view_renderer::{CustomViewRenderer, RenderError, RenderRequest, RenderResult};
+use waterui_core::{AnyView, Environment};
 use waterui_graphics::backend::SceneViewMergeToParent;
 use waterui_text::FontCollection;
 
