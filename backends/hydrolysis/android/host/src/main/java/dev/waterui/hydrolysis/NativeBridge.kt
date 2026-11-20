@@ -77,8 +77,13 @@ object NativeBridge {
      * the `Surface` of each GPU content view's `TextureView`
      * (water-rs/waterui#1812). 29 = the GPU video player's decoder-plane
      * edge: [nativeVideoPlaneAttached] / [nativeVideoPlaneSurfaceDestroyed].
+     * 30 = asynchronous GPU initialization and frame-completion delivery.
+     * 31 = [nativeSetResumed] forwards `onResume`/`onPause` for mounted
+     * `AndroidContent` views, and `onNativeBandShow` carries the band's
+     * painted device-pixel rectangles (`[x, y, w, h, ...]`) so viewability
+     * tracks only painted regions.
      */
-    private const val SCHEMA: Int = 30
+    private const val SCHEMA: Int = 31
 
     /** Applies the pending GPU result on the UI thread. */
     @JvmStatic external fun nativeCompleteFrame(session: Long)
@@ -287,6 +292,12 @@ object NativeBridge {
      * pump's hidden flag together with the surface's attach/detach.
      */
     @JvmStatic external fun nativeSetVisible(sessionPtr: Long, visible: Boolean)
+
+    /**
+     * The Activity's resumed state (`onResume`/`onPause`) — forwarded to
+     * mounted `AndroidContent` views.
+     */
+    @JvmStatic external fun nativeSetResumed(sessionPtr: Long, resumed: Boolean)
 
     /**
      * Continuous work and touch demand, combined with the engine's content

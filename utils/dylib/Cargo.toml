@@ -21,6 +21,10 @@ crate-type = ["dylib", "rlib"]
 waterui-internal.workspace = true
 
 [features]
+form = ["waterui-internal/form"]
+link = ["waterui-internal/link"]
+avatar = ["waterui-internal/avatar"]
+cpu-time = ["waterui-internal/cpu-time"]
 list = ["waterui-internal/list"]
 table = ["waterui-internal/table"]
 navigation = ["waterui-internal/navigation"]
@@ -38,6 +42,9 @@ text-field = ["waterui-internal/text-field"]
 toggle = ["waterui-internal/toggle"]
 validation = ["waterui-internal/validation"]
 default = [
+    "avatar",
+    "cpu-time",
+    "link",
     "list",
     "table",
     "navigation",
@@ -91,6 +98,9 @@ chart = ["waterui-internal/chart"]
 barcode = ["waterui-internal/barcode"]
 particle = ["waterui-internal/particle"]
 all = [
+    "avatar",
+    "cpu-time",
+    "link",
     "list",
     "table",
     "navigation",

@@ -5270,6 +5270,18 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         )
     }
 
+    /// Binds a non-chrome tap target that reports interaction state through
+    /// [`InteractionReport`](waterui_core::interaction::InteractionReport).
+    pub(crate) fn bind_reported_tap_target(
+        &mut self,
+        key: InteractionKey,
+        bounds: kurbo::Rect,
+        env: &Environment,
+        disabled: bool,
+    ) -> (InteractionState, PressSlot, Rc<InteractionLayerHandles>) {
+        self.bind_interaction_target_with_focus(key, bounds, env, None, disabled, None)
+    }
+
     /// Binds the interaction target of a toggle whose parts are
     /// engine-realized ([`LiveToggle`](crate::renderer::live_toggle::LiveToggle))
     /// from `control`, on its touch `target`: the same live binding

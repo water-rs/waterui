@@ -34,6 +34,9 @@ mod native_log;
 #[cfg(preview_entry)]
 pub mod preview;
 pub mod resources;
+mod sf_symbol;
+
+pub use sf_symbol::SfSymbol;
 
 #[cfg(target_os = "macos")]
 pub use apple_content::objc2_app_kit;

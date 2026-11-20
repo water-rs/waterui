@@ -523,10 +523,10 @@ pub fn styling_block_14() {
 // styling.md § "## Icons" — rust block 15/19
 //
 //     #[cfg(target_vendor = "apple")]
-//     use waterui_icons_sf_symbol as sf;
+//     use waterui_apple::SfSymbol;
 //
 // NOT COMPILABLE BY DESIGN here: proving it would mean adding the
-// target-scoped `waterui-icons-sf-symbol` dependency the snippet's companion
+// target-scoped `waterui-apple` dependency the snippet's companion
 // TOML fence declares, and this crate is not built for Apple targets only.
 // Recorded rather than transcribed.
 // ---------------------------------------------------------------------------

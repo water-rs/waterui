@@ -6,6 +6,8 @@ use executor_core::LocalExecutor;
 use executor_core::async_task::AsyncTask;
 use ndk::native_window::NativeWindow;
 
+use waterui::theme::ColorScheme;
+
 use super::gpu::{AndroidGpuContext, DisplayRefresh, GpuError};
 use super::host::{AndroidSession, HostBridge, MetricsSnapshot, UiThreadServices};
 use super::jni::JniError;
@@ -24,8 +26,9 @@ pub(super) struct Startup {
     pub bridge: Arc<HostBridge>,
     pub services: &'static UiThreadServices,
     pub metrics: MetricsSnapshot,
-    pub night: bool,
+    pub color_scheme: ColorScheme,
     pub visible: bool,
+    pub resumed: bool,
     pub attached: bool,
     pub surface: Option<Attachment>,
     pub demand: (bool, bool),
@@ -50,8 +53,13 @@ impl Startup {
             bridge,
             services,
             metrics,
-            night,
+            color_scheme: if night {
+                ColorScheme::Dark
+            } else {
+                ColorScheme::Light
+            },
             visible: false,
+            resumed: false,
             attached: false,
             surface: None,
             demand: (false, false),
@@ -76,12 +84,13 @@ impl Startup {
             gpu,
             &jni::objects::JObject::null(),
             self.metrics,
-            self.night,
+            self.color_scheme == ColorScheme::Dark,
             self.services,
         )?
         .ok_or_else(|| JniError("hydrolysis android: application mounting failed".to_owned()))?;
         session.set_host_attached(self.attached);
-        session.set_visible(self.visible);
+        session.set_visible(env, self.visible);
+        session.set_resumed(env, self.resumed);
         if let Some(surface) = self.surface {
             session
                 .surface_attached_with_generation(

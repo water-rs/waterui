@@ -1,20 +1,12 @@
-//! Reports for leaves this build has no realization for: system icons,
-//! maps, web views and views that need a GPU device.
+//! Reports for leaves this build has no realization for: maps, web views
+//! and views that need a GPU device.
 
-// glob import of the module vocabulary — the renderer internals are designed to be used wholesale
-#[allow(clippy::wildcard_imports)]
-use super::*;
+#[cfg(any(
+    all(waterui_feature = "map", not(feature = "map-gpu")),
+    all(not(hydrolysis_gpu), waterui_feature = "gpu"),
+    all(hydrolysis_gpu, hydrolysis_cpu_painter)
+))]
 use waterui_core::contract_violation;
-
-/// Reports a `SystemIcon` the backend cannot draw; the icon is not drawn and
-/// measures as zero.
-pub fn unsupported_system_icon(icon: &SystemIcon) {
-    contract_violation!(
-        "SystemIcon `{}` is unsupported on Hydrolysis because self-drawn backends have no \
-         OS-supplied icon catalog; use a packaged WaterUI icon crate; the icon is not drawn",
-        icon.name().as_str()
-    );
-}
 
 /// Reports a `Map` reaching a build without the GPU map (`map-gpu`): this
 /// backend bridges no platform map. The map is not drawn and measures as zero.

@@ -17,7 +17,6 @@ svg = ["dep:waterui-svg"]
 [dependencies]
 waterui-core.workspace = true
 waterui-graphics = { workspace = true, default-features = false }
-suiteki.workspace = true
 waterui-text.workspace = true
 waterui-svg = { workspace = true, optional = true }
 

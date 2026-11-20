@@ -20,7 +20,6 @@ waterui-core.workspace = true
 waterui-text.workspace = true
 waterui-graphics = { workspace = true, default-features = false }
 waterui-controls.workspace = true
-waterui-icon.workspace = true
 waterui-url.workspace = true
 
 nami.workspace = true

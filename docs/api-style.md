@@ -284,11 +284,7 @@ mechanism, but new code should use `.color_space(...)`.
 
 ## 12. Icon packs: function form everywhere
 
-Every icon pack — `lucide`, `material-icon`, `sf-symbol`, `native`, plus
-`waterui_icon::system_icon` — exposes its icons as **functions**, not
-constants. `lucide::house()`, `mdi::home()`, `sf::house_fill()`,
-`system_icon::checkmark()`. Don't add `pub const FOO: SystemIcon = …`
-constants alongside; new code converges on functions.
-
-The `SystemIcon::FOO` constants on the `SystemIcon` type itself were
-removed. Use `waterui_icon::system_icon::*` functions.
+Portable icon packs — `lucide`, `material-icon`, and `fontawesome7` — expose
+their icons as **functions** (`lucide::house()`, `mdi::home()`, ...). Apple SF
+Symbols live in `waterui_apple::SfSymbol` as typed constants (`SfSymbol::HOUSE`,
+`SfSymbol::HOUSE_FILL`).

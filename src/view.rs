@@ -69,6 +69,9 @@ use crate::{
 };
 #[cfg(feature = "std")]
 use waterkit_haptic::{Haptic, Intensity};
+use waterui_controls::button::{ButtonStyleHook, IntoButtonStyle};
+#[cfg(feature = "toggle")]
+use waterui_controls::toggle::{IntoToggleStyle, ToggleStyleHook};
 use waterui_core::event::{Event, LifeCycle, LifeCycleHook, OnChange, OnEvent};
 use waterui_core::id::TaggedView;
 use waterui_core::interaction::{Disabled, InteractionReport, InteractionState, Selected};
@@ -214,6 +217,38 @@ pub trait ViewExt: View + Sized {
     /// scope is offered a payload before an outer one.
     fn hooks<H: hook::HookList>(self, hooks: H) -> hook::Hooks<Self, H> {
         hook::Hooks::new(self, hooks)
+    }
+
+    /// Styles all [`Button`](crate::component::button::Button) views in this subtree
+    /// that did not specify an explicit `.style(...)`.
+    ///
+    /// Accepts a built-in [`ButtonStyle`](crate::component::ButtonStyle), a
+    /// [`CustomButtonStyle`](crate::component::CustomButtonStyle), or a
+    /// [`PrimitiveButtonStyle`](crate::component::PrimitiveButtonStyle).
+    fn button_style<S, Marker>(
+        self,
+        style: S,
+    ) -> hook::Hooks<Self, ButtonStyleHook<<S as IntoButtonStyle<Marker>>::Style>>
+    where
+        S: IntoButtonStyle<Marker>,
+    {
+        hook::Hooks::new(self, ButtonStyleHook::new(style.into_button_style()))
+    }
+
+    /// Styles all [`Toggle`](crate::component::toggle::Toggle) views in this subtree
+    /// that did not specify an explicit `.style(...)`.
+    ///
+    /// Accepts a built-in [`ToggleStyle`](crate::component::ToggleStyle) or a
+    /// [`CustomToggleStyle`](crate::component::CustomToggleStyle).
+    #[cfg(feature = "toggle")]
+    fn toggle_style<S, Marker>(
+        self,
+        style: S,
+    ) -> hook::Hooks<Self, ToggleStyleHook<<S as IntoToggleStyle<Marker>>::Style>>
+    where
+        S: IntoToggleStyle<Marker>,
+    {
+        hook::Hooks::new(self, ToggleStyleHook::new(style.into_toggle_style()))
     }
 
     /// Sets this view as the content of a navigation view with the specified title.

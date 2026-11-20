@@ -1378,17 +1378,6 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         RenderNode::build_table(renderer, native, env)
     }
 
-    fn icon(
-        &mut self,
-        native: waterui::icon::SystemIcon,
-        env: &Environment,
-        (): (),
-    ) -> RenderNode<E> {
-        let renderer = &mut *self.renderer;
-        unsupported_system_icon(&native);
-        RenderNode::build_empty(renderer, env)
-    }
-
     fn gradient(
         &mut self,
         native: waterui::graphics::Gradient,
@@ -1428,14 +1417,14 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     }
 
     #[cfg(waterui_feature = "navigation")]
-    fn navigation_split(
+    fn navigation_split<C: ChildView<Self>>(
         &mut self,
-        native: waterui::navigation::split::NavigationSplitLayout,
+        native: waterui::navigation::split::NavigationSplitLayout<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
         let renderer = &mut *self.renderer;
-        RenderNode::build_navigation_split(native, env, renderer)
+        RenderNode::build_navigation_split(native.map_slots(C::into_child), env, renderer)
     }
 
     #[cfg(waterui_feature = "navigation")]
@@ -1470,9 +1459,9 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         RenderNode::build_spacer(renderer, native, env)
     }
 
-    // `Divider` and `Str` are registered renderers (not `Native<…>` leaves), so
-    // they are downcast as their value type directly and built into persistent
-    // `Widget` nodes that re-render from a retained cell each flush.
+    // `Divider` and `Str` are `NativeView` leaves routed directly to
+    // `NativeBackend::divider` and `NativeBackend::label`, and built into
+    // persistent `Widget` nodes that re-render from a retained cell each flush.
     fn divider(
         &mut self,
         native: waterui::layout::Divider,
@@ -1537,6 +1526,29 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
             drop(native);
             return self.unrealized(core::any::type_name::<T>(), env);
         }
+        #[cfg(all(target_os = "android", any(hydrolysis_gpu_painter, hydrolysis_hwui)))]
+        let native = {
+            #[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
+            let semantic_walk = self.renderer.semantic_walk;
+            #[cfg(not(all(feature = "accessibility", hydrolysis_cherenkov)))]
+            let semantic_walk = false;
+            if !semantic_walk
+                && let Some(bridge) = env
+                    .get::<crate::runner::android::host::AndroidHostBridge>()
+                    .cloned()
+            {
+                let core = self.renderer.new_core();
+                let mut slot = android_provided_slot(&core, bridge);
+                match native.realize_provided(&mut slot, env) {
+                    Ok(()) => {
+                        return realize_android_provided_slot(self.renderer, slot, core, env);
+                    }
+                    Err(native) => native,
+                }
+            } else {
+                native
+            }
+        };
         drop(native);
         self.unrealized(core::any::type_name::<T>(), env)
     }
@@ -1569,6 +1581,24 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
                     StretchAxis::None,
                     env,
                 );
+            }
+        }
+        #[cfg(all(target_os = "android", any(hydrolysis_gpu_painter, hydrolysis_hwui)))]
+        {
+            #[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
+            let semantic_walk = self.renderer.semantic_walk;
+            #[cfg(not(all(feature = "accessibility", hydrolysis_cherenkov)))]
+            let semantic_walk = false;
+            if !semantic_walk
+                && let Some(bridge) = env
+                    .get::<crate::runner::android::host::AndroidHostBridge>()
+                    .cloned()
+            {
+                let core = self.renderer.new_core();
+                let mut slot = android_provided_slot(&core, bridge);
+                if native.realize_provided(&mut slot, env) {
+                    return realize_android_provided_slot(self.renderer, slot, core, env);
+                }
             }
         }
         self.unrealized(native.type_name(), env)
@@ -1660,4 +1690,48 @@ impl<E: crate::text::TextEngine> HydroBackend<'_, E> {
             )),
         }))
     }
+}
+
+#[cfg(all(target_os = "android", any(hydrolysis_gpu_painter, hydrolysis_hwui)))]
+fn android_provided_slot<E: crate::text::TextEngine>(
+    core: &NodeCore<E>,
+    bridge: crate::runner::android::host::AndroidHostBridge,
+) -> crate::android_content::AndroidProvidedSlot {
+    let weak_layout = Rc::downgrade(&core.cell);
+    let weak_paint = Rc::downgrade(&core.cell);
+    crate::android_content::AndroidProvidedSlot {
+        bridge,
+        mark_layout: Rc::new(move || {
+            if let Some(cell) = weak_layout.upgrade() {
+                cell.mark_layout();
+            }
+        }),
+        mark_paint: Rc::new(move || {
+            if let Some(cell) = weak_paint.upgrade() {
+                cell.mark(crate::renderer::mount::Dirty::PAINT);
+            }
+        }),
+        realized: None,
+    }
+}
+
+#[cfg(all(target_os = "android", any(hydrolysis_gpu_painter, hydrolysis_hwui)))]
+fn realize_android_provided_slot<E: crate::text::TextEngine>(
+    renderer: &SemanticCore<E>,
+    slot: crate::android_content::AndroidProvidedSlot,
+    core: NodeCore<E>,
+    env: &Environment,
+) -> RenderNode<E> {
+    let Some((leaf, stretch)) = slot.realized else {
+        return RenderNode::build_empty(renderer, env);
+    };
+    let Some(leaf) = leaf else {
+        return RenderNode::build_empty(renderer, env);
+    };
+    RenderNode::build_widget_with_core(
+        Rc::new(crate::android_content::AndroidWidgetAdapter(leaf)),
+        stretch,
+        env,
+        core,
+    )
 }

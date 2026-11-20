@@ -236,7 +236,15 @@ fn rebuild_menu(state: &Rc<RefCell<MenuState>>) {
         )
     };
     let key_commands = button.menu_commands();
-    button.set_menu(&build_menu(mtm, &key_commands, "", None, &items, &env));
+    button.set_menu(&build_menu(
+        mtm,
+        &key_commands,
+        "",
+        None,
+        None,
+        &items,
+        &env,
+    ));
     // `setMenu:` has replaced the rows of a menu that is open, so the
     // previous menu's commands are unreachable and retire with its scope.
     state.borrow_mut().key_commands = Some(key_commands);

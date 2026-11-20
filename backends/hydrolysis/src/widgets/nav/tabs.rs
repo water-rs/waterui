@@ -16,13 +16,13 @@ use accesskit::{
 };
 use nami::watcher::BoxWatcherGuard;
 use nami::{Binding, Signal};
-use waterui::navigation::tab::{NativeTabStyle, TabIcon, TabItem, TabsLayout};
+use waterui::navigation::tab::{NativeTabStyle, TabItem, TabsLayout};
 use waterui_controls::label::LabelDisplayMode;
 use waterui_core::contract_violation;
 use waterui_core::id::Id;
 use waterui_core::layout::{LayoutDirection, ProposalSize, Size as LayoutSize, ViewDimensions};
 use waterui_core::views::AnyViewsSnapshot;
-use waterui_core::{AnyView, Environment, Native};
+use waterui_core::{Environment, Native};
 
 #[cfg(feature = "accessibility")]
 use crate::widgets::util::widget_disabled;
@@ -49,12 +49,7 @@ impl<E: crate::text::TextEngine> TabRenderState<E> {
         Self {
             tag,
             label: RetainedSubview::held(label.build()),
-            icon: icon.map(|icon| {
-                RetainedSubview::new(match icon {
-                    TabIcon::System(icon) => AnyView::new(icon),
-                    TabIcon::View(builder) => builder.build(),
-                })
-            }),
+            icon: icon.map(|builder| RetainedSubview::new(builder.build())),
             content: RetainedSubview::new(Native::new(content.build())),
             enabled,
             badge,

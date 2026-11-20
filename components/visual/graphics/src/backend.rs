@@ -38,9 +38,11 @@ pub use crate::scene::picture::{Picture, PictureRecording, PictureSource};
 #[cfg(feature = "cherenkov")]
 pub use crate::scene::resources::SceneCaps;
 pub use crate::scene::resources::{
-    Handle, HeldResources, PlainId, RecordingResources, Registered, RegisteredText, ResourceHandle,
-    SceneBackend, SceneResources, ShaderBackend, TextBackend, TextRegistration, TextRequest,
+    Handle, HeldResources, PlainId, RecordingResources, Registered, ResourceHandle, SceneBackend,
+    SceneResources, ShaderBackend,
 };
+#[cfg(feature = "text")]
+pub use crate::scene::resources::{RegisteredText, TextBackend, TextRegistration, TextRequest};
 pub use crate::scene::scene_view::{
     NextFrame, SceneContent, SceneFrame, SceneInvalidator, SceneUpdate, SceneView,
     SceneViewMergeToParent, invalidate_on_change, resolve_scene_proposal, scene_stretch_axis,

@@ -1,328 +1,297 @@
-//! Error handling for the `WaterUI` framework.
+//! Typed error views for `WaterUI`.
 //!
-//! This module provides comprehensive error handling utilities that seamlessly integrate with the
-//! framework's view system. It enables developers to convert standard Rust errors into renderable
-//! views, customize error presentation, and handle errors gracefully within the declarative UI paradigm.
+//! This module turns errors and `Result` values into [`View`]s without type
+//! erasure or environment-injected builders:
 //!
-//! # Overview
+//! - [`ErrorView`]: Renders an error value through an [`ErrorViewBuilder`] (by
+//!   default [`DefaultErrorView`], which renders the error's [`Display`]
+//!   representation as [`Text`]).
+//! - [`ErrorViewBuilder`]: Trait implemented by [`DefaultErrorView`] and
+//!   closures `FnOnce(E) -> V`.
+//! - [`ResultExt`]: Extension trait converting `Result<T, E>` errors directly
+//!   into typed views or [`ErrorView`]s.
 //!
-//! The error handling system is built around several key components:
+//! # Examples
 //!
-//! - [`Error`]: A type-erased error wrapper that can render as a view
-//! - [`DefaultErrorView`]: Environment-based configuration for default error rendering
-//! - [`UseDefaultErrorView`]: A view that delegates to the environment's error renderer
-//! - [`ResultExt`]: Extension trait for `Result` types to simplify error-to-view conversion
-//!
-//! # Basic Usage
-//!
-//! ## Converting Errors to Views
-//!
-//! Any standard error can be converted to a renderable view:
+//! ## Default error view
 //!
 //! ```rust
-//! use waterui::widget::error::Error;
 //! use std::io;
+//! use waterui::prelude::*;
+//! use waterui::error::ErrorView;
 //!
-//! fn handle_io_error() -> Error {
-//!     let io_error = io::Error::new(io::ErrorKind::NotFound, "File not found");
-//!     Error::new(io_error)
-//! }
+//! let view = ErrorView::new(io::Error::new(io::ErrorKind::NotFound, "File not found"));
+//! let from_err: ErrorView<_> = io::Error::other("disk full").into();
+//! # let _ = (view, from_err);
 //! ```
 //!
-//! ## Configuring Default Error Views
+//! ## Custom error builder
 //!
-//! Set up a custom error renderer in your environment:
+//! ```rust
+//! use std::io;
+//! use waterui::prelude::*;
+//! use waterui::error::ErrorView;
+//!
+//! let view = ErrorView::with_builder(
+//!     io::Error::other("connection reset"),
+//!     |err: io::Error| text(format!("Request failed: {err}")),
+//! );
+//! # let _ = view;
+//! ```
+//!
+//! ## Converting `Result` errors to views
 //!
 //! ```rust
 //! use waterui::prelude::*;
-//! use waterui::widget::error::{BoxedStdError, DefaultErrorView};
-//! use waterui::ViewExt;
-//! use waterui_layout::stack::vstack;
-//!
-//! let env = Environment::new().with(DefaultErrorView::new(|error: BoxedStdError| {
-//!     let message = Binding::container(error.to_string());
-//!     vstack((
-//!         text!("❌ Error: {message}"),
-//!         text!("Please contact support if this persists.")
-//!             .foreground(Color::srgb(128, 128, 128)),
-//!     ))
-//! }));
-//! ```
-//!
-//! ## Using Result Extensions
-//!
-//! Convert `Result` errors to custom views inline:
-//!
-//! ```rust
-//! use waterui::prelude::*;
-//! use waterui::widget::error::ResultExt;
-//! use waterui::ViewExt;
+//! use waterui::error::ResultExt;
 //!
 //! fn load_data() -> Result<String, std::io::Error> {
-//!     // ... some operation that might fail
 //!     Ok("data".to_string())
 //! }
 //!
 //! fn my_view() -> impl View {
-//!     match load_data().error_view(|err| {
-//!         let message = Binding::container(err.to_string());
-//!         text!("Failed to load: {message}")
-//!     }) {
-//!         Ok(data) => OneOf2::A(text::text(data)),
-//!         Err(error_view) => OneOf2::B(error_view),
-//!     }
+//!     load_data()
+//!         .map(text)
+//!         .error_view(|err| text(format!("Failed to load: {err}")))
 //! }
 //! ```
-//!
-//! # Advanced Features
-//!
-//! ## Type Downcasting
-//!
-//! Errors can be downcast to specific types for specialized handling:
-//!
-//! ```rust
-//! use waterui::prelude::*;
-//! use waterui::widget::error::Error;
-//! use std::io;
-//!
-//! let error = Error::new(io::Error::new(io::ErrorKind::NotFound, "File not found"));
-//! match error.downcast::<io::Error>() {
-//!     Ok(io_error) => {
-//!         // Handle specific IO error
-//!         format!("IO Error: {:?}", io_error);
-//!     }
-//!     Err(original_error) => {
-//!         // Handle as generic error
-//!         format!("Other error: {:?}", original_error);
-//!     }
-//! }
-//! ```
-//!
-//! ## Creating Errors from Views
-//!
-//! Create errors directly from custom views:
-//!
-//! ```rust
-//! use waterui::prelude::*;
-//! use waterui::widget::error::Error;
-//! use waterui_layout::stack::vstack;
-//!
-//! let custom_error = Error::from_view(vstack((
-//!     text!("Something went wrong!"),
-//!     text!("Please try again later."),
-//! )));
-//! ```
-//!
-//! # Architecture
-//!
-//! The error system uses type erasure and trait objects to handle different error types
-//! uniformly while preserving the ability to downcast to specific types when needed.
-//! The [`DefaultErrorView`] mechanism allows for environment-based error styling
-//! configuration that can be inherited throughout the view hierarchy.
 
-use crate::{AnyView, Environment, View};
-use alloc::boxed::Box;
-use core::{
-    any::TypeId,
-    fmt::{Debug, Display},
-};
+use alloc::format;
+use core::fmt::Display;
+
+use waterui_core::{Environment, View};
+use waterui_text::{Text, text};
 
 /// Re-export of the standard error trait for convenience.
 pub use core::error::Error as StdError;
 
-/// Custom error type to use with framework views.
+/// A boxed standard error trait object for callers that opt into combining
+/// heterogeneous error types.
+pub type BoxedStdError = alloc::boxed::Box<dyn StdError>;
+
+/// Builds a [`View`] from an error of type `E`.
 ///
-/// This type encapsulates any error that can be rendered as a view.
-pub struct Error {
-    inner: Box<dyn ErrorImpl>,
+/// Implemented by [`DefaultErrorView`] (which formats `E` into [`Text`]) and by
+/// any `FnOnce(E) -> V + 'static` closure returning a [`View`].
+pub trait ErrorViewBuilder<E>: 'static {
+    /// The view produced for an error.
+    type Body: View;
+
+    /// Builds the view representing `error`.
+    fn build(self, error: E) -> Self::Body;
 }
 
-impl_debug!(Error);
+/// Default error renderer that displays an error's [`Display`] text.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DefaultErrorView;
 
-/// A boxed standard error trait object.
-pub type BoxedStdError = Box<dyn StdError>;
+impl<E: Display + 'static> ErrorViewBuilder<E> for DefaultErrorView {
+    type Body = Text;
 
-/// A function type that builds a view from a boxed error.
-pub type ErrorViewBuilder = Box<dyn Fn(BoxedStdError) -> AnyView>;
-
-trait ErrorImpl: Debug + Display + 'static {
-    fn body(self: Box<Self>, _env: Environment) -> AnyView;
-
-    fn type_id(&self) -> TypeId {
-        TypeId::of::<Self>()
+    fn build(self, error: E) -> Self::Body {
+        text(format!("{error}"))
     }
 }
 
-impl<E: StdError + 'static> ErrorImpl for E {
-    fn body(self: Box<Self>, _env: Environment) -> AnyView {
-        AnyView::new(UseDefaultErrorView::new(self))
+impl<E: 'static, F, V> ErrorViewBuilder<E> for F
+where
+    F: FnOnce(E) -> V + 'static,
+    V: View,
+{
+    type Body = V;
+
+    fn build(self, error: E) -> Self::Body {
+        self(error)
     }
 }
 
-impl Error {
-    /// Creates a new `Error` from any type that implements the standard error trait.
-    ///
-    /// # Arguments
-    ///
-    /// * `error` - Any error type that implements `StdError` and has static lifetime.
-    pub fn new(error: impl StdError + 'static) -> Self {
+/// A [`View`] that renders an error `E` with a statically typed builder `B`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ErrorView<E, B = DefaultErrorView> {
+    error: E,
+    builder: B,
+}
+
+impl<E> ErrorView<E, DefaultErrorView> {
+    /// Creates an [`ErrorView`] that renders `error` using [`DefaultErrorView`].
+    #[must_use]
+    pub const fn new(error: E) -> Self {
         Self {
-            inner: Box::new(error),
+            error,
+            builder: DefaultErrorView,
+        }
+    }
+}
+
+impl<E, F, V> ErrorView<E, F>
+where
+    F: FnOnce(E) -> V + 'static,
+    V: View,
+{
+    /// Creates an [`ErrorView`] with a custom closure builder.
+    #[must_use]
+    pub const fn with_builder(error: E, builder: F) -> Self {
+        Self { error, builder }
+    }
+}
+
+impl<E, B> ErrorView<E, B> {
+    /// Creates an [`ErrorView`] with a custom [`ErrorViewBuilder`].
+    #[must_use]
+    pub const fn from_builder(error: E, builder: B) -> Self
+    where
+        B: ErrorViewBuilder<E>,
+    {
+        Self { error, builder }
+    }
+
+    /// Replaces the error renderer with `builder`.
+    #[must_use]
+    pub fn builder<F, V>(self, builder: F) -> ErrorView<E, F>
+    where
+        F: FnOnce(E) -> V + 'static,
+        V: View,
+    {
+        ErrorView {
+            error: self.error,
+            builder,
         }
     }
 
-    /// Attempts to downcast the error to a concrete type.
-    ///
-    /// # Arguments
-    ///
-    /// * `T` - The type to downcast to.
-    ///
-    /// # Returns
-    ///
-    /// A `Result` containing either the boxed downcast type or the original error.
+    /// Replaces the error renderer with an [`ErrorViewBuilder`] implementation.
+    #[must_use]
+    pub fn with_custom_builder<B2: ErrorViewBuilder<E>>(self, builder: B2) -> ErrorView<E, B2> {
+        ErrorView {
+            error: self.error,
+            builder,
+        }
+    }
+
+    /// Returns a reference to the underlying error.
+    #[must_use]
+    pub const fn error(&self) -> &E {
+        &self.error
+    }
+
+    /// Unwraps and returns the underlying error.
+    #[must_use]
+    pub fn into_error(self) -> E {
+        self.error
+    }
+}
+
+impl<E: StdError + 'static> From<E> for ErrorView<E, DefaultErrorView> {
+    fn from(error: E) -> Self {
+        Self::new(error)
+    }
+}
+
+impl<E, B> View for ErrorView<E, B>
+where
+    E: 'static,
+    B: ErrorViewBuilder<E>,
+{
+    fn body(self, _env: &Environment) -> impl View {
+        self.builder.build(self.error)
+    }
+}
+
+/// Creates an [`ErrorView`] that renders `error` as plain text.
+#[must_use]
+pub const fn error_view<E>(error: E) -> ErrorView<E, DefaultErrorView> {
+    ErrorView::new(error)
+}
+
+/// Extension trait for [`Result`] to turn errors into typed views.
+pub trait ResultExt<T, E> {
+    /// Converts the `Err` variant into a view `V`.
     ///
     /// # Errors
     ///
-    /// Returns `Err(self)` if the error cannot be downcast to the specified type `T`.
-    pub fn downcast<T: 'static>(self) -> Result<Box<T>, Self> {
-        if ErrorImpl::type_id(&*self.inner) == TypeId::of::<T>() {
-            // SAFETY: the type check in the branch condition proves the boxed value is
-            // a `T`, so re-typing the box preserves its layout and ownership.
-            unsafe { Ok(Box::from_raw(Box::into_raw(self.inner).cast::<T>())) }
-        } else {
-            Err(self)
-        }
-    }
-
-    /// Creates an error directly from a view.
-    ///
-    /// # Arguments
-    ///
-    /// * `view` - Any type that implements `View`.
-    pub fn from_view(view: impl View) -> Self {
-        Self {
-            inner: Box::new(ErrorView::new(view)),
-        }
-    }
-}
-
-/// A wrapper that turns a view into an error.
-pub struct ErrorView(AnyView);
-
-impl ErrorView {
-    fn new(view: impl View) -> Self {
-        Self(AnyView::new(view))
-    }
-}
-
-impl Display for ErrorView {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_fmt(format_args!("ErrorView<{}>", self.0.name()))
-    }
-}
-
-impl Debug for ErrorView {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        Debug::fmt(&self, f)
-    }
-}
-
-impl ErrorImpl for ErrorView {
-    fn body(self: Box<Self>, _env: Environment) -> AnyView {
-        self.0
-    }
-}
-
-impl View for Error {
-    fn body(self, env: &Environment) -> impl View {
-        self.inner.body(env.clone())
-    }
-}
-
-/// Extension trait for `Result` types to easily convert errors to views.
-#[allow(clippy::missing_errors_doc)]
-pub trait ResultExt<T, E> {
-    /// Converts an error to a custom view.
-    ///
-    /// # Arguments
-    ///
-    /// * `view` - A function that converts the error to a view.
-    ///
-    /// # Returns
-    ///
-    /// A `Result` with the original value or an `Error` containing the view.
-    fn error_view<V: View>(self, view: impl FnOnce(E) -> V) -> Result<T, Error>
+    /// Returns `Err(view(error))` when `self` is `Err(error)`.
+    fn error_view<V: View>(self, view: impl FnOnce(E) -> V) -> Result<T, V>
     where
         Self: Sized;
-}
 
-impl<T, E: Debug + Display + 'static> ResultExt<T, E> for Result<T, E> {
-    fn error_view<V: View>(self, view: impl FnOnce(E) -> V) -> Result<T, Error>
+    /// Converts the `Err` variant into a default [`ErrorView<E>`].
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(ErrorView::new(error))` when `self` is `Err(error)`.
+    fn default_error_view(self) -> Result<T, ErrorView<E>>
     where
         Self: Sized,
+        E: Display + 'static;
+}
+
+impl<T, E> ResultExt<T, E> for Result<T, E> {
+    fn error_view<V: View>(self, view: impl FnOnce(E) -> V) -> Result<T, V> {
+        self.map_err(view)
+    }
+
+    fn default_error_view(self) -> Result<T, ErrorView<E>>
+    where
+        E: Display + 'static,
     {
-        self.map_err(|error| Error::from_view(view(error)))
+        self.map_err(ErrorView::new)
     }
 }
 
-/// A view that renders an error using the default error view from the environment.
-#[derive(Debug)]
-pub struct UseDefaultErrorView(BoxedStdError);
+#[cfg(test)]
+mod tests {
+    use alloc::format;
+    use core::fmt;
 
-impl From<BoxedStdError> for UseDefaultErrorView {
-    fn from(value: BoxedStdError) -> Self {
-        Self(value)
-    }
-}
+    use nami::Signal as _;
+    use waterui_core::{Environment, View};
+    use waterui_text::text;
 
-impl UseDefaultErrorView {
-    /// Creates a new view that will use the default error rendering.
-    ///
-    /// # Arguments
-    ///
-    /// * `error` - Any error type that implements `StdError`.
-    pub fn new(error: impl StdError + 'static) -> Self {
-        let boxed: BoxedStdError = Box::new(error);
-        Self::from(boxed)
-    }
-}
+    use super::{DefaultErrorView, ErrorView, ErrorViewBuilder, ResultExt, error_view};
 
-impl View for UseDefaultErrorView {
-    fn body(self, env: &Environment) -> impl View {
-        if let Some(builder) = env.get::<DefaultErrorView>() {
-            builder.build(self.0)
-        } else {
-            AnyView::new(())
+    #[derive(Debug)]
+    struct SampleError(&'static str);
+
+    impl fmt::Display for SampleError {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str(self.0)
         }
     }
-}
 
-/// A configurator for the default error view.
-///
-/// This can be placed in the environment to define how errors should be displayed.
-pub struct DefaultErrorView(ErrorViewBuilder);
-impl_debug!(DefaultErrorView);
+    impl core::error::Error for SampleError {}
 
-impl DefaultErrorView {
-    /// Creates a new default error view builder.
-    ///
-    /// # Arguments
-    ///
-    /// * `builder` - A function that creates a view from a boxed error.
-    pub fn new<V: View>(builder: impl 'static + Fn(BoxedStdError) -> V) -> Self {
-        Self(Box::new(move |error| AnyView::new(builder(error))))
+    #[test]
+    fn default_error_view_formats_display_text() {
+        let rendered = DefaultErrorView.build(SampleError("boom"));
+        assert_eq!(rendered.content().snapshot().to_plain().as_str(), "boom");
     }
 
-    /// Builds a view from a boxed error using the configured builder.
-    ///
-    /// # Arguments
-    ///
-    /// * `error` - A boxed error to render.
-    ///
-    /// # Returns
-    ///
-    /// An `AnyView` containing the rendered error.
-    pub fn build(&self, error: BoxedStdError) -> AnyView {
-        (self.0)(error)
+    #[test]
+    fn error_view_builder_replaces_default_renderer() {
+        let view = error_view(SampleError("boom")).builder(|err| text(format!("custom: {err}")));
+        let _body = view.body(&Environment::new());
+    }
+
+    #[test]
+    fn result_ext_maps_err_without_erasure() {
+        let res: Result<(), SampleError> = Err(SampleError("oops"));
+        let err_view = res
+            .default_error_view()
+            .expect_err("err variant should remain Err");
+        assert_eq!(err_view.error().0, "oops");
+
+        let custom: Result<(), SampleError> = Err(SampleError("oops"));
+        let custom_view = custom
+            .error_view(|e| text(format!("custom: {e}")))
+            .expect_err("err variant should map to custom view");
+        assert_eq!(
+            custom_view.content().snapshot().to_plain().as_str(),
+            "custom: oops"
+        );
+    }
+
+    #[test]
+    fn from_error_constructs_default_error_view() {
+        let view = ErrorView::from(SampleError("from-err"));
+        assert_eq!(view.into_error().0, "from-err");
     }
 }

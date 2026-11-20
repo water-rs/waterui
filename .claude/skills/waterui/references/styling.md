@@ -349,8 +349,7 @@ Icons come from packaged icon-set crates. **Pick one set per app** and depend on
 | `waterui-icons-material-icon` | Material Design Icons (Pictogrammers), SVG |
 | `waterui-icons-lucide` | Lucide, SVG |
 | `waterui-icons-fontawesome7` | Font Awesome 7 Free (webfont by default, SVG optional) — constants such as `fa::solid::HOUSE`, `.with_size(32.0)` |
-| `waterui-icons-sf-symbol` | SF Symbols — **Apple platforms only** |
-| `waterui-icons-native` | Curated SF Symbol names (`home()`, `settings()`, …) — **Apple platforms only** |
+| `waterui-apple` (`SfSymbol`) | Type-safe Apple SF Symbols (`SfSymbol::HOUSE`, gated by deployment target) — **Apple platforms only** |
 
 ```rust
 use waterui_icons_material_icon as mdi;
@@ -369,22 +368,22 @@ which the app must bundle; its `svg` feature needs no font.
 
 Match the set to the design language: a Material 3 app uses Material icons, not Lucide.
 
-The `SystemIcon` type behind the SF Symbol and native packs (`waterui::icon`, name-based)
-renders only on Apple platforms. There is deliberately no cross-platform "system icon" fallback. Apple ships SF Symbols and
-Android has no OS-supplied icon catalog, so the asymmetry is documented rather than hidden
-behind a bundled font pretending to be the system's. Using SF Symbols in portable code
-takes a *pair* of gates that must agree — a target-scoped dependency and a cfg on every
-use site — plus cfg-selected sibling functions rather than a cfg inside a tuple (stack
-tuple arity cannot vary by cfg):
+`waterui_apple::SfSymbol` exists only in the Apple backend (`waterui-apple`) and exposes
+Apple's catalog as typed constants gated by the build's deployment target (symbols newer
+than the deployment target fail to compile). There is deliberately no cross-platform
+"system icon" fallback: Apple ships SF Symbols and Android has no OS-supplied icon catalog.
+Using `SfSymbol` in portable code takes a *pair* of gates that must agree — a target-scoped
+dependency and a `cfg` on every use site — plus `cfg`-selected sibling functions rather
+than a `cfg` inside a tuple (stack tuple arity cannot vary by `cfg`):
 
 ```toml
 [target.'cfg(target_vendor = "apple")'.dependencies]
-waterui-icons-sf-symbol = "…"
+waterui-apple = "…"
 ```
 
 ```rust
 #[cfg(target_vendor = "apple")]
-use waterui_icons_sf_symbol as sf;
+use waterui_apple::SfSymbol;
 ```
 
 ## Material 3 with the Hydrolysis renderer
