@@ -11,6 +11,7 @@ use waterui_core::layout::{ProposalSize, Size, StretchAxis};
 use waterui_core::{AnyView, Environment, Native, NativeView, View, contract_violation};
 
 use crate::draw::Instant;
+#[cfg(feature = "input")]
 use crate::input::SurfaceInputEvent;
 use crate::scene::resources::{RecordingResources, SceneResources};
 
@@ -300,6 +301,7 @@ pub trait SceneContent: 'static {
     ///
     /// Read when the content is placed, so the answer is a property of the
     /// content rather than of its current state.
+    #[cfg(feature = "input")]
     fn wants_input_events(&self) -> bool {
         false
     }
@@ -314,6 +316,7 @@ pub trait SceneContent: 'static {
     /// An event that changes what the content draws is followed by a call to
     /// the invalidator from [`SceneContent::set_invalidator`]: delivering an
     /// event does not itself schedule a frame.
+    #[cfg(feature = "input")]
     fn input(&mut self, event: &SurfaceInputEvent) {
         let _ = event;
     }
@@ -324,6 +327,7 @@ pub trait SceneContent: 'static {
     /// Backends place the input-method candidate window against it, so
     /// content that accepts composed text reports its caret. `None` — the
     /// default — means there is no caret to place the panel against.
+    #[cfg(feature = "input")]
     fn ime_caret(&self) -> Option<crate::draw::kurbo::Rect> {
         None
     }

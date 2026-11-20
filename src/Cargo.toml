@@ -51,7 +51,7 @@ tracing-subscriber = { workspace = true, optional = true }
 async-channel.workspace = true
 web-time.workspace = true
 waterui-macros.workspace = true
-waterui-graphics = { workspace = true, default-features = false }
+waterui-graphics = { workspace = true, default-features = false, features = ["text"] }
 waterui-icon.workspace = true
 waterui-shape = { workspace = true, default-features = false }
 waterui-structural-transition.workspace = true
@@ -167,7 +167,7 @@ cpu = ["effects", "waterui-graphics/cpu"]
 # `waterui::video` (`VideoAsset`, behind `waterui-assets`' `video` feature);
 # each is enabled only when both sides are present.
 assets = ["dep:waterui-assets", "dep:waterui-assets-macros", "dep:waterui-meta"]
-media = ["dep:waterui-media", "waterui-assets?/media", "waterui-markdown?/media"]
+media = ["dep:waterui-media", "waterui-assets?/media", "waterui-graphics/image-decode", "waterui-markdown?/media"]
 video = ["dep:waterui-video", "waterui-media?/video", "waterui-assets?/video"]
 # Remote fetching (`Url::fetch`, `Data::from_remote`, remote `Photo` sources)
 # links the `zenwave` HTTP client through `waterui-url`/`waterui-media`. Off by
