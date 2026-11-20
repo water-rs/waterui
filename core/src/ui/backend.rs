@@ -193,7 +193,7 @@ impl Backend for Erased<'_> {
         cx: Self::Ctx,
     ) -> Self::Output {
         self.inner
-            .native_dyn(ErasedPayload::new(&mut Some(native)), env, cx)
+            .native_dyn(ErasedPayload::new_native(&mut Some(native)), env, cx)
     }
 
     fn metadata<K: MetadataKey>(
@@ -236,12 +236,35 @@ impl Backend for Erased<'_> {
     }
 }
 
+type RealizeProvidedFn = fn(&mut dyn Any, &mut dyn Any, &Environment) -> bool;
+
+fn realize_provided_erased<T: NativeView + 'static>(
+    slot: &mut dyn Any,
+    context: &mut dyn Any,
+    env: &Environment,
+) -> bool {
+    let slot = slot
+        .downcast_mut::<Option<T>>()
+        .expect("`new_native` stored an `Option<T>` for this function");
+    let Some(native) = slot.take() else {
+        return false;
+    };
+    match native.realize_provided(context, env) {
+        Ok(()) => true,
+        Err(native) => {
+            *slot = Some(native);
+            false
+        }
+    }
+}
+
 /// A payload an erased view hands back to its [`DynBackend`]: the value,
 /// behind a slot the implementation takes it out of once it matched the
 /// type, and the type's name for reporting one it does not realize.
 pub struct ErasedPayload<'a> {
     slot: &'a mut dyn Any,
     type_name: &'static str,
+    realize_provided: Option<RealizeProvidedFn>,
 }
 
 impl<'a> ErasedPayload<'a> {
@@ -250,12 +273,34 @@ impl<'a> ErasedPayload<'a> {
         Self {
             slot,
             type_name: core::any::type_name::<T>(),
+            realize_provided: None,
+        }
+    }
+
+    /// The [`NativeView`] payload `slot` holds, preserving
+    /// [`NativeView::realize_provided`] across the erased boundary without
+    /// boxing the payload.
+    pub fn new_native<T: NativeView + 'static>(slot: &'a mut Option<T>) -> Self {
+        Self {
+            slot,
+            type_name: core::any::type_name::<T>(),
+            realize_provided: Some(realize_provided_erased::<T>),
         }
     }
 
     /// Takes the payload when it is a `T`, leaving the slot empty.
     pub fn take<T: 'static>(&mut self) -> Option<T> {
         self.slot.downcast_mut::<Option<T>>().and_then(Option::take)
+    }
+
+    /// Offers the native payload in this slot to `context` through
+    /// [`NativeView::realize_provided`].
+    ///
+    /// Consumes the slot and returns `true` when `context` claims the payload;
+    /// restores the payload into the slot and returns `false` otherwise.
+    pub fn realize_provided(&mut self, context: &mut dyn Any, env: &Environment) -> bool {
+        self.realize_provided
+            .is_some_and(|realize| realize(self.slot, context, env))
     }
 
     /// Puts back a payload [`take`](Self::take) took, for the next
@@ -591,5 +636,32 @@ mod tests {
     fn cast_matches_only_the_same_type() {
         assert_eq!(cast::<u8, u8>(7), Ok(7));
         assert_eq!(cast::<u8, String>(7), Err(7));
+    }
+
+    struct Claimed(u32);
+
+    impl NativeView for Claimed {
+        fn realize_provided(self, context: &mut dyn Any, _env: &Environment) -> Result<(), Self> {
+            let Some(out) = context.downcast_mut::<Option<u32>>() else {
+                return Err(self);
+            };
+            *out = Some(self.0);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn erased_payload_realize_provided_restores_on_miss_and_consumes_on_claim() {
+        let env = Environment::new();
+        let mut slot = Some(Claimed(42));
+        let mut payload = ErasedPayload::new_native(&mut slot);
+
+        let mut wrong_context = 0_u8;
+        assert!(!payload.realize_provided(&mut wrong_context, &env));
+
+        let mut out: Option<u32> = None;
+        assert!(payload.realize_provided(&mut out, &env));
+        assert_eq!(out, Some(42));
+        assert!(payload.take::<Claimed>().is_none());
     }
 }
