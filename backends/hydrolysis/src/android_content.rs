@@ -732,7 +732,7 @@ fn subscribe_android_lifecycle<T: AndroidContent>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nami::binding;
+    use nami::{SignalExt as _, binding};
     use waterui_core::backend::ErasedPayload;
 
     struct DummyContent {
@@ -807,14 +807,14 @@ mod tests {
         let env = Environment::new();
         let view = AndroidView::new(DummyContent {
             stretch: StretchAxis::Horizontal,
-            role: Some(AccessibilityRole::Container),
+            role: Some(AccessibilityRole::Section),
             label: Some(label.computed()),
         });
         assert_eq!(view.stretch_axis(), StretchAxis::Horizontal);
 
         let mut semantics = ProvidedSemantics::default();
         assert!(view.realize_provided(&mut semantics, &env).is_ok());
-        assert_eq!(semantics.role, Some(AccessibilityRole::Container));
+        assert_eq!(semantics.role, Some(AccessibilityRole::Section));
         assert_eq!(
             semantics
                 .label
@@ -823,12 +823,12 @@ mod tests {
             Some("Sponsored ad".to_owned())
         );
 
-        let erased = AndroidView::new(DummyContent {
+        let mut erased_slot = Some(AndroidView::new(DummyContent {
             stretch: StretchAxis::None,
             role: Some(AccessibilityRole::Button),
             label: Some(binding(Str::from_static("Install")).computed()),
-        });
-        let payload = ErasedPayload::new_native(erased);
+        }));
+        let mut payload = ErasedPayload::new_native(&mut erased_slot);
         let mut erased_semantics = ProvidedSemantics::default();
         assert!(payload.realize_provided(&mut erased_semantics, &env));
         assert_eq!(erased_semantics.role, Some(AccessibilityRole::Button));
