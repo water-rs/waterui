@@ -862,7 +862,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
-        let layer = RetainedSubview::new(AnyView::new(value.modal_layer()));
+        let layer = RetainedSubview::new(value.modal_layer());
         RenderNode::build_wrapper(
             WrapperEffect::Dialog(DialogEffect {
                 content: Rc::new(RefCell::new(layer)),
@@ -1465,8 +1465,8 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         #[cfg(hydrolysis_video_plane)]
         let native = match cast::<T, waterui_video_gpu::AndroidVideoSurfaceHost>(native) {
             Ok(host) => {
-                let picture = crate::runner::android::video_plane::unwrap_host(Native::new(host));
-                return RenderNode::build_view(picture, env, self.renderer);
+                let picture = crate::runner::android::video_plane::unwrap_host(host);
+                return self.video_plane_host(picture.map_content(HeldChild::from_view), env);
             }
             Err(native) => native,
         };
@@ -1530,8 +1530,8 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         }
         #[cfg(hydrolysis_video_plane)]
         if let Some(host) = native.take::<waterui_video_gpu::AndroidVideoSurfaceHost>() {
-            let picture = crate::runner::android::video_plane::unwrap_host(Native::new(host));
-            return RenderNode::build_view(picture, env, self.renderer);
+            let picture = crate::runner::android::video_plane::unwrap_host(host);
+            return self.video_plane_host(picture.map_content(HeldChild::from_view), env);
         }
         #[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
         if self.renderer.semantic_walk {

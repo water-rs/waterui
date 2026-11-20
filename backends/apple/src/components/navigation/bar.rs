@@ -220,18 +220,16 @@ fn bar_title(view: &mut waterui_backend_core::AnyView, ctx: &RenderContext<'_>) 
 fn bar_item(item: NavigationToolbarItem, ctx: &RenderContext<'_>) -> BarItem {
     let toolbar_env = toolbar_environment(ctx.env());
     let (placement, content, title, icon) = item.into_parts();
-    let content = match content
+    let ctx = ctx.with_env(&toolbar_env);
+    let leaf = match content
         .downcast::<waterui_core::Metadata<Environment, waterui_backend_core::AnyView>>()
     {
         Ok(mut metadata) => {
             metadata.value = toolbar_environment(&metadata.value);
-            waterui_backend_core::AnyView::new(*metadata)
+            ctx.render(*metadata)
         }
-        Err(content) => content,
+        Err(content) => ctx.render(content),
     };
-    let ctx = ctx.with_env(&toolbar_env);
-
-    let leaf = ctx.render(content);
     let title = title.map(|title| title.resolve(ctx.env()).into_content());
     let icon = icon.map(|builder| {
         let icon_view = builder.build();
