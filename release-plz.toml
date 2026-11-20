@@ -96,6 +96,14 @@ version_group = "waterui"
 # Foundation components
 
 [[package]]
+name = "waterui-accessibility"
+version_group = "waterui"
+
+[[package]]
+name = "waterui-interaction"
+version_group = "waterui"
+
+[[package]]
 name = "waterui-text"
 version_group = "waterui"
 git_tag_name = "text-v{{ version }}"
@@ -202,6 +210,10 @@ version_group = "waterui"
 git_tag_name = "inspector-protocol-v{{ version }}"
 
 [[package]]
+name = "waterui-inspector-runtime"
+version_group = "waterui"
+
+[[package]]
 name = "waterui-inspector-app"
 version_group = "waterui"
 
@@ -227,10 +239,6 @@ name = "waterui-icons-codegen"
 version_group = "waterui"
 
 [[package]]
-name = "waterui-icons-sf-symbol"
-version_group = "waterui"
-
-[[package]]
 name = "waterui-icons-material-icon"
 version_group = "waterui"
 
@@ -240,10 +248,6 @@ version_group = "waterui"
 
 [[package]]
 name = "waterui-icons-lucide"
-version_group = "waterui"
-
-[[package]]
-name = "waterui-icons-native"
 version_group = "waterui"
 
 # Backends

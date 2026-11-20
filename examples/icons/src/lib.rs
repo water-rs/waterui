@@ -9,24 +9,22 @@ use waterui::app::{App, Windows};
 use waterui::prelude::*;
 use waterui::preview;
 
+#[cfg(target_vendor = "apple")]
+use waterui_apple::SfSymbol;
 use waterui_icons_lucide as lucide;
 use waterui_icons_material_icon as mdi;
-#[cfg(target_vendor = "apple")]
-use waterui_icons_sf_symbol as sf;
 
 /// Demo: SF Symbols (Apple only)
 #[cfg(target_vendor = "apple")]
 fn sf_symbols_demo() -> impl View {
-    use sf::{gearshape, heart_fill, house_fill, person_fill, star_fill};
-
     vstack((
         text("SF Symbols (Apple)").size(18.0),
         hstack((
-            house_fill(),
-            person_fill(),
-            gearshape(),
-            heart_fill(),
-            star_fill(),
+            SfSymbol::HOUSE_FILL,
+            SfSymbol::PERSON_FILL,
+            SfSymbol::GEARSHAPE,
+            SfSymbol::HEART_FILL,
+            SfSymbol::STAR_FILL,
         ))
         .spacing(16.0),
     ))

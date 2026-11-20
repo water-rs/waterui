@@ -79,7 +79,7 @@ pub fn menu_with_identifier(
     identifier: Option<&str>,
     nodes: &[MenuTreeNode],
 ) -> Retained<UIMenu> {
-    let image = menu_image(title.symbol.as_deref());
+    let image = menu_image(title);
     UIMenu::menuWithTitle_image_identifier_options_children(
         &NSString::from_str(&title.label),
         image.as_deref(),
@@ -181,7 +181,7 @@ fn command_element(
         UIMenuElementState::Off
     };
     let title = NSString::from_str(&command.label);
-    let image = menu_image(command.symbol.as_deref());
+    let image = menu_image(command);
     if command.key_equivalent.is_empty() {
         let block = RcBlock::new(move |_action: NonNull<UIAction>| {
             action();
@@ -228,8 +228,12 @@ fn command_element(
     }
 }
 
-fn menu_image(symbol: Option<&str>) -> Option<Retained<UIImage>> {
-    symbol.and_then(|symbol| UIImage::systemImageNamed(&NSString::from_str(symbol)))
+fn menu_image(command: &Command) -> Option<Retained<UIImage>> {
+    command
+        .symbol
+        .as_deref()
+        .and_then(|symbol| UIImage::systemImageNamed(&NSString::from_str(symbol)))
+        .or_else(|| command.image.clone())
 }
 
 /// A `UIMenu` for a text field's edit menu.
@@ -293,7 +297,8 @@ pub struct Menu {
 
 impl Menu {
     /// A menu titled `title` with `children`; `icon`, when given, is an
-    /// `SF Symbols` name drawn beside the title in a submenu row.
+    /// `SF Symbols` name drawn beside the title in a submenu row, and `image`
+    /// is an optional pre-rendered template image when `icon` is absent.
     ///
     /// `inline` marks the menu `.displayInline`: its children flatten into
     /// their parent as a labelled group rather than nesting.
@@ -302,10 +307,13 @@ impl Menu {
         mtm: MainThreadMarker,
         title: &str,
         icon: Option<&str>,
+        image: Option<&UIImage>,
         inline: bool,
         children: &[MenuElement],
     ) -> Self {
-        let image = icon.and_then(|name| UIImage::systemImageNamed(&NSString::from_str(name)));
+        let image = icon
+            .and_then(|name| UIImage::systemImageNamed(&NSString::from_str(name)))
+            .or_else(|| image.map(objc2::Message::retain));
         let options = if inline {
             UIMenuOptions::DisplayInline
         } else {

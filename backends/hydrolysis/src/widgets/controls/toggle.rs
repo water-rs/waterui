@@ -20,9 +20,9 @@ use std::rc::Rc;
 use waterui_controls::toggle::{ToggleConfig, ToggleStyle};
 use waterui_core::Environment;
 use waterui_core::contract_violation;
-use waterui_core::interaction::InteractionState;
 use waterui_core::layout::{LayoutDirection, Size as LayoutSize};
 use waterui_core::layout::{ProposalSize, StretchAxis, ViewDimensions};
+use waterui_interaction::interaction::InteractionState;
 
 use crate::widgets::util::{label_beside_control_bounds, mirrored_in, widget_disabled};
 

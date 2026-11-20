@@ -13,12 +13,11 @@ categories = ["gui", "graphics"]
 
 [dependencies]
 waterui-core.workspace = true
+waterui-interaction.workspace = true
 waterui-structural-transition.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
 nami.workspace = true
-waterui-icon.workspace = true
 waterui-shape.workspace = true
 waterui-layout.workspace = true
 waterui-controls.workspace = true
@@ -56,7 +55,6 @@ keyboard-types.workspace = true
 # `serde` lets the Android host push the merged accesskit tree to its
 # accessibility provider as JSON (src/runner/android/accessibility.rs).
 accesskit = { version = "0.25", optional = true, features = ["serde"] }
-waterui-inspector-protocol.workspace = true
 # `effects`, never `gpu` by itself: the `Filtered`/`filtrate` recipe
 # vocabulary resolves under every painter (the HWUI and CPU mounts name
 # their refusal); the GPU halves arrive with the `gpu` feature.
@@ -128,6 +126,8 @@ waterui-assets = { workspace = true, optional = true }
 # The GPU video player realizing `Video` off the web (the `video-gpu`
 # feature); the web realizes it with the page's `<video>` element.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tracing-subscriber.workspace = true
+waterui-inspector-protocol.workspace = true
 waterui-video-gpu = { workspace = true, optional = true }
 
 [build-dependencies]
@@ -347,7 +347,8 @@ console_error_panic_hook = { version = "0.1", optional = true }
 futures = { workspace = true, optional = true }
 js-sys = "0.3"
 serde = { workspace = true, features = ["derive"] }
-serde_json.workspace = true
+serde_json = { workspace = true, optional = true }
+tracing-subscriber = { workspace = true, optional = true }
 wasm-bindgen = { version = "0.2", optional = true }
 wasm-bindgen-futures = { version = "0.4", optional = true }
 # The `video` feature's realization of the two video leaves.
@@ -503,6 +504,7 @@ gpu = [
     "dep:lru",
     "dep:ndk-context",
     "dep:peniko",
+    "dep:tracing-subscriber",
     "dep:unicode-segmentation",
     "dep:wgpu",
     "dep:pollster",
@@ -535,6 +537,7 @@ cpu = [
     "dep:lru",
     "dep:ndk-context",
     "dep:peniko",
+    "dep:tracing-subscriber",
     "dep:unicode-segmentation",
     "cherenkov-cpu/shaders",
     "dep:waterkit-clipboard",
@@ -655,6 +658,7 @@ web = [
     "accessibility",
     "dep:console_error_panic_hook",
     "dep:futures",
+    "dep:serde_json",
     "dep:wasm-bindgen",
     "dep:wasm-bindgen-futures",
     "dep:waterui-watcher-set",

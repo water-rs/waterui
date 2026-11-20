@@ -28,10 +28,10 @@ use waterui_controls::label::{ControlLabel, LabelDisplayMode};
 use waterui_controls::menu::ResolvedMenu;
 use waterui_core::Environment;
 use waterui_core::handler::ReportExtraction as _;
-use waterui_core::interaction::InteractionState;
 use waterui_core::layout::Size as LayoutSize;
 use waterui_core::layout::{ProposalSize, ViewDimensions};
 use waterui_graphics::color::Color;
+use waterui_interaction::interaction::InteractionState;
 use waterui_text::font::Font;
 use waterui_text::styled::StyledStr;
 
@@ -1295,8 +1295,8 @@ mod tests {
     use waterui_core::animation::Animation;
     #[cfg(feature = "menu")]
     use waterui_core::backend::peel_native;
-    use waterui_core::interaction::{InteractionState, StateValue};
     use waterui_core::layout::{ProposalSize, Size};
+    use waterui_interaction::interaction::{InteractionState, StateValue};
 
     /// The trigger spec of `menu` resolved in `env`.
     #[cfg(feature = "menu")]

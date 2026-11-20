@@ -12,19 +12,22 @@ pub use interaction_support::{cursor, drag_drop, gesture, interaction};
 mod runtime;
 #[cfg(feature = "dialog")]
 pub use runtime::dialog;
-#[cfg(all(feature = "inspector", not(target_arch = "wasm32")))]
-pub use runtime::inspector;
 #[cfg(feature = "snackbar")]
 pub use runtime::snackbar;
 pub use runtime::{app, entry, fullscreen, metadata, task, window};
 pub use widget::error;
+// Inspection is a TCP endpoint that also launches the inspector application on
+// the developer's machine; a browser page can do neither, so on wasm the
+// endpoint is absent rather than present and permanently unable to work.
+#[cfg(all(feature = "inspector", not(target_arch = "wasm32")))]
+pub use waterui_inspector_runtime as inspector;
 /// Task management utilities and async support.
 pub mod view;
 /// Widget components for building complex UI elements.
 pub mod widget;
 #[doc(inline)]
 pub use view::View;
-pub use waterui_core::accessibility;
+pub use waterui_accessibility as accessibility;
 
 /// The shared `waterui_meta_*` record emitters — `dir_static!` lands its
 /// section and retention cfg at the invoking crate's profile — re-exported
@@ -260,14 +263,15 @@ pub use waterui_core::{
     contract_violation,
     easing::{self, EasingCurve, Interpolatable},
     env::{self, Environment},
-    event,
     extract::{self, Extractor, State, Use},
     handler::{self, Handler, HandlerOnce},
     id::{self, Identifiable},
-    impl_extractor, key, raw_view,
+    impl_extractor, raw_view,
     resolve::{self, AnyResolvable, Resolvable},
     views,
 };
+#[doc(inline)]
+pub use waterui_interaction::{event, key};
 
 // Selective re-exports only: `waterui::transition` stays free for the
 // `waterui-transition` pixel-effects crate re-export (#1389).

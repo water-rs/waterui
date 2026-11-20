@@ -26,6 +26,8 @@ erased-dispatch = ["waterui-core/erased-dispatch", "waterui/erased-dispatch"]
 [dependencies]
 waterui = { version = "0.5.2", path = "../..", default-features = false }
 waterui-structural-transition.workspace = true
+waterui-accessibility.workspace = true
+waterui-interaction.workspace = true
 waterui-core.workspace = true
 waterui-layout.workspace = true
 nami.workspace = true

@@ -27,9 +27,9 @@ use cherenkov_record::{
 };
 use kurbo::{Circle, Point, Rect, RoundedRect, RoundedRectRadii, Size, Vec2};
 use waterui_core::animation::Animation;
-use waterui_core::interaction::{InteractionState, StateValue};
 use waterui_core::plugin::Plugin;
 use waterui_graphics::color::Color;
+use waterui_interaction::interaction::{InteractionState, StateValue};
 
 use super::look::{CustomPart, DrivenSet};
 use super::{Custom, Driven, HitRegion, Motion};

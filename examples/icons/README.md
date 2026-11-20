@@ -6,7 +6,7 @@ This example demonstrates WaterUI's icon system with three icon packs.
 
 | Pack | Crate | Rendering | License |
 |------|-------|-----------|---------|
-| SF Symbols | `waterui-icons-sf-symbol` | Native (Apple platforms only) | Apple (system) |
+| SF Symbols | `waterui-apple` (`SfSymbol`) | Native (Apple platforms only) | Apple (system) |
 | Material Design Icons | `waterui-icons-material-icon` | SVG | Apache 2.0 |
 | Lucide | `waterui-icons-lucide` | SVG | ISC |
 
@@ -23,11 +23,11 @@ This example demonstrates WaterUI's icon system with three icon packs.
 use waterui_icons_lucide as lucide;
 use waterui_icons_material_icon as mdi;
 #[cfg(target_vendor = "apple")]
-use waterui_icons_sf_symbol as sf;
+use waterui_apple::SfSymbol;
 
 // SF Symbols (Apple platforms)
-sf::house_fill()
-sf::gearshape()
+SfSymbol::HOUSE_FILL
+SfSymbol::GEARSHAPE
 
 // Material Design Icons
 mdi::home()

@@ -5,7 +5,11 @@
 //! - [`OnEvent`] - Repeatable handlers for interaction events (hover enter/move/exit)
 //! - [`OnChange`] - Repeatable handlers for a signal's value changes
 
-use crate::{
+use alloc::{boxed::Box, rc::Rc};
+use core::{cell::RefCell, fmt};
+use nami::Signal;
+use nami::watcher::BoxWatcherGuard;
+use waterui_core::{
     Environment, LatestDispatch, Metadata, Retain, View,
     handler::{
         BoxedAction, BoxedActionOnce, EventHandler, Handler, HandlerOnce, ReportExtraction,
@@ -14,10 +18,6 @@ use crate::{
     layout::Point,
     metadata::MetadataKey,
 };
-use alloc::{boxed::Box, rc::Rc};
-use core::{cell::RefCell, fmt};
-use nami::Signal;
-use nami::watcher::BoxWatcherGuard;
 
 /// Lifecycle events that occur once per view attachment/detachment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -69,7 +69,7 @@ impl LifeCycleHook {
 
     /// Handles the lifecycle event by invoking the stored handler.
     /// This consumes the hook since the handler is one-time.
-    pub fn handle(self, env: &crate::Environment) {
+    pub fn handle(self, env: &Environment) {
         (self.handler)(env).report_extraction();
     }
 }
@@ -150,7 +150,7 @@ impl OnEvent {
     }
 
     /// Handles the event by invoking the stored handler.
-    pub fn handle(&mut self, env: &crate::Environment) {
+    pub fn handle(&mut self, env: &Environment) {
         (self.handler)(env).report_extraction();
     }
 }
@@ -265,8 +265,8 @@ mod tests {
     use nami::{Binding, Signal, binding};
 
     use super::OnChange;
-    use crate::Environment;
-    use crate::extract::State;
+    use waterui_core::Environment;
+    use waterui_core::extract::State;
 
     #[derive(Clone)]
     struct ChangesBeforeWatch {

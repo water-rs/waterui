@@ -16,7 +16,8 @@ use core::fmt;
 
 pub use keyboard_types::{Code, Key, Modifiers, NamedKey};
 
-use crate::{
+use waterui_core::{
+    Environment,
     handler::{BoxedAction, Handler, ReportExtraction, boxed_action},
     metadata::MetadataKey,
 };
@@ -24,7 +25,7 @@ use crate::{
 /// A key press delivered to an [`OnKeyPress`] handler.
 ///
 /// Backends place it into the handler's environment, so a handler reads it
-/// with [`Use<KeyPress>`](crate::extract::Use).
+/// with [`Use<KeyPress>`](waterui_core::extract::Use).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct KeyPress {
@@ -102,7 +103,7 @@ impl MetadataKey for OnKeyPress {}
 
 impl OnKeyPress {
     /// Creates a key handler. It extracts its arguments from the environment,
-    /// [`Use<KeyPress>`](crate::extract::Use) among them, and says whether it
+    /// [`Use<KeyPress>`](waterui_core::extract::Use) among them, and says whether it
     /// consumed the key.
     #[must_use]
     pub fn new<Args>(handler: impl Handler<Args, KeyHandling>) -> Self {
@@ -116,7 +117,7 @@ impl OnKeyPress {
     /// A handler whose parameters cannot be extracted does not run: the
     /// failure is reported and the key is [`Ignored`](KeyHandling::Ignored),
     /// so it keeps bubbling.
-    pub fn handle(&mut self, env: &crate::Environment) -> KeyHandling {
+    pub fn handle(&mut self, env: &Environment) -> KeyHandling {
         (self.handler)(env)
             .report_extraction()
             .unwrap_or(KeyHandling::Ignored)

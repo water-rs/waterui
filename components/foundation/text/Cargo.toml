@@ -12,6 +12,8 @@ categories = ["gui", "text-processing"]
 
 [dependencies]
 waterui-core.workspace = true
+waterui-accessibility = { workspace = true, optional = true }
+waterui-interaction = { workspace = true, optional = true }
 waterui-macros.workspace = true
 waterui-color.workspace = true
 suiteki.workspace = true
@@ -63,6 +65,8 @@ default = []
 highlight = [
     "dep:syntect",
     "dep:two-face",
+    "dep:waterui-accessibility",
+    "dep:waterui-interaction",
     "dep:waterui-layout",
     "dep:tracing",
     "dep:waterkit-clipboard",

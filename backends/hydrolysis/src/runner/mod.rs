@@ -33,7 +33,7 @@ use waterui::window::Window;
 use waterui_core::Environment;
 use waterui_core::Retain;
 use waterui_core::handler::ViewBuilder;
-use waterui_core::key::KeyPress;
+use waterui_interaction::key::KeyPress;
 #[cfg(hydrolysis_cherenkov)]
 use waterui_text::FontCollection;
 
@@ -334,14 +334,11 @@ fn offscreen_scale_factor() -> f64 {
     parsed
 }
 
-/// The environment the platform services this renderer provides need: the
-/// localization catalog and the system web view's controller.
+/// The environment services this renderer provides: the localization catalog.
 #[cfg(any(test, hydrolysis_platform_services))]
 fn install_platform_services(env: &mut Environment) {
     #[cfg(any(test, hydrolysis_localization))]
     crate::localization::install(env);
-    #[cfg(hydrolysis_webview_engine)]
-    crate::widgets::platform::webview::install_controller(env);
 }
 
 fn queue_window_opener<E: crate::text::TextEngine>(
@@ -422,7 +419,7 @@ pub fn run<W: Windows>(
     let app = app(env);
     let inspector_probe = inspector
         .as_ref()
-        .map(waterui::inspector::InspectorRuntime::runtime_probe);
+        .map(|inspector| inspector.task_probe() as std::sync::Arc<dyn waterui::task::RuntimeProbe>);
     // This path renders each window once offscreen and returns; it owns no event
     // loop, so it supplies the headless executor rather than a platform one.
     // Keep a handle on the executor: the render loop below has to drive it, or

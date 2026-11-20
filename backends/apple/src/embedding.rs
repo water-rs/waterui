@@ -234,11 +234,6 @@ impl Drop for Mount {
     }
 }
 
-#[cfg(any(feature = "webview", all(target_os = "macos", feature = "webview-cef")))]
-pub(crate) fn install_services(env: &mut Environment) {
-    crate::components::webview::install_service(env);
-}
-
 /// Initializes process services and returns one owned runtime through `ready`.
 ///
 /// # Panics
@@ -328,8 +323,6 @@ pub unsafe fn mount<W: Windows>(
     runtime.fonts.borrow_mut().register_bundle_fonts(&resources);
     env.insert(resources);
     crate::dispatch::install(&mut env);
-    #[cfg(any(feature = "webview", all(target_os = "macos", feature = "webview-cef")))]
-    install_services(&mut env);
 
     let mut keepalive = KeepAlive::default();
     #[cfg(target_os = "macos")]
@@ -342,10 +335,9 @@ pub unsafe fn mount<W: Windows>(
     // An embedded application's lifetime belongs to its host — iOS kills the
     // process without notice — so the termination machine is never started.
     let _ = parts.termination;
-    #[allow(unused_mut)]
-    let mut env = parts.env;
-    #[cfg(any(feature = "webview", all(target_os = "macos", feature = "webview-cef")))]
-    crate::components::webview::install_service(&mut env);
+    let env = parts.env;
+    #[cfg(target_os = "macos")]
+    let mut env = env;
     #[cfg(target_os = "macos")]
     crate::windows::install_root_environment(&mut env);
     let mut windows = crate::windows::connect_windows(parts.windows, &env).into_iter();

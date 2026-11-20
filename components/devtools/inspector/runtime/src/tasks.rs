@@ -13,13 +13,12 @@
 
 use std::backtrace::Backtrace;
 use std::collections::HashMap;
+use std::fmt;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use waterui_inspector_protocol::{Channel, InspectorEvent, StallSample, TaskAggregate, TaskWindow};
-
-use crate::task::{RuntimeProbe, TaskPollSample};
 
 use super::hub::EventHub;
 
@@ -39,12 +38,30 @@ type Clock = Arc<dyn Fn() -> Instant + Send + Sync>;
 const BACKTRACE_DEPTH: usize = 24;
 
 /// Aggregates poll samples and publishes one window at a time.
-pub(super) struct TaskProbe {
+pub struct TaskProbe {
     hub: Arc<EventHub>,
     window: Duration,
     stall_ratio: f64,
     clock: Clock,
     state: Mutex<ProbeState>,
+}
+
+impl fmt::Debug for TaskProbe {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TaskProbe")
+            .field("window", &self.window)
+            .field("stall_ratio", &self.stall_ratio)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Clone, Copy)]
+struct PollSample {
+    task_type: &'static str,
+    wall: Duration,
+    cpu: Duration,
+    frame_budget: Duration,
 }
 
 struct ProbeState {
@@ -67,7 +84,7 @@ struct Totals {
 
 impl TaskProbe {
     /// Creates a probe publishing to `hub` once per `window`.
-    pub(super) fn new(hub: Arc<EventHub>, window: Duration, stall_ratio: f64) -> Self {
+    pub fn new(hub: Arc<EventHub>, window: Duration, stall_ratio: f64) -> Self {
         Self::with_clock(hub, window, stall_ratio, Arc::new(Instant::now))
     }
 
@@ -90,14 +107,23 @@ impl TaskProbe {
     }
 }
 
-impl RuntimeProbe for TaskProbe {
-    fn on_poll_sample(&self, sample: &TaskPollSample) {
+impl TaskProbe {
+    /// Records one main-thread task poll sample.
+    pub fn record_poll(
+        &self,
+        task_type: &'static str,
+        poll_ready: bool,
+        wall: Duration,
+        cpu: Duration,
+        frame_budget: Duration,
+        refresh_hz: f64,
+    ) {
         if !self.hub.wants(Channel::Tasks) {
             return;
         }
 
-        let wall_us = duration_to_us(sample.wall());
-        let budget_us = saturating_u32(duration_to_us(sample.frame_budget()));
+        let wall_us = duration_to_us(wall);
+        let budget_us = saturating_u32(duration_to_us(frame_budget));
         let over_budget = budget_us > 0 && wall_us > u64::from(budget_us);
 
         let mut state = match self.state.lock() {
@@ -111,19 +137,17 @@ impl RuntimeProbe for TaskProbe {
             reason = "a display refresh rate is far inside f32 range"
         )]
         {
-            state.refresh_hz = sample.refresh_hz() as f32;
+            state.refresh_hz = refresh_hz as f32;
         }
 
-        let totals = state.totals.entry(sample.task_type()).or_default();
+        let totals = state.totals.entry(task_type).or_default();
         totals.polls = totals.polls.saturating_add(1);
-        if sample.poll_ready() {
+        if poll_ready {
             totals.ready = totals.ready.saturating_add(1);
         }
         totals.wall_us_total = totals.wall_us_total.saturating_add(wall_us);
         totals.wall_us_max = totals.wall_us_max.max(saturating_u32(wall_us));
-        totals.cpu_us_total = totals
-            .cpu_us_total
-            .saturating_add(duration_to_us(sample.cpu()));
+        totals.cpu_us_total = totals.cpu_us_total.saturating_add(duration_to_us(cpu));
         if over_budget {
             totals.over_budget = totals.over_budget.saturating_add(1);
         }
@@ -131,7 +155,18 @@ impl RuntimeProbe for TaskProbe {
         // One reading per sample: the stall check and the window check describe the
         // same moment, and taking the clock twice would let them disagree.
         let now = (self.clock)();
-        let stall = self.stall_for(&mut state, sample, wall_us, budget_us, now);
+        let stall = self.stall_for(
+            &mut state,
+            PollSample {
+                task_type,
+                wall,
+                cpu,
+                frame_budget,
+            },
+            wall_us,
+            budget_us,
+            now,
+        );
         let window = (now.duration_since(state.window_started) >= self.window)
             .then(|| flush(&mut state, now));
         drop(state);
@@ -145,23 +180,21 @@ impl RuntimeProbe for TaskProbe {
             self.hub.publish(InspectorEvent::Tasks(window));
         }
     }
-}
 
-impl TaskProbe {
     /// Builds a stall sample when this poll overran badly enough to warrant one.
     fn stall_for(
         &self,
         state: &mut ProbeState,
-        sample: &TaskPollSample,
+        sample: PollSample,
         wall_us: u64,
         budget_us: u32,
         now: Instant,
     ) -> Option<StallSample> {
-        let budget_secs = sample.frame_budget().as_secs_f64();
+        let budget_secs = sample.frame_budget.as_secs_f64();
         if budget_secs <= 0.0 {
             return None;
         }
-        let usage_ratio = sample.wall().as_secs_f64() / budget_secs;
+        let usage_ratio = sample.wall.as_secs_f64() / budget_secs;
         if usage_ratio < self.stall_ratio {
             return None;
         }
@@ -181,9 +214,9 @@ impl TaskProbe {
             reason = "a budget percentage is far inside f32 range"
         )]
         Some(StallSample {
-            task_type: sample.task_type().to_string(),
+            task_type: sample.task_type.to_string(),
             wall_us,
-            cpu_us: duration_to_us(sample.cpu()),
+            cpu_us: duration_to_us(sample.cpu),
             budget_us: u64::from(budget_us),
             usage_pct: (usage_ratio * 100.0) as f32,
             backtrace,
@@ -246,17 +279,15 @@ mod tests {
     use std::time::{Duration, Instant};
     use waterui_inspector_protocol::{ChannelSet, InspectorEvent};
 
-    use crate::task::{RuntimeProbe, TaskPollSample};
-
-    fn sample(wall_us: u64) -> TaskPollSample {
-        TaskPollSample::new(
+    fn record_sample(probe: &TaskProbe, wall_us: u64) {
+        probe.record_poll(
             "TestTask",
             false,
             Duration::from_micros(wall_us),
             Duration::from_micros(wall_us),
             Duration::from_micros(8_333),
             120.0,
-        )
+        );
     }
 
     /// The defect this replaces: one event per poll. A thousand polls inside one
@@ -268,7 +299,7 @@ mod tests {
         let probe = TaskProbe::new(Arc::clone(&hub), Duration::ZERO, 100.0);
 
         for _ in 0..1000 {
-            probe.on_poll_sample(&sample(10));
+            record_sample(&probe, 10);
         }
 
         // With a zero-length window every poll flushes, so instead assert the
@@ -293,7 +324,7 @@ mod tests {
         let probe = TaskProbe::new(Arc::clone(&hub), Duration::ZERO, 0.9);
 
         for _ in 0..100 {
-            probe.on_poll_sample(&sample(50_000));
+            record_sample(&probe, 50_000);
         }
 
         assert_eq!(receiver.len(), 0);
@@ -345,7 +376,7 @@ mod tests {
         // Time does not move, so every stall after the first is inside the
         // interval no matter how long the loop actually takes to run.
         for _ in 0..10 {
-            probe.on_poll_sample(&sample(50_000));
+            record_sample(&probe, 50_000);
         }
 
         let mut with_backtrace = 0_usize;
@@ -378,9 +409,9 @@ mod tests {
             clock.source(),
         );
 
-        probe.on_poll_sample(&sample(50_000));
+        record_sample(&probe, 50_000);
         clock.advance(BACKTRACE_INTERVAL);
-        probe.on_poll_sample(&sample(50_000));
+        record_sample(&probe, 50_000);
 
         let mut with_backtrace = 0_usize;
         while let Ok(dispatch) = receiver.try_recv() {

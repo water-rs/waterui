@@ -536,10 +536,17 @@ mod tests {
         type Output = ();
         type Ctx = ();
         type Family = Self;
+        #[cfg(waterui_feature = "webview")]
+        type WebViewController = waterui::webview::UnavailableWebViewController;
         type Offscreen = OtherOffscreen;
 
         fn with_family<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
             f(self)
+        }
+
+        #[cfg(waterui_feature = "webview")]
+        fn web_view_controller(&self) -> Self::WebViewController {
+            waterui::webview::UnavailableWebViewController
         }
 
         fn offscreen(&self, _env: &Environment) -> Self::Offscreen {
@@ -554,7 +561,6 @@ mod tests {
             spacer: waterui::layout::Spacer,
             divider: waterui::layout::Divider,
             shape: waterui::shape::ResolvedShape,
-            icon: waterui::icon::SystemIcon,
             gradient: waterui::graphics::Gradient,
             #[cfg(waterui_feature = "table")]
             table: waterui::component::table::TableConfig,
@@ -572,7 +578,7 @@ mod tests {
             #[cfg(waterui_feature = "video")]
             video_player: waterui::video::video::NativeVideoPlayerConfig,
             #[cfg(waterui_feature = "webview")]
-            web_view: waterui::webview::WebView,
+            web_view: waterui::webview::WebViewOpen,
             #[cfg(waterui_feature = "map")]
             map: waterui::map::MapConfig,
         }
@@ -626,20 +632,20 @@ mod tests {
             environment: Environment,
             retain: waterui_core::metadata::Retain,
             layout_priority: waterui_core::layout::LayoutPriority,
-            lifecycle_hook: waterui_core::event::LifeCycleHook,
-            on_event: waterui_core::event::OnEvent,
-            on_key_press: waterui_core::key::OnKeyPress,
-            gesture_observer: waterui_core::gesture::GestureObserver,
-            selected: waterui_core::interaction::Selected,
-            accessibility_children: waterui_core::accessibility::AccessibilityChildren,
-            accessibility_geometry: waterui_core::accessibility::AccessibilityGeometry,
-            accessibility_hidden: waterui_core::accessibility::AccessibilityHidden,
-            accessibility_identifier: waterui_core::accessibility::AccessibilityIdentifier,
-            accessibility_label: waterui_core::accessibility::AccessibilityLabel,
-            accessibility_role: waterui_core::accessibility::AccessibilityRole,
-            accessibility_state: waterui_core::accessibility::AccessibilityState,
-            accessibility_state_signal: waterui_core::accessibility::AccessibilityStateSignal,
-            accessibility_value: waterui_core::accessibility::AccessibilityValue,
+            lifecycle_hook: waterui_interaction::event::LifeCycleHook,
+            on_event: waterui_interaction::event::OnEvent,
+            on_key_press: waterui_interaction::key::OnKeyPress,
+            gesture_observer: waterui_interaction::gesture::GestureObserver,
+            selected: waterui_interaction::interaction::Selected,
+            accessibility_children: waterui_accessibility::AccessibilityChildren,
+            accessibility_geometry: waterui_accessibility::AccessibilityGeometry,
+            accessibility_hidden: waterui_accessibility::AccessibilityHidden,
+            accessibility_identifier: waterui_accessibility::AccessibilityIdentifier,
+            accessibility_label: waterui_accessibility::AccessibilityLabel,
+            accessibility_role: waterui_accessibility::AccessibilityRole,
+            accessibility_state: waterui_accessibility::AccessibilityState,
+            accessibility_state_signal: waterui_accessibility::AccessibilityStateSignal,
+            accessibility_value: waterui_accessibility::AccessibilityValue,
             transition: waterui_structural_transition::TransitionSpec,
             opacity: waterui::filter::Opacity,
             scale: waterui::style::Scale,

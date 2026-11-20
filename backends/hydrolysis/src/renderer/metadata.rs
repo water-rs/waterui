@@ -421,7 +421,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         // `captured_env.layered_on(runtime_env)` rule.
         let bounds = ctx.bounds();
         let disabled = env
-            .get::<waterui_core::interaction::Disabled>()
+            .get::<waterui_interaction::interaction::Disabled>()
             .is_some_and(|disabled| renderer.read_signal(disabled.signal()));
         #[cfg(feature = "accessibility")]
         let mut claimed_naming_node = None;
@@ -629,6 +629,48 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             return;
         }
 
+        if let Gesture::Tap(tap) = &effect.gesture
+            && tap.count() == 1
+            && tap.get_buttons() == waterui_interaction::gesture::PointerButtons::PRIMARY
+            && env
+                .get::<waterui_interaction::interaction::InteractionReport>()
+                .is_some()
+            && env.get::<crate::theme::Chrome>().is_none()
+        {
+            let interaction_key = InteractionKey::for_rc(&effect.action, 0);
+            let (_state, press_slot, _handles) =
+                renderer.bind_reported_tap_target(interaction_key.clone(), bounds, env, disabled);
+            #[cfg(feature = "accessibility")]
+            if let Some(node_id) = claimed_naming_node {
+                renderer.push_accessibility_parent(node_id);
+            }
+            Self::render_gesture_content(renderer, env, content_env, scope_claimed, render_content);
+            #[cfg(feature = "accessibility")]
+            if claimed_naming_node.is_some() {
+                renderer.pop_accessibility_parent();
+            }
+            #[cfg(feature = "accessibility")]
+            if let Some(node_id) = claimed_naming_node {
+                renderer.register_accessibility_focus_link(&interaction_key, node_id);
+                renderer.drain_claim_scope(node_id, claim_env.as_ref().unwrap_or(env));
+                if claim_synthesized {
+                    renderer.collapse_synthesized_claim(node_id);
+                }
+            }
+            if !disabled {
+                renderer.register_interactive_pointer_target_with_keyboard(
+                    bounds,
+                    press_slot,
+                    true,
+                    move |_renderer, _point, runtime_env| {
+                        layered_action(runtime_env).report_extraction();
+                        false
+                    },
+                );
+            }
+            return;
+        }
+
         if let Some(target) = effect.gesture_target.take() {
             renderer.register_retained_gesture_target(&target, bounds, group_id);
             effect.gesture_target.set(Some(target));
@@ -717,7 +759,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             return None;
         }
         let disabled = env
-            .get::<waterui_core::interaction::Disabled>()
+            .get::<waterui_interaction::interaction::Disabled>()
             .is_some_and(|disabled| renderer.read_signal(disabled.signal()));
         // A hidden subtree publishes nothing, the claim included.
         if env

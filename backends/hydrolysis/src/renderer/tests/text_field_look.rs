@@ -14,10 +14,10 @@ use nami::Binding;
 use waterui_controls::TextField;
 use waterui_core::Str;
 use waterui_core::handler::AnyViewBuilder;
-use waterui_core::interaction::{InteractionState, StateValue};
 use waterui_core::layout::LayoutDirection;
 use waterui_core::{AnyView, Environment};
 use waterui_form::secure::{Secure, secure};
+use waterui_interaction::interaction::{InteractionState, StateValue};
 use waterui_layout::stack::vstack;
 
 use super::chrome_primitives::Frames;

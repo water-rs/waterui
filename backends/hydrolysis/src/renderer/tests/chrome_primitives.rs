@@ -12,7 +12,7 @@ use cherenkov_record::{Paint, Shadow, WorkingColor};
 use waterui::{AnyView, View};
 use waterui_controls::button::button;
 use waterui_core::handler::AnyViewBuilder;
-use waterui_core::interaction::{InteractionState, StateValue};
+use waterui_interaction::interaction::{InteractionState, StateValue};
 
 use super::{MinimalTestTheme, pumped_test_environment};
 use crate::platform::{InputEvent, KeyCode, KeyState, Modifiers, PointerButton, PointerKind};

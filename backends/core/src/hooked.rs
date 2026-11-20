@@ -10,14 +10,19 @@
 //!
 //! A payload or metadata key holding child views that the decorator hands on
 //! carries its children re-wrapped through
-//! [`MapSlots`](waterui_core::backend::MapSlots) into the inner family's
+//! [`MapSlots`] into the inner family's
 //! slot, each re-entering the decorator when the inner backend realizes it.
 
+use alloc::vec::Vec;
+use core::any::TypeId;
 use core::marker::PhantomData;
 
-use waterui_core::backend::ErasedPayload;
+use waterui::component::button::{ButtonConfig, ButtonStyleTarget};
+#[cfg(waterui_feature = "toggle")]
+use waterui::component::toggle::{ToggleConfig, ToggleStyleTarget};
+use waterui_core::backend::{ErasedPayload, MapSlots};
 use waterui_core::view::hook::{ErasedHooks, HookList};
-use waterui_core::{AnyView, Environment, NativeView};
+use waterui_core::{AnyView, Environment, Native, NativeView, View};
 
 use crate::child::{Child, ChildView, IntoChild, NativeBackendFamily};
 use crate::native_backend::{NativeBackend, Realize};
@@ -34,15 +39,46 @@ pub struct Hooked<B, H> {
     inner: B,
     hooks: H,
     erased: ErasedHooks,
+    hooks_button: bool,
+    hooks_toggle: bool,
 }
 
 impl<B: NativeBackend, H: HookList> Hooked<B, H> {
     /// `inner` under `hooks` and the erased scopes `erased`.
-    pub const fn new(inner: B, hooks: H, erased: ErasedHooks) -> Self {
+    pub fn new(inner: B, hooks: H, erased: ErasedHooks) -> Self {
+        let mut targets = Vec::new();
+        hooks.targets(&mut targets);
+        let hooks_button = targets
+            .iter()
+            .any(|(id, _)| *id == TypeId::of::<ButtonStyleTarget>());
+        #[cfg(waterui_feature = "toggle")]
+        let hooks_toggle = targets
+            .iter()
+            .any(|(id, _)| *id == TypeId::of::<ToggleStyleTarget>());
+        #[cfg(not(waterui_feature = "toggle"))]
+        let hooks_toggle = false;
         Self {
             inner,
             hooks,
             erased,
+            hooks_button,
+            hooks_toggle,
+        }
+    }
+
+    const fn with_flags(
+        inner: B,
+        hooks: H,
+        erased: ErasedHooks,
+        hooks_button: bool,
+        hooks_toggle: bool,
+    ) -> Self {
+        Self {
+            inner,
+            hooks,
+            erased,
+            hooks_button,
+            hooks_toggle,
         }
     }
 
@@ -53,13 +89,17 @@ impl<B: NativeBackend, H: HookList> Hooked<B, H> {
         inner: &mut B,
         hooks: H,
         erased: ErasedHooks,
+        hooks_button: bool,
+        hooks_toggle: bool,
         f: impl for<'a> FnOnce(&mut Hooked<<B::Family as NativeBackendFamily>::Backend<'a>, H>) -> R,
     ) -> R {
         inner.with_family(|backend| {
-            let mut hooked = Hooked::new(
+            let mut hooked = Hooked::with_flags(
                 <B::Family as NativeBackendFamily>::reborrow(backend),
                 hooks,
                 erased,
+                hooks_button,
+                hooks_toggle,
             );
             f(&mut hooked)
         })
@@ -72,6 +112,8 @@ impl<B: NativeBackend, H: HookList> Hooked<B, H> {
             child: child.into_child(),
             hooks: self.hooks.clone(),
             erased: self.erased.clone(),
+            hooks_button: self.hooks_button,
+            hooks_toggle: self.hooks_toggle,
         }
     }
 
@@ -82,10 +124,14 @@ impl<B: NativeBackend, H: HookList> Hooked<B, H> {
     ) -> impl Fn(C) -> Rehook<B::Family, H> + Clone + 'static {
         let hooks = self.hooks.clone();
         let erased = self.erased.clone();
+        let hooks_button = self.hooks_button;
+        let hooks_toggle = self.hooks_toggle;
         move |child: C| Rehook {
             child: child.into_child(),
             hooks: hooks.clone(),
             erased: erased.clone(),
+            hooks_button,
+            hooks_toggle,
         }
     }
 
@@ -108,6 +154,8 @@ impl<B: NativeBackend, H: HookList> Hooked<B, H> {
                     &mut self.inner,
                     self.hooks.clone(),
                     outer,
+                    self.hooks_button,
+                    self.hooks_toggle,
                     |hooked| Realize::child(hooked, view, env, cx),
                 ));
             }
@@ -130,6 +178,8 @@ impl<B: NativeBackend, H: HookList> Hooked<B, H> {
                 &mut self.inner,
                 self.hooks.clone(),
                 outer,
+                self.hooks_button,
+                self.hooks_toggle,
                 |hooked| Realize::child(hooked, view, env, cx),
             ));
         }
@@ -160,6 +210,55 @@ impl<B: NativeBackend, H: HookList> Hooked<B, H> {
         (self.hooks.clone(), self.erased.clone())
     }
 
+    /// Offers a [`ButtonConfig`] to subtree button-style hooks when eligible,
+    /// keeping unhooked buttons and declined hooks strictly typed.
+    pub(crate) fn hook_button<C: ChildView<Self>>(
+        &mut self,
+        native: ButtonConfig<C>,
+        env: &Environment,
+        cx: B::Ctx,
+    ) -> B::Output {
+        if native.has_explicit_style() || (!self.hooks_button && self.erased.is_empty()) {
+            let native = MapSlots::map_slots(native, self.rehooker::<C>());
+            return self.inner().button(native, env, cx);
+        }
+        let rehook = self.rehooker::<C>();
+        let (target, pending) = native
+            .into_style_pending(move |slot| AnyView::new(SlotView(rehook(slot).into_child())));
+        match self.offer(target, env, cx) {
+            Ok(output) => output,
+            Err((_, cx)) => {
+                let restored = MapSlots::map_slots(pending.restore(), self.rehooker::<C>());
+                self.inner().button(restored, env, cx)
+            }
+        }
+    }
+
+    /// Offers a [`ToggleConfig`] to subtree toggle-style hooks when eligible,
+    /// keeping unhooked toggles and declined hooks strictly typed.
+    #[cfg(waterui_feature = "toggle")]
+    pub(crate) fn hook_toggle<C: ChildView<Self>>(
+        &mut self,
+        native: ToggleConfig<C>,
+        env: &Environment,
+        cx: B::Ctx,
+    ) -> B::Output {
+        if native.has_explicit_style() || (!self.hooks_toggle && self.erased.is_empty()) {
+            let native = MapSlots::map_slots(native, self.rehooker::<C>());
+            return self.inner().toggle(native, env, cx);
+        }
+        let rehook = self.rehooker::<C>();
+        let (target, pending) = native
+            .into_style_pending(move |slot| AnyView::new(SlotView(rehook(slot).into_child())));
+        match self.offer(target, env, cx) {
+            Ok(output) => output,
+            Err((_, cx)) => {
+                let restored = MapSlots::map_slots(pending.restore(), self.rehooker::<C>());
+                self.inner().toggle(restored, env, cx)
+            }
+        }
+    }
+
     /// The backend this decorator wraps.
     pub(crate) const fn inner(&mut self) -> &mut B {
         &mut self.inner
@@ -168,6 +267,30 @@ impl<B: NativeBackend, H: HookList> Hooked<B, H> {
     /// Shared reference to the backend this decorator wraps.
     pub(crate) const fn inner_ref(&self) -> &B {
         &self.inner
+    }
+}
+
+/// View wrapper keeping a backend child slot typed across subtree style hooks.
+#[doc(hidden)]
+pub struct SlotView<F: NativeBackendFamily>(Child<F>);
+
+impl<F: NativeBackendFamily> core::fmt::Debug for SlotView<F> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("SlotView")
+    }
+}
+
+impl<F: NativeBackendFamily> SlotView<F> {
+    pub(crate) fn into_child(self) -> Child<F> {
+        self.0
+    }
+}
+
+impl<F: NativeBackendFamily> NativeView for SlotView<F> {}
+
+impl<F: NativeBackendFamily> View for SlotView<F> {
+    fn body(self, _env: &Environment) -> impl View {
+        Native::new(self)
     }
 }
 
@@ -186,10 +309,12 @@ impl<F: NativeBackendFamily, H: HookList> NativeBackendFamily for HookedFamily<F
     type Backend<'a> = Hooked<F::Backend<'a>, H>;
 
     fn reborrow<'r>(backend: &'r mut Hooked<F::Backend<'_>, H>) -> Hooked<F::Backend<'r>, H> {
-        Hooked::new(
+        Hooked::with_flags(
             F::reborrow(&mut backend.inner),
             backend.hooks.clone(),
             backend.erased.clone(),
+            backend.hooks_button,
+            backend.hooks_toggle,
         )
     }
 }
@@ -200,6 +325,8 @@ pub struct Rehook<F: NativeBackendFamily, H: HookList> {
     child: Child<HookedFamily<F, H>>,
     hooks: H,
     erased: ErasedHooks,
+    hooks_button: bool,
+    hooks_toggle: bool,
 }
 
 impl<F: NativeBackendFamily, H: HookList> core::fmt::Debug for Rehook<F, H> {
@@ -214,10 +341,17 @@ impl<B: NativeBackend, H: HookList> ChildView<B> for Rehook<B::Family, H> {
             child,
             hooks,
             erased,
+            hooks_button,
+            hooks_toggle,
         } = self;
-        Hooked::reentered(backend, hooks, erased, |hooked| {
-            child.realize(hooked, env, cx)
-        })
+        Hooked::reentered(
+            backend,
+            hooks,
+            erased,
+            hooks_button,
+            hooks_toggle,
+            |hooked| child.realize(hooked, env, cx),
+        )
     }
 }
 
@@ -228,8 +362,16 @@ impl<F: NativeBackendFamily, H: HookList> IntoChild<F> for Rehook<F, H> {
                 child,
                 hooks,
                 erased,
+                hooks_button,
+                hooks_toggle,
             } = self;
-            let mut hooked = Hooked::new(F::reborrow(backend), hooks, erased);
+            let mut hooked = Hooked::with_flags(
+                F::reborrow(backend),
+                hooks,
+                erased,
+                hooks_button,
+                hooks_toggle,
+            );
             child.realize(&mut hooked, env, cx)
         })
     }

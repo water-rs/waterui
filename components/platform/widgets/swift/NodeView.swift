@@ -53,7 +53,7 @@ public struct WUINodeView: View {
     @ViewBuilder
     private func imageView(_ image: WUIImage) -> some View {
         let base: Image = switch image.source {
-        case let .system(name):
+        case let .sfSymbol(name):
             Image(systemName: name)
         case let .data(data):
             imageFromData(data)
