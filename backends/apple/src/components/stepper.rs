@@ -18,11 +18,11 @@ use cocoa_ui::{PlatformView, Rect, Retained, view};
 use waterui::component::stepper::StepperConfig;
 use waterui::reactive::Signal;
 use waterui::text::{StyledStr, TextConfig};
-use waterui_core::interaction::Disabled;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size, StretchAxis, SubView,
     ViewDimensions,
 };
+use waterui_interaction::interaction::Disabled;
 
 use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;

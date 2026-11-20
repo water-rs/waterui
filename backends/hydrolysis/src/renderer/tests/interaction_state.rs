@@ -23,7 +23,7 @@ use waterui::gesture::TapGesture;
 use waterui::{AnyView, Color, ViewExt as _};
 use waterui_core::Environment;
 use waterui_core::handler::AnyViewBuilder;
-use waterui_core::interaction::{InteractionState, StateValue};
+use waterui_interaction::interaction::{InteractionState, StateValue};
 use waterui_layout::stack::hstack;
 
 use super::{MinimalTestTheme, invisible_chrome, test_environment};

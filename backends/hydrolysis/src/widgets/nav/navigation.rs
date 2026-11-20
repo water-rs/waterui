@@ -34,10 +34,10 @@ use waterui_controls::label::LabelDisplayMode;
 use waterui_controls::text_field::TextField;
 use waterui_core::contract_violation;
 use waterui_core::id::Id;
-use waterui_core::interaction::InteractionState;
 use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
 use waterui_core::{AnyView, Environment, Metadata, Native};
 use waterui_graphics::color::Color;
+use waterui_interaction::interaction::InteractionState;
 
 #[derive(Clone, Copy)]
 struct NavigationLeadingReserve(f64);

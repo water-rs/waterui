@@ -14,11 +14,11 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use waterui_controls::ControlSize;
 use waterui_core::Environment;
-use waterui_core::interaction::InteractionState;
 use waterui_core::layout::{
     HorizontalAlignment, ProposalSize, Size as LayoutSize, ViewDimensions, layout_direction,
 };
 use waterui_form::picker::date::DatePickerConfig;
+use waterui_interaction::interaction::InteractionState;
 use waterui_text::styled::StyledStr;
 
 use crate::widgets::controls::button::label_styled;

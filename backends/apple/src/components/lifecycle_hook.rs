@@ -18,11 +18,11 @@ use cocoa_ui::view;
 use cocoa_ui::{MainThreadMarker, PlatformView, Rect};
 use waterui_backend_core::Environment;
 use waterui_core::Metadata;
-use waterui_core::event::{LifeCycle, LifeCycleHook};
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
     ViewDimensions,
 };
+use waterui_interaction::event::{LifeCycle, LifeCycleHook};
 
 use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;

@@ -31,13 +31,13 @@ use waterui_controls::label::ControlLabel;
 use waterui_core::Environment;
 use waterui_core::contract_violation;
 use waterui_core::id::Id;
-use waterui_core::interaction::InteractionState;
 use waterui_core::layout::{
     HorizontalAlignment, LayoutDirection, ProposalSize, Size as LayoutSize, StretchAxis,
     ViewDimensions, layout_direction,
 };
 use waterui_form::picker::PickerItem;
 use waterui_form::picker::{PickerConfig, PickerStyle};
+use waterui_interaction::interaction::InteractionState;
 use waterui_text::IntoText as _;
 use waterui_text::font::Font;
 use waterui_text::styled::StyledStr;

@@ -35,11 +35,11 @@ use waterui_core::animation::Animation;
 use waterui_core::contract_violation;
 use waterui_core::handler::{BoxedAction, boxed_action};
 use waterui_core::id::Id as RawId;
-use waterui_core::interaction::{InteractionState, Selected};
 use waterui_core::layout::{
     ProposalSize, Size as LayoutSize, UnitPoint, ViewDimensions, layout_direction,
 };
 use waterui_core::views::AnyViewsSnapshot;
+use waterui_interaction::interaction::{InteractionState, Selected};
 use waterui_layout::scroll::Axis as ScrollAxis;
 use waterui_text::Text;
 
@@ -445,7 +445,7 @@ struct RealizedRow {
     env: Environment,
     /// Whether the row's content sits under `.disabled` — read from the
     /// environment the content's own presses resolve against, the same
-    /// [`waterui_core::interaction::Disabled`] scope every control's input
+    /// [`waterui_interaction::interaction::Disabled`] scope every control's input
     /// gate consults. A disabled row is inert the way a disabled `Button`
     /// cannot be pressed: the list registers no selection press for it and
     /// its `ListItem` node advertises no `Click` (water-rs/waterui#2244).

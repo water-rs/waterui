@@ -27,13 +27,13 @@ use waterui_controls::text_field::ResolvedTextFieldConfig;
 use waterui_core::Environment;
 #[cfg(feature = "text-field")]
 use waterui_core::Str;
-#[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
-use waterui_core::interaction::InteractionState;
 use waterui_core::layout::{
     HorizontalAlignment, LayoutDirection, ProposalSize, Size as LayoutSize, ViewDimensions,
 };
 #[cfg(feature = "secure-field")]
 use waterui_form::secure::SecureFieldConfig;
+#[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
+use waterui_interaction::interaction::InteractionState;
 #[cfg(feature = "text-field")]
 use waterui_text::styled::Style;
 use waterui_text::styled::StyledStr;

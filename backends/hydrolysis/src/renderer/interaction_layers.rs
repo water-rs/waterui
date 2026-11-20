@@ -18,7 +18,7 @@ use crate::renderer::live_tabs::LiveTabs;
 #[cfg(any(feature = "toggle", feature = "picker"))]
 use crate::renderer::live_toggle::LiveToggle;
 use crate::theme::InteractionMotion;
-use waterui_core::interaction::InteractionState;
+use waterui_interaction::interaction::InteractionState;
 
 /// Maximum number of overlapping press ripple waves tracked per widget.
 pub const MAX_PRESS_WAVES: usize = 4;

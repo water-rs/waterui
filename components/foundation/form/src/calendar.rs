@@ -21,12 +21,12 @@ use nami::{
 use waterui_controls::label::{ControlLabel, Label, LabelKind, TitleLabel};
 use waterui_controls::{IntoLabel, button, impl_label_style_methods};
 use waterui_core::backend::{Backend, ChildSlot, MapSlots};
-use waterui_core::interaction::Disabled;
 use waterui_core::layout::StretchAxis;
 use waterui_core::{
     AnyView, Environment, Metadata, Native, NativeView, View, env::use_env, views::ForEach,
 };
 use waterui_graphics::color::{AccentColor, AccentForegroundColor, Color, ForegroundColor};
+use waterui_interaction::interaction::Disabled;
 use waterui_layout::frame::Frame;
 use waterui_layout::padding::{EdgeInsets, Padding};
 use waterui_layout::stack::{Alignment, HStack, HorizontalAlignment, hstack, vstack};

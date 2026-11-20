@@ -129,4 +129,4 @@ impl RetainedScopes {
 
 #[cfg(feature = "accessibility")]
 use accesskit::NodeId as AccessibilityNodeId;
-use waterui_core::key::OnKeyPress;
+use waterui_interaction::key::OnKeyPress;

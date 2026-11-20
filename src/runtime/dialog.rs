@@ -35,8 +35,8 @@
 //! ```
 
 use nami::Binding;
+use waterui_accessibility::AccessibilityRole;
 use waterui_controls::{ButtonStyle, button};
-use waterui_core::accessibility::AccessibilityRole;
 use waterui_core::handler::{Handler, SharedAction, shared_action};
 use waterui_core::metadata::MetadataKey;
 use waterui_core::{Environment, OneOf2, View};

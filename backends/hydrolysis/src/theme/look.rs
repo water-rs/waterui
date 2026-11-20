@@ -34,9 +34,9 @@ use waterui_controls::ControlSize;
 use waterui_controls::button::ButtonStyle;
 use waterui_core::Environment;
 use waterui_core::animation::{Animation, ChangeAnimation};
-use waterui_core::interaction::{InteractionState, StateValue};
 use waterui_core::layout::LayoutDirection;
 use waterui_graphics::color::Color;
+use waterui_interaction::interaction::{InteractionState, StateValue};
 use waterui_text::font::Font;
 
 use super::Chrome;
@@ -537,7 +537,7 @@ mod realized {
         /// The interaction state moved from `old` to the inputs' state; a
         /// value without motion of its own runs with `motion`.
         Interaction {
-            old: waterui_core::interaction::InteractionState,
+            old: waterui_interaction::interaction::InteractionState,
             motion: &'a Motion,
         },
         /// The widget's value changed under `change`; a value without

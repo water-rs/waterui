@@ -60,7 +60,7 @@ use waterui_core::Environment;
     feature = "secure-field",
     feature = "color-picker"
 ))]
-use waterui_core::interaction::InteractionState;
+use waterui_interaction::interaction::InteractionState;
 
 #[cfg(any(
     feature = "text-field",
@@ -389,7 +389,7 @@ impl FieldChrome {
         disabled: bool,
         focused: bool,
     ) -> (
-        waterui_core::interaction::InteractionState,
+        waterui_interaction::interaction::InteractionState,
         PressSlot,
         Rc<InteractionLayerHandles>,
     ) {

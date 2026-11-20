@@ -1187,7 +1187,7 @@ mod tests {
     use crate::platform::{KeyCode, Modifiers};
     use keyboard_types::Code;
     use waterui_core::extract::Use;
-    use waterui_core::key::{Key, KeyHandling, KeyPress, NamedKey};
+    use waterui_interaction::key::{Key, KeyHandling, KeyPress, NamedKey};
 
     /// A synthetic press of a named key, carrying both the legacy `KeyCode`
     /// the editor matches on and the W3C pair the bubble handlers read.
