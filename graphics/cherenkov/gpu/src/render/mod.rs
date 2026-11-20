@@ -460,6 +460,8 @@ struct SurfaceState {
     part_ranges: Vec<present::ColorRange>,
     #[cfg(target_os = "android")]
     part_damage: Vec<cherenkov::damage::Region>,
+    #[cfg(target_os = "android")]
+    part_painted: Vec<cherenkov::damage::Region>,
     /// Texture-target hand-off: each rendered texture goes to the host.
     textures: Option<std::sync::mpsc::Sender<wgpu::Texture>>,
     ranges: Option<std::sync::mpsc::Sender<present::ColorRange>>,
@@ -653,6 +655,8 @@ impl SurfaceState {
             part_ranges: Vec::new(),
             #[cfg(target_os = "android")]
             part_damage: Vec::new(),
+            #[cfg(target_os = "android")]
+            part_painted: Vec::new(),
             textures,
             ranges,
             refresh,
@@ -702,11 +706,12 @@ impl SurfaceState {
 
     fn lowering_bytes(&self) -> u64 {
         #[cfg(target_os = "android")]
-        let damage_bytes = (self.part_damage.capacity()
+        let damage_bytes = ((self.part_damage.capacity() + self.part_painted.capacity())
             * std::mem::size_of::<cherenkov::damage::Region>()) as u64
             + self
                 .part_damage
                 .iter()
+                .chain(self.part_painted.iter())
                 .map(|region| region.heap_bytes().0)
                 .sum::<u64>();
         #[cfg(not(target_os = "android"))]
@@ -6893,6 +6898,72 @@ impl GpuRenderer {
         Ok(())
     }
 
+    /// Computes the disjoint painted device-pixel rectangles of each engine
+    /// part (`part > 0`) in `frame` so Android region bands cover only what is
+    /// actually drawn above embedded platform views.
+    #[cfg(any(target_os = "android", test))]
+    fn compute_part_painted(
+        frame: &lower::Frame,
+        part_painted: &mut [cherenkov::damage::Region],
+        extent: (u32, u32),
+    ) {
+        for pass in &frame.passes {
+            let lower::Target::Part(part) = pass.target else {
+                continue;
+            };
+            if part == 0 {
+                continue;
+            }
+            let Some(region) = part_painted.get_mut(part as usize) else {
+                continue;
+            };
+            if pass.clear.is_some_and(|clear| clear[3] != 0.0) {
+                region.add(
+                    pass.region[0],
+                    pass.region[1],
+                    pass.region[2],
+                    pass.region[3],
+                );
+            }
+            for range in &pass.ranges {
+                if range.gpu.is_some() {
+                    region.add(
+                        pass.region[0],
+                        pass.region[1],
+                        pass.region[2],
+                        pass.region[3],
+                    );
+                    continue;
+                }
+                let start = range.instances.start as usize;
+                let end = range.instances.end as usize;
+                for instance in &frame.instances[start..end] {
+                    let bounds = damage::clipped_bounds(instance);
+                    if !bounds.iter().all(|value| value.is_finite())
+                        || bounds[2] <= bounds[0]
+                        || bounds[3] <= bounds[1]
+                    {
+                        continue;
+                    }
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        clippy::cast_sign_loss,
+                        reason = "bounds are clamped non-negative before converting to device pixel extent"
+                    )]
+                    let (x0, y0, x1, y1) = (
+                        (bounds[0].floor().max(0.0) as u32).min(extent.0),
+                        (bounds[1].floor().max(0.0) as u32).min(extent.1),
+                        (bounds[2].ceil().max(0.0) as u32).min(extent.0),
+                        (bounds[3].ceil().max(0.0) as u32).min(extent.1),
+                    );
+                    if x1 > x0 && y1 > y0 {
+                        region.add(x0, y0, x1 - x0, y1 - y0);
+                    }
+                }
+            }
+        }
+    }
+
     /// Presents `sf`'s surface: through its plane system when it has one —
     /// the frame-swap refresh when this render admitted frames only, a
     /// full compose otherwise — and through the window presenter when it
@@ -6926,6 +6997,8 @@ impl GpuRenderer {
                         range: surface.part_ranges[n],
                         #[cfg(target_os = "android")]
                         damage: &surface.part_damage[n],
+                        #[cfg(target_os = "android")]
+                        painted: &surface.part_painted[n],
                         view: match n {
                             0 => &surface.view,
                             n => &surface.parts[n - 1].1,
@@ -9630,6 +9703,17 @@ impl GpuRenderer {
                     *region = cherenkov::damage::Region::new(surf.size);
                 }
             }
+            surf.part_painted.resize_with(surf.plan.parts(), || {
+                cherenkov::damage::Region::new(surf.size)
+            });
+            for region in &mut surf.part_painted {
+                if region.extent() == surf.size {
+                    region.clear();
+                } else {
+                    *region = cherenkov::damage::Region::new(surf.size);
+                }
+            }
+            Self::compute_part_painted(&surf.frame, &mut surf.part_painted, surf.size);
         }
         diag::set_surface(Some(id.raw()));
         let inst_base = surf.inst_base;
@@ -12609,5 +12693,77 @@ mod tests {
             covered += rows;
         }
         assert_eq!(covered, 20011);
+    }
+
+    #[test]
+    fn part_painted_tracks_only_painted_band_regions() {
+        let mut frame = lower::Frame::default();
+        let mut inst_top = instance::Instance::new(instance::KIND_FILL);
+        inst_top.affine = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0];
+        inst_top.bounds = [10.0, 5.0, 30.0, 15.0];
+        let mut inst_bottom = instance::Instance::new(instance::KIND_FILL);
+        inst_bottom.affine = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0];
+        inst_bottom.bounds = [60.0, 200.0, 100.0, 212.0];
+        frame.instances.push(inst_top);
+        frame.instances.push(inst_bottom);
+        // Pass targeting Part(0) is the base surface and must not populate bands.
+        frame.passes.push(lower::Pass {
+            color_range: present::ColorRange::Standard,
+            target: lower::Target::Part(0),
+            clear: Some([1.0, 1.0, 1.0, 1.0]),
+            ranges: Vec::new(),
+            space: cherenkov::BlendSpace::Linear,
+            region: [0, 0, 300, 400],
+            backdrop_copy: None,
+            capture: None,
+            tier_ranges: [0..0, 0..0],
+        });
+        // Part(1) clears to transparent black ([0.0; 4]) and paints nothing:
+        // painted region stays empty.
+        frame.passes.push(lower::Pass {
+            color_range: present::ColorRange::Standard,
+            target: lower::Target::Part(1),
+            clear: Some([0.0; 4]),
+            ranges: Vec::new(),
+            space: cherenkov::BlendSpace::Linear,
+            region: [0, 0, 300, 400],
+            backdrop_copy: None,
+            capture: None,
+            tier_ranges: [0..0, 0..0],
+        });
+        // Part(2) clears to transparent black and draws two disjoint items.
+        frame.passes.push(lower::Pass {
+            color_range: present::ColorRange::Standard,
+            target: lower::Target::Part(2),
+            clear: Some([0.0; 4]),
+            ranges: vec![lower::DrawRange {
+                instances: 0..2,
+                source: None,
+                image: None,
+                mask: None,
+                pipeline: lower::PipelineKind::SrcOver,
+                variant: lower::ShaderVariant::Simple,
+                gpu: None,
+            }],
+            space: cherenkov::BlendSpace::Linear,
+            region: [0, 0, 300, 400],
+            backdrop_copy: None,
+            capture: None,
+            tier_ranges: [0..0, 0..0],
+        });
+        let mut painted = vec![
+            cherenkov::damage::Region::new((300, 400)),
+            cherenkov::damage::Region::new((300, 400)),
+            cherenkov::damage::Region::new((300, 400)),
+        ];
+        GpuRenderer::compute_part_painted(&frame, &mut painted, (300, 400));
+        assert!(painted[0].is_empty());
+        assert!(painted[1].is_empty());
+        let rects: Vec<[u32; 4]> = painted[2]
+            .rectangles()
+            .iter()
+            .map(|rect| rect.xywh().into())
+            .collect();
+        assert_eq!(rects.len(), 2);
     }
 }
