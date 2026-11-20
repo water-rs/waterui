@@ -1141,6 +1141,8 @@ struct SessionMounts {
     /// The session's colour-scheme signal — the binding `install_theme_tokens`
     /// resolved the default tokens over; `set_night_mode` writes it.
     color_scheme: nami::Binding<ColorScheme>,
+    #[cfg(hydrolysis_android_system_webview)]
+    android_webview: crate::widgets::platform::webview::AndroidSystemWebViewController,
 }
 
 /// Builds the session's mount inputs: instantiates the app, layers the
@@ -1225,14 +1227,13 @@ fn session_mounts(
     // window reads the same state to gate its soft-input pushes.
     let platform_view_focus = crate::platform_view::PlatformViewFocus::default();
 
-    // The system-WebView controller joins the same environment: a
-    // `WebView` opened through it mounts as a platform-view *instance*
-    // the registry resolves by id. Resolving the wrapper class must
+    // The system-WebView controller attaches directly to the renderer's
+    // `SemanticCore` so `NativeBackend::web_view_controller` supplies it
+    // without going through `Environment`. Resolving the wrapper class must
     // happen here, on the JNI thread — a thread that did not enter from
     // Java cannot resolve app classes later.
     #[cfg(hydrolysis_android_system_webview)]
-    crate::widgets::platform::webview::install_controller(
-        &mut env,
+    let android_webview = crate::widgets::platform::webview::AndroidSystemWebViewController::new(
         jni_env,
         Arc::clone(&bridge.host_view),
     )?;
@@ -1270,6 +1271,8 @@ fn session_mounts(
         safe_area,
         keyboard_area,
         color_scheme,
+        #[cfg(hydrolysis_android_system_webview)]
+        android_webview,
     }))
 }
 
@@ -1444,6 +1447,8 @@ impl AndroidSession {
             safe_area,
             keyboard_area,
             color_scheme,
+            #[cfg(hydrolysis_android_system_webview)]
+            android_webview,
         }) = session_mounts(
             services,
             night,
@@ -1481,6 +1486,8 @@ impl AndroidSession {
             &mut runtime.renderer,
             queue_window_opener(&pending_window_queue),
         );
+        #[cfg(hydrolysis_android_system_webview)]
+        runtime.renderer.set_android_webview(android_webview);
         // The session mounts parked: the activity's `onStart` and the
         // surface band's attach are the reports that unpark it.
         runtime.set_hidden(runtime.platform.is_occluded());

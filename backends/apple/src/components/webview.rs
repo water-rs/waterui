@@ -47,17 +47,16 @@ use waterui::Str;
 use waterui::reactive::watcher::BoxWatcherGuard;
 #[cfg(feature = "webview")]
 use waterui::reactive::{Computed, Signal};
-use waterui_backend_core::Environment;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
 };
 #[cfg(feature = "webview")]
 use waterui_webview::{
     ASSET_HOST, ASSET_ORIGIN, ASSET_SCHEME, AnsweredNavigations, BackendEvent, Cookie,
-    CustomWebViewController, DOCUMENT_START_SCRIPT, DocumentScripts, NavigationPolicy,
-    NavigationRequest, OriginPolicy, ScriptInjectionTime, ScriptMessageHandler, Url, UserScript,
-    WatcherGuard, WatcherSet, WebViewConfig, WebViewError, WebViewEvent, WebViewHandle,
-    WebViewOpenError, assets, bridge,
+    DOCUMENT_START_SCRIPT, DocumentScripts, NavigationPolicy, NavigationRequest, OriginPolicy,
+    ScriptInjectionTime, ScriptMessageHandler, Url, UserScript, WatcherGuard, WatcherSet,
+    WebViewConfig, WebViewController, WebViewError, WebViewEvent, WebViewHandle, WebViewOpenError,
+    assets, bridge,
 };
 
 use crate::contract::{NativeLeaf, RenderContext};
@@ -792,21 +791,16 @@ mod cookie_record {
     }
 }
 
-/// The platform `WebViewController` the late install puts into the
-/// environment — `installWebViewController`'s `WebViewWrapper` factory.
+/// The Apple platform [`WebViewController`] backed by `WKWebView`.
 #[cfg(feature = "webview")]
-struct AppleWebViewController;
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AppleWebViewController;
 
 #[cfg(feature = "webview")]
-impl core::fmt::Debug for AppleWebViewController {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("AppleWebViewController").finish()
-    }
-}
+impl WebViewController for AppleWebViewController {
+    type Handle = WkWebViewHandle;
 
-#[cfg(feature = "webview")]
-impl CustomWebViewController for AppleWebViewController {
-    fn open(&self, config: WebViewConfig) -> Result<impl WebViewHandle, WebViewOpenError> {
+    fn open(&self, config: WebViewConfig) -> Result<Self::Handle, WebViewOpenError> {
         let mtm = MainThreadMarker::new().ok_or(WebViewOpenError::MainThreadRequired)?;
         // Interception can only be registered while the configuration is
         // being assembled, so the asset server arrives at creation.
@@ -825,6 +819,46 @@ impl CustomWebViewController for AppleWebViewController {
     fn asset_origin(&self) -> Option<Url> {
         Some(Url::new(ASSET_ORIGIN))
     }
+}
+
+/// The compile-time selected [`WebViewController`] for this feature set.
+#[cfg(feature = "webview")]
+pub type SelectedWebViewController = AppleWebViewController;
+
+/// The compile-time selected [`WebViewController`] for macOS `webview-cef`.
+#[cfg(all(not(feature = "webview"), target_os = "macos", feature = "webview-cef"))]
+pub type SelectedWebViewController = waterui_browser_cef::CefController;
+
+/// Fallback [`WebViewController`] when `waterui/webview` is unified without an
+/// engine feature enabled on `waterui-apple`.
+#[cfg(all(
+    waterui_feature = "webview",
+    not(any(feature = "webview", all(target_os = "macos", feature = "webview-cef")))
+))]
+pub type SelectedWebViewController = waterui_webview::UnavailableWebViewController;
+
+/// Returns the compile-time selected [`SelectedWebViewController`].
+#[cfg(feature = "webview")]
+#[must_use]
+pub const fn selected_controller() -> SelectedWebViewController {
+    AppleWebViewController
+}
+
+/// Returns the compile-time selected [`SelectedWebViewController`].
+#[cfg(all(not(feature = "webview"), target_os = "macos", feature = "webview-cef"))]
+#[must_use]
+pub fn selected_controller() -> SelectedWebViewController {
+    waterui_browser_cef::webview_controller()
+}
+
+/// Returns the compile-time selected [`SelectedWebViewController`].
+#[cfg(all(
+    waterui_feature = "webview",
+    not(any(feature = "webview", all(target_os = "macos", feature = "webview-cef")))
+))]
+#[must_use]
+pub const fn selected_controller() -> SelectedWebViewController {
+    waterui_webview::UnavailableWebViewController
 }
 
 /// The kit's spelling of an injection time.
@@ -884,43 +918,45 @@ impl SubView for WebViewSubView {
     }
 }
 
-fn realize_unavailable(webview: waterui_webview::WebView, ctx: &RenderContext<'_>) -> NativeLeaf {
+fn realize_unavailable(ctx: &RenderContext<'_>) -> NativeLeaf {
     let host = HostView::new(ctx.mtm(), cocoa_ui::Rect::ZERO);
-    let mut leaf = NativeLeaf::new(&*host, WebViewSubView);
-    leaf.keep(webview);
-    leaf
+    NativeLeaf::new(&*host, WebViewSubView)
 }
 
-/// The `webview` realization: `Native<WebView>` mounts the selected engine's
-/// view, keeping the `WebView` — and with it the event, navigation and signal
-/// subscriptions — alive for the leaf's life.
+/// The `webview` realization: mounts the `WKWebView` opened from `open`, keeping
+/// the `WebView` — and with it the event, navigation and signal subscriptions —
+/// alive for the leaf's life.
 #[cfg(feature = "webview")]
-pub fn realize_web_view(webview: waterui_webview::WebView, ctx: &RenderContext<'_>) -> NativeLeaf {
-    // The controller failed to open this view and `waterui-webview`
-    // already reported it: mount an empty host where the page would be.
-    if webview.handle().is_unavailable() {
-        return realize_unavailable(webview, ctx);
-    }
-    let handle = webview.handle().downcast_ref::<WkWebViewHandle>().expect(
-        "a WebView leaf was handed a handle from another engine; the \
-                 WebViewController in this environment is not the Apple backend's",
-    );
-    let mut leaf = NativeLeaf::new(&**handle.controller().view(), WebViewSubView);
+pub fn realize_web_view(open: waterui_webview::WebViewOpen, ctx: &RenderContext<'_>) -> NativeLeaf {
+    let Some(opened) = open.open_with(&selected_controller(), ctx.env()) else {
+        return realize_unavailable(ctx);
+    };
+    let mut leaf = NativeLeaf::new(&**opened.handle().controller().view(), WebViewSubView);
     // The component owns the subscriptions that drive `can_go_back`,
     // `can_go_forward` and the event signal; dropping it would leave a
     // live view whose reactive state had gone dead.
-    leaf.keep(webview);
+    leaf.keep(opened.into_webview());
     leaf
 }
 
 /// The `webview-cef` realization on macOS: renders the CEF page directly as GPU
 /// content through `waterui-browser-cef`.
-#[cfg(all(target_os = "macos", feature = "webview-cef"))]
-pub fn realize_web_view(webview: waterui_webview::WebView, ctx: &RenderContext<'_>) -> NativeLeaf {
-    if webview.handle().is_unavailable() {
-        return realize_unavailable(webview, ctx);
-    }
-    ctx.render(waterui_browser_cef::webview(webview, ctx.env()))
+#[cfg(all(not(feature = "webview"), target_os = "macos", feature = "webview-cef"))]
+pub fn realize_web_view(open: waterui_webview::WebViewOpen, ctx: &RenderContext<'_>) -> NativeLeaf {
+    let Some(opened) = open.open_with(&selected_controller(), ctx.env()) else {
+        return realize_unavailable(ctx);
+    };
+    ctx.render(waterui_browser_cef::webview(opened, ctx.env()))
+}
+
+/// Fallback realization when `waterui/webview` is active without an engine feature.
+#[cfg(all(
+    waterui_feature = "webview",
+    not(any(feature = "webview", all(target_os = "macos", feature = "webview-cef")))
+))]
+pub fn realize_web_view(open: waterui_webview::WebViewOpen, ctx: &RenderContext<'_>) -> NativeLeaf {
+    let _ = open.open_with(&selected_controller(), ctx.env());
+    realize_unavailable(ctx)
 }
 
 /// The `SchemeHandler` an `asset_origin` view registers — `AssetSchemeHandler`,
@@ -949,17 +985,6 @@ fn asset_scheme(server: &assets::AssetServer) -> web_kit::SchemeHandler {
                 body,
             }
         }),
-    }
-}
-
-/// Installs the compile-time selected `WebViewController` into `env`.
-pub fn install_service(env: &mut Environment) {
-    if env.get::<waterui_webview::WebViewController>().is_none() {
-        #[cfg(all(target_os = "macos", feature = "webview-cef"))]
-        let controller = waterui_browser_cef::webview_controller();
-        #[cfg(feature = "webview")]
-        let controller = waterui_webview::WebViewController::new(AppleWebViewController);
-        env.insert(controller);
     }
 }
 

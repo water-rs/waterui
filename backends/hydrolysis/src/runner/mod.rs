@@ -334,14 +334,11 @@ fn offscreen_scale_factor() -> f64 {
     parsed
 }
 
-/// The environment the platform services this renderer provides need: the
-/// localization catalog and the system web view's controller.
+/// The environment services this renderer provides: the localization catalog.
 #[cfg(any(test, hydrolysis_platform_services))]
 fn install_platform_services(env: &mut Environment) {
     #[cfg(any(test, hydrolysis_localization))]
     crate::localization::install(env);
-    #[cfg(hydrolysis_webview_engine)]
-    crate::widgets::platform::webview::install_controller(env);
 }
 
 fn queue_window_opener<E: crate::text::TextEngine>(

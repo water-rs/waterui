@@ -5,6 +5,7 @@ use super::*;
 
 struct HostedNode {
     runtime: Rc<crate::hosted::HostedRuntime>,
+    _retained: Box<dyn core::any::Any>,
 }
 
 impl Drop for HostedNode {
@@ -71,8 +72,33 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         env: &Environment,
         renderer: &SemanticCore<E>,
     ) -> Self {
+        Self::build_hosted_retained(view, env, renderer, ())
+    }
+
+    #[cfg(hydrolysis_system_webview)]
+    pub(super) fn build_hosted_retained(
+        view: crate::hosted::HostedView,
+        env: &Environment,
+        renderer: &SemanticCore<E>,
+        retained: impl core::any::Any,
+    ) -> Self {
         let state = Rc::new(HostedNode {
             runtime: crate::hosted::HostedRuntime::new(view),
+            _retained: Box::new(retained),
+        });
+        Self::build_widget(renderer, state, StretchAxis::Both, env)
+    }
+
+    #[cfg(not(hydrolysis_system_webview))]
+    fn build_hosted_retained(
+        view: crate::hosted::HostedView,
+        env: &Environment,
+        renderer: &SemanticCore<E>,
+        retained: impl core::any::Any,
+    ) -> Self {
+        let state = Rc::new(HostedNode {
+            runtime: crate::hosted::HostedRuntime::new(view),
+            _retained: Box::new(retained),
         });
         Self::build_widget(renderer, state, StretchAxis::Both, env)
     }

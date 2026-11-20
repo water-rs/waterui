@@ -304,42 +304,32 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         not(any(hydrolysis_cef_webview, hydrolysis_wpe_webview))
     ))]
     pub(super) fn build_webview(
-        webview: &WebView,
+        open: waterui::webview::WebViewOpen,
         env: &Environment,
         renderer: &SemanticCore<E>,
     ) -> Self {
         #[cfg(hydrolysis_system_webview)]
         {
-            crate::widgets::platform::webview::hosted(webview).map_or_else(
-                || Self::build_empty(renderer, env),
-                |hosted| Self::build_hosted(hosted, env, renderer),
-            )
+            let controller =
+                crate::widgets::platform::webview::SelectedWebViewController::default();
+            let Some(opened) = open.open_with(&controller, env) else {
+                return Self::build_empty(renderer, env);
+            };
+            let hosted = crate::widgets::platform::webview::hosted_from_handle(opened.handle());
+            Self::build_hosted_retained(hosted, env, renderer, opened.into_webview())
         }
         #[cfg(hydrolysis_android_system_webview)]
         {
             use crate::widgets::platform::platform_view::PlatformViewRenderState;
             use crate::widgets::platform::webview::AndroidSystemWebViewHandle;
 
-            let handle = webview.handle();
-            // The controller failed to open this view and `waterui-webview`
-            // already reported it: nothing to draw.
-            if handle.is_unavailable() {
-                return Self::build_empty(renderer, env);
-            }
-            let Some(instance) = handle
-                .downcast_ref::<AndroidSystemWebViewHandle>()
-                .map(AndroidSystemWebViewHandle::instance)
-            else {
-                contract_violation!(
-                    "hydrolysis android: a WebView handle that is not \
-                     AndroidSystemWebViewHandle reached the backend; the \
-                     Android system bridge only draws views `WebView::open` \
-                     made through its controller; the web view is not drawn"
-                );
+            let stretch = waterui_core::NativeView::stretch_axis(&open);
+            let controller = renderer.android_webview_controller();
+            let Some(opened) = open.open_with(&controller, env) else {
                 return Self::build_empty(renderer, env);
             };
-            let stretch = waterui_core::NativeView::stretch_axis(webview);
-            let owner: Rc<dyn core::any::Any> = Rc::new(handle.clone());
+            let instance = AndroidSystemWebViewHandle::instance(opened.handle());
+            let owner: Rc<dyn core::any::Any> = Rc::new(opened.into_webview());
             let Some(state) = PlatformViewRenderState::from_instance(instance, owner, env) else {
                 return Self::build_empty(renderer, env);
             };
@@ -348,7 +338,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         }
         #[cfg(not(any(hydrolysis_system_webview, hydrolysis_android_system_webview)))]
         {
-            let _ = webview;
+            drop(open);
             contract_violation!("{UNSUPPORTED_WEBVIEW}; the web view is not drawn");
             Self::build_empty(renderer, env)
         }

@@ -10509,7 +10509,8 @@ mod webview {
     /// and the record of its loads.
     fn probed_view(origins: BridgeOrigins) -> (AnyWebViewHandle, Loads) {
         let initial: Url = "https://waterui.dev".parse().expect("parses");
-        let webview = waterui_apple::native_test_support::webview::controller(mtm()).open_with(
+        let webview = waterui_webview::open_webview_with(
+            &waterui_apple::native_test_support::webview::controller(mtm()),
             WebViewConfig::default()
                 .with_bridge_origins(OriginPolicy::new(origins, &initial))
                 .with_scripts(vec![UserScript::new(
@@ -11311,11 +11312,10 @@ mod a11y_frame {
     #[cfg(feature = "webview")]
     fn a_region_on_a_web_view_reports_the_named_region() {
         use cocoa_ui::web_kit::LeafWebView;
-        use waterui_apple::native_test_support::webview::controller;
-        use waterui_webview::WebViewConfig;
+        use waterui_webview::WebView;
 
         let region = Rect::new(Point::new(8.0, 12.0), Size::new(40.0, 24.0));
-        let page = controller(mtm()).open_with(WebViewConfig::default());
+        let page = WebView::open("about:blank");
         let (leaf, _window) = attached(
             page.a11y_label("Page")
                 .a11y_geometry(AccessibilityGeometry::Region(region)),

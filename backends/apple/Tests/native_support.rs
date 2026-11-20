@@ -517,7 +517,6 @@ use waterui_core::layout::{Point, Rect, Size};
 pub fn channel_connects_typed_declarations(_mtm: MainThreadMarker) {
     let mut env = Environment::new();
     crate::dispatch::install(&mut env);
-    crate::embedding::install_services(&mut env);
     let (manager, channel) = WindowManager::new();
     waterui::window::Window::new(
         "Queued Root",
@@ -547,7 +546,6 @@ pub fn channel_connects_typed_declarations(_mtm: MainThreadMarker) {
 pub fn window_environment(mtm: MainThreadMarker) -> (Environment, crate::theme::ThemeSignals) {
     let mut env = Environment::new();
     crate::dispatch::install(&mut env);
-    crate::embedding::install_services(&mut env);
     let theme = crate::theme::install(
         &mut env,
         cocoa_ui::appkit::Application::shared(mtm).color_scheme(),
@@ -1180,28 +1178,19 @@ pub mod filtered {
 
 /// The web view leaf's harness reach.
 ///
-/// Opens a real `WKWebView` through the same late install an application
-/// gets — `install_service` fills the environment's `WebViewController`
-/// slot exactly the way `embedding::mount` does — so a case can drive the
-/// engine without mounting a view tree.
+/// Opens a real `WKWebView` through the backend's [`AppleWebViewController`]
+/// so a case can drive the engine without mounting a view tree.
 #[cfg(feature = "webview")]
 pub mod webview {
     use cocoa_ui::MainThreadMarker;
-    use waterui_backend_core::Environment;
 
-    /// The `WebViewController` the leaf's `install_service` installs.
+    /// The Apple backend's [`WebViewController`](waterui_webview::WebViewController).
     ///
-    /// This is the same construction `open` drives, so a case that opens
-    /// several views shares the one service install. `mtm` is the proof
-    /// the call happened on the real main thread, which `WKWebView`
-    /// requires.
+    /// `mtm` is the proof the call happened on the real main thread, which
+    /// `WKWebView` requires.
     #[must_use]
-    pub fn controller(_mtm: MainThreadMarker) -> waterui_webview::WebViewController {
-        let mut env = Environment::new();
-        crate::components::webview::install_service(&mut env);
-        env.get::<waterui_webview::WebViewController>()
-            .expect("the webview leaf installs its WebViewController")
-            .clone()
+    pub fn controller(_mtm: MainThreadMarker) -> impl waterui_webview::WebViewController {
+        crate::components::webview::AppleWebViewController
     }
 
     /// A fresh `WebView` backed by the backend's own `WKWebView`, never
@@ -1209,7 +1198,7 @@ pub mod webview {
     /// thread, which `WKWebView` requires.
     #[must_use]
     pub fn open(mtm: MainThreadMarker) -> waterui_webview::WebView {
-        controller(mtm).open()
+        waterui_webview::open_webview(&controller(mtm))
     }
 }
 

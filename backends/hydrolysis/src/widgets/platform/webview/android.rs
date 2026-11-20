@@ -34,10 +34,10 @@ use jni::{Env, EnvUnowned, jni_sig, jni_str};
 use nami::Signal;
 use nami::watcher::BoxWatcherGuard;
 use waterui::webview::{
-    ASSET_HTTPS_ORIGIN, AssetServer, BackendEvent, Cookie, CustomWebViewController,
-    DOCUMENT_START_SCRIPT, DocumentScripts, NavigationPolicy, NavigationRequest,
-    ScriptInjectionTime, ScriptMessageHandler, Url, UserScript, WatcherGuard, WatcherSet,
-    WebViewConfig, WebViewError, WebViewEvent, WebViewHandle, WebViewOpenError, assets, bridge,
+    ASSET_HTTPS_ORIGIN, AssetServer, BackendEvent, Cookie, DOCUMENT_START_SCRIPT, DocumentScripts,
+    NavigationPolicy, NavigationRequest, ScriptInjectionTime, ScriptMessageHandler, Url,
+    UserScript, WatcherGuard, WatcherSet, WebViewConfig, WebViewController, WebViewError,
+    WebViewEvent, WebViewHandle, WebViewOpenError, assets, bridge,
 };
 use waterui_core::{Computed, Str};
 
@@ -310,10 +310,7 @@ struct AssetServerHandle {
     response: Arc<AssetResponseCtor>,
 }
 
-/// The controller the session's environment carries. `new` resolves the
-/// wrapper class and its method table while still on the JNI thread, and
-/// `open` builds wrappers against both.
-pub struct AndroidSystemWebViewController {
+struct ControllerInner {
     vm: JavaVM,
     /// The `HydrolysisSession` — the object `HostBridge` calls back into and
     /// the instance registry `create` registers the wrapper on. The same
@@ -328,6 +325,16 @@ pub struct AndroidSystemWebViewController {
     /// Placement instance ids, owned by the controller rather than a static:
     /// a session's registry counts from its own zero.
     next_instance: Cell<u64>,
+}
+
+/// The Android system [`WebViewController`] attached to a session.
+///
+/// `new` resolves the wrapper class and its method table while still on the
+/// JNI thread, and `open` builds wrappers against both. A `Default` instance
+/// carries no session and fails `open` cleanly with [`WebViewOpenError::Engine`].
+#[derive(Clone, Default)]
+pub struct AndroidSystemWebViewController {
+    inner: Option<Rc<ControllerInner>>,
 }
 
 impl AndroidSystemWebViewController {
@@ -361,20 +368,29 @@ impl AndroidSystemWebViewController {
             init,
         });
         Ok(Self {
-            vm: env.get_java_vm().map_err(JniError::from)?,
-            session,
-            webview_class,
-            methods,
-            asset_response,
-            next_instance: Cell::new(0),
+            inner: Some(Rc::new(ControllerInner {
+                vm: env.get_java_vm().map_err(JniError::from)?,
+                session,
+                webview_class,
+                methods,
+                asset_response,
+                next_instance: Cell::new(0),
+            })),
         })
     }
 }
 
-impl CustomWebViewController for AndroidSystemWebViewController {
-    fn open(&self, config: WebViewConfig) -> Result<impl WebViewHandle, WebViewOpenError> {
-        let instance = self.next_instance.get() + 1;
-        self.next_instance.set(instance);
+impl WebViewController for AndroidSystemWebViewController {
+    type Handle = AndroidSystemWebViewHandle;
+
+    fn open(&self, config: WebViewConfig) -> Result<Self::Handle, WebViewOpenError> {
+        let Some(inner) = self.inner.as_ref() else {
+            return Err(WebViewOpenError::Engine(String::from(
+                "hydrolysis android: AndroidSystemWebViewController has no attached session",
+            )));
+        };
+        let instance = inner.next_instance.get() + 1;
+        inner.next_instance.set(instance);
 
         let origin_rules = androidx_origin_rules(config.bridge_origins());
         let scripts = DocumentScripts::new(&config);
@@ -387,14 +403,14 @@ impl CustomWebViewController for AndroidSystemWebViewController {
         let asset_server = asset_server.map_or(0, |server| {
             Box::into_raw(Box::new(AssetServerHandle {
                 server,
-                response: Arc::clone(&self.asset_response),
+                response: Arc::clone(&inner.asset_response),
             })) as jlong
         });
 
         let shared = Rc::new(SharedState {
-            vm: self.vm.clone(),
+            vm: inner.vm.clone(),
             wrapper: RefCell::new(None),
-            methods: self.methods.clone(),
+            methods: inner.methods.clone(),
             watchers: WatcherSet::new(),
             handlers: RefCell::new(HashMap::new()),
             scripts: RefCell::new(scripts),
@@ -406,9 +422,10 @@ impl CustomWebViewController for AndroidSystemWebViewController {
         let native_handle = Box::into_raw(Box::new(Rc::downgrade(&shared))) as jlong;
 
         let wrapper = Rc::new(
-            self.vm
+            inner
+                .vm
                 .with_local_frame::<_, _, jni::errors::Error>(16, |env| {
-                    self.create_wrapper(env, instance, native_handle, asset_server)
+                    inner.create_wrapper(env, instance, native_handle, asset_server)
                 })
                 .map_err(|error| {
                     // Keep the leak surface honest on the failure path too.
@@ -430,7 +447,7 @@ impl CustomWebViewController for AndroidSystemWebViewController {
                         }
                     }
                     WebViewOpenError::Engine(jni_failure(
-                        &self.vm,
+                        &inner.vm,
                         "HydrolysisWebView.create",
                         &error,
                     ))
@@ -441,7 +458,7 @@ impl CustomWebViewController for AndroidSystemWebViewController {
         let handle = AndroidSystemWebViewHandle {
             inner: Rc::new(HandleInner {
                 wrapper,
-                methods: self.methods.clone(),
+                methods: inner.methods.clone(),
                 shared,
                 instance,
                 native_handle,
@@ -478,7 +495,7 @@ impl CustomWebViewController for AndroidSystemWebViewController {
 /// The Kotlin `HydrolysisWebView.create` call — the companion's static
 /// factory, resolved on the class at session create. Returns the wrapper as
 /// a `Global<JObject<'static>>`.
-impl AndroidSystemWebViewController {
+impl ControllerInner {
     fn create_wrapper(
         &self,
         env: &mut Env<'_>,

@@ -247,11 +247,6 @@ use waterui_graphics::gpu::RedrawHandle;
 #[cfg(hydrolysis_gpu)]
 use waterui_graphics::{ExternalFrameView, GpuView};
 
-#[cfg(all(
-    waterui_feature = "webview",
-    not(any(hydrolysis_cef_webview, hydrolysis_wpe_webview))
-))]
-use waterui::webview::WebView;
 use waterui_icon::SystemIcon;
 #[cfg(feature = "accessibility")]
 use waterui_layout::scroll::Axis as ScrollAxis;
@@ -759,6 +754,10 @@ pub struct SemanticCore<E: crate::text::TextEngine> {
     /// consumes it, so a material view flush sees the scope the window
     /// declares (always `None` — the window's own backdrop mounts solo).
     pub(crate) window_material: Option<mount::program::MaterialRequest>,
+    /// The session's Android system `WebViewController`, attached when
+    /// `AndroidSession::create` initializes the session on the JNI thread.
+    #[cfg(hydrolysis_android_system_webview)]
+    android_webview: crate::widgets::platform::webview::AndroidSystemWebViewController,
 }
 
 // The state members are engine internals (gesture/hit-test/executor state)
@@ -919,6 +918,21 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         self.window_closable
     }
 
+    #[cfg(hydrolysis_android_system_webview)]
+    pub(crate) fn set_android_webview(
+        &mut self,
+        controller: crate::widgets::platform::webview::AndroidSystemWebViewController,
+    ) {
+        self.android_webview = controller;
+    }
+
+    #[cfg(hydrolysis_android_system_webview)]
+    pub(crate) fn android_webview_controller(
+        &self,
+    ) -> crate::widgets::platform::webview::AndroidSystemWebViewController {
+        self.android_webview.clone()
+    }
+
     /// Assigns the window's declared logical frame — the semantic runner
     /// writes it at mount and on every move/resize, so emit paths that
     /// resolve a viewport-dependent decision (a navigation split's
@@ -1067,6 +1081,8 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             record_seq: 0,
             materialized_epoch: 0,
             window_material: None,
+            #[cfg(hydrolysis_android_system_webview)]
+            android_webview: Default::default(),
         }
     }
 
