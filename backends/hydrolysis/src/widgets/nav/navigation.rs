@@ -36,7 +36,7 @@ use waterui_core::contract_violation;
 use waterui_core::id::Id;
 use waterui_core::interaction::InteractionState;
 use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
-use waterui_core::{AnyView, Environment, Metadata};
+use waterui_core::{AnyView, Environment, Metadata, Native};
 use waterui_graphics::color::Color;
 
 #[derive(Clone, Copy)]
@@ -1111,9 +1111,9 @@ fn flush_title_and_subtitle<E: crate::text::TextEngine>(
 /// Retained adaptive split state for both two- and three-column configurations.
 pub struct NavigationSplitRenderState<E: crate::text::TextEngine> {
     primary_selection: nami::Binding<Option<Id>>,
-    content_builder: Option<NavigationSplitDetailBuilder>,
+    content_builder: Option<NavigationSplitDetailBuilder<HeldChild<E>>>,
     secondary_selection: Option<nami::Binding<Option<Id>>>,
-    detail_builder: NavigationSplitDetailBuilder,
+    detail_builder: NavigationSplitDetailBuilder<HeldChild<E>>,
     visibility: Computed<waterui::navigation::NavigationSplitColumnVisibility>,
     column_width: waterui::navigation::ColumnWidth,
     style: waterui::navigation::NativeNavigationSplitStyle,
@@ -1143,7 +1143,7 @@ impl<E: crate::text::TextEngine> NavigationSplitRenderState<E> {
         look
     }
 
-    pub(crate) fn from_layout(split: NavigationSplitLayout) -> Self {
+    pub(crate) fn from_layout(split: NavigationSplitLayout<HeldChild<E>>) -> Self {
         let (
             primary,
             placeholder,
@@ -1163,8 +1163,8 @@ impl<E: crate::text::TextEngine> NavigationSplitRenderState<E> {
             visibility,
             column_width,
             style,
-            primary: RetainedSubview::new(primary.build()),
-            placeholder: RetainedSubview::new(placeholder.build()),
+            primary: RetainedSubview::held(primary.build()),
+            placeholder: RetainedSubview::held(placeholder.build()),
             content: None,
             detail: None,
             look: None,
@@ -1227,7 +1227,7 @@ impl<E: crate::text::TextEngine> NavigationSplitRenderState<E> {
                 .content_builder
                 .as_ref()
                 .expect("three-column split must provide a content builder");
-            let mut subview = RetainedSubview::new(AnyView::new(builder.build(id)));
+            let mut subview = RetainedSubview::new(Native::new(builder.build(id)));
             subview.ensure_built(renderer, env);
             self.content = Some((id, compact, subview));
         }
@@ -1247,7 +1247,7 @@ impl<E: crate::text::TextEngine> NavigationSplitRenderState<E> {
                 *cached_id != id || *cached_compact != compact
             });
         if needs_rebuild {
-            let mut subview = RetainedSubview::new(AnyView::new(self.detail_builder.build(id)));
+            let mut subview = RetainedSubview::new(Native::new(self.detail_builder.build(id)));
             subview.ensure_built(renderer, env);
             self.detail = Some((id, compact, subview));
         }

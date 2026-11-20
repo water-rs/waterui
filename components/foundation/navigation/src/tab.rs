@@ -361,7 +361,7 @@ impl<C: 'static> View for Tab<C> {
 pub struct SlotBuilder<T>(Rc<dyn Fn() -> T>);
 
 impl<T> SlotBuilder<T> {
-    fn new(build: impl Fn() -> T + 'static) -> Self {
+    pub(crate) fn new(build: impl Fn() -> T + 'static) -> Self {
         Self(Rc::new(build))
     }
 
@@ -369,6 +369,14 @@ impl<T> SlotBuilder<T> {
     #[must_use]
     pub fn build(&self) -> T {
         (self.0)()
+    }
+}
+
+impl<T: 'static> SlotBuilder<T> {
+    /// Maps this builder's output through `f`.
+    #[must_use]
+    pub(crate) fn map_slot<U>(self, f: impl Fn(T) -> U + 'static) -> SlotBuilder<U> {
+        SlotBuilder::new(move || f(self.build()))
     }
 }
 

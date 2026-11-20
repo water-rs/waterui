@@ -1390,14 +1390,14 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     }
 
     #[cfg(waterui_feature = "navigation")]
-    fn navigation_split(
+    fn navigation_split<C: ChildView<Self>>(
         &mut self,
-        native: waterui::navigation::split::NavigationSplitLayout,
+        native: waterui::navigation::split::NavigationSplitLayout<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
         let renderer = &mut *self.renderer;
-        RenderNode::build_navigation_split(native, env, renderer)
+        RenderNode::build_navigation_split(native.map_slots(C::into_child), env, renderer)
     }
 
     #[cfg(waterui_feature = "navigation")]

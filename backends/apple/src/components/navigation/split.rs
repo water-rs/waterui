@@ -13,26 +13,22 @@
 use core::cell::RefCell;
 
 use waterui::navigation::{
-    NavigationSplitLayout, NavigationView, split::NavigationSplitDetailBuilder as DetailBuilder,
+    NavigationSplitLayout, NavigationView,
+    split::{NavigationSplitDetailBuilder as DetailBuilder, SlotBuilder},
 };
 use waterui::reactive::{Binding, Signal};
-use waterui_backend_core::AnyView;
-use waterui_core::handler::AnyViewBuilder;
+#[cfg(target_os = "macos")]
+use waterui_core::Native;
 use waterui_core::id::Id;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect, ResolvedExtent, StretchAxis, SubView, ViewDimensions,
 };
 
-#[cfg(target_os = "ios")]
-use crate::contract::Held;
-use crate::contract::KeepAlive;
-use crate::contract::{NativeLeaf, RenderContext};
-#[cfg(target_os = "ios")]
-use waterui_core::backend::ChildSlot;
+use crate::contract::{Held, KeepAlive, NativeLeaf, RenderContext};
 
 /// The `NavigationSplitLayout` realization.
 pub fn realize_navigation_split_layout(
-    value: NavigationSplitLayout,
+    value: NavigationSplitLayout<Held>,
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
     platform::split_leaf(value, ctx)
@@ -67,11 +63,11 @@ struct Columns {
     /// Renders views after the handler returns.
     renderer: crate::contract::Renderer,
     /// The middle column's builder, when the split has three columns.
-    content: Option<DetailBuilder>,
+    content: Option<DetailBuilder<Held>>,
     /// The detail column's builder.
-    detail: DetailBuilder,
+    detail: DetailBuilder<Held>,
     /// The middle column's empty-selection placeholder.
-    placeholder: AnyViewBuilder<AnyView>,
+    placeholder: SlotBuilder<Held>,
     /// Sidebar selection.
     primary: Binding<Option<Id>>,
     /// Middle-column selection, three-column splits only.
@@ -87,7 +83,7 @@ struct Columns {
 impl Columns {
     /// The middle column's selected content (three columns), or `None`
     /// when nothing is selected or the split has two columns.
-    fn middle_destination(&self) -> Option<NavigationView<AnyView>> {
+    fn middle_destination(&self) -> Option<NavigationView<Held>> {
         match (&self.content, self.primary.snapshot()) {
             (Some(content), Some(id)) => Some(content.build(id)),
             _ => None,
@@ -97,7 +93,7 @@ impl Columns {
     /// The detail column's selected content: the primary selection drives
     /// two-column splits; the secondary selection drives three-column
     /// splits. `None` when nothing is selected.
-    fn detail_destination(&self) -> Option<NavigationView<AnyView>> {
+    fn detail_destination(&self) -> Option<NavigationView<Held>> {
         self.secondary
             .as_ref()
             .map_or_else(
@@ -107,32 +103,25 @@ impl Columns {
             .map(|id| self.detail.build(id))
     }
 
-    /// The middle column's content, or the placeholder.
+    /// Renders a macOS column destination or the placeholder when unselected.
     #[cfg(target_os = "macos")]
-    fn middle_view(&self) -> AnyView {
-        self.middle_destination()
-            .map_or_else(|| self.placeholder.build(), AnyView::new)
-    }
-
-    /// The detail column's content, or the placeholder.
-    #[cfg(target_os = "macos")]
-    fn detail_view(&self) -> AnyView {
-        self.detail_destination()
-            .map_or_else(|| self.placeholder.build(), AnyView::new)
+    fn render_column(&self, destination: Option<NavigationView<Held>>) -> NativeLeaf {
+        destination.map_or_else(
+            || self.renderer.realize(self.placeholder.build()),
+            |nav| self.renderer.render(Native::new(nav)),
+        )
     }
 
     /// The root of a stack-driven column: the selected destination, or the
     /// empty-selection placeholder under the default, untitled bar.
     #[cfg(target_os = "ios")]
-    fn column_root(&self, destination: Option<NavigationView<AnyView>>) -> NavigationView<Held> {
-        destination
-            .unwrap_or_else(|| NavigationView {
-                bar: waterui::navigation::Bar::default(),
-                content: self.placeholder.build(),
-                state: waterui::navigation::NavigationDestinationState::default(),
-                transition: None,
-            })
-            .map_content(<Held as ChildSlot>::from_view)
+    fn column_root(&self, destination: Option<NavigationView<Held>>) -> NavigationView<Held> {
+        destination.unwrap_or_else(|| NavigationView {
+            bar: waterui::navigation::Bar::default(),
+            content: self.placeholder.build(),
+            state: waterui::navigation::NavigationDestinationState::default(),
+            transition: None,
+        })
     }
 }
 
@@ -142,7 +131,7 @@ mod platform {
     use alloc::rc::Rc;
     use core::cell::{Cell, RefCell};
 
-    use crate::contract::{NativeLeaf, RenderContext};
+    use crate::contract::{Held, NativeLeaf, RenderContext};
     use cocoa_ui::Retained;
     use cocoa_ui::geometry::Rect;
     use cocoa_ui::objc2::MainThreadOnly;
@@ -183,7 +172,10 @@ mod platform {
     /// The sidebar column is a navigation-content host around the sidebar
     /// leaf; middle/detail columns are rebuilt on selection changes.
     #[allow(clippy::too_many_lines)]
-    pub(super) fn split_leaf(layout: NavigationSplitLayout, ctx: &RenderContext) -> NativeLeaf {
+    pub(super) fn split_leaf(
+        layout: NavigationSplitLayout<Held>,
+        ctx: &RenderContext,
+    ) -> NativeLeaf {
         let (
             sidebar,
             placeholder,
@@ -203,7 +195,7 @@ mod platform {
             UISplitViewControllerColumn::Primary
         }));
 
-        let sidebar_leaf = ctx.render(sidebar.build());
+        let sidebar_leaf = ctx.realize(sidebar.build());
         let sidebar_vc = NavContentController::new(mtm, sidebar_leaf.view());
         hide_bar_when_base(&sidebar_vc);
         // UIKit's implicit wrapper unbalances the sidebar's appearance
@@ -389,7 +381,7 @@ mod platform {
     use alloc::rc::Rc;
     use core::cell::{Cell, RefCell};
 
-    use crate::contract::{NativeLeaf, RenderContext};
+    use crate::contract::{Held, NativeLeaf, RenderContext};
     use cocoa_ui::appkit::{Column, ColumnWidth, HostView, SplitViewController, WindowToolbar};
     use cocoa_ui::objc2_app_kit::NSWindowStyleMask;
     use cocoa_ui::{MainThreadMarker, Rect, Retained, view};
@@ -414,7 +406,10 @@ mod platform {
 
     /// `NSSplitViewController` with the sidebar leaf and rebuilt
     /// supplementary/detail columns.
-    pub(super) fn split_leaf(layout: NavigationSplitLayout, ctx: &RenderContext) -> NativeLeaf {
+    pub(super) fn split_leaf(
+        layout: NavigationSplitLayout<Held>,
+        ctx: &RenderContext,
+    ) -> NativeLeaf {
         let (
             sidebar,
             placeholder,
@@ -432,7 +427,7 @@ mod platform {
         let sidebar_env = ctx
             .env()
             .extending(waterui::component::list::SidebarContent);
-        let sidebar_leaf = ctx.with_env(&sidebar_env).render(sidebar.build());
+        let sidebar_leaf = ctx.with_env(&sidebar_env).realize(sidebar.build());
         let columns = Columns {
             renderer: ctx.renderer(),
             content,
@@ -605,8 +600,12 @@ mod platform {
         fn mount(&self, keep: &mut KeepAlive) {
             // The sidebar leaf is already retained; the first column stays
             // mounted — only downstream columns rebuild.
-            let middle = self.columns.renderer.render(self.columns.middle_view());
-            let detail = self.columns.renderer.render(self.columns.detail_view());
+            let middle = self
+                .columns
+                .render_column(self.columns.middle_destination());
+            let detail = self
+                .columns
+                .render_column(self.columns.detail_destination());
             self.nav.set_columns(
                 &self.sidebar,
                 if self.columns.content.is_some() {
