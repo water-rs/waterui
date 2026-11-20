@@ -557,8 +557,6 @@ mod tests {
             gradient: waterui::graphics::Gradient,
             #[cfg(waterui_feature = "table")]
             table: waterui::component::table::TableConfig,
-            #[cfg(waterui_feature = "navigation")]
-            navigation_split: waterui::navigation::split::NavigationSplitLayout,
             canvas: waterui::graphics::canvas::CanvasView,
             #[cfg(waterui_feature = "gpu")]
             gpu: waterui::GpuView<alloc::boxed::Box<dyn waterui::graphics::GpuContent>>,
@@ -615,6 +613,8 @@ mod tests {
             list<C>: waterui::component::list::ListConfig<C>,
             #[cfg(waterui_feature = "navigation")]
             navigation_view<C>: waterui::navigation::NavigationView<C>,
+            #[cfg(waterui_feature = "navigation")]
+            navigation_split<C>: waterui::navigation::split::NavigationSplitLayout<C>,
             #[cfg(waterui_feature = "navigation")]
             navigation_stack<C>: waterui::navigation::NavigationStackLayout<C>,
             #[cfg(waterui_feature = "navigation")]

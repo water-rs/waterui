@@ -792,9 +792,6 @@ native_backend! {
         #[cfg(waterui_feature = "table")]
         /// A table.
         table: waterui::component::table::TableConfig,
-        #[cfg(waterui_feature = "navigation")]
-        /// A split navigation layout.
-        navigation_split: waterui::navigation::split::NavigationSplitLayout,
         /// A canvas.
         canvas: waterui::graphics::canvas::CanvasView,
         #[cfg(waterui_feature = "gpu")]
@@ -881,6 +878,9 @@ native_backend! {
         #[cfg(waterui_feature = "navigation")]
         /// A navigation bar around its content.
         navigation_view<C>: waterui::navigation::NavigationView<C>,
+        #[cfg(waterui_feature = "navigation")]
+        /// A split navigation layout.
+        navigation_split<C>: waterui::navigation::split::NavigationSplitLayout<C>,
         #[cfg(waterui_feature = "navigation")]
         /// A navigation stack.
         navigation_stack<C>: waterui::navigation::NavigationStackLayout<C>,
@@ -1178,6 +1178,31 @@ mod tests {
     impl<C> Parent<C> for waterui::navigation::NavigationStackLayout<C> {
         fn children(self) -> Vec<C> {
             alloc::vec![self.resolve(&Environment::new()).content]
+        }
+    }
+
+    /// A split navigation layout's children are its sidebar, placeholder, and
+    /// any currently selected middle/detail column content.
+    #[cfg(waterui_feature = "navigation")]
+    impl<C: 'static> Parent<C> for waterui::navigation::split::NavigationSplitLayout<C> {
+        fn children(self) -> Vec<C> {
+            use nami::Signal as _;
+
+            let (primary, placeholder, primary_sel, content, secondary_sel, detail, ..) =
+                self.into_parts();
+            let mut children = alloc::vec![primary.build(), placeholder.build()];
+            if let Some(selected) = primary_sel.snapshot() {
+                if let Some(content) = &content {
+                    children.push(content.build(selected).content);
+                }
+                if secondary_sel.is_none() {
+                    children.push(detail.build(selected).content);
+                }
+            }
+            if let Some(selected) = secondary_sel.as_ref().and_then(nami::Signal::snapshot) {
+                children.push(detail.build(selected).content);
+            }
+            children
         }
     }
 
@@ -1665,6 +1690,58 @@ mod tests {
                 ]
             );
         }
+    }
+
+    #[cfg(waterui_feature = "navigation")]
+    #[test]
+    fn navigation_split_stays_typed_and_reenters_hooks() {
+        use nami::Binding;
+        use waterui::navigation::{NavigationSplitView, NavigationView};
+
+        let selection = Binding::container(Some(1_i32));
+        let authored = || {
+            NavigationSplitView::new(&selection, Spacer::flexible(), |_id: i32| {
+                NavigationView::new("Detail", Spacer::flexible())
+            })
+            .placeholder(Spacer::flexible())
+        };
+
+        assert_eq!(
+            reached(authored()),
+            [
+                "navigation_split",
+                "typed child",
+                "spacer",
+                "typed child",
+                "spacer",
+                "typed child",
+                "spacer",
+            ]
+        );
+        assert_eq!(
+            reached(AnyView::new(authored())),
+            [
+                "navigation_split",
+                "erased child",
+                "spacer",
+                "erased child",
+                "spacer",
+                "erased child",
+                "spacer",
+            ]
+        );
+        assert_eq!(
+            reached(Hooks::new(authored(), SpacerAsDivider)),
+            [
+                "navigation_split",
+                "typed child",
+                "divider",
+                "typed child",
+                "divider",
+                "typed child",
+                "divider",
+            ]
+        );
     }
 
     #[test]

@@ -1250,7 +1250,6 @@ pub fn components_block_34() {
     button("Save").action(|m: SnackbarManager| {
         m.show(
             Snackbar::new("Item moved to trash")
-                .icon(mdi::delete())
                 .action("Undo", || restore())
                 .position(SnackbarPosition::BottomCenter) // BottomCenter | TopCenter | BottomLeading | BottomTrailing
                 .closeable()
@@ -1261,11 +1260,13 @@ pub fn components_block_34() {
 
 // ---------------------------------------------------------------------------
 // components.md § "## Overlays: snackbars, cards, suspense, full screen" (prose): the other snackbar placements,
-// `.state`, `.on_dismiss`, `SnackbarManager::dismiss` and the full-screen
+// `.icon`, `.state`, `.on_dismiss`, `SnackbarManager::dismiss` and the full-screen
 // overlay manager. Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn components_snackbar_prose() {
-    use waterui::snackbar::{Snackbar, SnackbarDismissReason, SnackbarManager, SnackbarPosition};
+    use waterui::snackbar::{
+        Snackbar, SnackbarDismissReason, SnackbarIcon, SnackbarManager, SnackbarPosition,
+    };
 
     let value = Binding::i32(0);
 
@@ -1273,12 +1274,18 @@ pub fn components_snackbar_prose() {
     let _ = SnackbarPosition::BottomLeading;
     let _ = SnackbarPosition::BottomTrailing;
     let _ = Snackbar::new("x")
+        .icon(mdi::delete())
         .state(&value)
         .on_dismiss(|reason: SnackbarDismissReason| {
             let _ = reason;
         });
+    let _ = SnackbarManager::with_icons::<mdi::Svg>();
+    let _ = button("x").action(|m: SnackbarManager<SnackbarIcon<mdi::Svg>>| {
+        m.show(Snackbar::new("x").icon(mdi::delete()));
+    });
     let _ = button("x").action(|manager: SnackbarManager| manager.dismiss());
-    let _ = button("x").action(|overlay: FullScreenOverlayManager| {
+    let (_overlay_mgr, _overlay_view) = FullScreenOverlayManager::<Text>::new();
+    let _ = button("x").action(|overlay: FullScreenOverlayManager<Text>| {
         overlay.show(text("modal"));
         overlay.hide();
     });
@@ -1357,29 +1364,19 @@ pub fn components_overlay_extras_prose() {
 // ---------------------------------------------------------------------------
 pub fn components_secure_and_error_prose() -> impl View {
     use std::io;
-    use waterui::widget::error::{
-        BoxedStdError, DefaultErrorView, Error, ResultExt, UseDefaultErrorView,
-    };
+    use waterui::error::{ErrorView, ResultExt, error_view};
 
     let _ = Divider.secure();
 
-    let _ = Error::new(io::Error::other("failed"));
-    let _ = Error::from_view(text("failed"));
+    let _ = ErrorView::new(io::Error::other("failed"));
+    let _ = ErrorView::from(io::Error::other("failed"));
+    let _ = error_view(io::Error::other("failed")).builder(|e| text(e.to_string()));
+    let _ = ErrorView::with_builder(io::Error::other("failed"), |e| text(e.to_string()));
     let loaded: Result<Str, io::Error> = Ok(Str::from("data"));
-    let _: Result<Str, Error> = loaded.error_view(|e| text(e.to_string()));
-    let _ = Environment::new().with(DefaultErrorView::new(|e: BoxedStdError| {
-        text(e.to_string())
-    }));
-    let _ = UseDefaultErrorView::new(io::Error::other("failed"));
+    let _: Result<Str, Text> = loaded.error_view(|e| text(e.to_string()));
 
-    // The independent runtime pair.
-    let _ = waterui::error::ErrorView::from(io::Error::other("failed"));
-    let _ = waterui::error::ErrorViewBuilder::new(
-        |e: Box<dyn std::error::Error>, _env: &Environment| AnyView::new(text(e.to_string())),
-    );
-
-    // A body may return `Result<impl View, Error>`.
-    let body: Result<_, Error> = Ok(text("ok"));
+    // A body may return `Result<impl View, ErrorView<_>>`.
+    let body: Result<_, ErrorView<io::Error>> = Ok(text("ok"));
     body
 }
 

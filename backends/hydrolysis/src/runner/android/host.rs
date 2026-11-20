@@ -25,6 +25,7 @@ use jni::objects::{Global, JMethodID, JObject, JValue};
 use jni::signature::{MethodSignature, Primitive, ReturnType, RuntimeMethodSignature};
 use jni::strings::JNIString;
 use jni::vm::JavaVM;
+use jni::{jni_sig, jni_str};
 use nami::Signal;
 use ndk::looper::{FdEvent, ForeignLooper, ThreadLooper};
 use waterui::Environment;
@@ -352,21 +353,30 @@ impl HostBridge {
         self.call(HostMethodId::PlatformViewsChanged, &[]);
     }
 
-    /// `session.onNativeBandShow(view, colorSpace)` — the band `View` above
-    /// the platform view whose placement id is `view` shows the newest
-    /// image its `ImageReader` holds, its pixels encoded in the
-    /// `android.graphics.ColorSpace.Named` constant `color_space`
+    /// `session.onNativeBandShow(view, colorSpace, paintedRects)` — the band
+    /// `View` above the platform view whose placement id is `view` shows the
+    /// newest image its `ImageReader` holds across the packed device-pixel
+    /// rectangles `painted_rects`, encoded in `color_space`
     /// (water-rs/waterui#2225).
     #[cfg(hydrolysis_gpu_painter)]
-    fn band_show(&self, view: u64, color_space: &str) {
+    fn band_show(&self, view: u64, color_space: &str, painted_rects: &[[u32; 4]]) {
         let result: Result<(), jni::errors::Error> = self.vm.with_top_local_frame(|env| {
             let name = env.new_string(color_space)?;
+            let mut flat = Vec::with_capacity(painted_rects.len() * 4);
+            for rect in painted_rects {
+                for &component in rect {
+                    flat.push(i32::try_from(component).unwrap_or(i32::MAX));
+                }
+            }
+            let rects_array = env.new_int_array(flat.len())?;
+            rects_array.set_region(env, 0, &flat)?;
             self.call_with_env(
                 env,
                 HostMethodId::BandShow,
                 &[
                     JValue::Long(crate::num_cast::u64_as_i64(view)),
                     JValue::Object(name.as_ref()),
+                    JValue::Object(rects_array.as_ref()),
                 ],
             );
             Ok(())
@@ -444,6 +454,236 @@ fn color_space_name(space: wgpu::SurfaceColorSpace) -> Option<&'static str> {
                  cannot name; the band shows nothing"
             );
             None
+        }
+    }
+}
+
+/// Lifecycle subscriber registered on [`AndroidHostBridge`].
+type LifecycleListener = Rc<dyn Fn(&mut Env<'_>, crate::android_content::AndroidLifecycle)>;
+
+#[derive(Default)]
+struct AndroidLifecycleHub {
+    started: bool,
+    resumed: bool,
+    next_token: u64,
+    listeners: Vec<(u64, LifecycleListener)>,
+}
+
+impl AndroidLifecycleHub {
+    fn subscribe(&mut self, listener: LifecycleListener) -> u64 {
+        self.next_token += 1;
+        let token = self.next_token;
+        self.listeners.push((token, listener));
+        token
+    }
+
+    fn unsubscribe(&mut self, token: u64) {
+        self.listeners.retain(|(id, _)| *id != token);
+    }
+
+    fn snapshot(&self) -> Vec<LifecycleListener> {
+        self.listeners
+            .iter()
+            .map(|(_, listener)| Rc::clone(listener))
+            .collect()
+    }
+}
+
+/// The session handle installed in [`Environment`] for [`AndroidView`](crate::AndroidView)
+/// leaves: resolves host `Context` wrappers, registers platform-view instances,
+/// provides cached `android.view.View` measurement/invalidation JNI ids, and
+/// dispatches Activity lifecycle transitions.
+#[derive(Clone)]
+pub struct AndroidHostBridge {
+    vm: JavaVM,
+    session: Arc<Global<JObject<'static>>>,
+    acquire_instance_context: JMethodID,
+    register_instance: JMethodID,
+    unregister_instance: JMethodID,
+    view_post_invalidate: JMethodID,
+    lifecycle: Rc<RefCell<AndroidLifecycleHub>>,
+}
+
+impl AndroidHostBridge {
+    fn resolve(env: &mut Env, bridge: &HostBridge) -> Result<Self, JniError> {
+        let session_class = env.get_object_class(bridge.host_view.as_obj())?;
+        let acquire_instance_context = env.get_method_id(
+            &session_class,
+            jni_str!("acquireInstanceContext"),
+            jni_sig!("(J)Landroid/content/Context;"),
+        )?;
+        let register_instance = env.get_method_id(
+            &session_class,
+            jni_str!("registerPlatformViewInstance"),
+            jni_sig!("(JLandroid/view/View;)V"),
+        )?;
+        let unregister_instance = env.get_method_id(
+            &session_class,
+            jni_str!("unregisterPlatformViewInstance"),
+            jni_sig!("(J)V"),
+        )?;
+        let view_class = env.find_class(jni_str!("android/view/View"))?;
+        let view_post_invalidate =
+            env.get_method_id(&view_class, jni_str!("postInvalidate"), jni_sig!("()V"))?;
+
+        Ok(Self {
+            vm: bridge.vm.clone(),
+            session: Arc::clone(&bridge.host_view),
+            acquire_instance_context,
+            register_instance,
+            unregister_instance,
+            view_post_invalidate,
+            lifecycle: Rc::new(RefCell::new(AndroidLifecycleHub::default())),
+        })
+    }
+
+    pub(crate) const fn vm(&self) -> &JavaVM {
+        &self.vm
+    }
+
+    pub(crate) fn acquire_instance_context<'local>(
+        &self,
+        env: &mut Env<'local>,
+        id: u64,
+    ) -> jni::errors::Result<JObject<'local>> {
+        // SAFETY: `acquire_instance_context` was resolved on `self.session`'s
+        // class with signature `(J)Landroid/content/Context;`.
+        unsafe {
+            env.call_method_unchecked(
+                self.session.as_obj(),
+                self.acquire_instance_context,
+                ReturnType::Object,
+                &[JValue::Long(crate::num_cast::u64_as_i64(id)).as_jni()],
+            )
+        }?
+        .l()
+    }
+
+    pub(crate) fn register_instance(
+        &self,
+        env: &mut Env<'_>,
+        id: u64,
+        view: &JObject<'_>,
+    ) -> jni::errors::Result<()> {
+        // SAFETY: `register_instance` was resolved on `self.session`'s class
+        // with signature `(JLandroid/view/View;)V`.
+        unsafe {
+            env.call_method_unchecked(
+                self.session.as_obj(),
+                self.register_instance,
+                ReturnType::Primitive(Primitive::Void),
+                &[
+                    JValue::Long(crate::num_cast::u64_as_i64(id)).as_jni(),
+                    JValue::Object(view).as_jni(),
+                ],
+            )
+        }?;
+        Ok(())
+    }
+
+    pub(crate) fn unregister_instance(
+        &self,
+        env: &mut Env<'_>,
+        id: u64,
+    ) -> jni::errors::Result<()> {
+        // SAFETY: `unregister_instance` was resolved on `self.session`'s
+        // class with signature `(J)V`.
+        unsafe {
+            env.call_method_unchecked(
+                self.session.as_obj(),
+                self.unregister_instance,
+                ReturnType::Primitive(Primitive::Void),
+                &[JValue::Long(crate::num_cast::u64_as_i64(id)).as_jni()],
+            )
+        }?;
+        Ok(())
+    }
+
+    pub(crate) fn post_invalidate(
+        &self,
+        env: &mut Env<'_>,
+        view: &JObject<'_>,
+    ) -> jni::errors::Result<()> {
+        // SAFETY: `view_post_invalidate` has signature `()V`.
+        unsafe {
+            env.call_method_unchecked(
+                view,
+                self.view_post_invalidate,
+                ReturnType::Primitive(Primitive::Void),
+                &[],
+            )
+        }?;
+        Ok(())
+    }
+
+    pub(crate) fn subscribe_lifecycle(&self, listener: LifecycleListener) -> (u64, bool, bool) {
+        let mut hub = self.lifecycle.borrow_mut();
+        let token = hub.subscribe(listener);
+        (token, hub.started, hub.resumed)
+    }
+
+    pub(crate) fn unsubscribe_lifecycle(&self, token: u64) {
+        self.lifecycle.borrow_mut().unsubscribe(token);
+    }
+
+    pub(crate) fn lifecycle_state(&self) -> (bool, bool) {
+        let hub = self.lifecycle.borrow();
+        (hub.started, hub.resumed)
+    }
+
+    fn set_started(&self, env: &mut Env<'_>, started: bool) {
+        let (pause_first, emit_event, listeners) = {
+            let mut hub = self.lifecycle.borrow_mut();
+            if hub.started == started {
+                return;
+            }
+            let pause_first = !started && hub.resumed;
+            if pause_first {
+                hub.resumed = false;
+            }
+            hub.started = started;
+            let event = if started {
+                crate::android_content::AndroidLifecycle::Start
+            } else {
+                crate::android_content::AndroidLifecycle::Stop
+            };
+            (pause_first, event, hub.snapshot())
+        };
+        if pause_first {
+            for listener in &listeners {
+                listener(env, crate::android_content::AndroidLifecycle::Pause);
+            }
+        }
+        for listener in &listeners {
+            listener(env, emit_event);
+        }
+    }
+
+    fn set_resumed(&self, env: &mut Env<'_>, resumed: bool) {
+        let (start_first, emit_event, listeners) = {
+            let mut hub = self.lifecycle.borrow_mut();
+            if hub.resumed == resumed {
+                return;
+            }
+            let start_first = resumed && !hub.started;
+            if start_first {
+                hub.started = true;
+            }
+            hub.resumed = resumed;
+            let event = if resumed {
+                crate::android_content::AndroidLifecycle::Resume
+            } else {
+                crate::android_content::AndroidLifecycle::Pause
+            };
+            (start_first, event, hub.snapshot())
+        };
+        if start_first {
+            for listener in &listeners {
+                listener(env, crate::android_content::AndroidLifecycle::Start);
+            }
+        }
+        for listener in &listeners {
+            listener(env, emit_event);
         }
     }
 }
@@ -959,8 +1199,8 @@ pub struct FrameOutcome {
 /// executor and the GPU context. Owned by the Kotlin side through a raw
 /// pointer as `jlong`; every entry point runs on the UI thread.
 pub struct AndroidSession {
-    pub(crate) env: Environment,
-    pub(crate) runtime: RuntimeWindow<AndroidHostWindow, super::AndroidTextEngine>,
+    pub(super) env: Environment,
+    pub(super) runtime: RuntimeWindow<AndroidHostWindow, super::AndroidTextEngine>,
     executor: AndroidMainThreadExecutor,
     #[cfg(hydrolysis_gpu_painter)]
     completion_waker: std::task::Waker,
@@ -994,6 +1234,7 @@ pub struct AndroidSession {
     /// The platform-view sink the window's `PlatformView` leaves record into;
     /// the published table is serialized for the Kotlin registry.
     pub(crate) platform_views: crate::platform_view::PlatformViewSink,
+    android_bridge: AndroidHostBridge,
     #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) ime: ImeBridge,
     /// The live surface generation, as last reported by the host.
@@ -1136,6 +1377,7 @@ struct SessionMounts {
         Rc<RefCell<Vec<super::super::window::RootWindow<super::AndroidTextEngine>>>>,
     platform_views: crate::platform_view::PlatformViewSink,
     platform_view_focus: crate::platform_view::PlatformViewFocus,
+    android_bridge: AndroidHostBridge,
     safe_area: nami::Binding<waterui_layout::padding::EdgeInsets>,
     keyboard_area: nami::Binding<waterui_layout::padding::EdgeInsets>,
     /// The session's colour-scheme signal — the binding `install_theme_tokens`
@@ -1151,18 +1393,11 @@ struct SessionMounts {
 ///
 /// `None` after a reported contract violation (no registered app, no
 /// seeded shortcut registry, no or several windows).
-#[cfg_attr(
-    not(hydrolysis_android_system_webview),
-    expect(
-        clippy::unnecessary_wraps,
-        reason = "the `Result` exists for the system-WebView controller install, which is the only fallible step"
-    )
-)]
 fn session_mounts(
     services: &'static UiThreadServices,
     night: bool,
-    #[cfg(hydrolysis_android_system_webview)] jni_env: &mut Env,
-    #[cfg(hydrolysis_android_system_webview)] bridge: &HostBridge,
+    jni_env: &mut Env,
+    bridge: &HostBridge,
 ) -> Result<Option<SessionMounts>, JniError> {
     let Some((parts, style)) = super::instantiate_app() else {
         return Ok(None);
@@ -1218,6 +1453,8 @@ fn session_mounts(
     let keyboard_area = nami::binding(waterui_layout::padding::EdgeInsets::default());
     env.insert(crate::platform::WindowKeyboardArea(keyboard_area.clone()));
     let platform_views = install_platform_view_surfaces(&mut env);
+    let android_bridge = AndroidHostBridge::resolve(jni_env, bridge)?;
+    env.insert(android_bridge.clone());
     // The session-wide "focus sits inside a platform-view container"
     // state the Kotlin registry reports through
     // `onNativePlatformViewFocus`: while a mounted child holds the IME,
@@ -1267,6 +1504,7 @@ fn session_mounts(
         pending_window_queue,
         platform_views,
         platform_view_focus,
+        android_bridge,
         safe_area,
         keyboard_area,
         color_scheme,
@@ -1412,13 +1650,6 @@ impl AndroidSession {
     /// `None` after a reported contract violation (no registered app, no or
     /// several windows, an orphan window id): no session exists then.
     pub(crate) fn create(
-        #[cfg_attr(
-            all(hydrolysis_gpu_painter, not(hydrolysis_android_system_webview)),
-            expect(
-                unused_variables,
-                reason = "HWUI and system WebView mounting use the JNI environment"
-            )
-        )]
         jni_env: &mut Env,
         bridge: Arc<HostBridge>,
         #[cfg(hydrolysis_gpu_painter)] gpu: AndroidGpuContext,
@@ -1441,17 +1672,11 @@ impl AndroidSession {
             pending_window_queue,
             platform_views,
             platform_view_focus,
+            android_bridge,
             safe_area,
             keyboard_area,
             color_scheme,
-        }) = session_mounts(
-            services,
-            night,
-            #[cfg(hydrolysis_android_system_webview)]
-            jni_env,
-            #[cfg(hydrolysis_android_system_webview)]
-            &bridge,
-        )?
+        }) = session_mounts(services, night, jni_env, &bridge)?
         else {
             return Ok(None);
         };
@@ -1507,6 +1732,7 @@ impl AndroidSession {
             pending_window_queue,
             a11y: AccessibilitySnapshot::default(),
             platform_views,
+            android_bridge,
             #[cfg(any(feature = "text-field", feature = "secure-field"))]
             ime: ImeBridge::default(),
             #[cfg(hydrolysis_gpu_painter)]
@@ -1620,7 +1846,7 @@ impl AndroidSession {
     /// visibility signal. Stopping parks the pump even when the surface
     /// survives; starting posts the single restore frame when the band
     /// can present again.
-    pub(crate) fn set_visible(&mut self, started: bool) {
+    pub(crate) fn set_visible(&mut self, jni_env: &mut Env, started: bool) {
         self.runtime.platform.started = started;
         #[cfg(hydrolysis_gpu_painter)]
         if !started {
@@ -1636,9 +1862,16 @@ impl AndroidSession {
         self.hwui
             .surface
             .set_hidden(self.runtime.platform.is_occluded());
+        self.android_bridge.set_started(jni_env, started);
         // Android has no about-to-wait pass to notice an armed mode — the
         // restore frame needs the explicit Choreographer post.
         self.runtime.sync_occlusion_and_post_restore();
+    }
+
+    /// The hosting Activity crossed `onResume`/`onPause` — forwarded to
+    /// mounted `AndroidContent` views.
+    pub(crate) fn set_resumed(&self, jni_env: &mut Env, resumed: bool) {
+        self.android_bridge.set_resumed(jni_env, resumed);
     }
 
     /// The Kotlin host bound or unbound the view — the HWUI draw gate.
@@ -2118,7 +2351,11 @@ impl AndroidSession {
                     continue;
                 }
                 match update.image.and_then(color_space_name) {
-                    Some(name) => platform.bridge.band_show(update.window, name),
+                    Some(name) => {
+                        platform
+                            .bridge
+                            .band_show(update.window, name, &update.painted_rects);
+                    }
                     None => platform.bridge.band_clear(update.window),
                 }
             }

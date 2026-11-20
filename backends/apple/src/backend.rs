@@ -416,14 +416,14 @@ impl NativeBackend for AppleBackend {
     }
 
     #[cfg(waterui_feature = "navigation")]
-    fn navigation_split(
+    fn navigation_split<C: ChildView<Self>>(
         &mut self,
-        native: waterui::navigation::split::NavigationSplitLayout,
+        native: waterui::navigation::split::NavigationSplitLayout<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
         crate::components::navigation::split::realize_navigation_split_layout(
-            native,
+            native.map_slots(C::into_child),
             &self.entry(env),
         )
     }
