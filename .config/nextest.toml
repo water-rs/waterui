@@ -304,6 +304,7 @@ filter = '''
  or package(stress-example)
  or package(typography-rtl-example)
  or package(waterui)
+ or package(waterui-apple)
  or package(waterui-controls)
  or package(waterui-form)
  or package(waterui-graphics)
