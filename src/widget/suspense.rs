@@ -33,8 +33,9 @@
 
 use core::future::Future;
 
+use waterui_capture::ContentLedger;
 use waterui_core::{
-    AnyView, ContentLedger, Environment, View,
+    AnyView, Environment, View,
     handler::{AnyViewBuilder, ViewBuilder},
 };
 

@@ -12,14 +12,15 @@ use core::future::Future;
 use core::pin::Pin;
 use core::time::Duration;
 
-use crate::AnyView;
-use crate::layout::Size;
-use crate::ui::content_ledger::{ContentError, DisplayList, PendingContent};
+use waterui_core::AnyView;
+use waterui_core::layout::Size;
+
+use crate::content_ledger::{ContentError, DisplayList, PendingContent};
 
 /// What a [`ViewRenderer`] capture renders: the size it proposes to the
 /// view, and how long it waits for content the view owes after mount.
 ///
-/// The renderer installs a fresh [`ContentLedger`](crate::ui::content_ledger::ContentLedger)
+/// The renderer installs a fresh [`ContentLedger`](crate::content_ledger::ContentLedger)
 /// for the captured view and rasterizes only once nothing in it is owed, or
 /// fails with [`RenderError::ContentPending`] when `content_deadline` passes
 /// first.
@@ -177,7 +178,7 @@ impl From<ContentError> for RenderError {
 ///
 /// Native backends implement this to provide view-to-RGBA capture. The method
 /// returns `impl Future`, so implementations write a plain `async fn` — the
-/// object-safe boxing needed to store the renderer in the [`Environment`](crate::Environment) is an
+/// object-safe boxing needed to store the renderer in the [`Environment`](waterui_core::Environment) is an
 /// internal detail of [`ViewRenderer`], never part of this contract.
 pub trait CustomViewRenderer: 'static {
     /// Render a view to RGBA bytes.
@@ -185,8 +186,8 @@ pub trait CustomViewRenderer: 'static {
     /// The implementation should:
     /// 1. Create an offscreen rendering context at the requested size
     /// 2. Mount the view hierarchy (native widgets + GPU surfaces) under a
-    ///    fresh [`ContentLedger`](crate::ui::content_ledger::ContentLedger)
-    /// 3. Await [`ContentLedger::wait`](crate::ui::content_ledger::ContentLedger::wait)
+    ///    fresh [`ContentLedger`](crate::content_ledger::ContentLedger)
+    /// 3. Await [`ContentLedger::wait`](crate::content_ledger::ContentLedger::wait)
     ///    bounded by the request's content deadline, draining the backend
     ///    between passes
     /// 4. Capture the final composited result to RGBA pixels

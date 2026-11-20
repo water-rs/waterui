@@ -11,8 +11,8 @@ use std::{
 
 use crate::preview_symbol;
 use hydrolysis::{FontFamilyResolution, HeadlessRuntime, InputEvent, PointerButton, PointerKind};
-use waterui_core::ContentLedger;
-use waterui_core::content_ledger::{ContentError, ContentFailure};
+use waterui::ContentLedger;
+use waterui::content_ledger::{ContentError, ContentFailure};
 use waterui_core::handler::AnyViewBuilder;
 use waterui_preview_protocol::run::{
     Alpha, PreviewRunConfig, PreviewRunMode, ScenarioEvent, ScenarioEventKind,

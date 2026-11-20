@@ -13,13 +13,6 @@ use core::time::Duration;
 use nami::Signal;
 #[cfg(feature = "date-picker")]
 use waterui::form::Calendar;
-#[cfg(any(
-    feature = "menu",
-    feature = "color-picker",
-    feature = "picker",
-    feature = "date-picker"
-))]
-use waterui::window::AnyWindow;
 #[cfg(any(feature = "picker", feature = "color-picker", feature = "date-picker"))]
 use waterui_controls::button;
 #[cfg(any(feature = "menu", feature = "color-picker"))]
@@ -58,26 +51,46 @@ pub fn menu_look(theme: &Rc<dyn crate::theme::WidgetTheme>, env: &Environment) -
 
 /// Backend-private presentation service for transient popup windows.
 ///
-/// Keeping popup presentation separate from the public
-/// [`waterui::window::WindowManager`] lets
+/// Keeping popup presentation separate from application windows lets
 /// the desktop runner mount menus without activating them while ordinary
 /// application windows retain their normal focus behavior.
-#[derive(Clone)]
 #[cfg(any(feature = "menu", feature = "color-picker"))]
-pub struct PopupWindowManager(Rc<dyn Fn(AnyWindow)>);
+pub struct PopupWindowManager<E: crate::text::TextEngine>(
+    Rc<dyn Fn(crate::runner::window::RootWindow<E>)>,
+);
 
 #[cfg(any(feature = "menu", feature = "color-picker"))]
-impl PopupWindowManager {
-    pub(crate) fn new(show: impl Fn(AnyWindow) + 'static) -> Self {
+impl<E: crate::text::TextEngine> Clone for PopupWindowManager<E> {
+    fn clone(&self) -> Self {
+        Self(Rc::clone(&self.0))
+    }
+}
+
+#[cfg(any(feature = "menu", feature = "color-picker"))]
+impl<E: crate::text::TextEngine> PopupWindowManager<E> {
+    #[cfg(hydrolysis_winit)]
+    pub(crate) fn new(show: impl Fn(crate::runner::window::RootWindow<E>) + 'static) -> Self {
         Self(Rc::new(show))
+    }
+
+    pub(crate) const fn from_opener(
+        opener: Rc<dyn Fn(crate::runner::window::RootWindow<E>)>,
+    ) -> Self {
+        Self(opener)
     }
 
     /// Mounts `window` re-rooted in `env` — the environment of the view that
     /// opened the popup (water-rs/hydrolysis#140), so its `.state(&value)`
     /// and `.with(...)` overlays reach the item actions' extractors exactly
     /// as they do for inline views.
-    pub(crate) fn show(&self, window: AnyWindow, env: &Environment) {
-        (self.0)(window_in_opening_environment(window, env));
+    pub(crate) fn show<C: ViewBuilder, T: waterui::window::WindowToolbar>(
+        &self,
+        window: Window<C, T>,
+        env: &Environment,
+    ) {
+        (self.0)(crate::runner::window::root_window(
+            window_in_opening_environment(window, env),
+        ));
     }
 }
 
@@ -91,17 +104,16 @@ impl PopupWindowManager {
 /// value the input dispatcher installs for a root window, so a nested popup
 /// opened from this window anchors to it.
 #[cfg(any(feature = "menu", feature = "color-picker"))]
-pub fn window_in_opening_environment(mut window: AnyWindow, env: &Environment) -> AnyWindow {
+pub fn window_in_opening_environment<C: ViewBuilder, T>(
+    window: Window<C, T>,
+    env: &Environment,
+) -> Window<impl ViewBuilder<Output = Metadata<Environment, C::Output>>, T> {
     let frame = window.frame.snapshot();
     let content_env = env.extending(HydrolysisWindowOrigin {
         x: frame.x(),
         y: frame.y(),
     });
-    let content = window.content;
-    window.content = AnyViewBuilder::new(move || {
-        AnyView::new(Metadata::new(content.build(), content_env.clone()))
-    });
-    window
+    window.map_content(move |content| move || Metadata::new(content.build(), content_env.clone()))
 }
 
 #[cfg(feature = "menu")]
@@ -158,6 +170,8 @@ pub enum PopupMenuNode {
 pub struct PopupMenuStateGroup(pub Rc<RefCell<Vec<Binding<WindowState>>>>);
 
 pub struct PopupMenuState<E: crate::text::TextEngine> {
+    #[cfg(any(feature = "menu", feature = "color-picker"))]
+    pub(crate) popup_opener: Option<PopupWindowManager<E>>,
     #[cfg(any(feature = "menu", feature = "color-picker"))]
     pub active_popup_menu_group: Option<PopupMenuStateGroup>,
     /// The drawn presentation around an open `.context_menu` popup — dimmed
@@ -275,22 +289,6 @@ pub fn popup_window_origin(origin: LayoutPoint, env: &Environment) -> Option<Lay
         window_origin.x + origin.x,
         window_origin.y + origin.y,
     ))
-}
-
-/// The [`PopupWindowManager`] the runner seeded into `env`, or `None` after a
-/// contract violation when it seeded none: the `opening` popup does not open.
-#[cfg(any(feature = "menu", feature = "color-picker"))]
-pub fn popup_window_manager<'env>(
-    env: &'env Environment,
-    opening: &str,
-) -> Option<&'env PopupWindowManager> {
-    let manager = env.get::<PopupWindowManager>();
-    if manager.is_none() {
-        contract_violation!(
-            "hydrolysis {opening} require PopupWindowManager in environment; the popup does not open"
-        );
-    }
-    manager
 }
 
 #[cfg(any(feature = "menu", feature = "color-picker"))]
@@ -416,7 +414,7 @@ fn popup_menu_command_row(
     label: SemanticLabel<ErasedLabel>,
     action: SharedAction<()>,
     disabled: bool,
-) -> AnyView {
+) -> impl View + use<> {
     let button = Button::new(label).style(ButtonStyle::Borderless).action(
         move |group: PopupMenuStateGroup, env: Environment| {
             if disabled {
@@ -427,9 +425,11 @@ fn popup_menu_command_row(
         },
     );
     if disabled {
-        AnyView::new(button.foreground(Color::new(waterui::theme::color::DisabledForeground)))
+        waterui_core::OneOf2::A(
+            button.foreground(Color::new(waterui::theme::color::DisabledForeground)),
+        )
     } else {
-        AnyView::new(button)
+        waterui_core::OneOf2::B(button)
     }
 }
 
@@ -480,124 +480,173 @@ impl View for ShortcutHint {
 /// dividers and submenu items — padded by the theme's vertical padding. The
 /// chrome around it (the borderless window's rounded `Surface` background,
 /// the drawn presentation's theme panel) is the caller's.
-#[expect(
-    clippy::too_many_lines,
-    reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
-)]
 #[cfg(feature = "menu")]
-pub fn popup_menu_content(
+pub struct PopupMenuContent<E: crate::text::TextEngine> {
     nodes: Vec<PopupMenuNode>,
     depth: usize,
     metrics: MenuLayout,
     text: PopupMenuTextMetrics,
     popup_origin: LayoutPoint,
     width: f64,
+    theme: Rc<dyn crate::theme::WidgetTheme>,
+    popup_opener: Option<PopupWindowManager<E>>,
+}
+
+/// Layout metrics and anchor placement passed to [`popup_menu_content`].
+#[cfg(feature = "menu")]
+#[derive(Clone, Copy)]
+pub struct PopupMenuPlacement {
+    pub depth: usize,
+    pub metrics: MenuLayout,
+    pub text: PopupMenuTextMetrics,
+    pub popup_origin: LayoutPoint,
+    pub width: f64,
+}
+
+#[cfg(feature = "menu")]
+pub fn popup_menu_content<E: crate::text::TextEngine>(
+    nodes: Vec<PopupMenuNode>,
+    placement: PopupMenuPlacement,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
-) -> AnyView {
-    let mut rows = Vec::with_capacity(nodes.len());
-    let mut row_top = metrics.vertical_padding;
-    for node in nodes {
-        let row_height = match &node {
-            PopupMenuNode::Command {
-                subtitle: Some(_), ..
-            } => metrics.row_height + text.subtitle_height,
-            PopupMenuNode::Divider => popup_menu_divider_height(metrics),
-            _ => metrics.row_height,
-        };
-        match node {
-            PopupMenuNode::Command {
-                label,
-                action,
-                disabled,
-                shortcut,
-                ..
-            } => {
-                let disabled = disabled.snapshot();
-                let button = popup_menu_command_row(label, action, disabled);
-                // The chord's trailing hint is a sibling pinned to the row's
-                // trailing inset by a spacer, styled by the shared builder
-                // (water-rs/hydrolysis#247).
-                let row_content = match shortcut {
-                    Some(shortcut) => AnyView::new(
-                        hstack((
-                            AnyView::new(button),
-                            spacer(),
-                            ShortcutHint {
-                                shortcut,
-                                disabled,
-                                theme: theme.clone(),
-                            }
-                            .padding_with(EdgeInsets::new(
-                                0.0,
-                                0.0,
-                                0.0,
-                                crate::num_cast::f64_as_f32(metrics.horizontal_padding),
-                            )),
-                        ))
-                        .spacing(0.0),
-                    ),
-                    None => AnyView::new(button),
-                };
-                // A leading-aligned frame puts the content-width row at the
-                // menu's leading edge, so every row's label shares one leading
-                // x regardless of kind.
-                rows.push(AnyView::new(
-                    Frame::new(row_content)
-                        .height(crate::num_cast::f64_as_f32(row_height))
-                        .max_width(f32::INFINITY)
-                        .alignment(waterui_layout::alignment::Leading),
-                ));
-            }
-            PopupMenuNode::Divider => rows.push(AnyView::new(
-                Frame::new(Divider)
-                    .height(crate::num_cast::f64_as_f32(row_height))
-                    .max_width(f32::INFINITY)
-                    .alignment(waterui_layout::alignment::Leading),
-            )),
-            PopupMenuNode::Menu { label, items, .. } => {
-                let next_depth = depth + 1;
-                let child_origin = LayoutPoint::new(
-                    popup_origin.x + crate::num_cast::f64_as_f32(width),
-                    popup_origin.y + crate::num_cast::f64_as_f32(row_top),
-                );
-                let button = Button::new(label).style(ButtonStyle::Borderless).action({
-                    let theme = theme.clone();
-                    move |group: PopupMenuStateGroup, env: Environment| {
-                        if items.is_empty() {
-                            return;
-                        }
-                        let Some(manager) = popup_window_manager(&env, "popup menus") else {
-                            return;
-                        };
-                        group.truncate(next_depth);
-                        let (window, child_state) = popup_menu_window(
-                            items.clone(),
-                            child_origin,
-                            group.clone(),
-                            next_depth,
-                            metrics,
-                            text,
-                            &theme,
-                        );
-                        group.push(child_state);
-                        manager.show(window, &env);
-                    }
-                });
-                // The button sizes to its label: a leading-aligned frame puts
-                // the content-width row at the menu's leading edge, so every
-                // row's label shares one leading x regardless of kind.
-                rows.push(AnyView::new(
-                    Frame::new(button)
-                        .height(crate::num_cast::f64_as_f32(row_height))
-                        .max_width(f32::INFINITY)
-                        .alignment(waterui_layout::alignment::Leading),
-                ));
-            }
-        }
-        row_top += row_height;
+    popup_opener: Option<PopupWindowManager<E>>,
+) -> PopupMenuContent<E> {
+    PopupMenuContent {
+        nodes,
+        depth: placement.depth,
+        metrics: placement.metrics,
+        text: placement.text,
+        popup_origin: placement.popup_origin,
+        width: placement.width,
+        theme: Rc::clone(theme),
+        popup_opener,
     }
-    let menu_content: waterui_layout::stack::VStack<(Vec<AnyView>,)> = rows.into_iter().collect();
-    AnyView::new(
+}
+
+#[cfg(feature = "menu")]
+impl<E: crate::text::TextEngine> View for PopupMenuContent<E> {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+    )]
+    fn body(self, _env: &Environment) -> impl View {
+        let Self {
+            nodes,
+            depth,
+            metrics,
+            text,
+            popup_origin,
+            width,
+            theme,
+            popup_opener,
+        } = self;
+        let mut rows = Vec::with_capacity(nodes.len());
+        let mut row_top = metrics.vertical_padding;
+        for node in nodes {
+            let row_height = match &node {
+                PopupMenuNode::Command {
+                    subtitle: Some(_), ..
+                } => metrics.row_height + text.subtitle_height,
+                PopupMenuNode::Divider => popup_menu_divider_height(metrics),
+                _ => metrics.row_height,
+            };
+            match node {
+                PopupMenuNode::Command {
+                    label,
+                    action,
+                    disabled,
+                    shortcut,
+                    ..
+                } => {
+                    let disabled = disabled.snapshot();
+                    let button = popup_menu_command_row(label, action, disabled);
+                    // The chord's trailing hint is a sibling pinned to the row's
+                    // trailing inset by a spacer, styled by the shared builder
+                    // (water-rs/hydrolysis#247).
+                    let row_content = match shortcut {
+                        Some(shortcut) => waterui_core::OneOf2::A(
+                            hstack((
+                                button,
+                                spacer(),
+                                ShortcutHint {
+                                    shortcut,
+                                    disabled,
+                                    theme: theme.clone(),
+                                }
+                                .padding_with(EdgeInsets::new(
+                                    0.0,
+                                    0.0,
+                                    0.0,
+                                    crate::num_cast::f64_as_f32(metrics.horizontal_padding),
+                                )),
+                            ))
+                            .spacing(0.0),
+                        ),
+                        None => waterui_core::OneOf2::B(button),
+                    };
+                    // A leading-aligned frame puts the content-width row at the
+                    // menu's leading edge, so every row's label shares one leading
+                    // x regardless of kind.
+                    rows.push(waterui_core::OneOf3::A(
+                        Frame::new(row_content)
+                            .height(crate::num_cast::f64_as_f32(row_height))
+                            .max_width(f32::INFINITY)
+                            .alignment(waterui_layout::alignment::Leading),
+                    ));
+                }
+                PopupMenuNode::Divider => rows.push(waterui_core::OneOf3::B(
+                    Frame::new(Divider)
+                        .height(crate::num_cast::f64_as_f32(row_height))
+                        .max_width(f32::INFINITY)
+                        .alignment(waterui_layout::alignment::Leading),
+                )),
+                PopupMenuNode::Menu { label, items, .. } => {
+                    let next_depth = depth + 1;
+                    let child_origin = LayoutPoint::new(
+                        popup_origin.x + crate::num_cast::f64_as_f32(width),
+                        popup_origin.y + crate::num_cast::f64_as_f32(row_top),
+                    );
+                    let button = Button::new(label).style(ButtonStyle::Borderless).action({
+                        let theme = theme.clone();
+                        let popup_opener = popup_opener.clone();
+                        move |group: PopupMenuStateGroup, env: Environment| {
+                            if items.is_empty() {
+                                return;
+                            }
+                            let Some(manager) = popup_opener.clone() else {
+                                contract_violation!(
+                                    "hydrolysis popup menus require a runner popup-window opener; the popup does not open"
+                                );
+                                return;
+                            };
+                            group.truncate(next_depth);
+                            let (window, child_state) = popup_menu_window::<E>(
+                                items.clone(),
+                                child_origin,
+                                group.clone(),
+                                next_depth,
+                                metrics,
+                                text,
+                                &theme,
+                                manager.clone(),
+                            );
+                            group.push(child_state);
+                            manager.show(window, &env);
+                        }
+                    });
+                    // The button sizes to its label: a leading-aligned frame puts
+                    // the content-width row at the menu's leading edge, so every
+                    // row's label shares one leading x regardless of kind.
+                    rows.push(waterui_core::OneOf3::C(
+                        Frame::new(button)
+                            .height(crate::num_cast::f64_as_f32(row_height))
+                            .max_width(f32::INFINITY)
+                            .alignment(waterui_layout::alignment::Leading),
+                    ));
+                }
+            }
+            row_top += row_height;
+        }
+        let menu_content: waterui_layout::stack::VStack<(Vec<_>,)> = rows.into_iter().collect();
         menu_content
             .alignment(HorizontalAlignment::Leading)
             .spacing(0.0)
@@ -613,12 +662,16 @@ pub fn popup_menu_content(
             // inset (`md.comp.menu.list-item.leading-space`/`trailing-space`,
             // 12 dp in M3) and its state layer the foreground colour over a
             // square, containerless surface.
-            .with(MenuRowChrome),
-    )
+            .with(MenuRowChrome)
+    }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "popup menu windows carry the resolved node tree, anchor, group, depth, layout/text metrics, widget theme, and runner popup opener"
+)]
 #[cfg(feature = "menu")]
-pub fn popup_menu_window(
+pub fn popup_menu_window<E: crate::text::TextEngine>(
     nodes: Vec<PopupMenuNode>,
     origin: LayoutPoint,
     group: PopupMenuStateGroup,
@@ -626,7 +679,8 @@ pub fn popup_menu_window(
     metrics: MenuLayout,
     text: PopupMenuTextMetrics,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
-) -> (AnyWindow, Binding<WindowState>) {
+    popup_opener: PopupWindowManager<E>,
+) -> (Window<impl ViewBuilder>, Binding<WindowState>) {
     let state = Binding::container(WindowState::Normal);
     let (width, height) = popup_menu_size(&nodes, metrics, &text);
     let group_for_content = group;
@@ -634,22 +688,25 @@ pub fn popup_menu_window(
     let nodes_for_content = nodes;
     let theme = theme.clone();
     let popup_content = move || {
-        AnyView::new(animated_popup_panel(
+        animated_popup_panel(
             Metadata::new(
-                popup_menu_content(
+                popup_menu_content::<E>(
                     nodes_for_content.clone(),
-                    depth,
-                    metrics,
-                    text,
-                    origin,
-                    width,
+                    PopupMenuPlacement {
+                        depth,
+                        metrics,
+                        text,
+                        popup_origin: origin,
+                        width,
+                    },
                     &theme,
+                    Some(popup_opener.clone()),
                 ),
                 PopupMenuSurface { selected_row: None },
             )
             .padding_with(crate::num_cast::f64_as_f32(POPUP_MENU_PANEL_MARGIN)),
             group_for_content.clone(),
-        ))
+        )
     };
     let mut popup = Window::new(
         TEXT_CONTEXT_MENU_WINDOW_TITLE,
@@ -674,7 +731,70 @@ pub fn popup_menu_window(
             crate::num_cast::f64_as_f32(POPUP_MENU_PANEL_MARGIN.mul_add(2.0, height)),
         ),
     ));
-    (popup.erase(), state)
+    (popup, state)
+}
+
+#[cfg(feature = "accessibility")]
+#[cfg(feature = "menu")]
+struct SemanticPopupMenuContent<E: crate::text::TextEngine> {
+    nodes: Vec<PopupMenuNode>,
+    group: PopupMenuStateGroup,
+    depth: usize,
+    popup_opener: PopupWindowManager<E>,
+}
+
+#[cfg(feature = "accessibility")]
+#[cfg(feature = "menu")]
+impl<E: crate::text::TextEngine> View for SemanticPopupMenuContent<E> {
+    fn body(self, _env: &Environment) -> impl View {
+        let Self {
+            nodes,
+            group,
+            depth,
+            popup_opener,
+        } = self;
+        let mut rows = Vec::with_capacity(nodes.len());
+        for node in nodes {
+            match node {
+                PopupMenuNode::Command {
+                    label,
+                    action,
+                    disabled,
+                    ..
+                } => {
+                    let button = popup_menu_command_row(label, action, disabled.snapshot());
+                    rows.push(waterui_core::OneOf3::A(button));
+                }
+                PopupMenuNode::Divider => rows.push(waterui_core::OneOf3::B(Divider)),
+                PopupMenuNode::Menu { label, items, .. } => {
+                    let next_depth = depth + 1;
+                    let manager = popup_opener.clone();
+                    let button = Button::new(label).style(ButtonStyle::Borderless).action(
+                        move |group: PopupMenuStateGroup, env: Environment| {
+                            if items.is_empty() {
+                                return;
+                            }
+                            group.truncate(next_depth);
+                            let (window, child_state) = semantic_popup_menu_window::<E>(
+                                items.clone(),
+                                group.clone(),
+                                next_depth,
+                                manager.clone(),
+                            );
+                            group.push(child_state);
+                            manager.show(window, &env);
+                        },
+                    );
+                    rows.push(waterui_core::OneOf3::C(button));
+                }
+            }
+        }
+        let menu_content: waterui_layout::stack::VStack<(Vec<_>,)> = rows.into_iter().collect();
+        menu_content
+            .alignment(HorizontalAlignment::Leading)
+            .spacing(0.0)
+            .with(group)
+    }
 }
 
 /// The semantic counterpart of [`popup_menu_window`]: the same rows —
@@ -684,61 +804,21 @@ pub fn popup_menu_window(
 /// emitted accessibility tree is identical to the rendered popup's.
 #[cfg(feature = "accessibility")]
 #[cfg(feature = "menu")]
-pub fn semantic_popup_menu_window(
+pub fn semantic_popup_menu_window<E: crate::text::TextEngine>(
     nodes: Vec<PopupMenuNode>,
     group: PopupMenuStateGroup,
     depth: usize,
-) -> (AnyWindow, Binding<WindowState>) {
+    popup_opener: PopupWindowManager<E>,
+) -> (Window<impl ViewBuilder>, Binding<WindowState>) {
     let state = Binding::container(WindowState::Normal);
     let group_for_content = group;
     let state_for_content = state.clone();
     let nodes_for_content = nodes;
-    let popup_content = move || {
-        let mut rows = Vec::with_capacity(nodes_for_content.len());
-        for node in nodes_for_content.clone() {
-            match node {
-                PopupMenuNode::Command {
-                    label,
-                    action,
-                    disabled,
-                    ..
-                } => {
-                    let button = popup_menu_command_row(label, action, disabled.snapshot());
-                    rows.push(AnyView::new(button));
-                }
-                PopupMenuNode::Divider => rows.push(AnyView::new(Divider)),
-                PopupMenuNode::Menu { label, items, .. } => {
-                    let next_depth = depth + 1;
-                    let button = Button::new(label).style(ButtonStyle::Borderless).action(
-                        move |group: PopupMenuStateGroup, env: Environment| {
-                            if items.is_empty() {
-                                return;
-                            }
-                            let Some(manager) = popup_window_manager(&env, "popup menus") else {
-                                return;
-                            };
-                            group.truncate(next_depth);
-                            let (window, child_state) = semantic_popup_menu_window(
-                                items.clone(),
-                                group.clone(),
-                                next_depth,
-                            );
-                            group.push(child_state);
-                            manager.show(window, &env);
-                        },
-                    );
-                    rows.push(AnyView::new(button));
-                }
-            }
-        }
-        let menu_content: waterui_layout::stack::VStack<(Vec<AnyView>,)> =
-            rows.into_iter().collect();
-        AnyView::new(
-            menu_content
-                .alignment(HorizontalAlignment::Leading)
-                .spacing(0.0)
-                .with(group_for_content.clone()),
-        )
+    let popup_content = move || SemanticPopupMenuContent::<E> {
+        nodes: nodes_for_content.clone(),
+        group: group_for_content.clone(),
+        depth,
+        popup_opener: popup_opener.clone(),
     };
     let mut popup = Window::new(
         TEXT_CONTEXT_MENU_WINDOW_TITLE,
@@ -749,7 +829,7 @@ pub fn semantic_popup_menu_window(
     .resizable(false)
     .background(Color::transparent());
     popup.closable = false;
-    (popup.erase(), state)
+    (popup, state)
 }
 
 /// The semantic counterpart of [`picker_menu_window`]: the same selection
@@ -762,7 +842,7 @@ pub fn semantic_picker_menu_window(
     selection: Binding<Id>,
     open: Rc<Cell<bool>>,
     group: PopupMenuStateGroup,
-) -> (AnyWindow, Binding<WindowState>) {
+) -> (Window<impl ViewBuilder>, Binding<WindowState>) {
     let state = Binding::container(WindowState::Normal);
     let group_for_content = group;
     let state_for_content = state.clone();
@@ -775,7 +855,7 @@ pub fn semantic_picker_menu_window(
             let row_selection = selection.clone();
             let row_group = group_for_content.clone();
             let row_open = Rc::clone(&open);
-            rows.push(AnyView::new(
+            rows.push(
                 button(label)
                     .style(ButtonStyle::Borderless)
                     .action(move || {
@@ -785,23 +865,20 @@ pub fn semantic_picker_menu_window(
                         row_open.set(false);
                         row_group.close_all();
                     }),
-            ));
+            );
         }
-        let menu_content: waterui_layout::stack::VStack<(Vec<AnyView>,)> =
-            rows.into_iter().collect();
-        AnyView::new(
-            menu_content
-                .alignment(HorizontalAlignment::Leading)
-                .spacing(0.0)
-                .with(group_for_content.clone()),
-        )
+        let menu_content: waterui_layout::stack::VStack<(Vec<_>,)> = rows.into_iter().collect();
+        menu_content
+            .alignment(HorizontalAlignment::Leading)
+            .spacing(0.0)
+            .with(group_for_content.clone())
     };
     let mut popup = Window::new("WaterUI Picker Menu", state_for_content, popup_content)
         .style(WindowStyle::Borderless)
         .resizable(false)
         .background(Color::transparent());
     popup.closable = false;
-    (popup.erase(), state)
+    (popup, state)
 }
 
 #[allow(
@@ -819,7 +896,7 @@ pub fn picker_menu_window(
     selected: Id,
     group: PopupMenuStateGroup,
     look: &MenuLook,
-) -> (AnyWindow, Binding<WindowState>) {
+) -> (Window<impl ViewBuilder>, Binding<WindowState>) {
     let state = Binding::container(WindowState::Normal);
     let layout = look.layout();
     let height = picker_menu_panel_height(layout, row_height, entries.len());
@@ -843,7 +920,7 @@ pub fn picker_menu_window(
             let row_selection = selection.clone();
             let row_group = group_for_content.clone();
             let row_open = Rc::clone(&open);
-            rows.push(AnyView::new(
+            rows.push(
                 Frame::new(
                     button(label)
                         .style(ButtonStyle::Borderless)
@@ -857,10 +934,9 @@ pub fn picker_menu_window(
                 )
                 .width(crate::num_cast::f64_as_f32(width))
                 .height(crate::num_cast::f64_as_f32(row_height)),
-            ));
+            );
         }
-        let menu_content: waterui_layout::stack::VStack<(Vec<AnyView>,)> =
-            rows.into_iter().collect();
+        let menu_content: waterui_layout::stack::VStack<(Vec<_>,)> = rows.into_iter().collect();
         let rows = menu_content
             .alignment(HorizontalAlignment::Leading)
             .spacing(0.0)
@@ -872,7 +948,7 @@ pub fn picker_menu_window(
             .with(MenuRowChrome);
         let panel = Metadata::new(rows, PopupMenuSurface { selected_row })
             .padding_with(crate::num_cast::f64_as_f32(POPUP_MENU_PANEL_MARGIN));
-        AnyView::new(animated_popup_panel(panel, group_for_content.clone()))
+        animated_popup_panel(panel, group_for_content.clone())
     };
     let mut popup = Window::new("WaterUI Picker Menu", state_for_content, popup_content)
         .style(WindowStyle::Borderless)
@@ -892,7 +968,7 @@ pub fn picker_menu_window(
             crate::num_cast::f64_as_f32(POPUP_MENU_PANEL_MARGIN.mul_add(2.0, height)),
         ),
     ));
-    (popup.erase(), state)
+    (popup, state)
 }
 
 /// The height of a picker popup's panel: its rows of `row_height` inside the
@@ -968,7 +1044,7 @@ fn color_picker_window_base(
     support_hdr: bool,
     group: PopupMenuStateGroup,
     env: &Environment,
-) -> (AnyWindow, Binding<WindowState>) {
+) -> (Window<impl ViewBuilder>, Binding<WindowState>) {
     let state = Binding::container(WindowState::Normal);
     let (width, _) = color_picker_size(support_alpha, support_hdr);
     let swatch = 40.0;
@@ -988,7 +1064,7 @@ fn color_picker_window_base(
                 let selected = value.clone();
                 let group = group_for_content.clone();
                 let swatch_color = color.clone();
-                swatches.push(AnyView::new(
+                swatches.push(
                     Frame::new(
                         button(label)
                             .style(ButtonStyle::Borderless)
@@ -1001,17 +1077,16 @@ fn color_picker_window_base(
                     )
                     .width(crate::num_cast::f64_as_f32(swatch))
                     .height(crate::num_cast::f64_as_f32(swatch)),
-                ));
+                );
             }
-            let row: waterui_layout::stack::HStack<(Vec<AnyView>,)> =
-                swatches.into_iter().collect();
-            row_views.push(AnyView::new(row.spacing(gap)));
+            let row: waterui_layout::stack::HStack<(Vec<_>,)> = swatches.into_iter().collect();
+            row_views.push(waterui_core::OneOf3::A(row.spacing(gap)));
         }
 
         if support_alpha {
             let selected = value.clone();
             let group = group_for_content.clone();
-            row_views.push(AnyView::new(
+            row_views.push(waterui_core::OneOf3::B(
                 Frame::new(
                     button(crate::localization::text(&popup_env, "opacity_50"))
                         .style(ButtonStyle::Borderless)
@@ -1029,7 +1104,7 @@ fn color_picker_window_base(
         if support_hdr {
             let selected = value.clone();
             let group = group_for_content.clone();
-            row_views.push(AnyView::new(
+            row_views.push(waterui_core::OneOf3::C(
                 Frame::new(
                     button(crate::localization::text(&popup_env, "hdr_headroom"))
                         .style(ButtonStyle::Borderless)
@@ -1044,21 +1119,20 @@ fn color_picker_window_base(
             ));
         }
 
-        let content: waterui_layout::stack::VStack<(Vec<AnyView>,)> =
-            row_views.into_iter().collect();
+        let content: waterui_layout::stack::VStack<(Vec<_>,)> = row_views.into_iter().collect();
         let panel = content
             .alignment(HorizontalAlignment::Leading)
             .spacing(gap)
             .padding_with(EdgeInsets::all(16.0))
             .background(RoundedRectangle::new(0.05).fill(Color::new(Surface).with_opacity(0.96)));
-        AnyView::new(animated_popup_panel(panel, group_for_content.clone()))
+        animated_popup_panel(panel, group_for_content.clone())
     };
     let mut popup = Window::new("WaterUI Color Picker", state_for_content, popup_content)
         .style(WindowStyle::Borderless)
         .resizable(false)
         .background(Color::transparent());
     popup.closable = false;
-    (popup.erase(), state)
+    (popup, state)
 }
 
 /// The rendered popup path: the shared color-picker window anchored at the
@@ -1072,7 +1146,7 @@ pub fn color_picker_window(
     origin: LayoutPoint,
     group: PopupMenuStateGroup,
     env: &Environment,
-) -> (AnyWindow, Binding<WindowState>) {
+) -> (Window<impl ViewBuilder>, Binding<WindowState>) {
     let (popup, state) = color_picker_window_base(value, support_alpha, support_hdr, group, env);
     let (width, height) = color_picker_size(support_alpha, support_hdr);
     popup.frame.set(LayoutRect::new(
@@ -1154,7 +1228,7 @@ fn date_picker_window_base(
     ty: DatePickerType,
     group: PopupMenuStateGroup,
     env: &Environment,
-) -> (AnyWindow, Binding<WindowState>) {
+) -> (Window<impl ViewBuilder>, Binding<WindowState>) {
     let state = Binding::container(WindowState::Normal);
     let current = value.snapshot().clamp(*range.start(), *range.end());
     let staged_date = Binding::container(current.date());
@@ -1181,12 +1255,12 @@ fn date_picker_window_base(
     let popup_env = env.clone();
     let popup_content = move || {
         let mut sections = Vec::new();
-        sections.push(AnyView::new(
+        sections.push(waterui_core::OneOf4::A(
             text(crate::localization::text(&popup_env, "select_date")).headline(),
         ));
         if uses_date {
             let visible_month = staged_visible_month.clone();
-            sections.push(AnyView::new(
+            sections.push(waterui_core::OneOf4::B(
                 Calendar::new(
                     crate::localization::text(&popup_env, "date"),
                     &staged_date,
@@ -1198,26 +1272,26 @@ fn date_picker_window_base(
         }
         if uses_time {
             let mut time_controls = Vec::new();
-            time_controls.push(AnyView::new(time_part_binding(
+            time_controls.push(time_part_binding(
                 &staged_hour,
                 0..=23,
                 crate::localization::text(&popup_env, "hour"),
-            )));
-            time_controls.push(AnyView::new(time_part_binding(
+            ));
+            time_controls.push(time_part_binding(
                 &staged_minute,
                 0..=59,
                 crate::localization::text(&popup_env, "minute"),
-            )));
+            ));
             if uses_second {
-                time_controls.push(AnyView::new(time_part_binding(
+                time_controls.push(time_part_binding(
                     &staged_second,
                     0..=59,
                     crate::localization::text(&popup_env, "second"),
-                )));
+                ));
             }
-            let time_content: waterui_layout::stack::VStack<(Vec<AnyView>,)> =
+            let time_content: waterui_layout::stack::VStack<(Vec<_>,)> =
                 time_controls.into_iter().collect();
-            sections.push(AnyView::new(time_content.spacing(8.0)));
+            sections.push(waterui_core::OneOf4::C(time_content.spacing(8.0)));
         }
         let cancel_group = group_for_content.clone();
         let apply_group = group_for_content.clone();
@@ -1227,7 +1301,7 @@ fn date_picker_window_base(
         let apply_hour = staged_hour.clone();
         let apply_minute = staged_minute.clone();
         let apply_second = staged_second.clone();
-        sections.push(AnyView::new(
+        sections.push(waterui_core::OneOf4::D(
             hstack((
                 spacer(),
                 button(crate::localization::text(&popup_env, "cancel"))
@@ -1256,21 +1330,20 @@ fn date_picker_window_base(
             .spacing(8.0),
         ));
 
-        let content: waterui_layout::stack::VStack<(Vec<AnyView>,)> =
-            sections.into_iter().collect();
+        let content: waterui_layout::stack::VStack<(Vec<_>,)> = sections.into_iter().collect();
         let panel = content
             .alignment(HorizontalAlignment::Leading)
             .spacing(16.0)
             .padding_with(EdgeInsets::all(24.0))
             .background(RoundedRectangle::new(0.04).fill(Color::new(Surface).with_opacity(0.96)));
-        AnyView::new(animated_popup_panel(panel, group_for_content.clone()))
+        animated_popup_panel(panel, group_for_content.clone())
     };
     let mut popup = Window::new("WaterUI Date Picker", state_for_content, popup_content)
         .style(WindowStyle::Borderless)
         .resizable(false)
         .background(Color::transparent());
     popup.closable = false;
-    (popup.erase(), state)
+    (popup, state)
 }
 
 /// The rendered popup path: the shared date-picker window anchored at the
@@ -1284,7 +1357,7 @@ pub fn date_picker_window(
     origin: LayoutPoint,
     group: PopupMenuStateGroup,
     env: &Environment,
-) -> (AnyWindow, Binding<WindowState>) {
+) -> (Window<impl ViewBuilder>, Binding<WindowState>) {
     let (popup, state) = date_picker_window_base(value, range, ty, group, env);
     let (width, height) = date_picker_size(ty);
     popup.frame.set(LayoutRect::new(
@@ -1509,6 +1582,22 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         }
     }
 
+    #[cfg(any(feature = "menu", feature = "color-picker"))]
+    pub(crate) fn set_popup_window_manager(&mut self, manager: PopupWindowManager<E>) {
+        self.popup_menu.popup_opener = Some(manager);
+    }
+
+    #[cfg(any(feature = "menu", feature = "color-picker"))]
+    pub(crate) fn popup_window_manager(&self, opening: &str) -> Option<PopupWindowManager<E>> {
+        let manager = self.popup_menu.popup_opener.clone();
+        if manager.is_none() {
+            contract_violation!(
+                "hydrolysis {opening} require a runner popup-window opener; the popup does not open"
+            );
+        }
+        manager
+    }
+
     #[cfg(feature = "menu")]
     pub(crate) fn show_popup_menu_nodes(
         &mut self,
@@ -1523,7 +1612,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         // The menu's rows carry this window's identity, so a Close Window
         // row they fire targets its owner window, not the popup.
         let env = &env.extending(self.window_id);
-        let Some(manager) = popup_window_manager(env, "popup menus") else {
+        let Some(manager) = self.popup_window_manager("popup menus") else {
             return false;
         };
         let Some(popup_origin) = popup_window_origin(origin, env) else {
@@ -1533,8 +1622,16 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         let metrics = menu_look(theme, env).layout();
         let group = PopupMenuStateGroup::new();
         let text = self.popup_menu_text_metrics(&nodes, metrics, env, theme);
-        let (window, state) =
-            popup_menu_window(nodes, popup_origin, group.clone(), 0, metrics, text, theme);
+        let (window, state) = popup_menu_window::<E>(
+            nodes,
+            popup_origin,
+            group.clone(),
+            0,
+            metrics,
+            text,
+            theme,
+            manager.clone(),
+        );
         group.push(state);
         manager.show(window, env);
         self.popup_menu.active_popup_menu_group = Some(group);
@@ -1559,12 +1656,13 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         // The menu's rows carry this window's identity, so a Close Window
         // row they fire targets its owner window, not the popup.
         let env = &env.extending(self.window_id);
-        let Some(manager) = popup_window_manager(env, "popup menus") else {
+        let Some(manager) = self.popup_window_manager("popup menus") else {
             return false;
         };
         self.dismiss_active_popup_menu();
         let group = PopupMenuStateGroup::new();
-        let (window, state) = semantic_popup_menu_window(nodes, group.clone(), 0);
+        let (window, state) =
+            semantic_popup_menu_window::<E>(nodes, group.clone(), 0, manager.clone());
         group.push(state);
         manager.show(window, env);
         self.popup_menu.active_popup_menu_group = Some(group);
@@ -1586,7 +1684,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         if entries.is_empty() {
             return false;
         }
-        let Some(manager) = popup_window_manager(env, "picker menus") else {
+        let Some(manager) = self.popup_window_manager("picker menus") else {
             return false;
         };
         self.dismiss_active_popup_menu();
@@ -1610,7 +1708,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         if request.entries.is_empty() {
             return false;
         }
-        let Some(manager) = popup_window_manager(env, "picker menus") else {
+        let Some(manager) = self.popup_window_manager("picker menus") else {
             return false;
         };
         let Some(popup_origin) = popup_window_origin(request.origin, env) else {
@@ -1646,7 +1744,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         origin: LayoutPoint,
         env: &Environment,
     ) -> bool {
-        let Some(manager) = popup_window_manager(env, "color pickers") else {
+        let Some(manager) = self.popup_window_manager("color pickers") else {
             return false;
         };
         let Some(popup_origin) = popup_window_origin(origin, env) else {
@@ -1677,7 +1775,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         origin: LayoutPoint,
         env: &Environment,
     ) -> bool {
-        let Some(manager) = popup_window_manager(env, "date pickers") else {
+        let Some(manager) = self.popup_window_manager("date pickers") else {
             return false;
         };
         let Some(popup_origin) = popup_window_origin(origin, env) else {
@@ -1705,7 +1803,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         support_hdr: bool,
         env: &Environment,
     ) -> bool {
-        let Some(manager) = popup_window_manager(env, "color pickers") else {
+        let Some(manager) = self.popup_window_manager("color pickers") else {
             return false;
         };
         self.dismiss_active_popup_menu();
@@ -1730,7 +1828,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         ty: DatePickerType,
         env: &Environment,
     ) -> bool {
-        let Some(manager) = popup_window_manager(env, "date pickers") else {
+        let Some(manager) = self.popup_window_manager("date pickers") else {
             return false;
         };
         self.dismiss_active_popup_menu();
@@ -1797,6 +1895,8 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
 impl<E: crate::text::TextEngine> Default for PopupMenuState<E> {
     fn default() -> Self {
         Self {
+            #[cfg(any(feature = "menu", feature = "color-picker"))]
+            popup_opener: Option::default(),
             #[cfg(any(feature = "menu", feature = "color-picker"))]
             active_popup_menu_group: Option::default(),
             #[cfg(feature = "menu")]

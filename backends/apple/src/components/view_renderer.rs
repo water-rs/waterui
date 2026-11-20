@@ -10,12 +10,13 @@
 //! the `CustomViewRenderer` contract.
 
 use waterui_backend_core::Environment;
-use waterui_core::env::With;
-use waterui_core::layout::{ProposalSize, Size};
-use waterui_core::view_renderer::{
+use waterui_capture::ContentLedger;
+use waterui_capture::view_renderer::{
     CustomViewRenderer, RenderError, RenderRequest, RenderResult, ViewRenderer,
 };
-use waterui_core::{AnyView, ContentLedger};
+use waterui_core::AnyView;
+use waterui_core::env::With;
+use waterui_core::layout::{ProposalSize, Size};
 
 use crate::contract::{NativeLeaf, Renderer};
 
@@ -204,7 +205,7 @@ fn lay_out(view: &cocoa_ui::PlatformView, size: Size) {
 /// The capture window the leaf joins before it is measured.
 #[cfg(feature = "gpu_surface")]
 mod host {
-    use waterui_core::view_renderer::RenderError;
+    use waterui_capture::view_renderer::RenderError;
 
     /// The central capture's re-host: the leaf moves into a never-ordered
     /// (`AppKit`) or offscreen (`UIKit`) window and returns to its parent
@@ -235,7 +236,7 @@ mod host {
 /// The capture window the leaf joins before it is measured.
 #[cfg(all(target_os = "macos", not(feature = "gpu_surface")))]
 mod host {
-    use waterui_core::view_renderer::RenderError;
+    use waterui_capture::view_renderer::RenderError;
 
     /// `AppKit`: a window that never orders in hosts the leaf for
     /// `crate::capture`'s bitmap readback — the `AppKit` half of
@@ -269,7 +270,7 @@ mod host {
 /// The capture window the leaf joins before it is measured.
 #[cfg(all(target_os = "ios", not(feature = "gpu_surface")))]
 mod host {
-    use waterui_core::view_renderer::RenderError;
+    use waterui_capture::view_renderer::RenderError;
 
     use crate::capture::CaptureError;
 

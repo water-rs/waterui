@@ -12,7 +12,7 @@ use core::time::Duration;
 use std::task::Wake;
 
 use super::{ContentError, ContentLedger, OwedContent, PendingContent};
-use crate::{Environment, Signal};
+use waterui_core::{Environment, Signal};
 
 /// A stand-in for a component that owes content after mount.
 struct FakeLoader;
