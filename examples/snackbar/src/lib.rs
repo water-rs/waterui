@@ -7,23 +7,26 @@ use waterui::app::{App, Windows};
 use waterui::log::info;
 use waterui::prelude::*;
 use waterui::preview;
-use waterui::snackbar::{Snackbar, SnackbarManager, SnackbarPosition};
+use waterui::snackbar::{Snackbar, SnackbarIcon, SnackbarManager, SnackbarPosition};
 use waterui_icons_material_icon as mdi;
+
+type IconSnackbarManager = SnackbarManager<SnackbarIcon<mdi::Svg>>;
 
 /// The snackbar example page, with buttons that show each snackbar variant.
 #[preview]
 pub fn demo() -> impl View {
+    let (snackbar, snackbar_overlay) = SnackbarManager::with_icons::<mdi::Svg>();
     scroll(
         vstack((
             text("Snackbar Demo").title().bold(),
             spacer(),
-            button("Simple Snackbar").action(|m: SnackbarManager| {
+            button("Simple Snackbar").action(|m: IconSnackbarManager| {
                 m.show(Snackbar::new("Hello from Snackbar!"));
             }),
-            button("With Icon").action(|m: SnackbarManager| {
+            button("With Icon").action(|m: IconSnackbarManager| {
                 m.show(Snackbar::new("File saved successfully").icon(check_circle()));
             }),
-            button("With Action Button").action(|m: SnackbarManager| {
+            button("With Action Button").action(|m: IconSnackbarManager| {
                 m.show(
                     Snackbar::new("Item moved to trash")
                         .icon(delete())
@@ -33,19 +36,19 @@ pub fn demo() -> impl View {
                         }),
                 );
             }),
-            button("Top Position").action(|m: SnackbarManager| {
+            button("Top Position").action(|m: IconSnackbarManager| {
                 m.show(
                     Snackbar::new("Network connected")
                         .icon(check_circle())
                         .position(SnackbarPosition::TopCenter),
                 );
             }),
-            button("Queue Multiple").action(|m: SnackbarManager| {
+            button("Queue Multiple").action(|m: IconSnackbarManager| {
                 m.show(Snackbar::new("First message"));
                 m.show(Snackbar::new("Second message"));
                 m.show(Snackbar::new("Third message"));
             }),
-            button("Top + Bottom").action(|m: SnackbarManager| {
+            button("Top + Bottom").action(|m: IconSnackbarManager| {
                 // Different placements are independent — these coexist.
                 m.show(
                     Snackbar::new("Top banner")
@@ -54,7 +57,7 @@ pub fn demo() -> impl View {
                 );
                 m.show(Snackbar::new("Bottom banner"));
             }),
-            button("Closeable").action(|m: SnackbarManager| {
+            button("Closeable").action(|m: IconSnackbarManager| {
                 m.show(
                     Snackbar::new("Stays until you close it")
                         .duration(Duration::ZERO)
@@ -65,6 +68,8 @@ pub fn demo() -> impl View {
         ))
         .padding(),
     )
+    .overlay(snackbar_overlay)
+    .state(&snackbar)
 }
 
 /// Builds the snackbar example app.

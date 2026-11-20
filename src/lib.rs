@@ -77,7 +77,8 @@ pub mod prelude {
     pub use super::fullscreen::*;
     #[cfg(feature = "snackbar")]
     pub use super::snackbar::{
-        Snackbar, SnackbarDismissReason, SnackbarManager, SnackbarPosition, SnackbarTheme,
+        Snackbar, SnackbarDismissReason, SnackbarIcon, SnackbarManager, SnackbarPosition,
+        SnackbarTheme,
     };
 
     pub use super::gesture::GestureObserver;

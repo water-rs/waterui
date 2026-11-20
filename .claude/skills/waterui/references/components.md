@@ -768,8 +768,10 @@ A `Binding<BTreeSet<Date>>` needs the turbofish: `binding(BTreeSet::<Date>::new(
 
 ## Overlays: snackbars, cards, suspense, full screen
 
-Every `Window` installs a `SnackbarManager` through `.state()`; it is a `#[state]`-marked
-framework type, so handlers take it bare.
+Every `Window` installs a plain `SnackbarManager` through `.state()`; it is a `#[state]`-marked
+framework type, so handlers take it bare. For snackbars with icons of view type `V`, attach
+`let (snackbars, overlay) = SnackbarManager::with_icons::<V>();` with `.overlay(overlay).state(&snackbars)`
+and extract `m: SnackbarManager<SnackbarIcon<V>>`.
 
 ```rust
 use core::time::Duration;
@@ -778,7 +780,6 @@ use waterui::snackbar::{Snackbar, SnackbarManager, SnackbarPosition};
 button("Save").action(|m: SnackbarManager| {
     m.show(
         Snackbar::new("Item moved to trash")
-            .icon(mdi::delete())
             .action("Undo", || restore())
             .position(SnackbarPosition::BottomCenter)   // BottomCenter | TopCenter | BottomLeading | BottomTrailing
             .closeable()
@@ -788,7 +789,8 @@ button("Save").action(|m: SnackbarManager| {
 ```
 
 Placements are independent stacks: a top snackbar never evicts a bottom one, and multiple
-at one placement stack and reflow. `.state(&v)` injects state for the `.action(..)` and
+at one placement stack and reflow. `.icon(view)` attaches a typed leading icon (`Snackbar<SnackbarIcon<V>>`),
+`.state(&v)` injects state for the `.action(..)` and
 `.on_dismiss(..)` handlers; `.on_dismiss(|reason: SnackbarDismissReason| ..)` runs once per
 presentation with why it went (`Action`, `Timeout`, `Closed`, `Replaced`, `Programmatic`),
 and `manager.dismiss()` dismisses the current one.
@@ -814,8 +816,10 @@ accordion(header, || body())                           // disclosure; Accordion:
 view.floating()                                        // themed elevated surface (FloatingStyle-aware)
 ```
 
-`FullScreenOverlayManager` (also installed per window, taken bare by a handler) presents
-modal, window-filling content: `overlay.show(view)` and `overlay.hide()`.
+`FullScreenOverlayManager<V>` creates a typed overlay manager and overlay view via
+`FullScreenOverlayManager::<V>::new()`, installed with `.overlay(overlay_view).state(&overlay)` and
+taken bare by handlers (`overlay: FullScreenOverlayManager<V>`) to present modal, window-filling
+content: `overlay.show(view)` and `overlay.hide()`.
 
 `.secure()` on any view marks it as content that must not appear in screenshots. Only the
 iOS backend enforces it today; macOS and Hydrolysis (Android included) render the content
