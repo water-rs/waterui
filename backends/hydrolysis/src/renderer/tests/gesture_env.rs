@@ -36,9 +36,9 @@ use waterui::gesture::{DragEvent, DragGesture, GesturePoint, TapEvent, TapGestur
 use waterui::style::Anchor;
 use waterui::{AnyView, Binding, Color, ViewExt as _};
 use waterui_core::Environment;
-use waterui_core::event::{Event, HoverEvent};
 use waterui_core::extract::{State, Use};
 use waterui_core::handler::AnyViewBuilder;
+use waterui_interaction::event::{Event, HoverEvent};
 use waterui_layout::stack::hstack;
 
 use super::{MinimalTestTheme, test_environment};

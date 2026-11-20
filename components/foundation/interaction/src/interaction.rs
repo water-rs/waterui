@@ -15,7 +15,7 @@ use alloc::vec::Vec;
 
 use nami::{Computed, SignalExt, signal::IntoComputed, zip::zip};
 
-use crate::{Environment, metadata::MetadataKey};
+use waterui_core::{Environment, metadata::MetadataKey, plugin::Plugin};
 
 bitflags::bitflags! {
     /// The states an interactive control is in at one moment.
@@ -48,7 +48,7 @@ bitflags::bitflags! {
 /// precedence — the author states it rather than the framework guessing it:
 ///
 /// ```rust
-/// use waterui_core::interaction::{InteractionState, StateValue};
+/// use waterui_interaction::interaction::{InteractionState, StateValue};
 ///
 /// let radius = StateValue::new(8.0)
 ///     .when(InteractionState::DRAGGED, 16.0)
@@ -115,7 +115,7 @@ impl<T> From<T> for StateValue<T> {
 #[derive(Debug, Clone)]
 pub struct InteractionReport(pub nami::Binding<InteractionState>);
 
-impl crate::plugin::Plugin for InteractionReport {}
+impl Plugin for InteractionReport {}
 
 /// Marks the control it modifies as selected, as `.selected(...)` installs it.
 ///
@@ -177,8 +177,8 @@ impl Disabled {
 #[cfg(test)]
 mod tests {
     use super::{Disabled, InteractionState, StateValue};
-    use crate::Environment;
     use nami::{Signal, binding};
+    use waterui_core::Environment;
 
     #[test]
     fn state_value_precedence_is_insertion_order() {

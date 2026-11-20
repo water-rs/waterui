@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use accesskit::{Action, ActionRequest, Role, TreeId};
 use waterui_core::AnyView;
 use waterui_core::handler::AnyViewBuilder;
-use waterui_core::interaction::InteractionState;
+use waterui_interaction::interaction::InteractionState;
 use waterui_layout::stack::vstack;
 use waterui_navigation::tab::{Tab, Tabs};
 use waterui_navigation::{NavigationLink, NavigationStack, NavigationView};

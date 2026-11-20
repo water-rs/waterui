@@ -28,11 +28,11 @@ use waterui::resolve::Resolvable;
 use waterui::text::StyledStr;
 use waterui::text::font::{Body, ResolvedFont};
 use waterui_core::id::Id;
-use waterui_core::interaction::Disabled;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size, StretchAxis, SubView,
     ViewDimensions,
 };
+use waterui_interaction::interaction::Disabled;
 
 use super::font::platform_font;
 use crate::components::control_size::platform_control_size;

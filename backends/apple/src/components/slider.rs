@@ -21,11 +21,11 @@ use waterui::animation::{Animation, ChangeAnimation};
 use waterui::component::slider::{SliderConfig, snap};
 use waterui::reactive::Signal;
 use waterui::reactive::watcher::Metadata;
-use waterui_core::interaction::Disabled;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size, StretchAxis, SubView,
     ViewDimensions,
 };
+use waterui_interaction::interaction::Disabled;
 
 use crate::components::button_chrome;
 use crate::components::control_size::platform_control_size;

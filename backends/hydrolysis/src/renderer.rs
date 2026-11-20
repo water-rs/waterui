@@ -223,13 +223,11 @@ use waterui_controls::text_field::ResolvedTextFieldConfig;
 #[cfg(feature = "toggle")]
 use waterui_controls::toggle::ToggleConfig;
 use waterui_core::dynamic::DynamicInitialContent;
-use waterui_core::event::{Event, HoverEvent, LifeCycle, LifeCycleHook, OnEvent};
 #[cfg(any(feature = "menu", feature = "color-picker"))]
 use waterui_core::handler::ViewBuilder;
 use waterui_core::handler::{BoxedAction, SharedAction};
 #[cfg(any(feature = "menu", feature = "color-picker"))]
 use waterui_core::impl_extractor;
-use waterui_core::key::{KeyHandling, KeyPress, OnKeyPress};
 #[cfg(any(feature = "menu", feature = "color-picker"))]
 use waterui_core::layout::Point as LayoutPoint;
 use waterui_core::layout::{
@@ -255,6 +253,8 @@ use waterui_graphics::color::Color;
 use waterui_graphics::gpu::RedrawHandle;
 #[cfg(hydrolysis_gpu)]
 use waterui_graphics::{ExternalFrameView, GpuView};
+use waterui_interaction::event::{Event, HoverEvent, LifeCycle, LifeCycleHook, OnEvent};
+use waterui_interaction::key::{KeyHandling, KeyPress, OnKeyPress};
 
 #[cfg(feature = "accessibility")]
 use waterui_layout::scroll::Axis as ScrollAxis;

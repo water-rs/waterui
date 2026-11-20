@@ -1,7 +1,8 @@
 //! Floating-surface presentation for elevated interactive views.
 
 use nami::binding;
-use waterui_core::{Dynamic, Environment, View, interaction::InteractionState, plugin::Plugin};
+use waterui_core::{Dynamic, Environment, View, plugin::Plugin};
+use waterui_interaction::interaction::InteractionState;
 use waterui_shape::{RoundedRectangle, ShapeExt as _};
 
 use crate::{
@@ -113,8 +114,8 @@ mod tests {
     use waterui_core::{
         AnyView, Dynamic, Environment, Retain, View,
         backend::{peel_metadata, peel_native},
-        interaction::{InteractionReport, InteractionState, StateValue},
     };
+    use waterui_interaction::interaction::{InteractionReport, InteractionState, StateValue};
     use waterui_layout::container::FixedContainer;
     use waterui_shape::{ClipShape, ShapeKind};
     use waterui_text::Text;

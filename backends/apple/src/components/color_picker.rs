@@ -18,11 +18,11 @@ use waterui::component::form::picker::color::ColorPickerConfig;
 use waterui::graphics::color::{Color, Working, WorkingColor, srgb_to_linear, working};
 use waterui::reactive::{Computed, Signal};
 use waterui::text::StyledStr;
-use waterui_core::interaction::Disabled;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size, StretchAxis, SubView,
     ViewDimensions,
 };
+use waterui_interaction::interaction::Disabled;
 
 use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;
