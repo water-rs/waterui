@@ -69,7 +69,7 @@ pub mod prelude {
     };
 
     #[cfg(feature = "flow-markdown")]
-    pub use crate::include_markdown;
+    pub use waterui_markdown::include_markdown;
 
     pub use super::color::*;
     #[cfg(feature = "dialog")]
@@ -200,6 +200,11 @@ pub use waterui_text as text;
 pub mod ts;
 #[cfg(feature = "map")]
 pub use waterui_map as map;
+#[cfg(feature = "flow-markdown")]
+pub use waterui_markdown as markdown;
+#[cfg(feature = "flow-markdown")]
+#[doc(inline)]
+pub use waterui_markdown::include_markdown;
 #[cfg(feature = "video")]
 pub use waterui_video as video;
 #[cfg(feature = "webview")]

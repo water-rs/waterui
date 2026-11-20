@@ -85,6 +85,11 @@ fn copy_to_clipboard(_text: &str) {}
 pub struct OnCopied(Rc<dyn Fn(&Environment)>);
 
 impl OnCopied {
+    /// Creates a new copy-feedback callback.
+    pub fn new(callback: impl Fn(&Environment) + 'static) -> Self {
+        Self(Rc::new(callback))
+    }
+
     /// Runs the callback against the environment the copy happened in.
     pub fn call(&self, env: &Environment) {
         (self.0)(env);

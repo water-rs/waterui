@@ -1432,9 +1432,9 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         RenderNode::build_spacer(renderer, native, env)
     }
 
-    // `Divider` and `Str` are registered renderers (not `Native<…>` leaves), so
-    // they are downcast as their value type directly and built into persistent
-    // `Widget` nodes that re-render from a retained cell each flush.
+    // `Divider` and `Str` are `NativeView` leaves routed directly to
+    // `NativeBackend::divider` and `NativeBackend::label`, and built into
+    // persistent `Widget` nodes that re-render from a retained cell each flush.
     fn divider(
         &mut self,
         native: waterui::layout::Divider,
