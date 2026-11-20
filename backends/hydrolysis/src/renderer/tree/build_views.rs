@@ -4,10 +4,10 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
-// Only the Android bridge and a build with no selected engine report a WebView.
+// A build with no selected engine reports a WebView as a contract violation.
 #[cfg(all(
     waterui_feature = "webview",
-    any(hydrolysis_android_system_webview, not(hydrolysis_webview_engine))
+    not(any(hydrolysis_webview_engine, hydrolysis_android_system_webview))
 ))]
 use waterui_core::contract_violation;
 

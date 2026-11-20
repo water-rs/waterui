@@ -337,11 +337,24 @@ pub struct AndroidSystemWebViewController {
     inner: Option<Rc<ControllerInner>>,
 }
 
+impl core::fmt::Debug for AndroidSystemWebViewController {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("AndroidSystemWebViewController")
+            .field("has_session", &self.inner.is_some())
+            .finish()
+    }
+}
+
 impl AndroidSystemWebViewController {
     /// Resolve the wrapper class and its method table, and capture the
     /// session. `env` must be the JNI environment of `nativeCreateSession` —
     /// the only call that reaches app classes by name on every thread model.
     /// A method R8 stripped or renamed fails here, naming it.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`JniError`] if the JNI wrapper classes or their method table
+    /// cannot be resolved on `env`.
     pub fn new(
         env: &mut Env<'_>,
         session: Arc<Global<JObject<'static>>>,

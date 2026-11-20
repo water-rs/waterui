@@ -194,10 +194,10 @@ pub use widgets::platform::webview::MacSystemWebViewHandle;
 #[doc(hidden)]
 pub use widgets::platform::webview::SelectedWebViewController;
 #[cfg(hydrolysis_web_system_webview)]
-pub use widgets::platform::webview::WebSystemWebViewController;
-#[cfg(hydrolysis_web_system_webview)]
 #[doc(hidden)]
 pub use widgets::platform::webview::WebIframeHandle;
+#[cfg(hydrolysis_web_system_webview)]
+pub use widgets::platform::webview::WebSystemWebViewController;
 #[cfg(hydrolysis_android_system_webview)]
 #[doc(hidden)]
 pub use widgets::platform::webview::{AndroidSystemWebViewController, AndroidSystemWebViewHandle};

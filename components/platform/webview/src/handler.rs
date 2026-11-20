@@ -516,10 +516,10 @@ webview_handle! {
 
         /// Returns a handle whose page could not be opened before the engine was
         /// called (for example, an invalid asset-origin configuration).
+        #[cfg(not(target_arch = "wasm32"))]
         pub(crate) fn unavailable() -> Self {
             Self {
                 inner: Rc::new(Opened {
-                    #[cfg(not(target_arch = "wasm32"))]
                     creation_keys: Box::default(),
                     handle: UnavailableWebViewHandle::default(),
                 }),

@@ -1100,7 +1100,8 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             materialized_epoch: 0,
             window_material: None,
             #[cfg(hydrolysis_android_system_webview)]
-            android_webview: Default::default(),
+            android_webview:
+                crate::widgets::platform::webview::AndroidSystemWebViewController::default(),
             offscreen: crate::view_renderer::HydrolysisOffscreenRenderer::unavailable(
                 "hydrolysis semantic core has no widget theme or painter for offscreen capture",
             ),
