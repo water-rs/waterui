@@ -521,9 +521,16 @@ mod tests {
         type Output = ();
         type Ctx = ();
         type Family = Self;
+        #[cfg(waterui_feature = "webview")]
+        type WebViewController = waterui::webview::UnavailableWebViewController;
 
         fn with_family<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
             f(self)
+        }
+
+        #[cfg(waterui_feature = "webview")]
+        fn web_view_controller(&self) -> Self::WebViewController {
+            waterui::webview::UnavailableWebViewController
         }
 
         stub_natives! {
@@ -554,7 +561,7 @@ mod tests {
             #[cfg(waterui_feature = "video")]
             video_player: waterui::video::video::NativeVideoPlayerConfig,
             #[cfg(waterui_feature = "webview")]
-            web_view: waterui::webview::WebView,
+            web_view: waterui::webview::WebViewOpen,
             #[cfg(waterui_feature = "map")]
             map: waterui::map::MapConfig,
         }
