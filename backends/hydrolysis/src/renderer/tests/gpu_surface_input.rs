@@ -95,7 +95,7 @@ impl GpuContent for SilentProbe {
 
 /// The input-receiving probe as a view: the `on_input` handler is what makes
 /// the surface take focus and see events; the caret query places IME panels.
-fn probe_view(log: ProbeLog, caret: Option<kurbo::Rect>) -> GpuView {
+fn probe_view(log: ProbeLog, caret: Option<kurbo::Rect>) -> GpuView<InputProbe> {
     GpuView::new(InputProbe)
         .on_input(move |event| log.0.borrow_mut().push(event.clone()))
         .on_ime_caret(move || caret)
