@@ -151,9 +151,14 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     type Output = RenderNode<E>;
     type Ctx = ();
     type Family = HydroFamily<E>;
+    type Offscreen = crate::view_renderer::HydrolysisOffscreenRenderer;
 
     fn with_family<R>(&mut self, f: impl for<'a> FnOnce(&mut HydroBackend<'a, E>) -> R) -> R {
         f(self)
+    }
+
+    fn offscreen(&self, _env: &Environment) -> Self::Offscreen {
+        self.renderer.offscreen_renderer()
     }
 
     accessibility_scope_table!(accessibility_scopes);

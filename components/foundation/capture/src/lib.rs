@@ -11,5 +11,6 @@ pub mod view_renderer;
 
 pub use content_ledger::ContentLedger;
 pub use view_renderer::{
-    CustomViewRenderer, RenderError, RenderRequest, RenderResult, ViewRenderer,
+    CaptureHandle, CaptureScope, OffscreenRenderer, RenderError, RenderFuture, RenderRequest,
+    RenderResult, UnwiredCaptureError,
 };
