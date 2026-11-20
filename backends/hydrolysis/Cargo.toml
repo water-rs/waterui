@@ -22,7 +22,7 @@ waterui-icon.workspace = true
 waterui-shape.workspace = true
 waterui-layout.workspace = true
 waterui-controls.workspace = true
-waterui-form.workspace = true
+waterui-form = { workspace = true, optional = true }
 waterui-backend-core = { workspace = true, optional = true, features = ["gestures", "overlay", "log"] }
 waterkit-clipboard = { workspace = true, optional = true }
 waterui-locale.workspace = true
@@ -49,7 +49,7 @@ read-fonts = { version = "0.45.1", default-features = false, features = ["std"],
 lru = { workspace = true, optional = true }
 executor-core.workspace = true
 rustc-hash.workspace = true
-unicode-segmentation = "1.13"
+unicode-segmentation = { version = "1.13", optional = true }
 async-task = "4.7"
 native-executor.workspace = true
 keyboard-types.workspace = true
@@ -311,12 +311,12 @@ windows = { workspace = true, features = [
 # carries the eventfd the main-Looper executor wakes on, and `android_logger`
 # + `tracing-log` route `tracing` into logcat.
 [target.'cfg(target_os = "android")'.dependencies]
-jni.workspace = true
+jni = { workspace = true, optional = true }
 ndk = { version = "0.9.0", features = ["nativewindow", "api-level-33"] }
 # The application `Context` for service crates that resolve it through
 # `ndk_context::android_context` — waterkit-clipboard's Android backend
 # panics without it; published once in `nativeCreateSession`.
-ndk-context = "0.1"
+ndk-context = { version = "0.1", optional = true }
 libc = "0.2"
 # A pure-HWUI build (`--no-default-features --features hwui`,
 # water-rs/waterui#1811) selects the platform painter and links none of the
@@ -467,15 +467,15 @@ required-features = ["webview-system", "winit"]
 [features]
 menu = ["waterui/menu"]
 calendar = ["waterui/calendar"]
-color-picker = ["waterui/color-picker"]
-date-picker = ["calendar", "stepper", "menu", "waterui/date-picker"]
+color-picker = ["waterui/color-picker", "dep:waterui-form"]
+date-picker = ["calendar", "stepper", "menu", "waterui/date-picker", "dep:waterui-form"]
 file-picker = ["waterui/file-picker"]
 multi-date-picker = ["calendar", "waterui/multi-date-picker"]
-picker = ["menu", "waterui/picker"]
-secure-field = ["menu", "waterui/secure-field"]
+picker = ["menu", "waterui/picker", "dep:waterui-form"]
+secure-field = ["menu", "waterui/secure-field", "dep:waterui-form", "dep:unicode-segmentation"]
 slider = ["waterui/slider"]
 stepper = ["waterui/stepper"]
-text-field = ["menu", "waterui/text-field"]
+text-field = ["menu", "waterui/text-field", "dep:unicode-segmentation"]
 toggle = ["waterui/toggle"]
 validation = ["text-field", "waterui/validation"]
 list = ["waterui/list"]
@@ -499,8 +499,11 @@ gpu = [
     "dep:android_logger",
     "dep:cherenkov",
     "dep:cherenkov-gpu",
+    "dep:jni",
     "dep:lru",
+    "dep:ndk-context",
     "dep:peniko",
+    "dep:unicode-segmentation",
     "dep:wgpu",
     "dep:pollster",
     "dep:raw-window-handle",
@@ -528,8 +531,11 @@ gpu = [
 cpu = [
     "dep:cherenkov",
     "dep:cherenkov-cpu",
+    "dep:jni",
     "dep:lru",
+    "dep:ndk-context",
     "dep:peniko",
+    "dep:unicode-segmentation",
     "cherenkov-cpu/shaders",
     "dep:waterkit-clipboard",
     "dep:waterui-assets-core",
@@ -550,7 +556,9 @@ inspector-signals = ["waterui/inspector-signals"]
 hwui = [
     "dep:askama",
     "dep:android_logger",
+    "dep:jni",
     "dep:lru",
+    "dep:ndk-context",
     "dep:peniko",
     "dep:read-fonts",
     "dep:waterkit-clipboard",

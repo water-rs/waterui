@@ -87,6 +87,7 @@ pub mod prelude {
 
     pub use super::border::Border;
     pub use super::component::*;
+    #[cfg(feature = "form")]
     pub use super::form::*;
     pub use super::layout::padding::*;
     pub use super::layout::*;
@@ -101,6 +102,7 @@ pub mod prelude {
 
     pub use super::text::{TextConfig, font, highlight, styled};
 
+    #[cfg(feature = "link")]
     pub use super::component::link::{Link, LinkTarget, link};
     #[cfg(feature = "list")]
     pub use super::component::list::{
@@ -117,9 +119,9 @@ pub mod prelude {
     // Drag and drop extension traits
     pub use super::drag_drop::DropDestinationExt;
 
-    pub use super::widget::{
-        Avatar, Card, CardStyle, CardStyleTokens, CardTheme, Divider, avatar, card, suspense,
-    };
+    #[cfg(feature = "avatar")]
+    pub use super::widget::{Avatar, avatar};
+    pub use super::widget::{Card, CardStyle, CardStyleTokens, CardTheme, Divider, card, suspense};
     #[cfg(feature = "flow-markdown")]
     pub use super::widget::{
         FlowAnimationPolicy, FlowAnimationPreset, FlowElementKind, FlowMarkdown, FlowStreamMode,
@@ -154,6 +156,7 @@ pub mod prelude {
     pub use waterui_macros::*;
 }
 pub use color::Color;
+#[cfg(feature = "form")]
 pub use form::FormBuilder;
 #[cfg(feature = "effects")]
 #[doc(inline)]
@@ -164,6 +167,7 @@ pub use view::ViewExt;
 pub use waterui_barcode as barcode;
 #[cfg(feature = "chart")]
 pub use waterui_chart as chart;
+#[cfg(feature = "form")]
 pub use waterui_form as form;
 #[cfg(feature = "canvas")]
 pub use waterui_graphics::canvas;

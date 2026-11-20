@@ -411,6 +411,10 @@ waterui = { path = ".", features = ["media"] }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 
 [features]
+form = ["waterui-internal/form", "waterui-dylib?/form"]
+link = ["waterui-internal/link", "waterui-dylib?/link"]
+avatar = ["waterui-internal/avatar", "waterui-dylib?/avatar"]
+cpu-time = ["waterui-internal/cpu-time", "waterui-dylib?/cpu-time"]
 list = ["waterui-internal/list", "waterui-dylib?/list"]
 table = ["waterui-internal/table", "waterui-dylib?/table"]
 navigation = ["waterui-internal/navigation", "waterui-dylib?/navigation"]
@@ -428,6 +432,9 @@ text-field = ["waterui-internal/text-field", "waterui-dylib?/text-field"]
 toggle = ["waterui-internal/toggle", "waterui-dylib?/toggle"]
 validation = ["waterui-internal/validation", "waterui-dylib?/validation"]
 default = [
+    "avatar",
+    "cpu-time",
+    "link",
     "list",
     "table",
     "navigation",
@@ -533,6 +540,9 @@ particle = ["waterui-internal/particle", "waterui-dylib?/particle"]
 # TypeScript view modules opts in explicitly rather than paying for them through
 # the full-feature set — the same reasoning that keeps `markdown-math` out.
 all = [
+    "avatar",
+    "cpu-time",
+    "link",
     "list",
     "table",
     "navigation",
