@@ -264,7 +264,14 @@ impl<V: View, H: HookList> View for Hooks<V, H> {
     }
 
     fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
-        backend.scoped(self.hooks, self.content, env, cx)
+        #[cfg(feature = "erased-dispatch")]
+        {
+            backend.scoped(self.hooks, AnyView::new(self.content), env, cx)
+        }
+        #[cfg(not(feature = "erased-dispatch"))]
+        {
+            backend.scoped(self.hooks, self.content, env, cx)
+        }
     }
 }
 
