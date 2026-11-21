@@ -2831,8 +2831,7 @@ mod tests {
         let ops = shared
             .borrow_mut()
             .take_changes(crate::Instant::now())
-            .map(|changes| changes.ops)
-            .unwrap_or_default();
+            .map_or_default(|changes| changes.ops);
         assert!(
             matches!(
                 ops.as_slice(),
@@ -3216,8 +3215,7 @@ mod tests {
         let ops = shared
             .borrow_mut()
             .take_changes(crate::Instant::now())
-            .map(|changes| changes.ops)
-            .unwrap_or_default();
+            .map_or_default(|changes| changes.ops);
         assert!(
             ops.iter().any(|op| matches!(
                 op,
@@ -3408,8 +3406,7 @@ mod tests {
         let ops = shared
             .borrow_mut()
             .take_changes(crate::Instant::now())
-            .map(|changes| changes.ops)
-            .unwrap_or_default();
+            .map_or_default(|changes| changes.ops);
         assert!(
             ops.iter().any(|op| matches!(
                 op,
