@@ -148,13 +148,24 @@ pub trait ViewSequence: 'static {
     }
 }
 
+fn slot_from_view<S: ChildSlot, V: View>(view: V) -> S {
+    #[cfg(feature = "erased-dispatch")]
+    {
+        S::from_view(AnyView::new(view))
+    }
+    #[cfg(not(feature = "erased-dispatch"))]
+    {
+        S::from_view(view)
+    }
+}
+
 impl<V: View> ViewSequence for Vec<V> {
     fn len(&self) -> usize {
         self.len()
     }
 
     fn push_slots<S: ChildSlot>(self, slots: &mut Vec<S>) {
-        slots.extend(self.into_iter().map(S::from_view));
+        slots.extend(self.into_iter().map(slot_from_view));
     }
 }
 
@@ -164,7 +175,7 @@ impl<V: View, const N: usize> ViewSequence for [V; N] {
     }
 
     fn push_slots<S: ChildSlot>(self, slots: &mut Vec<S>) {
-        slots.extend(self.into_iter().map(S::from_view));
+        slots.extend(self.into_iter().map(slot_from_view));
     }
 }
 
@@ -185,7 +196,7 @@ macro_rules! impl_tuple_views {
                 // single-child container would hold the tuple itself instead
                 // of the view inside it.
                 let ($($ty,)*) = self;
-                $(slots.push(S::from_view($ty));)*
+                $(slots.push(slot_from_view($ty));)*
             }
         }
     };

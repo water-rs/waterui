@@ -11,6 +11,10 @@ keywords = ["layout", "ui", "components", "flexbox"]
 categories = ["gui"]
 
 
+[features]
+# Build strategy propagated from `waterui/erased-dispatch`.
+erased-dispatch = ["waterui-core/erased-dispatch"]
+
 [dependencies]
 waterui-core.workspace = true
 waterui-contract.workspace = true

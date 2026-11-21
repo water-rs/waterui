@@ -13,6 +13,8 @@ use core::any::Any;
 use core::any::type_name;
 use core::fmt;
 
+#[cfg(feature = "erased-dispatch")]
+use crate::AnyView;
 use crate::backend::{Backend, ChildSlot};
 use crate::{Environment, View};
 
@@ -63,7 +65,18 @@ impl<T: MetadataKey, C: View> View for Metadata<T, C> {
 
     /// Reaches the backend with the content in the backend's child slot.
     fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
-        backend.metadata(self.map_content(B::Slot::from_view), env, cx)
+        #[cfg(feature = "erased-dispatch")]
+        {
+            backend.metadata(
+                self.map_content(|content| B::Slot::from_view(AnyView::new(content))),
+                env,
+                cx,
+            )
+        }
+        #[cfg(not(feature = "erased-dispatch"))]
+        {
+            backend.metadata(self.map_content(B::Slot::from_view), env, cx)
+        }
     }
 }
 
