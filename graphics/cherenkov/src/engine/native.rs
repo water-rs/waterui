@@ -126,11 +126,10 @@ impl<B: Backend> Engine<B> {
         // dropping the future releases it, which posts Shutdown and
         // detaches the worker — it exits after its ordered shutdown
         // without the caller's thread joining it.
-        let guard = InitGuard::<B> {
-            tx: Some(spawn.tx.clone()),
-            thread: spawn.thread.take(),
-            _engine: PhantomData,
-        };
+        let guard = core::mem::DropGuard::new(
+            (spawn.tx.clone(), spawn.thread.take()),
+            abandon_init::<B> as fn(InitDrop<B>),
+        );
         let result = spawn
             .init_rx
             .recv()
@@ -143,7 +142,8 @@ impl<B: Backend> Engine<B> {
                 return Err(error);
             }
         }?;
-        spawn.thread = guard.disarm();
+        let (_tx, thread) = core::mem::DropGuard::dismiss(guard);
+        spawn.thread = thread;
         Ok(Self::from_spawn(spawn, info, image_limits))
     }
 
@@ -457,16 +457,16 @@ impl<B: Backend> Engine<B> {
         target: impl Into<B::Target>,
         wake: impl Fn() + Send + Sync + 'static,
     ) -> Result<Surface<B>, SurfaceError> {
-        let (id, waker, rx, mut registration) = self.start_surface(target, wake)?;
+        let (id, waker, rx, registration) = self.start_surface(target, wake)?;
         let info = match rx.recv().await {
             Ok(Ok(info)) => info,
             Ok(Err(error)) => {
-                registration.disarm();
+                let _ = core::mem::DropGuard::dismiss(registration);
                 return Err(error);
             }
             Err(_) => return Err(SurfaceError::Lost),
         };
-        registration.disarm();
+        let _ = core::mem::DropGuard::dismiss(registration);
         Ok(self.finish_surface(id, info, waker))
     }
 
@@ -477,17 +477,16 @@ impl<B: Backend> Engine<B> {
         &self,
         target: impl Into<B::Target>,
         wake: impl Fn() + Send + Sync + 'static,
-    ) -> Result<SurfaceStart<B>, SurfaceError> {
+    ) -> Result<SurfaceStart, SurfaceError> {
         let id = SurfaceId::new(Self::alloc(&self.next_surface));
         let waker = Arc::new(SurfaceWaker::new(wake));
         let (reply, rx) = crate::transport::reply();
         let tx = self.tx.clone();
-        let registration = Registration::<B> {
-            release: Some(Box::new(move || {
-                let _ = tx.send(Message::DestroySurface { id });
-            })),
-            _engine: PhantomData,
-        };
+        let release: Box<dyn FnOnce()> = Box::new(move || {
+            let _ = tx.send(Message::DestroySurface { id });
+        });
+        let registration =
+            core::mem::DropGuard::new(release, (|release| release()) as fn(Box<dyn FnOnce()>));
         self.tx
             .send(Message::CreateSurface {
                 id,
@@ -793,67 +792,35 @@ struct Spawn<B: Backend> {
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
-/// Owns the nascent connection during `new_async`'s init wait: a
-/// cancellation posts `Shutdown` and detaches the worker — it exits after
-/// its ordered shutdown without the caller's thread joining it. Success
-/// disarms; only then does the engine take over the channels.
-struct InitGuard<B: Backend> {
-    tx: Option<crossbeam_channel::Sender<Message<B>>>,
-    thread: Option<std::thread::JoinHandle<()>>,
-    _engine: PhantomData<B>,
+/// The connection an `InitGuard` guards: the worker's command sender and
+/// its thread handle.
+type InitDrop<B> = (
+    crossbeam_channel::Sender<Message<B>>,
+    Option<std::thread::JoinHandle<()>>,
+);
+
+/// `InitGuard`'s destructor: a cancellation posts `Shutdown` and drops the
+/// worker handle — it exits after its ordered shutdown without the
+/// caller's thread joining it.
+fn abandon_init<B: Backend>((tx, _thread): InitDrop<B>) {
+    let _ = tx.send(Message::Shutdown);
 }
 
-impl<B: Backend> InitGuard<B> {
-    /// `new_async`'s init resolved — the engine takes the worker handle;
-    /// disarming empties the guard, so its destructor posts nothing.
-    fn disarm(mut self) -> Option<std::thread::JoinHandle<()>> {
-        self.tx.take();
-        self.thread.take()
-    }
-}
-
-impl<B: Backend> Drop for InitGuard<B> {
-    fn drop(&mut self) {
-        if let Some(tx) = self.tx.take() {
-            let _ = tx.send(Message::Shutdown);
-        }
-        self.thread.take();
-    }
-}
+/// Guards a surface id from `CreateSurface`'s enqueue on: dropping the
+/// `surface_async` future still destroys what the worker committed —
+/// the same registration protocol the browser engine runs (#150).
+/// `DropGuard::dismiss` on a successful reply leaves destruction to the
+/// surface itself.
+type Registration = core::mem::DropGuard<Box<dyn FnOnce()>, fn(Box<dyn FnOnce()>)>;
 
 /// The shared surface start's pieces: the allocated id, its waker, the
 /// reply receiver and the guard that destroys the id on cancel.
-type SurfaceStart<B> = (
+type SurfaceStart = (
     SurfaceId,
     Arc<SurfaceWaker>,
     ReplyRx<Result<crate::backend::SurfaceInfo, SurfaceError>>,
-    Registration<B>,
+    Registration,
 );
-
-/// Owns a surface id from `CreateSurface`'s enqueue on: dropping the
-/// `surface_async` future still destroys what the worker committed —
-/// the same registration protocol the browser engine's `Registration`
-/// runs (#150).
-struct Registration<B: Backend> {
-    release: Option<Box<dyn FnOnce()>>,
-    _engine: PhantomData<B>,
-}
-
-impl<B: Backend> Registration<B> {
-    /// The worker replied and the registration survived — the id is the
-    /// surface's now, no destruction to post.
-    fn disarm(&mut self) {
-        self.release = None;
-    }
-}
-
-impl<B: Backend> Drop for Registration<B> {
-    fn drop(&mut self) {
-        if let Some(release) = self.release.take() {
-            release();
-        }
-    }
-}
 
 impl<B: Backend> Drop for Engine<B> {
     fn drop(&mut self) {
