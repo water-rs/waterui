@@ -77,6 +77,9 @@ pub fn compose_erased<T: HookableView>(
 /// The hooks one [`Hooks`] modifier installs: a single [`Hook`], or a tuple of
 /// up to eight. Earlier hooks are offered a payload first.
 pub trait HookList: Clone + 'static {
+    /// Target payload [`TypeId`]s of every hook in this list, known at compile time.
+    const TARGET_IDS: &'static [TypeId];
+
     /// Offers `payload` to each hook in order. The first hook that realizes
     /// it has its view dispatched through `backend`; when every hook declines,
     /// the payload and the context come back.
@@ -102,6 +105,8 @@ pub trait HookList: Clone + 'static {
 }
 
 impl HookList for () {
+    const TARGET_IDS: &'static [TypeId] = &[];
+
     fn offer<T: NativeView + 'static, B: Backend>(
         &self,
         payload: T,
@@ -124,6 +129,8 @@ impl HookList for () {
 }
 
 impl<H: Hook> HookList for H {
+    const TARGET_IDS: &'static [TypeId] = &[TypeId::of::<H::Target>()];
+
     fn offer<T: NativeView + 'static, B: Backend>(
         &self,
         payload: T,
@@ -165,6 +172,8 @@ impl<H: Hook> HookList for H {
 macro_rules! tuple_hook_lists {
     ($(($($hook:ident),+))+) => {$(
         impl<$($hook: Hook),+> HookList for ($($hook,)+) {
+            const TARGET_IDS: &'static [TypeId] = &[$(TypeId::of::<$hook::Target>()),+];
+
             #[allow(non_snake_case, reason = "the bindings are the tuple's type parameters")]
             fn offer<T: NativeView + 'static, B: Backend>(
                 &self,
@@ -278,11 +287,17 @@ impl<V: View, H: HookList> View for Hooks<V, H> {
 /// One erased hook list, matched at run time.
 trait ErasedHookList {
     fn offer_erased(&self, payload: &mut ErasedPayload<'_>, env: &Environment) -> Option<AnyView>;
+
+    fn targets_id(&self, target: TypeId) -> bool;
 }
 
 impl<H: HookList> ErasedHookList for H {
     fn offer_erased(&self, payload: &mut ErasedPayload<'_>, env: &Environment) -> Option<AnyView> {
         HookList::offer_erased(self, payload, env)
+    }
+
+    fn targets_id(&self, target: TypeId) -> bool {
+        H::TARGET_IDS.contains(&target)
     }
 }
 
@@ -340,6 +355,20 @@ impl ErasedHooks {
     #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.0.is_none()
+    }
+
+    /// Whether any installed erased hook targets `T`.
+    #[must_use]
+    pub fn targets_type<T: 'static>(&self) -> bool {
+        let target = TypeId::of::<T>();
+        let mut scope = self.0.as_deref();
+        while let Some(current) = scope {
+            if current.hooks.targets_id(target) {
+                return true;
+            }
+            scope = current.outer.0.as_deref();
+        }
+        false
     }
 
     fn depth(&self) -> usize {

@@ -30,7 +30,7 @@ use waterui_core::view::hook::{ComposeErased, ErasedHooks, HookList, HookableVie
 use waterui_core::{AnyView, Environment, Metadata, NativeView, View, contract_violation};
 
 use crate::child::{Child, ChildView, NativeBackendFamily};
-use crate::hooked::{Hooked, HookedFamily};
+use crate::hooked::{ErasedScope, Hooked, HookedFamily};
 
 /// Declares [`NativeBackend`] and both routers from one list, so the trait
 /// and the routing never disagree.
@@ -166,7 +166,7 @@ macro_rules! native_backend {
             /// own.
             fn scoped_erased(&mut self, hooks: &ErasedHooks, view: AnyView, env: &Environment, cx: Self::Ctx) -> Self::Output {
                 self.with_family(|backend| {
-                    let mut hooked = Hooked::new(
+                    let mut hooked = Hooked::with_scope(
                         <Self::Family as NativeBackendFamily>::reborrow(backend),
                         (),
                         ErasedHooks::new().nest(hooks),
@@ -190,10 +190,10 @@ macro_rules! native_backend {
             }
         }
 
-        impl<B: NativeBackend, H: HookList> NativeBackend for Hooked<B, H> {
+        impl<B: NativeBackend, H: HookList, E: ErasedScope> NativeBackend for Hooked<B, H, E> {
             type Output = B::Output;
             type Ctx = B::Ctx;
-            type Family = HookedFamily<B::Family, H>;
+            type Family = HookedFamily<B::Family, H, E>;
             #[cfg(waterui_feature = "webview")]
             type WebViewController = B::WebViewController;
             #[cfg(waterui_feature = "capture")]
@@ -207,7 +207,7 @@ macro_rules! native_backend {
                 // the inner backend as the inner family names that.
                 let (hooks, erased) = self.scope();
                 self.inner().with_family(|backend| {
-                    f(&mut Hooked::new(
+                    f(&mut Hooked::with_scope(
                         <B::Family as NativeBackendFamily>::reborrow(backend),
                         hooks,
                         erased,
@@ -747,11 +747,8 @@ impl<B: NativeBackend> Backend for Realize<'_, B> {
         cx: Self::Ctx,
     ) -> Self::Output {
         self.backend.with_family(|backend| {
-            let mut hooked = Hooked::new(
-                <B::Family as NativeBackendFamily>::reborrow(backend),
-                hooks,
-                ErasedHooks::new(),
-            );
+            let mut hooked =
+                Hooked::new(<B::Family as NativeBackendFamily>::reborrow(backend), hooks);
             Realize::child(&mut hooked, view, env, cx)
         })
     }
