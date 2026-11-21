@@ -211,7 +211,7 @@ use waterui_controls::button::ButtonConfig;
 #[cfg(feature = "accessibility")]
 use waterui_controls::input::ContentType;
 #[cfg(feature = "menu")]
-use waterui_controls::label::{ErasedLabel, Label as SemanticLabel};
+use waterui_controls::label::Label as SemanticLabel;
 #[cfg(feature = "menu")]
 use waterui_controls::menu::{CommandRole, ResolvedCommand, ResolvedMenu, ResolvedMenuItem};
 #[cfg(feature = "slider")]
@@ -222,6 +222,8 @@ use waterui_controls::stepper::StepperConfig;
 use waterui_controls::text_field::ResolvedTextFieldConfig;
 #[cfg(feature = "toggle")]
 use waterui_controls::toggle::ToggleConfig;
+#[cfg(any(feature = "menu", hydrolysis_video_plane, test))]
+use waterui_core::AnyView;
 use waterui_core::dynamic::DynamicInitialContent;
 #[cfg(any(feature = "menu", feature = "color-picker"))]
 use waterui_core::handler::ViewBuilder;
@@ -236,7 +238,7 @@ use waterui_core::layout::{
 };
 #[cfg(feature = "accessibility")]
 use waterui_core::metadata::MetadataKey;
-use waterui_core::{AnyView, Environment, Metadata, Retain, Str, View};
+use waterui_core::{Environment, Metadata, Retain, Str, View};
 #[cfg(feature = "picker")]
 use waterui_form::picker::PickerConfig;
 #[cfg(feature = "color-picker")]

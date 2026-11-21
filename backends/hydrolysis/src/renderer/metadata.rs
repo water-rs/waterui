@@ -941,7 +941,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 is_presented: value.is_presented.clone(),
                 placed_edge: value.placed_edge.clone(),
                 env: env.clone(),
-                builder: value.builder.clone(),
+                builder: Rc::clone(&value.builder),
                 presentations: Rc::clone(&value.presentations),
                 marker: Rc::clone(&value.marker),
             });
