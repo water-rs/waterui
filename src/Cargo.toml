@@ -243,6 +243,8 @@ canvas = []
 chart = ["dep:waterui-chart"]
 barcode = ["dep:waterui-barcode"]
 particle = ["dep:waterui-particle"]
+# Build strategy: erase views at generic dispatch boundaries.
+erased-dispatch = ["waterui-core/erased-dispatch", "waterui-layout/erased-dispatch"]
 # `ts` is deliberately absent: the TypeScript runtime will link a JavaScript
 # engine and a bundle loader, so an application that mounts TypeScript view
 # modules opts in explicitly rather than paying for them through the

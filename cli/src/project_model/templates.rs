@@ -3386,10 +3386,15 @@ mod tests {
         assert!(older.get("gpu").is_none(), "{older:?}");
         assert!(older.get("cpu").is_none(), "{older:?}");
         assert!(older.get("hwui").is_none(), "{older:?}");
+        assert!(older.get("erased-dispatch").is_none(), "{older:?}");
         assert!(older.contains_key("waterui-preview-mode"), "{older:?}");
 
         let mut current = super::FeatureTables::new();
-        declare("waterui", &["gpu", "cpu", "video"], &mut current);
+        declare(
+            "waterui",
+            &["gpu", "cpu", "video", "erased-dispatch"],
+            &mut current,
+        );
         declare("hydrolysis", &["gpu", "cpu", "hwui"], &mut current);
         let current = features(&current);
         let forwards = |name: &str| {
@@ -3405,6 +3410,7 @@ mod tests {
         assert_eq!(forwards("gpu"), ["hydrolysis/gpu", "waterui/gpu"]);
         assert_eq!(forwards("cpu"), ["hydrolysis/cpu", "waterui/cpu"]);
         assert_eq!(forwards("hwui"), ["hydrolysis/hwui"]);
+        assert_eq!(forwards("erased-dispatch"), ["waterui/erased-dispatch"]);
 
         // A facade without `gpu` keeps only the `hydrolysis` half.
         let mut partial = super::FeatureTables::new();
@@ -6463,6 +6469,12 @@ pub mod hydrolysis {
                 features.insert((*painter).to_string(), forwards);
             }
         }
+        if super::declares(painter_tables, "waterui", "erased-dispatch") {
+            features.insert(
+                "erased-dispatch".to_string(),
+                vec!["waterui/erased-dispatch".to_string()],
+            );
+        }
         Ok(GeneratedCargoManifest {
             package,
             lib,
@@ -7897,6 +7909,7 @@ fn find_workspace_manifest(
 /// keeps every one of them inside the locked graph.
 const FORWARDED_FEATURES: &[&str] = &[
     "chromium",
+    "erased-dispatch",
     "gpu",
     "inspector",
     "map",
@@ -7934,7 +7947,8 @@ const BACKEND_FEATURE_FORWARDS: &[(&str, &str, &str)] = &[
 /// gpu/media/video/webview capability surface the native Apple entry
 /// compiles; the Hydrolysis launcher's `gpu` and `cpu` painter features
 /// reach the facade through the same entry.
-const APPLE_RUNTIME_FEATURE_FORWARDS: &[&str] = &["gpu", "cpu", "media", "video", "webview"];
+const APPLE_RUNTIME_FEATURE_FORWARDS: &[&str] =
+    &["erased-dispatch", "gpu", "cpu", "media", "video", "webview"];
 
 /// The declaration `name` carries in `manifest`, wherever it lives:
 /// `[dependencies]` or a `[target.*.dependencies]` table. A generated

@@ -498,7 +498,18 @@ impl<C: View> View for ScrollView<C> {
 
     /// Reaches the backend with the content in the backend's child slot.
     fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
-        backend.native(self.map_content(B::Slot::from_view), env, cx)
+        #[cfg(feature = "erased-dispatch")]
+        {
+            backend.native(
+                self.map_content(|content| B::Slot::from_view(AnyView::new(content))),
+                env,
+                cx,
+            )
+        }
+        #[cfg(not(feature = "erased-dispatch"))]
+        {
+            backend.native(self.map_content(B::Slot::from_view), env, cx)
+        }
     }
 }
 
