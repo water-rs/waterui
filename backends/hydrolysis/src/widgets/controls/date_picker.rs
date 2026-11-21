@@ -1,6 +1,6 @@
-#[cfg(feature = "accessibility")]
-use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::chrome::{ChromeContent, LiveChromeParts};
+#[cfg(feature = "accessibility")]
+use crate::renderer::{AccessibilityActionTarget, SemanticCore};
 use crate::renderer::{
     HeldChild, HydroState, HydrolysisRenderer, RenderContext, RetainedSubview, WidgetRenderContext,
 };
@@ -157,8 +157,7 @@ pub fn date_picker_accessibility<E: crate::text::TextEngine, S>(
                     range,
                     ty,
                     open_popup: Rc::new(RefCell::new(
-                        move |renderer: &mut crate::renderer::SemanticCore<E>,
-                              env: &Environment| {
+                        move |renderer: &mut SemanticCore<E>, env: &Environment| {
                             let env = picker_env.layered_on(env);
                             match origin {
                                 Some(origin) => {

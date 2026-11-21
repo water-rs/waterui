@@ -1935,42 +1935,23 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         true
     }
 
-    #[allow(clippy::too_many_arguments)]
     #[cfg(feature = "menu")]
     pub(crate) fn register_context_menu_target(
         &mut self,
         bounds: kurbo::Rect,
-        items: nami::Computed<Vec<ResolvedMenuItem>>,
+        effect: &ContextMenuEffect<E>,
         env: &Environment,
-        dismiss_requests: nami::Computed<i32>,
-        preview: Rc<RefCell<Option<RetainedSubview<E>>>>,
-        accessory: Rc<RefCell<Option<RetainedSubview<E>>>>,
-        present: ContextMenuPresenter<E>,
     ) {
-        self.register_context_menu_target_data(
-            bounds,
-            items,
-            self.render_depth,
-            env,
-            dismiss_requests,
-            preview,
-            accessory,
-            present,
-        );
+        self.register_context_menu_target_data(bounds, effect, self.render_depth, env);
     }
 
-    #[allow(clippy::too_many_arguments)]
     #[cfg(feature = "menu")]
     pub(crate) fn register_context_menu_target_data(
         &mut self,
         bounds: kurbo::Rect,
-        items: nami::Computed<Vec<ResolvedMenuItem>>,
+        effect: &ContextMenuEffect<E>,
         depth: usize,
         env: &Environment,
-        dismiss_requests: nami::Computed<i32>,
-        preview: Rc<RefCell<Option<RetainedSubview<E>>>>,
-        accessory: Rc<RefCell<Option<RetainedSubview<E>>>>,
-        present: ContextMenuPresenter<E>,
     ) {
         self.register_retained(
             ContextMenuTarget {
@@ -1978,12 +1959,12 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 bounds,
                 depth,
                 order: 0,
-                items,
+                items: effect.items.clone(),
                 env: env.clone(),
-                dismiss_requests,
-                preview,
-                accessory,
-                present,
+                dismiss_requests: effect.dismiss_requests.clone(),
+                preview: Rc::clone(&effect.preview),
+                accessory: Rc::clone(&effect.accessory),
+                present: effect.present,
             },
             bounds,
             |regs| &mut regs.context_menu_targets,
