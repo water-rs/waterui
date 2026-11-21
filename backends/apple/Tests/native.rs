@@ -11778,7 +11778,7 @@ mod embedding {
     };
     use cocoa_ui::objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
     use cocoa_ui::{MainThreadMarker, Retained, view};
-    use waterui::app::{App, Windows};
+    use waterui::app::{App, AppMenuBar, Windows};
     use waterui::component::menu::{Command, Menu, MenuItem};
     use waterui::component::text::Text;
     use waterui::graphics::color::ColorScheme;
@@ -11800,7 +11800,7 @@ mod embedding {
     }
 
     impl Embed {
-        fn new<W: Windows, M: waterui::app::AppMenuBar>(
+        fn new<W: Windows, M: AppMenuBar>(
             host: &NSView,
             app: impl FnOnce(Environment) -> App<W, M>,
         ) -> Self {
@@ -11809,7 +11809,7 @@ mod embedding {
 
         /// `environment` is the scoped host snapshot a `SwiftUI` host would
         /// declare; `None` mounts under the ambient platform.
-        fn new_with_environment<W: Windows, M: waterui::app::AppMenuBar>(
+        fn new_with_environment<W: Windows, M: AppMenuBar>(
             host: &NSView,
             environment: Option<waterui_apple::embedding::HostEnvironment>,
             app: impl FnOnce(Environment) -> App<W, M>,

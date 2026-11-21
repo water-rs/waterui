@@ -4,6 +4,7 @@
 extern crate alloc;
 
 use waterui::Identifiable;
+use waterui::app::{App, AppMenuBar, Windows};
 use waterui::prelude::*;
 
 use waterui_icons_lucide as lucide;
@@ -717,7 +718,7 @@ pub fn components_block_17() {
     clippy::redundant_closure,
     reason = "the snippet is transcribed verbatim from the skill; rewriting it to satisfy the lint would defeat this crate's purpose"
 )]
-pub fn components_block_18(env: Environment) -> waterui::app::App<impl waterui::app::Windows> {
+pub fn components_block_18(env: Environment) -> App<impl Windows, impl AppMenuBar> {
     fn content() -> impl View {
         text("demo")
     }

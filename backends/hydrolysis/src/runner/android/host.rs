@@ -29,6 +29,8 @@ use jni::{jni_sig, jni_str};
 use nami::Signal;
 use ndk::looper::{FdEvent, ForeignLooper, ThreadLooper};
 use waterui::Environment;
+#[cfg(feature = "menu")]
+use waterui::app::AppMenuBar;
 use waterui::cursor::CursorStyle;
 use waterui::theme::ColorScheme;
 use waterui::window::WindowState;
@@ -1427,7 +1429,7 @@ fn session_mounts(
     install_platform_services(&mut env);
     install_window_registries::<super::AndroidTextEngine>(&mut env);
     #[cfg(feature = "menu")]
-    if let Some(menu_bar) = waterui::app::AppMenuBar::declared(&menu_bar) {
+    if let Some(menu_bar) = AppMenuBar::declared(&menu_bar) {
         menu_bar::register_menu_bar::<super::AndroidTextEngine>(menu_bar, &env);
     }
     #[cfg(any(feature = "text-field", feature = "secure-field"))]
