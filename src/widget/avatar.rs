@@ -16,7 +16,8 @@ use nami::signal::IntoComputed;
 use unicode_segmentation::UnicodeSegmentation as _;
 use waterui_accessibility::{AccessibilityChildren, AccessibilityRole};
 use waterui_controls::{IntoLabel, Label, SemanticLabel};
-use waterui_core::handler::{AnyViewBuilder, ViewBuilder};
+use waterui_core::OneOf2;
+use waterui_core::handler::ViewBuilder;
 #[cfg(feature = "media")]
 use waterui_layout::ContentMode;
 use waterui_layout::stack::zstack;
@@ -112,6 +113,47 @@ struct Ring {
     width: f32,
 }
 
+/// Default monogram fallback built from the avatar's name.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy)]
+pub struct Monogram;
+
+mod sealed {
+    pub trait Sealed {}
+}
+
+/// Fallback view builder used by [`Avatar`].
+#[doc(hidden)]
+pub trait AvatarFallback: sealed::Sealed + 'static {
+    /// Concrete view type built when the avatar has no picture yet.
+    type Output: View;
+
+    /// Builds the fallback view for the resolved spoken name and inner box side.
+    fn build_fallback(self, spoken: Computed<Str>, inner: f32) -> Self::Output;
+}
+
+impl sealed::Sealed for Monogram {}
+
+impl AvatarFallback for Monogram {
+    type Output = Text;
+
+    fn build_fallback(self, spoken: Computed<Str>, inner: f32) -> Self::Output {
+        Text::new(spoken.map(|name| initials(&name)).computed())
+            .size(f64::from(inner * INITIALS_SCALE))
+            .color(Color::new(MutedForeground))
+    }
+}
+
+impl<F: ViewBuilder> sealed::Sealed for F {}
+
+impl<F: ViewBuilder> AvatarFallback for F {
+    type Output = F::Output;
+
+    fn build_fallback(self, _spoken: Computed<Str>, _inner: f32) -> Self::Output {
+        self.build()
+    }
+}
+
 /// A small portrait of a person or an entity.
 ///
 /// The avatar always carries the name it stands for: assistive technology
@@ -143,9 +185,9 @@ struct Ring {
 /// # }
 /// ```
 #[derive(Debug)]
-pub struct Avatar {
+pub struct Avatar<F = Monogram> {
     label: Label<SemanticLabel>,
-    fallback: Option<AnyViewBuilder<AnyView>>,
+    fallback: F,
     #[cfg(feature = "media")]
     image: Option<Computed<Url>>,
     shape: CapturedShape,
@@ -154,7 +196,7 @@ pub struct Avatar {
     color_space: ColorSpace,
 }
 
-impl Avatar {
+impl<F: ViewBuilder> Avatar<F> {
     /// An avatar named `name` that shows `fallback` when it has no image.
     ///
     /// This is the general constructor: `fallback` is any view — a monogram of
@@ -175,15 +217,14 @@ impl Avatar {
     /// # }
     /// ```
     #[must_use]
-    pub fn new(name: impl IntoLabel, fallback: impl ViewBuilder) -> Self {
-        Self::with_fallback(
-            name,
-            Some(AnyViewBuilder::new(move || AnyView::new(fallback.build()))),
-        )
+    pub fn new(name: impl IntoLabel, fallback: F) -> Self {
+        Self::with_fallback(name, fallback)
     }
+}
 
-    /// The shared constructor: `None` means "derive a monogram from the name".
-    fn with_fallback(name: impl IntoLabel, fallback: Option<AnyViewBuilder<AnyView>>) -> Self {
+impl<F> Avatar<F> {
+    /// The shared constructor: [`Monogram`] means "derive a monogram from the name".
+    fn with_fallback(name: impl IntoLabel, fallback: F) -> Self {
         Self {
             label: name.into_label().into_semantic(),
             fallback,
@@ -268,7 +309,7 @@ impl Avatar {
     }
 }
 
-impl View for Avatar {
+impl<F: AvatarFallback> View for Avatar<F> {
     fn body(self, env: &Environment) -> impl View {
         let Self {
             label,
@@ -290,27 +331,16 @@ impl View for Avatar {
         let ring_width = ring.as_ref().map_or(0.0, |ring| ring.width);
         let inner = f32::mul_add(ring_width, -2.0, size).max(0.0);
 
-        let fallback = fallback.map_or_else(
-            || {
-                AnyView::new(
-                    Text::new(spoken.map(|name| initials(&name)).computed())
-                        .size(f64::from(inner * INITIALS_SCALE))
-                        .color(Color::new(MutedForeground)),
-                )
-            },
-            |fallback| fallback.build(),
-        );
+        let fallback = fallback.build_fallback(spoken.clone(), inner);
 
         #[cfg(feature = "media")]
         let picture = image.map(|source| {
-            AnyView::new(
-                Photo::new(source)
-                    .resizable()
-                    .content_mode(ContentMode::Fill),
-            )
+            Photo::new(source)
+                .resizable()
+                .content_mode(ContentMode::Fill)
         });
         #[cfg(not(feature = "media"))]
-        let picture: Option<AnyView> = None;
+        let picture = ();
 
         let content = zstack((fallback, picture))
             .size(inner, inner)
@@ -318,10 +348,10 @@ impl View for Avatar {
             .clip(shape.clone());
 
         let framed = match ring {
-            Some(ring) => AnyView::new(content.padding_with(ring_width).border_with(
+            Some(ring) => OneOf2::A(content.padding_with(ring_width).border_with(
                 Border::new(ring.color, ring.width).corner_radius(shape.corner_radius(size)),
             )),
-            None => AnyView::new(content),
+            None => OneOf2::B(content),
         };
 
         framed
@@ -350,7 +380,7 @@ impl View for Avatar {
 /// ```
 #[must_use]
 pub fn avatar(name: impl IntoLabel) -> Avatar {
-    Avatar::with_fallback(name, None)
+    Avatar::with_fallback(name, Monogram)
 }
 
 /// The monogram shown for `name` when an avatar has no picture.

@@ -32,10 +32,11 @@ use waterui::navigation::{
 use waterui::theme::color::{Background, Surface};
 use waterui_controls::label::LabelDisplayMode;
 use waterui_controls::text_field::TextField;
+use waterui_core::backend::ChildSlot as _;
 use waterui_core::contract_violation;
 use waterui_core::id::Id;
 use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
-use waterui_core::{AnyView, Environment, Metadata, Native};
+use waterui_core::{AnyView, Environment, Metadata, Native, View};
 use waterui_graphics::color::Color;
 use waterui_interaction::interaction::InteractionState;
 
@@ -244,10 +245,10 @@ pub fn toolbar_item_env(env: &Environment) -> Environment {
 /// `content` scoped to [`toolbar_item_env`]: the scope reaches every
 /// environment snapshot inside the content as its [`SnapshotDefaults`], so
 /// build, measure and render all see one scope.
-pub fn toolbar_item_view(content: AnyView, env: &Environment) -> AnyView {
+pub fn toolbar_item_view<V: View>(content: V, env: &Environment) -> impl View + use<V> {
     let mut scoped = toolbar_item_env(env);
     scoped.insert(SnapshotDefaults(toolbar_item_env));
-    AnyView::new(Metadata::new(content, scoped))
+    Metadata::new(content, scoped)
 }
 
 impl<E: crate::text::TextEngine> NavigationViewRenderState<E> {
@@ -271,8 +272,11 @@ impl<E: crate::text::TextEngine> NavigationViewRenderState<E> {
         let mut trailing = Vec::new();
         let mut bottom = Vec::new();
         for item in toolbar.take_items() {
-            let (placement, content, ..) = item.into_parts();
-            let retained = RetainedSubview::new(toolbar_item_view(content, env));
+            let (placement, content, _, _, item_env) = item.into_parts();
+            let retained = RetainedSubview::held(HeldChild::from_view(toolbar_item_view(
+                content,
+                item_env.as_ref().unwrap_or(env),
+            )));
             match placement {
                 NavigationToolbarPlacement::Principal => principal.push(retained),
                 NavigationToolbarPlacement::Cancellation
@@ -296,8 +300,8 @@ impl<E: crate::text::TextEngine> NavigationViewRenderState<E> {
             ))
         });
         Self {
-            title: RetainedSubview::new(title),
-            subtitle: RetainedSubview::new(subtitle),
+            title: RetainedSubview::held(HeldChild::from_view(title)),
+            subtitle: RetainedSubview::held(HeldChild::from_view(subtitle)),
             principal,
             leading,
             trailing,

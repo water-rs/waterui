@@ -5,8 +5,8 @@ use waterui_core::handler::{
     BoxedEventAction, EventHandler, ReportExtraction, boxed_event_handler,
 };
 use waterui_core::{
-    AnyView, Binding, Computed, Dynamic, Environment, Metadata, SerialDispatch, Signal, SignalExt,
-    View, reactive::signal::IntoComputed,
+    Binding, Computed, Dynamic, Environment, Metadata, SerialDispatch, Signal, SignalExt, View,
+    reactive::signal::IntoComputed,
 };
 use waterui_interaction::gesture::{GestureObserver, LongPressGesture};
 use waterui_layout::overlay;
@@ -131,15 +131,13 @@ impl View for LivePhoto {
         let report = LivePhotoReporter::new(self.on_event, env.clone());
         let report_on_press = report.clone();
         let motion = Dynamic::watch(is_playing, move |is_playing_now| {
-            if is_playing_now {
-                AnyView::new(live_photo_video(
+            is_playing_now.then(|| {
+                live_photo_video(
                     motion_source.snapshot(),
                     playback_state.clone(),
                     report.clone(),
-                ))
-            } else {
-                AnyView::new(())
-            }
+                )
+            })
         });
 
         Metadata::new(

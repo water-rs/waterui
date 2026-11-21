@@ -99,8 +99,8 @@ impl BarState {
     /// resolved (`resolve_native_fields` runs in `NavigationView::body`), so
     /// every view renders against `ctx`'s environment directly.
     pub fn new(bar: &mut Bar, ctx: &RenderContext<'_>) -> Self {
-        let title = bar_title(&mut bar.title, ctx);
-        let subtitle = bar_title(&mut bar.subtitle, ctx);
+        let title = bar_title(bar.title.take(), ctx);
+        let subtitle = bar_title(bar.subtitle.take(), ctx);
         let items = bar
             .toolbar
             .take_items()
@@ -203,8 +203,8 @@ impl BarState {
 
 /// A title rendered and read back — the view plus the text its leaf's
 /// labels carry.
-fn bar_title(view: &mut waterui_backend_core::AnyView, ctx: &RenderContext<'_>) -> BarTitle {
-    let leaf = ctx.render(core::mem::take(view));
+fn bar_title(view: Option<waterui::text::Text>, ctx: &RenderContext<'_>) -> BarTitle {
+    let leaf = ctx.render(view);
     let text = extract_title_text(leaf.view());
     BarTitle { leaf, text }
 }
@@ -218,17 +218,8 @@ fn bar_title(view: &mut waterui_backend_core::AnyView, ctx: &RenderContext<'_>) 
 /// ([`ToolbarChrome`](crate::toolbar_chrome::ToolbarChrome)), so the item's
 /// button styles resolve the way the platform's toolbar draws them.
 fn bar_item(item: NavigationToolbarItem, ctx: &RenderContext<'_>) -> BarItem {
-    let toolbar_env = toolbar_environment(ctx.env());
-    let (placement, content, title, icon) = item.into_parts();
-    let content = match content
-        .downcast::<waterui_core::Metadata<Environment, waterui_backend_core::AnyView>>()
-    {
-        Ok(mut metadata) => {
-            metadata.value = toolbar_environment(&metadata.value);
-            waterui_backend_core::AnyView::new(*metadata)
-        }
-        Err(content) => content,
-    };
+    let (placement, content, title, icon, item_env) = item.into_parts();
+    let toolbar_env = toolbar_environment(item_env.as_ref().unwrap_or_else(|| ctx.env()));
     let ctx = ctx.with_env(&toolbar_env);
 
     let leaf = ctx.render(content);

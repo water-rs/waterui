@@ -17,7 +17,7 @@ use native_executor::sleep;
 use suiteki::Str;
 use tree_sitter::{InputEdit, Parser, Point, Tree};
 use waterui_core::{
-    AnyView, Metadata, Retain, SerialDispatch, View,
+    Metadata, Retain, SerialDispatch, View,
     animation::Animation,
     dynamic::{Dynamic, DynamicHandler},
     id::Identifiable,
@@ -440,8 +440,10 @@ struct FlowBlockRender {
     config: FlowMarkdownConfig,
 }
 
+type FlowBlockView = VStack<(Vec<RichTextElement>,)>;
+
 impl FlowBlockRender {
-    fn view(self) -> AnyView {
+    fn view(self) -> FlowBlockView {
         let mut remaining = self.remaining;
         build_flow_block_view(
             &self.block,
@@ -457,7 +459,7 @@ struct FlowBlockContent(Rc<RefCell<FlowBlockContentState>>);
 
 struct FlowBlockContentState {
     current: FlowBlockRender,
-    subscribers: HashMap<u64, DynamicHandler<AnyView>>,
+    subscribers: HashMap<u64, DynamicHandler<FlowBlockView>>,
     next_subscriber_identity: u64,
 }
 
@@ -1542,7 +1544,7 @@ fn build_flow_block_view(
     remaining: &mut usize,
     enforce_budget: bool,
     config: &FlowMarkdownConfig,
-) -> AnyView {
+) -> FlowBlockView {
     let mut views = Vec::new();
     if enforce_budget && has_typewriter_policy_for_kind(block.kind, config) {
         for element in &block.elements {
@@ -1550,20 +1552,14 @@ fn build_flow_block_view(
                 break;
             }
             if let Some(truncated) = truncate_rich_text_element(element, remaining) {
-                push_rich_text_element_view(&mut views, truncated);
+                views.push(truncated);
             }
         }
     } else {
-        for element in &block.elements {
-            push_rich_text_element_view(&mut views, element.clone());
-        }
+        views.extend(block.elements.iter().cloned());
     }
 
-    AnyView::new(VStack::from_iter(views).alignment(HorizontalAlignment::Leading))
-}
-
-fn push_rich_text_element_view(views: &mut Vec<AnyView>, element: RichTextElement) {
-    views.push(AnyView::new(element));
+    VStack::from_iter(views).alignment(HorizontalAlignment::Leading)
 }
 
 fn has_typewriter_policy_for_kind(kind: FlowElementKind, config: &FlowMarkdownConfig) -> bool {
