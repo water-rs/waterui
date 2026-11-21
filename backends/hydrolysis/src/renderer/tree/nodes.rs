@@ -1203,6 +1203,10 @@ pub struct ContextMenuEffect<E: crate::text::TextEngine> {
     /// The interactive view anchored to the lifted preview, mounted outside
     /// the menu so its own pointer, touch and keyboard input reaches it.
     pub(crate) accessory: Rc<RefCell<Option<RetainedSubview<E>>>>,
+    /// Popup presenter registered by `NativeBackend::context_menu`, keeping
+    /// `show_context_menu` / `popup_menu_window` unreachable unless a context
+    /// menu is actually constructed.
+    pub(crate) present: crate::renderer::ContextMenuPresenter<E>,
 }
 
 /// The node-owned state of a lifecycle hook (see [`WrapperEffect::LifeCycle`]).

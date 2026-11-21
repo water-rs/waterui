@@ -910,6 +910,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             value.dismiss_requests.clone(),
             Rc::clone(&value.preview),
             Rc::clone(&value.accessory),
+            value.present,
         );
         render_content(renderer);
     }

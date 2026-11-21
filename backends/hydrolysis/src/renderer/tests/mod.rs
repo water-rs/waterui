@@ -793,6 +793,7 @@ fn text_input_target(
         model,
         selection,
         env: test_environment(),
+        show_context_menu: HydrolysisRenderer::<crate::text::ParleyEngine>::show_text_context_menu,
         key_handlers: None,
         focus_binding: None,
         #[cfg(feature = "accessibility")]

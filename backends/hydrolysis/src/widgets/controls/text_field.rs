@@ -567,6 +567,7 @@ pub fn render_text_field_parts<E: crate::text::TextEngine>(
                 model: input_model,
                 selection: selection_slot,
                 env: env.clone(),
+                show_context_menu: crate::renderer::HydrolysisRenderer::<E>::show_text_context_menu,
             });
     }
 }
@@ -837,6 +838,7 @@ pub fn render_secure_field_parts<E: crate::text::TextEngine>(
                 model: input_model,
                 selection: selection_slot,
                 env: env.clone(),
+                show_context_menu: crate::renderer::HydrolysisRenderer::<E>::show_text_context_menu,
             });
     }
 }
@@ -1306,6 +1308,7 @@ pub fn emit_text_field_accessibility<E: crate::text::TextEngine>(
                 },
                 selection: Rc::clone(&state.selection_slot),
                 env: env.clone(),
+                show_context_menu: crate::renderer::HydrolysisRenderer::<E>::show_text_context_menu,
             });
         }
     }
@@ -1409,6 +1412,7 @@ pub fn emit_secure_field_accessibility<E: crate::text::TextEngine>(
                 },
                 selection: Rc::clone(&state.selection_slot),
                 env: env.clone(),
+                show_context_menu: crate::renderer::HydrolysisRenderer::<E>::show_text_context_menu,
             });
         }
     }

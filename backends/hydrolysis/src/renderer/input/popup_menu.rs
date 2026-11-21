@@ -117,6 +117,16 @@ pub fn window_in_opening_environment<C: ViewBuilder, T>(
 }
 
 #[cfg(feature = "menu")]
+pub type ContextMenuPresenter<E> = fn(
+    &mut HydrolysisRenderer<E>,
+    Vec<PopupMenuNode>,
+    Option<&ContextMenuTarget<E>>,
+    LayoutPoint,
+    &Environment,
+    bool,
+) -> bool;
+
+#[cfg(feature = "menu")]
 pub struct ContextMenuTarget<E: crate::text::TextEngine> {
     pub(crate) bounds: kurbo::Rect,
     /// The node cell that registered the target.
@@ -137,6 +147,8 @@ pub struct ContextMenuTarget<E: crate::text::TextEngine> {
     /// The interactive accessory the owning node lends the open presentation
     /// to anchor to the lifted preview. Returned to the slot on close.
     pub accessory: Rc<RefCell<Option<RetainedSubview<E>>>>,
+    /// Popup presenter attached by `NativeBackend::context_menu`.
+    pub(crate) present: ContextMenuPresenter<E>,
 }
 
 #[derive(Clone)]
@@ -1923,6 +1935,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         true
     }
 
+    #[allow(clippy::too_many_arguments)]
     #[cfg(feature = "menu")]
     pub(crate) fn register_context_menu_target(
         &mut self,
@@ -1932,6 +1945,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         dismiss_requests: nami::Computed<i32>,
         preview: Rc<RefCell<Option<RetainedSubview<E>>>>,
         accessory: Rc<RefCell<Option<RetainedSubview<E>>>>,
+        present: ContextMenuPresenter<E>,
     ) {
         self.register_context_menu_target_data(
             bounds,
@@ -1941,6 +1955,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             dismiss_requests,
             preview,
             accessory,
+            present,
         );
     }
 
@@ -1955,6 +1970,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         dismiss_requests: nami::Computed<i32>,
         preview: Rc<RefCell<Option<RetainedSubview<E>>>>,
         accessory: Rc<RefCell<Option<RetainedSubview<E>>>>,
+        present: ContextMenuPresenter<E>,
     ) {
         self.register_retained(
             ContextMenuTarget {
@@ -1967,6 +1983,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 dismiss_requests,
                 preview,
                 accessory,
+                present,
             },
             bounds,
             |regs| &mut regs.context_menu_targets,
@@ -2008,6 +2025,7 @@ impl<E: crate::text::TextEngine> Clone for ContextMenuTarget<E> {
             dismiss_requests: self.dismiss_requests.clone(),
             preview: self.preview.clone(),
             accessory: self.accessory.clone(),
+            present: self.present,
         }
     }
 }
