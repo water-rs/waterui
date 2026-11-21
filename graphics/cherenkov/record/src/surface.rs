@@ -3239,14 +3239,14 @@ mod tests {
         struct PanicGuardSignal;
         impl Signal for PanicGuardSignal {
             type Output = Rect;
-            type Guard = nami_core::watcher::OnDrop<fn()>;
+            type Guard = core::mem::DropGuard<(), fn(())>;
 
             fn snapshot(&self) -> Rect {
                 Rect::new(0.0, 0.0, 1.0, 1.0)
             }
 
             fn watch(&self, _: impl Fn(Context<Rect>) + 'static) -> Self::Guard {
-                nami_core::watcher::OnDrop::new(guard_panics)
+                core::mem::DropGuard::new((), (|()| guard_panics()) as fn(()))
             }
         }
 
