@@ -237,6 +237,10 @@ flow-markdown = [
 # sign in prose stays a dollar sign, exactly as it does today.
 markdown-math = ["flow-markdown", "waterui-markdown?/math"]
 std = ["dep:waterkit-haptic"]
+# In-tree offscreen view capture (`CaptureHandle`, `CaptureScope`, `ViewExt::capture`)
+# and `NativeBackend::offscreen` wiring. Opt-in so `route_metadata_dyn` does not pull
+# the offscreen renderer into binaries that never capture views from inside the tree.
+capture = []
 # `waterui::canvas`: the target-neutral drawing API, `waterui_graphics::canvas`.
 # It costs no dependency; the feature only exposes the re-export.
 canvas = []
@@ -269,6 +273,7 @@ all = [
     "text-field",
     "toggle",
     "validation",
+    "capture",
     "canvas",
     "chart",
     "barcode",

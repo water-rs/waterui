@@ -765,6 +765,7 @@ pub struct SemanticCore<E: crate::text::TextEngine> {
     #[cfg(hydrolysis_android_system_webview)]
     android_webview: crate::widgets::platform::webview::AndroidSystemWebViewController,
     /// Offscreen renderer vended by [`HydroBackend::offscreen`](crate::renderer::tree::build::backend::HydroBackend).
+    #[cfg(waterui_feature = "capture")]
     offscreen: crate::view_renderer::HydrolysisOffscreenRenderer,
 }
 
@@ -1108,25 +1109,26 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             #[cfg(hydrolysis_android_system_webview)]
             android_webview:
                 crate::widgets::platform::webview::AndroidSystemWebViewController::default(),
+            #[cfg(waterui_feature = "capture")]
             offscreen: crate::view_renderer::HydrolysisOffscreenRenderer::unavailable(
                 "hydrolysis semantic core has no widget theme or painter for offscreen capture",
             ),
         }
     }
 
-    #[cfg(hydrolysis_cherenkov)]
+    #[cfg(all(waterui_feature = "capture", hydrolysis_cherenkov))]
     pub(crate) fn offscreen_renderer(&self) -> crate::view_renderer::HydrolysisOffscreenRenderer {
         self.offscreen.clone_for_dispatch()
     }
 
-    #[cfg(not(hydrolysis_cherenkov))]
+    #[cfg(all(waterui_feature = "capture", not(hydrolysis_cherenkov)))]
     pub(crate) const fn offscreen_renderer(
         &self,
     ) -> crate::view_renderer::HydrolysisOffscreenRenderer {
         self.offscreen.clone_for_dispatch()
     }
 
-    #[cfg(hydrolysis_cherenkov)]
+    #[cfg(all(waterui_feature = "capture", hydrolysis_cherenkov))]
     pub(crate) fn set_offscreen_renderer(
         &mut self,
         offscreen: crate::view_renderer::HydrolysisOffscreenRenderer,
@@ -2146,10 +2148,17 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
         fonts: &waterui_text::FontCollection,
         family_resolution: FontFamilyResolution,
     ) -> Self {
+        #[cfg(waterui_feature = "capture")]
         let mut renderer = Self::with_engine(
             theme,
             crate::text::ParleyEngine::from_collection(fonts, family_resolution),
         );
+        #[cfg(not(waterui_feature = "capture"))]
+        let renderer = Self::with_engine(
+            theme,
+            crate::text::ParleyEngine::from_collection(fonts, family_resolution),
+        );
+        #[cfg(waterui_feature = "capture")]
         renderer
             .core
             .offscreen
@@ -2157,7 +2166,11 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
         renderer
     }
 
-    #[cfg(all(not(target_arch = "wasm32"), hydrolysis_cherenkov))]
+    #[cfg(all(
+        waterui_feature = "capture",
+        not(target_arch = "wasm32"),
+        hydrolysis_cherenkov
+    ))]
     pub(crate) fn set_offscreen_painter(
         &mut self,
         painter: &crate::platform::OffscreenPainter,
@@ -2319,11 +2332,11 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         let frame_instant = Instant::now();
         let mut material_registry = cherenkov_record::MaterialRegistry::default();
         theme.register_backdrop_shaders(&mut material_registry);
-        #[cfg(hydrolysis_cherenkov)]
+        #[cfg(all(waterui_feature = "capture", hydrolysis_cherenkov))]
         let mut core = SemanticCore::new(frame_instant, text);
-        #[cfg(not(hydrolysis_cherenkov))]
+        #[cfg(not(all(waterui_feature = "capture", hydrolysis_cherenkov)))]
         let core = SemanticCore::new(frame_instant, text);
-        #[cfg(hydrolysis_cherenkov)]
+        #[cfg(all(waterui_feature = "capture", hydrolysis_cherenkov))]
         core.set_offscreen_renderer(crate::view_renderer::HydrolysisOffscreenRenderer::new(
             Rc::clone(&theme),
             FontFamilyResolution::Lenient,

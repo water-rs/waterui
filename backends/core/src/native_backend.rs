@@ -15,10 +15,13 @@
 //! come back through the same routing, by `TypeId` at run time.
 
 use alloc::boxed::Box;
+#[cfg(waterui_feature = "capture")]
 use alloc::rc::Rc;
 use core::any::Any;
 
+#[cfg(waterui_feature = "capture")]
 use waterui::OffscreenRenderer;
+#[cfg(waterui_feature = "capture")]
 use waterui::view_renderer::CaptureBinder;
 
 use waterui_core::backend::{Backend, DynBackend, ErasedPayload, MapSlots, cast};
@@ -66,6 +69,7 @@ macro_rules! native_backend {
             type WebViewController: waterui::webview::WebViewController;
 
             /// The backend's offscreen view-to-RGBA renderer.
+            #[cfg(waterui_feature = "capture")]
             type Offscreen: OffscreenRenderer;
 
             /// Runs `f` on this backend as its family names it. Every
@@ -81,10 +85,12 @@ macro_rules! native_backend {
             fn web_view_controller(&self) -> Self::WebViewController;
 
             /// Creates an offscreen renderer configured from `env`.
+            #[cfg(waterui_feature = "capture")]
             fn offscreen(&self, env: &Environment) -> Self::Offscreen;
 
             /// Wires a [`CaptureBinder`] to [`Self::offscreen`] and realizes
             /// its wrapped content.
+            #[cfg(waterui_feature = "capture")]
             #[doc(hidden)]
             fn capture_binder<S: ChildView<Self>, C: ChildView<Self>>(
                 &mut self,
@@ -190,6 +196,7 @@ macro_rules! native_backend {
             type Family = HookedFamily<B::Family, H>;
             #[cfg(waterui_feature = "webview")]
             type WebViewController = B::WebViewController;
+            #[cfg(waterui_feature = "capture")]
             type Offscreen = B::Offscreen;
 
             fn with_family<R>(
@@ -213,10 +220,12 @@ macro_rules! native_backend {
                 self.inner_ref().web_view_controller()
             }
 
+            #[cfg(waterui_feature = "capture")]
             fn offscreen(&self, env: &Environment) -> Self::Offscreen {
                 self.inner_ref().offscreen(env)
             }
 
+            #[cfg(waterui_feature = "capture")]
             fn capture_binder<S: ChildView<Self>, C: ChildView<Self>>(
                 &mut self,
                 metadata: Metadata<CaptureBinder<S>, C>,
@@ -371,6 +380,7 @@ macro_rules! native_backend {
                 $(#[cfg($pcfg)])*
                 let (native, cx) = native;
             )*
+            #[cfg(waterui_feature = "capture")]
             let native = match cast::<T, SlotNative<B::Family>>(native) {
                 Ok(slot) => return slot.0.realize(backend, env, cx),
                 Err(native) => native,
@@ -421,6 +431,7 @@ macro_rules! native_backend {
                 $(#[cfg($pmcfg)])*
                 let (metadata, cx) = metadata;
             )*
+            #[cfg(waterui_feature = "capture")]
             let (metadata, cx) = {
                 fn route_capture<B: NativeBackend, C: ChildView<B>, K: MetadataKey>(
                     backend: &mut B,
@@ -479,6 +490,7 @@ macro_rules! native_backend {
                     }
                 }
             )*
+            #[cfg(waterui_feature = "capture")]
             if let Some(slot) = native.take::<SlotNative<B::Family>>() {
                 return slot.0.realize(backend, env, cx);
             }
@@ -523,9 +535,11 @@ macro_rules! native_backend {
                     }
                 }
             )*
+            #[cfg(waterui_feature = "capture")]
             if let Some(metadata) = metadata.take::<Metadata<CaptureBinder<Child<B::Family>>, Child<B::Family>>>() {
                 return backend.capture_binder(metadata, env, cx);
             }
+            #[cfg(waterui_feature = "capture")]
             if let Some(metadata) = metadata.take::<Metadata<CaptureBinder<AnyView>, AnyView>>() {
                 return backend.capture_binder(metadata, env, cx);
             }
@@ -551,6 +565,7 @@ macro_rules! native_backend {
             type Family = Self;
             #[cfg(waterui_feature = "webview")]
             type WebViewController = waterui::webview::UnavailableWebViewController;
+            #[cfg(waterui_feature = "capture")]
             type Offscreen = tests::RecorderOffscreen;
 
             fn with_family<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
@@ -562,6 +577,7 @@ macro_rules! native_backend {
                 waterui::webview::UnavailableWebViewController
             }
 
+            #[cfg(waterui_feature = "capture")]
             fn offscreen(&self, _env: &Environment) -> Self::Offscreen {
                 tests::RecorderOffscreen(self.clone())
             }
@@ -628,13 +644,17 @@ pub fn report_unprovided(backend: &str, payload: &str) {
 
 /// Native payload carrying a backend's held child slot into
 /// [`NativeBackend::offscreen`].
+#[cfg(waterui_feature = "capture")]
 struct SlotNative<F: NativeBackendFamily>(Child<F>);
 
+#[cfg(waterui_feature = "capture")]
 impl<F: NativeBackendFamily> NativeView for SlotNative<F> {}
 
 /// View adapter realizing a [`Child`] slot through [`OffscreenRenderer::render_to_rgba`].
+#[cfg(waterui_feature = "capture")]
 struct SlotView<F: NativeBackendFamily>(Child<F>);
 
+#[cfg(waterui_feature = "capture")]
 impl<F: NativeBackendFamily> View for SlotView<F> {
     fn body(self, _env: &Environment) -> impl View {
         waterui_core::Native::new(SlotNative(self.0))
@@ -1064,8 +1084,10 @@ mod tests {
         pub(super) reached: alloc::rc::Rc<core::cell::RefCell<Vec<&'static str>>>,
     }
 
+    #[cfg(waterui_feature = "capture")]
     pub(super) struct RecorderOffscreen(pub(super) Recorder);
 
+    #[cfg(waterui_feature = "capture")]
     impl OffscreenRenderer for RecorderOffscreen {
         fn render_to_rgba<V: View>(
             &self,
@@ -2033,6 +2055,7 @@ mod tests {
         assert_eq!(*seen_override.borrow(), 0);
     }
 
+    #[cfg(waterui_feature = "capture")]
     #[test]
     fn capture_handle_wires_typed_offscreen_renderer_and_reenters_hooks() {
         use core::future::Future;
@@ -2101,5 +2124,49 @@ mod tests {
 
         assert_eq!(reached(GpuView::new(ProbeContent)), ["gpu"]);
         assert_eq!(reached(AnyView::new(GpuView::new(ProbeContent))), ["gpu"]);
+    }
+
+    #[cfg(not(waterui_feature = "capture"))]
+    #[test]
+    fn capture_binder_is_not_routed_without_capture_feature() {
+        use waterui::view_renderer::CaptureHandle;
+
+        let handle = CaptureHandle::<Spacer>::new();
+        let scope = handle.attach(Spacer::flexible());
+        let env = Environment::new();
+
+        let mut static_recorder = Recorder::default();
+        Realize::child(&mut static_recorder, scope, &env, ());
+        assert!(!handle.is_wired());
+        #[cfg(not(feature = "erased-dispatch"))]
+        assert_eq!(
+            static_recorder.reached.borrow().first().copied(),
+            Some(core::any::type_name::<
+                waterui::view_renderer::CaptureBinder<Child<Recorder>>,
+            >())
+        );
+        #[cfg(feature = "erased-dispatch")]
+        assert_eq!(
+            static_recorder.reached.borrow().as_slice(),
+            [core::any::type_name::<
+                Metadata<waterui::view_renderer::CaptureBinder<AnyView>, AnyView>,
+            >()]
+        );
+
+        let erased_handle = CaptureHandle::<Spacer>::new();
+        let mut erased_recorder = Recorder::default();
+        Realize::child(
+            &mut erased_recorder,
+            AnyView::new(erased_handle.attach(Spacer::flexible())),
+            &env,
+            (),
+        );
+        assert!(!erased_handle.is_wired());
+        assert_eq!(
+            erased_recorder.reached.borrow().as_slice(),
+            [core::any::type_name::<
+                Metadata<waterui::view_renderer::CaptureBinder<AnyView>, AnyView>,
+            >()]
+        );
     }
 }

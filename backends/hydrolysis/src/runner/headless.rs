@@ -836,6 +836,7 @@ impl HeadlessRuntime {
             Rc::clone(&theme),
             ParleyEngine::from_collection(&fonts, family_resolution),
         );
+        #[cfg(waterui_feature = "capture")]
         renderer.set_offscreen_painter(&painter, family_resolution);
         renderer.set_window_id(
             env.get::<crate::renderer::WindowIdentities>()
@@ -893,6 +894,7 @@ impl HeadlessRuntime {
             Rc::clone(&self.theme),
             ParleyEngine::from_collection(&self.fonts, self.family_resolution),
         );
+        #[cfg(waterui_feature = "capture")]
         renderer.set_offscreen_painter(&self.painter, self.family_resolution);
         renderer.set_window_id(
             self.env

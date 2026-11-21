@@ -74,6 +74,7 @@ impl NativeBackend for AppleBackend {
     type Family = Self;
     #[cfg(waterui_feature = "webview")]
     type WebViewController = crate::components::webview::SelectedWebViewController;
+    #[cfg(waterui_feature = "capture")]
     type Offscreen = crate::components::view_renderer::AppleOffscreenRenderer;
 
     fn with_family<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
@@ -85,6 +86,7 @@ impl NativeBackend for AppleBackend {
         crate::components::webview::selected_controller()
     }
 
+    #[cfg(waterui_feature = "capture")]
     fn offscreen(&self, _env: &Environment) -> Self::Offscreen {
         crate::components::view_renderer::AppleOffscreenRenderer::new(self.mtm)
     }
@@ -1080,8 +1082,8 @@ impl NativeBackend for AppleBackend {
     }
 
     // `AppleView<T>` and `SfSymbol` are components `waterui-apple` provides outside
-    // `NativeBackend`; every other payload outside `NativeBackend` is a
-    // contract violation.
+    // `NativeBackend` via `NativeView::realize_provided` against `AppleProvidedSlot`;
+    // every other payload outside `NativeBackend` is a contract violation.
 
     fn provided<T: NativeView + 'static>(
         &mut self,
@@ -1089,9 +1091,6 @@ impl NativeBackend for AppleBackend {
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
-        if let Some(&symbol) = (&native as &dyn core::any::Any).downcast_ref::<crate::SfSymbol>() {
-            return crate::components::image::realize_sf_symbol(symbol, &self.entry(env));
-        }
         let _ = self.entry(env);
         let mut slot = crate::apple_content::AppleProvidedSlot {
             mtm: self.mtm,
@@ -1112,9 +1111,6 @@ impl NativeBackend for AppleBackend {
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
-        if let Some(symbol) = native.take::<crate::SfSymbol>() {
-            return crate::components::image::realize_sf_symbol(symbol, &self.entry(env));
-        }
         let _ = self.entry(env);
         let mut slot = crate::apple_content::AppleProvidedSlot {
             mtm: self.mtm,

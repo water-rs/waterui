@@ -107,6 +107,7 @@ pub mod toggle;
 pub mod transition;
 #[cfg(any(feature = "video", feature = "video_player"))]
 pub mod video;
+#[cfg(any(waterui_feature = "capture", feature = "native-test"))]
 pub mod view_renderer;
 #[cfg(any(feature = "webview", all(target_os = "macos", feature = "webview-cef")))]
 pub mod webview;

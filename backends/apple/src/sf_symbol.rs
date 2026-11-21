@@ -1,16 +1,18 @@
 //! Type-safe Apple SF Symbols provided directly by `waterui-apple`.
 //!
 //! [`SfSymbol`] is realized natively through the Apple backend's
-//! backend-provided component path (`AppleBackend::provided` /
-//! `provided_dyn`), never through `AppleView` / `AppleContent` or a
-//! cross-platform `SystemIcon` fallback. Every symbol in Apple's catalog is
-//! exposed as an associated constant gated on the build's Apple deployment
-//! target so nonexistent or too-new symbols fail to compile.
+//! backend-provided component path (`NativeView::realize_provided` via
+//! `AppleBackend::provided` / `provided_dyn`), never through `AppleView` /
+//! `AppleContent` or a cross-platform `SystemIcon` fallback. Every symbol in
+//! Apple's catalog is exposed as an associated constant gated on the build's
+//! Apple deployment target so nonexistent or too-new symbols fail to compile.
 
 use alloc::string::String;
+use core::any::Any;
 use core::fmt;
 
-use waterui_core::{impl_constant, raw_view};
+use waterui_core::layout::StretchAxis;
+use waterui_core::{Environment, Native, NativeView, View, impl_constant};
 
 #[path = "sf_symbol_catalog.rs"]
 mod catalog;
@@ -71,7 +73,28 @@ impl From<SfSymbol> for String {
     }
 }
 
-raw_view!(SfSymbol);
+impl NativeView for SfSymbol {
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::None
+    }
+
+    fn realize_provided(self, context: &mut dyn Any, env: &Environment) -> Result<(), Self> {
+        if let Some(slot) = context.downcast_mut::<crate::apple_content::AppleProvidedSlot>() {
+            slot.leaf = Some(crate::components::image::realize_sf_symbol(
+                self, env, slot.mtm,
+            ));
+            return Ok(());
+        }
+        Err(self)
+    }
+}
+
+impl View for SfSymbol {
+    fn body(self, _env: &Environment) -> impl View {
+        Native::new(self)
+    }
+}
+
 impl_constant!(SfSymbol);
 
 #[cfg(test)]
@@ -104,5 +127,22 @@ mod tests {
             assert!(cfg!(sf_symbol_release = "2019"));
             assert!(cfg!(sf_symbol_release = "2025"));
         }
+    }
+
+    #[test]
+    fn realize_provided_declines_non_apple_slots_on_static_and_erased_paths() {
+        use waterui_core::backend::ErasedPayload;
+
+        let env = Environment::new();
+        let mut foreign = 0_u8;
+        assert_eq!(
+            SfSymbol::HOUSE.realize_provided(&mut foreign, &env),
+            Err(SfSymbol::HOUSE)
+        );
+
+        let mut slot = Some(SfSymbol::STAR_FILL);
+        let mut payload = ErasedPayload::new_native(&mut slot);
+        assert!(!payload.realize_provided(&mut foreign, &env));
+        assert_eq!(payload.take::<SfSymbol>(), Some(SfSymbol::STAR_FILL));
     }
 }

@@ -32,9 +32,9 @@ mod platform {
     pub(super) use cocoa_ui::uikit::colors;
 }
 
-use crate::contract::RenderContext;
-use cocoa_ui::PlatformView;
+use cocoa_ui::{MainThreadMarker, PlatformView};
 use platform::ImageView;
+use waterui_core::Environment;
 
 /// The image view as its platform view, for the leaf and layout helpers.
 fn as_view(image: &ImageView) -> &PlatformView {
@@ -139,8 +139,7 @@ impl SubView for ImageSubView {
 /// The SF Symbol realization: [`SfSymbol`] maps to a kit image view drawing
 /// the typed `SF Symbol`, tinted by the theme foreground and sized by the theme
 /// body font.
-pub fn realize_sf_symbol(symbol: SfSymbol, ctx: &RenderContext<'_>) -> NativeLeaf {
-    let mtm = ctx.mtm();
+pub fn realize_sf_symbol(symbol: SfSymbol, env: &Environment, mtm: MainThreadMarker) -> NativeLeaf {
     let view = ImageView::new(mtm);
     view.set_scale_mode(cocoa_ui::ScaleMode::Fit);
 
@@ -158,13 +157,13 @@ pub fn realize_sf_symbol(symbol: SfSymbol, ctx: &RenderContext<'_>) -> NativeLea
     // re-renders it at the themed type size — both push imperatively,
     // exactly as the Swift leaf's two observations did. Watchers only
     // fire on change, so the current values are applied eagerly.
-    let foreground = Foreground.resolve(ctx.env());
+    let foreground = Foreground.resolve(env);
     view.set_tint_color(Some(&platform_color(&foreground.snapshot())));
     leaf.bind(&foreground, {
         let view = view.clone();
         move |color| view.set_tint_color(Some(&platform_color(&color)))
     });
-    let body = Body.resolve(ctx.env());
+    let body = Body.resolve(env);
     apply_symbol_font(mtm, &view, &body.snapshot());
     leaf.bind(&body, move |font| apply_symbol_font(mtm, &view, &font));
     leaf
