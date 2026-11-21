@@ -112,12 +112,20 @@ def test_a_change_to_the_msrv_check_runs_it():
 
 
 def test_apple_crates_are_dropped_from_linux_package_args():
-    assert LINUX_EXCLUDED == {"waterui-apple", "cocoa-ui"}
+    assert LINUX_EXCLUDED == {"waterui-apple", "cocoa-ui", "liquid-glass-example"}
     assert (
-        linux_package_args(["cocoa-ui", "waterui-apple", "waterui-core", "waterui"])
+        linux_package_args(
+            [
+                "cocoa-ui",
+                "liquid-glass-example",
+                "waterui-apple",
+                "waterui-core",
+                "waterui",
+            ]
+        )
         == "-p waterui-core -p waterui"
     )
-    assert linux_package_args(["waterui-apple"]) == ""
+    assert linux_package_args(["waterui-apple", "liquid-glass-example"]) == ""
     assert linux_package_args([]) == ""
 
 
