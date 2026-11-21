@@ -12,7 +12,7 @@ use std::{
 
 use waterui::{
     Environment,
-    app::{App, Windows},
+    app::{App, AppMenuBar, Windows},
     reactive::Binding,
 };
 use waterui_core::layout::{LayoutDirection, ProposalSize};
@@ -309,13 +309,13 @@ pub unsafe extern "C" fn waterui_apple_runtime_drop(runtime: *mut c_void) {
 /// An app that declares no root window is a contract violation: nothing is
 /// mounted and the result is null, which every other entry point accepts as
 /// a mount with no content.
-pub unsafe fn mount<W: Windows>(
+pub unsafe fn mount<W: Windows, M: AppMenuBar>(
     runtime: *const c_void,
     host: *mut c_void,
     assets: *const c_char,
     fonts: *const c_char,
     host_environment: Option<HostEnvironment>,
-    app: impl FnOnce(Environment) -> App<W>,
+    app: impl FnOnce(Environment) -> App<W, M>,
 ) -> *mut c_void {
     let mtm = MainThreadMarker::new().expect("mount runs on the main thread");
     // SAFETY: the runtime and host are borrowed live objects under the caller contract.

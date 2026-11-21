@@ -10,7 +10,7 @@ use hydrolysis::{
     AccessibilityActivationPointError, FontFamilyResolution, HeadlessRuntime, KeyCode, Modifiers,
     PainterUnavailable, PointerKind, SemanticRuntime, Style,
 };
-use waterui::app::{App, AppParts, WindowSink, Windows};
+use waterui::app::{App, AppMenuBar, AppParts, WindowSink, Windows};
 use waterui::window::{Window, WindowChannel, WindowToolbar};
 use waterui::{ContentLedger, Plugin, ViewExt as _};
 use waterui_core::handler::{AnyViewBuilder, ViewBuilder};
@@ -75,7 +75,7 @@ pub fn ui() -> UiBuilder {
 /// Panics if the app declares no window, or if the initial Hydrolysis
 /// offscreen frame does not produce an accessibility tree.
 #[must_use]
-pub fn mount_app<W: Windows>(app: App<W>, style: impl Style) -> OffscreenApp {
+pub fn mount_app<W: Windows, M: AppMenuBar>(app: App<W, M>, style: impl Style) -> OffscreenApp {
     ui().theme(style)
         .mount_first_window(app, Viewport::FromWindow)
 }
@@ -447,12 +447,16 @@ impl<S: Style> UiBuilder<Styled<S>> {
     /// initial Hydrolysis offscreen frame does not produce an accessibility
     /// tree.
     #[must_use]
-    pub fn mount_app<W: Windows>(self, app: App<W>) -> OffscreenApp {
+    pub fn mount_app<W: Windows, M: AppMenuBar>(self, app: App<W, M>) -> OffscreenApp {
         self.mount_first_window(app, Viewport::Configured)
     }
 
     /// Mounts `app`'s first window, see [`Self::mount_app`].
-    fn mount_first_window<W: Windows>(self, app: App<W>, viewport: Viewport) -> OffscreenApp {
+    fn mount_first_window<W: Windows, M: AppMenuBar>(
+        self,
+        app: App<W, M>,
+        viewport: Viewport,
+    ) -> OffscreenApp {
         let AppParts {
             windows,
             env: app_env,

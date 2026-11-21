@@ -11800,16 +11800,19 @@ mod embedding {
     }
 
     impl Embed {
-        fn new<W: Windows>(host: &NSView, app: impl FnOnce(Environment) -> App<W>) -> Self {
+        fn new<W: Windows, M: waterui::app::AppMenuBar>(
+            host: &NSView,
+            app: impl FnOnce(Environment) -> App<W, M>,
+        ) -> Self {
             Self::new_with_environment(host, None, app)
         }
 
         /// `environment` is the scoped host snapshot a `SwiftUI` host would
         /// declare; `None` mounts under the ambient platform.
-        fn new_with_environment<W: Windows>(
+        fn new_with_environment<W: Windows, M: waterui::app::AppMenuBar>(
             host: &NSView,
             environment: Option<waterui_apple::embedding::HostEnvironment>,
-            app: impl FnOnce(Environment) -> App<W>,
+            app: impl FnOnce(Environment) -> App<W, M>,
         ) -> Self {
             let runtime = Box::new(waterui_apple::embedding::Runtime::for_test());
             // SAFETY: `_runtime` keeps the runtime box alive past the mount's

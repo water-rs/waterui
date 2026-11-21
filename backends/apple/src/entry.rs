@@ -1,7 +1,7 @@
 //! Native application startup. GPU setup completes on the main executor
 //! before services, application declarations, and windows are realized.
 
-use waterui::app::{App, Windows};
+use waterui::app::{App, AppMenuBar, Windows};
 use waterui_backend_core::Environment;
 
 /// Runs `app` on `env`, which the caller's `configure_environment!` already
@@ -16,8 +16,8 @@ use waterui_backend_core::Environment;
 /// is lent to native services for the rest of the process, so the
 /// caller's frame must live that long — this function does not return, which
 /// is what guarantees it.
-pub unsafe fn run<W: Windows>(
-    app: impl FnOnce(Environment) -> App<W> + 'static,
+pub unsafe fn run<W: Windows, M: AppMenuBar>(
+    app: impl FnOnce(Environment) -> App<W, M> + 'static,
     env: &mut Environment,
     accessory: bool,
 ) -> ! {
@@ -50,7 +50,7 @@ mod imp {
     use cocoa_ui::appkit::{
         ActivationPolicy, Application, ApplicationHandlers, ColorSchemeObservation, TerminateReply,
     };
-    use waterui::app::{App, Windows};
+    use waterui::app::{App, AppMenuBar, Windows};
     use waterui_backend_core::Environment;
 
     use crate::termination::Session;
@@ -72,7 +72,11 @@ mod imp {
 
     /// GPU preparation has installed native services; `app(env)` now declares
     /// its windows under the native window manager.
-    unsafe extern "C" fn prepared<F: FnOnce(Environment) -> App<W>, W: Windows>(
+    unsafe extern "C" fn prepared<
+        F: FnOnce(Environment) -> App<W, M>,
+        W: Windows,
+        M: AppMenuBar,
+    >(
         context: *mut c_void,
     ) {
         let mtm = MainThreadMarker::new().expect("GPU completion runs on the main thread");
@@ -110,7 +114,9 @@ mod imp {
         // environment `app` returned, exactly as windows do. The guard lives
         // for the process.
         #[cfg(waterui_feature = "menu")]
-        if let Some(menu_bar) = &parts.menu_bar {
+        if M::HAS_DECLARED
+            && let Some(menu_bar) = parts.menu_bar.declared()
+        {
             core::mem::forget(crate::menus::install_declared(
                 mtm,
                 &Application::shared(mtm),
@@ -133,7 +139,7 @@ mod imp {
         core::mem::forget(launch);
     }
 
-    pub fn launch<W: Windows, F: FnOnce(Environment) -> App<W> + 'static>(
+    pub fn launch<W: Windows, M: AppMenuBar, F: FnOnce(Environment) -> App<W, M> + 'static>(
         app: F,
         env: &mut Environment,
         accessory: bool,
@@ -180,7 +186,7 @@ mod imp {
                     // this handler runs once — and `env` is `run`'s borrow, lent
                     // for the process.
                     unsafe {
-                        prepared::<F, W>(Box::into_raw(launch).cast::<c_void>());
+                        prepared::<F, W, M>(Box::into_raw(launch).cast::<c_void>());
                     }
                 };
                 #[cfg(feature = "gpu_surface")]
@@ -224,7 +230,7 @@ mod imp {
 
     use cocoa_ui::MainThreadMarker;
     use cocoa_ui::uikit::{self, ApplicationHandlers};
-    use waterui::app::{App, Windows};
+    use waterui::app::{App, AppMenuBar, Windows};
     use waterui::graphics::Color;
     use waterui::theme::color::Background;
     use waterui_backend_core::Environment;
@@ -244,7 +250,11 @@ mod imp {
 
     /// GPU completion: `app(env)` declares its windows, and each fills
     /// the scene already waiting for it — or queues for the next connection.
-    unsafe extern "C" fn prepared<F: FnOnce(Environment) -> App<W>, W: Windows>(
+    unsafe extern "C" fn prepared<
+        F: FnOnce(Environment) -> App<W, M>,
+        W: Windows,
+        M: AppMenuBar,
+    >(
         context: *mut c_void,
     ) {
         let mtm = MainThreadMarker::new().expect("GPU completion runs on the main thread");
@@ -275,14 +285,16 @@ mod imp {
         // build handler once `app(env)` declares them; apps without a menu bar
         // leave the system menu alone and never reach menu icon rendering.
         #[cfg(waterui_feature = "menu")]
-        if let Some(menu_bar) = &parts.menu_bar {
+        if M::HAS_DECLARED
+            && let Some(menu_bar) = parts.menu_bar.declared()
+        {
             core::mem::forget(crate::menus::install_declared(mtm, menu_bar, &app_env));
         }
         crate::windows::declare(&launch.scenes.state, initial, &app_env, 0, mtm);
         core::mem::forget(launch);
     }
 
-    pub fn launch<W: Windows, F: FnOnce(Environment) -> App<W> + 'static>(
+    pub fn launch<W: Windows, M: AppMenuBar, F: FnOnce(Environment) -> App<W, M> + 'static>(
         app: F,
         env: &mut Environment,
         _accessory: bool,
@@ -330,7 +342,7 @@ mod imp {
                 // SAFETY: `launch` is consumed by `prepared` exactly once, and
                 // `env` is `run`'s borrow, lent for the process.
                 unsafe {
-                    prepared::<F, W>(Box::into_raw(launch).cast::<c_void>());
+                    prepared::<F, W, M>(Box::into_raw(launch).cast::<c_void>());
                 }
             };
             #[cfg(feature = "gpu_surface")]

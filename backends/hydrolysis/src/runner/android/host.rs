@@ -1408,6 +1408,8 @@ fn session_mounts(
         windows,
         #[cfg(feature = "menu")]
         menu_bar,
+        #[cfg(not(feature = "menu"))]
+            menu_bar: _,
         env,
         // A phone activity already embodies both policies: when the last
         // window asks to close the host finishes the activity, and the OS
@@ -1425,7 +1427,7 @@ fn session_mounts(
     install_platform_services(&mut env);
     install_window_registries::<super::AndroidTextEngine>(&mut env);
     #[cfg(feature = "menu")]
-    if let Some(menu_bar) = &menu_bar {
+    if let Some(menu_bar) = waterui::app::AppMenuBar::declared(&menu_bar) {
         menu_bar::register_menu_bar::<super::AndroidTextEngine>(menu_bar, &env);
     }
     #[cfg(any(feature = "text-field", feature = "secure-field"))]

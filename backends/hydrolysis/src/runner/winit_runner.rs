@@ -21,7 +21,8 @@ use executor_core::{
 };
 use nami::Signal;
 use waterui::app::{
-    App, AppParts, LastWindowPolicy, TerminationHandle, TerminationHost, TerminationKind, Windows,
+    App, AppMenuBar, AppParts, LastWindowPolicy, TerminationHandle, TerminationHost,
+    TerminationKind, Windows,
 };
 use waterui::window::{Monitor, MonitorSelector, Window, WindowState};
 use waterui_core::Environment;
@@ -675,8 +676,8 @@ impl LocalExecutor for WinitMainThreadExecutor {
     clippy::too_many_lines,
     reason = "startup wires the event loop, the first windows and the executor in one ordered sequence; splitting it would obscure the setup order"
 )]
-pub fn run<W: Windows>(
-    app: App<W>,
+pub fn run<W: Windows, M: AppMenuBar>(
+    app: App<W, M>,
     style: impl crate::Style,
     inspector: Option<waterui::inspector::InspectorRuntime>,
 ) {
@@ -684,6 +685,8 @@ pub fn run<W: Windows>(
         windows,
         #[cfg(feature = "menu")]
         menu_bar,
+        #[cfg(not(feature = "menu"))]
+            menu_bar: _,
         env,
         last_window,
         termination,
@@ -871,17 +874,23 @@ pub fn run<W: Windows>(
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[cfg(feature = "menu")]
     let native_menu_bar = {
-        let items = menu_bar.as_ref().map_or_else(
-            || nami::Computed::constant(Vec::new()),
-            |menu_bar| {
-                super::menu_bar::register_menu_bar::<crate::text::ParleyEngine>(menu_bar, &env)
-            },
-        );
+        let items = if M::HAS_DECLARED {
+            menu_bar.declared().map_or_else(
+                || nami::Computed::constant(Vec::new()),
+                |menu_bar| {
+                    super::menu_bar::register_menu_bar::<crate::text::ParleyEngine>(menu_bar, &env)
+                },
+            )
+        } else {
+            nami::Computed::constant(Vec::new())
+        };
         crate::platform::native_menu_bar::NativeMenuBar::install(&items, &env)
     };
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     #[cfg(feature = "menu")]
-    if let Some(menu_bar) = &menu_bar {
+    if M::HAS_DECLARED
+        && let Some(menu_bar) = menu_bar.declared()
+    {
         super::menu_bar::register_menu_bar::<crate::text::ParleyEngine>(menu_bar, &env);
     }
     let mut runner = WinitRunner {

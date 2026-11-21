@@ -441,7 +441,7 @@ fn quit_menu(refuse_quit: &Binding<bool>) -> impl MenuBarView + use<> {
 
 /// Builds the menu example app: menu bar, toolbar and the quit-refusal window.
 #[must_use]
-pub fn app(env: Environment) -> App<impl Windows> {
+pub fn app(env: Environment) -> App<impl Windows, impl waterui::app::AppMenuBar> {
     let toolbar_status = Binding::container(String::from("No toolbar action yet"));
     let content_toolbar_status = toolbar_status.clone();
     let refuse_quit = Binding::bool(false);

@@ -447,7 +447,10 @@ mod tests {
     /// The app's end of the test: a `Termination` built through the real
     /// `App` hooks, started against `log`, and the environment it installed
     /// its `Quit` into.
-    fn start<W: Windows>(app: App<W>, log: &Log) -> (TerminationHandle, Environment) {
+    fn start<W: Windows, M: crate::runtime::app::AppMenuBar>(
+        app: App<W, M>,
+        log: &Log,
+    ) -> (TerminationHandle, Environment) {
         let mut env = Environment::new();
         let handle = app.into_parts().termination.start(&mut env, log.clone());
         (handle, env)
