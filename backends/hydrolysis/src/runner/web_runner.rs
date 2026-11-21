@@ -22,7 +22,7 @@ use nami::Signal;
 use serde::Deserialize;
 use wasm_bindgen::{JsCast, closure::Closure};
 use wasm_bindgen_futures::JsFuture;
-use waterui::app::{App, AppParts, Windows};
+use waterui::app::{App, AppMenuBar, AppParts, Windows};
 use waterui::window::WindowState;
 use waterui_core::{Environment, contract_violation};
 use web_sys::Response;
@@ -445,7 +445,7 @@ impl BrowserRunnerHandle {
     clippy::too_many_lines,
     reason = "the runner wires every browser subsystem once at startup; the length is the enumeration, not logic"
 )]
-pub fn run<W: Windows>(app: App<W>, style: impl crate::Style) {
+pub fn run<W: Windows, M: AppMenuBar>(app: App<W, M>, style: impl crate::Style) {
     wasm_bindgen_futures::spawn_local(async move {
         let schedule_frame_ref: ScheduleFrameSlot = Rc::new(RefCell::new(None));
         let browser_schedule = {
@@ -501,6 +501,8 @@ pub fn run<W: Windows>(app: App<W>, style: impl crate::Style) {
             windows,
             #[cfg(feature = "menu")]
             menu_bar,
+            #[cfg(not(feature = "menu"))]
+                menu_bar: _,
             env,
             last_window: _,
             termination: _,
@@ -543,7 +545,9 @@ pub fn run<W: Windows>(app: App<W>, style: impl crate::Style) {
         // A browser page cannot own the browser's menu bar, so the app menus
         // contribute their chords only — nothing renders.
         #[cfg(feature = "menu")]
-        if let Some(menu_bar) = &menu_bar {
+        if M::HAS_DECLARED
+            && let Some(menu_bar) = menu_bar.declared()
+        {
             super::menu_bar::register_menu_bar::<crate::text::ParleyEngine>(menu_bar, &env);
         }
         #[cfg(any(feature = "text-field", feature = "secure-field"))]

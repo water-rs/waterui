@@ -21,6 +21,87 @@ pub use crate::runtime::termination::{
     Quit, Termination, TerminationHandle, TerminationHost, TerminationKind,
 };
 
+/// Menu bar declaration carried by [`App`] and [`AppParts`].
+///
+/// [`NoMenuBar`] is the default so applications without `.menu_bar(...)`
+/// resolve [`Self::HAS_DECLARED`] as `false` at compile time, allowing
+/// backends to omit declared menu-bar installation without relying on
+/// cross-function inlining.
+pub trait AppMenuBar: 'static {
+    /// Whether this declaration type may carry application menus.
+    const HAS_DECLARED: bool;
+
+    /// Borrows the declared menu bar signal when [`Self::HAS_DECLARED`] is `true`.
+    #[cfg(feature = "menu")]
+    fn declared(&self) -> Option<&Computed<Vec<Menu<SemanticLabel>>>>;
+
+    /// Consumes this declaration into its menu bar signal when present.
+    #[cfg(feature = "menu")]
+    fn into_declared(self) -> Option<Computed<Vec<Menu<SemanticLabel>>>>;
+}
+
+/// Marker type for an [`App`] without a declared menu bar.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoMenuBar;
+
+impl AppMenuBar for NoMenuBar {
+    const HAS_DECLARED: bool = false;
+
+    #[cfg(feature = "menu")]
+    fn declared(&self) -> Option<&Computed<Vec<Menu<SemanticLabel>>>> {
+        None
+    }
+
+    #[cfg(feature = "menu")]
+    fn into_declared(self) -> Option<Computed<Vec<Menu<SemanticLabel>>>> {
+        None
+    }
+}
+
+/// Declared application menu bar attached via [`App::menu_bar`].
+#[cfg(feature = "menu")]
+#[derive(Debug, Clone)]
+pub struct DeclaredMenuBar(Computed<Vec<Menu<SemanticLabel>>>);
+
+#[cfg(feature = "menu")]
+impl DeclaredMenuBar {
+    /// Wraps a resolved menu bar signal.
+    #[must_use]
+    pub const fn new(menus: Computed<Vec<Menu<SemanticLabel>>>) -> Self {
+        Self(menus)
+    }
+}
+
+#[cfg(feature = "menu")]
+impl AppMenuBar for DeclaredMenuBar {
+    const HAS_DECLARED: bool = true;
+
+    fn declared(&self) -> Option<&Computed<Vec<Menu<SemanticLabel>>>> {
+        Some(&self.0)
+    }
+
+    fn into_declared(self) -> Option<Computed<Vec<Menu<SemanticLabel>>>> {
+        Some(self.0)
+    }
+}
+
+#[cfg(feature = "menu")]
+impl AppMenuBar for Option<DeclaredMenuBar> {
+    const HAS_DECLARED: bool = true;
+
+    fn declared(&self) -> Option<&Computed<Vec<Menu<SemanticLabel>>>> {
+        self.as_ref().map(|menus| &menus.0)
+    }
+
+    #[expect(
+        clippy::single_option_map,
+        reason = "trait implementation preserves the Option<DeclaredMenuBar> signature"
+    )]
+    fn into_declared(self) -> Option<Computed<Vec<Menu<SemanticLabel>>>> {
+        self.map(|menus| menus.0)
+    }
+}
+
 /// Represents a `WaterUI` application.
 ///
 /// An application declares zero or more windows. None of them is structurally
@@ -28,14 +109,13 @@ pub use crate::runtime::termination::{
 /// once the last one closes — or when there is none to begin with — is the
 /// application's [`LastWindowPolicy`].
 #[derive(Debug)]
-pub struct App<W> {
+pub struct App<W, M = NoMenuBar> {
     /// The windows opened at startup, in declaration order.
     windows: W,
     /// What the application does once it has no window left.
     last_window: LastWindowPolicy,
     /// Optional system menu bar menus.
-    #[cfg(feature = "menu")]
-    pub menu_bar: Option<Computed<Vec<Menu<SemanticLabel>>>>,
+    pub menu_bar: M,
     /// The application environment containing injected services. Values
     /// installed with [`App::state`] are layered over it when the runner
     /// takes the application apart with [`App::into_parts`].
@@ -216,12 +296,11 @@ tuple_windows!(A, B, C, D, E, F, G, H);
 
 /// An [`App`] taken apart for a runner, see [`App::into_parts`].
 #[derive(Debug)]
-pub struct AppParts<W> {
+pub struct AppParts<W, M = NoMenuBar> {
     /// The windows opened at startup, in declaration order; possibly none.
     pub windows: W,
     /// The application menu bar.
-    #[cfg(feature = "menu")]
-    pub menu_bar: Option<Computed<Vec<Menu<SemanticLabel>>>>,
+    pub menu_bar: M,
     /// The application environment, the composition root every window renders
     /// under.
     pub env: Environment,
@@ -233,14 +312,13 @@ pub struct AppParts<W> {
     pub termination: Termination,
 }
 
-impl<W> AppParts<W> {
+impl<W, M> AppParts<W, M> {
     /// The same parts with the windows replaced by `f(windows)`: a runner
     /// that stores the application turns its windows into the form it holds.
     #[inline]
-    pub fn map_windows<V>(self, f: impl FnOnce(W) -> V) -> AppParts<V> {
+    pub fn map_windows<V>(self, f: impl FnOnce(W) -> V) -> AppParts<V, M> {
         let Self {
             windows,
-            #[cfg(feature = "menu")]
             menu_bar,
             env,
             last_window,
@@ -248,8 +326,26 @@ impl<W> AppParts<W> {
         } = self;
         AppParts {
             windows: f(windows),
-            #[cfg(feature = "menu")]
             menu_bar,
+            env,
+            last_window,
+            termination,
+        }
+    }
+
+    /// The same parts with the menu bar replaced by `f(menu_bar)`.
+    #[inline]
+    pub fn map_menu_bar<N>(self, f: impl FnOnce(M) -> N) -> AppParts<W, N> {
+        let Self {
+            windows,
+            menu_bar,
+            env,
+            last_window,
+            termination,
+        } = self;
+        AppParts {
+            windows,
+            menu_bar: f(menu_bar),
             env,
             last_window,
             termination,
@@ -301,7 +397,7 @@ impl<B: ViewBuilder> App<Window<WindowContent<B>>> {
     }
 }
 
-impl<W: Windows> App<W> {
+impl<W: Windows> App<W, NoMenuBar> {
     /// Create an application with the given windows and environment.
     ///
     /// Any number of windows is valid, none included: an application with no
@@ -325,14 +421,15 @@ impl<W: Windows> App<W> {
         Self {
             windows,
             last_window: LastWindowPolicy::default(),
-            #[cfg(feature = "menu")]
-            menu_bar: None,
+            menu_bar: NoMenuBar,
             env,
             states: Environment::new(),
             termination: Termination::default(),
         }
     }
+}
 
+impl<W: Windows, M: AppMenuBar> App<W, M> {
     /// The windows opened at startup, in declaration order.
     #[must_use]
     pub const fn windows(&self) -> &W {
@@ -349,11 +446,10 @@ impl<W: Windows> App<W> {
     ///
     /// Use this for multi-window applications on platforms that support it.
     #[must_use]
-    pub fn window<N: Windows>(self, window: N) -> App<(W, N)> {
+    pub fn window<N: Windows>(self, window: N) -> App<(W, N), M> {
         let Self {
             windows,
             last_window,
-            #[cfg(feature = "menu")]
             menu_bar,
             env,
             states,
@@ -362,7 +458,6 @@ impl<W: Windows> App<W> {
         App {
             windows: (windows, window),
             last_window,
-            #[cfg(feature = "menu")]
             menu_bar,
             env,
             states,
@@ -394,9 +489,23 @@ impl<W: Windows> App<W> {
     #[inline]
     #[must_use]
     #[cfg(feature = "menu")]
-    pub fn menu_bar(mut self, menus: impl MenuBarView) -> Self {
-        self.menu_bar = Some(menus.into_menus());
-        self
+    pub fn menu_bar(self, menus: impl MenuBarView) -> App<W, DeclaredMenuBar> {
+        let Self {
+            windows,
+            last_window,
+            menu_bar: _,
+            env,
+            states,
+            termination,
+        } = self;
+        App {
+            windows,
+            last_window,
+            menu_bar: DeclaredMenuBar(menus.into_menus()),
+            env,
+            states,
+            termination,
+        }
     }
 
     /// Injects cloneable state into the application's environment.
@@ -413,12 +522,12 @@ impl<W: Windows> App<W> {
     ///
     /// ```
     /// # use waterui::prelude::*;
-    /// # use waterui::app::{App, Windows};
+    /// # use waterui::app::{App, AppMenuBar, Windows};
     /// #[waterui::state]
     /// #[derive(Clone)]
     /// struct Store;
     ///
-    /// fn app(env: Environment) -> App<impl Windows> {
+    /// fn app(env: Environment) -> App<impl Windows, impl AppMenuBar> {
     ///     App::new(|| text!("Counter"), env)
     ///         .state(&Store)
     ///         .menu_bar(Menu::new("App", "Quit".action(|_store: Store| {})))
@@ -525,23 +634,25 @@ impl<W: Windows> App<W> {
     /// environment a runner hands its menus carries the one decision.
     #[inline]
     #[must_use]
-    pub fn into_parts(self) -> AppParts<W> {
+    pub fn into_parts(self) -> AppParts<W, M> {
         let env = self.states.layered_on(&self.env);
         #[cfg(feature = "menu")]
         let env = {
             let mut env = env;
-            env.insert(
+            let chord = if M::HAS_DECLARED {
                 self.menu_bar
-                    .as_ref()
+                    .declared()
                     .map_or_else(CloseWindowChord::standard, |menu_bar| {
                         CloseWindowChord::new(menu_bar, &env)
-                    }),
-            );
+                    })
+            } else {
+                CloseWindowChord::standard()
+            };
+            env.insert(chord);
             env
         };
         AppParts {
             windows: self.windows,
-            #[cfg(feature = "menu")]
             menu_bar: self.menu_bar,
             env,
             last_window: self.last_window,
@@ -625,13 +736,13 @@ mod tests {
     /// Resolves `app`'s menu bar under the environment its runner receives
     /// and runs the first command of its first menu.
     #[cfg(feature = "menu")]
-    fn run_first_menu_bar_command<W: Windows>(app: App<W>) {
+    fn run_first_menu_bar_command<W: Windows, M: AppMenuBar>(app: App<W, M>) {
         use crate::component::menu::{ResolvedMenuItem, resolve_menu_bar_items};
 
         let parts = app.into_parts();
         let menu_bar = parts
             .menu_bar
-            .as_ref()
+            .declared()
             .expect("the test application must declare a menu bar");
         let bars = resolve_menu_bar_items(menu_bar, &parts.env).snapshot();
         let [ResolvedMenuItem::Menu(menu)] = bars.as_slice() else {

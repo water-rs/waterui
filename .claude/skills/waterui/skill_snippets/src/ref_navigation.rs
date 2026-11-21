@@ -1,7 +1,7 @@
 //! Snippets from `.claude/skills/waterui/references/navigation.md`, in file
 //! order. Transcription conventions are documented in the crate README.
 
-use waterui::app::{App, Windows};
+use waterui::app::{App, AppMenuBar, Windows};
 use waterui::prelude::*;
 use waterui::reactive::binding;
 use waterui_icons_material_icon as mdi;
@@ -686,15 +686,15 @@ pub fn navigation_block_15() -> impl View {
 // ---------------------------------------------------------------------------
 // navigation.md § "## Resident apps and windows on demand" — rust block 16/16
 // ---------------------------------------------------------------------------
-pub fn navigation_block_16(env: Environment) -> App<impl Windows> {
+pub fn navigation_block_16(env: Environment) -> App<impl Windows, impl AppMenuBar> {
     fn scratch_content() -> impl View {
         text("scratch")
     }
 
-    use waterui::app::{App, LastWindowPolicy, QuitReply, Windows};
+    use waterui::app::{App, AppMenuBar, LastWindowPolicy, QuitReply, Windows};
     use waterui::window::{Window, WindowManager, WindowState};
 
-    fn app(env: Environment) -> App<impl Windows> {
+    fn app(env: Environment) -> App<impl Windows, impl AppMenuBar> {
         let (windows, channel) = WindowManager::new();
         App::new_with_windows(channel, env)
             .on_last_window_closed(LastWindowPolicy::StayResident)

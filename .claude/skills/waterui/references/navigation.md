@@ -510,10 +510,10 @@ windows) so the runner monomorphizes `C` directly into its root window type, and
 handlers when `.state(&windows)` is attached:
 
 ```rust
-use waterui::app::{App, LastWindowPolicy, QuitReply, Windows};
+use waterui::app::{App, AppMenuBar, LastWindowPolicy, QuitReply, Windows};
 use waterui::window::{Window, WindowManager, WindowState};
 
-fn app(env: Environment) -> App<impl Windows> {
+fn app(env: Environment) -> App<impl Windows, impl AppMenuBar> {
     let (windows, channel) = WindowManager::new();
     App::new_with_windows(channel, env)
         .on_last_window_closed(LastWindowPolicy::StayResident)

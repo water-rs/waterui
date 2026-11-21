@@ -20,14 +20,14 @@ use std::cell::Cell;
 use std::collections::VecDeque;
 use std::time::Duration;
 use std::{cell::RefCell, rc::Rc};
-#[cfg(hydrolysis_run)]
-use waterui::app::App;
 #[cfg(all(
     not(target_arch = "wasm32"),
     not(hydrolysis_winit),
     not(target_os = "android")
 ))]
 use waterui::app::AppParts;
+#[cfg(hydrolysis_run)]
+use waterui::app::{App, AppMenuBar};
 use waterui::app::{WindowSink, Windows};
 use waterui::window::Window;
 use waterui_core::Environment;
@@ -409,8 +409,8 @@ fn exit_without_gpu(error: impl core::error::Error + Send + Sync + 'static) -> !
 ///
 /// # Panics
 /// Panics when the seeded environment lost its `MenuShortcutRegistry`.
-pub fn run<W: Windows>(
-    app: impl FnOnce(Environment) -> App<W>,
+pub fn run<W: Windows, M: AppMenuBar>(
+    app: impl FnOnce(Environment) -> App<W, M>,
     env: Environment,
     style: impl crate::Style,
 ) {
@@ -449,6 +449,8 @@ pub fn run<W: Windows>(
         windows,
         #[cfg(feature = "menu")]
         menu_bar,
+        #[cfg(not(feature = "menu"))]
+            menu_bar: _,
         env,
         last_window: _,
         termination: _,
@@ -464,7 +466,9 @@ pub fn run<W: Windows>(
     // App-level menu bar: arms its chords on the shared registry. The
     // headless host renders no chrome, so there is no surface to draw.
     #[cfg(feature = "menu")]
-    if let Some(menu_bar) = &menu_bar {
+    if M::HAS_DECLARED
+        && let Some(menu_bar) = menu_bar.declared()
+    {
         menu_bar::register_menu_bar::<crate::text::ParleyEngine>(menu_bar, &env);
     }
     #[cfg(any(feature = "text-field", feature = "secure-field"))]
@@ -531,8 +535,8 @@ pub fn run<W: Windows>(
 ///
 /// # Panics
 /// Propagates panics from `web_runner::run`.
-pub fn run<W: Windows>(
-    app: impl FnOnce(Environment) -> App<W>,
+pub fn run<W: Windows, M: AppMenuBar>(
+    app: impl FnOnce(Environment) -> App<W, M>,
     env: Environment,
     style: impl crate::Style,
 ) {
@@ -562,8 +566,8 @@ pub fn run<W: Windows>(
 /// # Panics
 /// Propagates panics from `winit_runner::run` and tracing initialization.
 #[cfg(all(not(target_arch = "wasm32"), hydrolysis_winit))]
-pub fn run<W: Windows>(
-    app: impl FnOnce(Environment) -> App<W>,
+pub fn run<W: Windows, M: AppMenuBar>(
+    app: impl FnOnce(Environment) -> App<W, M>,
     env: Environment,
     style: impl crate::Style,
 ) {

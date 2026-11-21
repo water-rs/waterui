@@ -415,7 +415,7 @@ mod tests {
 
     use super::super::parked_executor::{drain, install as install_executor};
     use super::*;
-    use crate::app::{App, QuitReply, Windows};
+    use crate::app::{App, AppMenuBar, QuitReply, Windows};
 
     #[test]
     #[cfg_attr(debug_assertions, should_panic(expected = "termination machine ended"))]
@@ -447,7 +447,10 @@ mod tests {
     /// The app's end of the test: a `Termination` built through the real
     /// `App` hooks, started against `log`, and the environment it installed
     /// its `Quit` into.
-    fn start<W: Windows>(app: App<W>, log: &Log) -> (TerminationHandle, Environment) {
+    fn start<W: Windows, M: AppMenuBar>(
+        app: App<W, M>,
+        log: &Log,
+    ) -> (TerminationHandle, Environment) {
         let mut env = Environment::new();
         let handle = app.into_parts().termination.start(&mut env, log.clone());
         (handle, env)
