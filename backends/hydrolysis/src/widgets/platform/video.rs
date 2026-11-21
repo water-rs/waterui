@@ -21,7 +21,7 @@ use std::rc::{Rc, Weak};
 use nami::watcher::BoxWatcherGuard;
 use nami::{Binding, Computed, Signal};
 use wasm_bindgen::{JsCast, JsValue, closure::Closure};
-use waterui_core::{AnyView, Native, contract_violation};
+use waterui_core::{Native, OneOf3, View, contract_violation};
 use waterui_video::video::{
     AudioTrackSelection, BoundVideoEventHandler, ContentMode, Event, NativeVideoConfig,
     NativeVideoPlayerConfig, PlaybackConfiguration, PlaybackOutputPath, PlaybackPowerPolicy,
@@ -45,7 +45,7 @@ const HLS_MIME: &str = "application/vnd.apple.mpegurl";
 type BoundPlayback = PlaybackConfiguration<Option<BoundVideoEventHandler>>;
 
 /// The `Video` realization.
-pub fn video(config: NativeVideoConfig) -> AnyView {
+pub fn video(config: NativeVideoConfig) -> impl View {
     let VideoConfig {
         playback,
         content_mode,
@@ -56,7 +56,7 @@ pub fn video(config: NativeVideoConfig) -> AnyView {
 }
 
 /// The `VideoPlayer` realization.
-pub fn video_player(config: NativeVideoPlayerConfig) -> AnyView {
+pub fn video_player(config: NativeVideoPlayerConfig) -> impl View {
     let VideoPlayerConfig {
         playback,
         content_mode,
@@ -74,14 +74,14 @@ fn leaf(
     projection: &VideoProjection,
     controls: bool,
     loops: bool,
-) -> AnyView {
+) -> impl View + use<> {
     // A configuration this realization cannot honour is a contract violation
     // by the app: it is reported and the video is not drawn.
     if projection.is_spherical() {
         contract_violation!(
             "spherical video projection is not supported by the web video element realization; the video is not drawn"
         );
-        return AnyView::new(());
+        return OneOf3::A(());
     }
     match playback.playback_policy.get_power() {
         PlaybackPowerPolicy::PlatformManaged => {}
@@ -91,13 +91,13 @@ fn leaf(
                 "{:?} cannot be satisfied by the web video element realization; the video is not drawn",
                 playback.playback_policy.get_power()
             );
-            return AnyView::new(());
+            return OneOf3::A(());
         }
         other => {
             contract_violation!(
                 "hydrolysis web video: unsupported playback power policy {other:?}; the video is not drawn"
             );
-            return AnyView::new(());
+            return OneOf3::A(());
         }
     }
     let object_fit = match content_mode {
@@ -108,20 +108,20 @@ fn leaf(
             contract_violation!(
                 "hydrolysis web video: unsupported content mode {other:?}; the video is not drawn"
             );
-            return AnyView::new(());
+            return OneOf3::A(());
         }
     };
     let Some(element) = video_element(object_fit, controls) else {
-        return AnyView::new(());
+        return OneOf3::A(());
     };
     let player = Player::new(element, playback, loops);
     let aspect = player.aspect.clone().into();
     let natural_width = player.natural_width.clone().into();
     let hosted = Native::new(HostedView::new(VideoContent { player }));
     match content_mode {
-        ContentMode::Fit => AnyView::new(waterui_video::fit_video(hosted, aspect, natural_width)),
+        ContentMode::Fit => OneOf3::B(waterui_video::fit_video(hosted, aspect, natural_width)),
         // `Fill` and `Stretch`: `object_fit` above rejected every other mode.
-        _ => AnyView::new(hosted),
+        _ => OneOf3::C(hosted),
     }
 }
 

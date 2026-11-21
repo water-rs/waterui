@@ -29,7 +29,7 @@ use jni::objects::JObject;
 use rustc_hash::FxHashMap;
 use waterui::Environment;
 use waterui_core::metadata::MetadataKey;
-use waterui_core::{AnyView, Metadata, Native};
+use waterui_core::{AnyView, Metadata};
 use waterui_video_gpu::{AndroidVideoSurfaceBridge, AndroidVideoSurfaceHost};
 
 use crate::platform_view::{
@@ -62,12 +62,12 @@ impl VideoPlaneHost {
 }
 
 /// `host` as a passthrough wrapper over its picture.
-pub fn unwrap_host(host: Native<AndroidVideoSurfaceHost>) -> AnyView {
-    let (content, bridge) = host.into_inner().into_parts();
-    AnyView::new(Metadata {
+pub(crate) fn unwrap_host(host: AndroidVideoSurfaceHost) -> Metadata<VideoPlaneHost, AnyView> {
+    let (content, bridge) = host.into_parts();
+    Metadata {
         content,
         value: VideoPlaneHost { bridge },
-    })
+    }
 }
 
 /// The window's video planes, addressed by placement id from the host's JNI

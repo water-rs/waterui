@@ -4,7 +4,7 @@
 //! Mirrors `WuiTable` + `WuiTableColumnNode`: columns reconcile by their
 //! `semantic_id` inside `with_platform_animation`, each column keeps an
 //! id-keyed set of rendered cells driven by `rows().watch(..)`, cells are
-//! `ctx.render(AnyView::new(text))` leaves measured under
+//! `ctx.render(text)` leaves measured under
 //! `ProposalSize::UNSPECIFIED`, and `sizeThatFits` ignores the proposal —
 //! width is the sum of the per-column fitted widths, height is the header
 //! band plus the per-row maxima.
@@ -29,7 +29,6 @@ use waterui::reactive::watcher::Metadata;
 use waterui::reactive::{Computed, Signal};
 use waterui::text::{StyledStr, Text};
 use waterui::views::AnyViewsSnapshot;
-use waterui_backend_core::AnyView;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
 };
@@ -314,7 +313,7 @@ fn sync_column_cells(
             .snapshot
             .get_view(index)
             .expect("table row index is in bounds");
-        let leaf = renderer.render(AnyView::new(text));
+        let leaf = renderer.render(text);
         #[cfg(target_os = "ios")]
         let cell = {
             let mounted = leaf.mount(host);
@@ -566,7 +565,7 @@ fn materialize_column(
 
     #[cfg(target_os = "ios")]
     let label = {
-        let leaf = renderer.render(AnyView::new(column.label()));
+        let leaf = renderer.render(column.label());
         let mounted = leaf.mount(&host);
         view::set_translates_autoresizing(mounted.view(), true);
         mounted

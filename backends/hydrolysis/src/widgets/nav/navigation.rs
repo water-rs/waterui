@@ -35,7 +35,7 @@ use waterui_controls::text_field::TextField;
 use waterui_core::contract_violation;
 use waterui_core::id::Id;
 use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
-use waterui_core::{AnyView, Environment, Metadata, Native};
+use waterui_core::{Environment, Metadata, Native};
 use waterui_graphics::color::Color;
 use waterui_interaction::interaction::InteractionState;
 
@@ -244,10 +244,13 @@ pub fn toolbar_item_env(env: &Environment) -> Environment {
 /// `content` scoped to [`toolbar_item_env`]: the scope reaches every
 /// environment snapshot inside the content as its [`SnapshotDefaults`], so
 /// build, measure and render all see one scope.
-pub fn toolbar_item_view(content: AnyView, env: &Environment) -> AnyView {
+pub fn toolbar_item_view<V: waterui_core::View>(
+    content: V,
+    env: &Environment,
+) -> Metadata<Environment, V> {
     let mut scoped = toolbar_item_env(env);
     scoped.insert(SnapshotDefaults(toolbar_item_env));
-    AnyView::new(Metadata::new(content, scoped))
+    Metadata::new(content, scoped)
 }
 
 impl<E: crate::text::TextEngine> NavigationViewRenderState<E> {
@@ -289,11 +292,11 @@ impl<E: crate::text::TextEngine> NavigationViewRenderState<E> {
         let search_field = search.as_ref().map(|search| {
             // A search field shows only its placeholder, so the prompt doubles
             // as the accessible name and the visible label is suppressed.
-            RetainedSubview::new(AnyView::new(
+            RetainedSubview::new(
                 TextField::new(search.prompt().clone(), search.text())
                     .hide_label()
                     .prompt(search.prompt().clone()),
-            ))
+            )
         });
         Self {
             title: RetainedSubview::new(title),
