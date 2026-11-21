@@ -87,8 +87,8 @@ jobs:
       - run: echo "checking code changes"
 
   # Which checks this change can reach. `code` is any changed file that is
-  # not prose or repository metadata; `deps` is what the audit, license and
-  # unused-dependency checks read; `android` is the CLI's Android paths and
+  # not prose or repository metadata; `deps` is what the audit and license
+  # checks read; `android` is the CLI's Android paths and
   # the Hydrolysis Android host, the only changes that can break the
   # create/build/package cycle the `android-package` job runs. A workflow
   # change runs the whole gate, because a
@@ -263,11 +263,11 @@ jobs:
         with:
           name: ci-scripts
 
-  # Security audit, license check and unused-dependency check are each a cheap
-  # metadata pass over the dependency graph, but were previously three separate
-  # jobs that each paid full runner startup, checkout and cache-restore cost.
-  # They share nothing that isolates them from each other, so one job running
-  # them sequentially pays that fixed cost once instead of three times.
+  # Security audit and license check are each a cheap metadata pass over the
+  # dependency graph, but separate jobs would each pay full runner startup,
+  # checkout and cache-restore cost. They share nothing that isolates them
+  # from each other, so one job running them sequentially pays that fixed
+  # cost once.
   hygiene:
     name: Hygiene
     needs: [bump, changes]
