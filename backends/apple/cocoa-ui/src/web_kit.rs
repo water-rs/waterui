@@ -864,7 +864,7 @@ fn respond_to_scheme_task(task: &ProtocolObject<dyn WKURLSchemeTask>, handler: &
         // `NSMutableURLRequest`.
         msg_send![&request, HTTPMethod]
     };
-    let method = method.map(|method| method.to_string()).unwrap_or_default();
+    let method = method.map_or_default(|method| method.to_string());
 
     let served = url
         .as_ref()
@@ -1027,8 +1027,7 @@ define_class!(
                 url: raw
                     .URL()
                     .and_then(|url| url.absoluteString())
-                    .map(|text| text.to_string())
-                    .unwrap_or_default(),
+                    .map_or_default(|text| text.to_string()),
                 redirect_location: http.and_then(|http| {
                     http.valueForHTTPHeaderField(&NSString::from_str("Location"))
                         .map(|value| value.to_string())
@@ -1106,8 +1105,7 @@ define_class!(
                 current_url: web_view
                     .url()
                     .and_then(|url| url.absoluteString())
-                    .map(|text| text.to_string())
-                    .unwrap_or_default(),
+                    .map_or_default(|text| text.to_string()),
             };
             let handlers = self.ivars().handlers.clone();
             let decision = crate::callback::guarded("web view authentication challenge", || {
