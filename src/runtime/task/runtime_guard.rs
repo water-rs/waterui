@@ -233,6 +233,20 @@ pub trait RuntimeProbe: Send + Sync + 'static {
     fn on_poll_sample(&self, sample: &TaskPollSample);
 }
 
+#[cfg(all(feature = "inspector", not(target_arch = "wasm32")))]
+impl RuntimeProbe for waterui_inspector_runtime::TaskProbe {
+    fn on_poll_sample(&self, sample: &TaskPollSample) {
+        self.record_poll(
+            sample.task_type(),
+            sample.poll_ready(),
+            sample.wall(),
+            sample.cpu(),
+            sample.frame_budget(),
+            sample.refresh_hz(),
+        );
+    }
+}
+
 /// A local executor wrapper that instruments per-poll main-thread occupancy.
 ///
 /// The wrapper measures each `poll()` slice of spawned futures and emits

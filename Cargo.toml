@@ -279,6 +279,8 @@ waterui-color = { version = "0.5.1", path = "components/foundation/color" }
 waterui-graphics = { version = "0.5.1", path = "components/visual/graphics", default-features = false }
 waterui-shape = { version = "0.5.1", path = "components/foundation/shape", default-features = false }
 waterui-structural-transition = { version = "0.5.1", path = "components/foundation/transition" }
+waterui-accessibility = { version = "0.5.1", path = "components/foundation/accessibility" }
+waterui-interaction = { version = "0.5.1", path = "components/foundation/interaction" }
 waterui-svg = "0.4.0"
 waterui-math = "0.2.0"
 waterui-layout = { version = "0.5.1", path = "components/foundation/layout" }
@@ -290,7 +292,6 @@ waterui-browser-cef = { version = "0.1.0", git = "https://github.com/water-rs/br
 waterui-browser-wpe = { version = "0.1.0", git = "https://github.com/water-rs/browsers", branch = "main", default-features = false }
 wgpu-external-frame = "0.4.0"
 waterui-icon = { version = "0.5.1", path = "components/foundation/icon" }
-waterui-icons-sf-symbol = { version = "0.5.1", path = "components/icon/sf_symbol" }
 waterui-icons-material-icon = { version = "0.5.1", path = "components/icon/material" }
 waterui-icons-lucide = { version = "0.5.1", path = "components/icon/lucide" }
 waterui-locale = { version = "0.5.1", path = "utils/locale" }
@@ -330,6 +331,7 @@ waterui-assets-core = { version = "0.5.1", path = "components/assets/core" }
 waterui-assets-planner = { version = "0.5.1", path = "components/assets/planner" }
 waterui-assets-macros = { version = "0.5.1", path = "components/assets/macros" }
 waterui-inspector-protocol = { version = "0.5.1", path = "components/devtools/inspector/protocol" }
+waterui-inspector-runtime = { version = "0.5.1", path = "components/devtools/inspector/runtime" }
 waterui-preview-protocol = { version = "0.5.1", path = "components/devtools/preview/protocol" }
 waterui-mcp-protocol = { version = "0.5.1", path = "components/devtools/mcp/protocol" }
 waterui-testing = { path = "testing" }
@@ -527,6 +529,11 @@ markdown-math = [
 ]
 std = ["waterui-internal/std", "waterui-dylib?/std"]
 dynamic_linking = ["dep:waterui-dylib"]
+erased-dispatch = ["waterui-internal/erased-dispatch", "waterui-dylib?/erased-dispatch"]
+# In-tree offscreen view capture (`CaptureHandle`, `CaptureScope`, `ViewExt::capture`)
+# and `NativeBackend::offscreen` wiring. Opt-in so `route_metadata_dyn` does not pull
+# the offscreen renderer into binaries that never capture views from inside the tree.
+capture = ["waterui-internal/capture", "waterui-dylib?/capture"]
 canvas = ["waterui-internal/canvas", "waterui-dylib?/canvas"]
 chart = ["waterui-internal/chart", "waterui-dylib?/chart"]
 barcode = ["waterui-internal/barcode", "waterui-dylib?/barcode"]
@@ -560,6 +567,7 @@ all = [
     "text-field",
     "toggle",
     "validation",
+    "capture",
     "canvas",
     "chart",
     "barcode",
@@ -670,6 +678,8 @@ shaderloom = { git = "https://github.com/water-rs/shaderloom", branch = "main" }
 # is a different type on either side. Publishing ignores this table, so the
 # published crates keep their registry pins.
 waterui-core = { path = "core" }
+waterui-accessibility = { path = "components/foundation/accessibility" }
+waterui-interaction = { path = "components/foundation/interaction" }
 waterui-graphics = { path = "components/visual/graphics" }
 waterui-layout = { path = "components/foundation/layout" }
 waterui-shape = { path = "components/foundation/shape" }
@@ -690,6 +700,7 @@ waterui-backend-core = { path = "backends/core" }
 waterui-form = { path = "components/foundation/form" }
 waterui-icon = { path = "components/foundation/icon" }
 waterui-inspector-protocol = { path = "components/devtools/inspector/protocol" }
+waterui-inspector-runtime = { path = "components/devtools/inspector/runtime" }
 waterui-locale = { path = "utils/locale" }
 waterui-navigation = { path = "components/foundation/navigation" }
 waterui-webview = { path = "components/platform/webview" }
@@ -707,7 +718,7 @@ waterui-watcher-set = { path = "utils/watcher-set" }
 # and the split tabs-bar surface and divider calls (#1982). Drop the git pin
 # once a release has these changes.
 hydrolysis = { path = "backends/hydrolysis" }
-hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", branch = "refactor/typed-control-labels" }
+hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", branch = "refactor/4770-slim-core-ui" }
 # The waterkit family follows waterkit's `dev` so the framework consumes its
 # unreleased changes; the patches apply only while the `[workspace.dependencies]`
 # requirements admit `dev`'s version (0.3). Every waterkit crate the
@@ -828,3 +839,10 @@ clipboard-rs = { git = "https://github.com/water-rs/clipboard-rs", branch = "win
 # for the web (water-rs/waterui#1349). Drop it once a `tree-sitter-md`
 # release includes the fix.
 tree-sitter-md = { git = "https://github.com/lexoliu/tree-sitter-markdown", branch = "wasm-tree-sitter-0.27" }
+
+# Split repositories depend on `waterui-accessibility` and `waterui-interaction`
+# from git until their first crates.io release; resolve them to the in-tree
+# workspace crates so only one copy exists in the graph.
+[patch."https://github.com/water-rs/waterui"]
+waterui-accessibility = { path = "components/foundation/accessibility" }
+waterui-interaction = { path = "components/foundation/interaction" }

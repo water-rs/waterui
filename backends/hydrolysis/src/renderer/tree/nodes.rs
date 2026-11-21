@@ -1098,6 +1098,7 @@ pub(super) enum WrapperEffect<E: crate::text::TextEngine> {
     /// dialog stack each flush; the post-flush `render_dialogs` pass draws
     /// the one on screen in the modal layer above all content — its scrim
     /// plus the composed card.
+    #[cfg(waterui_feature = "dialog")]
     Dialog(DialogEffect<E>),
     /// A `.transition(...)` declaration (layout-spec.md §4.5): paint- and
     /// layout-transparent. The structural site that swaps the content claims
@@ -1117,13 +1118,16 @@ impl<E: crate::text::TextEngine> WrapperEffect<E> {
         if matches!(self, Self::ContextMenu(_)) {
             return true;
         }
+        #[cfg(waterui_feature = "dialog")]
+        if matches!(self, Self::Dialog(_)) {
+            return true;
+        }
         matches!(
             self,
             Self::OnEvent(_)
                 | Self::GestureObserver(_)
                 | Self::DropDestination(_)
                 | Self::AnchoredOverlay(_)
-                | Self::Dialog(_)
                 | Self::LifeCycle(_)
         )
     }
@@ -1160,6 +1164,7 @@ pub struct AnchoredOverlayEffect<E: crate::text::TextEngine> {
 /// The node-owned state of a `.dialog(...)` wrapper. The content slot is
 /// `Rc`-shared because the post-flush render pass — not this node — measures
 /// and flushes the modal layer, and the node keeps it built across closes.
+#[cfg(waterui_feature = "dialog")]
 pub struct DialogEffect<E: crate::text::TextEngine> {
     /// The layer content — the dialog's scrim-plus-card modal layer.
     pub(crate) content: Rc<RefCell<RetainedSubview<E>>>,
@@ -1242,7 +1247,7 @@ pub struct GestureObserverEffect {
     /// bounds stay the same.
     pub(crate) chrome: RefCell<Option<crate::renderer::chrome::LiveChromeParts>>,
     /// The state the tap's live chrome reports between flushes.
-    pub(crate) chrome_state: nami::Binding<waterui_core::interaction::InteractionState>,
+    pub(crate) chrome_state: nami::Binding<waterui_interaction::interaction::InteractionState>,
 }
 
 pub struct ColorNode<E: crate::text::TextEngine> {
@@ -2083,7 +2088,7 @@ impl<E: crate::text::TextEngine> TextNode<E> {
             return;
         }
         let disabled = env
-            .get::<waterui_core::interaction::Disabled>()
+            .get::<waterui_interaction::interaction::Disabled>()
             .is_some_and(|disabled| renderer.read_signal(disabled.signal()));
         if let Some(parent) = parent {
             renderer.push_accessibility_parent(parent);
@@ -2154,7 +2159,7 @@ impl<E: crate::text::TextEngine> TextNode<E> {
             return;
         }
         let disabled = env
-            .get::<waterui_core::interaction::Disabled>()
+            .get::<waterui_interaction::interaction::Disabled>()
             .is_some_and(|disabled| renderer.read_signal(disabled.signal()));
         // The recording's origin is the bounds' top-left: a layout-space
         // rectangle lands there offset into this node's local space.

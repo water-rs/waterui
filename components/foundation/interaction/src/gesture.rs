@@ -51,7 +51,7 @@
 use alloc::boxed::Box;
 use core::fmt;
 
-use crate::{
+use waterui_core::{
     handler::{BoxedAction, Handler, boxed_action},
     metadata::MetadataKey,
 };
@@ -160,7 +160,7 @@ impl GesturePoint {
 /// Event payload for tap gestures.
 ///
 /// Backends place this structure into the environment when a tap is recognised,
-/// allowing gesture handlers to extract the payload using [`Use<TapEvent>`](crate::extract::Use).
+/// allowing gesture handlers to extract the payload using [`Use<TapEvent>`](waterui_core::extract::Use).
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct TapEvent {
@@ -882,7 +882,7 @@ impl GestureObserver {
     ///
     /// Simple action:
     /// ```
-    /// use waterui_core::gesture::{GestureObserver, TapGesture};
+    /// use waterui_interaction::gesture::{GestureObserver, TapGesture};
     ///
     /// let observer = GestureObserver::new(TapGesture::new(), || {});
     /// ```
@@ -891,7 +891,7 @@ impl GestureObserver {
     /// ```
     /// use nami::Binding;
     /// use waterui_core::State;
-    /// use waterui_core::gesture::{GestureObserver, TapGesture};
+    /// use waterui_interaction::gesture::{GestureObserver, TapGesture};
     ///
     /// let observer = GestureObserver::new(
     ///     TapGesture::repeat(2),

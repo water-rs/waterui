@@ -25,17 +25,16 @@ use core::{
 };
 
 use nami::{Binding, Computed, Signal as _, SignalExt as _};
-use waterui_controls::{ButtonStyle, IntoLabel, button};
+use waterui_controls::{Button, ButtonStyle, IntoLabel, button, label::SemanticLabel};
 use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::handler::{AnyViewBuilder, BoxedAction, Handler, ReportExtraction, boxed_action};
 use waterui_core::metadata::MetadataKey;
 use waterui_core::{
-    AnyView, Environment, Error, IntoSignal, Metadata, Native, NativeView, Retain, SerialDispatch,
-    Str, View, contract_violation, extract::ExtractionState, extract::Extractor, extract::State,
-    flatten_signal, handler::ViewBuilder, impl_extractor, layout::StretchAxis,
+    AnyView, Environment, Error, IntoSignal, Metadata, Native, NativeView, OneOf3, Retain,
+    SerialDispatch, Str, View, contract_violation, extract::ExtractionState, extract::Extractor,
+    extract::State, flatten_signal, handler::ViewBuilder, impl_extractor, layout::StretchAxis,
 };
 use waterui_graphics::color::{Color, WorkingColor};
-use waterui_icon::SystemIcon;
 use waterui_text::IntoText;
 use waterui_text::Text;
 
@@ -741,10 +740,6 @@ impl NavigationController {
     }
 }
 
-fn navigation_slot_with_environment(content: AnyView, env: &Environment) -> AnyView {
-    AnyView::new(Metadata::new(content, env.clone()))
-}
-
 /// `view` with its bar and content scoped to `env`, its environment-dependent
 /// fields resolved against it.
 fn scoped_navigation_view<V>(
@@ -752,10 +747,8 @@ fn scoped_navigation_view<V>(
     env: &Environment,
 ) -> NavigationView<Metadata<Environment, V>> {
     view.resolve_native_fields(env);
-    view.bar.title = navigation_slot_with_environment(view.bar.title, env);
-    view.bar.subtitle = navigation_slot_with_environment(view.bar.subtitle, env);
     for item in &mut view.bar.toolbar.items {
-        item.content = navigation_slot_with_environment(core::mem::take(&mut item.content), env);
+        item.env = Some(env.clone());
     }
     view.map_content(|content| Metadata::new(content, env.clone()))
 }
@@ -951,6 +944,37 @@ pub enum NavigationToolbarPlacement {
     TopBarTrailing = 8,
 }
 
+/// View content carried by a [`NavigationToolbarItem`].
+#[derive(Debug, Default)]
+#[non_exhaustive]
+pub enum NavigationToolbarContent {
+    /// Empty content (after taking content out of a toolbar item).
+    #[default]
+    Empty,
+    /// Semantic plain-label toolbar action button.
+    Action(Button<SemanticLabel, BoxedAction<()>>),
+    /// Caller-supplied heterogeneous view content.
+    View(AnyView),
+}
+
+impl View for NavigationToolbarContent {
+    fn body(self, _env: &Environment) -> impl View {
+        match self {
+            Self::Empty => OneOf3::A(()),
+            Self::Action(button) => OneOf3::B(button),
+            Self::View(view) => OneOf3::C(view),
+        }
+    }
+
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        match self {
+            Self::Empty => ().dispatch(backend, env, cx),
+            Self::Action(button) => button.dispatch(backend, env, cx),
+            Self::View(view) => view.dispatch(backend, env, cx),
+        }
+    }
+}
+
 /// One semantic native toolbar item.
 #[must_use]
 #[non_exhaustive]
@@ -958,7 +982,7 @@ pub struct NavigationToolbarItem {
     /// Semantic placement resolved by each platform backend.
     placement: NavigationToolbarPlacement,
     /// Item content.
-    content: AnyView,
+    content: NavigationToolbarContent,
     /// The item's name, when it was declared as a semantic label.
     ///
     /// Kept beside the content rather than only inside it, because the
@@ -970,20 +994,30 @@ pub struct NavigationToolbarItem {
     /// each platform draws what its own chrome calls for.
     title: Option<Text>,
     /// The item's icon, when it was declared as a semantic label.
-    icon: Option<ToolbarItemIcon>,
+    icon: Option<AnyViewBuilder<AnyView>>,
+    /// Scoped navigation environment attached by a pushed page.
+    env: Option<Environment>,
 }
 
 impl NavigationToolbarItem {
     /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
     pub fn into_parts(
         self,
     ) -> (
         NavigationToolbarPlacement,
-        AnyView,
+        NavigationToolbarContent,
         Option<Text>,
-        Option<ToolbarItemIcon>,
+        Option<AnyViewBuilder<AnyView>>,
+        Option<Environment>,
     ) {
-        (self.placement, self.content, self.title, self.icon)
+        (
+            self.placement,
+            self.content,
+            self.title,
+            self.icon,
+            self.env,
+        )
     }
 
     /// Semantic placement resolved by each platform backend.
@@ -994,22 +1028,22 @@ impl NavigationToolbarItem {
 
     /// Item content.
     #[must_use]
-    pub const fn content(&self) -> &AnyView {
+    pub const fn content(&self) -> &NavigationToolbarContent {
         &self.content
     }
 
     /// Takes the item content out, leaving an empty view behind.
-    pub fn take_content(&mut self) -> AnyView {
+    pub fn take_content(&mut self) -> NavigationToolbarContent {
         core::mem::take(&mut self.content)
     }
 
     /// Sets the item content.
-    pub fn set_content(&mut self, content: AnyView) {
+    pub fn set_content(&mut self, content: NavigationToolbarContent) {
         self.content = content;
     }
 
     /// Sets the item's icon.
-    pub fn set_icon(&mut self, icon: Option<ToolbarItemIcon>) {
+    pub fn set_icon(&mut self, icon: Option<AnyViewBuilder<AnyView>>) {
         self.icon = icon;
     }
 
@@ -1029,33 +1063,14 @@ impl NavigationToolbarItem {
 
     /// The item's icon, when it was declared as a semantic label.
     #[must_use]
-    pub const fn icon(&self) -> Option<&ToolbarItemIcon> {
+    pub const fn icon(&self) -> Option<&AnyViewBuilder<AnyView>> {
         self.icon.as_ref()
     }
-}
 
-/// A toolbar item's icon, kept apart from its name.
-///
-/// The two forms are not interchangeable: a platform that recognizes the symbol
-/// draws it at whatever size and weight its chrome calls for, while a view has
-/// to be rendered into an image at a chosen size.
-#[expect(
-    clippy::exhaustive_enums,
-    reason = "backends realize each toolbar icon source variant by variant; a new toolbar icon source must fail their build instead of falling into a wildcard arm"
-)]
-pub enum ToolbarItemIcon {
-    /// A symbol the platform knows by name.
-    System(SystemIcon),
-    /// A view the backend renders itself.
-    View(AnyViewBuilder<AnyView>),
-}
-
-impl Debug for ToolbarItemIcon {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::System(icon) => formatter.debug_tuple("System").field(icon).finish(),
-            Self::View(_) => formatter.write_str("View"),
-        }
+    /// Scoped navigation environment attached by a pushed destination, if any.
+    #[must_use]
+    pub const fn env(&self) -> Option<&Environment> {
+        self.env.as_ref()
     }
 }
 
@@ -1067,6 +1082,7 @@ impl Debug for NavigationToolbarItem {
             .field("content", &self.content)
             .field("title", &self.title)
             .field("icon", &self.icon)
+            .field("env", &self.env)
             .finish()
     }
 }
@@ -1080,9 +1096,10 @@ impl NavigationToolbarItem {
     pub fn new(placement: NavigationToolbarPlacement, content: impl View) -> Self {
         Self {
             placement,
-            content: AnyView::new(content),
+            content: NavigationToolbarContent::View(AnyView::new(content)),
             title: None,
             icon: None,
+            env: None,
         }
     }
 
@@ -1098,15 +1115,24 @@ impl NavigationToolbarItem {
     ) -> Self {
         let label = label.into_label();
         let title = Some(label.semantic_text().clone());
-        let icon = label.semantic_icon().map_or_else(
-            || label.icon_view().map(ToolbarItemIcon::View),
-            |icon| Some(ToolbarItemIcon::System(icon)),
-        );
+        let icon = label.icon_view();
+        let content = if !label.has_custom_content() && icon.is_none() {
+            NavigationToolbarContent::Action(
+                button(label.into_semantic())
+                    .style(ButtonStyle::Plain)
+                    .action_boxed(boxed_action(handler)),
+            )
+        } else {
+            NavigationToolbarContent::View(AnyView::new(
+                button(label).style(ButtonStyle::Plain).action(handler),
+            ))
+        };
         Self {
             placement,
-            content: AnyView::new(button(label).style(ButtonStyle::Plain).action(handler)),
+            content,
             title,
             icon,
+            env: None,
         }
     }
 }
@@ -1156,12 +1182,12 @@ impl NavigationToolbar {
 ///
 /// Represents the appearance and behavior of a navigation bar, including
 /// its title, color, and visibility.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Bar {
-    /// The title view displayed in the navigation bar
-    pub title: AnyView,
+    /// The title text displayed in the navigation bar.
+    pub title: Option<Text>,
     /// Optional semantic subtitle rendered by native chrome.
-    pub subtitle: AnyView,
+    pub subtitle: Option<Text>,
     /// Semantic native toolbar content.
     pub toolbar: NavigationToolbar,
     /// Optional search field configuration displayed in navigation chrome.
@@ -1173,20 +1199,6 @@ pub struct Bar {
     pub hidden: Computed<bool>,
     /// The display mode for the title (automatic, inline, or large)
     pub display_mode: NavigationTitleDisplayMode,
-}
-
-impl Default for Bar {
-    fn default() -> Self {
-        Self {
-            title: AnyView::default(),
-            subtitle: AnyView::default(),
-            toolbar: NavigationToolbar::default(),
-            search: None,
-            color: None,
-            hidden: Computed::constant(false),
-            display_mode: NavigationTitleDisplayMode::Automatic,
-        }
-    }
 }
 
 /// Marks a subtree as a navigation link: activating it follows to a
@@ -1819,13 +1831,13 @@ where
         // Plain for the same reason as `NavigationLink` above: the link is a
         // button in behaviour, not in chrome.
         let link = if let Ok(navigator) = Navigator::<T>::extract(env) {
-            AnyView::new(
+            OneOf3::A(
                 button(self.label)
                     .style(ButtonStyle::Plain)
                     .action(move || navigator.push(value.clone())),
             )
         } else if let Ok(navigator) = Navigator::<ErasedNavigationRoute>::extract(env) {
-            AnyView::new(
+            OneOf3::B(
                 button(self.label)
                     .style(ButtonStyle::Plain)
                     .action(move || navigator.push(value.clone())),
@@ -1834,7 +1846,7 @@ where
             contract_violation!(
                 "NavigationLink::value used outside of a compatible path-backed stack; the link does nothing when activated"
             );
-            AnyView::new(button(self.label).style(ButtonStyle::Plain).action(|| {}))
+            OneOf3::C(button(self.label).style(ButtonStyle::Plain).action(|| {}))
         };
         Metadata::new(link, NavigationLinkHint)
     }
@@ -1848,6 +1860,14 @@ impl<C> NavigationView<C> {
     /// view or as a page a stack built. Resolving again is harmless.
     #[doc(hidden)]
     pub fn resolve_native_fields(&mut self, env: &Environment) {
+        if let Some(title) = self.bar.title.take() {
+            self.bar.title = Some(Text::from(title.resolve(env)));
+        }
+
+        if let Some(subtitle) = self.bar.subtitle.take() {
+            self.bar.subtitle = Some(Text::from(subtitle.resolve(env)));
+        }
+
         if let Some(search) = &mut self.bar.search {
             search.set_prompt(waterui_text::Text::computed(
                 search.prompt().resolve(env).into_content(),
@@ -1883,7 +1903,7 @@ impl<C> NavigationView<C> {
         C: View,
     {
         let bar = Bar {
-            title: AnyView::new(title.into_text()),
+            title: Some(title.into_text()),
             ..Default::default()
         };
 
@@ -1952,7 +1972,7 @@ impl<C> NavigationView<C> {
 
     /// Sets the semantic navigation subtitle.
     pub fn navigation_subtitle(mut self, subtitle: impl IntoText) -> Self {
-        self.bar.subtitle = AnyView::new(subtitle.into_text());
+        self.bar.subtitle = Some(subtitle.into_text());
         self
     }
 

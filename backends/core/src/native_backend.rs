@@ -15,10 +15,13 @@
 //! come back through the same routing, by `TypeId` at run time.
 
 use alloc::boxed::Box;
+#[cfg(waterui_feature = "capture")]
 use alloc::rc::Rc;
 use core::any::Any;
 
+#[cfg(waterui_feature = "capture")]
 use waterui::OffscreenRenderer;
+#[cfg(waterui_feature = "capture")]
 use waterui::view_renderer::CaptureBinder;
 
 use waterui_core::backend::{Backend, DynBackend, ErasedPayload, MapSlots, cast};
@@ -60,8 +63,13 @@ macro_rules! native_backend {
             /// This backend type with its lifetimes left open, for the
             /// [`Child`] views of the payloads it receives.
             type Family: NativeBackendFamily<Output = Self::Output, Ctx = Self::Ctx>;
+            #[cfg(waterui_feature = "webview")]
+            /// The compile-time selected [`waterui::webview::WebViewController`]
+            /// used to realize [`waterui::webview::WebViewOpen`].
+            type WebViewController: waterui::webview::WebViewController;
 
             /// The backend's offscreen view-to-RGBA renderer.
+            #[cfg(waterui_feature = "capture")]
             type Offscreen: OffscreenRenderer;
 
             /// Runs `f` on this backend as its family names it. Every
@@ -72,11 +80,17 @@ macro_rules! native_backend {
                 f: impl for<'a> FnOnce(&mut <Self::Family as NativeBackendFamily>::Backend<'a>) -> R,
             ) -> R;
 
+            #[cfg(waterui_feature = "webview")]
+            /// Returns the backend's [`WebViewController`](Self::WebViewController).
+            fn web_view_controller(&self) -> Self::WebViewController;
+
             /// Creates an offscreen renderer configured from `env`.
+            #[cfg(waterui_feature = "capture")]
             fn offscreen(&self, env: &Environment) -> Self::Offscreen;
 
             /// Wires a [`CaptureBinder`] to [`Self::offscreen`] and realizes
             /// its wrapped content.
+            #[cfg(waterui_feature = "capture")]
             #[doc(hidden)]
             fn capture_binder<S: ChildView<Self>, C: ChildView<Self>>(
                 &mut self,
@@ -180,6 +194,9 @@ macro_rules! native_backend {
             type Output = B::Output;
             type Ctx = B::Ctx;
             type Family = HookedFamily<B::Family, H>;
+            #[cfg(waterui_feature = "webview")]
+            type WebViewController = B::WebViewController;
+            #[cfg(waterui_feature = "capture")]
             type Offscreen = B::Offscreen;
 
             fn with_family<R>(
@@ -198,10 +215,17 @@ macro_rules! native_backend {
                 })
             }
 
+            #[cfg(waterui_feature = "webview")]
+            fn web_view_controller(&self) -> Self::WebViewController {
+                self.inner_ref().web_view_controller()
+            }
+
+            #[cfg(waterui_feature = "capture")]
             fn offscreen(&self, env: &Environment) -> Self::Offscreen {
                 self.inner_ref().offscreen(env)
             }
 
+            #[cfg(waterui_feature = "capture")]
             fn capture_binder<S: ChildView<Self>, C: ChildView<Self>>(
                 &mut self,
                 metadata: Metadata<CaptureBinder<S>, C>,
@@ -229,6 +253,15 @@ macro_rules! native_backend {
             $(
                 $(#[cfg($pcfg)])*
                 fn $parent<$child: ChildView<Self>>(&mut self, native: $parent_ty, env: &Environment, cx: Self::Ctx) -> Self::Output {
+                    let native = match cast::<$parent_ty, waterui::component::button::ButtonConfig<$child>>(native) {
+                        Ok(config) => return self.hook_button(config, env, cx),
+                        Err(native) => native,
+                    };
+                    #[cfg(waterui_feature = "toggle")]
+                    let native = match cast::<$parent_ty, waterui::component::toggle::ToggleConfig<$child>>(native) {
+                        Ok(config) => return self.hook_toggle(config, env, cx),
+                        Err(native) => native,
+                    };
                     let native = MapSlots::map_slots(native, self.rehooker::<$child>());
                     self.inner().$parent(native, env, cx)
                 }
@@ -255,6 +288,10 @@ macro_rules! native_backend {
             )*
 
             fn provided<T: NativeView + 'static>(&mut self, native: T, env: &Environment, cx: Self::Ctx) -> Self::Output {
+                let native = match cast::<T, $crate::hooked::SlotView<B::Family>>(native) {
+                    Ok(slot) => return slot.into_child().realize(self.inner(), env, cx),
+                    Err(native) => native,
+                };
                 match self.offer(native, env, cx) {
                     Ok(output) => output,
                     Err((native, cx)) => self.inner().provided(native, env, cx),
@@ -262,6 +299,9 @@ macro_rules! native_backend {
             }
 
             fn provided_dyn(&mut self, mut native: ErasedPayload<'_>, env: &Environment, cx: Self::Ctx) -> Self::Output {
+                if let Some(slot) = native.take::<$crate::hooked::SlotView<B::Family>>() {
+                    return slot.into_child().realize(self.inner(), env, cx);
+                }
                 match self.offer_erased(&mut native, env, cx) {
                     Ok(output) => output,
                     Err(cx) => self.inner().provided_dyn(native, env, cx),
@@ -302,6 +342,10 @@ macro_rules! native_backend {
             env: &Environment,
             cx: B::Ctx,
         ) -> B::Output {
+            let native = match cast::<T, $crate::hooked::SlotView<B::Family>>(native) {
+                Ok(slot) => return slot.into_child().realize(backend, env, cx),
+                Err(native) => native,
+            };
             $(
                 $(#[cfg($ncfg)])*
                 let native = match cast::<T, $native_ty>(native) {
@@ -336,6 +380,7 @@ macro_rules! native_backend {
                 $(#[cfg($pcfg)])*
                 let (native, cx) = native;
             )*
+            #[cfg(waterui_feature = "capture")]
             let native = match cast::<T, SlotNative<B::Family>>(native) {
                 Ok(slot) => return slot.0.realize(backend, env, cx),
                 Err(native) => native,
@@ -386,6 +431,7 @@ macro_rules! native_backend {
                 $(#[cfg($pmcfg)])*
                 let (metadata, cx) = metadata;
             )*
+            #[cfg(waterui_feature = "capture")]
             let (metadata, cx) = {
                 fn route_capture<B: NativeBackend, C: ChildView<B>, K: MetadataKey>(
                     backend: &mut B,
@@ -420,6 +466,9 @@ macro_rules! native_backend {
             env: &Environment,
             cx: B::Ctx,
         ) -> B::Output {
+            if let Some(slot) = native.take::<$crate::hooked::SlotView<B::Family>>() {
+                return slot.into_child().realize(backend, env, cx);
+            }
             $(
                 $(#[cfg($ncfg)])*
                 if let Some(native) = native.take::<$native_ty>() {
@@ -429,15 +478,19 @@ macro_rules! native_backend {
             $(
                 $(#[cfg($pcfg)])*
                 {
-                    // The payload with its children in the erased slot.
+                    // The payload with its children in `Child<B::Family>` or `AnyView`.
                     fn take<$child: 'static>(native: &mut ErasedPayload<'_>) -> Option<$parent_ty> {
                         native.take::<$parent_ty>()
+                    }
+                    if let Some(native) = take::<Child<B::Family>>(&mut native) {
+                        return backend.$parent(native, env, cx);
                     }
                     if let Some(native) = take::<AnyView>(&mut native) {
                         return backend.$parent(native, env, cx);
                     }
                 }
             )*
+            #[cfg(waterui_feature = "capture")]
             if let Some(slot) = native.take::<SlotNative<B::Family>>() {
                 return slot.0.realize(backend, env, cx);
             }
@@ -457,22 +510,36 @@ macro_rules! native_backend {
                 }
             )*
             $(
+                $(#[cfg($mcfg)])*
+                if let Some(metadata) = metadata.take::<Metadata<$meta_ty, Child<B::Family>>>() {
+                    return backend.$meta(metadata, env, cx);
+                }
+            )*
+            $(
                 $(#[cfg($pmcfg)])*
                 {
-                    // The metadata key with its children and content in the erased slot.
-                    fn take<$pmchild: 'static>(
+                    // The metadata key with its children and content in the erased or family slot.
+                    fn take<$pmchild: 'static, C: 'static>(
                         metadata: &mut ErasedPayload<'_>,
-                    ) -> Option<Metadata<$pmeta_ty, AnyView>>
+                    ) -> Option<Metadata<$pmeta_ty, C>>
                     where
                         $pmeta_ty: MetadataKey,
                     {
-                        metadata.take::<Metadata<$pmeta_ty, AnyView>>()
+                        metadata.take::<Metadata<$pmeta_ty, C>>()
                     }
-                    if let Some(metadata) = take::<AnyView>(&mut metadata) {
+                    if let Some(metadata) = take::<Child<B::Family>, Child<B::Family>>(&mut metadata) {
+                        return backend.$pmeta(metadata, env, cx);
+                    }
+                    if let Some(metadata) = take::<AnyView, AnyView>(&mut metadata) {
                         return backend.$pmeta(metadata, env, cx);
                     }
                 }
             )*
+            #[cfg(waterui_feature = "capture")]
+            if let Some(metadata) = metadata.take::<Metadata<CaptureBinder<Child<B::Family>>, Child<B::Family>>>() {
+                return backend.capture_binder(metadata, env, cx);
+            }
+            #[cfg(waterui_feature = "capture")]
             if let Some(metadata) = metadata.take::<Metadata<CaptureBinder<AnyView>, AnyView>>() {
                 return backend.capture_binder(metadata, env, cx);
             }
@@ -496,12 +563,21 @@ macro_rules! native_backend {
             type Output = ();
             type Ctx = ();
             type Family = Self;
+            #[cfg(waterui_feature = "webview")]
+            type WebViewController = waterui::webview::UnavailableWebViewController;
+            #[cfg(waterui_feature = "capture")]
             type Offscreen = tests::RecorderOffscreen;
 
             fn with_family<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
                 f(self)
             }
 
+            #[cfg(waterui_feature = "webview")]
+            fn web_view_controller(&self) -> Self::WebViewController {
+                waterui::webview::UnavailableWebViewController
+            }
+
+            #[cfg(waterui_feature = "capture")]
             fn offscreen(&self, _env: &Environment) -> Self::Offscreen {
                 tests::RecorderOffscreen(self.clone())
             }
@@ -568,13 +644,17 @@ pub fn report_unprovided(backend: &str, payload: &str) {
 
 /// Native payload carrying a backend's held child slot into
 /// [`NativeBackend::offscreen`].
+#[cfg(waterui_feature = "capture")]
 struct SlotNative<F: NativeBackendFamily>(Child<F>);
 
+#[cfg(waterui_feature = "capture")]
 impl<F: NativeBackendFamily> NativeView for SlotNative<F> {}
 
 /// View adapter realizing a [`Child`] slot through [`OffscreenRenderer::render_to_rgba`].
+#[cfg(waterui_feature = "capture")]
 struct SlotView<F: NativeBackendFamily>(Child<F>);
 
+#[cfg(waterui_feature = "capture")]
 impl<F: NativeBackendFamily> View for SlotView<F> {
     fn body(self, _env: &Environment) -> impl View {
         waterui_core::Native::new(SlotNative(self.0))
@@ -610,7 +690,7 @@ impl<'a, B: NativeBackend> Realize<'a, B> {
 
     /// Realizes `view` through `backend`.
     pub fn child<V: View>(backend: &mut B, view: V, env: &Environment, cx: B::Ctx) -> B::Output {
-        view.dispatch(&mut Realize::new(backend), env, cx)
+        waterui_core::backend::dispatch(view, &mut Realize::new(backend), env, cx)
     }
 
     /// Realizes the native payload an [`AnyView`] handed back through a
@@ -788,8 +868,6 @@ native_backend! {
         divider: waterui::layout::Divider,
         /// A resolved shape.
         shape: waterui::shape::ResolvedShape,
-        /// A system icon.
-        icon: waterui::icon::SystemIcon,
         /// A gradient fill.
         gradient: waterui::graphics::Gradient,
         #[cfg(waterui_feature = "table")]
@@ -817,7 +895,7 @@ native_backend! {
         video_player: waterui::video::video::NativeVideoPlayerConfig,
         #[cfg(waterui_feature = "webview")]
         /// A web view.
-        web_view: waterui::webview::WebView,
+        web_view: waterui::webview::WebViewOpen,
         #[cfg(waterui_feature = "map")]
         /// A map.
         map: waterui::map::MapConfig,
@@ -899,33 +977,33 @@ native_backend! {
         /// A layout priority.
         layout_priority: waterui_core::layout::LayoutPriority,
         /// A lifecycle hook.
-        lifecycle_hook: waterui_core::event::LifeCycleHook,
+        lifecycle_hook: waterui_interaction::event::LifeCycleHook,
         /// An event handler.
-        on_event: waterui_core::event::OnEvent,
+        on_event: waterui_interaction::event::OnEvent,
         /// A key-press handler.
-        on_key_press: waterui_core::key::OnKeyPress,
+        on_key_press: waterui_interaction::key::OnKeyPress,
         /// A gesture observer.
-        gesture_observer: waterui_core::gesture::GestureObserver,
+        gesture_observer: waterui_interaction::gesture::GestureObserver,
         /// Selection state.
-        selected: waterui_core::interaction::Selected,
+        selected: waterui_interaction::interaction::Selected,
         /// The accessibility children.
-        accessibility_children: waterui_core::accessibility::AccessibilityChildren,
+        accessibility_children: waterui_accessibility::AccessibilityChildren,
         /// The accessibility geometry.
-        accessibility_geometry: waterui_core::accessibility::AccessibilityGeometry,
+        accessibility_geometry: waterui_accessibility::AccessibilityGeometry,
         /// Hidden from accessibility.
-        accessibility_hidden: waterui_core::accessibility::AccessibilityHidden,
+        accessibility_hidden: waterui_accessibility::AccessibilityHidden,
         /// An accessibility identifier.
-        accessibility_identifier: waterui_core::accessibility::AccessibilityIdentifier,
+        accessibility_identifier: waterui_accessibility::AccessibilityIdentifier,
         /// An accessibility label.
-        accessibility_label: waterui_core::accessibility::AccessibilityLabel,
+        accessibility_label: waterui_accessibility::AccessibilityLabel,
         /// An accessibility role.
-        accessibility_role: waterui_core::accessibility::AccessibilityRole,
+        accessibility_role: waterui_accessibility::AccessibilityRole,
         /// Accessibility state.
-        accessibility_state: waterui_core::accessibility::AccessibilityState,
+        accessibility_state: waterui_accessibility::AccessibilityState,
         /// Accessibility state from a signal.
-        accessibility_state_signal: waterui_core::accessibility::AccessibilityStateSignal,
+        accessibility_state_signal: waterui_accessibility::AccessibilityStateSignal,
         /// An accessibility value.
-        accessibility_value: waterui_core::accessibility::AccessibilityValue,
+        accessibility_value: waterui_accessibility::AccessibilityValue,
         /// A structural transition.
         transition: waterui_structural_transition::TransitionSpec,
         /// Opacity.
@@ -1007,8 +1085,10 @@ mod tests {
         pub(super) reached: alloc::rc::Rc<core::cell::RefCell<Vec<&'static str>>>,
     }
 
+    #[cfg(waterui_feature = "capture")]
     pub(super) struct RecorderOffscreen(pub(super) Recorder);
 
+    #[cfg(waterui_feature = "capture")]
     impl OffscreenRenderer for RecorderOffscreen {
         fn render_to_rgba<V: View>(
             &self,
@@ -1307,6 +1387,11 @@ mod tests {
         assert_eq!(recorder.reached.borrow().as_slice(), ["empty"]);
     }
 
+    #[cfg(not(feature = "erased-dispatch"))]
+    const UNHOOKED_CHILD: &str = "typed child";
+    #[cfg(feature = "erased-dispatch")]
+    const UNHOOKED_CHILD: &str = "erased child";
+
     #[test]
     fn a_payload_child_realizes_through_the_same_backend() {
         let mut recorder = Recorder::default();
@@ -1314,15 +1399,14 @@ mod tests {
         Realize::child(&mut recorder, scroll(tree()), &env, ());
         Realize::child(&mut recorder, AnyView::new(scroll(tree())), &env, ());
         Realize::child(&mut recorder, scroll(AnyView::new(tree())), &env, ());
-        // A typed tree's child stays typed; only an erased scroll's payload
-        // carries an erased child. Content erased by hand stays erased
-        // inside the typed slot.
+        // A typed tree's child stays typed unless `erased-dispatch` is
+        // enabled; an erased scroll's payload always carries an erased child.
         assert_eq!(
             recorder.reached.borrow().as_slice(),
             [
-                ["scroll", "typed child", "layout_priority", "spacer"],
+                ["scroll", UNHOOKED_CHILD, "layout_priority", "spacer"],
                 ["scroll", "erased child", "layout_priority", "spacer"],
-                ["scroll", "typed child", "layout_priority", "spacer"],
+                ["scroll", UNHOOKED_CHILD, "layout_priority", "spacer"],
             ]
             .concat()
         );
@@ -1340,7 +1424,7 @@ mod tests {
         assert_eq!(
             recorder.reached.borrow().as_slice(),
             [
-                ["filtered", "typed child", "layout_priority", "spacer"],
+                ["filtered", UNHOOKED_CHILD, "layout_priority", "spacer"],
                 ["filtered", "erased child", "layout_priority", "spacer"],
             ]
             .concat()
@@ -1552,8 +1636,11 @@ mod tests {
             Spacer::flexible,
         ));
         assert_eq!(hits[0], "window");
-        assert_eq!(hits[1], "typed child");
+        assert_eq!(hits[1], UNHOOKED_CHILD);
+        #[cfg(not(feature = "erased-dispatch"))]
         assert!(!hits.contains(&"erased child"));
+        #[cfg(feature = "erased-dispatch")]
+        assert!(!hits.contains(&"typed child"));
         assert!(hits.contains(&"spacer"));
     }
 
@@ -1567,22 +1654,25 @@ mod tests {
             )
             .toolbar(waterui::layout::Divider),
         );
+        #[cfg(not(feature = "erased-dispatch"))]
         assert!(!hits.contains(&"erased child"));
+        #[cfg(feature = "erased-dispatch")]
+        assert!(!hits.contains(&"typed child"));
         assert_eq!(
             hits,
             [
                 "window",
-                "typed child",
+                UNHOOKED_CHILD,
                 "environment",
                 "environment",
                 "fixed_container",
-                "typed child",
+                UNHOOKED_CHILD,
                 "spacer",
-                "typed child",
+                UNHOOKED_CHILD,
                 "dynamic",
-                "typed child",
+                UNHOOKED_CHILD,
                 "empty",
-                "typed child",
+                UNHOOKED_CHILD,
                 "environment",
                 "divider",
             ]
@@ -1608,9 +1698,9 @@ mod tests {
             [
                 "resolved_context_menu",
                 "empty",
-                "typed child",
+                UNHOOKED_CHILD,
                 "spacer",
-                "typed child",
+                UNHOOKED_CHILD,
                 "environment",
                 "spacer",
             ]
@@ -1652,7 +1742,7 @@ mod tests {
 
         assert_eq!(
             reached(authored()),
-            ["badge", "typed child", "button", "typed child", "spacer",]
+            ["badge", UNHOOKED_CHILD, "button", UNHOOKED_CHILD, "spacer",]
         );
         assert_eq!(
             reached(AnyView::new(authored())),
@@ -1713,11 +1803,11 @@ mod tests {
             reached(authored()),
             [
                 "navigation_split",
-                "typed child",
+                UNHOOKED_CHILD,
                 "spacer",
-                "typed child",
+                UNHOOKED_CHILD,
                 "spacer",
-                "typed child",
+                UNHOOKED_CHILD,
                 "spacer",
             ]
         );
@@ -1747,6 +1837,226 @@ mod tests {
         );
     }
 
+    #[test]
+    fn subtree_button_styles_apply_across_containers_and_anyview() {
+        use alloc::rc::Rc;
+        use core::cell::RefCell;
+        use waterui::ViewExt as _;
+        use waterui::component::badge::Badge;
+        use waterui::component::button::{
+            ButtonRole, ButtonStyleConfiguration, ButtonStyleTarget, CustomButtonStyle,
+            PrimitiveButtonStyle, PrimitiveButtonStyleConfiguration, button,
+        };
+        use waterui::component::label::Label;
+
+        struct TaggedButtonStyle {
+            seen_roles: Rc<RefCell<Vec<Option<ButtonRole>>>>,
+        }
+
+        impl CustomButtonStyle for TaggedButtonStyle {
+            fn make_body<L: View>(
+                &self,
+                configuration: ButtonStyleConfiguration<L>,
+            ) -> impl View + use<L> {
+                self.seen_roles.borrow_mut().push(configuration.role());
+                scroll(configuration.into_label())
+            }
+        }
+
+        struct TaggedPrimitiveStyle;
+
+        impl PrimitiveButtonStyle for TaggedPrimitiveStyle {
+            fn make_body<L: View>(
+                &self,
+                configuration: PrimitiveButtonStyleConfiguration<L>,
+            ) -> impl View + use<L> {
+                configuration.into_label()
+            }
+        }
+
+        #[derive(Clone)]
+        struct DecliningButtonStyleHook;
+
+        impl Hook for DecliningButtonStyleHook {
+            type Target = ButtonStyleTarget;
+
+            fn apply(
+                &self,
+                target: Self::Target,
+                _env: &Environment,
+            ) -> Result<impl View, Self::Target> {
+                if false {
+                    return Ok(());
+                }
+                Err(target)
+            }
+        }
+
+        // A declining button-style hook preserves the typed child slot ("typed child").
+        assert_eq!(
+            reached(Hooks::new(
+                Badge::new(1, button(Label::new("Save", Spacer::flexible))),
+                DecliningButtonStyleHook,
+            )),
+            ["badge", "typed child", "button", "typed child", "spacer"]
+        );
+
+        // Subtree `.button_style(...)` reaches buttons nested in containers and AnyView hops,
+        // and inner hooks like `SpacerAsDivider` still re-enter the button's label.
+        let roles = Rc::new(RefCell::new(Vec::new()));
+        let tree = scroll(AnyView::new(
+            button(Label::new("Delete", Spacer::flexible)).role(ButtonRole::Destructive),
+        ))
+        .button_style(TaggedButtonStyle {
+            seen_roles: Rc::clone(&roles),
+        });
+        assert_eq!(
+            reached(Hooks::new(tree, SpacerAsDivider)),
+            [
+                "scroll",
+                "typed child",
+                "environment",
+                "accessibility_role",
+                "accessibility_label",
+                "gesture_observer",
+                "scroll",
+                "typed child",
+                "divider"
+            ]
+        );
+        assert_eq!(*roles.borrow(), alloc::vec![Some(ButtonRole::Destructive)]);
+
+        // Primitive style also installs cleanly via `.button_style(...)`.
+        let primitive_tree = AnyView::new(button("Go").button_style(TaggedPrimitiveStyle));
+        assert_eq!(
+            reached(primitive_tree),
+            [
+                "environment",
+                "accessibility_role",
+                "accessibility_label",
+                "text"
+            ]
+        );
+    }
+
+    #[test]
+    fn subtree_button_explicit_style_and_inner_builtin_override_win() {
+        use alloc::rc::Rc;
+        use core::cell::RefCell;
+        use waterui::ViewExt as _;
+        use waterui::component::button::{
+            ButtonStyle, ButtonStyleConfiguration, CustomButtonStyle, button,
+        };
+        use waterui::component::label::Label;
+
+        struct TaggedButtonStyle {
+            seen: Rc<RefCell<u32>>,
+        }
+
+        impl CustomButtonStyle for TaggedButtonStyle {
+            fn make_body<L: View>(
+                &self,
+                configuration: ButtonStyleConfiguration<L>,
+            ) -> impl View + use<L> {
+                *self.seen.borrow_mut() += 1;
+                scroll(configuration.into_label())
+            }
+        }
+
+        // Explicit `.style(ButtonStyle::Bordered)` wins over outer `.button_style(...)`.
+        let seen_explicit = Rc::new(RefCell::new(0));
+        let explicit = button(Label::new("Save", Spacer::flexible))
+            .style(ButtonStyle::Bordered)
+            .button_style(TaggedButtonStyle {
+                seen: Rc::clone(&seen_explicit),
+            });
+        assert_eq!(reached(explicit), ["button", "typed child", "spacer"]);
+        assert_eq!(*seen_explicit.borrow(), 0);
+
+        // Inner `.button_style(ButtonStyle::Bordered)` overrides outer `.button_style(Custom)`.
+        let seen_override = Rc::new(RefCell::new(0));
+        let overridden = button(Label::new("Save", Spacer::flexible))
+            .button_style(ButtonStyle::Bordered)
+            .button_style(TaggedButtonStyle {
+                seen: Rc::clone(&seen_override),
+            });
+        assert_eq!(
+            reached(Hooks::new(overridden, SpacerAsDivider)),
+            ["button", "typed child", "divider"]
+        );
+        assert_eq!(*seen_override.borrow(), 0);
+    }
+
+    #[cfg(waterui_feature = "toggle")]
+    #[test]
+    fn subtree_toggle_styles_apply_across_containers_and_respect_overrides() {
+        use alloc::rc::Rc;
+        use core::cell::RefCell;
+        use nami::Binding;
+        use waterui::ViewExt as _;
+        use waterui::component::label::Label;
+        use waterui::component::toggle::{
+            CustomToggleStyle, Toggle, ToggleStyle, ToggleStyleConfiguration,
+        };
+
+        struct CustomToggleMarkerStyle {
+            seen: Rc<RefCell<u32>>,
+        }
+
+        impl CustomToggleStyle for CustomToggleMarkerStyle {
+            fn make_body<L: View>(
+                &self,
+                configuration: ToggleStyleConfiguration<L>,
+            ) -> impl View + use<L> {
+                *self.seen.borrow_mut() += 1;
+                scroll(configuration.into_label())
+            }
+        }
+
+        let on = Binding::bool(false);
+        let seen = Rc::new(RefCell::new(0));
+        let toggle_tree = Hooks::new(
+            scroll(AnyView::new(Toggle::new(
+                Label::new("Wi-Fi", Spacer::flexible),
+                &on,
+            )))
+            .toggle_style(CustomToggleMarkerStyle {
+                seen: Rc::clone(&seen),
+            }),
+            SpacerAsDivider,
+        );
+        assert_eq!(
+            reached(toggle_tree),
+            [
+                "scroll",
+                "typed child",
+                "environment",
+                "accessibility_role",
+                "accessibility_label",
+                "accessibility_state_signal",
+                "gesture_observer",
+                "scroll",
+                "typed child",
+                "divider"
+            ]
+        );
+        assert_eq!(*seen.borrow(), 1);
+
+        // Inner `.toggle_style(ToggleStyle::Checkbox)` overrides outer custom toggle style.
+        let seen_override = Rc::new(RefCell::new(0));
+        let toggle_override = Toggle::new(Label::new("Sync", Spacer::flexible), &on)
+            .toggle_style(ToggleStyle::Checkbox)
+            .toggle_style(CustomToggleMarkerStyle {
+                seen: Rc::clone(&seen_override),
+            });
+        assert_eq!(
+            reached(toggle_override),
+            ["toggle", "typed child", "spacer"]
+        );
+        assert_eq!(*seen_override.borrow(), 0);
+    }
+
+    #[cfg(waterui_feature = "capture")]
     #[test]
     fn capture_handle_wires_typed_offscreen_renderer_and_reenters_hooks() {
         use core::future::Future;
@@ -1815,5 +2125,49 @@ mod tests {
 
         assert_eq!(reached(GpuView::new(ProbeContent)), ["gpu"]);
         assert_eq!(reached(AnyView::new(GpuView::new(ProbeContent))), ["gpu"]);
+    }
+
+    #[cfg(not(waterui_feature = "capture"))]
+    #[test]
+    fn capture_binder_is_not_routed_without_capture_feature() {
+        use waterui::view_renderer::CaptureHandle;
+
+        let handle = CaptureHandle::<Spacer>::new();
+        let scope = handle.attach(Spacer::flexible());
+        let env = Environment::new();
+
+        let mut static_recorder = Recorder::default();
+        Realize::child(&mut static_recorder, scope, &env, ());
+        assert!(!handle.is_wired());
+        #[cfg(not(feature = "erased-dispatch"))]
+        assert_eq!(
+            static_recorder.reached.borrow().first().copied(),
+            Some(core::any::type_name::<
+                waterui::view_renderer::CaptureBinder<Child<Recorder>>,
+            >())
+        );
+        #[cfg(feature = "erased-dispatch")]
+        assert_eq!(
+            static_recorder.reached.borrow().as_slice(),
+            [core::any::type_name::<
+                Metadata<waterui::view_renderer::CaptureBinder<AnyView>, AnyView>,
+            >()]
+        );
+
+        let erased_handle = CaptureHandle::<Spacer>::new();
+        let mut erased_recorder = Recorder::default();
+        Realize::child(
+            &mut erased_recorder,
+            AnyView::new(erased_handle.attach(Spacer::flexible())),
+            &env,
+            (),
+        );
+        assert!(!erased_handle.is_wired());
+        assert_eq!(
+            erased_recorder.reached.borrow().as_slice(),
+            [core::any::type_name::<
+                Metadata<waterui::view_renderer::CaptureBinder<AnyView>, AnyView>,
+            >()]
+        );
     }
 }

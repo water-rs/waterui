@@ -34,6 +34,7 @@ use waterui_graphics::color::Color;
 pub use waterui_graphics::filter_view::FilterViewExt;
 
 use suiteki::Str;
+#[cfg(feature = "capture")]
 use waterui_capture::{CaptureHandle, CaptureScope};
 use waterui_layout::{
     AspectRatio, ContentMode, HorizontalAlignmentGuide, IgnoreSafeArea, LayoutPriority, Overlay,
@@ -69,10 +70,13 @@ use crate::{
 };
 #[cfg(feature = "std")]
 use waterkit_haptic::{Haptic, Intensity};
-use waterui_core::event::{Event, LifeCycle, LifeCycleHook, OnChange, OnEvent};
+use waterui_controls::button::{ButtonStyleHook, IntoButtonStyle};
+#[cfg(feature = "toggle")]
+use waterui_controls::toggle::{IntoToggleStyle, ToggleStyleHook};
 use waterui_core::id::TaggedView;
-use waterui_core::interaction::{Disabled, InteractionReport, InteractionState, Selected};
-use waterui_core::key::{KeyHandling, OnKeyPress};
+use waterui_interaction::event::{Event, LifeCycle, LifeCycleHook, OnChange, OnEvent};
+use waterui_interaction::interaction::{Disabled, InteractionReport, InteractionState, Selected};
+use waterui_interaction::key::{KeyHandling, OnKeyPress};
 use waterui_structural_transition::{Transition, Transitioned};
 
 /// Plays an impact haptic. `Haptic::impact` is async; the event that
@@ -214,6 +218,38 @@ pub trait ViewExt: View + Sized {
     /// scope is offered a payload before an outer one.
     fn hooks<H: hook::HookList>(self, hooks: H) -> hook::Hooks<Self, H> {
         hook::Hooks::new(self, hooks)
+    }
+
+    /// Styles all [`Button`](crate::component::button::Button) views in this subtree
+    /// that did not specify an explicit `.style(...)`.
+    ///
+    /// Accepts a built-in [`ButtonStyle`](crate::component::ButtonStyle), a
+    /// [`CustomButtonStyle`](crate::component::CustomButtonStyle), or a
+    /// [`PrimitiveButtonStyle`](crate::component::PrimitiveButtonStyle).
+    fn button_style<S, Marker>(
+        self,
+        style: S,
+    ) -> hook::Hooks<Self, ButtonStyleHook<<S as IntoButtonStyle<Marker>>::Style>>
+    where
+        S: IntoButtonStyle<Marker>,
+    {
+        hook::Hooks::new(self, ButtonStyleHook::new(style.into_button_style()))
+    }
+
+    /// Styles all [`Toggle`](crate::component::toggle::Toggle) views in this subtree
+    /// that did not specify an explicit `.style(...)`.
+    ///
+    /// Accepts a built-in [`ToggleStyle`](crate::component::ToggleStyle) or a
+    /// [`CustomToggleStyle`](crate::component::CustomToggleStyle).
+    #[cfg(feature = "toggle")]
+    fn toggle_style<S, Marker>(
+        self,
+        style: S,
+    ) -> hook::Hooks<Self, ToggleStyleHook<<S as IntoToggleStyle<Marker>>::Style>>
+    where
+        S: IntoToggleStyle<Marker>,
+    {
+        hook::Hooks::new(self, ToggleStyleHook::new(style.into_toggle_style()))
     }
 
     /// Sets this view as the content of a navigation view with the specified title.
@@ -1489,7 +1525,7 @@ pub trait ViewExt: View + Sized {
 
     /// Disables every interactive control in this view subtree.
     ///
-    /// Installs a [`waterui_core::interaction::Disabled`] scope into the
+    /// Installs a [`waterui_interaction::interaction::Disabled`] scope into the
     /// subtree's environment, so controls (toggles, buttons, sliders, …)
     /// render their platform-correct disabled appearance and stop responding
     /// to input. Nested `.disabled(...)` scopes OR-combine: a control stays
@@ -1561,7 +1597,7 @@ pub trait ViewExt: View + Sized {
     /// announces it as selected. It applies to the control it modifies, not to
     /// controls nested inside that control.
     ///
-    /// [`InteractionState::SELECTED`]: waterui_core::interaction::InteractionState::SELECTED
+    /// [`InteractionState::SELECTED`]: waterui_interaction::interaction::InteractionState::SELECTED
     fn selected(self, is_selected: impl IntoComputed<bool>) -> Metadata<Selected, Self> {
         Metadata::new(self, Selected(is_selected.into_computed()))
     }
@@ -1617,6 +1653,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// Views of type `V` rendered through `handle` retain their concrete type
     /// across backend dispatch instead of erasing to [`AnyView`](waterui_core::AnyView).
+    #[cfg(feature = "capture")]
     fn capture<V: View>(self, handle: &CaptureHandle<V>) -> CaptureScope<V, Self> {
         handle.attach(self)
     }
@@ -1636,7 +1673,8 @@ impl Plugin for DisabledScope {
 
 #[cfg(test)]
 mod tests {
-    use waterui_core::{AnyView, Binding, View, interaction::InteractionState};
+    use waterui_core::{AnyView, Binding, View};
+    use waterui_interaction::interaction::InteractionState;
 
     use super::ViewExt;
 

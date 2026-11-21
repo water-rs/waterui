@@ -21,11 +21,3 @@ fn icon_glyph_exposes_accessibility_image(app: &mut SemanticApp) {
         .label("Glyph icon")
         .assert_exists();
 }
-
-// `system_icon` is deliberately not covered here. This suite runs on
-// Hydrolysis, and a self-drawn backend has no OS-supplied icon catalog, so
-// rendering a `SystemIcon` panics by design — the asymmetry is documented
-// rather than papered over (see the framework principle on asymmetric
-// primitives). `IconGlyph` above covers the accessibility path with an icon
-// source every backend can render; `SystemIcon` belongs in an Apple-backend
-// test.

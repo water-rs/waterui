@@ -8,10 +8,10 @@ use crate::theme::{NavigationBarLook, NavigationMetrics, NavigationSpec};
 use crate::widgets::controls::field_look::placeholder_text;
 #[cfg(any(feature = "text-field", feature = "secure-field"))]
 use crate::widgets::controls::field_look::value_text;
-#[cfg(any(feature = "text-field", feature = "secure-field"))]
-use waterui_core::interaction::InteractionState;
 #[cfg(feature = "list")]
 use waterui_core::views::AnyViewsSnapshot;
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
+use waterui_interaction::interaction::InteractionState;
 #[cfg(feature = "list")]
 use waterui_layout::padding::EdgeInsets;
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale

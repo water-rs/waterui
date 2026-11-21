@@ -543,10 +543,13 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         });
         // The `.dialog` modal layer draws above everything: scrim, card and
         // the modal input scope the card registers through its environment.
-        let host = self.core.presentation_hosts.dialog.clone();
-        self.record_host(&host, |renderer| {
-            renderer.render_dialogs(transform, safe_area);
-        });
+        #[cfg(waterui_feature = "dialog")]
+        {
+            let host = self.core.presentation_hosts.dialog.clone();
+            self.record_host(&host, |renderer| {
+                renderer.render_dialogs(transform, safe_area);
+            });
+        }
     }
 }
 

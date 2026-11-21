@@ -296,17 +296,14 @@ pub fn media_web_bundled_prose() -> impl View {
 }
 
 // ---------------------------------------------------------------------------
-// media.md § "## Web content" (prose): a `WebView` handle from
-// `WebViewController::open()` and `webview.proxy_scope(|| controls)`. Not counted
-// as a rust block.
+// media.md § "## Web content" (prose): opening a web view with `.with_proxy`
+// and driving a `WebViewProxy` action. Not counted as a rust block.
 // ---------------------------------------------------------------------------
-pub fn media_web_handle_prose(controller: waterui::webview::WebViewController) -> impl View {
+pub fn media_web_handle_prose() -> impl View {
     use waterui::webview::{WebView, WebViewProxy};
 
-    let webview: WebView = controller.open();
-    let controls =
-        webview.proxy_scope(|| button("Back").action(|proxy: WebViewProxy| proxy.go_back()));
-    vstack((controls, webview))
+    WebView::open("https://waterui.dev")
+        .with_proxy(|| button("Back").action(|proxy: WebViewProxy| proxy.go_back()))
 }
 
 // ---------------------------------------------------------------------------

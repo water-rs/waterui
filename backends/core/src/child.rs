@@ -41,7 +41,14 @@ impl<F: NativeBackendFamily> core::fmt::Debug for Child<F> {
 
 impl<F: NativeBackendFamily> ChildSlot for Child<F> {
     fn from_view<V: View>(view: V) -> Self {
-        Self(Box::new(ViewChild(view)))
+        #[cfg(feature = "erased-dispatch")]
+        {
+            Self(Box::new(ViewChild(AnyView::new(view))))
+        }
+        #[cfg(not(feature = "erased-dispatch"))]
+        {
+            Self(Box::new(ViewChild(view)))
+        }
     }
 }
 

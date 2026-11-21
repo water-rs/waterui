@@ -1796,91 +1796,16 @@ fn a_label_reaches_the_view_a_hook_realizes() {
     assert_eq!(labelled[0].1.role(), AccessibilityNodeRole::Image);
 }
 
-/// A `WebView` created under an application-provided controller exists — the
-/// controller permits it — but on a build bridging no engine there is nothing
-/// to draw it with, and the backend fails rather than occupying a layout slot
-/// with no page behind it.
+/// A `WebView` reaching a build bridging no engine fails cleanly through
+/// `UnavailableWebViewController` rather than occupying a layout slot with no
+/// page behind it.
 #[cfg(not(any(hydrolysis_webview_engine, hydrolysis_android_system_webview)))]
 #[test]
 #[cfg_attr(debug_assertions, should_panic(expected = "no web engine is bridged"))]
 fn a_webview_with_no_engine_to_draw_it_is_reported_and_not_drawn() {
-    use std::future::{Future, ready};
+    use waterui::webview::WebView;
 
-    use waterui::webview::{
-        BackendEvent, Cookie, CustomWebViewController, ScriptInjectionTime, ScriptMessageHandler,
-        WatcherGuard, WatcherSet, WebView, WebViewConfig, WebViewController, WebViewHandle,
-        WebViewOpenError,
-    };
-    use waterui_core::{Signal, Str};
-
-    /// The smallest controller that can still create a `WebView`: the handle
-    /// answers what construction asks and discards the rest, because the
-    /// assertion only needs the view to exist long enough for the backend to
-    /// refuse it.
-    struct TestWebViewController;
-
-    impl CustomWebViewController for TestWebViewController {
-        fn open(&self, _config: WebViewConfig) -> Result<impl WebViewHandle, WebViewOpenError> {
-            Ok(TestWebViewHandle {
-                watchers: WatcherSet::new(),
-            })
-        }
-
-        // No interception facility: the double has no engine to route an asset
-        // origin through, and the assertion it serves never opens assets.
-        fn asset_origin(&self) -> Option<waterui::webview::Url> {
-            None
-        }
-    }
-
-    struct TestWebViewHandle {
-        watchers: WatcherSet<BackendEvent>,
-    }
-
-    impl WebViewHandle for TestWebViewHandle {
-        fn go_back(&self) {}
-        fn go_forward(&self) {}
-        fn go_to(&self, _url: &waterui::webview::Url) {}
-        fn stop(&self) {}
-        fn refresh(&self) {}
-        fn set_user_agent(&self, _user_agent: &str) {}
-        fn can_go_back(&self) -> bool {
-            false
-        }
-        fn can_go_forward(&self) -> bool {
-            false
-        }
-        fn inject_script(&self, _key: &str, _script: &str, _time: ScriptInjectionTime) {}
-        fn add_handler(&self, _name: &str, _handler: Box<ScriptMessageHandler>) {}
-        fn remove_handler(&self, _name: &str) {}
-        fn set_cookie(&self, _cookie: Cookie<'static>) {}
-        fn set_redirects_enabled(&self, _enabled: impl Signal<Output = bool>) {}
-        fn watch(&self, f: impl Fn(BackendEvent) + 'static) -> WatcherGuard {
-            self.watchers.insert(f)
-        }
-        fn get_cookies(
-            &self,
-        ) -> impl Future<Output = Result<Vec<Cookie<'static>>, waterui_core::Error>> {
-            ready(Ok(Vec::new()))
-        }
-        #[expect(
-            clippy::future_not_send,
-            reason = "the returned future runs on the engine's single-threaded executor; the mock captures !Send test state that never crosses a thread"
-        )]
-        fn run_javascript(&self, _script: &str) -> impl Future<Output = Result<Str, Str>> {
-            ready(Err(Str::from_static("no page")))
-        }
-        #[expect(
-            clippy::future_not_send,
-            reason = "the returned future runs on the engine's single-threaded executor; the mock captures !Send test state that never crosses a thread"
-        )]
-        fn call_async_javascript(&self, _body: &str) -> impl Future<Output = Result<Str, Str>> {
-            ready(Err(Str::from_static("no page")))
-        }
-    }
-
-    let mut env = test_environment();
-    env.insert(WebViewController::new(TestWebViewController));
+    let env = test_environment();
     let mut renderer = test_renderer();
     let view = WebView::open("https://github.com/water-rs/waterui");
 

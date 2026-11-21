@@ -12,8 +12,6 @@ keywords = ["ui", "core", "framework", "waterui"]
 categories = ["gui"]
 
 [dependencies]
-bitflags.workspace = true
-keyboard-types.workspace = true
 suiteki.workspace = true
 smallvec.workspace = true
 nami.workspace = true
@@ -46,6 +44,10 @@ default = ["std"]
 std = []
 nightly = []
 serde = ["dep:serde", "suiteki/serde"]
+# Build strategy: erase views before entering generic framework and backend
+# dispatch so application edits do not re-monomorphize them. Off by default;
+# the CLI selects it for debug development builds, never in release.
+erased-dispatch = []
 
 [lints]
 workspace = true

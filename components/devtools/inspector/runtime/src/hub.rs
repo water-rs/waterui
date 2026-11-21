@@ -23,7 +23,8 @@ use waterui_inspector_protocol::{Channel, ChannelSet, InspectorEvent, InspectorE
 const PUBLISH_CAPACITY: usize = 8192;
 
 /// What the dispatcher thread consumes.
-pub(super) enum Dispatch {
+#[derive(Debug)]
+pub enum Dispatch {
     /// An event to fan out to subscribed clients.
     Event(InspectorEventEnvelope),
     /// An authenticated client, handed over by the acceptor.
@@ -61,7 +62,7 @@ pub(super) enum Dispatch {
 
 /// Identifies one connected inspector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(super) struct ClientId(pub(super) u64);
+pub struct ClientId(pub u64);
 
 /// Shared publishing endpoint held by every producer.
 #[derive(Debug)]
@@ -84,7 +85,7 @@ pub struct EventHub {
 
 impl EventHub {
     /// Creates a hub and the receiver its dispatcher thread will drain.
-    pub(super) fn new() -> (Arc<Self>, async_channel::Receiver<Dispatch>) {
+    pub fn new() -> (Arc<Self>, async_channel::Receiver<Dispatch>) {
         let (sender, receiver) = async_channel::bounded(PUBLISH_CAPACITY);
         let hub = Arc::new(Self {
             seq: AtomicU64::new(0),
@@ -127,12 +128,12 @@ impl EventHub {
     }
 
     /// Counts one event lost on `channel`.
-    pub(super) fn record_drop(&self, channel: Channel) {
+    pub fn record_drop(&self, channel: Channel) {
         self.dropped[channel as usize].fetch_add(1, Ordering::Relaxed);
     }
 
     /// Takes the number of events dropped on `channel` since the last call.
-    pub(super) fn take_dropped(&self, channel: Channel) -> u64 {
+    pub fn take_dropped(&self, channel: Channel) -> u64 {
         self.dropped[channel as usize].swap(0, Ordering::Relaxed)
     }
 
@@ -142,7 +143,8 @@ impl EventHub {
         self.clients.load(Ordering::Relaxed) > 0
     }
 
-    pub(super) fn set_client_count(&self, count: usize) {
+    /// Updates the count of attached inspector clients.
+    pub fn set_client_count(&self, count: usize) {
         self.clients.store(count, Ordering::Relaxed);
     }
 
@@ -158,19 +160,19 @@ impl EventHub {
     ///
     /// Control messages are rare, so losing one would be a correctness bug
     /// rather than backpressure; this blocks instead of dropping.
-    pub(super) fn send_control(&self, dispatch: Dispatch) {
+    pub fn send_control(&self, dispatch: Dispatch) {
         // A closed channel means the dispatcher is gone and the process is
         // shutting down; there is nothing useful to do about it here.
         let _ = self.sender.send_blocking(dispatch);
     }
 
     /// Allocates the next client identifier.
-    pub(super) fn next_client_id(&self) -> ClientId {
+    pub fn next_client_id(&self) -> ClientId {
         ClientId(self.next_client.fetch_add(1, Ordering::Relaxed))
     }
 
     /// Replaces the union of client subscriptions.
-    pub(super) fn set_subscribed(&self, channels: ChannelSet) {
+    pub fn set_subscribed(&self, channels: ChannelSet) {
         self.subscribed.store(channels.bits(), Ordering::Relaxed);
     }
 }
@@ -188,7 +190,7 @@ fn unix_millis() -> u64 {
 /// The milliseconds `time` is after the Unix epoch.
 fn millis_since_epoch(time: SystemTime) -> u64 {
     let since_epoch = time.duration_since(UNIX_EPOCH).unwrap_or_else(|error| {
-        crate::contract_violation!(
+        waterui_core::contract_violation!(
             "system clock is before the UNIX epoch ({error}), so the timestamp is 0"
         );
         Duration::ZERO

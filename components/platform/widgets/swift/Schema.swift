@@ -146,15 +146,15 @@ public struct WUIImage: Decodable {
 }
 
 public enum WUIImageSource: Decodable {
-    case system(name: String)
+    case sfSymbol(name: String)
     case data(Data)
 
     private enum CodingKeys: String, CodingKey { case kind, name, data }
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         switch try container.decode(String.self, forKey: .kind) {
-        case "system":
-            self = .system(name: try container.decode(String.self, forKey: .name))
+        case "sfSymbol":
+            self = .sfSymbol(name: try container.decode(String.self, forKey: .name))
         case "data":
             // The Rust side serializes `Vec<u8>` as a JSON byte array.
             let bytes = try container.decode([UInt8].self, forKey: .data)

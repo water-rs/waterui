@@ -20,7 +20,7 @@
 use crate::appearance::style::Vector;
 use nami::{Computed, SignalExt as _};
 use suiteki::Str;
-use waterui_core::accessibility::AccessibilityIdentifier;
+use waterui_accessibility::AccessibilityIdentifier;
 use waterui_core::{AnyView, Metadata};
 use waterui_graphics::WorkingColor;
 use waterui_graphics::color::{Color, Working};

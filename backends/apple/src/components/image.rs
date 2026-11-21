@@ -1,17 +1,13 @@
-//! The `image` leaf: `Native<SystemIcon>` rendered through the kit's image
-//! view.
+//! The `image` leaf: [`SfSymbol`] rendered through the kit's image view.
 //!
-//! Mirrors `WuiSystemIcon`: the `SystemIcon`'s `name` resolves an `SF
-//! Symbol` once (a missing name is a fatal authoring error, as in Swift),
-//! the theme `Foreground` slot drives the tint, and the theme `Body` font
-//! slot re-renders the symbol at the themed type size — `preferredSymbol-
-//! Configuration` on `UIKit`, a fresh configured `NSImage` on `AppKit`.
-//! Every update is an imperative kit call inside a watcher; no signal type
-//! crosses into `cocoa-ui`.
+//! Renders an Apple SF Symbol directly in an `NSImageView` / `UIImageView`,
+//! tinted by the theme `Foreground` slot and sized by the theme `Body` font
+//! slot — `preferredSymbolConfiguration` on `UIKit`, a fresh configured
+//! `NSImage` on `AppKit`. Every update is an imperative kit call inside a
+//! watcher; no signal type crosses into `cocoa-ui`.
 
 use cocoa_ui::Retained;
 use waterui::graphics::color::WorkingColor;
-use waterui::icon::SystemIcon;
 use waterui::reactive::Signal;
 use waterui::resolve::Resolvable;
 use waterui::text::font::{Body, ResolvedFont};
@@ -21,6 +17,7 @@ use waterui_core::layout::{
 };
 
 use super::font::resolved_weight;
+use crate::SfSymbol;
 use crate::contract::NativeLeaf;
 
 #[cfg(target_os = "macos")]
@@ -35,9 +32,9 @@ mod platform {
     pub(super) use cocoa_ui::uikit::colors;
 }
 
-use crate::contract::RenderContext;
-use cocoa_ui::PlatformView;
+use cocoa_ui::{MainThreadMarker, PlatformView};
 use platform::ImageView;
+use waterui_core::Environment;
 
 /// The image view as its platform view, for the leaf and layout helpers.
 fn as_view(image: &ImageView) -> &PlatformView {
@@ -139,19 +136,14 @@ impl SubView for ImageSubView {
     }
 }
 
-/// The `image` realization: `Native<SystemIcon>` maps
-/// to a kit image view drawing the named `SF Symbol`, tinted by the theme
-/// foreground and sized by the theme body font.
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "NativeBackend hands each payload by value"
-)]
-pub fn realize_system_icon(config: SystemIcon, ctx: &RenderContext<'_>) -> NativeLeaf {
-    let mtm = ctx.mtm();
+/// The SF Symbol realization: [`SfSymbol`] maps to a kit image view drawing
+/// the typed `SF Symbol`, tinted by the theme foreground and sized by the theme
+/// body font.
+pub fn realize_sf_symbol(symbol: SfSymbol, env: &Environment, mtm: MainThreadMarker) -> NativeLeaf {
     let view = ImageView::new(mtm);
     view.set_scale_mode(cocoa_ui::ScaleMode::Fit);
 
-    let name = config.name().as_str();
+    let name = symbol.as_str();
     if !view.set_system_symbol(name) {
         waterui::contract_violation!("Unknown SF Symbol name: {name}; the view draws no symbol");
     }
@@ -165,13 +157,13 @@ pub fn realize_system_icon(config: SystemIcon, ctx: &RenderContext<'_>) -> Nativ
     // re-renders it at the themed type size — both push imperatively,
     // exactly as the Swift leaf's two observations did. Watchers only
     // fire on change, so the current values are applied eagerly.
-    let foreground = Foreground.resolve(ctx.env());
+    let foreground = Foreground.resolve(env);
     view.set_tint_color(Some(&platform_color(&foreground.snapshot())));
     leaf.bind(&foreground, {
         let view = view.clone();
         move |color| view.set_tint_color(Some(&platform_color(&color)))
     });
-    let body = Body.resolve(ctx.env());
+    let body = Body.resolve(env);
     apply_symbol_font(mtm, &view, &body.snapshot());
     leaf.bind(&body, move |font| apply_symbol_font(mtm, &view, &font));
     leaf

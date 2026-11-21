@@ -22,7 +22,8 @@ pub struct FrameRecorder {
 }
 
 impl FrameRecorder {
-    pub(super) const fn new(hub: Arc<EventHub>) -> Self {
+    /// Creates a recorder publishing to `hub`.
+    pub const fn new(hub: Arc<EventHub>) -> Self {
         Self { hub }
     }
 
@@ -62,7 +63,8 @@ struct TreeState {
 }
 
 impl TreeRecorder {
-    pub(super) fn new(hub: Arc<EventHub>) -> Self {
+    /// Creates a recorder publishing to `hub`.
+    pub fn new(hub: Arc<EventHub>) -> Self {
         Self {
             hub,
             state: Arc::new(Mutex::new(TreeState::default())),

@@ -23,7 +23,7 @@ use waterui::gesture::TapGesture;
 use waterui::{AnyView, Color, ViewExt as _};
 use waterui_core::Environment;
 use waterui_core::handler::AnyViewBuilder;
-use waterui_core::interaction::{InteractionState, StateValue};
+use waterui_interaction::interaction::{InteractionState, StateValue};
 use waterui_layout::stack::hstack;
 
 use super::{MinimalTestTheme, invisible_chrome, test_environment};
@@ -401,4 +401,133 @@ fn selected_sets_the_accessibility_selected_trait() {
         Some(true),
         "Selected must set the selected trait"
     );
+}
+
+struct TestButtonStyle {
+    state_out: Rc<RefCell<Option<nami::Computed<InteractionState>>>>,
+}
+
+impl waterui::component::button::CustomButtonStyle for TestButtonStyle {
+    fn make_body<L: waterui::View>(
+        &self,
+        configuration: waterui::component::button::ButtonStyleConfiguration<L>,
+    ) -> impl waterui::View + use<L> {
+        *self.state_out.borrow_mut() = Some(configuration.interaction_state().clone());
+        configuration
+            .into_label()
+            .width(120.0)
+            .height(44.0)
+            .background(Color::srgb_hex("#2563EB"))
+    }
+}
+
+struct TestToggleStyle {
+    state_out: Rc<RefCell<Option<nami::Computed<InteractionState>>>>,
+}
+
+impl waterui::component::toggle::CustomToggleStyle for TestToggleStyle {
+    fn make_body<L: waterui::View>(
+        &self,
+        configuration: waterui::component::toggle::ToggleStyleConfiguration<L>,
+    ) -> impl waterui::View + use<L> {
+        *self.state_out.borrow_mut() = Some(configuration.interaction_state().clone());
+        let bg = waterui::color::signal_color(nami::SignalExt::select(
+            configuration.is_on(),
+            Color::srgb_hex("#16A34A"),
+            Color::srgb_hex("#52525B"),
+        ));
+        configuration
+            .into_label()
+            .width(120.0)
+            .height(44.0)
+            .background(bg)
+    }
+}
+
+#[test]
+fn custom_button_and_toggle_styles_report_interaction_without_chrome() {
+    use core::cell::Cell;
+    use nami::{Binding, Signal as _, binding};
+    use waterui::component::button::button;
+    use waterui::component::toggle::Toggle;
+
+    let button_state = Rc::new(RefCell::new(None));
+    let toggle_state = Rc::new(RefCell::new(None));
+    let clicks = Rc::new(Cell::new(0u32));
+    let toggled = Binding::bool(false);
+    let disabled = binding(false);
+
+    let view = AnyView::new(
+        hstack((
+            button("Act")
+                .action({
+                    let clicks = Rc::clone(&clicks);
+                    move || clicks.set(clicks.get() + 1)
+                })
+                .style(TestButtonStyle {
+                    state_out: Rc::clone(&button_state),
+                })
+                .disabled(disabled.clone()),
+            Toggle::new("Switch", &toggled).style(TestToggleStyle {
+                state_out: Rc::clone(&toggle_state),
+            }),
+        ))
+        .spacing(20.0),
+    );
+
+    // Deliberately no Chrome installed in env: custom styles own their surface.
+    let mut rt = runtime(test_environment(), view, MinimalTestTheme::default());
+    let btn_state = button_state
+        .borrow_mut()
+        .take()
+        .expect("custom button style ran");
+    let tgl_state = toggle_state
+        .borrow_mut()
+        .take()
+        .expect("custom toggle style ran");
+
+    assert_eq!(btn_state.snapshot(), InteractionState::empty());
+    assert_eq!(tgl_state.snapshot(), InteractionState::empty());
+
+    // Hover -> press -> release over first control (centered horizontally in 800pt window:
+    // total hstack width = 120 + 20 + 120 = 260, so button is x=270..390, toggle x=410..530).
+    pointer_move(&mut rt, 330.0, 300.0);
+    assert!(btn_state.snapshot().contains(InteractionState::HOVERED));
+    assert!(!btn_state.snapshot().contains(InteractionState::PRESSED));
+
+    pointer_down(&mut rt, 330.0, 300.0);
+    assert!(btn_state.snapshot().contains(InteractionState::HOVERED));
+    assert!(btn_state.snapshot().contains(InteractionState::PRESSED));
+
+    pointer_up(&mut rt, 330.0, 300.0);
+    let _ = rt.pump(false);
+    assert_eq!(clicks.get(), 1);
+    assert!(!btn_state.snapshot().contains(InteractionState::PRESSED));
+
+    // Toggle sits at x=410..530.
+    pointer_move(&mut rt, 470.0, 300.0);
+    assert!(tgl_state.snapshot().contains(InteractionState::HOVERED));
+    pointer_down(&mut rt, 470.0, 300.0);
+    assert!(tgl_state.snapshot().contains(InteractionState::PRESSED));
+    pointer_up(&mut rt, 470.0, 300.0);
+    let _ = rt.pump(false);
+    assert!(toggled.snapshot(), "clicking custom toggle flips is_on");
+
+    // Keyboard Tab focuses button and reports FOCUSED.
+    pointer_move(&mut rt, 10.0, 10.0);
+    key(&mut rt, KeyCode::Named("Tab".into()), KeyState::Pressed);
+    key(&mut rt, KeyCode::Named("Tab".into()), KeyState::Released);
+    assert!(
+        btn_state.snapshot().contains(InteractionState::FOCUSED),
+        "Tab must report FOCUSED on custom-styled button"
+    );
+
+    // Disabling suppresses hover/click and surfaces DISABLED.
+    disabled.set(true);
+    let _ = rt.pump(false);
+    assert!(btn_state.snapshot().contains(InteractionState::DISABLED));
+    pointer_down(&mut rt, 330.0, 300.0);
+    pointer_up(&mut rt, 330.0, 300.0);
+    let _ = rt.pump(false);
+    assert_eq!(clicks.get(), 1, "disabled custom button must not fire");
 }

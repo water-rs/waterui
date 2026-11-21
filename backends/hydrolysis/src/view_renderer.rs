@@ -45,6 +45,8 @@ enum OffscreenState {
         theme: Rc<dyn crate::theme::WidgetTheme>,
         family_resolution: FontFamilyResolution,
     },
+    #[cfg(any(waterui_feature = "capture", not(hydrolysis_cherenkov)))]
+    #[cfg_attr(not(waterui_feature = "capture"), allow(dead_code))]
     Unavailable(&'static str),
 }
 
@@ -64,6 +66,7 @@ impl core::fmt::Debug for HydrolysisOffscreenRenderer {
     }
 }
 
+#[cfg(any(waterui_feature = "capture", not(hydrolysis_cherenkov)))]
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
 struct OffscreenUnavailableError(&'static str);
@@ -71,6 +74,7 @@ struct OffscreenUnavailableError(&'static str);
 impl HydrolysisOffscreenRenderer {
     /// Returns a renderer that fails captures with `reason` (used by
     /// `SemanticRuntime` and targets without Cherenkov offscreen support).
+    #[cfg(waterui_feature = "capture")]
     #[must_use]
     pub(crate) const fn unavailable(reason: &'static str) -> Self {
         Self {
@@ -135,7 +139,7 @@ impl HydrolysisOffscreenRenderer {
         }
     }
 
-    #[cfg(hydrolysis_cherenkov)]
+    #[cfg(all(waterui_feature = "capture", hydrolysis_cherenkov))]
     pub(crate) const fn set_family_resolution(&mut self, resolution: FontFamilyResolution) {
         if let OffscreenState::Cherenkov {
             family_resolution, ..
@@ -147,7 +151,7 @@ impl HydrolysisOffscreenRenderer {
 
     /// Returns a fresh renderer sharing the underlying device/engine configuration
     /// without sharing the per-renderer surface borrow.
-    #[cfg(hydrolysis_cherenkov)]
+    #[cfg(all(waterui_feature = "capture", hydrolysis_cherenkov))]
     #[must_use]
     pub(crate) fn clone_for_dispatch(&self) -> Self {
         match &self.state {
@@ -174,7 +178,7 @@ impl HydrolysisOffscreenRenderer {
     }
 
     /// Returns a fresh renderer sharing the underlying configuration.
-    #[cfg(not(hydrolysis_cherenkov))]
+    #[cfg(all(waterui_feature = "capture", not(hydrolysis_cherenkov)))]
     #[must_use]
     pub(crate) const fn clone_for_dispatch(&self) -> Self {
         let OffscreenState::Unavailable(reason) = self.state;
@@ -306,6 +310,7 @@ impl OffscreenRenderer for HydrolysisOffscreenRenderer {
         request: RenderRequest,
     ) -> Result<RenderResult, RenderError> {
         match &self.state {
+            #[cfg(waterui_feature = "capture")]
             OffscreenState::Unavailable(reason) => Err(RenderError::Capture(Box::new(
                 OffscreenUnavailableError(reason),
             ))),

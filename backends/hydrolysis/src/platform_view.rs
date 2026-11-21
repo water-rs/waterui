@@ -89,6 +89,28 @@ impl NativeView for PlatformView {
     fn stretch_axis(&self) -> StretchAxis {
         StretchAxis::Both
     }
+
+    fn realize_provided(
+        self,
+        context: &mut dyn core::any::Any,
+        env: &waterui_core::Environment,
+    ) -> Result<(), Self> {
+        if let Some(slot) = context.downcast_mut::<crate::renderer::HydroProvidedSlot>() {
+            let behavior =
+                crate::widgets::platform::platform_view::PlatformViewRenderState::from_config(
+                    &self, env,
+                )
+                .map(|state| {
+                    (
+                        Rc::new(state) as Rc<dyn crate::renderer::HydroProvidedBehavior>,
+                        StretchAxis::Both,
+                    )
+                });
+            slot.realized = behavior;
+            return Ok(());
+        }
+        Err(self)
+    }
 }
 
 /// An ancestor scroll view's overscroll stretch as it warps one embedded

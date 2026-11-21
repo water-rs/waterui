@@ -13,8 +13,8 @@ use waterui_backend_core::gesture::GesturePlacement;
 #[cfg(feature = "menu")]
 use waterui_backend_core::gesture::LONG_PRESS_SLOP;
 use waterui_core::contract_violation;
-use waterui_core::interaction::{InteractionReport, InteractionState, Selected};
 use waterui_graphics::input::{Code, GesturePhase, ScrollPhase, ScrollUnit};
+use waterui_interaction::interaction::{InteractionReport, InteractionState, Selected};
 use waterui_layout::scroll::Axis as ScrollAxis;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -3865,6 +3865,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         // whatever control holds focus — Space still activates the focused
         // one — as an alert's default button does. A dialog without a
         // primary action leaves Return to the focused control.
+        #[cfg(waterui_feature = "dialog")]
         if matches!(key, KeyCode::Named(value) if value == "Enter")
             && let Some(dialog) = self.popup_menu.dialog_stack.front().cloned()
             && let Some(primary) = dialog.primary_action().cloned()
@@ -5268,6 +5269,18 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             chrome.get_hit(),
             Some(InteractionFocus::visible(focused)),
         )
+    }
+
+    /// Binds a non-chrome tap target that reports interaction state through
+    /// [`InteractionReport`](waterui_interaction::interaction::InteractionReport).
+    pub(crate) fn bind_reported_tap_target(
+        &mut self,
+        key: InteractionKey,
+        bounds: kurbo::Rect,
+        env: &Environment,
+        disabled: bool,
+    ) -> (InteractionState, PressSlot, Rc<InteractionLayerHandles>) {
+        self.bind_interaction_target_with_focus(key, bounds, env, None, disabled, None)
     }
 
     /// Binds the interaction target of a toggle whose parts are

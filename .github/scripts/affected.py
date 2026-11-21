@@ -98,7 +98,7 @@ SCENE_ASSET_OWNERS = {"cherenkov-oracle", "cherenkov-gpu", "cherenkov-cpu"}
 # The workspace members the Linux lint never compiles: they build only on
 # Apple hosts, so the macOS legs lint them and test.yml's Linux scope drops
 # them from the `-p` list (`-p` and `--exclude` cannot be combined).
-LINUX_EXCLUDED = {"waterui-apple", "cocoa-ui"}
+LINUX_EXCLUDED = {"waterui-apple", "cocoa-ui", "liquid-glass-example"}
 
 # A pull request whose affected packages are at least this share of the
 # Linux-linted members re-checks most of the workspace, so it gets the

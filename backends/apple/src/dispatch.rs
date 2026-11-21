@@ -6,10 +6,14 @@ use crate::backend::AppleBackend;
 use crate::contract::NativeLeaf;
 
 /// Gives a root environment the state its leaves share.
+#[cfg(waterui_feature = "dialog")]
 pub fn install(env: &mut Environment) {
-    #[cfg(waterui_feature = "dialog")]
     crate::components::dialog::install(env);
-    #[cfg(not(waterui_feature = "dialog"))]
+}
+
+/// Gives a root environment the state its leaves share.
+#[cfg(not(waterui_feature = "dialog"))]
+pub const fn install(env: &mut Environment) {
     let _ = env;
 }
 

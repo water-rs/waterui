@@ -29,14 +29,14 @@ use waterkit_fs::WaterFs;
 use waterui_capture::ContentLedger;
 use waterui_capture::content_ledger::OwedContent;
 use waterui_core::contract_violation;
-use waterui_core::event::{LifeCycle, LifeCycleHook};
 use waterui_core::handler::ReportExtraction as _;
 use waterui_core::reactive::signal::IntoComputed;
 use waterui_core::reactive::watcher::BoxWatcherGuard;
-use waterui_core::{AnyView, Computed, Environment, Metadata, Retain, Signal, View};
+use waterui_core::{Computed, Environment, Metadata, Retain, Signal, View};
 use waterui_image::{
     ContentMode, Image, ImageStatus, ReactiveImage, ReactiveImageHandle, reactive_image,
 };
+use waterui_interaction::event::{LifeCycle, LifeCycleHook};
 #[cfg(feature = "remote")]
 use zenwave::{Client, Method};
 
@@ -210,7 +210,7 @@ impl View for Photo {
         };
         let guard = subscribe_photo_source(&source, &load_state, owe, start.clone());
 
-        AnyView::new(Metadata::new(
+        Metadata::new(
             Metadata::new(
                 content,
                 LifeCycleHook::new(LifeCycle::Appear, {
@@ -219,7 +219,7 @@ impl View for Photo {
                 }),
             ),
             Retain::new((guard, source, load_state)),
-        ))
+        )
     }
 }
 

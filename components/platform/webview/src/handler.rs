@@ -71,12 +71,17 @@ pub struct AnyWebViewHandle {
 }
 
 /// A backend's handle, with what the facade keeps of how it was opened.
-struct Opened<H: ?Sized> {
+pub struct Opened<H: ?Sized> {
     #[cfg(not(target_arch = "wasm32"))]
     /// The keys of [`WebViewConfig::user_scripts`] — the scripts fixed for
     /// the view's life, which `inject_script` may not name.
     creation_keys: Box<[Str]>,
     handle: H,
+}
+
+#[must_use]
+pub const fn opened_handle<H: WebViewHandle>(opened: &Opened<H>) -> &H {
+    &opened.handle
 }
 
 webview_handle! {
@@ -449,6 +454,46 @@ webview_handle! {
             }
         }
 
+        /// Opens a web view through `open` and returns both the type-erased
+        /// handle and the concrete `Rc<Opened<H>>` sharing the same
+        /// allocation.
+        ///
+        /// # Errors
+        ///
+        /// When the engine fails to open the view: emits a
+        /// `contract_violation!` and returns an unavailable `AnyWebViewHandle`
+        /// that ignores every call.
+        pub(crate) fn open_typed<H: WebViewHandle>(
+            config: WebViewConfig,
+            open: impl FnOnce(WebViewConfig) -> Result<H, WebViewOpenError>,
+        ) -> Result<(Self, Rc<Opened<H>>), Self> {
+            #[cfg(not(target_arch = "wasm32"))]
+            let creation_keys: Box<[Str]> = config.script_keys().collect();
+            match open(config) {
+                Ok(handle) => {
+                    let typed = Rc::new(Opened {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        creation_keys,
+                        handle,
+                    });
+                    let inner: Rc<Opened<dyn WebViewHandleImpl>> = Rc::clone(&typed) as Rc<Opened<dyn WebViewHandleImpl>>;
+                    Ok((Self { inner }, typed))
+                }
+                Err(error) => {
+                    contract_violation!(
+                        "the web engine could not open a web view: {error}; the view is \
+                         drawn as an unavailable placeholder and ignores every call"
+                    );
+                    let inner: Rc<Opened<dyn WebViewHandleImpl>> = Rc::new(Opened {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        creation_keys,
+                        handle: UnavailableWebViewHandle::default(),
+                    });
+                    Err(Self { inner })
+                }
+            }
+        }
+
         /// Opens a web view through `open` and erases its handle, recording
         /// the keys of the scripts `config` creates it with.
         ///
@@ -464,27 +509,21 @@ webview_handle! {
             config: WebViewConfig,
             open: impl FnOnce(WebViewConfig) -> Result<H, WebViewOpenError>,
         ) -> Self {
-            #[cfg(not(target_arch = "wasm32"))]
-            let creation_keys = config.script_keys().collect();
-            let handle: Rc<Opened<dyn WebViewHandleImpl>> = match open(config) {
-                Ok(handle) => Rc::new(Opened {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    creation_keys,
-                    handle,
+            match Self::open_typed(config, open) {
+                Ok((handle, _)) | Err(handle) => handle,
+            }
+        }
+
+        /// Returns a handle whose page could not be opened before the engine was
+        /// called (for example, an invalid asset-origin configuration).
+        #[cfg(not(target_arch = "wasm32"))]
+        pub(crate) fn unavailable() -> Self {
+            Self {
+                inner: Rc::new(Opened {
+                    creation_keys: Box::default(),
+                    handle: UnavailableWebViewHandle::default(),
                 }),
-                Err(error) => {
-                    contract_violation!(
-                        "the web engine could not open a web view: {error}; the view is \
-                         drawn as an unavailable placeholder and ignores every call"
-                    );
-                    Rc::new(Opened {
-                        #[cfg(not(target_arch = "wasm32"))]
-                        creation_keys,
-                        handle: UnavailableWebViewHandle::default(),
-                    })
-                }
-            };
-            Self { inner: handle }
+            }
         }
 
         /// Whether the engine failed to open this view, so no page exists

@@ -19,8 +19,9 @@
 //! ```
 
 use nami::{Computed, SignalExt};
-use waterui_core::{IntoSignalF32, interaction::StateValue, metadata::MetadataKey, plugin::Plugin};
+use waterui_core::{IntoSignalF32, metadata::MetadataKey, plugin::Plugin};
 use waterui_graphics::color::Color;
+use waterui_interaction::interaction::StateValue;
 use waterui_shape::{ClipShape, Rectangle, Shape};
 
 /// Theme tokens for a view promoted with [`ViewExt::floating`](crate::ViewExt::floating).

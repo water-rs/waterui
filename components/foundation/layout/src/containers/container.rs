@@ -314,11 +314,11 @@ impl<C: 'static> NativeView for FixedContainer<Vec<C>> {}
 impl<S: ViewSequence> View for FixedContainer<S> {
     /// The erased form, for code that expands views by hand.
     fn body(self, env: &waterui_core::Environment) -> impl View {
-        let Self { layout, contents } = self.directional(env);
-        Native::new(FixedContainer::<Vec<AnyView>>::from_parts(
-            layout,
-            contents.into_slots(),
-        ))
+        let Self { layout, contents } = self;
+        Native::new(
+            FixedContainer::<Vec<AnyView>>::from_parts(layout, contents.into_slots())
+                .directional(env),
+        )
     }
 
     /// Reaches the backend with each child in the backend's child slot.
@@ -328,9 +328,10 @@ impl<S: ViewSequence> View for FixedContainer<S> {
         env: &waterui_core::Environment,
         cx: B::Ctx,
     ) -> B::Output {
-        let Self { layout, contents } = self.directional(env);
+        let Self { layout, contents } = self;
         backend.native(
-            FixedContainer::<Vec<B::Slot>>::from_parts(layout, contents.into_slots()),
+            FixedContainer::<Vec<B::Slot>>::from_parts(layout, contents.into_slots())
+                .directional(env),
             env,
             cx,
         )
@@ -369,6 +370,11 @@ impl<V: View> LazyContainer<V> {
         // separate signal so placement can mirror without materializing items.
         LazyContainer {
             layout: self.layout,
+            #[cfg(feature = "erased-dispatch")]
+            contents: self
+                .contents
+                .map_views(|view| S::from_view(AnyView::new(view))),
+            #[cfg(not(feature = "erased-dispatch"))]
             contents: self.contents.map_views(S::from_view),
             direction: layout_direction(env),
         }

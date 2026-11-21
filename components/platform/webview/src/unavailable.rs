@@ -123,3 +123,28 @@ impl WebViewHandle for UnavailableWebViewHandle {
         ready(Err(Str::from_static(UNAVAILABLE)))
     }
 }
+
+/// [`WebViewController`](crate::WebViewController) for configurations without a
+/// web engine feature enabled.
+///
+/// Every open request fails cleanly with [`WebViewOpenError::Engine`] so
+/// backends without a bridged engine still satisfy
+/// [`WebViewController`](crate::WebViewController) at compile time and surface
+/// the configuration error as a contract violation if a `WebView` is rendered.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct UnavailableWebViewController;
+
+impl crate::WebViewController for UnavailableWebViewController {
+    type Handle = UnavailableWebViewHandle;
+
+    fn open(&self, _config: crate::WebViewConfig) -> Result<Self::Handle, WebViewOpenError> {
+        Err(WebViewOpenError::Engine(String::from(
+            "no web engine is bridged in this build",
+        )))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn asset_origin(&self) -> Option<Url> {
+        None
+    }
+}

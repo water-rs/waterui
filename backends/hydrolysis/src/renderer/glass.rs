@@ -19,8 +19,8 @@ use std::rc::Rc;
 use kurbo::RoundedRectRadii;
 use waterui::background::Glass;
 use waterui_core::Environment;
-use waterui_core::interaction::InteractionState;
 use waterui_graphics::color::Color;
+use waterui_interaction::interaction::InteractionState;
 use waterui_shape::{ClipShape, ShapeKind};
 
 use crate::renderer::chrome::LiveChromeParts;

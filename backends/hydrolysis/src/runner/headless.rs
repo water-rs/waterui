@@ -776,7 +776,7 @@ impl HeadlessRuntime {
         let inspector = init_main_thread_executors();
         let inspector_probe = inspector
             .as_ref()
-            .map(waterui::inspector::InspectorRuntime::runtime_probe);
+            .map(|inspector| inspector.task_probe() as Arc<dyn waterui::task::RuntimeProbe>);
         let mut env = env.extending(waterui_graphics::backend::SceneViewMergeToParent);
         waterui::install_application_resources(&mut env);
         waterui::inspector::install(&mut env, inspector);
@@ -836,6 +836,7 @@ impl HeadlessRuntime {
             Rc::clone(&theme),
             ParleyEngine::from_collection(&fonts, family_resolution),
         );
+        #[cfg(waterui_feature = "capture")]
         renderer.set_offscreen_painter(&painter, family_resolution);
         renderer.set_window_id(
             env.get::<crate::renderer::WindowIdentities>()
@@ -893,6 +894,7 @@ impl HeadlessRuntime {
             Rc::clone(&self.theme),
             ParleyEngine::from_collection(&self.fonts, self.family_resolution),
         );
+        #[cfg(waterui_feature = "capture")]
         renderer.set_offscreen_painter(&self.painter, self.family_resolution);
         renderer.set_window_id(
             self.env

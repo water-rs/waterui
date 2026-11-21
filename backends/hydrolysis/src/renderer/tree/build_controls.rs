@@ -113,6 +113,7 @@ impl_widget_behavior!(
     ; a11y: crate::widgets::layout::badge::emit_badge_accessibility
 );
 
+#[cfg(hydrolysis_android_system_webview)]
 impl_widget_behavior!(
     crate::widgets::platform::platform_view::PlatformViewRenderState,
     crate::widgets::platform::platform_view::render_platform_view_node,
@@ -156,23 +157,6 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             fill_leaf: false,
             env: env.clone(),
         })
-    }
-
-    /// Build a platform-view placement leaf: the retained state is the factory
-    /// key, a stable placement id and the session's `PlatformViewSink` — the
-    /// sink lookup happens here so a runner that embeds no native views is
-    /// reported at build instead of at first flush, and builds an empty leaf.
-    pub(super) fn build_platform_view(
-        renderer: &SemanticCore<E>,
-        config: &crate::platform_view::PlatformView,
-        env: &Environment,
-    ) -> Self {
-        use crate::widgets::platform::platform_view::PlatformViewRenderState;
-        let Some(state) = PlatformViewRenderState::from_config(config, env) else {
-            return Self::build_empty(renderer, env);
-        };
-        let state = Rc::new(RefCell::new(state));
-        Self::build_widget(renderer, state, StretchAxis::Both, env)
     }
 
     /// Build a persistent button node: retain the config behind an `Rc<RefCell<…>>`

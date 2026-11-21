@@ -362,7 +362,14 @@ pub fn dispatch<V: View, B: Backend>(
     env: &Environment,
     cx: B::Ctx,
 ) -> B::Output {
-    view.dispatch(backend, env, cx)
+    #[cfg(feature = "erased-dispatch")]
+    {
+        AnyView::new(view).dispatch(backend, env, cx)
+    }
+    #[cfg(not(feature = "erased-dispatch"))]
+    {
+        view.dispatch(backend, env, cx)
+    }
 }
 
 /// Reads the first [`Metadata<K>`] wrapper `view` resolves to, with its

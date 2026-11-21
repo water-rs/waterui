@@ -1238,6 +1238,8 @@ pub struct BuildOptions {
     dev_server: bool,
     /// `CARGO_PROFILE_*` overrides applied to the cargo invocation.
     cargo_envs: Vec<(String, OsString)>,
+    /// Whether this build enables `waterui/erased-dispatch`.
+    erased_dispatch: bool,
     /// Sink compile progress is reported to while cargo runs.
     progress: Option<BuildProgress>,
 }
@@ -1261,6 +1263,7 @@ impl BuildOptions {
             linkage: RustLinkage::SharedRuntime,
             dev_server: false,
             cargo_envs: profile.development_envs(),
+            erased_dispatch: !profile.is_release(),
             progress: None,
         }
     }
@@ -1330,6 +1333,7 @@ impl BuildOptions {
             linkage: RustLinkage::Static,
             dev_server: false,
             cargo_envs: Vec::new(),
+            erased_dispatch: false,
             progress: None,
         }
     }
@@ -1356,6 +1360,13 @@ impl BuildOptions {
     #[must_use]
     pub const fn is_release(&self) -> bool {
         self.profile.is_release()
+    }
+
+    /// Whether this build enables the framework's `erased-dispatch` debug
+    /// build strategy.
+    #[must_use]
+    pub const fn uses_erased_dispatch(&self) -> bool {
+        self.erased_dispatch
     }
 
     /// The selected build profile.
@@ -4098,6 +4109,18 @@ mod tests {
         );
         assert!(BuildOptions::development(BuildProfile::Release).is_release());
         assert!(BuildOptions::packaging(BuildProfile::Release).is_release());
+        assert!(BuildOptions::development(BuildProfile::Debug).uses_erased_dispatch());
+        assert!(BuildOptions::development(BuildProfile::Optimized).uses_erased_dispatch());
+        assert!(!BuildOptions::development(BuildProfile::Release).uses_erased_dispatch());
+        assert!(!BuildOptions::development(BuildProfile::Profiling).uses_erased_dispatch());
+        for profile in [
+            BuildProfile::Debug,
+            BuildProfile::Optimized,
+            BuildProfile::Release,
+            BuildProfile::Profiling,
+        ] {
+            assert!(!BuildOptions::packaging(profile).uses_erased_dispatch());
+        }
     }
 
     #[test]

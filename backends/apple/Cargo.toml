@@ -44,7 +44,7 @@ applied_filter = ["gpu_surface", "dep:objc2-core-image", "waterui/effects"]
 calendar = ["waterui/calendar"]
 # The Core Animation realization of `Canvas`.
 canvas = ["dep:block2", "dep:skrifa", "waterui-graphics/text"]
-gpu_surface = ["dep:block2", "objc2-metal/block2", "waterui/gpu"]
+gpu_surface = ["dep:block2", "objc2-metal/block2", "dep:wgpu-hal", "waterui/gpu", "waterui-graphics/gpu"]
 color_picker = ["waterui/color-picker"]
 context_menu = ["waterui/menu"]
 date_picker = ["waterui/date-picker"]
@@ -58,7 +58,7 @@ multi_date_picker = ["waterui/multi-date-picker"]
 navigation = ["menu", "waterui/navigation"]
 picker = ["waterui/picker"]
 plain = []
-picture = ["waterui/gpu"]
+picture = ["waterui-graphics/cpu"]
 secure_field = ["waterui/secure-field"]
 slider = ["waterui/slider"]
 stepper = ["waterui/stepper"]
@@ -95,6 +95,10 @@ preview = ["dep:waterui-preview-protocol"]
 # `__wmeta` record for the packager.
 swiftui = ["dep:waterkit-build", "dep:waterui-meta"]
 
+# Development inspector endpoint and tracing subscriber, enabled by the CLI for
+# development sessions (`water run` / `water preview`).
+inspector = ["waterui/inspector", "dep:tracing-subscriber"]
+
 # Harness-only reach for `Tests/native.rs`: compiles the doc(hidden)
 # `native_test_support` module (private windows + embedding internals),
 # never part of a production build. Forwards cocoa-ui's gate so one
@@ -104,6 +108,7 @@ swiftui = ["dep:waterkit-build", "dep:waterui-meta"]
 # `waterui-webview/conformance` supplying the engine checks it runs.
 native-test = [
     "cocoa-ui/native-test",
+    "inspector",
     "preview",
     "webview",
     "waterui-webview/conformance",
@@ -112,7 +117,9 @@ native-test = [
 
 
 [dependencies]
-waterui = { workspace = true, features = ["inspector", "assets", "snackbar", "highlight", "locale-datetime", "locale-list"] }
+waterui = { workspace = true }
+waterui-accessibility = { workspace = true }
+waterui-interaction = { workspace = true }
 waterui-core = { workspace = true }
 waterui-capture = { workspace = true }
 waterui-resources = { workspace = true }
@@ -131,12 +138,9 @@ waterui-meta = { workspace = true, optional = true }
 # The GPU components the backend owns (`gpu_surface`, `view_effect`,
 # `picture`, `resolved_gradient`) are Rust semantic types here, not FFI
 # pointers: `cpu` is what `picture`'s rasteriser needs beyond `gpu`.
-waterui-graphics = { workspace = true, features = [
-    "gpu",
-    "cpu",
-] }
+waterui-graphics = { workspace = true }
 # HAL access to the runtime device for native Metal presentation.
-wgpu-hal = { workspace = true }
+wgpu-hal = { workspace = true, optional = true }
 # `addCompletedHandler` blocks on the submitted Metal command buffer —
 # `gpu_surface`-gated so no-GPU artifacts link neither it nor the metal
 # block2 feature.
@@ -177,13 +181,14 @@ skrifa = { workspace = true, optional = true }
 dispatch2 = "0.3"
 libc = "0.2"
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
+tracing-subscriber = { workspace = true, optional = true }
 tracing-panic = { workspace = true }
 
 objc2 = { workspace = true }
 objc2-foundation = { version = "0.3", default-features = false, features = [
     "NSAttributedString",
     "NSDate",
+    "NSKeyValueCoding",
     "NSValue",
 ] }
 objc2-core-foundation = { version = "0.3", default-features = false, features = [
@@ -233,9 +238,10 @@ divan = "0.1"
 pollster = { workspace = true }
 libtest-mimic = "0.8"
 serde_json = { workspace = true }
-# The preview suite renders an `ImageAsset`, which sits behind `media` on
-# the facade — the crate's own `waterui` edge does not enable it.
-waterui = { workspace = true, features = ["media"] }
+# The preview suite renders an `ImageAsset`, which sits behind `assets` + `media`
+# on the facade, and the native suite tests `NativeBackend::offscreen` behind
+# `capture` — the crate's own `waterui` edge enables none of them.
+waterui = { workspace = true, features = ["assets", "capture", "media"] }
 # The termination tests park the hook futures on an `async-task` executor.
 executor-core = { workspace = true, features = ["async-task"] }
 # The webview trials drive the shared conformance cases; the crate's own

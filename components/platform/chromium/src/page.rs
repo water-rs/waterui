@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::rc::Rc;
 
-use waterui_core::accessibility::{AccessibilityRole, default_role};
+use waterui_accessibility::{AccessibilityRole, default_role};
 use waterui_core::env::use_env;
 use waterui_core::extract::{ExtractionState, Extractor};
 use waterui_core::{Environment, Error, Metadata, Retain, View, impl_debug};

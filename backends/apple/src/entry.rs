@@ -21,8 +21,13 @@ pub unsafe fn run<W: Windows>(
     env: &mut Environment,
     accessory: bool,
 ) -> ! {
-    let inspector = crate::startup::initialize();
-    waterui::inspector::install(env, inspector);
+    #[cfg(feature = "inspector")]
+    {
+        let inspector = crate::startup::initialize();
+        waterui::inspector::install(env, inspector);
+    }
+    #[cfg(not(feature = "inspector"))]
+    crate::startup::initialize();
     waterui::text::install_system_font_collection(env);
     let mut fonts = crate::fonts::FontRegistrations::default();
     crate::resources::install_application(env, &mut fonts);
@@ -80,16 +85,12 @@ mod imp {
             .expect("GPU completion must run exactly once");
         // SAFETY: `run` lent `env` for the process and never returned.
         let env = unsafe { &mut *launch.env };
-        #[cfg(any(feature = "webview", all(target_os = "macos", feature = "webview-cef")))]
-        crate::components::webview::install_service(env);
         let parts = app(env.clone()).into_parts();
         // Content renders under the environment `app` returned: its own
         // installs (`.state(..)` chains) landed as overlays on the clone it
         // was handed, which the host env cannot see — `insert` never
         // propagates between clones.
         let mut app_env = parts.env;
-        #[cfg(any(feature = "webview", all(target_os = "macos", feature = "webview-cef")))]
-        crate::components::webview::install_service(&mut app_env);
         // The machine installs the `Quit` service into `app_env` before the
         // menus and windows realize under it, so a `|quit: Quit|` action
         // finds it. A declared `MenuItem::Quit` does not use the service: it
@@ -108,6 +109,7 @@ mod imp {
         // `installMenuBar`: the declared menus resolve and rebuild under the
         // environment `app` returned, exactly as windows do. The guard lives
         // for the process.
+        #[cfg(waterui_feature = "menu")]
         core::mem::forget(crate::menus::install_declared(
             mtm,
             &Application::shared(mtm),
@@ -143,6 +145,7 @@ mod imp {
         } else {
             ActivationPolicy::Regular
         });
+        #[cfg(waterui_feature = "menu")]
         crate::menus::install_default(mtm, &application);
 
         let theme = Rc::new(crate::theme::install(env, application.color_scheme()));
@@ -164,18 +167,27 @@ mod imp {
 
         let handlers = ApplicationHandlers::new()
             .did_finish_launching(move |_| {
+                #[cfg(feature = "gpu_surface")]
                 let env_ptr = launch.env;
                 // SAFETY: `launch` is consumed by `prepared` exactly once —
                 // this handler runs once — and `env` is `run`'s borrow, lent
                 // for the process.
                 // Install native services only after the GPU context is ready.
-                unsafe {
-                    crate::gpu_runtime::prepare(env_ptr, move || {
-                        #[cfg(any(feature = "webview", all(target_os = "macos", feature = "webview-cef")))]
-                        crate::embedding::install_services(&mut *env_ptr);
+                let finish = move || {
+                    // SAFETY: `launch` is consumed by `prepared` exactly once —
+                    // this handler runs once — and `env` is `run`'s borrow, lent
+                    // for the process.
+                    unsafe {
                         prepared::<F, W>(Box::into_raw(launch).cast::<c_void>());
-                    });
+                    }
+                };
+                #[cfg(feature = "gpu_surface")]
+                // SAFETY: `env_ptr` stays live until `finish` runs on the main thread.
+                unsafe {
+                    crate::gpu_runtime::prepare(env_ptr, finish);
                 }
+                #[cfg(not(feature = "gpu_surface"))]
+                finish();
             })
             .should_terminate({
                 let termination = Rc::clone(&termination);
@@ -223,6 +235,7 @@ mod imp {
     struct Launch<F> {
         app: Option<F>,
         env: *mut Environment,
+        #[cfg(waterui_feature = "menu")]
         declared: crate::menus::Declared,
         scenes: crate::scene_registry::Registration<crate::windows::Scenes>,
         _theme: Rc<ThemeSignals>,
@@ -244,8 +257,6 @@ mod imp {
             .expect("GPU completion must run exactly once");
         // SAFETY: `run` lent `env` for the process and never returned.
         let env = unsafe { &mut *launch.env };
-        #[cfg(any(feature = "webview", all(target_os = "macos", feature = "webview-cef")))]
-        crate::components::webview::install_service(env);
         let parts = app(env.clone()).into_parts();
         // iOS ends the process without notice, so `on_quit_request` and
         // `on_terminate` are never called: the machine is never started and
@@ -253,12 +264,7 @@ mod imp {
         let _ = parts.termination;
         // Same hand-off as macOS: content renders under the env `app`
         // returned — its installs are invisible to the host env.
-        // `mut` only serves the `webview` install below; without the port
-        // nothing borrows `app_env` mutably.
-        #[allow(unused_mut)]
-        let mut app_env = parts.env;
-        #[cfg(any(feature = "webview", all(target_os = "macos", feature = "webview-cef")))]
-        crate::components::webview::install_service(&mut app_env);
+        let app_env = parts.env;
         let initial = crate::windows::connect_windows(parts.windows, &app_env);
         if initial.is_empty() {
             waterui::contract_violation!(
@@ -268,6 +274,7 @@ mod imp {
         // `installMenuBar`: `declared` feeds the `build_menus` handler the
         // delegate registered at launch; the watch rebuilds on every change.
         // The guard lives for the process.
+        #[cfg(waterui_feature = "menu")]
         core::mem::forget(crate::menus::install_declared(
             mtm,
             &parts.menu_bar,
@@ -295,7 +302,9 @@ mod imp {
 
         // Filled by `prepared`: `build_menus` can fire before `app(env)`
         // runs, so the declared menus sit behind this slot.
+        #[cfg(waterui_feature = "menu")]
         let declared = crate::menus::declared();
+        #[cfg(waterui_feature = "menu")]
         let build_menus = crate::menus::build_handler(Rc::clone(&declared));
         let scenes = env
             .get::<crate::scene_registry::SceneRegistry<crate::windows::Scenes>>()
@@ -305,6 +314,7 @@ mod imp {
         let launch = Box::new(Launch {
             app: Some(app),
             env: core::ptr::from_mut(env),
+            #[cfg(waterui_feature = "menu")]
             declared,
             scenes,
             _theme: Rc::clone(&theme),
@@ -320,23 +330,29 @@ mod imp {
         })
         // Releases the scene's host, leaf and keep-alive, as the embedding
         // path's `waterui_apple_scene_disconnect` does.
-        .scene_did_disconnect(move |id| disconnected.disconnect(id))
-        .build_menus(build_menus)
-        .did_finish_launching(move |_| {
+        .scene_did_disconnect(move |id| disconnected.disconnect(id));
+        #[cfg(waterui_feature = "menu")]
+        let handlers = handlers.build_menus(build_menus);
+        let handlers = handlers.did_finish_launching(move |_| {
+            #[cfg(feature = "gpu_surface")]
             let env_ptr = launch.env;
             // SAFETY: `launch` is consumed by `prepared` exactly once, and
             // `env` is `run`'s borrow, lent for the process.
             // Install native services only after the GPU context is ready.
-            unsafe {
-                crate::gpu_runtime::prepare(env_ptr, move || {
-                    #[cfg(any(
-                        feature = "webview",
-                        all(target_os = "macos", feature = "webview-cef")
-                    ))]
-                    crate::embedding::install_services(&mut *env_ptr);
+            let finish = move || {
+                // SAFETY: `launch` is consumed by `prepared` exactly once, and
+                // `env` is `run`'s borrow, lent for the process.
+                unsafe {
                     prepared::<F, W>(Box::into_raw(launch).cast::<c_void>());
-                });
+                }
+            };
+            #[cfg(feature = "gpu_surface")]
+            // SAFETY: `env_ptr` stays live until `finish` runs on the main thread.
+            unsafe {
+                crate::gpu_runtime::prepare(env_ptr, finish);
             }
+            #[cfg(not(feature = "gpu_surface"))]
+            finish();
         });
         uikit::run(mtm, handlers)
     }

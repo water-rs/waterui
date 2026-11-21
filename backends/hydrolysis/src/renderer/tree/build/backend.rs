@@ -6,9 +6,9 @@ use core::marker::PhantomData;
 use waterui_backend_core::{
     ChildView, NativeBackend, NativeBackendFamily, Realize, mark_reached, report_unprovided,
 };
+use waterui_core::backend::ErasedPayload;
 #[cfg(any(feature = "menu", hydrolysis_video_plane))]
-use waterui_core::backend::ChildSlot;
-use waterui_core::backend::{ErasedPayload, cast};
+use waterui_core::backend::{ChildSlot, cast};
 use waterui_core::metadata::MetadataKey;
 use waterui_core::{NativeView, View};
 
@@ -152,12 +152,50 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     type Output = RenderNode<E>;
     type Ctx = ();
     type Family = HydroFamily<E>;
+    #[cfg(waterui_feature = "webview")]
+    type WebViewController = crate::widgets::platform::webview::SelectedWebViewController;
+    #[cfg(waterui_feature = "capture")]
     type Offscreen = crate::view_renderer::HydrolysisOffscreenRenderer;
 
     fn with_family<R>(&mut self, f: impl for<'a> FnOnce(&mut HydroBackend<'a, E>) -> R) -> R {
         f(self)
     }
 
+    #[cfg(waterui_feature = "webview")]
+    fn web_view_controller(&self) -> Self::WebViewController {
+        #[cfg(hydrolysis_macos_system_webview)]
+        {
+            crate::widgets::platform::webview::MacSystemWebViewController
+        }
+        #[cfg(hydrolysis_android_system_webview)]
+        {
+            self.renderer.android_webview_controller()
+        }
+        #[cfg(hydrolysis_web_system_webview)]
+        {
+            crate::widgets::platform::webview::WebSystemWebViewController
+        }
+        #[cfg(hydrolysis_cef_webview)]
+        {
+            waterui_browser_cef::webview_controller()
+        }
+        #[cfg(hydrolysis_wpe_webview)]
+        {
+            waterui_browser_wpe::webview_controller()
+        }
+        #[cfg(not(any(
+            hydrolysis_macos_system_webview,
+            hydrolysis_android_system_webview,
+            hydrolysis_web_system_webview,
+            hydrolysis_cef_webview,
+            hydrolysis_wpe_webview,
+        )))]
+        {
+            waterui::webview::UnavailableWebViewController
+        }
+    }
+
+    #[cfg(waterui_feature = "capture")]
     fn offscreen(&self, _env: &Environment) -> Self::Offscreen {
         self.renderer.offscreen_renderer()
     }
@@ -360,28 +398,30 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     #[cfg(waterui_feature = "webview")]
     fn web_view(
         &mut self,
-        native: waterui::webview::WebView,
+        native: waterui::webview::WebViewOpen,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
         mark_reached!("web_view");
+        let controller = self.web_view_controller();
         #[cfg(hydrolysis_cef_webview)]
         {
-            if native.handle().is_unavailable() {
+            let Some(opened) = native.open_with(&controller, env) else {
                 return RenderNode::build_empty(self.renderer, env);
-            }
-            self.build(waterui_browser_cef::webview(native, env), env)
+            };
+            self.build(waterui_browser_cef::webview(opened, env), env)
         }
         #[cfg(hydrolysis_wpe_webview)]
         {
-            if native.handle().is_unavailable() {
+            let Some(opened) = native.open_with(&controller, env) else {
                 return RenderNode::build_empty(self.renderer, env);
-            }
-            self.build(waterui_browser_wpe::webview(native, env), env)
+            };
+            self.build(waterui_browser_wpe::webview(opened, env), env)
         }
         #[cfg(not(any(hydrolysis_cef_webview, hydrolysis_wpe_webview)))]
         {
-            RenderNode::build_webview(&native, env, self.renderer)
+            let _ = controller;
+            RenderNode::build_webview(native, env, self.renderer)
         }
     }
 
@@ -628,7 +668,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     // control's `SELECTED` flag and a11y selected state read it.
     fn selected<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_core::interaction::Selected, C>,
+        metadata: Metadata<waterui_interaction::interaction::Selected, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -899,7 +939,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
-        let layer = RetainedSubview::new(AnyView::new(value.modal_layer()));
+        let layer = RetainedSubview::new(value.modal_layer());
         RenderNode::build_wrapper(
             WrapperEffect::Dialog(DialogEffect {
                 content: Rc::new(RefCell::new(layer)),
@@ -1022,7 +1062,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
 
     fn on_event<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_core::event::OnEvent, C>,
+        metadata: Metadata<waterui_interaction::event::OnEvent, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -1040,7 +1080,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
 
     fn on_key_press<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_core::key::OnKeyPress, C>,
+        metadata: Metadata<waterui_interaction::key::OnKeyPress, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -1058,7 +1098,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
 
     fn gesture_observer<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_core::gesture::GestureObserver, C>,
+        metadata: Metadata<waterui_interaction::gesture::GestureObserver, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -1075,7 +1115,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
             gesture_target: Cell::new(None),
             chrome: RefCell::new(None),
             chrome_state: nami::Binding::container(
-                waterui_core::interaction::InteractionState::empty(),
+                waterui_interaction::interaction::InteractionState::empty(),
             ),
         };
         RenderNode::wrap(WrapperEffect::GestureObserver(effect), child, env, renderer)
@@ -1096,7 +1136,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
 
     fn lifecycle_hook<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_core::event::LifeCycleHook, C>,
+        metadata: Metadata<waterui_interaction::event::LifeCycleHook, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -1409,18 +1449,6 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         RenderNode::build_table(renderer, native, env)
     }
 
-    fn icon(
-        &mut self,
-        native: waterui::icon::SystemIcon,
-        env: &Environment,
-        (): (),
-    ) -> RenderNode<E> {
-        mark_reached!("icon");
-        let renderer = &mut *self.renderer;
-        unsupported_system_icon(&native);
-        RenderNode::build_empty(renderer, env)
-    }
-
     fn gradient(
         &mut self,
         native: waterui::graphics::Gradient,
@@ -1537,31 +1565,22 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
-        // A platform-view embedding leaf records its frame onto the host's
-        // `PlatformViewSink` each flush; mounting the real native child is
-        // the host's work.
-        let native = match cast::<T, PlatformView>(native) {
-            Ok(platform_view) => {
-                mark_reached!("platform_view");
-                return RenderNode::build_platform_view(self.renderer, &platform_view, env);
-            }
+        // Backend-owned leaves (`PlatformView`, `HostedView`) claim
+        // `HydroProvidedSlot` inside `NativeView::realize_provided`, so only
+        // constructed leaves stay reachable and `provided` / `provided_dyn`
+        // carry no hardcoded downcasts for them.
+        let mut slot = provided::HydroProvidedSlot::default();
+        let native = match native.realize_provided(&mut slot, env) {
+            Ok(()) => return provided::realize_hydro_provided_slot(self.renderer, slot, env),
             Err(native) => native,
         };
-        #[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
-        let native = match cast::<T, crate::hosted::HostedView>(native) {
-            Ok(hosted) => {
-                mark_reached!("hosted");
-                return RenderNode::build_hosted(hosted, env, self.renderer);
-            }
-            Err(native) => native,
-        };
-        // The GPU video player's host.
+        // The GPU video player's host (owned by external `waterui-video-gpu`).
         #[cfg(hydrolysis_video_plane)]
         let native = match cast::<T, waterui_video_gpu::AndroidVideoSurfaceHost>(native) {
             Ok(host) => {
                 mark_reached!("android_video_surface_host");
-                let picture = crate::runner::android::video_plane::unwrap_host(Native::new(host));
-                return RenderNode::build_view(picture, env, self.renderer);
+                let picture = crate::runner::android::video_plane::unwrap_host(host);
+                return self.video_plane_host(picture.map_content(HeldChild::from_view), env);
             }
             Err(native) => native,
         };
@@ -1616,20 +1635,15 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
-        if let Some(platform_view) = native.take::<PlatformView>() {
-            mark_reached!("platform_view");
-            return RenderNode::build_platform_view(self.renderer, &platform_view, env);
-        }
-        #[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
-        if let Some(hosted) = native.take::<crate::hosted::HostedView>() {
-            mark_reached!("hosted");
-            return RenderNode::build_hosted(hosted, env, self.renderer);
+        let mut slot = provided::HydroProvidedSlot::default();
+        if native.realize_provided(&mut slot, env) {
+            return provided::realize_hydro_provided_slot(self.renderer, slot, env);
         }
         #[cfg(hydrolysis_video_plane)]
         if let Some(host) = native.take::<waterui_video_gpu::AndroidVideoSurfaceHost>() {
             mark_reached!("android_video_surface_host");
-            let picture = crate::runner::android::video_plane::unwrap_host(Native::new(host));
-            return RenderNode::build_view(picture, env, self.renderer);
+            let picture = crate::runner::android::video_plane::unwrap_host(host);
+            return self.video_plane_host(picture.map_content(HeldChild::from_view), env);
         }
         #[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
         if self.renderer.semantic_walk {
