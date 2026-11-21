@@ -190,6 +190,8 @@ pub trait LabelKind: sealed::Sealed + Clone + 'static {
     fn has_icon(&self) -> bool;
     /// Lifts the icon into an erased builder for chrome that places icons separately.
     fn icon_view(&self) -> Option<AnyViewBuilder<AnyView>>;
+    /// Builds the icon slot factory for [`ControlLabel`].
+    fn icon_slot_builder<S: ChildSlot>(&self) -> Option<Rc<dyn Fn() -> S>>;
     /// Attaches `icon`.
     fn with_icon<I: View + Clone>(self, icon: I) -> Self::WithIcon<I>;
     /// Sets icon placement (`Leading` or `Trailing`), or reports a contract violation on custom content.
@@ -252,6 +254,10 @@ impl LabelKind for TitleLabel {
     }
 
     fn icon_view(&self) -> Option<AnyViewBuilder<AnyView>> {
+        None
+    }
+
+    fn icon_slot_builder<S: ChildSlot>(&self) -> Option<Rc<dyn Fn() -> S>> {
         None
     }
 
@@ -384,6 +390,11 @@ impl<I: View + Clone> LabelKind for IconLabel<I> {
     fn icon_view(&self) -> Option<AnyViewBuilder<AnyView>> {
         let icon = self.icon.clone();
         Some(AnyViewBuilder::new(move || AnyView::new(icon.clone())))
+    }
+
+    fn icon_slot_builder<S: ChildSlot>(&self) -> Option<Rc<dyn Fn() -> S>> {
+        let icon = self.icon.clone();
+        Some(Rc::new(move || S::from_view(icon.clone())))
     }
 
     fn with_icon<NewI: View + Clone>(self, icon: NewI) -> IconLabel<NewI> {
@@ -552,6 +563,10 @@ impl<V: View + Clone> LabelKind for CustomLabel<V> {
         None
     }
 
+    fn icon_slot_builder<S: ChildSlot>(&self) -> Option<Rc<dyn Fn() -> S>> {
+        None
+    }
+
     fn with_icon<I: View + Clone>(self, _icon: I) -> Self {
         contract_violation!(
             "Label::icon requires a semantic text label; compose icons inside Label::new content; the call is ignored"
@@ -664,6 +679,13 @@ impl LabelKind for SemanticLabel {
 
     fn icon_view(&self) -> Option<AnyViewBuilder<AnyView>> {
         self.icon.clone()
+    }
+
+    fn icon_slot_builder<S: ChildSlot>(&self) -> Option<Rc<dyn Fn() -> S>> {
+        self.icon.clone().map(|icon| {
+            let build: Rc<dyn Fn() -> S> = Rc::new(move || S::from_view(icon.build()));
+            build
+        })
     }
 
     fn with_icon<I: View + Clone>(self, icon: I) -> IconLabel<I> {
@@ -814,6 +836,13 @@ impl LabelKind for ErasedLabel {
             Self::Semantic { icon, .. } => icon.clone(),
             Self::Custom { .. } => None,
         }
+    }
+
+    fn icon_slot_builder<S: ChildSlot>(&self) -> Option<Rc<dyn Fn() -> S>> {
+        self.icon_view().map(|icon| {
+            let build: Rc<dyn Fn() -> S> = Rc::new(move || S::from_view(icon.build()));
+            build
+        })
     }
 
     fn with_icon<I: View + Clone>(mut self, icon: I) -> Self {
@@ -972,12 +1001,26 @@ impl LabelKind for ErasedLabel {
     }
 }
 
+enum ControlLabelIcon<S> {
+    Slot(Rc<dyn Fn() -> S>),
+    Erased(AnyViewBuilder<AnyView>),
+}
+
+impl<S> Clone for ControlLabelIcon<S> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Slot(build) => Self::Slot(Rc::clone(build)),
+            Self::Erased(builder) => Self::Erased(builder.clone()),
+        }
+    }
+}
+
 /// Resolved control label carried by native control configurations in a
 /// backend's child slot `S`.
 pub struct ControlLabel<S> {
     build: Rc<dyn Fn(Option<Font>) -> S>,
     semantic_text: Text,
-    icon_view: Option<AnyViewBuilder<AnyView>>,
+    icon: Option<ControlLabelIcon<S>>,
     accessibility_text: Option<Text>,
     accessibility_label: Option<Computed<StyledStr>>,
     display_mode: LabelDisplayMode,
@@ -990,7 +1033,7 @@ impl<S> Clone for ControlLabel<S> {
         Self {
             build: Rc::clone(&self.build),
             semantic_text: self.semantic_text.clone(),
-            icon_view: self.icon_view.clone(),
+            icon: self.icon.clone(),
             accessibility_text: self.accessibility_text.clone(),
             accessibility_label: self.accessibility_label.clone(),
             display_mode: self.display_mode,
@@ -1063,6 +1106,22 @@ impl<S> ControlLabel<S> {
     pub const fn has_custom_content(&self) -> bool {
         self.has_custom_content
     }
+
+    /// Whether this label carries an icon.
+    #[must_use]
+    pub const fn has_icon(&self) -> bool {
+        self.has_icon
+    }
+
+    /// Materializes the label's icon in slot `S`, if this label carries a
+    /// slot-built icon.
+    #[must_use]
+    pub fn build_icon(&self) -> Option<S> {
+        match &self.icon {
+            Some(ControlLabelIcon::Slot(build)) => Some(build()),
+            Some(ControlLabelIcon::Erased(_)) | None => None,
+        }
+    }
 }
 
 impl<S: 'static> ControlLabel<S> {
@@ -1070,10 +1129,17 @@ impl<S: 'static> ControlLabel<S> {
     #[must_use]
     pub fn map_slots<T: 'static>(self, f: impl Fn(S) -> T + Clone + 'static) -> ControlLabel<T> {
         let build = self.build;
+        let icon = self.icon.map(|icon| match icon {
+            ControlLabelIcon::Slot(build_icon) => {
+                let map_icon = f.clone();
+                ControlLabelIcon::Slot(Rc::new(move || map_icon(build_icon())))
+            }
+            ControlLabelIcon::Erased(builder) => ControlLabelIcon::Erased(builder),
+        });
         ControlLabel {
             build: Rc::new(move |font| f(build(font))),
             semantic_text: self.semantic_text,
-            icon_view: self.icon_view,
+            icon,
             accessibility_text: self.accessibility_text,
             accessibility_label: self.accessibility_label,
             display_mode: self.display_mode,
@@ -1115,7 +1181,26 @@ impl<V: View> LabelKind for ControlLabel<V> {
     }
 
     fn icon_view(&self) -> Option<AnyViewBuilder<AnyView>> {
-        self.icon_view.clone()
+        match self.icon.as_ref()? {
+            ControlLabelIcon::Slot(build) => {
+                let build = Rc::clone(build);
+                Some(AnyViewBuilder::new(move || AnyView::new(build())))
+            }
+            ControlLabelIcon::Erased(builder) => Some(builder.clone()),
+        }
+    }
+
+    fn icon_slot_builder<S: ChildSlot>(&self) -> Option<Rc<dyn Fn() -> S>> {
+        match self.icon.as_ref()? {
+            ControlLabelIcon::Slot(build) => {
+                let build = Rc::clone(build);
+                Some(Rc::new(move || S::from_view(build())))
+            }
+            ControlLabelIcon::Erased(builder) => {
+                let builder = builder.clone();
+                Some(Rc::new(move || S::from_view(builder.build())))
+            }
+        }
     }
 
     fn with_icon<I: View + Clone>(self, icon: I) -> IconLabel<I> {
@@ -1140,9 +1225,10 @@ impl<V: View> LabelKind for ControlLabel<V> {
     fn set_default_text_line_limit(&mut self, _limit: core::num::NonZeroUsize) {}
 
     fn into_semantic(self) -> SemanticLabel {
+        let icon = self.icon_view();
         SemanticLabel {
             text: self.semantic_text,
-            icon: self.icon_view,
+            icon,
             icon_position: IconPosition::Leading,
             spacing: Computed::constant(8.0),
             font: None,
@@ -1705,7 +1791,10 @@ impl<K: LabelKind> Label<K> {
         let resolved = self.resolve(env);
         let mode = resolved.display_mode;
         let semantic_text = resolved.content.semantic_text().clone();
-        let icon_view = resolved.content.icon_view();
+        let icon = resolved
+            .content
+            .icon_slot_builder::<S>()
+            .map(ControlLabelIcon::Slot);
         let accessibility_text = resolved.accessibility_text.clone();
         let accessibility_label = resolved.accessibility_label();
         let has_custom_content = resolved.content.has_custom_content();
@@ -1714,7 +1803,7 @@ impl<K: LabelKind> Label<K> {
         ControlLabel {
             build,
             semantic_text,
-            icon_view,
+            icon,
             accessibility_text,
             accessibility_label: Some(accessibility_label),
             display_mode: mode,
@@ -1729,7 +1818,7 @@ impl<K: LabelKind> Label<K> {
     pub fn into_unscoped_control_label(self) -> ControlLabel<Self> {
         let mode = self.display_mode;
         let semantic_text = self.content.semantic_text().clone();
-        let icon_view = self.content.icon_view();
+        let icon = self.content.icon_view().map(ControlLabelIcon::Erased);
         let accessibility_text = self.accessibility_text.clone();
         let accessibility_label = self.accessibility_label.clone();
         let has_custom_content = self.content.has_custom_content();
@@ -1741,7 +1830,7 @@ impl<K: LabelKind> Label<K> {
         ControlLabel {
             build,
             semantic_text,
-            icon_view,
+            icon,
             accessibility_text,
             accessibility_label,
             display_mode: mode,
@@ -1881,5 +1970,45 @@ mod tests {
         let label = super::label("greeting").font(waterui_text::font::Body);
 
         assert_eq!(semantic_plain(&label, &env), "Hello");
+    }
+
+    #[derive(Clone)]
+    struct TestIcon;
+
+    impl waterui_core::View for TestIcon {
+        fn body(self, _env: &Environment) -> impl waterui_core::View {}
+    }
+
+    struct RecordingSlot(core::any::TypeId);
+
+    impl waterui_core::backend::ChildSlot for RecordingSlot {
+        fn from_view<V: waterui_core::View>(_view: V) -> Self {
+            Self(core::any::TypeId::of::<V>())
+        }
+    }
+
+    #[test]
+    fn into_control_label_builds_icon_directly_into_child_slot() {
+        let env = test_env();
+        let control = super::label("Close")
+            .icon(TestIcon)
+            .icon_only()
+            .into_control_label::<RecordingSlot>(&env);
+
+        assert!(control.has_icon());
+        let icon = control
+            .build_icon()
+            .expect("slot-backed ControlLabel should build its icon into S");
+        assert_eq!(
+            icon.0,
+            core::any::TypeId::of::<TestIcon>(),
+            "icon must enter ChildSlot::from_view as its concrete type, never AnyView",
+        );
+
+        let mapped = control.map_slots(|slot| slot.0);
+        assert_eq!(
+            mapped.build_icon(),
+            Some(core::any::TypeId::of::<TestIcon>())
+        );
     }
 }
