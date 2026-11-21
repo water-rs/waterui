@@ -2350,7 +2350,8 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                         // layered over this dispatch's, so `.state(&value)`
                         // overlays reach the item actions.
                         let menu_env = menu_target.env.layered_on(env);
-                        self.show_context_menu(
+                        (menu_target.present)(
+                            self,
                             items,
                             Some(&menu_target),
                             LayoutPoint::new(
@@ -2432,7 +2433,9 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                         if !keep_selection {
                             changed |= self.update_text_selection_from_pointer(index, point, false);
                         }
-                        changed |= self.show_text_context_menu(index, point, env);
+                        let show_context_menu =
+                            self.text_editing.text_input_targets[index].show_context_menu;
+                        changed |= show_context_menu(self, index, point, env);
                     }
                     _ => {}
                 }
@@ -2442,11 +2445,15 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
 
         if button != PointerButton::Primary {
             #[cfg(feature = "menu")]
-            if button == PointerButton::Secondary && !in_context_menu_presentation {
-                let menu_target = self.topmost_context_menu_target_at_point(point);
-                let mut items = menu_target.as_ref().map_or_default(|target| {
-                    popup_menu_nodes(&target.items.snapshot(), &target.env, self.window_closable)
-                });
+            if button == PointerButton::Secondary
+                && !in_context_menu_presentation
+                && let Some(menu_target) = self.topmost_context_menu_target_at_point(point)
+            {
+                let mut items = popup_menu_nodes(
+                    &menu_target.items.snapshot(),
+                    &menu_target.env,
+                    self.window_closable,
+                );
                 if !items.is_empty() {
                     // The debug inspect entry extends a menu, it does not
                     // create one — an empty `.context_menu` must behave the
@@ -2459,12 +2466,11 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                     // Same inheritance as the embedded-surface arm: the
                     // declaring view's environment layers over this
                     // dispatch's.
-                    let menu_env = menu_target
-                        .as_ref()
-                        .map_or_else(|| env.clone(), |target| target.env.layered_on(env));
-                    let changed = self.show_context_menu(
+                    let menu_env = menu_target.env.layered_on(env);
+                    let changed = (menu_target.present)(
+                        self,
                         items,
-                        menu_target.as_ref(),
+                        Some(&menu_target),
                         LayoutPoint::new(
                             crate::num_cast::f64_as_f32(point.x),
                             crate::num_cast::f64_as_f32(point.y),
@@ -4263,21 +4269,46 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         } else {
             self.topmost_context_menu_target_at_point(point)
         };
-        let mut items = menu_target.as_ref().map_or_default(|target| {
-            popup_menu_nodes(&target.items.snapshot(), &target.env, self.window_closable)
-        });
+        let Some(menu_target) = menu_target else {
+            #[cfg(debug_assertions)]
+            {
+                let mut items = Vec::new();
+                self.append_inspect_element_item(&mut items, point);
+                if items.is_empty() {
+                    return false;
+                }
+                return self.show_context_menu(
+                    items,
+                    None,
+                    LayoutPoint::new(
+                        crate::num_cast::f64_as_f32(point.x),
+                        crate::num_cast::f64_as_f32(point.y),
+                    ),
+                    env,
+                    true,
+                );
+            }
+            #[cfg(not(debug_assertions))]
+            {
+                return false;
+            }
+        };
+        let mut items = popup_menu_nodes(
+            &menu_target.items.snapshot(),
+            &menu_target.env,
+            self.window_closable,
+        );
         self.append_inspect_element_item(&mut items, point);
         if items.is_empty() {
             return false;
         }
         // Same inheritance the secondary-press arms apply: the declaring
         // view's environment layers over this dispatch's.
-        let menu_env = menu_target
-            .as_ref()
-            .map_or_else(|| env.clone(), |target| target.env.layered_on(env));
-        self.show_context_menu(
+        let menu_env = menu_target.env.layered_on(env);
+        (menu_target.present)(
+            self,
             items,
-            menu_target.as_ref(),
+            Some(&menu_target),
             LayoutPoint::new(
                 crate::num_cast::f64_as_f32(point.x),
                 crate::num_cast::f64_as_f32(point.y),

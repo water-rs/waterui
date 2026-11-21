@@ -316,13 +316,10 @@ pub enum AccessibilityActionTarget<E: crate::text::TextEngine> {
         value: nami::Binding<DateTime>,
         range: RangeInclusive<DateTime>,
         ty: DatePickerType,
-        /// The popup's window anchor when the node was emitted by a rendered
-        /// frame; `None` in the semantic tree, where activation mounts the
-        /// same window with no placement at all.
-        origin: Option<LayoutPoint>,
-        /// The node's own environment — its popup opens inside it
-        /// (water-rs/hydrolysis#140).
-        env: Environment,
+        /// Widget-registered popup opener invoked on `Click`, so
+        /// `date_picker_window_base` (`Calendar`/`Stepper`) is only reachable
+        /// when a `DatePicker` is constructed.
+        open_popup: AccessibilityActivation<E>,
     },
     #[cfg(feature = "text-field")]
     TextField {
@@ -1670,15 +1667,13 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 value,
                 range,
                 ty,
-                origin,
-                env: picker_env,
+                open_popup,
             } => handle_accessibility_date_picker_action(
                 self,
                 &value,
                 &range,
                 ty,
-                origin,
-                &picker_env,
+                &open_popup,
                 action,
                 action_data,
                 env,
@@ -2976,29 +2971,13 @@ fn handle_accessibility_date_picker_action<E: crate::text::TextEngine>(
     value: &nami::Binding<DateTime>,
     range: &RangeInclusive<DateTime>,
     ty: DatePickerType,
-    origin: Option<LayoutPoint>,
-    picker_env: &Environment,
+    open_popup: &AccessibilityActivation<E>,
     action: AccessibilityAction,
     data: Option<AccessibilityActionData>,
     env: &Environment,
 ) -> bool {
     match action {
-        // A rendered node carries its trigger anchor; a semantic node carries
-        // none and mounts the same window with no placement at all.
-        AccessibilityAction::Click => {
-            // The picker's own environment layers over the dispatch's
-            // (water-rs/hydrolysis#140).
-            let env = picker_env.layered_on(env);
-            match origin {
-                Some(origin) => {
-                    renderer.show_date_picker(value.clone(), range.clone(), ty, origin, &env);
-                }
-                None => {
-                    renderer.activate_date_picker(value.clone(), range.clone(), ty, &env);
-                }
-            }
-            true
-        }
+        AccessibilityAction::Click => (open_popup.borrow_mut())(renderer, env),
         AccessibilityAction::Focus => true,
         AccessibilityAction::SetValue => {
             let Some(AccessibilityActionData::Value(text)) = data else {
@@ -3224,14 +3203,12 @@ impl<E: crate::text::TextEngine> Clone for AccessibilityActionTarget<E> {
                 value,
                 range,
                 ty,
-                origin,
-                env,
+                open_popup,
             } => Self::DatePicker {
                 value: value.clone(),
                 range: range.clone(),
                 ty: *ty,
-                origin: *origin,
-                env: env.clone(),
+                open_popup: Rc::clone(open_popup),
             },
             #[cfg(feature = "text-field")]
             Self::TextField { value, line_limit } => Self::TextField {

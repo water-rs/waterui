@@ -903,14 +903,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         render_content: impl FnOnce(&mut Self),
     ) {
         let bounds = ctx.bounds();
-        renderer.register_context_menu_target(
-            bounds,
-            value.items.clone(),
-            env,
-            value.dismiss_requests.clone(),
-            Rc::clone(&value.preview),
-            Rc::clone(&value.accessory),
-        );
+        renderer.register_context_menu_target(bounds, value, env);
         render_content(renderer);
     }
 
