@@ -870,13 +870,20 @@ pub fn run<W: Windows>(
     // `MainThreadMarker` contract needs.
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[cfg(feature = "menu")]
-    let native_menu_bar = crate::platform::native_menu_bar::NativeMenuBar::install(
-        &super::menu_bar::register_menu_bar::<crate::text::ParleyEngine>(&menu_bar, &env),
-        &env,
-    );
+    let native_menu_bar = {
+        let items = menu_bar.as_ref().map_or_else(
+            || nami::Computed::constant(Vec::new()),
+            |menu_bar| {
+                super::menu_bar::register_menu_bar::<crate::text::ParleyEngine>(menu_bar, &env)
+            },
+        );
+        crate::platform::native_menu_bar::NativeMenuBar::install(&items, &env)
+    };
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     #[cfg(feature = "menu")]
-    super::menu_bar::register_menu_bar::<crate::text::ParleyEngine>(&menu_bar, &env);
+    if let Some(menu_bar) = &menu_bar {
+        super::menu_bar::register_menu_bar::<crate::text::ParleyEngine>(menu_bar, &env);
+    }
     let mut runner = WinitRunner {
         env,
         theme,

@@ -1320,6 +1320,12 @@ fn binds_chord(items: &[ResolvedMenuItem], chord: &Shortcut) -> bool {
 pub struct CloseWindowChord(Computed<Option<Shortcut>>);
 
 impl CloseWindowChord {
+    /// The standard close-window chord when an application declares no menu bar.
+    #[must_use]
+    pub fn standard() -> Self {
+        Self(Computed::constant(Some(Shortcut::new('w').command())))
+    }
+
     /// The decision over `menu_bar`, resolved under `env` — a signal, so a
     /// menu bar whose items change re-decides the chord.
     #[must_use]
