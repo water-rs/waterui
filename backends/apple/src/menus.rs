@@ -624,10 +624,8 @@ mod imp {
 #[cfg(target_os = "ios")]
 mod imp {
     use alloc::boxed::Box;
-    use alloc::rc::Rc;
     use alloc::vec::Vec;
     use core::any::Any;
-    use core::cell::RefCell;
 
     use cocoa_ui::MainThreadMarker;
     use cocoa_ui::uikit::MenuBuilder;
@@ -637,72 +635,57 @@ mod imp {
 
     use super::{DeclaredMenu, kit_command_for_menu, menu_tree, resolve};
 
-    /// What `install_declared` shares with the `build_menus` handler: the
-    /// resolved items plus the environment their actions run under, filled
-    /// once `app(env)` has returned its own environment.
-    pub type Declared = Rc<RefCell<Option<(Computed<Vec<ResolvedMenuItem>>, Environment)>>>;
-
-    /// The slot `build_menus` reads — empty until `app(env)` has run.
-    #[must_use]
-    pub fn declared() -> Declared {
-        Rc::new(RefCell::new(None))
-    }
-
-    /// The `build_menus` handler: each top-level declared `Menu` becomes a
-    /// `UIMenu` at the end of the root bar, replaced in place on rebuild.
-    pub fn build_handler(declared: Declared) -> impl Fn(&MenuBuilder<'_>) + 'static {
-        move |builder| {
-            let Some((resolved, env)) = declared.borrow().clone() else {
-                tracing::debug!("main menu built before the application declared its menus");
-                return;
-            };
-            let mtm =
-                MainThreadMarker::new().expect("UIKit calls `build_menus` on the main thread");
-            let items = resolved.snapshot();
-            for (index, item) in items.iter().enumerate() {
-                let ResolvedMenuItem::Menu(menu) = item else {
-                    waterui::contract_violation!(
-                        "App::menu_bar only accepts top-level Menu values; the item is skipped"
-                    );
-                    continue;
-                };
-                let identifier = alloc::format!("dev.waterui.menu.{index}");
-                let command = kit_command_for_menu(menu, &env);
-                let nodes = menu_tree(&menu.items.snapshot(), &env);
-                let ui_menu = cocoa_ui::uikit::menu_with_identifier(
-                    mtm,
-                    builder.key_commands(),
-                    &command,
-                    Some(&identifier),
-                    &nodes,
+    fn build_menus(
+        resolved: &Computed<Vec<ResolvedMenuItem>>,
+        env: &Environment,
+        builder: &MenuBuilder<'_>,
+    ) {
+        let mtm = MainThreadMarker::new().expect("UIKit calls `build_menus` on the main thread");
+        let items = resolved.snapshot();
+        for (index, item) in items.iter().enumerate() {
+            let ResolvedMenuItem::Menu(menu) = item else {
+                waterui::contract_violation!(
+                    "App::menu_bar only accepts top-level Menu values; the item is skipped"
                 );
-                if builder.contains(&identifier) {
-                    builder.replace(&identifier, &ui_menu);
-                } else {
-                    builder.insert_at_root_end(&ui_menu);
-                }
-            }
-            tracing::debug!(
-                menus = items.len(),
-                "main menu built with the declared menus"
+                continue;
+            };
+            let identifier = alloc::format!("dev.waterui.menu.{index}");
+            let command = kit_command_for_menu(menu, env);
+            let nodes = menu_tree(&menu.items.snapshot(), env);
+            let ui_menu = cocoa_ui::uikit::menu_with_identifier(
+                mtm,
+                builder.key_commands(),
+                &command,
+                Some(&identifier),
+                &nodes,
             );
+            if builder.contains(&identifier) {
+                builder.replace(&identifier, &ui_menu);
+            } else {
+                builder.insert_at_root_end(&ui_menu);
+            }
         }
+        tracing::debug!(
+            menus = items.len(),
+            "main menu built with the declared menus"
+        );
     }
 
-    /// Fills `declared` and flags each change for rebuild. The returned
-    /// guard keeps the watcher alive; hold it for the process.
+    /// Installs `menu_bar` as the main menu system's build handler and rebuilds
+    /// when items change. The returned guard keeps the watcher alive; hold it
+    /// for the process.
     pub fn install_declared(
         mtm: MainThreadMarker,
         menu_bar: &Computed<Vec<DeclaredMenu>>,
         env: &Environment,
-        declared: &Declared,
     ) -> Box<dyn Any> {
         let resolved = resolve(menu_bar, env);
         let guard = resolved.watch(move |_| cocoa_ui::uikit::request_main_menu_rebuild(mtm));
-        *declared.borrow_mut() = Some((resolved, env.clone()));
-        // `UIKit` may have built the main menu before the slot was filled;
-        // the watcher only flags later changes.
-        cocoa_ui::uikit::request_main_menu_rebuild(mtm);
+        let handler_resolved = resolved.clone();
+        let handler_env = env.clone();
+        cocoa_ui::uikit::set_main_menu_builder(mtm, move |builder| {
+            build_menus(&handler_resolved, &handler_env, builder);
+        });
         Box::new(guard)
     }
 }

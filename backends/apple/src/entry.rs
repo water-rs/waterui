@@ -110,12 +110,14 @@ mod imp {
         // environment `app` returned, exactly as windows do. The guard lives
         // for the process.
         #[cfg(waterui_feature = "menu")]
-        core::mem::forget(crate::menus::install_declared(
-            mtm,
-            &Application::shared(mtm),
-            &parts.menu_bar,
-            &app_env,
-        ));
+        if let Some(menu_bar) = &parts.menu_bar {
+            core::mem::forget(crate::menus::install_declared(
+                mtm,
+                &Application::shared(mtm),
+                menu_bar,
+                &app_env,
+            ));
+        }
         let initial = crate::windows::connect_windows(parts.windows, &app_env);
         if initial.is_empty() {
             // A zero-window application acts on its policy at launch.
@@ -235,8 +237,6 @@ mod imp {
     struct Launch<F> {
         app: Option<F>,
         env: *mut Environment,
-        #[cfg(waterui_feature = "menu")]
-        declared: crate::menus::Declared,
         scenes: crate::scene_registry::Registration<crate::windows::Scenes>,
         _theme: Rc<ThemeSignals>,
         _locale: Box<dyn Any>,
@@ -271,16 +271,13 @@ mod imp {
                 "an iOS application must declare at least one window; the app shows no window"
             );
         }
-        // `installMenuBar`: `declared` feeds the `build_menus` handler the
-        // delegate registered at launch; the watch rebuilds on every change.
-        // The guard lives for the process.
+        // `installMenuBar`: declared menus install the main menu system's
+        // build handler once `app(env)` declares them; apps without a menu bar
+        // leave the system menu alone and never reach menu icon rendering.
         #[cfg(waterui_feature = "menu")]
-        core::mem::forget(crate::menus::install_declared(
-            mtm,
-            &parts.menu_bar,
-            &app_env,
-            &launch.declared,
-        ));
+        if let Some(menu_bar) = &parts.menu_bar {
+            core::mem::forget(crate::menus::install_declared(mtm, menu_bar, &app_env));
+        }
         crate::windows::declare(&launch.scenes.state, initial, &app_env, 0, mtm);
         core::mem::forget(launch);
     }
@@ -300,12 +297,6 @@ mod imp {
         let background = Color::new(Background).resolve(env);
         let locale = crate::locale::install(env, mtm);
 
-        // Filled by `prepared`: `build_menus` can fire before `app(env)`
-        // runs, so the declared menus sit behind this slot.
-        #[cfg(waterui_feature = "menu")]
-        let declared = crate::menus::declared();
-        #[cfg(waterui_feature = "menu")]
-        let build_menus = crate::menus::build_handler(Rc::clone(&declared));
         let scenes = env
             .get::<crate::scene_registry::SceneRegistry<crate::windows::Scenes>>()
             .expect("application owns scene routing")
@@ -314,8 +305,6 @@ mod imp {
         let launch = Box::new(Launch {
             app: Some(app),
             env: core::ptr::from_mut(env),
-            #[cfg(waterui_feature = "menu")]
-            declared,
             scenes,
             _theme: Rc::clone(&theme),
             _locale: Box::new(locale),
@@ -331,8 +320,6 @@ mod imp {
         // Releases the scene's host, leaf and keep-alive, as the embedding
         // path's `waterui_apple_scene_disconnect` does.
         .scene_did_disconnect(move |id| disconnected.disconnect(id));
-        #[cfg(waterui_feature = "menu")]
-        let handlers = handlers.build_menus(build_menus);
         let handlers = handlers.did_finish_launching(move |_| {
             #[cfg(feature = "gpu_surface")]
             let env_ptr = launch.env;
