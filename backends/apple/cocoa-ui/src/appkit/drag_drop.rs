@@ -243,8 +243,7 @@ impl<'a> DragInfo<'a> {
         self.info
             .draggingPasteboard()
             .types()
-            .map(|types| types.iter().collect())
-            .unwrap_or_default()
+            .map_or_default(|types| types.iter().collect())
     }
 
     /// Whether the drag declares `type_identifier` on its pasteboard.
@@ -270,7 +269,7 @@ impl<'a> DragInfo<'a> {
         unsafe {
             pasteboard
                 .readObjectsForClasses_options(&classes, Some(&*options))
-                .map(|objects| {
+                .map_or_default(|objects| {
                     objects
                         .iter()
                         .filter_map(|object: Retained<AnyObject>| {
@@ -281,7 +280,6 @@ impl<'a> DragInfo<'a> {
                         })
                         .collect()
                 })
-                .unwrap_or_default()
         }
     }
 

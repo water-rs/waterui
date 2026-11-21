@@ -1425,7 +1425,9 @@ fn session_mounts(
     install_platform_services(&mut env);
     install_window_registries::<super::AndroidTextEngine>(&mut env);
     #[cfg(feature = "menu")]
-    menu_bar::register_menu_bar::<super::AndroidTextEngine>(&menu_bar, &env);
+    if let Some(menu_bar) = &menu_bar {
+        menu_bar::register_menu_bar::<super::AndroidTextEngine>(menu_bar, &env);
+    }
     #[cfg(any(feature = "text-field", feature = "secure-field"))]
     env.insert(HydrolysisTextContextMenuMode::Overlay);
     // The configuration's night mode is the colour-scheme signal: created

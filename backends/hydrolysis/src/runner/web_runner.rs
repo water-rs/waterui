@@ -543,7 +543,9 @@ pub fn run<W: Windows>(app: App<W>, style: impl crate::Style) {
         // A browser page cannot own the browser's menu bar, so the app menus
         // contribute their chords only — nothing renders.
         #[cfg(feature = "menu")]
-        super::menu_bar::register_menu_bar::<crate::text::ParleyEngine>(&menu_bar, &env);
+        if let Some(menu_bar) = &menu_bar {
+            super::menu_bar::register_menu_bar::<crate::text::ParleyEngine>(menu_bar, &env);
+        }
         #[cfg(any(feature = "text-field", feature = "secure-field"))]
         env.insert(HydrolysisTextContextMenuMode::Overlay);
         // The page's `prefers-color-scheme` media query is the host's

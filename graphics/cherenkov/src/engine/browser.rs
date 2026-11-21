@@ -85,27 +85,9 @@ impl<B: Backend> std::fmt::Debug for Engine<B> {
 /// Constructed before the request is enqueued, so dropping the
 /// [`Engine::surface`] future — before the backend processed it, after it
 /// committed, or after the reply — still destroys what was committed.
-/// `disarm` hands the surface to its handle, or is the rejected path,
-/// where nothing exists to destroy.
-struct Registration {
-    release: Option<Box<dyn FnOnce()>>,
-}
-
-impl Registration {
-    /// The surface handle owns the destruction now, or nothing was
-    /// committed: no destruction is enqueued.
-    fn disarm(&mut self) {
-        self.release = None;
-    }
-}
-
-impl Drop for Registration {
-    fn drop(&mut self) {
-        if let Some(release) = self.release.take() {
-            release();
-        }
-    }
-}
+/// `DropGuard::dismiss` hands the surface to its handle, or is the rejected
+/// path, where nothing exists to destroy.
+type Registration = core::mem::DropGuard<Box<dyn FnOnce()>, fn(Box<dyn FnOnce()>)>;
 
 impl<B: Backend> Engine<B> {
     /// Initializes the backend and its serial executor on the current JS thread.
@@ -366,11 +348,11 @@ impl<B: Backend> Engine<B> {
         // The guard owns the surface id from the enqueue on: dropping the
         // future still destroys what `create_surface` committed (#150).
         let tx = self.tx.clone();
-        let mut registration = Registration {
-            release: Some(Box::new(move || {
-                let _ = tx.send(Message::DestroySurface { id });
-            })),
-        };
+        let release: Box<dyn FnOnce()> = Box::new(move || {
+            let _ = tx.send(Message::DestroySurface { id });
+        });
+        let registration: Registration =
+            core::mem::DropGuard::new(release, (|release| release()) as fn(Box<dyn FnOnce()>));
         self.tx
             .send(Message::CreateSurface {
                 id,
@@ -381,7 +363,7 @@ impl<B: Backend> Engine<B> {
             .map_err(|_| SurfaceError::Lost)?;
         match rx.recv().await {
             Ok(Ok(info)) => {
-                registration.disarm();
+                let _ = core::mem::DropGuard::dismiss(registration);
                 let surface = Surface::new(id, info, self.tx.clone(), waker);
                 self.surfaces.borrow_mut().push(super::SurfaceEntry {
                     shared: Rc::downgrade(&surface.shared),
@@ -392,7 +374,7 @@ impl<B: Backend> Engine<B> {
                 Ok(surface)
             }
             Ok(Err(error)) => {
-                registration.disarm();
+                let _ = core::mem::DropGuard::dismiss(registration);
                 Err(error)
             }
             Err(_) => Err(SurfaceError::Lost),

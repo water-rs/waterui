@@ -464,7 +464,9 @@ pub fn run<W: Windows>(
     // App-level menu bar: arms its chords on the shared registry. The
     // headless host renders no chrome, so there is no surface to draw.
     #[cfg(feature = "menu")]
-    menu_bar::register_menu_bar::<crate::text::ParleyEngine>(&menu_bar, &env);
+    if let Some(menu_bar) = &menu_bar {
+        menu_bar::register_menu_bar::<crate::text::ParleyEngine>(menu_bar, &env);
+    }
     #[cfg(any(feature = "text-field", feature = "secure-field"))]
     env.insert(HydrolysisTextContextMenuMode::Overlay);
     // A headless host has no platform appearance: the scheme is Light

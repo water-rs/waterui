@@ -6,9 +6,9 @@ use core::marker::PhantomData;
 use waterui_backend_core::{
     ChildView, NativeBackend, NativeBackendFamily, Realize, mark_reached, report_unprovided,
 };
-use waterui_core::backend::ErasedPayload;
 #[cfg(any(feature = "menu", hydrolysis_video_plane))]
-use waterui_core::backend::{ChildSlot, cast};
+use waterui_core::backend::cast;
+use waterui_core::backend::{ChildSlot, ErasedPayload};
 use waterui_core::metadata::MetadataKey;
 use waterui_core::{NativeView, View};
 
@@ -914,7 +914,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         } = value;
         RenderNode::build_wrapper(
             WrapperEffect::AnchoredOverlay(AnchoredOverlayEffect {
-                builder: overlay_builder,
+                builder: Rc::new(move || HeldChild::from_view(overlay_builder.build())),
                 presentations: Rc::default(),
                 is_presented,
                 placed_edge,

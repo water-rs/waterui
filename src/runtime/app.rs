@@ -35,7 +35,7 @@ pub struct App<W> {
     last_window: LastWindowPolicy,
     /// Optional system menu bar menus.
     #[cfg(feature = "menu")]
-    pub menu_bar: Computed<Vec<Menu<SemanticLabel>>>,
+    pub menu_bar: Option<Computed<Vec<Menu<SemanticLabel>>>>,
     /// The application environment containing injected services. Values
     /// installed with [`App::state`] are layered over it when the runner
     /// takes the application apart with [`App::into_parts`].
@@ -221,7 +221,7 @@ pub struct AppParts<W> {
     pub windows: W,
     /// The application menu bar.
     #[cfg(feature = "menu")]
-    pub menu_bar: Computed<Vec<Menu<SemanticLabel>>>,
+    pub menu_bar: Option<Computed<Vec<Menu<SemanticLabel>>>>,
     /// The application environment, the composition root every window renders
     /// under.
     pub env: Environment,
@@ -236,6 +236,7 @@ pub struct AppParts<W> {
 impl<W> AppParts<W> {
     /// The same parts with the windows replaced by `f(windows)`: a runner
     /// that stores the application turns its windows into the form it holds.
+    #[inline]
     pub fn map_windows<V>(self, f: impl FnOnce(W) -> V) -> AppParts<V> {
         let Self {
             windows,
@@ -293,6 +294,7 @@ impl<B: ViewBuilder> App<Window<WindowContent<B>>> {
     /// means: it is shown under the application's own name, which the platform
     /// knows and this does not. To title it, declare the window yourself with
     /// [`Window::title`] and pass it to [`App::new_with_windows`].
+    #[inline]
     pub fn new(content: B, env: Environment) -> Self {
         let state = nami::binding(crate::window::WindowState::Normal);
         Self::new_with_windows(Window::new("", state, content), env)
@@ -306,6 +308,7 @@ impl<W: Windows> App<W> {
     /// window opens its windows on demand, or lives in a status item, and
     /// pairs this with [`LastWindowPolicy::StayResident`] so its runner keeps
     /// it alive (see [`App::on_last_window_closed`]).
+    #[inline]
     pub fn new_with_windows(windows: W, mut env: Environment) -> Self {
         if env
             .get::<Computed<waterui_core::layout::LayoutDirection>>()
@@ -323,7 +326,7 @@ impl<W: Windows> App<W> {
             windows,
             last_window: LastWindowPolicy::default(),
             #[cfg(feature = "menu")]
-            menu_bar: Computed::constant(Vec::new()),
+            menu_bar: None,
             env,
             states: Environment::new(),
             termination: Termination::default(),
@@ -388,10 +391,11 @@ impl<W: Windows> App<W> {
     }
 
     /// Sets the application system menu bar.
+    #[inline]
     #[must_use]
     #[cfg(feature = "menu")]
     pub fn menu_bar(mut self, menus: impl MenuBarView) -> Self {
-        self.menu_bar = menus.into_menus();
+        self.menu_bar = Some(menus.into_menus());
         self
     }
 
@@ -519,13 +523,20 @@ impl<W: Windows> App<W> {
     /// installed by [`App::state`] layered over its environment, and the
     /// Close Window chord decided from its menu bar installed — every
     /// environment a runner hands its menus carries the one decision.
+    #[inline]
     #[must_use]
     pub fn into_parts(self) -> AppParts<W> {
         let env = self.states.layered_on(&self.env);
         #[cfg(feature = "menu")]
         let env = {
             let mut env = env;
-            env.insert(CloseWindowChord::new(&self.menu_bar, &env));
+            env.insert(
+                self.menu_bar
+                    .as_ref()
+                    .map_or_else(CloseWindowChord::standard, |menu_bar| {
+                        CloseWindowChord::new(menu_bar, &env)
+                    }),
+            );
             env
         };
         AppParts {
@@ -618,7 +629,11 @@ mod tests {
         use crate::component::menu::{ResolvedMenuItem, resolve_menu_bar_items};
 
         let parts = app.into_parts();
-        let bars = resolve_menu_bar_items(&parts.menu_bar, &parts.env).snapshot();
+        let menu_bar = parts
+            .menu_bar
+            .as_ref()
+            .expect("the test application must declare a menu bar");
+        let bars = resolve_menu_bar_items(menu_bar, &parts.env).snapshot();
         let [ResolvedMenuItem::Menu(menu)] = bars.as_slice() else {
             panic!("expected one resolved menu, got {bars:?}");
         };

@@ -143,7 +143,8 @@ pub struct ContextMenuTarget<E: crate::text::TextEngine> {
 #[cfg(feature = "menu")]
 pub enum PopupMenuNode {
     Command {
-        label: SemanticLabel<ErasedLabel>,
+        semantic_text: Text,
+        styled_label: StyledStr,
         plain_label: String,
         action: SharedAction<()>,
         /// The live disabled signal — the row draws the snapshot it was built
@@ -159,7 +160,8 @@ pub enum PopupMenuNode {
     },
     Divider,
     Menu {
-        label: SemanticLabel<ErasedLabel>,
+        semantic_text: Text,
+        styled_label: StyledStr,
         plain_label: String,
         items: Vec<Self>,
     },
@@ -407,16 +409,64 @@ pub fn popup_menu_size(
     (width, height)
 }
 
+/// Typed visual label for a popup-menu command row: `Label::new` keeps
+/// `semantic_text` for accessibility while the custom content fills the row's
+/// label slot and aligns it leading so plain and subtitled rows share one
+/// leading edge, without erasing to `ErasedLabel` / `AnyView`.
+#[expect(
+    clippy::option_if_let_else,
+    reason = "match mirrors the OneOf2 branches more clearly than map_or_else"
+)]
+#[cfg(feature = "menu")]
+fn popup_menu_command_label(
+    semantic_text: Text,
+    styled_label: StyledStr,
+    subtitle: Option<Str>,
+) -> SemanticLabel<impl waterui_controls::label::LabelKind> {
+    SemanticLabel::new(semantic_text, move || {
+        let leading = match subtitle.clone() {
+            Some(subtitle) => waterui_core::OneOf2::A(
+                waterui_layout::stack::vstack((
+                    Text::new(styled_label.clone()),
+                    waterui_text::text(subtitle).caption().muted(),
+                ))
+                .alignment(HorizontalAlignment::Leading)
+                .spacing(0.0),
+            ),
+            None => waterui_core::OneOf2::B(Text::new(styled_label.clone())),
+        };
+        Frame::new(leading)
+            .alignment(waterui_layout::alignment::Leading)
+            .max_width(f32::INFINITY)
+    })
+}
+
+/// Typed visual label for a popup-menu submenu row.
+#[cfg(feature = "menu")]
+fn popup_menu_submenu_label(
+    semantic_text: Text,
+    styled_label: StyledStr,
+) -> SemanticLabel<impl waterui_controls::label::LabelKind> {
+    SemanticLabel::new(semantic_text, move || {
+        Frame::new(Text::new(styled_label.clone()))
+            .alignment(waterui_layout::alignment::Leading)
+            .max_width(f32::INFINITY)
+    })
+}
+
 /// A menu command row: a borderless `Button` that closes the menu group and
 /// runs the command on press. A `disabled` row draws its label in the
 /// `DisabledForeground` token while its press stays inert (the action's early
 /// return also gates it).
 #[cfg(feature = "menu")]
 fn popup_menu_command_row(
-    label: SemanticLabel<ErasedLabel>,
+    semantic_text: Text,
+    styled_label: StyledStr,
+    subtitle: Option<Str>,
     action: SharedAction<()>,
     disabled: bool,
 ) -> impl View + use<> {
+    let label = popup_menu_command_label(semantic_text, styled_label, subtitle);
     let button = Button::new(label).style(ButtonStyle::Borderless).action(
         move |group: PopupMenuStateGroup, env: Environment| {
             if disabled {
@@ -553,14 +603,22 @@ impl<E: crate::text::TextEngine> View for PopupMenuContent<E> {
             };
             match node {
                 PopupMenuNode::Command {
-                    label,
+                    semantic_text,
+                    styled_label,
                     action,
                     disabled,
                     shortcut,
+                    subtitle,
                     ..
                 } => {
                     let disabled = disabled.snapshot();
-                    let button = popup_menu_command_row(label, action, disabled);
+                    let button = popup_menu_command_row(
+                        semantic_text,
+                        styled_label,
+                        subtitle,
+                        action,
+                        disabled,
+                    );
                     // The chord's trailing hint is a sibling pinned to the row's
                     // trailing inset by a spacer, styled by the shared builder
                     // (water-rs/hydrolysis#247).
@@ -601,12 +659,18 @@ impl<E: crate::text::TextEngine> View for PopupMenuContent<E> {
                         .max_width(f32::INFINITY)
                         .alignment(waterui_layout::alignment::Leading),
                 )),
-                PopupMenuNode::Menu { label, items, .. } => {
+                PopupMenuNode::Menu {
+                    semantic_text,
+                    styled_label,
+                    items,
+                    ..
+                } => {
                     let next_depth = depth + 1;
                     let child_origin = LayoutPoint::new(
                         popup_origin.x + crate::num_cast::f64_as_f32(width),
                         popup_origin.y + crate::num_cast::f64_as_f32(row_top),
                     );
+                    let label = popup_menu_submenu_label(semantic_text, styled_label);
                     let button = Button::new(label).style(ButtonStyle::Borderless).action({
                         let theme = theme.clone();
                         let popup_opener = popup_opener.clone();
@@ -759,18 +823,32 @@ impl<E: crate::text::TextEngine> View for SemanticPopupMenuContent<E> {
         for node in nodes {
             match node {
                 PopupMenuNode::Command {
-                    label,
+                    semantic_text,
+                    styled_label,
                     action,
                     disabled,
+                    subtitle,
                     ..
                 } => {
-                    let button = popup_menu_command_row(label, action, disabled.snapshot());
+                    let button = popup_menu_command_row(
+                        semantic_text,
+                        styled_label,
+                        subtitle,
+                        action,
+                        disabled.snapshot(),
+                    );
                     rows.push(waterui_core::OneOf3::A(button));
                 }
                 PopupMenuNode::Divider => rows.push(waterui_core::OneOf3::B(Divider)),
-                PopupMenuNode::Menu { label, items, .. } => {
+                PopupMenuNode::Menu {
+                    semantic_text,
+                    styled_label,
+                    items,
+                    ..
+                } => {
                     let next_depth = depth + 1;
                     let manager = popup_opener.clone();
+                    let label = popup_menu_submenu_label(semantic_text, styled_label);
                     let button = Button::new(label).style(ButtonStyle::Borderless).action(
                         move |group: PopupMenuStateGroup, env: Environment| {
                             if items.is_empty() {
@@ -1423,8 +1501,10 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             items.push(PopupMenuNode::Divider);
         }
         let plain_label = String::from("Inspect element");
+        let styled_label = StyledStr::plain(plain_label.clone());
         items.push(PopupMenuNode::Command {
-            label: waterui_controls::label::label(plain_label.clone()).erase(),
+            semantic_text: Text::new(styled_label.clone()),
+            styled_label,
             plain_label,
             action: waterui_core::handler::SharedAction::new(
                 move |env: waterui_core::Environment| {
