@@ -478,6 +478,7 @@ pub struct PresentationHosts<E: crate::text::TextEngine> {
     /// `.anchored_overlay` presentations' host.
     pub(crate) anchored: NodeCore<E>,
     /// The `.dialog` modal layer's host.
+    #[cfg(waterui_feature = "dialog")]
     pub(crate) dialog: NodeCore<E>,
 }
 
@@ -488,16 +489,13 @@ impl<E: crate::text::TextEngine> PresentationHosts<E> {
     /// tree.
     #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     pub(crate) fn unmount(&self) {
-        for host in [
-            #[cfg(any(feature = "text-field", feature = "secure-field"))]
-            &self.text_overlay,
-            #[cfg(feature = "menu")]
-            &self.context_menu,
-            &self.anchored,
-            &self.dialog,
-        ] {
-            host.cell.unmount_subtree();
-        }
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
+        self.text_overlay.cell.unmount_subtree();
+        #[cfg(feature = "menu")]
+        self.context_menu.cell.unmount_subtree();
+        self.anchored.cell.unmount_subtree();
+        #[cfg(waterui_feature = "dialog")]
+        self.dialog.cell.unmount_subtree();
     }
 }
 
@@ -1216,16 +1214,34 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// A pass is also the dialog stack's frame: every `.dialog` node reports
     /// inside it, so the stack opens here and closes in
     /// [`Self::finish_emit_pass`].
+    #[cfg_attr(
+        not(waterui_feature = "dialog"),
+        expect(
+            clippy::needless_pass_by_ref_mut,
+            reason = "dialog stack state mutates self when dialog is enabled"
+        )
+    )]
     pub(crate) fn begin_emit_pass(&mut self) {
         self.emit_pass_active.set(true);
-        self.popup_menu.dialog_stack.begin_pass();
-        self.popup_menu.front_dialog = None;
+        #[cfg(waterui_feature = "dialog")]
+        {
+            self.popup_menu.dialog_stack.begin_pass();
+            self.popup_menu.front_dialog = None;
+        }
     }
 
     /// Closes the pass [`Self::begin_emit_pass`] opened. A dialog that came
     /// on screen takes keyboard focus; once the last one closes, focus
     /// returns to where it was before the first one came up.
+    #[cfg_attr(
+        not(waterui_feature = "dialog"),
+        expect(
+            clippy::needless_pass_by_ref_mut,
+            reason = "dialog stack state mutates self when dialog is enabled"
+        )
+    )]
     pub(crate) fn finish_emit_pass(&mut self) {
+        #[cfg(waterui_feature = "dialog")]
         match self.popup_menu.dialog_stack.finish_pass() {
             DialogFocus::Keep => {}
             DialogFocus::Enter => {
@@ -2258,8 +2274,9 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     pub(crate) fn mount_roots(
         &self,
     ) -> [Rc<NodeCell<E>>;
-        3 + cfg!(feature = "menu") as usize
-            + cfg!(any(feature = "text-field", feature = "secure-field")) as usize] {
+        2 + cfg!(feature = "menu") as usize
+            + cfg!(any(feature = "text-field", feature = "secure-field")) as usize
+            + cfg!(waterui_feature = "dialog") as usize] {
         let hosts = &self.core.presentation_hosts;
         [
             Rc::clone(&self.core.root_core.cell),
@@ -2268,6 +2285,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             Rc::clone(&hosts.anchored.cell),
             #[cfg(any(feature = "text-field", feature = "secure-field"))]
             Rc::clone(&hosts.text_overlay.cell),
+            #[cfg(waterui_feature = "dialog")]
             Rc::clone(&hosts.dialog.cell),
         ]
     }

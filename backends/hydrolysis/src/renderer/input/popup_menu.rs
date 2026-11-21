@@ -195,10 +195,12 @@ pub struct PopupMenuState<E: crate::text::TextEngine> {
     pub(crate) presented_anchored_overlays: Vec<PresentedAnchoredOverlay<E>>,
     /// The window's open `.dialog` presentations in presentation order —
     /// which one is on screen, which wait, and which closed with their node.
+    #[cfg(waterui_feature = "dialog")]
     pub(crate) dialog_stack: DialogStack,
     /// The front dialog this frame's flush registered — its modal
     /// environment and retained layer content. The post-flush
     /// `render_dialogs` takes it.
+    #[cfg(waterui_feature = "dialog")]
     pub(crate) front_dialog: Option<RegisteredDialog<E>>,
 }
 
@@ -1905,7 +1907,9 @@ impl<E: crate::text::TextEngine> Default for PopupMenuState<E> {
             node_picker_menus: Vec::default(),
             anchored_overlays: Vec::default(),
             presented_anchored_overlays: Vec::default(),
+            #[cfg(waterui_feature = "dialog")]
             dialog_stack: DialogStack::default(),
+            #[cfg(waterui_feature = "dialog")]
             front_dialog: Option::default(),
         }
     }

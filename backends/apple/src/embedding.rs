@@ -248,23 +248,34 @@ pub unsafe extern "C" fn waterui_apple_runtime_create(
     ready: unsafe extern "C" fn(*mut c_void, *mut c_void),
 ) {
     MainThreadMarker::new().expect("embedding initialization runs on the main thread");
+    #[cfg(feature = "inspector")]
     let inspector = crate::startup::initialize();
+    #[cfg(not(feature = "inspector"))]
+    crate::startup::initialize();
     let mut env = Environment::new();
     env.insert(crate::first_paint::FirstPaint::default());
     #[cfg(target_os = "ios")]
     env.insert(crate::scene_registry::SceneRegistry::<crate::windows::Scenes>::default());
+    #[cfg(feature = "inspector")]
     waterui::inspector::install(&mut env, inspector);
     waterui::text::install_system_font_collection(&mut env);
-    let mut runtime = Box::new(Runtime {
+    let runtime = Box::new(Runtime {
         env,
         fonts: std::cell::RefCell::default(),
     });
     // SAFETY: the owning box moves into the completion closure, keeping the
     // environment alive throughout GPU setup. The host owns it afterwards.
+    #[cfg(feature = "gpu_surface")]
     unsafe {
+        let mut runtime = runtime;
         crate::gpu_runtime::prepare(&raw mut runtime.env, move || {
             ready(context, Box::into_raw(runtime).cast());
         });
+    }
+    #[cfg(not(feature = "gpu_surface"))]
+    // SAFETY: `context` and `ready` uphold the caller contract above.
+    unsafe {
+        ready(context, Box::into_raw(runtime).cast());
     }
 }
 
@@ -374,6 +385,7 @@ pub unsafe fn mount<W: Windows>(
         for window in windows {
             keepalive.keep(crate::windows::realize_root(window, &env, mtm));
         }
+        #[cfg(waterui_feature = "menu")]
         keepalive.keep(parts.menu_bar);
     }
     #[cfg(target_os = "ios")]
@@ -387,6 +399,7 @@ pub unsafe fn mount<W: Windows>(
         );
         let declarations = std::iter::once(declaration).chain(windows).collect();
         crate::windows::declare(&scenes.state, declarations, &env, 1, mtm);
+        #[cfg(waterui_feature = "menu")]
         keepalive.keep(parts.menu_bar);
     }
     cocoa_ui::view::layout_immediately(&root);
@@ -542,7 +555,10 @@ pub(crate) fn mount_leaf(
     keepalive: &mut KeepAlive,
 ) -> Rc<Mounted> {
     let placed = cocoa_ui::view::retain_base(leaf.view());
+    #[cfg(feature = "inspector")]
     crate::inspector::install(root, env, keepalive);
+    #[cfg(not(feature = "inspector"))]
+    let _ = (env, keepalive);
     let content = place_then_join(
         root,
         move |root| {

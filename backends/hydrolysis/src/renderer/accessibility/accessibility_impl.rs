@@ -2199,6 +2199,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         // A presented dialog's card: the window's modal alert. Publication
         // keeps a modal node alone under the window, so the content beneath
         // the modal layer is inert for assistive technology.
+        #[cfg(waterui_feature = "dialog")]
         if node.role() == AccessibilityNodeRole::Dialog
             && env
                 .get::<crate::renderer::input::DialogLayerScope>()
