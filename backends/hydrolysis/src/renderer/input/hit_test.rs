@@ -3865,6 +3865,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         // whatever control holds focus — Space still activates the focused
         // one — as an alert's default button does. A dialog without a
         // primary action leaves Return to the focused control.
+        #[cfg(waterui_feature = "dialog")]
         if matches!(key, KeyCode::Named(value) if value == "Enter")
             && let Some(dialog) = self.popup_menu.dialog_stack.front().cloned()
             && let Some(primary) = dialog.primary_action().cloned()

@@ -7,17 +7,28 @@
 //! mailbox pump needs the executor that was just installed).
 
 use alloc::boxed::Box;
+#[cfg(feature = "inspector")]
 use alloc::sync::Arc;
 
+#[cfg(feature = "inspector")]
 use waterui::inspector::InspectorRuntime;
+#[cfg(feature = "inspector")]
 use waterui::task::RuntimeProbe;
 
+#[cfg(feature = "inspector")]
 use waterui_backend_core::log::{LOG_LEVEL_ENV, env_filter};
 
 /// One-time process startup. Returns the inspector runtime when the
 /// environment asked for one, for [`crate::entry`] to install.
+#[cfg(feature = "inspector")]
 pub fn initialize() -> Option<InspectorRuntime> {
     initialize_inner(false)
+}
+
+/// One-time process startup without inspector instrumentation.
+#[cfg(not(feature = "inspector"))]
+pub fn initialize() {
+    initialize_inner();
 }
 
 /// [`initialize`] for the preview entry: identical bring-up, plus the
@@ -30,27 +41,25 @@ pub fn initialize() -> Option<InspectorRuntime> {
 /// process is a bug, and the panic hook, subscriber and executor
 /// installs inside make it fail the same loud way a repeated
 /// [`initialize`] does.
-#[cfg(preview_entry)]
+#[cfg(all(preview_entry, feature = "inspector"))]
 pub fn initialize_for_preview() -> Option<InspectorRuntime> {
     initialize_inner(true)
 }
 
-/// One-time process startup. Returns the inspector runtime when the
-/// environment asked for one, for [`crate::entry`] to install.
-fn initialize_inner(stderr: bool) -> Option<InspectorRuntime> {
-    ignore_sigpipe();
-    let inspector = waterui::inspector::maybe_init_from_env("apple");
+/// [`initialize`] for the preview entry without inspector instrumentation.
+#[cfg(all(preview_entry, not(feature = "inspector")))]
+pub fn initialize_for_preview() {
+    initialize_inner();
+}
 
+fn install_process_base() {
+    ignore_sigpipe();
     std::panic::set_hook(Box::new(|info| {
         tracing_panic::panic_hook(info);
     }));
-    init_tracing(
-        inspector
-            .as_ref()
-            .map(waterui::inspector::InspectorRuntime::tracing_layer),
-        stderr,
-    );
+}
 
+fn install_executors(#[cfg(feature = "inspector")] inspector: Option<&InspectorRuntime>) {
     executor_core::init_global_executor(native_executor::NativeExecutor::new());
     // Without the main executor nothing the app declares can run, so the
     // app cannot launch: the failure is logged and ends the process.
@@ -61,18 +70,41 @@ fn initialize_inner(stderr: bool) -> Option<InspectorRuntime> {
         );
         std::process::exit(1);
     };
-    executor_core::init_local_executor(waterui::task::monitored_local_executor_with_probes(
+    #[cfg(feature = "inspector")]
+    let local_executor = waterui::task::monitored_local_executor_with_probes(
         main_executor,
         display_refresh_rate(),
         inspector
             .as_ref()
             .map(|inspector| inspector.task_probe() as Arc<dyn RuntimeProbe>),
-    ));
+    );
+    #[cfg(not(feature = "inspector"))]
+    let local_executor =
+        waterui::task::monitored_local_executor(main_executor, display_refresh_rate());
+    executor_core::init_local_executor(local_executor);
 
     // The listener's mailbox pump needs the executor installed above.
     waterui_locale::start_system_locale_listener();
+}
 
+/// One-time process startup. Returns the inspector runtime when the
+/// environment asked for one, for [`crate::entry`] to install.
+#[cfg(feature = "inspector")]
+fn initialize_inner(stderr: bool) -> Option<InspectorRuntime> {
+    install_process_base();
+    let inspector = waterui::inspector::maybe_init_from_env("apple");
+    init_tracing(
+        inspector.as_ref().map(InspectorRuntime::tracing_layer),
+        stderr,
+    );
+    install_executors(inspector.as_ref());
     inspector
+}
+
+#[cfg(not(feature = "inspector"))]
+fn initialize_inner() {
+    install_process_base();
+    install_executors();
 }
 
 /// Rust's own `lang_start` ignores `SIGPIPE`; a cdylib loaded by a foreign
@@ -169,6 +201,7 @@ fn max_frames_per_second() -> Option<core::num::NonZeroU32> {
 /// for a level — a physical iOS device's unified log is unreachable from the
 /// host, and `devicectl --console` only carries stderr. `stderr` forces the
 /// console layer on regardless — the preview entry's contract.
+#[cfg(feature = "inspector")]
 fn init_tracing(inspector: Option<waterui::inspector::InspectorLayer>, stderr: bool) {
     use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 

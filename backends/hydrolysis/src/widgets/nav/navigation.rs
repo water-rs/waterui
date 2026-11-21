@@ -32,11 +32,10 @@ use waterui::navigation::{
 use waterui::theme::color::{Background, Surface};
 use waterui_controls::label::LabelDisplayMode;
 use waterui_controls::text_field::TextField;
-use waterui_core::backend::ChildSlot as _;
 use waterui_core::contract_violation;
 use waterui_core::id::Id;
 use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
-use waterui_core::{AnyView, Environment, Metadata, Native, View};
+use waterui_core::{Environment, Metadata, Native, View};
 use waterui_graphics::color::Color;
 use waterui_interaction::interaction::InteractionState;
 
@@ -245,7 +244,7 @@ pub fn toolbar_item_env(env: &Environment) -> Environment {
 /// `content` scoped to [`toolbar_item_env`]: the scope reaches every
 /// environment snapshot inside the content as its [`SnapshotDefaults`], so
 /// build, measure and render all see one scope.
-pub fn toolbar_item_view<V: View>(content: V, env: &Environment) -> impl View + use<V> {
+pub fn toolbar_item_view<V: View>(content: V, env: &Environment) -> Metadata<Environment, V> {
     let mut scoped = toolbar_item_env(env);
     scoped.insert(SnapshotDefaults(toolbar_item_env));
     Metadata::new(content, scoped)
@@ -273,10 +272,8 @@ impl<E: crate::text::TextEngine> NavigationViewRenderState<E> {
         let mut bottom = Vec::new();
         for item in toolbar.take_items() {
             let (placement, content, _, _, item_env) = item.into_parts();
-            let retained = RetainedSubview::held(HeldChild::from_view(toolbar_item_view(
-                content,
-                item_env.as_ref().unwrap_or(env),
-            )));
+            let retained =
+                RetainedSubview::new(toolbar_item_view(content, item_env.as_ref().unwrap_or(env)));
             match placement {
                 NavigationToolbarPlacement::Principal => principal.push(retained),
                 NavigationToolbarPlacement::Cancellation
@@ -293,15 +290,15 @@ impl<E: crate::text::TextEngine> NavigationViewRenderState<E> {
         let search_field = search.as_ref().map(|search| {
             // A search field shows only its placeholder, so the prompt doubles
             // as the accessible name and the visible label is suppressed.
-            RetainedSubview::new(AnyView::new(
+            RetainedSubview::new(
                 TextField::new(search.prompt().clone(), search.text())
                     .hide_label()
                     .prompt(search.prompt().clone()),
-            ))
+            )
         });
         Self {
-            title: RetainedSubview::held(HeldChild::from_view(title)),
-            subtitle: RetainedSubview::held(HeldChild::from_view(subtitle)),
+            title: RetainedSubview::new(title),
+            subtitle: RetainedSubview::new(subtitle),
             principal,
             leading,
             trailing,

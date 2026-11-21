@@ -638,8 +638,10 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             && env.get::<crate::theme::Chrome>().is_none()
         {
             let interaction_key = InteractionKey::for_rc(&effect.action, 0);
+            #[cfg(feature = "accessibility")]
+            let focus_key = interaction_key.clone();
             let (_state, press_slot, _handles) =
-                renderer.bind_reported_tap_target(interaction_key.clone(), bounds, env, disabled);
+                renderer.bind_reported_tap_target(interaction_key, bounds, env, disabled);
             #[cfg(feature = "accessibility")]
             if let Some(node_id) = claimed_naming_node {
                 renderer.push_accessibility_parent(node_id);
@@ -651,7 +653,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             }
             #[cfg(feature = "accessibility")]
             if let Some(node_id) = claimed_naming_node {
-                renderer.register_accessibility_focus_link(&interaction_key, node_id);
+                renderer.register_accessibility_focus_link(&focus_key, node_id);
                 renderer.drain_claim_scope(node_id, claim_env.as_ref().unwrap_or(env));
                 if claim_synthesized {
                     renderer.collapse_synthesized_claim(node_id);
@@ -952,6 +954,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// carries the modal environment — the node's environment plus the
     /// `ModalInteraction` scope that routes Escape to the dialog's cancel
     /// path — so the layer presents modal the moment it draws.
+    #[cfg(waterui_feature = "dialog")]
     pub(super) fn apply_dialog(
         renderer: &mut Self,
         env: &Environment,
