@@ -9,7 +9,9 @@
 //! through their `CapturableSurface` contract, so a GPU surface or a
 //! nested filter contributes real pixels rather than a blank.
 
-use std::cell::{Cell, RefCell};
+#[cfg(any(waterui_feature = "capture", preview_entry, feature = "native-test"))]
+use std::cell::Cell;
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
@@ -516,6 +518,7 @@ fn read_target(target: &ProtocolObject<dyn MTLTexture>, width: u32, height: u32)
 /// replacing it: a surface binds the hook when it joins, so a replacement
 /// would leave every surface the pump already joined waking the pump
 /// while the retry loop waits on a redraw that never comes.
+#[cfg(any(waterui_feature = "capture", preview_entry, feature = "native-test"))]
 pub struct CaptureDrive {
     /// The open capture the pump passes and the terminal capture share.
     capture: Rc<cocoa_ui::capture::ViewCapture>,
@@ -539,6 +542,7 @@ pub struct CaptureDrive {
     terminal: RefCell<Option<Rc<RefCell<Signal>>>>,
 }
 
+#[cfg(any(waterui_feature = "capture", preview_entry, feature = "native-test"))]
 impl CaptureDrive {
     /// Opens the capture over `root` — already inside its windowless
     /// capture host — and starts the pump: the first pass runs on the
@@ -706,6 +710,7 @@ impl CaptureDrive {
     }
 }
 
+#[cfg(any(waterui_feature = "capture", preview_entry, feature = "native-test"))]
 impl Drop for CaptureDrive {
     /// The capture's own `shutdown` ends every external-rendering scope —
     /// the same contract `CaptureGuard` keeps for `capture_rgba`'s own
@@ -718,6 +723,7 @@ impl Drop for CaptureDrive {
 /// A pump pass's render destination: `RenderTarget` usage in private
 /// storage — the pass exists to record scenes and settle registrations,
 /// so its pixels are never sampled or read back.
+#[cfg(any(waterui_feature = "capture", preview_entry, feature = "native-test"))]
 fn scratch_target(
     device: &ProtocolObject<dyn MTLDevice>,
     width: u32,

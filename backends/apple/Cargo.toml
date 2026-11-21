@@ -236,8 +236,9 @@ pollster = { workspace = true }
 libtest-mimic = "0.8"
 serde_json = { workspace = true }
 # The preview suite renders an `ImageAsset`, which sits behind `media` on
-# the facade — the crate's own `waterui` edge does not enable it.
-waterui = { workspace = true, features = ["media"] }
+# the facade, and the native suite tests `NativeBackend::offscreen` behind
+# `capture` — the crate's own `waterui` edge enables neither.
+waterui = { workspace = true, features = ["capture", "media"] }
 # The termination tests park the hook futures on an `async-task` executor.
 executor-core = { workspace = true, features = ["async-task"] }
 # The webview trials drive the shared conformance cases; the crate's own
