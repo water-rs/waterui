@@ -245,7 +245,7 @@ pub fn response(view: &PlatformView) -> Rect {
 
 /// Where `view` draws its intrinsic content: its committed response
 /// rectangle, or its bounds before its first placement committed one.
-#[cfg(feature = "picture")]
+#[cfg(all(feature = "picture", waterui_feature = "gpu"))]
 pub fn content_rect(view: &PlatformView) -> Rect {
     slot_of(view).content_rect(view)
 }
@@ -314,6 +314,13 @@ impl Placement {
 
     /// The same placement with the view's response positioned by the
     /// parent's rule at `anchor` inside the frame it assigns.
+    #[cfg(any(
+        feature = "calendar",
+        feature = "multi_date_picker",
+        feature = "text_field",
+        feature = "secure_field",
+        feature = "list",
+    ))]
     #[must_use]
     pub const fn anchored(self, anchor: UnitPoint) -> Self {
         Self {
@@ -405,6 +412,12 @@ pub fn place_painted(
 /// frame's top staying the response's top. The frame stays the allocation,
 /// so a leaf that draws in its response (a label) lands at the leading
 /// edge rather than centred in a frame wider than its content.
+#[cfg(any(
+    feature = "calendar",
+    feature = "multi_date_picker",
+    feature = "text_field",
+    feature = "secure_field",
+))]
 pub fn place_leading(view: &PlatformView, frame: Rect, proposal: ProposalSize, rtl: bool) {
     let anchor = if rtl {
         UnitPoint::TOP_TRAILING

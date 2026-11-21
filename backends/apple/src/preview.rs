@@ -181,7 +181,10 @@ fn drive(
     // Startup before anything else can panic or error — the panic hook and
     // the unconditional stderr layer are what the contract guarantees
     // everything else through.
+    #[cfg(feature = "inspector")]
     let inspector = crate::startup::initialize_for_preview();
+    #[cfg(not(feature = "inspector"))]
+    crate::startup::initialize_for_preview();
 
     let content_deadline = config.content_deadline();
     let size = cocoa_ui::Size::new(f64::from(config.width()), f64::from(config.height()));
@@ -198,52 +201,61 @@ fn drive(
     // locale and font registrations `prepare` requires to outlive `env` —
     // drops last.
     let mut keepers = crate::contract::KeepAlive::default();
-    let (mut env, host) = prepare(mtm, resources, &mut keepers, inspector)?;
+    let (mut env, host) = prepare(
+        mtm,
+        resources,
+        &mut keepers,
+        #[cfg(feature = "inspector")]
+        inspector,
+    )?;
 
     let env_ptr = &raw mut env;
     let outcome = Rc::new(RefCell::new(None::<Result<(), PreviewError>>));
+    let launch = {
+        let outcome = Rc::clone(&outcome);
+        move || {
+            // `drive` lent `env` for its frame; this closure is the
+            // only consumer and runs once, on the main thread.
+            // SAFETY: `env_ptr` stays live until `render_and_write` completes.
+            let env = unsafe { &mut *env_ptr };
+            let env = compose(env.clone());
+            tracing::info!(
+                phase = "load",
+                elapsed_ms = load_started.elapsed().as_millis(),
+                "Apple preview phase"
+            );
+            executor_core::spawn_local(async move {
+                *outcome.borrow_mut() = Some(
+                    render_and_write(
+                        &env,
+                        mtm,
+                        &host,
+                        view,
+                        Capture {
+                            size,
+                            content_deadline,
+                            output: &output,
+                        },
+                    )
+                    .await,
+                );
+                CFRunLoop::current()
+                    .expect("the main executor drives this task from the main thread's run loop")
+                    .stop();
+            })
+            .detach();
+        }
+    };
+    #[cfg(feature = "gpu_surface")]
     // SAFETY: `env` is lent to `drive`'s frame — the completion below
     // renders, deposits the run's result in `outcome` and stops the run
     // loop `drive` blocks in, so the borrow ends before the frame returns;
     // nothing else drains the main queue after a `RunLoopExited` return.
     unsafe {
-        crate::gpu_runtime::prepare(env_ptr, {
-            let outcome = Rc::clone(&outcome);
-            move || {
-                // `drive` lent `env` for its frame; this closure is the
-                // only consumer and runs once, on the main thread.
-                let env = &mut *env_ptr;
-                let env = compose(env.clone());
-                tracing::info!(
-                    phase = "load",
-                    elapsed_ms = load_started.elapsed().as_millis(),
-                    "Apple preview phase"
-                );
-                executor_core::spawn_local(async move {
-                    *outcome.borrow_mut() = Some(
-                        render_and_write(
-                            &env,
-                            mtm,
-                            &host,
-                            view,
-                            Capture {
-                                size,
-                                content_deadline,
-                                output: &output,
-                            },
-                        )
-                        .await,
-                    );
-                    CFRunLoop::current()
-                        .expect(
-                            "the main executor drives this task from the main thread's run loop",
-                        )
-                        .stop();
-                })
-                .detach();
-            }
-        });
+        crate::gpu_runtime::prepare(env_ptr, launch);
     }
+    #[cfg(not(feature = "gpu_surface"))]
+    launch();
     // `prepare`'s completion and `render` both land on the main executor,
     // which this run loop drives; the task's `stop` is the only way out,
     // so a bare return can only come from the loop itself.
@@ -288,9 +300,10 @@ pub(crate) fn prepare(
     mtm: MainThreadMarker,
     resources: ResourceContext,
     keepers: &mut crate::contract::KeepAlive,
-    inspector: Option<waterui::inspector::InspectorRuntime>,
+    #[cfg(feature = "inspector")] inspector: Option<waterui::inspector::InspectorRuntime>,
 ) -> Result<(Environment, Host), PreviewError> {
     let mut env = Environment::new();
+    #[cfg(feature = "inspector")]
     waterui::inspector::install(&mut env, inspector);
     waterui::text::install_system_font_collection(&mut env);
     let mut fonts = crate::fonts::FontRegistrations::default();

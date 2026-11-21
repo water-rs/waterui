@@ -1098,6 +1098,7 @@ pub(super) enum WrapperEffect<E: crate::text::TextEngine> {
     /// dialog stack each flush; the post-flush `render_dialogs` pass draws
     /// the one on screen in the modal layer above all content — its scrim
     /// plus the composed card.
+    #[cfg(waterui_feature = "dialog")]
     Dialog(DialogEffect<E>),
     /// A `.transition(...)` declaration (layout-spec.md §4.5): paint- and
     /// layout-transparent. The structural site that swaps the content claims
@@ -1117,13 +1118,16 @@ impl<E: crate::text::TextEngine> WrapperEffect<E> {
         if matches!(self, Self::ContextMenu(_)) {
             return true;
         }
+        #[cfg(waterui_feature = "dialog")]
+        if matches!(self, Self::Dialog(_)) {
+            return true;
+        }
         matches!(
             self,
             Self::OnEvent(_)
                 | Self::GestureObserver(_)
                 | Self::DropDestination(_)
                 | Self::AnchoredOverlay(_)
-                | Self::Dialog(_)
                 | Self::LifeCycle(_)
         )
     }
@@ -1160,6 +1164,7 @@ pub struct AnchoredOverlayEffect<E: crate::text::TextEngine> {
 /// The node-owned state of a `.dialog(...)` wrapper. The content slot is
 /// `Rc`-shared because the post-flush render pass — not this node — measures
 /// and flushes the modal layer, and the node keeps it built across closes.
+#[cfg(waterui_feature = "dialog")]
 pub struct DialogEffect<E: crate::text::TextEngine> {
     /// The layer content — the dialog's scrim-plus-card modal layer.
     pub(crate) content: Rc<RefCell<RetainedSubview<E>>>,

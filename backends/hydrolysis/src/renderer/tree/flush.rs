@@ -516,6 +516,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                             },
                         );
                     }
+                    #[cfg(waterui_feature = "dialog")]
                     WrapperEffect::Dialog(value) => {
                         HydrolysisRenderer::apply_dialog(renderer, child_env, value, |r| {
                             node.child.flush(r, ctx, child_env, kurbo::Affine::IDENTITY);
@@ -1057,6 +1058,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                             hook.call();
                         }
                     }
+                    #[cfg(waterui_feature = "dialog")]
                     WrapperEffect::Dialog(effect) => {
                         // The walk reports to the same dialog stack the
                         // rendered flush does. The dialog on screen emits its

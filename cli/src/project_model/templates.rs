@@ -7934,6 +7934,7 @@ const BACKEND_FEATURE_FORWARDS: &[(&str, &str, &str)] = &[
     ("gpu", "hydrolysis", "gpu"),
     ("cpu", "hydrolysis", "cpu"),
     ("hwui", "hydrolysis", "hwui"),
+    ("inspector", "waterui-apple", "inspector"),
     ("map", "waterui-apple", "map"),
     ("media", "waterui-apple", "media"),
     ("webview", "waterui-apple", "webview"),

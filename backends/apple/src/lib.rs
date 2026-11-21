@@ -30,6 +30,7 @@ pub mod dispatch;
 pub mod embedding;
 pub mod entry;
 mod native_layout;
+#[cfg(feature = "inspector")]
 mod native_log;
 #[cfg(preview_entry)]
 pub mod preview;
@@ -59,7 +60,9 @@ mod frozen_frame;
 mod gpu_completion;
 #[cfg(feature = "gpu_surface")]
 mod gpu_input;
+#[cfg(feature = "gpu_surface")]
 mod gpu_runtime;
+#[cfg(feature = "inspector")]
 mod inspector;
 mod invalidation;
 pub(crate) mod locale;
@@ -73,7 +76,7 @@ pub(crate) mod locale;
 ))]
 pub(crate) mod main_queue_owned;
 pub(crate) mod measure_memo;
-#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[cfg(all(any(target_os = "macos", target_os = "ios"), waterui_feature = "menu"))]
 pub(crate) mod menus;
 #[cfg(feature = "gpu_surface")]
 mod presentation_time;

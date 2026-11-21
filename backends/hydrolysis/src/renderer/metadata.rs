@@ -952,6 +952,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// carries the modal environment — the node's environment plus the
     /// `ModalInteraction` scope that routes Escape to the dialog's cancel
     /// path — so the layer presents modal the moment it draws.
+    #[cfg(waterui_feature = "dialog")]
     pub(super) fn apply_dialog(
         renderer: &mut Self,
         env: &Environment,
