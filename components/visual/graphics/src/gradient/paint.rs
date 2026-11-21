@@ -339,9 +339,9 @@ impl waterui_core::NativeView for Gradient {
 impl View for Gradient {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         if matches!(self.paint(), Paint::Mesh(_)) {
-            waterui_core::AnyView::new(super::mesh::static_mesh_view(self.paint))
+            waterui_core::OneOf2::A(super::mesh::static_mesh_view(self.paint))
         } else {
-            waterui_core::AnyView::new(waterui_core::Native::new(self))
+            waterui_core::OneOf2::B(waterui_core::Native::new(self))
         }
     }
 }

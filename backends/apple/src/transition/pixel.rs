@@ -309,11 +309,11 @@ impl PixelRemoval {
             &visual.host,
             visual.geometry.direction(),
         ));
-        let body = state.body(AnyView::new(()), frame.computed());
+        let body = state.empty_body(frame.computed());
         Rc::new(Self {
             overlay,
             frame,
-            body: RefCell::new(Some(body)),
+            body: RefCell::new(body),
             env: env.clone(),
             pending: Cell::new(false),
             first_presented: Cell::new(false),
@@ -445,7 +445,7 @@ impl PixelInsertion {
     ) -> Option<Self> {
         let overlay = PixelOverlay::over(&host.host);
         let frame = Binding::container(frame_now(overlay.view(), &host.host, direction));
-        let body = state.body(AnyView::new(()), frame.computed());
+        let body = state.empty_body(frame.computed())?;
         let effect = LiveEffect::from_body(body, &host.content_view, overlay.view(), env)?;
         Some(Self {
             overlay,

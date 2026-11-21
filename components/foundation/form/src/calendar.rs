@@ -23,7 +23,7 @@ use waterui_controls::{IntoLabel, button, impl_label_style_methods};
 use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::layout::StretchAxis;
 use waterui_core::{
-    AnyView, Environment, Metadata, Native, NativeView, View, env::use_env, views::ForEach,
+    AnyView, Environment, Metadata, Native, NativeView, OneOf2, View, env::use_env, views::ForEach,
 };
 use waterui_graphics::color::{AccentColor, AccentForegroundColor, Color, ForegroundColor};
 use waterui_interaction::interaction::Disabled;
@@ -548,7 +548,7 @@ fn single_day_cell_content(
     range: &RangeInclusive<Date>,
     selection: Binding<Date>,
     decorated_dates: &Computed<BTreeSet<Date>>,
-) -> AnyView {
+) -> impl View + use<> {
     let is_in_range = range.contains(&cell.date);
     let is_selectable = cell.in_current_month && is_in_range;
     let selected = selection
@@ -559,11 +559,16 @@ fn single_day_cell_content(
         .computed();
 
     if is_selectable {
-        selectable_day_cell(cell.date, &decorated, &selected, move || {
-            selection.set(cell.date);
-        })
+        OneOf2::A(selectable_day_cell(
+            cell.date,
+            &decorated,
+            &selected,
+            move || {
+                selection.set(cell.date);
+            },
+        ))
     } else {
-        AnyView::new(day_grid_cell(
+        OneOf2::B(day_grid_cell(
             day_cell_placeholder(cell, &decorated),
             CALENDAR_DAY_SIZE,
         ))
@@ -576,7 +581,7 @@ pub(crate) fn multi_day_cell_content(
     range: &RangeInclusive<Date>,
     selection: Binding<BTreeSet<Date>>,
     decorated_dates: &Computed<BTreeSet<Date>>,
-) -> AnyView {
+) -> impl View + use<> {
     let is_in_range = range.contains(&cell.date);
     let is_selectable = cell.in_current_month && is_in_range;
     let selected = selection
@@ -587,27 +592,32 @@ pub(crate) fn multi_day_cell_content(
         .computed();
 
     if is_selectable {
-        selectable_day_cell(cell.date, &decorated, &selected, move || {
-            selection.with_mut(|dates| {
-                if !dates.insert(cell.date) {
-                    dates.remove(&cell.date);
-                }
-            });
-        })
+        OneOf2::A(selectable_day_cell(
+            cell.date,
+            &decorated,
+            &selected,
+            move || {
+                selection.with_mut(|dates| {
+                    if !dates.insert(cell.date) {
+                        dates.remove(&cell.date);
+                    }
+                });
+            },
+        ))
     } else {
-        AnyView::new(day_grid_cell(
+        OneOf2::B(day_grid_cell(
             day_cell_placeholder(cell, &decorated),
             CALENDAR_DAY_SIZE,
         ))
     }
 }
 
-fn selectable_day_cell(
+fn selectable_day_cell<F: FnMut() + 'static>(
     date: Date,
     decorated: &Computed<bool>,
     selected: &Computed<bool>,
-    action: impl FnMut() + 'static,
-) -> AnyView {
+    action: F,
+) -> impl View + use<F> {
     let foreground = selected.map(|selected| {
         if selected {
             Color::new(AccentForegroundColor)
@@ -621,7 +631,7 @@ fn selectable_day_cell(
         .action(action);
     let content = day_grid_cell(button, CALENDAR_DAY_SIZE);
 
-    AnyView::new(BackgroundView::new(
+    BackgroundView::new(
         content,
         Frame::new(
             Circle.fill(
@@ -631,7 +641,7 @@ fn selectable_day_cell(
         )
         .width(CALENDAR_SELECTED_DAY_SIZE)
         .height(CALENDAR_SELECTED_DAY_SIZE),
-    ))
+    )
 }
 
 fn day_cell_label(date: Date, decorated: &Computed<bool>) -> Text {
@@ -649,11 +659,11 @@ fn day_cell_accessibility_label(date: Date) -> String {
     date.day().to_string()
 }
 
-fn day_cell_placeholder(cell: DayCell, decorated: &Computed<bool>) -> impl View {
+fn day_cell_placeholder(cell: DayCell, decorated: &Computed<bool>) -> impl View + use<> {
     if cell.in_current_month {
-        AnyView::new(day_cell_label(cell.date, decorated).caption())
+        OneOf2::A(day_cell_label(cell.date, decorated).caption())
     } else {
-        AnyView::new(Text::new(String::new()).caption())
+        OneOf2::B(Text::new(String::new()).caption())
     }
 }
 

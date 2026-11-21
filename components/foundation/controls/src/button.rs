@@ -1514,9 +1514,15 @@ impl<L, Action, Style> Button<L, Action, Style> {
     where
         F: Handler<Args, ()> + 'static,
     {
+        self.action_boxed(waterui_core::handler::boxed_action(action))
+    }
+
+    /// Sets an already type-erased action to be performed when the button is clicked.
+    #[must_use]
+    pub fn action_boxed(self, action: BoxedAction<()>) -> Button<L, BoxedAction<()>, Style> {
         Button {
             label: self.label,
-            action: waterui_core::handler::boxed_action(action),
+            action,
             style: self.style,
             explicit_style: self.explicit_style,
             role: self.role,

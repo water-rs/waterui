@@ -8,7 +8,7 @@ use nami::Signal;
 use nami::watcher::BoxWatcherGuard;
 
 use waterui_core::layout::{ProposalSize, Size, StretchAxis};
-use waterui_core::{AnyView, Environment, Native, NativeView, View, contract_violation};
+use waterui_core::{Environment, Native, NativeView, View, contract_violation};
 
 use crate::draw::Instant;
 #[cfg(feature = "input")]
@@ -499,7 +499,7 @@ impl View for SceneView {
         // A scene draws on the engine its backend already owns: the native
         // leaf carries the content and the backend mounts it in its layer
         // tree. There is no second renderer to fall back on.
-        AnyView::new(Native::new(self))
+        Native::new(self)
     }
 }
 

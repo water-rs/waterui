@@ -16328,9 +16328,9 @@ mod transition {
             true
         }
 
-        fn body(
+        fn body<V: waterui_backend_core::View>(
             &self,
-            content: AnyView,
+            content: V,
             transition_context: waterui_structural_transition::TransitionContext,
         ) -> impl waterui_backend_core::View {
             *self.frame.borrow_mut() = Some(transition_context.frame().clone());

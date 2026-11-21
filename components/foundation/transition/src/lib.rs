@@ -18,7 +18,9 @@ use waterui_core::layout::{
     ViewDimensions,
 };
 use waterui_core::metadata::MetadataKey;
-use waterui_core::{AnyView, Binding, Computed, Environment, Metadata, Signal, SignalExt, View};
+use waterui_core::{
+    AnyView, Binding, Computed, Environment, Metadata, OneOf2, Signal, SignalExt, View,
+};
 
 /// The structural event starting an independent transition instance.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -314,7 +316,7 @@ pub trait Transition: 'static {
     }
 
     /// Wraps content in the existing GPU effect path when capture is declared.
-    fn body(&self, content: AnyView, transition_context: TransitionContext) -> impl View {
+    fn body<V: View>(&self, content: V, transition_context: TransitionContext) -> impl View {
         let _ = transition_context;
         content
     }
@@ -353,6 +355,7 @@ trait TransitionImpl {
         geometry: TransitionGeometry,
     ) -> TransitionProperties;
     fn body_erased(&self, content: AnyView, transition_context: TransitionContext) -> AnyView;
+    fn empty_body_erased(&self, transition_context: TransitionContext) -> Option<AnyView>;
     fn captures_content_erased(&self, phase: TransitionPhase) -> bool;
     fn reduced_erased(&self) -> AnyTransition;
 }
@@ -368,6 +371,12 @@ impl<T: Transition> TransitionImpl for T {
     }
     fn body_erased(&self, content: AnyView, transition_context: TransitionContext) -> AnyView {
         AnyView::new(Transition::body(self, content, transition_context))
+    }
+    fn empty_body_erased(&self, transition_context: TransitionContext) -> Option<AnyView> {
+        if !Transition::captures_content(self, transition_context.phase) {
+            return None;
+        }
+        Some(AnyView::new(Transition::body(self, (), transition_context)))
     }
     fn captures_content_erased(&self, phase: TransitionPhase) -> bool {
         Transition::captures_content(self, phase)
@@ -414,8 +423,9 @@ impl Transition for AnyTransition {
     ) -> TransitionProperties {
         self.0.properties_erased(phase, progress, geometry)
     }
-    fn body(&self, content: AnyView, transition_context: TransitionContext) -> impl View {
-        self.0.body_erased(content, transition_context)
+    fn body<V: View>(&self, content: V, transition_context: TransitionContext) -> impl View {
+        self.0
+            .body_erased(AnyView::new(content), transition_context)
     }
     fn captures_content(&self, phase: TransitionPhase) -> bool {
         self.0.captures_content_erased(phase)
@@ -535,9 +545,9 @@ impl<A: Transition, B: Transition> Transition for Combined<A, B> {
             .properties(phase, progress, geometry)
             .combined(self.second.properties(phase, progress, geometry))
     }
-    fn body(&self, content: AnyView, transition_context: TransitionContext) -> impl View {
+    fn body<V: View>(&self, content: V, transition_context: TransitionContext) -> impl View {
         self.second.body(
-            AnyView::new(self.first.body(content, transition_context.clone())),
+            self.first.body(content, transition_context.clone()),
             transition_context,
         )
     }
@@ -568,14 +578,12 @@ impl<I: Transition, R: Transition> Transition for Asymmetric<I, R> {
             TransitionPhase::Removal => self.removal.properties(phase, progress, geometry),
         }
     }
-    fn body(&self, content: AnyView, transition_context: TransitionContext) -> impl View {
+    fn body<V: View>(&self, content: V, transition_context: TransitionContext) -> impl View {
         match transition_context.phase {
             TransitionPhase::Insertion => {
-                AnyView::new(self.insertion.body(content, transition_context))
+                OneOf2::A(self.insertion.body(content, transition_context))
             }
-            TransitionPhase::Removal => {
-                AnyView::new(self.removal.body(content, transition_context))
-            }
+            TransitionPhase::Removal => OneOf2::B(self.removal.body(content, transition_context)),
         }
     }
     fn captures_content(&self, phase: TransitionPhase) -> bool {
@@ -759,15 +767,26 @@ impl TransitionState {
     ///
     /// A backend may pass an empty content view when it already owns the captured
     /// realization, then give the resulting `FilteredView` that GPU texture.
-    pub fn body(&self, content: AnyView, frame: Computed<TransitionFrame>) -> AnyView {
+    pub fn body<V: View>(&self, content: V, frame: Computed<TransitionFrame>) -> AnyView {
         self.transition.0.body_erased(
-            content,
+            AnyView::new(content),
             TransitionContext {
                 phase: self.phase,
                 progress: self.progress.clone().computed(),
                 frame,
             },
         )
+    }
+
+    /// Builds the effect over `()` when this transition captures content,
+    /// without constructing an inner `AnyView(())`.
+    #[must_use]
+    pub fn empty_body(&self, frame: Computed<TransitionFrame>) -> Option<AnyView> {
+        self.transition.0.empty_body_erased(TransitionContext {
+            phase: self.phase,
+            progress: self.progress.clone().computed(),
+            frame,
+        })
     }
 
     /// Animation definition for native property projection.
