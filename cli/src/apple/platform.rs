@@ -244,23 +244,26 @@ pub(crate) async fn apple_dependency_features(
 async fn apple_build_features(
     project: &Project,
     browser_runtime: &BrowserRuntimePlan,
-    linkage: RustLinkage,
+    options: &BuildOptions,
     target: &Triple,
 ) -> eyre::Result<Vec<String>> {
     let mut features = apple_dependency_features(project, browser_runtime, target).await?;
-    if linkage == RustLinkage::SharedRuntime {
+    let apple_manifest = project.apple_crate_path().join("Cargo.toml");
+    if options.linkage() == RustLinkage::SharedRuntime {
         features.push("dev".to_string());
         // The inspector is devtooling: development sessions get it through the
         // shared-runtime linkage while a packaged build leaves its server
         // stack out. The generated manifest forwards `inspector` only when
         // the resolved `waterui-apple` declares it, so the build can only
         // name it when the scaffold declared it.
-        if crate::templates::generated_manifest_declares(
-            &project.apple_crate_path().join("Cargo.toml"),
-            "inspector",
-        )? {
+        if crate::templates::generated_manifest_declares(&apple_manifest, "inspector")? {
             features.push("inspector".to_string());
         }
+    }
+    if options.uses_erased_dispatch()
+        && crate::templates::generated_manifest_declares(&apple_manifest, "erased-dispatch")?
+    {
+        features.push("erased-dispatch".to_string());
     }
     Ok(features)
 }
@@ -292,8 +295,7 @@ pub(crate) async fn apple_rust_build(
     let browser_runtime_plan = project
         .browser_runtime_plan(platform, TargetBackend::Apple, &triple)
         .await?;
-    let features =
-        apple_build_features(project, &browser_runtime_plan, options.linkage(), &triple).await?;
+    let features = apple_build_features(project, &browser_runtime_plan, options, &triple).await?;
     let target = triple.to_string();
     let target_underscore = target.replace('-', "_");
     let mut build = RustBuild::for_project(project, crate_path, triple)

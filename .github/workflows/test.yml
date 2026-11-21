@@ -334,7 +334,7 @@ jobs:
       # crate has, it gets here.
       - name: Clippy (waterui-core, every stable feature)
         if: inputs.full
-        run: cargo clippy --timings --locked --profile ci-check -p waterui-core --all-targets --features std,serde --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
+        run: cargo clippy --timings --locked --profile ci-check -p waterui-core --all-targets --features std,serde,erased-dispatch --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
       # The browser engine crates live in water-rs/browsers; their own CI
       # owns every engine test and lint, including the compile-only, chromium
       # and real-engine lanes these steps used to run (#868).
@@ -748,7 +748,7 @@ jobs:
         run: cargo nextest run --timings --locked -p hydrolysis --features all-controls,accessibility,testing,gpu,winit,webview-wpe --profile ci
       # `nightly` is `feature(never_type)`, a hard E0554 on stable.
       - name: Test (waterui-core, every stable feature)
-        run: cargo nextest run --timings --locked -p waterui-core --features std,serde --profile ci
+        run: cargo nextest run --timings --locked -p waterui-core --features std,serde,erased-dispatch --profile ci
       # Hydrolysis's doctests under the feature set its own CI ran (#1428);
       # nextest cannot enumerate doc tests, so this is a `cargo test` pass.
       - name: Test (hydrolysis doc tests)
@@ -844,7 +844,7 @@ jobs:
           MACOSX_DEPLOYMENT_TARGET: "27.0"
         run: cargo nextest run --timings --locked -p hydrolysis --features all-controls,accessibility,testing,gpu,winit,webview-cef --profile ci
       - name: Test (waterui-core, every stable feature)
-        run: cargo nextest run --timings --locked -p waterui-core --features std,serde --profile ci
+        run: cargo nextest run --timings --locked -p waterui-core --features std,serde,erased-dispatch --profile ci
       - name: Upload Test Snapshots
         if: always()
         uses: actions/upload-artifact@v4

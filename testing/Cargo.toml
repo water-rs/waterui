@@ -50,6 +50,8 @@ video-gpu = ["hydrolysis/video-gpu", "waterui/video-gpu"]
 # The GPU map as Hydrolysis's realization of `Map`, as an application linking
 # `waterui-map-gpu` gets it.
 map-gpu = ["hydrolysis/map-gpu", "waterui/map"]
+# Build strategy: run tests through the erased-dispatch path.
+erased-dispatch = ["waterui/erased-dispatch", "waterui-core/erased-dispatch"]
 
 [dev-dependencies]
 approx = "0.5"

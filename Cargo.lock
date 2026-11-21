@@ -12935,7 +12935,7 @@ dependencies = [
 [[package]]
 name = "waterui-barcode"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/barcode?branch=refactor%2F4770-slim-core-ui#8af122518fddfe9f22a6c50b85ea8bec6d2ab691"
+source = "git+https://github.com/water-rs/barcode?branch=main#3955172fbe2217978a5779d58a14dc0569eb7cad"
 dependencies = [
  "barcoders",
  "fast_qr",
@@ -12949,7 +12949,7 @@ dependencies = [
 [[package]]
 name = "waterui-browser-cef"
 version = "0.1.0"
-source = "git+https://github.com/water-rs/browsers?branch=refactor%2F4770-slim-core-ui#94995351b747b303fa3259804a7cd8ae066ffc25"
+source = "git+https://github.com/water-rs/browsers?branch=main#93a5a4d87f0ec93de0c2bab077a3f45272d2d335"
 dependencies = [
  "async-channel",
  "base64 0.23.1",
@@ -12990,7 +12990,7 @@ dependencies = [
 [[package]]
 name = "waterui-browser-wpe"
 version = "0.1.0"
-source = "git+https://github.com/water-rs/browsers?branch=refactor%2F4770-slim-core-ui#94995351b747b303fa3259804a7cd8ae066ffc25"
+source = "git+https://github.com/water-rs/browsers?branch=main#93a5a4d87f0ec93de0c2bab077a3f45272d2d335"
 dependencies = [
  "cookie",
  "executor-core",
@@ -13028,7 +13028,7 @@ dependencies = [
 [[package]]
 name = "waterui-chart"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/chart?branch=refactor%2F4770-slim-core-ui#1c042c6d2259e7f1af4af17dd496cb3d3f5af506"
+source = "git+https://github.com/water-rs/chart?branch=main#2e99e1fb708f2f5808a83fb6a2943ba29bcb86a0"
 dependencies = [
  "bytemuck",
  "nami",
@@ -13565,7 +13565,7 @@ dependencies = [
 [[package]]
 name = "waterui-map-gpu"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/map-gpu?branch=refactor%2F4770-slim-core-ui#6ff8707d3a170324a5281fd696c7a760d6de2c2b"
+source = "git+https://github.com/water-rs/map-gpu?branch=main#001ab8296bf9fde845a50835f37e770de10456c6"
 dependencies = [
  "arc-swap",
  "blocking",
@@ -13947,7 +13947,7 @@ dependencies = [
 [[package]]
 name = "waterui-video-gpu"
 version = "0.4.0"
-source = "git+https://github.com/water-rs/video-gpu?branch=refactor%2F4770-slim-core-ui#c1473c2b7261a15d31adff55d23769784ed29c39"
+source = "git+https://github.com/water-rs/video-gpu?branch=main#b88342361c0876122116f2f3f47b6ecc811672e2"
 dependencies = [
  "async-channel",
  "executor-core",
