@@ -351,7 +351,7 @@ impl<B: Backend> Engine<B> {
         let release: Box<dyn FnOnce()> = Box::new(move || {
             let _ = tx.send(Message::DestroySurface { id });
         });
-        let registration =
+        let registration: Registration =
             core::mem::DropGuard::new(release, (|release| release()) as fn(Box<dyn FnOnce()>));
         self.tx
             .send(Message::CreateSurface {
