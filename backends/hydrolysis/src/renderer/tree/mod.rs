@@ -115,7 +115,12 @@ mod window;
 
 pub use build::backend::held_with_foreground;
 pub use collection::*;
-#[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
+#[cfg(all(
+    feature = "accessibility",
+    hydrolysis_cherenkov,
+    hydrolysis_hosted,
+    hydrolysis_gpu
+))]
 pub use provided::HydroProvidedA11yHost;
 pub use provided::{HydroProvidedBehavior, HydroProvidedRenderHost, HydroProvidedSlot};
 

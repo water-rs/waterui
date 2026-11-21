@@ -46,6 +46,7 @@ enum OffscreenState {
         family_resolution: FontFamilyResolution,
     },
     #[cfg(any(waterui_feature = "capture", not(hydrolysis_cherenkov)))]
+    #[cfg_attr(not(waterui_feature = "capture"), allow(dead_code))]
     Unavailable(&'static str),
 }
 
