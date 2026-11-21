@@ -20,6 +20,8 @@ overlay = []
 # The `WATERUI_LOG` / `RUST_LOG` filter every backend's subscriber shares;
 # pulls `tracing-subscriber`.
 log = ["dep:tracing-subscriber"]
+# Build strategy propagated from `waterui/erased-dispatch`.
+erased-dispatch = ["waterui-core/erased-dispatch", "waterui/erased-dispatch"]
 
 [dependencies]
 waterui = { version = "0.5.2", path = "../..", default-features = false }

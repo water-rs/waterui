@@ -528,6 +528,7 @@ markdown-math = [
 ]
 std = ["waterui-internal/std", "waterui-dylib?/std"]
 dynamic_linking = ["dep:waterui-dylib"]
+erased-dispatch = ["waterui-internal/erased-dispatch", "waterui-dylib?/erased-dispatch"]
 canvas = ["waterui-internal/canvas", "waterui-dylib?/canvas"]
 chart = ["waterui-internal/chart", "waterui-dylib?/chart"]
 barcode = ["waterui-internal/barcode", "waterui-dylib?/barcode"]
