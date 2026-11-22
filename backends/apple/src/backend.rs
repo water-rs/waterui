@@ -303,12 +303,12 @@ impl NativeBackend for AppleBackend {
     #[cfg(waterui_feature = "text-field")]
     fn text_field<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::text_field::ResolvedTextFieldConfig<C>,
+        native: waterui::component::text_field::TextFieldConfig<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
         mark_reached!("text_field");
-        crate::components::text_field::realize_resolved_text_field_config(
+        crate::components::text_field::realize_text_field_config(
             native.map_slots(C::into_child),
             &self.entry(env),
         )

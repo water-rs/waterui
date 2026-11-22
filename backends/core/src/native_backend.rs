@@ -918,7 +918,7 @@ native_backend! {
         stepper<C>: waterui::component::stepper::StepperConfig<C>,
         #[cfg(waterui_feature = "text-field")]
         /// A text field.
-        text_field<C>: waterui::component::text_field::ResolvedTextFieldConfig<C>,
+        text_field<C>: waterui::component::text_field::TextFieldConfig<C>,
         #[cfg(waterui_feature = "secure-field")]
         /// A secure text field.
         secure_field<C>: waterui::form::secure::SecureFieldConfig<C>,
@@ -1150,7 +1150,7 @@ mod tests {
     }
 
     #[cfg(waterui_feature = "text-field")]
-    impl<C> Parent<C> for waterui::component::text_field::ResolvedTextFieldConfig<C> {
+    impl<C> Parent<C> for waterui::component::text_field::TextFieldConfig<C> {
         fn children(self) -> Vec<C> {
             alloc::vec![self.label().build()]
         }

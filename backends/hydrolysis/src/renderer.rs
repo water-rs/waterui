@@ -220,7 +220,7 @@ use waterui_controls::slider::SliderConfig;
 #[cfg(feature = "stepper")]
 use waterui_controls::stepper::StepperConfig;
 #[cfg(feature = "text-field")]
-use waterui_controls::text_field::ResolvedTextFieldConfig;
+use waterui_controls::text_field::TextFieldConfig;
 #[cfg(feature = "toggle")]
 use waterui_controls::toggle::ToggleConfig;
 #[cfg(any(feature = "menu", hydrolysis_video_plane, test))]

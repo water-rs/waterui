@@ -47,6 +47,7 @@ const CALENDAR_WEEKDAY_HEIGHT: f32 = 24.0;
 /// Configuration for the [`Calendar`] component — what a backend realizes
 /// through its `calendar` method, or a hook targeting `CalendarConfig`.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct CalendarConfig<S> {
     label: ControlLabel<S>,
     value: Binding<Date>,
@@ -60,6 +61,11 @@ impl<S> CalendarConfig<S> {
     #[must_use]
     pub const fn label(&self) -> &ControlLabel<S> {
         &self.label
+    }
+
+    /// Sets the `label`.
+    pub fn set_label(&mut self, label: ControlLabel<S>) {
+        self.label = label;
     }
 
     /// The label, for editing it in place.
