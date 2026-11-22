@@ -27,6 +27,8 @@ use objc2_core_graphics::{
     CGImage, CGImageAlphaInfo,
 };
 use objc2_quartz_core::CALayer;
+#[cfg(target_os = "macos")]
+use objc2_quartz_core::CATransaction;
 
 use waterui_contract::contract_violation;
 
@@ -158,14 +160,16 @@ pub(crate) fn without_sdf_layers<R>(layer: &CALayer, body: impl FnOnce() -> R) -
             for layer in &self.0 {
                 layer.setHidden(false);
             }
+            CATransaction::commit();
         }
     }
 
-    let mut hidden = Vec::new();
+    CATransaction::begin();
+    CATransaction::setDisableActions(true);
+    let mut restore = Restore(Vec::new());
     if let Some(sdf_class) = AnyClass::get(c"CASDFLayer") {
-        collect_and_hide_sdf_layers(layer, sdf_class, &mut hidden);
+        collect_and_hide_sdf_layers(layer, sdf_class, &mut restore.0);
     }
-    let _restore = Restore(hidden);
     body()
 }
 
