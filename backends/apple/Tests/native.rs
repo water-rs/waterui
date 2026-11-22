@@ -3638,6 +3638,10 @@ mod gpu_surface {
                 view_render_succeeds_over_a_healthy_gpu_child,
             ),
             Trial::test(
+                "gpu_surface::view_render_draws_controls_with_active_key_appearance",
+                view_render_draws_controls_with_active_key_appearance,
+            ),
+            Trial::test(
                 "gpu_surface::an_input_surface_is_told_its_size_once_before_its_first_frame_and_once_per_change",
                 an_input_surface_is_told_its_size_once_before_its_first_frame_and_once_per_change,
             ),
@@ -4457,6 +4461,61 @@ mod gpu_surface {
             texels.iter().all(|texel| *texel == [255, 255, 255, 255]),
             "every texel is the fixture's opaque white fill"
         );
+        Ok(())
+    }
+
+    /// Offscreen `ViewRenderer::render_to_rgba` renders `AppKit` controls with
+    /// their active key-window appearance (accent blue) rather than inactive
+    /// gray even though the capture window is never ordered on screen.
+    pub fn view_render_draws_controls_with_active_key_appearance()
+    -> Result<(), libtest_mimic::Failed> {
+        use waterui::component::button::{ButtonStyle, button};
+        use waterui::component::progress::progress;
+        use waterui::component::toggle::{ToggleStyle, toggle};
+        use waterui::reactive::binding;
+        use waterui_apple::native_test_support::view_renderer::{AppleBackend, GpuRuntime};
+        use waterui_apple::native_test_support::{install_gpu, refresh_theme, window_environment};
+        use waterui_backend_core::{AnyView, NativeBackend as _};
+        use waterui_capture::view_renderer::{RenderRequest, ViewRenderer as _};
+
+        let runtime = pollster::block_on(GpuRuntime::new())
+            .map_err(|error| format!("the GPU runtime: {error}"))?;
+        let (mut env, theme) = window_environment(super::mtm());
+        install_gpu(&mut env, runtime);
+        refresh_theme(&theme, cocoa_ui::ColorScheme::Light);
+
+        let renderer = AppleBackend::new(super::mtm()).offscreen(&env);
+        let request = RenderRequest::new(
+            waterui_core::layout::Size::new(160.0, 48.0),
+            std::time::Duration::from_secs(10),
+        );
+
+        for (name, view) in [
+            (
+                "prominent_button",
+                AnyView::new(button("Action").style(ButtonStyle::BorderedProminent)),
+            ),
+            (
+                "active_switch",
+                AnyView::new(toggle("", &binding(true)).style(ToggleStyle::Switch)),
+            ),
+            ("linear_progress", AnyView::new(progress(0.65_f64).linear())),
+        ] {
+            let result = waterui_apple::native_test_support::block_on_main(
+                30.0,
+                renderer.render_to_rgba(view, &env, request),
+            )
+            .map_err(|error| format!("{name} render_to_rgba failed: {error}"))?;
+            let (texels, _) = result.rgba_data().as_chunks::<4>();
+            let active_blue = texels
+                .iter()
+                .filter(|&&[r, g, b, a]| a >= 200 && b >= 180 && g >= 80 && r <= 100)
+                .count();
+            assert!(
+                active_blue > 20,
+                "{name} must render with active accent blue texels in offscreen capture, got {active_blue}"
+            );
+        }
         Ok(())
     }
 

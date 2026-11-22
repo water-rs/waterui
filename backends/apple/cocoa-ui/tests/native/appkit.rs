@@ -125,6 +125,10 @@ pub fn trials() -> Vec<Trial> {
         ),
         case!("capture", a_hidden_capture_renders_without_revealing),
         case!(
+            "capture",
+            capture_window_draws_controls_with_active_key_appearance
+        ),
+        case!(
             "appkit::text_field",
             a_fields_edit_path_carries_selection_undo_and_change
         ),
@@ -1431,6 +1435,91 @@ fn a_hidden_capture_renders_without_revealing() {
     drop(capture);
     crate::harness::pump_main_turn();
     label.removeFromSuperview();
+}
+
+/// A view hosted in `cocoa_ui::bitmap::capture_window` is never ordered on
+/// screen (`!window.isVisible()`), yet `AppKit` controls inside it (`Button`,
+/// `Toggle`, `Slider`, `Progress`) must draw their active key-window accent
+/// appearance rather than inactive gray.
+fn capture_window_draws_controls_with_active_key_appearance() {
+    use cocoa_ui::appkit::toggle::{Kind, Toggle};
+    use cocoa_ui::appkit::{Button, Progress, Slider};
+    use cocoa_ui::capture::ViewCapture;
+    use cocoa_ui::objc2_app_kit::{
+        NSAppearance, NSAppearanceCustomization as _, NSAppearanceNameAqua, NSBezelStyle, NSColor,
+    };
+    use cocoa_ui::progress::ProgressVariant;
+
+    let mtm = marker();
+    let window = cocoa_ui::bitmap::capture_window(mtm, Size::new(200.0, 200.0));
+    assert!(
+        !window.isVisible(),
+        "capture_window must never order onto the screen"
+    );
+    assert!(
+        window.isKeyWindow() && window.isMainWindow(),
+        "capture_window reports key and main state for offscreen control rendering"
+    );
+    // SAFETY: `NSAppearanceNameAqua` is an AppKit string constant.
+    let aqua = NSAppearance::appearanceNamed(unsafe { NSAppearanceNameAqua })
+        .expect("system Aqua appearance exists");
+    window.setAppearance(Some(&aqua));
+
+    let content = window
+        .contentView()
+        .expect("capture_window has a content view");
+    content.setWantsLayer(true);
+
+    let button = Button::new(mtm);
+    button.set_bordered(true);
+    button.set_bezel_style(NSBezelStyle::FlexiblePush);
+    button.set_bezel_color(Some(&NSColor::systemBlueColor()));
+    button.set_title("Action");
+    cocoa_ui::view::set_frame(&button, Rect::new(10.0, 10.0, 100.0, 28.0));
+    cocoa_ui::view::add_subview(&content, &button);
+
+    let toggle = Toggle::new(mtm, Kind::Switch, true);
+    cocoa_ui::view::set_frame(toggle.control(), Rect::new(10.0, 50.0, 60.0, 24.0));
+    cocoa_ui::view::add_subview(&content, toggle.control());
+
+    let slider = Slider::new(mtm);
+    slider.set_range(0.0, 1.0);
+    slider.set_value(0.65, None);
+    cocoa_ui::view::set_frame(&slider, Rect::new(10.0, 90.0, 140.0, 24.0));
+    cocoa_ui::view::add_subview(&content, &slider);
+
+    let progress = Progress::new(mtm);
+    progress.set_variant(ProgressVariant::Linear);
+    progress.set_indeterminate(false);
+    progress.set_range(0.0, 1.0);
+    progress.set_value(0.65);
+    cocoa_ui::view::set_frame(&progress, Rect::new(10.0, 130.0, 140.0, 16.0));
+    cocoa_ui::view::add_subview(&content, &progress);
+
+    cocoa_ui::view::prepare_for_capture(&content);
+
+    for (name, view) in [
+        ("button", &*button as &NSView),
+        ("switch", toggle.control()),
+        ("slider", &*slider as &NSView),
+        ("progress", &*progress as &NSView),
+    ] {
+        let target = crate::harness::capture_target();
+        let capture = Rc::new(ViewCapture::new(mtm, cocoa_ui::view::retain_base(view)));
+        capture.set_on_redraw(|| {});
+        let (flag, complete) = crate::harness::fence_flag();
+        capture.capture(&target, 0, complete);
+        crate::harness::await_fence(&flag, name);
+        let texels = crate::harness::readback(&target);
+        // `capture_target` is BGRA8Unorm: active accent blue has B >= 180 and R <= 100.
+        let active_blue =
+            crate::harness::count_pixels(&texels, [180, 80, 0, 200], [255, 220, 100, 255]);
+        assert!(
+            active_blue > 50,
+            "{name} inside capture_window must render with active accent blue pixels, got {active_blue}"
+        );
+        capture.shutdown();
+    }
 }
 
 /// A text field in a never-ordered window: `begin_editing` brings up the
