@@ -12562,68 +12562,103 @@ impl GpuRenderer {
             self.prepare_lazy_coverage(format_i, gpu).await?;
         }
         for (id, union, replace, format_i) in effects {
-            let Some(entry) = self.backdrop_shaders.get_mut(&id) else {
-                continue;
-            };
-            let replace_i = usize::from(replace);
-            let missing = if union {
-                entry.union[replace_i][format_i].is_none()
-            } else {
-                entry.plain[replace_i][format_i].is_none()
-            };
-            if !missing {
-                continue;
-            }
-            let module = if union {
-                &*entry.union_module.get_or_insert_with(|| {
-                    self.device
-                        .create_shader_module(wgpu::ShaderModuleDescriptor {
-                            label: Some("backdrop effect (union)"),
-                            source: wgpu::ShaderSource::Wgsl((&*entry.union_source).into()),
-                        })
-                })
-            } else {
-                &entry.plain_module
-            };
-            let built = create_pipeline(
-                &self.device,
-                &self.config,
-                &self.pipeline_layout,
-                self.pipeline_cache.handle.as_ref(),
-                &shaders::wgsl_engine_programs(module),
-                RENDER_FORMATS[format_i],
-                CoveragePass::Painter(replace),
-            )
-            .await
-            .map_err(|e| RenderError::Render(e.to_string()))?;
-            let cells = if union {
-                &mut entry.union
-            } else {
-                &mut entry.plain
-            };
-            cells[replace_i][format_i] = Some(built);
+            self.prepare_lazy_effect(id, union, replace, format_i)
+                .await?;
         }
         for (id, replace, format_i) in content_effects {
-            let Some(entry) = self.content_shaders.get_mut(&id) else {
-                continue;
-            };
-            let replace_i = usize::from(replace);
-            if entry.pipelines[replace_i][format_i].is_some() {
-                continue;
-            }
-            let built = create_pipeline(
-                &self.device,
-                &self.config,
-                &self.pipeline_layout,
-                self.pipeline_cache.handle.as_ref(),
-                &shaders::wgsl_engine_programs(&entry.module),
-                RENDER_FORMATS[format_i],
-                CoveragePass::Painter(replace),
-            )
-            .await
-            .map_err(|e| RenderError::Render(e.to_string()))?;
-            entry.pipelines[replace_i][format_i] = Some(built);
+            self.prepare_lazy_content_effect(id, replace, format_i)
+                .await?;
         }
+        Ok(())
+    }
+
+    /// wasm: builds one demand-built backdrop-effect pipeline slot if missing.
+    #[cfg(target_arch = "wasm32")]
+    #[expect(
+        clippy::future_not_send,
+        reason = "the browser engine is single-threaded and its futures run on the page's event loop"
+    )]
+    async fn prepare_lazy_effect(
+        &mut self,
+        id: u64,
+        union: bool,
+        replace: bool,
+        format_i: usize,
+    ) -> Result<(), RenderError> {
+        let Some(entry) = self.backdrop_shaders.get_mut(&id) else {
+            return Ok(());
+        };
+        let replace_i = usize::from(replace);
+        let missing = if union {
+            entry.union[replace_i][format_i].is_none()
+        } else {
+            entry.plain[replace_i][format_i].is_none()
+        };
+        if !missing {
+            return Ok(());
+        }
+        let module = if union {
+            &*entry.union_module.get_or_insert_with(|| {
+                self.device
+                    .create_shader_module(wgpu::ShaderModuleDescriptor {
+                        label: Some("backdrop effect (union)"),
+                        source: wgpu::ShaderSource::Wgsl((&*entry.union_source).into()),
+                    })
+            })
+        } else {
+            &entry.plain_module
+        };
+        let built = create_pipeline(
+            &self.device,
+            &self.config,
+            &self.pipeline_layout,
+            self.pipeline_cache.handle.as_ref(),
+            &shaders::wgsl_engine_programs(module),
+            RENDER_FORMATS[format_i],
+            CoveragePass::Painter(replace),
+        )
+        .await
+        .map_err(|e| RenderError::Render(e.to_string()))?;
+        let cells = if union {
+            &mut entry.union
+        } else {
+            &mut entry.plain
+        };
+        cells[replace_i][format_i] = Some(built);
+        Ok(())
+    }
+
+    /// wasm: builds one demand-built content-effect pipeline slot if missing.
+    #[cfg(target_arch = "wasm32")]
+    #[expect(
+        clippy::future_not_send,
+        reason = "the browser engine is single-threaded and its futures run on the page's event loop"
+    )]
+    async fn prepare_lazy_content_effect(
+        &mut self,
+        id: u64,
+        replace: bool,
+        format_i: usize,
+    ) -> Result<(), RenderError> {
+        let Some(entry) = self.content_shaders.get_mut(&id) else {
+            return Ok(());
+        };
+        let replace_i = usize::from(replace);
+        if entry.pipelines[replace_i][format_i].is_some() {
+            return Ok(());
+        }
+        let built = create_pipeline(
+            &self.device,
+            &self.config,
+            &self.pipeline_layout,
+            self.pipeline_cache.handle.as_ref(),
+            &shaders::wgsl_engine_programs(&entry.module),
+            RENDER_FORMATS[format_i],
+            CoveragePass::Painter(replace),
+        )
+        .await
+        .map_err(|e| RenderError::Render(e.to_string()))?;
+        entry.pipelines[replace_i][format_i] = Some(built);
         Ok(())
     }
 
