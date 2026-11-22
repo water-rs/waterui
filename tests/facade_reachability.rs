@@ -68,6 +68,7 @@ fn public_capabilities_are_reachable_through_the_facade() {
 
 #[test]
 fn prelude_exports_app_window_widgets_and_collections_without_shadowing() {
+    use std::io;
     use waterui::prelude::*;
 
     #[derive(Clone, Identifiable)]
@@ -84,8 +85,8 @@ fn prelude_exports_app_window_widgets_and_collections_without_shadowing() {
             let flag = Binding::bool(true);
             let _ = when(flag, || "ok");
             let _ = accordion("Header", || "Body");
-            let _ = error_view(std::io::Error::other("err"));
-            let _ = ErrorView::new(std::io::Error::other("err"));
+            let _ = error_view(io::Error::other("err"));
+            let _ = ErrorView::new(io::Error::other("err"));
             let _ = Suspense::new(async { "ready" });
             let _ = SignalCollection::new(Binding::container(vec![RowItem { id: 3 }]));
             let _ = ForEach::new(items, |item| text!("{id}", id = item.id));
