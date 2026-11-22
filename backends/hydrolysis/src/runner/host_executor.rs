@@ -19,7 +19,9 @@ use std::fmt::Debug;
 #[cfg(any(target_os = "android", all(test, target_os = "linux")))]
 use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+#[cfg(hydrolysis_frame_transaction)]
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, mpsc};
 
 use executor_core::LocalExecutor;
@@ -160,6 +162,7 @@ impl<W: HostWake> UiThreadPoster<W> {
 /// post runs `wake` on the UI thread, where it asks for the frame through
 /// the transaction gate. Wakes raised before the queued post runs coalesce
 /// into it.
+#[cfg(hydrolysis_frame_transaction)]
 pub fn redraw_wake<W: HostWake>(
     poster: UiThreadPoster<W>,
     latch: Arc<AtomicBool>,

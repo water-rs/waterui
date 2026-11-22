@@ -1203,7 +1203,10 @@ impl FrameHost for AndroidSession {
     }
 
     fn frame_in_flight(&self) -> bool {
-        self.gpu_frame_pending()
+        #[cfg(hydrolysis_gpu_painter)]
+        return self.gpu_frame_pending();
+        #[cfg(hydrolysis_hwui)]
+        false
     }
 
     fn rendering_ended(&self) -> bool {
@@ -1230,11 +1233,11 @@ impl FrameHost for AndroidSession {
     }
 
     fn closing_redraw_pending(&mut self) -> bool {
+        #[cfg(hydrolysis_gpu_painter)]
         if self.gpu_frame_pending() {
-            self.runtime.platform.redraw_pending.load(Ordering::Acquire)
-        } else {
-            self.runtime.platform.take_redraw_pending()
+            return self.runtime.platform.redraw_pending.load(Ordering::Acquire);
         }
+        self.runtime.platform.take_redraw_pending()
     }
 
     fn render(&mut self) -> bool {
@@ -2096,12 +2099,9 @@ impl AndroidSession {
     }
 
     /// Whether a submitted GPU frame's completion is still outstanding.
+    #[cfg(hydrolysis_gpu_painter)]
     const fn gpu_frame_pending(&self) -> bool {
-        #[cfg(hydrolysis_gpu_painter)]
-        let pending = self.runtime.platform.surface.frame_pending();
-        #[cfg(hydrolysis_hwui)]
-        let pending = false;
-        pending
+        self.runtime.platform.surface.frame_pending()
     }
 
     fn report_idle(&self, pending: bool) {

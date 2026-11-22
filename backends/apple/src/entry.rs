@@ -276,13 +276,7 @@ mod imp {
         let _ = parts.termination;
         // Same hand-off as macOS: content renders under the env `app`
         // returned — its installs are invisible to the host env.
-        #[cfg_attr(
-            not(feature = "webview"),
-            expect(unused_mut, reason = "only webview installs an app-env service on iOS")
-        )]
-        let mut app_env = parts.env;
-        #[cfg(feature = "webview")]
-        crate::components::webview::install_service(&mut app_env);
+        let app_env = parts.env;
         let initial = crate::windows::connect_windows(parts.windows, &app_env);
         if initial.is_empty() {
             waterui::contract_violation!(

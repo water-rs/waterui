@@ -106,7 +106,6 @@ impl AppleAppLayout {
 /// What an application's `Info.plist` says about the application itself,
 /// independent of which backend hosts it.
 #[derive(Debug, Clone, Copy)]
-#[non_exhaustive]
 pub struct PlistApp<'a> {
     /// The name the system displays for the application.
     pub display_name: &'a str,

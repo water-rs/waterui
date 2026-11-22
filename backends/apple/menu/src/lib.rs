@@ -4,7 +4,7 @@
 //! Hydrolysis `UIKit` host — turn a declared `App::menu_bar` into
 //! `cocoa_ui::menu::MenuTreeNode`s the same way: [`menu_tree`] binds each
 //! command's action to the application environment, and [`kit_command_fields`]
-//! carries its label, symbol and shortcut. On iOS the [`ios`] module builds
+//! carries its label, symbol and shortcut. On iOS the `ios` module builds
 //! the main menu from that tree through the main menu system's build
 //! handler, so a shortcut becomes a `UIKeyCommand` `UIKit` matches before
 //! the key reaches a responder.
