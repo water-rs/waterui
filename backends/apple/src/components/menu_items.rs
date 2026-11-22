@@ -21,6 +21,8 @@ use waterui::reactive::watcher::{BoxWatcherGuard, Metadata};
 use waterui::text::StyledStr;
 use waterui_backend_core::Environment;
 
+use crate::contract::Held;
+
 #[cfg(all(target_os = "macos", feature = "menu"))]
 mod platform {
     pub(super) use cocoa_ui::appkit::{Menu, MenuItem};
@@ -43,7 +45,7 @@ pub(super) fn item_title(styled: &StyledStr) -> String {
 /// with the watcher's metadata.
 #[cfg(feature = "menu")]
 pub(super) fn collect_item_watchers(
-    items: &[ResolvedMenuItem],
+    items: &[ResolvedMenuItem<Held>],
     resync: &Rc<dyn Fn(&Metadata)>,
     watchers: &mut Vec<BoxWatcherGuard>,
 ) {
@@ -84,7 +86,7 @@ pub(super) fn collect_item_watchers(
 
 /// A `ResolvedCommand` as a kit `Command` — every presentation field
 /// snapshotted; the shortcut's key equivalent travels cross-platform.
-fn kit_command(command: &ResolvedCommand, env: &Environment) -> KitCommand {
+fn kit_command(command: &ResolvedCommand<Held>, env: &Environment) -> KitCommand {
     let (key_equivalent, modifiers) = command.shortcut.as_ref().map_or_else(
         || (String::new(), cocoa_ui::menu::KeyModifiers::empty()),
         waterui_apple_menu::shortcut_parts,
@@ -108,7 +110,7 @@ fn kit_command(command: &ResolvedCommand, env: &Environment) -> KitCommand {
 /// Quit or Close Window is the standard item on macOS and is omitted on iOS,
 /// which has no application quit and whose windows the system owns.
 #[cfg(any(feature = "context_menu", feature = "text_field"))]
-pub(super) fn tree_nodes(items: &[ResolvedMenuItem], env: &Environment) -> Vec<MenuTreeNode> {
+pub(super) fn tree_nodes(items: &[ResolvedMenuItem<Held>], env: &Environment) -> Vec<MenuTreeNode> {
     let mut nodes = Vec::with_capacity(items.len());
     for item in items {
         match item {
@@ -158,7 +160,7 @@ pub(super) fn tree_nodes(items: &[ResolvedMenuItem], env: &Environment) -> Vec<M
 #[cfg(all(target_os = "macos", feature = "menu"))]
 fn command_item(
     mtm: cocoa_ui::MainThreadMarker,
-    command: &ResolvedCommand,
+    command: &ResolvedCommand<Held>,
     env: &Environment,
 ) -> platform::MenuItem {
     let kit = kit_command(command, env);
@@ -192,7 +194,7 @@ fn command_item(
 pub(super) fn append_items(
     mtm: cocoa_ui::MainThreadMarker,
     menu: &platform::Menu,
-    items: &[ResolvedMenuItem],
+    items: &[ResolvedMenuItem<Held>],
     env: &Environment,
 ) {
     for item in items {
@@ -235,10 +237,10 @@ pub(super) fn build_menu(
     title: &str,
     icon: Option<&str>,
     image: Option<&cocoa_ui::objc2_ui_kit::UIImage>,
-    items: &[ResolvedMenuItem],
+    items: &[ResolvedMenuItem<Held>],
     env: &Environment,
 ) -> platform::Menu {
-    let mut groups: Vec<&[ResolvedMenuItem]> = items
+    let mut groups: Vec<&[ResolvedMenuItem<Held>]> = items
         .split(|item| matches!(item, ResolvedMenuItem::Divider))
         .filter(|group| !group.is_empty())
         .collect();
@@ -272,7 +274,7 @@ pub(super) fn build_menu(
 /// nested menus recurse.
 #[cfg(all(target_os = "ios", feature = "menu"))]
 fn menu_elements(
-    items: &[ResolvedMenuItem],
+    items: &[ResolvedMenuItem<Held>],
     env: &Environment,
     mtm: cocoa_ui::MainThreadMarker,
     key_commands: &cocoa_ui::uikit::KeyCommands,

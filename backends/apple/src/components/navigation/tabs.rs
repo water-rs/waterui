@@ -21,6 +21,7 @@ use waterui_core::layout::{
 
 use super::extract_title_text;
 use crate::contract::RenderContext;
+use crate::sf_symbol::SfSymbolProbe;
 
 /// The `TabsLayout` realization.
 pub fn realize_tabs_layout(value: TabsLayout<Held>, ctx: &RenderContext<'_>) -> NativeLeaf {
@@ -91,15 +92,15 @@ fn mount_tab(id: Id, tab: TabItem<Held>, renderer: &crate::contract::Renderer) -
     let label = extract_title_text(label_leaf.view());
     let (symbol, icon_leaf) = icon.map_or_else(
         || (None, None),
-        |builder| {
-            let icon_view = builder.build();
-            let symbol = icon_view
-                .downcast_ref::<crate::SfSymbol>()
-                .map(|symbol| String::from(symbol.as_str()));
-            symbol.map_or_else(
-                || (None, Some(renderer.render(icon_view))),
-                |name| (Some(name), None),
-            )
+        |slot| {
+            let mut probe = SfSymbolProbe::default();
+            if slot.probe(&mut probe, renderer.context().env())
+                && let Some(name) = probe.name
+            {
+                (Some(String::from(name)), None)
+            } else {
+                (None, Some(renderer.realize(slot.build())))
+            }
         },
     );
 
@@ -335,7 +336,7 @@ mod platform {
         }
         refresh(mtm, &env, &tabs, &mounted, &controllers);
 
-        tabs.setTabBarMinimizeBehavior(match layout.get_minimize_behavior() {
+        tabs.setTabBarMinimizeBehavior(match layout.minimize_behavior() {
             TabBarMinimizeBehavior::Automatic => UITabBarMinimizeBehavior::Automatic,
             TabBarMinimizeBehavior::Never => UITabBarMinimizeBehavior::Never,
             TabBarMinimizeBehavior::OnScrollDown => UITabBarMinimizeBehavior::OnScrollDown,
@@ -595,7 +596,7 @@ mod platform {
             view::add_subview(&host, tab.pane.view());
         }
 
-        let sidebar = matches!(layout.get_style(), NativeTabStyle::Sidebar);
+        let sidebar = matches!(layout.style(), NativeTabStyle::Sidebar);
         let chrome = if sidebar {
             let list = SourceList::new(mtm);
             list.set_segments(&segments(&mounted.borrow()));

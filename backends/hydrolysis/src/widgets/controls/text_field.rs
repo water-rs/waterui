@@ -18,10 +18,16 @@ use crate::widgets::controls::field_look::placeholder_text;
 use crate::widgets::controls::field_look::{FieldChrome, FloatLabel, value_text};
 #[cfg(feature = "text-field")]
 use core::num::NonZeroUsize;
-use nami::Signal as _;
+#[cfg(feature = "text-field")]
+use nami::Computed;
+use nami::{Signal as _, SignalExt as _};
 use std::cell::RefCell;
 use std::rc::Rc;
 use waterui::cursor::CursorStyle;
+#[cfg(feature = "text-field")]
+use waterui_controls::NoopSlot;
+#[cfg(feature = "text-field")]
+use waterui_controls::menu::ResolvedMenuItem;
 #[cfg(feature = "text-field")]
 use waterui_controls::text_field::TextFieldConfig;
 use waterui_core::Environment;
@@ -45,6 +51,7 @@ use waterui_text::styled::StyledStr;
 #[cfg(feature = "text-field")]
 pub struct TextFieldRenderState<E: crate::text::TextEngine> {
     config: TextFieldConfig<HeldChild<E>>,
+    selection_menu: Computed<Vec<ResolvedMenuItem>>,
     label_view: RetainedSubview<E>,
     /// The look the field was requested for, its container's live chrome and
     /// the operands its label floats on.
@@ -70,9 +77,20 @@ impl<E: crate::text::TextEngine> TextFieldRenderState<E> {
 
     pub(crate) fn from_config(config: TextFieldConfig<HeldChild<E>>) -> Self {
         let field = FieldChrome::new();
+        let selection_menu = config
+            .selection_menu()
+            .clone()
+            .map(|items| {
+                items
+                    .into_iter()
+                    .map(|item| item.map_slots(|_| NoopSlot))
+                    .collect()
+            })
+            .computed();
         Self {
             label_view: RetainedSubview::held(field.label_view(config.label().build())),
             config,
+            selection_menu,
             field,
             selection_slot: Rc::new(RefCell::new(TextSelectionSlot::default())),
         }
@@ -222,7 +240,7 @@ pub fn render_text_field_parts<E: crate::text::TextEngine>(
             text_field.label().clone(),
             text_field.value().clone(),
             text_field.prompt().content(),
-            text_field.selection_menu().clone(),
+            state.selection_menu.clone(),
             text_field.line_limit(),
             text_field.on_submit().cloned(),
         )
@@ -1220,7 +1238,7 @@ pub fn emit_text_field_accessibility<E: crate::text::TextEngine>(
             text_field.label().clone(),
             text_field.value().clone(),
             text_field.prompt().content(),
-            text_field.selection_menu().clone(),
+            state.selection_menu.clone(),
             text_field.line_limit(),
             text_field.on_submit().cloned(),
         )

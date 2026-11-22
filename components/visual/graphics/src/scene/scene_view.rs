@@ -15,10 +15,6 @@ use crate::draw::Instant;
 use crate::input::SurfaceInputEvent;
 use crate::scene::resources::{RecordingResources, SceneResources};
 
-/// Environment marker: render `SceneView` directly in the backend scene.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct SceneViewMergeToParent;
-
 /// Callback used by scene content to request another frame.
 pub type SceneInvalidator = Rc<dyn Fn()>;
 

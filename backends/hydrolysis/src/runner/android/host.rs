@@ -1562,9 +1562,7 @@ fn session_mounts(
         // hooks are never called and the machine is never started.
         termination: _,
     } = parts;
-    let mut env = env
-        .extending(waterui_graphics::backend::SceneViewMergeToParent)
-        .layered_on(&services.env);
+    let mut env = env.layered_on(&services.env);
     let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
     #[cfg(any(test, hydrolysis_platform_services))]
     install_platform_services(&mut env);

@@ -5,7 +5,7 @@ use crate::theme::{ModalInteraction, NavigationMotion};
 use std::collections::BTreeSet;
 use waterui::navigation::{
     AnyNavigationTransition, NavigationDestinationState, NavigationTransactionId,
-    NavigationTransitionDirection,
+    NavigationTransitionDirection, ResolvedNavigationView,
 };
 use waterui_core::contract_violation;
 use waterui_core::id::Id;
@@ -133,7 +133,7 @@ pub struct HydroNavigationEntry<E: crate::text::TextEngine> {
 }
 
 impl<E: crate::text::TextEngine> HydroNavigationEntry<E> {
-    fn new(identity: u64, view: NavigationView<HeldChild<E>>) -> Self {
+    fn new(identity: u64, view: ResolvedNavigationView<HeldChild<E>>) -> Self {
         let NavigationView {
             bar,
             content,

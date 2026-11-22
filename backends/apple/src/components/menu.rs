@@ -152,7 +152,7 @@ struct MenuState {
     /// The environment item actions run against — `env.inner` in Swift.
     env: Environment,
     /// The resolved items the live menu was built from.
-    items: Vec<ResolvedMenuItem>,
+    items: Vec<ResolvedMenuItem<Held>>,
     /// Watchers on every item signal; replaced wholesale on rebuild.
     item_watchers: Vec<BoxWatcherGuard>,
     /// The placement a Rust parent last gave this leaf — its proposal is
@@ -174,7 +174,7 @@ impl core::fmt::Debug for MenuState {
 
 /// Re-snapshots `items` onto the state, installs a fresh watcher per item
 /// signal, and rebuilds the platform menu.
-fn apply_items(state: &Rc<RefCell<MenuState>>, items: Vec<ResolvedMenuItem>) {
+fn apply_items(state: &Rc<RefCell<MenuState>>, items: Vec<ResolvedMenuItem<Held>>) {
     let resync: Rc<dyn Fn(&Metadata)> = {
         // Weak: `item_watchers` lives inside the state — a strong capture
         // here would keep `MenuState` alive forever.

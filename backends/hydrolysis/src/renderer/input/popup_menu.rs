@@ -133,7 +133,7 @@ pub struct ContextMenuTarget<E: crate::text::TextEngine> {
     pub(crate) owner: std::rc::Weak<crate::renderer::NodeCell<E>>,
     pub(crate) depth: usize,
     pub(crate) order: usize,
-    pub(crate) items: nami::Computed<Vec<ResolvedMenuItem>>,
+    pub(crate) items: nami::Computed<Vec<ResolvedMenuItem<HeldChild<E>>>>,
     /// The environment of the view that declared the menu — its popup opens
     /// inside it, so `.state(&value)` overlays reach the item actions.
     pub(crate) env: Environment,

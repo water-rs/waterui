@@ -14,9 +14,11 @@ use std::rc::Rc;
 use cocoa_ui::MainThreadMarker;
 use cocoa_ui::uikit::MenuBuilder;
 use nami::{Computed, Signal};
+use waterui_controls::NoopSlot;
 use waterui_controls::label::SemanticLabel;
 use waterui_controls::menu::{Menu as DeclaredMenu, ResolvedMenuItem, resolve_menu_bar_items};
 use waterui_core::Environment;
+use waterui_core::backend::ChildSlot;
 
 use crate::{IconResolver, kit_command_for_menu, menu_tree};
 
@@ -25,19 +27,19 @@ use crate::{IconResolver, kit_command_for_menu, menu_tree};
 /// Holds the resolved items, the environment their actions run under, and
 /// the host's menu icon resolver, filled once the application has returned its
 /// own environment.
-pub type Declared = Rc<
+pub type Declared<S = NoopSlot> = Rc<
     RefCell<
         Option<(
-            Computed<Vec<ResolvedMenuItem>>,
+            Computed<Vec<ResolvedMenuItem<S>>>,
             Environment,
-            Rc<IconResolver>,
+            Rc<IconResolver<S>>,
         )>,
     >,
 >;
 
 /// The slot `build_menus` reads — empty until the application has run.
 #[must_use]
-pub fn declared() -> Declared {
+pub fn declared<S>() -> Declared<S> {
     Rc::new(RefCell::new(None))
 }
 
@@ -51,7 +53,7 @@ pub fn declared() -> Declared {
 /// # Panics
 ///
 /// When `UIKit` calls the handler off the main thread.
-pub fn build_handler(declared: Declared) -> impl Fn(&MenuBuilder<'_>) + 'static {
+pub fn build_handler<S: 'static>(declared: Declared<S>) -> impl Fn(&MenuBuilder<'_>) + 'static {
     move |builder| {
         let Some((resolved, env, resolve_icon)) = declared.borrow().clone() else {
             tracing::debug!("main menu built before the application declared its menus");
@@ -91,14 +93,14 @@ pub fn build_handler(declared: Declared) -> impl Fn(&MenuBuilder<'_>) + 'static 
 
 /// Fills `declared` and flags each change for rebuild. The returned guard
 /// keeps the watcher alive; hold it for the process.
-pub fn install_declared(
+pub fn install_declared<S: ChildSlot>(
     mtm: MainThreadMarker,
     menu_bar: &Computed<Vec<DeclaredMenu<SemanticLabel>>>,
     env: &Environment,
-    declared: &Declared,
-    resolve_icon: Rc<IconResolver>,
+    declared: &Declared<S>,
+    resolve_icon: Rc<IconResolver<S>>,
 ) -> Box<dyn Any> {
-    let resolved = resolve_menu_bar_items(menu_bar, env);
+    let resolved = resolve_menu_bar_items::<_, S>(menu_bar, env);
     let guard = resolved.watch(move |_| cocoa_ui::uikit::request_main_menu_rebuild(mtm));
     *declared.borrow_mut() = Some((resolved, env.clone(), resolve_icon));
     // `UIKit` may have built the main menu before the slot was filled; the

@@ -157,9 +157,7 @@ impl UiKitApplication {
         let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
         let opener = queue_window_opener(&pending_window_queue);
         RootWindows::connect_channels(channels, &opener);
-        let mut env = env
-            .extending(waterui_graphics::backend::SceneViewMergeToParent)
-            .layered_on(&services);
+        let mut env = env.layered_on(&services);
         #[cfg(any(test, hydrolysis_platform_services))]
         install_platform_services(&mut env);
         install_window_registries::<ParleyEngine>(&mut env);

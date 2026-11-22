@@ -1,6 +1,7 @@
 //! Split-view navigation primitives.
 
 use alloc::rc::Rc;
+use core::fmt::{self, Debug};
 use core::marker::PhantomData;
 
 use nami::{Binding, Computed, SignalExt as _};
@@ -11,8 +12,8 @@ use waterui_core::{
     AnyView, Environment, IntoSignal, Native, NativeView, View, contract_violation,
 };
 
-use crate::NavigationView;
 pub use crate::tab::SlotBuilder;
+use crate::{NavigationToolbarItems, NavigationView, ResolvedNavigationView};
 
 /// Width constraints for a resizable navigation split column.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -173,9 +174,9 @@ pub mod split_style {
 }
 
 /// Selected-column builder used by native split navigation backends, keeping
-/// each built destination's content in the backend's child slot `S`.
+/// each built destination's content and toolbar in the backend's child slot `S`.
 #[derive(Clone)]
-pub struct NavigationSplitDetailBuilder<S>(Rc<dyn Fn(Id) -> NavigationView<S>>);
+pub struct NavigationSplitDetailBuilder<S>(Rc<dyn Fn(Id) -> ResolvedNavigationView<S>>);
 
 impl<S> core::fmt::Debug for NavigationSplitDetailBuilder<S> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -184,10 +185,14 @@ impl<S> core::fmt::Debug for NavigationSplitDetailBuilder<S> {
 }
 
 impl<S: ChildSlot> NavigationSplitDetailBuilder<S> {
-    fn mapped<T, D>(mapping: Mapping<T>, detail: impl Fn(T) -> NavigationView<D> + 'static) -> Self
+    fn mapped<T, D, Tb>(
+        mapping: Mapping<T>,
+        detail: impl Fn(T) -> NavigationView<D, Tb> + 'static,
+    ) -> Self
     where
         T: Clone + Ord + 'static,
         D: View,
+        Tb: NavigationToolbarItems,
     {
         Self(Rc::new(move |selected| {
             detail(
@@ -195,27 +200,27 @@ impl<S: ChildSlot> NavigationSplitDetailBuilder<S> {
                     .to_data(selected)
                     .expect("NavigationSplitView selected id must exist in mapping"),
             )
-            .map_content(S::from_view)
+            .into_resolved::<S>()
         }))
     }
 }
 
 impl<S> NavigationSplitDetailBuilder<S> {
     /// Builds a column view for a selected identifier.
-    pub fn build(&self, selected: Id) -> NavigationView<S> {
+    pub fn build(&self, selected: Id) -> ResolvedNavigationView<S> {
         (self.0)(selected)
     }
 }
 
 impl<S: 'static> NavigationSplitDetailBuilder<S> {
-    /// Maps each built column's content through `f` into slot `T`.
+    /// Maps each built column's content and toolbar through `f` into slot `T`.
     #[must_use]
-    pub fn map_slot<T>(
+    pub fn map_slot<T: 'static>(
         self,
         f: impl Fn(S) -> T + Clone + 'static,
     ) -> NavigationSplitDetailBuilder<T> {
         NavigationSplitDetailBuilder(Rc::new(move |selected| {
-            self.build(selected).map_content(f.clone())
+            MapSlots::map_slots(self.build(selected), f.clone())
         }))
     }
 }
@@ -400,23 +405,24 @@ impl<S> NavigationSplitLayout<S> {
 
 /// Selected-column mapping paired with its typed builder closure.
 #[doc(hidden)]
-pub struct MappedSplitColumn<T, F, V> {
+pub struct MappedSplitColumn<T, F, V, Tb = ()> {
     mapping: Mapping<T>,
     build: F,
-    view: PhantomData<fn() -> V>,
+    view: PhantomData<fn() -> (V, Tb)>,
 }
 
-impl<T, F, V> core::fmt::Debug for MappedSplitColumn<T, F, V> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl<T, F, V, Tb> Debug for MappedSplitColumn<T, F, V, Tb> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("MappedSplitColumn")
     }
 }
 
-impl<T, F, V> MappedSplitColumn<T, F, V>
+impl<T, F, V, Tb> MappedSplitColumn<T, F, V, Tb>
 where
     T: Clone + Ord + 'static,
-    F: Fn(T) -> NavigationView<V> + 'static,
+    F: Fn(T) -> NavigationView<V, Tb> + 'static,
     V: View,
+    Tb: NavigationToolbarItems,
 {
     fn into_builder<S: ChildSlot>(self) -> NavigationSplitDetailBuilder<S> {
         NavigationSplitDetailBuilder::mapped(self.mapping, self.build)
@@ -436,11 +442,12 @@ impl IntoOptionalSplitDetailBuilder for () {
     }
 }
 
-impl<T, F, V> IntoOptionalSplitDetailBuilder for MappedSplitColumn<T, F, V>
+impl<T, F, V, Tb> IntoOptionalSplitDetailBuilder for MappedSplitColumn<T, F, V, Tb>
 where
     T: Clone + Ord + 'static,
-    F: Fn(T) -> NavigationView<V> + 'static,
+    F: Fn(T) -> NavigationView<V, Tb> + 'static,
     V: View,
+    Tb: NavigationToolbarItems,
 {
     fn into_detail_builder<S: ChildSlot>(self) -> Option<NavigationSplitDetailBuilder<S>> {
         Some(self.into_builder::<S>())
@@ -454,11 +461,12 @@ pub trait IntoSplitDetailBuilder: 'static {
     fn into_detail_builder<S: ChildSlot>(self) -> NavigationSplitDetailBuilder<S>;
 }
 
-impl<T, F, V> IntoSplitDetailBuilder for MappedSplitColumn<T, F, V>
+impl<T, F, V, Tb> IntoSplitDetailBuilder for MappedSplitColumn<T, F, V, Tb>
 where
     T: Clone + Ord + 'static,
-    F: Fn(T) -> NavigationView<V> + 'static,
+    F: Fn(T) -> NavigationView<V, Tb> + 'static,
     V: View,
+    Tb: NavigationToolbarItems,
 {
     fn into_detail_builder<S: ChildSlot>(self) -> NavigationSplitDetailBuilder<S> {
         self.into_builder::<S>()
@@ -493,12 +501,13 @@ impl<Sidebar, Placeholder, Content, Detail> core::fmt::Debug
 
 /// Three-column split view type returned by [`NavigationSplitView::three_column`].
 #[doc(hidden)]
-pub type ThreeColumnSplitView<Sidebar, S, C, Content, Detail, CV, DV> = NavigationSplitView<
-    Sidebar,
-    (),
-    MappedSplitColumn<S, Content, CV>,
-    MappedSplitColumn<C, Detail, DV>,
->;
+pub type ThreeColumnSplitView<Sidebar, S, C, Content, Detail, CV, CTb, DV, DTb> =
+    NavigationSplitView<
+        Sidebar,
+        (),
+        MappedSplitColumn<S, Content, CV, CTb>,
+        MappedSplitColumn<C, Detail, DV, DTb>,
+    >;
 
 impl NavigationSplitView<(), (), (), ()> {
     /// Creates a two-column split driven by a caller-owned optional selection.
@@ -508,16 +517,17 @@ impl NavigationSplitView<(), (), (), ()> {
     /// back control (including a completed back gesture) writes `None` into
     /// the selection. Start with `None` to open on the sidebar; the binding is
     /// the single source of truth for the visible compact column.
-    pub fn new<T, Sidebar, Detail, D>(
+    pub fn new<T, Sidebar, Detail, D, DTb>(
         selection: &Binding<Option<T>>,
         sidebar: Sidebar,
         detail: Detail,
-    ) -> NavigationSplitView<Sidebar, (), (), MappedSplitColumn<T, Detail, D>>
+    ) -> NavigationSplitView<Sidebar, (), (), MappedSplitColumn<T, Detail, D, DTb>>
     where
         T: Clone + Ord + 'static,
         Sidebar: View + Clone,
-        Detail: 'static + Fn(T) -> NavigationView<D>,
+        Detail: 'static + Fn(T) -> NavigationView<D, DTb>,
         D: View,
+        DTb: NavigationToolbarItems,
     {
         let mapping = Mapping::new();
         NavigationSplitView {
@@ -538,21 +548,23 @@ impl NavigationSplitView<(), (), (), ()> {
     }
 
     /// Creates a three-column split with independently selected content and detail columns.
-    pub fn three_column<S, C, Sidebar, Content, Detail, CV, DV>(
+    pub fn three_column<S, C, Sidebar, Content, Detail, CV, CTb, DV, DTb>(
         sidebar_selection: &Binding<Option<S>>,
         content_selection: &Binding<Option<C>>,
         sidebar: Sidebar,
         content: Content,
         detail: Detail,
-    ) -> ThreeColumnSplitView<Sidebar, S, C, Content, Detail, CV, DV>
+    ) -> ThreeColumnSplitView<Sidebar, S, C, Content, Detail, CV, CTb, DV, DTb>
     where
         S: Clone + Ord + 'static,
         C: Clone + Ord + 'static,
         Sidebar: View + Clone,
-        Content: 'static + Fn(S) -> NavigationView<CV>,
-        Detail: 'static + Fn(C) -> NavigationView<DV>,
+        Content: 'static + Fn(S) -> NavigationView<CV, CTb>,
+        Detail: 'static + Fn(C) -> NavigationView<DV, DTb>,
         CV: View,
+        CTb: NavigationToolbarItems,
         DV: View,
+        DTb: NavigationToolbarItems,
     {
         let sidebar_mapping = Mapping::new();
         let content_mapping = Mapping::new();

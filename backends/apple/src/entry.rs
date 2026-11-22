@@ -244,7 +244,7 @@ mod imp {
         app: Option<F>,
         env: *mut Environment,
         #[cfg(waterui_feature = "menu")]
-        declared: waterui_apple_menu::ios::Declared,
+        declared: waterui_apple_menu::ios::Declared<crate::contract::Held>,
         scenes: crate::scene_registry::Registration<crate::windows::Scenes>,
         _theme: Rc<ThemeSignals>,
         _locale: Box<dyn Any>,

@@ -12,8 +12,6 @@ use hydrolysis::{
 #[cfg(feature = "gpu")]
 use waterui::graphics::WorkingColor;
 #[cfg(feature = "gpu")]
-use waterui::graphics::backend::SceneViewMergeToParent;
-#[cfg(feature = "gpu")]
 use waterui::text::FontCollection;
 #[cfg(feature = "gpu")]
 use waterui_core::{AnyView, Environment, View};
@@ -182,10 +180,9 @@ impl TestHost {
         let surface = platform.surface();
         renderer.reset_scene();
         renderer.begin_rebuild_frame();
-        let env = self.env.clone().extending(SceneViewMergeToParent);
         renderer.capture_window_tree(
             AnyView::new(view),
-            &env,
+            &self.env,
             bounds,
             kurbo::Affine::IDENTITY,
             kurbo::Affine::IDENTITY,

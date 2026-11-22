@@ -23,11 +23,14 @@ use std::rc::{Rc, Weak};
 use nami::{Computed, Signal as _};
 use waterui::app::Quit;
 use waterui::window::WindowState;
+use waterui_controls::NoopSlot;
 use waterui_controls::menu::{
     CloseWindowChord, MenuItem, ResolvedCommand, ResolvedMenuItem, Shortcut, ShortcutKey,
 };
 use waterui_core::Environment;
 use waterui_core::Str;
+
+use crate::renderer::HeldChild;
 use waterui_core::contract_violation;
 use waterui_core::handler::SharedAction;
 
@@ -188,10 +191,13 @@ impl WindowCloser {
 /// close, and the item is omitted.
 pub fn close_window_command(env: &Environment, owner_closable: bool) -> Option<ResolvedCommand> {
     let close = env.get::<WindowCloser>()?.clone();
-    let mut command =
-        MenuItem::close_window_command(env, CloseWindowChord::of(env), move |window: WindowId| {
+    let mut command = MenuItem::close_window_command::<waterui_controls::NoopSlot, _>(
+        env,
+        CloseWindowChord::of(env),
+        move |window: WindowId| {
             close.request(window);
-        });
+        },
+    );
     if !owner_closable {
         command.disabled = Computed::constant(true);
     }
@@ -210,7 +216,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     pub(crate) fn register_menu_shortcuts(
         &mut self,
         menu_state: Weak<RefCell<MenuRenderState<E>>>,
-        items: Computed<Vec<ResolvedMenuItem>>,
+        items: Computed<Vec<ResolvedMenuItem<HeldChild<E>>>>,
         env: Environment,
     ) {
         let Some(registry) =
@@ -229,8 +235,8 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
 /// declared Close Window arms the application's decided chord of
 /// [`close_window_command`], and nothing where the host's windows cannot be
 /// closed.
-fn collect_menu_shortcuts(
-    items: &[ResolvedMenuItem],
+fn collect_menu_shortcuts<S: 'static>(
+    items: &[ResolvedMenuItem<S>],
     env: &Environment,
     out: &mut Vec<MenuShortcut>,
 ) {
@@ -238,7 +244,7 @@ fn collect_menu_shortcuts(
         match item {
             ResolvedMenuItem::Command(command) => collect_command_shortcut(command, out),
             ResolvedMenuItem::Quit => {
-                if let Some(command) = env.get::<Quit>().map(|quit| quit.command(env)) {
+                if let Some(command) = env.get::<Quit>().map(|quit| quit.command::<NoopSlot>(env)) {
                     collect_command_shortcut(&command, out);
                 }
             }
@@ -259,7 +265,7 @@ fn collect_menu_shortcuts(
     }
 }
 
-fn collect_command_shortcut(command: &ResolvedCommand, out: &mut Vec<MenuShortcut>) {
+fn collect_command_shortcut<S>(command: &ResolvedCommand<S>, out: &mut Vec<MenuShortcut>) {
     if let Some(shortcut) = &command.shortcut {
         out.push(MenuShortcut::new(
             shortcut,
@@ -313,7 +319,7 @@ enum MenuShortcutSource<E: crate::text::TextEngine> {
         /// `Weak::ptr_eq` against a live upgrade — and its liveness (unmount
         /// drops the render state, and the source with it).
         menu_state: Weak<RefCell<MenuRenderState<E>>>,
-        items: Computed<Vec<ResolvedMenuItem>>,
+        items: Computed<Vec<ResolvedMenuItem<HeldChild<E>>>>,
         env: Environment,
         seq: u64,
     },
@@ -387,7 +393,7 @@ impl<E: crate::text::TextEngine> MenuShortcutRegistry<E> {
         &self,
         window: WindowId,
         menu_state: Weak<RefCell<MenuRenderState<E>>>,
-        items: Computed<Vec<ResolvedMenuItem>>,
+        items: Computed<Vec<ResolvedMenuItem<HeldChild<E>>>>,
         env: Environment,
     ) {
         let mut inner = self.0.borrow_mut();

@@ -21,6 +21,7 @@ use crate::label::{
     ControlLabel, IntoLabel, Label, LabelDisplayMode, LabelKind, impl_label_style_methods,
 };
 use crate::size::ControlSize;
+use crate::slot::StyleSlot;
 
 /// Visual style options for toggle controls.
 #[non_exhaustive]
@@ -60,17 +61,21 @@ impl ToggleStyle {
 }
 
 /// The label view passed to a custom [`Toggle`] style.
-pub struct ToggleLabel(AnyView);
+pub struct ToggleLabel<L = ControlLabel<StyleSlot>>(L);
 
-impl fmt::Debug for ToggleLabel {
+impl<L> fmt::Debug for ToggleLabel<L> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("ToggleLabel")
     }
 }
 
-impl View for ToggleLabel {
+impl<L: View> View for ToggleLabel<L> {
     fn body(self, _env: &Environment) -> impl View {
         self.0
+    }
+
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        self.0.dispatch(backend, env, cx)
     }
 }
 
@@ -344,7 +349,7 @@ impl<S: CustomToggleStyle> SealedToggleStyle for CustomToggle<S> {
     ) -> Result<impl View, ToggleStyleTarget> {
         let data = *target.0;
         let a11y_label = data.label.accessibility_label();
-        let label = ToggleLabel(AnyView::new(data.label));
+        let label = ToggleLabel(data.label);
         Ok(compose_custom_toggle(
             &self.0,
             label,
@@ -357,7 +362,7 @@ impl<S: CustomToggleStyle> SealedToggleStyle for CustomToggle<S> {
 }
 
 struct ToggleStyleTargetData {
-    label: ControlLabel<AnyView>,
+    label: ControlLabel<StyleSlot>,
     toggle: Binding<bool>,
     size: ControlSize,
 }
@@ -541,11 +546,11 @@ impl<S: 'static> ToggleConfig<S> {
     #[doc(hidden)]
     pub fn into_style_pending(
         self,
-        map_slot: impl Fn(S) -> AnyView + Clone + 'static,
+        map_slot: impl Fn(S) -> StyleSlot + Clone + 'static,
     ) -> (ToggleStyleTarget, ToggleStylePending<S>) {
-        let erased_label = self.label.clone().map_slots(map_slot);
+        let style_label = self.label.clone().map_slots(map_slot);
         let target = ToggleStyleTarget(alloc::boxed::Box::new(ToggleStyleTargetData {
-            label: erased_label,
+            label: style_label,
             toggle: self.toggle.clone(),
             size: self.size,
         }));

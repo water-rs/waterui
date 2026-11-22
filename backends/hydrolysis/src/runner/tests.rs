@@ -1367,7 +1367,9 @@ fn an_open_context_menu_presentation_builds_once_through_the_build_path() {
     let mut runtime = sized_test_runtime_window(320, 240, &env);
     env.insert(crate::renderer::HydrolysisWindowOrigin { x: 0.0, y: 0.0 });
     let items = vec![ResolvedMenuItem::Command(
-        "Copy".action(|| {}).resolve(&env),
+        "Copy"
+            .action(|| {})
+            .resolve::<waterui_controls::NoopSlot>(&env),
     )];
     let nodes = crate::renderer::popup_menu_nodes(&items, &env, runtime.renderer.window_closable());
     assert!(runtime.renderer.show_context_menu(

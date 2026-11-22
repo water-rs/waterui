@@ -1466,7 +1466,7 @@ fn container_label_without_role_names_the_container_only() {
 #[cfg(feature = "accessibility")]
 #[test]
 fn a_naming_scope_keeps_the_elements_own_bounds_when_the_parent_stretched_it() {
-    let env = test_environment().extending(waterui_graphics::backend::SceneViewMergeToParent);
+    let env = test_environment();
     let mut renderer = test_renderer();
     let recording = waterui_graphics::backend::Picture::record(|_scene| {});
     let picture = waterui_graphics::backend::Picture::new(
@@ -4269,11 +4269,13 @@ fn diagnostic_gpu() -> (
 #[cfg(feature = "navigation")]
 #[test]
 fn a_toolbar_item_keeps_icon_only_labels_inside_an_environment_snapshot() {
+    use crate::widgets::nav::navigation::scoped_toolbar_item_env;
+
     let env = test_environment();
     let mut renderer = test_renderer();
     let item = AnyView::new(Metadata::new(text("Share"), Environment::new()));
     let node = RenderNode::build(
-        crate::widgets::nav::navigation::toolbar_item_view(item, &env),
+        Metadata::new(item, scoped_toolbar_item_env(&env)),
         &env,
         &mut renderer,
     );

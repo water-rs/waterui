@@ -21,13 +21,13 @@ use std::rc::Rc;
 
 use cocoa_ui::Retained;
 use nami::Signal;
+use waterui_controls::IconSlot;
 #[cfg(target_os = "macos")]
 use waterui_controls::menu::CloseWindowChord;
 use waterui_controls::menu::{
     CommandRole, ResolvedCommand, ResolvedMenuItem, ResolvedNestedMenu, Shortcut,
 };
-use waterui_core::handler::AnyViewBuilder;
-use waterui_core::{AnyView, Environment};
+use waterui_core::Environment;
 
 #[cfg(target_os = "macos")]
 pub use close_window::{standard_close_window_command, standard_close_window_node};
@@ -40,16 +40,16 @@ pub type PlatformMenuImage = cocoa_ui::objc2_app_kit::NSImage;
 #[cfg(target_os = "ios")]
 pub type PlatformMenuImage = cocoa_ui::objc2_ui_kit::UIImage;
 
-/// Resolves a menu item's icon builder into `(system_symbol_name, rendered_image)`.
-pub type IconResolver = dyn Fn(
-    Option<&AnyViewBuilder<AnyView>>,
+/// Resolves a menu item's icon slot into `(system_symbol_name, rendered_image)`.
+pub type IconResolver<S> = dyn Fn(
+    Option<&IconSlot<S>>,
     &Environment,
 ) -> (Option<String>, Option<Retained<PlatformMenuImage>>);
 
 /// Default icon resolver when the host does not rasterize menu icons.
 #[must_use]
-pub const fn no_menu_icon(
-    _icon: Option<&AnyViewBuilder<AnyView>>,
+pub const fn no_menu_icon<S>(
+    _icon: Option<&IconSlot<S>>,
     _env: &Environment,
 ) -> (Option<String>, Option<Retained<PlatformMenuImage>>) {
     (None, None)
@@ -73,10 +73,10 @@ pub fn shortcut_parts(shortcut: &Shortcut) -> (String, cocoa_ui::menu::KeyModifi
 
 /// A resolved command as the kit's shared `Command` payload — label text,
 /// subtitle, symbol name or rendered icon, destructive flag and shortcut.
-fn kit_command(
-    command: &ResolvedCommand,
+fn kit_command<S>(
+    command: &ResolvedCommand<S>,
     env: &Environment,
-    resolve_icon: &IconResolver,
+    resolve_icon: &IconResolver<S>,
 ) -> cocoa_ui::menu::Command {
     let (symbol, image) = resolve_icon(command.icon.as_ref(), env);
     kit_command_fields(
@@ -91,10 +91,10 @@ fn kit_command(
 
 /// A resolved nested menu's header as the kit's shared `Command` payload.
 #[must_use]
-pub fn kit_command_for_menu(
-    menu: &ResolvedNestedMenu,
+pub fn kit_command_for_menu<S>(
+    menu: &ResolvedNestedMenu<S>,
     env: &Environment,
-    resolve_icon: &IconResolver,
+    resolve_icon: &IconResolver<S>,
 ) -> cocoa_ui::menu::Command {
     let (symbol, image) = resolve_icon(menu.icon.as_ref(), env);
     kit_command_fields(
@@ -141,10 +141,10 @@ pub fn kit_command_fields(
 /// On macOS each command is checked against the chords the standard
 /// application menu reserves.
 #[must_use]
-pub fn menu_tree(
-    items: &[ResolvedMenuItem],
+pub fn menu_tree<S: 'static>(
+    items: &[ResolvedMenuItem<S>],
     env: &Environment,
-    resolve_icon: &IconResolver,
+    resolve_icon: &IconResolver<S>,
 ) -> Vec<cocoa_ui::menu::MenuTreeNode> {
     items
         .iter()
@@ -193,6 +193,7 @@ mod tests {
     use cocoa_ui::menu::MenuTreeNode;
     use cocoa_ui::objc2_app_kit::{NSDeleteFunctionKey, NSF5FunctionKey};
     use nami::{Computed, Signal};
+    use waterui_controls::NoopSlot;
     use waterui_controls::menu::{
         CloseWindowChord, Menu, MenuItem, NamedKey, ResolvedMenuItem, ShortcutKey,
         resolve_menu_bar_items,
@@ -256,7 +257,11 @@ mod tests {
     #[test]
     fn a_declared_close_window_emits_the_standard_item() {
         let env = chord_env();
-        let nodes = menu_tree(&[ResolvedMenuItem::CloseWindow], &env, &no_menu_icon);
+        let nodes = menu_tree(
+            &[ResolvedMenuItem::<NoopSlot>::CloseWindow],
+            &env,
+            &no_menu_icon,
+        );
         let [MenuTreeNode::Standard(command, MenuAction::CloseWindow)] = nodes.as_slice() else {
             panic!("a declared Close Window emits the standard Close node: {nodes:?}");
         };

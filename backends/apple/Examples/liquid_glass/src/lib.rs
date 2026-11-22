@@ -10,6 +10,7 @@
 
 use waterui::app::{App, Windows};
 use waterui::background::Glass;
+use waterui::component::label::IconLabel;
 use waterui::handler::ViewBuilder;
 use waterui::id::SelfId;
 use waterui::navigation::{TabBarMinimizeBehavior, TabRole};
@@ -53,7 +54,9 @@ pub fn main() -> impl View {
 
 /// The tab for `pane`. Every tab shares one root builder, whose page is the
 /// variant of one `OneOf4` its pane picks.
-fn pane_tab(pane: Pane) -> Tab<impl ViewBuilder<Output = NavigationView<impl View>>> {
+fn pane_tab(
+    pane: Pane,
+) -> Tab<impl ViewBuilder<Output = NavigationView<impl View>>, IconLabel<SfSymbol>> {
     let (title, symbol) = match pane {
         Pane::Surfaces => ("Surfaces", SfSymbol::SQUARE_ON_SQUARE),
         Pane::Controls => ("Controls", SfSymbol::BUTTON_HORIZONTAL),

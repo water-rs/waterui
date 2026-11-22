@@ -15,34 +15,39 @@
 use alloc::string::String;
 
 use cocoa_ui::Retained;
-use waterui_backend_core::{AnyView, Environment};
-use waterui_core::handler::AnyViewBuilder;
+use waterui::component::IconSlot;
+use waterui_backend_core::Environment;
 use waterui_core::layout::ProposalSize;
+
+use crate::contract::{Held, RenderContext};
+use crate::sf_symbol::SfSymbolProbe;
 
 #[cfg(target_os = "macos")]
 pub type PlatformMenuImage = cocoa_ui::objc2_app_kit::NSImage;
 #[cfg(target_os = "ios")]
 pub type PlatformMenuImage = cocoa_ui::objc2_ui_kit::UIImage;
 
-/// Resolves a label's icon builder for native Apple menus: direct [`crate::SfSymbol`]
-/// travels as a system symbol name, and any other view is rendered and rasterized
-/// into a template platform image.
+/// Resolves a label's icon slot for native Apple menus: direct [`crate::SfSymbol`]
+/// travels as a system symbol name via [`IconSlot::probe`], and any other view is
+/// realized statically and rasterized into a template platform image.
 pub fn resolve_menu_icon(
-    icon: Option<&AnyViewBuilder<AnyView>>,
+    icon: Option<&IconSlot<Held>>,
     env: &Environment,
 ) -> (Option<String>, Option<Retained<PlatformMenuImage>>) {
-    let Some(builder) = icon else {
+    let Some(slot) = icon else {
         return (None, None);
     };
-    let icon_view = builder.build();
-    if let Some(symbol) = icon_view.downcast_ref::<crate::SfSymbol>() {
-        return (Some(String::from(symbol.as_str())), None);
+    let mut probe = SfSymbolProbe::default();
+    if slot.probe(&mut probe, env)
+        && let Some(symbol) = probe.name
+    {
+        return (Some(String::from(symbol)), None);
     }
     let Some(mtm) = cocoa_ui::MainThreadMarker::new() else {
         tracing::warn!("menu icon view could not be rasterized off the main thread");
         return (None, None);
     };
-    let leaf = crate::contract::RenderContext::entry(env, mtm).render(icon_view);
+    let leaf = RenderContext::entry(env, mtm).realize(slot.build());
     let size = leaf
         .layout()
         .measure(ProposalSize {
@@ -80,8 +85,10 @@ mod imp {
     use waterui::reactive::{Computed, Signal};
     use waterui_backend_core::Environment;
 
+    use crate::contract::Held;
+
     fn menu_tree(
-        items: &[ResolvedMenuItem],
+        items: &[ResolvedMenuItem<Held>],
         env: &Environment,
     ) -> Vec<cocoa_ui::menu::MenuTreeNode> {
         waterui_apple_menu::menu_tree(items, env, &super::resolve_menu_icon)
@@ -260,7 +267,7 @@ mod imp {
             application,
             &[],
             CloseWindowPlacement::WindowMenu,
-            ResolvedMenuItem::close_window_chord(&[]).as_ref(),
+            ResolvedMenuItem::<Held>::close_window_chord(&[]).as_ref(),
         );
     }
 
@@ -302,19 +309,21 @@ mod tests {
 
     use cocoa_ui::appkit::KeyModifiers;
     use cocoa_ui::menu::MenuTreeNode;
-    use waterui::component::menu::{CloseWindowChord, ResolvedMenuItem};
+    use waterui::component::label::label;
+    use waterui::component::menu::{CloseWindowChord, Command, ResolvedMenuItem};
     use waterui::reactive::Computed;
     use waterui_backend_core::Environment;
+
+    use crate::SfSymbol;
+    use crate::contract::Held;
 
     #[test]
     fn sf_symbol_command_projects_directly_without_rasterization() {
         let mut env = Environment::new();
         env.insert(CloseWindowChord::new(&Computed::constant(Vec::new()), &env));
-        let command = waterui::component::menu::Command::builder(
-            waterui::component::label::label("Add").icon(crate::SfSymbol::PLUS),
-        )
-        .action(|| {})
-        .resolve(&env);
+        let command = Command::builder(label("Add").icon(SfSymbol::PLUS))
+            .action(|| {})
+            .resolve::<Held>(&env);
         let nodes = waterui_apple_menu::menu_tree(
             &[ResolvedMenuItem::Command(command)],
             &env,
