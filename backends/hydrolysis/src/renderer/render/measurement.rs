@@ -483,7 +483,7 @@ pub fn list_intrinsic_for_first_row<E: crate::text::TextEngine, C>(
         if section.label().is_some() {
             section_height += metrics.section_header_height;
         }
-        if section.get_footer().is_some() {
+        if section.footer().is_some() {
             section_height += metrics.section_footer_height;
         }
     }

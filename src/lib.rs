@@ -58,6 +58,7 @@ pub mod prelude {
     // Re-export core modules from super, excluding `background` to avoid conflict with layout::background
     #[cfg(feature = "effects")]
     pub use super::FilterViewExt;
+    pub use super::app::{App, AppMenuBar, Windows};
     pub use super::env::Environment;
     #[cfg(feature = "media")]
     pub use super::media;
@@ -65,12 +66,13 @@ pub mod prelude {
     pub use super::video;
     #[cfg(feature = "webview")]
     pub use super::webview;
+    pub use super::window::{Window, WindowState};
     pub use super::{
-        AnimationExt, AnyView, Binding, Color, Computed, OneOf2, OneOf3, OneOf4, OneOf5, OneOf6,
-        OneOf7, OneOf8, Signal, SignalExt, State, Str, Use, View, ViewExt, accessibility,
-        animation, app, binding, color, component, cursor, drag_drop, entry, env, error, filter,
-        form, fullscreen, gesture, gradient, id, layout, locale, metadata, reactive, regional,
-        shape, signal, style, task, text, widget, window,
+        AnimationExt, AnyView, Binding, Color, Computed, Identifiable, OneOf2, OneOf3, OneOf4,
+        OneOf5, OneOf6, OneOf7, OneOf8, Signal, SignalExt, State, Str, Use, View, ViewExt,
+        accessibility, animation, app, binding, color, component, cursor, drag_drop, entry, env,
+        error, filter, form, fullscreen, gesture, gradient, id, layout, locale, metadata, reactive,
+        regional, shape, signal, style, task, text, widget, window,
     };
 
     #[cfg(feature = "flow-markdown")]
@@ -82,8 +84,8 @@ pub mod prelude {
     pub use super::fullscreen::*;
     #[cfg(feature = "snackbar")]
     pub use super::snackbar::{
-        Snackbar, SnackbarDismissReason, SnackbarHost, SnackbarIcon, SnackbarManager,
-        SnackbarPosition, SnackbarTheme,
+        Snackbar, SnackbarDismissReason, SnackbarHost, SnackbarManager, SnackbarPosition,
+        SnackbarTheme,
     };
 
     pub use super::gesture::GestureObserver;
@@ -96,7 +98,9 @@ pub mod prelude {
     pub use super::layout::*;
     #[cfg(feature = "navigation")]
     pub use super::navigation::{self, *};
+    pub use super::reactive::collection::{List as ReactiveList, SignalCollection};
     pub use super::style::*;
+    pub use super::views::ForEach;
     pub use waterui_core::dynamic::{DynamicHandler, watch};
 
     pub use super::theme::{
@@ -122,9 +126,12 @@ pub mod prelude {
     // Drag and drop extension traits
     pub use super::drag_drop::DropDestinationExt;
 
+    pub use super::widget::{
+        Accordion, Card, CardStyle, CardStyleTokens, CardTheme, Divider, ErrorView, ResultExt,
+        SuspendedView, Suspense, accordion, card, condition::when, error_view, suspense,
+    };
     #[cfg(feature = "avatar")]
     pub use super::widget::{Avatar, avatar};
-    pub use super::widget::{Card, CardStyle, CardStyleTokens, CardTheme, Divider, card, suspense};
     #[cfg(feature = "flow-markdown")]
     pub use super::widget::{
         FlowAnimationPolicy, FlowAnimationPreset, FlowElementKind, FlowMarkdown, FlowStreamMode,
