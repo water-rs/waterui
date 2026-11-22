@@ -444,6 +444,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
+name = "apple-availability"
+version = "0.5.1"
+dependencies = [
+ "objc2 0.6.5",
+ "waterui-macros",
+]
+
+[[package]]
 name = "apple-planes"
 version = "0.0.0"
 dependencies = [
@@ -12858,14 +12866,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "waterui-apple-os"
-version = "0.5.1"
-dependencies = [
- "objc2 0.6.5",
- "waterui-macros",
-]
-
-[[package]]
 name = "waterui-assets"
 version = "0.5.1"
 dependencies = [
@@ -13460,7 +13460,6 @@ dependencies = [
  "suiteki",
  "thiserror 2.0.21",
  "tracing",
- "tracing-subscriber",
  "unicode-segmentation",
  "waterkit-deeplink",
  "waterkit-haptic",
@@ -13991,6 +13990,7 @@ version = "0.5.1"
 name = "waterui-webview"
 version = "0.5.1"
 dependencies = [
+ "apple-availability",
  "base64 0.23.1",
  "cookie",
  "divan",
@@ -14007,7 +14007,6 @@ dependencies = [
  "tracing",
  "waterkit-deeplink",
  "waterui",
- "waterui-apple-os",
  "waterui-core",
  "waterui-layout",
  "waterui-testing",

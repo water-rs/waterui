@@ -179,6 +179,8 @@ fn configure_cfg_aliases() {
         hydrolysis_video_plane: { all(android_platform, feature = "video-gpu") },
         // Runtime implementation exists only when a painter is selected.
         hydrolysis_runtime: { any(hydrolysis_cherenkov, hydrolysis_hwui) },
+        // Development inspector endpoint: opt-in and unavailable on wasm32.
+        hydrolysis_inspector: { all(feature = "inspector", not(target_arch = "wasm32")) },
         // The Cherenkov GPU engine and its wgpu device stack are linkable:
         // the `gpu` feature on every target. The GPU *painter* machinery is
         // the narrower `hydrolysis_gpu_painter` gate this alias is not: under
@@ -233,10 +235,15 @@ fn facade_features() {
     ];
 
     println!("cargo::rustc-check-cfg=cfg(waterui_feature, values(any()))");
+    println!("cargo::rustc-check-cfg=cfg(hydrolysis_scene_view)");
     let features = std::env::var("DEP_WATERUI_FEATURES")
         .expect("the `waterui` facade's build script exports DEP_WATERUI_FEATURES");
+    let mut has_scene_view = false;
     for feature in features.split(',').filter(|feature| !feature.is_empty()) {
         println!("cargo::rustc-cfg=waterui_feature=\"{feature}\"");
+        if matches!(feature, "canvas" | "gpu") {
+            has_scene_view = true;
+        }
         if let Some((_, own)) = REALIZED_BY.iter().find(|(name, _)| *name == feature) {
             let enabled = std::env::var_os(format!(
                 "CARGO_FEATURE_{}",
@@ -248,5 +255,8 @@ fn facade_features() {
                 "the application enables the `waterui` feature `{feature}`; enable hydrolysis's `{own}` to realize it"
             );
         }
+    }
+    if has_scene_view {
+        println!("cargo::rustc-cfg=hydrolysis_scene_view");
     }
 }

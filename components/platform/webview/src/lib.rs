@@ -97,7 +97,7 @@ mod navigation;
 const NAVIGATION_POLICY_OS: (u16, u16) = (27, 0);
 #[cfg(not(target_arch = "wasm32"))]
 type NavigationPolicyOs =
-    waterui_apple_os::AppleOs<{ NAVIGATION_POLICY_OS.0 }, { NAVIGATION_POLICY_OS.1 }>;
+    apple_availability::AppleOs<{ NAVIGATION_POLICY_OS.0 }, { NAVIGATION_POLICY_OS.1 }>;
 #[cfg(not(target_arch = "wasm32"))]
 pub use navigation::{NavigationDecision, NavigationPolicy, NavigationRequest, stay_on_origin};
 #[cfg(not(target_arch = "wasm32"))]
@@ -1094,7 +1094,7 @@ impl WebViewOpen {
     /// through `WKNavigationAction.mainFrameNavigation`, public API from
     /// macOS and iOS 27. A build targeting an earlier Apple OS does not
     /// compile a call to this method: the policy's type must satisfy
-    /// [`waterui_apple_os::Available`], which holds only when the deployment
+    /// [`apple_availability::Available`], which holds only when the deployment
     /// target reaches OS 27. Raise the platform under
     /// `[apple.deployment-targets]` in `Water.toml` to `27.0`; other targets
     /// are unaffected. `include_web!` installs [`stay_on_origin`] through this
@@ -1102,7 +1102,7 @@ impl WebViewOpen {
     pub fn navigation_policy<F>(self, policy: F) -> Self
     where
         F: Fn(&NavigationRequest) -> NavigationDecision + Send + Sync + 'static,
-        F: waterui_apple_os::Available<NavigationPolicyOs, NavigationPolicy>,
+        F: apple_availability::Available<NavigationPolicyOs, NavigationPolicy>,
     {
         self.with_navigation_policy(NavigationPolicy::new(policy))
     }

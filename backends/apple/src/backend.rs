@@ -490,8 +490,7 @@ impl NativeBackend for AppleBackend {
         )
     }
 
-    // Every application can build a canvas, so the method exists whether or
-    // not this build carries the `canvas` realization.
+    #[cfg(waterui_feature = "canvas")]
     fn canvas(
         &mut self,
         native: waterui::graphics::canvas::CanvasView,
@@ -499,17 +498,7 @@ impl NativeBackend for AppleBackend {
         (): (),
     ) -> NativeLeaf {
         mark_reached!("canvas");
-        #[cfg(feature = "canvas")]
-        return crate::components::canvas::realize_canvas_view(native, &self.entry(env));
-        #[cfg(not(feature = "canvas"))]
-        {
-            drop(native);
-            report_unprovided(
-                "waterui-apple without its `canvas` feature",
-                "waterui_graphics::canvas::CanvasView",
-            );
-            self.empty((), env, ())
-        }
+        crate::components::canvas::realize_canvas_view(native, &self.entry(env))
     }
 
     #[cfg(waterui_feature = "effects")]

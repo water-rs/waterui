@@ -4,7 +4,7 @@
 // Each row is `(major, minor, "major.minor")`. Apple OS versions are unified
 // across iOS, macOS, tvOS, watchOS and visionOS since 26, so one number
 // covers every platform. A row is the value of the
-// `waterui_apple_os_met` cfg the build script sets when the deployment target
+// `apple_availability_met` cfg the build script sets when the deployment target
 // reaches it.
 macro_rules! gated_versions {
     ($callback:ident) => {

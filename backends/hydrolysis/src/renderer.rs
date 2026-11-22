@@ -64,7 +64,8 @@ mod top_edge;
 mod tree;
 mod views;
 
-pub use effects::*;
+#[cfg(waterui_feature = "effects")]
+pub use effects::FilteredRuntime;
 pub use frame::*;
 pub use frame_work::FrameWorkCounters;
 #[cfg(feature = "frame-profile")]
@@ -248,6 +249,7 @@ use waterui_form::picker::date::DatePickerConfig;
 #[cfg(feature = "secure-field")]
 use waterui_form::secure::{Secure as FormSecure, SecureFieldConfig};
 use waterui_graphics::Gradient;
+#[cfg(waterui_feature = "effects")]
 use waterui_graphics::backend::FilteredView;
 #[cfg(any(feature = "menu", feature = "navigation", feature = "color-picker"))]
 use waterui_graphics::color::Color;
@@ -597,10 +599,7 @@ pub struct SemanticCore<E: crate::text::TextEngine> {
     /// layout would have seen. Renderers no runner claimed keep
     /// `Rect::ZERO` — below every compact threshold, the "smallest window"
     /// presentation.
-    #[cfg(all(
-        feature = "accessibility",
-        any(hydrolysis_cherenkov, feature = "navigation")
-    ))]
+    #[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
     window_frame: kurbo::Rect,
     render_depth: usize,
     /// The retained nodes whose subtrees are currently flushing, innermost
@@ -957,6 +956,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// The window's declared logical frame — `Rect::ZERO` until a runner's
     /// window declares one.
     #[cfg(feature = "accessibility")]
+    #[cfg(hydrolysis_cherenkov)]
     #[cfg(feature = "navigation")]
     pub(crate) const fn window_frame(&self) -> kurbo::Rect {
         self.window_frame
@@ -1010,6 +1010,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             #[cfg(feature = "menu")]
             context_menu: host(),
             anchored: host(),
+            #[cfg(waterui_feature = "dialog")]
             dialog: host(),
         }
     }
@@ -1057,10 +1058,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             window_id: WindowId::Orphan,
             window_closable: true,
             window_opener: None,
-            #[cfg(all(
-                feature = "accessibility",
-                any(hydrolysis_cherenkov, feature = "navigation")
-            ))]
+            #[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
             window_frame: kurbo::Rect::ZERO,
             render_depth: 0,
             owner_stack: Vec::new(),

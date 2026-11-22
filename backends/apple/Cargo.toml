@@ -43,7 +43,7 @@ default = [
 applied_filter = ["gpu_surface", "dep:objc2-core-image", "waterui/effects"]
 calendar = ["waterui/calendar"]
 # The Core Animation realization of `Canvas`.
-canvas = ["dep:block2", "dep:skrifa", "waterui-graphics/text"]
+canvas = ["dep:block2", "dep:skrifa", "waterui-graphics/text", "waterui/canvas"]
 gpu_surface = ["dep:block2", "objc2-metal/block2", "dep:wgpu-hal", "waterui/gpu", "waterui-graphics/gpu"]
 color_picker = ["waterui/color-picker"]
 context_menu = ["waterui/menu"]
@@ -145,7 +145,8 @@ wgpu-hal = { workspace = true, optional = true }
 # `gpu_surface`-gated so no-GPU artifacts link neither it nor the metal
 # block2 feature.
 block2 = { workspace = true, optional = true }
-objc2-metal = { version = "0.3", features = [
+objc2-metal = { version = "0.3", default-features = false, features = [
+    "std",
     "MTLCommandBuffer",
     "MTLCommandQueue",
     "MTLDevice",

@@ -41,7 +41,7 @@ features = ["derive"]
 
 [features]
 default = ["std"]
-std = []
+std = ["anyhow/std", "thiserror/std", "nami/std"]
 nightly = []
 serde = ["dep:serde", "suiteki/serde"]
 # Build strategy: erase views before entering generic framework and backend

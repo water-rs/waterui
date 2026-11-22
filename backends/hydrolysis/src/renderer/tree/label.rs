@@ -38,14 +38,13 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Self::Retain(node) => node.child.accessibility_label(renderer),
             Self::Env(node) => node.child.accessibility_label(renderer),
             Self::Wrapper(node) => node.child.accessibility_label(renderer),
+            #[cfg(waterui_feature = "effects")]
             Self::Filtered(node) => node.child.accessibility_label(renderer),
             Self::Fill(node) => node.child.accessibility_label(renderer),
             Self::Dynamic(node) => node.child.borrow().accessibility_label(renderer),
-            Self::Color(_)
-            | Self::Scroll(_)
-            | Self::Collection(_)
-            | Self::LazyStack(_)
-            | Self::SceneView(_) => None,
+            Self::Color(_) | Self::Scroll(_) | Self::Collection(_) | Self::LazyStack(_) => None,
+            #[cfg(hydrolysis_scene_view)]
+            Self::SceneView(_) => None,
             #[cfg(hydrolysis_gpu)]
             Self::GpuContent(_) | Self::ExternalFrame(_) => None,
         }

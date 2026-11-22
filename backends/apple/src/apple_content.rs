@@ -568,6 +568,7 @@ mod tests {
             gradient: waterui::graphics::Gradient,
             #[cfg(waterui_feature = "table")]
             table: waterui::component::table::TableConfig,
+            #[cfg(waterui_feature = "canvas")]
             canvas: waterui::graphics::canvas::CanvasView,
             #[cfg(waterui_feature = "gpu")]
             gpu: waterui::GpuView<alloc::boxed::Box<dyn waterui::graphics::GpuContent>>,

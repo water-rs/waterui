@@ -217,19 +217,20 @@ use waterui::task::{sleep, spawn_local};               // async utilities
 ```
 
 Components behind cargo features are also absent until you enable them. `waterui`'s
-defaults are `gpu`, `assets`, `dialog`, `snackbar`, `highlight` (the `Code` widget) and
-the `locale-datetime` / `locale-list` formatters. Everything else is opt-in in
+defaults are `canvas`, `gpu`, `assets`, `dialog`, `snackbar`, `highlight` (the `Code` widget),
+`avatar`, `cpu-time`, `link`, `list`, `table`, `navigation`, `menu`, the standard form/control
+features, and the `locale-datetime` / `locale-list` formatters. Everything else is opt-in in
 `Cargo.toml`: `media` (`Photo`, `MediaPicker`; the generated project's own `media`
 feature forwards to it), `video`, `video-gpu`, `remote` (web URLs for `Photo`,
-`Url::fetch`), `webview`, `flow-markdown`, `markdown-math`, `inspector`, `widgets`
-(home-screen widgets, `#[waterui::widget]`), `ts` / `ts-ota` (TypeScript views and
-their over-the-air update client `waterui::ts::Ota`), `navigation-restoration` and
-`std`. The `all` feature enables every one of these except `ts`, `ts-ota`, `widgets`,
-`markdown-math` and `dynamic_linking`. Canvas, charts, barcodes and particles have
-facade features `canvas`, `chart`, `barcode` and `particle`, exposing
-`waterui::canvas` (the drawing API, also at `waterui::graphics::canvas`) and the
-independent crates as `waterui::chart`, `waterui::barcode` and
-`waterui::particle`. Direct dependencies such as `waterui-chart` remain valid and expose
+`Url::fetch`), `webview`, `capture`, `flow-markdown`, `markdown-math`, `inspector`,
+`inspector-signals`, `widgets` (home-screen widgets, `#[waterui::widget]`), `ts` / `ts-ota`
+(TypeScript views and their over-the-air update client `waterui::ts::Ota`),
+`navigation-restoration`, and `std`. The `all` feature enables every one of these except `ts`,
+`ts-ota`, `widgets`, `markdown-math`, `erased-dispatch`, and `dynamic_linking`. Charts,
+barcodes, and particles have facade features `chart`, `barcode`, and `particle`, exposing the
+independent crates as `waterui::chart`, `waterui::barcode`, and `waterui::particle` (while
+`canvas` is enabled by default and exposes `waterui::canvas`, also at
+`waterui::graphics::canvas`). Direct dependencies such as `waterui-chart` remain valid and expose
 the same types as the facade, including with dynamic linking. Maps have the facade
 feature `map` (`waterui::map`, the same types as a direct `waterui-map` dependency).
 Mermaid diagrams use a direct dependency on `waterui-mermaid`, which lives
