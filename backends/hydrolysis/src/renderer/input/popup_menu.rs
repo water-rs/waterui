@@ -1503,7 +1503,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// the way a browser's entry joins its own menus: it extends a menu, it
     /// never creates one — an empty `.context_menu` behaves the same in every
     /// build. A release build appends nothing.
-    #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
+    #[cfg(all(feature = "accessibility", hydrolysis_inspector))]
     #[cfg(feature = "menu")]
     pub(crate) fn append_inspect_element_item(
         &self,
@@ -1542,9 +1542,8 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     }
 
     /// Inspecting an element means naming it in the accessibility tree, so a
-    /// build without that tree has no name to send — and a browser page has no
-    /// inspector endpoint to send it to.
-    #[cfg(any(not(feature = "accessibility"), target_arch = "wasm32"))]
+    /// build without that tree or without the inspector feature has nothing to send.
+    #[cfg(any(not(feature = "accessibility"), not(hydrolysis_inspector)))]
     // always an empty stub where it compiles — const would lie about the real variant
     #[allow(clippy::missing_const_for_fn)]
     #[cfg(feature = "menu")]

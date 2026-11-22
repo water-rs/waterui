@@ -55,10 +55,10 @@ keyboard-types.workspace = true
 # `serde` lets the Android host push the merged accesskit tree to its
 # accessibility provider as JSON (src/runner/android/accessibility.rs).
 accesskit = { version = "0.25", optional = true, features = ["serde"] }
-# `effects`, never `gpu` by itself: the `Filtered`/`filtrate` recipe
-# vocabulary resolves under every painter (the HWUI and CPU mounts name
-# their refusal); the GPU halves arrive with the `gpu` feature.
-waterui = { workspace = true, features = ["dialog", "inspector", "effects"] }
+# No facade features forced here: `build.rs` reads `DEP_WATERUI_FEATURES` so
+# `dialog`, `effects`, `gpu`, `canvas`, and other facade features stay under
+# the application's control.
+waterui = { workspace = true }
 waterui-graphics = { workspace = true, features = ["effects", "text", "input"] }
 # `engine` (selected by `gpu` and `cpu`) for the `parley` font context the
 # Cherenkov painters build and install into the environment; the faces come
@@ -131,8 +131,8 @@ waterui-assets = { workspace = true, optional = true }
 # The GPU video player realizing `Video` off the web (the `video-gpu`
 # feature); the web realizes it with the page's `<video>` element.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-tracing-subscriber.workspace = true
-waterui-inspector-protocol.workspace = true
+tracing-subscriber = { workspace = true, optional = true }
+waterui-inspector-protocol = { workspace = true, optional = true }
 waterui-video-gpu = { workspace = true, optional = true }
 
 [build-dependencies]
@@ -234,7 +234,6 @@ objc2-web-kit = { version = "0.3.2", optional = true, default-features = false, 
     "WKWebViewConfiguration",
     "WKWebsiteDataStore",
 ] }
-serde_json = { workspace = true, optional = true }
 
 # The native app menu-bar surface (`App::menu_bar`): waterkit-menu builds the
 # real NSMenu on NSApp.mainMenu (macOS) and a Win32 HMENU on the window's HWND
@@ -332,11 +331,11 @@ libc = "0.2"
 raw-window-handle = { version = "0.6", optional = true }
 android_logger = { version = "0.15", optional = true }
 waterui-assets-core = { workspace = true, optional = true }
-tracing-log = "0.2"
+tracing-log = { version = "0.2", optional = true }
 # The accessibility tree publish and the platform-view placement set cross JNI
 # as JSON.
 serde = { workspace = true, features = ["derive"] }
-serde_json.workspace = true
+serde_json = { workspace = true, optional = true }
 # The published payload's `contentTypes` map serializes `ContentType`
 # (camelCase names) — the provider maps each onto `HintConstants`.
 waterui-controls = { workspace = true, features = ["serde"] }
@@ -392,7 +391,9 @@ cherenkov = { workspace = true, features = ["testing"] }
 # feature APIs — the headless runtimes' `new_for_tests` constructors, the
 # merged-tree queries and `testing::TestStyle` — and a dev-dependency on the
 # package itself is what turns them on for test builds (water-rs/waterui#1673).
-hydrolysis = { workspace = true, features = ["accessibility", "testing", "all-controls"] }
+hydrolysis = { workspace = true, features = ["accessibility", "inspector", "testing", "all-controls"] }
+# `runner::tests` exercises `SignalExt::debounce`, which lives behind `nami/timer`.
+nami = { workspace = true, features = ["timer"] }
 # The HWUI target's unit tests read font metrics on the host as well.
 read-fonts = { version = "0.45.1", default-features = false, features = ["std"] }
 # The `hwui::kotlin` tests verify the generated Kotlin wire constants from the Rust
@@ -413,7 +414,7 @@ getrandom.workspace = true
 toml.workspace = true
 jiff.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
-waterui = { workspace = true, features = ["capture", "dialog", "flow-markdown", "gpu", "map", "snackbar", "video-gpu", "webview"] }
+waterui = { workspace = true, features = ["canvas", "capture", "dialog", "effects", "flow-markdown", "gpu", "map", "snackbar", "video-gpu", "webview"] }
 base64 = "0.23"
 # The font-collection tests stage a resource root of their own — a real
 # directory, since the loader reads one from the filesystem.
@@ -490,7 +491,7 @@ table = ["list", "hydrolysis-style/table", "waterui/table"]
 navigation = ["text-field", "hydrolysis-style/navigation", "waterui/navigation"]
 all-controls = ["menu", "calendar", "color-picker", "date-picker", "file-picker", "multi-date-picker", "picker", "secure-field", "slider", "stepper", "text-field", "toggle", "validation", "list", "table", "navigation"]
 default = ["gpu", "all-controls"]
-accessibility = ["dep:accesskit"]
+accessibility = ["dep:accesskit", "dep:serde_json"]
 testing = []
 # Per-frame CPU/GPU stage timing: wgpu timestamp queries around the
 # layer-content and compositor submits plus the CPU stage split the window
@@ -509,6 +510,8 @@ gpu = [
     "dep:lru",
     "dep:ndk-context",
     "dep:peniko",
+    "dep:serde_json",
+    "dep:tracing-log",
     "dep:tracing-subscriber",
     "dep:unicode-segmentation",
     "dep:wgpu",
@@ -558,7 +561,10 @@ cpu = [
     "dep:icu_locale",
     "waterui-text/engine",
 ]
-inspector-signals = ["waterui/inspector-signals"]
+# Development inspector endpoint and frame/tree recorders, enabled by the CLI
+# for development sessions (`water run` / `water preview`).
+inspector = ["waterui/inspector", "dep:waterui-inspector-protocol", "dep:tracing-subscriber"]
+inspector-signals = ["inspector", "waterui/inspector-signals"]
 # The HWUI render target (Android only): the retained layer tree recorded
 # into `RenderNode` display lists through one command buffer per frame, and
 # text laid out and drawn by the platform's `StaticLayout`
@@ -571,6 +577,9 @@ hwui = [
     "dep:ndk-context",
     "dep:peniko",
     "dep:read-fonts",
+    "dep:serde_json",
+    "dep:tracing-log",
+    "dep:tracing-subscriber",
     "dep:waterkit-clipboard",
     "waterui-backend-core/gestures",
     "waterui-backend-core/overlay",

@@ -139,11 +139,14 @@ fn facade_features() {
         ("dialog", &["dialog"]),
         ("map", &["map"]),
         ("video", &["video", "video_player"]),
+        ("canvas", &["canvas"]),
         ("gpu", &["gpu_surface", "picture"]),
-        ("effects", &["applied_filter"]),
     ];
     // Each facade feature satisfied when any of the listed crate features is enabled.
-    const REALIZED_BY_ANY: &[(&str, &[&str])] = &[("webview", &["webview", "webview-cef"])];
+    const REALIZED_BY_ANY: &[(&str, &[&str])] = &[
+        ("effects", &["applied_filter", "view_effect"]),
+        ("webview", &["webview", "webview-cef"]),
+    ];
 
     println!("cargo::rustc-check-cfg=cfg(waterui_feature, values(any()))");
     let features = std::env::var("DEP_WATERUI_FEATURES")

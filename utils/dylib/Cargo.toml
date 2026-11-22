@@ -61,9 +61,9 @@ default = [
     "text-field",
     "toggle",
     "validation",
+    "canvas",
     "gpu",
     "assets",
-    "webview",
     "snackbar",
     "dialog",
     "highlight",
@@ -77,6 +77,7 @@ highlight = ["waterui-internal/highlight"]
 locale-datetime = ["waterui-internal/locale-datetime"]
 locale-list = ["waterui-internal/locale-list"]
 inspector = ["waterui-internal/inspector"]
+inspector-signals = ["inspector", "waterui-internal/inspector-signals"]
 assets = ["waterui-internal/assets"]
 media = ["waterui-internal/media"]
 video = ["waterui-internal/video"]

@@ -33,9 +33,12 @@ pub mod target;
 pub use cell::{Dirty, NodeCell, NodeCore};
 pub use layers::{CommitReports, Mount, MountStats, SceneFrames};
 pub use placement::{HitClasses, HitGate, Placement, PlacementClock, ScopeDelta};
+#[cfg(any(hydrolysis_scene_view, hydrolysis_gpu))]
+pub use program::ProducerContent;
+#[cfg(hydrolysis_scene_view)]
+pub use program::SceneContentSource;
 pub use program::{
-    LiveOpacity, LiveTransform, MaterialRequest, ProducerContent, ProgramBuilder,
-    SceneContentSource, ScopeKey, ScopeLive, ScopeProps,
+    LiveOpacity, LiveTransform, MaterialRequest, ProgramBuilder, ScopeKey, ScopeLive, ScopeProps,
 };
 #[cfg(feature = "accessibility")]
 pub use registry::Region;

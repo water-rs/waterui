@@ -821,6 +821,7 @@ native_backend! {
         #[cfg(waterui_feature = "table")]
         /// A table.
         table: waterui::component::table::TableConfig,
+        #[cfg(waterui_feature = "canvas")]
         /// A canvas.
         canvas: waterui::graphics::canvas::CanvasView,
         #[cfg(waterui_feature = "gpu")]

@@ -20,7 +20,9 @@ use cherenkov_record::{
 };
 
 use waterui_core::contract_violation;
-use waterui_graphics::backend::{HeldResources, NextFrame, SceneUpdate};
+use waterui_graphics::backend::HeldResources;
+#[cfg(hydrolysis_scene_view)]
+use waterui_graphics::backend::{NextFrame, SceneUpdate};
 
 use super::backdrop::{
     BackdropGroupKey, ChromeBackdropGroups, ChromeGroupKey, ChromeParams, MaterialBackdropGroups,
@@ -30,9 +32,11 @@ use super::cell::NodeCell;
 use super::container::{ContainerMember, solo_effect};
 use super::motion::{LayerMotion, Motion};
 use super::placement::Placement;
+#[cfg(hydrolysis_scene_view)]
+use super::program::SceneContentSource;
 use super::program::{
     ChromeMaterial, InnerProgram, Item, LiveItem, LiveOpacity, MaterialRequest, ProducerContent,
-    Program, RunKey, SceneContentSource, ScopeKey, ScopeLive, ScopeProps,
+    Program, RunKey, ScopeKey, ScopeLive, ScopeProps,
 };
 use super::stretch::{ShownStretch, StretchFilter};
 use super::target::LayerTarget;
@@ -643,6 +647,7 @@ impl<E: crate::text::TextEngine> Default for SceneFrames<E> {
 
 impl<E: crate::text::TextEngine> SceneFrames<E> {
     /// Files `request`, made by the content `owner` presents.
+    #[cfg(hydrolysis_scene_view)]
     fn file(&mut self, owner: &Rc<NodeCell<E>>, request: NextFrame) {
         match request {
             NextFrame::Idle => {}
@@ -707,6 +712,7 @@ pub struct CommitCx<'m, 'tx, 's, T: LayerTarget<E>, E: crate::text::TextEngine> 
     wakes: &'m mut dyn FnMut(&Rc<NodeCell<E>>) -> ProducerWake,
     /// Where the scene nodes this commit presents file the frames their
     /// content asks for next.
+    #[cfg_attr(not(any(trybuild, hydrolysis_scene_view)), expect(dead_code))]
     scene_frames: &'m mut SceneFrames<E>,
 }
 
@@ -1362,6 +1368,7 @@ fn lower_program<T: LayerTarget<E>, E: crate::text::TextEngine>(
         child_canvas,
     );
 
+    #[cfg(hydrolysis_scene_view)]
     assert!(
         items.is_empty() || !matches!(producer, Some(ProducerContent::Scene(_))),
         "hydrolysis commit: a scene view's frame holds only its scene"
@@ -1537,6 +1544,10 @@ fn lower_inner<T: LayerTarget<E>, E: crate::text::TextEngine>(
 /// view's recording holds.
 fn commit_producer<T: LayerTarget<E>, E: crate::text::TextEngine>(
     cx: &mut CommitCx<'_, '_, '_, T, E>,
+    #[cfg_attr(
+        not(any(hydrolysis_scene_view, hydrolysis_gpu)),
+        expect(unused_variables)
+    )]
     cell: &Rc<NodeCell<E>>,
     layers: &mut NodeLayers<E>,
     producer: Option<&ProducerContent>,
@@ -1546,6 +1557,7 @@ fn commit_producer<T: LayerTarget<E>, E: crate::text::TextEngine>(
         Some(ProducerContent::Hosted { runtime, bounds }) => {
             mount_hosted(cx, layers, runtime, *bounds);
         }
+        #[cfg(hydrolysis_scene_view)]
         Some(ProducerContent::Scene(source)) => {
             // Content updated in place keeps the set its installed
             // recording named.
@@ -1564,6 +1576,8 @@ fn commit_producer<T: LayerTarget<E>, E: crate::text::TextEngine>(
             bounds,
             visible,
         }) => mount_external(cx, cell, layers, runtime, *bounds, *visible),
+        #[cfg(not(any(hydrolysis_scene_view, hydrolysis_gpu)))]
+        Some(_) => unreachable!("ProducerContent has no variants in this build"),
         None => {
             if let Some((layer, _)) = layers.install.take() {
                 cx.retire_layer(layer);
@@ -1577,6 +1591,7 @@ fn commit_producer<T: LayerTarget<E>, E: crate::text::TextEngine>(
 /// when either differs from what it was last told, ahead of the frame the
 /// commit is about to start — the surface's first, and the first at every new
 /// size. `deliver` hands the event to the surface's handler.
+#[cfg(any(hydrolysis_scene_view, hydrolysis_gpu))]
 fn announce_surface_size(
     tracker: &mut crate::renderer::ResizeTracker,
     bounds: kurbo::Rect,
@@ -1594,6 +1609,7 @@ fn announce_surface_size(
 /// its frame against the target's resource table, rebuilding it when the
 /// table changed since its last record. Returns the resources a new
 /// recording names; `None` when the installed recording stays.
+#[cfg(hydrolysis_scene_view)]
 fn mount_scene<T: LayerTarget<E>, E: crate::text::TextEngine>(
     cx: &mut CommitCx<'_, '_, '_, T, E>,
     cell: &Rc<NodeCell<E>>,

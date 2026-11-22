@@ -43,8 +43,8 @@ default = [
 applied_filter = ["gpu_surface", "dep:objc2-core-image", "waterui/effects"]
 calendar = ["waterui/calendar"]
 # The Core Animation realization of `Canvas`.
-canvas = ["dep:block2", "dep:skrifa", "waterui-graphics/text"]
-gpu_surface = ["dep:block2", "objc2-metal/block2", "dep:wgpu-hal", "waterui/gpu", "waterui-graphics/gpu"]
+canvas = ["dep:block2", "dep:skrifa", "waterui-graphics/text", "waterui/canvas"]
+gpu_surface = ["dep:block2", "dep:futures", "objc2-metal/block2", "dep:wgpu-hal", "waterui/gpu", "waterui-graphics/gpu"]
 color_picker = ["waterui/color-picker"]
 context_menu = ["waterui/menu"]
 date_picker = ["waterui/date-picker"]
@@ -145,7 +145,8 @@ wgpu-hal = { workspace = true, optional = true }
 # `gpu_surface`-gated so no-GPU artifacts link neither it nor the metal
 # block2 feature.
 block2 = { workspace = true, optional = true }
-objc2-metal = { version = "0.3", features = [
+objc2-metal = { version = "0.3", default-features = false, features = [
+    "std",
     "MTLCommandBuffer",
     "MTLCommandQueue",
     "MTLDevice",
@@ -171,7 +172,7 @@ async-channel = { workspace = true }
 # `native_test_support`'s readiness gate warms the suite's blocking pool —
 # production code never sees it (native-test only).
 blocking = { workspace = true, optional = true }
-futures = { workspace = true }
+futures = { workspace = true, optional = true }
 native-executor = { workspace = true }
 kurbo = { workspace = true }
 # Reads a variable font's `fvar` and `avar` so a glyph run's normalized
@@ -235,6 +236,7 @@ objc2-core-image = { version = "0.3", default-features = false, features = [
 [dev-dependencies]
 block2 = { workspace = true }
 divan = "0.1"
+futures = { workspace = true }
 pollster = { workspace = true }
 libtest-mimic = "0.8"
 serde_json = { workspace = true }

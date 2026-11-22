@@ -195,17 +195,13 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             // A filtered view wraps a child render node whose reactive
             // descendants must keep patching, so the walk recurses into it
             // (the filter itself owns its runtime, with no structural patch).
+            #[cfg(waterui_feature = "effects")]
             Self::Filtered(node) => node.child.patch(renderer),
             // A paint marker only: its child patches as on its own.
             Self::Fill(node) => node.child.patch(renderer),
-            Self::Color(_)
-            | Self::Text(_)
-            | Self::SceneView(_)
-            // GPU content owns its runtime and produces every frame; like a
-            // self-drawn scene it has no structural patch.
-            // A widget leaf re-dispatches from its live config every flush, so it
-            // needs no structural patch.
-            | Self::Widget(_) => false,
+            Self::Color(_) | Self::Text(_) | Self::Widget(_) => false,
+            #[cfg(hydrolysis_scene_view)]
+            Self::SceneView(_) => false,
             #[cfg(hydrolysis_gpu)]
             Self::GpuContent(_) | Self::ExternalFrame(_) => false,
             // A lazy stack keeps only visible item subtrees. Patch those retained
@@ -247,6 +243,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 }
                 dirty
             }
+            #[cfg(waterui_feature = "effects")]
             Self::Filtered(node) => node.child.take_layout_dirty(),
             Self::Fill(node) => node.child.take_layout_dirty(),
             Self::Collection(node) => node
@@ -261,6 +258,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             // `size_drifted` re-probes the last proposal and answers the
             // drift, which the next `measure` clears by rewriting
             // `measured` (water-rs/waterui#1957).
+            #[cfg(hydrolysis_scene_view)]
             Self::SceneView(node) => node.size_drifted(),
             #[cfg(hydrolysis_gpu)]
             Self::GpuContent(node) => node.size_drifted(),
