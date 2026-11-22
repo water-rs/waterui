@@ -468,11 +468,11 @@ impl<E: crate::text::TextEngine> RetainedSubview<E> {
     /// change is reported to the renderer so the next refresh frame runs the
     /// full prune cycle for the dropped subtrees' animation/measurement slots.
     fn patch_built(node: &mut RenderNode<E>, renderer: &mut SemanticCore<E>) -> bool {
-        let structural = node.patch(renderer);
-        if structural {
+        let patch = node.patch(renderer);
+        if patch.structural {
             renderer.note_subview_structural_change();
         }
-        structural
+        patch.layout
     }
 
     /// Applies a pending structural update while the owning window tree is already
@@ -481,11 +481,11 @@ impl<E: crate::text::TextEngine> RetainedSubview<E> {
     /// Unlike [`Self::patch_built`], this does not carry the change into another
     /// frame: the parent tree's current patch result already owns the structural
     /// bookkeeping and will lay out the updated child immediately.
-    pub(super) fn patch_for_parent(&mut self, renderer: &mut SemanticCore<E>) -> bool {
+    pub(super) fn patch_for_parent(&mut self, renderer: &mut SemanticCore<E>) -> PatchOutcome {
         let built = self.expect_built_mut("patch_for_parent");
-        let structural = built.node.patch(renderer);
-        built.needs_layout |= structural;
-        structural
+        let patch = built.node.patch(renderer);
+        built.needs_layout |= patch.layout;
+        patch
     }
 
     /// Names where the host's placement rule puts the root's response inside
@@ -856,10 +856,12 @@ impl<K: Eq + core::hash::Hash + Clone, E: crate::text::TextEngine> VisibleSubvie
 
     /// Patches every currently retained (therefore visible) item before its
     /// virtualized parent is measured.
-    pub(crate) fn patch_for_parent(&mut self, renderer: &mut SemanticCore<E>) -> bool {
-        self.entries.values_mut().fold(false, |changed, entry| {
-            entry.patch_for_parent(renderer) | changed
-        })
+    pub(crate) fn patch_for_parent(&mut self, renderer: &mut SemanticCore<E>) -> PatchOutcome {
+        self.entries
+            .values_mut()
+            .fold(PatchOutcome::NONE, |changed, entry| {
+                entry.patch_for_parent(renderer) | changed
+            })
     }
 
     /// Consume the layout-invalidated marks over every currently retained item:

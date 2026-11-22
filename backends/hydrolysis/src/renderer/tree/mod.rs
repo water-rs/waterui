@@ -129,6 +129,7 @@ pub use provided::{HydroProvidedBehavior, HydroProvidedRenderHost, HydroProvided
 pub type HeldChild<E> = waterui_backend_core::Child<build::backend::HydroFamily<E>>;
 pub use nodes::*;
 use subview::NodeSubView;
+pub use window::{PatchOutcome, WindowLayoutState};
 
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]

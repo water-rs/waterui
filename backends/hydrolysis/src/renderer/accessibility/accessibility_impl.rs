@@ -2036,7 +2036,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             return true;
         };
         if handle.user_scroll_to(metrics.offset_x, target) {
-            self.mark_scroll_owner_of_node(handle, node, Dirty::LAYOUT);
+            self.mark_scroll_owner_of_node(handle, node, Dirty::PAINT);
         }
         true
     }
@@ -2846,7 +2846,7 @@ fn handle_accessibility_scroll_action<E: crate::text::TextEngine>(
     match delta {
         Some((dx, dy)) => {
             if handle.apply_scroll_delta(dx, dy, false) {
-                renderer.mark_scroll_owner_of_node(handle, node, Dirty::LAYOUT);
+                renderer.mark_scroll_owner_of_node(handle, node, Dirty::PAINT);
             }
             true
         }

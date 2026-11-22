@@ -645,6 +645,8 @@ pub struct SemanticCore<E: crate::text::TextEngine> {
     /// The persistent window render tree (`tree::RenderNode`), built on a structural
     /// rebuild and re-flushed each frame. `None` before the first build.
     render_tree: Option<RenderNode<E>>,
+    /// Cached root layout inputs and signal dependencies for `render_tree`.
+    window_layout: tree::WindowLayoutState<E>,
     /// Content minimum measured after the most recent retained-tree update.
     /// Engine-only redraws do not change the window's layout constraints.
     content_minimum: Option<LayoutSize>,
@@ -1094,6 +1096,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             #[cfg(feature = "accessibility")]
             accessibility: AccessibilityBuilder::default(),
             render_tree: None,
+            window_layout: tree::WindowLayoutState::new(Rc::downgrade(&root)),
             content_minimum: None,
             rebuild_active: Rc::new(Cell::new(false)),
             emit_pass_active: Cell::new(false),

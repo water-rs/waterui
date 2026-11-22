@@ -567,17 +567,21 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         let core = renderer.new_core();
         let cell = Rc::downgrade(&core.cell);
         // The connect itself delivers the pending initial content through
-        // the receiver: the rebuild that produced this node already renders
-        // exactly that view, so it is never a change to mark.
+        // the receiver: `initial` below immediately consumes it to build
+        // `child`, so a synchronous delivery inside `connect` is never an
+        // unapplied change to mark, even when a lazy row builds mid-flush.
         let render_generation = signals.rebuild_generation();
         let rebuild_active = renderer.rebuild_active_flag();
+        let connecting = Rc::new(Cell::new(true));
         dynamic.connect({
             let pending = Rc::clone(&pending);
+            let connecting = Rc::clone(&connecting);
             move |update| {
-                let is_initial = update
-                    .metadata()
-                    .try_get::<DynamicInitialContent>()
-                    .is_some()
+                let is_initial = connecting.get()
+                    || update
+                        .metadata()
+                        .try_get::<DynamicInitialContent>()
+                        .is_some()
                     || signals.initial_dynamic_content_already_rendered(render_generation);
                 *pending.borrow_mut() = Some(into_child(update.into_value()));
                 // A real content change marks the host structure-dirty; the
@@ -591,6 +595,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 }
             }
         });
+        connecting.set(false);
         let initial = pending.borrow_mut().take();
         let child = match initial {
             Some(content) => backend::HydroBackend::new(renderer).build_child(content, env),

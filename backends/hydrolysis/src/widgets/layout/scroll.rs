@@ -263,7 +263,7 @@ pub fn draw_scroll_indicators<E: crate::text::TextEngine>(
                 let target = ((pointer - grab) / geometry.travel).clamp(0.0, 1.0) * metrics.max_y;
                 let changed = handle.user_scroll_to(metrics.offset_x, target);
                 if changed {
-                    renderer.mark_scroll_owner(&handle, crate::renderer::Dirty::LAYOUT);
+                    renderer.mark_scroll_owner(&handle, crate::renderer::Dirty::PAINT);
                 }
                 changed
             });
@@ -309,7 +309,7 @@ pub fn draw_scroll_indicators<E: crate::text::TextEngine>(
                 let target = ((pointer - grab) / geometry.travel).clamp(0.0, 1.0) * metrics.max_x;
                 let changed = handle.user_scroll_to(target, metrics.offset_y);
                 if changed {
-                    renderer.mark_scroll_owner(&handle, crate::renderer::Dirty::LAYOUT);
+                    renderer.mark_scroll_owner(&handle, crate::renderer::Dirty::PAINT);
                 }
                 changed
             });
