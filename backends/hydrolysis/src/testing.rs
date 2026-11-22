@@ -186,22 +186,23 @@ pub const fn plain_menu_layout() -> crate::theme::MenuLayout {
         min_width: 112.0,
         max_width: 320.0,
         width_per_char: 8.5,
-        corner_radius: 4.0,
         separator_horizontal_inset: 16.0,
         separator_thickness: 1.0,
     }
 }
 
-/// A menu look measured by [`plain_menu_layout`], drawing nothing: what a
+/// A menu look measured by [`plain_menu_layout`], drawing nothing.
+///
+/// Its panel is clear, with 4-point corners and no elevation. It is what a
 /// test style's picker popups, text context menus and popup windows measure,
 /// place and hit-test as.
 #[must_use]
 #[cfg(feature = "menu")]
 pub fn plain_menu_look() -> crate::theme::MenuLook {
-    use crate::theme::Custom;
+    use crate::theme::{CornerShape, Custom, Surface};
     crate::theme::MenuLook::new(
         plain_menu_layout(),
-        Custom::new((), |_recorder, _frame, ()| {}),
+        Surface::clear(CornerShape::radius(4.0)),
         Custom::new((), |_recorder, _frame, ()| {}),
     )
 }
