@@ -428,50 +428,62 @@ pub struct SurfaceInfo {
 /// render.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FrameRedraw {
-    /// The unioned request per surface that asked for the next frame.
-    requests: rustc_hash::FxHashMap<SurfaceId, crate::RefreshRange>,
+    /// The combined redraw request per surface that asked for the next frame.
+    requests: rustc_hash::FxHashMap<SurfaceId, crate::FrameRate>,
+    /// Non-redrawing source cadence votes per surface (e.g. a source-paced or
+    /// paused video stream). Propagated through [`SurfaceNext::rate_vote`]
+    /// without requesting another render pass.
+    votes: rustc_hash::FxHashMap<SurfaceId, crate::FrameRate>,
 }
 
 impl FrameRedraw {
-    /// Records that `surface` wants the next frame at `rate`, unioning
-    /// repeated requests for the same surface into one entry.
-    pub fn request(&mut self, surface: SurfaceId, rate: crate::RefreshRange) {
+    /// Records that `surface` wants the next frame at `rate`, combining
+    /// repeated requests for the same surface via field-wise max.
+    pub fn request(&mut self, surface: SurfaceId, rate: crate::FrameRate) {
         self.requests
             .entry(surface)
-            .and_modify(|kept| *kept = union_rate(kept.clone(), rate.clone()))
+            .and_modify(|kept| *kept = kept.combine_with(rate))
             .or_insert(rate);
     }
 
-    /// Removes every request.
-    pub fn clear(&mut self) {
-        self.requests.clear();
+    /// Records a non-redrawing cadence vote for `surface`, combining repeated
+    /// votes via field-wise max without requesting a redraw.
+    pub fn vote(&mut self, surface: SurfaceId, rate: crate::FrameRate) {
+        self.votes
+            .entry(surface)
+            .and_modify(|kept| *kept = kept.combine_with(rate))
+            .or_insert(rate);
     }
 
-    /// The request `surface` made, when it asked for the next frame.
+    /// Removes every request and source vote.
+    pub fn clear(&mut self) {
+        self.requests.clear();
+        self.votes.clear();
+    }
+
+    /// The redraw request `surface` made, when it asked for the next frame.
     #[must_use]
-    pub fn for_surface(&self, surface: SurfaceId) -> Option<&crate::RefreshRange> {
+    pub fn for_surface(&self, surface: SurfaceId) -> Option<&crate::FrameRate> {
         self.requests.get(&surface)
     }
 
+    /// The non-redrawing source cadence vote for `surface`, if any.
+    #[must_use]
+    pub fn vote_only_for_surface(&self, surface: SurfaceId) -> Option<&crate::FrameRate> {
+        self.votes.get(&surface)
+    }
+
     /// The requests, one per surface — unordered.
-    pub fn iter(&self) -> impl Iterator<Item = (&SurfaceId, &crate::RefreshRange)> {
+    pub fn iter(&self) -> impl Iterator<Item = (&SurfaceId, &crate::FrameRate)> {
         self.requests.iter()
     }
 
-    /// The union of every request's refresh range — the frame's aggregate
-    /// backend demand.
+    /// The combined refresh-rate vote across every surface that asked for the
+    /// next frame.
     #[must_use]
-    pub fn rate(&self) -> Option<crate::RefreshRange> {
-        self.requests.values().fold(None, |rate, next| {
-            Some(rate.map_or_else(|| next.clone(), |rate| union_rate(rate, next.clone())))
-        })
+    pub fn rate(&self) -> Option<crate::FrameRate> {
+        waterui_frame_rate::combine_all(self.requests.values().copied().map(Some))
     }
-}
-
-/// The union of two refresh ranges: the slowest floor, the fastest
-/// ceiling — a frame serving both rates ticks at the covered range.
-pub fn union_rate(a: crate::RefreshRange, b: crate::RefreshRange) -> crate::RefreshRange {
-    (*a.start()).min(*b.start())..=(*a.end()).max(*b.end())
 }
 
 /// One frame's render input: every live surface with its sampled tree.

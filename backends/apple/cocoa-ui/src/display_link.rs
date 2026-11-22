@@ -110,6 +110,8 @@ pub struct FrameClock {
     mtm: MainThreadMarker,
     on_frame: Rc<dyn Fn()>,
     active: Cell<bool>,
+    vote: Cell<waterui_frame_rate::FrameRate>,
+    screen_peak: Cell<Option<f32>>,
     /// The exact `targetTimestamp` of the tick whose callback is running,
     /// `None` between ticks — the clock's own record of the current frame.
     current_target: Rc<Cell<Option<f64>>>,
@@ -120,9 +122,20 @@ impl fmt::Debug for FrameClock {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FrameClock")
             .field("active", &self.active.get())
+            .field("vote", &self.vote.get())
             .field("armed", &self.state.borrow().link.is_some())
             .finish_non_exhaustive()
     }
+}
+
+/// Converts a `FrameRate` vote clamped against `peak_fps` into Core Animation's
+/// `(minimum, maximum, preferred)` `CAFrameRateRange`.
+pub(crate) fn ca_frame_rate_range(
+    vote: waterui_frame_rate::FrameRate,
+    peak_fps: f32,
+) -> CAFrameRateRange {
+    let clamped = vote.clamped(peak_fps);
+    CAFrameRateRange::new(clamped.minimum(), clamped.maximum(), clamped.preferred())
 }
 
 impl FrameClock {
@@ -133,12 +146,36 @@ impl FrameClock {
             mtm,
             on_frame: Rc::new(on_frame),
             active: Cell::new(false),
+            vote: Cell::new(waterui_frame_rate::FrameRate::FAST),
+            screen_peak: Cell::new(None),
             current_target: Rc::new(Cell::new(None)),
             state: RefCell::new(State {
                 link: None,
                 target: None,
             }),
         }
+    }
+
+    /// Updates the clock's refresh-rate vote, immediately updating any armed
+    /// `CADisplayLink` against the current screen's peak rate.
+    pub fn set_frame_rate(&self, vote: waterui_frame_rate::FrameRate) {
+        if self.vote.get() == vote {
+            return;
+        }
+        self.vote.set(vote);
+        if let (Some(link), Some(peak)) = (&self.state.borrow().link, self.screen_peak.get()) {
+            link.setPreferredFrameRateRange(ca_frame_rate_range(vote, peak));
+        }
+    }
+
+    /// Returns the armed display link's `(minimum, maximum, preferred)` range,
+    /// or `None` while disarmed.
+    #[must_use]
+    pub fn preferred_frame_rate_range(&self) -> Option<(f32, f32, f32)> {
+        self.state.borrow().link.as_ref().map(|link| {
+            let range = link.preferredFrameRateRange();
+            (range.minimum, range.maximum, range.preferred)
+        })
     }
 
     /// (Re)starts the clock against `view`'s current window and screen.
@@ -222,7 +259,8 @@ impl FrameClock {
         };
         let maximum =
             f32::from(u16::try_from(screen.maximumFramesPerSecond().max(1)).unwrap_or(u16::MAX));
-        link.setPreferredFrameRateRange(CAFrameRateRange::new(maximum.min(60.0), maximum, maximum));
+        self.screen_peak.set(Some(maximum));
+        link.setPreferredFrameRateRange(ca_frame_rate_range(self.vote.get(), maximum));
         // SAFETY: `addToRunLoop:forMode:` schedules the live link on this
         // thread's run loop; `NSRunLoopCommonModes` is a system constant.
         unsafe {
@@ -234,6 +272,7 @@ impl FrameClock {
 
     /// Drops whatever link is armed.
     fn disarm(&self) {
+        self.screen_peak.set(None);
         let mut state = self.state.borrow_mut();
         if let Some(link) = state.link.take() {
             link.invalidate();
@@ -267,5 +306,41 @@ fn window_screen(window: &PlatformWindow) -> Option<Retained<PlatformScreen>> {
     #[cfg(target_os = "ios")]
     {
         Some(window.screen())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ca_frame_rate_range;
+    use waterui_frame_rate::FrameRate;
+
+    #[test]
+    fn fast_vote_keeps_full_promotion_band_without_60hz_floor() {
+        let range = ca_frame_rate_range(FrameRate::FAST, 120.0);
+        assert_eq!(
+            (range.minimum, range.maximum, range.preferred),
+            (80.0, 120.0, 120.0)
+        );
+    }
+
+    #[test]
+    fn slow_and_fixed_votes_preserve_classified_bounds() {
+        let slow = ca_frame_rate_range(FrameRate::SLOW, 120.0);
+        assert_eq!(
+            (slow.minimum, slow.maximum, slow.preferred),
+            (30.0, 60.0, 60.0)
+        );
+
+        let cinema = ca_frame_rate_range(FrameRate::fixed(24.0), 120.0);
+        assert_eq!(
+            (cinema.minimum, cinema.maximum, cinema.preferred),
+            (24.0, 24.0, 24.0)
+        );
+
+        let sixty = ca_frame_rate_range(FrameRate::FAST, 60.0);
+        assert_eq!(
+            (sixty.minimum, sixty.maximum, sixty.preferred),
+            (60.0, 60.0, 60.0)
+        );
     }
 }

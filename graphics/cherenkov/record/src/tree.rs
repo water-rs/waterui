@@ -21,7 +21,7 @@ use crate::animation::{
 };
 use crate::backdrop::BackdropSample;
 use crate::display_list::{Operand, SlotUpdate, blends_within, translucent_within};
-use crate::frame::RefreshRange;
+use crate::frame::FrameRate;
 use crate::ops::{
     ContentOp, Install, KeyframeProp, LayerId, LayerKeyframes, LayerOp, Op, Prop, Retarget,
 };
@@ -52,12 +52,6 @@ fn note_updates(node: &mut LayerNode, updates: &[SlotUpdate]) {
         Operand::Shape(_) | Operand::Stroke(_) | Operand::Transform(_) | Operand::Rect(_) => false,
     });
 }
-
-/// The fast rate class: springs, curves and fast decays run here.
-pub const RATE_FAST: RefreshRange = 60..=120;
-/// The slow rate class: only decays slower than one device pixel per frame
-/// at 60 Hz remain.
-pub const RATE_SLOW: RefreshRange = 30..=60;
 
 /// Which kinds of engine-run layer tracks a surface's tree still holds.
 ///
@@ -246,7 +240,7 @@ pub struct LayerNode {
     /// The backdrop sample's running track: its effect parameters.
     backdrop_track: Option<LaneTrack<BackdropSample>>,
     projective: bool,
-    animation_rate: Option<RefreshRange>,
+    animation_rate: Option<FrameRate>,
     /// The stamp of the last change to what this layer draws in its own
     /// space: clip, scroll offset, filter, blend space, backdrop, content,
     /// children.
@@ -453,9 +447,9 @@ impl LayerNode {
     /// an opacity curve or spring, which moves no geometry — a fade reads
     /// smooth at 30–60 Hz. A keyframed opacity keeps the fast class, and a
     /// clip or backdrop track, which moves what the layer shows, runs fast.
-    fn classify_rate(&self, scale: f64, components_running: bool) -> Option<RefreshRange> {
+    fn classify_rate(&self, scale: f64, components_running: bool) -> Option<FrameRate> {
         if components_running || self.clip_track.is_some() || self.backdrop_track.is_some() {
-            return Some(RATE_FAST);
+            return Some(FrameRate::FAST);
         }
         let mut rate = None;
         for fast in [
@@ -469,9 +463,9 @@ impl LayerNode {
         .flatten()
         {
             if fast {
-                return Some(RATE_FAST);
+                return Some(FrameRate::FAST);
             }
-            rate = Some(RATE_SLOW);
+            rate = Some(FrameRate::SLOW);
         }
         rate
     }
@@ -646,7 +640,7 @@ pub struct Sampling {
     /// Whether any animation step touched the tree.
     pub stepped: bool,
     /// The refresh rate still-running animations need.
-    pub rate: Option<RefreshRange>,
+    pub rate: Option<FrameRate>,
 }
 
 impl Default for SurfaceTree {
@@ -686,18 +680,15 @@ impl SurfaceTree {
     /// Rate required by tracks the backend has not accepted. Called after
     /// presentation so a handoff suppresses the very next frame, and a
     /// demotion resumes scheduling immediately.
-    pub fn animation_rate(&self, owns: impl Fn(LayerId) -> bool) -> Option<RefreshRange> {
-        let mut running = false;
+    pub fn animation_rate(&self, owns: impl Fn(LayerId) -> bool) -> Option<FrameRate> {
+        let mut rate = None;
         for (&raw, node) in &self.nodes {
             if owns(LayerId::new(raw)) {
                 continue;
             }
-            if node.animation_rate == Some(RATE_FAST) {
-                return Some(RATE_FAST);
-            }
-            running |= node.animation_rate.is_some();
+            rate = waterui_frame_rate::combine(rate, node.animation_rate);
         }
-        running.then_some(RATE_SLOW)
+        rate
     }
 
     /// The tracks the engine itself is running on attached layers, the
@@ -892,7 +883,7 @@ impl SurfaceTree {
             }
             state.refresh(node);
             if run {
-                node.animation_rate = Some(RATE_FAST);
+                node.animation_rate = Some(FrameRate::FAST);
             }
         }
         (stepped, running)
@@ -1286,8 +1277,7 @@ impl SurfaceTree {
     /// [`Layer`](crate::surface::Layer).
     pub fn sample(&mut self, time: Instant, scale: f64) -> Sampling {
         let mut stepped = false;
-        let mut fast = false;
-        let mut slow = false;
+        let mut rate = None;
         for node in self.nodes.values_mut() {
             if !node.attached {
                 node.animation_rate = None;
@@ -1379,19 +1369,13 @@ impl SurfaceTree {
             }
             node.restamp(&mut self.clock, outer_changed, inner_changed);
             node.animation_rate = node.classify_rate(scale, node_fast);
-            fast |= node.animation_rate == Some(RATE_FAST);
-            slow |= node.animation_rate == Some(RATE_SLOW);
+            rate = waterui_frame_rate::combine(rate, node.animation_rate);
         }
         let (projective_step, projective_running) = self.sample_projective(time);
         stepped |= projective_step;
-        fast |= projective_running;
-        let rate = if fast {
-            Some(RATE_FAST)
-        } else if slow {
-            Some(RATE_SLOW)
-        } else {
-            None
-        };
+        if projective_running {
+            rate = waterui_frame_rate::combine(rate, Some(FrameRate::FAST));
+        }
         Sampling { stepped, rate }
     }
 }
@@ -1991,8 +1975,11 @@ mod hierarchy_tests {
             },
         ));
         let sampled = tree.sample(Instant::now(), 1.0);
-        assert_eq!(sampled.rate, Some(RATE_FAST));
-        assert_eq!(tree.animation_rate(|layer| layer == owned), Some(RATE_SLOW));
+        assert_eq!(sampled.rate, Some(FrameRate::FAST));
+        assert_eq!(
+            tree.animation_rate(|layer| layer == owned),
+            Some(FrameRate::SLOW)
+        );
         assert_eq!(tree.animation_rate(|_| false), sampled.rate);
         assert_eq!(tree.animation_rate(|_| true), None);
     }
@@ -2272,7 +2259,7 @@ mod hierarchy_tests {
         tree.sample(start, 1.0);
         assert_eq!(tree.animation_rate(|_| true), None);
         // An opacity curve moves no geometry: it runs in the slow class.
-        assert_eq!(tree.animation_rate(|_| false), Some(RATE_SLOW));
+        assert_eq!(tree.animation_rate(|_| false), Some(FrameRate::SLOW));
         tree.sample_owned(start + Duration::from_secs(1), |_| true);
         tree.apply(LayerOp::Opacity(
             layer,
@@ -2314,7 +2301,7 @@ mod hierarchy_tests {
                 },
             ));
             let fading = tree.sample(start + Duration::from_millis(100), 1.0);
-            assert_eq!(fading.rate, Some(RATE_SLOW), "{animation:?}");
+            assert_eq!(fading.rate, Some(FrameRate::SLOW), "{animation:?}");
             tree.apply(LayerOp::Transform(
                 layer,
                 Prop {
@@ -2324,7 +2311,7 @@ mod hierarchy_tests {
                 },
             ));
             let moving = tree.sample(start + Duration::from_millis(150), 1.0);
-            assert_eq!(moving.rate, Some(RATE_FAST), "{animation:?}");
+            assert_eq!(moving.rate, Some(FrameRate::FAST), "{animation:?}");
         }
     }
 
@@ -2487,7 +2474,7 @@ mod hierarchy_tests {
         let start = Instant::now();
         let first = tree.sample(start, 1.0);
         assert!(first.stepped);
-        assert_eq!(first.rate, Some(RATE_FAST));
+        assert_eq!(first.rate, Some(FrameRate::FAST));
         let stamp = tree.layer(layer).inner_stamp();
         tree.sample(start + Duration::from_millis(250), 1.0);
         assert!(
@@ -2590,7 +2577,7 @@ mod hierarchy_tests {
         let start = Instant::now();
         tree.sample(start, 1.0);
         let sampled = tree.sample(start + Duration::from_millis(250), 1.0);
-        assert_eq!(sampled.rate, Some(RATE_FAST));
+        assert_eq!(sampled.rate, Some(FrameRate::FAST));
         assert!(
             (strength(&tree) - 10.0).abs() < 1e-4,
             "a quarter of the way: {}",

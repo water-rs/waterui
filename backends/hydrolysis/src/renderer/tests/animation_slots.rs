@@ -40,17 +40,17 @@ fn opacity_fade_refreshes_at_the_slow_rate_until_the_fade_finishes() {
     capture_root_window(&mut renderer, view(), &env, bounds);
     renderer.commit_mirror();
     let started = renderer.frame_instant();
-    assert_eq!(renderer.animation_refresh_range(), None);
+    assert_eq!(renderer.frame_rate_vote(), None);
     assert_eq!(renderer.mirror().sample(started).rate, None);
 
     source.set(true);
     renderer.commit_mirror();
     let mid = started + Duration::from_millis(50);
     renderer.set_frame_instant(mid);
-    assert_eq!(renderer.animation_refresh_range(), None);
+    assert_eq!(renderer.frame_rate_vote(), None);
     assert_eq!(
         renderer.mirror().sample(mid).rate,
-        Some(cherenkov_record::tree::RATE_SLOW)
+        Some(waterui_frame_rate::FrameRate::SLOW)
     );
 
     let settled = started + Duration::from_secs(2);

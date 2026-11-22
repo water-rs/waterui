@@ -312,31 +312,30 @@ pub struct DisplayRefresh {
     pub high: f32,
 }
 
-#[derive(Default, PartialEq, Eq)]
+#[derive(Default, PartialEq)]
 pub struct RefreshDemand {
-    pub continuous: bool,
-    pub touching: bool,
-    pub content: Option<cherenkov::RefreshRange>,
+    pub rate: Option<waterui_frame_rate::FrameRate>,
 }
 
 impl DisplayRefresh {
-    fn requested(self, demand: &RefreshDemand) -> f32 {
-        if demand.touching {
-            return self.peak;
-        }
-        // Continuous callbacks also drive classified animations. Their content
-        // vote sets the vsync cadence; only unclassified work needs peak rate.
-        let Some(content) = &demand.content else {
-            return if demand.continuous { self.peak } else { 0.0 };
+    fn requested(
+        self,
+        demand: &RefreshDemand,
+    ) -> (f32, ndk::native_window::FrameRateCompatibility) {
+        let Some(vote) = demand.rate else {
+            return (0.0, ndk::native_window::FrameRateCompatibility::Default);
         };
-        let minimum = crate::num_cast::f64_as_f32(f64::from(*content.start()));
-        let maximum = crate::num_cast::f64_as_f32(f64::from(*content.end()));
-        let suggested = if maximum <= self.normal {
-            self.normal
+        let steps = [self.normal, self.high];
+        let rate = waterui_frame_rate::resolve(
+            vote,
+            waterui_frame_rate::DisplayCapabilities::discrete(self.peak, &steps),
+        );
+        let compatibility = if vote.is_fixed() {
+            ndk::native_window::FrameRateCompatibility::FixedSource
         } else {
-            self.high
+            ndk::native_window::FrameRateCompatibility::Default
         };
-        suggested.clamp(minimum, maximum).min(self.peak)
+        (rate, compatibility)
     }
 }
 
@@ -632,15 +631,19 @@ impl AndroidSurface {
         let Some(lease) = self.native_window.as_ref() else {
             return Ok(());
         };
-        let rate = lease.refresh.requested(&self.refresh_demand);
-        // `ANativeWindow_setFrameRate` is API 30. The framework floor is API
-        // 33, so the symbol is a direct link, not a run-time lookup.
+        let (rate, compatibility) = lease.refresh.requested(&self.refresh_demand);
+        // `ANativeWindow_setFrameRateWithChangeStrategy` is API 31. The
+        // framework floor is API 33, so the symbol is a direct link.
         lease
             .window
-            .set_frame_rate(rate, ndk::native_window::FrameRateCompatibility::Default)
+            .set_frame_rate_with_change_strategy(
+                rate,
+                compatibility,
+                ndk::native_window::ChangeFrameRateStrategy::OnlyIfSeamless,
+            )
             .map_err(|error| {
                 GpuError::new(format!(
-                    "hydrolysis android: ANativeWindow_setFrameRate({rate}) failed: {error}"
+                    "hydrolysis android: ANativeWindow_setFrameRateWithChangeStrategy({rate}) failed: {error}"
                 ))
             })
     }

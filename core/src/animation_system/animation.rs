@@ -133,6 +133,7 @@
 
 use core::time::Duration;
 
+pub use crate::animation_system::frame_rate::{FrameRate, FrameRateVote};
 use crate::easing::{
     EasingCurve, Interpolatable, Lanes, Spring, Timing, bezier_is_valid, cubic_bezier, lanes_of,
 };

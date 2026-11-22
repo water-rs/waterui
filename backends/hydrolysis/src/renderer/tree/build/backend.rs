@@ -1129,6 +1129,19 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         RenderNode::build_wrapper(WrapperEffect::Focused(value), content, env, renderer)
     }
 
+    fn frame_rate<C: ChildView<Self>>(
+        &mut self,
+        metadata: Metadata<waterui::animation::FrameRateVote, C>,
+        env: &Environment,
+        (): (),
+    ) -> RenderNode<E> {
+        mark_reached!("frame_rate");
+        let metadata = metadata.map_content(C::into_child);
+        let renderer = &mut *self.renderer;
+        let Metadata { content, value } = metadata;
+        RenderNode::build_wrapper(WrapperEffect::FrameRate(value), content, env, renderer)
+    }
+
     fn lifecycle_hook<C: ChildView<Self>>(
         &mut self,
         metadata: Metadata<waterui_interaction::event::LifeCycleHook, C>,

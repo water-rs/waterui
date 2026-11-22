@@ -310,6 +310,16 @@ impl FramePipeline {
         (next, renderer.submission_evidence())
     }
 
+    pub(super) fn rate_vote(&self) -> Option<waterui_frame_rate::FrameRate> {
+        match &self.bound {
+            Some(Bound {
+                stage: Stage::Live { renderer, .. },
+                ..
+            }) => renderer.rate_vote(),
+            _ => None,
+        }
+    }
+
     /// Drops the frame in flight or produced — a detached native surface's
     /// — without waiting on the render thread: the renderer, its producer
     /// and its context stay bound, so the next frame renders on them.

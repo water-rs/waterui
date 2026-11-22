@@ -253,6 +253,15 @@ struct BrowserRunner {
     /// Held for its lifetime: the media-query listener keeps writing the
     /// colour-scheme binding only while the runner holds the observation.
     _appearance: crate::platform::web_appearance::SystemAppearance,
+    /// Earliest `performance.now()` (ms) for the next self-paced continuous
+    /// frame when an active vote caps below 60Hz.
+    next_paced_due_ms: Option<f64>,
+}
+
+fn browser_now_ms() -> Option<f64> {
+    web_sys::window()
+        .and_then(|window| window.performance())
+        .map(|performance| performance.now())
 }
 
 impl BrowserRunner {
@@ -321,10 +330,27 @@ impl BrowserRunner {
         // A hidden window produces no frame — a tick already posted when
         // the occluding listener landed must not present either — and a
         // wake that carried no armed work answers without one. Only armed
-        // work on a visible window encodes a frame.
-        if !self.runtime.is_hidden()
-            && (self.runtime.mode.is_pending() || self.runtime.renderer.take_redraw_request())
+        // work on a visible window encodes a frame; continuous votes below
+        // 60Hz self-pace across rAF callbacks while keeping reactive refreshes
+        // immediate.
+        let redraw_requested = self.runtime.renderer.take_redraw_request();
+        let vote = self.runtime.effective_frame_rate_vote();
+        let self_paced = super::window::self_pace_interval(vote, 60.0);
+        let should_render = if self.runtime.is_hidden() {
+            false
+        } else if matches!(self.runtime.mode, FrameMode::Refresh) || redraw_requested {
+            true
+        } else if self.runtime.mode.is_pending()
+            || matches!(self.runtime.engine_next, crate::renderer::Next::At { .. })
         {
+            match (self_paced, self.next_paced_due_ms, browser_now_ms()) {
+                (Some(_), Some(due_ms), Some(now_ms)) if now_ms + 0.5 < due_ms => false,
+                _ => true,
+            }
+        } else {
+            false
+        };
+        if should_render {
             let frame = render_window(&mut self.runtime, &self.env, &mut || {
                 Self::drain_runnable_queue(&self.runnable_queue)
             })
@@ -338,6 +364,15 @@ impl BrowserRunner {
                 self.stopped = true;
                 return false;
             }
+            let next_vote = self.runtime.effective_frame_rate_vote();
+            if let (Some(interval), Some(now_ms)) = (
+                super::window::self_pace_interval(next_vote, 60.0),
+                browser_now_ms(),
+            ) {
+                self.next_paced_due_ms = Some(now_ms + interval.as_secs_f64() * 1000.0);
+            } else {
+                self.next_paced_due_ms = None;
+            }
             if frame.presented() && !self.first_frame_announced {
                 self.first_frame_announced = true;
                 self.runtime.platform.announce_first_frame();
@@ -348,6 +383,8 @@ impl BrowserRunner {
                     &self.wake,
                 );
             }
+        } else if self.runtime.is_hidden() || self_paced.is_none() {
+            self.next_paced_due_ms = None;
         }
         if let Some(update) = self.runtime.renderer.take_accessibility_tree_update()
             && let Some(bridge) = self.accessibility_bridge.as_mut()
@@ -363,6 +400,8 @@ impl BrowserRunner {
         // into a parked pump.
         !self.runtime.is_hidden()
             && (self.runtime.platform.take_redraw_request()
+                || self.runtime.mode.is_pending()
+                || matches!(self.runtime.engine_next, crate::renderer::Next::At { .. })
                 || !self.runnable_queue.borrow().is_empty())
     }
 }
@@ -634,6 +673,7 @@ pub fn run<W: Windows, M: AppMenuBar>(app: App<W, M>, style: impl crate::Style) 
             fonts_arrived: Rc::new(Cell::new(false)),
             wake: browser_schedule,
             _appearance: system_appearance,
+            next_paced_due_ms: None,
         };
 
         let handle = Rc::new(BrowserRunnerHandle {

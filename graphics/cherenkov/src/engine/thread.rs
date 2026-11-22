@@ -3,7 +3,6 @@
 //! frame time, renders, and answers with [`Next`] and the [`FrameStats`].
 
 use std::sync::Arc;
-use std::time::Duration;
 
 #[cfg(not(target_arch = "wasm32"))]
 use crossbeam_channel::Receiver;
@@ -17,7 +16,7 @@ use crate::backend::{
 };
 use crate::engine::{CompletionWaker, SurfaceWaker};
 use crate::error::{EngineError, ResourceError, SurfaceError, SurfaceRejection};
-use cherenkov_record::RefreshRange;
+use cherenkov_record::FrameRate;
 
 use crate::frame::{FrameId, FrameStats, FrameTime, Next};
 use crate::image::ImageUpload;
@@ -87,7 +86,7 @@ struct SurfaceState {
     /// sample at the fast rate class.
     content_animating: bool,
     /// Track cadence before the backend accepts this frame's handoffs.
-    sampled_rate: Option<RefreshRange>,
+    sampled_rate: Option<FrameRate>,
     /// Whether the host announced the surface hidden. A hidden surface is
     /// left out of every frame: its tree is not sampled, it is not drawn,
     /// and its per-frame state waits for the frame that shows it.
@@ -960,59 +959,45 @@ fn finish_frame<B: Backend>(
     {
         let owned = renderer.owned_animations(*id);
         let running = if state.content_animating {
-            Some(cherenkov_record::tree::RATE_FAST)
+            Some(FrameRate::FAST)
         } else if owned.is_empty() {
             state.sampled_rate.take()
         } else {
             state.tree.animation_rate(|layer| owned.contains(&layer))
         };
-        // The surface's own deadline unions its animation demand with
-        // only the backend requests that name it.
-        let mine = match (running.clone(), redraw.for_surface(*id)) {
-            (None, None) => None,
-            (Some(running), None) => Some(running),
-            (None, Some(request)) => Some(request.clone()),
-            (Some(running), Some(request)) => {
-                Some(crate::backend::union_rate(running, request.clone()))
-            }
-        };
+        // The surface's own deadline combines its animation demand with
+        // only the backend redraw requests that name it. Non-redrawing
+        // source votes widen `rate_vote` without requesting another frame.
+        let mine = waterui_frame_rate::combine(running, redraw.for_surface(*id).copied());
+        let rate_vote =
+            waterui_frame_rate::combine(mine, redraw.vote_only_for_surface(*id).copied());
         surface_next.insert(
             *id,
             SurfaceNext {
                 next: mine.map_or(Next::Idle, |rate| next_at(time, rate)),
+                rate_vote,
                 tracks: state.tree.running_tracks(|layer| owned.contains(&layer)),
             },
         );
-        match running {
-            Some(r) if r == cherenkov_record::tree::RATE_FAST => {
-                rate = Some(cherenkov_record::tree::RATE_FAST);
-            }
-            Some(r) => rate = rate.or(Some(r)),
-            None => {}
-        }
+        rate = waterui_frame_rate::combine(rate, running);
         state.commits = Commits::Clean;
         state.plane_frames.clear();
         state.display_moved = false;
         state.presented();
     }
-    let rate = match redraw.rate() {
-        None => rate,
-        Some(backend_rate) => Some(match rate {
-            None => backend_rate,
-            Some(rate) => crate::backend::union_rate(rate, backend_rate),
-        }),
-    };
+    let rate = waterui_frame_rate::combine(rate, redraw.rate());
     (
         rate.map_or(Next::Idle, |rate| next_at(time, rate)),
         surface_next,
     )
 }
 
-/// The next frame time for a refresh class: one interval of its fastest
-/// end after `time`.
-fn next_at(time: crate::Instant, rate: RefreshRange) -> Next {
+/// The next frame time for a refresh vote: one interval at the resolved cadence
+/// (capping open upper bounds at 120 Hz) after `time`.
+fn next_at(time: crate::Instant, rate: FrameRate) -> Next {
+    let interval = rate.interval(waterui_frame_rate::DisplayCapabilities::continuous(120.0));
     Next::At {
-        time: time + Duration::from_secs_f64(1.0 / f64::from(*rate.end())),
+        time: time + interval,
         rate,
     }
 }

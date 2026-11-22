@@ -370,8 +370,10 @@ pub unsafe fn mount<W: Windows, M: AppMenuBar>(
     cocoa_ui::view::add_subview(host, &root);
     #[cfg(target_os = "ios")]
     cocoa_ui::uikit::view_controller::did_move_to_parent(&controller);
-    let leaf = (declaration.content)(&env, mtm);
-    let content = mount_leaf(&root, leaf, &env, &mut keepalive);
+    let mut mount_env = env.clone();
+    mount_env.insert(crate::frame_rate::WindowFrameRateVotes::default());
+    let leaf = (declaration.content)(&mount_env, mtm);
+    let content = mount_leaf(&root, leaf, &mount_env, &mut keepalive);
     #[cfg(target_os = "macos")]
     {
         crate::windows::bind_background(

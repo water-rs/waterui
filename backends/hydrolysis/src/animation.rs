@@ -12,11 +12,10 @@
 //! scoped like the first but never sampled: the engine samples it, and the
 //! controller only compares the frame clock with the instant its track ends.
 
-#[cfg(any(test, all(target_os = "android", hydrolysis_gpu_painter)))]
-use cherenkov_record::{RefreshRange, tree::RATE_FAST};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
+use waterui_frame_rate::{FrameRate, combine_all};
 
 use crate::renderer::mount::motion::MotionStatus;
 use waterui_core::animation::{Animation, AnimationTrack};
@@ -74,6 +73,7 @@ enum AnimationKeyScope {
 #[derive(Debug)]
 struct AnimatedScalarSlot {
     state: Rc<RefCell<AnimatedScalarState>>,
+    rate: FrameRate,
 }
 
 /// Cloneable reference to one animated scalar slot, valid for the bind
@@ -206,6 +206,7 @@ impl AnimationController {
         key: AnimationKey,
         target: f32,
         animation: Animation,
+        rate: FrameRate,
         now: Instant,
     ) -> AnimatedScalarHandle {
         if key.scope != AnimationKeyScope::RendererLocalScalar {
@@ -217,7 +218,9 @@ impl AnimationController {
         self.note_key(key);
         let slot = self.slots.entry(key).or_insert_with(|| AnimatedScalarSlot {
             state: Rc::new(RefCell::new(AnimatedScalarState::new(target, now))),
+            rate,
         });
+        slot.rate = rate;
 
         let state = Rc::clone(&slot.state);
         let generation = state.borrow_mut().prepare_target_generation();
@@ -249,15 +252,15 @@ impl AnimationController {
             .any(|slot| slot.state.borrow().is_active())
     }
 
-    /// The range needed by currently running content, independent of how
-    /// often the host happens to sample it: widget scalars move content at
-    /// the fast rate. Engine-run motions are
-    /// not counted here; the engine reports the rate of every track it
-    /// samples.
-    #[cfg(any(test, all(target_os = "android", hydrolysis_gpu_painter)))]
+    /// Combined refresh-rate vote across currently active scalar slots, or
+    /// `None` when every slot is settled.
     #[must_use]
-    pub fn refresh_range(&self) -> Option<RefreshRange> {
-        self.has_active().then_some(RATE_FAST)
+    pub fn frame_rate_vote(&self) -> Option<FrameRate> {
+        combine_all(
+            self.slots
+                .values()
+                .map(|slot| slot.state.borrow().is_active().then_some(slot.rate)),
+        )
     }
 
     /// Marks the start of a subtree whose animation slots belong to `scope`
@@ -423,11 +426,11 @@ const fn approx_eq(a: f32, b: f32) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use cherenkov_record::tree::RATE_FAST;
     use core::time::Duration;
     use std::time::Instant;
 
     use waterui::animation::Animation;
+    use waterui_frame_rate::FrameRate;
 
     use super::{AnimationController, AnimationKey};
 
@@ -452,14 +455,46 @@ mod tests {
         let mut controller = AnimationController::default();
         let start = Instant::now();
         let animation = Animation::linear(Duration::from_millis(100));
-        let handle = controller.bind_scalar_target(scalar_key(1), 0.0, animation.clone(), start);
-        assert_eq!(controller.refresh_range(), None);
+        let handle = controller.bind_scalar_target(
+            scalar_key(1),
+            0.0,
+            animation.clone(),
+            FrameRate::FAST,
+            start,
+        );
+        assert_eq!(controller.frame_rate_vote(), None);
         handle.apply_target(1.0, Some(animation), start);
-        assert_eq!(controller.refresh_range(), Some(RATE_FAST));
+        assert_eq!(controller.frame_rate_vote(), Some(FrameRate::FAST));
         let settled = start + Duration::from_millis(200);
         controller.tick(settled);
-        assert_eq!(controller.refresh_range(), None);
+        assert_eq!(controller.frame_rate_vote(), None);
         assert_eq!(handle.sample(settled), 1.0);
+    }
+
+    #[test]
+    fn slow_scalar_votes_slow_and_combines_with_fast() {
+        let mut controller = AnimationController::default();
+        let start = Instant::now();
+        let animation = Animation::linear(Duration::from_millis(100));
+        let slow = controller.bind_scalar_target(
+            scalar_key(1),
+            0.0,
+            animation.clone(),
+            FrameRate::SLOW,
+            start,
+        );
+        slow.apply_target(1.0, Some(animation.clone()), start);
+        assert_eq!(controller.frame_rate_vote(), Some(FrameRate::SLOW));
+
+        let fast = controller.bind_scalar_target(
+            scalar_key(2),
+            0.0,
+            animation.clone(),
+            FrameRate::FAST,
+            start,
+        );
+        fast.apply_target(1.0, Some(animation), start);
+        assert_eq!(controller.frame_rate_vote(), Some(FrameRate::FAST));
     }
 
     #[test]
@@ -468,11 +503,18 @@ mod tests {
         let start = Instant::now();
         let animation = Animation::linear(Duration::from_millis(100));
         controller.begin_rebuild_frame();
-        let stale = controller.bind_scalar_target(scalar_key(1), 0.0, animation.clone(), start);
+        let stale = controller.bind_scalar_target(
+            scalar_key(1),
+            0.0,
+            animation.clone(),
+            FrameRate::FAST,
+            start,
+        );
         controller.finish_rebuild_frame_with_inactive_slot_retention(false);
 
         controller.begin_rebuild_frame();
-        let current = controller.bind_scalar_target(scalar_key(1), 0.0, animation, start);
+        let current =
+            controller.bind_scalar_target(scalar_key(1), 0.0, animation, FrameRate::FAST, start);
         controller.finish_rebuild_frame_with_inactive_slot_retention(false);
 
         stale.apply_target(1.0, None, start);
@@ -487,6 +529,7 @@ mod tests {
             scalar_key(1),
             0.0,
             Animation::ease_in_out(Duration::from_millis(1)),
+            FrameRate::FAST,
             Instant::now(),
         );
         controller.finish_rebuild_frame_with_inactive_slot_retention(false);
@@ -498,6 +541,7 @@ mod tests {
             scalar_key(1),
             1.0,
             Animation::ease_in_out(Duration::from_millis(120)),
+            FrameRate::FAST,
             start,
         );
         controller.finish_rebuild_frame_with_inactive_slot_retention(false);
@@ -515,6 +559,7 @@ mod tests {
             scalar_key(1),
             0.0,
             Animation::ease_in_out(Duration::from_millis(120)),
+            FrameRate::FAST,
             start,
         );
         controller.finish_rebuild_frame_with_inactive_slot_retention(false);
@@ -525,6 +570,7 @@ mod tests {
             scalar_key(1),
             1.0,
             Animation::ease_in_out(Duration::from_millis(120)),
+            FrameRate::FAST,
             start,
         );
         controller.finish_rebuild_frame_with_inactive_slot_retention(false);
@@ -535,6 +581,7 @@ mod tests {
             scalar_key(1),
             1.0,
             Animation::ease_in_out(Duration::from_millis(120)),
+            FrameRate::FAST,
             start + Duration::from_millis(60),
         );
         controller.finish_rebuild_frame_with_inactive_slot_retention(false);
@@ -551,7 +598,13 @@ mod tests {
         let animation = Animation::ease_in_out(Duration::from_millis(120));
 
         controller.begin_rebuild_frame();
-        let handle = controller.bind_scalar_target(scalar_key(1), 0.0, animation.clone(), start);
+        let handle = controller.bind_scalar_target(
+            scalar_key(1),
+            0.0,
+            animation.clone(),
+            FrameRate::FAST,
+            start,
+        );
         controller.finish_rebuild_frame_with_inactive_slot_retention(false);
         handle.apply_target(1.0, Some(animation.clone()), start);
 
@@ -559,7 +612,8 @@ mod tests {
         controller.finish_rebuild_frame_with_inactive_slot_retention(true);
 
         controller.begin_rebuild_frame();
-        let rebound = controller.bind_scalar_target(scalar_key(1), 1.0, animation, start);
+        let rebound =
+            controller.bind_scalar_target(scalar_key(1), 1.0, animation, FrameRate::FAST, start);
         controller.finish_rebuild_frame_with_inactive_slot_retention(false);
 
         let mid = rebound.sample(start + Duration::from_millis(60));
@@ -576,26 +630,59 @@ mod tests {
         let animation = Animation::ease_in_out(Duration::from_millis(120));
 
         controller.begin_rebuild_frame();
-        let first_a = controller.bind_scalar_target(scalar_key(1), 0.0, animation.clone(), start);
-        let first_b = controller.bind_scalar_target(scalar_key(2), 0.0, animation.clone(), start);
+        let first_a = controller.bind_scalar_target(
+            scalar_key(1),
+            0.0,
+            animation.clone(),
+            FrameRate::FAST,
+            start,
+        );
+        let first_b = controller.bind_scalar_target(
+            scalar_key(2),
+            0.0,
+            animation.clone(),
+            FrameRate::FAST,
+            start,
+        );
         controller.finish_rebuild_frame_with_inactive_slot_retention(false);
         assert!((first_a.sample(start) - 0.0).abs() < 0.0001);
         assert!((first_b.sample(start) - 0.0).abs() < 0.0001);
 
         controller.begin_rebuild_frame();
-        let animating_a =
-            controller.bind_scalar_target(scalar_key(1), 1.0, animation.clone(), start);
-        let steady_b = controller.bind_scalar_target(scalar_key(2), 0.0, animation.clone(), start);
+        let animating_a = controller.bind_scalar_target(
+            scalar_key(1),
+            1.0,
+            animation.clone(),
+            FrameRate::FAST,
+            start,
+        );
+        let steady_b = controller.bind_scalar_target(
+            scalar_key(2),
+            0.0,
+            animation.clone(),
+            FrameRate::FAST,
+            start,
+        );
         controller.finish_rebuild_frame_with_inactive_slot_retention(false);
         assert!(animating_a.sample(start + Duration::from_millis(60)) > 0.0);
         assert!((steady_b.sample(start + Duration::from_millis(60)) - 0.0).abs() < 0.0001);
 
         let reordered_at = start + Duration::from_millis(60);
         controller.begin_rebuild_frame();
-        let reordered_b =
-            controller.bind_scalar_target(scalar_key(2), 0.0, animation.clone(), reordered_at);
-        let reordered_a =
-            controller.bind_scalar_target(scalar_key(1), 1.0, animation, reordered_at);
+        let reordered_b = controller.bind_scalar_target(
+            scalar_key(2),
+            0.0,
+            animation.clone(),
+            FrameRate::FAST,
+            reordered_at,
+        );
+        let reordered_a = controller.bind_scalar_target(
+            scalar_key(1),
+            1.0,
+            animation,
+            FrameRate::FAST,
+            reordered_at,
+        );
         controller.finish_rebuild_frame_with_inactive_slot_retention(false);
 
         assert!(

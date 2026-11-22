@@ -1105,6 +1105,9 @@ pub(super) enum WrapperEffect<E: crate::text::TextEngine> {
     /// the registered text input's `focus_binding`/focus state is set from the
     /// child's just-flushed targets — reactive descendants reach their own nodes.
     Focused(Focused),
+    /// A `.frame_rate(...)` modifier contributing its active vote while
+    /// mounted and visible.
+    FrameRate(waterui_core::animation::FrameRateVote),
     /// An `.on_appear`/`.on_disappear` lifecycle hook, owned by this node rather
     /// than by a frame-ordered slot, so it cannot drift onto another subtree's
     /// hook. Appear fires after the child's first flush; disappear

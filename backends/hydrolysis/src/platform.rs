@@ -2250,6 +2250,10 @@ pub trait PlatformWindow: 'static {
     fn drain_events(&mut self) -> Vec<InputEvent>;
     /// Requests that the window be repainted.
     fn request_redraw(&self);
+    /// Updates the window's active refresh-rate vote (`None` when idle or hidden).
+    fn set_frame_rate_vote(&self, vote: Option<waterui_frame_rate::FrameRate>) {
+        let _ = vote;
+    }
     /// The wake the window's frame signals fire when a frame request lands
     /// on an idle handle — the mechanism that schedules a frame for a
     /// state change made outside one (an executor drain, a platform-view
@@ -6614,12 +6618,18 @@ mod winit_impl {
         /// Requests that the window be repainted.
         fn request_redraw(&self) {
             self.window.request_redraw();
-            // Hold the ProMotion frame-rate demand while frames are being
-            // requested, so animations run at 120Hz on high-refresh panels.
+        }
+
+        fn set_frame_rate_vote(&self, vote: Option<waterui_frame_rate::FrameRate>) {
             #[cfg(target_os = "macos")]
             if let Some(demand) = &self.frame_rate_demand {
-                demand.hold_demand();
+                let peak = super::macos_display_link::screen_peak_fps(&self.window)
+                    .or_else(|| self.refresh_rate_hz().map(crate::num_cast::f64_as_f32))
+                    .unwrap_or(60.0);
+                demand.set_vote(vote, peak);
             }
+            #[cfg(not(target_os = "macos"))]
+            let _ = vote;
         }
 
         /// The frame-signals wake is the same occlusion-gated

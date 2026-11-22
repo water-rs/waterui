@@ -951,6 +951,8 @@ native_backend! {
         retain: waterui_core::metadata::Retain,
         /// A layout priority.
         layout_priority: waterui_core::layout::LayoutPriority,
+        /// A view subtree's refresh-rate vote.
+        frame_rate: waterui_core::animation::FrameRateVote,
         /// A lifecycle hook.
         lifecycle_hook: waterui_interaction::event::LifeCycleHook,
         /// An event handler.

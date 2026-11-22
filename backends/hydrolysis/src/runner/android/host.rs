@@ -1197,6 +1197,8 @@ pub struct FrameOutcome {
     pub(crate) deadline_in_nanos: Option<i64>,
     /// The window's content asked to close (its `Window::state` is Closed).
     pub(crate) should_close: bool,
+    /// Active refresh-rate vote for this window, or `None` when idle or hidden.
+    pub(crate) frame_rate_vote: Option<waterui_frame_rate::FrameRate>,
 }
 
 /// The mounted app session: one runtime window, its environment, the
@@ -2050,18 +2052,28 @@ impl AndroidSession {
             )
             .unwrap_or_default()
         });
+        let frame_rate_vote = self.runtime.effective_frame_rate_vote();
+        #[cfg(hydrolysis_gpu_painter)]
+        {
+            let (continuous, touching) = self.host_frame_demand;
+            if let Err(error) = self.set_frame_demand(continuous, touching) {
+                self.end_rendering(&error);
+            }
+        }
         self.frame_deadline_in_nanos = deadline_in_nanos;
         tracing::debug!(
             target: "waterui::hydrolysis::android",
             wants_next_frame,
             deadline_in_nanos,
             should_close,
+            ?frame_rate_vote,
             "frame outcome"
         );
         FrameOutcome {
             wants_next_frame,
             deadline_in_nanos,
             should_close,
+            frame_rate_vote,
         }
     }
 
@@ -2390,7 +2402,7 @@ impl AndroidSession {
         }
     }
 
-    /// Combines host work with the engine's content-rate range for this window.
+    /// Combines host work with the window's effective refresh-rate vote.
     #[cfg(hydrolysis_gpu_painter)]
     pub(crate) fn set_frame_demand(
         &mut self,
@@ -2399,25 +2411,19 @@ impl AndroidSession {
     ) -> Result<(), String> {
         self.host_frame_demand = (continuous, touching);
         let visible = !self.runtime.is_hidden();
-        let engine = match &self.runtime.engine_next {
-            crate::renderer::Next::At { rate, .. } if visible => Some(rate.clone()),
-            _ => None,
-        };
-        let framework = visible
-            .then(|| self.runtime.renderer.animation_refresh_range())
-            .flatten();
-        let content = engine.into_iter().chain(framework).reduce(|left, right| {
-            (*left.start()).max(*right.start())..=(*left.end()).max(*right.end())
-        });
+        let touching_vote = (visible && touching).then_some(waterui_frame_rate::FrameRate::FAST);
+        let mut rate =
+            waterui_frame_rate::combine(self.runtime.effective_frame_rate_vote(), touching_vote);
+        if rate.is_none()
+            && visible
+            && (continuous || self.runtime.platform.surface.frame_pending())
+        {
+            rate = Some(waterui_frame_rate::FrameRate::FAST);
+        }
         self.runtime
             .platform
             .surface
-            .set_refresh_demand(super::gpu::RefreshDemand {
-                continuous: visible
-                    && (continuous || self.runtime.platform.surface.frame_pending()),
-                touching: visible && touching,
-                content,
-            })
+            .set_refresh_demand(super::gpu::RefreshDemand { rate })
             .map_err(|error| error.to_string())
     }
 

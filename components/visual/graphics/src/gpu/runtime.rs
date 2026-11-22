@@ -1339,6 +1339,13 @@ impl GpuContentRenderer {
         self.host.context.generation()
     }
 
+    /// The surface's combined refresh-rate vote published by the latest frame,
+    /// including non-redrawing source cadence votes.
+    #[must_use]
+    pub fn rate_vote(&self) -> Option<waterui_frame_rate::FrameRate> {
+        self.host.surface.rate_vote()
+    }
+
     /// Resizes the retained attachment along with the surface.
     ///
     /// # Errors
@@ -1585,6 +1592,13 @@ impl ExternalFrameRenderer {
         self.host.context.generation()
     }
 
+    /// The surface's combined refresh-rate vote published by the latest frame,
+    /// including non-redrawing source cadence votes.
+    #[must_use]
+    pub fn rate_vote(&self) -> Option<waterui_frame_rate::FrameRate> {
+        self.host.surface.rate_vote()
+    }
+
     /// Resizes the surface, reports the size it presents at for `display`
     /// to the source, installs the newest published frame, and keeps the
     /// frame stretched to the surface.
@@ -1597,6 +1611,16 @@ impl ExternalFrameRenderer {
             pixels: size,
             scale: display.scale,
         });
+        if let Some(update) = self.frames.take_source_rate() {
+            let rate = match update {
+                super::SourceRateUpdate::Unchanged => None,
+                super::SourceRateUpdate::Clear => Some(None),
+                super::SourceRateUpdate::Set(rate) => Some(Some(rate)),
+            };
+            if let Some(rate) = rate {
+                self.sink.set_source_rate(rate);
+            }
+        }
         let frame = self.frames.take();
         if frame.is_none() && !resized {
             return Ok(());

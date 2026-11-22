@@ -930,9 +930,18 @@ pub fn run<W: Windows, M: AppMenuBar>(
         termination,
         #[cfg(target_os = "windows")]
         session_end,
+        #[cfg(target_os = "windows")]
+        windows_boosted: false,
         #[cfg(hydrolysis_wayland_platform)]
         x11_state_watch: None,
     };
+
+    #[cfg(target_os = "windows")]
+    // SAFETY: process-wide DXGI opt-out so VRR/high-refresh swaps are not virtualized to 60Hz.
+    if let Err(error) = unsafe { windows::Win32::Graphics::Dxgi::DXGIDisableVBlankVirtualization() }
+    {
+        tracing::warn!("hydrolysis runner: DXGIDisableVBlankVirtualization failed: {error}");
+    }
 
     event_loop.set_control_flow(ControlFlow::Wait);
     // Raw pointer presses are reported for every device on the seat, not just
@@ -941,6 +950,14 @@ pub fn run<W: Windows, M: AppMenuBar>(
     // windows when the pointer goes down outside them.
     event_loop.listen_device_events(DeviceEvents::Always);
     let run_result = event_loop.run_app(&mut runner);
+    #[cfg(target_os = "windows")]
+    if runner.windows_boosted {
+        // SAFETY: restore DirectComposition compositor clock boost on loop exit.
+        let _ = unsafe {
+            windows::Win32::Graphics::DirectComposition::DCompositionBoostCompositorClock(false)
+        };
+        runner.windows_boosted = false;
+    }
     waterui_locale::shutdown_current_thread_runtime_locale_state();
     let _ = runner.drain_local_executor_queue();
     if let Err(error) = run_result {
@@ -1026,6 +1043,10 @@ struct WinitRunner {
     /// console control handler — share with the `TerminationHost`.
     #[cfg(target_os = "windows")]
     session_end: Rc<SessionEnd>,
+    /// Whether DirectComposition compositor clock boost is currently enabled
+    /// for at least one window voting above 60Hz on Windows.
+    #[cfg(target_os = "windows")]
+    windows_boosted: bool,
     /// The second-connection `_NET_WM_STATE`/unmap watch that delivers the
     /// X11 transitions winit drops. `None` on Wayland, and stays `None` if
     /// no connection could be opened — the coverage is then what winit
@@ -1685,7 +1706,38 @@ impl WinitRunner {
         self.popup_window_ids.remove(&window_id);
         self.accesskit_adapters.remove(&window_id);
         self.last_accessibility_updates.remove(&window_id);
+        #[cfg(target_os = "windows")]
+        self.sync_windows_compositor_boost();
         self.exit_if_last_window_closed();
+    }
+
+    #[cfg(target_os = "windows")]
+    fn sync_windows_compositor_boost(&mut self) {
+        let want_boost = self.windows.values().any(|runtime| {
+            let peak = runtime
+                .refresh_rate_hz
+                .map_or(60.0, crate::num_cast::f64_as_f32);
+            super::window::should_boost_windows_clock(runtime.effective_frame_rate_vote(), peak)
+        });
+        if want_boost == self.windows_boosted {
+            return;
+        }
+        // SAFETY: main-thread DirectComposition compositor clock boost toggle.
+        match unsafe {
+            windows::Win32::Graphics::DirectComposition::DCompositionBoostCompositorClock(
+                want_boost,
+            )
+        } {
+            Ok(()) => {
+                self.windows_boosted = want_boost;
+            }
+            Err(error) => {
+                tracing::warn!(
+                    want_boost,
+                    "hydrolysis runner: DCompositionBoostCompositorClock failed: {error}"
+                );
+            }
+        }
     }
 
     /// An accesskit adapter's request for one of the runner's windows: the
@@ -1868,8 +1920,12 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
             });
             if let WindowFrame::Failed(error) = frame {
                 self.end_failed_window(window_id, error);
+                #[cfg(target_os = "windows")]
+                self.sync_windows_compositor_boost();
                 return;
             }
+            #[cfg(target_os = "windows")]
+            self.sync_windows_compositor_boost();
             let Some(runtime) = self.windows.get_mut(&window_id) else {
                 return;
             };
@@ -1917,6 +1973,8 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
                     Some(next_gesture_deadline.map_or(deadline, |existing| existing.min(deadline)));
             }
         }
+        #[cfg(target_os = "windows")]
+        self.sync_windows_compositor_boost();
         if let Some(deadline) = next_gesture_deadline {
             event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
         } else {

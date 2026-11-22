@@ -1057,6 +1057,17 @@ impl NativeBackend for AppleBackend {
         )
     }
 
+    fn frame_rate<C: ChildView<Self>>(
+        &mut self,
+        metadata: Metadata<waterui::animation::FrameRateVote, C>,
+        env: &Environment,
+        (): (),
+    ) -> NativeLeaf {
+        mark_reached!("frame_rate");
+        let metadata = metadata.map_content(C::into_child);
+        crate::components::frame_rate::realize_frame_rate_metadata(metadata, &self.entry(env))
+    }
+
     fn high_dynamic_range<C: ChildView<Self>>(
         &mut self,
         metadata: Metadata<waterui::metadata::secure::HighDynamicRange, C>,

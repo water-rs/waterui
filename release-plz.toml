@@ -82,6 +82,10 @@ name = "waterui-easing"
 version_group = "waterui"
 
 [[package]]
+name = "waterui-frame-rate"
+version_group = "waterui"
+
+[[package]]
 name = "waterui-resources"
 version_group = "waterui"
 

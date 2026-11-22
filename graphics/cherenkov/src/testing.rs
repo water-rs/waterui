@@ -215,6 +215,8 @@ struct NullProducer {
     /// The submitted frame's marker: `Some` once one landed, so a later
     /// bind reports its declared alpha like the GPU backend's slot.
     current: Option<()>,
+    /// Latched source cadence vote from `FrameSink::set_source_rate`.
+    source_rate: Option<crate::FrameRate>,
     /// The bindings hold a [`GpuProducer`](crate::GpuProducer) clone
     /// like the GPU backend's `Binding` — a binding's unbind drops the
     /// clone on the render thread, so the last reference can die
@@ -223,6 +225,21 @@ struct NullProducer {
 }
 
 impl NullRenderer {
+    fn frame_redraw(&self) -> FrameRedraw {
+        let mut redraw = FrameRedraw::default();
+        for producer in self.producers.values() {
+            let Some(rate) = producer.source_rate else {
+                continue;
+            };
+            for &(surface, _) in producer.bindings.keys() {
+                if !self.hidden.contains(&surface) {
+                    redraw.vote(surface, rate);
+                }
+            }
+        }
+        redraw
+    }
+
     fn register_image(&mut self, id: ImageId, _image: &ImageUpload) -> Result<(), ResourceError> {
         if self.reject.contains(&NullReject::Image) {
             return Err(ResourceError::Image("injected rejection".into()));
@@ -541,7 +558,7 @@ impl Renderer for NullRenderer {
                 layers,
             }));
         }
-        Ok((FrameRedraw::default(), ()))
+        Ok((self.frame_redraw(), ()))
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -579,7 +596,7 @@ impl Renderer for NullRenderer {
                 layers,
             }));
         }
-        core::future::ready(Ok((FrameRedraw::default(), ())))
+        core::future::ready(Ok((self.frame_redraw(), ())))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -713,6 +730,7 @@ impl crate::GpuContent for Null {
                 NullProducer {
                     content: Some(()),
                     current: None,
+                    source_rate: None,
                     bindings: FxHashMap::default(),
                 },
             );
@@ -727,6 +745,7 @@ impl crate::GpuContent for Null {
                 NullProducer {
                     content: None,
                     current: None,
+                    source_rate: None,
                     bindings: FxHashMap::default(),
                 },
             );
@@ -769,6 +788,16 @@ impl crate::GpuContent for Null {
             let _ = r.events.send(Event::ProducerFrame(surface, layer));
         }
         bound
+    }
+
+    fn set_source_rate(
+        r: &mut NullRenderer,
+        id: crate::ProducerId,
+        rate: Option<crate::FrameRate>,
+    ) {
+        if let Some(producer) = r.producers.get_mut(&id) {
+            producer.source_rate = rate;
+        }
     }
 
     fn retire_gpu_producer(r: &mut NullRenderer, id: crate::ProducerId) {
@@ -2362,15 +2391,28 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(
-        debug_assertions,
-        should_panic(expected = "refresh range must be positive and ordered")
-    )]
-    fn an_invalid_refresh_range_keeps_the_previous_one() {
-        let target = Offscreen::new((8, 8), OffscreenFormat::LinearF16);
-        let before = target.refresh.clone();
-        let target = target.rate(0..=30);
-        assert_eq!(target.refresh, before);
+    fn a_frame_sink_source_rate_votes_without_requesting_redraw() {
+        let (engine, _rx) = engine();
+        let surface = engine
+            .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16), || {})
+            .expect("surface");
+        let layer = surface.layer();
+        let (producer, sink) = engine.frame_producer();
+        surface.update(|tx| {
+            tx[surface.root()].push(&layer);
+            tx[&layer].content(producer.at((16, 16)));
+        });
+        assert_eq!(engine.render(FrameTime::now()).expect("render"), Next::Idle);
+        assert_eq!(surface.rate_vote(), None);
+
+        sink.set_source_rate(Some(crate::FrameRate::fixed(24.0)));
+        assert_eq!(engine.render(FrameTime::now()).expect("render"), Next::Idle);
+        assert_eq!(surface.next_frame(), Next::Idle);
+        assert_eq!(surface.rate_vote(), Some(crate::FrameRate::fixed(24.0)));
+
+        sink.set_source_rate(None);
+        assert_eq!(engine.render(FrameTime::now()).expect("render"), Next::Idle);
+        assert_eq!(surface.rate_vote(), None);
     }
 
     #[test]

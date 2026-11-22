@@ -425,6 +425,12 @@ mod imp {
         // Content: the declared tree becomes one leaf whose view fills the
         // host each layout pass, at the safe-area-aware frame `content_frame`
         // resolves.
+        let mut window_env = env.clone();
+        window_env.insert(crate::frame_rate::WindowFrameRateVotes::default());
+        let env = &window_env;
+        let mut window_env = env.clone();
+        window_env.insert(crate::frame_rate::WindowFrameRateVotes::default());
+        let env = &window_env;
         let leaf = (declaration.content)(env, mtm);
 
         let host = HostView::new(mtm, window.content_rect());
@@ -1261,6 +1267,9 @@ mod imp {
             mtm,
         );
 
+        let mut window_env = env.clone();
+        window_env.insert(crate::frame_rate::WindowFrameRateVotes::default());
+        let env = &window_env;
         let leaf = (declaration.content)(env, mtm);
         let leaf_view = cocoa_ui::view::retain_base(leaf.view());
         #[cfg(feature = "gpu_surface")]

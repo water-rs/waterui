@@ -279,6 +279,10 @@ pub struct FilteredState {
     /// frozen copy for a transition's retirement hand-off (§2.1). `None`
     /// for an unarmed surface — its drawables stay framebuffer-only.
     armed: Option<crate::frozen_frame::SharedFrozenFrameSlot>,
+    /// Window-scoped `.frame_rate(...)` votes active on the owning window.
+    window_votes: Option<crate::frame_rate::WindowFrameRateVotes>,
+    /// Subscription keeping the live presenter aligned with window votes.
+    vote_listener: RefCell<Option<crate::frame_rate::VoteListener>>,
 }
 
 impl fmt::Debug for FilteredState {
@@ -567,12 +571,16 @@ fn attach_if_needed(
     );
     presenter.set_device(&crate::gpu_runtime::raw_metal_device(context));
     presenter.set_drawable_size(cocoa_ui::metal_presenter::drawable_size(width, height));
-    // The display's maximum frame rate — the link is armed for its
-    // cadence (`min 60..=max preferred max` inside `set_display_rate`).
-    if let Some(maximum) = crate::gpu_runtime::display_rate(&state.view) {
-        presenter.set_display_rate(maximum);
-    }
     *state.presenter.borrow_mut() = Some(presenter);
+    apply_filtered_rate(state);
+    *state.vote_listener.borrow_mut() = state.window_votes.as_ref().map(|votes| {
+        let state = Rc::downgrade(state);
+        votes.subscribe(move || {
+            if let Some(state) = state.upgrade() {
+                apply_filtered_rate(&state);
+            }
+        })
+    });
     // A fresh presenter carries the latched colour contract — the layer is
     // persistent across attaches, but `advance_generation` above does not
     // reapply contract properties.
@@ -598,6 +606,21 @@ fn attach_if_needed(
     }
 }
 
+fn apply_filtered_rate(state: &FilteredState) {
+    let Some(maximum) = crate::gpu_runtime::display_rate(&state.view) else {
+        return;
+    };
+    let window_vote = state
+        .window_votes
+        .as_ref()
+        .and_then(crate::frame_rate::WindowFrameRateVotes::combined);
+    let vote = waterui_frame_rate::combine(Some(waterui_frame_rate::FrameRate::FAST), window_vote)
+        .unwrap_or(waterui_frame_rate::FrameRate::FAST);
+    if let Some(presenter) = state.presenter.borrow().as_ref() {
+        presenter.set_frame_rate(vote, maximum);
+    }
+}
+
 /// `detachIfNeeded` — `waterui_applied_filter_detach`. Detaching retires
 /// the presenter: dropping it invalidates the link and advances the
 /// generation, so a late completion settles its lease without presenting.
@@ -606,6 +629,7 @@ fn detach_if_needed(state: &FilteredState) {
         return;
     }
     state.attached.set(false);
+    state.vote_listener.borrow_mut().take();
     state.presenter.borrow_mut().take();
     state.imported_texture.borrow_mut().take();
     state.capture_texture.borrow_mut().take();
@@ -2833,6 +2857,10 @@ fn wire_filtered_state(
             armed: env
                 .get::<crate::transition::SnapshotDemand>()
                 .map(|_| Rc::new(crate::frozen_frame::FrozenFrameSlot::new())),
+            window_votes: env
+                .get::<crate::frame_rate::WindowFrameRateVotes>()
+                .cloned(),
+            vote_listener: RefCell::new(None),
         }
     });
     *state.effects.borrow_mut() = Some(effects);

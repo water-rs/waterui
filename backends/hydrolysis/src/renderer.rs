@@ -400,9 +400,8 @@ pub enum Next {
         /// When the frame is wanted.
         #[cfg_attr(not(any(target_os = "android", trybuild, test)), expect(dead_code))]
         time: Instant,
-        /// The refresh-rate range the frame requests.
-        #[cfg_attr(not(any(target_os = "android", trybuild)), expect(dead_code))]
-        rate: cherenkov_record::RefreshRange,
+        /// The refresh-rate vote the frame requests.
+        rate: waterui_frame_rate::FrameRate,
     },
 }
 
@@ -618,6 +617,16 @@ pub struct SemanticCore<E: crate::text::TextEngine> {
     /// The layer tracks the engine still ran at the last presented frame:
     /// scheduled work the host-side `animation_controller` cannot see.
     engine_tracks: cherenkov_record::RunningTracks,
+    /// Combined active `.frame_rate(...)` vote collected from mounted, visible
+    /// subtrees during the latest flush.
+    app_frame_rate_vote: Option<waterui_frame_rate::FrameRate>,
+    /// Nesting depth of zero-opacity wrappers during a flush, suppressing
+    /// invisible `.frame_rate(...)` votes inside them.
+    zero_opacity_depth: u32,
+    /// Combined refresh-rate vote reported by the latest engine render,
+    /// including non-redrawing source cadence votes.
+    #[cfg(hydrolysis_cherenkov)]
+    engine_rate_vote: Option<waterui_frame_rate::FrameRate>,
     frame_instant: Instant,
     /// When the platform reports the frame being rendered will reach the
     /// display — Android's Choreographer expected presentation time. `None`
@@ -1068,6 +1077,10 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             signals,
             animation_controller: AnimationController::default(),
             animation_owner_pins: AnimationOwnerPins::default(),
+            app_frame_rate_vote: None,
+            zero_opacity_depth: 0,
+            #[cfg(hydrolysis_cherenkov)]
+            engine_rate_vote: None,
             engine_tracks: cherenkov_record::RunningTracks::default(),
             frame_instant,
             #[cfg(all(target_os = "android", not(hydrolysis_hwui)))]

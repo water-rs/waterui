@@ -534,6 +534,10 @@ impl HostedRenderer for SceneRenderer {
         }))
     }
 
+    fn rate_vote(&self) -> Option<waterui_frame_rate::FrameRate> {
+        self.part.surface.rate_vote()
+    }
+
     fn composite(&mut self, target: &wgpu::Texture, display: Display) {
         for texture in self.part.textures.try_iter() {
             *self.part.source.borrow_mut() = texture;

@@ -21,11 +21,11 @@ fn opacity_change_with_animation_disabled_needs_no_animation_frames() {
         )
     };
     capture_root_window(&mut renderer, view(), &env, bounds);
-    assert_eq!(renderer.animation_refresh_range(), None);
+    assert_eq!(renderer.frame_rate_vote(), None);
 
     let started = renderer.frame_instant();
     source.set(true);
     renderer.set_frame_instant(started + Duration::from_millis(50));
     capture_root_window(&mut renderer, view(), &env, bounds);
-    assert_eq!(renderer.animation_refresh_range(), None);
+    assert_eq!(renderer.frame_rate_vote(), None);
 }

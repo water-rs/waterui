@@ -712,4 +712,12 @@ impl<B: crate::GpuContent> FrameSink<B> {
             apply: Box::new(move |r| B::submit_frame(r, id, frame)),
         });
     }
+
+    /// Declares or clears a non-redrawing source cadence vote (e.g. a video
+    /// decoder's frame rate) on this producer without submitting a frame.
+    pub fn set_source_rate(&self, rate: Option<crate::FrameRate>) {
+        let id = self.id;
+        let op: crate::message::ResOp<B> = Box::new(move |r| B::set_source_rate(r, id, rate));
+        let _ = self.tx.send(crate::message::Message::Resource(op));
+    }
 }
