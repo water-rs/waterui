@@ -1,6 +1,7 @@
 //! Scroll containers that defer behaviour to the active renderer backend.
 
 use nami::{Binding, Computed};
+use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::{AnyView, Environment, Native, NativeView, View, animation::Animation};
 
 use crate::{Point, Size, StretchAxis};
@@ -56,7 +57,7 @@ impl<T> ScrollRequest<T> {
 ///
 /// `at_start`/`at_end` report edge contact across every axis the view
 /// scrolls along: a view smaller than its viewport is both at start and at
-/// end. Follow-tail UIs read them through [`Computed::map`] — for example
+/// end. Follow-tail UIs read them through [`SignalExt::map`](nami::SignalExt::map) — for example
 /// `controller.position().map(|p| p.is_some_and(|p| p.at_end))`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[non_exhaustive]
@@ -217,7 +218,7 @@ impl<T: Clone + 'static> ScrollController<T> {
     /// read-only for the app — writing it does not scroll; use
     /// [`Self::scroll_to`] for that.
     ///
-    /// Read edge contact through [`Computed::map`], e.g.
+    /// Read edge contact through [`SignalExt::map`](nami::SignalExt::map), e.g.
     /// `controller.position().map(|p| p.is_some_and(|p| p.at_end))` for a
     /// follow-tail chat view.
     #[must_use]
@@ -283,10 +284,13 @@ where
 /// scroll_both(large_image)
 /// # }
 /// ```
+///
+/// The content keeps its own type, `C`, until the view reaches a backend,
+/// which receives it as its child slot and realizes it in place.
 #[derive(Debug)]
-pub struct ScrollView {
+pub struct ScrollView<C> {
     axis: Axis,
-    content: AnyView,
+    content: C,
     controller: Option<ScrollController<Point>>,
     offset: Option<Binding<Point>>,
 }
@@ -295,11 +299,11 @@ pub struct ScrollView {
 /// hands them to a backend.
 #[derive(Debug)]
 #[non_exhaustive]
-pub struct ScrollViewParts {
+pub struct ScrollViewParts<C> {
     /// The axis or axes the view scrolls along.
     axis: Axis,
     /// The scrolled content.
-    content: AnyView,
+    content: C,
     /// The programmatic scroll controller, if one is connected.
     controller: Option<ScrollController<Point>>,
     /// The binding the backend reports the content offset into, if one is
@@ -307,13 +311,13 @@ pub struct ScrollViewParts {
     offset: Option<Binding<Point>>,
 }
 
-impl ScrollViewParts {
+impl<C> ScrollViewParts<C> {
     /// Takes the value apart into its fields, in declaration order.
     pub fn into_parts(
         self,
     ) -> (
         Axis,
-        AnyView,
+        C,
         Option<ScrollController<Point>>,
         Option<Binding<Point>>,
     ) {
@@ -324,7 +328,7 @@ impl ScrollViewParts {
     #[must_use]
     pub const fn new(
         axis: Axis,
-        content: AnyView,
+        content: C,
         controller: Option<ScrollController<Point>>,
         offset: Option<Binding<Point>>,
     ) -> Self {
@@ -344,7 +348,7 @@ impl ScrollViewParts {
 
     /// The scrolled content.
     #[must_use]
-    pub const fn content(&self) -> &AnyView {
+    pub const fn content(&self) -> &C {
         &self.content
     }
 
@@ -375,10 +379,10 @@ pub enum Axis {
     All,
 }
 
-impl ScrollView {
+impl<C> ScrollView<C> {
     /// Creates a new `ScrollView` with the specified scroll axis and content.
     #[must_use]
-    pub const fn new(axis: Axis, content: AnyView) -> Self {
+    pub const fn new(axis: Axis, content: C) -> Self {
         Self {
             axis,
             content,
@@ -389,7 +393,7 @@ impl ScrollView {
 
     /// Decomposes the `ScrollView` into its parts.
     #[must_use]
-    pub fn into_inner(self) -> ScrollViewParts {
+    pub fn into_inner(self) -> ScrollViewParts<C> {
         ScrollViewParts {
             axis: self.axis,
             content: self.content,
@@ -406,8 +410,18 @@ impl ScrollView {
 
     /// The scrolled content.
     #[must_use = "this borrows the scrolled content without consuming it"]
-    pub const fn content(&self) -> &AnyView {
+    pub const fn content(&self) -> &C {
         &self.content
+    }
+
+    /// The same view with its content mapped through `f`.
+    fn map_content<D>(self, f: impl FnOnce(C) -> D) -> ScrollView<D> {
+        ScrollView {
+            axis: self.axis,
+            content: f(self.content),
+            controller: self.controller,
+            offset: self.offset,
+        }
     }
 
     /// Connects a programmatic scroll controller.
@@ -433,18 +447,18 @@ impl ScrollView {
     }
 
     /// Creates a `ScrollView` with horizontal scrolling.
-    pub fn horizontal(content: impl View) -> Self {
-        Self::new(Axis::Horizontal, AnyView::new(content))
+    pub const fn horizontal(content: C) -> Self {
+        Self::new(Axis::Horizontal, content)
     }
 
     /// Creates a `ScrollView` with vertical scrolling.
-    pub fn vertical(content: impl View) -> Self {
-        Self::new(Axis::Vertical, AnyView::new(content))
+    pub const fn vertical(content: C) -> Self {
+        Self::new(Axis::Vertical, content)
     }
 
     /// Creates a `ScrollView` with scrolling in both directions.
-    pub fn both(content: impl View) -> Self {
-        Self::new(Axis::All, AnyView::new(content))
+    pub const fn both(content: C) -> Self {
+        Self::new(Axis::All, content)
     }
 }
 
@@ -472,19 +486,38 @@ pub const fn scroll_stretch_axis(axis: Axis, content: StretchAxis) -> StretchAxi
     }
 }
 
-impl NativeView for ScrollView {
-    fn stretch_axis(&self) -> StretchAxis {
-        scroll_stretch_axis(self.axis, self.content.stretch_axis())
+/// A scroll's axis follows its realized content's (§6), so backends answer
+/// it from the realized node through [`scroll_stretch_axis`].
+impl<C: 'static> NativeView for ScrollView<C> {}
+
+impl<C: View> View for ScrollView<C> {
+    /// The erased form, for code that expands views by hand.
+    fn body(self, _env: &Environment) -> impl View {
+        Native::new(self.map_content(AnyView::new))
+    }
+
+    /// Reaches the backend with the content in the backend's child slot.
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        #[cfg(feature = "erased-dispatch")]
+        {
+            backend.native(
+                self.map_content(|content| B::Slot::from_view(AnyView::new(content))),
+                env,
+                cx,
+            )
+        }
+        #[cfg(not(feature = "erased-dispatch"))]
+        {
+            backend.native(self.map_content(B::Slot::from_view), env, cx)
+        }
     }
 }
 
-impl View for ScrollView {
-    fn body(self, _env: &Environment) -> impl View {
-        Native::new(self)
-    }
+impl<C> MapSlots<C> for ScrollView<C> {
+    type With<T: 'static> = ScrollView<T>;
 
-    fn stretch_axis(&self) -> StretchAxis {
-        scroll_stretch_axis(self.axis, self.content.stretch_axis())
+    fn map_slots<T: 'static>(self, f: impl Fn(C) -> T + Clone + 'static) -> ScrollView<T> {
+        self.map_content(f)
     }
 }
 
@@ -492,7 +525,7 @@ impl View for ScrollView {
 ///
 /// This is the most common scroll direction for lists and long content.
 /// The actual scrolling behavior is implemented by the renderer backend.
-pub fn scroll(content: impl View) -> ScrollView {
+pub const fn scroll<C: View>(content: C) -> ScrollView<C> {
     ScrollView::vertical(content)
 }
 
@@ -500,7 +533,7 @@ pub fn scroll(content: impl View) -> ScrollView {
 ///
 /// Useful for wide content that needs to scroll left-right.
 /// The actual scrolling behavior is implemented by the renderer backend.
-pub fn scroll_horizontal(content: impl View) -> ScrollView {
+pub const fn scroll_horizontal<C: View>(content: C) -> ScrollView<C> {
     ScrollView::horizontal(content)
 }
 
@@ -508,7 +541,7 @@ pub fn scroll_horizontal(content: impl View) -> ScrollView {
 ///
 /// Useful for large content like images or tables that may need both horizontal and vertical scrolling.
 /// The actual scrolling behavior is implemented by the renderer backend.
-pub fn scroll_both(content: impl View) -> ScrollView {
+pub const fn scroll_both<C: View>(content: C) -> ScrollView<C> {
     ScrollView::both(content)
 }
 

@@ -1157,7 +1157,7 @@ impl Active {
         while k < self.ft.len() {
             self.ft[k].0 = self.ft[k].0.wrapping_add_signed(dc);
             self.ft[k].1 += dd;
-            k += k & k.wrapping_neg();
+            k += k.isolate_lowest_one();
         }
     }
 
@@ -1202,7 +1202,7 @@ impl Active {
             let ch = &self.chunks[i - 1];
             self.ft[i].0 += u32::try_from(ch.els.len()).expect("a chunk holds at most 2*CHUNK");
             self.ft[i].1 += ch.ds;
-            let j = i + (i & i.wrapping_neg());
+            let j = i + i.isolate_lowest_one();
             if j <= n {
                 let v = self.ft[i];
                 self.ft[j].0 += v.0;

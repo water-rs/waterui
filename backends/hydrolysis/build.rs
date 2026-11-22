@@ -8,6 +8,7 @@ mod hwui;
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    facade_features();
     #[cfg(feature = "hwui")]
     {
         for input in [
@@ -49,7 +50,10 @@ fn main() {
     // `--cfg trybuild -A dead_code`, so a `dead_code` expectation cannot be
     // fulfilled there.
     println!("cargo:rustc-check-cfg=cfg(trybuild)");
+    configure_cfg_aliases();
+}
 
+fn configure_cfg_aliases() {
     cfg_aliases! {
         // Where hosted content exists: the targets on which `cherenkov-gpu`
         // implements `HostedLayers`, whose plane shows a platform object.
@@ -119,6 +123,45 @@ fn main() {
         hydrolysis_system_webview: {
             any(hydrolysis_macos_system_webview, hydrolysis_web_system_webview)
         },
+        // Bundled CEF engine realizing `WebView` on desktop targets.
+        hydrolysis_cef_webview: {
+            all(feature = "webview-cef", any(target_os = "macos", target_os = "linux", target_os = "windows"))
+        },
+        // Bundled WPE WebKit engine realizing `WebView` on Linux.
+        hydrolysis_wpe_webview: {
+            all(feature = "webview-wpe", target_os = "linux")
+        },
+        // Any non-Android web engine wired into `install_platform_services` and
+        // `NativeBackend::web_view`.
+        hydrolysis_webview_engine: {
+            any(hydrolysis_system_webview, hydrolysis_cef_webview, hydrolysis_wpe_webview)
+        },
+        // The built-in localized strings: the controls that draw them, and the
+        // list and navigation chrome that name accessibility nodes with them.
+        hydrolysis_localization: {
+            any(
+                feature = "text-field",
+                feature = "secure-field",
+                feature = "color-picker",
+                feature = "date-picker",
+                feature = "navigation",
+                all(feature = "list", feature = "accessibility")
+            )
+        },
+        // The renderer installs the environment its platform services need:
+        // its localizations and the platform web view's controller.
+        // The page's `<video>` element realizes `Video` on the web.
+        hydrolysis_web_video: {
+            all(target_arch = "wasm32", feature = "web", feature = "video")
+        },
+        // The GPU player realizes `Video` everywhere but the web: this
+        // backend bridges no platform player.
+        hydrolysis_gpu_video: {
+            all(feature = "video-gpu", not(target_arch = "wasm32"))
+        },
+        hydrolysis_platform_services: {
+            any(hydrolysis_localization, hydrolysis_webview_engine)
+        },
         // The persistent pipeline cache serialises through `std::fs` into a
         // platform cache directory; targets without that filesystem contract
         // (wasm, redox) compile the renderer without it.
@@ -136,6 +179,8 @@ fn main() {
         hydrolysis_video_plane: { all(android_platform, feature = "video-gpu") },
         // Runtime implementation exists only when a painter is selected.
         hydrolysis_runtime: { any(hydrolysis_cherenkov, hydrolysis_hwui) },
+        // Development inspector endpoint: opt-in and unavailable on wasm32.
+        hydrolysis_inspector: { all(feature = "inspector", not(target_arch = "wasm32")) },
         // The Cherenkov GPU engine and its wgpu device stack are linkable:
         // the `gpu` feature on every target. The GPU *painter* machinery is
         // the narrower `hydrolysis_gpu_painter` gate this alias is not: under
@@ -161,5 +206,57 @@ fn main() {
         // Both Cherenkov painters: the offscreen runtime selects one at
         // construction from the host's adapters.
         hydrolysis_both_painters: { all(hydrolysis_gpu_painter, hydrolysis_cpu_painter) },
+    }
+}
+
+/// Turns the facade's enabled features into `waterui_feature` cfgs, and
+/// fails the build when a facade component this crate realizes itself is on
+/// without the feature that realizes it: `NativeBackend` then requires a
+/// method this crate would not compile. Components drawn by a realization
+/// the application links (`map`, `video`, a browser engine's `webview`)
+/// are not listed: their methods report a missing realization at run time.
+fn facade_features() {
+    // Each facade feature, and the feature of this crate that realizes it.
+    const REALIZED_BY: &[(&str, &str)] = &[
+        ("calendar", "calendar"),
+        ("color-picker", "color-picker"),
+        ("date-picker", "date-picker"),
+        ("multi-date-picker", "multi-date-picker"),
+        ("picker", "picker"),
+        ("secure-field", "secure-field"),
+        ("slider", "slider"),
+        ("stepper", "stepper"),
+        ("text-field", "text-field"),
+        ("toggle", "toggle"),
+        ("menu", "menu"),
+        ("list", "list"),
+        ("table", "table"),
+        ("navigation", "navigation"),
+    ];
+
+    println!("cargo::rustc-check-cfg=cfg(waterui_feature, values(any()))");
+    println!("cargo::rustc-check-cfg=cfg(hydrolysis_scene_view)");
+    let features = std::env::var("DEP_WATERUI_FEATURES")
+        .expect("the `waterui` facade's build script exports DEP_WATERUI_FEATURES");
+    let mut has_scene_view = false;
+    for feature in features.split(',').filter(|feature| !feature.is_empty()) {
+        println!("cargo::rustc-cfg=waterui_feature=\"{feature}\"");
+        if matches!(feature, "canvas" | "gpu") {
+            has_scene_view = true;
+        }
+        if let Some((_, own)) = REALIZED_BY.iter().find(|(name, _)| *name == feature) {
+            let enabled = std::env::var_os(format!(
+                "CARGO_FEATURE_{}",
+                own.to_ascii_uppercase().replace('-', "_")
+            ))
+            .is_some();
+            assert!(
+                enabled,
+                "the application enables the `waterui` feature `{feature}`; enable hydrolysis's `{own}` to realize it"
+            );
+        }
+    }
+    if has_scene_view {
+        println!("cargo::rustc-cfg=hydrolysis_scene_view");
     }
 }

@@ -582,13 +582,13 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     use waterui::{Binding, SignalExt, binding};
-    use waterui_core::{AnyView, Environment, View};
+
     use waterui_graphics::backend::draw::{
         Command, Draw, FontId, ImageId, ImageLimits, Paint, Recorder, WorkingColor,
     };
     use waterui_graphics::backend::{
         FontSource, Handle, ImageData, NextFrame, Picture, PictureRecording, RecordingResources,
-        ResourceError, Rgba8, Rgba16F, SceneBackend, SceneContent, SceneViewMergeToParent,
+        ResourceError, Rgba8, Rgba16F, SceneBackend, SceneContent,
     };
 
     /// Content that counts its recordings and fills a half-extent logical
@@ -994,11 +994,7 @@ mod tests {
     /// recording signal through whichever invalidator the host installs.
     fn picture_scene(recording: &Binding<WorkingColor>, engines: &Rc<SceneEngine>) -> Scene {
         let picture = Picture::new(Size::new(10.0, 10.0), recording.map(square));
-        let scene_view =
-            AnyView::new(picture.body(&Environment::new().extending(SceneViewMergeToParent)))
-                .downcast::<SceneView>()
-                .unwrap_or_else(|_| panic!("a merged picture is a SceneView"));
-        Scene::new(*scene_view, engines.clone())
+        Scene::new(picture.into_scene_view(), engines.clone())
     }
 
     /// The colour the content's last recording draws, read out of the

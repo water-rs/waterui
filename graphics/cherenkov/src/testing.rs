@@ -3724,6 +3724,8 @@ pub fn ownership(members: &[(f32, [f32; 2])], member: usize) -> f32 {
 /// Retained-lowering equivalence checks for first-party backends.
 pub mod incremental;
 
+pub mod allocations;
+
 /// A surface wake-up with no host behind it, for a harness that drives a
 /// renderer directly and renders on its own schedule.
 #[must_use]

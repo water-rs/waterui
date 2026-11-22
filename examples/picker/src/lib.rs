@@ -12,7 +12,7 @@ use std::collections::BTreeSet;
 
 use jiff::civil::{Date, DateTime, Time};
 use waterui::Url;
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::color::Srgb;
 use waterui::form::Calendar;
 use waterui::form::picker::color::ColorPicker;
@@ -244,11 +244,11 @@ pub fn demo() -> impl View {
     )
 }
 
-fn picker_selection_text(selection: &Binding<Fruit>) -> impl View {
+fn picker_selection_text(selection: &Binding<Fruit>) -> impl View + use<> {
     hstack(("Selected: ", text!("{selection:?}")))
 }
 
-fn color_preview(color: &Binding<Color>, label: &'static str) -> impl View {
+fn color_preview(color: &Binding<Color>, label: &'static str) -> impl View + use<> {
     hstack((text(label).bold(), text(": "), ColorSwatch::new(color)))
 }
 
@@ -273,7 +273,7 @@ impl View for ColorSwatch {
     }
 }
 
-fn file_list(files: &Binding<Vec<Url>>) -> impl View {
+fn file_list(files: &Binding<Vec<Url>>) -> impl View + use<> {
     let file_list_text = files.clone().map(|urls| {
         if urls.is_empty() {
             "No files selected".to_string()
@@ -288,6 +288,6 @@ fn file_list(files: &Binding<Vec<Url>>) -> impl View {
 }
 
 /// Builds the example app, showing the picker gallery demo.
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     App::new(demo, env)
 }

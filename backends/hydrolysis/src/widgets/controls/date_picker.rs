@@ -1,9 +1,8 @@
-#[cfg(feature = "accessibility")]
-use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::chrome::{ChromeContent, LiveChromeParts};
+#[cfg(feature = "accessibility")]
+use crate::renderer::{AccessibilityActionTarget, SemanticCore};
 use crate::renderer::{
-    HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext,
-    measure_date_picker_intrinsic,
+    HeldChild, HydroState, HydrolysisRenderer, RenderContext, RetainedSubview, WidgetRenderContext,
 };
 use crate::theme::{MenuPickerLook, PickerSpec, SpecTint};
 #[cfg(feature = "accessibility")]
@@ -14,15 +13,14 @@ use nami::{Binding, Signal as _};
 use std::cell::RefCell;
 use std::rc::Rc;
 use waterui_controls::ControlSize;
-use waterui_core::interaction::InteractionState;
+use waterui_core::Environment;
 use waterui_core::layout::{
     HorizontalAlignment, ProposalSize, Size as LayoutSize, ViewDimensions, layout_direction,
 };
-use waterui_core::{AnyView, Environment, Native};
 use waterui_form::picker::date::DatePickerConfig;
+use waterui_interaction::interaction::InteractionState;
 use waterui_text::styled::StyledStr;
 
-use crate::renderer::RetainedSubview;
 use crate::widgets::controls::button::label_styled;
 use crate::widgets::controls::field_look::field_look;
 #[cfg(feature = "accessibility")]
@@ -45,7 +43,7 @@ pub fn date_picker_spec(env: &Environment) -> PickerSpec {
 /// [`RetainedSubview`] built once and re-flushed each frame so reactive label
 /// content stays live.
 pub struct DatePickerRenderState<E: crate::text::TextEngine> {
-    config: DatePickerConfig,
+    config: DatePickerConfig<HeldChild<E>>,
     label_view: RetainedSubview<E>,
     /// The field's look, held while its spec is.
     look: Option<(PickerSpec, MenuPickerLook)>,
@@ -56,9 +54,20 @@ pub struct DatePickerRenderState<E: crate::text::TextEngine> {
 }
 
 impl<E: crate::text::TextEngine> DatePickerRenderState<E> {
-    pub(crate) fn from_config(config: DatePickerConfig) -> Self {
+    /// The label this control contributes to a node naming itself from its
+    /// content: its own label.
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn contributed_label(
+        &self,
+        _renderer: &mut crate::renderer::SemanticCore<E>,
+        env: &Environment,
+    ) -> Option<String> {
+        crate::renderer::SemanticCore::<E>::accessibility_label_from_label(self.config.label(), env)
+    }
+
+    pub(crate) fn from_config(config: DatePickerConfig<HeldChild<E>>) -> Self {
         Self {
-            label_view: RetainedSubview::new(AnyView::new(config.label().clone())),
+            label_view: RetainedSubview::held(config.label().build()),
             config,
             look: None,
             parts: None,
@@ -84,26 +93,15 @@ impl<E: crate::text::TextEngine> DatePickerRenderState<E> {
     }
 }
 
-impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<DatePickerConfig> {
-    fn intrinsic(
-        state: &mut HydroState<E>,
-        view: &Self,
-        env: &Environment,
-        theme: &Rc<dyn crate::theme::WidgetTheme>,
-    ) -> LayoutSize {
-        measure_date_picker_intrinsic(view.as_inner(), state, env, theme)
-    }
-}
-
 /// Emits a date picker's accessibility node from its config. Shared by the dispatch
 /// path ([`Native<DatePickerConfig>::accessibility`]) and the retained `Widget`-node
 /// path so both produce the same a11y tree.
 // empty when the accessibility feature is off
 #[cfg_attr(not(feature = "accessibility"), allow(clippy::missing_const_for_fn))]
-pub fn date_picker_accessibility<E: crate::text::TextEngine>(
+pub fn date_picker_accessibility<E: crate::text::TextEngine, S>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     ctx: Option<RenderContext>,
-    date_picker: &DatePickerConfig,
+    date_picker: &DatePickerConfig<S>,
     env: &Environment,
     focus_keys: &[crate::renderer::InteractionKey],
 ) {
@@ -145,14 +143,45 @@ pub fn date_picker_accessibility<E: crate::text::TextEngine>(
             ctx,
             node,
             env,
-            (!disabled).then(|| AccessibilityActionTarget::DatePicker {
-                value: date_picker.value().clone(),
-                range: date_picker.range().clone(),
-                ty: date_picker.ty(),
-                origin,
-                // The popup opens in the picker's own environment
-                // (water-rs/hydrolysis#140).
-                env: env.clone(),
+            (!disabled).then(|| {
+                let value = date_picker.value().clone();
+                let range = date_picker.range().clone();
+                let ty = date_picker.ty();
+                let popup_value = value.clone();
+                let popup_range = range.clone();
+                // The popup opens in the picker's own environment layered over
+                // the dispatch's (water-rs/hydrolysis#140).
+                let picker_env = env.clone();
+                AccessibilityActionTarget::DatePicker {
+                    value,
+                    range,
+                    ty,
+                    open_popup: Rc::new(RefCell::new(
+                        move |renderer: &mut SemanticCore<E>, env: &Environment| {
+                            let env = picker_env.layered_on(env);
+                            match origin {
+                                Some(origin) => {
+                                    renderer.show_date_picker(
+                                        popup_value.clone(),
+                                        popup_range.clone(),
+                                        ty,
+                                        origin,
+                                        &env,
+                                    );
+                                }
+                                None => {
+                                    renderer.activate_date_picker(
+                                        popup_value.clone(),
+                                        popup_range.clone(),
+                                        ty,
+                                        &env,
+                                    );
+                                }
+                            }
+                            true
+                        },
+                    )),
+                }
             }),
         ) {
             for key in focus_keys {
@@ -167,8 +196,8 @@ pub fn date_picker_accessibility<E: crate::text::TextEngine>(
 }
 
 /// Measures a retained date-picker leaf from its [`DatePickerRenderState`],
-/// mirroring [`measure_date_picker_intrinsic`] but reading the label size from its
-/// already-built [`RetainedSubview`] so layout and render agree.
+/// reading the label size from its already-built [`RetainedSubview`] so layout
+/// and render agree.
 pub fn measure_date_picker_node<E: crate::text::TextEngine>(
     render_state: &DatePickerRenderState<E>,
     _proposal: ProposalSize,

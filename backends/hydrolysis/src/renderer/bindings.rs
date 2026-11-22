@@ -490,6 +490,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 model: data.target.model,
                 selection: data.target.selection,
                 env: data.target.env,
+                show_context_menu: data.target.show_context_menu,
                 key_handlers,
                 focus_binding: data.focus_binding,
                 #[cfg(feature = "accessibility")]

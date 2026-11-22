@@ -95,7 +95,9 @@ use super::host::{AndroidSession, MetricsSnapshot, UiThreadServices};
 /// the player and `nativeVideoPlaneSurfaceDestroyed` reports the loss of its
 /// `Surface`.
 /// 30 adds asynchronous GPU initialization and frame-completion delivery.
-pub const JNI_SCHEMA: jint = 30;
+/// 31 adds `nativeSetResumed` for `AndroidContent` lifecycle forwarding and
+/// passes painted device-pixel rects through `onNativeBandShow` for viewability.
+pub const JNI_SCHEMA: jint = 31;
 
 /// A failure crossing the JNI boundary as an exception.
 #[derive(Debug)]
@@ -974,7 +976,11 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetColorSc
 ) {
     guard(&mut env, |_env| {
         initializing!(session_ptr, pending, {
-            pending.night = night;
+            pending.color_scheme = if night {
+                waterui::theme::ColorScheme::Dark
+            } else {
+                waterui::theme::ColorScheme::Light
+            };
             return Ok(());
         });
         session!(session_ptr).set_night_mode(night);
@@ -991,12 +997,31 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetVisible
     session_ptr: jlong,
     visible: jboolean,
 ) {
-    guard(&mut env, |_env| {
+    guard(&mut env, |jni_env| {
         initializing!(session_ptr, pending, {
             pending.visible = visible;
             return Ok(());
         });
-        session!(session_ptr).set_visible(visible);
+        session!(session_ptr).set_visible(jni_env, visible);
+        Ok(())
+    });
+}
+
+/// The Activity's resumed state — `onResume`/`onPause` forwarded to mounted
+/// `AndroidContent` views.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetResumed<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    session_ptr: jlong,
+    resumed: jboolean,
+) {
+    guard(&mut env, |jni_env| {
+        initializing!(session_ptr, pending, {
+            pending.resumed = resumed;
+            return Ok(());
+        });
+        session!(session_ptr).set_resumed(jni_env, resumed);
         Ok(())
     });
 }

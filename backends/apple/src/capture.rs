@@ -7,7 +7,7 @@
 //! bitmap, so with `gpu_surface` the readback is `capture_image`'s
 //! `ViewCapture` instead.
 
-use waterui_core::view_renderer::RenderResult;
+use waterui_capture::view_renderer::RenderResult;
 
 /// Why the platform capture produced no bitmap.
 #[derive(Debug, thiserror::Error)]
@@ -42,7 +42,7 @@ pub enum CaptureError {
         height: f64,
     },
     /// No connected window scene can host the offscreen capture window.
-    #[cfg(all(target_os = "ios", feature = "view_renderer"))]
+    #[cfg(target_os = "ios")]
     #[error("no UIWindowScene is connected to host the capture window")]
     NoWindowScene,
 }

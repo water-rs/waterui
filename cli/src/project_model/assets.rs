@@ -37,6 +37,7 @@ mod app_values;
 mod apple_metadata;
 mod gradle_plugins;
 pub mod icon;
+mod keep_rules;
 mod unified;
 mod web;
 
@@ -255,6 +256,9 @@ struct AndroidTable {
     /// Gradle plugins to apply to the generated application module.
     #[serde(default)]
     gradle_plugin: Vec<gradle_plugins::GradlePlugin>,
+    /// Classes and members R8 keeps because JNI reaches them by name.
+    #[serde(default)]
+    keep: Vec<keep_rules::KeepRule>,
 }
 
 impl AndroidTable {
@@ -268,6 +272,7 @@ impl AndroidTable {
             && self.receiver.is_empty()
             && self.meta_data.is_empty()
             && self.gradle_plugin.is_empty()
+            && self.keep.is_empty()
     }
 }
 
@@ -706,6 +711,8 @@ pub struct AndroidClasspath {
     pub kotlin_sources: Vec<PathBuf>,
     /// `group:artifact:version` coordinates to emit as Gradle dependencies.
     pub maven: BTreeSet<String>,
+    /// Classes and members R8 keeps because JNI reaches them by name.
+    pub keep: keep_rules::KeepRules,
 }
 
 /// Which Gradle configuration a module's classpath dependencies land on.
@@ -842,6 +849,7 @@ fn collect_android_declarations(
                 );
                 declarations.classpath.maven.insert(coordinate);
             }
+            declarations.classpath.keep.merge(table.keep);
             declarations
                 .manifest
                 .merge(package.name.as_str(), components)?;
@@ -1090,7 +1098,7 @@ async fn stage_classpath_files(
     }
 
     write_android_dependencies(module_dir, &classpath.maven, scope).await?;
-    write_android_keeps(module_dir, &keep_packages).await?;
+    write_android_keeps(module_dir, &keep_packages, &classpath.keep).await?;
     Ok(())
 }
 
@@ -1197,7 +1205,11 @@ async fn write_android_dependencies(
 /// R8's release shrink cannot remove or rename classes JNI loads by name.
 /// An empty set removes a block an earlier stage left; the file itself is
 /// only written when its contents change.
-async fn write_android_keeps(module_dir: &Path, packages: &BTreeSet<String>) -> eyre::Result<()> {
+async fn write_android_keeps(
+    module_dir: &Path,
+    packages: &BTreeSet<String>,
+    declared: &keep_rules::KeepRules,
+) -> eyre::Result<()> {
     let rules_path = module_dir.join("proguard-rules.pro");
     let existing = match fs::read_to_string(&rules_path).await {
         Ok(contents) => contents,
@@ -1221,15 +1233,11 @@ async fn write_android_keeps(module_dir: &Path, packages: &BTreeSet<String>) -> 
         body.pop();
     }
 
-    if !packages.is_empty() {
-        body.push_str(ANDROID_KEEPS_BEGIN);
-        body.push('\n');
-        for package in packages {
-            body.push_str("-keep class ");
-            body.push_str(package);
-            body.push_str(".** { *; }\n");
-        }
-        body.push_str(ANDROID_KEEPS_END);
+    if !packages.is_empty() || !declared.is_empty() {
+        let block = declared
+            .block(ANDROID_KEEPS_BEGIN, ANDROID_KEEPS_END, packages)
+            .wrap_err("failed to render the managed keep block")?;
+        body.push_str(&block);
         body.push('\n');
     }
 
@@ -4303,6 +4311,75 @@ mod permission_audit_tests {
         assert!(message.contains("`other-push`"), "{message}");
     }
 
+    /// Keep rules are collected across the resolved graph — two crates
+    /// keeping one class keep the union of their members — and a wildcard
+    /// fails the collection naming the declaring crate.
+    #[test]
+    fn keep_rules_are_collected_across_the_graph() {
+        let project = tempdir().expect("temp project");
+        write_crate(
+            &project.path().join("sdk"),
+            "sdk-bridge",
+            "[[package.metadata.waterui.android.keep]]\n\
+             class = \"com.example.sdk.Entry\"\n\
+             members = [\"public static void start(android.content.Context)\"]\n",
+        );
+        write_crate(
+            &project.path().join("ads"),
+            "ads-bridge",
+            "[[package.metadata.waterui.android.keep]]\n\
+             class = \"com.example.sdk.Entry\"\n\
+             members = [\"void stop()\"]\n",
+        );
+        let app = write_crate(
+            &project.path().join("app"),
+            "app",
+            "[dependencies]\n\
+             sdk-bridge = { path = \"../sdk\" }\n\
+             ads-bridge = { path = \"../ads\" }\n",
+        );
+        let collect = |manifest: &Path| {
+            let metadata = smol::block_on(crate_metadata(
+                &crate::toolchain::Host::current(),
+                manifest,
+                &[],
+            ))
+            .expect("resolve the fixture graph");
+            collect_android_declarations(&metadata)
+        };
+
+        let declarations = collect(&app).expect("collect the graph");
+        let block = declarations
+            .classpath
+            .keep
+            .block("# begin", "# end", &BTreeSet::new())
+            .expect("render");
+        assert_eq!(
+            block,
+            "# begin\n\
+             -keep class com.example.sdk.Entry {\n    \
+             public static void start(android.content.Context);\n    void stop();\n}\n\
+             # end"
+        );
+
+        write_crate(
+            &project.path().join("broad"),
+            "broad-bridge",
+            "[[package.metadata.waterui.android.keep]]\n\
+             class = \"com.example.sdk.Entry\"\n\
+             members = [\"*** get*(...)\"]\n",
+        );
+        let broad = write_crate(
+            &project.path().join("broad-app"),
+            "broad-app",
+            "[dependencies]\nbroad-bridge = { path = \"../broad\" }\n",
+        );
+        let message = collect(&broad)
+            .expect_err("a wildcard keep must fail")
+            .to_string();
+        assert!(message.contains("broad-bridge"), "{message}");
+    }
+
     /// The iOS development entitlements `declarations` merge into an empty
     /// table.
     fn signed_entitlements(declarations: &AppleDeclarations) -> plist::Dictionary {
@@ -4572,6 +4649,7 @@ mod permission_audit_tests {
             &AndroidClasspath {
                 kotlin_sources: vec![source],
                 maven: BTreeSet::from(["androidx.health.connect:connect-client:1.1.0".to_string()]),
+                keep: keep_rules::KeepRules::default(),
             },
             &module_dir,
             AndroidDependencyScope::Implementation,
@@ -4608,6 +4686,7 @@ mod permission_audit_tests {
             &AndroidClasspath {
                 kotlin_sources: Vec::new(),
                 maven: BTreeSet::from(["androidx.health.connect:connect-client:1.1.0".to_string()]),
+                keep: keep_rules::KeepRules::default(),
             },
             &module_dir,
             AndroidDependencyScope::Api,
@@ -4638,6 +4717,7 @@ mod permission_audit_tests {
             &AndroidClasspath {
                 kotlin_sources: vec![source],
                 maven: BTreeSet::from(["androidx.health.connect:connect-client:1.1.0".to_string()]),
+                keep: keep_rules::KeepRules::default(),
             },
             &module_dir,
             AndroidDependencyScope::Implementation,
@@ -4678,6 +4758,7 @@ mod permission_audit_tests {
             &AndroidClasspath {
                 kotlin_sources: vec![source],
                 maven: BTreeSet::new(),
+                keep: keep_rules::KeepRules::default(),
             },
             &module_dir,
             AndroidDependencyScope::Implementation,
@@ -4700,6 +4781,7 @@ mod permission_audit_tests {
             &AndroidClasspath {
                 kotlin_sources: Vec::new(),
                 maven: BTreeSet::from(["androidx.health.connect:connect-client:1.1.0".to_string()]),
+                keep: keep_rules::KeepRules::default(),
             },
             &module_dir,
             AndroidDependencyScope::Implementation,
@@ -4725,6 +4807,7 @@ mod permission_audit_tests {
             &AndroidClasspath {
                 kotlin_sources: Vec::new(),
                 maven: BTreeSet::new(),
+                keep: keep_rules::KeepRules::default(),
             },
             &module_dir,
             AndroidDependencyScope::Implementation,
@@ -4741,6 +4824,7 @@ mod permission_audit_tests {
             &AndroidClasspath {
                 kotlin_sources: Vec::new(),
                 maven: BTreeSet::new(),
+                keep: keep_rules::KeepRules::default(),
             },
             &module_dir,
             AndroidDependencyScope::Implementation,

@@ -11,8 +11,9 @@ mod effects;
 #[cfg(feature = "gpu")]
 pub mod gpu;
 pub mod gradient;
-#[cfg(feature = "gpu")]
+#[cfg(feature = "image-decode")]
 mod image;
+#[cfg(feature = "input")]
 pub mod input;
 #[cfg(any(feature = "gpu", feature = "cpu"))]
 pub mod offscreen;
@@ -49,15 +50,16 @@ pub use filter_view::{
 #[cfg(feature = "gpu")]
 pub use gpu::{
     CaretQuery, Context, DeviceLoss, ExternalFrameSource, ExternalFrameStream, ExternalFrameView,
-    Frame, FrameHook, FrameOutput, GpuContent, GpuContentHandle, GpuContentView, GpuRuntime,
-    InputHandler, RedrawHandle, SharedGpuContext,
+    Frame, FrameHook, FrameOutput, GpuContent, GpuContentHandle, GpuRuntime, GpuView, InputHandler,
+    RedrawHandle, SharedGpuContext,
 };
 #[cfg(feature = "gpu")]
 pub use gradient::FlowingGradient;
 pub use gradient::{ANIMATED_MESH_PALETTE_LEN, AnimatedMeshGradient, AnimatedMeshGradientConfig};
 pub use gradient::{Gradient, GradientType, MeshGradient};
-#[cfg(feature = "gpu")]
+#[cfg(feature = "image-decode")]
 pub use image::image_decode;
+#[cfg(feature = "input")]
 pub use input::{
     Code, GesturePhase, Key, Modifiers, NamedKey, ScrollPhase, ScrollUnit, SurfaceInputEvent,
     SurfacePointerButton,

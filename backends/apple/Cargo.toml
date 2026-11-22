@@ -18,151 +18,71 @@ workspace = true
 # Component ports are feature-gated so unused ones leave no code or
 # dependency in the artifact; the default is everything ported so far.
 default = [
-    "anchored_overlay",
     "applied_filter",
-    "accessibility_identifier",
-    "accessibility_metadata",
-    "badge",
-    "button",
     "calendar",
     "canvas",
-    "clip_shape",
     "gpu_surface",
     "color_picker",
-    "container",
     "context_menu",
-    "cursor",
     "date_picker",
     "dialog",
-    "draggable",
-    "drop_destination",
-    "dynamic",
-    "dynamic_range",
-    "fixed_container",
-    "focused",
-    "glass_background",
-    "ignore_safe_area",
-    "hittable",
-    "gesture",
-    "image",
-    "layout_priority",
-    "lifecycle_hook",
-    "material_background",
     "menu",
-    "offset",
-    "rotation",
-    "scale",
-    "border",
-    "shadow",
-    "opacity",
     "list",
     "multi_date_picker",
     "navigation",
-    "on_change",
-    "on_event",
-    "on_key_press",
     "picker",
     "picture",
-    "progress",
-    "resolved_color",
-    "resolved_gradient",
-    "resolved_shape",
-    "retain",
-    "scroll",
-    "secure",
     "secure_field",
     "slider",
-    "spacer",
     "stepper",
     "table",
-    "text",
     "text_field",
     "toggle",
     "view_effect",
-    "view_renderer",
-    "env",
 ]
-anchored_overlay = ["transition_sites"]
-accessibility_identifier = []
-applied_filter = ["gpu_surface", "dep:objc2-core-image"]
-accessibility_metadata = []
-badge = []
-border = []
-button = []
+applied_filter = ["gpu_surface", "dep:objc2-core-image", "waterui/effects"]
 calendar = ["waterui/calendar"]
 # The Core Animation realization of `Canvas`.
-canvas = ["dep:block2", "dep:skrifa"]
-clip_shape = []
-gpu_surface = ["dep:block2", "objc2-metal/block2"]
+canvas = ["dep:block2", "dep:skrifa", "waterui-graphics/text", "waterui/canvas"]
+gpu_surface = ["dep:block2", "dep:futures", "objc2-metal/block2", "dep:wgpu-hal", "waterui/gpu", "waterui-graphics/gpu"]
 color_picker = ["waterui/color-picker"]
-container = ["transition_sites"]
 context_menu = ["waterui/menu"]
-cursor = []
 date_picker = ["waterui/date-picker"]
 dialog = ["waterui/dialog", "cocoa-ui/dialog"]
-draggable = []
-drop_destination = []
-dynamic = ["transition_sites"]
-dynamic_range = []
-fixed_container = []
-focused = []
-glass_background = []
-ignore_safe_area = []
-hittable = ["waterui/table"]
-gesture = []
-layout_priority = []
-image = []
-lifecycle_hook = []
-list = ["transition_sites", "waterui/list"]
+list = ["waterui/list"]
 # `cocoa-ui/map` brings `MKMapView`, the `MapKit` framework link and the
 # `CoreLocation` types; an app that never uses the leaf gets none of it.
-map = ["dep:waterui-map", "cocoa-ui/map"]
-material_background = []
+map = ["dep:waterui-map", "cocoa-ui/map", "waterui/map"]
 menu = ["waterui/menu"]
-offset = []
-opacity = []
 multi_date_picker = ["waterui/multi-date-picker"]
-navigation = ["menu", "text", "transition_sites", "waterui/navigation"]
-on_change = []
-on_event = []
-on_key_press = []
+navigation = ["menu", "waterui/navigation"]
 picker = ["waterui/picker"]
 plain = []
-picture = []
-progress = []
-resolved_color = []
-resolved_gradient = []
-resolved_shape = []
-retain = []
-rotation = []
-scale = []
-scroll = []
-secure = []
+picture = ["waterui-graphics/cpu"]
 secure_field = ["waterui/secure-field"]
-shadow = []
 slider = ["waterui/slider"]
-spacer = []
 stepper = ["waterui/stepper"]
-table = []
-text = []
+table = ["list", "waterui/table"]
 text_field = ["waterui/text-field"]
 toggle = ["waterui/toggle"]
-# The structural transition machinery (ghosts, the transition host and
-# its clock) the ports that insert and remove children share; each such
-# port enables it.
-transition_sites = []
-view_effect = ["gpu_surface"]
-view_renderer = []
-webview = ["dep:waterui-webview", "dep:cookie", "cocoa-ui/webview"]
+view_effect = ["gpu_surface", "waterui/effects"]
+webview = ["dep:waterui-webview", "dep:cookie", "cocoa-ui/webview", "waterui/webview"]
+webview-cef = [
+    "gpu_surface",
+    "picture",
+    "dep:waterui-webview",
+    "dep:waterui-browser-cef",
+    "waterui/webview",
+    "waterui-browser-cef?/webview",
+]
 # `media` is the name the `water` CLI's capability mechanism (`waterui-video`
 # in the app's resolved graph) forwards to this crate; it turns on both
 # leaves the media semantic needs.
 media = ["video", "video_player"]
 # `cocoa-ui/avkit` brings the `AVFoundation`/`AVKit` framework links; an app
 # without media compiles and links none of it.
-video = ["dep:waterui-video", "dep:waterkit-audio", "cocoa-ui/avkit"]
-video_player = ["dep:waterui-video", "dep:waterkit-audio", "cocoa-ui/avkit"]
-env = []
+video = ["dep:waterui-video", "dep:waterkit-audio", "cocoa-ui/avkit", "waterui/video"]
+video_player = ["dep:waterui-video", "dep:waterkit-audio", "cocoa-ui/avkit", "waterui/video"]
 
 # The `preview::run` entry `water preview` links — the generated preview
 # package enables it; `water run` never does, so every other Apple app
@@ -175,6 +95,10 @@ preview = ["dep:waterui-preview-protocol"]
 # `__wmeta` record for the packager.
 swiftui = ["dep:waterkit-build", "dep:waterui-meta"]
 
+# Development inspector endpoint and tracing subscriber, enabled by the CLI for
+# development sessions (`water run` / `water preview`).
+inspector = ["waterui/inspector", "dep:tracing-subscriber"]
+
 # Harness-only reach for `Tests/native.rs`: compiles the doc(hidden)
 # `native_test_support` module (private windows + embedding internals),
 # never part of a production build. Forwards cocoa-ui's gate so one
@@ -184,6 +108,7 @@ swiftui = ["dep:waterkit-build", "dep:waterui-meta"]
 # `waterui-webview/conformance` supplying the engine checks it runs.
 native-test = [
     "cocoa-ui/native-test",
+    "inspector",
     "preview",
     "webview",
     "waterui-webview/conformance",
@@ -192,8 +117,13 @@ native-test = [
 
 
 [dependencies]
-waterui = { workspace = true, features = ["inspector", "gpu", "assets", "snackbar", "highlight", "locale-datetime", "locale-list"] }
+waterui = { workspace = true }
+waterui-accessibility = { workspace = true }
+waterui-interaction = { workspace = true }
 waterui-core = { workspace = true }
+waterui-capture = { workspace = true }
+waterui-resources = { workspace = true }
+waterui-structural-transition.workspace = true
 thiserror.workspace = true
 waterui-backend-core = { workspace = true, default-features = true, features = [
     "overlay",
@@ -208,17 +138,15 @@ waterui-meta = { workspace = true, optional = true }
 # The GPU components the backend owns (`gpu_surface`, `view_effect`,
 # `picture`, `resolved_gradient`) are Rust semantic types here, not FFI
 # pointers: `cpu` is what `picture`'s rasteriser needs beyond `gpu`.
-waterui-graphics = { workspace = true, features = [
-    "gpu",
-    "cpu",
-] }
+waterui-graphics = { workspace = true }
 # HAL access to the runtime device for native Metal presentation.
-wgpu-hal = { workspace = true }
+wgpu-hal = { workspace = true, optional = true }
 # `addCompletedHandler` blocks on the submitted Metal command buffer —
 # `gpu_surface`-gated so no-GPU artifacts link neither it nor the metal
 # block2 feature.
 block2 = { workspace = true, optional = true }
-objc2-metal = { version = "0.3", features = [
+objc2-metal = { version = "0.3", default-features = false, features = [
+    "std",
     "MTLCommandBuffer",
     "MTLCommandQueue",
     "MTLDevice",
@@ -244,7 +172,7 @@ async-channel = { workspace = true }
 # `native_test_support`'s readiness gate warms the suite's blocking pool —
 # production code never sees it (native-test only).
 blocking = { workspace = true, optional = true }
-futures = { workspace = true }
+futures = { workspace = true, optional = true }
 native-executor = { workspace = true }
 kurbo = { workspace = true }
 # Reads a variable font's `fvar` and `avar` so a glyph run's normalized
@@ -254,13 +182,14 @@ skrifa = { workspace = true, optional = true }
 dispatch2 = "0.3"
 libc = "0.2"
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
+tracing-subscriber = { workspace = true, optional = true }
 tracing-panic = { workspace = true }
 
 objc2 = { workspace = true }
 objc2-foundation = { version = "0.3", default-features = false, features = [
     "NSAttributedString",
     "NSDate",
+    "NSKeyValueCoding",
     "NSValue",
 ] }
 objc2-core-foundation = { version = "0.3", default-features = false, features = [
@@ -293,6 +222,7 @@ waterkit-build = { workspace = true, default-features = false, optional = true }
 # macOS-only, gated by `applied_filter` so no-filter artifacts link none
 # of it.
 [target.'cfg(target_os = "macos")'.dependencies]
+waterui-browser-cef = { workspace = true, optional = true }
 objc2-core-image = { version = "0.3", default-features = false, features = [
     "CIContext",
     "CIFilter",
@@ -306,12 +236,14 @@ objc2-core-image = { version = "0.3", default-features = false, features = [
 [dev-dependencies]
 block2 = { workspace = true }
 divan = "0.1"
+futures = { workspace = true }
 pollster = { workspace = true }
 libtest-mimic = "0.8"
 serde_json = { workspace = true }
-# The preview suite renders an `ImageAsset`, which sits behind `media` on
-# the facade — the crate's own `waterui` edge does not enable it.
-waterui = { workspace = true, features = ["media"] }
+# The preview suite renders an `ImageAsset`, which sits behind `assets` + `media`
+# on the facade, and the native suite tests `NativeBackend::offscreen` behind
+# `capture` — the crate's own `waterui` edge enables none of them.
+waterui = { workspace = true, features = ["assets", "capture", "media"] }
 # The termination tests park the hook futures on an `async-task` executor.
 executor-core = { workspace = true, features = ["async-task"] }
 # The webview trials drive the shared conformance cases; the crate's own
@@ -337,6 +269,7 @@ waterui-preview-protocol = { workspace = true, optional = true }
 # `NSWorkspace` — the feature lands on cocoa-ui's same-version
 # `objc2-app-kit` edge, so `cocoa_ui::objc2_app_kit` sees it.
 [target.'cfg(target_os = "macos")'.dev-dependencies]
+waterui-testing = { workspace = true, default-features = false, features = ["cpu"] }
 objc2-core-graphics = { version = "0.3", default-features = false, features = [
     "std",
     "CGEvent",

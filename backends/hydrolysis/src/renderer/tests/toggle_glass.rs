@@ -27,9 +27,9 @@ use waterui::animation::Animation;
 use waterui::graphics::Color;
 use waterui_controls::toggle::toggle;
 use waterui_core::handler::AnyViewBuilder;
-use waterui_core::interaction::InteractionState;
 use waterui_core::layout::LayoutDirection;
 use waterui_core::{AnyView, Environment};
+use waterui_interaction::interaction::InteractionState;
 
 use super::chrome_primitives::tree_work;
 use super::{ChromePlan, MinimalTestTheme, pumped_test_environment};

@@ -29,7 +29,7 @@
 mod accessibility;
 #[cfg(hydrolysis_gpu_painter)]
 mod gpu;
-mod host;
+pub(crate) mod host;
 #[cfg(hydrolysis_hwui_gpu)]
 pub(crate) mod hosted_gpu;
 #[cfg(hydrolysis_hwui)]
@@ -48,9 +48,14 @@ pub(crate) mod video_plane;
 use std::rc::Rc;
 use std::sync::OnceLock;
 
+use super::window::RootWindows;
 use tracing::level_filters::LevelFilter;
 use tracing_log::AsLog;
-use waterui::app::App;
+#[cfg(feature = "menu")]
+use waterui::app::DeclaredMenuBar;
+#[cfg(not(feature = "menu"))]
+use waterui::app::NoMenuBar;
+use waterui::app::{App, AppMenuBar, AppParts, Windows};
 use waterui_core::contract_violation;
 
 pub use preview::register_preview;
@@ -69,7 +74,19 @@ pub(super) type AndroidTextEngine = crate::text::ParleyEngine;
 /// A factory is a plain `Fn()` — the app cdylib registers it once at
 /// `JNI_OnLoad`, and every `nativeCreateSession` calls it again so a
 /// recreated activity gets a fresh `App`, not a reused tree.
-type AppFactory = Box<dyn Fn() -> (App, Rc<dyn crate::Style>) + Send + Sync>;
+type AppFactory = Box<dyn Fn() -> InstantiatedApp + Send + Sync>;
+
+#[cfg(feature = "menu")]
+pub(super) type AndroidMenuBar = Option<DeclaredMenuBar>;
+#[cfg(not(feature = "menu"))]
+pub(super) type AndroidMenuBar = NoMenuBar;
+
+/// One application the factory instantiated: its parts, with the windows
+/// already collected into the roots this host holds, and its style.
+pub(crate) type InstantiatedApp = (
+    AppParts<RootWindows<AndroidTextEngine>, AndroidMenuBar>,
+    Rc<dyn crate::Style>,
+);
 
 static APP_FACTORY: OnceLock<AppFactory> = OnceLock::new();
 
@@ -80,8 +97,19 @@ static APP_FACTORY: OnceLock<AppFactory> = OnceLock::new();
 /// Calling it a second time breaks the contract: the factory is a singleton,
 /// so a debug build panics and a release build logs the violation and keeps
 /// the first factory.
-pub fn register_app(factory: impl Fn() -> (App, Rc<dyn crate::Style>) + Send + Sync + 'static) {
-    let factory: AppFactory = Box::new(factory);
+pub fn register_app<W: Windows, M: AppMenuBar>(
+    factory: impl Fn() -> (App<W, M>, Rc<dyn crate::Style>) + Send + Sync + 'static,
+) {
+    let factory: AppFactory = Box::new(move || {
+        let (app, style) = factory();
+        let parts = app.into_parts().map_windows(RootWindows::collect);
+        #[cfg(feature = "menu")]
+        let parts =
+            parts.map_menu_bar(|menu_bar| menu_bar.into_declared().map(DeclaredMenuBar::new));
+        #[cfg(not(feature = "menu"))]
+        let parts = parts.map_menu_bar(|_| NoMenuBar);
+        (parts, style)
+    });
     // `register_app` may run on a non-UI JNI thread; the factory moves to
     // the UI thread on the first create.
     if APP_FACTORY.set(factory).is_err() {
@@ -175,13 +203,14 @@ fn android_log(message: &[u8]) {
     }
 }
 
-/// The registered factory's next `(App, Style)` pair — the entry point the
+/// The registered factory's next application, taken apart with its windows
+/// in the form this host holds them, and its style — the entry point the
 /// session-create path calls on the UI thread.
 ///
 /// `None` after a [`contract_violation!`] when no app was registered: the
 /// app cdylib must call `hydrolysis::android::register_app` from
 /// `JNI_OnLoad`.
-pub(crate) fn instantiate_app() -> Option<(App, Rc<dyn crate::Style>)> {
+pub(crate) fn instantiate_app() -> Option<InstantiatedApp> {
     let Some(factory) = APP_FACTORY.get() else {
         contract_violation!(
             "hydrolysis android: no app registered — the app cdylib must call \

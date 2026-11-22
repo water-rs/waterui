@@ -8,7 +8,7 @@
 //! ## Native vs self-rendered playback
 //!
 //! The same SDR and HDR10 sources exercise either the platform-native player or
-//! `WaterUI`'s self-rendered pipeline (`GpuContentView` + `waterkit-codec`), depending
+//! `WaterUI`'s self-rendered pipeline (`GpuView` + `waterkit-codec`), depending
 //! on the selected backend/runtime policy.
 
 use std::cell::RefCell;
@@ -16,7 +16,7 @@ use std::fmt;
 use std::rc::Rc;
 
 use waterui::ContentLedger;
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::color::Srgb;
 use waterui::prelude::grid::{grid as layout_grid, row as grid_row};
 use waterui::prelude::*;
@@ -247,7 +247,7 @@ fn player_shell<V: View>(
     let source_grid = playlist.map(|(controller, ids)| {
         layout_grid(
             3,
-            [
+            (
                 grid_row((
                     pill_button(SAMPLES[0].title, 0, ids[0], selected, &controller),
                     pill_button(SAMPLES[1].title, 1, ids[1], selected, &controller),
@@ -257,7 +257,7 @@ fn player_shell<V: View>(
                     pill_button(SAMPLES[3].title, 3, ids[3], selected, &controller),
                     pill_button(SAMPLES[4].title, 4, ids[4], selected, &controller),
                 )),
-            ],
+            ),
         )
         .spacing(12.0)
     });
@@ -283,7 +283,7 @@ fn pill_button(
     item_id: MediaItemId,
     selected: &Computed<usize>,
     controller: &PlayerController,
-) -> impl View {
+) -> impl View + use<> {
     let is_selected = selected.clone().equal_to(index);
     let controller = controller.clone();
     let selected_bg_opacity = is_selected.select(1.0, 0.0);
@@ -301,6 +301,6 @@ fn pill_button(
 }
 
 /// Builds the video player example app.
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     App::new(demo, env)
 }

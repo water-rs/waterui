@@ -5,7 +5,7 @@ use crate::theme::{ModalInteraction, NavigationMotion};
 use std::collections::BTreeSet;
 use waterui::navigation::{
     AnyNavigationTransition, NavigationDestinationState, NavigationTransactionId,
-    NavigationTransitionDirection,
+    NavigationTransitionDirection, ResolvedNavigationView,
 };
 use waterui_core::contract_violation;
 use waterui_core::id::Id;
@@ -61,11 +61,11 @@ pub struct NavigationPageRecord<E: crate::text::TextEngine> {
 /// built, before anything can walk it.
 pub struct StackPage<E: crate::text::TextEngine> {
     content: RetainedSubview<E>,
-    transition: Option<waterui_core::transition::TransitionSpec>,
+    transition: Option<waterui_structural_transition::TransitionSpec>,
 }
 
 impl<E: crate::text::TextEngine> StackPage<E> {
-    pub(crate) const fn new(view: AnyView) -> Self {
+    pub(crate) fn new(view: impl View) -> Self {
         Self {
             content: RetainedSubview::new(view),
             transition: None,
@@ -87,7 +87,9 @@ impl<E: crate::text::TextEngine> StackPage<E> {
 
     /// The transition the page's root declares — its insertion on a push and
     /// its removal on a pop. Read after [`Self::ensure_built`].
-    pub(crate) const fn transition(&self) -> Option<&waterui_core::transition::TransitionSpec> {
+    pub(crate) const fn transition(
+        &self,
+    ) -> Option<&waterui_structural_transition::TransitionSpec> {
         self.transition.as_ref()
     }
 
@@ -131,7 +133,7 @@ pub struct HydroNavigationEntry<E: crate::text::TextEngine> {
 }
 
 impl<E: crate::text::TextEngine> HydroNavigationEntry<E> {
-    fn new(identity: u64, view: NavigationView) -> Self {
+    fn new(identity: u64, view: ResolvedNavigationView<HeldChild<E>>) -> Self {
         let NavigationView {
             bar,
             content,
@@ -140,7 +142,7 @@ impl<E: crate::text::TextEngine> HydroNavigationEntry<E> {
         } = view;
         Self {
             identity,
-            content: StackPage::new(AnyView::new(NavigationView {
+            content: StackPage::new(waterui_core::Native::new(NavigationView {
                 bar,
                 content,
                 state: NavigationDestinationState::default(),
@@ -245,13 +247,13 @@ pub struct PageTransition<E: crate::text::TextEngine> {
 impl<E: crate::text::TextEngine> PageTransition<E> {
     pub(crate) fn start(
         identity: u64,
-        spec: &waterui_core::transition::TransitionSpec,
+        spec: &waterui_structural_transition::TransitionSpec,
         navigation: NavigationTransitionDirection,
         env: &Environment,
         now: Instant,
     ) -> Self {
         let reduce_motion = env
-            .get::<waterui_core::transition::ReduceMotion>()
+            .get::<waterui_structural_transition::ReduceMotion>()
             .is_some_and(|flag| flag.0);
         let run = match navigation {
             NavigationTransitionDirection::Push => {
@@ -342,7 +344,7 @@ impl<E: crate::text::TextEngine> PageMotion<E> for InteractivePageTransition<E> 
     ) -> crate::renderer::TransitionPaint<'a, E> {
         self.removal.paint(
             self.progress,
-            waterui_core::transition::TransitionGeometry::new(size, self.direction),
+            waterui_structural_transition::TransitionGeometry::new(size, self.direction),
             hit,
             owner,
         )
@@ -509,14 +511,14 @@ impl<E: crate::text::TextEngine> NavigationInteractivePop<E> {
     /// stack style (layout-spec.md §4.5), as it does on a programmatic pop.
     pub(crate) fn page_motion(
         &mut self,
-        spec: &waterui_core::transition::TransitionSpec,
+        spec: &waterui_structural_transition::TransitionSpec,
         env: &Environment,
         now: Instant,
     ) -> Rc<RefCell<InteractivePageTransition<E>>> {
         let identity = self.from_page.identity;
         let page = self.page.get_or_insert_with(|| {
             let reduce_motion = env
-                .get::<waterui_core::transition::ReduceMotion>()
+                .get::<waterui_structural_transition::ReduceMotion>()
                 .is_some_and(|flag| flag.0);
             Rc::new(RefCell::new(InteractivePageTransition {
                 identity,
@@ -668,7 +670,9 @@ fn eased_progress(progress: f64, motion: NavigationMotion) -> f64 {
 }
 
 impl<E: crate::text::TextEngine> CustomNavigationController for HydroNavigationController<E> {
-    fn apply(&mut self, transaction: NavigationTransaction) {
+    type Slot = HeldChild<E>;
+
+    fn apply(&mut self, transaction: NavigationTransaction<HeldChild<E>>) {
         let NavigationTransaction {
             id: transaction_id,
             retained_prefix,

@@ -25,7 +25,7 @@ use std::rc::Rc;
 use block2::RcBlock;
 use futures::channel::oneshot;
 use nami::Signal;
-use objc2::rc::Retained;
+use objc2::rc::{Retained, Weak};
 use objc2::runtime::{AnyObject, NSObjectProtocol, ProtocolObject};
 use objc2::{AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_foundation::{
@@ -45,15 +45,15 @@ use objc2_web_kit::{
     WKURLSchemeHandler, WKURLSchemeTask, WKUserContentController, WKUserScript,
     WKUserScriptInjectionTime, WKWebView, WKWebViewConfiguration,
 };
-use waterui_core::{Computed, Environment, Str, contract_violation};
-use waterui_webview::{
-    ASSET_ORIGIN, ASSET_SCHEME, AnsweredNavigations, AssetResponse, AssetServer, BackendEvent,
-    Cookie, CustomWebViewController, DocumentScripts, NavigationPolicy, NavigationRequest,
-    OriginPolicy, ScriptInjectionTime, Url, UserScript, WatcherGuard, WatcherSet, WebViewConfig,
-    WebViewController, WebViewError, WebViewEvent, WebViewHandle, WebViewOpenError,
+use waterui::webview::{
+    ASSET_ORIGIN, ASSET_SCHEME, AssetResponse, AssetServer, BackendEvent, Cookie, DocumentScripts,
+    NavigationPolicy, NavigationRequest, OriginPolicy, ScriptInjectionTime, Url, UserScript,
+    WatcherGuard, WatcherSet, WebViewConfig, WebViewController, WebViewError, WebViewEvent,
+    WebViewHandle, WebViewOpenError,
     assets::{asset_target, dispatch},
     bridge,
 };
+use waterui_core::{Computed, Str, contract_violation};
 
 /// The reply channel `WebKit` hands a `WKScriptMessageHandlerWithReply`
 /// callback.
@@ -126,7 +126,7 @@ impl Drop for ScriptReply {
     }
 }
 
-type JavaScriptHandler = Rc<waterui_webview::ScriptMessageHandler>;
+type JavaScriptHandler = Rc<waterui::webview::ScriptMessageHandler>;
 
 #[path = "macos_hosted.rs"]
 mod hosted;
@@ -155,6 +155,38 @@ const TRANSPORT_ERROR_CODES: [NSInteger; 6] = [
     NSURLErrorDNSLookupFailed,
     NSURLErrorNotConnectedToInternet,
 ];
+
+/// The `WKNavigation`s whose policy question is already answered.
+#[derive(Debug, Default)]
+struct AnsweredNavigations {
+    navigations: RefCell<Vec<Weak<WKNavigation>>>,
+}
+
+impl AnsweredNavigations {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn answer(&self, navigation: &WKNavigation) {
+        let mut navigations = self.navigations.borrow_mut();
+        navigations.retain(|weak| weak.load().is_some());
+        navigations.push(Weak::new(navigation));
+    }
+
+    fn is_answered(&self, navigation: Option<&WKNavigation>) -> bool {
+        let Some(navigation) = navigation else {
+            return false;
+        };
+        let mut answered = false;
+        self.navigations.borrow_mut().retain(|weak| {
+            weak.load().is_some_and(|live| {
+                answered |= std::ptr::eq(Retained::as_ptr(&live), navigation);
+                true
+            })
+        });
+        answered
+    }
+}
 
 struct SharedState {
     watchers: WatcherSet<BackendEvent>,
@@ -740,7 +772,7 @@ fn install_user_scripts(controller: &WKUserContentController, shared: &SharedSta
     );
     add_user_script(
         controller,
-        waterui_webview::DOCUMENT_START_SCRIPT,
+        waterui::webview::DOCUMENT_START_SCRIPT,
         ScriptInjectionTime::DocumentStart,
     );
     for script in shared.scripts.borrow().iter() {
@@ -751,7 +783,7 @@ fn install_user_scripts(controller: &WKUserContentController, shared: &SharedSta
 /// The string an evaluation produced.
 ///
 /// Both evaluation paths run scripts that encode their answer in the page —
-/// the raw path through `waterui_webview::raw_evaluation`, the awaited one
+/// the raw path through `waterui::webview::raw_evaluation`, the awaited one
 /// through the shared wrapper's envelope — so `WebKit` hands back a string,
 /// returned as it is. Anything else, `nil` for `undefined` included, means the
 /// script broke that contract and is reported rather than re-encoded here.
@@ -1128,7 +1160,7 @@ impl MacSystemWebViewHandle {
             // expiry unset; one whose interval names no representable date
             // fails the whole query rather than silently dropping the expiry.
             let seconds = expires.timeIntervalSince1970();
-            builder = builder.expires(waterui_webview::cookie_expiry(&name, seconds)?);
+            builder = builder.expires(waterui::webview::cookie_expiry(&name, seconds)?);
         }
         Ok(builder.build())
     }
@@ -1170,7 +1202,7 @@ impl WebViewHandle for MacSystemWebViewHandle {
         self.rebuild_user_scripts();
     }
 
-    fn add_handler(&self, name: &str, handler: Box<waterui_webview::ScriptMessageHandler>) {
+    fn add_handler(&self, name: &str, handler: Box<waterui::webview::ScriptMessageHandler>) {
         if name.is_empty() {
             contract_violation!(
                 "Hydrolysis WKWebView handler name must not be empty; the handler is not registered"
@@ -1319,7 +1351,7 @@ impl WebViewHandle for MacSystemWebViewHandle {
         // the module safety note.
         unsafe {
             self.inner.web_view.evaluateJavaScript_completionHandler(
-                &NSString::from_str(&waterui_webview::raw_evaluation(script)),
+                &NSString::from_str(&waterui::webview::raw_evaluation(script)),
                 Some(&completion),
             );
         }
@@ -1406,13 +1438,14 @@ impl MacSystemWebViewHandle {
 ///
 /// Public so the real-engine test suite can drive the exact handle
 /// [`Self::open`] hands the renderer — a genuine `WKWebView`, not a double —
-/// through the shared `WebViewHandle` contract. Applications never need it:
-/// the backend installs it as the default controller on macOS.
-#[derive(Debug, Clone, Copy)]
+/// through the shared `WebViewHandle` contract.
+#[derive(Debug, Clone, Copy, Default)]
 pub struct MacSystemWebViewController;
 
-impl CustomWebViewController for MacSystemWebViewController {
-    fn open(&self, config: WebViewConfig) -> Result<impl WebViewHandle, WebViewOpenError> {
+impl WebViewController for MacSystemWebViewController {
+    type Handle = MacSystemWebViewHandle;
+
+    fn open(&self, config: WebViewConfig) -> Result<Self::Handle, WebViewOpenError> {
         MacSystemWebViewHandle::new(config)
     }
 
@@ -1423,15 +1456,4 @@ impl CustomWebViewController for MacSystemWebViewController {
                 .expect("the bundled asset origin is a fixed constant"),
         )
     }
-}
-
-pub fn install(env: &mut Environment) {
-    // The backend supplies the *default* controller, so an application or test
-    // that installed its own keeps it. This used to assert instead, which turned
-    // a deliberate `WebViewController` in the environment into a crash; the WPE
-    // path had the mirror-image bug and silently overwrote one.
-    if env.get::<WebViewController>().is_some() {
-        return;
-    }
-    env.insert(WebViewController::new(MacSystemWebViewController));
 }

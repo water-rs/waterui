@@ -589,7 +589,7 @@ pub fn reactivity_block_17() {
         id: u64,
         subject: Str,
     }
-    fn message_row(m: Message) -> ListItem {
+    fn message_row(m: Message) -> ListItem<impl View> {
         ListItem::new(text(m.subject))
     }
     let messages = Binding::container(Vec::<Message>::new());
@@ -711,8 +711,8 @@ pub fn reactivity_block_20() -> impl View {
     let mode = Binding::container(ChartMode::Bar);
 
     Dynamic::watch(mode.clone(), |mode| match mode {
-        ChartMode::Bar => AnyView::new(bar_chart()),
-        ChartMode::Line => AnyView::new(line_chart()),
+        ChartMode::Bar => OneOf2::A(bar_chart()),
+        ChartMode::Line => OneOf2::B(line_chart()),
     })
 }
 
@@ -743,24 +743,21 @@ pub fn reactivity_block_21() -> impl View {
     let url = Binding::container(Str::from("https://waterui.dev/logo.png"));
     let blur = Binding::f64(0.0);
 
-    let (handler, slot) = Dynamic::new();
+    let (handler, slot) = Dynamic::<Photo>::new();
 
     button("Load")
         .action(
-            |State(url): State<Binding<Str>>,
-             State(blur): State<Binding<f64>>,
-             h: DynamicHandler| {
+            |State(url): State<Binding<Str>>, h: DynamicHandler<Photo>| {
                 let Ok(parsed) = url.snapshot().as_str().parse::<Url>() else {
                     return;
                 };
-                h.set(Photo::new(parsed).blur(blur.clone()));
+                h.set(Photo::new(parsed));
             },
         )
         .state(&url)
-        .state(&blur)
         .state(&handler);
 
-    vstack((slot, ())) // [ellipsis filled]
+    vstack((slot.blur(blur.clone()), ())) // [ellipsis filled]
 }
 
 // ---------------------------------------------------------------------------

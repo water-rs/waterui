@@ -9,9 +9,9 @@ use super::*;
 
 fn measure_row(env: &Environment, proposal: ProposalSize) -> f32 {
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
-    let view = normalize_layout_view(AnyView::new(text("Row")), env);
-    measure_view_dimensions_with_proposal(&view, proposal, &mut state, env, &theme)
+    let view = AnyView::new(text("Row"));
+    Realized::with_theme(view, env, &theme)
+        .measure(proposal)
         .size
         .width
 }

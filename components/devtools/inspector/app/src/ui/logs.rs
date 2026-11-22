@@ -74,7 +74,7 @@ fn visible_rows(
         .computed()
 }
 
-fn level_picker(minimum: &Binding<LogLevel>) -> impl View {
+fn level_picker(minimum: &Binding<LogLevel>) -> impl View + use<> {
     let levels = [
         LogLevel::Trace,
         LogLevel::Debug,
@@ -92,13 +92,12 @@ fn level_picker(minimum: &Binding<LogLevel>) -> impl View {
                 .action(move |State(minimum): State<Binding<LogLevel>>| minimum.set(level))
                 .state(minimum)
                 .opacity(selected.select(1.0, 0.5))
-                .anyview()
         })
         .collect::<HStack<_>>()
         .spacing(4.0)
 }
 
-fn row_view(row: LogRow) -> ListItem {
+fn row_view(row: LogRow) -> ListItem<impl View> {
     let (_, level, target, message, origin) = row.into_parts();
     ListItem::new(
         hstack((

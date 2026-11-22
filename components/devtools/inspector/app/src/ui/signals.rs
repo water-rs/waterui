@@ -69,7 +69,7 @@ pub fn view(model: Model) -> impl View {
 }
 
 /// Graph-wide figures, which are what you look at before any single node.
-fn totals(model: &Model) -> impl View {
+fn totals(model: &Model) -> impl View + use<> {
     let signals = model.signals.clone();
 
     hstack((
@@ -105,7 +105,7 @@ fn totals(model: &Model) -> impl View {
 }
 
 /// One node: what it holds, where it came from, and how hard it is working.
-fn row_view(row: SignalRow) -> ListItem {
+fn row_view(row: SignalRow) -> ListItem<impl View> {
     let (_, type_name, origin, subscribers, notifications, dropped) = row.into_parts();
     ListItem::new(
         hstack((

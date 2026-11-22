@@ -38,6 +38,7 @@ use waterui::navigation::{NavigationLink, NavigationStack, NavigationView};
 use waterui::text::text;
 use waterui::widget::{Accordion, Avatar, Card};
 use waterui::{AnyView, Str, ViewExt as _};
+use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::SelfId;
 use waterui_core::layout::{Alignment, HorizontalAlignment, VerticalAlignment};
 use waterui_core::views::ForEach;
@@ -1080,16 +1081,24 @@ fn ts_tabs_is_a_tabs() {
             let pairs = vec![
                 (
                     Str::from("inbox"),
-                    Tab::new(label("Inbox"), || {
-                        NavigationView::new("All messages", text("Messages"))
-                    }),
+                    Tab::new(
+                        label("Inbox"),
+                        AnyViewBuilder::new(|| {
+                            NavigationView::new("All messages", AnyView::new(text("Messages")))
+                        }),
+                    ),
                 ),
                 (
                     Str::from("sent"),
-                    Tab::new(label("Sent"), || NavigationView::new("", text("Sent mail"))),
+                    Tab::new(
+                        label("Sent"),
+                        AnyViewBuilder::new(|| {
+                            NavigationView::new("", AnyView::new(text("Sent mail")))
+                        }),
+                    ),
                 ),
             ];
-            let tabs: std::collections::BTreeMap<Str, Tab> = pairs.iter().cloned().collect();
+            let tabs: std::collections::BTreeMap<Str, Tab<_>> = pairs.iter().cloned().collect();
             let ids = pairs
                 .into_iter()
                 .map(|(value, _)| SelfId::new(value))

@@ -27,7 +27,7 @@ use kurbo::{Affine, Point, Rect, Vec2};
 use nami::{Computed, Signal};
 use waterui_core::Environment;
 use waterui_core::animation::{Animation, ChangeAnimation};
-use waterui_core::interaction::InteractionState;
+use waterui_interaction::interaction::InteractionState;
 
 use crate::renderer::interaction_layers::MAX_PRESS_WAVES;
 use crate::renderer::recording::{LoweredResources, SceneResources};
@@ -35,7 +35,8 @@ use crate::renderer::{HydrolysisRenderer, RenderContext};
 use crate::theme::live::Operand;
 use crate::theme::{
     Change, Chrome, Corners, CustomPart, Driven, Elevation, Fill, FocusIndicator, Inputs,
-    InteractionMotion, LayerRotation, LiveDriven, Motion, RealizedCustom, Retarget, Ripple, Wash,
+    InteractionMotion, LayerRotation, LiveDriven, Motion, RealizedCustom, Retarget, Ripple,
+    Surface, Wash,
 };
 use waterui_graphics::color::Color;
 
@@ -439,6 +440,117 @@ enum FillOperands {
     Backdrop(Operand<MaterialEffect>),
 }
 
+/// A [`Surface`]'s live operands: its silhouette, fill, border and
+/// elevation, which a chrome retargets and a surface drawn at rest
+/// ([`record_surface_at_rest`]) records once.
+struct SurfaceOperands {
+    shape: Operand<ShapeData>,
+    fill: FillOperands,
+    border: Option<BorderOperands>,
+    /// The key and ambient shadows; `None` when the surface never elevates.
+    elevation: Option<(Operand<Shadow>, Operand<Shadow>)>,
+}
+
+impl SurfaceOperands {
+    /// The operands of `surface` at `inputs`, over the `silhouette` of
+    /// `corners`. `elevates` says whether the surface ever casts a shadow.
+    fn new(
+        surface: &Surface,
+        inputs: &Inputs<'_, ()>,
+        silhouette: Rect,
+        corners: Corners,
+        elevates: bool,
+    ) -> Self {
+        let shape = surface.shape();
+        let border = surface.get_border().map(|border| {
+            let resolved = border.target(inputs);
+            BorderOperands {
+                shape: Operand::new(shape.outset(silhouette, corners, -resolved.width / 2.0)),
+                stroke: Operand::new(Stroke::new(resolved.width)),
+                paint: Operand::new(resolved.paint),
+            }
+        });
+        let elevation = elevates.then(|| {
+            let resolved = surface.get_elevation().target(inputs);
+            (Operand::new(resolved.key), Operand::new(resolved.ambient))
+        });
+        let fill = match surface.fill() {
+            Fill::Paint(paint) => FillOperands::Paint(Operand::new(paint.target(inputs))),
+            Fill::Backdrop(backdrop) => {
+                FillOperands::Backdrop(Operand::new(backdrop.effect().target(inputs)))
+            }
+        };
+        Self {
+            shape: Operand::new(shape.shape(silhouette, corners)),
+            fill,
+            border,
+            elevation,
+        }
+    }
+
+    /// Records what lies beneath a backdrop material: the elevation's
+    /// shadows, and a paint fill with its border.
+    fn record_below(&self, recorder: &mut Recorder) {
+        if let Some((key, ambient)) = &self.elevation {
+            recorder.shadow(self.shape.live(), ambient.live());
+            recorder.shadow(self.shape.live(), key.live());
+        }
+        if let FillOperands::Paint(paint) = &self.fill {
+            recorder.fill(self.shape.live(), paint.live());
+            self.record_border(recorder);
+        }
+    }
+
+    fn record_border(&self, recorder: &mut Recorder) {
+        if let Some(border) = &self.border {
+            recorder.stroke(
+                border.shape.live(),
+                border.stroke.live(),
+                border.paint.live(),
+            );
+        }
+    }
+
+    /// Records the backdrop material of `surface`'s fill; nothing for a
+    /// paint fill.
+    fn record_backdrop(&self, recorder: &mut Recorder, surface: &Surface) {
+        if let (FillOperands::Backdrop(effect), Fill::Backdrop(backdrop)) =
+            (&self.fill, surface.fill())
+        {
+            recorder.backdrop_material(
+                self.shape.live(),
+                backdrop.shader(),
+                backdrop.capture(),
+                effect.live(),
+            );
+        }
+    }
+
+    /// Records the whole surface: what lies beneath, the backdrop material
+    /// and the border over it.
+    fn record(&self, recorder: &mut Recorder, surface: &Surface) {
+        self.record_below(recorder);
+        if matches!(self.fill, FillOperands::Backdrop(_)) {
+            self.record_backdrop(recorder, surface);
+            self.record_border(recorder);
+        }
+    }
+}
+
+/// Records `surface` at rest over `frame`: its elevation, fill and border,
+/// as a chrome records the surface of a widget at rest.
+///
+/// A [`Fill::Backdrop`] surface declares its material as a chrome's does,
+/// which only a recording opened with
+/// [`Content::record_layered`](cherenkov_record::Content::record_layered)
+/// takes.
+pub fn record_surface_at_rest(surface: &Surface, recorder: &mut Recorder, frame: Rect) {
+    let inputs = Inputs::at_rest(frame, InteractionState::empty(), &());
+    let corners = surface.shape().corners().target(&inputs);
+    let elevates = !surface.get_elevation().target(&inputs).is_none();
+    SurfaceOperands::new(surface, &inputs, frame, corners, elevates).record(recorder, surface);
+}
+
 /// What moved the chrome's inputs, deciding each operand's animation.
 #[derive(Clone, Copy)]
 enum Retargeting<'a> {
@@ -470,11 +582,7 @@ pub struct LiveChrome {
     /// `None` for a chrome whose owner reports its state itself.
     report: Option<nami::Binding<InteractionState>>,
     layer_color: Computed<WorkingColor>,
-    shape: Operand<ShapeData>,
-    fill: FillOperands,
-    border: Option<BorderOperands>,
-    /// The key and ambient shadows; `None` when the surface never elevates.
-    elevation: Option<(Operand<Shadow>, Operand<Shadow>)>,
+    surface: SurfaceOperands,
     tint: Operand<Paint>,
     waves: Option<(Ripple, [WaveOperands; MAX_PRESS_WAVES])>,
     wash: Option<WashOperands>,
@@ -833,14 +941,6 @@ impl LiveChrome {
         let surface = spec.surface();
         let (silhouette, corners) = Self::silhouette_of(&spec, &inputs);
         let shape = surface.shape();
-        let border = surface.get_border().map(|border| {
-            let resolved = border.target(&inputs);
-            BorderOperands {
-                shape: Operand::new(shape.outset(silhouette, corners, -resolved.width / 2.0)),
-                stroke: Operand::new(Stroke::new(resolved.width)),
-                paint: Operand::new(resolved.paint),
-            }
-        });
         let elevation = surface.get_elevation();
         let elevates = elevation.follows_signal()
             || every_state().any(|state| {
@@ -848,16 +948,7 @@ impl LiveChrome {
                     .target(&Inputs::at_rest(frame, state, &()))
                     .is_none()
             });
-        let elevation = elevates.then(|| {
-            let resolved = elevation.target(&inputs);
-            (Operand::new(resolved.key), Operand::new(resolved.ambient))
-        });
-        let fill = match surface.fill() {
-            Fill::Paint(paint) => FillOperands::Paint(Operand::new(paint.target(&inputs))),
-            Fill::Backdrop(backdrop) => {
-                FillOperands::Backdrop(Operand::new(backdrop.effect().target(&inputs)))
-            }
-        };
+        let operands = SurfaceOperands::new(surface, &inputs, silhouette, corners, elevates);
         let layer = spec.state_layer();
         let layer_color = layer.color.resolve(env);
         let color = layer_color.snapshot();
@@ -897,10 +988,7 @@ impl LiveChrome {
             .map(|custom| custom.realize(&inputs))
             .collect();
         Self {
-            shape: Operand::new(shape.shape(silhouette, corners)),
-            fill,
-            border,
-            elevation,
+            surface: operands,
             tint: Operand::new(with_alpha(color, layer.opacity(state, spec.press()))),
             waves,
             wash,
@@ -1072,7 +1160,7 @@ impl LiveChrome {
     /// The surface's live silhouette now.
     #[cfg(test)]
     pub(crate) fn shape(&self) -> ShapeData {
-        nami::Signal::snapshot(&self.shape)
+        nami::Signal::snapshot(&self.surface.shape)
     }
 
     /// Moves the chrome to the widget's `bounds`: the silhouette and every
@@ -1143,13 +1231,14 @@ impl LiveChrome {
         let shape = surface.shape();
         let (silhouette, corners) = Self::silhouette_of(&self.spec, &inputs);
         let shape_animation = self.driven_animation(shape.corners(), retargeting);
-        self.shape
+        self.surface
+            .shape
             .set(shape.shape(silhouette, corners), shape_animation);
         self.content_scale.set(
             Self::scale_about(self.frame.get(), Self::scale_of(&self.spec, state)),
             self.animation(None, retargeting),
         );
-        match (&self.fill, surface.fill()) {
+        match (&self.surface.fill, surface.fill()) {
             (FillOperands::Paint(operand), Fill::Paint(paint)) => {
                 operand.set(
                     paint.target(&inputs),
@@ -1164,7 +1253,7 @@ impl LiveChrome {
             }
             _ => unreachable!("a live chrome's fill operands follow its surface's fill"),
         }
-        if let (Some(operands), Some(border)) = (&self.border, surface.get_border()) {
+        if let (Some(operands), Some(border)) = (&self.surface.border, surface.get_border()) {
             let resolved = border.target(&inputs);
             let animation = self.driven_animation(border, retargeting);
             operands.shape.set(
@@ -1174,7 +1263,7 @@ impl LiveChrome {
             operands.stroke.set(Stroke::new(resolved.width), animation);
             operands.paint.set(resolved.paint, animation);
         }
-        if let Some((key, ambient)) = &self.elevation {
+        if let Some((key, ambient)) = &self.surface.elevation {
             let elevation = surface.get_elevation();
             let animation = self.driven_animation(elevation, retargeting);
             let Elevation {
@@ -1521,38 +1610,17 @@ impl LiveChrome {
         self.content_scale.live()
     }
 
-    fn record_below(&self, recorder: &mut Recorder) {
-        if let Some((key, ambient)) = &self.elevation {
-            recorder.shadow(self.shape.live(), ambient.live());
-            recorder.shadow(self.shape.live(), key.live());
-        }
-        if let FillOperands::Paint(paint) = &self.fill {
-            recorder.fill(self.shape.live(), paint.live());
-            self.record_border(recorder);
-        }
-    }
-
-    fn record_border(&self, recorder: &mut Recorder) {
-        if let Some(border) = &self.border {
-            recorder.stroke(
-                border.shape.live(),
-                border.stroke.live(),
-                border.paint.live(),
-            );
-        }
-    }
-
     fn record_above(&self, recorder: &mut Recorder) {
-        recorder.fill(self.shape.live(), self.tint.live());
+        recorder.fill(self.surface.shape.live(), self.tint.live());
         if self.waves.is_some() || self.wash.is_some() {
-            recorder.clip(self.shape.live(), |recorder| {
+            recorder.clip(self.surface.shape.live(), |recorder| {
                 if let Some((_, waves)) = &self.waves {
                     for wave in waves {
                         recorder.fill(wave.shape.live(), wave.paint.live());
                     }
                 }
                 if let Some(wash) = &self.wash {
-                    recorder.fill(self.shape.live(), wash.paint.live());
+                    recorder.fill(self.surface.shape.live(), wash.paint.live());
                 }
             });
         }
@@ -1649,20 +1717,7 @@ impl LiveChrome {
     pub(crate) fn layer_steps(chrome: &Rc<Self>) -> impl Iterator<Item = PartStep> {
         let surface = PartStep::content({
             let chrome = Rc::clone(chrome);
-            move |recorder| {
-                chrome.record_below(recorder);
-                if let (FillOperands::Backdrop(effect), Fill::Backdrop(backdrop)) =
-                    (&chrome.fill, chrome.spec.surface().fill())
-                {
-                    recorder.backdrop_material(
-                        chrome.shape.live(),
-                        backdrop.shader(),
-                        backdrop.capture(),
-                        effect.live(),
-                    );
-                    chrome.record_border(recorder);
-                }
-            }
+            move |recorder| chrome.surface.record(recorder, chrome.spec.surface())
         });
         let above = PartStep::content({
             let chrome = Rc::clone(chrome);
@@ -1757,8 +1812,8 @@ impl LiveSource for ChromeSource {
         #[cfg(test)]
         self.chrome.recordings.set(self.chrome.recordings.get() + 1);
         match self.half {
-            Half::Below => self.chrome.record_below(recorder),
-            Half::Edge => self.chrome.record_border(recorder),
+            Half::Below => self.chrome.surface.record_below(recorder),
+            Half::Edge => self.chrome.surface.record_border(recorder),
             Half::Above => self.chrome.record_above(recorder),
         }
         None
@@ -1797,8 +1852,9 @@ impl LiveChromeParts {
                 half,
             })
         };
-        let edge = (matches!(chrome.fill, FillOperands::Backdrop(_)) && chrome.border.is_some())
-            .then(|| source(Half::Edge));
+        let edge = (matches!(chrome.surface.fill, FillOperands::Backdrop(_))
+            && chrome.surface.border.is_some())
+        .then(|| source(Half::Edge));
         Self {
             below: source(Half::Below),
             edge,
@@ -1885,16 +1941,11 @@ impl LiveChromeParts {
     ) {
         renderer.push_live(ctx, &self.below);
         let chrome = &self.chrome;
-        if let (FillOperands::Backdrop(effect), Fill::Backdrop(backdrop)) =
-            (&chrome.fill, chrome.spec.surface().fill())
-        {
+        if matches!(chrome.surface.fill, FillOperands::Backdrop(_)) {
             renderer.draw_context(ctx, |recorder| {
-                recorder.backdrop_material(
-                    chrome.shape.live(),
-                    backdrop.shader(),
-                    backdrop.capture(),
-                    effect.live(),
-                );
+                chrome
+                    .surface
+                    .record_backdrop(recorder, chrome.spec.surface());
             });
         }
         if let Some(edge) = &self.edge {

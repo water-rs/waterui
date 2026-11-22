@@ -35,7 +35,7 @@ use waterui_graphics::input::{
     Code, GesturePhase, Key, Modifiers as W3cModifiers, NamedKey, ScrollPhase, ScrollUnit,
     SurfaceInputEvent, SurfacePointerButton,
 };
-use waterui_graphics::{GpuContent, GpuContentView};
+use waterui_graphics::{GpuContent, GpuView};
 use waterui_layout::scroll::scroll;
 use waterui_layout::stack::{vstack, zstack};
 
@@ -95,8 +95,8 @@ impl GpuContent for SilentProbe {
 
 /// The input-receiving probe as a view: the `on_input` handler is what makes
 /// the surface take focus and see events; the caret query places IME panels.
-fn probe_view(log: ProbeLog, caret: Option<kurbo::Rect>) -> GpuContentView {
-    GpuContentView::new(InputProbe)
+fn probe_view(log: ProbeLog, caret: Option<kurbo::Rect>) -> GpuView<InputProbe> {
+    GpuView::new(InputProbe)
         .on_input(move |event| log.0.borrow_mut().push(event.clone()))
         .on_ime_caret(move || caret)
 }
@@ -621,7 +621,7 @@ fn the_focused_surface_places_the_input_method_panel() {
 #[test]
 fn a_view_that_does_not_want_input_receives_none() {
     let log = ProbeLog::default();
-    let mut runtime = runtime_with(GpuContentView::new(SilentProbe));
+    let mut runtime = runtime_with(GpuView::new(SilentProbe));
     let start = Instant::now();
     settled(&mut runtime, start);
     let _ = log.drain();
@@ -787,7 +787,7 @@ impl ExternalFrameSource for OutputProbe {
 }
 
 /// An `ExternalFrameView` with an input handler is an embedded input surface
-/// exactly like a `GpuContentView`: a press focuses it and lands in its own
+/// exactly like a `GpuView`: a press focuses it and lands in its own
 /// logical coordinates, the keyboard reaches it on later frames, it places
 /// the input-method panel at its caret, its frame hook runs on every pass,
 /// and its source learns the pixel extent the layer presents at.

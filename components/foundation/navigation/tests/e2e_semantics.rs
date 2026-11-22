@@ -7,7 +7,7 @@ use std::time::Duration;
 use waterui::ViewExt as _;
 use waterui::layout::stack::vstack;
 use waterui::text::Text;
-use waterui::{Binding, View};
+use waterui::{Binding, OneOf2, View};
 use waterui_navigation::tab::{Tab, Tabs};
 use waterui_navigation::{
     NavigationLink, NavigationPath, NavigationSplitView, NavigationStack, NavigationView,
@@ -25,14 +25,14 @@ fn tabs_view() -> impl View {
 
     Tabs::new(
         &selection,
-        vec![
+        (
             Tab::new("Home Tab", || {
                 NavigationView::new("Home", Text::new("home content"))
             }),
             Tab::new("Settings Tab", || {
                 NavigationView::new("Settings", Text::new("settings content"))
             }),
-        ],
+        ),
     )
 }
 
@@ -60,9 +60,12 @@ fn path_stack_nested_value_link_view_with_path(path: NavigationPath<TestRoute>) 
     .destination(|route| match route {
         TestRoute::First => NavigationView::new(
             "First",
-            vstack((NavigationLink::value("Open Second", TestRoute::Second),)),
+            OneOf2::A(vstack((NavigationLink::value(
+                "Open Second",
+                TestRoute::Second,
+            ),))),
         ),
-        TestRoute::Second => NavigationView::new("Second", Text::new("second content")),
+        TestRoute::Second => NavigationView::new("Second", OneOf2::B(Text::new("second content"))),
     })
 }
 
@@ -84,14 +87,14 @@ fn mixed_link_view_with_path(path: NavigationPath<TestRoute>) -> impl View {
     .destination(|route| match route {
         TestRoute::First => NavigationView::new(
             "First",
-            vstack((
+            OneOf2::A(vstack((
                 Text::new("first content"),
                 NavigationLink::new("Open Nested Builder", || {
                     NavigationView::new("Nested Builder", Text::new("nested builder content"))
                 }),
-            )),
+            ))),
         ),
-        TestRoute::Second => NavigationView::new("Second", Text::new("second content")),
+        TestRoute::Second => NavigationView::new("Second", OneOf2::B(Text::new("second content"))),
     })
     .transition(waterui_navigation::navigation_transition::none())
 }
@@ -204,7 +207,7 @@ fn tabs_with_stacks_view() -> impl View {
 
     Tabs::new(
         &selection,
-        vec![
+        (
             Tab::new("Home Tab", || {
                 NavigationView::new(
                     "Home",
@@ -227,7 +230,7 @@ fn tabs_with_stacks_view() -> impl View {
                 )
                 .navigation_bar_visibility(false)
             }),
-        ],
+        ),
     )
 }
 

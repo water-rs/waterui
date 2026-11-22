@@ -9,7 +9,7 @@ pub struct HydroState<E: crate::text::TextEngine> {
     /// with worker-thread layout measurement via `Arc`. See [`TextService`].
     pub(crate) text: Arc<TextService<E>>,
     pub(crate) text_scenes: crate::text::TextScenes,
-    pub(crate) measurement: MeasurementCaches<E>,
+    pub(crate) measurement: MeasurementCaches,
     /// Per-frame work counters for the fine-grained frame model; see
     /// [`crate::renderer::FrameWorkCounters`].
     pub(crate) counters: FrameWorkCounters,

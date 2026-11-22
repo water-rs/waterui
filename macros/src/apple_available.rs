@@ -7,12 +7,12 @@ use syn::{LitFloat, LitInt, parse::Parser as _};
 
 const USAGE: &str = "`apple_available!` takes one `<major>.<minor>` version, such as `27.0`";
 
-/// The path to `waterui-apple-os`, which the expansion names.
-fn apple_os_path(span: Span) -> syn::Result<TokenStream> {
-    match crate_name("waterui-apple-os") {
-        // `waterui-apple-os` declares `extern crate self as waterui_apple_os`,
+/// The path to `apple-availability`, which the expansion names.
+fn apple_availability_path(span: Span) -> syn::Result<TokenStream> {
+    match crate_name("apple-availability") {
+        // `apple-availability` declares `extern crate self as apple_availability`,
         // so its own tests and doctests name it the way a dependent does.
-        Ok(FoundCrate::Itself) => Ok(quote_spanned!(span=> ::waterui_apple_os)),
+        Ok(FoundCrate::Itself) => Ok(quote_spanned!(span=> ::apple_availability)),
         Ok(FoundCrate::Name(name)) => {
             let ident = syn::Ident::new(&name, span);
             Ok(quote_spanned!(span=> ::#ident))
@@ -20,7 +20,7 @@ fn apple_os_path(span: Span) -> syn::Result<TokenStream> {
         Err(error) => Err(syn::Error::new(
             span,
             format!(
-                "`apple_available!` requires the `waterui-apple-os` crate as a dependency: {error}"
+                "`apple_available!` requires the `apple-availability` crate as a dependency: {error}"
             ),
         )),
     }
@@ -58,7 +58,7 @@ pub fn expand(input: TokenStream) -> TokenStream {
         Ok(version) => version,
         Err(error) => return error.into_compile_error(),
     };
-    let os = match apple_os_path(span) {
+    let os = match apple_availability_path(span) {
         Ok(path) => path,
         Err(error) => return error.into_compile_error(),
     };

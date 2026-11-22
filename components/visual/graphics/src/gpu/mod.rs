@@ -87,7 +87,7 @@ type Shared<T> = Rc<T>;
 ///
 /// The backend supplies it in [`Context`]; requesting a redraw while a frame
 /// is already scheduled is a no-op. It wakes the same view instance only: a
-/// [`GpuContentView`] that a parent rebuild tears down takes its content with
+/// [`GpuView`] that a parent rebuild tears down takes its content with
 /// it, and a later request through its handle redraws nothing.
 #[derive(Clone)]
 pub struct RedrawHandle(Arc<dyn Fn() + Send + Sync>);
@@ -314,10 +314,36 @@ pub trait GpuContent: Send + 'static {
     /// - `Some(false)`: prefer an SDR target.
     /// - `None` — the default — means follow the host's surrounding policy.
     ///
-    /// The view's own [`prefer_hdr_surface`](GpuContentView::prefer_hdr_surface)
+    /// The view's own [`prefer_hdr_surface`](GpuView::prefer_hdr_surface)
     /// overrides this answer.
     fn preferred_surface_hdr(&self) -> Option<bool> {
         None
+    }
+}
+
+impl GpuContent for Box<dyn GpuContent> {
+    fn setup(&mut self, gpu: &Context<'_>) {
+        (**self).setup(gpu);
+    }
+
+    fn render(&mut self, frame: &mut Frame<'_>) {
+        (**self).render(frame);
+    }
+
+    fn is_opaque(&self) -> bool {
+        (**self).is_opaque()
+    }
+
+    fn intrinsic_size(&self) -> Option<Size> {
+        (**self).intrinsic_size()
+    }
+
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+        (**self).measure(proposal)
+    }
+
+    fn preferred_surface_hdr(&self) -> Option<bool> {
+        (**self).preferred_surface_hdr()
     }
 }
 
@@ -332,7 +358,7 @@ fn measure_by_intrinsic_size(intrinsic: Option<Size>, proposal: ProposalSize) ->
     }))
 }
 
-/// A UI-side handler for input the backend routes to a [`GpuContentView`]
+/// A UI-side handler for input the backend routes to a [`GpuView`]
 /// or an [`ExternalFrameView`].
 pub type InputHandler = Rc<dyn Fn(&SurfaceInputEvent)>;
 
@@ -349,7 +375,7 @@ pub type CaretQuery = Rc<dyn Fn() -> Option<kurbo::Rect>>;
 
 /// The UI-thread hooks a GPU-backed view carries for its host: input
 /// routing, the per-frame pump and the caret query, shared by
-/// [`GpuContentView`] and [`ExternalFrameView`].
+/// [`GpuView`] and [`ExternalFrameView`].
 #[derive(Default)]
 struct SurfaceHooks {
     input: Option<InputHandler>,
@@ -393,8 +419,8 @@ impl SurfaceHooks {
 ///
 /// Stretches on both axes unless the content reports an intrinsic size, in
 /// which case it is that size and does not stretch.
-pub struct GpuContentView {
-    content: Option<Box<dyn GpuContent>>,
+pub struct GpuView<T: GpuContent> {
+    content: Option<T>,
     content_handle: Option<GpuContentHandle>,
     intrinsic_size: Option<Size>,
     opaque: bool,
@@ -404,9 +430,10 @@ pub struct GpuContentView {
     value: Option<String>,
 }
 
-impl fmt::Debug for GpuContentView {
+impl<T: GpuContent> fmt::Debug for GpuView<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("GpuContentView")
+        f.debug_struct("GpuView")
+            .field("content", &core::any::type_name::<T>())
             .field("intrinsic_size", &self.intrinsic_size)
             .field("opaque", &self.opaque)
             .field("label", &self.label)
@@ -414,19 +441,36 @@ impl fmt::Debug for GpuContentView {
     }
 }
 
-impl GpuContentView {
+impl<T: GpuContent> GpuView<T> {
     /// A view drawing `content`.
     #[must_use]
-    pub fn new(content: impl GpuContent) -> Self {
+    pub fn new(content: T) -> Self {
         Self {
             intrinsic_size: content.intrinsic_size(),
             opaque: content.is_opaque(),
-            content: Some(Box::new(content)),
+            content: Some(content),
             content_handle: None,
             surface_prefers_hdr: None,
             hooks: SurfaceHooks::default(),
             label: None,
             value: None,
+        }
+    }
+
+    /// Type-erases the content into a boxed trait object for backends whose
+    /// retained node or render-thread host stores a single non-generic type.
+    #[must_use]
+    pub fn into_boxed(self) -> GpuView<Box<dyn GpuContent>> {
+        let content = self.content.map(box_content);
+        GpuView {
+            content,
+            content_handle: self.content_handle,
+            intrinsic_size: self.intrinsic_size,
+            opaque: self.opaque,
+            surface_prefers_hdr: self.surface_prefers_hdr,
+            hooks: self.hooks,
+            label: self.label,
+            value: self.value,
         }
     }
 
@@ -497,7 +541,7 @@ impl GpuContentView {
     /// Measures this view's content against a layout proposal.
     ///
     /// Unlike [`intrinsic_size`](Self::intrinsic_size) — the snapshot taken at
-    /// [`GpuContentView::new`] — this asks the live content, so a source whose
+    /// [`GpuView::new`] — this asks the live content, so a source whose
     /// size resolves asynchronously reports it once it has one.
     #[must_use]
     pub fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
@@ -550,7 +594,7 @@ impl GpuContentView {
                 .or_else(|| {
                     self.content
                         .as_ref()
-                        .and_then(|content| content.preferred_surface_hdr())
+                        .and_then(GpuContent::preferred_surface_hdr)
                 })
         })
     }
@@ -608,12 +652,24 @@ impl GpuContentView {
     }
 }
 
+/// Moves `content` into `Box<dyn GpuContent>` without double-boxing when
+/// `T` is already `Box<dyn GpuContent>`.
+fn box_content<T: GpuContent>(content: T) -> Box<dyn GpuContent> {
+    match waterui_core::backend::cast::<T, Box<dyn GpuContent>>(content) {
+        Ok(already_boxed) => already_boxed,
+        Err(content) => Box::new(content),
+    }
+}
+
 /// The content in `slot`, or [`Vacant`] when it was already taken.
-fn take_once(slot: &mut Option<Box<dyn GpuContent>>) -> Box<dyn GpuContent> {
-    slot.take().unwrap_or_else(|| {
-        contract_violation!("GpuContentView content installed twice; the layer draws nothing");
-        Box::new(Vacant)
-    })
+fn take_once<T: GpuContent>(slot: &mut Option<T>) -> Box<dyn GpuContent> {
+    slot.take().map_or_else(
+        || {
+            contract_violation!("GpuView content installed twice; the layer draws nothing");
+            Box::new(Vacant)
+        },
+        box_content,
+    )
 }
 
 /// Content that draws nothing: what a view's second installation gets.
@@ -625,7 +681,7 @@ impl GpuContent for Vacant {
     fn render(&mut self, _frame: &mut Frame<'_>) {}
 }
 
-impl NativeView for GpuContentView {
+impl<T: GpuContent> NativeView for GpuView<T> {
     fn stretch_axis(&self) -> StretchAxis {
         if self.intrinsic_size.is_some() {
             StretchAxis::None
@@ -635,13 +691,9 @@ impl NativeView for GpuContentView {
     }
 }
 
-impl View for GpuContentView {
+impl<T: GpuContent> View for GpuView<T> {
     fn body(self, _env: &Environment) -> impl View {
-        Native::new(self)
-    }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        NativeView::stretch_axis(self)
+        Native::new(self.into_boxed())
     }
 }
 
@@ -746,10 +798,10 @@ mod tests {
     #[test]
     #[cfg_attr(
         debug_assertions,
-        should_panic(expected = "GpuContentView content installed twice")
+        should_panic(expected = "GpuView content installed twice")
     )]
     fn content_taken_twice_draws_nothing() {
-        let mut view = GpuContentView::new(Sized);
+        let mut view = GpuView::new(Sized);
         assert!(view.take_content().intrinsic_size().is_some());
         assert!(view.take_content().intrinsic_size().is_none());
     }
@@ -757,12 +809,35 @@ mod tests {
     #[test]
     #[cfg_attr(
         debug_assertions,
-        should_panic(expected = "GpuContentView content installed twice")
+        should_panic(expected = "GpuView content installed twice")
     )]
     fn an_engine_handle_after_taking_the_content_draws_nothing() {
-        let mut view = GpuContentView::new(Sized);
+        let mut view = GpuView::new(Sized);
         let _ = view.take_content();
         let handle = view.engine_content();
         assert!(handle.lock().intrinsic_size().is_none());
+    }
+
+    #[test]
+    fn typed_gpu_view_measures_statically_and_preserves_state_when_boxed() {
+        let view: GpuView<Sized> = GpuView::new(Sized).labeled("Chart");
+        assert_eq!(
+            view.measure(ProposalSize::UNSPECIFIED).size,
+            Size::new(4.0, 4.0)
+        );
+        assert_eq!(NativeView::stretch_axis(&view), StretchAxis::None);
+
+        let boxed: GpuView<Box<dyn GpuContent>> = view.into_boxed();
+        assert_eq!(boxed.accessibility_label(), Some("Chart"));
+        assert_eq!(
+            boxed.measure(ProposalSize::UNSPECIFIED).size,
+            Size::new(4.0, 4.0)
+        );
+        // Converting an already-boxed `GpuView` keeps the existing inner box.
+        let reboxed = boxed.into_boxed();
+        assert_eq!(
+            reboxed.measure(ProposalSize::UNSPECIFIED).size,
+            Size::new(4.0, 4.0)
+        );
     }
 }

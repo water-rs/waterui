@@ -9,10 +9,9 @@ use std::time::{Duration, Instant};
 use accesskit::{Action, ActionRequest, Role, TreeId};
 use waterui_core::AnyView;
 use waterui_core::handler::AnyViewBuilder;
-use waterui_core::interaction::InteractionState;
-use waterui_core::views::{SharedAnyViews, ViewSnapshot as _, Views as _};
+use waterui_interaction::interaction::InteractionState;
 use waterui_layout::stack::vstack;
-use waterui_navigation::tab::{Tab, TabsLayout};
+use waterui_navigation::tab::{Tab, Tabs};
 use waterui_navigation::{NavigationLink, NavigationStack, NavigationView};
 use waterui_text::text;
 
@@ -171,21 +170,14 @@ fn the_back_button_shows_interaction_feedback() {
 }
 
 fn two_tabs() -> AnyView {
-    let tabs = SharedAnyViews::new(
-        (1..=2)
-            .map(|i| {
-                Tab::new(format!("Tab {i}"), move || {
-                    NavigationView::new(format!("Pane {i}"), text("pane"))
-                })
+    let tabs = (1..=2)
+        .map(|i| {
+            Tab::new(format!("Tab {i}"), move || {
+                NavigationView::new(format!("Pane {i}"), text("pane"))
             })
-            .collect::<Vec<_>>(),
-    );
-    let selection = nami::Binding::container(
-        tabs.snapshot()
-            .get_id(0)
-            .expect("a non-empty tab set reports an id"),
-    );
-    AnyView::new(TabsLayout::new(selection, tabs))
+        })
+        .collect::<Vec<_>>();
+    AnyView::new(Tabs::new(&nami::Binding::container(0usize), tabs))
 }
 
 /// Selecting a tab moves the container's operands to the new item and

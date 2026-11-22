@@ -21,6 +21,10 @@ crate-type = ["dylib", "rlib"]
 waterui-internal.workspace = true
 
 [features]
+form = ["waterui-internal/form"]
+link = ["waterui-internal/link"]
+avatar = ["waterui-internal/avatar"]
+cpu-time = ["waterui-internal/cpu-time"]
 list = ["waterui-internal/list"]
 table = ["waterui-internal/table"]
 navigation = ["waterui-internal/navigation"]
@@ -38,6 +42,9 @@ text-field = ["waterui-internal/text-field"]
 toggle = ["waterui-internal/toggle"]
 validation = ["waterui-internal/validation"]
 default = [
+    "avatar",
+    "cpu-time",
+    "link",
     "list",
     "table",
     "navigation",
@@ -54,9 +61,9 @@ default = [
     "text-field",
     "toggle",
     "validation",
+    "canvas",
     "gpu",
     "assets",
-    "webview",
     "snackbar",
     "dialog",
     "highlight",
@@ -70,12 +77,14 @@ highlight = ["waterui-internal/highlight"]
 locale-datetime = ["waterui-internal/locale-datetime"]
 locale-list = ["waterui-internal/locale-list"]
 inspector = ["waterui-internal/inspector"]
+inspector-signals = ["inspector", "waterui-internal/inspector-signals"]
 assets = ["waterui-internal/assets"]
 media = ["waterui-internal/media"]
 video = ["waterui-internal/video"]
 remote = ["waterui-internal/remote"]
 video-gpu = ["waterui-internal/video-gpu"]
 webview = ["waterui-internal/webview"]
+map = ["waterui-internal/map"]
 widgets = ["waterui-internal/widgets"]
 ts = ["waterui-internal/ts"]
 ts-ota = ["ts", "waterui-internal/ts-ota"]
@@ -85,11 +94,16 @@ dialog = ["waterui-internal/dialog"]
 flow-markdown = ["waterui-internal/flow-markdown"]
 markdown-math = ["waterui-internal/markdown-math"]
 std = ["waterui-internal/std"]
+erased-dispatch = ["waterui-internal/erased-dispatch"]
+capture = ["waterui-internal/capture"]
 canvas = ["waterui-internal/canvas"]
 chart = ["waterui-internal/chart"]
 barcode = ["waterui-internal/barcode"]
 particle = ["waterui-internal/particle"]
 all = [
+    "avatar",
+    "cpu-time",
+    "link",
     "list",
     "table",
     "navigation",

@@ -9,6 +9,9 @@
 //!
 //! These extensions help create a fluent API for constructing user interfaces.
 
+use crate::fullscreen::FullScreenOverlayHost;
+#[cfg(feature = "snackbar")]
+use crate::snackbar::SnackbarHost;
 use executor_core::spawn_local;
 use nami::{Binding, Computed, Signal, SignalExt as _, signal::IntoComputed};
 use waterui_core::IntoSignalF32;
@@ -16,7 +19,7 @@ use waterui_core::IntoSignalF32;
 use waterui_core::handler::ReportExtraction;
 pub use waterui_core::view::*;
 use waterui_core::{
-    AnyView, Environment, IgnorableMetadata, Retain,
+    Environment, Metadata, OneOf2, Retain,
     env::{Installed, With},
     extract::State,
     handler::{EventHandler, Handler, HandlerOnce},
@@ -34,6 +37,8 @@ use waterui_graphics::color::Color;
 pub use waterui_graphics::filter_view::FilterViewExt;
 
 use suiteki::Str;
+#[cfg(feature = "capture")]
+use waterui_capture::{CaptureHandle, CaptureScope};
 use waterui_layout::{
     AspectRatio, ContentMode, HorizontalAlignmentGuide, IgnoreSafeArea, LayoutPriority, Overlay,
     VerticalAlignmentGuide,
@@ -56,7 +61,7 @@ use crate::{
     filter::Opacity,
     gesture::{Gesture, GestureObserver, LongPressGesture, TapGesture},
     interaction::Hittable,
-    metadata::secure::Secure,
+    metadata::secure::{HighDynamicRange, Secure, StandardDynamicRange},
     theme,
 };
 use crate::{
@@ -68,11 +73,14 @@ use crate::{
 };
 #[cfg(feature = "std")]
 use waterkit_haptic::{Haptic, Intensity};
-use waterui_core::Metadata;
-use waterui_core::event::{Event, LifeCycle, LifeCycleHook, OnChange, OnEvent};
+use waterui_controls::button::{ButtonStyleHook, IntoButtonStyle};
+#[cfg(feature = "toggle")]
+use waterui_controls::toggle::{IntoToggleStyle, ToggleStyleHook};
 use waterui_core::id::TaggedView;
-use waterui_core::interaction::{Disabled, InteractionReport, InteractionState, Selected};
-use waterui_core::key::{KeyHandling, OnKeyPress};
+use waterui_interaction::event::{Event, LifeCycle, LifeCycleHook, OnChange, OnEvent};
+use waterui_interaction::interaction::{Disabled, InteractionReport, InteractionState, Selected};
+use waterui_interaction::key::{KeyHandling, OnKeyPress};
+use waterui_structural_transition::{Transition, Transitioned};
 
 /// Plays an impact haptic. `Haptic::impact` is async; the event that
 /// triggers it does not wait for it.
@@ -99,14 +107,14 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `metadata` - The metadata to attach
-    fn metadata<T: MetadataKey>(self, metadata: T) -> Metadata<T> {
+    fn metadata<T: MetadataKey>(self, metadata: T) -> Metadata<T, Self> {
         Metadata::new(self, metadata)
     }
 
     /// Selects the [`ColorSpace`](crate::metadata::secure::ColorSpace) for this subtree.
     ///
-    /// Friendly wrapper over the underlying [`StandardDynamicRange`](crate::metadata::secure::StandardDynamicRange) /
-    /// [`HighDynamicRange`](crate::metadata::secure::HighDynamicRange) metadata. Prefer this over
+    /// Friendly wrapper over the underlying [`StandardDynamicRange`] /
+    /// [`HighDynamicRange`] metadata. Prefer this over
     /// `metadata(HighDynamicRange::new())` for new code.
     ///
     /// # Examples
@@ -118,12 +126,25 @@ pub trait ViewExt: View + Sized {
     /// let wide_gamut = text!("Sunset").color_space(ColorSpace::Hdr);
     /// let thumbnail = text!("Avatar").color_space(ColorSpace::Sdr);
     /// ```
-    fn color_space(self, space: crate::metadata::secure::ColorSpace) -> AnyView {
-        use crate::metadata::secure::{ColorSpace, HighDynamicRange, StandardDynamicRange};
+    fn color_space(
+        self,
+        space: crate::metadata::secure::ColorSpace,
+    ) -> OneOf2<Metadata<StandardDynamicRange, Self>, Metadata<HighDynamicRange, Self>> {
+        use crate::metadata::secure::ColorSpace;
         match space {
-            ColorSpace::Sdr => AnyView::new(self.metadata(StandardDynamicRange::new())),
-            ColorSpace::Hdr => AnyView::new(self.metadata(HighDynamicRange::new())),
+            ColorSpace::Sdr => OneOf2::A(self.metadata(StandardDynamicRange::new())),
+            ColorSpace::Hdr => OneOf2::B(self.metadata(HighDynamicRange::new())),
         }
+    }
+
+    /// Animates structural insertion and removal of this view.
+    ///
+    /// Value updates do not trigger a transition. Applied to a `Dynamic`, this
+    /// decorates its replacing content; applied to a collection item, it follows
+    /// that item's membership. Removal immediately ends semantic membership,
+    /// while the backend retains a non-interactive visual and a fixed-size slot.
+    fn transition(self, transition: impl Transition) -> Transitioned<Self> {
+        Transitioned::new(self, transition)
     }
 
     /// Adjusts the opacity (transparency) of this view.
@@ -135,7 +156,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `amount` - The opacity value (0.0 = transparent, 1.0 = opaque). Can be reactive.
-    fn opacity(self, amount: impl IntoSignalF32) -> Metadata<Opacity> {
+    fn opacity(self, amount: impl IntoSignalF32) -> Metadata<Opacity, Self> {
         Metadata::new(self, Opacity::new(amount))
     }
 
@@ -159,7 +180,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `priority` - Higher keeps more space; ties share the shortfall.
-    fn layout_priority(self, priority: i32) -> Metadata<LayoutPriority> {
+    fn layout_priority(self, priority: i32) -> Metadata<LayoutPriority, Self> {
         Metadata::new(self, LayoutPriority::new(priority))
     }
 
@@ -192,12 +213,54 @@ pub trait ViewExt: View + Sized {
         With::new(self, value)
     }
 
+    /// Offers every native payload in this view to `hooks` before the
+    /// backend realizes it: the realization a subtree chooses for a
+    /// component, such as a browser engine for `WebView`.
+    ///
+    /// `hooks` is one [`Hook`](hook::Hook) or a tuple of them; an inner
+    /// scope is offered a payload before an outer one.
+    fn hooks<H: hook::HookList>(self, hooks: H) -> hook::Hooks<Self, H> {
+        hook::Hooks::new(self, hooks)
+    }
+
+    /// Styles all [`Button`](crate::component::button::Button) views in this subtree
+    /// that did not specify an explicit `.style(...)`.
+    ///
+    /// Accepts a built-in [`ButtonStyle`](crate::component::ButtonStyle), a
+    /// [`CustomButtonStyle`](crate::component::CustomButtonStyle), or a
+    /// [`PrimitiveButtonStyle`](crate::component::PrimitiveButtonStyle).
+    fn button_style<S, Marker>(
+        self,
+        style: S,
+    ) -> hook::Hooks<Self, ButtonStyleHook<<S as IntoButtonStyle<Marker>>::Style>>
+    where
+        S: IntoButtonStyle<Marker>,
+    {
+        hook::Hooks::new(self, ButtonStyleHook::new(style.into_button_style()))
+    }
+
+    /// Styles all [`Toggle`](crate::component::toggle::Toggle) views in this subtree
+    /// that did not specify an explicit `.style(...)`.
+    ///
+    /// Accepts a built-in [`ToggleStyle`](crate::component::ToggleStyle) or a
+    /// [`CustomToggleStyle`](crate::component::CustomToggleStyle).
+    #[cfg(feature = "toggle")]
+    fn toggle_style<S, Marker>(
+        self,
+        style: S,
+    ) -> hook::Hooks<Self, ToggleStyleHook<<S as IntoToggleStyle<Marker>>::Style>>
+    where
+        S: IntoToggleStyle<Marker>,
+    {
+        hook::Hooks::new(self, ToggleStyleHook::new(style.into_toggle_style()))
+    }
+
     /// Sets this view as the content of a navigation view with the specified title.
     ///
     /// # Arguments
     /// * `title` - The semantic title for the navigation view
     #[cfg(feature = "navigation")]
-    fn title(self, title: impl crate::text::IntoText) -> NavigationView {
+    fn title(self, title: impl crate::text::IntoText) -> NavigationView<Self> {
         NavigationView::new(title, self)
     }
 
@@ -210,7 +273,7 @@ pub trait ViewExt: View + Sized {
         self,
         value: &Binding<Option<T>>,
         equals: T,
-    ) -> Metadata<Focused> {
+    ) -> Metadata<Focused, Self> {
         Metadata::new(self, Focused::new(value, equals))
     }
 
@@ -240,13 +303,13 @@ pub trait ViewExt: View + Sized {
     ///     })
     ///     .state(&last_seen);
     /// ```
-    fn on_change<C, H, A>(self, source: &C, handler: H) -> Metadata<OnChange>
+    fn on_change<C, H, A>(self, source: &C, handler: H) -> OnChange<Self>
     where
         C: Signal,
         C::Output: PartialEq + Clone,
         H: EventHandler<C::Output, A>,
     {
-        Metadata::new(self, OnChange::new(source, handler))
+        OnChange::new(self, source, handler)
     }
 
     /// Spawns an asynchronous task tied to the lifecycle of this view.
@@ -255,17 +318,12 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `task` - The asynchronous task to run
-    fn task<Fut>(self, task: Fut) -> Metadata<Retain>
+    fn task<Fut>(self, task: Fut) -> Metadata<Retain, Self>
     where
         Fut: std::future::Future<Output = ()> + 'static,
     {
         let local_task = spawn_local(task);
         self.retain(local_task)
-    }
-
-    /// Converts this view to an `AnyView` type-erased container.
-    fn anyview(self) -> AnyView {
-        AnyView::new(self)
     }
 
     /// Sets the background of this view.
@@ -315,8 +373,8 @@ pub trait ViewExt: View + Sized {
     /// ))
     /// .material_group();
     /// ```
-    fn material_group(self) -> IgnorableMetadata<crate::background::MaterialGroup> {
-        IgnorableMetadata::new(AnyView::new(self), crate::background::MaterialGroup)
+    fn material_group(self) -> Metadata<crate::background::MaterialGroup, Self> {
+        Metadata::new(self, crate::background::MaterialGroup)
     }
 
     /// Sets the foreground color for this view and all its descendants.
@@ -409,7 +467,7 @@ pub trait ViewExt: View + Sized {
     /// # Arguments
     /// * `lifecycle` - The lifecycle event to listen for
     /// * `handler` - The action to execute when the event occurs (called once)
-    fn lifecycle<H, Args>(self, lifecycle: LifeCycle, handler: H) -> Metadata<LifeCycleHook>
+    fn lifecycle<H, Args>(self, lifecycle: LifeCycle, handler: H) -> Metadata<LifeCycleHook, Self>
     where
         H: HandlerOnce<Args, ()>,
     {
@@ -424,7 +482,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `handler` - The action to execute when the view disappears
-    fn on_disappear<H, Args>(self, handler: H) -> Metadata<LifeCycleHook>
+    fn on_disappear<H, Args>(self, handler: H) -> Metadata<LifeCycleHook, Self>
     where
         H: HandlerOnce<Args, ()>,
     {
@@ -454,7 +512,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `handler` - The action to execute when the view appears
-    fn on_appear<H, Args>(self, handler: H) -> Metadata<LifeCycleHook>
+    fn on_appear<H, Args>(self, handler: H) -> Metadata<LifeCycleHook, Self>
     where
         H: HandlerOnce<Args, ()>,
     {
@@ -468,7 +526,7 @@ pub trait ViewExt: View + Sized {
     /// # Arguments
     /// * `event` - The event to listen for
     /// * `handler` - The action to execute when the event occurs (can be called multiple times)
-    fn event<H, Args>(self, event: Event, handler: H) -> Metadata<OnEvent>
+    fn event<H, Args>(self, event: Event, handler: H) -> Metadata<OnEvent, Self>
     where
         H: Handler<Args, ()>,
     {
@@ -482,7 +540,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `handler` - The action to execute when hover starts
-    fn on_hover_enter<H, Args>(self, handler: H) -> Metadata<OnEvent>
+    fn on_hover_enter<H, Args>(self, handler: H) -> Metadata<OnEvent, Self>
     where
         H: Handler<Args, ()>,
     {
@@ -496,7 +554,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `handler` - The action to execute when hover ends
-    fn on_hover_exit<H, Args>(self, handler: H) -> Metadata<OnEvent>
+    fn on_hover_exit<H, Args>(self, handler: H) -> Metadata<OnEvent, Self>
     where
         H: Handler<Args, ()>,
     {
@@ -529,7 +587,7 @@ pub trait ViewExt: View + Sized {
     ///     },
     /// ).state(&open);
     /// ```
-    fn on_key_press<H, Args>(self, handler: H) -> Metadata<OnKeyPress>
+    fn on_key_press<H, Args>(self, handler: H) -> Metadata<OnKeyPress, Self>
     where
         H: Handler<Args, KeyHandling>,
     {
@@ -558,7 +616,7 @@ pub trait ViewExt: View + Sized {
     fn cursor(
         self,
         style: impl IntoComputed<crate::cursor::CursorStyle>,
-    ) -> Metadata<crate::cursor::Cursor> {
+    ) -> Metadata<crate::cursor::Cursor, Self> {
         Metadata::new(self, crate::cursor::Cursor::new(style))
     }
 
@@ -566,60 +624,57 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `value` - The numeric value to display in the badge
-    fn badge(self, value: impl IntoComputed<i32>) -> Badge
-    where
-        Self: Clone,
-    {
+    fn badge(self, value: impl IntoComputed<i32>) -> Badge<Self> {
         Badge::new(value, self)
     }
 
     /// Fixes this view's width to the provided value.
-    fn width(self, width: f32) -> Frame {
+    fn width(self, width: f32) -> Frame<Self> {
         Frame::new(self).width(width)
     }
 
     /// Fixes this view's height to the provided value.
-    fn height(self, height: f32) -> Frame {
+    fn height(self, height: f32) -> Frame<Self> {
         Frame::new(self).height(height)
     }
 
     /// Applies a minimum width constraint.
-    fn min_width(self, width: f32) -> Frame {
+    fn min_width(self, width: f32) -> Frame<Self> {
         Frame::new(self).min_width(width)
     }
 
     /// Applies a maximum width constraint.
-    fn max_width(self, width: f32) -> Frame {
+    fn max_width(self, width: f32) -> Frame<Self> {
         Frame::new(self).max_width(width)
     }
 
     /// Applies a minimum height constraint.
-    fn min_height(self, height: f32) -> Frame {
+    fn min_height(self, height: f32) -> Frame<Self> {
         Frame::new(self).min_height(height)
     }
 
     /// Applies a maximum height constraint.
-    fn max_height(self, height: f32) -> Frame {
+    fn max_height(self, height: f32) -> Frame<Self> {
         Frame::new(self).max_height(height)
     }
 
     /// Fixes both width and height simultaneously.
-    fn size(self, width: f32, height: f32) -> Frame {
+    fn size(self, width: f32, height: f32) -> Frame<Self> {
         Frame::new(self).width(width).height(height)
     }
 
     /// Applies minimum constraints on both axes.
-    fn min_size(self, width: f32, height: f32) -> Frame {
+    fn min_size(self, width: f32, height: f32) -> Frame<Self> {
         Frame::new(self).min_width(width).min_height(height)
     }
 
     /// Applies maximum constraints on both axes.
-    fn max_size(self, width: f32, height: f32) -> Frame {
+    fn max_size(self, width: f32, height: f32) -> Frame<Self> {
         Frame::new(self).max_width(width).max_height(height)
     }
 
     /// Aligns this view within its frame using the provided alignment.
-    fn alignment(self, alignment: Alignment) -> Frame {
+    fn alignment(self, alignment: Alignment) -> Frame<Self> {
         Frame::new(self).alignment(alignment)
     }
 
@@ -663,12 +718,12 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `edge` - The edge insets to apply as padding
-    fn padding_with(self, edge: impl IntoComputed<EdgeInsets>) -> Padding {
+    fn padding_with(self, edge: impl IntoComputed<EdgeInsets>) -> Padding<Self> {
         Padding::new(edge, self)
     }
 
     /// Adds padding on the leading and trailing edges only.
-    fn padding_horizontal(self, value: impl IntoSignalF32) -> Padding {
+    fn padding_horizontal(self, value: impl IntoSignalF32) -> Padding<Self> {
         Padding::new(
             value
                 .into_signal_f32()
@@ -678,7 +733,7 @@ pub trait ViewExt: View + Sized {
     }
 
     /// Adds padding on the top and bottom edges only.
-    fn padding_vertical(self, value: impl IntoSignalF32) -> Padding {
+    fn padding_vertical(self, value: impl IntoSignalF32) -> Padding<Self> {
         Padding::new(
             value
                 .into_signal_f32()
@@ -698,7 +753,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// text!("Hello").padding();
     /// ```
-    fn padding(self) -> Padding {
+    fn padding(self) -> Padding<Self> {
         Padding::new(EdgeInsets::all(DEFAULT_PADDING), self)
     }
 
@@ -708,7 +763,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `secure` - The secure metadata to apply
-    fn secure(self) -> Metadata<Secure> {
+    fn secure(self) -> Metadata<Secure, Self> {
         Metadata::new(self, Secure::new())
     }
 
@@ -727,8 +782,8 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `label` - The accessibility label to apply, constant or reactive
-    fn a11y_label(self, label: impl IntoComputed<Str>) -> IgnorableMetadata<AccessibilityLabel> {
-        IgnorableMetadata::new(self, accessibility::AccessibilityLabel::new(label))
+    fn a11y_label(self, label: impl IntoComputed<Str>) -> Metadata<AccessibilityLabel, Self> {
+        Metadata::new(self, accessibility::AccessibilityLabel::new(label))
     }
 
     /// Sets the accessibility value for this view.
@@ -744,8 +799,8 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `value` - The accessibility value to apply, constant or reactive
-    fn a11y_value(self, value: impl IntoComputed<Str>) -> IgnorableMetadata<AccessibilityValue> {
-        IgnorableMetadata::new(self, accessibility::AccessibilityValue::new(value))
+    fn a11y_value(self, value: impl IntoComputed<Str>) -> Metadata<AccessibilityValue, Self> {
+        Metadata::new(self, accessibility::AccessibilityValue::new(value))
     }
 
     /// Sets the accessibility role for this view.
@@ -755,8 +810,8 @@ pub trait ViewExt: View + Sized {
     fn a11y_role(
         self,
         role: accessibility::AccessibilityRole,
-    ) -> IgnorableMetadata<AccessibilityRole> {
-        IgnorableMetadata::new(self, role)
+    ) -> Metadata<AccessibilityRole, Self> {
+        Metadata::new(self, role)
     }
 
     /// Sets a stable automation identifier for locating this view in UI tests.
@@ -764,16 +819,16 @@ pub trait ViewExt: View + Sized {
     /// Identifiers are invisible to end users and assistive technologies; they
     /// exist for `waterui-testing` selectors and native automation frameworks
     /// (`XCUITest` `accessibilityIdentifier`, Android `UiAutomator`).
-    fn a11y_id(self, identifier: impl Into<Str>) -> IgnorableMetadata<AccessibilityIdentifier> {
-        IgnorableMetadata::new(
+    fn a11y_id(self, identifier: impl Into<Str>) -> Metadata<AccessibilityIdentifier, Self> {
+        Metadata::new(
             self,
             accessibility::AccessibilityIdentifier::new(identifier),
         )
     }
 
     /// Overrides whether this view is hidden from assistive technologies.
-    fn a11y_hidden(self, hidden: bool) -> IgnorableMetadata<AccessibilityHidden> {
-        IgnorableMetadata::new(self, accessibility::AccessibilityHidden::new(hidden))
+    fn a11y_hidden(self, hidden: bool) -> Metadata<AccessibilityHidden, Self> {
+        Metadata::new(self, accessibility::AccessibilityHidden::new(hidden))
     }
 
     /// Chooses which rectangle this view's accessibility element reports.
@@ -787,32 +842,32 @@ pub trait ViewExt: View + Sized {
     fn a11y_geometry(
         self,
         geometry: AccessibilityGeometry,
-    ) -> IgnorableMetadata<AccessibilityGeometry> {
-        IgnorableMetadata::new(self, geometry)
+    ) -> Metadata<AccessibilityGeometry, Self> {
+        Metadata::new(self, geometry)
     }
 
     /// Controls how descendants contribute semantics for this view.
     fn a11y_children(
         self,
         behavior: accessibility::AccessibilityChildren,
-    ) -> IgnorableMetadata<AccessibilityChildren> {
-        IgnorableMetadata::new(self, behavior)
+    ) -> Metadata<AccessibilityChildren, Self> {
+        Metadata::new(self, behavior)
     }
 
     /// Applies explicit accessibility state metadata.
     fn a11y_state(
         self,
         state: accessibility::AccessibilityState,
-    ) -> IgnorableMetadata<AccessibilityState> {
-        IgnorableMetadata::new(self, state)
+    ) -> Metadata<AccessibilityState, Self> {
+        Metadata::new(self, state)
     }
 
     /// Applies reactive accessibility state metadata.
     fn a11y_state_signal(
         self,
         state: impl IntoComputed<accessibility::AccessibilityState>,
-    ) -> IgnorableMetadata<accessibility::AccessibilityStateSignal> {
-        IgnorableMetadata::new(self, accessibility::AccessibilityStateSignal::new(state))
+    ) -> Metadata<accessibility::AccessibilityStateSignal, Self> {
+        Metadata::new(self, accessibility::AccessibilityStateSignal::new(state))
     }
 
     /// Observes a gesture and executes an action when the gesture is recognized.
@@ -825,7 +880,11 @@ pub trait ViewExt: View + Sized {
     /// # Arguments
     /// * `gesture` - The gesture to observe
     /// * `action` - The action to execute when the gesture is recognized
-    fn gesture<H, Args>(self, gesture: impl Into<Gesture>, action: H) -> Metadata<GestureObserver>
+    fn gesture<H, Args>(
+        self,
+        gesture: impl Into<Gesture>,
+        action: H,
+    ) -> Metadata<GestureObserver, Self>
     where
         H: Handler<Args, ()>,
     {
@@ -849,7 +908,7 @@ pub trait ViewExt: View + Sized {
     ///     )
     /// );
     /// ```
-    fn gesture_observer(self, observer: GestureObserver) -> Metadata<GestureObserver> {
+    fn gesture_observer(self, observer: GestureObserver) -> Metadata<GestureObserver, Self> {
         Metadata::new(self, observer)
     }
 
@@ -865,7 +924,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// text!("Click me").on_tap(|| {});
     /// ```
-    fn on_tap<H, Args>(self, action: H) -> Metadata<GestureObserver>
+    fn on_tap<H, Args>(self, action: H) -> Metadata<GestureObserver, Self>
     where
         H: Handler<Args, ()>,
     {
@@ -875,7 +934,7 @@ pub trait ViewExt: View + Sized {
     /// Adds a tap gesture recognizer to this view (`SwiftUI` naming style).
     ///
     /// Equivalent to [`ViewExt::on_tap`].
-    fn on_tap_gesture<H, Args>(self, action: H) -> Metadata<GestureObserver>
+    fn on_tap_gesture<H, Args>(self, action: H) -> Metadata<GestureObserver, Self>
     where
         H: Handler<Args, ()>,
     {
@@ -883,7 +942,7 @@ pub trait ViewExt: View + Sized {
     }
 
     /// Adds a tap gesture recognizer requiring an exact tap count.
-    fn on_tap_gesture_count<H, Args>(self, count: u32, action: H) -> Metadata<GestureObserver>
+    fn on_tap_gesture_count<H, Args>(self, count: u32, action: H) -> Metadata<GestureObserver, Self>
     where
         H: Handler<Args, ()>,
     {
@@ -897,7 +956,7 @@ pub trait ViewExt: View + Sized {
         self,
         minimum_duration_ms: u32,
         action: H,
-    ) -> Metadata<GestureObserver>
+    ) -> Metadata<GestureObserver, Self>
     where
         H: Handler<Args, ()>,
     {
@@ -906,7 +965,11 @@ pub trait ViewExt: View + Sized {
 
     /// Adds a tap gesture recognizer and triggers haptic impact feedback.
     #[cfg(feature = "std")]
-    fn on_tap_haptic<H, Args>(self, intensity: Intensity, action: H) -> Metadata<GestureObserver>
+    fn on_tap_haptic<H, Args>(
+        self,
+        intensity: Intensity,
+        action: H,
+    ) -> Metadata<GestureObserver, Self>
     where
         H: Handler<Args, ()>,
     {
@@ -919,7 +982,7 @@ pub trait ViewExt: View + Sized {
 
     /// Adds a tap gesture recognizer with medium haptic impact feedback.
     #[cfg(feature = "std")]
-    fn on_tap_haptic_default<H, Args>(self, action: H) -> Metadata<GestureObserver>
+    fn on_tap_haptic_default<H, Args>(self, action: H) -> Metadata<GestureObserver, Self>
     where
         H: Handler<Args, ()>,
     {
@@ -933,7 +996,7 @@ pub trait ViewExt: View + Sized {
         minimum_duration_ms: u32,
         intensity: Intensity,
         action: H,
-    ) -> Metadata<GestureObserver>
+    ) -> Metadata<GestureObserver, Self>
     where
         H: Handler<Args, ()>,
     {
@@ -953,7 +1016,7 @@ pub trait ViewExt: View + Sized {
         self,
         minimum_duration_ms: u32,
         action: H,
-    ) -> Metadata<GestureObserver>
+    ) -> Metadata<GestureObserver, Self>
     where
         H: Handler<Args, ()>,
     {
@@ -961,7 +1024,7 @@ pub trait ViewExt: View + Sized {
     }
 
     /// Applies a shadow effect to this view.
-    fn shadow(self, shadow: impl Into<Shadow>) -> Metadata<Shadow> {
+    fn shadow(self, shadow: impl Into<Shadow>) -> Metadata<Shadow, Self> {
         Metadata::new(self, shadow.into())
     }
 
@@ -999,7 +1062,7 @@ pub trait ViewExt: View + Sized {
     /// // Simple border on all edges
     /// text!("Hello").border(Color::red(), 2.0);
     /// ```
-    fn border(self, color: impl Into<Color>, width: f32) -> Metadata<Border> {
+    fn border(self, color: impl Into<Color>, width: f32) -> Metadata<Border, Self> {
         Metadata::new(self, Border::new(color, width))
     }
 
@@ -1022,7 +1085,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// text!("Custom").border_with(border);
     /// ```
-    fn border_with(self, border: Border) -> Metadata<Border> {
+    fn border_with(self, border: Border) -> Metadata<Border, Self> {
         Metadata::new(self, border)
     }
 
@@ -1049,7 +1112,7 @@ pub trait ViewExt: View + Sized {
     /// let y = binding::<f32>(1.0_f32).animated();
     /// let animated = text!("Hello").scale(x, y);
     /// ```
-    fn scale(self, x: impl IntoSignalF32, y: impl IntoSignalF32) -> Metadata<Scale> {
+    fn scale(self, x: impl IntoSignalF32, y: impl IntoSignalF32) -> Metadata<Scale, Self> {
         Metadata::new(self, Scale::xy(x, y))
     }
 
@@ -1074,7 +1137,7 @@ pub trait ViewExt: View + Sized {
         x: impl IntoSignalF32,
         y: impl IntoSignalF32,
         anchor: Anchor,
-    ) -> Metadata<Scale> {
+    ) -> Metadata<Scale, Self> {
         Metadata::new(self, Scale::xy_from(x, y, anchor))
     }
 
@@ -1097,7 +1160,7 @@ pub trait ViewExt: View + Sized {
     /// let angle = binding::<f32>(0.0_f32).animated();
     /// let spinning = text!("Hello").rotation(angle);
     /// ```
-    fn rotation(self, degrees: impl IntoSignalF32) -> Metadata<Rotation> {
+    fn rotation(self, degrees: impl IntoSignalF32) -> Metadata<Rotation, Self> {
         Metadata::new(self, Rotation::degrees(degrees))
     }
 
@@ -1116,7 +1179,11 @@ pub trait ViewExt: View + Sized {
     /// // Rotate around top-left corner
     /// let tilted = text!("Hello").rotation_from(45.0, Anchor::TOP_LEFT);
     /// ```
-    fn rotation_from(self, degrees: impl IntoSignalF32, anchor: Anchor) -> Metadata<Rotation> {
+    fn rotation_from(
+        self,
+        degrees: impl IntoSignalF32,
+        anchor: Anchor,
+    ) -> Metadata<Rotation, Self> {
         Metadata::new(self, Rotation::degrees_from(degrees, anchor))
     }
 
@@ -1140,7 +1207,7 @@ pub trait ViewExt: View + Sized {
     /// let x = binding::<f32>(0.0_f32).animated();
     /// let sliding = text!("Hello").offset(x, 0.0);
     /// ```
-    fn offset(self, x: impl IntoSignalF32, y: impl IntoSignalF32) -> Metadata<Offset> {
+    fn offset(self, x: impl IntoSignalF32, y: impl IntoSignalF32) -> Metadata<Offset, Self> {
         Metadata::new(self, Offset::new(x, y))
     }
 
@@ -1173,7 +1240,7 @@ pub trait ViewExt: View + Sized {
     ///     .close();
     /// Color::red().size(100.0, 100.0).clip(triangle);
     /// ```
-    fn clip(self, shape: impl Shape) -> Metadata<ClipShape> {
+    fn clip(self, shape: impl Shape) -> Metadata<ClipShape, Self> {
         Metadata::new(self, ClipShape::new(shape))
     }
 
@@ -1199,10 +1266,10 @@ pub trait ViewExt: View + Sized {
     ///     ]);
     /// ```
     #[cfg(feature = "menu")]
-    fn context_menu(
+    fn context_menu<M: crate::metadata::context_menu::IntoContextMenu>(
         self,
-        menu: impl crate::metadata::context_menu::IntoContextMenu,
-    ) -> crate::metadata::context_menu::ContextMenuView<Self> {
+        menu: M,
+    ) -> crate::metadata::context_menu::ContextMenuView<Self, M::Preview, M::Accessory> {
         crate::metadata::context_menu::ContextMenuView::new(self, menu.into_context_menu())
     }
 
@@ -1232,7 +1299,7 @@ pub trait ViewExt: View + Sized {
     fn anchored_overlay(
         self,
         overlay: crate::metadata::anchored_overlay::AnchoredOverlay,
-    ) -> Metadata<crate::metadata::anchored_overlay::AnchoredOverlay> {
+    ) -> Metadata<crate::metadata::anchored_overlay::AnchoredOverlay, Self> {
         Metadata::new(self, overlay)
     }
 
@@ -1266,8 +1333,41 @@ pub trait ViewExt: View + Sized {
     ///     );
     /// ```
     #[cfg(feature = "dialog")]
-    fn dialog(self, dialog: crate::dialog::Dialog) -> Metadata<crate::dialog::Dialog> {
+    fn dialog(self, dialog: crate::dialog::Dialog) -> Metadata<crate::dialog::Dialog, Self> {
         Metadata::new(self, dialog)
+    }
+
+    /// Hosts a [`SnackbarManager`](crate::snackbar::SnackbarManager) and its
+    /// overlay for this view subtree.
+    ///
+    /// Descendant handlers can extract `SnackbarManager` bare
+    /// (`|manager: SnackbarManager| ...`). Each built instance creates its own
+    /// manager and overlay stack, keeping multiple windows and scenes isolated.
+    /// When `flow-markdown` is enabled, markdown code blocks inside this
+    /// subtree also show copy feedback through the hosted manager.
+    #[cfg(feature = "snackbar")]
+    fn snackbar_host(self) -> SnackbarHost<Self> {
+        SnackbarHost::new(self)
+    }
+
+    /// Hosts a [`SnackbarManager`](crate::snackbar::SnackbarManager) accepting
+    /// snackbars with leading icon views of type `I`, alongside plain
+    /// icon-less snackbars.
+    ///
+    /// Descendant handlers can extract `SnackbarManager<I>` bare.
+    #[cfg(feature = "snackbar")]
+    fn snackbar_host_with_icons<I: View + Clone + 'static>(self) -> SnackbarHost<Self, I> {
+        SnackbarHost::new(self)
+    }
+
+    /// Hosts a [`FullScreenOverlayManager<O>`](crate::fullscreen::FullScreenOverlayManager)
+    /// and its overlay for this view subtree.
+    ///
+    /// Descendant handlers can extract `FullScreenOverlayManager<O>` bare
+    /// (`|overlay: FullScreenOverlayManager<O>| ...`). Each built instance
+    /// creates its own manager and overlay view.
+    fn full_screen_overlay_host<O: View>(self) -> FullScreenOverlayHost<Self, O> {
+        FullScreenOverlayHost::new(self)
     }
 
     /// Sets the minimum row height of every list inside this view, in points.
@@ -1327,7 +1427,7 @@ pub trait ViewExt: View + Sized {
     /// let editor = text!("editor")
     ///     .ignore_safe_area(SafeAreaRegions::KEYBOARD.on(EdgeSet::BOTTOM));
     /// ```
-    fn ignore_safe_area(self, ignore: impl Into<IgnoreSafeArea>) -> Metadata<IgnoreSafeArea> {
+    fn ignore_safe_area(self, ignore: impl Into<IgnoreSafeArea>) -> Metadata<IgnoreSafeArea, Self> {
         Metadata::new(self, ignore.into())
     }
 
@@ -1359,7 +1459,7 @@ pub trait ViewExt: View + Sized {
     ///     text("Hello").retain(guard)
     /// }
     /// ```
-    fn retain<T: 'static>(self, value: T) -> Metadata<Retain> {
+    fn retain<T: 'static>(self, value: T) -> Metadata<Retain, Self> {
         Metadata::new(self, Retain::new(value))
     }
 
@@ -1383,7 +1483,7 @@ pub trait ViewExt: View + Sized {
     /// text!("Drag me")
     ///     .draggable(Str::from("Hello!"));
     /// ```
-    fn draggable<S>(self, payload: S) -> Metadata<Draggable>
+    fn draggable<S>(self, payload: S) -> Metadata<Draggable, Self>
     where
         S: waterui_core::Signal + Clone + 'static,
         S::Output: Transferable,
@@ -1425,7 +1525,7 @@ pub trait ViewExt: View + Sized {
     ///         },
     ///     );
     /// ```
-    fn drop_destination<T, H, Args>(self, on_drop: H) -> Metadata<DropDestination>
+    fn drop_destination<T, H, Args>(self, on_drop: H) -> Metadata<DropDestination, Self>
     where
         T: Transferable,
         H: EventHandler<T, Args>,
@@ -1455,13 +1555,13 @@ pub trait ViewExt: View + Sized {
     /// button("Click me").action(|| {})
     ///     .hittable(can_interact);
     /// ```
-    fn hittable(self, enabled: impl IntoComputed<bool>) -> Metadata<Hittable> {
+    fn hittable(self, enabled: impl IntoComputed<bool>) -> Metadata<Hittable, Self> {
         Metadata::new(self, Hittable::new(enabled))
     }
 
     /// Disables every interactive control in this view subtree.
     ///
-    /// Installs a [`waterui_core::interaction::Disabled`] scope into the
+    /// Installs a [`waterui_interaction::interaction::Disabled`] scope into the
     /// subtree's environment, so controls (toggles, buttons, sliders, …)
     /// render their platform-correct disabled appearance and stop responding
     /// to input. Nested `.disabled(...)` scopes OR-combine: a control stays
@@ -1533,8 +1633,8 @@ pub trait ViewExt: View + Sized {
     /// announces it as selected. It applies to the control it modifies, not to
     /// controls nested inside that control.
     ///
-    /// [`InteractionState::SELECTED`]: waterui_core::interaction::InteractionState::SELECTED
-    fn selected(self, is_selected: impl IntoComputed<bool>) -> Metadata<Selected> {
+    /// [`InteractionState::SELECTED`]: waterui_interaction::interaction::InteractionState::SELECTED
+    fn selected(self, is_selected: impl IntoComputed<bool>) -> Metadata<Selected, Self> {
         Metadata::new(self, Selected(is_selected.into_computed()))
     }
 
@@ -1583,6 +1683,16 @@ pub trait ViewExt: View + Sized {
     fn state<T: Clone + 'static>(self, state: &T) -> With<Self, State<T>> {
         With::new(self, State(state.clone()))
     }
+
+    /// Wires `handle` to the active backend's offscreen renderer when this view
+    /// dispatches, without altering the view's layout or appearance.
+    ///
+    /// Views of type `V` rendered through `handle` retain their concrete type
+    /// across backend dispatch instead of erasing to [`AnyView`](waterui_core::AnyView).
+    #[cfg(feature = "capture")]
+    fn capture<V: View>(self, handle: &CaptureHandle<V>) -> CaptureScope<V, Self> {
+        handle.attach(self)
+    }
 }
 
 impl<V: View + Sized> ViewExt for V {}
@@ -1599,7 +1709,8 @@ impl Plugin for DisabledScope {
 
 #[cfg(test)]
 mod tests {
-    use waterui_core::{AnyView, Binding, View, interaction::InteractionState};
+    use waterui_core::{AnyView, Binding, View};
+    use waterui_interaction::interaction::InteractionState;
 
     use super::ViewExt;
 

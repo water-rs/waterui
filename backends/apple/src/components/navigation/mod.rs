@@ -21,15 +21,6 @@ pub mod split;
 pub mod stack;
 pub mod tabs;
 
-/// Installs every navigation handler on the dispatcher.
-pub fn install(dispatcher: &mut crate::dispatch::Dispatcher) {
-    metadata::install(dispatcher);
-    nav_view::install(dispatcher);
-    stack::install(dispatcher);
-    split::install(dispatcher);
-    tabs::install(dispatcher);
-}
-
 /// The first plain-text string a rendered subtree's text views carry —
 /// `extractNavigationTitleText`'s walk: labels on `UIKit`, text fields on
 /// `AppKit`, depth-first.

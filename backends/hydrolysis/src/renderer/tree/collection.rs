@@ -11,10 +11,10 @@ use crate::theme::WidgetTheme;
 use std::rc::Rc;
 
 use nami::collection::CollectionChange;
+use waterui_core::backend::ChildSlot;
 use waterui_core::contract_violation;
 use waterui_core::layout::{LayoutError, PlacementInput, ResolvedExtent, resolve_layout_extent};
-use waterui_core::transition::{Ghost, GhostSlot, TransitionSpec};
-use waterui_core::views::ViewSnapshot;
+use waterui_structural_transition::{Ghost, GhostSlot, TransitionSpec};
 
 use super::transition::{
     TransitionPaint, TransitionRun, TransitionRuntime, claim_transition, flush_transitioned,
@@ -27,14 +27,11 @@ use super::transition::{
 /// notification. Insertions, removals and moves are membership changes the
 /// id reconciliation applies; an empty change means nothing needs
 /// re-materializing.
-pub fn collect_replaced_ids<S>(
-    snapshot: &S,
+pub fn collect_replaced_ids<V>(
+    snapshot: &AnyViewsSnapshot<V>,
     change: &CollectionChange,
-    out: &mut std::collections::HashSet<S::Id>,
-) where
-    S: ViewSnapshot,
-    S::Id: std::hash::Hash,
-{
+    out: &mut std::collections::HashSet<RawId>,
+) {
     for range in change.updates() {
         out.extend(range.filter_map(|index| snapshot.get_id(index)));
     }
@@ -43,7 +40,7 @@ pub fn collect_replaced_ids<S>(
 /// The id of item `index`, which `snapshot` must report for every index in its
 /// range. `None` after a contract violation when it does not: the caller skips
 /// the item.
-pub(super) fn item_id<S: ViewSnapshot>(snapshot: &S, index: usize) -> Option<S::Id> {
+pub(super) fn item_id<V>(snapshot: &AnyViewsSnapshot<V>, index: usize) -> Option<RawId> {
     let id = snapshot.get_id(index);
     if id.is_none() {
         contract_violation!(
@@ -56,7 +53,7 @@ pub(super) fn item_id<S: ViewSnapshot>(snapshot: &S, index: usize) -> Option<S::
 /// The view of item `index`, which `snapshot` must materialize for every index
 /// in its range. `None` after a contract violation when it does not: the
 /// caller skips the item, or draws [`item_view_or_empty`]'s empty view.
-fn item_view<S: ViewSnapshot>(snapshot: &S, index: usize) -> Option<S::View> {
+fn item_view<V>(snapshot: &AnyViewsSnapshot<V>, index: usize) -> Option<V> {
     let view = snapshot.get_view(index);
     if view.is_none() {
         contract_violation!(
@@ -68,8 +65,11 @@ fn item_view<S: ViewSnapshot>(snapshot: &S, index: usize) -> Option<S::View> {
 
 /// [`item_view`], with an empty view standing in for the item that failed to
 /// materialize, for callers that must place a view at `index`.
-pub(super) fn item_view_or_empty(snapshot: &AnyViewsSnapshot<AnyView>, index: usize) -> AnyView {
-    item_view(snapshot, index).unwrap_or_else(|| AnyView::new(()))
+pub(super) fn item_view_or_empty<E: crate::text::TextEngine>(
+    snapshot: &AnyViewsSnapshot<HeldChild<E>>,
+    index: usize,
+) -> HeldChild<E> {
+    item_view(snapshot, index).unwrap_or_else(|| HeldChild::from_view(()))
 }
 
 /// The dimensions a live entry freezes at for its removal ghost: measured at
@@ -155,7 +155,7 @@ pub struct CollectionNode<E: crate::text::TextEngine> {
     /// in the snapshot each event carries, so reconcile, measure, and flush
     /// all read exactly the membership the last applied event reported —
     /// never the live source mid-notification. Shared with the watcher.
-    pub(super) snapshot: Rc<RefCell<AnyViewsSnapshot<AnyView>>>,
+    pub(super) snapshot: Rc<RefCell<AnyViewsSnapshot<HeldChild<E>>>>,
     /// Environment captured at build, used to materialize items. Already shielded
     /// when this collection carries accessibility naming metadata — the name
     /// belongs to the collection, not to every item in it.
@@ -228,7 +228,7 @@ pub struct LazyStackNode<E: crate::text::TextEngine> {
     /// carries its own snapshot, which the watcher swaps in so the virtual
     /// window, id keys, and materialization all read one coherent membership
     /// — never the live source mid-notification. Shared with the watcher.
-    pub(super) snapshot: Rc<RefCell<AnyViewsSnapshot<AnyView>>>,
+    pub(super) snapshot: Rc<RefCell<AnyViewsSnapshot<HeldChild<E>>>>,
     /// Environment captured at build, used to materialize and style items. Already
     /// shielded when this stack carries accessibility naming metadata — the name
     /// belongs to the stack, not to every row in it.
@@ -296,7 +296,7 @@ pub struct LazyStackNode<E: crate::text::TextEngine> {
     /// extent index and item rects.
     pub(super) _layout_guards: Vec<BoxWatcherGuard>,
     /// The structural transitions of the realized rows.
-    pub(super) transitions: LazyTransitions<E>,
+    pub(super) transitions: LazyTransitions<E, HeldChild<E>>,
 }
 
 /// A detached outgoing item: its retained node (semantically dead, painted
@@ -636,8 +636,8 @@ impl<E: crate::text::TextEngine> CollectionNode<E> {
                     // Same id, changed content: re-materialize this row's
                     // node and spec from the current item. The entry keeps
                     // its identity; an in-flight insertion clock keeps running.
-                    previous.replace_node(RenderNode::build(
-                        normalize_layout_view(item_view_or_empty(&snapshot, index), &env),
+                    previous.replace_node(RenderNode::build_held(
+                        item_view_or_empty(&snapshot, index),
                         &env,
                         renderer,
                     ));
@@ -647,7 +647,7 @@ impl<E: crate::text::TextEngine> CollectionNode<E> {
                 let view = item_view_or_empty(&snapshot, index);
                 let core = renderer.new_core();
                 core.cell.set_parent(&self.core.cell);
-                let node = RenderNode::build(normalize_layout_view(view, &env), &env, renderer);
+                let node = RenderNode::build_held(view, &env, renderer);
                 node.core().cell.set_parent(&core.cell);
                 let mut entry = CollectionEntry::new(id, node, core);
                 entry.begin_insertion(self.reduce_motion, renderer.frame_instant);
@@ -696,7 +696,7 @@ impl<E: crate::text::TextEngine> CollectionNode<E> {
 /// ghost holding its main-axis slot in the stack's flow until its removal
 /// completes. A removed row that was never realized has no pixels to animate
 /// and leaves at once.
-pub struct LazyTransitions<E: crate::text::TextEngine, T: View = AnyView> {
+pub struct LazyTransitions<E: crate::text::TextEngine, T: 'static> {
     /// Set by the membership watcher; consumed when the container applies
     /// the change.
     pub(crate) membership: Rc<Cell<bool>>,
@@ -719,7 +719,7 @@ pub struct LazyTransitions<E: crate::text::TextEngine, T: View = AnyView> {
 
 /// The row set a membership change replaced, the frame that applied it and,
 /// once a transitioned row asked, the ids it held.
-struct ReplacedSet<T: View> {
+struct ReplacedSet<T> {
     snapshot: AnyViewsSnapshot<T>,
     at: Instant,
     ids: Option<std::collections::HashSet<CollectionItemId>>,
@@ -782,7 +782,7 @@ pub enum LazySlot {
     Ghost(usize),
 }
 
-impl<T: View, E: crate::text::TextEngine> LazyTransitions<E, T> {
+impl<T: 'static, E: crate::text::TextEngine> LazyTransitions<E, T> {
     pub(crate) fn new(
         env: &Environment,
         snapshot: AnyViewsSnapshot<T>,
@@ -795,7 +795,7 @@ impl<T: View, E: crate::text::TextEngine> LazyTransitions<E, T> {
             rows: RefCell::new(std::collections::HashMap::new()),
             ghosts: RefCell::new(Vec::new()),
             reduce_motion: env
-                .get::<waterui_core::transition::ReduceMotion>()
+                .get::<waterui_structural_transition::ReduceMotion>()
                 .is_some_and(|flag| flag.0),
             direction: waterui_layout::layout_direction(env).snapshot(),
         }
@@ -1165,15 +1165,16 @@ impl<E: crate::text::TextEngine> LazyStackNode<E> {
                     // Build now, not at flush: a cached-but-unbuilt entry
                     // measures as zero and is skipped by `patch_for_parent`,
                     // so the row would place at a collapsed rect this frame.
-                    let subview = cache.materialize(id, || normalize_layout_view(view, env));
+                    let subview = cache.materialize(id, || RetainedSubview::held(view));
                     subview.ensure_built(renderer, env);
                     transitions.track(id, subview, renderer);
                     materialized = true;
                 }
             }
         }
+        let first_rebuilt = self.realize_first_item(&snapshot, renderer);
         let changed = self.item_cache.borrow_mut().patch_for_parent(renderer);
-        if changed || materialized {
+        if changed || materialized || first_rebuilt {
             self.estimate_sample.set(None);
             self.floor_sample.set(None);
             renderer.state.counters.structural_patches += 1;
@@ -1182,7 +1183,37 @@ impl<E: crate::text::TextEngine> LazyStackNode<E> {
         if animating {
             renderer.context_mark_layout();
         }
-        changed | materialized | ghosted | dropped | animating
+        changed | materialized | ghosted | dropped | animating | first_rebuilt
+    }
+
+    /// Keeps the collection's first item realized in the item cache and
+    /// pinned there, so the estimate and floor samples measure its retained
+    /// node even while it is scrolled away; the visible window reuses the same
+    /// node when it reaches the item. Returns whether this built it.
+    pub(super) fn realize_first_item(
+        &self,
+        snapshot: &AnyViewsSnapshot<HeldChild<E>>,
+        renderer: &mut SemanticCore<E>,
+    ) -> bool {
+        let mut cache = self.item_cache.borrow_mut();
+        let id = if snapshot.is_empty() {
+            None
+        } else {
+            item_id(snapshot, 0)
+        };
+        cache.pin(id);
+        let Some(id) = id else {
+            return false;
+        };
+        if cache.get(&id).is_some_and(RetainedSubview::is_built) {
+            return false;
+        }
+        let subview = cache.materialize(id, || {
+            RetainedSubview::held(item_view_or_empty(snapshot, 0))
+        });
+        subview.ensure_built(renderer, &self.env);
+        self.transitions.track(id, subview, renderer);
+        true
     }
 
     fn spacing(&self, state: &mut HydroState<E>) -> f64 {
@@ -1218,38 +1249,25 @@ impl<E: crate::text::TextEngine> LazyStackNode<E> {
         }
     }
 
-    /// Measures item `index` under the given proposal against `snapshot` —
-    /// the retained row set the current pass is reconciling — returning its
-    /// measured size and stretch axis (both needed to place it).
-    fn measure_item(
+    /// Measures the first item under `proposal`, returning its measured size
+    /// and stretch axis, through the node [`Self::realize_first_item`] keeps.
+    fn measure_first_item(
         &self,
-        snapshot: &AnyViewsSnapshot<AnyView>,
         state: &mut HydroState<E>,
         theme: &Rc<dyn crate::theme::WidgetTheme>,
-        index: usize,
         proposal: ProposalSize,
     ) -> (Size, StretchAxis) {
-        let Some(id) = item_id(snapshot, index) else {
+        let cache = self.item_cache.borrow();
+        let Some(item) = cache.pinned().and_then(|id| cache.get(id)) else {
+            contract_violation!(
+                "a lazy stack measured its first item before realizing it; the item measures as empty"
+            );
             return (Size::new(0.0, 0.0), StretchAxis::None);
         };
-        if let Some(item) = self.item_cache.borrow().get(&id)
-            && item.is_built()
-        {
-            return (
-                item.measure_built_with_proposal(state, &self.env, theme, proposal),
-                item.stretch_axis(),
-            );
-        }
-
-        let view = normalize_layout_view(item_view_or_empty(snapshot, index), &self.env);
-        state.measurement.begin_transient_measurement();
-        let result = {
-            let bound = RefCell::new(&mut *state);
-            let subview = HydroSubview::from_view(&view, &bound, &self.env, theme);
-            (subview.measure(proposal).size, subview.stretch_axis())
-        };
-        state.measurement.end_transient_measurement();
-        result
+        (
+            item.measure_built_with_proposal(state, &self.env, theme, proposal),
+            item.stretch_axis(),
+        )
     }
 
     fn main_extent(&self, size: Size) -> f64 {
@@ -1265,7 +1283,6 @@ impl<E: crate::text::TextEngine> LazyStackNode<E> {
     /// extent here, so the stack overflows instead of collapsing.
     fn ensure_floor(
         &self,
-        snapshot: &AnyViewsSnapshot<AnyView>,
         state: &mut HydroState<E>,
         theme: &Rc<dyn crate::theme::WidgetTheme>,
         cross: Option<f32>,
@@ -1275,7 +1292,7 @@ impl<E: crate::text::TextEngine> LazyStackNode<E> {
         {
             return floor;
         }
-        let (size, _) = self.measure_item(snapshot, state, theme, 0, self.item_min_proposal(cross));
+        let (size, _) = self.measure_first_item(state, theme, self.item_min_proposal(cross));
         let floor = self.main_extent(size);
         self.floor_sample.set(Some((cross, floor)));
         floor
@@ -1284,7 +1301,7 @@ impl<E: crate::text::TextEngine> LazyStackNode<E> {
     /// Keeps estimates scoped to the cross-axis query and collection lifetime.
     fn ensure_estimate(
         &self,
-        snapshot: &AnyViewsSnapshot<AnyView>,
+        snapshot: &AnyViewsSnapshot<HeldChild<E>>,
         state: &mut HydroState<E>,
         theme: &Rc<dyn crate::theme::WidgetTheme>,
         cross: Option<f32>,
@@ -1295,7 +1312,7 @@ impl<E: crate::text::TextEngine> LazyStackNode<E> {
         {
             return size;
         }
-        let (size, _) = self.measure_item(snapshot, state, theme, 0, self.item_proposal(cross));
+        let (size, _) = self.measure_first_item(state, theme, self.item_proposal(cross));
         let extent = self.main_extent(size);
         self.estimate.set(extent.max(1.0));
         self.estimate_sample.set(Some((cross, size)));
@@ -1339,7 +1356,7 @@ impl<E: crate::text::TextEngine> LazyStackNode<E> {
     /// layout pass instead of discovering it later during flush.
     fn refresh_visible_extents(
         &self,
-        snapshot: &AnyViewsSnapshot<AnyView>,
+        snapshot: &AnyViewsSnapshot<HeldChild<E>>,
         state: &mut HydroState<E>,
         theme: &Rc<dyn crate::theme::WidgetTheme>,
         count: usize,
@@ -1389,7 +1406,7 @@ impl<E: crate::text::TextEngine> LazyStackNode<E> {
         let (ghost_main, ghost_cross) = self.transitions.ghost_extents(&self.axis);
         let (sample, row_floor) = if count > 0 {
             let sample = self.ensure_estimate(&snapshot, state, theme, cross);
-            let floor = self.ensure_floor(&snapshot, state, theme, cross);
+            let floor = self.ensure_floor(state, theme, cross);
             (sample, floor * crate::num_cast::usize_as_f64(count))
         } else {
             (Size::zero(), 0.0)
@@ -1569,7 +1586,7 @@ impl<E: crate::text::TextEngine> LazyStackNode<E> {
         &self,
         renderer: &mut HydrolysisRenderer<E>,
         ctx: RenderContext,
-        snapshot: &AnyViewsSnapshot<AnyView>,
+        snapshot: &AnyViewsSnapshot<HeldChild<E>>,
         index: usize,
         cross: Option<f32>,
         cursor: f64,
@@ -1580,7 +1597,7 @@ impl<E: crate::text::TextEngine> LazyStackNode<E> {
         };
         let proposal = self.item_proposal(cross);
         let env = &self.env;
-        let materialize = || normalize_layout_view(item_view_or_empty(snapshot, index), env);
+        let materialize = || RetainedSubview::held(item_view_or_empty(snapshot, index));
         let (size, stretch) = {
             let mut cache = self.item_cache.borrow_mut();
             let subview = cache.entry(id, materialize);
@@ -1718,7 +1735,7 @@ impl<E: crate::text::TextEngine> LazyStackNode<E> {
             let views = &snapshot;
             let mut cache = self.item_cache.borrow_mut();
             let subview = cache.entry(id, || {
-                normalize_layout_view(item_view_or_empty(views, index), env)
+                RetainedSubview::held(item_view_or_empty(views, index))
             });
             // The row's declaration is claimed before its first walk.
             subview.ensure_built(renderer, env);

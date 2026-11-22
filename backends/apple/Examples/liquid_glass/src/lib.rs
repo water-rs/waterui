@@ -8,9 +8,10 @@
 //! The backdrop is deliberately loud — glass is a lens, and a lens needs
 //! something to bend.
 
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::background::Glass;
-use waterui::icon::SystemIcon;
+use waterui::component::label::IconLabel;
+use waterui::handler::ViewBuilder;
 use waterui::id::SelfId;
 use waterui::navigation::{TabBarMinimizeBehavior, TabRole};
 use waterui::prelude::theme_color::Accent;
@@ -20,6 +21,7 @@ use waterui::reactive::binding;
 use waterui::reactive::collection::List;
 use waterui::shape::{Circle, RoundedRectangle, ShapeExt};
 use waterui::views::ForEach;
+use waterui_apple::SfSymbol;
 
 /// Tab identity. `Tabs` is generic over it, so no `Id` reaches app code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -31,55 +33,14 @@ enum Pane {
 }
 
 /// The Liquid Glass demo: surfaces, controls, an about page and a search tab.
-///
-/// # Panics
-///
-/// Panics if the tab collection has no tab for one of the four panes. The tabs and
-/// the pane ids are built from the same four panes, so this cannot happen.
 #[preview]
 pub fn main() -> impl View {
     let pane = binding(Pane::Surfaces);
-
-    let tabs = std::collections::BTreeMap::from([
-        (
-            Pane::Surfaces,
-            Tab::container(
-                label("Surfaces").icon(SystemIcon::new("square.on.square")),
-                surfaces_page,
-            ),
-        ),
-        (
-            Pane::Controls,
-            Tab::container(
-                label("Controls").icon(SystemIcon::new("button.horizontal")),
-                controls_page,
-            ),
-        ),
-        (
-            Pane::About,
-            Tab::container(
-                label("About").icon(SystemIcon::new("info.circle")),
-                about_page,
-            ),
-        ),
-        // The role, not a different kind of tab: iOS places it trailing as
-        // the system search tab with its own glass and presentation.
-        (
-            Pane::Search,
-            Tab::container(
-                label("Search").icon(SystemIcon::new("magnifyingglass")),
-                search_page,
-            )
-            .role(TabRole::Search),
-        ),
-    ]);
     let panes = [Pane::Surfaces, Pane::Controls, Pane::About, Pane::Search].map(SelfId::new);
     Tabs::new(
         &pane,
-        ForEach::new(List::from(panes.to_vec()), move |pane: SelfId<Pane>| {
-            tabs.get(&pane.into_inner())
-                .expect("a keyed tab collection reports a tab for every id")
-                .clone()
+        ForEach::new(List::from(panes.to_vec()), |pane: SelfId<Pane>| {
+            pane_tab(pane.into_inner())
         }),
     )
     .style(tab_style::automatic())
@@ -91,13 +52,39 @@ pub fn main() -> impl View {
     .bottom_accessory(now_playing())
 }
 
+/// The tab for `pane`. Every tab shares one root builder, whose page is the
+/// variant of one `OneOf4` its pane picks.
+fn pane_tab(
+    pane: Pane,
+) -> Tab<impl ViewBuilder<Output = NavigationView<impl View>>, IconLabel<SfSymbol>> {
+    let (title, symbol) = match pane {
+        Pane::Surfaces => ("Surfaces", SfSymbol::SQUARE_ON_SQUARE),
+        Pane::Controls => ("Controls", SfSymbol::BUTTON_HORIZONTAL),
+        Pane::About => ("About", SfSymbol::INFO_CIRCLE),
+        Pane::Search => ("Search", SfSymbol::MAGNIFYINGGLASS),
+    };
+    let tab = Tab::container(label(title).icon(symbol), move || match pane {
+        Pane::Surfaces => OneOf4::A(surfaces_page()),
+        Pane::Controls => OneOf4::B(controls_page()),
+        Pane::About => OneOf4::C(about_page()),
+        Pane::Search => OneOf4::D(search_page()),
+    });
+    // The role, not a different kind of tab: iOS places it trailing as the
+    // system search tab with its own glass and presentation.
+    if pane == Pane::Search {
+        tab.role(TabRole::Search)
+    } else {
+        tab
+    }
+}
+
 /// A now-playing bar for the tab bar's bottom accessory slot.
 ///
 /// The slot is one bar tall, so the content is a single row: the title and
 /// its subtitle stacked at the sizes a now-playing bar uses.
 fn now_playing() -> impl View {
     hstack((
-        label("Play").icon(SystemIcon::new("play.fill")),
+        label("Play").icon(SfSymbol::PLAY_FILL),
         vstack((
             text("Now Playing").bold().size(15.0),
             text("Liquid Glass — Surfaces").size(12.0),
@@ -117,7 +104,7 @@ fn surfaces_page() -> impl View {
     NavigationStack::new(surfaces_root())
 }
 
-fn surfaces_root() -> NavigationView {
+fn surfaces_root() -> NavigationView<impl View> {
     zstack((
         backdrop(),
         scroll(
@@ -164,7 +151,7 @@ fn controls_page() -> impl View {
     NavigationStack::new(controls_root())
 }
 
-fn controls_root() -> NavigationView {
+fn controls_root() -> NavigationView<impl View> {
     zstack((
         backdrop(),
         scroll(
@@ -183,9 +170,9 @@ fn controls_root() -> NavigationView {
                 .spacing(12.0),
                 caption("Labels with symbols get the same capsule."),
                 hstack((
-                    button(label("Share").icon(SystemIcon::new("square.and.arrow.up")))
+                    button(label("Share").icon(SfSymbol::SQUARE_AND_ARROW_UP))
                         .style(ButtonStyle::Glass),
-                    button(label("Play").icon(SystemIcon::new("play.fill")))
+                    button(label("Play").icon(SfSymbol::PLAY_FILL))
                         .style(ButtonStyle::GlassProminent),
                 ))
                 .spacing(12.0),
@@ -267,6 +254,6 @@ fn backdrop() -> impl View {
 }
 
 /// Builds the Liquid Glass example app around [`main`].
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     App::new(main, env)
 }

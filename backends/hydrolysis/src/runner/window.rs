@@ -74,8 +74,179 @@ impl FrameMode {
     }
 }
 
+/// A window's content as a runner holds it: the content builder's type is
+/// erased behind the one call that builds the window's tree, so everything
+/// below the window dispatches statically.
+pub trait WindowRoot<E: crate::text::TextEngine> {
+    /// Builds the window's content, calls `built`, then builds the window's
+    /// tree from it into `renderer`, see
+    /// [`HydrolysisRenderer::capture_window_tree`].
+    fn capture_tree(
+        &self,
+        renderer: &mut HydrolysisRenderer<E>,
+        env: &Environment,
+        bounds: kurbo::Rect,
+        transform: kurbo::Affine,
+        hit_transform: kurbo::Affine,
+        built: &mut dyn FnMut(),
+    );
+
+    /// Builds the window's tree into `core` for its semantics only.
+    #[cfg(hydrolysis_cherenkov)]
+    fn capture_semantics(&self, core: &mut SemanticCore<E>, env: &Environment);
+}
+
+impl<E: crate::text::TextEngine, C: ViewBuilder> WindowRoot<E> for C {
+    fn capture_tree(
+        &self,
+        renderer: &mut HydrolysisRenderer<E>,
+        env: &Environment,
+        bounds: kurbo::Rect,
+        transform: kurbo::Affine,
+        hit_transform: kurbo::Affine,
+        built: &mut dyn FnMut(),
+    ) {
+        let content = self.build();
+        built();
+        renderer.capture_window_tree(content, env, bounds, transform, hit_transform);
+    }
+
+    #[cfg(hydrolysis_cherenkov)]
+    fn capture_semantics(&self, core: &mut SemanticCore<E>, env: &Environment) {
+        core.capture_window_semantics(self.build(), env);
+    }
+}
+
+struct HeldWindowSlot<E: crate::text::TextEngine>(
+    waterui::window::WindowSlot<crate::renderer::HeldChild<E>>,
+);
+
+impl<E: crate::text::TextEngine> WindowRoot<E> for HeldWindowSlot<E> {
+    fn capture_tree(
+        &self,
+        renderer: &mut HydrolysisRenderer<E>,
+        env: &Environment,
+        bounds: kurbo::Rect,
+        transform: kurbo::Affine,
+        hit_transform: kurbo::Affine,
+        built: &mut dyn FnMut(),
+    ) {
+        let child = self.0.build();
+        built();
+        renderer.capture_held_window_tree(child, env, bounds, transform, hit_transform);
+    }
+
+    #[cfg(hydrolysis_cherenkov)]
+    fn capture_semantics(&self, core: &mut SemanticCore<E>, env: &Environment) {
+        core.capture_held_window_semantics(self.0.build(), env);
+    }
+}
+
+/// A window as a runner holds it, see [`WindowRoot`].
+pub type RootWindow<E> = Window<Box<dyn WindowRoot<E>>>;
+
+/// `window` as a runner holds it.
+pub fn root_window<
+    E: crate::text::TextEngine,
+    C: ViewBuilder,
+    T: waterui::window::WindowToolbar,
+>(
+    window: Window<C, T>,
+) -> RootWindow<E> {
+    window.map(
+        |content| Box::new(content) as Box<dyn WindowRoot<E>>,
+        |_| (),
+    )
+}
+
+/// A window dispatched from the view tree as a runner holds it.
+pub fn slot_root_window<E: crate::text::TextEngine>(
+    window: Window<
+        waterui::window::WindowSlot<crate::renderer::HeldChild<E>>,
+        Option<crate::renderer::HeldChild<E>>,
+    >,
+) -> RootWindow<E> {
+    window.map(
+        |slot| Box::new(HeldWindowSlot(slot)) as Box<dyn WindowRoot<E>>,
+        |_| (),
+    )
+}
+
+pub type RootChannelConnector<E> = Box<dyn FnOnce(Rc<dyn Fn(RootWindow<E>)>)>;
+
+/// Collects an application's startup windows and runtime window channels as a
+/// runner holds them.
+pub struct RootWindows<E: crate::text::TextEngine> {
+    pub(crate) initial: Vec<RootWindow<E>>,
+    pub(crate) channels: Vec<RootChannelConnector<E>>,
+}
+
+impl<E: crate::text::TextEngine> RootWindows<E> {
+    /// `windows` as a runner holds them, in declaration order.
+    pub(crate) fn collect(windows: impl Windows) -> Self {
+        let mut sink = Self {
+            initial: Vec::with_capacity(windows.len()),
+            channels: Vec::new(),
+        };
+        windows.for_each(&mut sink);
+        sink
+    }
+
+    /// Connects every collected [`WindowChannel`](waterui::window::WindowChannel)
+    /// to `opener`.
+    pub(crate) fn connect_channels(
+        channels: Vec<RootChannelConnector<E>>,
+        opener: &Rc<dyn Fn(RootWindow<E>)>,
+    ) {
+        for connect in channels {
+            connect(Rc::clone(opener));
+        }
+    }
+}
+
+enum ChannelTarget<E: crate::text::TextEngine> {
+    Pending(Vec<RootWindow<E>>),
+    Connected(Rc<dyn Fn(RootWindow<E>)>),
+}
+
+impl<E: crate::text::TextEngine> WindowSink for RootWindows<E> {
+    fn window<C: ViewBuilder, T: waterui::window::WindowToolbar>(&mut self, window: Window<C, T>) {
+        self.initial.push(root_window(window));
+    }
+
+    fn channel<C: ViewBuilder, T: waterui::window::WindowToolbar>(
+        &mut self,
+        channel: waterui::window::WindowChannel<C, T>,
+    ) {
+        let target = Rc::new(RefCell::new(ChannelTarget::Pending(Vec::new())));
+        let receiver_target = Rc::clone(&target);
+        let queued = channel.connect(move |window| {
+            let root = root_window(window);
+            let opener = match &mut *receiver_target.borrow_mut() {
+                ChannelTarget::Pending(pending) => {
+                    pending.push(root);
+                    return;
+                }
+                ChannelTarget::Connected(opener) => Rc::clone(opener),
+            };
+            opener(root);
+        });
+        self.initial.extend(queued.into_iter().map(root_window));
+        self.channels.push(Box::new(move |opener| {
+            let pending = match &mut *target.borrow_mut() {
+                ChannelTarget::Pending(pending) => core::mem::take(pending),
+                ChannelTarget::Connected(_) => Vec::new(),
+            };
+            *target.borrow_mut() = ChannelTarget::Connected(Rc::clone(&opener));
+            for window in pending {
+                opener(window);
+            }
+        }));
+    }
+}
+
 pub(super) struct RuntimeWindow<P: PlatformWindow, E: crate::text::TextEngine> {
-    pub(super) window: Window,
+    pub(super) window: RootWindow<E>,
     pub(super) platform: P,
     pub(super) renderer: HydrolysisRenderer<E>,
     pub(super) mode: FrameMode,
@@ -128,7 +299,7 @@ pub(super) struct RuntimeWindow<P: PlatformWindow, E: crate::text::TextEngine> {
 // a compile-time painter boundary.
 impl<P: PlatformWindow, E: crate::text::TextEngine> RuntimeWindow<P, E> {
     pub(super) fn new(
-        window: Window,
+        window: RootWindow<E>,
         platform: P,
         renderer: HydrolysisRenderer<E>,
         render_diagnostics_config: RenderDiagnosticsConfig,
@@ -166,7 +337,7 @@ impl<P: PaintedWindow> RuntimeWindow<P, crate::text::ParleyEngine> {
     /// A Cherenkov painter's window: the shared construction plus the host
     /// redraw handle, installed before the window's first frame.
     pub(super) fn new_painted(
-        window: Window,
+        window: RootWindow<crate::text::ParleyEngine>,
         platform: P,
         renderer: HydrolysisRenderer<crate::text::ParleyEngine>,
         config: RenderDiagnosticsConfig,
@@ -845,7 +1016,7 @@ pub struct FrameCounters {
     scene_layers: u32,
     /// Number of recorded scene segment layers submitted for this frame.
     scene_segment_layers: u32,
-    /// Number of mounted `GpuContentView` layers submitted for this frame.
+    /// Number of mounted `GpuView` layers submitted for this frame.
     gpu_content_layers: u32,
     /// Number of clip scopes pushed while building this frame.
     clip_layers: u32,
@@ -903,7 +1074,7 @@ impl FrameCounters {
         self.scene_segment_layers
     }
 
-    /// Number of mounted `GpuContentView` layers submitted for this frame.
+    /// Number of mounted `GpuView` layers submitted for this frame.
     #[must_use]
     pub const fn gpu_content_layers(&self) -> u32 {
         self.gpu_content_layers
@@ -1082,7 +1253,7 @@ pub(super) struct SurfaceBackground(ResolvedWindowBackground);
 
 impl SurfaceBackground {
     /// `window`'s background as it resolves now.
-    pub(super) fn of(window: &Window, env: &Environment) -> Self {
+    pub(super) fn of<C, T>(window: &Window<C, T>, env: &Environment) -> Self {
         Self(window.resolved_background(env).snapshot())
     }
 
@@ -1172,7 +1343,7 @@ pub(super) fn apply_window_background<P: PaintedWindow, E: crate::text::TextEngi
 }
 
 #[cfg(hydrolysis_winit)]
-pub fn window_requires_transparency(window: &Window, env: &Environment) -> bool {
+pub fn window_requires_transparency<C, T>(window: &Window<C, T>, env: &Environment) -> bool {
     SurfaceBackground::of(window, env).transparent()
 }
 
@@ -1301,19 +1472,21 @@ fn build_window_scene<P: PlatformWindow, E: crate::text::TextEngine>(
     runtime.renderer.reset_scene();
     runtime.renderer.begin_rebuild_frame();
     let build_content_started_at = Instant::now();
-    let content = runtime.window.build_content();
-    phases.build_content += build_content_started_at.elapsed();
-    let _ = drain_local_tasks();
-    let scene_dispatch_started_at = Instant::now();
+    let mut scene_dispatch_started_at = build_content_started_at;
     // The capture records the presentation hosts too — an open text
     // context menu or `.context_menu` presentation builds and places its
     // sub-views there, under its host cell.
-    runtime.renderer.capture_window_tree(
-        content,
+    runtime.window.content.capture_tree(
+        &mut runtime.renderer,
         env,
         bounds,
         root_transform,
         kurbo::Affine::IDENTITY,
+        &mut || {
+            phases.build_content += build_content_started_at.elapsed();
+            let _ = drain_local_tasks();
+            scene_dispatch_started_at = Instant::now();
+        },
     );
     phases.scene_dispatch += scene_dispatch_started_at.elapsed();
     let scene_finish_started_at = Instant::now();
@@ -1994,11 +2167,11 @@ crate::engine::cfg_async_fn! {
     let stages: crate::renderer::FrameStageTimes;
     // What the inspector is told about this frame, captured before the pump:
     // the scheduled mode is cleared while the scene is pumped, and the elapsed
-    // total has to start before any of it runs. A browser page hosts no
-    // inspector endpoint, so neither is measured there.
-    #[cfg(all(not(target_arch = "wasm32"), feature = "inspector"))]
+    // total has to start before any of it runs. Neither is measured without
+    // the inspector endpoint.
+    #[cfg(hydrolysis_inspector)]
     let frame_mode = runtime.mode;
-    #[cfg(all(not(target_arch = "wasm32"), feature = "inspector"))]
+    #[cfg(hydrolysis_inspector)]
     let frame_pump_started_at = Instant::now();
     {
         let diagnostics_enabled = runtime.render_diagnostics.enabled();
@@ -2198,7 +2371,7 @@ crate::engine::cfg_async_fn! {
             runtime.platform.request_redraw();
         }
     }
-    #[cfg(all(not(target_arch = "wasm32"), feature = "inspector"))]
+    #[cfg(hydrolysis_inspector)]
     {
         super::inspector::publish_frame(
             env,

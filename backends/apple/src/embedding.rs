@@ -1,6 +1,6 @@
 //! Header-free embedding ABI. Handles and callbacks are main-thread owned.
 
-use crate::contract::{KeepAlive, Mounted};
+use crate::contract::{KeepAlive, Mounted, NativeLeaf};
 use cocoa_ui::{MainThreadMarker, PlatformView, Retained};
 #[cfg(target_os = "ios")]
 use objc2::Message;
@@ -10,7 +10,11 @@ use std::{
     rc::Rc,
 };
 
-use waterui::{Environment, app::App, reactive::Binding};
+use waterui::{
+    Environment,
+    app::{App, AppMenuBar, Windows},
+    reactive::Binding,
+};
 use waterui_core::layout::{LayoutDirection, ProposalSize};
 use waterui_locale::Locale;
 
@@ -230,17 +234,6 @@ impl Drop for Mount {
     }
 }
 
-pub(crate) fn install_services(env: &mut Environment) {
-    #[cfg(feature = "map")]
-    {
-        use waterui_core::view::ViewConfiguration;
-        env.insert_hook::<waterui_map::MapConfig, _>(|_env, config| config.render());
-    }
-    crate::windows::install_manager(env);
-    #[cfg(feature = "view_renderer")]
-    crate::components::view_renderer::install_service(env);
-}
-
 /// Initializes process services and returns one owned runtime through `ready`.
 ///
 /// # Panics
@@ -255,23 +248,34 @@ pub unsafe extern "C" fn waterui_apple_runtime_create(
     ready: unsafe extern "C" fn(*mut c_void, *mut c_void),
 ) {
     MainThreadMarker::new().expect("embedding initialization runs on the main thread");
+    #[cfg(feature = "inspector")]
     let inspector = crate::startup::initialize();
+    #[cfg(not(feature = "inspector"))]
+    crate::startup::initialize();
     let mut env = Environment::new();
     env.insert(crate::first_paint::FirstPaint::default());
     #[cfg(target_os = "ios")]
     env.insert(crate::scene_registry::SceneRegistry::<crate::windows::Scenes>::default());
+    #[cfg(feature = "inspector")]
     waterui::inspector::install(&mut env, inspector);
     waterui::text::install_system_font_collection(&mut env);
-    let mut runtime = Box::new(Runtime {
+    let runtime = Box::new(Runtime {
         env,
         fonts: std::cell::RefCell::default(),
     });
     // SAFETY: the owning box moves into the completion closure, keeping the
     // environment alive throughout GPU setup. The host owns it afterwards.
+    #[cfg(feature = "gpu_surface")]
     unsafe {
+        let mut runtime = runtime;
         crate::gpu_runtime::prepare(&raw mut runtime.env, move || {
             ready(context, Box::into_raw(runtime).cast());
         });
+    }
+    #[cfg(not(feature = "gpu_surface"))]
+    // SAFETY: `context` and `ready` uphold the caller contract above.
+    unsafe {
+        ready(context, Box::into_raw(runtime).cast());
     }
 }
 
@@ -305,13 +309,13 @@ pub unsafe extern "C" fn waterui_apple_runtime_drop(runtime: *mut c_void) {
 /// An app that declares no root window is a contract violation: nothing is
 /// mounted and the result is null, which every other entry point accepts as
 /// a mount with no content.
-pub unsafe fn mount(
+pub unsafe fn mount<W: Windows, M: AppMenuBar>(
     runtime: *const c_void,
     host: *mut c_void,
     assets: *const c_char,
     fonts: *const c_char,
     host_environment: Option<HostEnvironment>,
-    app: impl FnOnce(Environment) -> App,
+    app: impl FnOnce(Environment) -> App<W, M>,
 ) -> *mut c_void {
     let mtm = MainThreadMarker::new().expect("mount runs on the main thread");
     // SAFETY: the runtime and host are borrowed live objects under the caller contract.
@@ -330,7 +334,6 @@ pub unsafe fn mount(
     runtime.fonts.borrow_mut().register_bundle_fonts(&resources);
     env.insert(resources);
     crate::dispatch::install(&mut env);
-    install_services(&mut env);
 
     let mut keepalive = KeepAlive::default();
     #[cfg(target_os = "macos")]
@@ -343,11 +346,12 @@ pub unsafe fn mount(
     // An embedded application's lifetime belongs to its host — iOS kills the
     // process without notice — so the termination machine is never started.
     let _ = parts.termination;
-    #[allow(unused_mut)]
-    let mut env = parts.env;
-    #[cfg(feature = "webview")]
-    crate::components::webview::install_service(&mut env);
-    let mut windows = parts.windows.into_iter();
+    let env = parts.env;
+    #[cfg(target_os = "macos")]
+    let mut env = env;
+    #[cfg(target_os = "macos")]
+    crate::windows::install_root_environment(&mut env);
+    let mut windows = crate::windows::connect_windows(parts.windows, &env).into_iter();
     let Some(declaration) = windows.next() else {
         waterui::contract_violation!(
             "an embedded app must declare a root window; nothing is mounted and the host shows no content"
@@ -366,13 +370,8 @@ pub unsafe fn mount(
     cocoa_ui::view::add_subview(host, &root);
     #[cfg(target_os = "ios")]
     cocoa_ui::uikit::view_controller::did_move_to_parent(&controller);
-    let content = mount_content(
-        &root,
-        declaration.build_content(),
-        &env,
-        &mut keepalive,
-        mtm,
-    );
+    let leaf = (declaration.content)(&env, mtm);
+    let content = mount_leaf(&root, leaf, &env, &mut keepalive);
     #[cfg(target_os = "macos")]
     {
         crate::windows::bind_background(
@@ -384,8 +383,9 @@ pub unsafe fn mount(
             mtm,
         );
         for window in windows {
-            keepalive.keep(crate::windows::realize(window, &env, mtm));
+            keepalive.keep(crate::windows::realize_root(window, &env, mtm));
         }
+        #[cfg(waterui_feature = "menu")]
         keepalive.keep(parts.menu_bar);
     }
     #[cfg(target_os = "ios")]
@@ -399,6 +399,7 @@ pub unsafe fn mount(
         );
         let declarations = std::iter::once(declaration).chain(windows).collect();
         crate::windows::declare(&scenes.state, declarations, &env, 1, mtm);
+        #[cfg(waterui_feature = "menu")]
         keepalive.keep(parts.menu_bar);
     }
     cocoa_ui::view::layout_immediately(&root);
@@ -530,16 +531,34 @@ pub(crate) fn place_then_join<R>(
     join()
 }
 
+#[cfg(any(preview_entry, feature = "native-test"))]
 pub(crate) fn mount_content(
     root: &HostView,
-    view: waterui::AnyView,
+    view: impl waterui::View,
     env: &Environment,
     keepalive: &mut KeepAlive,
     mtm: MainThreadMarker,
 ) -> Rc<Mounted> {
-    let leaf = crate::dispatch::render(view, env, mtm);
+    mount_leaf(
+        root,
+        crate::dispatch::render(view, env, mtm),
+        env,
+        keepalive,
+    )
+}
+
+/// [`mount_content`] for content already rendered into `leaf`.
+pub(crate) fn mount_leaf(
+    root: &HostView,
+    leaf: NativeLeaf,
+    env: &Environment,
+    keepalive: &mut KeepAlive,
+) -> Rc<Mounted> {
     let placed = cocoa_ui::view::retain_base(leaf.view());
+    #[cfg(feature = "inspector")]
     crate::inspector::install(root, env, keepalive);
+    #[cfg(not(feature = "inspector"))]
+    let _ = (env, keepalive);
     let content = place_then_join(
         root,
         move |root| {

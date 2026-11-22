@@ -12,8 +12,6 @@ use hydrolysis::{
 #[cfg(feature = "gpu")]
 use waterui::graphics::WorkingColor;
 #[cfg(feature = "gpu")]
-use waterui::graphics::backend::SceneViewMergeToParent;
-#[cfg(feature = "gpu")]
 use waterui::text::FontCollection;
 #[cfg(feature = "gpu")]
 use waterui_core::{AnyView, Environment, View};
@@ -135,7 +133,7 @@ impl TestHost {
     #[must_use]
     pub fn new(env: Environment, width: u32, height: u32, style: impl Style) -> Self {
         let mut env = env;
-        waterui_core::install_application_resources(&mut env);
+        waterui::install_application_resources(&mut env);
         // A host that staged its declared fonts itself installs a
         // `DeclaredFonts`; a test binary under cargo resolves them here.
         crate::declared_fonts::install_declared_fonts(&mut env);
@@ -182,10 +180,9 @@ impl TestHost {
         let surface = platform.surface();
         renderer.reset_scene();
         renderer.begin_rebuild_frame();
-        let env = self.env.clone().extending(SceneViewMergeToParent);
         renderer.capture_window_tree(
             AnyView::new(view),
-            &env,
+            &self.env,
             bounds,
             kurbo::Affine::IDENTITY,
             kurbo::Affine::IDENTITY,

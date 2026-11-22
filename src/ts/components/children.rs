@@ -10,7 +10,7 @@
 
 use nami::{Computed, Signal, SignalExt as _};
 use suiteki::Str;
-use waterui_controls::label::{IntoLabel as _, Label};
+use waterui_controls::label::{ErasedLabel, IntoLabel as _, Label, TitleLabel};
 use waterui_core::{AnyView, Dynamic, Metadata, Retain};
 use waterui_text::Text;
 use waterui_ts::engine::{JsError, JsValue};
@@ -100,10 +100,10 @@ pub fn label(
     component: &str,
     explicit: Option<AnyView>,
     children: &[JsValue],
-) -> Result<Label, JsError> {
+) -> Result<Label<ErasedLabel>, JsError> {
     if let Some(view) = explicit {
         return view
-            .downcast::<Label>()
+            .downcast::<Label<ErasedLabel>>()
             .map(|label| *label)
             .map_err(|view| {
                 JsError::conversion(format!(
@@ -118,7 +118,7 @@ pub fn label(
              so give it children — <{component}>Save</{component}> — or a label attribute"
         )));
     };
-    Ok(Text::new(content).into_label())
+    Ok(Text::new(content).into_label().erase())
 }
 
 /// The label of a control that may go without one.
@@ -130,7 +130,10 @@ pub fn label(
 /// # Errors
 ///
 /// Returns [`JsError`] when a child cannot be read as text.
-pub fn label_or_none(bridge: &Bridge, children: &[JsValue]) -> Result<Option<Label>, JsError> {
+pub fn label_or_none(
+    bridge: &Bridge,
+    children: &[JsValue],
+) -> Result<Option<Label<TitleLabel>>, JsError> {
     Ok(text(bridge, children)?.map(|content| Text::new(content).into_label()))
 }
 

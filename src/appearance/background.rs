@@ -30,7 +30,7 @@
 use nami::signal::IntoComputed;
 use std::sync::Arc;
 use suiteki::Str;
-use waterui_core::{AnyView, Computed, IgnorableMetadata, View, metadata::MetadataKey};
+use waterui_core::{Computed, Metadata, View, metadata::MetadataKey};
 use waterui_graphics::color::{Color, Srgb};
 use waterui_graphics::gradient::Gradient;
 use waterui_layout::BackgroundView;
@@ -67,19 +67,18 @@ pub trait IntoBackground {
 }
 
 impl IntoBackground for Material {
-    type Output<Content: View> = IgnorableMetadata<MaterialBackground>;
+    type Output<Content: View> = Metadata<MaterialBackground, Content>;
 
     fn apply_background<Content: View>(self, content: Content) -> Self::Output<Content> {
-        IgnorableMetadata::new(AnyView::new(content), MaterialBackground(self))
+        Metadata::new(content, MaterialBackground(self))
     }
 }
 
 /// A Liquid Glass background metadata.
 ///
-/// This is an ignorable metadata delegated to native backends, the same way
-/// [`MaterialBackground`] is: a backend that has the platform's glass primitive
-/// projects it, and any other backend approximates it or renders the content
-/// without a background.
+/// Every backend realizes it, as it does [`MaterialBackground`]: a backend
+/// that has the platform's glass primitive projects it, and any other backend
+/// approximates it.
 ///
 /// Use via the `.background(Glass::…)` API rather than directly:
 ///
@@ -94,10 +93,10 @@ pub struct GlassBackground(pub Glass);
 impl MetadataKey for GlassBackground {}
 
 impl IntoBackground for Glass {
-    type Output<Content: View> = IgnorableMetadata<GlassBackground>;
+    type Output<Content: View> = Metadata<GlassBackground, Content>;
 
     fn apply_background<Content: View>(self, content: Content) -> Self::Output<Content> {
-        IgnorableMetadata::new(AnyView::new(content), GlassBackground(self))
+        Metadata::new(content, GlassBackground(self))
     }
 }
 
@@ -115,8 +114,8 @@ impl IntoBackground for Glass {
 /// group of its own, and its materials do not join the outer one. A
 /// material outside every group is a group of its own.
 ///
-/// This is ignorable metadata, like [`MaterialBackground`]: a realization
-/// whose style does not group materials renders the content unchanged.
+/// Every backend handles it: a realization whose materials do not share a
+/// backdrop renders the content unchanged.
 ///
 /// Use via [`material_group`](crate::ViewExt::material_group) rather than
 /// directly.
@@ -157,10 +156,9 @@ pub enum Background {
 /// Materials create translucent blur effects that allow content behind the view
 /// to show through with varying degrees of blur and vibrancy.
 ///
-/// The mainline backends, Apple and Hydrolysis, realize `Material`. As a
-/// view's background it travels as ignorable metadata, so a backend that does
-/// not realize it, such as an experimental one, draws the content without it;
-/// as a window's background see [`WindowBackground::Material`]. The levels
+/// Every backend realizes `Material`, as a view's background through
+/// metadata and as a window's background through
+/// [`WindowBackground::Material`]. The levels
 /// fall in two groups:
 ///
 /// - **Within-window levels** — [`Regular`](Self::Regular),

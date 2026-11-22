@@ -28,7 +28,7 @@ use alloc::vec::Vec;
 use core::fmt;
 
 use nami::{Computed, Signal, SignalExt, watcher::BoxWatcherGuard};
-use waterui_core::{IntoSignalF32, View, layout::LayoutInvalidationCallback, view::TupleViews};
+use waterui_core::{IntoSignalF32, View, layout::LayoutInvalidationCallback, view::ViewSequence};
 
 use crate::{
     Layout, LayoutError, PlacementInput, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
@@ -470,10 +470,6 @@ impl<V: View> View for PositionedChild<V> {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         FixedContainer::new(self.layout, (self.content,))
     }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::Both
-    }
 }
 
 // ============================================================================
@@ -672,7 +668,7 @@ impl<C> fmt::Debug for Absolute<C> {
     }
 }
 
-impl<C: TupleViews> Absolute<C> {
+impl<C: ViewSequence> Absolute<C> {
     /// Creates a new `Absolute` container with the given contents.
     #[must_use]
     pub const fn new(contents: C) -> Self {
@@ -680,13 +676,9 @@ impl<C: TupleViews> Absolute<C> {
     }
 }
 
-impl<C: TupleViews + 'static> View for Absolute<C> {
+impl<C: ViewSequence + 'static> View for Absolute<C> {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         FixedContainer::new(AbsoluteLayout, self.contents)
-    }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::Both
     }
 }
 
@@ -708,7 +700,7 @@ impl<C: TupleViews + 'static> View for Absolute<C> {
 /// # }
 /// ```
 #[must_use]
-pub const fn absolute<C: TupleViews>(contents: C) -> Absolute<C> {
+pub const fn absolute<C: ViewSequence>(contents: C) -> Absolute<C> {
     Absolute::new(contents)
 }
 

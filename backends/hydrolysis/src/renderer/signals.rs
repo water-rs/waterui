@@ -463,7 +463,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         signal.snapshot()
     }
 
-    #[cfg(any(feature = "picker", feature = "list"))]
+    #[cfg(any(feature = "picker", all(feature = "list", feature = "accessibility")))]
     pub(crate) fn read_resolved_text_styled(
         &mut self,
         text: &Text,

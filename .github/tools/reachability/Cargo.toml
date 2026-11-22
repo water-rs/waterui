@@ -1,0 +1,15 @@
+[package]
+name = "reachability"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0 OR MIT"
+description = "Checks .wreach / __DATA,__wreach reachability markers in linked release artifacts"
+
+[dependencies]
+object = { version = "0.41", default-features = false, features = ["read_core", "elf", "macho", "pe", "archive", "std"] }
+waterui-meta = { path = "../../../utils/meta" }
+
+# Standalone: the root workspace excludes .github, so this tool builds with
+# its own lockfile and never joins the graph it measures.
+[workspace]

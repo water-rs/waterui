@@ -2,7 +2,7 @@
 
 use alloc::{vec, vec::Vec};
 use nami::{Computed, Signal, signal::IntoComputed, watcher::BoxWatcherGuard};
-use waterui_core::{AnyView, View, layout::LayoutInvalidationCallback};
+use waterui_core::{View, layout::LayoutInvalidationCallback};
 
 use crate::{
     HorizontalAlignment, Layout, LayoutError, PlacedSubview, PlacementInput, Point, ProposalSize,
@@ -322,37 +322,31 @@ impl EdgeInsets {
 
 /// View wrapper that applies [`PaddingLayout`] to a single child.
 #[derive(Debug)]
-pub struct Padding {
+pub struct Padding<C> {
     layout: PaddingLayout,
-    content: AnyView,
+    content: C,
 }
 
-impl Padding {
+impl<C: View> Padding<C> {
     /// Wraps a view with custom `edges`.
-    pub fn new(edges: impl IntoComputed<EdgeInsets>, content: impl View + 'static) -> Self {
+    pub fn new(edges: impl IntoComputed<EdgeInsets>, content: C) -> Self {
         Self {
             layout: PaddingLayout {
                 edges: edges.into_computed(),
             },
-            content: AnyView::new(content),
+            content,
         }
     }
 
     /// Consumes the padding and returns the edge insets and content.
-    pub fn into_inner(self) -> (Computed<EdgeInsets>, AnyView) {
+    pub fn into_inner(self) -> (Computed<EdgeInsets>, C) {
         (self.layout.edges, self.content)
     }
 }
 
-impl View for Padding {
+impl<C: View> View for Padding<C> {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
-        FixedContainer::new(self.layout, vec![self.content])
-    }
-
-    /// Resolves to `FixedContainer` over the same layout and single child;
-    /// reports what that container would.
-    fn stretch_axis(&self) -> StretchAxis {
-        self.layout.stretch_axis(&[self.content.stretch_axis()])
+        FixedContainer::new(self.layout, (self.content,))
     }
 }
 

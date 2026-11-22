@@ -20,7 +20,7 @@
 //!
 //! An interactive source — a web view — takes input, answers a caret and
 //! pumps its UI-thread work through the same hooks a
-//! [`GpuContentView`](super::GpuContentView) carries, and keeps its own
+//! [`GpuView`](super::GpuView) carries, and keeps its own
 //! viewport at the layer's [`PresentedSize`].
 
 use alloc::boxed::Box;
@@ -494,9 +494,5 @@ impl NativeView for ExternalFrameView {
 impl View for ExternalFrameView {
     fn body(self, _env: &Environment) -> impl View {
         Native::new(self)
-    }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        NativeView::stretch_axis(self)
     }
 }

@@ -430,7 +430,7 @@ pub struct ExternalFrame {
 #[derive(Clone)]
 pub struct FrameRelease {
     /// Held only to be dropped: the last clone's drop runs the hook.
-    _hook: Arc<ReleaseOnDrop>,
+    _hook: Arc<ReleaseGuard>,
 }
 
 impl std::fmt::Debug for FrameRelease {
@@ -442,21 +442,15 @@ impl std::fmt::Debug for FrameRelease {
 /// A producer's release callback, run at most once.
 pub(crate) type ReleaseFn = Box<dyn FnOnce() + Send + 'static>;
 
-/// Runs its callback when dropped: the last [`FrameRelease`] clone going
-/// away is the release point.
-struct ReleaseOnDrop(std::sync::Mutex<Option<ReleaseFn>>);
+/// Runs the callback when dropped: the last [`FrameRelease`] clone going
+/// away is the release point. The callback sits in a [`Mutex`] only so the
+/// guard is `Sync`, like the handle sharing it.
+type ReleaseGuard =
+    std::mem::DropGuard<std::sync::Mutex<ReleaseFn>, fn(std::sync::Mutex<ReleaseFn>)>;
 
-impl Drop for ReleaseOnDrop {
-    fn drop(&mut self) {
-        let release = self
-            .0
-            .get_mut()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
-        if let Some(release) = release {
-            release();
-        }
-    }
+fn run_release(slot: std::sync::Mutex<ReleaseFn>) {
+    slot.into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)();
 }
 
 /// The planes an [`ExternalFrame`] samples.
@@ -963,7 +957,10 @@ impl ExternalFrame {
                     return self;
                 }
                 self.release = Some(FrameRelease {
-                    _hook: Arc::new(ReleaseOnDrop(std::sync::Mutex::new(Some(release)))),
+                    _hook: Arc::new(std::mem::DropGuard::new(
+                        std::sync::Mutex::new(release),
+                        run_release,
+                    )),
                 });
             }
         }

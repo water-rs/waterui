@@ -40,10 +40,10 @@ pub fn troubleshooting_table_fixes() {
 
     let signal = Binding::bool(true);
 
-    // `when(..)` / `.visible(signal)` / `.anyview()` / `AnyView::new(..)`
+    // `when(..)` / `.visible(signal)` / `OneOf2::A(..)` / `OneOf2::B(..)`
     let _ = Divider.visible(signal);
-    let _ = Divider.anyview();
-    let _ = AnyView::new(Divider);
+    let _: OneOf2<Divider, ()> = OneOf2::A(Divider);
+    let _: OneOf2<Divider, ()> = OneOf2::B(());
 
     // `Binding::default()` for `Binding<Option<T>>`.
     let _: Binding<Option<i32>> = Binding::default();

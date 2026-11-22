@@ -26,7 +26,7 @@ use nami::Binding;
 use waterui::metadata::anchored_overlay::{AnchorEdge, AnchorPlacement, Clamp, Dismissal};
 use waterui_core::Environment;
 use waterui_core::layout::layout_direction;
-use waterui_core::transition::TransitionSpec;
+use waterui_structural_transition::TransitionSpec;
 
 use crate::renderer::tree::transition::{
     TransitionPaint, TransitionRun, claim_transition, flush_transitioned,
@@ -60,7 +60,7 @@ pub struct RegisteredAnchoredOverlay<E: crate::text::TextEngine> {
     pub(crate) env: Environment,
     /// The overlay's view builder: every presentation calls it, so each one
     /// gets an independent view instance.
-    pub(crate) builder: waterui_core::handler::AnyViewBuilder,
+    pub(crate) builder: Rc<dyn Fn() -> HeldChild<E>>,
     /// The presentations the owning effect keeps across frames.
     pub(crate) presentations: Rc<RefCell<AnchoredPresentations<E>>>,
     /// Identity shared between the effect and its registration, so the render
@@ -101,7 +101,7 @@ impl<E: crate::text::TextEngine> AnchoredPresentation<E> {
         reduce_motion: bool,
     ) -> Self {
         let marker = Rc::new(());
-        let mut content = RetainedSubview::new(entry.builder.build());
+        let mut content = RetainedSubview::held((entry.builder)());
         renderer
             .animation_controller
             .begin_animation_scope(scope_of(&marker));
@@ -237,7 +237,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             let mut state = core::mem::take(&mut *entry.presentations.borrow_mut());
             let reduce_motion = entry
                 .env
-                .get::<waterui_core::transition::ReduceMotion>()
+                .get::<waterui_structural_transition::ReduceMotion>()
                 .is_some_and(|flag| flag.0);
             if entry.presented {
                 // A new presentation builds fresh content: still-presented

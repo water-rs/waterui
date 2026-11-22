@@ -25,7 +25,6 @@ use crate::{
     hydrolysis::backend::HydrolysisBackend,
     platform::{PackageOptions, TargetPlatform},
     project::Project,
-    toolchain::{ToolchainError, windows_arm64_llvm::WindowsArm64LlvmToolchain},
     utils::command,
 };
 #[cfg(target_os = "macos")]
@@ -177,7 +176,6 @@ pub async fn build_hydrolysis_with_envs_and_features(
         );
     }
     let render_features = render_features(project, &cargo_toml, platform, offscreen)?;
-    let inspector_feature = super::development_inspector(&cargo_toml, options.is_release())?;
 
     // The managed crate is its own workspace root, so its `Cargo.lock` is
     // re-seeded from the application's lockfile before every resolution —
@@ -209,17 +207,7 @@ pub async fn build_hydrolysis_with_envs_and_features(
         .await?;
     }
 
-    let llvm_envs = WindowsArm64LlvmToolchain
-        .cargo_envs(project.host())
-        .await
-        .map_err(|error| match error {
-            ToolchainError::Fixable(_) => eyre::eyre!(
-                "Windows ARM64 LLVM toolchain is missing. Run `water doctor --fix` to install it automatically."
-            ),
-            ToolchainError::Unfixable(unfixable) => {
-                eyre::eyre!("Windows ARM64 LLVM toolchain check failed: {unfixable}")
-            }
-        })?;
+    let llvm_envs = super::windows_arm64_llvm_envs(project.host()).await?;
 
     let mut build = RustBuild::for_project(project, &backend_path, platform.triple())
         .with_target_dir(project.water_target_dir(options.linkage()).await?)
@@ -227,7 +215,14 @@ pub async fn build_hydrolysis_with_envs_and_features(
             render_features
                 .into_iter()
                 .chain(extra_features.iter().copied())
-                .chain(inspector_feature),
+                .chain(super::erased_dispatch(
+                    &cargo_toml,
+                    options.uses_erased_dispatch(),
+                )?)
+                .chain(super::development_inspector(
+                    &cargo_toml,
+                    options.is_release(),
+                )?),
         )
         .with_linkage(
             options.linkage(),
@@ -1171,6 +1166,7 @@ mod tests {
                 webview_enabled: true,
                 engine: Some(ResolvedWebViewBackend::Cef),
                 video_gpu: false,
+                map_gpu: false,
             },
         );
         let package_name = "demo-hydrolysis-deadbeef";
@@ -1315,6 +1311,7 @@ mod tests {
                 webview_enabled: false,
                 engine: Some(ResolvedWebViewBackend::Wpe),
                 video_gpu: false,
+                map_gpu: false,
             },
         );
         assert_eq!(rendered_bin_names(&ctx, package_name), [package_name]);

@@ -195,70 +195,19 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             // A filtered view wraps a child render node whose reactive
             // descendants must keep patching, so the walk recurses into it
             // (the filter itself owns its runtime, with no structural patch).
+            #[cfg(waterui_feature = "effects")]
             Self::Filtered(node) => node.child.patch(renderer),
             // A paint marker only: its child patches as on its own.
             Self::Fill(node) => node.child.patch(renderer),
-            Self::Color(_)
-            | Self::Text(_)
-            | Self::SceneView(_)
-            // GPU content owns its runtime and produces every frame; like a
-            // self-drawn scene it has no structural patch.
-            // A widget leaf re-dispatches from its live config every flush, so it
-            // needs no structural patch.
-            | Self::Widget(_) => false,
+            Self::Color(_) | Self::Text(_) | Self::Widget(_) => false,
+            #[cfg(hydrolysis_scene_view)]
+            Self::SceneView(_) => false,
             #[cfg(hydrolysis_gpu)]
             Self::GpuContent(_) | Self::ExternalFrame(_) => false,
             // A lazy stack keeps only visible item subtrees. Patch those retained
             // items before parent layout so a Dynamic row-height change updates the
             // scroll extent in the same refresh instead of one frame later.
             Self::LazyStack(node) => node.patch_visible(renderer),
-        }
-    }
-
-    /// Collect the identities of every live `DynamicHostNode` in this retained
-    /// subtree, so the measure-path dynamic dimension cache can be pruned to the
-    /// `Dynamic`s still present in the tree. Walks the same child-bearing variants
-    /// as [`RenderNode::patch`]. A set, not a list: the prune tests every cached
-    /// identity against it, which is quadratic over a linear scan.
-    pub(crate) fn collect_dynamic_identities(&self) -> FxHashSet<usize> {
-        let mut out = FxHashSet::default();
-        self.collect_dynamic_identities_into(&mut out);
-        out
-    }
-
-    pub(super) fn collect_dynamic_identities_into(&self, out: &mut FxHashSet<usize>) {
-        match self {
-            Self::Dynamic(node) => {
-                out.insert(node.source.identity());
-                node.child.borrow().collect_dynamic_identities_into(out);
-            }
-            Self::Container(container) => {
-                for child in &container.children {
-                    child.collect_dynamic_identities_into(out);
-                }
-            }
-            Self::Opacity(node) => node.child.collect_dynamic_identities_into(out),
-            Self::Scale(node) => node.child.collect_dynamic_identities_into(out),
-            Self::Rotation(node) => node.child.collect_dynamic_identities_into(out),
-            Self::Offset(node) => node.child.collect_dynamic_identities_into(out),
-            Self::Retain(node) => node.child.collect_dynamic_identities_into(out),
-            Self::Env(node) => node.child.collect_dynamic_identities_into(out),
-            Self::Wrapper(node) => node.child.collect_dynamic_identities_into(out),
-            Self::Collection(node) => {
-                for entry in &node.entries {
-                    entry.node.collect_dynamic_identities_into(out);
-                }
-            }
-            Self::Scroll(node) => node.child.collect_dynamic_identities_into(out),
-            Self::Filtered(node) => node.child.collect_dynamic_identities_into(out),
-            Self::Fill(node) => node.child.collect_dynamic_identities_into(out),
-            Self::Color(_) | Self::Text(_) | Self::SceneView(_) | Self::Widget(_) => {}
-            #[cfg(hydrolysis_gpu)]
-            Self::GpuContent(_) | Self::ExternalFrame(_) => {}
-            Self::LazyStack(node) => node
-                .item_cache
-                .borrow()
-                .collect_dynamic_identities_into(out),
         }
     }
 
@@ -294,6 +243,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 }
                 dirty
             }
+            #[cfg(waterui_feature = "effects")]
             Self::Filtered(node) => node.child.take_layout_dirty(),
             Self::Fill(node) => node.child.take_layout_dirty(),
             Self::Collection(node) => node
@@ -308,6 +258,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             // `size_drifted` re-probes the last proposal and answers the
             // drift, which the next `measure` clears by rewriting
             // `measured` (water-rs/waterui#1957).
+            #[cfg(hydrolysis_scene_view)]
             Self::SceneView(node) => node.size_drifted(),
             #[cfg(hydrolysis_gpu)]
             Self::GpuContent(node) => node.size_drifted(),
@@ -376,13 +327,12 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
 
     /// The emit-pass equivalent of the non-scene half of
     /// `HydrolysisRenderer::finish_rebuild_frame` — the build path: Retain
-    /// watcher rollover, the measurement-cache and animation-slot prunes,
-    /// focus validation, and the accessibility tree's publication.
+    /// watcher rollover, the animation-slot prune, focus validation, and the
+    /// accessibility tree's publication.
     /// `signals.finish_rebuild` stays with the caller — only a build entered
     /// one.
     #[cfg(hydrolysis_cherenkov)]
-    fn finish_semantic_rebuild_frame(&mut self, live_dynamics: &FxHashSet<usize>) {
-        self.prune_dynamic_measurements(live_dynamics);
+    fn finish_semantic_rebuild_frame(&mut self) {
         self.validate_focused_text_input_after_flush();
         self.retire_unbound_animation_slots();
         self.hit_test.finish_rebuild_frame(
@@ -405,7 +355,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// Releasing in the renderer's order is what exposes same-manager watcher
     /// re-entrancy (water-rs/waterui#1213) to `#[waterui::test]`.
     #[cfg(hydrolysis_cherenkov)]
-    fn finish_semantic_emit_frame(&mut self, tree: &RenderNode<E>, structural_change: bool) {
+    fn finish_semantic_emit_frame(&mut self, structural_change: bool) {
         self.frame_registries();
         self.hit_test.finish_rebuild_frame(
             #[cfg(any(feature = "text-field", feature = "secure-field"))]
@@ -415,11 +365,10 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         self.navigation.finish_rebuild_frame();
         self.finish_outside_read_frame();
         if structural_change {
-            // The emit re-bound every live animation slot; drop the slots and
-            // cached Dynamic measurements belonging to subtrees the patch
-            // removed, before the frame's retained subscriptions release.
+            // The emit re-bound every live animation slot; drop the slots
+            // belonging to subtrees the patch removed, before the frame's
+            // retained subscriptions release.
             self.retire_unbound_animation_slots();
-            self.prune_dynamic_measurements(&tree.collect_dynamic_identities());
         }
         self.validate_focused_text_input_after_flush();
         self.relocate_dropped_focus();
@@ -435,7 +384,27 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// Like the rendered path, a call made with a tree already built applies
     /// the pending patch and re-emits instead of re-dispatching.
     #[cfg(hydrolysis_cherenkov)]
-    pub(crate) fn capture_window_semantics(&mut self, content: AnyView, env: &Environment) {
+    pub(crate) fn capture_window_semantics(&mut self, content: impl View, env: &Environment) {
+        self.capture_window_semantics_with(env, |core, env| RenderNode::build(content, env, core));
+    }
+
+    #[cfg(hydrolysis_cherenkov)]
+    pub(crate) fn capture_held_window_semantics(
+        &mut self,
+        content: HeldChild<E>,
+        env: &Environment,
+    ) {
+        self.capture_window_semantics_with(env, |core, env| {
+            RenderNode::build_held(content, env, core)
+        });
+    }
+
+    #[cfg(hydrolysis_cherenkov)]
+    fn capture_window_semantics_with(
+        &mut self,
+        env: &Environment,
+        build: impl FnOnce(&mut Self, &Environment) -> RenderNode<E>,
+    ) {
         if self.render_tree.is_some() {
             assert!(
                 self.flush_window_semantics(env),
@@ -449,7 +418,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         self.begin_rebuild();
         self.begin_semantic_rebuild_frame();
         self.render_depth = 0;
-        let tree = RenderNode::build(content, env, self);
+        let tree = build(self, env);
         // Marks on the window tree propagate to the window's root cell,
         // which the pump polls.
         tree.core().cell.set_parent(self.root_cell());
@@ -459,7 +428,6 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         // schedule more work.
         self.clear_all_marks();
         let _ = self.signals.take_patch_request();
-        let live_dynamics = tree.collect_dynamic_identities();
         #[cfg(feature = "accessibility")]
         {
             self.begin_emit_pass();
@@ -468,7 +436,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         }
         self.content_minimum = None;
         self.render_tree = Some(tree);
-        self.finish_semantic_rebuild_frame(&live_dynamics);
+        self.finish_semantic_rebuild_frame();
         self.finish_rebuild();
     }
 
@@ -511,7 +479,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             tree.emit_accessibility(self, _env);
             self.finish_emit_pass();
         }
-        self.finish_semantic_emit_frame(&tree, structural_change);
+        self.finish_semantic_emit_frame(structural_change);
         self.content_minimum = None;
         self.render_tree = Some(tree);
         true
@@ -573,10 +541,13 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         });
         // The `.dialog` modal layer draws above everything: scrim, card and
         // the modal input scope the card registers through its environment.
-        let host = self.core.presentation_hosts.dialog.clone();
-        self.record_host(&host, |renderer| {
-            renderer.render_dialogs(transform, safe_area);
-        });
+        #[cfg(waterui_feature = "dialog")]
+        {
+            let host = self.core.presentation_hosts.dialog.clone();
+            self.record_host(&host, |renderer| {
+                renderer.render_dialogs(transform, safe_area);
+            });
+        }
     }
 }
 
@@ -584,7 +555,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// Build the retained tree before its first sized frame, so statically
     /// reachable nodes exist before the first render target is presented.
     #[cfg(test)]
-    pub(crate) fn prepare_window_tree(&mut self, content: AnyView, env: &Environment) {
+    pub(crate) fn prepare_window_tree(&mut self, content: impl View, env: &Environment) {
         assert!(
             self.render_tree.is_none(),
             "hydrolysis renderer: window tree prepared more than once"
@@ -607,11 +578,39 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// `render_tree` for subsequent per-frame flushes.
     pub fn capture_window_tree(
         &mut self,
-        content: AnyView,
+        content: impl View,
         env: &Environment,
         bounds: kurbo::Rect,
         transform: kurbo::Affine,
         hit_transform: kurbo::Affine,
+    ) {
+        self.capture_window_tree_with(env, bounds, transform, hit_transform, |core, env| {
+            RenderNode::build(content, env, core)
+        });
+    }
+
+    /// [`Self::capture_window_tree`] for a window dispatched from the view
+    /// tree, whose content is held in [`HeldChild`].
+    pub(crate) fn capture_held_window_tree(
+        &mut self,
+        content: HeldChild<E>,
+        env: &Environment,
+        bounds: kurbo::Rect,
+        transform: kurbo::Affine,
+        hit_transform: kurbo::Affine,
+    ) {
+        self.capture_window_tree_with(env, bounds, transform, hit_transform, |core, env| {
+            RenderNode::build_held(content, env, core)
+        });
+    }
+
+    fn capture_window_tree_with(
+        &mut self,
+        env: &Environment,
+        bounds: kurbo::Rect,
+        transform: kurbo::Affine,
+        hit_transform: kurbo::Affine,
+        build: impl FnOnce(&mut SemanticCore<E>, &Environment) -> RenderNode<E>,
     ) {
         let _flush_span = tracing::debug_span!("hydrolysis_capture_window_tree").entered();
         let (content_rect, size, safe_area) = window_root_layout(self, env, bounds, transform);
@@ -677,7 +676,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 .set_update(self.frame_stage_times.update() + update_started_at.elapsed());
         }
         self.render_depth = 0;
-        let mut node = RenderNode::build(content, env, self);
+        let mut node = build(self, env);
         node.core().cell.set_parent(self.root_cell());
         // The build is the flush for every mark it raised (dev's rebuild
         // generation dropped the same marks): only a mark raised by the
@@ -814,10 +813,9 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         self.core.navigation.finish_rebuild_frame();
         self.core.finish_outside_read_frame();
         if structural_change {
-            // The flush re-bound every live animation. Drop slots and cached
-            // Dynamic measurements belonging to subtrees removed by the patch.
+            // The flush re-bound every live animation. Drop slots belonging
+            // to subtrees removed by the patch.
             self.core.retire_unbound_animation_slots();
-            self.prune_dynamic_measurements(&tree.collect_dynamic_identities());
         }
         // Drop focus or drag targets that are no longer emitted, relocate the
         // focus a dropped view released, then publish the refreshed

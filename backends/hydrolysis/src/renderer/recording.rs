@@ -497,6 +497,7 @@ impl SceneResources {
     }
 
     /// The table `SceneContent::build_scene` calls register through.
+    #[cfg(hydrolysis_scene_view)]
     pub(crate) const fn waterui(&self) -> &waterui_graphics::backend::SceneResources {
         &self.inner
     }

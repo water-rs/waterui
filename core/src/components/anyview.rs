@@ -13,32 +13,45 @@ use core::{
 };
 
 use alloc::boxed::Box;
+use waterui_meta::mark_reached;
 
-use crate::{Environment, View, layout::StretchAxis};
+use crate::backend::{Backend, DynBackend, Erased};
+use crate::{Environment, View};
 
 trait AnyViewImpl: 'static {
-    fn body(self: Box<Self>, env: Environment) -> AnyView;
+    fn dispatch_dyn(
+        self: Box<Self>,
+        backend: &mut dyn DynBackend,
+        env: &Environment,
+        cx: Box<dyn Any>,
+    ) -> Box<dyn Any>;
     fn type_id(&self) -> TypeId {
         TypeId::of::<Self>()
     }
     fn name(&self) -> &'static str {
         type_name::<Self>()
     }
-    fn stretch_axis(&self) -> StretchAxis;
 }
 
 impl<T: View> AnyViewImpl for T {
-    fn body(self: Box<Self>, env: Environment) -> AnyView {
-        AnyView::new(View::body(*self, &env))
-    }
-    fn stretch_axis(&self) -> StretchAxis {
-        View::stretch_axis(self)
+    fn dispatch_dyn(
+        self: Box<Self>,
+        backend: &mut dyn DynBackend,
+        env: &Environment,
+        cx: Box<dyn Any>,
+    ) -> Box<dyn Any> {
+        View::dispatch(*self, &mut Erased::new(backend), env, cx)
     }
 }
 
 /// A type-erased wrapper for a `View`.
 ///
 /// This allows storing and passing around different view types uniformly.
+///
+/// # Contract
+///
+/// An erased view expands through [`View::dispatch`], which reaches
+/// [`Backend::erased`]; `body` is unreachable, and reaching it panics.
 #[must_use]
 pub struct AnyView(Box<dyn AnyViewImpl>);
 
@@ -93,13 +106,17 @@ impl AnyView {
         AnyViewImpl::name(&*self.0)
     }
 
-    /// Returns the stretch axis of the contained view.
-    ///
-    /// This delegates to the `View::stretch_axis()` method of the wrapped view,
-    /// which for native views returns their layout stretch behavior.
-    #[must_use]
-    pub fn stretch_axis(&self) -> StretchAxis {
-        AnyViewImpl::stretch_axis(&*self.0)
+    /// Expands the erased view through `backend`: its own subtree
+    /// dispatches statically, and only its native payloads and metadata
+    /// reach `backend`, each as `&mut dyn Any`.
+    pub fn dispatch_dyn(
+        self,
+        backend: &mut dyn DynBackend,
+        env: &Environment,
+        cx: Box<dyn Any>,
+    ) -> Box<dyn Any> {
+        mark_reached!("erased");
+        self.0.dispatch_dyn(backend, env, cx)
     }
 
     #[doc(hidden)]
@@ -178,30 +195,60 @@ impl AnyView {
 }
 
 impl View for AnyView {
-    fn body(self, env: &Environment) -> impl View {
-        self.0.body(env.clone())
+    fn body(self, _env: &Environment) -> impl View {
+        never_expands(self.name());
     }
 
-    /// Forwards the erased view's own answer.
-    ///
-    /// Without this, erasing a view silently reset its stretch axis to the
-    /// default: the inherent [`AnyView::stretch_axis`] reported the real value
-    /// while the trait method — the one generic code calls — reported `None`.
-    /// Every container that wanted its content's axis therefore had to copy it
-    /// before erasing, and that copy is what went stale.
-    fn stretch_axis(&self) -> StretchAxis {
-        AnyViewImpl::stretch_axis(&*self.0)
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        backend.erased(self, env, cx)
     }
+}
+
+fn never_expands(name: &'static str) {
+    unreachable!(
+        "erased view {name} reached `body`: an `AnyView` expands through `View::dispatch`"
+    );
 }
 
 #[cfg(test)]
 mod test {
     use core::any::TypeId;
 
+    use crate::backend::{Backend, peel_native};
+    use crate::{Environment, View};
+
     use super::AnyView;
 
     #[test]
     pub fn get_type_id() {
         assert_eq!(AnyView::new(()).type_id(), TypeId::of::<()>());
+    }
+
+    #[test]
+    #[should_panic(expected = "reached `body`")]
+    fn an_erased_view_never_expands() {
+        let _ = AnyView::new(()).body(&Environment::new());
+    }
+
+    struct DispatchedOnly;
+
+    fn body_must_not_run() {
+        panic!("erased dispatch must not call body");
+    }
+
+    impl View for DispatchedOnly {
+        fn body(self, _env: &Environment) -> impl View {
+            body_must_not_run();
+        }
+
+        fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+            ().dispatch(backend, env, cx)
+        }
+    }
+
+    #[test]
+    fn an_erased_view_dispatches_without_calling_body() {
+        let erased = AnyView::new(DispatchedOnly);
+        assert_eq!(peel_native::<()>(erased, &Environment::new()), Some(()));
     }
 }

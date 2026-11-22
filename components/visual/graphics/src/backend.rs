@@ -38,12 +38,14 @@ pub use crate::scene::picture::{Picture, PictureRecording, PictureSource};
 #[cfg(feature = "cherenkov")]
 pub use crate::scene::resources::SceneCaps;
 pub use crate::scene::resources::{
-    Handle, HeldResources, PlainId, RecordingResources, Registered, RegisteredText, ResourceHandle,
-    SceneBackend, SceneResources, ShaderBackend, TextBackend, TextRegistration, TextRequest,
+    Handle, HeldResources, PlainId, RecordingResources, Registered, ResourceHandle, SceneBackend,
+    SceneResources, ShaderBackend,
 };
+#[cfg(feature = "text")]
+pub use crate::scene::resources::{RegisteredText, TextBackend, TextRegistration, TextRequest};
 pub use crate::scene::scene_view::{
     NextFrame, SceneContent, SceneFrame, SceneInvalidator, SceneUpdate, SceneView,
-    SceneViewMergeToParent, invalidate_on_change, resolve_scene_proposal, scene_stretch_axis,
+    invalidate_on_change, resolve_scene_proposal, scene_stretch_axis,
 };
 pub use crate::scene::source::{
     FontSource, Format, ImageColorSpace, ImageData, ImageFormat, ResourceError, Rgba8, Rgba16F,
@@ -63,36 +65,3 @@ pub use crate::effects::filter_view::ErasedEffect;
 pub use crate::effects::filter_view::{
     AnyEffect, FilterDescription, FilterSignal, FilteredView, OutputSize, ParamGuards, Reactive,
 };
-
-use waterui_core::AnyView;
-
-/// The name of `view` when it is a leaf that needs a GPU device to render,
-/// and `None` for any other view.
-///
-/// The leaves are `GpuContentView` — user GPU content, which
-/// `ShaderPaintView`, `FlowingGradient` and the GPU video player render
-/// through — and `ExternalFrameView`. A render target without a device
-/// refuses them by this name. Whether they exist depends on this crate's
-/// `gpu` feature, which any crate in the build can enable, so a backend
-/// built without a GPU asks here instead of naming the types.
-#[cfg(feature = "gpu")]
-#[must_use]
-pub fn gpu_device_view(view: &AnyView) -> Option<&'static str> {
-    use waterui_core::Native;
-
-    if view.is::<Native<crate::GpuContentView>>() {
-        Some("GpuContentView")
-    } else if view.is::<Native<crate::ExternalFrameView>>() {
-        Some("ExternalFrameView")
-    } else {
-        None
-    }
-}
-
-/// Always `None`: without the `gpu` feature this crate defines no leaf that
-/// needs a GPU device.
-#[cfg(not(feature = "gpu"))]
-#[must_use]
-pub const fn gpu_device_view(_view: &AnyView) -> Option<&'static str> {
-    None
-}

@@ -11,9 +11,10 @@ use crate::text::TextEngine;
 use crate::theme::WidgetTheme;
 use waterui_core::contract_violation;
 use waterui_core::layout::{
-    Layout, LayoutError, LayoutPlacement, ResolvedExtent, SubviewPlacement, place_layout,
-    resolve_layout_extent,
+    Layout, LayoutError, LayoutPlacement, PlacedSubview, Rect as LayoutRect, ResolvedExtent,
+    SubviewPlacement, place_layout, resolve_layout_extent,
 };
+#[cfg(hydrolysis_scene_view)]
 use waterui_graphics::backend::scene_stretch_axis;
 use waterui_layout::scroll::scroll_stretch_axis;
 
@@ -36,6 +37,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Self::Retain(node) => node.child.priority(),
             Self::Env(node) => node.child.priority(),
             Self::Dynamic(node) => node.child.borrow().priority(),
+            #[cfg(waterui_feature = "effects")]
             Self::Filtered(node) => node.child.priority(),
             Self::Fill(node) => node.child.priority(),
             Self::Widget(node) => node.behavior.priority(),
@@ -51,7 +53,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// treats a child answering `true` as a non-member (§4.4: it takes no
     /// slot and no spacing), and a `Dynamic` flipping between `()` and content
     /// is a membership change — `layout` re-asks this every pass.
-    pub(super) fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         match self {
             Self::Widget(node) => node.behavior.renders_nothing(),
             Self::Opacity(node) => node.child.is_empty(),
@@ -66,6 +68,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Self::Wrapper(node) => node.child.is_empty(),
             Self::Fill(node) => node.child.is_empty(),
             // A filter over a child that draws nothing draws nothing itself.
+            #[cfg(waterui_feature = "effects")]
             Self::Filtered(node) => node.child.is_empty(),
             // A container is always a member — even a frame wrapping `()`
             // explicitly claims its configured slot, like a `Spacer` does —
@@ -74,7 +77,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         }
     }
 
-    pub(super) fn stretch(&self) -> StretchAxis {
+    pub(in crate::renderer) fn stretch(&self) -> StretchAxis {
         match self {
             Self::Color(_) => StretchAxis::Both,
             // §6: a scroll stretches on its scrolling axis and on the
@@ -103,6 +106,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Self::Dynamic(node) => node.child.borrow().stretch(),
             // Scene content that is naturally a size is content-sized and claims
             // no leftover space; content that has no size of its own fills.
+            #[cfg(hydrolysis_scene_view)]
             Self::SceneView(node) => scene_stretch_axis(node.content.borrow().intrinsic_size()),
             // GPU content's stretch is the view's declared contract, fixed
             // at construction by `intrinsic_size`: a live `measure` answer
@@ -119,6 +123,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Self::ExternalFrame(node) => {
                 waterui_core::NativeView::stretch_axis(&node.runtime.borrow().view)
             }
+            #[cfg(waterui_feature = "effects")]
             Self::Filtered(node) => node.child.stretch(),
             Self::Collection(node) => {
                 // A collection's membership is reactive; its layout is one of the
@@ -132,8 +137,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     }
 
     /// Measure this node under a proposal (recursive). Text shaping runs through
-    /// the renderer's [`HydroState`] on the main thread. Visible crate-wide so
-    /// the `Dynamic` dispatch measure can re-measure the retained child.
+    /// the renderer's [`HydroState`] on the main thread.
     ///
     /// Memoized per frame on the node's own [`NodeMeasureEntry`], for
     /// container-like nodes only: a layout engine that re-probes a child
@@ -168,6 +172,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         let mut gate = memo_gate.get();
         if !gate.probe(frame, proposal) {
             memo_gate.set(gate);
+            state.measurement.record_miss();
             return self.measure_body(state, env, theme, proposal);
         }
         memo_gate.set(gate);
@@ -175,8 +180,10 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         let env_identity = env.identity();
         let hit = memo_slots.borrow().dims(env_identity, frame, proposal);
         if let Some(hit) = hit {
+            state.measurement.record_hit();
             return hit;
         }
+        state.measurement.record_miss();
         let dimensions = self.measure_body(state, env, theme, proposal);
         let mut memo = memo_slots.borrow_mut();
         memo.ensure_current(frame);
@@ -212,7 +219,8 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                     .map(|child| NodeSubView::new(child, &cell, env, theme))
                     .collect();
                 let refs: Vec<&dyn SubView> = subs.iter().map(|sub| sub as &dyn SubView).collect();
-                ViewDimensions::new(container.layout.size_that_fits(proposal, &refs))
+                let size = container.layout.size_that_fits(proposal, &refs);
+                container_dimensions(&*container.layout, size, proposal, &subs, &refs)
             }
             // Transform/opacity wrappers are layout-transparent.
             Self::Opacity(node) => node.child.measure(state, env, theme, proposal),
@@ -221,20 +229,11 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Self::Offset(node) => node.child.measure(state, env, theme, proposal),
             Self::Retain(node) => node.child.measure(state, env, theme, proposal),
             Self::Env(node) => node.child.measure(state, &node.env, theme, proposal),
-            Self::Dynamic(node) => {
-                let dimensions = node.child.borrow().measure(state, env, theme, proposal);
-                // The connected node's real per-proposal answers feed the
-                // dispatch measure of the same `Dynamic` (`measure_dynamic`).
-                state.measurement.store_dynamic_dimensions(
-                    node.source.identity(),
-                    proposal,
-                    dimensions.clone(),
-                );
-                dimensions
-            }
+            Self::Dynamic(node) => node.child.borrow().measure(state, env, theme, proposal),
             // Scene content that is naturally a size (an SVG's viewBox, a
             // formula's typeset box) answers with it on whichever axis the
             // container left open; content that is not fills the proposal.
+            #[cfg(hydrolysis_scene_view)]
             Self::SceneView(node) => {
                 let dimensions = node.intrinsic_dimensions(proposal);
                 node.measured.set(Some((proposal, dimensions.size)));
@@ -258,6 +257,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             }
             // A filtered view is sized by its content: the engine applies the
             // filter to the mount the child's layers hang from.
+            #[cfg(waterui_feature = "effects")]
             Self::Filtered(node) => node.child.measure(state, &node.env, theme, proposal),
             Self::Scroll(node) => {
                 // layout-spec.md §6 (water-rs/waterui#1208): on the scrolling
@@ -441,6 +441,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Self::Env(node) => node
                 .child
                 .resolve_extent(state, &node.env, theme, bounds, proposal),
+            #[cfg(waterui_feature = "effects")]
             Self::Filtered(node) => node
                 .child
                 .resolve_extent(state, &node.env, theme, bounds, proposal),
@@ -457,13 +458,14 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Self::Collection(node) => node
                 .resolve_extent(state, theme, bounds, proposal)
                 .map(Some),
-            // Leaves: a scroll answers its offer, widgets and text measure
-            // themselves, scene/GPU/external content answers its intrinsic size.
-            Self::Color(_)
-            | Self::Text(_)
-            | Self::Scroll(_)
-            | Self::SceneView(_)
-            | Self::Widget(_) => Ok(None),
+            Self::Widget(node) => node
+                .behavior
+                .resolve_extent(state, &node.env, theme, bounds, proposal),
+            // Leaves: a scroll answers its offer, text measures itself, and
+            // scene/GPU/external content answers its intrinsic size.
+            Self::Color(_) | Self::Text(_) | Self::Scroll(_) => Ok(None),
+            #[cfg(hydrolysis_scene_view)]
+            Self::SceneView(_) => Ok(None),
             #[cfg(hydrolysis_gpu)]
             Self::GpuContent(_) | Self::ExternalFrame(_) => Ok(None),
         }
@@ -485,6 +487,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 Self::Scale(inner) => node = &inner.child,
                 Self::Rotation(inner) => node = &inner.child,
                 Self::Offset(inner) => node = &inner.child,
+                #[cfg(waterui_feature = "effects")]
                 Self::Filtered(inner) => node = &inner.child,
                 Self::Fill(inner) => node = &inner.child,
                 _ => return None,
@@ -528,6 +531,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Self::Dynamic(node) => node.child.borrow_mut().prepare_for_measure(renderer),
             Self::Env(node) => node.child.prepare_for_measure(renderer),
             Self::Wrapper(node) => node.child.prepare_for_measure(renderer),
+            #[cfg(waterui_feature = "effects")]
             Self::Filtered(node) => node.child.prepare_for_measure(renderer),
             Self::Fill(node) => node.child.prepare_for_measure(renderer),
             Self::Container(node) => {
@@ -544,7 +548,9 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Self::LazyStack(node) => {
                 node.item_cache.borrow_mut().prepare_for_measure(renderer);
             }
-            Self::Color(_) | Self::Text(_) | Self::SceneView(_) => {}
+            Self::Color(_) | Self::Text(_) => {}
+            #[cfg(hydrolysis_scene_view)]
+            Self::SceneView(_) => {}
             #[cfg(hydrolysis_gpu)]
             Self::GpuContent(_) | Self::ExternalFrame(_) => {}
         }
@@ -846,6 +852,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                     .layout(renderer, env, None, child_proposal, content_size);
             }
             Self::Collection(node) => node.layout(renderer, safe_area.as_ref(), proposal, bounds),
+            #[cfg(waterui_feature = "effects")]
             Self::Filtered(node) => {
                 let node_env = node.env.clone();
                 node.child
@@ -911,7 +918,9 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 });
             }
             // Color and GPU leaves render at flush from `ctx.bounds`.
-            Self::Color(_) | Self::SceneView(_) => {}
+            Self::Color(_) => {}
+            #[cfg(hydrolysis_scene_view)]
+            Self::SceneView(_) => {}
             #[cfg(hydrolysis_gpu)]
             Self::GpuContent(_) | Self::ExternalFrame(_) => {}
         }
@@ -1081,7 +1090,9 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         core::mem::discriminant(self).hash(hasher);
         hash_frame(hasher, frame);
         match self {
-            Self::Color(_) | Self::Text(_) | Self::SceneView(_) | Self::Widget(_) => {}
+            Self::Color(_) | Self::Text(_) | Self::Widget(_) => {}
+            #[cfg(hydrolysis_scene_view)]
+            Self::SceneView(_) => {}
             #[cfg(hydrolysis_gpu)]
             Self::GpuContent(_) | Self::ExternalFrame(_) => {}
             Self::Opacity(node) => node.child.signature_into(frame, hasher),
@@ -1092,6 +1103,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Self::Env(node) => node.child.signature_into(frame, hasher),
             Self::Wrapper(node) => node.child.signature_into(frame, hasher),
             Self::Dynamic(node) => node.child.borrow().signature_into(frame, hasher),
+            #[cfg(waterui_feature = "effects")]
             Self::Filtered(node) => node.child.signature_into(frame, hasher),
             Self::Fill(node) => node.child.signature_into(frame, hasher),
             Self::Container(node) => {
@@ -1115,4 +1127,59 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Self::LazyStack(node) => node.item_cache.borrow().signature_into(hasher),
         }
     }
+}
+
+/// A container's answer to `proposal`: its `size` with the explicit alignment
+/// guides it exports (§2.2) — the alignments its layout declares and those
+/// its children answered, each resolved by the layout over the placement it
+/// makes inside `size`. A container whose layout declares none and whose
+/// children answered none exports none, without placing.
+fn container_dimensions<E: crate::text::TextEngine>(
+    layout: &dyn Layout,
+    size: Size,
+    proposal: ProposalSize,
+    subs: &[NodeSubView<'_, E>],
+    refs: &[&dyn SubView],
+) -> ViewDimensions {
+    let mut dimensions = ViewDimensions::new(size);
+    let mut horizontal = layout.explicit_horizontal_alignments();
+    let mut vertical = layout.explicit_vertical_alignments();
+    if !size.width.is_finite()
+        || !size.height.is_finite()
+        || (horizontal.is_empty()
+            && vertical.is_empty()
+            && !subs.iter().any(NodeSubView::answered_guides))
+    {
+        return dimensions;
+    }
+    let bounds = LayoutRect::from_size(size);
+    let placed: Vec<PlacedSubview<'_>> = refs
+        .iter()
+        .zip(layout.place(bounds, proposal, refs))
+        .map(|(view, placement)| PlacedSubview::new(*view, placement))
+        .collect();
+    for child in &placed {
+        let child_dimensions = child.dimensions();
+        for (alignment, _) in child_dimensions.explicit_horizontal_guides() {
+            if !horizontal.contains(&alignment) {
+                horizontal.push(alignment);
+            }
+        }
+        for (alignment, _) in child_dimensions.explicit_vertical_guides() {
+            if !vertical.contains(&alignment) {
+                vertical.push(alignment);
+            }
+        }
+    }
+    for alignment in horizontal {
+        if let Some(value) = layout.explicit_horizontal(alignment, bounds, &placed) {
+            dimensions.set_horizontal(alignment, value);
+        }
+    }
+    for alignment in vertical {
+        if let Some(value) = layout.explicit_vertical(alignment, bounds, &placed) {
+            dimensions.set_vertical(alignment, value);
+        }
+    }
+    dimensions
 }

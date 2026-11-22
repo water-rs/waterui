@@ -2,7 +2,8 @@
 
 use core::any::type_name;
 
-use crate::{AnyView, Environment, View, layout::StretchAxis};
+use crate::backend::Backend;
+use crate::{Environment, View, layout::StretchAxis};
 
 /// A wrapper for platform-specific native UI components.
 ///
@@ -11,13 +12,12 @@ use crate::{AnyView, Environment, View, layout::StretchAxis};
 ///
 /// # Contract
 ///
-/// Rendering a `Native<T>` view directly breaks the contract of this type, which
-/// platform-specific backends handle: a debug build panics, and a release build
-/// logs the error and renders the fallback, or nothing without one.
+/// Every backend realizes every native component it can receive: a backend
+/// built on `waterui-backend-core` implements each one. `body` is therefore
+/// unreachable, and reaching it panics.
 #[derive(Debug)]
 pub struct Native<T: NativeView> {
     native: T,
-    fallback: Option<AnyView>,
 }
 
 impl<T: NativeView> Native<T> {
@@ -27,20 +27,7 @@ impl<T: NativeView> Native<T> {
     ///
     /// * `native` - The platform-specific native UI component to wrap.
     pub const fn new(native: T) -> Self {
-        Self {
-            native,
-            fallback: None,
-        }
-    }
-
-    /// Sets a fallback view to be used if the native view cannot be rendered.
-    ///
-    /// # Arguments
-    /// * `fallback` - The fallback view to display.
-    #[must_use]
-    pub fn with_fallback(mut self, fallback: impl View) -> Self {
-        self.fallback = Some(AnyView::new(fallback));
-        self
+        Self { native }
     }
 
     /// Consumes the wrapper and returns the inner native component.
@@ -63,18 +50,21 @@ impl<T: NativeView> Native<T> {
 
 impl<T: 'static + NativeView> View for Native<T> {
     fn body(self, _env: &Environment) -> impl View {
-        self.fallback.unwrap_or_else(|| {
-            crate::contract_violation!(
-                "Native view ({}) reached `body` without a fallback: the backend does not realize it, so it renders nothing",
-                type_name::<T>()
-            );
-            AnyView::default()
-        })
+        never_expands::<T>();
     }
 
-    fn stretch_axis(&self) -> StretchAxis {
-        NativeView::stretch_axis(&self.native)
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        backend.native(self.native, env, cx)
     }
+}
+
+/// Panics: a native view never expands, because every backend realizes every
+/// native component.
+fn never_expands<T>() {
+    unreachable!(
+        "native view {} reached `body`: every backend realizes every native component",
+        type_name::<T>()
+    );
 }
 
 /// A trait for all views handled by the native backend.
@@ -89,32 +79,43 @@ pub trait NativeView {
     fn stretch_axis(&self) -> StretchAxis {
         StretchAxis::None
     }
+
+    /// Hands this payload to `context` when `Self` is a component a backend
+    /// itself provides outside `NativeBackend`.
+    ///
+    /// Non-generic payloads leave the default; generic backend-provided leaves
+    /// downcast `context` to their backend's receiver so `Self` stays
+    /// monomorphized without naming its type parameter in the backend, returning
+    /// `Err(self)` on any receiver that does not claim it.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(self)` unchanged when `context` does not claim this payload.
+    fn realize_provided(
+        self,
+        context: &mut dyn core::any::Any,
+        env: &Environment,
+    ) -> Result<(), Self>
+    where
+        Self: Sized,
+    {
+        let _ = (context, env);
+        Err(self)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    use crate::metadata::{Metadata, MetadataKey};
+    use crate::AnyView;
 
     struct Probe;
     impl NativeView for Probe {}
 
-    struct Marker;
-    impl MetadataKey for Marker {}
-
     #[test]
-    #[cfg_attr(debug_assertions, should_panic(expected = "without a fallback"))]
-    fn a_native_view_without_a_fallback_renders_nothing() {
-        let body = Native::new(Probe).body(&Environment::new());
-        assert!(AnyView::new(body).is::<()>());
-    }
-
-    #[test]
-    fn a_native_view_with_a_fallback_renders_it() {
-        let body = Native::new(Probe)
-            .with_fallback(Metadata::new((), Marker))
-            .body(&Environment::new());
-        assert!(AnyView::new(body).is::<Metadata<Marker>>());
+    #[should_panic(expected = "reached `body`")]
+    fn a_native_view_never_expands() {
+        let _ = AnyView::new(Native::new(Probe).body(&Environment::new()));
     }
 }

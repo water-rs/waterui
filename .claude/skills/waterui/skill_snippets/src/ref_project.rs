@@ -30,10 +30,10 @@ fn content(_state: AppState) -> impl View {
 pub mod project_block_01 {
     use super::root_view;
 
-    use waterui::app::App;
+    use waterui::app::{App, Windows};
     use waterui::prelude::*;
 
-    pub fn app(env: Environment) -> App {
+    pub fn app(env: Environment) -> App<impl Windows> {
         App::new(root_view, env)
     }
 }
@@ -43,10 +43,10 @@ pub mod project_block_01 {
 // ---------------------------------------------------------------------------
 pub mod project_block_02 {
     use super::{AppState, content};
-    use waterui::app::App;
+    use waterui::app::{App, Windows};
     use waterui::prelude::*;
 
-    pub fn app(env: Environment) -> App {
+    pub fn app(env: Environment) -> App<impl Windows> {
         let state = AppState::new();
         App::new(move || content(state.clone()), env)
     }
@@ -110,6 +110,14 @@ pub mod project_block_04 {
         .alignment(HorizontalAlignment::Leading)
     }
 }
+
+// ---------------------------------------------------------------------------
+// project.md § "## Platforms and backends" (prose)
+// `waterui-apple` (`AppleContent`, `AppleMount`, `AppleView`),
+// `waterui-apple-os` (`apple_available!`), and Android-only `hydrolysis`
+// (`AndroidContent`, `AndroidMount`, `AndroidView`) are backend/OS-specific
+// types not linked into this cross-platform compile gate (README rule 6).
+// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // project.md § "## Logging and debugging" — rust block 5/5

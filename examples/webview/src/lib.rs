@@ -14,7 +14,7 @@
 //! injected script, the page API and JavaScript evaluation are not compiled
 //! there, so this example gates them the same way.
 
-use waterui::app::App;
+use waterui::app::{App, Windows};
 #[cfg(not(target_arch = "wasm32"))]
 use waterui::js_api;
 use waterui::prelude::*;
@@ -22,8 +22,7 @@ use waterui::preview;
 use waterui::reactive::binding;
 #[cfg(not(target_arch = "wasm32"))]
 use waterui::webview::{Json, ScriptInjectionTime, serde_json};
-use waterui::webview::{Url, WebView, WebViewController, WebViewEvent, WebViewProxy};
-use waterui::widget::condition::when;
+use waterui::webview::{Url, WebView, WebViewEvent, WebViewProxy};
 
 #[cfg(not(target_arch = "wasm32"))]
 /// What the `greet` handler answers with.
@@ -214,16 +213,6 @@ fn bridge_controls(allow_redirects: &Binding<bool>) -> impl View + use<> {
     .spacing(5.0)
 }
 
-fn missing_controller_view() -> impl View {
-    vstack((
-        text("WebView not available on this backend.").title(),
-        "The native runtime did not install a WebViewController.",
-        "Run this example on a backend with WebView support.",
-    ))
-    .spacing(8.0)
-    .padding()
-}
-
 fn webview_playground() -> impl View {
     let status: Binding<Str> = binding("Idle");
     let progress_value = Binding::f64(0.0);
@@ -266,38 +255,22 @@ fn webview_playground() -> impl View {
     open.with_proxy(move || toolbar(&status, progress_value, &address, bridge))
 }
 
-#[derive(Debug)]
-struct WebViewDemo;
-
-impl View for WebViewDemo {
-    fn body(self, env: &Environment) -> impl View {
-        when(env.get::<WebViewController>().is_some(), webview_playground)
-            .otherwise(missing_controller_view)
-    }
-}
-
 /// The web view demo: a playground page with navigation, history and JavaScript controls.
 #[preview]
 pub fn demo() -> impl View {
-    WebViewDemo
+    webview_playground()
 }
+
+#[cfg(all(target_os = "linux", feature = "wpe"))]
+use waterui_browser_wpe as _;
 
 /// Builds the example with whichever engine this platform's `WebView` needs.
 ///
-/// Selecting the browser engine is the application's job, not the renderer's.
-/// Apple platforms, Android and GTK all bridge a system web engine, so nothing
-/// has to be linked there. Linux without `WebKitGTK` has none to bridge, so the
-/// app links `WaterUI`'s bundled WPE `WebKit` and installs it here — the same
-/// `WebView` code above then draws through it, unchanged.
-#[cfg_attr(
-    not(all(target_os = "linux", feature = "wpe")),
-    expect(
-        unused_mut,
-        reason = "only the platforms with no bridged web engine install one"
-    )
-)]
-pub fn app(mut env: Environment) -> App {
-    #[cfg(all(target_os = "linux", feature = "wpe"))]
-    waterui_browser_wpe::install(&mut env);
+/// Selecting the browser engine is the application's dependency choice, not
+/// view code's: Apple, Android, and GTK bridge their platform web engine, and
+/// Linux without `WebKitGTK` enables the `wpe` feature linking
+/// `waterui-browser-wpe` so the backend selects WPE at compile time.
+#[must_use]
+pub fn app(env: Environment) -> App<impl Windows> {
     App::new(demo, env)
 }

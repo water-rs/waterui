@@ -16,7 +16,7 @@ use waterui::window::{UserAttention, Window, WindowHandle, WindowLevel, WindowSt
 /// window shows `_NET_WM_STATE_ABOVE`, `_NET_WM_STATE_MAXIMIZED_*`,
 /// `_NET_WM_STATE_DEMANDS_ATTENTION`, and the increment in `WM_NORMAL_HINTS`.
 pub fn main() {
-    let mut window = Window::new(
+    let window = Window::new(
         "window-api-probe",
         waterui::reactive::binding(WindowState::Normal),
         || (),
@@ -25,8 +25,8 @@ pub fn main() {
     .resize_increments(Size::new(24.0, 12.0));
 
     let handle: WindowHandle = window.handle();
-    window.content = waterui::handler::AnyViewBuilder::new(move || {
-        AnyView::new(text("window API probe").padding().task({
+    let window = window.content(move || {
+        text("window API probe").padding().task({
             let handle = handle.clone();
             async move {
                 sleep(Duration::from_secs(4)).await;
@@ -36,7 +36,7 @@ pub fn main() {
                 sleep(Duration::from_secs(20)).await;
                 std::process::exit(0);
             }
-        }))
+        })
     });
 
     run(

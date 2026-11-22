@@ -12,6 +12,7 @@ use accesskit::{Action, ActionRequest, Role, TreeId, TreeUpdate};
 use nami::Binding;
 use nami::Signal as _;
 use waterui::ViewExt as _;
+use waterui::metadata::context_menu::IntoContextMenu;
 use waterui::prelude::{ContextMenu, DismissContextMenu, Use};
 use waterui_controls::button::button;
 use waterui_controls::menu::{CommandExt as _, MenuItem};
@@ -73,9 +74,9 @@ fn primary_click(x: f32, y: f32) -> [InputEvent; 2] {
 /// what `bounds_of` returns is what the preview lifts and the menu clears.
 /// `menu` is a factory because the builder closure is `Fn`, and `ContextMenu`
 /// is not `Clone`.
-fn host_view_with_spacer(
+fn host_view_with_spacer<M: IntoContextMenu + 'static>(
     spacer: f32,
-    menu: impl Fn() -> ContextMenu + 'static,
+    menu: impl Fn() -> M + 'static,
 ) -> AnyViewBuilder<AnyView> {
     // The trailing spacer fills the window column, so the host sits `spacer`
     // points below the window's top edge rather than in a centred block
@@ -91,11 +92,13 @@ fn host_view_with_spacer(
     })
 }
 
-fn host_view(menu: impl Fn() -> ContextMenu + 'static) -> AnyViewBuilder<AnyView> {
+fn host_view<M: IntoContextMenu + 'static>(
+    menu: impl Fn() -> M + 'static,
+) -> AnyViewBuilder<AnyView> {
     host_view_with_spacer(110.0, menu)
 }
 
-fn runtime(menu: impl Fn() -> ContextMenu + 'static) -> HeadlessRuntime {
+fn runtime<M: IntoContextMenu + 'static>(menu: impl Fn() -> M + 'static) -> HeadlessRuntime {
     HeadlessRuntime::new_for_tests(
         test_environment(),
         host_view(menu),
@@ -109,10 +112,10 @@ fn runtime(menu: impl Fn() -> ContextMenu + 'static) -> HeadlessRuntime {
 /// every context menu with a divider and an "Inspect element" row, so the
 /// menu stands `3 * row_height + padding` tall — a `240`-high window leaves
 /// no room beside any source for the below/above placements to show.
-fn runtime_sized(
+fn runtime_sized<M: IntoContextMenu + 'static>(
     spacer: f32,
     window: (u32, u32),
-    menu: impl Fn() -> ContextMenu + 'static,
+    menu: impl Fn() -> M + 'static,
 ) -> HeadlessRuntime {
     let mut runtime = HeadlessRuntime::new_for_tests(
         test_environment(),
@@ -861,16 +864,12 @@ fn a_divider_row_takes_the_themes_divider_spacing() {
     let rows = row
         + row
         + divider
-        + if cfg!(all(
-            debug_assertions,
-            feature = "inspector",
-            not(target_arch = "wasm32")
-        )) {
+        + if cfg!(all(debug_assertions, hydrolysis_inspector)) {
             divider + row
         } else {
             0.0
         };
-    let expected = crate::renderer::POPUP_MENU_PANEL_MARGIN
+    let expected = MinimalTestTheme::panel_margin()
         .mul_add(2.0, f64::mul_add(menu_metrics.vertical_padding, 2.0, rows));
     assert!(
         (f64::from(frame.height()) - expected).abs() < 1.0,
@@ -890,7 +889,7 @@ fn the_plain_popup_draws_the_theme_panel() {
     let _ = secondary_click_label(&mut runtime, "host");
     let pop = runtime.popup_frame(0).expect("the popup mounts");
 
-    let m = crate::num_cast::f64_as_u32(crate::renderer::POPUP_MENU_PANEL_MARGIN);
+    let m = crate::num_cast::f64_as_u32(MinimalTestTheme::panel_margin());
     // The window's transparent ring: well outside the panel.
     assert!(
         pixel(&pop, 1, 1)[3] < 16,
@@ -946,7 +945,7 @@ fn a_disabled_command_draws_its_label_dimmed_and_stays_inert() {
     // Rows lay out under the panel margin: first the disabled `Copy`, then
     // `Paste` — each `row_height` tall inside `vertical_padding`.
     let metrics = MinimalTestTheme::menu_layout();
-    let margin = crate::num_cast::f64_as_u32(crate::renderer::POPUP_MENU_PANEL_MARGIN);
+    let margin = crate::num_cast::f64_as_u32(MinimalTestTheme::panel_margin());
     let row_top = margin + crate::num_cast::f64_as_u32(metrics.vertical_padding);
     let row_bottom = row_top + crate::num_cast::f64_as_u32(metrics.row_height);
     let (x0, x1) = (margin + 2, pop.width() - margin - 2);

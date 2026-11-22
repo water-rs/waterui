@@ -12,6 +12,7 @@
 //! and accessibility actions addressed to nodes directly.
 
 use super::executor::{DrainExecutorOnDrop, HeadlessMainThreadExecutor};
+use super::window::{RootWindow, root_window};
 use super::*;
 use crate::animation::PerpetualAnimation;
 #[cfg(feature = "accessibility")]
@@ -20,6 +21,7 @@ use crate::renderer::accessibility::{
 };
 use crate::renderer::{SemanticCore, WindowId};
 use std::rc::Rc;
+use std::sync::Arc;
 use waterui_core::contract_violation;
 
 /// What one semantic pump produced.
@@ -105,7 +107,7 @@ impl SemanticPumpResult {
 /// state, content builder), the [`SemanticCore`] owning its retained tree,
 /// and the input events queued for the next pump.
 struct SemanticWindow {
-    window: Window,
+    window: RootWindow<crate::text::ParleyEngine>,
     core: SemanticCore<crate::text::ParleyEngine>,
     pending_events: VecDeque<InputEvent>,
     /// Set when state changed outside a pump (an accessibility action, a
@@ -130,10 +132,11 @@ struct SemanticWindow {
 
 impl SemanticWindow {
     fn new(
-        window: Window,
+        window: RootWindow<crate::text::ParleyEngine>,
         fonts: &FontCollection,
         window_id: WindowId,
         family_resolution: FontFamilyResolution,
+        opener: Rc<dyn Fn(RootWindow<crate::text::ParleyEngine>)>,
         env: &Environment,
     ) -> Self {
         let mut core = SemanticCore::new(
@@ -142,6 +145,7 @@ impl SemanticWindow {
         );
         core.set_window_id(window_id);
         core.set_window_closable(window.closable);
+        install_core_window_openers(&mut core, opener);
         // The semantic pump is driven explicitly by the harness — a request
         // recorded on the frame signals is consumed by the next `pump` the
         // test calls, so the host wake does nothing.
@@ -181,7 +185,7 @@ impl SemanticWindow {
 pub struct SemanticRuntime {
     env: Environment,
     window: SemanticWindow,
-    pending_window_queue: Rc<RefCell<Vec<Window>>>,
+    pending_window_queue: Rc<RefCell<Vec<RootWindow<crate::text::ParleyEngine>>>>,
     popup_windows: Vec<SemanticWindow>,
     /// The application's font collection: popup windows' cores are seeded
     /// from it so they shape with the same faces as the main window.
@@ -211,69 +215,64 @@ impl SemanticRuntime {
     #[must_use]
     pub fn new(
         env: Environment,
-        content: AnyViewBuilder<AnyView>,
+        content: impl ViewBuilder,
         width: u32,
         height: u32,
         family_resolution: FontFamilyResolution,
     ) -> Self {
+        let window = root_window(Window::new(
+            "",
+            waterui_core::binding(waterui::window::WindowState::Normal),
+            content,
+        ));
         // A native app loads the fonts its `ResourceContext` stages; a browser
         // page has no synchronous resource directory to scan, so the semantic
         // runtime there shapes with the default collection alone.
         #[cfg(not(target_arch = "wasm32"))]
         return Self::on_env(
             env,
-            content,
+            window,
             width,
             height,
             family_resolution,
             crate::text::fonts::native_collection,
         );
         #[cfg(target_arch = "wasm32")]
-        Self::on_env(env, content, width, height, family_resolution, |_| {
+        Self::on_env(env, window, width, height, family_resolution, |_| {
             crate::text::fonts::system_collection()
         })
     }
 
-    #[expect(
-        clippy::needless_pass_by_value,
-        reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
-    )]
     fn on_env(
         env: Environment,
-        content: AnyViewBuilder<AnyView>,
+        window: RootWindow<crate::text::ParleyEngine>,
         width: u32,
         height: u32,
         family_resolution: FontFamilyResolution,
         build_fonts: fn(&Environment) -> FontCollection,
     ) -> Self {
-        init_global_executor();
-        // The inspector endpoint is a TCP server a browser page cannot host —
-        // on wasm32 the executor installs alone, with no probe to report to.
-        #[cfg(any(target_arch = "wasm32", not(feature = "inspector")))]
-        let inspector_probe = None;
-        let mut env = env.extending(waterui_graphics::backend::SceneViewMergeToParent);
+        // The inspector endpoint is opt-in and unavailable on wasm32 —
+        // without it the executor installs alone, with no probe to report to.
+        #[cfg(hydrolysis_inspector)]
+        let inspector = init_main_thread_executors();
+        #[cfg(hydrolysis_inspector)]
+        let inspector_probe = inspector
+            .as_ref()
+            .map(|inspector| inspector.task_probe() as Arc<dyn waterui::task::RuntimeProbe>);
+        #[cfg(not(hydrolysis_inspector))]
+        let inspector_probe: Option<Arc<dyn waterui::task::RuntimeProbe>> = {
+            init_global_executor();
+            None
+        };
+        let mut env = env;
         #[cfg(not(target_arch = "wasm32"))]
-        waterui_core::install_application_resources(&mut env);
-        #[cfg(all(not(target_arch = "wasm32"), feature = "inspector"))]
-        let inspector_probe = install_inspector(&mut env);
+        waterui::install_application_resources(&mut env);
+        #[cfg(hydrolysis_inspector)]
+        waterui::inspector::install(&mut env, inspector);
         let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
-        #[cfg(any(
-            test,
-            feature = "text-field",
-            feature = "secure-field",
-            feature = "color-picker",
-            feature = "date-picker",
-            feature = "list",
-            feature = "navigation",
-            feature = "table",
-            hydrolysis_system_webview,
-            all(target_arch = "wasm32", feature = "web", feature = "video")
-        ))]
-        install_native_component_hooks(&mut env);
-        install_headless_window_managers::<crate::text::ParleyEngine>(
-            &mut env,
-            Rc::clone(&pending_window_queue),
-        );
+        #[cfg(any(test, hydrolysis_platform_services))]
+        install_platform_services(&mut env);
+        install_window_registries::<crate::text::ParleyEngine>(&mut env);
         #[cfg(any(feature = "text-field", feature = "secure-field"))]
         env.insert(HydrolysisTextContextMenuMode::Overlay);
         // Framework tokens only: the semantic runtime has no `Style`, so no
@@ -300,12 +299,6 @@ impl SemanticRuntime {
             inspector_probe,
         ));
 
-        let content_builder = content;
-        let window = Window::new(
-            "",
-            waterui_core::binding(waterui::window::WindowState::Normal),
-            move || content_builder.build(),
-        );
         window.frame.set(waterui_core::layout::Rect::new(
             waterui_core::layout::Point::zero(),
             waterui_core::layout::Size::new(
@@ -316,11 +309,17 @@ impl SemanticRuntime {
 
         let window_id = env
             .get::<crate::renderer::WindowIdentities>()
-            .expect("install_headless_window_managers seeds WindowIdentities")
+            .expect("install_window_registries seeds WindowIdentities")
             .mint_window_id();
         window.arm_close_requests(&env);
-        let semantic_window =
-            SemanticWindow::new(window, &fonts, window_id, family_resolution, &env);
+        let semantic_window = SemanticWindow::new(
+            window,
+            &fonts,
+            window_id,
+            family_resolution,
+            queue_window_opener(&pending_window_queue),
+            &env,
+        );
         Self {
             env,
             window: semantic_window,
@@ -562,7 +561,7 @@ impl SemanticRuntime {
             let window_id = self
                 .env
                 .get::<crate::renderer::WindowIdentities>()
-                .expect("install_headless_window_managers seeds WindowIdentities")
+                .expect("install_window_registries seeds WindowIdentities")
                 .mint_window_id();
             window.arm_close_requests(&self.env);
             self.popup_windows.push(SemanticWindow::new(
@@ -570,6 +569,7 @@ impl SemanticRuntime {
                 &fonts,
                 window_id,
                 self.family_resolution,
+                queue_window_opener(&self.pending_window_queue),
                 &self.env,
             ));
         }
@@ -861,8 +861,10 @@ fn pump_semantic_window(window: &mut SemanticWindow, env: &Environment) -> bool 
         window.refresh_requested = false;
         return true;
     }
-    let content = window.window.build_content();
-    window.core.capture_window_semantics(content, env);
+    window
+        .window
+        .content
+        .capture_semantics(&mut window.core, env);
     window.refresh_requested = false;
     true
 }
@@ -881,6 +883,7 @@ mod tests {
     use waterui::ViewExt as _;
     use waterui_controls::button::button;
     use waterui_controls::menu::{CommandExt, Menu, MenuItem};
+    use waterui_core::AnyView;
     use waterui_core::handler::AnyViewBuilder;
     use waterui_layout::stack::{hstack, vstack};
     use waterui_text::text;
@@ -1180,7 +1183,7 @@ mod tests {
     use crate::platform::{KeyCode, Modifiers};
     use keyboard_types::Code;
     use waterui_core::extract::Use;
-    use waterui_core::key::{Key, KeyHandling, KeyPress, NamedKey};
+    use waterui_interaction::key::{Key, KeyHandling, KeyPress, NamedKey};
 
     /// A synthetic press of a named key, carrying both the legacy `KeyCode`
     /// the editor matches on and the W3C pair the bubble handlers read.

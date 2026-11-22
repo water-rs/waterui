@@ -5,6 +5,7 @@ use super::*;
 mod anchored_overlay;
 #[cfg(feature = "menu")]
 mod context_menu;
+#[cfg(waterui_feature = "dialog")]
 mod dialog;
 mod edge_stretch;
 mod hit_test;
@@ -23,6 +24,7 @@ mod touch_scroll;
 pub use anchored_overlay::*;
 #[cfg(feature = "menu")]
 pub use context_menu::*;
+#[cfg(waterui_feature = "dialog")]
 pub use dialog::*;
 pub use hit_test::*;
 pub use interaction::*;

@@ -84,12 +84,14 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             | Self::Scale(_)
             | Self::Rotation(_)
             | Self::Offset(_)
-            | Self::SceneView(_)
-            | Self::Filtered(_)
             | Self::Scroll(_)
             | Self::LazyStack(_)
             | Self::Collection(_)
             | Self::Widget(_) => true,
+            #[cfg(hydrolysis_scene_view)]
+            Self::SceneView(_) => true,
+            #[cfg(waterui_feature = "effects")]
+            Self::Filtered(_) => true,
             #[cfg(hydrolysis_gpu)]
             Self::GpuContent(_) | Self::ExternalFrame(_) => true,
             Self::Wrapper(node) => match node.effect {
@@ -129,7 +131,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     }
 
     #[cfg_attr(
-        feature = "accessibility",
+        all(feature = "accessibility", hydrolysis_scene_view),
         expect(
             clippy::used_underscore_binding,
             reason = "feature-gated bindings are underscored for the builds that compile them out"
@@ -381,8 +383,14 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             }
             Self::Env(node) => {
                 renderer.register_modal_scope(&node.env);
+                #[cfg(feature = "accessibility")]
+                let walk_env = renderer.accessibility_scope_walk_env(&node.env);
+                #[cfg(feature = "accessibility")]
+                let env: &Environment = &walk_env;
+                #[cfg(not(feature = "accessibility"))]
+                let env = &node.env;
                 node.child
-                    .flush(renderer, ctx, &node.env, kurbo::Affine::IDENTITY);
+                    .flush(renderer, ctx, env, kurbo::Affine::IDENTITY);
             }
             Self::Wrapper(node) => {
                 renderer.push_render_owner(&node.accessibility_identity);
@@ -510,14 +518,14 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                             },
                         );
                     }
+                    #[cfg(waterui_feature = "dialog")]
                     WrapperEffect::Dialog(value) => {
                         HydrolysisRenderer::apply_dialog(renderer, child_env, value, |r| {
                             node.child.flush(r, ctx, child_env, kurbo::Affine::IDENTITY);
                         });
                     }
-                    WrapperEffect::LayoutPriority(_) | WrapperEffect::OnChange { .. } => {
-                        // Layout-only or a held subscription: nothing to
-                        // apply while drawing.
+                    WrapperEffect::LayoutPriority(_) => {
+                        // Layout-only: nothing to apply while drawing.
                         node.child
                             .flush(renderer, ctx, child_env, kurbo::Affine::IDENTITY);
                     }
@@ -603,6 +611,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                             ctx,
                             child_env,
                             effect,
+                            &node.child,
                             |r, walk_env| {
                                 node.child.flush(r, ctx, walk_env, kurbo::Affine::IDENTITY);
                             },
@@ -627,6 +636,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 }
                 renderer.pop_render_owner();
             }
+            #[cfg(hydrolysis_scene_view)]
             Self::SceneView(node) => {
                 renderer.state.counters.recorded_view_contents += 1;
                 // The drawing's own name and content, read every flush: content
@@ -667,7 +677,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                     }));
                 // Content that handles its own input receives the pointer,
                 // keyboard, IME and scroll events landing on its bounds, through
-                // the same routing an interactive `GpuContentView` uses.
+                // the same routing an interactive `GpuView` uses.
                 if wants_input {
                     renderer.register_surface_input_target(
                         ctx.bounds(),
@@ -710,6 +720,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                         visible,
                     });
             }
+            #[cfg(waterui_feature = "effects")]
             Self::Filtered(node) => {
                 // Ancestor clips and opacity belong on the filtered mount
                 // itself — the engine's `Filter` covers the mount's whole
@@ -960,7 +971,8 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Self::Retain(node) => node.child.emit_accessibility(renderer, env),
             Self::Env(node) => {
                 renderer.register_modal_scope(&node.env);
-                node.child.emit_accessibility(renderer, &node.env);
+                let env = renderer.accessibility_scope_walk_env(&node.env);
+                node.child.emit_accessibility(renderer, &env);
             }
             Self::Wrapper(node) => {
                 renderer.push_accessibility_owner(&node.accessibility_identity);
@@ -968,7 +980,10 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 match &node.effect {
                     WrapperEffect::GestureObserver(effect) => {
                         let claim = HydrolysisRenderer::emit_gesture_observer_accessibility(
-                            renderer, child_env, effect,
+                            renderer,
+                            child_env,
+                            effect,
+                            &node.child,
                         );
                         // The gesture's node claimed the naming scope: the
                         // content walks under the same shielded environment a
@@ -1047,6 +1062,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                             hook.call();
                         }
                     }
+                    #[cfg(waterui_feature = "dialog")]
                     WrapperEffect::Dialog(effect) => {
                         // The walk reports to the same dialog stack the
                         // rendered flush does. The dialog on screen emits its
@@ -1078,6 +1094,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 }
                 renderer.pop_accessibility_owner();
             }
+            #[cfg(hydrolysis_scene_view)]
             Self::SceneView(node) => {
                 let (content_label, content_value, wants_input) = {
                     let content = node.content.borrow();
@@ -1129,6 +1146,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             }
             // The filter is a paint concern: the semantic tree keeps the
             // child exactly as it emits on its own.
+            #[cfg(waterui_feature = "effects")]
             Self::Filtered(node) => {
                 node.child.emit_accessibility(renderer, &node.env);
             }
@@ -1256,7 +1274,7 @@ fn flush_navigation_transition_element<E: crate::text::TextEngine>(
     child.flush(renderer, ctx, env, kurbo::Affine::IDENTITY);
 }
 
-/// Records a GPU-backed leaf's per-flush semantics — a `GpuContentView`'s
+/// Records a GPU-backed leaf's per-flush semantics — a `GpuView`'s
 /// or an `ExternalFrameView`'s: the accessibility node, read off the view
 /// every flush, and, when the view takes input, the input target that
 /// routes pointer, keyboard and IME events landing on its bounds to it.

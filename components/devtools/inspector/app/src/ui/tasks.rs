@@ -62,7 +62,7 @@ fn task_header() -> impl View {
     .spacing(8.0)
 }
 
-fn task_row(row: TaskRow) -> ListItem {
+fn task_row(row: TaskRow) -> ListItem<impl View> {
     let (id, polls, mean_us, max_us, over) = row.into_parts();
 
     ListItem::new(
@@ -92,7 +92,7 @@ fn column(content: impl View) -> impl View {
     clippy::needless_pass_by_value,
     reason = "a list row builder is handed ownership of its item"
 )]
-fn stall_row(row: StallRow) -> ListItem {
+fn stall_row(row: StallRow) -> ListItem<impl View> {
     let summary = Str::from(format!(
         "{} · {:.0}% of budget · {}",
         row.task_type(),
@@ -112,23 +112,20 @@ fn stall_row(row: StallRow) -> ListItem {
 }
 
 /// The captured stack, or an explanation of why there isn't one.
-fn backtrace_view(backtrace: &[Str]) -> AnyView {
+fn backtrace_view(backtrace: &[Str]) -> impl View + use<> {
     if backtrace.is_empty() {
-        return text("stack not captured — rate-limited to avoid perturbing the target")
-            .caption()
-            .foreground(MutedForeground)
-            .anyview();
+        return OneOf2::A(
+            text("stack not captured — rate-limited to avoid perturbing the target")
+                .caption()
+                .foreground(MutedForeground),
+        );
     }
 
-    backtrace
-        .iter()
-        .map(|frame| {
-            text(frame.clone())
-                .caption()
-                .foreground(MutedForeground)
-                .anyview()
-        })
-        .collect::<VStack<_>>()
-        .alignment(HorizontalAlignment::Leading)
-        .anyview()
+    OneOf2::B(
+        backtrace
+            .iter()
+            .map(|frame| text(frame.clone()).caption().foreground(MutedForeground))
+            .collect::<VStack<_>>()
+            .alignment(HorizontalAlignment::Leading),
+    )
 }

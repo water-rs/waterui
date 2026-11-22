@@ -12,6 +12,7 @@ use accesskit::Role;
 use nami::collection::SignalCollection;
 use waterui::component::list::{List, ListItem};
 use waterui::component::text;
+use waterui::metadata::context_menu::IntoContextMenu;
 use waterui::prelude::ContextMenu;
 use waterui::{AnyView, ViewExt as _};
 use waterui_controls::button::button;
@@ -79,9 +80,9 @@ fn primary_click(x: f32, y: f32) -> [InputEvent; 2] {
 /// A `scroll` over a `List`: filler rows, the menu row (a button carrying the
 /// `.context_menu`, so its a11y bounds are the open target), then a last row
 /// `tail` supplies — its gesture region covers the rest of the window.
-fn chat_list_with_tail(
+fn chat_list_with_tail<M: IntoContextMenu + 'static>(
     tail: impl Fn() -> AnyView + 'static,
-    menu: Rc<dyn Fn() -> ContextMenu>,
+    menu: Rc<dyn Fn() -> M>,
 ) -> AnyViewBuilder<AnyView> {
     let tail = Rc::new(tail);
     AnyViewBuilder::<AnyView>::new(move || {
@@ -109,7 +110,10 @@ fn chat_list_with_tail(
 }
 
 /// The last row carries an `.on_tap` region covering the rest of the window.
-fn chat_list(taps: Rc<RefCell<u32>>, menu: Rc<dyn Fn() -> ContextMenu>) -> AnyViewBuilder<AnyView> {
+fn chat_list<M: IntoContextMenu + 'static>(
+    taps: Rc<RefCell<u32>>,
+    menu: Rc<dyn Fn() -> M>,
+) -> AnyViewBuilder<AnyView> {
     chat_list_with_tail(
         move || {
             let taps = taps.clone();
@@ -126,9 +130,9 @@ fn chat_list(taps: Rc<RefCell<u32>>, menu: Rc<dyn Fn() -> ContextMenu>) -> AnyVi
 /// Same list, with an `.on_long_press_gesture` on the last row instead —
 /// occlusion must hold for every gesture kind the engine could arm, not
 /// only taps.
-fn chat_list_with_long_press(
+fn chat_list_with_long_press<M: IntoContextMenu + 'static>(
     long_presses: Rc<RefCell<u32>>,
-    menu: Rc<dyn Fn() -> ContextMenu>,
+    menu: Rc<dyn Fn() -> M>,
 ) -> AnyViewBuilder<AnyView> {
     chat_list_with_tail(
         move || {

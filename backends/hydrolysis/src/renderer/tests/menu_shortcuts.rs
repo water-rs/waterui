@@ -14,8 +14,9 @@ use waterui::ViewExt as _;
 use waterui::app::{App, TerminationHost};
 use waterui::prelude::{ContextMenu, Shortcut};
 use waterui::widget::condition::when;
+use waterui_controls::NoopSlot;
 use waterui_controls::button::button;
-use waterui_controls::menu::{CommandExt as _, Menu, MenuItem, NamedKey};
+use waterui_controls::menu::{CommandExt as _, Menu, MenuItem, NamedKey, ResolvedMenuItem};
 use waterui_controls::text_field::field;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::{AnyView, Environment};
@@ -436,12 +437,15 @@ fn menu_bar_chord_fires_without_a_mounted_menu() {
     let fired = Binding::container(0_i32);
     let menu_bar = {
         let fired = fired.clone();
-        nami::Computed::constant(vec![Menu::new(
-            "App",
-            "Quit"
-                .action(move || fired.set(fired.snapshot() + 1))
-                .shortcut(Shortcut::new('w').control()),
-        )])
+        nami::Computed::constant(vec![
+            Menu::new(
+                "App",
+                "Quit"
+                    .action(move || fired.set(fired.snapshot() + 1))
+                    .shortcut(Shortcut::new('w').control()),
+            )
+            .into_semantic(),
+        ])
     };
     let env = test_environment();
     let _menu_bar_items =
@@ -478,7 +482,7 @@ fn command() -> Modifiers {
 
 /// A headless runtime whose app menu bar declares only `MenuItem::Quit`.
 fn runtime_with_declared_quit(env: Environment) -> HeadlessRuntime {
-    let menu_bar = nami::Computed::constant(vec![Menu::new("App", MenuItem::Quit)]);
+    let menu_bar = nami::Computed::constant(vec![Menu::new("App", MenuItem::Quit).into_semantic()]);
     let _menu_bar_items =
         crate::runner::menu_bar::register_menu_bar::<crate::text::ParleyEngine>(&menu_bar, &env);
     let mut runtime = HeadlessRuntime::new_for_tests(
@@ -510,7 +514,7 @@ impl TerminationHost for TerminateCount {
 fn a_declared_quit_chord_requests_termination() {
     let mut env = test_environment();
     let terminated = TerminateCount::default();
-    let _machine = App::new_with_windows(Vec::new(), Environment::new())
+    let _machine = App::new_with_windows((), Environment::new())
         .into_parts()
         .termination
         .start(&mut env, terminated.clone());
@@ -550,7 +554,9 @@ fn a_declared_quit_arms_no_chord_where_nothing_can_quit() {
 /// A headless runtime whose app menu bar declares only
 /// `MenuItem::CloseWindow`.
 fn runtime_with_declared_close_window(env: Environment) -> HeadlessRuntime {
-    let menu_bar = nami::Computed::constant(vec![Menu::new("Window", MenuItem::CloseWindow)]);
+    let menu_bar = nami::Computed::constant(vec![
+        Menu::new("Window", MenuItem::CloseWindow).into_semantic(),
+    ]);
     let _menu_bar_items =
         crate::runner::menu_bar::register_menu_bar::<crate::text::ParleyEngine>(&menu_bar, &env);
     let mut runtime = HeadlessRuntime::new_for_tests(
@@ -602,11 +608,8 @@ fn a_declared_close_window_chord_closes_the_dispatching_window() {
         "the dispatching window's own id is the close request's target"
     );
 
-    let nodes = crate::renderer::popup_menu_nodes(
-        &[waterui_controls::menu::ResolvedMenuItem::CloseWindow],
-        &env,
-        true,
-    );
+    let nodes =
+        crate::renderer::popup_menu_nodes(&[ResolvedMenuItem::<NoopSlot>::CloseWindow], &env, true);
     let [
         crate::renderer::PopupMenuNode::Command {
             plain_label,
@@ -634,7 +637,7 @@ fn a_nonclosable_owner_renders_a_disabled_close_row() {
     let mut env = test_environment();
     env.insert(crate::renderer::WindowCloser::new(|_| {}));
     let nodes = crate::renderer::popup_menu_nodes(
-        &[waterui_controls::menu::ResolvedMenuItem::CloseWindow],
+        &[ResolvedMenuItem::<NoopSlot>::CloseWindow],
         &env,
         false,
     );
@@ -725,7 +728,7 @@ fn a_declared_close_window_is_omitted_where_windows_cannot_close() {
     );
     assert!(
         crate::renderer::popup_menu_nodes(
-            &[waterui_controls::menu::ResolvedMenuItem::CloseWindow],
+            &[ResolvedMenuItem::<NoopSlot>::CloseWindow],
             &env,
             true,
         )
@@ -744,12 +747,15 @@ fn a_mounted_close_window_follows_the_application_decided_chord() {
     let bar_fired = Binding::container(0_i32);
     let menu_bar = {
         let bar_fired = bar_fired.clone();
-        nami::Computed::constant(vec![Menu::new(
-            "File",
-            "Close Tab"
-                .action(move || bar_fired.set(bar_fired.snapshot() + 1))
-                .shortcut(Shortcut::new('w').command()),
-        )])
+        nami::Computed::constant(vec![
+            Menu::new(
+                "File",
+                "Close Tab"
+                    .action(move || bar_fired.set(bar_fired.snapshot() + 1))
+                    .shortcut(Shortcut::new('w').command()),
+            )
+            .into_semantic(),
+        ])
     };
     // What `App::into_parts` installs for this bar: tests reach the
     // decision through the same environment value.
@@ -810,12 +816,15 @@ fn a_mounted_menu_wins_the_app_bars_chord_while_mounted() {
     let menu_fired = Binding::container(0_i32);
     let menu_bar = {
         let bar_fired = bar_fired.clone();
-        nami::Computed::constant(vec![Menu::new(
-            "App",
-            "Quit"
-                .action(move || bar_fired.set(bar_fired.snapshot() + 1))
-                .shortcut(Shortcut::new('w').control()),
-        )])
+        nami::Computed::constant(vec![
+            Menu::new(
+                "App",
+                "Quit"
+                    .action(move || bar_fired.set(bar_fired.snapshot() + 1))
+                    .shortcut(Shortcut::new('w').control()),
+            )
+            .into_semantic(),
+        ])
     };
     let mounted = Binding::container(false);
     let env = test_environment();

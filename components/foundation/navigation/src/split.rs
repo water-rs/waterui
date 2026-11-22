@@ -1,16 +1,19 @@
 //! Split-view navigation primitives.
 
 use alloc::rc::Rc;
+use core::fmt::{self, Debug};
+use core::marker::PhantomData;
 
 use nami::{Binding, Computed, SignalExt as _};
-use waterui_core::handler::AnyViewBuilder;
+use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::id::{Id, Mapping};
 use waterui_core::layout::StretchAxis;
-use waterui_core::{AnyView, IntoSignal, View, contract_violation, raw_view};
+use waterui_core::{
+    AnyView, Environment, IntoSignal, Native, NativeView, View, contract_violation,
+};
 
-use crate::NavigationView;
-
-const fn empty_placeholder() {}
+pub use crate::tab::SlotBuilder;
+use crate::{NavigationToolbarItems, NavigationView, ResolvedNavigationView};
 
 /// Width constraints for a resizable navigation split column.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -170,20 +173,26 @@ pub mod split_style {
     }
 }
 
-/// Type-erased selected-column builder used by native split navigation backends.
+/// Selected-column builder used by native split navigation backends, keeping
+/// each built destination's content and toolbar in the backend's child slot `S`.
 #[derive(Clone)]
-pub struct NavigationSplitDetailBuilder(Rc<dyn Fn(Id) -> NavigationView>);
+pub struct NavigationSplitDetailBuilder<S>(Rc<dyn Fn(Id) -> ResolvedNavigationView<S>>);
 
-impl core::fmt::Debug for NavigationSplitDetailBuilder {
+impl<S> core::fmt::Debug for NavigationSplitDetailBuilder<S> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str("NavigationSplitDetailBuilder")
     }
 }
 
-impl NavigationSplitDetailBuilder {
-    fn mapped<T>(mapping: Mapping<T>, detail: impl Fn(T) -> NavigationView + 'static) -> Self
+impl<S: ChildSlot> NavigationSplitDetailBuilder<S> {
+    fn mapped<T, D, Tb>(
+        mapping: Mapping<T>,
+        detail: impl Fn(T) -> NavigationView<D, Tb> + 'static,
+    ) -> Self
     where
         T: Clone + Ord + 'static,
+        D: View,
+        Tb: NavigationToolbarItems,
     {
         Self(Rc::new(move |selected| {
             detail(
@@ -191,51 +200,124 @@ impl NavigationSplitDetailBuilder {
                     .to_data(selected)
                     .expect("NavigationSplitView selected id must exist in mapping"),
             )
+            .into_resolved::<S>()
         }))
     }
+}
 
+impl<S> NavigationSplitDetailBuilder<S> {
     /// Builds a column view for a selected identifier.
-    pub fn build(&self, selected: Id) -> NavigationView {
+    pub fn build(&self, selected: Id) -> ResolvedNavigationView<S> {
         (self.0)(selected)
     }
 }
 
-fn stable_view_builder<V>(view: V) -> AnyViewBuilder<AnyView>
-where
-    V: View + Clone,
-{
-    AnyViewBuilder::new(move || AnyView::new(view.clone()))
+impl<S: 'static> NavigationSplitDetailBuilder<S> {
+    /// Maps each built column's content and toolbar through `f` into slot `T`.
+    #[must_use]
+    pub fn map_slot<T: 'static>(
+        self,
+        f: impl Fn(S) -> T + Clone + 'static,
+    ) -> NavigationSplitDetailBuilder<T> {
+        NavigationSplitDetailBuilder(Rc::new(move |selected| {
+            MapSlots::map_slots(self.build(selected), f.clone())
+        }))
+    }
 }
 
-/// Internal native split container consumed by platform backends.
+fn stable_slot_builder<V, S>(view: V) -> SlotBuilder<S>
+where
+    V: View + Clone,
+    S: ChildSlot,
+{
+    SlotBuilder::new(move || S::from_view(view.clone()))
+}
+
+/// Internal native split container consumed by platform backends, with its
+/// columns in the backend's child slot `S`.
 #[must_use]
-pub struct NavigationSplitLayout {
-    pub(crate) sidebar: AnyViewBuilder<AnyView>,
-    pub(crate) placeholder: AnyViewBuilder<AnyView>,
+pub struct NavigationSplitLayout<S> {
+    pub(crate) sidebar: SlotBuilder<S>,
+    pub(crate) placeholder: SlotBuilder<S>,
     pub(crate) primary_selection: Binding<Option<Id>>,
-    pub(crate) content: Option<NavigationSplitDetailBuilder>,
+    pub(crate) content: Option<NavigationSplitDetailBuilder<S>>,
     pub(crate) secondary_selection: Option<Binding<Option<Id>>>,
-    pub(crate) detail: NavigationSplitDetailBuilder,
+    pub(crate) detail: NavigationSplitDetailBuilder<S>,
     pub(crate) column_visibility: Computed<NavigationSplitColumnVisibility>,
     pub(crate) sidebar_width: ColumnWidth,
     pub(crate) style: NativeNavigationSplitStyle,
 }
 
-waterui_core::impl_debug!(NavigationSplitLayout);
-raw_view!(NavigationSplitLayout, StretchAxis::Both);
+impl<S> core::fmt::Debug for NavigationSplitLayout<S> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("NavigationSplitLayout")
+            .field("column_visibility", &self.column_visibility)
+            .field("sidebar_width", &self.sidebar_width)
+            .field("style", &self.style)
+            .finish_non_exhaustive()
+    }
+}
 
-impl NavigationSplitLayout {
+impl<S: 'static> NativeView for NavigationSplitLayout<S> {
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::Both
+    }
+}
+
+impl<S: 'static> NavigationSplitLayout<S> {
+    /// Maps every column builder's slot through `f`.
+    pub fn map_slots<T: 'static>(
+        self,
+        f: impl Fn(S) -> T + Clone + 'static,
+    ) -> NavigationSplitLayout<T> {
+        let Self {
+            sidebar,
+            placeholder,
+            primary_selection,
+            content,
+            secondary_selection,
+            detail,
+            column_visibility,
+            sidebar_width,
+            style,
+        } = self;
+        NavigationSplitLayout {
+            sidebar: sidebar.map_slot(f.clone()),
+            placeholder: placeholder.map_slot(f.clone()),
+            primary_selection,
+            content: content.map(|builder| builder.map_slot(f.clone())),
+            secondary_selection,
+            detail: detail.map_slot(f),
+            column_visibility,
+            sidebar_width,
+            style,
+        }
+    }
+}
+
+impl<S: 'static> MapSlots<S> for NavigationSplitLayout<S> {
+    type With<T: 'static> = NavigationSplitLayout<T>;
+
+    fn map_slots<T: 'static>(
+        self,
+        f: impl Fn(S) -> T + Clone + 'static,
+    ) -> NavigationSplitLayout<T> {
+        Self::map_slots(self, f)
+    }
+}
+
+impl<S> NavigationSplitLayout<S> {
     /// Returns the stable primary-column builder.
     #[doc(hidden)]
     #[must_use]
-    pub const fn primary_builder(&self) -> &AnyViewBuilder<AnyView> {
+    pub const fn primary_builder(&self) -> &SlotBuilder<S> {
         &self.sidebar
     }
 
     /// Returns the empty-detail placeholder builder.
     #[doc(hidden)]
     #[must_use]
-    pub const fn placeholder_builder(&self) -> &AnyViewBuilder<AnyView> {
+    pub const fn placeholder_builder(&self) -> &SlotBuilder<S> {
         &self.placeholder
     }
 
@@ -249,7 +331,7 @@ impl NavigationSplitLayout {
     /// Returns the optional middle-column builder.
     #[doc(hidden)]
     #[must_use]
-    pub const fn content_builder(&self) -> Option<&NavigationSplitDetailBuilder> {
+    pub const fn content_builder(&self) -> Option<&NavigationSplitDetailBuilder<S>> {
         self.content.as_ref()
     }
 
@@ -263,7 +345,7 @@ impl NavigationSplitLayout {
     /// Returns the detail-column builder.
     #[doc(hidden)]
     #[must_use]
-    pub const fn detail_builder(&self) -> &NavigationSplitDetailBuilder {
+    pub const fn detail_builder(&self) -> &NavigationSplitDetailBuilder<S> {
         &self.detail
     }
 
@@ -290,19 +372,19 @@ impl NavigationSplitLayout {
 
     #[doc(hidden)]
     #[must_use]
-    #[allow(
+    #[expect(
         clippy::type_complexity,
-        reason = "FFI consumes the complete split semantic model"
+        reason = "backends consume the complete split semantic model"
     )]
     pub fn into_parts(
         self,
     ) -> (
-        AnyViewBuilder<AnyView>,
-        AnyViewBuilder<AnyView>,
+        SlotBuilder<S>,
+        SlotBuilder<S>,
         Binding<Option<Id>>,
-        Option<NavigationSplitDetailBuilder>,
+        Option<NavigationSplitDetailBuilder<S>>,
         Option<Binding<Option<Id>>>,
-        NavigationSplitDetailBuilder,
+        NavigationSplitDetailBuilder<S>,
         Computed<NavigationSplitColumnVisibility>,
         ColumnWidth,
         NativeNavigationSplitStyle,
@@ -321,15 +403,113 @@ impl NavigationSplitLayout {
     }
 }
 
-/// Adaptive two- or three-column native navigation container.
-#[must_use]
-pub struct NavigationSplitView {
-    layout: NavigationSplitLayout,
+/// Selected-column mapping paired with its typed builder closure.
+#[doc(hidden)]
+pub struct MappedSplitColumn<T, F, V, Tb = ()> {
+    mapping: Mapping<T>,
+    build: F,
+    view: PhantomData<fn() -> (V, Tb)>,
 }
 
-waterui_core::impl_debug!(NavigationSplitView);
+impl<T, F, V, Tb> Debug for MappedSplitColumn<T, F, V, Tb> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("MappedSplitColumn")
+    }
+}
 
-impl NavigationSplitView {
+impl<T, F, V, Tb> MappedSplitColumn<T, F, V, Tb>
+where
+    T: Clone + Ord + 'static,
+    F: Fn(T) -> NavigationView<V, Tb> + 'static,
+    V: View,
+    Tb: NavigationToolbarItems,
+{
+    fn into_builder<S: ChildSlot>(self) -> NavigationSplitDetailBuilder<S> {
+        NavigationSplitDetailBuilder::mapped(self.mapping, self.build)
+    }
+}
+
+/// Optional middle-column builder carried by [`NavigationSplitView`].
+#[doc(hidden)]
+pub trait IntoOptionalSplitDetailBuilder: 'static {
+    /// Converts the middle-column specification into an optional builder in slot `S`.
+    fn into_detail_builder<S: ChildSlot>(self) -> Option<NavigationSplitDetailBuilder<S>>;
+}
+
+impl IntoOptionalSplitDetailBuilder for () {
+    fn into_detail_builder<S: ChildSlot>(self) -> Option<NavigationSplitDetailBuilder<S>> {
+        None
+    }
+}
+
+impl<T, F, V, Tb> IntoOptionalSplitDetailBuilder for MappedSplitColumn<T, F, V, Tb>
+where
+    T: Clone + Ord + 'static,
+    F: Fn(T) -> NavigationView<V, Tb> + 'static,
+    V: View,
+    Tb: NavigationToolbarItems,
+{
+    fn into_detail_builder<S: ChildSlot>(self) -> Option<NavigationSplitDetailBuilder<S>> {
+        Some(self.into_builder::<S>())
+    }
+}
+
+/// Trailing detail-column builder carried by [`NavigationSplitView`].
+#[doc(hidden)]
+pub trait IntoSplitDetailBuilder: 'static {
+    /// Converts the detail-column specification into a builder in slot `S`.
+    fn into_detail_builder<S: ChildSlot>(self) -> NavigationSplitDetailBuilder<S>;
+}
+
+impl<T, F, V, Tb> IntoSplitDetailBuilder for MappedSplitColumn<T, F, V, Tb>
+where
+    T: Clone + Ord + 'static,
+    F: Fn(T) -> NavigationView<V, Tb> + 'static,
+    V: View,
+    Tb: NavigationToolbarItems,
+{
+    fn into_detail_builder<S: ChildSlot>(self) -> NavigationSplitDetailBuilder<S> {
+        self.into_builder::<S>()
+    }
+}
+
+/// Adaptive two- or three-column native navigation container.
+#[must_use]
+pub struct NavigationSplitView<Sidebar, Placeholder, Content, Detail> {
+    sidebar: Sidebar,
+    placeholder: Placeholder,
+    primary_selection: Binding<Option<Id>>,
+    content: Content,
+    secondary_selection: Option<Binding<Option<Id>>>,
+    detail: Detail,
+    column_visibility: Computed<NavigationSplitColumnVisibility>,
+    sidebar_width: ColumnWidth,
+    style: NativeNavigationSplitStyle,
+}
+
+impl<Sidebar, Placeholder, Content, Detail> core::fmt::Debug
+    for NavigationSplitView<Sidebar, Placeholder, Content, Detail>
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("NavigationSplitView")
+            .field("column_visibility", &self.column_visibility)
+            .field("sidebar_width", &self.sidebar_width)
+            .field("style", &self.style)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Three-column split view type returned by [`NavigationSplitView::three_column`].
+#[doc(hidden)]
+pub type ThreeColumnSplitView<Sidebar, S, C, Content, Detail, CV, CTb, DV, DTb> =
+    NavigationSplitView<
+        Sidebar,
+        (),
+        MappedSplitColumn<S, Content, CV, CTb>,
+        MappedSplitColumn<C, Detail, DV, DTb>,
+    >;
+
+impl NavigationSplitView<(), (), (), ()> {
     /// Creates a two-column split driven by a caller-owned optional selection.
     ///
     /// At compact widths exactly one column is visible: the detail while
@@ -337,71 +517,98 @@ impl NavigationSplitView {
     /// back control (including a completed back gesture) writes `None` into
     /// the selection. Start with `None` to open on the sidebar; the binding is
     /// the single source of truth for the visible compact column.
-    pub fn new<T, Sidebar, Detail>(
+    pub fn new<T, Sidebar, Detail, D, DTb>(
         selection: &Binding<Option<T>>,
         sidebar: Sidebar,
         detail: Detail,
-    ) -> Self
+    ) -> NavigationSplitView<Sidebar, (), (), MappedSplitColumn<T, Detail, D, DTb>>
     where
         T: Clone + Ord + 'static,
         Sidebar: View + Clone,
-        Detail: 'static + Fn(T) -> NavigationView,
+        Detail: 'static + Fn(T) -> NavigationView<D, DTb>,
+        D: View,
+        DTb: NavigationToolbarItems,
     {
         let mapping = Mapping::new();
-        Self {
-            layout: NavigationSplitLayout {
-                sidebar: stable_view_builder(sidebar),
-                placeholder: stable_view_builder(empty_placeholder),
-                primary_selection: mapping.optional_binding(selection),
-                content: None,
-                secondary_selection: None,
-                detail: NavigationSplitDetailBuilder::mapped(mapping, detail),
-                column_visibility: Computed::constant(NavigationSplitColumnVisibility::Automatic),
-                sidebar_width: ColumnWidth::default(),
-                style: NativeNavigationSplitStyle::Automatic,
+        NavigationSplitView {
+            sidebar,
+            placeholder: (),
+            primary_selection: mapping.optional_binding(selection),
+            content: (),
+            secondary_selection: None,
+            detail: MappedSplitColumn {
+                mapping,
+                build: detail,
+                view: PhantomData,
             },
+            column_visibility: Computed::constant(NavigationSplitColumnVisibility::Automatic),
+            sidebar_width: ColumnWidth::default(),
+            style: NativeNavigationSplitStyle::Automatic,
         }
     }
 
     /// Creates a three-column split with independently selected content and detail columns.
-    pub fn three_column<S, C, Sidebar, Content, Detail>(
+    pub fn three_column<S, C, Sidebar, Content, Detail, CV, CTb, DV, DTb>(
         sidebar_selection: &Binding<Option<S>>,
         content_selection: &Binding<Option<C>>,
         sidebar: Sidebar,
         content: Content,
         detail: Detail,
-    ) -> Self
+    ) -> ThreeColumnSplitView<Sidebar, S, C, Content, Detail, CV, CTb, DV, DTb>
     where
         S: Clone + Ord + 'static,
         C: Clone + Ord + 'static,
         Sidebar: View + Clone,
-        Content: 'static + Fn(S) -> NavigationView,
-        Detail: 'static + Fn(C) -> NavigationView,
+        Content: 'static + Fn(S) -> NavigationView<CV, CTb>,
+        Detail: 'static + Fn(C) -> NavigationView<DV, DTb>,
+        CV: View,
+        CTb: NavigationToolbarItems,
+        DV: View,
+        DTb: NavigationToolbarItems,
     {
         let sidebar_mapping = Mapping::new();
         let content_mapping = Mapping::new();
-        Self {
-            layout: NavigationSplitLayout {
-                sidebar: stable_view_builder(sidebar),
-                placeholder: stable_view_builder(empty_placeholder),
-                primary_selection: sidebar_mapping.optional_binding(sidebar_selection),
-                content: Some(NavigationSplitDetailBuilder::mapped(
-                    sidebar_mapping,
-                    content,
-                )),
-                secondary_selection: Some(content_mapping.optional_binding(content_selection)),
-                detail: NavigationSplitDetailBuilder::mapped(content_mapping, detail),
-                column_visibility: Computed::constant(NavigationSplitColumnVisibility::Automatic),
-                sidebar_width: ColumnWidth::default(),
-                style: NativeNavigationSplitStyle::Automatic,
+        NavigationSplitView {
+            sidebar,
+            placeholder: (),
+            primary_selection: sidebar_mapping.optional_binding(sidebar_selection),
+            content: MappedSplitColumn {
+                mapping: sidebar_mapping,
+                build: content,
+                view: PhantomData,
             },
+            secondary_selection: Some(content_mapping.optional_binding(content_selection)),
+            detail: MappedSplitColumn {
+                mapping: content_mapping,
+                build: detail,
+                view: PhantomData,
+            },
+            column_visibility: Computed::constant(NavigationSplitColumnVisibility::Automatic),
+            sidebar_width: ColumnWidth::default(),
+            style: NativeNavigationSplitStyle::Automatic,
         }
     }
+}
 
+impl<Sidebar, Placeholder, Content, Detail>
+    NavigationSplitView<Sidebar, Placeholder, Content, Detail>
+{
     /// Sets the placeholder displayed when the active selection has no destination.
-    pub fn placeholder(mut self, placeholder: impl View + Clone) -> Self {
-        self.layout.placeholder = stable_view_builder(placeholder);
-        self
+    pub fn placeholder<P: View + Clone>(
+        self,
+        placeholder: P,
+    ) -> NavigationSplitView<Sidebar, P, Content, Detail> {
+        NavigationSplitView {
+            sidebar: self.sidebar,
+            placeholder,
+            primary_selection: self.primary_selection,
+            content: self.content,
+            secondary_selection: self.secondary_selection,
+            detail: self.detail,
+            column_visibility: self.column_visibility,
+            sidebar_width: self.sidebar_width,
+            style: self.style,
+        }
     }
 
     /// Sets reactive native column visibility.
@@ -409,37 +616,75 @@ impl NavigationSplitView {
         mut self,
         visibility: impl IntoSignal<NavigationSplitColumnVisibility> + 'static,
     ) -> Self {
-        self.layout.column_visibility = visibility.into_signal().computed();
+        self.column_visibility = visibility.into_signal().computed();
         self
     }
 
     /// Sets native sidebar resize constraints.
     pub const fn sidebar_width(mut self, width: ColumnWidth) -> Self {
-        self.layout.sidebar_width = width;
+        self.sidebar_width = width;
         self
     }
 
     /// Sets the native split presentation style.
     pub fn style(mut self, style: impl NavigationSplitStyle) -> Self {
-        self.layout.style = style.into_native();
+        self.style = style.into_native();
         self
     }
 }
 
-impl View for NavigationSplitView {
-    fn body(self, _env: &waterui_core::Environment) -> impl View {
-        self.layout
+impl<Sidebar, Placeholder, Content, Detail>
+    NavigationSplitView<Sidebar, Placeholder, Content, Detail>
+where
+    Sidebar: View + Clone,
+    Placeholder: View + Clone,
+    Content: IntoOptionalSplitDetailBuilder,
+    Detail: IntoSplitDetailBuilder,
+{
+    /// Converts this split container into [`NavigationSplitLayout`] with every
+    /// column in the child slot `S`.
+    #[doc(hidden)]
+    pub fn into_layout<S: ChildSlot>(self) -> NavigationSplitLayout<S> {
+        NavigationSplitLayout {
+            sidebar: stable_slot_builder(self.sidebar),
+            placeholder: stable_slot_builder(self.placeholder),
+            primary_selection: self.primary_selection,
+            content: self.content.into_detail_builder::<S>(),
+            secondary_selection: self.secondary_selection,
+            detail: self.detail.into_detail_builder::<S>(),
+            column_visibility: self.column_visibility,
+            sidebar_width: self.sidebar_width,
+            style: self.style,
+        }
+    }
+}
+
+impl<Sidebar, Placeholder, Content, Detail> View
+    for NavigationSplitView<Sidebar, Placeholder, Content, Detail>
+where
+    Sidebar: View + Clone,
+    Placeholder: View + Clone,
+    Content: IntoOptionalSplitDetailBuilder,
+    Detail: IntoSplitDetailBuilder,
+{
+    /// The erased form, for code that expands views by hand.
+    fn body(self, _env: &Environment) -> impl View {
+        Native::new(self.into_layout::<AnyView>())
     }
 
-    /// Resolves to `NavigationSplit`, a configurable that declares `Both`.
-    fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
-        waterui_core::layout::StretchAxis::Both
+    /// Reaches the backend with every column built in the backend's child slot.
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        backend.native(self.into_layout::<B::Slot>(), env, cx)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::ColumnWidth;
+    use nami::{Binding, Signal as _};
+    use waterui_core::{AnyView, Str};
+
+    use super::{ColumnWidth, NavigationSplitView};
+    use crate::NavigationView;
 
     #[test]
     #[cfg_attr(
@@ -465,6 +710,64 @@ mod tests {
         assert_eq!(
             ColumnWidth::new(f32::NAN, 200.0, 400.0),
             ColumnWidth::default()
+        );
+    }
+
+    #[test]
+    fn into_layout_preserves_concrete_column_view_types() {
+        let primary = Binding::container(Some(1_i32));
+        let secondary = Binding::container(Some(2_i32));
+        let split = NavigationSplitView::three_column(
+            &primary,
+            &secondary,
+            Str::from("sidebar"),
+            |id| {
+                NavigationView::new(
+                    "Content",
+                    Str::from(if id == 1 { "content" } else { "other" }),
+                )
+            },
+            |id| {
+                NavigationView::new(
+                    "Detail",
+                    Str::from(if id == 2 { "detail" } else { "other" }),
+                )
+            },
+        )
+        .placeholder(Str::from("placeholder"));
+
+        let layout = split.into_layout::<AnyView>();
+        let primary_id = layout.primary_selection().snapshot().expect("primary id");
+        let secondary_id = layout
+            .secondary_selection()
+            .expect("secondary selection")
+            .snapshot()
+            .expect("secondary id");
+
+        assert!(layout.primary_builder().build().downcast::<Str>().is_ok());
+        assert!(
+            layout
+                .placeholder_builder()
+                .build()
+                .downcast::<Str>()
+                .is_ok()
+        );
+        assert!(
+            layout
+                .content_builder()
+                .expect("content builder")
+                .build(primary_id)
+                .content
+                .downcast::<Str>()
+                .is_ok()
+        );
+        assert!(
+            layout
+                .detail_builder()
+                .build(secondary_id)
+                .content
+                .downcast::<Str>()
+                .is_ok()
         );
     }
 }

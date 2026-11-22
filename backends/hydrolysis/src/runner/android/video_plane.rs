@@ -29,7 +29,7 @@ use jni::objects::JObject;
 use rustc_hash::FxHashMap;
 use waterui::Environment;
 use waterui_core::metadata::MetadataKey;
-use waterui_core::{AnyView, Metadata, Native};
+use waterui_core::{AnyView, Metadata};
 use waterui_video_gpu::{AndroidVideoSurfaceBridge, AndroidVideoSurfaceHost};
 
 use crate::platform_view::{
@@ -45,9 +45,9 @@ const VIDEO_PLANE_KIND: &str = "dev.waterui.hydrolysis.video-surface-host";
 /// content and the bridge waits for the node build, which gives the picture
 /// its decoder plane.
 ///
-/// The host is unwrapped when the view is normalized because its wrapped
-/// picture is only reachable by consuming it; every layout and build step
-/// then sees an ordinary passthrough wrapper.
+/// The host is unwrapped when the node is built because its wrapped picture is
+/// only reachable by consuming it; layout then sees an ordinary passthrough
+/// wrapper.
 pub struct VideoPlaneHost {
     bridge: AndroidVideoSurfaceBridge,
 }
@@ -62,12 +62,12 @@ impl VideoPlaneHost {
 }
 
 /// `host` as a passthrough wrapper over its picture.
-pub fn unwrap_host(host: Native<AndroidVideoSurfaceHost>) -> AnyView {
-    let (content, bridge) = host.into_inner().into_parts();
-    AnyView::new(Metadata {
+pub(crate) fn unwrap_host(host: AndroidVideoSurfaceHost) -> Metadata<VideoPlaneHost, AnyView> {
+    let (content, bridge) = host.into_parts();
+    Metadata {
         content,
         value: VideoPlaneHost { bridge },
-    })
+    }
 }
 
 /// The window's video planes, addressed by placement id from the host's JNI

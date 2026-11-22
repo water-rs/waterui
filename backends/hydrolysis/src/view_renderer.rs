@@ -1,10 +1,13 @@
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 use std::cell::RefCell;
+#[cfg(hydrolysis_cherenkov)]
 use std::rc::Rc;
 
-use waterui_core::view_renderer::{CustomViewRenderer, RenderError, RenderRequest, RenderResult};
-use waterui_core::{AnyView, ContentLedger, Environment};
-use waterui_graphics::backend::SceneViewMergeToParent;
+#[cfg(hydrolysis_cherenkov)]
+use waterui::ContentLedger;
+use waterui::view_renderer::{RenderError, RenderRequest, RenderResult, ViewRenderer};
+use waterui_core::{Environment, View};
+#[cfg(hydrolysis_cherenkov)]
 use waterui_text::FontCollection;
 
 #[cfg(hydrolysis_gpu_painter)]
@@ -13,85 +16,96 @@ use crate::platform::{
 };
 #[cfg(hydrolysis_gpu_painter)]
 use crate::readback::readback_texture_rgba8;
+#[cfg(hydrolysis_cherenkov)]
 use crate::renderer::{FontFamilyResolution, HydrolysisRenderer};
 
-/// What a capture renders with: the painter of the runtime that installed
-/// the service.
+/// What a capture renders with: the painter of the runtime that supplied
+/// the renderer.
+#[cfg(hydrolysis_cherenkov)]
 enum CaptureTarget {
     /// The GPU painter's offscreen texture, created on the first capture —
-    /// on the runtime's device when the service was handed its context,
-    /// on a device of its own otherwise.
+    /// on the runtime's device when handed its context, on a device of its
+    /// own otherwise.
     #[cfg(hydrolysis_gpu_painter)]
     Gpu {
         context: Option<OffscreenGpuContext>,
         surface: Rc<RefCell<Option<OffscreenSurface>>>,
     },
-    /// The CPU painter, on the runtime's engine.
+    /// The CPU painter, on the runtime's engine or opened lazily on first use.
     #[cfg(hydrolysis_cpu_painter)]
-    Cpu(Rc<crate::engine::RasterEngineState>),
+    Cpu(RefCell<Option<Rc<crate::engine::RasterEngineState>>>),
 }
 
-/// `ViewRenderer` implementation backed by Hydrolysis offscreen rendering.
+enum OffscreenState {
+    #[cfg(hydrolysis_cherenkov)]
+    Cherenkov {
+        target: CaptureTarget,
+        theme: Rc<dyn crate::theme::WidgetTheme>,
+        family_resolution: FontFamilyResolution,
+    },
+    #[cfg(any(waterui_feature = "capture", not(hydrolysis_cherenkov)))]
+    #[cfg_attr(not(waterui_feature = "capture"), allow(dead_code))]
+    Unavailable(&'static str),
+}
+
+/// [`ViewRenderer`] implementation backed by Hydrolysis offscreen rendering.
 ///
-/// A capture mounts the view under a fresh [`ContentLedger`] and keeps the
-/// tree mounted while it awaits the content the view owes, re-flushing the
-/// retained tree between passes, then renders it once.
-pub struct HydrolysisViewRenderer {
-    target: CaptureTarget,
-    theme: Rc<dyn crate::theme::WidgetTheme>,
-    /// The environment the runner that installed this renderer had fully
-    /// assembled — theme tokens, hooks and the shared font collection a
-    /// capture's text engine shapes from. A capture mounts under a snapshot
-    /// of it, so the captured subtree resolves exactly what it would mounted
-    /// in one of the runtime's windows.
-    env: Environment,
-    /// The named-family resolution mode the runtime's own renderers shape
-    /// under; the capture's text engine resolves the same way.
-    family_resolution: FontFamilyResolution,
+/// A capture mounts the typed view under a fresh [`ContentLedger`] and keeps
+/// the tree mounted while it awaits the content the view owes, re-flushing the
+/// retained tree between passes, then renders it once without erasing `V`.
+pub struct HydrolysisOffscreenRenderer {
+    state: OffscreenState,
 }
 
-impl core::fmt::Debug for HydrolysisViewRenderer {
+impl core::fmt::Debug for HydrolysisOffscreenRenderer {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("HydrolysisViewRenderer")
+        f.debug_struct("HydrolysisOffscreenRenderer")
             .finish_non_exhaustive()
     }
 }
 
-impl HydrolysisViewRenderer {
+#[cfg(any(waterui_feature = "capture", not(hydrolysis_cherenkov)))]
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+struct OffscreenUnavailableError(&'static str);
+
+impl HydrolysisOffscreenRenderer {
+    /// Returns a renderer that fails captures with `reason` (used by
+    /// `SemanticRuntime` and targets without Cherenkov offscreen support).
+    #[cfg(waterui_feature = "capture")]
     #[must_use]
-    /// Creates a renderer drawing on a GPU device of its own with `theme`
-    /// under `env` — the environment as the runner finished assembling it —
-    /// resolving named font families as the runtime's own renderers do.
-    ///
-    /// `env` is captured as a snapshot: install this renderer once the
-    /// environment carries everything a subtree can read (theme tokens,
-    /// hooks, the [`FontCollection`]), or the capture resolves against
-    /// entries the runtime itself never sees.
-    #[cfg(hydrolysis_gpu_painter)]
+    pub(crate) const fn unavailable(reason: &'static str) -> Self {
+        Self {
+            state: OffscreenState::Unavailable(reason),
+        }
+    }
+
+    /// Creates a renderer drawing with `theme` and `family_resolution`,
+    /// lazily opening a GPU offscreen surface (or CPU engine in CPU-only
+    /// builds) on first capture.
+    #[cfg(hydrolysis_cherenkov)]
+    #[must_use]
     pub fn new(
         theme: Rc<dyn crate::theme::WidgetTheme>,
-        env: Environment,
         family_resolution: FontFamilyResolution,
     ) -> Self {
-        Self::on_target(
-            CaptureTarget::Gpu {
-                context: None,
-                surface: Rc::new(RefCell::new(None)),
-            },
-            theme,
-            env,
-            family_resolution,
-        )
+        #[cfg(hydrolysis_gpu_painter)]
+        let target = CaptureTarget::Gpu {
+            context: None,
+            surface: Rc::new(RefCell::new(None)),
+        };
+        #[cfg(all(hydrolysis_cpu_painter, not(hydrolysis_gpu_painter)))]
+        let target = CaptureTarget::Cpu(RefCell::new(None));
+        Self::on_target(target, theme, family_resolution)
     }
 
     /// `Self::new` on the offscreen runtime's own `painter`: a capture
     /// renders on its device or CPU engine instead of opening another.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), hydrolysis_cherenkov))]
     #[must_use]
     pub fn on_painter(
         painter: &crate::platform::OffscreenPainter,
         theme: Rc<dyn crate::theme::WidgetTheme>,
-        env: Environment,
         family_resolution: FontFamilyResolution,
     ) -> Self {
         let target = match painter {
@@ -101,23 +115,72 @@ impl HydrolysisViewRenderer {
                 surface: Rc::new(RefCell::new(None)),
             },
             #[cfg(hydrolysis_cpu_painter)]
-            crate::platform::OffscreenPainter::Cpu(state) => CaptureTarget::Cpu(Rc::clone(state)),
+            crate::platform::OffscreenPainter::Cpu(state) => {
+                CaptureTarget::Cpu(RefCell::new(Some(Rc::clone(state))))
+            }
         };
-        Self::on_target(target, theme, env, family_resolution)
+        Self::on_target(target, theme, family_resolution)
     }
 
+    #[cfg(hydrolysis_cherenkov)]
     const fn on_target(
         target: CaptureTarget,
         theme: Rc<dyn crate::theme::WidgetTheme>,
-        env: Environment,
         family_resolution: FontFamilyResolution,
     ) -> Self {
         Self {
-            target,
-            theme,
-            env,
-            family_resolution,
+            state: OffscreenState::Cherenkov {
+                target,
+                theme,
+                family_resolution,
+            },
         }
+    }
+
+    #[cfg(all(waterui_feature = "capture", hydrolysis_cherenkov))]
+    pub(crate) const fn set_family_resolution(&mut self, resolution: FontFamilyResolution) {
+        if let OffscreenState::Cherenkov {
+            family_resolution, ..
+        } = &mut self.state
+        {
+            *family_resolution = resolution;
+        }
+    }
+
+    /// Returns a fresh renderer sharing the underlying device/engine configuration
+    /// without sharing the per-renderer surface borrow.
+    #[cfg(all(waterui_feature = "capture", hydrolysis_cherenkov))]
+    #[must_use]
+    pub(crate) fn clone_for_dispatch(&self) -> Self {
+        match &self.state {
+            OffscreenState::Cherenkov {
+                target,
+                theme,
+                family_resolution,
+            } => {
+                let target = match target {
+                    #[cfg(hydrolysis_gpu_painter)]
+                    CaptureTarget::Gpu { context, .. } => CaptureTarget::Gpu {
+                        context: context.clone(),
+                        surface: Rc::new(RefCell::new(None)),
+                    },
+                    #[cfg(hydrolysis_cpu_painter)]
+                    CaptureTarget::Cpu(state) => {
+                        CaptureTarget::Cpu(RefCell::new(state.borrow().clone()))
+                    }
+                };
+                Self::on_target(target, Rc::clone(theme), *family_resolution)
+            }
+            OffscreenState::Unavailable(reason) => Self::unavailable(reason),
+        }
+    }
+
+    /// Returns a fresh renderer sharing the underlying configuration.
+    #[cfg(all(waterui_feature = "capture", not(hydrolysis_cherenkov)))]
+    #[must_use]
+    pub(crate) const fn clone_for_dispatch(&self) -> Self {
+        let OffscreenState::Unavailable(reason) = self.state;
+        Self::unavailable(reason)
     }
 }
 
@@ -166,123 +229,184 @@ async fn acquire_frame(
 #[cfg(hydrolysis_gpu_painter)]
 type AcquiredFrame = (SurfaceFrame, GpuGeneration, wgpu::TextureFormat);
 
-impl CustomViewRenderer for HydrolysisViewRenderer {
+#[cfg(hydrolysis_gpu_painter)]
+#[expect(
+    clippy::future_not_send,
+    reason = "view rendering runs on the main thread; the future borrows non-Send GPU and renderer state"
+)]
+async fn rasterize_gpu(
+    context: Option<&OffscreenGpuContext>,
+    surface: &RefCell<Option<OffscreenSurface>>,
+    renderer: &mut HydrolysisRenderer<crate::text::ParleyEngine>,
+    width: u32,
+    height: u32,
+) -> Result<Vec<u8>, RenderError> {
+    let (frame, generation, format) = acquire_frame(context, surface, width, height).await?;
+    crate::engine::engine_await!(renderer.render_generation_to_texture(
+        &generation,
+        frame.texture(),
+        format,
+        (width, height),
+        cherenkov_record::WorkingColor::TRANSPARENT,
+    ))
+    .map_err(render_failure)?;
+    renderer.frame_work_counters_mut().gpu_submissions += 1;
+
+    let mut borrowed = surface.borrow_mut();
+    let surface = borrowed
+        .as_mut()
+        .expect("hydrolysis view renderer surface lost its surface");
+    let rgba_data = readback_texture_rgba8(&*surface, frame.texture(), width, height)
+        .map_err(render_failure)?;
+    surface.present(frame);
+    Ok(rgba_data)
+}
+
+#[cfg(hydrolysis_cpu_painter)]
+fn rasterize_cpu(
+    state_cell: &RefCell<Option<Rc<crate::engine::RasterEngineState>>>,
+    renderer: &mut HydrolysisRenderer<crate::text::ParleyEngine>,
+    width: u32,
+    height: u32,
+) -> Result<Vec<u8>, RenderError> {
+    if state_cell.borrow().is_none() {
+        let created = crate::engine::RasterEngineState::new().map_err(render_failure)?;
+        *state_cell.borrow_mut() = Some(created);
+    }
+    let state = state_cell
+        .borrow()
+        .as_ref()
+        .expect("cpu capture engine initialized")
+        .clone();
+    Ok(renderer
+        .render_raster_frame(
+            &state,
+            crate::renderer::FrameGeometry {
+                display_scale: 1.0,
+                width,
+                height,
+                base_color: cherenkov_record::WorkingColor::TRANSPARENT,
+            },
+            // The GPU capture's convention: the texture is presented
+            // in straight alpha.
+            Some(cherenkov::OutputAlpha::Straight),
+        )
+        .map_err(render_failure)?
+        .expect("a capture reads back the frame it renders"))
+}
+
+#[cfg(hydrolysis_cherenkov)]
+impl ViewRenderer for HydrolysisOffscreenRenderer {
     #[expect(
         clippy::future_not_send,
         reason = "view rendering runs on the main thread; the future borrows non-Send GPU and Environment state"
     )]
-    async fn render_to_rgba(
+    async fn render_to_rgba<V: View>(
         &self,
-        view: AnyView,
+        view: V,
+        env: &Environment,
         request: RenderRequest,
     ) -> Result<RenderResult, RenderError> {
-        #[expect(
-            clippy::cast_sign_loss,
-            clippy::cast_possible_truncation,
-            reason = "the proposal's width is clamped to at least 1.0 and a display size always fits u32"
-        )]
-        let width = request.size().width.max(1.0).round() as u32;
-        #[expect(
-            clippy::cast_sign_loss,
-            clippy::cast_possible_truncation,
-            reason = "the proposal's height is clamped to at least 1.0 and a display size always fits u32"
-        )]
-        let height = request.size().height.max(1.0).round() as u32;
+        match &self.state {
+            #[cfg(waterui_feature = "capture")]
+            OffscreenState::Unavailable(reason) => Err(RenderError::Capture(Box::new(
+                OffscreenUnavailableError(reason),
+            ))),
+            OffscreenState::Cherenkov {
+                target,
+                theme,
+                family_resolution,
+            } => {
+                #[expect(
+                    clippy::cast_sign_loss,
+                    clippy::cast_possible_truncation,
+                    reason = "the proposal's width is clamped to at least 1.0 and a display size always fits u32"
+                )]
+                let width = request.size().width.max(1.0).round() as u32;
+                #[expect(
+                    clippy::cast_sign_loss,
+                    clippy::cast_possible_truncation,
+                    reason = "the proposal's height is clamped to at least 1.0 and a display size always fits u32"
+                )]
+                let height = request.size().height.max(1.0).round() as u32;
 
-        // The capture's text engine shapes against the collection the runner
-        // installed — `FontCollection::from_env` names the host's obligation
-        // when the environment carries none.
-        let mut renderer = HydrolysisRenderer::with_fonts(
-            Rc::clone(&self.theme),
-            &FontCollection::from_env(&self.env),
-            self.family_resolution,
-        );
-        renderer.reset_scene();
-        renderer.begin_rebuild_frame();
+                // The capture's text engine shapes against the collection the
+                // caller's environment carries — `FontCollection::from_env`
+                // names the host's obligation when the environment carries none.
+                let mut renderer = HydrolysisRenderer::with_fonts(
+                    Rc::clone(theme),
+                    &FontCollection::from_env(env),
+                    *family_resolution,
+                );
+                renderer.reset_scene();
+                renderer.begin_rebuild_frame();
 
-        let ledger = ContentLedger::new();
-        let env = self
-            .env
-            .extending(SceneViewMergeToParent)
-            .extending(ledger.clone());
-        let view = crate::renderer::normalize_view_for_render(view, &env);
-        let bounds = kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
-        renderer.capture_window_tree(
-            view,
-            &env,
-            bounds,
-            kurbo::Affine::IDENTITY,
-            kurbo::Affine::IDENTITY,
-        );
-        renderer.finish_rebuild_frame();
-        // The tree stays mounted while its content arrives: each pass
-        // flushes what resolved content changed into the retained tree —
-        // a decoded photo taking its size — and yields so the tasks the
-        // flush spawned run before the ledger is checked again.
-        ledger
-            .wait(
-                request.content_deadline(),
-                waterui::task::sleep(request.content_deadline()),
-                || {
-                    renderer.drain_producer_wakes();
-                    let _ = renderer.flush_window_tree(
-                        &env,
-                        bounds,
-                        kurbo::Affine::IDENTITY,
-                        kurbo::Affine::IDENTITY,
-                    );
-                    waterui::task::yield_now()
-                },
-            )
-            .await?;
+                let ledger = ContentLedger::new();
+                let render_env = env.extending(ledger.clone());
+                let bounds = kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
+                renderer.capture_window_tree(
+                    view,
+                    &render_env,
+                    bounds,
+                    kurbo::Affine::IDENTITY,
+                    kurbo::Affine::IDENTITY,
+                );
+                renderer.finish_rebuild_frame();
+                // The tree stays mounted while its content arrives: each pass
+                // flushes what resolved content changed into the retained tree —
+                // a decoded photo taking its size — and yields so the tasks the
+                // flush spawned run before the ledger is checked again.
+                ledger
+                    .wait(
+                        request.content_deadline(),
+                        waterui::task::sleep(request.content_deadline()),
+                        || {
+                            renderer.drain_producer_wakes();
+                            let _ = renderer.flush_window_tree(
+                                &render_env,
+                                bounds,
+                                kurbo::Affine::IDENTITY,
+                                kurbo::Affine::IDENTITY,
+                            );
+                            waterui::task::yield_now()
+                        },
+                    )
+                    .await?;
 
-        let rgba_data = match &self.target {
-            #[cfg(hydrolysis_gpu_painter)]
-            CaptureTarget::Gpu { context, surface } => {
-                let (frame, generation, format) =
-                    acquire_frame(context.as_ref(), surface, width, height).await?;
-                crate::engine::engine_await!(renderer.render_generation_to_texture(
-                    &generation,
-                    frame.texture(),
-                    format,
-                    (width, height),
-                    cherenkov_record::WorkingColor::TRANSPARENT,
-                ))
-                .map_err(render_failure)?;
-                renderer.frame_work_counters_mut().gpu_submissions += 1;
-
-                let mut borrowed = surface.borrow_mut();
-                let surface = borrowed
-                    .as_mut()
-                    .expect("hydrolysis view renderer surface lost its surface");
-                let rgba_data = readback_texture_rgba8(&*surface, frame.texture(), width, height)
-                    .map_err(render_failure)?;
-                surface.present(frame);
-                rgba_data
+                let rgba_data = match target {
+                    #[cfg(hydrolysis_gpu_painter)]
+                    CaptureTarget::Gpu { context, surface } => {
+                        rasterize_gpu(context.as_ref(), surface, &mut renderer, width, height)
+                            .await?
+                    }
+                    #[cfg(hydrolysis_cpu_painter)]
+                    CaptureTarget::Cpu(state_cell) => {
+                        rasterize_cpu(state_cell, &mut renderer, width, height)?
+                    }
+                };
+                Ok(RenderResult::new(rgba_data, width, height))
             }
-            #[cfg(hydrolysis_cpu_painter)]
-            CaptureTarget::Cpu(state) => renderer
-                .render_raster_frame(
-                    state,
-                    crate::renderer::FrameGeometry {
-                        display_scale: 1.0,
-                        width,
-                        height,
-                        base_color: cherenkov_record::WorkingColor::TRANSPARENT,
-                    },
-                    // The GPU capture's convention: the texture is presented
-                    // in straight alpha.
-                    Some(cherenkov::OutputAlpha::Straight),
-                )
-                .map_err(render_failure)?
-                .expect("a capture reads back the frame it renders"),
-        };
+        }
+    }
+}
 
-        Ok(RenderResult::new(rgba_data, width, height))
+#[cfg(not(hydrolysis_cherenkov))]
+impl ViewRenderer for HydrolysisOffscreenRenderer {
+    fn render_to_rgba<V: View>(
+        &self,
+        _view: V,
+        _env: &Environment,
+        _request: RenderRequest,
+    ) -> impl core::future::Future<Output = Result<RenderResult, RenderError>> {
+        let OffscreenState::Unavailable(reason) = self.state;
+        core::future::ready(Err(RenderError::Capture(Box::new(
+            OffscreenUnavailableError(reason),
+        ))))
     }
 }
 
 /// Wraps a Hydrolysis render failure as the [`RenderError`] callers receive.
+#[cfg(hydrolysis_cherenkov)]
 fn render_failure(error: impl core::error::Error + Send + Sync + 'static) -> RenderError {
     RenderError::Gpu(Box::new(error))
 }

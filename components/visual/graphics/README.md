@@ -6,7 +6,7 @@ GPU and engine rendering primitives for WaterUI applications.
 
 `waterui-graphics` hosts the rendering contracts a WaterUI backend consumes:
 
-- **GpuContentView** - a view driven by a `GpuContent` producer drawing raw wgpu frames
+- **GpuView** - a view driven by a `GpuContent` producer drawing raw wgpu frames
 - **SceneView** - a view whose `SceneContent` records vector scenes into `waterui_graphics::backend::draw::Recorder`
 - **ShaderPaintView** - a view painted by a WGSL fragment shader
 - **Gradients** - `Gradient` (linear, radial, angular, mesh), the signal-driven `MeshGradient`, and the canvas-drawn `AnimatedMeshGradient`, and the GPU-animated `FlowingGradient`
@@ -33,13 +33,13 @@ waterui = "0.3"
 
 ## Quick Start
 
-### GpuContentView - Full wgpu Control
+### GpuView - Full wgpu Control
 
 For custom GPU rendering, implement the `GpuContent` trait and wrap it in a
-`GpuContentView`:
+`GpuView`:
 
 ```rust
-use waterui::graphics::{Context, Frame, GpuContent, GpuContentView};
+use waterui::graphics::{Context, Frame, GpuContent, GpuView};
 use waterui::prelude::*;
 
 struct Flame;
@@ -56,7 +56,7 @@ impl GpuContent for Flame {
 }
 
 fn main() -> impl View {
-    GpuContentView::new(Flame).size(400.0, 500.0)
+    GpuView::new(Flame).size(400.0, 500.0)
 }
 ```
 
@@ -66,7 +66,7 @@ engine, a camera stream — keep their state in a `.on_frame` hook and post
 frames to the render side through shared state:
 
 ```rust
-GpuContentView::new(RenderSide::new())
+GpuView::new(RenderSide::new())
     .on_frame(move || bridge.borrow_mut().frame())
 ```
 
@@ -174,7 +174,7 @@ scene content on either the GPU or CPU (`OffscreenRenderer::cpu`).
 
 ### Gpu Module
 
-- `GpuContentView::new(content)` - Create a view from a `GpuContent`
+- `GpuView::new(content)` - Create a view from a `GpuContent`
 - `ExternalFrameView::new(source)` - Create a view from an `ExternalFrameSource`
 - `FrameOutput` - Where a source publishes frames: `device()`, `queue()`, `present(frame)`
 - `GpuContentRenderer` / `ExternalFrameRenderer` - Host-side renderers presenting either view into a native texture: `submit` hands a frame to the render thread and returns a `HostedFrame` future, and `composite` draws the resolved frame into the host's texture

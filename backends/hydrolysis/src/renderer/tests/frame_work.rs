@@ -47,7 +47,7 @@ use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::SelfId;
 use waterui_graphics::backend::{NextFrame, RecordingResources, SceneContent};
 use waterui_graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
-use waterui_graphics::{GpuContent, GpuContentView};
+use waterui_graphics::{GpuContent, GpuView};
 use waterui_layout::frame::Frame;
 use waterui_layout::scroll::scroll;
 use waterui_layout::stack::{VStack, vstack};
@@ -620,7 +620,7 @@ fn gpu_content_under_clips_and_effects() {
     let probe = FillProbe {
         renders: std::sync::Arc::clone(&renders),
     };
-    let view = Frame::new(GpuContentView::new(probe))
+    let view = Frame::new(GpuView::new(probe))
         .width(120.0)
         .height(120.0)
         .clip(RoundedRectangle::new(12.0))

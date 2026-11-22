@@ -1,4 +1,4 @@
-//! The `gpu_surface` leaf: `Native<GpuContentView>` and
+//! The `gpu_surface` leaf: `Native<GpuView>` and
 //! `Native<ExternalFrameView>` and `Native<SceneView>` as a kit surface view
 //! presenting through a `CAMetalLayer` driven by a `CAMetalDisplayLink` —
 //! the platform's own presentation primitive.
@@ -29,15 +29,14 @@ use waterui_core::layout::{
 };
 use waterui_graphics::backend::cherenkov::Next;
 use waterui_graphics::gpu::{
-    Display, ExternalFrameRenderer, ExternalFrameStream, ExternalFrameView, FrameTime,
-    GpuContentRenderer, GpuContentView, GpuRuntime, HostedFrame, HostedLayerError, RedrawHandle,
+    Display, ExternalFrameRenderer, ExternalFrameStream, ExternalFrameView, FrameTime, GpuContent,
+    GpuContentRenderer, GpuRuntime, GpuView, HostedFrame, HostedLayerError, RedrawHandle,
     RenderedFrame, SharedGpuContext, wgpu,
 };
 use waterui_graphics::input::SurfaceInputEvent;
 use waterui_graphics::offscreen::OffscreenSize;
 
 use crate::contract::NativeLeaf;
-use crate::dispatch::Dispatcher;
 use crate::gpu_runtime::EngineGeneration;
 #[cfg(all(feature = "native-test", target_os = "macos"))]
 use crate::gpu_runtime::SceneEngine;
@@ -62,6 +61,7 @@ mod scene;
 #[path = "gpu_frame_pipeline.rs"]
 mod pipeline;
 
+use crate::contract::RenderContext;
 use pipeline::{FramePipeline, FrameRequest, RendererCreation, Step};
 
 /// The semantic half of a mounted GPU surface: what is drawn, measured and
@@ -330,7 +330,7 @@ impl From<HostedLayerError> for HostedError {
     }
 }
 
-impl HostedView for GpuContentView {
+impl<T: GpuContent> HostedView for GpuView<T> {
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         Self::measure(self, proposal)
     }
@@ -2879,24 +2879,28 @@ impl SubView for SurfaceSubView {
 
 // MARK: - Install
 
-/// Installs the `gpu_surface` handlers — `Native<GpuContentView>` and
+/// The `gpu_surface` realizations — `Native<GpuView>` and
 /// `Native<ExternalFrameView>` and `Native<SceneView>` share presentation.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher
-        .register_native::<GpuContentView>(|view, ctx| build_surface(view, "GPU content", ctx));
-    dispatcher.register_native::<ExternalFrameView>(|view, ctx| {
-        build_surface(view, "external frame", ctx)
-    });
-    dispatcher.register_native::<waterui_graphics::backend::SceneView>(|view, ctx| {
-        let Some(engines) = crate::gpu_runtime::scene_engine(ctx.env()) else {
-            return crate::gpu_runtime::unavailable_leaf(ctx.mtm(), "scene");
-        };
-        build_surface(scene::Scene::new(view, engines), "scene", ctx)
-    });
+pub fn realize_gpu_view<T: GpuContent>(view: GpuView<T>, ctx: &RenderContext<'_>) -> NativeLeaf {
+    build_surface(view, "GPU content", ctx)
 }
 
-/// The leaf construction the dispatcher's GPU-surface claims share —
-/// `GpuContentView`, `ExternalFrameView`, and `SceneView`. Without a GPU
+pub fn realize_external_frame_view(view: ExternalFrameView, ctx: &RenderContext<'_>) -> NativeLeaf {
+    build_surface(view, "external frame", ctx)
+}
+
+pub fn realize_scene_view(
+    view: waterui_graphics::backend::SceneView,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    let Some(engines) = crate::gpu_runtime::scene_engine(ctx.env()) else {
+        return crate::gpu_runtime::unavailable_leaf(ctx.mtm(), "scene");
+    };
+    build_surface(scene::Scene::new(view, engines), "scene", ctx)
+}
+
+/// The leaf construction the GPU-surface realizations share —
+/// `GpuView`, `ExternalFrameView`, and `SceneView`. Without a GPU
 /// runtime the view (named `kind` in the report) mounts empty instead.
 fn build_surface<V: HostedView + 'static>(
     view: V,
@@ -3065,7 +3069,7 @@ pub mod native_test {
     use waterui_graphics::gpu::runtime::HostedLayerError;
 
     use super::{
-        Capturable, Dispatcher, DrawableFrame, DrawableUse, FrameTime, GpuRuntime, HostedError,
+        Capturable, DrawableFrame, DrawableUse, FrameTime, GpuRuntime, HostedError,
         MainThreadMarker, NativeLeaf, Pipelining, PresentationTime, Produced, Rc, RefCell,
         Retained, SceneEngine, SurfaceState, SurfaceView, build_surface_parts,
         defer_unwritten_external_frame, fmt, park_for_publication, render_drawable, scene,
@@ -3170,7 +3174,7 @@ pub mod native_test {
     /// A `SceneView` carrying [`FixtureContent`].
     ///
     /// The same GPU child the fixture mounts, as a value a
-    /// `ViewRenderer::render` trial passes straight in, so the leaf mounts
+    /// `ViewRenderer::render_to_rgba` trial passes straight in, so the leaf mounts
     /// through the production `Native<SceneView>` path itself.
     #[must_use]
     pub fn fixture_scene_view() -> SceneView {
@@ -3334,7 +3338,7 @@ pub mod native_test {
                 crate::gpu_runtime::runtime(env).ok_or("the environment carries no GpuRuntime")?;
             let engines = crate::gpu_runtime::scene_engine(env)
                 .ok_or("the environment carries no SceneEngine")?;
-            let ctx = RenderContext::new(env, Rc::new(Dispatcher::new()), mtm);
+            let ctx = RenderContext::new(env, mtm);
             let (leaf, capturable) =
                 build_surface_parts(scene::Scene::new(view, engines), runtime.clone(), &ctx);
             Ok(Self {

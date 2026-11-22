@@ -1,4 +1,4 @@
-//! The `glass_background` metadata: `IgnorableMetadata<GlassBackground>`
+//! The `glass_background` metadata: `Metadata<GlassBackground>`
 //! wrapped around content Liquid Glass sits behind.
 //!
 //! Mirrors `WuiGlassBackground`: a transparent `HostView` container —
@@ -20,16 +20,16 @@ use cocoa_ui::{PlatformView, Rect, Retained};
 use waterui::background::{Glass, GlassBackground};
 use waterui::graphics::color::WorkingColor;
 use waterui::shape::ShapeKind;
-use waterui_core::IgnorableMetadata;
+use waterui_core::Metadata;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
     ViewDimensions,
 };
 
-use crate::contract::{Mounted, NativeLeaf};
-use crate::dispatch::Dispatcher;
+use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;
 
+use crate::contract::RenderContext;
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::HostView;
 #[cfg(target_os = "ios")]
@@ -203,109 +203,110 @@ impl SubView for GlassBackgroundSubView {
     }
 }
 
-/// Installs the `glass_background` handler on the dispatcher:
-/// `IgnorableMetadata<GlassBackground>` maps to a transparent container
+/// The `glass_background` realization:
+/// `Metadata<GlassBackground>` maps to a transparent container
 /// with the platform's glass surface behind the content.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_view::<IgnorableMetadata<GlassBackground>>(|metadata, ctx| {
-        let mtm = ctx.mtm();
-        let host = HostView::new(mtm, Rect::ZERO);
-        let host_view: &PlatformView = &host;
+pub fn realize_glass_background_metadata(
+    metadata: Metadata<GlassBackground, Held>,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    let mtm = ctx.mtm();
+    let host = HostView::new(mtm, Rect::ZERO);
+    let host_view: &PlatformView = &host;
 
-        let glass_config = &metadata.value.0;
-        let shape = glass_config.shape_kind();
-        let glass = Rc::new(GlassView::new(
-            mtm,
-            style(glass_config),
-            glass_config.is_interactive(),
-        ));
+    let glass_config = &metadata.value.0;
+    let shape = glass_config.shape_kind();
+    let glass = Rc::new(GlassView::new(
+        mtm,
+        style(glass_config),
+        glass_config.is_interactive(),
+    ));
 
-        #[cfg(target_os = "macos")]
-        let _backing_layer = cocoa_ui::shape::layer(host_view);
+    #[cfg(target_os = "macos")]
+    let _backing_layer = cocoa_ui::shape::layer(host_view);
 
-        // The glass pinned to the wrapper's bounds, the content inside the
-        // effect's own content view — the platform expects it there; a
-        // subview beside the effect gets none of the glass's treatment.
-        let glass_view = glass.platform_view();
-        view::set_translates_autoresizing(glass_view, false);
-        view::add_subview(host_view, glass_view);
-        view::pin_edges(mtm, host_view, glass_view);
+    // The glass pinned to the wrapper's bounds, the content inside the
+    // effect's own content view — the platform expects it there; a
+    // subview beside the effect gets none of the glass's treatment.
+    let glass_view = glass.platform_view();
+    view::set_translates_autoresizing(glass_view, false);
+    view::add_subview(host_view, glass_view);
+    view::pin_edges(mtm, host_view, glass_view);
 
-        // Default-token text inside the glass draws at full strength, as
-        // SwiftUI's does (`SystemLabelSlots::in_glass`).
-        #[cfg(target_os = "macos")]
-        let child_leaf = {
-            let slots = ctx
+    // Default-token text inside the glass draws at full strength, as
+    // SwiftUI's does (`SystemLabelSlots::in_glass`).
+    #[cfg(target_os = "macos")]
+    let child_leaf = {
+        let slots = ctx
                 .env()
                 .get::<crate::theme::SystemLabelSlots>()
                 .copied()
                 .expect("the Apple theme installs its label slots with the color slots, and the glass handler runs under that theme");
-            let mut env = ctx.env().clone();
-            env.insert(slots.in_glass());
-            ctx.with_env(&env).render(metadata.content)
-        };
+        let mut env = ctx.env().clone();
+        env.insert(slots.in_glass());
+        ctx.with_env(&env).realize(metadata.content)
+    };
+    #[cfg(target_os = "ios")]
+    let child_leaf = ctx.realize(metadata.content);
+    let mounted = {
         #[cfg(target_os = "ios")]
-        let child_leaf = ctx.render(metadata.content);
-        let mounted = {
-            #[cfg(target_os = "ios")]
-            {
-                let content_view = glass.content_view();
-                let mounted = child_leaf.mount(&content_view);
-                view::set_translates_autoresizing(mounted.view(), false);
-                view::pin_edges(mtm, &content_view, mounted.view());
-                mounted
-            }
-            #[cfg(target_os = "macos")]
-            {
-                let mounted = child_leaf.mount(glass_view);
-                view::set_translates_autoresizing(mounted.view(), false);
-                glass.set_content_view(mounted.view());
-                view::pin_edges(mtm, glass_view, mounted.view());
-                mounted
-            }
-        };
-
-        let state = Rc::new(GlassBackgroundState { child: mounted });
-
-        // Each layout pass re-resolves the corner configuration against the
-        // current bounds — the outline is the effect's, so it must follow
-        // the frame like `WuiGlassBackground.layoutSubviews`/`layout`.
-        host.set_layout_handler({
-            let glass = Rc::clone(&glass);
-            move |host| {
-                apply_outline(&glass, shape, view::bounds(host));
-            }
-        });
-
-        // `setPlacementProposal`: the proposal selected for this wrapper is
-        // the proposal its content was negotiated with.
-        let sink_guard = proposal::register_sink(host_view, {
-            let state = Rc::clone(&state);
-            move |selected| {
-                proposal::deliver(state.child.view(), selected);
-            }
-        });
-
-        let mut leaf = NativeLeaf::new(
-            host_view,
-            GlassBackgroundSubView {
-                state: Rc::clone(&state),
-            },
-        );
-
-        // The tint is scheme-aware: resolve through the environment and
-        // push each resolved color onto the effect imperatively.
-        if let Some(tint) = glass_config.tint_color() {
-            let resolved = tint.clone().resolve(ctx.env());
-            let glass = Rc::clone(&glass);
-            leaf.bind(&resolved, move |color| {
-                glass.set_tint_color(&platform_color(&color));
-            });
+        {
+            let content_view = glass.content_view();
+            let mounted = child_leaf.mount(&content_view);
+            view::set_translates_autoresizing(mounted.view(), false);
+            view::pin_edges(mtm, &content_view, mounted.view());
+            mounted
         }
+        #[cfg(target_os = "macos")]
+        {
+            let mounted = child_leaf.mount(glass_view);
+            view::set_translates_autoresizing(mounted.view(), false);
+            glass.set_content_view(mounted.view());
+            view::pin_edges(mtm, glass_view, mounted.view());
+            mounted
+        }
+    };
 
-        leaf.keep(sink_guard);
-        leaf.keep(state);
-        leaf.keep(glass);
-        leaf
+    let state = Rc::new(GlassBackgroundState { child: mounted });
+
+    // Each layout pass re-resolves the corner configuration against the
+    // current bounds — the outline is the effect's, so it must follow
+    // the frame like `WuiGlassBackground.layoutSubviews`/`layout`.
+    host.set_layout_handler({
+        let glass = Rc::clone(&glass);
+        move |host| {
+            apply_outline(&glass, shape, view::bounds(host));
+        }
     });
+
+    // `setPlacementProposal`: the proposal selected for this wrapper is
+    // the proposal its content was negotiated with.
+    let sink_guard = proposal::register_sink(host_view, {
+        let state = Rc::clone(&state);
+        move |selected| {
+            proposal::deliver(state.child.view(), selected);
+        }
+    });
+
+    let mut leaf = NativeLeaf::new(
+        host_view,
+        GlassBackgroundSubView {
+            state: Rc::clone(&state),
+        },
+    );
+
+    // The tint is scheme-aware: resolve through the environment and
+    // push each resolved color onto the effect imperatively.
+    if let Some(tint) = glass_config.tint_color() {
+        let resolved = tint.clone().resolve(ctx.env());
+        let glass = Rc::clone(&glass);
+        leaf.bind(&resolved, move |color| {
+            glass.set_tint_color(&platform_color(&color));
+        });
+    }
+
+    leaf.keep(sink_guard);
+    leaf.keep(state);
+    leaf.keep(glass);
+    leaf
 }

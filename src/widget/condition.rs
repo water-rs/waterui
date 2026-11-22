@@ -26,9 +26,8 @@
 use core::any::Any;
 use std::rc::Rc;
 
-use crate::ViewExt;
 use nami::{Computed, SignalExt, signal::IntoComputed};
-use waterui_core::{AnyView, Dynamic, Environment, View, handler::ViewBuilder};
+use waterui_core::{Dynamic, Environment, OneOf2, View, handler::ViewBuilder};
 
 /// A component that conditionally renders a view based on a reactive boolean condition.
 ///
@@ -289,18 +288,22 @@ impl<Chain, Otherwise> core::fmt::Debug for WhenComplete<Chain, Otherwise> {
 
 /// Helper trait to evaluate a condition chain.
 trait EvalChain: 'static {
+    /// The view any branch of the chain builds: each `or` nests the chain
+    /// so far and its own branch in a [`OneOf2`].
+    type Output: View;
+
     /// Check if all conditions in this chain are static bools.
     fn all_static(&self) -> bool;
 
     /// Evaluate the chain statically (when all conditions are static).
     /// Returns `Some(view)` if a condition matched, `None` otherwise.
-    fn eval_static(&self) -> Option<AnyView>;
+    fn eval_static(&self) -> Option<Self::Output>;
 
     /// Create a combined signal that returns which branch index matched (if any).
     fn make_combined(&self) -> Computed<Option<usize>>;
 
     /// Build the view for a given branch index.
-    fn build_branch(&self, index: usize) -> AnyView;
+    fn build_branch(&self, index: usize) -> Self::Output;
 }
 
 /// The condition's value when it is a plain `bool` rather than a signal.
@@ -320,13 +323,15 @@ where
     C: IntoComputed<bool> + Clone,
     T: ViewBuilder,
 {
+    type Output = T::Output;
+
     fn all_static(&self) -> bool {
         static_bool(&self.condition).is_some()
     }
 
-    fn eval_static(&self) -> Option<AnyView> {
+    fn eval_static(&self) -> Option<T::Output> {
         if static_bool(&self.condition) == Some(true) {
-            return Some(self.then.build().anyview());
+            return Some(self.then.build());
         }
         None
     }
@@ -336,9 +341,9 @@ where
         cond.map(|v| if v { Some(0) } else { None }).computed()
     }
 
-    fn build_branch(&self, index: usize) -> AnyView {
+    fn build_branch(&self, index: usize) -> T::Output {
         debug_assert_eq!(index, 0);
-        self.then.build().anyview()
+        self.then.build()
     }
 }
 
@@ -348,18 +353,20 @@ where
     C: IntoComputed<bool> + Clone,
     T: ViewBuilder,
 {
+    type Output = OneOf2<Prev::Output, T::Output>;
+
     fn all_static(&self) -> bool {
         self.prev.all_static() && static_bool(&self.condition).is_some()
     }
 
-    fn eval_static(&self) -> Option<AnyView> {
+    fn eval_static(&self) -> Option<Self::Output> {
         // Try previous branches first
         if let Some(view) = self.prev.eval_static() {
-            return Some(view);
+            return Some(OneOf2::A(view));
         }
         // Check this branch
         if static_bool(&self.condition) == Some(true) {
-            return Some(self.then.build().anyview());
+            return Some(OneOf2::B(self.then.build()));
         }
         None
     }
@@ -386,13 +393,13 @@ where
             .computed()
     }
 
-    fn build_branch(&self, index: usize) -> AnyView {
+    fn build_branch(&self, index: usize) -> Self::Output {
         let prev_len = self.prev.branch_count();
         if index < prev_len {
-            self.prev.build_branch(index)
+            OneOf2::A(self.prev.build_branch(index))
         } else {
             debug_assert_eq!(index, prev_len);
-            self.then.build().anyview()
+            OneOf2::B(self.then.build())
         }
     }
 }
@@ -425,19 +432,25 @@ where
         // Check if all conditions are static bools for compile-time optimization
         if chain.all_static() {
             // Static optimization: evaluate at build time
-            if let Some(view) = chain.eval_static() {
-                return view;
-            }
-            return otherwise.build().anyview();
+            return OneOf2::A(
+                chain
+                    .eval_static()
+                    .map_or_else(|| OneOf2::B(otherwise.build()), OneOf2::A),
+            );
         }
 
         let chain = Rc::new(chain);
         let otherwise = Rc::new(otherwise);
 
-        Dynamic::watch(chain.make_combined().distinct(), move |index| {
-            index.map_or_else(|| otherwise.build().anyview(), |i| chain.build_branch(i))
-        })
-        .anyview()
+        OneOf2::B(Dynamic::watch(
+            chain.make_combined().distinct(),
+            move |index| {
+                index.map_or_else(
+                    || OneOf2::B(otherwise.build()),
+                    |i| OneOf2::A(chain.build_branch(i)),
+                )
+            },
+        ))
     }
 }
 
