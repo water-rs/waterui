@@ -14,7 +14,8 @@
 //! use waterui::prelude::*;
 //! use waterui::snackbar::{Snackbar, SnackbarManager, SnackbarPosition};
 //!
-//! // A window installs one into the environment; this builds one directly.
+//! // Attach `.snackbar_host()` to a root view to install a manager into the
+//! // environment automatically, or construct one directly:
 //! let (manager, _overlay) = SnackbarManager::new();
 //!
 //! // Show a simple message
@@ -36,6 +37,7 @@
 
 use alloc::rc::Rc;
 use core::cell::{Cell, RefCell};
+use core::marker::PhantomData;
 use core::time::Duration;
 
 use executor_core::spawn_local;
@@ -51,7 +53,7 @@ use waterui_core::handler::{
 };
 use waterui_core::plugin::Plugin;
 use waterui_core::views::ForEach;
-use waterui_core::{OneOf2, SignalExt, View};
+use waterui_core::{Environment, OneOf2, SignalExt, View};
 use waterui_layout::container::{FixedContainer, LazyContainer};
 use waterui_layout::frame::Frame;
 use waterui_layout::padding::EdgeInsets;
@@ -62,6 +64,10 @@ use waterui_layout::{
     SubView, SubviewPlacement, UnitPoint,
 };
 use waterui_macros::state;
+#[cfg(feature = "flow-markdown")]
+use waterui_markdown::CodeCopyFeedback;
+#[cfg(feature = "flow-markdown")]
+use waterui_text::code::OnCopied;
 use waterui_text::{font::Font, text::text};
 
 use crate::ViewExt;
@@ -697,8 +703,9 @@ impl<I: 'static> core::fmt::Debug for SnackbarManager<I> {
 impl SnackbarManager<()> {
     /// Creates a new snackbar manager and returns the overlay view.
     ///
-    /// The returned view should be placed in a window overlay above the main content.
-    /// This is automatically done by `Window::new()`.
+    /// Place the returned view in an overlay above the content and install the
+    /// manager with `.state(&manager)`, or use [`ViewExt::snackbar_host`] on
+    /// the root view to do both automatically.
     ///
     /// # Returns
     ///
@@ -1187,6 +1194,53 @@ impl<I: View + Clone + 'static> View for StackedSnackbarView<I> {
         // The backend places this host clear of the hardware; the theme's own
         // margin keeps the bar off the window edge.
         .padding_with(theme.viewport_padding)
+    }
+}
+
+/// Hosts a [`SnackbarManager`] and its overlay for a view subtree.
+///
+/// Attach with [`ViewExt::snackbar_host`] (plain snackbars) or
+/// [`ViewExt::snackbar_host_with_icons`] (snackbars carrying a typed icon view).
+/// Each built instance creates its own manager and overlay stack, so multiple
+/// windows or scenes stay isolated. When `flow-markdown` is enabled, this host
+/// also installs `CodeCopyFeedback` so copying a markdown code block presents
+/// `"Copied to clipboard"` through the hosted manager.
+#[derive(Debug)]
+pub struct SnackbarHost<V, I = ()> {
+    content: V,
+    _icon: PhantomData<fn() -> I>,
+}
+
+impl<V, I> SnackbarHost<V, I> {
+    /// Wraps `content` in a snackbar host.
+    #[must_use]
+    pub const fn new(content: V) -> Self {
+        Self {
+            content,
+            _icon: PhantomData,
+        }
+    }
+}
+
+impl<V: View, I: View + Clone + 'static> View for SnackbarHost<V, I>
+where
+    Snackbar<()>: Into<Snackbar<I>>,
+{
+    fn body(self, _env: &Environment) -> impl View {
+        let (manager, overlay) = SnackbarManager::<I>::typed();
+        let content = self
+            .content
+            .overlay(overlay)
+            .with(manager.clone())
+            .state(&manager);
+        #[cfg(feature = "flow-markdown")]
+        let content = content.with(CodeCopyFeedback(OnCopied::new({
+            let snackbar = manager;
+            move |_env| {
+                snackbar.show(Snackbar::new("Copied to clipboard"));
+            }
+        })));
+        content
     }
 }
 

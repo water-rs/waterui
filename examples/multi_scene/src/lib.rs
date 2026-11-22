@@ -23,6 +23,7 @@ pub fn demo() -> impl View {
         spacer(),
     ))
     .padding()
+    .snackbar_host()
 }
 
 /// Builds the example app, showing the multi-scene demo.

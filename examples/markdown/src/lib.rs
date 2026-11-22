@@ -123,6 +123,7 @@ pub fn demo() -> impl View {
     .state(&open)
     .state(&current)
     .state(&focus)
+    .snackbar_host()
 }
 
 /// Builds the example app, showing the markdown demo.

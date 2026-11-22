@@ -224,7 +224,7 @@ impl View for RichTextElement {
                     None => view,
                 };
                 // Copy feedback goes through the host-installed `CodeCopyFeedback`
-                // plugin (for example the window's `SnackbarManager`), keeping
+                // plugin (for example a `snackbar_host()`), keeping
                 // `waterui-markdown` independent of runtime overlays.
                 let view = match env.get::<CodeCopyFeedback>().cloned() {
                     Some(feedback) => view.on_copied(move |env| feedback.0.call(env)),

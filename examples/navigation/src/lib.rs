@@ -291,6 +291,7 @@ pub fn demo() -> impl View {
     // A tab bar on a phone, a sidebar or navigation rail on a large window: the
     // backend decides from the platform and the current window size.
     .style(tab_style::automatic())
+    .snackbar_host()
 }
 
 /// The tab for `pane`. Every tab shares one root builder, whose page is the
