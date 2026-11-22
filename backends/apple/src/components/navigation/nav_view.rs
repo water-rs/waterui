@@ -7,12 +7,17 @@
 //! header on macOS — publishing into the window toolbar instead when the
 //! window is titled.
 
-use crate::contract::{NativeLeaf, RenderContext};
+use crate::contract::{Held, NativeLeaf, RenderContext};
 use waterui::navigation::NavigationView;
 use waterui_core::layout::{LayoutError, ProposalSize, Rect, ResolvedExtent};
 
-/// The `NavigationView` realization.
-pub fn realize_navigation_view(value: NavigationView, ctx: &RenderContext<'_>) -> NativeLeaf {
+/// The `NavigationView` realization, its fields resolved against the
+/// environment it is realized in.
+pub fn realize_navigation_view(
+    mut value: NavigationView<Held>,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    value.resolve_native_fields(ctx.env());
     platform::nav_view_leaf(value, ctx)
 }
 
@@ -45,7 +50,6 @@ impl waterui_core::layout::SubView for Fill {
 
 #[cfg(target_os = "ios")]
 mod platform {
-    use core::mem;
 
     use cocoa_ui::uikit::{LargeTitle, NavBar, NavPage, SearchBar};
     use cocoa_ui::{Rect, view};
@@ -58,7 +62,7 @@ mod platform {
     use crate::components::navigation::bar::{
         BarItem, BarState, bar_color, bar_item_frame, search_prompt,
     };
-    use crate::contract::{KeepAlive, NativeLeaf, RenderContext};
+    use crate::contract::{Held, KeepAlive, NativeLeaf, RenderContext};
     use crate::theme::platform_color;
 
     use super::Fill;
@@ -68,11 +72,11 @@ mod platform {
     /// The standalone page: the content under an in-content `NavBar`; hosted
     /// pages render content only — the stack owns the chrome.
     #[allow(clippy::too_many_lines)]
-    pub(super) fn nav_view_leaf(view: NavigationView, ctx: &RenderContext) -> NativeLeaf {
-        let mut view = view;
+    pub(super) fn nav_view_leaf(view: NavigationView<Held>, ctx: &RenderContext) -> NativeLeaf {
+        let (content, mut view) = view.split_content();
         let env = ctx.env();
         let mtm = ctx.mtm();
-        let content = ctx.render(mem::take(&mut view.content));
+        let content = ctx.realize(content);
         let host = cocoa_ui::uikit::HostView::new(mtm, Rect::ZERO);
         view::add_subview(&host, content.view());
         // The page's own chrome (the bar and search field that may follow)
@@ -335,7 +339,6 @@ mod platform {
 
 #[cfg(target_os = "macos")]
 mod platform {
-    use core::mem;
 
     use cocoa_ui::appkit::{
         HostView, HostedItem, HostedSearch, Label, SearchField, ToolbarChild, ToolbarContent,
@@ -352,7 +355,7 @@ mod platform {
     use crate::components::navigation::bar::{
         BarItem, BarItemIcon, BarState, bar_color, bar_item_frame, search_prompt,
     };
-    use crate::contract::{KeepAlive, NativeLeaf, RenderContext};
+    use crate::contract::{Held, KeepAlive, NativeLeaf, RenderContext};
     use crate::theme::platform_color;
 
     use super::Fill;
@@ -362,11 +365,11 @@ mod platform {
     /// The standalone page on macOS: a material header under non-titled
     /// windows; the window toolbar when the window is titled.
     #[allow(clippy::too_many_lines)]
-    pub(super) fn nav_view_leaf(view: NavigationView, ctx: &RenderContext) -> NativeLeaf {
-        let mut view = view;
+    pub(super) fn nav_view_leaf(view: NavigationView<Held>, ctx: &RenderContext) -> NativeLeaf {
+        let (content, mut view) = view.split_content();
         let env = ctx.env();
         let mtm = ctx.mtm();
-        let content = ctx.render(mem::take(&mut view.content));
+        let content = ctx.realize(content);
         let host = HostView::new(mtm, Rect::ZERO);
         view::add_subview(&host, content.view());
         let content_view = view::retain_base(content.view());

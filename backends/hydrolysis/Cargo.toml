@@ -12,18 +12,17 @@ keywords = ["ui", "graphics", "gpu", "waterui", "cherenkov"]
 categories = ["gui", "graphics"]
 
 [dependencies]
+hydrolysis-style.workspace = true
 waterui-core.workspace = true
+waterui-interaction.workspace = true
 waterui-structural-transition.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
 nami.workspace = true
-waterui-icon.workspace = true
 waterui-shape.workspace = true
 waterui-layout.workspace = true
 waterui-controls.workspace = true
-waterui-form.workspace = true
-waterui-backend-core = { workspace = true, optional = true, features = ["gestures", "overlay", "log"] }
+waterui-form = { workspace = true, optional = true }
 waterkit-clipboard = { workspace = true, optional = true }
 waterui-locale.workspace = true
 # `std` for `Url::from_file_path`, the OS file-drop path.
@@ -49,19 +48,18 @@ read-fonts = { version = "0.45.1", default-features = false, features = ["std"],
 lru = { workspace = true, optional = true }
 executor-core.workspace = true
 rustc-hash.workspace = true
-unicode-segmentation = "1.13"
+unicode-segmentation = { version = "1.13", optional = true }
 async-task = "4.7"
 native-executor.workspace = true
 keyboard-types.workspace = true
 # `serde` lets the Android host push the merged accesskit tree to its
 # accessibility provider as JSON (src/runner/android/accessibility.rs).
 accesskit = { version = "0.25", optional = true, features = ["serde"] }
-waterui-inspector-protocol.workspace = true
-# `effects`, never `gpu` by itself: the `Filtered`/`filtrate` recipe
-# vocabulary resolves under every painter (the HWUI and CPU mounts name
-# their refusal); the GPU halves arrive with the `gpu` feature.
-waterui = { workspace = true, features = ["dialog", "inspector", "effects"] }
-waterui-graphics = { workspace = true, features = ["effects"] }
+# No facade features forced here: `build.rs` reads `DEP_WATERUI_FEATURES` so
+# `dialog`, `effects`, `gpu`, `canvas`, and other facade features stay under
+# the application's control.
+waterui = { workspace = true }
+waterui-graphics = { workspace = true, features = ["effects", "text", "input"] }
 # `engine` (selected by `gpu` and `cpu`) for the `parley` font context the
 # Cherenkov painters build and install into the environment; the faces come
 # from the resource loader and the system source `parley/system` provides, so
@@ -101,6 +99,13 @@ pollster = { workspace = true, optional = true }
 # Hosted content (Apple, Android and the web, the `hydrolysis_hosted` targets)
 # follows the occlusion rects through a watcher set, as does the web
 # platform's surface; no other target compiles either.
+# The GPU vector map as the realization of `Map` (the `map-gpu` feature).
+waterui-map-gpu = { workspace = true, optional = true }
+
+# Desktop browser engines for standard `WebView`.
+[target.'cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))'.dependencies]
+waterui-browser-cef = { workspace = true, optional = true }
+
 [target.'cfg(any(target_vendor = "apple", target_os = "android", target_arch = "wasm32"))'.dependencies]
 waterui-watcher-set = { workspace = true, optional = true }
 
@@ -133,10 +138,22 @@ accesskit_ios = { version = "0.2.2", default-features = false, optional = true }
 tracing-panic = { workspace = true, optional = true }
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
+# Non-Android builds link `waterui-backend-core` only when a runtime painter
+# (`gpu` or `cpu`) is enabled; Android links it unconditionally so plugin crates
+# using `AndroidContent` / `AndroidView` can depend on `hydrolysis` with
+# `default-features = false`.
+waterui-backend-core = { workspace = true, default-features = false, optional = true }
 # Decodes the CLI-staged window icon (always written as 8-bit RGBA PNG) —
 # only the winit runner reads one.
 png = { version = "0.18", optional = true }
 waterui-assets = { workspace = true, optional = true }
+
+# The GPU video player realizing `Video` off the web (the `video-gpu`
+# feature); the web realizes it with the page's `<video>` element.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tracing-subscriber = { workspace = true, optional = true }
+waterui-inspector-protocol = { workspace = true, optional = true }
+waterui-video-gpu = { workspace = true, optional = true }
 
 [build-dependencies]
 askama = { version = "0.16", default-features = false, features = ["derive", "std"], optional = true }
@@ -237,7 +254,6 @@ objc2-web-kit = { version = "0.3.2", optional = true, default-features = false, 
     "WKWebViewConfiguration",
     "WKWebsiteDataStore",
 ] }
-serde_json = { workspace = true, optional = true }
 
 # The native app menu-bar surface (`App::menu_bar`): waterkit-menu builds the
 # real NSMenu on NSApp.mainMenu (macOS) and a Win32 HMENU on the window's HWND
@@ -277,6 +293,7 @@ wayland-protocols = { version = "0.32", features = ["client", "staging"], option
 # never blocks on D-Bus. `futures-core` names the `Stream` trait the signal
 # subscription is consumed through.
 [target.'cfg(target_os = "linux")'.dependencies]
+waterui-browser-wpe = { workspace = true, optional = true }
 zbus = { version = "5.19", default-features = false, features = ["async-io"], optional = true }
 futures-core = { version = "0.3", optional = true }
 
@@ -318,15 +335,14 @@ windows = { workspace = true, features = [
 # carries the eventfd the main-Looper executor wakes on, and `android_logger`
 # + `tracing-log` route `tracing` into logcat.
 [target.'cfg(target_os = "android")'.dependencies]
+waterui-backend-core = { workspace = true, default-features = false }
 jni.workspace = true
 ndk = { version = "0.9.0", features = ["nativewindow", "api-level-33"] }
 # The application `Context` for service crates that resolve it through
 # `ndk_context::android_context` — waterkit-clipboard's Android backend
 # panics without it; published once in `nativeCreateSession`.
-ndk-context = "0.1"
+ndk-context = { version = "0.1", optional = true }
 libc = "0.2"
-# The GPU video player's Android decoder plane (the `video-gpu` feature).
-waterui-video-gpu = { workspace = true, optional = true }
 # A pure-HWUI build (`--no-default-features --features hwui`,
 # water-rs/waterui#1811) selects the platform painter and links none of the
 # Cherenkov engine dependencies above; with `gpu` it composes (the painter is
@@ -335,11 +351,11 @@ waterui-video-gpu = { workspace = true, optional = true }
 raw-window-handle = { version = "0.6", optional = true }
 android_logger = { version = "0.15", optional = true }
 waterui-assets-core = { workspace = true, optional = true }
-tracing-log = "0.2"
+tracing-log = { version = "0.2", optional = true }
 # The accessibility tree publish and the platform-view placement set cross JNI
 # as JSON.
 serde = { workspace = true, features = ["derive"] }
-serde_json.workspace = true
+serde_json = { workspace = true, optional = true }
 # The published payload's `contentTypes` map serializes `ContentType`
 # (camelCase names) — the provider maps each onto `HintConstants`.
 waterui-controls = { workspace = true, features = ["serde"] }
@@ -356,7 +372,8 @@ console_error_panic_hook = { version = "0.1", optional = true }
 futures = { workspace = true, optional = true }
 js-sys = "0.3"
 serde = { workspace = true, features = ["derive"] }
-serde_json.workspace = true
+serde_json = { workspace = true, optional = true }
+tracing-subscriber = { workspace = true, optional = true }
 wasm-bindgen = { version = "0.2", optional = true }
 wasm-bindgen-futures = { version = "0.4", optional = true }
 # The `video` feature's realization of the two video leaves.
@@ -394,7 +411,9 @@ cherenkov = { workspace = true, features = ["testing"] }
 # feature APIs — the headless runtimes' `new_for_tests` constructors, the
 # merged-tree queries and `testing::TestStyle` — and a dev-dependency on the
 # package itself is what turns them on for test builds (water-rs/waterui#1673).
-hydrolysis = { workspace = true, features = ["accessibility", "testing", "all-controls"] }
+hydrolysis = { workspace = true, features = ["accessibility", "inspector", "testing", "all-controls"] }
+# `runner::tests` exercises `SignalExt::debounce`, which lives behind `nami/timer`.
+nami = { workspace = true, features = ["timer"] }
 # The HWUI target's unit tests read font metrics on the host as well.
 read-fonts = { version = "0.45.1", default-features = false, features = ["std"] }
 # The `hwui::kotlin` tests verify the generated Kotlin wire constants from the Rust
@@ -415,7 +434,7 @@ getrandom.workspace = true
 toml.workspace = true
 jiff.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
-waterui = { workspace = true, features = ["dialog", "flow-markdown", "gpu", "map", "snackbar", "video-gpu", "webview"] }
+waterui = { workspace = true, features = ["canvas", "capture", "dialog", "effects", "flow-markdown", "gpu", "map", "snackbar", "video-gpu", "webview"] }
 base64 = "0.23"
 # The font-collection tests stage a resource root of their own — a real
 # directory, since the loader reads one from the filesystem.
@@ -474,25 +493,25 @@ harness = false
 required-features = ["webview-system", "winit"]
 
 [features]
-menu = ["waterui/menu", "dep:waterkit-menu", "dep:waterui-apple-menu"]
-calendar = ["waterui/calendar"]
-color-picker = ["waterui/color-picker"]
-date-picker = ["calendar", "stepper", "menu", "waterui/date-picker"]
-file-picker = ["waterui/file-picker"]
-multi-date-picker = ["calendar", "waterui/multi-date-picker"]
-picker = ["menu", "waterui/picker"]
-secure-field = ["menu", "waterui/secure-field"]
-slider = ["waterui/slider"]
-stepper = ["waterui/stepper"]
-text-field = ["menu", "waterui/text-field"]
-toggle = ["waterui/toggle"]
-validation = ["text-field", "waterui/validation"]
-list = ["waterui/list"]
-table = ["list", "waterui/table"]
-navigation = ["text-field", "waterui/navigation"]
+menu = ["hydrolysis-style/menu", "waterui/menu", "dep:waterkit-menu", "dep:waterui-apple-menu"]
+calendar = ["hydrolysis-style/calendar", "waterui/calendar"]
+color-picker = ["hydrolysis-style/color-picker", "waterui/color-picker", "dep:waterui-form"]
+date-picker = ["calendar", "stepper", "menu", "hydrolysis-style/date-picker", "waterui/date-picker", "dep:waterui-form"]
+file-picker = ["hydrolysis-style/file-picker", "waterui/file-picker"]
+multi-date-picker = ["calendar", "hydrolysis-style/multi-date-picker", "waterui/multi-date-picker"]
+picker = ["menu", "hydrolysis-style/picker", "waterui/picker", "dep:waterui-form"]
+secure-field = ["menu", "hydrolysis-style/secure-field", "waterui/secure-field", "dep:waterui-form", "dep:unicode-segmentation"]
+slider = ["hydrolysis-style/slider", "waterui/slider"]
+stepper = ["hydrolysis-style/stepper", "waterui/stepper"]
+text-field = ["menu", "hydrolysis-style/text-field", "waterui/text-field", "dep:unicode-segmentation"]
+toggle = ["hydrolysis-style/toggle", "waterui/toggle"]
+validation = ["text-field", "hydrolysis-style/validation", "waterui/validation"]
+list = ["hydrolysis-style/list", "waterui/list"]
+table = ["list", "hydrolysis-style/table", "waterui/table"]
+navigation = ["text-field", "hydrolysis-style/navigation", "waterui/navigation"]
 all-controls = ["menu", "calendar", "color-picker", "date-picker", "file-picker", "multi-date-picker", "picker", "secure-field", "slider", "stepper", "text-field", "toggle", "validation", "list", "table", "navigation"]
 default = ["gpu", "all-controls"]
-accessibility = ["dep:accesskit", "dep:accesskit_ios"]
+accessibility = ["dep:accesskit", "dep:accesskit_ios", "dep:serde_json"]
 testing = []
 # Per-frame CPU/GPU stage timing: wgpu timestamp queries around the
 # layer-content and compositor submits plus the CPU stage split the window
@@ -509,13 +528,20 @@ gpu = [
     "dep:cherenkov",
     "dep:cherenkov-gpu",
     "dep:lru",
+    "dep:ndk-context",
     "dep:peniko",
+    "dep:serde_json",
+    "dep:tracing-log",
+    "dep:tracing-subscriber",
+    "dep:unicode-segmentation",
     "dep:wgpu",
     "dep:pollster",
     "dep:raw-window-handle",
     "dep:waterkit-clipboard",
     "dep:waterui-assets-core",
-    "dep:waterui-backend-core",
+    "waterui-backend-core/gestures",
+    "waterui-backend-core/overlay",
+    "waterui-backend-core/log",
     "dep:waterui-watcher-set",
     "dep:cocoa-ui",
     "dep:tracing-panic",
@@ -540,11 +566,16 @@ cpu = [
     "dep:cherenkov",
     "dep:cherenkov-cpu",
     "dep:lru",
+    "dep:ndk-context",
     "dep:peniko",
+    "dep:tracing-subscriber",
+    "dep:unicode-segmentation",
     "cherenkov-cpu/shaders",
     "dep:waterkit-clipboard",
     "dep:waterui-assets-core",
-    "dep:waterui-backend-core",
+    "waterui-backend-core/gestures",
+    "waterui-backend-core/overlay",
+    "waterui-backend-core/log",
     "waterui-graphics/cpu",
     "dep:parley",
     "dep:skrifa",
@@ -552,7 +583,10 @@ cpu = [
     "dep:icu_locale",
     "waterui-text/engine",
 ]
-inspector-signals = ["waterui/inspector-signals"]
+# Development inspector endpoint and frame/tree recorders, enabled by the CLI
+# for development sessions (`water run` / `water preview`).
+inspector = ["waterui/inspector", "dep:waterui-inspector-protocol", "dep:tracing-subscriber"]
+inspector-signals = ["inspector", "waterui/inspector-signals"]
 # The HWUI render target (Android only): the retained layer tree recorded
 # into `RenderNode` display lists through one command buffer per frame, and
 # text laid out and drawn by the platform's `StaticLayout`
@@ -562,20 +596,30 @@ hwui = [
     "dep:askama",
     "dep:android_logger",
     "dep:lru",
+    "dep:ndk-context",
     "dep:peniko",
     "dep:read-fonts",
+    "dep:serde_json",
+    "dep:tracing-log",
+    "dep:tracing-subscriber",
     "dep:waterkit-clipboard",
-    "dep:waterui-backend-core",
+    "waterui-backend-core/gestures",
+    "waterui-backend-core/overlay",
+    "waterui-backend-core/log",
 ]
-# The Android realization of the GPU video player's decoder plane
-# (`AndroidVideoSurfaceHost`), for an application that links
-# `waterui-video-gpu`. The CLI enables it for such an application; elsewhere
-# the feature selects nothing.
-video-gpu = ["gpu", "dep:waterui-video-gpu"]
+# The GPU video player as the realization of `Video` and `VideoPlayer` off the
+# web, with its Android decoder plane
+# (`AndroidVideoSurfaceHost`). The CLI enables it for an application that
+# selects `waterui/video-gpu`.
+video-gpu = ["gpu", "dep:waterui-video-gpu", "waterui/video"]
+# The GPU vector map as the realization of `Map`: this backend bridges no
+# platform map. The CLI enables it for an application that links
+# `waterui-map-gpu`.
+map-gpu = ["gpu", "dep:waterui-map-gpu", "waterui/map"]
 # The platform's own web engine: `WKWebView` on macOS, an `<iframe>` on the web,
 # each hosted on a compositor plane, and `android.webkit.WebView` on Android,
-# mounted as a platform-view instance. Every other engine is a crate the
-# application links and installs; this backend never names one.
+# mounted as a platform-view instance. Mutually exclusive with `webview-cef` and
+# `webview-wpe`.
 webview-system = [
     "waterui/webview",
     "dep:block2",
@@ -588,6 +632,22 @@ webview-system = [
     "web-sys?/MouseEvent",
     "web-sys?/PointerEventInit",
     "web-sys?/WheelEventInit",
+]
+# The bundled CEF engine as the realization of `WebView` on macOS, Linux, and
+# Windows. Mutually exclusive with `webview-system` and `webview-wpe`.
+webview-cef = [
+    "gpu",
+    "waterui/webview",
+    "dep:waterui-browser-cef",
+    "waterui-browser-cef?/webview",
+]
+# The bundled WPE WebKit engine as the realization of `WebView` on Linux.
+# Mutually exclusive with `webview-system` and `webview-cef`.
+webview-wpe = [
+    "gpu",
+    "waterui/webview",
+    "dep:waterui-browser-wpe",
+    "waterui-browser-wpe?/webview",
 ]
 winit = [
     "accessibility",
@@ -604,6 +664,8 @@ winit = [
     "dep:objc2-foundation",
     "dep:objc2-quartz-core",
     "dep:futures",
+    "menu",
+    "dep:waterkit-menu",
     "dep:windows",
     "dep:x11-dl",
     "dep:x11rb",
@@ -618,6 +680,7 @@ winit = [
 # selects nothing. The CLI enables it for an application that uses video.
 video = [
     "dep:waterui-video",
+    "waterui/video",
     "web-sys?/HtmlMediaElement",
     "web-sys?/HtmlTrackElement",
     "web-sys?/HtmlVideoElement",
@@ -635,6 +698,7 @@ web = [
     "accessibility",
     "dep:console_error_panic_hook",
     "dep:futures",
+    "dep:serde_json",
     "dep:wasm-bindgen",
     "dep:wasm-bindgen-futures",
     "dep:waterui-watcher-set",

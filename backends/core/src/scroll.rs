@@ -68,11 +68,11 @@ const SMOOTH_SCROLL_SETTLE_EPSILON: f64 = 0.1;
 #[non_exhaustive]
 pub struct ScrollPositionReport {
     /// The binding the measured [`ScrollPosition`] is written into.
-    pub binding: Binding<Option<ScrollPosition>>,
+    binding: Binding<Option<ScrollPosition>>,
     /// The logical viewport size the report describes, in points.
-    pub viewport_size: Size,
+    viewport_size: Size,
     /// The logical content size the report describes, in points.
-    pub content_size: Size,
+    content_size: Size,
 }
 
 impl ScrollPositionReport {

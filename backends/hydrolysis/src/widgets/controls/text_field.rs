@@ -7,8 +7,9 @@ use crate::renderer::measure_secure_field_size_with_label_size;
 use crate::renderer::measure_text_field_size_with_label_size;
 use crate::renderer::text_editing::CaretPaints;
 use crate::renderer::{
-    HydroState, HydrolysisRenderer, RetainedSubview, TextInputModel, TextInputTargetRegistration,
-    TextSelectionSlot, WidgetRenderContext, clamp_to_char_boundary, transformed_rect,
+    HeldChild, HydroState, HydrolysisRenderer, RetainedSubview, TextInputModel,
+    TextInputTargetRegistration, TextSelectionSlot, WidgetRenderContext, clamp_to_char_boundary,
+    transformed_rect,
 };
 use crate::text::{TextLayout as _, TextPosition};
 use crate::theme::{ModalInteraction, TextFieldLook};
@@ -22,28 +23,28 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use waterui::cursor::CursorStyle;
 #[cfg(feature = "text-field")]
-use waterui_controls::text_field::ResolvedTextFieldConfig;
+use waterui_controls::text_field::TextFieldConfig;
 use waterui_core::Environment;
 #[cfg(feature = "text-field")]
 use waterui_core::Str;
-#[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
-use waterui_core::interaction::InteractionState;
 use waterui_core::layout::{
     HorizontalAlignment, LayoutDirection, ProposalSize, Size as LayoutSize, ViewDimensions,
 };
 #[cfg(feature = "secure-field")]
 use waterui_form::secure::SecureFieldConfig;
+#[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
+use waterui_interaction::interaction::InteractionState;
 #[cfg(feature = "text-field")]
 use waterui_text::styled::Style;
 use waterui_text::styled::StyledStr;
 
-/// The retained render state of a text field: the cloneable [`ResolvedTextFieldConfig`]
+/// The retained render state of a text field: the cloneable [`TextFieldConfig`]
 /// drives the input model + accessibility, and its floating label is held as a
 /// [`RetainedSubview`] built once and placed each frame at its resting place,
 /// riding the look's float operands, so reactive label content stays live.
 #[cfg(feature = "text-field")]
 pub struct TextFieldRenderState<E: crate::text::TextEngine> {
-    config: ResolvedTextFieldConfig,
+    config: TextFieldConfig<HeldChild<E>>,
     label_view: RetainedSubview<E>,
     /// The look the field was requested for, its container's live chrome and
     /// the operands its label floats on.
@@ -67,10 +68,10 @@ impl<E: crate::text::TextEngine> TextFieldRenderState<E> {
         crate::renderer::SemanticCore::<E>::accessibility_label_from_label(self.config.label(), env)
     }
 
-    pub(crate) fn from_config(config: ResolvedTextFieldConfig) -> Self {
+    pub(crate) fn from_config(config: TextFieldConfig<HeldChild<E>>) -> Self {
         let field = FieldChrome::new();
         Self {
-            label_view: RetainedSubview::new(field.label_view(config.label().clone())),
+            label_view: RetainedSubview::held(field.label_view(config.label().build())),
             config,
             field,
             selection_slot: Rc::new(RefCell::new(TextSelectionSlot::default())),
@@ -101,7 +102,7 @@ impl<E: crate::text::TextEngine> TextFieldRenderState<E> {
 /// label transform so reactive label content stays live.
 #[cfg(feature = "secure-field")]
 pub struct SecureFieldRenderState<E: crate::text::TextEngine> {
-    config: SecureFieldConfig,
+    config: SecureFieldConfig<HeldChild<E>>,
     label_view: RetainedSubview<E>,
     /// The look and live parts the field realizes; see [`TextFieldRenderState::field`].
     field: FieldChrome,
@@ -122,10 +123,10 @@ impl<E: crate::text::TextEngine> SecureFieldRenderState<E> {
         crate::renderer::SemanticCore::<E>::accessibility_label_from_label(self.config.label(), env)
     }
 
-    pub(crate) fn from_config(config: SecureFieldConfig) -> Self {
+    pub(crate) fn from_config(config: SecureFieldConfig<HeldChild<E>>) -> Self {
         let field = FieldChrome::new();
         Self {
-            label_view: RetainedSubview::new(field.label_view(config.label().clone())),
+            label_view: RetainedSubview::held(field.label_view(config.label().build())),
             config,
             field,
             selection_slot: Rc::new(RefCell::new(TextSelectionSlot::default())),
@@ -566,6 +567,7 @@ pub fn render_text_field_parts<E: crate::text::TextEngine>(
                 model: input_model,
                 selection: selection_slot,
                 env: env.clone(),
+                show_context_menu: HydrolysisRenderer::<E>::show_text_context_menu,
             });
     }
 }
@@ -836,6 +838,7 @@ pub fn render_secure_field_parts<E: crate::text::TextEngine>(
                 model: input_model,
                 selection: selection_slot,
                 env: env.clone(),
+                show_context_menu: HydrolysisRenderer::<E>::show_text_context_menu,
             });
     }
 }
@@ -1305,6 +1308,7 @@ pub fn emit_text_field_accessibility<E: crate::text::TextEngine>(
                 },
                 selection: Rc::clone(&state.selection_slot),
                 env: env.clone(),
+                show_context_menu: HydrolysisRenderer::<E>::show_text_context_menu,
             });
         }
     }
@@ -1408,6 +1412,7 @@ pub fn emit_secure_field_accessibility<E: crate::text::TextEngine>(
                 },
                 selection: Rc::clone(&state.selection_slot),
                 env: env.clone(),
+                show_context_menu: HydrolysisRenderer::<E>::show_text_context_menu,
             });
         }
     }

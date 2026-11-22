@@ -33,9 +33,9 @@ use waterui_core::layout::{
     LayoutDirection, LayoutError, Point, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis,
     SubView, ViewDimensions, layout_direction,
 };
-use waterui_core::{Computed, Metadata};
+use waterui_core::{AnyView, Computed, Metadata};
 
-use crate::contract::{Mounted, NativeLeaf, Renderer};
+use crate::contract::{Held, Mounted, NativeLeaf, Renderer};
 use crate::transition::ghost::Ghost;
 use crate::transition::live::{LiveChild, Removal};
 
@@ -55,7 +55,7 @@ struct OverlayState {
     /// The anchor's content, laid out over the host's full bounds.
     child: Mounted,
     /// Builds a fresh overlay view for each presentation.
-    builder: AnyViewBuilder,
+    builder: AnyViewBuilder<AnyView>,
     /// A `'static` render handle the builder's output mounts through.
     renderer: Renderer,
     /// The overlay content, moved into the presentation surface while shown;
@@ -564,13 +564,13 @@ impl SubView for AnchoredSubView {
 /// presents the overlay content in a window-level surface against the
 /// anchor's frame.
 pub fn realize_anchored_overlay_metadata(
-    metadata: Metadata<AnchoredOverlay>,
+    metadata: Metadata<AnchoredOverlay, Held>,
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
     let mtm = ctx.mtm();
     let host = HostView::new(mtm, KitRect::ZERO);
     let host_view: &PlatformView = &host;
-    let mounted = ctx.render(metadata.content).mount(host_view);
+    let mounted = ctx.realize(metadata.content).mount(host_view);
     crate::primary_content::forward(&host, mounted.view());
 
     let state = Rc::new(OverlayState {

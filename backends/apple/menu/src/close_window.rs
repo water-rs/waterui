@@ -22,6 +22,7 @@ pub fn standard_close_window_command(chord: Option<&Shortcut>) -> cocoa_ui::menu
         String::from(CLOSE_WINDOW_TITLE),
         None,
         None,
+        None,
         CommandRole::Standard,
         chord,
     )

@@ -23,8 +23,8 @@ use super::text_input::ImeShared;
 use crate::platform::PaintedWindow;
 use crate::runner::host_executor::HostMainThreadExecutor;
 use crate::runner::window::{
-    FrameHost, FrameOutcome, FrameTransaction, RuntimeWindow, WindowFrame, render_window,
-    reports_ui_idle, run_frame_transaction,
+    FrameHost, FrameOutcome, FrameTransaction, RootWindow, RuntimeWindow, WindowFrame,
+    render_window, reports_ui_idle, run_frame_transaction,
 };
 use crate::text::ParleyEngine;
 
@@ -63,7 +63,7 @@ pub(super) struct AppleSession<P: AppleHostWindow> {
     accessibility: AccessibilityBridge,
     /// Windows the app asked for while mounted — popups among them; a scene
     /// mounts exactly one window, so they are reported and dropped.
-    pending_window_queue: Rc<RefCell<Vec<waterui::window::Window>>>,
+    pending_window_queue: Rc<RefCell<Vec<RootWindow<ParleyEngine>>>>,
     /// A frame reached the surface at least once; with an idle
     /// `wants_next_frame` it arms the one-shot readiness log.
     presented_once: Cell<bool>,
@@ -79,7 +79,7 @@ impl<P: AppleHostWindow> AppleSession<P> {
         executor: AppleExecutor,
         #[cfg(any(feature = "text-field", feature = "secure-field"))] ime: Rc<ImeShared>,
         #[cfg(feature = "accessibility")] accessibility: AccessibilityBridge,
-        pending_window_queue: Rc<RefCell<Vec<waterui::window::Window>>>,
+        pending_window_queue: Rc<RefCell<Vec<RootWindow<ParleyEngine>>>>,
     ) -> Self {
         Self {
             env,

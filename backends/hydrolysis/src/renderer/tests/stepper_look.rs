@@ -16,8 +16,8 @@ use waterui::{Color, ViewExt as _};
 use waterui_controls::stepper::stepper;
 use waterui_core::AnyView;
 use waterui_core::handler::AnyViewBuilder;
-use waterui_core::interaction::InteractionState;
 use waterui_core::layout::LayoutDirection;
+use waterui_interaction::interaction::InteractionState;
 
 use super::chrome_primitives::Frames;
 use super::{MinimalTestTheme, pumped_test_environment, test_environment};

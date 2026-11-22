@@ -13,13 +13,13 @@ use cocoa_ui::Rect;
 use cocoa_ui::view;
 use waterui_backend_core::Environment;
 use waterui_core::Metadata;
-use waterui_core::event::{Event, HoverEvent, OnEvent};
 use waterui_core::layout::{
     LayoutError, Point, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
     ViewDimensions,
 };
+use waterui_interaction::event::{Event, HoverEvent, OnEvent};
 
-use crate::contract::{Mounted, NativeLeaf};
+use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;
 
 use crate::contract::RenderContext;
@@ -101,12 +101,12 @@ fn fire(state: &OnEventState, event: Event, location: Option<Point>) {
 
 /// The `on_event` realization.
 pub fn realize_on_event_metadata(
-    metadata: Metadata<OnEvent>,
+    metadata: Metadata<OnEvent, Held>,
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
     let mtm = ctx.mtm();
     let host = HostView::new(mtm, Rect::ZERO);
-    let child = ctx.render(metadata.content);
+    let child = ctx.realize(metadata.content);
     // The handler resolves in the environment its content's modifier
     // chain resolves in (water-rs/waterui#1292).
     let env = child.handler_env(ctx.env());

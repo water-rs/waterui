@@ -77,7 +77,8 @@ pub use filtrate::{Filter, FilterImage, LutImage, Reach};
 use nami::SignalExt;
 use nami::{Signal, signal::IntoComputed};
 use waterui_core::animation::ChangeAnimation;
-use waterui_core::{AnyView, Environment, IntoSignalF32, View};
+use waterui_core::backend::{Backend, ChildSlot, MapSlots};
+use waterui_core::{AnyView, Environment, IntoSignalF32, Native, View};
 
 #[cfg(feature = "gpu")]
 mod gpu;
@@ -879,10 +880,10 @@ impl<V: View, F: Reach + RenderTransfer> Filtered<V, F> {
         }
     }
 
-    /// Erases the view and the filter into the form a backend receives.
-    fn erase(self) -> FilteredView {
+    /// Erases the filter into [`AnyEffect`], keeping the content's view type.
+    fn into_filtered_view(self) -> FilteredView<V> {
         FilteredView {
-            content: AnyView::new(self.view),
+            content: self.view,
             effect: AnyEffect::filter(self.filter),
             guards: self.guards,
         }
@@ -891,42 +892,67 @@ impl<V: View, F: Reach + RenderTransfer> Filtered<V, F> {
 
 impl<V: View, F: Reach + RenderTransfer> View for Filtered<V, F> {
     fn body(self, _env: &Environment) -> impl View {
-        self.erase()
+        self.into_filtered_view()
     }
 }
 
 /// A view with an effect on its rendered subtree, as a backend receives it.
 ///
-/// The backend realizes `effect` on the layer rendering `content` — from its
-/// [`description`](AnyEffect::description), or, with the `gpu` feature, by
-/// registering it with its engine (`Engine::effect`) — and keeps `guards`
-/// alive as long as the realization.
+/// The content keeps its own type, `C`, until the view reaches a backend,
+/// which receives it in its child slot and realizes `effect` on the layer
+/// rendering `content` — from its [`description`](AnyEffect::description), or,
+/// with the `gpu` feature, by registering it with its engine
+/// (`Engine::effect`) — while keeping `guards` alive as long as the
+/// realization.
 #[derive(Debug)]
-pub struct FilteredView {
+pub struct FilteredView<C> {
     /// The filtered subtree.
-    pub content: AnyView,
+    pub content: C,
     /// The effect to realize.
     pub effect: AnyEffect,
     /// The subscriptions feeding the effect's reactive parameters.
     pub guards: ParamGuards,
 }
 
-impl FilteredView {
+impl<C> FilteredView<C> {
     /// Sets the output texture dimensions without changing layout.
     #[must_use]
     pub fn output_size(mut self, size: impl IntoComputed<OutputSize>) -> Self {
         self.effect.bind_output_size(size, &mut self.guards);
         self
     }
+
+    /// The same view with its content mapped through `f`.
+    pub fn map_content<D>(self, f: impl FnOnce(C) -> D) -> FilteredView<D> {
+        FilteredView {
+            content: f(self.content),
+            effect: self.effect,
+            guards: self.guards,
+        }
+    }
 }
 
 /// An effect never changes how its subtree stretches, so backends answer
 /// the axis from the realized content.
-impl waterui_core::NativeView for FilteredView {}
+impl<C: 'static> waterui_core::NativeView for FilteredView<C> {}
 
-impl View for FilteredView {
+impl<C: View> View for FilteredView<C> {
+    /// The erased form, for code that expands views by hand.
     fn body(self, _env: &Environment) -> impl View {
-        waterui_core::Native::new(self)
+        Native::new(self.map_content(AnyView::new))
+    }
+
+    /// Reaches the backend with the content in the backend's child slot.
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        backend.native(self.map_content(B::Slot::from_view), env, cx)
+    }
+}
+
+impl<C> MapSlots<C> for FilteredView<C> {
+    type With<T: 'static> = FilteredView<T>;
+
+    fn map_slots<T: 'static>(self, f: impl Fn(C) -> T + Clone + 'static) -> FilteredView<T> {
+        self.map_content(f)
     }
 }
 
@@ -934,8 +960,9 @@ impl View for FilteredView {
 ///
 /// Unlike [`Filtered`], which carries a portable [`Filter`], `WithEffect`
 /// pairs the view with an [`Effect`](filtrate::Effect) only a GPU can run:
-/// its body erases both into a [`FilteredView`] whose
-/// [`description`](AnyEffect::description) is `None`. The subscriptions of
+/// its body lowers the effect into a [`FilteredView`] whose
+/// [`description`](AnyEffect::description) is `None`, keeping the content's
+/// view type. The subscriptions of
 /// the effect's reactive parameters live in `guards` and cross to the
 /// backend with the lowered view, exactly as a filter's do.
 ///
@@ -971,12 +998,12 @@ impl<V: View, E: filtrate::Effect + RenderTransfer> WithEffect<V, E> {
         self
     }
 
-    /// Erases the view and the effect into the form a backend receives.
-    fn erase(self) -> FilteredView {
+    /// Erases the effect into [`AnyEffect`], keeping the content's view type.
+    fn into_filtered_view(self) -> FilteredView<V> {
         let mut effect = AnyEffect::new(self.effect);
         effect.output_size = self.output_size;
         FilteredView {
-            content: AnyView::new(self.view),
+            content: self.view,
             effect,
             guards: self.guards,
         }
@@ -1017,7 +1044,7 @@ impl<V: View> WithEffect<V, filtrate::ShaderEffect> {
 #[cfg(feature = "gpu")]
 impl<V: View, E: filtrate::Effect + RenderTransfer> View for WithEffect<V, E> {
     fn body(self, _env: &Environment) -> impl View {
-        self.erase()
+        self.into_filtered_view()
     }
 }
 
@@ -2137,8 +2164,6 @@ mod tests {
     #[cfg(feature = "gpu")]
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc;
-    #[cfg(feature = "gpu")]
-    use waterui_core::AnyView;
     use waterui_core::animation::Animation;
 
     /// Records each stage's kind, name and parameter offset, and checks that
@@ -2160,7 +2185,8 @@ mod tests {
 
     #[test]
     fn filter_chain_describes_its_stages_in_order() {
-        let FilteredView { effect, guards, .. } = ().brightness(0.25_f32).blur(4.0_f32).erase();
+        let FilteredView { effect, guards, .. } =
+            ().brightness(0.25_f32).blur(4.0_f32).into_filtered_view();
         let description = effect.description().expect("a filter is portable");
         let mut stages = Stages::default();
         description.collect_stages(&mut stages);
@@ -2179,7 +2205,9 @@ mod tests {
     #[test]
     fn described_filter_links_are_the_concrete_filters() {
         let FilteredView { effect, guards, .. } =
-            ().gaussian_blur(1.5_f32).brightness(0.25_f32).erase();
+            ().gaussian_blur(1.5_f32)
+                .brightness(0.25_f32)
+                .into_filtered_view();
         let description = effect.description().expect("a filter is portable");
 
         let mut links = Vec::new();
@@ -2200,7 +2228,9 @@ mod tests {
     fn described_filter_signals_follow_their_bindings() {
         let amount = nami::binding(0.25_f32);
         let FilteredView { effect, guards, .. } =
-            ().brightness(amount.clone()).blur(4.0_f32).erase();
+            ().brightness(amount.clone())
+                .blur(4.0_f32)
+                .into_filtered_view();
         let description = effect.description().expect("a filter is portable");
 
         let (send, receive) = mpsc::channel();
@@ -2286,7 +2316,7 @@ mod tests {
         assert_eq!(filtrate::Effect::output_size(&executor, 10, 20), (30, 80));
 
         let filtered = FilteredView {
-            content: AnyView::new(()),
+            content: (),
             effect: AnyEffect::filter(filtrate::filters::Invert),
             guards: ParamGuards::default(),
         }
@@ -2315,7 +2345,10 @@ mod tests {
             }",
         )
         .expect("the test shader is valid WGSL");
-        let FilteredView { effect, guards, .. } = ().effect(shader).param(strength.clone()).erase();
+        let FilteredView { effect, guards, .. } =
+            ().effect(shader)
+                .param(strength.clone())
+                .into_filtered_view();
         let mut effect = effect.build();
         let redraws = Arc::new(AtomicUsize::new(0));
         let count = Arc::clone(&redraws);
@@ -2347,7 +2380,9 @@ mod tests {
         )
         .expect("the test shader is valid WGSL");
         let FilteredView { effect, guards, .. } =
-            ().effect(shader).animated(animated.clone()).erase();
+            ().effect(shader)
+                .animated(animated.clone())
+                .into_filtered_view();
         let mut effect = effect.build();
         let redraws = Arc::new(AtomicUsize::new(0));
         let count = Arc::clone(&redraws);
@@ -2372,7 +2407,7 @@ mod tests {
     #[test]
     fn filter_without_declared_size_matches_input() {
         let filtered = FilteredView {
-            content: AnyView::new(()),
+            content: (),
             effect: AnyEffect::filter(filtrate::filters::Invert),
             guards: ParamGuards::default(),
         };
@@ -2387,7 +2422,7 @@ mod tests {
     fn output_size_signal_updates_without_rebuilding_the_effect() {
         let size = nami::binding(OutputSize::Scale(2.0));
         let filtered = FilteredView {
-            content: AnyView::new(()),
+            content: (),
             effect: AnyEffect::filter(filtrate::filters::Invert),
             guards: ParamGuards::default(),
         }
@@ -2415,7 +2450,7 @@ mod tests {
     fn output_size_watchers_survive_the_gpu_redraw_callback() {
         let size = nami::binding(OutputSize::Scale(2.0));
         let FilteredView { effect, guards, .. } = FilteredView {
-            content: AnyView::new(()),
+            content: (),
             effect: AnyEffect::filter(filtrate::filters::Invert),
             guards: ParamGuards::default(),
         }

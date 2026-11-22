@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 use alloc::{string::ToString, vec};
 use nami::Binding;
-use waterui_controls::label::{Label, LabelDisplayMode};
+use waterui_controls::label::{Label, LabelDisplayMode, LabelKind};
 use waterui_controls::{Button, IntoLabel};
 use waterui_core::View;
 use waterui_url::Url;
@@ -16,8 +16,8 @@ use waterkit_dialog::FileDialog;
 
 /// Configuration for a file picker component.
 #[derive(Debug, Clone)]
-pub struct FilePicker {
-    label: Label,
+pub struct FilePicker<L> {
+    label: Label<L>,
     /// The selected file URLs.
     value: Binding<Vec<Url>>,
     /// The maximum number of files that can be selected.
@@ -26,13 +26,13 @@ pub struct FilePicker {
     import: bool,
 }
 
-impl FilePicker {
+impl<L> FilePicker<L> {
     /// Select files without importing them, with the given semantic label
     /// driving the picker button.
     ///
     /// You will get URLs that point to the original file locations.
     #[must_use]
-    pub fn open(label: impl IntoLabel, value: &Binding<Vec<Url>>) -> Self {
+    pub fn open<I: IntoLabel<Kind = L>>(label: I, value: &Binding<Vec<Url>>) -> Self {
         Self {
             label: label.into_label(),
             value: value.clone(),
@@ -44,7 +44,7 @@ impl FilePicker {
     /// Select files and import them into the app's sandboxed storage, with
     /// the given semantic label driving the picker button.
     #[must_use]
-    pub fn import(label: impl IntoLabel, value: &Binding<Vec<Url>>) -> Self {
+    pub fn import<I: IntoLabel<Kind = L>>(label: I, value: &Binding<Vec<Url>>) -> Self {
         Self {
             label: label.into_label(),
             value: value.clone(),
@@ -79,7 +79,7 @@ impl FilePicker {
     }
 }
 
-impl View for FilePicker {
+impl<L: LabelKind> View for FilePicker<L> {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         Button::new(self.label).action_async(move || {
             let value = self.value.clone();

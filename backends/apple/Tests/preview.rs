@@ -321,11 +321,11 @@ mod suite {
     /// would be handed, lets `run` reload it through `PREVIEW_RUN_CONFIG_ENV`,
     /// then checks the captured process's activation contract and names the
     /// written PNG through `tracing`.
-    fn image_run(
+    fn image_run<V: View>(
         slug: &str,
         width: f32,
         height: f32,
-        view: impl FnOnce() -> AnyView + 'static,
+        view: impl FnOnce() -> V + 'static,
     ) -> Result<(), PreviewError> {
         let output = output_dir().join(format!("{slug}.png"));
         let result = run_with_config(
@@ -426,24 +426,24 @@ mod suite {
     /// takes. Also materializes the image asset's directory: the suite's
     /// `ImageAsset` resolves `image.png` against the `ResourceContext`
     /// `resources` gives the run.
-    fn run_with_config(
+    fn run_with_config<V: View>(
         slug: &str,
         mode: PreviewRunMode,
         width: f32,
         height: f32,
-        view: impl FnOnce() -> AnyView + 'static,
+        view: impl FnOnce() -> V + 'static,
     ) -> Result<(), PreviewError> {
         run_with_deadline(slug, mode, width, height, DEFAULT_CONTENT_DEADLINE, view)
     }
 
     /// [`run_with_config`] with an explicit content deadline.
-    fn run_with_deadline(
+    fn run_with_deadline<V: View>(
         slug: &str,
         mode: PreviewRunMode,
         width: f32,
         height: f32,
         content_deadline: Duration,
-        view: impl FnOnce() -> AnyView + 'static,
+        view: impl FnOnce() -> V + 'static,
     ) -> Result<(), PreviewError> {
         let dir = output_dir();
         fs::create_dir_all(&dir).expect("the preview capture directory is creatable");
@@ -472,7 +472,7 @@ mod suite {
         let fonts_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("Tests/fonts");
         waterui_apple::preview::run(
             |env| env,
-            view,
+            move || AnyView::new(view()),
             ResourceContext::new(assets_dir, fonts_dir),
             config,
         )
@@ -587,7 +587,7 @@ mod suite {
     /// both styles, toggle, slider, stepper, a text field with text, picker,
     /// progress, an image asset, filled shapes and a gradient, a material
     /// background and a scroll view.
-    fn issue_view_set() -> AnyView {
+    fn issue_view_set() -> impl View {
         use waterui::form::picker::picker;
         use waterui::gradient::Gradient;
         use waterui::shape::{Circle, Rectangle, RoundedRectangle, ShapeExt};
@@ -630,7 +630,7 @@ mod suite {
         ),
         progress(0.35).label("Downloading"),
         hstack((
-            waterui::icon::SystemIcon::new("star.fill").size(48.0, 48.0),
+            waterui_apple::SfSymbol::STAR_FILL.size(48.0, 48.0),
             waterui::ImageAsset::new(waterui::Bundle::main(), "image.png").size(48.0, 48.0),
             Circle.fill(Color::srgb_hex("#3B82F6")).size(48.0, 48.0),
             Rectangle.fill(Color::srgb_hex("#10B981")).size(64.0, 48.0),
@@ -653,21 +653,19 @@ mod suite {
         .height(80.0),
     ))
     .padding()
-    .anyview()
     }
 
     /// One image asset, large enough to read: the capture must show the
     /// decoded image, not the empty slot its asynchronous load starts as.
-    fn image_asset_view() -> AnyView {
+    fn image_asset_view() -> impl View {
         waterui::ImageAsset::new(waterui::Bundle::main(), "image.png")
             .size(160.0, 160.0)
             .padding()
-            .anyview()
     }
 
     /// A red square drawn by a `Canvas`.
     #[cfg(feature = "canvas")]
-    fn canvas_view() -> AnyView {
+    fn canvas_view() -> impl View {
         use waterui::color::WorkingColor;
         use waterui::graphics::canvas::Canvas;
         use waterui::layout::{Rect, Size};
@@ -679,31 +677,27 @@ mod suite {
             );
         })
         .intrinsic_size(Size::new(100.0, 100.0))
-        .anyview()
     }
 
     /// A `Suspense` whose content never arrives: the capture fails at its
     /// content deadline, naming it.
-    fn never_loading_view() -> AnyView {
+    fn never_loading_view() -> impl View {
         waterui::widget::suspense::Suspense::new(core::future::pending::<waterui::text::Text>())
             .loading(text("loading"))
-            .anyview()
     }
 
     /// An image asset whose file does not exist: its load fails and the
     /// capture reports the failure, naming it.
-    fn missing_image_view() -> AnyView {
-        waterui::ImageAsset::new(waterui::Bundle::main(), "missing.png")
-            .size(48.0, 48.0)
-            .anyview()
+    fn missing_image_view() -> impl View {
+        waterui::ImageAsset::new(waterui::Bundle::main(), "missing.png").size(48.0, 48.0)
     }
 
     /// A content-ledger run that must fail: an image run whose `view` owes
     /// content the capture never receives, under `content_deadline`.
-    fn content_run(
+    fn content_run<V: View>(
         slug: &str,
         content_deadline: Duration,
-        view: impl FnOnce() -> AnyView + 'static,
+        view: impl FnOnce() -> V + 'static,
     ) -> Result<(), PreviewError> {
         run_with_deadline(
             slug,
@@ -721,7 +715,7 @@ mod suite {
     /// the `cacheDisplay` capture only shows once the surfaces' first frames
     /// have presented.
     #[cfg(feature = "gpu_surface")]
-    fn gpu_set() -> AnyView {
+    fn gpu_set() -> impl View {
         // The checkerboard shader lives beside the suite — shaders in separate
         // files.
         const SHADER: &str = include_str!("gpu_set.wgsl");
@@ -734,7 +728,6 @@ mod suite {
             text("filtered: hue rotation").hue_rotation(120.0_f32),
         ))
         .padding()
-        .anyview()
     }
 }
 

@@ -20,7 +20,7 @@
 use crate::appearance::style::Vector;
 use nami::{Computed, SignalExt as _};
 use suiteki::Str;
-use waterui_core::accessibility::AccessibilityIdentifier;
+use waterui_accessibility::AccessibilityIdentifier;
 use waterui_core::{AnyView, Metadata};
 use waterui_graphics::WorkingColor;
 use waterui_graphics::color::{Color, Working};
@@ -152,10 +152,10 @@ fn frame(
     bridge: &Bridge,
     view: AnyView,
     value: &JsValue,
-    set: impl FnOnce(Frame, Computed<f32>) -> Frame,
+    set: impl FnOnce(Frame<AnyView>, Computed<f32>) -> Frame<AnyView>,
 ) -> Result<AnyView, JsError> {
     let length: Computed<f32> = bridge.materialize_computed(value)?;
-    let frame = match view.downcast::<Frame>() {
+    let frame = match view.downcast::<Frame<AnyView>>() {
         Ok(frame) => *frame,
         Err(view) => Frame::new(view),
     };

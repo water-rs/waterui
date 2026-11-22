@@ -36,21 +36,24 @@ use waterui::reactive::watcher::{BoxWatcherGuard, Metadata};
 #[cfg(target_os = "macos")]
 use waterui::resolve::Resolvable;
 use waterui::text::{StyledStr, Text};
-use waterui::views::{AnyViewsSnapshot, SharedAnyViews, ViewSnapshot, Views};
+use waterui::views::{AnyViewsSnapshot, SharedAnyViews};
 use waterui_backend_core::Environment;
 use waterui_backend_core::scroll::animated_row_scroll_approach;
 use waterui_core::Computed;
-use waterui_core::interaction::Disabled;
 use waterui_core::layout::{
     LayoutDirection, LayoutError, Point, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis,
     SubView, UnitPoint, ViewDimensions, layout_direction,
 };
+use waterui_interaction::interaction::Disabled;
 
-use crate::contract::{NativeLeaf, RenderContext, Renderer};
+use crate::backend::AppleBackend;
+use crate::contract::{Held, NativeLeaf, RenderContext, Renderer};
 use crate::proposal::{self, Placement};
 use crate::transition::ghost::Ghost;
 use crate::transition::live::{LiveChild, Removal};
 use crate::transition::slots::{GhostKey, Slot, SlotSequence};
+use waterui_backend_core::ChildView;
+use waterui_core::backend::MapSlots as _;
 
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::{
@@ -126,7 +129,7 @@ fn compute_section_groups(
                 .and_then(ListSection::label)
                 .map(|text| resolve_text(text, env)),
             footer: chrome
-                .and_then(ListSection::get_footer)
+                .and_then(ListSection::footer)
                 .map(|text| resolve_text(text, env)),
             count: 1,
         });
@@ -201,7 +204,7 @@ fn sequential_moves(
 }
 
 /// The snapshot's ids, in order.
-fn ids_snapshot(snapshot: &AnyViewsSnapshot<ListItem>) -> Vec<ItemId> {
+fn ids_snapshot(snapshot: &AnyViewsSnapshot<ListItem<Held>>) -> Vec<ItemId> {
     snapshot
         .range()
         .filter_map(|index| snapshot.get_id(index))
@@ -211,7 +214,7 @@ fn ids_snapshot(snapshot: &AnyViewsSnapshot<ListItem>) -> Vec<ItemId> {
 /// Each snapshot id's collection-wide position — item ids stay stable
 /// across display reordering, so row realization always finds a row's
 /// retained data.
-fn positions_snapshot(snapshot: &AnyViewsSnapshot<ListItem>) -> HashMap<ItemId, usize> {
+fn positions_snapshot(snapshot: &AnyViewsSnapshot<ListItem<Held>>) -> HashMap<ItemId, usize> {
     snapshot
         .range()
         .filter_map(|index| snapshot.get_id(index).map(|id| (id, index)))
@@ -516,12 +519,12 @@ struct Shared {
     /// The lazily materialized collection — watches register here and
     /// `snapshot()` captures state; membership and row answers never
     /// read it live.
-    contents: SharedAnyViews<ListItem>,
+    contents: SharedAnyViews<ListItem<Held>>,
     /// The retained row-data snapshot aligned with `item_ids` — every
     /// `get_id`/`get_view` answer comes from it, so row realization
     /// materializes exact retained data even when the source mutates
     /// mid-materialization.
-    snapshot: AnyViewsSnapshot<ListItem>,
+    snapshot: AnyViewsSnapshot<ListItem<Held>>,
     /// `item_ids`-keyed positions inside `snapshot` — survives local
     /// deletes and moves, so a row's retained view stays exact while
     /// display order and snapshot membership differ mid-transition.
@@ -621,7 +624,7 @@ impl Shared {
     /// `updateVirtualIds` + `reloadSectionGroups`: take `snapshot` as
     /// current — ids, positions, groups and the height cache all follow
     /// it.
-    fn apply_snapshot(&mut self, snapshot: AnyViewsSnapshot<ListItem>) {
+    fn apply_snapshot(&mut self, snapshot: AnyViewsSnapshot<ListItem<Held>>) {
         self.item_ids = ids_snapshot(&snapshot);
         self.positions = positions_snapshot(&snapshot);
         self.snapshot = snapshot;
@@ -694,9 +697,11 @@ impl Shared {
             .get_view(self.positions[&self.item_ids[flat]])
             .expect("list item index is in bounds");
         let (content, deletable, insets) = item.into_parts();
-        // The row's `Disabled` signal comes from the scope this render
-        // resolves the content under — the same pass, not a second walk.
-        let (leaf, resolved_env) = self.renderer.render_resolved(content);
+        // The row's `Disabled` signal comes from the scope its content's
+        // leading environment chain resolved, which the realized leaf
+        // records — the same pass, not a second walk.
+        let leaf = self.renderer.realize(content);
+        let resolved_env = leaf.handler_env(self.renderer.env());
         self.disabled_rows
             .borrow_mut()
             .insert(self.item_ids[flat], Disabled::resolve(&resolved_env, false));
@@ -1080,7 +1085,7 @@ fn metadata_animated(metadata: &Metadata) -> bool {
 #[derive(Default)]
 struct PendingRows {
     scheduled: bool,
-    snapshot: Option<AnyViewsSnapshot<ListItem>>,
+    snapshot: Option<AnyViewsSnapshot<ListItem<Held>>>,
     metadata: Option<Metadata>,
     dirty: HashSet<ItemId>,
 }
@@ -1092,7 +1097,7 @@ impl PendingRows {
     /// emissions — both index this emission's own snapshot.
     fn record(
         &mut self,
-        snapshot: AnyViewsSnapshot<ListItem>,
+        snapshot: AnyViewsSnapshot<ListItem<Held>>,
         metadata: Metadata,
         change: &CollectionChange,
     ) {
@@ -1108,7 +1113,7 @@ impl PendingRows {
     }
 
     /// Drains the pending batch; the flush owns delivery from here.
-    fn take(&mut self) -> Option<(AnyViewsSnapshot<ListItem>, Metadata, HashSet<ItemId>)> {
+    fn take(&mut self) -> Option<(AnyViewsSnapshot<ListItem<Held>>, Metadata, HashSet<ItemId>)> {
         self.scheduled = false;
         self.snapshot.take().map(|snapshot| {
             (
@@ -1125,7 +1130,7 @@ impl PendingRows {
     /// the take is newer and stays authoritative for snapshot/metadata.
     fn merge_back(
         &mut self,
-        snapshot: AnyViewsSnapshot<ListItem>,
+        snapshot: AnyViewsSnapshot<ListItem<Held>>,
         metadata: Metadata,
         dirty: HashSet<ItemId>,
     ) {
@@ -2537,7 +2542,7 @@ fn wire_controller(
     clippy::too_many_lines,
     reason = "one render pass: state init, source wiring, watches"
 )]
-fn render(mut config: ListConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
+fn render(mut config: ListConfig<Held>, ctx: &RenderContext<'_>) -> NativeLeaf {
     let mtm = ctx.mtm();
     let table = TableView::new(mtm);
     // A navigation split marks its sidebar column with `SidebarContent`:
@@ -2860,9 +2865,13 @@ fn wire_position_report(
 }
 
 /// The `list` realization: `Native<ListConfig>` →
-/// the platform's table surface.
-pub fn realize_list_config(value: ListConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
-    render(value, ctx)
+/// the platform's table surface, each row's content realized as the child it
+/// holds.
+pub fn realize_list_config<C: ChildView<AppleBackend>>(
+    value: ListConfig<C>,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    render(value.map_slots(C::into_child), ctx)
 }
 
 #[cfg(test)]

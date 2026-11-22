@@ -58,11 +58,13 @@ remove the nested one. Recognizers on the *same* view combine (see interaction.m
 **The app quits when its last window closes, or an on-demand window cannot reopen.** The
 default `LastWindowPolicy::Quit` ends the app with its last window. A tray, resident or
 on-demand-window app sets `App::on_last_window_closed(LastWindowPolicy::StayResident)`
-(iOS and Android reject an app that declares no window) and opens windows with
-`window.show(&env)` (`Window::show`): a `conditional_window` lives only as long as the
+(iOS and Android reject an app that declares no window), registers a `WindowChannel` from
+`WindowManager::new()` with `App::new_with_windows` or `App::window`, and opens windows with
+`window.show(&windows)` (`Window::show`): a `conditional_window` lives only as long as the
 window hosting it.
 
-**A snackbar shown from a callback does nothing.** `SnackbarManager` reaches handlers as a
+**A snackbar shown from a callback does nothing.** First make sure an ancestor view attaches
+`.snackbar_host()` (or `.snackbar_host_with_icons::<V>()`). `SnackbarManager` reaches handlers as a
 parameter, but a callback that is not a WaterUI handler (a `GpuView::on_input`, a
 closure handed to another component) has none. Read it while building the view with
 `use_env(|manager: SnackbarManager| ..)` and move it into the callback.
@@ -131,7 +133,7 @@ Use `app.pump_for(duration)`.
 | `the trait bound 'Url: From<Str>' is not satisfied` | `Url` converts from `&'static str` only | `Url::parse(s)` (returns `Option`) — or `Url::parse_user_input(s)` for human-typed addresses |
 | `Computed<Option<View>>` rejected where a view is expected | a *signal* of `Option<View>` is not a view | `when(..)`, or keep the view and use `.visible(signal)` |
 | `text!` rejects an expression in a placeholder | placeholders are i18n slot keys | alias it: `text!("{slot}", slot = expr)` |
-| mismatched types between `if` branches returning views | different concrete view types | wrap the `if`/`match` in `view! { .. }`, or put `#[view_builder]` on the function so tail-position branches may return different view types under one `impl View` (both turn the branches into `Fn` closures over a `watch`, so clone captured values inside them); or `when(..).otherwise(..)`, or `.anyview()` / `AnyView::new(..)` on each arm |
+| mismatched types between `if` branches returning views | different concrete view types | wrap the `if`/`match` in `view! { .. }`, or put `#[view_builder]` on the function so tail-position branches may return different view types under one `impl View` (both turn the branches into `Fn` closures over a `watch`, so clone captured values inside them); or `when(..).otherwise(..)`, or `OneOf2::A(..)` / `OneOf2::B(..)` (up to `OneOf8`) on the arms |
 
 Do not add crate-, module-, or file-level `allow` attributes to silence a lint. If a lint is
 genuinely a false positive, use a narrowly scoped item-level `expect` with a reason.
@@ -191,9 +193,9 @@ and place children with `PositionExt` / `.pin(..)`.
 not from unit-space path commands, which scale with the aspect ratio. Test shape code
 against a deliberately non-square rectangle.
 
-**A map renders nothing on a self-drawn backend.** Nothing installs a map realization for
-you off Apple: `app(env)` must both call `waterui_map_gpu::install(&mut env)` and put a
-`MapGpuOptions` tile source into the environment. See [media.md](media.md).
+**A map renders nothing on a self-drawn backend.** Hydrolysis draws a map only with
+`waterui-map-gpu`: the app must depend on it and put a `MapGpuOptions` tile source into the
+environment in `app(env)`. See [media.md](media.md).
 
 ## Build and run problems
 

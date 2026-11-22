@@ -4,22 +4,26 @@
 
 use core::ops::{Bound, RangeBounds, RangeInclusive};
 
-use crate::label::{IntoLabel, Label, LabelDisplayMode, impl_label_style_methods};
+use crate::label::{
+    ControlLabel, IntoLabel, Label, LabelDisplayMode, LabelKind, impl_label_style_methods,
+};
 use alloc::rc::Rc;
 use nami::{Binding, Computed, SignalExt, signal::IntoComputed};
-use waterui_core::{Environment, configurable, layout::StretchAxis};
+use waterui_core::backend::{Backend, ChildSlot, MapSlots};
+use waterui_core::layout::StretchAxis;
+use waterui_core::{AnyView, Environment, Native, NativeView, View};
 use waterui_text::styled::StyledStr;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 /// Configuration options for the [`Stepper`] component.
-pub struct StepperConfig {
+pub struct StepperConfig<S> {
     /// The binding to the current value of the stepper.
     value: Binding<i32>,
     /// The step size for each increment or decrement.
     step: Computed<i32>,
     /// The label displayed alongside the stepper.
-    label: Label,
+    label: ControlLabel<S>,
     /// Optional formatter for the inline value display, layered on top of the
     /// label. When `None`, the stepper renders only the label; when `Some`, the
     /// formatted value is shown next to the buttons.
@@ -28,7 +32,7 @@ pub struct StepperConfig {
     range: RangeInclusive<i32>,
 }
 
-impl StepperConfig {
+impl<S> StepperConfig<S> {
     /// The binding to the current value of the stepper.
     #[must_use]
     pub const fn value(&self) -> &Binding<i32> {
@@ -43,17 +47,17 @@ impl StepperConfig {
 
     /// The label displayed alongside the stepper.
     #[must_use]
-    pub const fn label(&self) -> &Label {
+    pub const fn label(&self) -> &ControlLabel<S> {
         &self.label
     }
 
     /// Sets the `label`.
-    pub fn set_label(&mut self, label: Label) {
+    pub fn set_label(&mut self, label: ControlLabel<S>) {
         self.label = label;
     }
 
     /// The label displayed for the control, for editing it in place.
-    pub const fn label_mut(&mut self) -> &mut Label {
+    pub const fn label_mut(&mut self) -> &mut ControlLabel<S> {
         &mut self.label
     }
 
@@ -82,7 +86,7 @@ impl StepperConfig {
     ) -> (
         Binding<i32>,
         Computed<i32>,
-        Label,
+        ControlLabel<S>,
         Option<Computed<StyledStr>>,
         RangeInclusive<i32>,
     ) {
@@ -93,77 +97,6 @@ impl StepperConfig {
             self.value_formatter,
             self.range,
         )
-    }
-}
-
-configurable!(
-    /// A control for incrementing or decrementing a value.
-    ///
-    /// Stepper displays +/- buttons with an optional label. It's ideal for
-    /// adjusting small numeric values like quantities.
-    ///
-    /// # Layout Behavior
-    ///
-    /// A stepper with a visible label expands horizontally to fill the
-    /// available width, placing the label at the leading edge and the buttons
-    /// at the trailing edge with the free space between. A stepper with a
-    /// hidden label is content-sized (just the buttons).
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// # use waterui::prelude::*;
-    /// # use waterui_controls::stepper;
-    /// # fn basic(quantity: Binding<i32>) -> impl View {
-    /// // Basic stepper: the label is required, so assistive technology always
-    /// // has something to announce
-    /// stepper("Quantity", &quantity)
-    /// # }
-    ///
-    /// # fn bounded(count: Binding<i32>) -> impl View {
-    /// // With a range and step
-    /// stepper("Items", &count)
-    ///     .range(1..=10)
-    ///     .step(1)
-    /// # }
-    ///
-    /// # fn row(quantity: Binding<i32>) -> impl View {
-    /// // In a form row, where the row's own text carries the label visually
-    /// hstack((
-    ///     text("Quantity"),
-    ///     spacer(),
-    ///     stepper("Quantity", &quantity).hide_label(),
-    /// ))
-    /// # }
-    /// ```
-    //
-    // ═══════════════════════════════════════════════════════════════════════════
-    // INTERNAL: Layout Contract for Backend Implementers
-    // ═══════════════════════════════════════════════════════════════════════════
-    //
-    // - Visible label: stretchAxis `.horizontal`; sizeThatFits answers the
-    //   proposed width (never below the row's intrinsic width) and the
-    //   intrinsic height; label leading, buttons trailing, flexible space
-    //   between.
-    // - Hidden label: stretchAxis `.none`; sizeThatFits answers the intrinsic
-    //   size — the buttons alone.
-    // - Read the axis from `NativeView::stretch_axis` on the payload; do not
-    //   restate the rule in the backend.
-    //
-    // ═══════════════════════════════════════════════════════════════════════════
-    //
-    Stepper,
-    StepperConfig,
-    |config| config.layout_stretch_axis(),
-    resolve | config,
-    env | config.resolve(env)
-);
-
-impl StepperConfig {
-    #[must_use]
-    fn resolve(mut self, env: &Environment) -> Self {
-        self.label = self.label.resolve(env);
-        self
     }
 
     /// `docs/layout-spec.md` §3: a stepper is `Horizontal` when its label is
@@ -184,27 +117,98 @@ impl StepperConfig {
     }
 }
 
-impl Stepper {
+impl<S: 'static> NativeView for StepperConfig<S> {
+    fn stretch_axis(&self) -> StretchAxis {
+        self.layout_stretch_axis()
+    }
+}
+
+impl<S: 'static> MapSlots<S> for StepperConfig<S> {
+    type With<T: 'static> = StepperConfig<T>;
+
+    fn map_slots<T: 'static>(self, f: impl Fn(S) -> T + Clone + 'static) -> StepperConfig<T> {
+        StepperConfig {
+            value: self.value,
+            step: self.step,
+            label: self.label.map_slots(f),
+            value_formatter: self.value_formatter,
+            range: self.range,
+        }
+    }
+}
+
+/// A control for incrementing or decrementing a value.
+///
+/// Stepper displays +/- buttons with an optional label. It's ideal for
+/// adjusting small numeric values like quantities.
+///
+/// # Layout Behavior
+///
+/// A stepper with a visible label expands horizontally to fill the
+/// available width, placing the label at the leading edge and the buttons
+/// at the trailing edge with the free space between. A stepper with a
+/// hidden label is content-sized (just the buttons).
+///
+/// # Examples
+///
+/// ```rust
+/// # use waterui::prelude::*;
+/// # use waterui_controls::stepper;
+/// # fn basic(quantity: Binding<i32>) -> impl View {
+/// // Basic stepper: the label is required, so assistive technology always
+/// // has something to announce
+/// stepper("Quantity", &quantity)
+/// # }
+///
+/// # fn bounded(count: Binding<i32>) -> impl View {
+/// // With a range and step
+/// stepper("Items", &count)
+///     .range(1..=10)
+///     .step(1)
+/// # }
+///
+/// # fn row(quantity: Binding<i32>) -> impl View {
+/// // In a form row, where the row's own text carries the label visually
+/// hstack((
+///     text("Quantity"),
+///     spacer(),
+///     stepper("Quantity", &quantity).hide_label(),
+/// ))
+/// # }
+/// ```
+#[derive(Debug, Clone)]
+#[must_use]
+pub struct Stepper<L> {
+    value: Binding<i32>,
+    step: Computed<i32>,
+    label: Label<L>,
+    value_formatter: Option<Computed<StyledStr>>,
+    range: RangeInclusive<i32>,
+}
+
+impl<L> Stepper<L> {
     /// Creates a new `Stepper` with the given semantic label and binding value.
     ///
     /// The label is required so screen readers always have meaningful text to
     /// announce. Use [`hide_label`](Self::hide_label) to omit it visually
     /// while keeping it in the accessibility tree.
-    #[must_use]
-    pub fn new(label: Label, value: &Binding<i32>) -> Self {
-        Self(StepperConfig {
+    pub fn new(label: Label<L>, value: &Binding<i32>) -> Self {
+        Self {
             value: value.clone(),
             step: 1i32.into_computed(),
             label,
             value_formatter: None,
             range: i32::MIN..=i32::MAX,
-        })
+        }
+    }
+
+    pub(crate) const fn label_mut(&mut self) -> &mut Label<L> {
+        &mut self.label
     }
 
     /// Sets the step size for the stepper.
-    #[must_use]
     pub fn step(mut self, step: impl IntoComputed<i32>) -> Self {
-        self.0.step = step.into_computed();
+        self.step = step.into_computed();
         self
     }
 
@@ -213,20 +217,18 @@ impl Stepper {
     /// Exposed for the same reason a text field exposes its own: a validator
     /// wraps the control by splicing a filtered binding in front of its value.
     pub const fn value_binding(&mut self) -> &mut Binding<i32> {
-        &mut self.0.value
+        &mut self.value
     }
 
     /// Sets a formatter for the inline value display. The semantic label is
     /// unaffected.
-    #[must_use]
     pub fn value_formatter<T: Into<StyledStr>>(
         mut self,
         formatter: impl 'static + Fn(i32) -> T,
     ) -> Self {
         let formatter = Rc::new(formatter);
-        self.0.value_formatter = Some(
-            self.0
-                .value
+        self.value_formatter = Some(
+            self.value
                 .clone()
                 .map(move |value| formatter(value).into())
                 .computed(),
@@ -235,7 +237,6 @@ impl Stepper {
     }
 
     /// Sets the valid range of values for the stepper.
-    #[must_use]
     pub fn range(mut self, range: impl RangeBounds<i32>) -> Self {
         let start = match range.start_bound() {
             Bound::Included(&s) => s,
@@ -247,18 +248,66 @@ impl Stepper {
             Bound::Excluded(&e) => e.saturating_sub(1),
             Bound::Unbounded => i32::MAX,
         };
-        self.0.range = start..=end;
+        self.range = start..=end;
         self
     }
 }
 
-impl_label_style_methods!(Stepper);
+impl<L: LabelKind> Stepper<L> {
+    fn into_config<S: ChildSlot>(self, env: &Environment) -> StepperConfig<S> {
+        StepperConfig {
+            value: self.value,
+            step: self.step,
+            label: self.label.into_control_label::<S>(env),
+            value_formatter: self.value_formatter,
+            range: self.range,
+        }
+    }
+}
+
+impl<L: LabelKind> Stepper<L> {
+    /// Returns the configuration for this stepper.
+    #[must_use]
+    pub fn config(self) -> StepperConfig<Label<L>> {
+        StepperConfig {
+            value: self.value,
+            step: self.step,
+            label: self.label.into_unscoped_control_label(),
+            value_formatter: self.value_formatter,
+            range: self.range,
+        }
+    }
+}
+
+impl<S: View> From<StepperConfig<S>> for Stepper<ControlLabel<S>> {
+    fn from(value: StepperConfig<S>) -> Self {
+        let mode = value.label.display_mode_preference();
+        Self {
+            value: value.value,
+            step: value.step,
+            label: Label::from_control_label(value.label, mode),
+            value_formatter: value.value_formatter,
+            range: value.range,
+        }
+    }
+}
+
+impl<L: LabelKind> View for Stepper<L> {
+    fn body(self, env: &Environment) -> impl View {
+        Native::new(self.into_config::<AnyView>(env))
+    }
+
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        backend.native(self.into_config::<B::Slot>(env), env, cx)
+    }
+}
+
+impl_label_style_methods!(Stepper<L>);
 
 /// Creates a new Stepper with the given label and binding value.
 ///
 /// See [`Stepper`] for more details.
-#[must_use]
-pub fn stepper(label: impl IntoLabel, value: &Binding<i32>) -> Stepper {
+pub fn stepper<L: IntoLabel>(label: L, value: &Binding<i32>) -> Stepper<L::Kind> {
     Stepper::new(label.into_label(), value)
 }
 
@@ -266,7 +315,7 @@ pub fn stepper(label: impl IntoLabel, value: &Binding<i32>) -> Stepper {
 mod tests {
     use nami::Binding;
     use waterui_core::layout::StretchAxis;
-    use waterui_core::{Environment, NativeView};
+    use waterui_core::{AnyView, Environment, NativeView};
     use waterui_locale::locales;
 
     use super::stepper;
@@ -287,7 +336,7 @@ mod tests {
                     stepper.hide_label()
                 }
             };
-            let resolved = make().0.resolve(&env);
+            let resolved = make().into_config::<AnyView>(&env);
             assert_eq!(
                 NativeView::stretch_axis(&resolved),
                 expected,
@@ -297,7 +346,7 @@ mod tests {
 
         let mut env = test_env();
         env.insert(LabelDisplayMode::Hidden);
-        let resolved = stepper("Quantity", &quantity).0.resolve(&env);
+        let resolved = stepper("Quantity", &quantity).into_config::<AnyView>(&env);
         assert_eq!(
             NativeView::stretch_axis(&resolved),
             StretchAxis::None,

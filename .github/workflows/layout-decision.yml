@@ -12,6 +12,7 @@ name: Layout decision
 # label.
 
 on:
+  merge_group:
   pull_request:
     branches: [main]
     # `labeled`/`unlabeled` are not in the default trigger set; they must be
@@ -27,13 +28,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        if: github.event_name == 'pull_request'
         with:
           fetch-depth: 0
 
       - uses: astral-sh/setup-uv@v6
+        if: github.event_name == 'pull_request'
 
       - name: Scan the pull request for changes that can alter layout semantics
         id: scan
+        if: github.event_name == 'pull_request'
         run: |
           set -euo pipefail
           set +e
@@ -55,7 +59,7 @@ jobs:
           fi
 
       - name: Block the merge without the layout-decision label
-        if: steps.scan.outputs.touched == 'true' && !contains(github.event.pull_request.labels.*.name, 'layout-decision')
+        if: github.event_name == 'pull_request' && steps.scan.outputs.touched == 'true' && !contains(github.event.pull_request.labels.*.name, 'layout-decision')
         run: |
           echo "::error title=Layout decision::This pull request changes the frozen layout (docs/layout-spec.md, waterui-layout, or the core layout protocol). Only the maintainer applies the 'layout-decision' label, after deciding the change."
           while IFS= read -r line; do

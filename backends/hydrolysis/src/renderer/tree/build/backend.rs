@@ -1,8 +1,14 @@
 //! Hydrolysis's [`NativeBackend`]: each payload's retained node, built by
 //! the method `View::dispatch` reaches.
 
-use waterui_backend_core::{NativeBackend, Realize, report_unprovided};
-use waterui_core::backend::{ErasedPayload, cast};
+use core::marker::PhantomData;
+
+use waterui_backend_core::{
+    ChildView, NativeBackend, NativeBackendFamily, Realize, mark_reached, report_unprovided,
+};
+#[cfg(any(feature = "menu", hydrolysis_video_plane))]
+use waterui_core::backend::cast;
+use waterui_core::backend::{ChildSlot, ErasedPayload};
 use waterui_core::metadata::MetadataKey;
 use waterui_core::{NativeView, View};
 
@@ -15,7 +21,7 @@ const NO_GPU_PAINTER: &str =
     "this Hydrolysis build has no GPU painter: it was built without the `gpu` feature";
 
 /// Builds retained nodes into one renderer.
-pub(in crate::renderer::tree) struct HydroBackend<'r, E: crate::text::TextEngine> {
+pub struct HydroBackend<'r, E: crate::text::TextEngine> {
     renderer: &'r mut SemanticCore<E>,
 }
 
@@ -34,15 +40,54 @@ impl<'r, E: crate::text::TextEngine> HydroBackend<'r, E> {
         Realize::child(self, view, env, ())
     }
 
+    /// Builds a payload's child view into a node, counted like [`build`](Self::build).
+    pub(in crate::renderer::tree) fn build_child<C: ChildView<Self>>(
+        &mut self,
+        child: C,
+        env: &Environment,
+    ) -> RenderNode<E> {
+        self.renderer.state.counters.semantic_builds += 1;
+        child.realize(self, env, ())
+    }
+
     /// An accessibility wrapper: its content builds under `scoped`, the
     /// environment the wrapper's value installs, held by an `Env` node so
     /// emission reads it every flush and the content stays live.
-    fn accessibility_scope(&mut self, content: AnyView, scoped: Environment) -> RenderNode<E> {
-        let child = RenderNode::build_view(content, &scoped, self.renderer);
+    fn accessibility_scope(&mut self, content: HeldChild<E>, scoped: Environment) -> RenderNode<E> {
+        self.env_scope(content, scoped)
+    }
+
+    pub(in crate::renderer::tree) fn env_scope(
+        &mut self,
+        content: HeldChild<E>,
+        scoped: Environment,
+    ) -> RenderNode<E> {
+        let child = RenderNode::build_slot(content, &scoped, self.renderer);
         RenderNode::Env(Box::new(EnvNode {
             core: self.renderer.new_core(),
             env: scoped,
             child,
+        }))
+    }
+
+    #[cfg(any(waterui_feature = "calendar", waterui_feature = "multi-date-picker"))]
+    fn build_vertical_pair<C: ChildView<Self>>(
+        &mut self,
+        label: &waterui_controls::label::ControlLabel<C>,
+        body: impl View,
+        env: &Environment,
+    ) -> RenderNode<E> {
+        let mut child_env = env.clone();
+        child_env.insert(waterui::layout::stack::Axis::Vertical);
+        let container = waterui::layout::container::FixedContainer::new(
+            waterui::layout::stack::VStackLayout::default(),
+            vec![label.build().into_child(), HeldChild::from_view(body)],
+        );
+        let node = self.fixed_container(container, &child_env, ());
+        RenderNode::Env(Box::new(EnvNode {
+            core: self.renderer.new_core(),
+            env: child_env,
+            child: node,
         }))
     }
 
@@ -65,43 +110,184 @@ impl<'r, E: crate::text::TextEngine> HydroBackend<'r, E> {
 macro_rules! accessibility_scopes {
     ($( $method:ident: $ty:ty => $install:expr; )+) => {
         $(
-            fn $method(&mut self, metadata: Metadata<$ty>, env: &Environment, (): ()) -> RenderNode<E> {
+            fn $method<C: ChildView<Self>>(&mut self, metadata: Metadata<$ty, C>, env: &Environment, (): ()) -> RenderNode<E> {
+                mark_reached!(stringify!($method));
                 let install: fn(&Environment, &$ty) -> Environment = $install;
                 let scoped = install(env, &metadata.value);
-                self.accessibility_scope(metadata.content, scoped)
+                self.accessibility_scope(metadata.content.into_child(), scoped)
             }
         )+
     };
 }
 
+/// Wraps a held child view in an environment scope overriding `Foreground` to `color`.
+pub fn held_with_foreground<E: crate::text::TextEngine>(
+    content: HeldChild<E>,
+    color: waterui::Color,
+) -> HeldChild<E> {
+    HeldChild::from_fn(move |backend, env, ()| {
+        let mut scoped = env.clone();
+        waterui_core::plugin::Plugin::install(
+            waterui::theme::ForegroundOverride::new(color),
+            &mut scoped,
+        );
+        backend.env_scope(content, scoped)
+    })
+}
+
+/// [`HydroBackend`] with its renderer borrow left open.
+pub struct HydroFamily<E>(PhantomData<E>);
+
+impl<E: crate::text::TextEngine> NativeBackendFamily for HydroFamily<E> {
+    type Output = RenderNode<E>;
+    type Ctx = ();
+    type Backend<'a> = HydroBackend<'a, E>;
+
+    fn reborrow<'r>(backend: &'r mut HydroBackend<'_, E>) -> HydroBackend<'r, E> {
+        HydroBackend::new(backend.renderer)
+    }
+}
+
 impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     type Output = RenderNode<E>;
     type Ctx = ();
+    type Family = HydroFamily<E>;
+    #[cfg(waterui_feature = "webview")]
+    type WebViewController = crate::widgets::platform::webview::SelectedWebViewController;
+    #[cfg(waterui_feature = "capture")]
+    type Offscreen = crate::view_renderer::HydrolysisOffscreenRenderer;
+
+    fn with_family<R>(&mut self, f: impl for<'a> FnOnce(&mut HydroBackend<'a, E>) -> R) -> R {
+        f(self)
+    }
+
+    #[cfg(waterui_feature = "webview")]
+    fn web_view_controller(&self) -> Self::WebViewController {
+        #[cfg(hydrolysis_macos_system_webview)]
+        {
+            crate::widgets::platform::webview::MacSystemWebViewController
+        }
+        #[cfg(hydrolysis_android_system_webview)]
+        {
+            self.renderer.android_webview_controller()
+        }
+        #[cfg(hydrolysis_web_system_webview)]
+        {
+            crate::widgets::platform::webview::WebSystemWebViewController
+        }
+        #[cfg(hydrolysis_cef_webview)]
+        {
+            waterui_browser_cef::webview_controller()
+        }
+        #[cfg(hydrolysis_wpe_webview)]
+        {
+            waterui_browser_wpe::webview_controller()
+        }
+        #[cfg(not(any(
+            hydrolysis_macos_system_webview,
+            hydrolysis_android_system_webview,
+            hydrolysis_web_system_webview,
+            hydrolysis_cef_webview,
+            hydrolysis_wpe_webview,
+        )))]
+        {
+            waterui::webview::UnavailableWebViewController
+        }
+    }
+
+    #[cfg(waterui_feature = "capture")]
+    fn offscreen(&self, _env: &Environment) -> Self::Offscreen {
+        self.renderer.offscreen_renderer()
+    }
 
     accessibility_scope_table!(accessibility_scopes);
 
     // `Native<()>` carries no data.
     fn empty(&mut self, (): (), env: &Environment, (): ()) -> RenderNode<E> {
+        mark_reached!("empty");
         RenderNode::build_empty(self.renderer, env)
     }
 
-    fn fixed_container(
+    fn window<C: ChildView<Self>>(
         &mut self,
-        native: waterui::layout::container::FixedContainer,
+        native: waterui::window::Window<waterui::window::WindowSlot<C>, Option<C>>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
-        // A `BackgroundLayout` container's slot 0 is the background the
-        // §7.1 fill rule extends.
+        mark_reached!("window");
+        self.renderer
+            .open_window(crate::runner::window::slot_root_window(native.map(
+                |slot| slot.map(C::into_child),
+                |toolbar| toolbar.map(C::into_child),
+            )));
+        RenderNode::build_empty(self.renderer, env)
+    }
+
+    /// Builds the [`RenderNode::Container`] for a fixed container. A
+    /// `BackgroundLayout` container's slot 0 is the background the §7.1 fill
+    /// rule extends: its fill is wrapped in [`RenderNode::Fill`], the type
+    /// §7.1's paint extension records on. The identification happens here,
+    /// while the layout type is still concrete; a declaration wrapping the
+    /// fill (`.ignore_safe_area` on the fill itself) stops the predicate, so
+    /// it replaces the default rather than stacking with it.
+    fn fixed_container<C: ChildView<Self>>(
+        &mut self,
+        native: waterui::layout::container::FixedContainer<Vec<C>>,
+        env: &Environment,
+        (): (),
+    ) -> RenderNode<E> {
+        mark_reached!("fixed_container");
         let background_slot = native.background_slot();
-        RenderNode::build_fixed_container(Native::new(native), env, self.renderer, background_slot)
+        let (layout, children) = native.into_inner();
+        let core = self.renderer.new_core();
+        let (layout_dirty, invalidate) = layout_invalidation(&core.cell);
+        let guards = layout.watch_invalidation(invalidate);
+        #[cfg(feature = "accessibility")]
+        let accessibility_child_env = accessibility_container_child_environment(env);
+        #[cfg(feature = "accessibility")]
+        let child_env = accessibility_child_env.as_ref().unwrap_or(env);
+        #[cfg(not(feature = "accessibility"))]
+        let child_env = env;
+        let children: Vec<RenderNode<E>> = children
+            .into_iter()
+            .enumerate()
+            .map(|(index, child)| {
+                let node = self.build_child(child, child_env);
+                if Some(index) == background_slot && is_background_fill_leaf(&node) {
+                    RenderNode::Fill(Box::new(FillNode::new(node, self.renderer.new_core())))
+                } else {
+                    node
+                }
+            })
+            .collect();
+        RenderNode::Container(Box::new(ContainerNode {
+            memo_gate: Cell::default(),
+            memo_slots: RefCell::default(),
+            accessibility_identity: Rc::new(()),
+            core,
+            layout,
+            children,
+            #[cfg(feature = "accessibility")]
+            accessibility_child_env,
+            placed: Vec::new(),
+            #[cfg(feature = "accessibility")]
+            geometry: None,
+            layout_dirty,
+            _guards: guards,
+        }))
     }
 
     // GPU/effect leaves each own their effect runtime directly (textures,
     // setup state, redraw handle), so a reactive swap renders the new content
     // and a per-frame re-flush re-binds the *same* runtime.
     #[cfg(waterui_feature = "gpu")]
-    fn gpu(&mut self, native: waterui::GpuView, env: &Environment, (): ()) -> RenderNode<E> {
+    fn gpu(
+        &mut self,
+        native: waterui::GpuView<Box<dyn waterui::graphics::GpuContent>>,
+        env: &Environment,
+        (): (),
+    ) -> RenderNode<E> {
+        mark_reached!("gpu");
         #[cfg(hydrolysis_gpu)]
         return RenderNode::build_gpu_content(native, self.renderer, env);
         #[cfg(not(hydrolysis_gpu))]
@@ -119,6 +305,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("external_frame");
         #[cfg(hydrolysis_gpu)]
         return RenderNode::build_external_frame(native, self.renderer, env);
         #[cfg(not(hydrolysis_gpu))]
@@ -139,57 +326,107 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("picture");
         self.unrealized("a `Picture` outside `SceneViewMergeToParent`", env)
     }
 
-    // Video is drawn by the realization the application links (the GPU
-    // player installs a `Hook` for it); reaching the backend means none did.
+    // Video is the page's `<video>` element on the web and the GPU player
+    // (`video-gpu`) elsewhere; a build with neither draws no video.
     #[cfg(waterui_feature = "video")]
     fn video(
         &mut self,
-        _native: waterui::video::video::NativeVideoConfig,
+        native: waterui::video::video::NativeVideoConfig,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
-        self.unrealized("a `Video` no linked video realization drew", env)
+        mark_reached!("video");
+        #[cfg(hydrolysis_web_video)]
+        {
+            self.build(crate::widgets::platform::video::video(native), env)
+        }
+        #[cfg(hydrolysis_gpu_video)]
+        {
+            self.build(waterui_video_gpu::video(env, native), env)
+        }
+        #[cfg(not(any(hydrolysis_web_video, hydrolysis_gpu_video)))]
+        {
+            let _ = native;
+            self.unrealized("a `Video` in a build with no video realization", env)
+        }
     }
 
     #[cfg(waterui_feature = "video")]
     fn video_player(
         &mut self,
-        _native: waterui::video::video::NativeVideoPlayerConfig,
+        native: waterui::video::video::NativeVideoPlayerConfig,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
-        self.unrealized("a `VideoPlayer` no linked video realization drew", env)
+        mark_reached!("video_player");
+        #[cfg(hydrolysis_web_video)]
+        {
+            self.build(crate::widgets::platform::video::video_player(native), env)
+        }
+        #[cfg(hydrolysis_gpu_video)]
+        {
+            self.build(waterui_video_gpu::video_player(env, native), env)
+        }
+        #[cfg(not(any(hydrolysis_web_video, hydrolysis_gpu_video)))]
+        {
+            let _ = native;
+            self.unrealized("a `VideoPlayer` in a build with no video realization", env)
+        }
     }
 
-    // `Map::body` found no `Hook<MapConfig>`: no map realization is linked.
+    // This backend bridges no platform map: the GPU map (`map-gpu`) draws
+    // it, and a build without one draws no map.
     #[cfg(waterui_feature = "map")]
-    fn map(
-        &mut self,
-        _native: waterui::map::MapConfig,
-        env: &Environment,
-        (): (),
-    ) -> RenderNode<E> {
-        unsupported_map();
-        RenderNode::build_empty(self.renderer, env)
+    fn map(&mut self, native: waterui::map::MapConfig, env: &Environment, (): ()) -> RenderNode<E> {
+        mark_reached!("map");
+        #[cfg(feature = "map-gpu")]
+        {
+            self.build(waterui_map_gpu::map(env, native), env)
+        }
+        #[cfg(not(feature = "map-gpu"))]
+        {
+            let _ = native;
+            unsupported_map();
+            RenderNode::build_empty(self.renderer, env)
+        }
     }
 
-    // This backend bridges the platform's own web engine. An application that
-    // linked a browser engine of its own installed a `Hook<WebView>`, which
-    // `WebView::body` applies before the payload reaches here.
     #[cfg(waterui_feature = "webview")]
     fn web_view(
         &mut self,
-        native: waterui::webview::WebView,
+        native: waterui::webview::WebViewOpen,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
-        RenderNode::build_webview(&native, env, self.renderer)
+        mark_reached!("web_view");
+        let controller = self.web_view_controller();
+        #[cfg(hydrolysis_cef_webview)]
+        {
+            let Some(opened) = native.open_with(&controller, env) else {
+                return RenderNode::build_empty(self.renderer, env);
+            };
+            self.build(waterui_browser_cef::webview(opened, env), env)
+        }
+        #[cfg(hydrolysis_wpe_webview)]
+        {
+            let Some(opened) = native.open_with(&controller, env) else {
+                return RenderNode::build_empty(self.renderer, env);
+            };
+            self.build(waterui_browser_wpe::webview(opened, env), env)
+        }
+        #[cfg(not(any(hydrolysis_cef_webview, hydrolysis_wpe_webview)))]
+        {
+            let _ = controller;
+            RenderNode::build_webview(native, env, self.renderer)
+        }
     }
 
     fn color(&mut self, native: waterui::Color, env: &Environment, (): ()) -> RenderNode<E> {
+        mark_reached!("color");
         let renderer = &mut *self.renderer;
         RenderNode::Color(ColorNode {
             bounds: nami::Binding::container(kurbo::Rect::ZERO),
@@ -204,6 +441,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         _env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("text");
         let renderer = &mut *self.renderer;
         let (content, alignment, line_limit) = native.into_parts();
         let core = renderer.new_core();
@@ -230,15 +468,20 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         }))
     }
 
-    fn lazy_container(
+    fn lazy_container<C: ChildView<Self>>(
         &mut self,
-        native: waterui::layout::container::LazyContainer,
+        native: waterui::layout::container::LazyContainer<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("lazy_container");
         let renderer = &mut *self.renderer;
         let direction = native.direction();
         let (layout, children) = native.into_inner();
+        // A function pointer, so the mapped collection does not borrow
+        // this backend.
+        let into_child: fn(C) -> HeldChild<E> = C::into_child;
+        let children = children.map_views(into_child);
         // The collection's own layout inputs (stack spacing, absolute
         // pins, …) are signals too: subscribe them through
         // `watch_invalidation` like a FixedContainer's, so a change
@@ -282,64 +525,74 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         )
     }
 
-    fn opacity(
+    fn opacity<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::filter::Opacity>,
+        metadata: Metadata<waterui::filter::Opacity, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("opacity");
+        let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
         RenderNode::Opacity(Box::new(OpacityNode::new(&value, renderer, |renderer| {
-            RenderNode::build_view(content, env, renderer)
+            RenderNode::build_slot(content, env, renderer)
         })))
     }
 
-    fn scale(
+    fn scale<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::style::Scale>,
+        metadata: Metadata<waterui::style::Scale, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("scale");
+        let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
         RenderNode::Scale(Box::new(ScaleNode::new(&value, renderer, |renderer| {
-            RenderNode::build_view(content, env, renderer)
+            RenderNode::build_slot(content, env, renderer)
         })))
     }
 
-    fn rotation(
+    fn rotation<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::style::Rotation>,
+        metadata: Metadata<waterui::style::Rotation, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("rotation");
+        let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
         RenderNode::Rotation(Box::new(RotationNode::new(&value, renderer, |renderer| {
-            RenderNode::build_view(content, env, renderer)
+            RenderNode::build_slot(content, env, renderer)
         })))
     }
 
-    fn offset(
+    fn offset<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::style::Offset>,
+        metadata: Metadata<waterui::style::Offset, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("offset");
+        let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
         RenderNode::Offset(Box::new(OffsetNode::new(&value, renderer, |renderer| {
-            RenderNode::build_view(content, env, renderer)
+            RenderNode::build_slot(content, env, renderer)
         })))
     }
 
-    fn environment(
+    fn environment<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<Environment>,
+        metadata: Metadata<Environment, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("environment");
+        let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
         // The snapshot replaces the environment wholesale, so the
@@ -351,7 +604,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         // Carry the scoped environment in the node (not flattened away), so
         // it is also the env used at flush/measure/layout — text shaping and
         // a11y read env every frame.
-        let child = RenderNode::build_view(content, &scoped_env, renderer);
+        let child = RenderNode::build_slot(content, &scoped_env, renderer);
         RenderNode::Env(Box::new(EnvNode {
             core: renderer.new_core(),
             env: scoped_env,
@@ -359,15 +612,17 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         }))
     }
 
-    fn retain(
+    fn retain<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_core::metadata::Retain>,
+        metadata: Metadata<waterui_core::metadata::Retain, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("retain");
+        let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, mut value } = metadata;
-        let child = RenderNode::build_view(content, env, renderer);
+        let child = RenderNode::build_slot(content, env, renderer);
         // A `Retain::resolved` value is built from the environment
         // its content's modifier chain resolves in, as a handler's is.
         value.resolve(RenderNode::resolved_handler_env(&child, env));
@@ -383,12 +638,14 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     // A `.transition(...)` declaration: a transparent node the structural
     // site that swaps this content claims from the built instance. One
     // placed directly over a conditional is that `Dynamic` host's own.
-    fn transition(
+    fn transition<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_structural_transition::TransitionSpec>,
+        metadata: Metadata<waterui_structural_transition::TransitionSpec, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("transition");
+        let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
         let node = RenderNode::build_wrapper(
@@ -409,16 +666,18 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     // environment like the a11y metadata above: the outermost interactive
     // control binding under it claims it (`claim_selected`), and the
     // control's `SELECTED` flag and a11y selected state read it.
-    fn selected(
+    fn selected<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_core::interaction::Selected>,
+        metadata: Metadata<waterui_interaction::interaction::Selected, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("selected");
+        let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
         let scoped = a11y_scoped_env(env, &value);
-        let child = RenderNode::build_view(content, &scoped, renderer);
+        let child = RenderNode::build_slot(content, &scoped, renderer);
         RenderNode::Env(Box::new(EnvNode {
             core: renderer.new_core(),
             env: scoped,
@@ -429,45 +688,53 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     // Passthrough metadata: the dispatch handlers discard the value and just
     // render the content (no-ops in Hydrolysis), so the tree unwraps them to
     // the content directly — fully transparent, keeping reactive descendants live.
-    fn secure(
+    fn secure<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::metadata::secure::Secure>,
+        metadata: Metadata<waterui::metadata::secure::Secure, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("secure");
+        let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
-        RenderNode::build_view(metadata.content, env, renderer)
+        RenderNode::build_slot(metadata.content, env, renderer)
     }
 
     // Dynamic-range metadata used to scope a preference read by the retired
     // GPU-surface path; Cherenkov's engine owns headroom per surface, so
     // both pass through to the content like `Secure` above.
-    fn standard_dynamic_range(
+    fn standard_dynamic_range<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::metadata::secure::StandardDynamicRange>,
+        metadata: Metadata<waterui::metadata::secure::StandardDynamicRange, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("standard_dynamic_range");
+        let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
-        RenderNode::build_view(metadata.content, env, renderer)
+        RenderNode::build_slot(metadata.content, env, renderer)
     }
 
-    fn high_dynamic_range(
+    fn high_dynamic_range<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::metadata::secure::HighDynamicRange>,
+        metadata: Metadata<waterui::metadata::secure::HighDynamicRange, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("high_dynamic_range");
+        let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
-        RenderNode::build_view(metadata.content, env, renderer)
+        RenderNode::build_slot(metadata.content, env, renderer)
     }
 
-    fn ignore_safe_area(
+    fn ignore_safe_area<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::layout::safe_area::IgnoreSafeArea>,
+        metadata: Metadata<waterui::layout::safe_area::IgnoreSafeArea, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("ignore_safe_area");
+        let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
         RenderNode::build_wrapper(WrapperEffect::IgnoreSafeArea(value), content, env, renderer)
@@ -477,23 +744,27 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     // affordance. Hydrolysis's list rows draw none, so the hint has
     // nothing to drive here.
     #[cfg(waterui_feature = "navigation")]
-    fn navigation_link_hint(
+    fn navigation_link_hint<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::navigation::NavigationLinkHint>,
+        metadata: Metadata<waterui::navigation::NavigationLinkHint, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("navigation_link_hint");
+        let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
-        RenderNode::build_view(metadata.content, env, renderer)
+        RenderNode::build_slot(metadata.content, env, renderer)
     }
 
     #[cfg(waterui_feature = "navigation")]
-    fn navigation_transition_source(
+    fn navigation_transition_source<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::navigation::NavigationTransitionSource>,
+        metadata: Metadata<waterui::navigation::NavigationTransitionSource, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("navigation_transition_source");
+        let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
         RenderNode::build_wrapper(
@@ -505,12 +776,14 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     }
 
     #[cfg(waterui_feature = "navigation")]
-    fn navigation_transition_destination(
+    fn navigation_transition_destination<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::navigation::NavigationTransitionDestination>,
+        metadata: Metadata<waterui::navigation::NavigationTransitionDestination, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("navigation_transition_destination");
+        let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
         RenderNode::build_wrapper(
@@ -521,29 +794,33 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         )
     }
 
-    fn material_background(
+    fn material_background<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::background::MaterialBackground>,
+        metadata: Metadata<waterui::background::MaterialBackground, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("material_background");
+        let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata {
             content,
             value: MaterialBackground(material),
         } = metadata;
         let Some(level) = crate::renderer::material::WithinWindowLevel::of(material) else {
-            return RenderNode::build_view(content, env, renderer);
+            return RenderNode::build_slot(content, env, renderer);
         };
         RenderNode::build_wrapper(WrapperEffect::Material(level), content, env, renderer)
     }
 
-    fn glass_background(
+    fn glass_background<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::background::GlassBackground>,
+        metadata: Metadata<waterui::background::GlassBackground, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("glass_background");
+        let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata {
             content,
@@ -557,12 +834,14 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         )
     }
 
-    fn material_group(
+    fn material_group<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::background::MaterialGroup>,
+        metadata: Metadata<waterui::background::MaterialGroup, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("material_group");
+        let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         RenderNode::build_wrapper(
             WrapperEffect::MaterialGroup,
@@ -577,45 +856,53 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     // descendants reach their dedicated nodes (instead of freezing inside a
     // one-shot `Captured`). The effect is shared with the dispatch path via
     // the `apply_*` helpers in `metadata.rs`.
-    fn clip_shape(
+    fn clip_shape<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::shape::ClipShape>,
+        metadata: Metadata<waterui::shape::ClipShape, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("clip_shape");
+        let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
         RenderNode::build_wrapper(WrapperEffect::Clip(value), content, env, renderer)
     }
 
-    fn border(
+    fn border<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::border::Border>,
+        metadata: Metadata<waterui::border::Border, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("border");
+        let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
         RenderNode::build_wrapper(WrapperEffect::Border(value), content, env, renderer)
     }
 
-    fn shadow(
+    fn shadow<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::style::Shadow>,
+        metadata: Metadata<waterui::style::Shadow, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("shadow");
+        let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
         RenderNode::build_wrapper(WrapperEffect::Shadow(value), content, env, renderer)
     }
 
-    fn anchored_overlay(
+    fn anchored_overlay<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::metadata::anchored_overlay::AnchoredOverlay>,
+        metadata: Metadata<waterui::metadata::anchored_overlay::AnchoredOverlay, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("anchored_overlay");
+        let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
         let AnchoredOverlay {
@@ -627,7 +914,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         } = value;
         RenderNode::build_wrapper(
             WrapperEffect::AnchoredOverlay(AnchoredOverlayEffect {
-                builder: overlay_builder,
+                builder: Rc::new(move || HeldChild::from_view(overlay_builder.build())),
                 presentations: Rc::default(),
                 is_presented,
                 placed_edge,
@@ -642,15 +929,17 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     }
 
     #[cfg(waterui_feature = "dialog")]
-    fn dialog(
+    fn dialog<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::dialog::Dialog>,
+        metadata: Metadata<waterui::dialog::Dialog, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("dialog");
+        let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
-        let layer = RetainedSubview::new(AnyView::new(value.modal_layer()));
+        let layer = RetainedSubview::new(value.modal_layer());
         RenderNode::build_wrapper(
             WrapperEffect::Dialog(DialogEffect {
                 content: Rc::new(RefCell::new(layer)),
@@ -663,34 +952,40 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         )
     }
 
-    fn layout_priority(
+    fn layout_priority<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_core::layout::LayoutPriority>,
+        metadata: Metadata<waterui_core::layout::LayoutPriority, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("layout_priority");
+        let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
         RenderNode::build_wrapper(WrapperEffect::LayoutPriority(value), content, env, renderer)
     }
 
-    fn cursor(
+    fn cursor<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::cursor::Cursor>,
+        metadata: Metadata<waterui::cursor::Cursor, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("cursor");
+        let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
         RenderNode::build_wrapper(WrapperEffect::Cursor(value), content, env, renderer)
     }
 
-    fn draggable(
+    fn draggable<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::drag_drop::Draggable>,
+        metadata: Metadata<waterui::drag_drop::Draggable, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("draggable");
+        let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
         RenderNode::build_wrapper(
@@ -701,12 +996,14 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         )
     }
 
-    fn drop_destination(
+    fn drop_destination<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::drag_drop::DropDestination>,
+        metadata: Metadata<waterui::drag_drop::DropDestination, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("drop_destination");
+        let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
         RenderNode::build_wrapper(
@@ -718,26 +1015,32 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     }
 
     #[cfg(waterui_feature = "menu")]
-    fn resolved_context_menu(
+    fn resolved_context_menu<S: ChildView<Self>, C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::metadata::context_menu::ResolvedContextMenu>,
+        metadata: Metadata<waterui::metadata::context_menu::ResolvedContextMenu<S>, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("resolved_context_menu");
+        let content = metadata.content.into_child();
         let renderer = &mut *self.renderer;
-        let Metadata { content, value } = metadata;
         let ResolvedContextMenu {
             items,
             preview,
             accessory,
             dismiss_requests,
-        } = value;
+        } = metadata.value;
         RenderNode::build_wrapper(
             WrapperEffect::ContextMenu(ContextMenuEffect {
                 items,
                 dismiss_requests,
-                preview: Rc::new(RefCell::new(preview.map(RetainedSubview::new))),
-                accessory: Rc::new(RefCell::new(accessory.map(RetainedSubview::new))),
+                preview: Rc::new(RefCell::new(
+                    preview.map(|child| RetainedSubview::held(child.into_child())),
+                )),
+                accessory: Rc::new(RefCell::new(
+                    accessory.map(|child| RetainedSubview::held(child.into_child())),
+                )),
+                present: HydrolysisRenderer::<E>::show_context_menu,
             }),
             content,
             env,
@@ -745,23 +1048,27 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         )
     }
 
-    fn hittable(
+    fn hittable<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::interaction::Hittable>,
+        metadata: Metadata<waterui::interaction::Hittable, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("hittable");
+        let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
         RenderNode::build_wrapper(WrapperEffect::Hittable(value), content, env, renderer)
     }
 
-    fn on_event(
+    fn on_event<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_core::event::OnEvent>,
+        metadata: Metadata<waterui_interaction::event::OnEvent, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("on_event");
+        let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
         RenderNode::build_wrapper(
@@ -772,12 +1079,14 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         )
     }
 
-    fn on_key_press(
+    fn on_key_press<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_core::key::OnKeyPress>,
+        metadata: Metadata<waterui_interaction::key::OnKeyPress, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("on_key_press");
+        let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
         RenderNode::build_wrapper(
@@ -788,16 +1097,18 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         )
     }
 
-    fn gesture_observer(
+    fn gesture_observer<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_core::gesture::GestureObserver>,
+        metadata: Metadata<waterui_interaction::gesture::GestureObserver, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("gesture_observer");
+        let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
         let (gesture, action) = value.into_parts();
-        let child = RenderNode::build_view(content, env, renderer);
+        let child = RenderNode::build_slot(content, env, renderer);
         let effect = GestureObserverEffect {
             gesture,
             action: Rc::new(RefCell::new(action)),
@@ -805,42 +1116,48 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
             gesture_target: Cell::new(None),
             chrome: RefCell::new(None),
             chrome_state: nami::Binding::container(
-                waterui_core::interaction::InteractionState::empty(),
+                waterui_interaction::interaction::InteractionState::empty(),
             ),
         };
         RenderNode::wrap(WrapperEffect::GestureObserver(effect), child, env, renderer)
     }
 
-    fn focused(
+    fn focused<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::component::focus::Focused>,
+        metadata: Metadata<waterui::component::focus::Focused, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("focused");
+        let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
         RenderNode::build_wrapper(WrapperEffect::Focused(value), content, env, renderer)
     }
 
-    fn lifecycle_hook(
+    fn lifecycle_hook<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui_core::event::LifeCycleHook>,
+        metadata: Metadata<waterui_interaction::event::LifeCycleHook, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("lifecycle_hook");
+        let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
         RenderNode::build_lifecycle(value, content, env, renderer)
     }
 
-    fn scroll(
+    fn scroll<C: ChildView<Self>>(
         &mut self,
-        native: waterui::layout::scroll::ScrollView,
+        native: waterui::layout::scroll::ScrollView<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
-        let renderer = &mut *self.renderer;
+        mark_reached!("scroll");
         let (axis, content, controller, offset) = native.into_inner().into_parts();
+        let core = self.renderer.new_core();
+        let child = self.build_child(content, env);
         // A scroll surface owns §7.1 for its subtree: the layout
         // pass hands the surface its facts and the child lays out
         // with no safe-area context — the surface insets and
@@ -849,9 +1166,9 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
             memo_gate: Cell::default(),
             memo_slots: RefCell::default(),
             accessibility_identity: Rc::new(()),
-            core: renderer.new_core(),
+            core,
             axis,
-            child: RenderNode::build_view(content, env, renderer),
+            child,
             controller,
             offset,
             applied_scroll_generation: Cell::new(0),
@@ -871,209 +1188,255 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         _env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("scene");
         let renderer = &mut *self.renderer;
         RenderNode::build_scene_view_node(native.into_content(), renderer)
     }
 
     // A canvas mounts through the same scene node as any scene content.
+    #[cfg(waterui_feature = "canvas")]
     fn canvas(
         &mut self,
         native: waterui::graphics::canvas::CanvasView,
         _env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("canvas");
         RenderNode::build_scene_view_node(Box::new(native), self.renderer)
     }
 
     #[cfg(waterui_feature = "effects")]
-    fn filtered(
+    fn filtered<C: ChildView<Self>>(
         &mut self,
-        native: waterui::graphics::backend::FilteredView,
+        native: waterui::graphics::backend::FilteredView<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("filtered");
+        let filtered = native.map_content(C::into_child);
         let renderer = &mut *self.renderer;
-        RenderNode::build_filtered(native, env, renderer)
+        RenderNode::build_filtered(filtered, env, renderer)
     }
 
-    fn dynamic(
+    fn dynamic<C: ChildView<Self>>(
         &mut self,
-        native: waterui_core::Dynamic,
+        native: waterui_core::Dynamic<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("dynamic");
         let renderer = &mut *self.renderer;
-        RenderNode::build_dynamic_host(native, env, renderer)
+        RenderNode::build_dynamic_host(native, C::into_child, env, renderer)
     }
 
     // A native widget leaf: build a `Widget` node that re-renders it every flush
     // from a retained, signal-holding config (action retained behind `Rc`), so
     // its handler re-reads live signals — reactive labels/values stay live
     // instead of freezing in a one-shot `Captured` bake.
-    fn button(
+    fn button<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::button::ButtonConfig,
+        native: waterui::component::button::ButtonConfig<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        use waterui_core::backend::MapSlots as _;
+        mark_reached!("button");
         let renderer = &mut *self.renderer;
-        RenderNode::build_button(renderer, native, env)
+        let into_child: fn(C) -> HeldChild<E> = C::into_child;
+        RenderNode::build_button(renderer, native.map_slots(into_child), env)
     }
 
     #[cfg(waterui_feature = "menu")]
-    fn menu(
+    fn menu<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::menu::ResolvedMenu,
+        native: waterui::component::menu::ResolvedMenu<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        use waterui_core::backend::MapSlots as _;
+        mark_reached!("menu");
         let renderer = &mut *self.renderer;
-        RenderNode::build_menu(renderer, native, env)
+        let into_child: fn(C) -> HeldChild<E> = C::into_child;
+        RenderNode::build_menu(renderer, native.map_slots(into_child), env)
     }
 
     #[cfg(waterui_feature = "toggle")]
-    fn toggle(
+    fn toggle<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::toggle::ToggleConfig,
+        native: waterui::component::toggle::ToggleConfig<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        use waterui_core::backend::MapSlots as _;
+        mark_reached!("toggle");
         let renderer = &mut *self.renderer;
-        RenderNode::build_toggle(native, env, renderer)
+        let into_child: fn(C) -> HeldChild<E> = C::into_child;
+        RenderNode::build_toggle(native.map_slots(into_child), env, renderer)
     }
 
     #[cfg(waterui_feature = "slider")]
-    fn slider(
+    fn slider<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::slider::SliderConfig,
+        native: waterui::component::slider::SliderConfig<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        use waterui_core::backend::MapSlots as _;
+        mark_reached!("slider");
         let renderer = &mut *self.renderer;
-        RenderNode::build_slider(native, env, renderer)
+        let into_child: fn(C) -> HeldChild<E> = C::into_child;
+        RenderNode::build_slider(native.map_slots(into_child), env, renderer)
     }
 
     #[cfg(waterui_feature = "stepper")]
-    fn stepper(
+    fn stepper<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::stepper::StepperConfig,
+        native: waterui::component::stepper::StepperConfig<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        use waterui_core::backend::MapSlots as _;
+        mark_reached!("stepper");
         let renderer = &mut *self.renderer;
-        RenderNode::build_stepper(native, env, renderer)
+        let into_child: fn(C) -> HeldChild<E> = C::into_child;
+        RenderNode::build_stepper(native.map_slots(into_child), env, renderer)
     }
 
-    fn progress(
+    fn progress<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::progress::ProgressConfig,
+        native: waterui::component::progress::ProgressConfig<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        use waterui_core::backend::MapSlots as _;
+        mark_reached!("progress");
         let renderer = &mut *self.renderer;
-        RenderNode::build_progress(native, env, renderer)
+        let into_child: fn(C) -> HeldChild<E> = C::into_child;
+        RenderNode::build_progress(native.map_slots(into_child), env, renderer)
     }
 
     // Hydrolysis realizes the calendar and the multi-date picker with
     // their grids composed from `WaterUI` views.
     #[cfg(waterui_feature = "calendar")]
-    fn calendar(
+    fn calendar<C: ChildView<Self>>(
         &mut self,
-        native: waterui::form::calendar::CalendarConfig,
+        native: waterui::form::calendar::CalendarConfig<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
-        let renderer = &mut *self.renderer;
-        let grid = CalendarGrid::new(native);
-        RenderNode::build_view(AnyView::new(grid), env, renderer)
+        mark_reached!("calendar");
+        let (label, calendar) = CalendarGrid::new(native).into_parts(env);
+        self.build_vertical_pair(&label, calendar, env)
     }
 
     #[cfg(waterui_feature = "multi-date-picker")]
-    fn multi_date_picker(
+    fn multi_date_picker<C: ChildView<Self>>(
         &mut self,
-        native: waterui::form::picker::multi_date::MultiDatePickerConfig,
+        native: waterui::form::picker::multi_date::MultiDatePickerConfig<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
-        let renderer = &mut *self.renderer;
-        let grid = MultiDatePickerGrid::new(native, env);
-        RenderNode::build_view(AnyView::new(grid), env, renderer)
+        mark_reached!("multi_date_picker");
+        let (label, calendar) = MultiDatePickerGrid::new(native).into_parts(env);
+        self.build_vertical_pair(&label, calendar, env)
     }
 
     #[cfg(waterui_feature = "date-picker")]
-    fn date_picker(
+    fn date_picker<C: ChildView<Self>>(
         &mut self,
-        native: waterui::form::picker::date::DatePickerConfig,
+        native: waterui::form::picker::date::DatePickerConfig<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        use waterui_core::backend::MapSlots as _;
+        mark_reached!("date_picker");
         let renderer = &mut *self.renderer;
-        RenderNode::build_date_picker(native, env, renderer)
+        let into_child: fn(C) -> HeldChild<E> = C::into_child;
+        RenderNode::build_date_picker(native.map_slots(into_child), env, renderer)
     }
 
     #[cfg(waterui_feature = "color-picker")]
-    fn color_picker(
+    fn color_picker<C: ChildView<Self>>(
         &mut self,
-        native: waterui::form::picker::color::ColorPickerConfig,
+        native: waterui::form::picker::color::ColorPickerConfig<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        use waterui_core::backend::MapSlots as _;
+        mark_reached!("color_picker");
         let renderer = &mut *self.renderer;
-        RenderNode::build_color_picker(native, env, renderer)
+        let into_child: fn(C) -> HeldChild<E> = C::into_child;
+        RenderNode::build_color_picker(native.map_slots(into_child), env, renderer)
     }
 
     #[cfg(waterui_feature = "picker")]
-    fn picker(
+    fn picker<C: ChildView<Self>>(
         &mut self,
-        native: waterui::form::picker::PickerConfig,
+        native: waterui::form::picker::PickerConfig<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        use waterui_core::backend::MapSlots as _;
+        mark_reached!("picker");
         let renderer = &mut *self.renderer;
-        RenderNode::build_picker(native, env, renderer)
+        let into_child: fn(C) -> HeldChild<E> = C::into_child;
+        RenderNode::build_picker(native.map_slots(into_child), env, renderer)
     }
 
     #[cfg(waterui_feature = "text-field")]
-    fn text_field(
+    fn text_field<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::text_field::ResolvedTextFieldConfig,
+        native: waterui::component::text_field::TextFieldConfig<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        use waterui_core::backend::MapSlots as _;
+        mark_reached!("text_field");
         let renderer = &mut *self.renderer;
-        RenderNode::build_text_field(native, env, renderer)
+        let into_child: fn(C) -> HeldChild<E> = C::into_child;
+        RenderNode::build_text_field(native.map_slots(into_child), env, renderer)
     }
 
     #[cfg(waterui_feature = "secure-field")]
-    fn secure_field(
+    fn secure_field<C: ChildView<Self>>(
         &mut self,
-        native: waterui::form::secure::SecureFieldConfig,
+        native: waterui::form::secure::SecureFieldConfig<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        use waterui_core::backend::MapSlots as _;
+        mark_reached!("secure_field");
         let renderer = &mut *self.renderer;
-        RenderNode::build_secure_field(native, env, renderer)
+        let into_child: fn(C) -> HeldChild<E> = C::into_child;
+        RenderNode::build_secure_field(native.map_slots(into_child), env, renderer)
     }
 
-    fn badge(
+    fn badge<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::badge::BadgeConfig,
+        native: waterui::component::badge::BadgeConfig<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        use waterui_core::backend::MapSlots as _;
+        mark_reached!("badge");
         let renderer = &mut *self.renderer;
-        RenderNode::build_badge(native, env, renderer)
+        let into_child: fn(C) -> HeldChild<E> = C::into_child;
+        RenderNode::build_badge(native.map_slots(into_child), env, renderer)
     }
 
     #[cfg(waterui_feature = "list")]
-    fn list(
+    fn list<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::list::ListConfig,
+        native: waterui::component::list::ListConfig<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        use waterui_core::backend::MapSlots as _;
+        mark_reached!("list");
         let renderer = &mut *self.renderer;
-        RenderNode::build_list(native, env, renderer)
+        // A function pointer, so the mapped rows do not borrow this backend.
+        let into_child: fn(C) -> HeldChild<E> = C::into_child;
+        RenderNode::build_list(native.map_slots(into_child), env, renderer)
     }
 
     #[cfg(waterui_feature = "table")]
@@ -1083,19 +1446,9 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("table");
         let renderer = &mut *self.renderer;
         RenderNode::build_table(renderer, native, env)
-    }
-
-    fn icon(
-        &mut self,
-        native: waterui::icon::SystemIcon,
-        env: &Environment,
-        (): (),
-    ) -> RenderNode<E> {
-        let renderer = &mut *self.renderer;
-        unsupported_system_icon(&native);
-        RenderNode::build_empty(renderer, env)
     }
 
     fn gradient(
@@ -1104,6 +1457,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("gradient");
         let renderer = &mut *self.renderer;
         RenderNode::build_gradient(renderer, native, env)
     }
@@ -1114,6 +1468,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("shape");
         let renderer = &mut *self.renderer;
         RenderNode::build_shape(renderer, native, env)
     }
@@ -1124,47 +1479,53 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     // and reactive route/tab selection keeps driving updates, instead of
     // freezing in a one-shot `Captured` bake.
     #[cfg(waterui_feature = "navigation")]
-    fn navigation_view(
+    fn navigation_view<C: ChildView<Self>>(
         &mut self,
-        native: waterui::navigation::NavigationView,
+        native: waterui::navigation::NavigationView<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("navigation_view");
+        let mut native = native.map_content(C::into_child);
+        native.resolve_native_fields(env);
         let renderer = &mut *self.renderer;
         RenderNode::build_navigation_view(native, env, renderer)
     }
 
     #[cfg(waterui_feature = "navigation")]
-    fn navigation_split(
+    fn navigation_split<C: ChildView<Self>>(
         &mut self,
-        native: waterui::navigation::split::NavigationSplitLayout,
+        native: waterui::navigation::split::NavigationSplitLayout<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("navigation_split");
         let renderer = &mut *self.renderer;
-        RenderNode::build_navigation_split(native, env, renderer)
+        RenderNode::build_navigation_split(native.map_slots(C::into_child), env, renderer)
     }
 
     #[cfg(waterui_feature = "navigation")]
-    fn navigation_stack(
+    fn navigation_stack<C: ChildView<Self>>(
         &mut self,
-        native: waterui::navigation::NavigationStack<(), ()>,
+        native: waterui::navigation::NavigationStackLayout<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("navigation_stack");
         let renderer = &mut *self.renderer;
-        RenderNode::build_navigation_stack(renderer, native, env)
+        RenderNode::build_navigation_stack(renderer, native.map_slot(C::into_child), env)
     }
 
     #[cfg(waterui_feature = "navigation")]
-    fn tabs(
+    fn tabs<C: ChildView<Self>>(
         &mut self,
-        native: waterui::navigation::tab::TabsLayout,
+        native: waterui::navigation::tab::TabsLayout<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("tabs");
         let renderer = &mut *self.renderer;
-        RenderNode::build_tabs(native, env, renderer)
+        RenderNode::build_tabs(native.map_slots(C::into_child), env, renderer)
     }
 
     fn spacer(
@@ -1173,24 +1534,27 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("spacer");
         let renderer = &mut *self.renderer;
         RenderNode::build_spacer(renderer, native, env)
     }
 
-    // `Divider` and `Str` are registered renderers (not `Native<…>` leaves), so
-    // they are downcast as their value type directly and built into persistent
-    // `Widget` nodes that re-render from a retained cell each flush.
+    // `Divider` and `Str` are `NativeView` leaves routed directly to
+    // `NativeBackend::divider` and `NativeBackend::label`, and built into
+    // persistent `Widget` nodes that re-render from a retained cell each flush.
     fn divider(
         &mut self,
         native: waterui::layout::Divider,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        mark_reached!("divider");
         let renderer = &mut *self.renderer;
         RenderNode::build_divider(renderer, native, env)
     }
 
     fn label(&mut self, native: waterui_core::Str, env: &Environment, (): ()) -> RenderNode<E> {
+        mark_reached!("label");
         let renderer = &mut *self.renderer;
         RenderNode::build_str(renderer, native, env)
     }
@@ -1203,28 +1567,65 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
-        // A platform-view embedding leaf records its frame onto the host's
-        // `PlatformViewSink` each flush; mounting the real native child is
-        // the host's work.
-        let native = match cast::<T, PlatformView>(native) {
-            Ok(platform_view) => {
-                return RenderNode::build_platform_view(self.renderer, &platform_view, env);
-            }
+        // Backend-owned leaves (`PlatformView`, `HostedView`) claim
+        // `HydroProvidedSlot` inside `NativeView::realize_provided`, so only
+        // constructed leaves stay reachable and `provided` / `provided_dyn`
+        // carry no hardcoded downcasts for them.
+        let mut slot = provided::HydroProvidedSlot::default();
+        let native = match native.realize_provided(&mut slot, env) {
+            Ok(()) => return provided::realize_hydro_provided_slot(self.renderer, slot, env),
             Err(native) => native,
         };
-        #[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
-        let native = match cast::<T, crate::hosted::HostedView>(native) {
-            Ok(hosted) => return RenderNode::build_hosted(hosted, env, self.renderer),
-            Err(native) => native,
-        };
-        // The GPU video player's host.
+        // The GPU video player's host (owned by external `waterui-video-gpu`).
         #[cfg(hydrolysis_video_plane)]
         let native = match cast::<T, waterui_video_gpu::AndroidVideoSurfaceHost>(native) {
             Ok(host) => {
-                let picture = crate::runner::android::video_plane::unwrap_host(Native::new(host));
-                return RenderNode::build_view(picture, env, self.renderer);
+                mark_reached!("android_video_surface_host");
+                let picture = crate::runner::android::video_plane::unwrap_host(host);
+                return self.video_plane_host(picture.map_content(HeldChild::from_view), env);
             }
             Err(native) => native,
+        };
+        #[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
+        if self.renderer.semantic_walk {
+            let stretch = waterui_core::NativeView::stretch_axis(&native);
+            let mut semantics = waterui_backend_core::ProvidedSemantics::default();
+            let native = match native.realize_provided(&mut semantics, env) {
+                Ok(()) => {
+                    return RenderNode::build_provided_semantics(
+                        self.renderer,
+                        semantics,
+                        stretch,
+                        env,
+                    );
+                }
+                Err(native) => native,
+            };
+            drop(native);
+            return self.unrealized(core::any::type_name::<T>(), env);
+        }
+        #[cfg(all(target_os = "android", any(hydrolysis_gpu_painter, hydrolysis_hwui)))]
+        let native = {
+            #[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
+            let semantic_walk = self.renderer.semantic_walk;
+            #[cfg(not(all(feature = "accessibility", hydrolysis_cherenkov)))]
+            let semantic_walk = false;
+            if !semantic_walk
+                && let Some(bridge) = env
+                    .get::<crate::runner::android::host::AndroidHostBridge>()
+                    .cloned()
+            {
+                let core = self.renderer.new_core();
+                let mut slot = android_provided_slot(&core, bridge);
+                match native.realize_provided(&mut slot, env) {
+                    Ok(()) => {
+                        return realize_android_provided_slot(self.renderer, slot, core, env);
+                    }
+                    Err(native) => native,
+                }
+            } else {
+                native
+            }
         };
         drop(native);
         self.unrealized(core::any::type_name::<T>(), env)
@@ -1236,38 +1637,71 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
-        if let Some(platform_view) = native.take::<PlatformView>() {
-            return RenderNode::build_platform_view(self.renderer, &platform_view, env);
-        }
-        #[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
-        if let Some(hosted) = native.take::<crate::hosted::HostedView>() {
-            return RenderNode::build_hosted(hosted, env, self.renderer);
+        let mut slot = provided::HydroProvidedSlot::default();
+        if native.realize_provided(&mut slot, env) {
+            return provided::realize_hydro_provided_slot(self.renderer, slot, env);
         }
         #[cfg(hydrolysis_video_plane)]
         if let Some(host) = native.take::<waterui_video_gpu::AndroidVideoSurfaceHost>() {
-            let picture = crate::runner::android::video_plane::unwrap_host(Native::new(host));
-            return RenderNode::build_view(picture, env, self.renderer);
+            mark_reached!("android_video_surface_host");
+            let picture = crate::runner::android::video_plane::unwrap_host(host);
+            return self.video_plane_host(picture.map_content(HeldChild::from_view), env);
+        }
+        #[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
+        if self.renderer.semantic_walk {
+            let mut semantics = waterui_backend_core::ProvidedSemantics::default();
+            if native.realize_provided(&mut semantics, env) {
+                return RenderNode::build_provided_semantics(
+                    self.renderer,
+                    semantics,
+                    StretchAxis::None,
+                    env,
+                );
+            }
+        }
+        #[cfg(all(target_os = "android", any(hydrolysis_gpu_painter, hydrolysis_hwui)))]
+        {
+            #[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
+            let semantic_walk = self.renderer.semantic_walk;
+            #[cfg(not(all(feature = "accessibility", hydrolysis_cherenkov)))]
+            let semantic_walk = false;
+            if !semantic_walk
+                && let Some(bridge) = env
+                    .get::<crate::runner::android::host::AndroidHostBridge>()
+                    .cloned()
+            {
+                let core = self.renderer.new_core();
+                let mut slot = android_provided_slot(&core, bridge);
+                if native.realize_provided(&mut slot, env) {
+                    return realize_android_provided_slot(self.renderer, slot, core, env);
+                }
+            }
         }
         self.unrealized(native.type_name(), env)
     }
 
-    fn provided_metadata<K: MetadataKey>(
+    fn provided_metadata<K: MetadataKey, C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<K>,
+        metadata: Metadata<K, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        #[cfg(any(feature = "menu", hydrolysis_video_plane))]
+        let metadata = metadata.map_content(C::into_child);
         #[cfg(feature = "menu")]
-        let metadata = match cast::<Metadata<K>, Metadata<PopupMenuSurface>>(metadata) {
-            Ok(metadata) => return self.popup_menu_surface(metadata, env),
-            Err(metadata) => metadata,
-        };
+        let metadata =
+            match cast::<Metadata<K, HeldChild<E>>, Metadata<PopupMenuSurface, HeldChild<E>>>(
+                metadata,
+            ) {
+                Ok(metadata) => return self.popup_menu_surface(metadata, env),
+                Err(metadata) => metadata,
+            };
         // The picture of the GPU video player with the decoder plane the
         // Android backend places below it.
         #[cfg(hydrolysis_video_plane)]
         let metadata = match cast::<
-            Metadata<K>,
-            Metadata<crate::runner::android::video_plane::VideoPlaneHost>,
+            Metadata<K, HeldChild<E>>,
+            Metadata<crate::runner::android::video_plane::VideoPlaneHost, HeldChild<E>>,
         >(metadata)
         {
             Ok(metadata) => return self.video_plane_host(metadata, env),
@@ -1286,14 +1720,14 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         #[cfg(any(feature = "menu", hydrolysis_video_plane))]
         let mut metadata = metadata;
         #[cfg(feature = "menu")]
-        if let Some(metadata) = metadata.take::<Metadata<PopupMenuSurface>>() {
-            return self.popup_menu_surface(metadata, env);
+        if let Some(metadata) = metadata.take::<Metadata<PopupMenuSurface, AnyView>>() {
+            return self.popup_menu_surface(metadata.map_content(HeldChild::from_view), env);
         }
         #[cfg(hydrolysis_video_plane)]
-        if let Some(metadata) =
-            metadata.take::<Metadata<crate::runner::android::video_plane::VideoPlaneHost>>()
+        if let Some(metadata) = metadata
+            .take::<Metadata<crate::runner::android::video_plane::VideoPlaneHost, AnyView>>()
         {
-            return self.video_plane_host(metadata, env);
+            return self.video_plane_host(metadata.map_content(HeldChild::from_view), env);
         }
         self.unrealized(metadata.type_name(), env)
     }
@@ -1303,9 +1737,10 @@ impl<E: crate::text::TextEngine> HydroBackend<'_, E> {
     #[cfg(feature = "menu")]
     fn popup_menu_surface(
         &mut self,
-        metadata: Metadata<PopupMenuSurface>,
+        metadata: Metadata<PopupMenuSurface, HeldChild<E>>,
         env: &Environment,
     ) -> RenderNode<E> {
+        mark_reached!("popup_menu_surface");
         RenderNode::build_wrapper(
             WrapperEffect::PopupMenuSurface(metadata.value.selected_row),
             metadata.content,
@@ -1317,19 +1752,64 @@ impl<E: crate::text::TextEngine> HydroBackend<'_, E> {
     #[cfg(hydrolysis_video_plane)]
     fn video_plane_host(
         &mut self,
-        metadata: Metadata<crate::runner::android::video_plane::VideoPlaneHost>,
+        metadata: Metadata<crate::runner::android::video_plane::VideoPlaneHost, HeldChild<E>>,
         env: &Environment,
     ) -> RenderNode<E> {
+        mark_reached!("video_plane_host");
         let Metadata { content, value } = metadata;
         let planes = crate::runner::android::video_plane::VideoPlanes::in_environment(env);
         RenderNode::Retain(Box::new(RetainNode {
             core: self.renderer.new_core(),
             _retain: Retain::new(()),
-            child: RenderNode::build_view(content, env, self.renderer),
+            child: RenderNode::build_slot(content, env, self.renderer),
             plane: Some(crate::runner::android::video_plane::VideoPlane::new(
                 &planes,
                 value.into_bridge(),
             )),
         }))
     }
+}
+
+#[cfg(all(target_os = "android", any(hydrolysis_gpu_painter, hydrolysis_hwui)))]
+fn android_provided_slot<E: crate::text::TextEngine>(
+    core: &NodeCore<E>,
+    bridge: crate::runner::android::host::AndroidHostBridge,
+) -> crate::android_content::AndroidProvidedSlot {
+    let weak_layout = Rc::downgrade(&core.cell);
+    let weak_paint = Rc::downgrade(&core.cell);
+    crate::android_content::AndroidProvidedSlot {
+        bridge,
+        mark_layout: Rc::new(move || {
+            if let Some(cell) = weak_layout.upgrade() {
+                cell.mark_layout();
+            }
+        }),
+        mark_paint: Rc::new(move || {
+            if let Some(cell) = weak_paint.upgrade() {
+                cell.mark(crate::renderer::mount::Dirty::PAINT);
+            }
+        }),
+        realized: None,
+    }
+}
+
+#[cfg(all(target_os = "android", any(hydrolysis_gpu_painter, hydrolysis_hwui)))]
+fn realize_android_provided_slot<E: crate::text::TextEngine>(
+    renderer: &SemanticCore<E>,
+    slot: crate::android_content::AndroidProvidedSlot,
+    core: NodeCore<E>,
+    env: &Environment,
+) -> RenderNode<E> {
+    let Some((leaf, stretch)) = slot.realized else {
+        return RenderNode::build_empty(renderer, env);
+    };
+    let Some(leaf) = leaf else {
+        return RenderNode::build_empty(renderer, env);
+    };
+    RenderNode::build_widget_with_core(
+        Rc::new(crate::android_content::AndroidWidgetAdapter(leaf)),
+        stretch,
+        env,
+        core,
+    )
 }

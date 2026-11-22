@@ -7,12 +7,12 @@
 //! The selection binding is two-way: native selection writes back, external
 //! writes select the matching tab.
 
-use alloc::vec::Vec;
+use alloc::{string::String, vec::Vec};
 
-use crate::contract::NativeLeaf;
+use crate::contract::{Held, NativeLeaf};
 use waterui::navigation::{
     TabsLayout,
-    tab::{Tab, TabIcon, TabRole},
+    tab::{TabItem, TabRole},
 };
 use waterui_core::id::Id;
 use waterui_core::layout::{
@@ -23,7 +23,7 @@ use super::extract_title_text;
 use crate::contract::RenderContext;
 
 /// The `TabsLayout` realization.
-pub fn realize_tabs_layout(value: TabsLayout, ctx: &RenderContext<'_>) -> NativeLeaf {
+pub fn realize_tabs_layout(value: TabsLayout<Held>, ctx: &RenderContext<'_>) -> NativeLeaf {
     platform::tabs_leaf(value, ctx)
 }
 
@@ -84,16 +84,24 @@ struct Mounted {
 
 /// Renders one tab once: the pane, the label's extracted text and the icon's
 /// leaf the platform chrome still binds.
-fn mount_tab(id: Id, tab: Tab, renderer: &crate::contract::Renderer) -> Mounted {
+fn mount_tab(id: Id, tab: TabItem<Held>, renderer: &crate::contract::Renderer) -> Mounted {
     let (label, icon, content, badge, enabled, role) = tab.into_parts();
-    let pane = renderer.render(waterui_backend_core::AnyView::new(content.build()));
-    let label_leaf = renderer.render(label.build());
+    let pane = super::nav_view::realize_navigation_view(content.build(), &renderer.context());
+    let label_leaf = renderer.realize(label.build());
     let label = extract_title_text(label_leaf.view());
-    let (symbol, icon_leaf) = match icon {
-        Some(TabIcon::System(icon)) => (Some(icon.name().to_string()), None),
-        Some(TabIcon::View(icon)) => (None, Some(renderer.render(icon.build()))),
-        None => (None, None),
-    };
+    let (symbol, icon_leaf) = icon.map_or_else(
+        || (None, None),
+        |builder| {
+            let icon_view = builder.build();
+            let symbol = icon_view
+                .downcast_ref::<crate::SfSymbol>()
+                .map(|symbol| String::from(symbol.as_str()));
+            symbol.map_or_else(
+                || (None, Some(renderer.render(icon_view))),
+                |name| (Some(name), None),
+            )
+        },
+    );
 
     Mounted {
         id,
@@ -118,12 +126,11 @@ fn mount_tab(id: Id, tab: Tab, renderer: &crate::contract::Renderer) -> Mounted 
 /// cannot re-enter it; an empty set leaves the binding untouched.
 fn reconcile_tabs(
     mounted: &mut Vec<Mounted>,
-    snapshot: &waterui_core::views::AnyViewsSnapshot<Tab>,
+    snapshot: &waterui_core::views::AnyViewsSnapshot<TabItem<Held>>,
     renderer: &crate::contract::Renderer,
     selection: &waterui::reactive::Binding<Id>,
 ) -> Option<Id> {
     use waterui::reactive::Signal as _;
-    use waterui_core::views::ViewSnapshot as _;
     let selected = selection.snapshot();
     let old_index = mounted.iter().position(|tab| tab.id == selected);
     let mut old: alloc::collections::BTreeMap<Id, Mounted> =
@@ -158,7 +165,7 @@ mod platform {
     use alloc::vec::Vec;
     use core::cell::RefCell;
 
-    use crate::contract::{NativeLeaf, RenderContext};
+    use crate::contract::{Held, NativeLeaf, RenderContext};
     use cocoa_ui::geometry::Rect;
     use cocoa_ui::objc2_ui_kit::{UITabAccessory, UITabBarMinimizeBehavior};
     use cocoa_ui::uikit::{HostView, TabContentController, TabSpec, TabsController};
@@ -168,7 +175,6 @@ mod platform {
     use waterui::reactive::Signal;
     use waterui_core::id::Id;
     use waterui_core::layout::ProposalSize;
-    use waterui_core::views::Views as _;
 
     use crate::contract::KeepAlive;
 
@@ -308,7 +314,7 @@ mod platform {
 
     /// `UITabBarController` with one `UIViewController` per pane.
     #[allow(clippy::too_many_lines)]
-    pub(super) fn tabs_leaf(mut layout: TabsLayout, ctx: &RenderContext) -> NativeLeaf {
+    pub(super) fn tabs_leaf(mut layout: TabsLayout<Held>, ctx: &RenderContext) -> NativeLeaf {
         let mtm = ctx.mtm();
         let tabs = TabsController::new(mtm);
         let mut keep = KeepAlive::default();
@@ -343,7 +349,7 @@ mod platform {
         // sizing and collapse.
         if let Some(accessory) = layout.take_bottom_accessory() {
             let accessory_host = HostView::new(mtm, Rect::ZERO);
-            let mounted = Rc::new(ctx.render(accessory).mount(&accessory_host));
+            let mounted = Rc::new(ctx.realize(accessory).mount(&accessory_host));
             accessory_host.set_measure_handler({
                 let mounted = Rc::clone(&mounted);
                 move |_host, proposal| {
@@ -516,12 +522,12 @@ mod platform {
 
 #[cfg(target_os = "macos")]
 mod platform {
-    use super::{Fill, Mounted, reconcile_tabs};
+    use super::{Fill, Mounted, ProposalSize, reconcile_tabs};
     use alloc::rc::Rc;
     use alloc::vec::Vec;
     use core::cell::RefCell;
 
-    use crate::contract::{NativeLeaf, RenderContext};
+    use crate::contract::{Held, NativeLeaf, RenderContext};
     use crate::native_layout::LayoutContext;
     use cocoa_ui::appkit::{HostView, Segment, SegmentedControl, SourceList, WindowToolbar};
     use cocoa_ui::objc2_app_kit::NSWindowStyleMask;
@@ -529,7 +535,6 @@ mod platform {
     use waterui::navigation::{TabsLayout, tab::NativeTabStyle};
     use waterui::reactive::Signal;
     use waterui_core::id::Id;
-    use waterui_core::views::{ViewSnapshot as _, Views as _};
 
     use crate::contract::KeepAlive;
 
@@ -537,13 +542,23 @@ mod platform {
     fn segments(mounted: &[Mounted]) -> Vec<Segment> {
         mounted
             .iter()
-            .map(|tab| Segment {
-                label: tab.label.clone(),
-                symbol: tab.symbol.clone(),
-                image: None,
-                enabled: tab.enabled.snapshot(),
-                badge: tab.badge.as_ref().map(|badge| badge.snapshot().to_string()),
-                is_search: tab.is_search,
+            .map(|tab| {
+                let image = tab.icon_leaf.as_ref().and_then(|icon_leaf| {
+                    let size = icon_leaf.layout().measure(ProposalSize::UNSPECIFIED).size;
+                    view::set_frame(
+                        icon_leaf.view(),
+                        Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height)),
+                    );
+                    cocoa_ui::bitmap::view_template_image(icon_leaf.view(), 18.0)
+                });
+                Segment {
+                    label: tab.label.clone(),
+                    symbol: tab.symbol.clone(),
+                    image,
+                    enabled: tab.enabled.snapshot(),
+                    badge: tab.badge.as_ref().map(|badge| badge.snapshot().to_string()),
+                    is_search: tab.is_search,
+                }
             })
             .collect()
     }
@@ -555,7 +570,7 @@ mod platform {
         clippy::needless_pass_by_value,
         reason = "the `register_native` signature takes `TabsLayout` by value; the iOS twin consumes `bottom_accessory`, AppKit has no such slot"
     )]
-    pub(super) fn tabs_leaf(layout: TabsLayout, ctx: &RenderContext) -> NativeLeaf {
+    pub(super) fn tabs_leaf(layout: TabsLayout<Held>, ctx: &RenderContext) -> NativeLeaf {
         let mtm = ctx.mtm();
         // The host places each pane against the safe area itself
         // (`region_frame`): a scroll surface reaches under the window

@@ -19,17 +19,41 @@ mod key;
 
 use std::rc::Rc;
 
+use cocoa_ui::Retained;
 use nami::Signal;
 #[cfg(target_os = "macos")]
 use waterui_controls::menu::CloseWindowChord;
 use waterui_controls::menu::{
     CommandRole, ResolvedCommand, ResolvedMenuItem, ResolvedNestedMenu, Shortcut,
 };
-use waterui_core::Environment;
+use waterui_core::handler::AnyViewBuilder;
+use waterui_core::{AnyView, Environment};
 
 #[cfg(target_os = "macos")]
 pub use close_window::{standard_close_window_command, standard_close_window_node};
 pub use key::key_equivalent_for;
+
+/// Platform image type attached to a native menu item when its icon is not an SF Symbol.
+#[cfg(target_os = "macos")]
+pub type PlatformMenuImage = cocoa_ui::objc2_app_kit::NSImage;
+/// Platform image type attached to a native menu item when its icon is not an SF Symbol.
+#[cfg(target_os = "ios")]
+pub type PlatformMenuImage = cocoa_ui::objc2_ui_kit::UIImage;
+
+/// Resolves a menu item's icon builder into `(system_symbol_name, rendered_image)`.
+pub type IconResolver = dyn Fn(
+    Option<&AnyViewBuilder<AnyView>>,
+    &Environment,
+) -> (Option<String>, Option<Retained<PlatformMenuImage>>);
+
+/// Default icon resolver when the host does not rasterize menu icons.
+#[must_use]
+pub const fn no_menu_icon(
+    _icon: Option<&AnyViewBuilder<AnyView>>,
+    _env: &Environment,
+) -> (Option<String>, Option<Retained<PlatformMenuImage>>) {
+    (None, None)
+}
 
 /// The key equivalent and modifier set a `Shortcut` describes.
 #[must_use]
@@ -48,12 +72,18 @@ pub fn shortcut_parts(shortcut: &Shortcut) -> (String, cocoa_ui::menu::KeyModifi
 }
 
 /// A resolved command as the kit's shared `Command` payload — label text,
-/// subtitle, symbol name, destructive flag and shortcut.
-fn kit_command(command: &ResolvedCommand) -> cocoa_ui::menu::Command {
+/// subtitle, symbol name or rendered icon, destructive flag and shortcut.
+fn kit_command(
+    command: &ResolvedCommand,
+    env: &Environment,
+    resolve_icon: &IconResolver,
+) -> cocoa_ui::menu::Command {
+    let (symbol, image) = resolve_icon(command.icon.as_ref(), env);
     kit_command_fields(
         command.label.content().snapshot().to_plain().to_string(),
         command.subtitle.as_ref().map(ToString::to_string),
-        command.icon.as_ref().map(|icon| icon.name().to_string()),
+        symbol,
+        image,
         command.role,
         command.shortcut.as_ref(),
     )
@@ -61,11 +91,17 @@ fn kit_command(command: &ResolvedCommand) -> cocoa_ui::menu::Command {
 
 /// A resolved nested menu's header as the kit's shared `Command` payload.
 #[must_use]
-pub fn kit_command_for_menu(menu: &ResolvedNestedMenu) -> cocoa_ui::menu::Command {
+pub fn kit_command_for_menu(
+    menu: &ResolvedNestedMenu,
+    env: &Environment,
+    resolve_icon: &IconResolver,
+) -> cocoa_ui::menu::Command {
+    let (symbol, image) = resolve_icon(menu.icon.as_ref(), env);
     kit_command_fields(
         menu.label.content().snapshot().to_plain().to_string(),
         None,
-        menu.icon.as_ref().map(|icon| icon.name().to_string()),
+        symbol,
+        image,
         CommandRole::Standard,
         None,
     )
@@ -77,6 +113,7 @@ pub fn kit_command_fields(
     label: String,
     subtitle: Option<String>,
     symbol: Option<String>,
+    image: Option<Retained<PlatformMenuImage>>,
     role: CommandRole,
     shortcut: Option<&Shortcut>,
 ) -> cocoa_ui::menu::Command {
@@ -88,6 +125,7 @@ pub fn kit_command_fields(
         label,
         subtitle,
         symbol,
+        image,
         destructive: matches!(role, CommandRole::Destructive),
         enabled: true,
         selected: false,
@@ -106,6 +144,7 @@ pub fn kit_command_fields(
 pub fn menu_tree(
     items: &[ResolvedMenuItem],
     env: &Environment,
+    resolve_icon: &IconResolver,
 ) -> Vec<cocoa_ui::menu::MenuTreeNode> {
     items
         .iter()
@@ -119,15 +158,15 @@ pub fn menu_tree(
                 let action = command.action.clone();
                 let env = env.clone();
                 Some(cocoa_ui::menu::MenuTreeNode::Command(
-                    kit_command(command),
+                    kit_command(command, &env, resolve_icon),
                     Rc::new(move || {
                         action.run(&env);
                     }),
                 ))
             }
             ResolvedMenuItem::Menu(menu) => Some(cocoa_ui::menu::MenuTreeNode::Submenu(
-                kit_command_for_menu(menu),
-                menu_tree(&menu.items.snapshot(), env),
+                kit_command_for_menu(menu, env, resolve_icon),
+                menu_tree(&menu.items.snapshot(), env, resolve_icon),
             )),
             // macOS: the standard application menu already ends with Quit
             // (`build_default`), so a declared one is dropped rather than
@@ -160,7 +199,7 @@ mod tests {
     };
     use waterui_core::Environment;
 
-    use super::{key_equivalent_for, menu_tree};
+    use super::{key_equivalent_for, menu_tree, no_menu_icon};
 
     fn function_key(code: u32) -> String {
         String::from(char::from_u32(code).expect("function keys are scalar values"))
@@ -197,7 +236,9 @@ mod tests {
     }
 
     /// `menus` resolved as the declared menu bar.
-    fn declared(menus: Vec<Menu>) -> Vec<ResolvedMenuItem> {
+    fn declared<L: waterui_controls::label::LabelKind + Clone>(
+        menus: Vec<Menu<L>>,
+    ) -> Vec<ResolvedMenuItem> {
         resolve_menu_bar_items(&Computed::constant(menus), &Environment::new()).snapshot()
     }
 
@@ -215,7 +256,7 @@ mod tests {
     #[test]
     fn a_declared_close_window_emits_the_standard_item() {
         let env = chord_env();
-        let nodes = menu_tree(&[ResolvedMenuItem::CloseWindow], &env);
+        let nodes = menu_tree(&[ResolvedMenuItem::CloseWindow], &env, &no_menu_icon);
         let [MenuTreeNode::Standard(command, MenuAction::CloseWindow)] = nodes.as_slice() else {
             panic!("a declared Close Window emits the standard Close node: {nodes:?}");
         };
@@ -228,7 +269,7 @@ mod tests {
     fn a_nested_declared_close_window_emits_the_standard_item() {
         let env = chord_env();
         let items = declared(vec![Menu::new("Window", (MenuItem::CloseWindow,))]);
-        let nodes = menu_tree(&items, &env);
+        let nodes = menu_tree(&items, &env, &no_menu_icon);
         let [MenuTreeNode::Submenu(_, children)] = nodes.as_slice() else {
             panic!("a declared menu nests: {nodes:?}");
         };

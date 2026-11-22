@@ -20,12 +20,12 @@ use waterui::widget::condition::when;
 use waterui::{AnyView, View, component::text};
 use waterui_controls::button::button;
 use waterui_core::handler::AnyViewBuilder;
-use waterui_core::id::{Id, SelfId};
+use waterui_core::id::SelfId;
 use waterui_layout::frame::Frame;
 use waterui_layout::scroll::{ScrollController, scroll};
 use waterui_layout::stack::{VStack, hstack, vstack};
 use waterui_navigation::NavigationView;
-use waterui_navigation::tab::{Tab, TabsLayout};
+use waterui_navigation::tab::{Tab, Tabs};
 
 use super::{MinimalTestTheme, test_environment};
 use crate::HeadlessRuntime;
@@ -413,15 +413,12 @@ fn a_fling_whose_scroll_view_is_replaced_mid_fling_ends_with_it() {
 /// retired owner.
 #[test]
 fn a_fling_whose_scroll_view_is_hidden_by_a_tab_switch_mid_fling_ends_with_it() {
-    let tabs = waterui_core::views::SharedAnyViews::new(vec![
+    let tabs = (
         Tab::new("Rows", || NavigationView::new("Rows", tall_stack())),
         Tab::new("Other", || NavigationView::new("Other", text("Other"))),
-    ]);
-    let selection = Binding::container(
-        waterui_core::views::ViewSnapshot::get_id(&waterui_core::views::Views::snapshot(&tabs), 0)
-            .expect("a non-empty tab set reports an id"),
     );
-    let mut runtime = runtime(TabsLayout::new(selection.clone(), tabs));
+    let selection = Binding::container(0usize);
+    let mut runtime = runtime(Tabs::new(&selection, tabs));
     let start = Instant::now();
     let _ = runtime.pump_at(false, start);
     assert!(
@@ -443,7 +440,7 @@ fn a_fling_whose_scroll_view_is_hidden_by_a_tab_switch_mid_fling_ends_with_it() 
         "a fast release over the scroll view must fling"
     );
 
-    selection.set(Id::try_from(2).expect("non-zero tab id"));
+    selection.set(1);
     for frame in 1..=20u64 {
         let _ = runtime.pump_at(false, start + Duration::from_millis(96 + frame * 16));
     }

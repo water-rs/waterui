@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use hydrolysis::run;
 use waterui::Environment;
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::component::list::{List, ListItem};
 use waterui::component::progress::loading;
 use waterui::component::table::{col, table};
@@ -108,7 +108,7 @@ fn main_view() -> impl View {
     .foreground(Color::srgb_hex("#0F172A"))
 }
 
-fn app(env: Environment) -> App {
+fn app(env: Environment) -> App<impl Windows> {
     let window = Window::new(
         "Hydrolysis Wayland Showcase",
         binding(waterui::window::WindowState::Normal),

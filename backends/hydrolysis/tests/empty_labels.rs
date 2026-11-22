@@ -14,7 +14,7 @@ use waterui_core::Environment;
 use waterui_navigation::NavigationView;
 
 /// The issue's first shape: a titled navigation page that binds no subtitle.
-fn inbox_view() -> NavigationView {
+fn inbox_view() -> NavigationView<impl waterui_core::View> {
     NavigationView::new("Inbox", text("mail body"))
 }
 

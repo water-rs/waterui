@@ -206,9 +206,14 @@ impl SubView for FixedSubView {
 /// `Native<FixedContainer>`: a host view placing each child through the
 /// container's layout. A `BackgroundLayout` container marks slot 0 as the
 /// background, so the §7.1 fill rule extends it through touched-edge regions.
-pub fn realize_fixed_container(container: FixedContainer, ctx: &RenderContext<'_>) -> NativeLeaf {
+/// Each child is realized by `realize_child`, in order.
+pub fn realize_fixed_container<C>(
+    container: FixedContainer<Vec<C>>,
+    realize_child: impl FnMut(C) -> NativeLeaf,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
     let background_slot = container.background_slot();
-    let leaf = render_fixed_container(container, ctx);
+    let leaf = render_fixed_container(container, realize_child, ctx);
     if background_slot.is_some() {
         let host = leaf.view().downcast_ref::<HostView>().expect(
             "a `BackgroundLayout` container must mount a `HostView` — the fill rule marks the background slot on it",
@@ -218,14 +223,18 @@ pub fn realize_fixed_container(container: FixedContainer, ctx: &RenderContext<'_
     leaf
 }
 
-fn render_fixed_container(container: FixedContainer, ctx: &RenderContext<'_>) -> NativeLeaf {
+fn render_fixed_container<C>(
+    container: FixedContainer<Vec<C>>,
+    mut realize_child: impl FnMut(C) -> NativeLeaf,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
     let mtm = ctx.mtm();
     let (layout, contents) = container.into_inner();
     let host = HostView::new(mtm, Rect::ZERO);
 
     let mut children = Vec::with_capacity(contents.len());
     for content in contents {
-        let mounted = ctx.render(content).mount(&host);
+        let mounted = realize_child(content).mount(&host);
         view::set_translates_autoresizing(mounted.view(), true);
         children.push(mounted);
     }

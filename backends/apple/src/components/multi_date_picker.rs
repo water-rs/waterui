@@ -14,27 +14,24 @@ use alloc::vec::Vec;
 use cocoa_ui::date::CalendarSelectionMode;
 use waterui::component::form::picker::date::Date;
 use waterui::component::form::picker::multi_date::MultiDatePickerConfig;
-use waterui::reactive::{Binding, Signal, SignalExt};
+use waterui::reactive::{Binding, Signal};
 
 use super::calendar::{CalendarSelection, CalendarSpec, render_calendar};
-use crate::contract::{NativeLeaf, RenderContext};
+use crate::contract::{Held, NativeLeaf, RenderContext};
 
 /// The toggle a pick applies to the date-ordered selection: `day` leaves
 /// it when present, else joins it in order.
-fn toggle_selection(selected: &mut Vec<Date>, day: Date) {
-    match selected.binary_search(&day) {
-        Ok(index) => {
-            selected.remove(index);
-        }
-        Err(index) => selected.insert(index, day),
+fn toggle_selection(selected: &mut BTreeSet<Date>, day: Date) {
+    if !selected.remove(&day) {
+        selected.insert(day);
     }
 }
 
-impl CalendarSelection for Binding<Vec<Date>> {
+impl CalendarSelection for Binding<BTreeSet<Date>> {
     const MODE: CalendarSelectionMode = CalendarSelectionMode::Multiple;
 
-    fn selected(value: &Vec<Date>) -> Vec<Date> {
-        value.clone()
+    fn selected(value: &BTreeSet<Date>) -> Vec<Date> {
+        value.iter().copied().collect()
     }
 
     fn pick(&self, day: Date) {
@@ -49,32 +46,25 @@ impl CalendarSelection for Binding<Vec<Date>> {
     clippy::needless_pass_by_value,
     reason = "NativeBackend hands each payload by value"
 )]
-fn render(config: MultiDatePickerConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
+fn render(config: MultiDatePickerConfig<Held>, ctx: &RenderContext<'_>) -> NativeLeaf {
     render_calendar(
         CalendarSpec {
             label: config.label().clone(),
             selection: config.value().clone(),
             range: config.range().clone(),
-            decorated: config
-                .decorated()
-                .clone()
-                .map(|days: Vec<Date>| days.into_iter().collect::<BTreeSet<_>>())
-                .computed(),
+            decorated: config.decorated().clone(),
             visible_month: config.visible_month().clone(),
         },
         ctx,
     )
 }
 
-/// The `multi_date_picker` realization: the composer claim plus the
-/// `Native<MultiDatePickerConfig>` claim for hook-produced payloads.
-/// `Native<MultiDatePickerConfig>`: the label resolves, then the platform
-/// picker renders.
+/// The `multi_date_picker` realization: `Native<MultiDatePickerConfig>` maps
+/// to the platform multi-date calendar.
 pub fn realize_multi_date_picker_config(
-    mut config: MultiDatePickerConfig,
+    config: MultiDatePickerConfig<Held>,
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
-    config.label_mut().resolve_in_place(ctx.env());
     render(config, ctx)
 }
 
@@ -88,13 +78,16 @@ mod tests {
 
     #[test]
     fn toggle_adds_in_order_and_removes() {
-        let mut selected = vec![day(2025, 3, 1), day(2025, 3, 10)];
+        let mut selected = BTreeSet::from([day(2025, 3, 1), day(2025, 3, 10)]);
         toggle_selection(&mut selected, day(2025, 3, 5));
         assert_eq!(
             selected,
-            vec![day(2025, 3, 1), day(2025, 3, 5), day(2025, 3, 10)]
+            BTreeSet::from([day(2025, 3, 1), day(2025, 3, 5), day(2025, 3, 10)])
         );
         toggle_selection(&mut selected, day(2025, 3, 5));
-        assert_eq!(selected, vec![day(2025, 3, 1), day(2025, 3, 10)]);
+        assert_eq!(
+            selected,
+            BTreeSet::from([day(2025, 3, 1), day(2025, 3, 10)])
+        );
     }
 }

@@ -8,14 +8,16 @@ use fmt::Debug;
 use alloc::{boxed::Box, vec::Vec};
 use nami::{Computed, Signal};
 use waterui_core::{
-    AnyView, Native, NativeView, View,
+    AnyView, Environment, Native, NativeView, View,
+    backend::{Backend, ChildSlot, MapSlots},
     layout::{
         HorizontalAlignment, LayoutDirection, LayoutError, LayoutInvalidationCallback,
         PlacedSubview, PlacementInput, Point, ProposalSize, Rect, ResolvedExtent, Size, SubView,
-        SubviewPlacement, VerticalAlignment, ViewDimensions, with_memoized_children,
+        SubviewPlacement, VerticalAlignment, ViewDimensions, layout_direction,
+        with_memoized_children,
     },
-    view::TupleViews,
-    views::{AnyViews, Views, ViewsExt},
+    view::ViewSequence,
+    views::{AnyViews, Views},
 };
 
 use crate::{Layout, StretchAxis};
@@ -236,12 +238,15 @@ impl Layout for DirectionalLayout {
 
 /// A view wrapper that executes an arbitrary [`Layout`]
 /// implementation.
-pub struct FixedContainer {
+///
+/// Authored over a [`ViewSequence`] `S`, the container reaches a backend as
+/// `FixedContainer<Vec<C>>`, each child in the backend's child slot `C`.
+pub struct FixedContainer<S> {
     layout: Box<dyn Layout>,
-    contents: Vec<AnyView>,
+    contents: S,
 }
 
-impl Debug for FixedContainer {
+impl<S: Debug> Debug for FixedContainer<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Container")
             .field("layout", &"Box<dyn Layout>")
@@ -250,32 +255,43 @@ impl Debug for FixedContainer {
     }
 }
 
-impl FixedContainer {
-    /// Wraps the supplied layout object and tuple of child views into a
+impl<S> FixedContainer<S> {
+    /// Wraps the supplied layout object and sequence of child views into a
     /// container view.
-    pub fn new(layout: impl Layout + 'static, contents: impl TupleViews) -> Self {
+    pub fn new(layout: impl Layout + 'static, contents: S) -> Self {
         Self {
             layout: Box::new(layout),
-            contents: contents.into_views(),
+            contents,
         }
     }
 
-    /// Returns the boxed layout object together with the collected child views.
+    /// Returns the boxed layout object together with the children.
     #[must_use]
-    pub fn into_inner(self) -> (Box<dyn Layout>, Vec<AnyView>) {
+    pub fn into_inner(self) -> (Box<dyn Layout>, S) {
         (self.layout, self.contents)
     }
 
     /// Creates a fixed container from pre-built layout and children parts.
     #[must_use]
-    pub fn from_parts(layout: Box<dyn Layout>, contents: Vec<AnyView>) -> Self {
+    pub fn from_parts(layout: Box<dyn Layout>, contents: S) -> Self {
         Self { layout, contents }
     }
 
-    /// Returns borrowed access to the boxed layout and collected children.
+    /// Returns borrowed access to the boxed layout and the children.
     #[must_use = "this borrows the container's parts without consuming it"]
-    pub fn as_parts(&self) -> (&dyn Layout, &[AnyView]) {
+    pub fn as_parts(&self) -> (&dyn Layout, &S) {
         (self.layout.as_ref(), &self.contents)
+    }
+
+    /// The layout in the layout direction `env` declares.
+    fn directional(self, env: &waterui_core::Environment) -> Self {
+        Self {
+            layout: Box::new(DirectionalLayout::new(
+                self.layout,
+                waterui_core::layout::layout_direction(env),
+            )),
+            contents: self.contents,
+        }
     }
 
     /// The child the §7.1 fill rule extends as a background: `Some(0)` when
@@ -293,15 +309,32 @@ impl FixedContainer {
 
 /// A container's axis is its layout's answer over its realized children,
 /// so backends answer it from the realized node.
-impl NativeView for FixedContainer {}
+impl<C: 'static> NativeView for FixedContainer<Vec<C>> {}
 
-impl View for FixedContainer {
-    fn body(mut self, env: &waterui_core::Environment) -> impl View {
-        self.layout = Box::new(DirectionalLayout::new(
-            self.layout,
-            waterui_core::layout::layout_direction(env),
-        ));
-        Native::new(self)
+impl<S: ViewSequence> View for FixedContainer<S> {
+    /// The erased form, for code that expands views by hand.
+    fn body(self, env: &waterui_core::Environment) -> impl View {
+        let Self { layout, contents } = self;
+        Native::new(
+            FixedContainer::<Vec<AnyView>>::from_parts(layout, contents.into_slots())
+                .directional(env),
+        )
+    }
+
+    /// Reaches the backend with each child in the backend's child slot.
+    fn dispatch<B: Backend>(
+        self,
+        backend: &mut B,
+        env: &waterui_core::Environment,
+        cx: B::Ctx,
+    ) -> B::Output {
+        let Self { layout, contents } = self;
+        backend.native(
+            FixedContainer::<Vec<B::Slot>>::from_parts(layout, contents.into_slots())
+                .directional(env),
+            env,
+            cx,
+        )
     }
 }
 
@@ -310,36 +343,54 @@ impl View for FixedContainer {
 ///
 /// Unlike [`FixedContainer`], this container stores views as an [`AnyViews`]
 /// collection, allowing backends to reconstruct views on-demand for efficient
-/// rendering of large lists.
+/// rendering of large lists. The collection keeps its item view type `V`,
+/// and a backend receives each item in its own child slot.
 #[derive(Debug)]
-pub struct LazyContainer {
+pub struct LazyContainer<V> {
     layout: Box<dyn Layout>,
-    contents: AnyViews<AnyView>,
+    contents: AnyViews<V>,
     direction: Computed<LayoutDirection>,
 }
 
-impl LazyContainer {
+impl<V: View> LazyContainer<V> {
     /// Wraps the supplied layout object and views into a lazy container view.
-    pub fn new<V: View>(
-        layout: impl Layout + 'static,
-        contents: impl Views<View = V> + 'static,
-    ) -> Self {
+    pub fn new(layout: impl Layout + 'static, contents: impl Views<View = V> + 'static) -> Self {
         Self {
             layout: Box::new(layout),
-            contents: AnyViews::new(contents.map(|v| AnyView::new(v))),
+            contents: AnyViews::new(contents),
             direction: Computed::constant(LayoutDirection::default()),
         }
     }
 
+    /// The same container under `env`'s layout direction, each item in the
+    /// child slot `S`.
+    fn resolved<S: ChildSlot>(self, env: &Environment) -> LazyContainer<S> {
+        // Keep the concrete stack layout visible to backends: lazy-stack
+        // virtualization identifies its axis from that type. Direction is a
+        // separate signal so placement can mirror without materializing items.
+        LazyContainer {
+            layout: self.layout,
+            #[cfg(feature = "erased-dispatch")]
+            contents: self
+                .contents
+                .map_views(|view| S::from_view(AnyView::new(view))),
+            #[cfg(not(feature = "erased-dispatch"))]
+            contents: self.contents.map_views(S::from_view),
+            direction: layout_direction(env),
+        }
+    }
+}
+
+impl<V> LazyContainer<V> {
     /// Returns the boxed layout object together with the collected child views.
     #[must_use]
-    pub fn into_inner(self) -> (Box<dyn Layout>, AnyViews<AnyView>) {
+    pub fn into_inner(self) -> (Box<dyn Layout>, AnyViews<V>) {
         (self.layout, self.contents)
     }
 
     /// Returns borrowed access to the boxed layout and lazy child collection.
     #[must_use]
-    pub fn as_parts(&self) -> (&dyn Layout, &AnyViews<AnyView>) {
+    pub fn as_parts(&self) -> (&dyn Layout, &AnyViews<V>) {
         (self.layout.as_ref(), &self.contents)
     }
 
@@ -348,9 +399,7 @@ impl LazyContainer {
     pub fn direction(&self) -> Computed<LayoutDirection> {
         self.direction.clone()
     }
-}
 
-impl LazyContainer {
     /// A lazy container cannot enumerate its children without materializing the
     /// collection, which is the one thing it exists to avoid, so its layout
     /// answers with no children. Every layout that virtualizes — the two stacks —
@@ -360,19 +409,42 @@ impl LazyContainer {
     }
 }
 
-impl NativeView for LazyContainer {
+impl<S: 'static> NativeView for LazyContainer<S> {
     fn stretch_axis(&self) -> StretchAxis {
         self.layout.stretch_axis(Self::child_stretch_axes())
     }
 }
 
-impl View for LazyContainer {
-    fn body(mut self, env: &waterui_core::Environment) -> impl View {
-        // Keep the concrete stack layout visible to backends: lazy-stack
-        // virtualization identifies its axis from that type. Direction is a
-        // separate signal so placement can mirror without materializing items.
-        self.direction = waterui_core::layout::layout_direction(env);
-        Native::new(self)
+impl<V: View> View for LazyContainer<V> {
+    /// The erased form, for code that expands views by hand.
+    fn body(self, env: &Environment) -> impl View {
+        Native::new(self.resolved::<AnyView>(env))
+    }
+
+    /// Reaches the backend with each item in the backend's child slot.
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        backend.native(self.resolved::<B::Slot>(env), env, cx)
+    }
+}
+
+impl<C> MapSlots<C> for FixedContainer<Vec<C>> {
+    type With<T: 'static> = FixedContainer<Vec<T>>;
+
+    fn map_slots<T: 'static>(self, f: impl Fn(C) -> T + Clone + 'static) -> FixedContainer<Vec<T>> {
+        let Self { layout, contents } = self;
+        FixedContainer::from_parts(layout, contents.into_iter().map(f).collect())
+    }
+}
+
+impl<C: 'static> MapSlots<C> for LazyContainer<C> {
+    type With<T: 'static> = LazyContainer<T>;
+
+    fn map_slots<T: 'static>(self, f: impl Fn(C) -> T + Clone + 'static) -> LazyContainer<T> {
+        LazyContainer {
+            layout: self.layout,
+            contents: self.contents.map_views(f),
+            direction: self.direction,
+        }
     }
 }
 
@@ -420,8 +492,8 @@ mod tests {
         assert_eq!(background.background_slot(), Some(0));
         let body = AnyView::new(background.body(&waterui_core::Environment::new()));
         let native = body
-            .downcast::<Native<FixedContainer>>()
-            .expect("FixedContainer::body produces Native<FixedContainer>");
+            .downcast::<Native<FixedContainer<Vec<AnyView>>>>()
+            .expect("FixedContainer::body produces Native<FixedContainer<Vec<AnyView>>>");
         assert_eq!(native.as_inner().background_slot(), Some(0));
 
         let plain = FixedContainer::new(OffsetLayout, ((),));

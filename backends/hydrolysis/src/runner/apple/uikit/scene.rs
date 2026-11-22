@@ -33,7 +33,7 @@ use super::Process;
 use super::host::{SceneShared, UiKitHostWindow};
 use crate::platform::{PlatformWindow as _, WindowKeyboardArea, WindowSafeArea};
 use crate::renderer::{FontFamilyResolution, HydrolysisRenderer};
-use crate::runner::{RenderDiagnosticsConfig, install_view_renderer};
+use crate::runner::{RenderDiagnosticsConfig, install_core_window_openers};
 use crate::text::ParleyEngine;
 
 /// A connected scene.
@@ -165,7 +165,6 @@ impl UiKitScene {
         let mut env = process.env.clone();
         env.insert(WindowSafeArea(safe_area.clone()));
         env.insert(WindowKeyboardArea(keyboard_area.clone()));
-        install_view_renderer(&mut env, &process.theme);
 
         let display_moved = Rc::new(Cell::new(false));
         let view_handle = AppleViewHandle::new(
@@ -194,6 +193,7 @@ impl UiKitScene {
         );
         renderer.set_window_id(process.identities.mint_window_id());
         renderer.set_window_closable(declaration.closable);
+        install_core_window_openers(&mut renderer, Rc::clone(&process.opener));
         let mut runtime = crate::runner::window::RuntimeWindow::new_painted(
             declaration,
             platform,

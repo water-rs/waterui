@@ -53,12 +53,12 @@ impl SubView for PassthroughSubView {
 /// Renders `content` into a transparent host and returns the leaf with the
 /// child mounted over the host's bounds.
 pub fn passthrough_leaf(
-    content: waterui_backend_core::AnyView,
+    content: crate::contract::Held,
     ctx: &crate::contract::RenderContext<'_>,
 ) -> NativeLeaf {
     let host = HostView::new(ctx.mtm(), cocoa_ui::Rect::ZERO);
     let host_view: &PlatformView = &host;
-    let mounted = ctx.render(content).mount(host_view);
+    let mounted = ctx.realize(content).mount(host_view);
     crate::primary_content::forward(&host, mounted.view());
     host.set_layout_handler({
         let child = cocoa_ui::view::retain_base(mounted.view());

@@ -4,12 +4,110 @@
 //! whose title, frame, state, size limits, background and toolbar are all
 //! wired two-way — declared signals drive the platform, platform events
 //! publish back — and whose content is a dispatched leaf laid out inside a
-//! host view. iOS has no multi-window surface: the service is installed so
-//! `Window::show` finds it, and it fails exactly as the Swift implementation
-//! did.
+//! host view. iOS has no runtime multi-window surface: opening a window at
+//! runtime reports the unsupported-feature contract violation.
 
+use alloc::boxed::Box;
+use alloc::vec::Vec;
+
+use cocoa_ui::MainThreadMarker;
 #[cfg(target_os = "macos")]
 use cocoa_ui::geometry::{Rect, Size};
+use waterui::app::{WindowSink, Windows};
+use waterui::handler::ViewBuilder;
+#[cfg(target_os = "macos")]
+use waterui::window::WindowSlot;
+use waterui::window::{Window, WindowChannel, WindowToolbar};
+use waterui_backend_core::Environment;
+#[cfg(target_os = "macos")]
+use waterui_backend_core::{ChildView as _, IntoChild};
+
+#[cfg(target_os = "macos")]
+use crate::backend::AppleBackend;
+use crate::contract::NativeLeaf;
+
+/// A window's content as this backend holds it: the content builder's type
+/// is erased behind the one call that renders the window's tree, so
+/// everything below the window dispatches statically.
+pub type Root = Box<dyn Fn(&Environment, MainThreadMarker) -> NativeLeaf>;
+
+/// A window's toolbar as this backend holds it: the toolbar view's type is
+/// erased behind the one call that renders it, so everything below the toolbar
+/// dispatches statically.
+pub type ToolbarRoot = Box<dyn FnOnce(&Environment, MainThreadMarker) -> NativeLeaf>;
+
+/// A window as this backend holds it, see [`Root`] and [`ToolbarRoot`].
+pub type RootWindow = Window<Root, Option<ToolbarRoot>>;
+
+/// `window` as this backend holds it.
+pub fn root_window<C: ViewBuilder, T: WindowToolbar>(window: Window<C, T>) -> RootWindow {
+    window.map(
+        |content| -> Root {
+            Box::new(move |env, mtm| crate::dispatch::render(content.build(), env, mtm))
+        },
+        |toolbar| {
+            toolbar.into_view().map(|view| -> ToolbarRoot {
+                Box::new(move |env, mtm| crate::dispatch::render(view, env, mtm))
+            })
+        },
+    )
+}
+
+/// A window dispatched from the view tree as this backend holds it.
+#[cfg(target_os = "macos")]
+pub fn slot_root_window<C: IntoChild<AppleBackend>>(
+    window: Window<WindowSlot<C>, Option<C>>,
+) -> RootWindow {
+    window.map(
+        |slot| -> Root {
+            Box::new(move |env, mtm| {
+                slot.build()
+                    .into_child()
+                    .realize(&mut AppleBackend::new(mtm), env, ())
+            })
+        },
+        |toolbar| {
+            toolbar.map(|child| -> ToolbarRoot {
+                Box::new(move |env, mtm| {
+                    child
+                        .into_child()
+                        .realize(&mut AppleBackend::new(mtm), env, ())
+                })
+            })
+        },
+    )
+}
+
+/// Collects startup [`RootWindow`]s from `windows` and connects every
+/// [`WindowChannel`] to this backend's runtime window presenter.
+pub fn connect_windows(windows: impl Windows, env: &Environment) -> Vec<RootWindow> {
+    struct Collect<'a> {
+        initial: Vec<RootWindow>,
+        env: &'a Environment,
+    }
+    impl WindowSink for Collect<'_> {
+        fn window<C: ViewBuilder, T: WindowToolbar>(&mut self, window: Window<C, T>) {
+            self.initial.push(root_window(window));
+        }
+
+        fn channel<C: ViewBuilder, T: WindowToolbar>(&mut self, channel: WindowChannel<C, T>) {
+            #[cfg(target_os = "macos")]
+            let queued = imp::connect_channel(channel, self.env);
+            #[cfg(target_os = "ios")]
+            let queued = {
+                let _ = self.env;
+                channel.connect(|_| imp::show_unsupported_on_ios())
+            };
+            self.initial.extend(queued.into_iter().map(root_window));
+        }
+    }
+    let mut collect = Collect {
+        initial: Vec::with_capacity(windows.len()),
+        env,
+    };
+    windows.for_each(&mut collect);
+    collect.initial
+}
 #[cfg(target_os = "macos")]
 use waterui_core::layout::{Point as WPoint, Rect as WRect, Size as WSize};
 
@@ -19,14 +117,17 @@ mod imp {
     use alloc::vec::Vec;
     use core::cell::{Cell, RefCell};
 
+    use super::RootWindow;
     use super::{into_kit_rect, into_kit_size, into_layout_rect};
     use cocoa_ui::appkit::{AttentionRequest, HostView, WindowLevel as KitLevel, WindowStyle};
     use cocoa_ui::{MainThreadMarker, Retained};
     use waterui::animation::ChangeAnimation;
+    use waterui::handler::ViewBuilder;
     use waterui::reactive::{Binding, Computed, Signal};
+    use waterui::window::Window;
     use waterui::window::{
-        ResolvedWindowBackground, UserAttention, Window, WindowHandle, WindowLevel, WindowState,
-        WindowStyle as WuiStyle,
+        ResolvedWindowBackground, UserAttention, WindowHandle, WindowLevel, WindowState,
+        WindowStyle as WuiStyle, WindowToolbar,
     };
     use waterui_backend_core::Environment;
 
@@ -86,18 +187,50 @@ mod imp {
         static HOSTS: RefCell<Vec<WindowHost>> = const { RefCell::new(Vec::new()) };
     }
 
-    /// Installs the `WindowManager` service: `window.show(env)` realizes the
-    /// declaration on a fresh platform window, deferred to the next main-queue
-    /// turn exactly as the Swift `show` dispatch was.
-    pub fn install_manager(env: &mut Environment) {
-        let inner = env.clone();
-        let manager = waterui::window::WindowManager::new(move |window| {
-            let inner = inner.clone();
+    /// The application-level environment snapshot under which windows opened
+    /// from the view tree realize, so a window opened by `conditional_window`
+    /// renders under the application's root environment rather than its host
+    /// window's chrome/navigation scopes.
+    #[derive(Clone)]
+    struct RootEnvironment(Environment);
+
+    /// Records `env` as the root environment for windows opened later from a
+    /// view tree.
+    pub fn install_root_environment(env: &mut Environment) {
+        let root = env.clone();
+        env.insert(RootEnvironment(root));
+    }
+
+    /// Connects `channel` so each window shown through its manager realizes on
+    /// a fresh platform window, deferred to the next main-queue turn.
+    pub(super) fn connect_channel<C: ViewBuilder, T: WindowToolbar>(
+        channel: super::WindowChannel<C, T>,
+        env: &Environment,
+    ) -> Vec<Window<C, T>> {
+        let env = env.clone();
+        channel.connect(move |window| {
+            let declaration = super::root_window(window);
+            let env = env.clone();
             cocoa_ui::main_queue::enqueue_local(mtm(), move |mtm| {
-                track(realize(window, &inner, mtm));
+                track(realize_root(declaration, &env, mtm));
             });
+        })
+    }
+
+    /// Realizes a window dispatched from the view tree (`conditional_window`)
+    /// on a fresh platform window, deferred to the next main-queue turn.
+    pub fn show_from_tree<C: super::IntoChild<super::AppleBackend>>(
+        declaration: Window<super::WindowSlot<C>, Option<C>>,
+        env: &Environment,
+        mtm: MainThreadMarker,
+    ) {
+        let root_env = env
+            .get::<RootEnvironment>()
+            .map_or_else(|| env.clone(), |root| root.0.clone());
+        let declaration = super::slot_root_window(declaration);
+        cocoa_ui::main_queue::enqueue_local(mtm, move |mtm| {
+            track(realize_root(declaration, &root_env, mtm));
         });
-        env.insert(manager);
     }
 
     /// Keeps `host` — the window the startup path realized — in the open set.
@@ -115,6 +248,17 @@ mod imp {
         drop(hosts);
     }
 
+    /// Realizes `declaration` as a platform window and returns its host, see
+    /// [`realize_root`].
+    #[cfg(feature = "native-test")]
+    pub fn realize<C: ViewBuilder, T: WindowToolbar>(
+        declaration: Window<C, T>,
+        env: &Environment,
+        mtm: MainThreadMarker,
+    ) -> WindowHost {
+        realize_root(super::root_window(declaration), env, mtm)
+    }
+
     /// Realizes `declaration` as a platform window and returns its host. The
     /// window is ordered front at full transparency and revealed when its
     /// content reports ready — the same path the Swift host took, so a GPU
@@ -123,7 +267,11 @@ mod imp {
         clippy::too_many_lines,
         reason = "one sequential realization: order is the point, splitting it obscures the wiring"
     )]
-    pub fn realize(declaration: Window, env: &Environment, mtm: MainThreadMarker) -> WindowHost {
+    pub fn realize_root(
+        declaration: RootWindow,
+        env: &Environment,
+        mtm: MainThreadMarker,
+    ) -> WindowHost {
         let mut keepalive = KeepAlive::default();
 
         declaration.arm_close_requests(env);
@@ -277,8 +425,7 @@ mod imp {
         // Content: the declared tree becomes one leaf whose view fills the
         // host each layout pass, at the safe-area-aware frame `content_frame`
         // resolves.
-        let content = declaration.build_content();
-        let leaf = crate::dispatch::render(content, env, mtm);
+        let leaf = (declaration.content)(env, mtm);
 
         let host = HostView::new(mtm, window.content_rect());
         host.add_subview(leaf.view());
@@ -290,6 +437,7 @@ mod imp {
         // First-paint marking happens on the leaf the fallback produced.
         crate::first_paint::mark(&leaf_view, env);
 
+        #[cfg(feature = "inspector")]
         crate::inspector::install(&host, env, &mut keepalive);
         host.set_layout_handler(move |host| {
             let host_view: &cocoa_ui::PlatformView = host;
@@ -332,7 +480,7 @@ mod imp {
         // system's capsule, spacing and overflow.
         if let Some(toolbar) = declaration.toolbar {
             let toolbar_env = crate::toolbar_chrome::toolbar_environment(env);
-            let toolbar_leaf = crate::dispatch::render(toolbar, &toolbar_env, mtm);
+            let toolbar_leaf = toolbar(&toolbar_env, mtm);
             install_toolbar(
                 window.native(),
                 toolbar_leaf.view(),
@@ -467,7 +615,7 @@ mod imp {
     /// back on screen — the same post-teardown answer the winit hook's
     /// weak reference gives.
     pub fn wire_focus_requests(
-        declaration: &Window,
+        declaration: &RootWindow,
         window: &Rc<cocoa_ui::appkit::Window>,
         mtm: MainThreadMarker,
     ) {
@@ -760,6 +908,7 @@ mod imp {
     use alloc::vec::Vec;
     use core::cell::{Cell, RefCell};
 
+    use super::RootWindow;
     use cocoa_ui::objc2_ui_kit::{NSObjectUIAccessibility as _, UIView, UIWindow};
     use cocoa_ui::uikit::{
         ColorSchemeObservation, HostView, ViewController, WindowScene, window_root,
@@ -769,7 +918,6 @@ mod imp {
     use waterui::graphics::color::WorkingColor;
     use waterui::reactive::Computed;
     use waterui::theme::color::Background;
-    use waterui::window::Window;
     use waterui_backend_core::Environment;
 
     use crate::contract::KeepAlive;
@@ -858,13 +1006,13 @@ mod imp {
     pub struct Scenes {
         hosts: RefCell<std::collections::BTreeMap<String, WindowHost>>,
         pending: RefCell<VecDeque<Pending>>,
-        declared: RefCell<Vec<Rc<Window>>>,
+        declared: RefCell<Vec<Rc<RootWindow>>>,
         claimed: Cell<usize>,
         env: RefCell<Option<Environment>>,
     }
 
     impl Scenes {
-        fn claim(&self) -> Option<Rc<Window>> {
+        fn claim(&self) -> Option<Rc<RootWindow>> {
             let declared = self.declared.borrow();
             if declared.is_empty() {
                 return None;
@@ -910,15 +1058,12 @@ mod imp {
             .to_string()
     }
 
-    /// Installs the `WindowManager` service: `Window::show` resolves the
-    /// service, and invoking it on a surface with no multi-window support
-    /// fails the way the Swift implementation did.
-    pub fn install_manager(env: &mut Environment) {
-        env.insert(waterui::window::WindowManager::new(|_| {
-            waterui::contract_violation!(
-                "WaterUI multi-window is unsupported on iOS; the window is not shown"
-            );
-        }));
+    /// Reports that opening a secondary window at run time is unsupported on
+    /// iOS.
+    pub fn show_unsupported_on_ios() {
+        waterui::contract_violation!(
+            "WaterUI multi-window is unsupported on iOS; the window is not shown"
+        );
     }
 
     /// Connects `scene`: the platform window must exist at connection time,
@@ -1007,7 +1152,7 @@ mod imp {
     /// `connect` realizes declarations under the same env.
     pub fn declare(
         scenes: &Scenes,
-        windows: Vec<Window>,
+        windows: Vec<RootWindow>,
         env: &Environment,
         claimed: usize,
         mtm: MainThreadMarker,
@@ -1083,7 +1228,7 @@ mod imp {
     /// tree becomes one leaf laid out inside the controller's host view, at
     /// the safe-area-aware frame `content_frame` resolves.
     pub fn realize(
-        declaration: &Window,
+        declaration: &RootWindow,
         pending: Pending,
         env: &Environment,
         mtm: MainThreadMarker,
@@ -1116,8 +1261,7 @@ mod imp {
             mtm,
         );
 
-        let content = declaration.build_content();
-        let leaf = crate::dispatch::render(content, env, mtm);
+        let leaf = (declaration.content)(env, mtm);
         let leaf_view = cocoa_ui::view::retain_base(leaf.view());
         #[cfg(feature = "gpu_surface")]
         let reveal_view = leaf_view.clone();
@@ -1125,6 +1269,7 @@ mod imp {
         // The root host places the content before the content joins the live
         // window and before any of its controllers is adopted
         // (water-rs/waterui#3744).
+        #[cfg(feature = "inspector")]
         crate::inspector::install(&host, env, &mut keepalive);
         crate::embedding::place_then_join(
             &host,
@@ -1219,15 +1364,18 @@ mod imp {
     }
 }
 
-#[cfg(target_os = "ios")]
-pub use imp::bind_background;
-pub use imp::install_manager;
+#[cfg(all(target_os = "macos", feature = "native-test"))]
+pub use imp::realize;
 #[cfg(all(target_os = "ios", feature = "native-test"))]
 pub use imp::{Pending, Veil, WindowHost, realize};
 #[cfg(target_os = "ios")]
-pub use imp::{Scenes, connect, connect_embedded, declare};
+pub use imp::{
+    Scenes, bind_background, connect, connect_embedded, declare, show_unsupported_on_ios,
+};
 #[cfg(target_os = "macos")]
-pub use imp::{bind_background, close_all, realize, track};
+pub use imp::{
+    bind_background, close_all, install_root_environment, realize_root, show_from_tree, track,
+};
 
 /// A waterui layout rect, as the kit sees it.
 #[cfg(target_os = "macos")]
@@ -1263,5 +1411,24 @@ fn into_kit_size(size: WSize) -> Size {
     Size {
         width: f64::from(size.width),
         height: f64::from(size.height),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::root_window;
+    use waterui::reactive::binding;
+    use waterui::window::{Window, WindowState};
+
+    #[test]
+    fn root_window_preserves_absent_and_present_toolbars() {
+        let plain = root_window(Window::new("Plain", binding(WindowState::Closed), || ()));
+        assert!(plain.toolbar.is_none());
+
+        let with_toolbar = root_window(
+            Window::new("Toolbar", binding(WindowState::Closed), || ())
+                .toolbar(waterui::layout::Divider),
+        );
+        assert!(with_toolbar.toolbar.is_some());
     }
 }

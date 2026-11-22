@@ -24,7 +24,7 @@ use waterui_core::layout::{
     ViewDimensions,
 };
 
-use crate::contract::{Mounted, NativeLeaf, RenderContext};
+use crate::contract::{Held, Mounted, NativeLeaf, RenderContext};
 
 #[cfg(target_os = "macos")]
 mod platform {
@@ -160,16 +160,16 @@ impl SubView for BadgeSubView {
 
 /// Renders a `BadgeConfig` into the host container: content filling the
 /// bounds, the badge indicator pinned top-trailing.
-fn render(config: BadgeConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
+fn render(config: BadgeConfig<Held>, ctx: &RenderContext<'_>) -> NativeLeaf {
     let BadgeConfig {
         value,
-        content: content_builder,
+        content,
         color,
     } = config;
     let mtm = ctx.mtm();
     let host = HostView::new(mtm, Rect::ZERO);
     let host_view: &PlatformView = &host;
-    let content = ctx.render(content_builder.build()).mount(host_view);
+    let content = ctx.realize(content).mount(host_view);
     crate::primary_content::forward(&host, content.view());
     let indicator = BadgeView::new(mtm, BADGE_METRICS);
     cocoa_ui::view::add_subview(host_view, &indicator);
@@ -259,7 +259,7 @@ fn render(config: BadgeConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
 
 /// The `badge` realization: `Native<BadgeConfig>`
 /// maps to the overlay container.
-pub fn realize_badge_config(value: BadgeConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
+pub fn realize_badge_config(value: BadgeConfig<Held>, ctx: &RenderContext<'_>) -> NativeLeaf {
     render(value, ctx)
 }
 

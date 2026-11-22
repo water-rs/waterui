@@ -4,7 +4,7 @@
 //! lines, empty/whitespace text, and size extremes — the cases that break
 //! text measurement and line breaking.
 
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::prelude::*;
 use waterui::preview;
 
@@ -122,6 +122,6 @@ pub fn demo() -> impl View {
 }
 
 /// Builds the edge-case text app around [`demo`].
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     App::new(demo, env)
 }

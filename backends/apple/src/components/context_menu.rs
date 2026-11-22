@@ -35,7 +35,7 @@ use waterui_core::layout::{
 use crate::components::menu_items;
 #[cfg(target_os = "ios")]
 use crate::contract::measure_callback;
-use crate::contract::{Mounted, NativeLeaf};
+use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;
 
 use crate::contract::RenderContext;
@@ -401,21 +401,21 @@ fn set_accessory_item(state: &Rc<RefCell<ContextMenuState>>, menu: &appkit::Cont
     reason = "one component's whole realization, as the handler it replaces"
 )]
 pub fn realize_resolved_context_menu_metadata(
-    metadata: Metadata<ResolvedContextMenu>,
+    metadata: Metadata<ResolvedContextMenu<Held>, Held>,
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
     let mtm = ctx.mtm();
     let host = HostView::new(mtm, Rect::ZERO);
-    let mounted = ctx.render(metadata.content).mount(&host);
+    let mounted = ctx.realize(metadata.content).mount(&host);
     crate::primary_content::forward(&host, mounted.view());
     view::set_translates_autoresizing(mounted.view(), true);
 
-    // `preview` is a `UIKit` primitive; on `AppKit` the `AnyView`
-    // drops unresolved.
-    let accessory = metadata.value.accessory.map(|view| ctx.render(view));
+    // `preview` is a `UIKit` primitive; on `AppKit` the child drops
+    // unrealized.
+    let accessory = metadata.value.accessory.map(|child| ctx.realize(child));
     #[cfg(target_os = "ios")]
-    let preview = metadata.value.preview.map(|view| {
-        let leaf = ctx.render(view);
+    let preview = metadata.value.preview.map(|child| {
+        let leaf = ctx.realize(child);
         // An accessory-bearing menu mounts the leaf into its own
         // panel; the canonical interaction alone takes a controller,
         // and only one controller may own the view at a time.

@@ -74,7 +74,7 @@ pub mod opacity;
 pub mod passthrough;
 #[cfg(feature = "picker")]
 pub mod picker;
-#[cfg(feature = "picture")]
+#[cfg(all(feature = "picture", waterui_feature = "gpu"))]
 pub mod picture;
 #[cfg(feature = "plain")]
 pub mod plain;
@@ -107,7 +107,8 @@ pub mod toggle;
 pub mod transition;
 #[cfg(any(feature = "video", feature = "video_player"))]
 pub mod video;
+#[cfg(any(waterui_feature = "capture", feature = "native-test"))]
 pub mod view_renderer;
-#[cfg(feature = "webview")]
+#[cfg(any(feature = "webview", all(target_os = "macos", feature = "webview-cef")))]
 pub mod webview;
 pub mod with_env;

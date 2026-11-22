@@ -2138,19 +2138,19 @@ fn rows_of_fillers_share_the_column_they_sit_in_bounded_proposal() {
 // Container payload arity
 // ============================================================================
 
-/// A one-element tuple is a legitimate container payload. `TupleViews` covers
+/// A one-element tuple is a legitimate container payload. `ViewSequence` covers
 /// arity 1, so `vstack((child,))` erases to exactly one child instead of
 /// rejecting the tuple or erasing the tuple itself as a single view.
 #[test]
 fn one_element_tuple_is_a_single_child_payload() {
-    use waterui_core::{View, view::TupleViews};
+    use waterui_core::{AnyView, View, view::ViewSequence};
 
     use crate::spacer::spacer;
     use crate::stack::{hstack, vstack, zstack};
 
     fn accepts_view(_view: impl View) {}
 
-    assert_eq!((spacer(),).into_views().len(), 1);
+    assert_eq!((spacer(),).into_slots::<AnyView>().len(), 1);
 
     accepts_view(vstack((spacer(),)));
     accepts_view(hstack((spacer(),)));

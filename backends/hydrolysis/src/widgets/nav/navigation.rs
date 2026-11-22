@@ -1,5 +1,6 @@
 #[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
+use crate::renderer::HeldChild;
 use crate::renderer::ROOT_NAVIGATION_IDENTITY;
 use crate::renderer::SafeAreaLayout;
 use crate::renderer::SnapshotDefaults;
@@ -24,19 +25,19 @@ use std::rc::Rc;
 use waterui::navigation::split::NavigationSplitDetailBuilder;
 use waterui::navigation::{
     AnyNavigationTransition, Bar, NavigationDestinationState, NavigationSearch,
-    NavigationSplitLayout, NavigationStack, NavigationTitleDisplayMode, NavigationToolbarPlacement,
-    NavigationTransitionDirection, NavigationView, RetainedNavigationTransition,
-    resolve_navigation_root,
+    NavigationSplitLayout, NavigationStackLayout, NavigationTitleDisplayMode,
+    NavigationToolbarPlacement, NavigationTransitionDirection, NavigationView,
+    RetainedNavigationTransition,
 };
 use waterui::theme::color::{Background, Surface};
 use waterui_controls::label::LabelDisplayMode;
 use waterui_controls::text_field::TextField;
 use waterui_core::contract_violation;
 use waterui_core::id::Id;
-use waterui_core::interaction::InteractionState;
 use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
-use waterui_core::{AnyView, Environment, Metadata};
+use waterui_core::{Environment, Metadata, Native, View};
 use waterui_graphics::color::Color;
+use waterui_interaction::interaction::InteractionState;
 
 #[derive(Clone, Copy)]
 struct NavigationLeadingReserve(f64);
@@ -243,14 +244,14 @@ pub fn toolbar_item_env(env: &Environment) -> Environment {
 /// `content` scoped to [`toolbar_item_env`]: the scope reaches every
 /// environment snapshot inside the content as its [`SnapshotDefaults`], so
 /// build, measure and render all see one scope.
-pub fn toolbar_item_view(content: AnyView, env: &Environment) -> AnyView {
+pub fn toolbar_item_view<V: View>(content: V, env: &Environment) -> Metadata<Environment, V> {
     let mut scoped = toolbar_item_env(env);
     scoped.insert(SnapshotDefaults(toolbar_item_env));
-    AnyView::new(Metadata::new(content, scoped))
+    Metadata::new(content, scoped)
 }
 
 impl<E: crate::text::TextEngine> NavigationViewRenderState<E> {
-    pub(crate) fn from_view(navigation: NavigationView, env: &Environment) -> Self {
+    pub(crate) fn from_view(navigation: NavigationView<HeldChild<E>>, env: &Environment) -> Self {
         let NavigationView { bar, content, .. } = navigation;
         let Bar {
             title,
@@ -270,8 +271,9 @@ impl<E: crate::text::TextEngine> NavigationViewRenderState<E> {
         let mut trailing = Vec::new();
         let mut bottom = Vec::new();
         for item in toolbar.take_items() {
-            let (placement, content, ..) = item.into_parts();
-            let retained = RetainedSubview::new(toolbar_item_view(content, env));
+            let (placement, content, _, _, item_env) = item.into_parts();
+            let retained =
+                RetainedSubview::new(toolbar_item_view(content, item_env.as_ref().unwrap_or(env)));
             match placement {
                 NavigationToolbarPlacement::Principal => principal.push(retained),
                 NavigationToolbarPlacement::Cancellation
@@ -288,11 +290,11 @@ impl<E: crate::text::TextEngine> NavigationViewRenderState<E> {
         let search_field = search.as_ref().map(|search| {
             // A search field shows only its placeholder, so the prompt doubles
             // as the accessible name and the visible label is suppressed.
-            RetainedSubview::new(AnyView::new(
+            RetainedSubview::new(
                 TextField::new(search.prompt().clone(), search.text())
                     .hide_label()
                     .prompt(search.prompt().clone()),
-            ))
+            )
         });
         Self {
             title: RetainedSubview::new(title),
@@ -301,7 +303,7 @@ impl<E: crate::text::TextEngine> NavigationViewRenderState<E> {
             leading,
             trailing,
             bottom,
-            content: RetainedSubview::new(content),
+            content: RetainedSubview::held(content),
             search,
             search_field,
             color,
@@ -1110,9 +1112,9 @@ fn flush_title_and_subtitle<E: crate::text::TextEngine>(
 /// Retained adaptive split state for both two- and three-column configurations.
 pub struct NavigationSplitRenderState<E: crate::text::TextEngine> {
     primary_selection: nami::Binding<Option<Id>>,
-    content_builder: Option<NavigationSplitDetailBuilder>,
+    content_builder: Option<NavigationSplitDetailBuilder<HeldChild<E>>>,
     secondary_selection: Option<nami::Binding<Option<Id>>>,
-    detail_builder: NavigationSplitDetailBuilder,
+    detail_builder: NavigationSplitDetailBuilder<HeldChild<E>>,
     visibility: Computed<waterui::navigation::NavigationSplitColumnVisibility>,
     column_width: waterui::navigation::ColumnWidth,
     style: waterui::navigation::NativeNavigationSplitStyle,
@@ -1142,7 +1144,7 @@ impl<E: crate::text::TextEngine> NavigationSplitRenderState<E> {
         look
     }
 
-    pub(crate) fn from_layout(split: NavigationSplitLayout) -> Self {
+    pub(crate) fn from_layout(split: NavigationSplitLayout<HeldChild<E>>) -> Self {
         let (
             primary,
             placeholder,
@@ -1162,8 +1164,8 @@ impl<E: crate::text::TextEngine> NavigationSplitRenderState<E> {
             visibility,
             column_width,
             style,
-            primary: RetainedSubview::new(primary.build()),
-            placeholder: RetainedSubview::new(placeholder.build()),
+            primary: RetainedSubview::held(primary.build()),
+            placeholder: RetainedSubview::held(placeholder.build()),
             content: None,
             detail: None,
             look: None,
@@ -1226,7 +1228,7 @@ impl<E: crate::text::TextEngine> NavigationSplitRenderState<E> {
                 .content_builder
                 .as_ref()
                 .expect("three-column split must provide a content builder");
-            let mut subview = RetainedSubview::new(AnyView::new(builder.build(id)));
+            let mut subview = RetainedSubview::new(Native::new(builder.build(id)));
             subview.ensure_built(renderer, env);
             self.content = Some((id, compact, subview));
         }
@@ -1246,7 +1248,7 @@ impl<E: crate::text::TextEngine> NavigationSplitRenderState<E> {
                 *cached_id != id || *cached_compact != compact
             });
         if needs_rebuild {
-            let mut subview = RetainedSubview::new(AnyView::new(self.detail_builder.build(id)));
+            let mut subview = RetainedSubview::new(Native::new(self.detail_builder.build(id)));
             subview.ensure_built(renderer, env);
             self.detail = Some((id, compact, subview));
         }
@@ -1833,7 +1835,7 @@ fn render_split_detail<E: crate::text::TextEngine>(
 /// destination own a persistent render node, so inactive pages retain local widget
 /// state and a transition never reconstructs its source or destination subtree.
 pub struct NavigationStackRenderState<E: crate::text::TextEngine> {
-    unresolved_root: Option<AnyView>,
+    unresolved_root: Option<NavigationStackLayout<HeldChild<E>>>,
     root: Option<crate::renderer::navigation_state::StackPage<E>>,
     background: Option<Computed<WorkingColor>>,
     transition_style: AnyNavigationTransition,
@@ -1845,10 +1847,10 @@ pub struct NavigationStackRenderState<E: crate::text::TextEngine> {
 }
 
 impl<E: crate::text::TextEngine> NavigationStackRenderState<E> {
-    pub(crate) fn from_stack(stack: NavigationStack<(), ()>) -> Self {
+    pub(crate) fn from_stack(stack: NavigationStackLayout<HeldChild<E>>) -> Self {
         let transition_style = stack.transition_style().clone();
         Self {
-            unresolved_root: Some(stack.into_inner()),
+            unresolved_root: Some(stack),
             root: None,
             background: None,
             transition_style,
@@ -1879,10 +1881,10 @@ impl<E: crate::text::TextEngine> NavigationStackRenderState<E> {
             state,
             // The root is never pushed, so it has no arrival to style.
             transition: _,
-        } = resolve_navigation_root(unresolved_root, env);
+        } = unresolved_root.resolve(env);
         self.background = Some(Color::new(Background).resolve(env));
         self.root = Some(crate::renderer::navigation_state::StackPage::new(
-            AnyView::new(NavigationView {
+            waterui_core::Native::new(NavigationView {
                 bar,
                 content,
                 state: NavigationDestinationState::default(),

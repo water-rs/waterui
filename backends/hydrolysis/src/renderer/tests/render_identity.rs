@@ -17,11 +17,11 @@ use waterui::animation::Animation;
 use waterui::component::text;
 use waterui::graphics::Color;
 use waterui::{Binding, SignalExt as _, ViewExt as _};
-use waterui_core::AnyView;
 use waterui_core::dynamic::Dynamic;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::Identifiable;
 use waterui_core::views::ForEach;
+use waterui_core::{AnyView, OneOf2};
 use waterui_layout::AbsoluteLayout;
 use waterui_layout::container::LazyContainer;
 use waterui_layout::stack::vstack;
@@ -106,14 +106,14 @@ fn scalar_update_preserves_node_cells() {
 #[test]
 fn dynamic_swap_replaces_only_the_swapped_mounts() {
     let (handler, dynamic) = Dynamic::new();
-    handler.set(text("first"));
+    handler.set(OneOf2::A(text("first")));
     let mut runtime =
         runtime(move || AnyView::new(vstack((text("kept sibling"), dynamic.clone()))));
     let start = Instant::now();
     let _ = runtime.pump_at(true, start);
     let before = tree_cells(&runtime);
 
-    handler.set(vstack((text("second"), ().size(40.0, 20.0))));
+    handler.set(OneOf2::B(vstack((text("second"), ().size(40.0, 20.0)))));
     let _ = runtime.pump_at(true, start + Duration::from_millis(16));
     let after = tree_cells(&runtime);
 

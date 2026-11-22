@@ -28,16 +28,31 @@ use cocoa_ui::MainThreadMarker;
 use cocoa_ui::main_queue::MainQueueWake;
 use cocoa_ui::uikit::{self, ApplicationHandlers, Window, WindowScene};
 use executor_core::{LocalExecutor as _, Task as _};
-use waterui::app::App;
+use waterui::app::{App, AppMenuBar, Windows};
 use waterui::theme::ColorScheme;
 #[cfg(feature = "menu")]
 use waterui_apple_menu::ios::{Declared, build_handler, declared, install_declared};
+#[cfg(feature = "menu")]
+use waterui_controls::label::SemanticLabel;
+#[cfg(feature = "menu")]
+use waterui_controls::menu::Menu;
 use waterui_core::Environment;
 
 use super::session::AppleExecutor;
 use crate::platform::EngineGpuContext;
-
-use crate::runner::{HostEnvironment, assemble_host_environment, init_main_thread_executors};
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
+use crate::renderer::HydrolysisTextContextMenuMode;
+use crate::renderer::WindowIdentities;
+#[cfg(not(hydrolysis_inspector))]
+use crate::runner::init_global_executor;
+#[cfg(hydrolysis_inspector)]
+use crate::runner::init_main_thread_executors;
+#[cfg(any(test, hydrolysis_platform_services))]
+use crate::runner::install_platform_services;
+#[cfg(feature = "menu")]
+use crate::runner::menu_bar;
+use crate::runner::window::{RootWindow, RootWindows};
+use crate::runner::{install_window_registries, queue_window_opener};
 use crate::text::ParleyEngine;
 use crate::theme::WidgetTheme;
 use scene::{UiKitScene, framework_scheme};
@@ -46,9 +61,16 @@ use scene::{UiKitScene, framework_scheme};
 /// application logs at — `water run --logs <level>` writes it.
 const LOG_LEVEL_ENV: &str = "WATERUI_LOG";
 
+struct LaunchParts {
+    windows: RootWindows<ParleyEngine>,
+    #[cfg(feature = "menu")]
+    menu_bar: Option<nami::Computed<Vec<Menu<SemanticLabel>>>>,
+    env: Environment,
+}
+
 /// What launch needs from `run`'s arguments.
 struct Launch {
-    app: Box<dyn FnOnce(Environment) -> App>,
+    app: Box<dyn FnOnce(Environment) -> LaunchParts>,
     env: Environment,
     style: Rc<dyn crate::Style>,
     /// The environment carrying the inspector's recorders; the
@@ -65,8 +87,9 @@ pub(super) struct Process {
     identities: crate::renderer::WindowIdentities,
     gpu: EngineGpuContext,
     /// The one window declaration; taken by the scene that mounts it.
-    window: RefCell<Option<waterui::window::Window>>,
-    pub(super) pending_window_queue: Rc<RefCell<Vec<waterui::window::Window>>>,
+    window: RefCell<Option<RootWindow<ParleyEngine>>>,
+    opener: Rc<dyn Fn(RootWindow<ParleyEngine>)>,
+    pub(super) pending_window_queue: Rc<RefCell<Vec<RootWindow<ParleyEngine>>>>,
 }
 
 impl Process {
@@ -75,7 +98,7 @@ impl Process {
     /// # Panics
     /// When it was already taken: a second scene has no declaration to
     /// mount until the facade can instantiate declarations.
-    pub(super) fn take_window(&self) -> waterui::window::Window {
+    pub(super) fn take_window(&self) -> RootWindow<ParleyEngine> {
         self.window.borrow_mut().take().expect(
             "hydrolysis UIKit: a second scene connected, but the app declared one window and \
              windows cannot yet be instantiated per scene",
@@ -116,18 +139,14 @@ impl UiKitApplication {
             .borrow_mut()
             .take()
             .expect("the application finishes launching once");
-        let waterui::app::AppParts {
+        let LaunchParts {
             windows,
             #[cfg(feature = "menu")]
             menu_bar,
             env,
-            // iOS ends the process without notice: the last-window policy
-            // has nothing to decide, and the termination hooks are never
-            // called, so the machine is never started.
-            last_window: _,
-            termination: _,
-        } = app(env).into_parts();
-        let mut windows = windows.into_iter();
+        } = app(env);
+        let RootWindows { initial, channels } = windows;
+        let mut windows = initial.into_iter();
         let window = windows
             .next()
             .expect("an iOS application must declare at least one window");
@@ -136,30 +155,40 @@ impl UiKitApplication {
             "hydrolysis UIKit: multiple windows are unsupported — a scene mounts exactly one window"
         );
         let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
-        let HostEnvironment {
-            env,
-            theme,
-            fonts,
-            identities,
-        } = assemble_host_environment::<ParleyEngine>(
-            &env.layered_on(&services),
-            #[cfg(feature = "menu")]
-            &menu_bar,
-            style,
-            self.color_scheme.clone(),
-            &pending_window_queue,
-        );
+        let opener = queue_window_opener(&pending_window_queue);
+        RootWindows::connect_channels(channels, &opener);
+        let mut env = env
+            .extending(waterui_graphics::backend::SceneViewMergeToParent)
+            .layered_on(&services);
+        #[cfg(any(test, hydrolysis_platform_services))]
+        install_platform_services(&mut env);
+        install_window_registries::<ParleyEngine>(&mut env);
+        #[cfg(feature = "menu")]
+        if let Some(ref menu_bar) = menu_bar {
+            menu_bar::register_menu_bar::<ParleyEngine>(menu_bar, &env);
+        }
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
+        env.insert(HydrolysisTextContextMenuMode::Overlay);
+        crate::theme::install_theme_tokens(&mut env, Some(&*style), self.color_scheme.clone());
+        let theme: Rc<dyn WidgetTheme> = style;
+        let fonts = crate::text::fonts::native_collection(&env);
+        fonts.clone().install(&mut env);
+        let identities = env
+            .get::<WindowIdentities>()
+            .expect("install_window_registries seeds WindowIdentities")
+            .clone();
 
         // The iPadOS main menu is built from the environment the chords above
         // were registered under, so its actions run with the application
         // environment as the macOS winit bar's do.
         #[cfg(feature = "menu")]
-        {
+        if let Some(ref menu_bar) = menu_bar {
             *self.menu_watch.borrow_mut() = Some(install_declared(
                 MainThreadMarker::new().expect("launch runs on the main thread"),
-                &menu_bar,
+                menu_bar,
                 &env,
                 &self.menus,
+                Rc::new(waterui_apple_menu::no_menu_icon),
             ));
         }
 
@@ -180,6 +209,7 @@ impl UiKitApplication {
                     identities,
                     gpu,
                     window: RefCell::new(Some(window)),
+                    opener,
                     pending_window_queue,
                 });
             })
@@ -238,22 +268,31 @@ impl UiKitApplication {
 ///
 /// # Panics
 /// When called off the main thread or twice.
-pub(in crate::runner) fn run(
-    app: impl FnOnce(Environment) -> App + 'static,
+pub(in crate::runner) fn run<W: Windows, M: AppMenuBar>(
+    app: impl FnOnce(Environment) -> App<W, M> + 'static,
     env: Environment,
     style: impl crate::Style,
 ) -> ! {
     let mtm = MainThreadMarker::new().expect("hydrolysis::run is called on the main thread");
     std::panic::set_hook(Box::new(tracing_panic::panic_hook));
+    #[cfg(hydrolysis_inspector)]
     let inspector = init_main_thread_executors();
+    #[cfg(not(hydrolysis_inspector))]
+    init_global_executor();
+    #[cfg(hydrolysis_inspector)]
     init_tracing(
         inspector
             .as_ref()
             .map(waterui::inspector::InspectorRuntime::tracing_layer),
     );
+    #[cfg(not(hydrolysis_inspector))]
+    init_tracing();
+    #[cfg(hydrolysis_inspector)]
     let inspector_probe = inspector
         .as_ref()
-        .map(waterui::inspector::InspectorRuntime::runtime_probe);
+        .map(|inspector| inspector.task_probe() as std::sync::Arc<dyn waterui::task::RuntimeProbe>);
+    #[cfg(not(hydrolysis_inspector))]
+    let inspector_probe = None;
 
     let wake = MainQueueWake::new(mtm);
     let executor = AppleExecutor::new(wake.clone());
@@ -270,14 +309,32 @@ pub(in crate::runner) fn run(
     ))
     .unwrap_or_else(|_| panic!("hydrolysis UIKit: the main thread's executor is already attached"));
 
+    #[cfg_attr(
+        not(hydrolysis_inspector),
+        expect(
+            unused_mut,
+            reason = "services is mutated only when inspector is enabled"
+        )
+    )]
     let mut services = Environment::new();
+    #[cfg(hydrolysis_inspector)]
     waterui::inspector::install(&mut services, inspector);
     #[cfg(feature = "menu")]
     let menus = declared();
     let application = Rc::new(UiKitApplication {
         executor,
         launch: RefCell::new(Some(Launch {
-            app: Box::new(app),
+            app: Box::new(move |env| {
+                let parts = app(env).into_parts();
+                LaunchParts {
+                    windows: RootWindows::collect(parts.windows),
+                    #[cfg(feature = "menu")]
+                    menu_bar: M::HAS_DECLARED
+                        .then(|| parts.menu_bar.declared().cloned())
+                        .flatten(),
+                    env: parts.env,
+                }
+            }),
             env,
             style: Rc::new(style),
             services,
@@ -290,13 +347,27 @@ pub(in crate::runner) fn run(
         #[cfg(feature = "menu")]
         menu_watch: RefCell::new(None),
     });
+    uikit::run(
+        mtm,
+        application_handlers(
+            application,
+            #[cfg(feature = "menu")]
+            menus,
+        ),
+    )
+}
+
+fn application_handlers(
+    application: Rc<UiKitApplication>,
+    #[cfg(feature = "menu")] menus: waterui_apple_menu::ios::Declared,
+) -> ApplicationHandlers {
     let handlers = ApplicationHandlers::new({
         let application = Rc::clone(&application);
         move |scene| application.connect(scene)
     });
     #[cfg(feature = "menu")]
     let handlers = handlers.build_menus(build_handler(menus));
-    let handlers = handlers
+    handlers
         .did_finish_launching({
             let application = Rc::clone(&application);
             move |_| application.did_finish_launching()
@@ -317,8 +388,7 @@ pub(in crate::runner) fn run(
             let application = Rc::clone(&application);
             move |id| application.with_scene(id, UiKitScene::resigned_active)
         })
-        .scene_did_disconnect(move |id| application.disconnect(id));
-    uikit::run(mtm, handlers)
+        .scene_did_disconnect(move |id| application.disconnect(id))
 }
 
 /// The fastest attached screen's refresh rate, for the executor's frame
@@ -374,7 +444,9 @@ fn env_filter() -> tracing_subscriber::EnvFilter {
 /// Sends `tracing` records to `os_log`, plus stderr when `WATERUI_LOG` asked
 /// for a level — a physical device's unified log is unreachable from the
 /// host, and `devicectl --console` only carries stderr.
-fn init_tracing(inspector: Option<waterui::inspector::InspectorLayer>) {
+fn init_tracing(
+    #[cfg(hydrolysis_inspector)] inspector: Option<waterui::inspector::InspectorLayer>,
+) {
     use tracing_subscriber::layer::SubscriberExt as _;
     use tracing_subscriber::util::SubscriberInitExt as _;
 
@@ -387,10 +459,11 @@ fn init_tracing(inspector: Option<waterui::inspector::InspectorLayer>) {
         .with_writer(cocoa_ui::log::NativeLog)
         .without_time()
         .with_ansi(false);
-    tracing_subscriber::registry()
+    let registry = tracing_subscriber::registry()
         .with(env_filter())
         .with(native_layer)
-        .with(console_layer)
-        .with(inspector)
-        .init();
+        .with(console_layer);
+    #[cfg(hydrolysis_inspector)]
+    let registry = registry.with(inspector);
+    registry.init();
 }

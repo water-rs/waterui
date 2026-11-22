@@ -23,7 +23,7 @@ use waterui_core::layout::{
 };
 
 use super::font::platform_font;
-use crate::contract::NativeLeaf;
+use crate::contract::{NativeLeaf, RenderContext};
 
 #[cfg(target_os = "macos")]
 mod platform {
@@ -190,7 +190,7 @@ impl SubView for PlainSubView {
 /// The `plain` realization: `Native<Str>` maps to a
 /// kit label whose attributed string rebuilds when the body font slot or
 /// foreground slot changes.
-pub(crate) fn realize_str(text: Str, ctx: &RenderContext<'_>) -> NativeLeaf {
+pub fn realize_str(text: Str, ctx: &RenderContext<'_>) -> NativeLeaf {
     let mtm = ctx.mtm();
     let label = Label::new(mtm);
     label.set_line_limit(0);

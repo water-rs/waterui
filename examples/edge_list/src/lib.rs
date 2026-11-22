@@ -5,7 +5,7 @@
 //! lazy realization, measurement, and recycling of non-uniform cells.
 
 use waterui::Identifiable;
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::collection::List as ReactiveList;
@@ -32,7 +32,7 @@ fn detail_line(n: u64, label: &'static str) -> impl View {
     text(text!("detail line {n} {label}")).caption().muted()
 }
 
-fn record_row(index: u64) -> ListItem {
+fn record_row(index: u64) -> ListItem<impl View> {
     let lines = index % 3 + 1;
     let header = hstack((
         Circle.fill(chip_color(index)).size(10.0, 10.0),
@@ -87,6 +87,6 @@ pub fn demo() -> impl View {
 }
 
 /// Builds the edge-list example app.
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     App::new(demo, env)
 }

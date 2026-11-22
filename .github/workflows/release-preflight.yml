@@ -11,6 +11,7 @@ name: Release preflight
 # rewritten in place while a different 0.1.0 stayed live on crates.io.
 
 on:
+  merge_group:
   pull_request:
     branches: [main]
   workflow_dispatch:

@@ -60,12 +60,19 @@ use core::ptr;
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 
+#[cfg(feature = "text")]
+use waterui_core::Environment;
+use waterui_core::contract_violation;
+#[cfg(feature = "text")]
 use waterui_core::layout::Size;
-use waterui_core::{Environment, contract_violation};
+#[cfg(feature = "text")]
 use waterui_text::styled::StyledStr;
 
+#[cfg(feature = "text")]
 use crate::canvas::TextPlacement;
-use crate::draw::{FontId, ImageId, ResourceId, ShaderId, TextLayoutId};
+#[cfg(feature = "text")]
+use crate::draw::TextLayoutId;
+use crate::draw::{FontId, ImageId, ResourceId, ShaderId};
 use crate::scene::source::{
     FontSource, Format, ImageColorSpace, ImageData, ResourceError, Rgba8, Rgba16F, ShaderLanguage,
     ShaderSource,
@@ -219,6 +226,7 @@ enum EntryKey {
     Rgba16F(Key<ImageShape>),
     Shader(Key<ShaderShape>),
     /// A laid-out text: never shared, so it occupies no listing.
+    #[cfg(feature = "text")]
     Text,
 }
 
@@ -299,6 +307,7 @@ pub trait ShaderBackend: SceneBackend {
 /// other `Text` on the screen goes through — so canvas text matches them.
 /// The canvas never measures: it asks, and the registration reports the
 /// box the target made.
+#[cfg(feature = "text")]
 pub trait TextBackend: 'static {
     /// Lays `request`'s text out and registers the result; `None` when
     /// the text has nothing to draw.
@@ -318,6 +327,7 @@ pub trait TextBackend: 'static {
 /// The environment is the canvas's own, so the target resolves the text's
 /// theme colours, locale and default font in the same context as the other
 /// text under it.
+#[cfg(feature = "text")]
 #[derive(Debug)]
 pub struct TextRequest {
     text: StyledStr,
@@ -325,6 +335,7 @@ pub struct TextRequest {
     env: Environment,
 }
 
+#[cfg(feature = "text")]
 impl TextRequest {
     pub(crate) const fn new(text: StyledStr, placement: TextPlacement, env: Environment) -> Self {
         Self {
@@ -355,12 +366,14 @@ impl TextRequest {
 }
 
 /// What a target made of a [`TextRequest`].
+#[cfg(feature = "text")]
 #[derive(Debug)]
 pub struct TextRegistration {
     handle: Handle<TextLayoutId>,
     size: Size,
 }
 
+#[cfg(feature = "text")]
 impl TextRegistration {
     /// The registered layout, and the size of the box it filled, in points.
     #[must_use]
@@ -446,7 +459,7 @@ impl ResourceHandle for cherenkov::Shader {
     }
 }
 
-#[cfg(any(feature = "cherenkov", test))]
+#[cfg(all(feature = "text", any(feature = "cherenkov", test)))]
 impl ResourceHandle for cherenkov::TextLayoutHandle {
     type Id = TextLayoutId;
 
@@ -577,6 +590,7 @@ mod sealed {
     impl Sealed for crate::draw::FontId {}
     impl Sealed for crate::draw::ImageId {}
     impl Sealed for crate::draw::ShaderId {}
+    #[cfg(feature = "text")]
     impl Sealed for crate::draw::TextLayoutId {}
 
     /// The erased target handle a [`Handle`](super::Handle) owns: dropping
@@ -654,6 +668,7 @@ impl PlainId for ShaderId {
     }
 }
 
+#[cfg(feature = "text")]
 impl PlainId for TextLayoutId {
     fn into_resource_id(self) -> ResourceId {
         ResourceId::TextLayout(self)
@@ -716,12 +731,14 @@ impl<I: PlainId> fmt::Debug for Registered<I> {
 ///
 /// Name [`layout`](Self::layout) in the recording that draws it, with
 /// [`RecordingResources::name`].
+#[cfg(feature = "text")]
 #[derive(Debug, Clone)]
 pub struct RegisteredText {
     layout: Registered<TextLayoutId>,
     size: Size,
 }
 
+#[cfg(feature = "text")]
 impl RegisteredText {
     /// The registered layout.
     #[must_use]
@@ -906,6 +923,7 @@ impl RecordingResources<'_> {
     /// # Errors
     ///
     /// As [`SceneResources::text`].
+    #[cfg(feature = "text")]
     pub fn text(
         &self,
         text: StyledStr,
@@ -999,6 +1017,7 @@ struct Table {
     backend: Rc<dyn SceneBackend>,
     shaders: Option<Rc<dyn ShaderBackend>>,
     /// Installed by the host once its text stack exists.
+    #[cfg(feature = "text")]
     text: RefCell<Option<Rc<dyn TextBackend>>>,
     fonts: RefCell<Listing<FontShape>>,
     images_rgba8: RefCell<Listing<ImageShape>>,
@@ -1014,6 +1033,7 @@ impl Table {
             EntryKey::Rgba8(key) => self.images_rgba8.borrow_mut().unlist(key),
             EntryKey::Rgba16F(key) => self.images_rgba16f.borrow_mut().unlist(key),
             EntryKey::Shader(key) => self.shaders_cache.borrow_mut().unlist(key),
+            #[cfg(feature = "text")]
             EntryKey::Text => {}
         }
     }
@@ -1088,6 +1108,7 @@ impl SceneResources {
             table: Rc::new(Table {
                 backend,
                 shaders,
+                #[cfg(feature = "text")]
                 text: RefCell::new(None),
                 fonts: Listing::new(),
                 images_rgba8: Listing::new(),
@@ -1305,6 +1326,7 @@ impl SceneResources {
     /// Installs the registry laid-out text registers through, replacing
     /// any earlier one. A host calls it once its text stack exists; until
     /// then a text request reports [`ResourceError::Unsupported`].
+    #[cfg(feature = "text")]
     pub fn set_text<B: TextBackend>(&self, backend: Rc<B>) {
         *self.table.text.borrow_mut() = Some(backend);
     }
@@ -1319,6 +1341,7 @@ impl SceneResources {
     ///
     /// [`ResourceError::Unsupported`] when no text registry is installed,
     /// otherwise as [`TextBackend::register_text`].
+    #[cfg(feature = "text")]
     pub fn text(
         &self,
         text: StyledStr,

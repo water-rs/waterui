@@ -1,0 +1,5 @@
+waterui_path = "../.."
+
+[package]
+name = "Reachability"
+bundle_identifier = "dev.waterui.reachability"

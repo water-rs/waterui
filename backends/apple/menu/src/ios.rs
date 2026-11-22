@@ -14,15 +14,26 @@ use std::rc::Rc;
 use cocoa_ui::MainThreadMarker;
 use cocoa_ui::uikit::MenuBuilder;
 use nami::{Computed, Signal};
+use waterui_controls::label::SemanticLabel;
 use waterui_controls::menu::{Menu as DeclaredMenu, ResolvedMenuItem, resolve_menu_bar_items};
 use waterui_core::Environment;
 
-use crate::{kit_command_for_menu, menu_tree};
+use crate::{IconResolver, kit_command_for_menu, menu_tree};
 
-/// What [`install_declared`] shares with the [`build_handler`]: the resolved
-/// items plus the environment their actions run under, filled once the
-/// application has returned its own environment.
-pub type Declared = Rc<RefCell<Option<(Computed<Vec<ResolvedMenuItem>>, Environment)>>>;
+/// Shared state between [`install_declared`] and [`build_handler`].
+///
+/// Holds the resolved items, the environment their actions run under, and
+/// the host's menu icon resolver, filled once the application has returned its
+/// own environment.
+pub type Declared = Rc<
+    RefCell<
+        Option<(
+            Computed<Vec<ResolvedMenuItem>>,
+            Environment,
+            Rc<IconResolver>,
+        )>,
+    >,
+>;
 
 /// The slot `build_menus` reads — empty until the application has run.
 #[must_use]
@@ -42,7 +53,7 @@ pub fn declared() -> Declared {
 /// When `UIKit` calls the handler off the main thread.
 pub fn build_handler(declared: Declared) -> impl Fn(&MenuBuilder<'_>) + 'static {
     move |builder| {
-        let Some((resolved, env)) = declared.borrow().clone() else {
+        let Some((resolved, env, resolve_icon)) = declared.borrow().clone() else {
             tracing::debug!("main menu built before the application declared its menus");
             return;
         };
@@ -56,8 +67,8 @@ pub fn build_handler(declared: Declared) -> impl Fn(&MenuBuilder<'_>) + 'static 
                 continue;
             };
             let identifier = format!("dev.waterui.menu.{index}");
-            let command = kit_command_for_menu(menu);
-            let nodes = menu_tree(&menu.items.snapshot(), &env);
+            let command = kit_command_for_menu(menu, &env, &*resolve_icon);
+            let nodes = menu_tree(&menu.items.snapshot(), &env, &*resolve_icon);
             let ui_menu = cocoa_ui::uikit::menu_with_identifier(
                 mtm,
                 builder.key_commands(),
@@ -82,13 +93,14 @@ pub fn build_handler(declared: Declared) -> impl Fn(&MenuBuilder<'_>) + 'static 
 /// keeps the watcher alive; hold it for the process.
 pub fn install_declared(
     mtm: MainThreadMarker,
-    menu_bar: &Computed<Vec<DeclaredMenu>>,
+    menu_bar: &Computed<Vec<DeclaredMenu<SemanticLabel>>>,
     env: &Environment,
     declared: &Declared,
+    resolve_icon: Rc<IconResolver>,
 ) -> Box<dyn Any> {
     let resolved = resolve_menu_bar_items(menu_bar, env);
     let guard = resolved.watch(move |_| cocoa_ui::uikit::request_main_menu_rebuild(mtm));
-    *declared.borrow_mut() = Some((resolved, env.clone()));
+    *declared.borrow_mut() = Some((resolved, env.clone(), resolve_icon));
     // `UIKit` may have built the main menu before the slot was filled; the
     // watcher only flags later changes.
     cocoa_ui::uikit::request_main_menu_rebuild(mtm);

@@ -18,8 +18,8 @@ use waterui::navigation::{
 use waterui_core::Metadata;
 
 use crate::components::passthrough::passthrough_leaf;
-use crate::contract::NativeLeaf;
 use crate::contract::RenderContext;
+use crate::contract::{Held, NativeLeaf};
 
 /// The marker a link-hint leaf carries; `WuiList`'s `containsNavigationLink`
 /// matches on it.
@@ -52,7 +52,7 @@ fn tag_transition(leaf: &NativeLeaf, id: waterui_core::id::Id) {
 
 /// The three metadata realizations.
 pub fn realize_navigation_transition_source_metadata(
-    metadata: Metadata<NavigationTransitionSource>,
+    metadata: Metadata<NavigationTransitionSource, Held>,
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
     let leaf = passthrough_leaf(metadata.content, ctx);
@@ -61,7 +61,7 @@ pub fn realize_navigation_transition_source_metadata(
 }
 
 pub fn realize_navigation_transition_destination_metadata(
-    metadata: Metadata<NavigationTransitionDestination>,
+    metadata: Metadata<NavigationTransitionDestination, Held>,
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
     let leaf = passthrough_leaf(metadata.content, ctx);
@@ -70,7 +70,7 @@ pub fn realize_navigation_transition_destination_metadata(
 }
 
 pub fn realize_navigation_link_hint_metadata(
-    metadata: Metadata<NavigationLinkHint>,
+    metadata: Metadata<NavigationLinkHint, Held>,
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
     let leaf = passthrough_leaf(metadata.content, ctx);

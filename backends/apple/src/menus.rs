@@ -12,6 +12,54 @@
 //! decision, [`CloseWindowChord`], which `App::into_parts` installs: ⌘W
 //! unless the application binds it, ⇧⌘W then, none when it binds both.
 
+use alloc::string::String;
+
+use cocoa_ui::Retained;
+use waterui_backend_core::{AnyView, Environment};
+use waterui_core::handler::AnyViewBuilder;
+use waterui_core::layout::ProposalSize;
+
+#[cfg(target_os = "macos")]
+pub type PlatformMenuImage = cocoa_ui::objc2_app_kit::NSImage;
+#[cfg(target_os = "ios")]
+pub type PlatformMenuImage = cocoa_ui::objc2_ui_kit::UIImage;
+
+/// Resolves a label's icon builder for native Apple menus: direct [`crate::SfSymbol`]
+/// travels as a system symbol name, and any other view is rendered and rasterized
+/// into a template platform image.
+pub fn resolve_menu_icon(
+    icon: Option<&AnyViewBuilder<AnyView>>,
+    env: &Environment,
+) -> (Option<String>, Option<Retained<PlatformMenuImage>>) {
+    let Some(builder) = icon else {
+        return (None, None);
+    };
+    let icon_view = builder.build();
+    if let Some(symbol) = icon_view.downcast_ref::<crate::SfSymbol>() {
+        return (Some(String::from(symbol.as_str())), None);
+    }
+    let Some(mtm) = cocoa_ui::MainThreadMarker::new() else {
+        tracing::warn!("menu icon view could not be rasterized off the main thread");
+        return (None, None);
+    };
+    let leaf = crate::contract::RenderContext::entry(env, mtm).render(icon_view);
+    let size = leaf
+        .layout()
+        .measure(ProposalSize {
+            width: None,
+            height: None,
+        })
+        .size;
+    cocoa_ui::view::set_frame(
+        leaf.view(),
+        cocoa_ui::Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height)),
+    );
+    (
+        None,
+        cocoa_ui::bitmap::view_template_image(leaf.view(), 16.0),
+    )
+}
+
 #[cfg(target_os = "macos")]
 pub use imp::*;
 
@@ -30,9 +78,14 @@ mod imp {
         resolve_menu_bar_items,
     };
     use waterui::reactive::{Computed, Signal};
-    use waterui_apple_menu::menu_tree;
     use waterui_backend_core::Environment;
 
+    fn menu_tree(
+        items: &[ResolvedMenuItem],
+        env: &Environment,
+    ) -> Vec<cocoa_ui::menu::MenuTreeNode> {
+        waterui_apple_menu::menu_tree(items, env, &super::resolve_menu_icon)
+    }
     /// What this application calls itself in its own menu: the display name a
     /// bundle chooses for people to read, then the bundle name, then the
     /// process name — `WaterUIMainMenu.appName`'s order.
@@ -217,7 +270,7 @@ mod imp {
     pub fn install_declared(
         mtm: MainThreadMarker,
         application: &Application,
-        menu_bar: &Computed<Vec<DeclaredMenu>>,
+        menu_bar: &Computed<Vec<DeclaredMenu<waterui::component::label::SemanticLabel>>>,
         env: &Environment,
     ) -> Box<dyn Any> {
         let resolved = resolve_menu_bar_items(menu_bar, env);
@@ -240,5 +293,38 @@ mod imp {
         rebuild();
         let guard = resolved.watch(move |_| rebuild());
         Box::new(guard)
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use alloc::vec::Vec;
+
+    use cocoa_ui::appkit::KeyModifiers;
+    use cocoa_ui::menu::MenuTreeNode;
+    use waterui::component::menu::{CloseWindowChord, ResolvedMenuItem};
+    use waterui::reactive::Computed;
+    use waterui_backend_core::Environment;
+
+    #[test]
+    fn sf_symbol_command_projects_directly_without_rasterization() {
+        let mut env = Environment::new();
+        env.insert(CloseWindowChord::new(&Computed::constant(Vec::new()), &env));
+        let command = waterui::component::menu::Command::builder(
+            waterui::component::label::label("Add").icon(crate::SfSymbol::PLUS),
+        )
+        .action(|| {})
+        .resolve(&env);
+        let nodes = waterui_apple_menu::menu_tree(
+            &[ResolvedMenuItem::Command(command)],
+            &env,
+            &super::resolve_menu_icon,
+        );
+        let [MenuTreeNode::Command(cmd, _)] = nodes.as_slice() else {
+            panic!("expected command node: {nodes:?}");
+        };
+        assert_eq!(cmd.symbol.as_deref(), Some("plus"));
+        assert!(cmd.image.is_none());
+        assert_eq!(cmd.modifiers, KeyModifiers::empty());
     }
 }

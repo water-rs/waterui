@@ -10,7 +10,7 @@
 
 use core::time::Duration;
 use waterui::animation::Animation;
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::drag_drop::Transferable;
 use waterui::prelude::font::Title;
 use waterui::prelude::*;
@@ -31,7 +31,7 @@ impl Transferable for Fruit {}
 impl_constant!(Fruit);
 
 /// A draggable fruit card
-fn fruit_card(emoji: &'static str, label: &'static str, color: Color) -> impl View {
+fn fruit_card(emoji: &'static str, label: &'static str, color: Color) -> impl View + use<> {
     hstack((text(emoji).size(28.0), text(label).size(16.0)))
         .spacing(8.0)
         .padding()
@@ -45,7 +45,7 @@ fn fruit_basket(
     is_hovering: &Binding<bool>,
     collected: &Binding<Vec<String>>,
     bounce: &Binding<f32>,
-) -> impl View {
+) -> impl View + use<> {
     // Scale up when hovering (SignalExt methods take &self and clone internally)
     let hover_scale = is_hovering
         .select(1.05, 1.0)
@@ -171,6 +171,6 @@ pub fn demo() -> impl View {
 }
 
 /// Builds the drag-and-drop app around [`demo`].
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     App::new(demo, env)
 }

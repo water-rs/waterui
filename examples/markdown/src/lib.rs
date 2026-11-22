@@ -4,7 +4,7 @@
 //! it — that demonstrates key bubbling: `on_key_press` on the bar owns Escape
 //! while the field keeps focus, and the field's `on_submit` advances to the
 //! next match.
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::key::{Key, KeyHandling, KeyPress, NamedKey};
 use waterui::prelude::theme_color::Surface;
 use waterui::prelude::*;
@@ -123,9 +123,10 @@ pub fn demo() -> impl View {
     .state(&open)
     .state(&current)
     .state(&focus)
+    .snackbar_host()
 }
 
 /// Builds the example app, showing the markdown demo.
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     App::new(demo, env)
 }

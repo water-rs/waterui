@@ -10,7 +10,7 @@ use filtrate::{
     Effect, EffectContext, EffectInput, EffectOutput, EffectRedrawCallback, EffectRenderResult,
     EffectSetupResult, Executor, Filter, RetainedMemory,
 };
-use waterui_core::{AnyView, View};
+use waterui_core::View;
 
 use super::{
     AnyEffect, ChangeCallback, EffectSource, FilteredView, OutputSizeState, ParamGuards,
@@ -197,11 +197,11 @@ impl AnyEffect {
     }
 }
 
-impl FilteredView {
+impl<C: View> FilteredView<C> {
     /// Applies an arbitrary GPU effect to `view`.
-    pub fn new(view: impl View, effect: impl Effect + RenderTransfer) -> Self {
+    pub fn new(view: C, effect: impl Effect + RenderTransfer) -> Self {
         Self {
-            content: AnyView::new(view),
+            content: view,
             effect: AnyEffect::new(effect),
             guards: ParamGuards::default(),
         }

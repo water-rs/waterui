@@ -25,8 +25,8 @@ use waterui::layout::container::LazyContainer;
 use waterui::layout::stack::{Axis, LazyStackAxis, lazy_stack_axis};
 use waterui::reactive::Signal;
 use waterui::reactive::watcher::{BoxWatcherGuard, Metadata};
-use waterui::views::{AnyViewsSnapshot, ViewSnapshot, Views};
-use waterui_backend_core::AnyView;
+use waterui::views::AnyViewsSnapshot;
+use waterui_backend_core::{Child, ChildView};
 use waterui_core::Computed;
 use waterui_core::layout::{
     HorizontalAlignment, Layout, LayoutDirection, LayoutError, PlacedGeometry, PlacementInput,
@@ -35,6 +35,7 @@ use waterui_core::layout::{
 };
 use waterui_core::views::AnyViews;
 
+use crate::backend::AppleBackend;
 use crate::contract::{NativeLeaf, Renderer};
 use crate::proposal::{self, CommittedGeometry, Placement, to_proposal};
 use crate::transition::ghost::Ghost;
@@ -164,11 +165,11 @@ struct ContainerState {
     /// The lazily materialized collection — watches register here and
     /// `snapshot()` captures state; membership and row answers never
     /// read it live.
-    contents: AnyViews<AnyView>,
+    contents: AnyViews<Child<AppleBackend>>,
     /// The retained child-data snapshot aligned with `item_ids` — every
     /// `get_id`/`get_view` answer comes from it, never the live
     /// collection.
-    snapshot: AnyViewsSnapshot<AnyView>,
+    snapshot: AnyViewsSnapshot<Child<AppleBackend>>,
     /// The render capability `get_view` results are realized through.
     renderer: Renderer,
     /// The host view — the leaf's platform object.
@@ -282,7 +283,7 @@ fn render_at(state: &ContainerState, index: usize) -> NativeLeaf {
         .snapshot
         .get_view(index)
         .expect("lazy container index is in bounds");
-    state.renderer.render(item)
+    state.renderer.realize(item)
 }
 
 /// Renders and mounts the item at `index`, recorded under its id.
@@ -717,14 +718,14 @@ struct PendingChildren {
     /// delivers.
     depth: usize,
     /// The newest unapplied (snapshot, ids, metadata) triple.
-    emission: Option<(AnyViewsSnapshot<AnyView>, Vec<ItemId>, Metadata)>,
+    emission: Option<(AnyViewsSnapshot<Child<AppleBackend>>, Vec<ItemId>, Metadata)>,
 }
 
 impl PendingChildren {
     /// The newest emission is authoritative.
     fn record(
         &mut self,
-        snapshot: AnyViewsSnapshot<AnyView>,
+        snapshot: AnyViewsSnapshot<Child<AppleBackend>>,
         ids: Vec<ItemId>,
         metadata: Metadata,
     ) {
@@ -732,7 +733,9 @@ impl PendingChildren {
     }
 
     /// Drains the pending emission; the apply owns delivery from here.
-    const fn take(&mut self) -> Option<(AnyViewsSnapshot<AnyView>, Vec<ItemId>, Metadata)> {
+    const fn take(
+        &mut self,
+    ) -> Option<(AnyViewsSnapshot<Child<AppleBackend>>, Vec<ItemId>, Metadata)> {
         self.emission.take()
     }
 }
@@ -1376,10 +1379,14 @@ impl SubView for ContainerSubView {
     clippy::too_many_lines,
     reason = "one component's whole realization, as the handler it replaces"
 )]
-pub fn realize_lazy_container(container: LazyContainer, ctx: &RenderContext<'_>) -> NativeLeaf {
+pub fn realize_lazy_container<C: ChildView<AppleBackend>>(
+    container: LazyContainer<C>,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
     let mtm = ctx.mtm();
     let direction = container.direction();
     let (layout, contents) = container.into_inner();
+    let contents = contents.map_views(C::into_child);
     let host = HostView::new(mtm, Rect::ZERO);
 
     let lazy = LazyConfig::new(&*layout);

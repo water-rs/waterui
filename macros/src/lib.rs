@@ -65,7 +65,7 @@ fn core_or_facade_path(macro_name: &str) -> syn::Result<TokenStream2> {
 /// `apple_available!(27.0)` is `objc2::available!` with that one version for
 /// iOS, macOS, tvOS, watchOS and visionOS: Apple OS versions are unified across
 /// them since 26, so one number covers every platform and none can be left
-/// out. The version must be one the framework gates (`waterui-apple-os` lists
+/// out. The version must be one the framework gates (`apple-availability` lists
 /// them); an unknown version does not compile.
 ///
 /// When the build's Apple deployment target already meets the version the
@@ -73,7 +73,7 @@ fn core_or_facade_path(macro_name: &str) -> syn::Result<TokenStream2> {
 /// warning: the older realization is dead and is deleted when the framework
 /// floor reaches the version.
 ///
-/// The crate using it depends on `waterui-apple-os`, and only builds for Apple
+/// The crate using it depends on `apple-availability`, and only builds for Apple
 /// targets.
 #[proc_macro]
 pub fn apple_available(input: TokenStream) -> TokenStream {
@@ -498,13 +498,13 @@ pub fn derive_form_builder(input: TokenStream) -> TokenStream {
     // way the body does keeps the two in step at every arity, including zero.
     let expanded = quote! {
         impl #waterui::FormBuilder for #name {
-            type View = #waterui::component::stack::VStack<((#(<#field_types as #waterui::FormBuilder>::View,)*),)>;
+            type View<L: #waterui::component::label::LabelKind> = #waterui::component::stack::VStack<((#(<#field_types as #waterui::FormBuilder>::View<#waterui::component::label::TitleLabel>,)*),)>;
 
             fn view<L: #waterui::component::IntoLabel>(
                 binding: &#waterui::Binding<Self>,
                 _label: L,
                 _placeholder: #waterui::Str,
-            ) -> Self::View {
+            ) -> Self::View<L::Kind> {
                 #view_body
             }
         }

@@ -104,10 +104,10 @@ my-app/
 `src/lib.rs` exposes an entry point:
 
 ```rust
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::prelude::*;
 
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     App::new(root_view, env)
 }
 ```
@@ -116,7 +116,7 @@ For state that must exist before the first view, build it in `app` and clone int
 builder:
 
 ```rust
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     let state = AppState::new();
     App::new(move || content(state.clone()), env)
 }
@@ -445,7 +445,7 @@ the defaults below apply. `water create` leaves the tables absent.
 | Platform | Default backend | Also possible |
 |---|---|---|
 | macOS | `apple` (AppKit) | `hydrolysis` |
-| iOS (+ simulator) | `apple` (UIKit) | `hydrolysis` (winit; no preview) |
+| iOS (+ simulator) | `apple` (UIKit) | `hydrolysis` (UIKit host; no preview) |
 | Android | `hydrolysis` | — |
 | Linux | `gtk4` | `hydrolysis` |
 | Windows | `hydrolysis` | `winui` |
@@ -472,7 +472,24 @@ there is not supported. The asymmetry is documented, not faked: the `ts` feature
 not build on watchOS, a compile error rather than a fallback.
 
 The same view code runs on all of them. Platform-specific behavior belongs in the backend,
-not in conditional app code. Apple-only code (a component's AppKit or UIKit realization) that
+not in conditional app code. A plugin or component crate that must embed a genuinely
+platform-coupled AppKit (`NSView`) or UIKit (`UIView`) control — `PKPaymentButton`, an ad
+SDK's banner view, a system picker WaterUI does not wrap — depends on `waterui-apple`,
+implements `AppleContent` against `objc2` (`make_view(&mut self, mount: &mut AppleMount<'_>)`
+creates the view on the main thread with `mount.mtm()` and retains signal watchers through
+`mount.watch(..)` / `mount.bind(..)` / `mount.keep(..)`), and places it with
+`AppleView::new(content)`. `AppleView` is provided by `waterui-apple` alone: reaching any
+other presentation backend is a contract violation, while declared `accessibility_role` and
+`accessibility_label` keep the component testable under `waterui-testing`. On Android,
+a crate that must embed an `android.view.View` SDK control (`AdView`, `NativeAdView`,
+CameraX `PreviewView`, a vendor map view) depends on `hydrolysis`, implements
+`AndroidContent` against `hydrolysis::jni` (`make_view(&mut self, env: &mut Env<'_>, mount: &mut AndroidMount<'_>)`
+creates the view with `mount.context()`, tracks Activity `AndroidLifecycle`, and retains
+watchers via `mount.watch(..)` / `mount.bind(..)` / `mount.keep(..)`), and places it with
+`AndroidView::new(content)`. `AndroidView` exists only on `target_os = "android"` and
+reports a contract violation on any other presentation backend while exposing
+`accessibility_role` / `accessibility_label` on `SemanticRuntime`. Apple-only code
+(a component's AppKit or UIKit realization) that
 must choose between a newer and an older realization by OS version uses
 `apple_available!(27.0)`: `objc2::available!` for iOS, macOS, tvOS, watchOS and visionOS
 (one number covers them all). The version must be one `waterui-apple-os` lists, the crate

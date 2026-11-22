@@ -1380,8 +1380,7 @@ impl InputView {
     /// there is none.
     fn traits(&self) -> super::text_input::TextInputTraits {
         self.client()
-            .map(|client| guarded("InputView traits", || client.traits()))
-            .unwrap_or_default()
+            .map_or_default(|client| guarded("InputView traits", || client.traits()))
     }
 
     fn text_in(&self, range: &UITextRange) -> Option<Retained<NSString>> {

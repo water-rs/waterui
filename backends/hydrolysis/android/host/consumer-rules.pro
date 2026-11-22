@@ -15,3 +15,10 @@
 -keepclasseswithmembernames class dev.waterui.hydrolysis.** {
     native <methods>;
 }
+
+# Platform-view instance methods resolved by `GetMethodID` from Rust (`AndroidContent`).
+-keepclassmembers class dev.waterui.hydrolysis.HydrolysisSession {
+    public android.content.Context acquireInstanceContext(long);
+    public void registerPlatformViewInstance(long, android.view.View);
+    public void unregisterPlatformViewInstance(long);
+}

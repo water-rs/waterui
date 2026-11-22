@@ -204,18 +204,19 @@ impl std::fmt::Debug for VisibilityEmitter {
 
 /// One registered wake's detach-on-drop handle.
 #[must_use = "dropping detaches the subscription immediately"]
-pub struct Subscription(Option<Box<dyn FnOnce()>>);
+pub struct Subscription {
+    _guard: DetachGuard,
+}
+
+type DetachGuard = core::mem::DropGuard<Box<dyn FnOnce()>, fn(Box<dyn FnOnce()>)>;
 
 impl Subscription {
     fn new(detach: impl FnOnce() + 'static) -> Self {
-        Self(Some(Box::new(detach)))
-    }
-}
-
-impl Drop for Subscription {
-    fn drop(&mut self) {
-        if let Some(detach) = self.0.take() {
-            detach();
+        Self {
+            _guard: core::mem::DropGuard::new(
+                Box::new(detach),
+                (|detach| detach()) as fn(Box<dyn FnOnce()>),
+            ),
         }
     }
 }

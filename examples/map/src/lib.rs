@@ -11,7 +11,7 @@ use lucide::minus;
 use lucide::plus;
 use waterkit_location::{Location, Permission, PermissionStatus};
 use waterkit_permission::request;
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::env::use_env;
 use waterui::prelude::theme_color::Surface;
 use waterui::prelude::*;
@@ -22,7 +22,6 @@ use waterui::shape::{RoundedRectangle, ShapeExt as _};
 use waterui_icons_lucide as lucide;
 use waterui_map::{Coordinate, Map, MapStyle, Region};
 use waterui_map_gpu::MapGpuOptions;
-use waterui_map_gpu::install;
 use waterui_url::Url;
 
 const MAP_CONTROL_SPACING: f32 = 10.0;
@@ -178,22 +177,23 @@ fn content(state: MapExampleState) -> impl View {
 /// The map demo: a full-screen map with a status panel and zoom and location controls.
 #[preview]
 pub fn demo() -> impl View {
-    content(MapExampleState::new())
+    with_tiles(content(MapExampleState::new()))
 }
 
-/// Builds the example with whichever map realization this platform needs.
+/// `view` with the tile source the GPU map draws from.
 ///
-/// Selecting the map realization is the application's job, not the framework's:
-/// `waterui-map` is the semantic component, `waterui-map-gpu` is one way to draw
-/// it. Apple platforms bridge `MapKit`, so nothing is installed there and the
-/// same `Map` view above draws through the native bridge. Every other platform
-/// draws the map itself, and the tile source below is what it draws from.
-#[must_use]
-pub fn app(mut env: Environment) -> App {
-    env.insert(MapGpuOptions::new(Url::new(
+/// `waterui-map` is the semantic component. The Apple backend bridges
+/// `MapKit`; Hydrolysis bridges no platform map and draws it with
+/// `waterui-map-gpu`, which this example links, from the tile source below.
+fn with_tiles(view: impl View) -> impl View {
+    view.with(MapGpuOptions::new(Url::new(
         "https://tiles.openfreemap.org/styles/positron",
-    )));
-    install(&mut env);
+    )))
+}
+
+/// Builds the example.
+#[must_use]
+pub fn app(env: Environment) -> App<impl Windows> {
     let state = MapExampleState::new();
-    App::new(move || content(state.clone()), env)
+    App::new(move || with_tiles(content(state.clone())), env)
 }

@@ -13,8 +13,8 @@ use waterui_backend_core::gesture::GesturePlacement;
 #[cfg(feature = "menu")]
 use waterui_backend_core::gesture::LONG_PRESS_SLOP;
 use waterui_core::contract_violation;
-use waterui_core::interaction::{InteractionReport, InteractionState, Selected};
 use waterui_graphics::input::{Code, GesturePhase, ScrollPhase, ScrollUnit};
+use waterui_interaction::interaction::{InteractionReport, InteractionState, Selected};
 use waterui_layout::scroll::Axis as ScrollAxis;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -549,6 +549,7 @@ pub struct HitTestState<E: crate::text::TextEngine> {
     pub(crate) trackpad_scroll_contact: bool,
     /// The paste queue of every surface that has one, by receiver identity.
     /// An entry lives while a sink or a pending paste holds its queue.
+    #[cfg(any(hydrolysis_scene_view, hydrolysis_gpu))]
     pub(crate) paste_queues: std::collections::HashMap<*const (), Weak<RefCell<PasteQueue>>>,
     /// The physical keys whose press was the paste shortcut of a focused
     /// surface, so the matching releases are consumed with them.
@@ -2350,7 +2351,8 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                         // layered over this dispatch's, so `.state(&value)`
                         // overlays reach the item actions.
                         let menu_env = menu_target.env.layered_on(env);
-                        self.show_context_menu(
+                        (menu_target.present)(
+                            self,
                             items,
                             Some(&menu_target),
                             LayoutPoint::new(
@@ -2432,7 +2434,9 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                         if !keep_selection {
                             changed |= self.update_text_selection_from_pointer(index, point, false);
                         }
-                        changed |= self.show_text_context_menu(index, point, env);
+                        let show_context_menu =
+                            self.text_editing.text_input_targets[index].show_context_menu;
+                        changed |= show_context_menu(self, index, point, env);
                     }
                     _ => {}
                 }
@@ -2442,11 +2446,15 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
 
         if button != PointerButton::Primary {
             #[cfg(feature = "menu")]
-            if button == PointerButton::Secondary && !in_context_menu_presentation {
-                let menu_target = self.topmost_context_menu_target_at_point(point);
-                let mut items = menu_target.as_ref().map_or_default(|target| {
-                    popup_menu_nodes(&target.items.snapshot(), &target.env, self.window_closable)
-                });
+            if button == PointerButton::Secondary
+                && !in_context_menu_presentation
+                && let Some(menu_target) = self.topmost_context_menu_target_at_point(point)
+            {
+                let mut items = popup_menu_nodes(
+                    &menu_target.items.snapshot(),
+                    &menu_target.env,
+                    self.window_closable,
+                );
                 if !items.is_empty() {
                     // The debug inspect entry extends a menu, it does not
                     // create one — an empty `.context_menu` must behave the
@@ -2459,12 +2467,11 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                     // Same inheritance as the embedded-surface arm: the
                     // declaring view's environment layers over this
                     // dispatch's.
-                    let menu_env = menu_target
-                        .as_ref()
-                        .map_or_else(|| env.clone(), |target| target.env.layered_on(env));
-                    let changed = self.show_context_menu(
+                    let menu_env = menu_target.env.layered_on(env);
+                    let changed = (menu_target.present)(
+                        self,
                         items,
-                        menu_target.as_ref(),
+                        Some(&menu_target),
                         LayoutPoint::new(
                             crate::num_cast::f64_as_f32(point.x),
                             crate::num_cast::f64_as_f32(point.y),
@@ -3865,6 +3872,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         // whatever control holds focus — Space still activates the focused
         // one — as an alert's default button does. A dialog without a
         // primary action leaves Return to the focused control.
+        #[cfg(waterui_feature = "dialog")]
         if matches!(key, KeyCode::Named(value) if value == "Enter")
             && let Some(dialog) = self.popup_menu.dialog_stack.front().cloned()
             && let Some(primary) = dialog.primary_action().cloned()
@@ -4262,21 +4270,46 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         } else {
             self.topmost_context_menu_target_at_point(point)
         };
-        let mut items = menu_target.as_ref().map_or_default(|target| {
-            popup_menu_nodes(&target.items.snapshot(), &target.env, self.window_closable)
-        });
+        let Some(menu_target) = menu_target else {
+            #[cfg(debug_assertions)]
+            {
+                let mut items = Vec::new();
+                self.append_inspect_element_item(&mut items, point);
+                if items.is_empty() {
+                    return false;
+                }
+                return self.show_context_menu(
+                    items,
+                    None,
+                    LayoutPoint::new(
+                        crate::num_cast::f64_as_f32(point.x),
+                        crate::num_cast::f64_as_f32(point.y),
+                    ),
+                    env,
+                    true,
+                );
+            }
+            #[cfg(not(debug_assertions))]
+            {
+                return false;
+            }
+        };
+        let mut items = popup_menu_nodes(
+            &menu_target.items.snapshot(),
+            &menu_target.env,
+            self.window_closable,
+        );
         self.append_inspect_element_item(&mut items, point);
         if items.is_empty() {
             return false;
         }
         // Same inheritance the secondary-press arms apply: the declaring
         // view's environment layers over this dispatch's.
-        let menu_env = menu_target
-            .as_ref()
-            .map_or_else(|| env.clone(), |target| target.env.layered_on(env));
-        self.show_context_menu(
+        let menu_env = menu_target.env.layered_on(env);
+        (menu_target.present)(
+            self,
             items,
-            menu_target.as_ref(),
+            Some(&menu_target),
             LayoutPoint::new(
                 crate::num_cast::f64_as_f32(point.x),
                 crate::num_cast::f64_as_f32(point.y),
@@ -5270,6 +5303,18 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         )
     }
 
+    /// Binds a non-chrome tap target that reports interaction state through
+    /// [`InteractionReport`](waterui_interaction::interaction::InteractionReport).
+    pub(crate) fn bind_reported_tap_target(
+        &mut self,
+        key: InteractionKey,
+        bounds: kurbo::Rect,
+        env: &Environment,
+        disabled: bool,
+    ) -> (InteractionState, PressSlot, Rc<InteractionLayerHandles>) {
+        self.bind_interaction_target_with_focus(key, bounds, env, None, disabled, None)
+    }
+
     /// Binds the interaction target of a toggle whose parts are
     /// engine-realized ([`LiveToggle`](crate::renderer::live_toggle::LiveToggle))
     /// from `control`, on its touch `target`: the same live binding
@@ -6053,6 +6098,7 @@ impl<E: crate::text::TextEngine> Default for HitTestState<E> {
             multi_click: MultiClickTracker::default(),
             clipboard_read: system_clipboard_read(),
             trackpad_scroll_contact: false,
+            #[cfg(any(hydrolysis_scene_view, hydrolysis_gpu))]
             paste_queues: std::collections::HashMap::default(),
             paste_shortcut_keys: Vec::default(),
             touch_scroll: TouchScrollGesture::default(),

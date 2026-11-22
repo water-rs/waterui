@@ -8,7 +8,7 @@
 //! - Mesh gradients with per-vertex colors
 //! - Shape fills with gradients
 
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::color::working::from_linear_srgb;
 use waterui::prelude::*;
 use waterui::preview;
@@ -494,6 +494,6 @@ pub fn demo() -> impl View {
 }
 
 /// Builds the gradient example app around [`demo`].
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     App::new(demo, env)
 }

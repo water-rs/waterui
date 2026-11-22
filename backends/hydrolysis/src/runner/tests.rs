@@ -1,4 +1,6 @@
+use super::ViewBuilder;
 use super::headless::HeadlessPlatformWindow;
+use super::window::root_window;
 use super::{
     FrameMode, FrameReader, RenderDiagnosticsConfig, RuntimeWindow, advance_runtime,
     axes_whose_limits_changed, clamp_window_size, handle_input_events, pump_window_semantics,
@@ -1152,14 +1154,14 @@ fn a_behind_window_material_asks_the_platform_to_blur_behind() {
 }
 
 fn runtime_window_for(
-    window: Window,
+    window: Window<impl ViewBuilder>,
     env: &Environment,
 ) -> RuntimeWindow<HeadlessPlatformWindow, crate::text::ParleyEngine> {
     runtime_window_sized(window, 16, 16, env)
 }
 
 fn runtime_window_sized(
-    window: Window,
+    window: Window<impl ViewBuilder>,
     width: u32,
     height: u32,
     env: &Environment,
@@ -1170,7 +1172,7 @@ fn runtime_window_sized(
 }
 
 fn runtime_window_with_platform(
-    window: Window,
+    window: Window<impl ViewBuilder>,
     mut platform: HeadlessPlatformWindow,
     env: &Environment,
 ) -> RuntimeWindow<HeadlessPlatformWindow, crate::text::ParleyEngine> {
@@ -1180,7 +1182,7 @@ fn runtime_window_with_platform(
         ParleyEngine::system(FontFamilyResolution::Strict),
     );
     RuntimeWindow::new_painted(
-        window,
+        root_window(window),
         platform,
         renderer,
         RenderDiagnosticsConfig {
@@ -1198,13 +1200,13 @@ fn runtime_window_with_platform(
 #[test]
 fn host_window_pipeline_requires_no_gpu_surface_trait() {
     fn construct<P: crate::platform::PlatformWindow, E: crate::text::TextEngine>(
-        window: Window,
+        window: Window<impl ViewBuilder>,
         platform: P,
         renderer: HydrolysisRenderer<E>,
         env: &Environment,
     ) -> RuntimeWindow<P, E> {
         RuntimeWindow::new(
-            window,
+            root_window(window),
             platform,
             renderer,
             RenderDiagnosticsConfig {
@@ -1435,7 +1437,7 @@ fn sized_test_runtime_window(
         ParleyEngine::system(FontFamilyResolution::Strict),
     );
     RuntimeWindow::new_painted(
-        window,
+        root_window(window),
         platform,
         renderer,
         RenderDiagnosticsConfig {
@@ -1957,7 +1959,7 @@ fn a_run_installs_tracing_before_the_app_factory_runs() {
                 tracing::subscriber::NoSubscriber::default(),
             )
             .is_err();
-            waterui::app::App::new_with_windows(Vec::new(), env)
+            waterui::app::App::new_with_windows((), env)
         },
         Environment::new(),
         crate::testing::TestStyle::new(),

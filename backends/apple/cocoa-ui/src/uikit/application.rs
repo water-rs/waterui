@@ -208,6 +208,14 @@ pub fn request_main_menu_rebuild(mtm: MainThreadMarker) {
     unsafe { UIMainMenuSystem::mainSystem(mtm) }.setNeedsRebuild();
 }
 
+/// Installs `handler` as the main menu system's build handler and requests
+/// a rebuild once `UIApplication` has started.
+pub fn set_main_menu_builder(mtm: MainThreadMarker, handler: impl Fn(&MenuBuilder<'_>) + 'static) {
+    let delegate = AppDelegate::current(mtm);
+    install_main_menu_builder(&delegate, Box::new(handler));
+    request_main_menu_rebuild(mtm);
+}
+
 impl fmt::Debug for ApplicationHandlers {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ApplicationHandlers")

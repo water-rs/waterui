@@ -1,17 +1,18 @@
-use std::rc::Rc;
-
-use waterui_core::{impl_debug, impl_extractor};
 #[cfg(not(target_arch = "wasm32"))]
 use waterui_url::Url;
 
 use crate::{AnyWebViewHandle, WebView, WebViewConfig, WebViewHandle, WebViewOpenError};
 
-/// A trait for custom web view controllers.
+/// A backend's factory for opening native or engine-backed web views.
 ///
-/// Native backends must implement this trait and inject into environment to provide web view functionality.
-/// The created web view starts blank - use `go_to(url)` to navigate after creation.
-pub trait CustomWebViewController: 'static {
-    /// Opens a new blank web view and returns its handle.
+/// Backends provide their concrete `WebViewController` implementation as
+/// `NativeBackend::WebViewController`. The created web view starts blank —
+/// `go_to(url)` navigates after creation.
+pub trait WebViewController: 'static {
+    /// The concrete handle type returned when a web view opens cleanly.
+    type Handle: WebViewHandle;
+
+    /// Opens a new blank web view and returns its typed handle.
     ///
     /// `config` carries the inputs a document may receive before its first
     /// line of script, already resolved: the asset server behind the engine's
@@ -29,7 +30,7 @@ pub trait CustomWebViewController: 'static {
     /// caller is off the thread the engine requires, or the platform refused.
     /// The facade reports it as a contract violation and hands the application
     /// an unavailable [`WebView`] rather than a crash.
-    fn open(&self, config: WebViewConfig) -> Result<impl WebViewHandle, WebViewOpenError>;
+    fn open(&self, config: WebViewConfig) -> Result<Self::Handle, WebViewOpenError>;
 
     #[cfg(not(target_arch = "wasm32"))]
     /// The origin this engine serves bundled assets under, known before any
@@ -44,79 +45,27 @@ pub trait CustomWebViewController: 'static {
     fn asset_origin(&self) -> Option<Url>;
 }
 
-/// A controller for managing web view instances.
+/// Opens a blank [`WebView`] through `controller` with default creation config.
 ///
-/// This is a factory for creating web views. It is injected into the Environment
-/// by native backends during initialization.
-#[derive(Clone)]
-pub struct WebViewController {
-    controller: Rc<dyn WebViewControllerImpl>,
+/// # Contract violation
+///
+/// When the engine cannot open the view: a debug build panics, a release
+/// build logs the failure and returns an unavailable view that ignores every
+/// operation.
+#[must_use]
+pub fn open_webview<C: WebViewController>(controller: &C) -> WebView {
+    open_webview_with(controller, WebViewConfig::default())
 }
 
-impl_debug!(WebViewController);
-
-impl WebViewController {
-    /// Creates a new web view controller from a custom implementation.
-    pub fn new(controller: impl CustomWebViewController) -> Self {
-        Self {
-            controller: Rc::new(controller),
-        }
-    }
-
-    /// Opens a new blank web view.
-    ///
-    /// The web view starts blank - use `go_to(url)` on the returned view to navigate.
-    ///
-    /// # Contract violation
-    ///
-    /// When the engine cannot open the view: a debug build panics, a release
-    /// build logs the failure and returns an unavailable view that draws a
-    /// placeholder and ignores every operation.
-    #[must_use]
-    pub fn open(&self) -> WebView {
-        self.open_with(WebViewConfig::default())
-    }
-
-    /// Opens a new blank web view honoring `config`'s creation-time inputs.
-    ///
-    /// # Contract violation
-    ///
-    /// As [`open`](Self::open).
-    #[must_use]
-    pub fn open_with(&self, config: WebViewConfig) -> WebView {
-        WebView::from_handle(self.open_handle(config))
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    /// The origin the engine serves bundled assets under; see
-    /// [`CustomWebViewController::asset_origin`].
-    #[must_use]
-    pub fn asset_origin(&self) -> Option<Url> {
-        self.controller.asset_origin()
-    }
-
-    /// Opens a new blank web view and returns the underlying handle.
-    #[must_use]
-    pub(crate) fn open_handle(&self, config: WebViewConfig) -> AnyWebViewHandle {
-        self.controller.open(config)
-    }
+/// Opens a blank [`WebView`] through `controller` honoring `config`'s
+/// creation-time inputs.
+///
+/// # Contract violation
+///
+/// As [`open_webview`].
+#[must_use]
+pub fn open_webview_with<C: WebViewController>(controller: &C, config: WebViewConfig) -> WebView {
+    WebView::from_handle(AnyWebViewHandle::open(config, |config| {
+        controller.open(config)
+    }))
 }
-
-trait WebViewControllerImpl: 'static {
-    fn open(&self, config: WebViewConfig) -> AnyWebViewHandle;
-    #[cfg(not(target_arch = "wasm32"))]
-    fn asset_origin(&self) -> Option<Url>;
-}
-
-impl<T: CustomWebViewController> WebViewControllerImpl for T {
-    fn open(&self, config: WebViewConfig) -> AnyWebViewHandle {
-        AnyWebViewHandle::open(config, |config| CustomWebViewController::open(self, config))
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn asset_origin(&self) -> Option<Url> {
-        CustomWebViewController::asset_origin(self)
-    }
-}
-
-impl_extractor!(WebViewController);

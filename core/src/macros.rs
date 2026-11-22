@@ -122,14 +122,13 @@ macro_rules! configurable {
             }
         }
 
-        impl $crate::view::ConfigurableView for $view {
-            type Config = $config;
-            #[inline] fn config(self) -> Self::Config { self.0 }
-        }
-
-        impl $crate::view::ViewConfiguration for $config {
-            type View = $view;
-            #[inline] fn render(self) -> Self::View { $view(self) }
+        impl $view {
+            /// Returns the configuration for this view.
+            #[inline]
+            #[must_use]
+            pub fn config(self) -> $config {
+                self.0
+            }
         }
 
         impl From<$config> for $view {
@@ -138,13 +137,7 @@ macro_rules! configurable {
 
         impl $crate::view::View for $view {
             fn body(self, env: &$crate::Environment) -> impl $crate::View {
-                use $crate::view::ConfigurableView;
-                let config = self.config();
-                if let Some(hook) = env.get::<$crate::view::Hook<$config>>() {
-                    $crate::AnyView::new(hook.apply(env, config))
-                } else {
-                    $crate::AnyView::new($crate::Native::new(($resolve_native)(config, env)))
-                }
+                $crate::Native::new(($resolve_native)(self.config(), env))
             }
         }
     };
@@ -173,14 +166,13 @@ macro_rules! configurable {
             }
         }
 
-        impl $crate::view::ConfigurableView for $view {
-            type Config = $config;
-            #[inline] fn config(self) -> Self::Config { self.0 }
-        }
-
-        impl $crate::view::ViewConfiguration for $config {
-            type View = $view;
-            #[inline] fn render(self) -> Self::View { $view(self) }
+        impl $view {
+            /// Returns the configuration for this view.
+            #[inline]
+            #[must_use]
+            pub fn config(self) -> $config {
+                self.0
+            }
         }
 
         impl From<$config> for $view {
@@ -189,13 +181,7 @@ macro_rules! configurable {
 
         impl $crate::view::View for $view {
             fn body(self, env: &$crate::Environment) -> impl $crate::View {
-                use $crate::view::ConfigurableView;
-                let config = self.config();
-                if let Some(hook) = env.get::<$crate::view::Hook<$config>>() {
-                    $crate::AnyView::new(hook.apply(env, config))
-                } else {
-                    $crate::AnyView::new($crate::Native::new(($resolve_native)(config, env)))
-                }
+                $crate::Native::new(($resolve_native)(self.config(), env))
             }
         }
     };
@@ -249,6 +235,11 @@ macro_rules! configurable {
         $crate::configurable!(@impl $(#[$meta])*; $view, $config, $crate::layout::StretchAxis::None);
     };
 }
+
+/// Invokes `$macro` once for each tuple arity a view sequence supports,
+/// with that many type parameter names.
+#[doc(hidden)]
+#[macro_export]
 macro_rules! tuples {
     ($macro:ident) => {
         $macro!();
@@ -308,20 +299,4 @@ macro_rules! impl_deref {
             }
         }
     };
-}
-
-/// Configures a freshly-created environment with compile-time discovered app plugins.
-///
-/// This currently installs the runtime translation catalog generated from the caller's
-/// `i18n/*.toml` files — or the directory `WATERUI_I18N_DIR` names when the caller is a
-/// CLI-generated backend crate without an `i18n/` of its own. It is intended to be used
-/// at environment creation boundaries such as backend entry points.
-#[macro_export]
-macro_rules! configure_environment {
-    ($env:expr) => {{
-        let mut __waterui_env = $env;
-        $crate::install_application_resources(&mut __waterui_env);
-        $crate::plugin::Plugin::install($crate::catalog!(), &mut __waterui_env);
-        __waterui_env
-    }};
 }

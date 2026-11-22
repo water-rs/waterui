@@ -4,19 +4,18 @@
 //!
 //! The primary types include:
 //! - `View`: The fundamental trait for UI components
-//! - `IntoView`: A trait for converting values into views
-//! - `TupleViews`: A trait for working with collections of views
-//! - `ConfigurableView`: A trait for views that can be configured
-//! - `Modifier`: A type for modifying configurable views
+//! - `ViewSequence`: A trait for sequences of child views (tuples, arrays, `Vec`)
 //!
 //! These abstractions support a declarative and composable approach to UI building, allowing
 //! for flexible combinations of views and transformations.
 
-use crate::backend::Backend;
-use crate::{AnyView, Environment, components::Metadata};
-use alloc::{boxed::Box, vec::Vec};
-use core::any::type_name;
-use core::fmt;
+pub mod hook;
+
+#[cfg(feature = "erased-dispatch")]
+use crate::AnyView;
+use crate::backend::{Backend, ChildSlot};
+use crate::{Environment, OneOf2};
+use alloc::vec::Vec;
 
 /// View represents a part of the user interface.
 ///
@@ -38,7 +37,7 @@ use core::fmt;
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is not a WaterUI view",
     label = "expected a view",
-    note = "Any `'static` type implementing `View::body` is a view, as is a function returning `impl View` or a bare `&'static str`, `String`, or `Str`. A `ForEach` is a collection of views, not a view — hand it to a container such as `Lazy::for_each` or `List::for_each`, and erase differing view types with `.anyview()`."
+    note = "Any `'static` type implementing `View::body` is a view, as is a function returning `impl View` or a bare `&'static str`, `String`, or `Str`. A `ForEach` is a collection of views, not a view — hand it to a container such as `Lazy::for_each` or `List::for_each`, and unify differing view types with `OneOf2`..`OneOf8`."
 )]
 pub trait View: 'static {
     /// Build this view and return the content.
@@ -69,8 +68,8 @@ impl<F: 'static + FnOnce() -> V, V: View> View for F {
 impl<V: View, E: View> View for Result<V, E> {
     fn body(self, _env: &Environment) -> impl View {
         match self {
-            Ok(view) => AnyView::new(view),
-            Err(view) => AnyView::new(view),
+            Ok(view) => OneOf2::A(view),
+            Err(view) => OneOf2::B(view),
         }
     }
 
@@ -84,7 +83,7 @@ impl<V: View, E: View> View for Result<V, E> {
 
 impl<V: View> View for Option<V> {
     fn body(self, _env: &Environment) -> impl View {
-        self.map_or_else(|| AnyView::new(()), AnyView::new)
+        self.map_or_else(|| OneOf2::B(()), OneOf2::A)
     }
 
     fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
@@ -95,168 +94,83 @@ impl<V: View> View for Option<V> {
     }
 }
 
-/// A trait for converting values into views.
+/// The children of a container: a tuple, an array or a `Vec` of views.
 ///
-/// This trait allows different types to be converted into View implementations,
-/// enabling more flexible composition of UI elements.
-pub trait IntoView {
-    /// The resulting View type after conversion.
-    type Output: View;
+/// A container keeps its children's own types until it reaches a backend,
+/// which receives each child in its [`Backend::Slot`]: a typed child stays
+/// statically dispatched, and only an erased backend sees `AnyView`s.
+pub trait ViewSequence: 'static {
+    /// How many views the sequence holds.
+    fn len(&self) -> usize;
 
-    /// Converts the implementing type into a View.
-    ///
-    /// # Arguments
-    ///
-    /// * `env` - The environment containing context for the view conversion.
-    ///
-    /// # Returns
-    ///
-    /// A View implementation that can be used in the UI.
-    fn into_view(self, env: &Environment) -> Self::Output;
-}
-
-impl<V: View> IntoView for V {
-    type Output = V;
-    fn into_view(self, _env: &Environment) -> Self::Output {
-        self
+    /// Whether the sequence holds no view.
+    fn is_empty(&self) -> bool {
+        self.len() == 0
     }
-}
 
-/// A trait for converting collections and tuples of views into a vector of `AnyView`s.
-///
-/// This trait provides a uniform way to handle multiple views, allowing them
-/// to be converted into a homogeneous collection that can be processed consistently.
-pub trait TupleViews {
-    /// Converts the implementing type into a vector of `AnyView` objects.
-    ///
-    /// # Returns
-    ///
-    /// A `Vec<AnyView>` containing each view from the original collection.
-    fn into_views(self) -> Vec<AnyView>;
-}
+    /// Appends each view, in order, to `slots` as a slot of type `S`.
+    fn push_slots<S: ChildSlot>(self, slots: &mut Vec<S>);
 
-impl<V: View> TupleViews for Vec<V> {
-    fn into_views(self) -> Vec<AnyView> {
-        self.into_iter()
-            .map(|content| AnyView::new(content))
-            .collect()
-    }
-}
-
-impl<V: View, const N: usize> TupleViews for [V; N] {
-    fn into_views(self) -> Vec<AnyView> {
-        self.into_iter()
-            .map(|content| AnyView::new(content))
-            .collect()
-    }
-}
-
-/// A trait for views that can be configured with additional parameters.
-///
-/// This trait extends the basic `View` trait to support views that can be
-/// customized with a configuration object, allowing for more flexible and
-/// reusable UI components.
-pub trait ConfigurableView: View {
-    /// The configuration type associated with this view.
-    ///
-    /// This type defines the structure of configuration data that can be
-    /// applied to the view.
-    type Config: ViewConfiguration;
-
-    /// Returns the configuration for this view.
-    ///
-    /// This method extracts the configuration data from the view, which can
-    /// then be modified and applied to create customized versions of the view.
-    ///
-    /// # Returns
-    ///
-    /// The configuration object for this view.
-    fn config(self) -> Self::Config;
-}
-
-/// A trait for types that can be used to configure views.
-///
-/// View configurations are used by hooks to modify how views are rendered.
-pub trait ViewConfiguration: 'static {
-    // Note: the result would ignore any hook in the environment, to avoid infinite recursion.
-    /// The view type that this configuration produces.
-    type View: View;
-    /// Renders this configuration into a view.
-    fn render(self) -> Self::View;
-}
-
-// Note: Hook could change the behavior of the view dynamically based on the environment
-// only view implemented `ViewConfiguration` can be hooked.
-// A struct implemented `View` can be not concrete, but `ViewConfiguration` providing
-// `config()` method, which would return a concrete type.
-// By add `Hook<Config>` into `Environment`, a
-/// A function type for view hooks.
-type HookFn<C> = Box<dyn Fn(&Environment, C) -> AnyView>;
-
-/// A hook that can intercept and modify view configurations.
-///
-/// Hooks are used to apply global transformations to views based on their configuration.
-pub struct Hook<C>(HookFn<C>);
-
-impl<C> fmt::Debug for Hook<C> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Modifier<{}>(..)", type_name::<C>())
-    }
-}
-
-impl<V, C, F> From<F> for Hook<C>
-where
-    C: ViewConfiguration,
-    V: View,
-    F: Fn(&Environment, C) -> V + 'static,
-{
-    fn from(value: F) -> Self {
-        Self(Box::new(move |env, config| {
-            let mut env = env.clone();
-            env.remove::<Self>(); // avoid infinite recursion
-            AnyView::new(Metadata::new(value(&env, config), env))
-        }))
-    }
-}
-
-impl<C> Hook<C>
-where
-    C: ViewConfiguration,
-{
-    /// Creates a new hook from a function.
-    ///
-    /// The function will be called with the environment and configuration
-    /// whenever a matching view configuration is encountered.
-    pub fn new<V, F>(f: F) -> Self
+    /// The views, in order, each in a slot of type `S`.
+    fn into_slots<S: ChildSlot>(self) -> Vec<S>
     where
-        V: View,
-        F: Fn(&Environment, C) -> V + 'static,
+        Self: Sized,
     {
-        Self::from(f)
-    }
-
-    /// Applies this hook to a configuration, producing a view.
-    pub fn apply(&self, env: &Environment, config: C) -> AnyView {
-        (self.0)(env, config)
+        let mut slots = Vec::with_capacity(self.len());
+        self.push_slots(&mut slots);
+        slots
     }
 }
 
-impl<C: ViewConfiguration> Hook<C> {}
+fn slot_from_view<S: ChildSlot, V: View>(view: V) -> S {
+    #[cfg(feature = "erased-dispatch")]
+    {
+        S::from_view(AnyView::new(view))
+    }
+    #[cfg(not(feature = "erased-dispatch"))]
+    {
+        S::from_view(view)
+    }
+}
+
+impl<V: View> ViewSequence for Vec<V> {
+    fn len(&self) -> usize {
+        self.len()
+    }
+
+    fn push_slots<S: ChildSlot>(self, slots: &mut Vec<S>) {
+        slots.extend(self.into_iter().map(slot_from_view));
+    }
+}
+
+impl<V: View, const N: usize> ViewSequence for [V; N] {
+    fn len(&self) -> usize {
+        N
+    }
+
+    fn push_slots<S: ChildSlot>(self, slots: &mut Vec<S>) {
+        slots.extend(self.into_iter().map(slot_from_view));
+    }
+}
 
 macro_rules! impl_tuple_views {
     ($($ty:ident),*) => {
         #[allow(non_snake_case)]
         #[allow(unused_variables)]
         #[allow(unused_parens)]
-        impl <$($ty:View,)*>TupleViews for ($($ty,)*){
-            fn into_views(self) -> Vec<AnyView> {
+        impl <$($ty:View,)*> ViewSequence for ($($ty,)*){
+            fn len(&self) -> usize {
+                let views: &[&str] = &[$(stringify!($ty)),*];
+                views.len()
+            }
+
+            fn push_slots<S: ChildSlot>(self, slots: &mut Vec<S>) {
                 // The trailing comma matters: `let (T) = self` is a parenthesized
                 // binding, not a one-element tuple pattern, so without it a
-                // single-child container erased the tuple itself instead of the
-                // view inside it — and the tuple answers every view question with
-                // its default, losing whatever the child had declared.
-                let ($($ty,)*)=self;
-                alloc::vec![$(AnyView::new($ty)),*]
+                // single-child container would hold the tuple itself instead
+                // of the view inside it.
+                let ($($ty,)*) = self;
+                $(slots.push(slot_from_view($ty));)*
             }
         }
     };

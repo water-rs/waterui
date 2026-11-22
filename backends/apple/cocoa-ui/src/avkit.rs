@@ -1682,6 +1682,10 @@ mod platform {
         ///
         /// A surface mounted outside a `UIViewController` hierarchy breaks the
         /// contract: it is reported and the controller is not attached.
+        #[expect(
+            clippy::missing_panics_doc,
+            reason = "the `downcast` directly after `isKindOfClass(UIViewController)` cannot fail"
+        )]
         pub fn attach_to_parent_controller(&self) {
             // SAFETY: `parent`/`addChildViewController:` are the standard
             // containment messages on `UIViewController`.

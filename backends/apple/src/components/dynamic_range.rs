@@ -21,7 +21,7 @@ use waterui_core::layout::{
     ViewDimensions,
 };
 
-use crate::contract::{Mounted, NativeLeaf};
+use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;
 
 use crate::contract::RenderContext;
@@ -87,14 +87,14 @@ impl SubView for DynamicRangeSubView {
 /// layers keep their own mode.
 fn dynamic_range_leaf(
     mode: DynamicRange,
-    content: waterui_backend_core::AnyView,
+    content: crate::contract::Held,
     ctx: &crate::contract::RenderContext<'_>,
 ) -> NativeLeaf {
     let mtm = ctx.mtm();
     let host = HostView::new(mtm, Rect::ZERO);
     let host_view: &PlatformView = &host;
 
-    let mounted = ctx.render(content).mount(host_view);
+    let mounted = ctx.realize(content).mount(host_view);
     crate::primary_content::forward(&host, mounted.view());
     view::set_translates_autoresizing(mounted.view(), true);
 
@@ -137,14 +137,14 @@ fn dynamic_range_leaf(
 /// `Metadata<StandardDynamicRange>` pins the subtree to SDR,
 /// `Metadata<HighDynamicRange>` pins it to HDR.
 pub fn realize_standard_dynamic_range_metadata(
-    metadata: Metadata<StandardDynamicRange>,
+    metadata: Metadata<StandardDynamicRange, Held>,
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
     dynamic_range_leaf(DynamicRange::Standard, metadata.content, ctx)
 }
 
 pub fn realize_high_dynamic_range_metadata(
-    metadata: Metadata<HighDynamicRange>,
+    metadata: Metadata<HighDynamicRange, Held>,
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
     dynamic_range_leaf(DynamicRange::High, metadata.content, ctx)

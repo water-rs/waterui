@@ -29,7 +29,7 @@ use waterui_core::layout::{
 };
 use waterui_graphics::backend::cherenkov::Next;
 use waterui_graphics::gpu::{
-    Display, ExternalFrameRenderer, ExternalFrameStream, ExternalFrameView, FrameTime,
+    Display, ExternalFrameRenderer, ExternalFrameStream, ExternalFrameView, FrameTime, GpuContent,
     GpuContentRenderer, GpuRuntime, GpuView, HostedFrame, HostedLayerError, RedrawHandle,
     RenderedFrame, SharedGpuContext, wgpu,
 };
@@ -330,7 +330,7 @@ impl From<HostedLayerError> for HostedError {
     }
 }
 
-impl HostedView for GpuView {
+impl<T: GpuContent> HostedView for GpuView<T> {
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         Self::measure(self, proposal)
     }
@@ -2895,7 +2895,7 @@ impl SubView for SurfaceSubView {
 
 /// The `gpu_surface` realizations — `Native<GpuView>` and
 /// `Native<ExternalFrameView>` and `Native<SceneView>` share presentation.
-pub fn realize_gpu_view(view: GpuView, ctx: &RenderContext<'_>) -> NativeLeaf {
+pub fn realize_gpu_view<T: GpuContent>(view: GpuView<T>, ctx: &RenderContext<'_>) -> NativeLeaf {
     build_surface(view, "GPU content", ctx)
 }
 
@@ -3188,7 +3188,7 @@ pub mod native_test {
     /// A `SceneView` carrying [`FixtureContent`].
     ///
     /// The same GPU child the fixture mounts, as a value a
-    /// `ViewRenderer::render` trial passes straight in, so the leaf mounts
+    /// `ViewRenderer::render_to_rgba` trial passes straight in, so the leaf mounts
     /// through the production `Native<SceneView>` path itself.
     #[must_use]
     pub fn fixture_scene_view() -> SceneView {

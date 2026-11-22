@@ -26,7 +26,7 @@ use waterui_core::layout::{
     ViewDimensions,
 };
 
-use crate::contract::{Mounted, NativeLeaf};
+use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal::{self, Placement};
 use crate::window_background::level;
 
@@ -102,14 +102,14 @@ impl SubView for MaterialBackgroundSubView {
 /// what is behind it on its own, so the group scope Hydrolysis needs to
 /// share one backdrop has nothing to do here.
 pub fn realize_material_group_metadata(
-    metadata: Metadata<MaterialGroup>,
+    metadata: Metadata<MaterialGroup, Held>,
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
     crate::components::passthrough::passthrough_leaf(metadata.content, ctx)
 }
 
 pub fn realize_material_background_metadata(
-    metadata: Metadata<MaterialBackground>,
+    metadata: Metadata<MaterialBackground, Held>,
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
     let mtm = ctx.mtm();
@@ -139,7 +139,7 @@ pub fn realize_material_background_metadata(
     let content_parent: &PlatformView = &blur;
     #[cfg(target_os = "ios")]
     let content_parent: &PlatformView = host_view;
-    let mounted = ctx.render(metadata.content).mount(content_parent);
+    let mounted = ctx.realize(metadata.content).mount(content_parent);
     view::set_translates_autoresizing(&blur, true);
     view::set_translates_autoresizing(mounted.view(), true);
 

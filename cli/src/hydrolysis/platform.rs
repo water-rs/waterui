@@ -150,6 +150,20 @@ fn render_features(
     Ok(features)
 }
 
+async fn windows_llvm_envs(project: &Project) -> eyre::Result<Vec<(String, OsString)>> {
+    WindowsArm64LlvmToolchain
+        .cargo_envs(project.host())
+        .await
+        .map_err(|error| match error {
+            ToolchainError::Fixable(_) => eyre::eyre!(
+                "Windows ARM64 LLVM toolchain is missing. Run `water doctor --fix` to install it automatically."
+            ),
+            ToolchainError::Unfixable(unfixable) => {
+                eyre::eyre!("Windows ARM64 LLVM toolchain check failed: {unfixable}")
+            }
+        })
+}
+
 /// Build hydrolysis binary for the host platform with extra Cargo environment variables and features.
 ///
 /// `offscreen` says the binary renders without a window (`water preview`,
@@ -210,24 +224,19 @@ pub async fn build_hydrolysis_with_envs_and_features(
         .await?;
     }
 
-    let llvm_envs = WindowsArm64LlvmToolchain
-        .cargo_envs(project.host())
-        .await
-        .map_err(|error| match error {
-            ToolchainError::Fixable(_) => eyre::eyre!(
-                "Windows ARM64 LLVM toolchain is missing. Run `water doctor --fix` to install it automatically."
-            ),
-            ToolchainError::Unfixable(unfixable) => {
-                eyre::eyre!("Windows ARM64 LLVM toolchain check failed: {unfixable}")
-            }
-        })?;
+    let llvm_envs = windows_llvm_envs(project).await?;
+
+    let strategy_feature = (options.uses_erased_dispatch()
+        && crate::templates::generated_manifest_declares(&cargo_toml, "erased-dispatch")?)
+    .then_some("erased-dispatch");
 
     let mut build = RustBuild::for_project(project, &backend_path, platform.triple())
         .with_target_dir(project.water_target_dir(options.linkage()).await?)
         .with_features(
             render_features
                 .into_iter()
-                .chain(extra_features.iter().copied()),
+                .chain(extra_features.iter().copied())
+                .chain(strategy_feature),
         )
         .with_linkage(
             options.linkage(),
@@ -1192,6 +1201,7 @@ mod tests {
                 webview_enabled: true,
                 engine: Some(ResolvedWebViewBackend::Cef),
                 video_gpu: false,
+                map_gpu: false,
             },
         );
         let package_name = "demo-hydrolysis-deadbeef";
@@ -1336,6 +1346,7 @@ mod tests {
                 webview_enabled: false,
                 engine: Some(ResolvedWebViewBackend::Wpe),
                 video_gpu: false,
+                map_gpu: false,
             },
         );
         assert_eq!(rendered_bin_names(&ctx, package_name), [package_name]);

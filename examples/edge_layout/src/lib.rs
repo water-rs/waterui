@@ -5,7 +5,7 @@
 //! recursion and constraint resolution.
 
 use waterui::Identifiable;
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::layout::stack::{HStack, VStack};
 use waterui::prelude::*;
 use waterui::preview;
@@ -138,6 +138,6 @@ pub fn demo() -> impl View {
 }
 
 /// Builds the example app, showing the edge layout demo.
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     App::new(demo, env)
 }

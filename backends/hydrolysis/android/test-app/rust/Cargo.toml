@@ -27,7 +27,7 @@ stretch-probe = ["probe"]
 # the GPU video player and the GPU vector map, each its own scene
 # (water-rs/waterui#1812).
 gpu-video-probe = ["probe", "gpu", "hydrolysis/video-gpu", "waterui/video-gpu", "waterui/remote"]
-gpu-map-probe = ["probe", "gpu", "dep:waterui-map", "dep:waterui-map-gpu", "dep:waterui-url"]
+gpu-map-probe = ["probe", "gpu", "hydrolysis/map-gpu", "waterui/map", "dep:waterui-map", "dep:waterui-map-gpu", "dep:waterui-url"]
 
 # The whole crate is `cfg(target_os = "android")`, so these are named only there.
 [target.'cfg(target_os = "android")'.dependencies]

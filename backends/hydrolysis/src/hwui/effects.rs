@@ -1268,7 +1268,7 @@ mod tests {
     #[test]
     fn an_output_size_override_rejects_at_registration() {
         let view = fv::FilteredView {
-            content: waterui_core::AnyView::new(()),
+            content: (),
             effect: AnyEffect::filter(filters::Brightness(0.5f32)),
             guards: fv::ParamGuards::default(),
         }

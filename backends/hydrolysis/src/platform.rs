@@ -2253,7 +2253,7 @@ pub trait PlatformWindow: 'static {
     /// between surface generations.
     fn content_size(&self) -> (u32, u32);
     /// Applies the window's declarative properties to the platform window.
-    fn apply_properties(&mut self, window: &WuiWindow);
+    fn apply_properties<C, T>(&mut self, window: &WuiWindow<C, T>);
     /// Applies the window's effective content-size limits (logical units).
     ///
     /// The minimum is the content's layout minimum, overridden by an explicit
@@ -4116,7 +4116,7 @@ impl<S: OffscreenTarget> PlatformWindow for OffscreenWindow<S> {
     }
 
     /// Applies the window's declarative properties to the platform window.
-    fn apply_properties(&mut self, window: &WuiWindow) {
+    fn apply_properties<C, T>(&mut self, window: &WuiWindow<C, T>) {
         if window.state.snapshot() == WindowState::Closed {
             return;
         }
@@ -6517,7 +6517,7 @@ mod winit_impl {
         }
 
         /// Applies the window's declarative properties to the platform window.
-        fn apply_properties(&mut self, window: &waterui::window::Window) {
+        fn apply_properties<C, T>(&mut self, window: &waterui::window::Window<C, T>) {
             let title = window.display_title().snapshot();
             let decorations = !matches!(
                 window.style.snapshot(),

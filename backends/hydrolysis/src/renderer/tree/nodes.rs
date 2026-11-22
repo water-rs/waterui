@@ -4,23 +4,27 @@
 use super::layout::resolved_or_collapsed;
 #[cfg(feature = "frame-profile")]
 use super::layout::{SignatureHasher, hash_size};
+use waterui_core::backend::ChildSlot;
+use waterui_core::layout::{LayoutError, ResolvedExtent};
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
+#[cfg(feature = "menu")]
+use crate::renderer::ContextMenuPresenter;
 use crate::renderer::mount::motion::{LayerMotion, Motion};
 use crate::text::{TextEngine, TextLayout as _};
+use crate::theme::WidgetTheme;
 use waterui::gesture::TapGesture;
+use waterui_backend_core::Child;
 use waterui_layout::safe_area::IgnoreSafeArea;
 use waterui_structural_transition::TransitionSpec;
 use waterui_text::styled::TapSpan;
 
-/// A retained sub-view a native widget owns and re-renders every flush — the
-/// solution for a widget's move-only `AnyView` label sub-views (slider min/max
-/// labels, menu label, progress label/value label) which cannot be re-dispatched
-/// twice. The source `AnyView` is built into a persistent [`RenderNode`] once
-/// (going through the same dispatcher path as everything else, so a reactive label
-/// inside it reaches its dedicated `Dynamic`/`Text` node and stays live), then
-/// laid out and flushed at the label's rect each frame.
+/// A retained sub-view a native widget or wrapper owns and re-renders every
+/// flush — holding a move-only child view (a widget label, a navigation slot,
+/// or a context menu's preview and accessory) in the backend's [`Child`] slot
+/// until it is first realized into a persistent [`RenderNode`], then laid out
+/// and flushed at its rect each frame so reactive state inside it stays live.
 ///
 /// The lifecycle is [`RetainedSubviewState::Unbuilt`] — the move-only source is
 /// held — until [`Self::ensure_built`] transitions it to
@@ -36,8 +40,8 @@ pub struct RetainedSubview<E: crate::text::TextEngine> {
 /// The [`RetainedSubview`] lifecycle: the unbuilt source view, or the built
 /// node plus the layout bookkeeping its flushes own.
 enum RetainedSubviewState<E: crate::text::TextEngine> {
-    /// The source view, taken on first build (`AnyView` is move-only).
-    Unbuilt { source: AnyView },
+    /// The source view in the child slot, taken on first build.
+    Unbuilt { source: HeldChild<E> },
     /// The built sub-view: the node and the layout bookkeeping its flushes own.
     Built(Box<BuiltSubview<E>>),
 }
@@ -186,7 +190,12 @@ impl<E: crate::text::TextEngine> BuiltSubview<E> {
 }
 
 impl<E: crate::text::TextEngine> RetainedSubview<E> {
-    pub(crate) const fn new(source: AnyView) -> Self {
+    pub(crate) fn new(source: impl View) -> Self {
+        Self::held(HeldChild::from_view(source))
+    }
+
+    /// The sub-view of a child a payload held in its slot.
+    pub(crate) const fn held(source: HeldChild<E>) -> Self {
         Self {
             state: RetainedSubviewState::Unbuilt { source },
         }
@@ -220,8 +229,8 @@ impl<E: crate::text::TextEngine> RetainedSubview<E> {
         let RetainedSubviewState::Unbuilt { source } = &mut self.state else {
             return;
         };
-        let view = core::mem::replace(source, AnyView::new(()));
-        let node = RenderNode::build(view, env, renderer);
+        let source = core::mem::replace(source, HeldChild::from_view(()));
+        let node = RenderNode::build_held(source, env, renderer);
         let layout_dependencies = Some(LayoutDependencies::new(Rc::downgrade(&node.core().cell)));
         self.state = RetainedSubviewState::Built(Box::new(BuiltSubview {
             node,
@@ -268,18 +277,6 @@ impl<E: crate::text::TextEngine> RetainedSubview<E> {
         self.expect_built("accessibility_label")
             .node
             .accessibility_label(renderer)
-    }
-
-    /// Transform the still-unbuilt source view (e.g. apply a default foreground
-    /// color before build). Works only on [`RetainedSubviewState::Unbuilt`] —
-    /// the source is consumed at build, so running after it panics naming the
-    /// misuse.
-    pub(crate) fn map_source(&mut self, f: impl FnOnce(AnyView) -> AnyView) {
-        let RetainedSubviewState::Unbuilt { source } = &mut self.state else {
-            panic!("RetainedSubview::map_source ran after the sub-view was built");
-        };
-        let source = core::mem::replace(source, AnyView::new(()));
-        self.state = RetainedSubviewState::Unbuilt { source: f(source) };
     }
 
     /// Whether the sub-view's node has been built.
@@ -760,17 +757,15 @@ impl<K: Eq + core::hash::Hash + Clone, E: crate::text::TextEngine> VisibleSubvie
     }
 
     /// Get-or-build the retained sub-view for `key`, marking it visible this frame.
-    /// `build` produces the item's source view; it runs only the first time an id
-    /// becomes visible (or after it was evicted and scrolled back).
+    /// `build` produces the item's unbuilt sub-view; it runs only the first time
+    /// an id becomes visible (or after it was evicted and scrolled back).
     pub(crate) fn entry(
         &mut self,
         key: K,
-        build: impl FnOnce() -> AnyView,
+        build: impl FnOnce() -> RetainedSubview<E>,
     ) -> &mut RetainedSubview<E> {
         self.touched.insert(key.clone());
-        self.entries
-            .entry(key)
-            .or_insert_with(|| RetainedSubview::new(build()))
+        self.entries.entry(key).or_insert_with(build)
     }
 
     /// Insert the sub-view for `key` without marking it visible this frame —
@@ -779,11 +774,9 @@ impl<K: Eq + core::hash::Hash + Clone, E: crate::text::TextEngine> VisibleSubvie
     pub(crate) fn materialize(
         &mut self,
         key: K,
-        build: impl FnOnce() -> AnyView,
+        build: impl FnOnce() -> RetainedSubview<E>,
     ) -> &mut RetainedSubview<E> {
-        self.entries
-            .entry(key)
-            .or_insert_with(|| RetainedSubview::new(build()))
+        self.entries.entry(key).or_insert_with(build)
     }
 
     /// Marks the retained item for `key` visible this frame; `false` when
@@ -918,8 +911,22 @@ pub trait WidgetBehavior<E: crate::text::TextEngine> {
         state: &mut HydroState<E>,
         proposal: ProposalSize,
         env: &Environment,
-        theme: &Rc<dyn crate::theme::WidgetTheme>,
+        theme: &Rc<dyn WidgetTheme>,
     ) -> ViewDimensions;
+
+    /// Resolves this leaf's response geometry inside `bounds`, returning
+    /// `Ok(None)` when the leaf uses the default [`ResolvedExtent::centred`]
+    /// answer from [`Self::measure`].
+    fn resolve_extent(
+        &self,
+        _state: &mut HydroState<E>,
+        _env: &Environment,
+        _theme: &Rc<dyn WidgetTheme>,
+        _bounds: Rect,
+        _proposal: ProposalSize,
+    ) -> Result<Option<ResolvedExtent>, LayoutError> {
+        Ok(None)
+    }
 
     /// Consume the layout-dirty marks of the [`RetainedSubview`]s this
     /// leaf owns — labels, bar parts, badge content — and report whether
@@ -1108,6 +1115,7 @@ pub(super) enum WrapperEffect<E: crate::text::TextEngine> {
     /// dialog stack each flush; the post-flush `render_dialogs` pass draws
     /// the one on screen in the modal layer above all content — its scrim
     /// plus the composed card.
+    #[cfg(waterui_feature = "dialog")]
     Dialog(DialogEffect<E>),
     /// A `.transition(...)` declaration (layout-spec.md §4.5): paint- and
     /// layout-transparent. The structural site that swaps the content claims
@@ -1127,13 +1135,16 @@ impl<E: crate::text::TextEngine> WrapperEffect<E> {
         if matches!(self, Self::ContextMenu(_)) {
             return true;
         }
+        #[cfg(waterui_feature = "dialog")]
+        if matches!(self, Self::Dialog(_)) {
+            return true;
+        }
         matches!(
             self,
             Self::OnEvent(_)
                 | Self::GestureObserver(_)
                 | Self::DropDestination(_)
                 | Self::AnchoredOverlay(_)
-                | Self::Dialog(_)
                 | Self::LifeCycle(_)
         )
     }
@@ -1145,7 +1156,7 @@ impl<E: crate::text::TextEngine> WrapperEffect<E> {
 pub struct AnchoredOverlayEffect<E: crate::text::TextEngine> {
     /// Builds a fresh view for each presentation: a presentation started
     /// while an older exit is still animating gets its own instance.
-    pub(crate) builder: waterui_core::handler::AnyViewBuilder,
+    pub(crate) builder: Rc<dyn Fn() -> HeldChild<E>>,
     /// The overlay's presentations: the one presented now, built from
     /// `builder` on each new presentation, and the dismissed ones still
     /// leaving the screen.
@@ -1170,6 +1181,7 @@ pub struct AnchoredOverlayEffect<E: crate::text::TextEngine> {
 /// The node-owned state of a `.dialog(...)` wrapper. The content slot is
 /// `Rc`-shared because the post-flush render pass — not this node — measures
 /// and flushes the modal layer, and the node keeps it built across closes.
+#[cfg(waterui_feature = "dialog")]
 pub struct DialogEffect<E: crate::text::TextEngine> {
     /// The layer content — the dialog's scrim-plus-card modal layer.
     pub(crate) content: Rc<RefCell<RetainedSubview<E>>>,
@@ -1209,6 +1221,10 @@ pub struct ContextMenuEffect<E: crate::text::TextEngine> {
     /// The interactive view anchored to the lifted preview, mounted outside
     /// the menu so its own pointer, touch and keyboard input reaches it.
     pub(crate) accessory: Rc<RefCell<Option<RetainedSubview<E>>>>,
+    /// Popup presenter registered by `NativeBackend::context_menu`, keeping
+    /// `show_context_menu` / `popup_menu_window` unreachable unless a context
+    /// menu is actually constructed.
+    pub(crate) present: ContextMenuPresenter<E>,
 }
 
 /// The node-owned state of a lifecycle hook (see [`WrapperEffect::LifeCycle`]).
@@ -1252,7 +1268,7 @@ pub struct GestureObserverEffect {
     /// bounds stay the same.
     pub(crate) chrome: RefCell<Option<crate::renderer::chrome::LiveChromeParts>>,
     /// The state the tap's live chrome reports between flushes.
-    pub(crate) chrome_state: nami::Binding<waterui_core::interaction::InteractionState>,
+    pub(crate) chrome_state: nami::Binding<waterui_interaction::interaction::InteractionState>,
 }
 
 pub struct ColorNode<E: crate::text::TextEngine> {
@@ -1562,6 +1578,7 @@ pub struct EnvNode<E: crate::text::TextEngine> {
     pub(super) child: RenderNode<E>,
 }
 
+#[cfg(hydrolysis_scene_view)]
 pub struct SceneViewNode<E: crate::text::TextEngine> {
     pub(super) accessibility_identity: Rc<()>,
     pub(crate) core: NodeCore<E>,
@@ -1589,6 +1606,7 @@ pub struct SceneViewNode<E: crate::text::TextEngine> {
     pub(super) measured: Cell<Option<(ProposalSize, Size)>>,
 }
 
+#[cfg(hydrolysis_scene_view)]
 impl<E: crate::text::TextEngine> SceneViewNode<E> {
     /// The leaf's natural-size answer under `proposal` — the
     /// `measure_body` arm's own computation.
@@ -1695,6 +1713,7 @@ impl<E: crate::text::TextEngine> ExternalFrameNode<E> {
 /// and patches the child exactly as the child would on its own. Each flush
 /// presents the child's layers inside a keyed filtered mount — the engine
 /// applies the filter across the whole group.
+#[cfg(waterui_feature = "effects")]
 pub struct FilteredNode<E: crate::text::TextEngine> {
     pub(crate) core: NodeCore<E>,
     pub(super) runtime: Rc<RefCell<crate::renderer::effects::FilteredRuntime>>,
@@ -1708,7 +1727,7 @@ pub struct DynamicHostNode<E: crate::text::TextEngine> {
     /// mid-pass layout for a child that applied its pending reuses it.
     pub(super) safe_area: Option<Box<safe_area::SafeAreaLayout>>,
     /// Latest content delivered by the `Dynamic`, awaiting a patch.
-    pub(super) pending: Rc<RefCell<Option<AnyView>>>,
+    pub(super) pending: Rc<RefCell<Option<Child<super::build::backend::HydroFamily<E>>>>>,
     /// Environment captured at build, used to rebuild the child on a change.
     pub(super) env: Environment,
     /// The current expansion of the `Dynamic`'s content. Interior mutability
@@ -1833,7 +1852,7 @@ impl<E: crate::text::TextEngine> DynamicHostNode<E> {
         match pending {
             Some(content) => {
                 let node_env = self.env.clone();
-                let child = RenderNode::build(content, &node_env, renderer);
+                let child = RenderNode::build_held(content, &node_env, renderer);
                 // The rebuilt child re-roots its marks under this host —
                 // without it the subtree is an orphan whose dirty bits can
                 // never reach the window root.
@@ -2093,7 +2112,7 @@ impl<E: crate::text::TextEngine> TextNode<E> {
             return;
         }
         let disabled = env
-            .get::<waterui_core::interaction::Disabled>()
+            .get::<waterui_interaction::interaction::Disabled>()
             .is_some_and(|disabled| renderer.read_signal(disabled.signal()));
         if let Some(parent) = parent {
             renderer.push_accessibility_parent(parent);
@@ -2164,7 +2183,7 @@ impl<E: crate::text::TextEngine> TextNode<E> {
             return;
         }
         let disabled = env
-            .get::<waterui_core::interaction::Disabled>()
+            .get::<waterui_interaction::interaction::Disabled>()
             .is_some_and(|disabled| renderer.read_signal(disabled.signal()));
         // The recording's origin is the bounds' top-left: a layout-space
         // rectangle lands there offset into this node's local space.
@@ -2261,7 +2280,10 @@ impl<E: crate::text::TextEngine> TextNode<E> {
 /// `default_value` is the drawing's spoken content beside its name
 /// ([`SceneContent::accessibility_value`](waterui_graphics::backend::SceneContent::accessibility_value)),
 /// emitted under the same precedence: a scoped `.a11y_value(…)` wins it.
-#[cfg(feature = "accessibility")]
+#[cfg(all(
+    feature = "accessibility",
+    any(hydrolysis_scene_view, hydrolysis_gpu, hydrolysis_cherenkov)
+))]
 pub(super) fn emit_graphics_image_accessibility<E: crate::text::TextEngine>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     ctx: Option<RenderContext>,
@@ -2295,7 +2317,10 @@ pub(super) fn emit_graphics_image_accessibility<E: crate::text::TextEngine>(
     renderer.register_accessibility_leaf(ctx, node, env, None)
 }
 
-#[cfg(not(feature = "accessibility"))]
+#[cfg(all(
+    not(feature = "accessibility"),
+    any(hydrolysis_scene_view, hydrolysis_gpu)
+))]
 pub(super) fn emit_graphics_image_accessibility<E: crate::text::TextEngine>(
     _renderer: &mut crate::renderer::SemanticCore<E>,
     _ctx: Option<RenderContext>,

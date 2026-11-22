@@ -20,6 +20,7 @@ use waterui::component::list::{List, ListItem};
 use waterui::component::progress::progress;
 use waterui::component::table::{col, table};
 use waterui::theme::color::Error;
+use waterui::widget::Divider;
 use waterui_controls::button::button;
 use waterui_controls::menu::{CommandExt as _, Menu};
 use waterui_controls::slider::slider;
@@ -40,7 +41,7 @@ use waterui_graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
 use waterui_graphics::{GpuContent, GpuView};
 use waterui_layout::spacer::spacer;
 use waterui_layout::stack::{VStackLayout, hstack, vstack};
-use waterui_layout::{Divider, LazyContainer, scroll};
+use waterui_layout::{LazyContainer, scroll};
 use waterui_navigation::NavigationView;
 use waterui_navigation::tab::{Tab, Tabs};
 use waterui_navigation::{NavigationLink, NavigationSplitView, NavigationStack};
@@ -1090,10 +1091,10 @@ fn tabs_emit_tab_list_and_click_selects() {
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
         AnyView::new(Tabs::new(
             &selection_for_view,
-            vec![
+            (
                 Tab::new("First", || NavigationView::new("One", text("one"))),
                 Tab::new("Second", || NavigationView::new("Two", text("two"))),
-            ],
+            ),
         ))
     }));
 
@@ -1891,4 +1892,58 @@ fn a_tap_region_names_itself_from_its_content_as_it_is_now() {
     let update = pumped(&mut runtime);
     find_by_label(&update, Role::Button, "Gamma Beta")
         .expect("the label follows the content's current text");
+}
+
+#[test]
+fn provided_semantics_node_supports_and_dispatches_on_activate() {
+    use core::any::Any;
+    use core::cell::Cell;
+    use std::rc::Rc;
+    use waterui::accessibility::AccessibilityRole;
+    use waterui_backend_core::ProvidedSemantics;
+    use waterui_core::{Computed, Native, NativeView, View};
+
+    struct DummyProvided {
+        activated: Rc<Cell<u32>>,
+    }
+
+    impl NativeView for DummyProvided {
+        fn realize_provided(self, context: &mut dyn Any, _env: &Environment) -> Result<(), Self> {
+            let Some(semantics) = context.downcast_mut::<ProvidedSemantics>() else {
+                return Err(self);
+            };
+            let activated = Rc::clone(&self.activated);
+            *semantics = ProvidedSemantics::new()
+                .with_role(AccessibilityRole::Button)
+                .with_label(Computed::constant(Str::from_static("Embedded Control")))
+                .with_on_activate(move || {
+                    activated.set(activated.get() + 1);
+                });
+            Ok(())
+        }
+    }
+
+    impl View for DummyProvided {
+        fn body(self, _env: &Environment) -> impl View {
+            Native::new(self)
+        }
+    }
+
+    let activated = Rc::new(Cell::new(0));
+    let activated_for_view = Rc::clone(&activated);
+    let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
+        AnyView::new(DummyProvided {
+            activated: Rc::clone(&activated_for_view),
+        })
+    }));
+
+    let update = pumped(&mut runtime);
+    let (node_id, node) = find_by_label(&update, Role::Button, "Embedded Control")
+        .expect("ProvidedSemantics must emit its role and label on SemanticRuntime");
+    assert!(
+        node.supports_action(Action::Click),
+        "ProvidedSemantics with on_activate must advertise Click"
+    );
+    assert!(act(&mut runtime, Action::Click, node_id));
+    assert_eq!(activated.get(), 1);
 }

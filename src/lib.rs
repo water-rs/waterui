@@ -1,6 +1,7 @@
 #![doc = include_str!("README.md")]
 extern crate alloc;
 extern crate self as waterui;
+#[cfg(feature = "table")]
 #[macro_use]
 mod macros;
 mod appearance;
@@ -11,18 +12,22 @@ pub use interaction_support::{cursor, drag_drop, gesture, interaction};
 mod runtime;
 #[cfg(feature = "dialog")]
 pub use runtime::dialog;
-#[cfg(all(feature = "inspector", not(target_arch = "wasm32")))]
-pub use runtime::inspector;
 #[cfg(feature = "snackbar")]
 pub use runtime::snackbar;
-pub use runtime::{app, entry, error, fullscreen, metadata, realization, task, window};
+pub use runtime::{app, entry, fullscreen, metadata, task, window};
+pub use widget::error;
+// Inspection is a TCP endpoint that also launches the inspector application on
+// the developer's machine; a browser page can do neither, so on wasm the
+// endpoint is absent rather than present and permanently unable to work.
+#[cfg(all(feature = "inspector", not(target_arch = "wasm32")))]
+pub use waterui_inspector_runtime as inspector;
 /// Task management utilities and async support.
 pub mod view;
 /// Widget components for building complex UI elements.
 pub mod widget;
 #[doc(inline)]
 pub use view::View;
-pub use waterui_core::accessibility;
+pub use waterui_accessibility as accessibility;
 
 /// The shared `waterui_meta_*` record emitters — `dir_static!` lands its
 /// section and retention cfg at the invoking crate's profile — re-exported
@@ -53,6 +58,7 @@ pub mod prelude {
     // Re-export core modules from super, excluding `background` to avoid conflict with layout::background
     #[cfg(feature = "effects")]
     pub use super::FilterViewExt;
+    pub use super::app::{App, AppMenuBar, Windows};
     pub use super::env::Environment;
     #[cfg(feature = "media")]
     pub use super::media;
@@ -60,15 +66,17 @@ pub mod prelude {
     pub use super::video;
     #[cfg(feature = "webview")]
     pub use super::webview;
+    pub use super::window::{Window, WindowState};
     pub use super::{
-        AnimationExt, AnyView, Binding, Color, Computed, Signal, SignalExt, State, Str, Use, View,
-        ViewExt, accessibility, animation, app, binding, color, component, cursor, drag_drop,
-        entry, env, error, filter, form, fullscreen, gesture, gradient, id, layout, locale,
-        metadata, reactive, regional, shape, signal, style, task, text, widget, window,
+        AnimationExt, AnyView, Binding, Color, Computed, Identifiable, OneOf2, OneOf3, OneOf4,
+        OneOf5, OneOf6, OneOf7, OneOf8, Signal, SignalExt, State, Str, Use, View, ViewExt,
+        accessibility, animation, app, binding, color, component, cursor, drag_drop, entry, env,
+        error, filter, form, fullscreen, gesture, gradient, id, layout, locale, metadata, reactive,
+        regional, shape, signal, style, task, text, widget, window,
     };
 
     #[cfg(feature = "flow-markdown")]
-    pub use crate::include_markdown;
+    pub use waterui_markdown::include_markdown;
 
     pub use super::color::*;
     #[cfg(feature = "dialog")]
@@ -76,19 +84,23 @@ pub mod prelude {
     pub use super::fullscreen::*;
     #[cfg(feature = "snackbar")]
     pub use super::snackbar::{
-        Snackbar, SnackbarDismissReason, SnackbarManager, SnackbarPosition, SnackbarTheme,
+        Snackbar, SnackbarDismissReason, SnackbarHost, SnackbarManager, SnackbarPosition,
+        SnackbarTheme,
     };
 
     pub use super::gesture::GestureObserver;
 
     pub use super::border::Border;
     pub use super::component::*;
+    #[cfg(feature = "form")]
     pub use super::form::*;
     pub use super::layout::padding::*;
     pub use super::layout::*;
     #[cfg(feature = "navigation")]
     pub use super::navigation::{self, *};
+    pub use super::reactive::collection::{List as ReactiveList, SignalCollection};
     pub use super::style::*;
+    pub use super::views::ForEach;
     pub use waterui_core::dynamic::{DynamicHandler, watch};
 
     pub use super::theme::{
@@ -97,6 +109,7 @@ pub mod prelude {
 
     pub use super::text::{TextConfig, font, highlight, styled};
 
+    #[cfg(feature = "link")]
     pub use super::component::link::{Link, LinkTarget, link};
     #[cfg(feature = "list")]
     pub use super::component::list::{
@@ -114,8 +127,11 @@ pub mod prelude {
     pub use super::drag_drop::DropDestinationExt;
 
     pub use super::widget::{
-        Avatar, Card, CardStyle, CardStyleTokens, CardTheme, Divider, avatar, card, suspense,
+        Accordion, Card, CardStyle, CardStyleTokens, CardTheme, Divider, ErrorView, ResultExt,
+        SuspendedView, Suspense, accordion, card, condition::when, error_view, suspense,
     };
+    #[cfg(feature = "avatar")]
+    pub use super::widget::{Avatar, avatar};
     #[cfg(feature = "flow-markdown")]
     pub use super::widget::{
         FlowAnimationPolicy, FlowAnimationPreset, FlowElementKind, FlowMarkdown, FlowStreamMode,
@@ -150,6 +166,7 @@ pub mod prelude {
     pub use waterui_macros::*;
 }
 pub use color::Color;
+#[cfg(feature = "form")]
 pub use form::FormBuilder;
 #[cfg(feature = "effects")]
 #[doc(inline)]
@@ -160,20 +177,27 @@ pub use view::ViewExt;
 pub use waterui_barcode as barcode;
 #[cfg(feature = "chart")]
 pub use waterui_chart as chart;
+#[cfg(feature = "form")]
 pub use waterui_form as form;
 #[cfg(feature = "canvas")]
 pub use waterui_graphics::canvas;
 pub use waterui_graphics::color;
 pub use waterui_graphics::gradient;
+#[cfg(feature = "media")]
+pub use waterui_graphics::image_decode;
 #[cfg(feature = "gpu")]
-pub use waterui_graphics::{GpuContent, GpuView, RedrawHandle, ShaderPaintView, image_decode};
+pub use waterui_graphics::{GpuContent, GpuView, RedrawHandle, ShaderPaintView};
 pub use waterui_icon as icon;
 #[cfg(feature = "particle")]
 pub use waterui_particle as particle;
 
 #[cfg(feature = "assets")]
 pub use waterui_assets as assets;
-pub use waterui_layout as layout;
+pub mod layout {
+    //! Layout primitives re-exported from [`waterui_layout`], together with [`Divider`].
+    pub use crate::widget::Divider;
+    pub use waterui_layout::*;
+}
 pub use waterui_locale as locale;
 pub use waterui_locale::regional;
 /// The UI-test attribute, written qualified as `#[waterui::test(...)]`.
@@ -195,6 +219,11 @@ pub use waterui_text as text;
 pub mod ts;
 #[cfg(feature = "map")]
 pub use waterui_map as map;
+#[cfg(feature = "flow-markdown")]
+pub use waterui_markdown as markdown;
+#[cfg(feature = "flow-markdown")]
+#[doc(inline)]
+pub use waterui_markdown::include_markdown;
 #[cfg(feature = "video")]
 pub use waterui_video as video;
 #[cfg(feature = "webview")]
@@ -214,7 +243,7 @@ pub use waterui_assets::VideoAsset;
 #[cfg(all(feature = "assets", not(target_arch = "wasm32")))]
 pub use waterui_assets::{
     AssetError, AssetKind, AudioAsset, Bundle, Data, DataAsset, FontAsset, LargeFile,
-    LargeFileAsset, ResourceContext,
+    LargeFileAsset,
 };
 #[cfg(all(feature = "assets", target_arch = "wasm32"))]
 pub use waterui_assets::{AssetError, AssetKind, Data};
@@ -227,21 +256,32 @@ pub use waterui_assets_macros::include_web;
 #[doc(inline)]
 #[cfg(feature = "assets")]
 pub use waterui_assets_macros::{asset, assets, include_bundle};
+pub use waterui_resources::ResourceContext;
 pub use waterui_url::Url;
 
 #[doc(inline)]
+#[cfg(feature = "capture")]
+pub use waterui_capture::{CaptureHandle, CaptureScope, UnwiredCaptureError};
+#[doc(inline)]
+pub use waterui_capture::{
+    ContentLedger, RenderError, RenderRequest, RenderResult, ViewRenderer, content_ledger,
+    view_renderer,
+};
+#[doc(inline)]
 pub use waterui_core::{
-    AnyView, ContentLedger, Error, Str, animation, contract_violation,
+    AnyView, Error, OneOf2, OneOf3, OneOf4, OneOf5, OneOf6, OneOf7, OneOf8, Str, animation,
+    contract_violation,
     easing::{self, EasingCurve, Interpolatable},
     env::{self, Environment},
-    event,
     extract::{self, Extractor, State, Use},
     handler::{self, Handler, HandlerOnce},
     id::{self, Identifiable},
-    impl_extractor, key, raw_view,
+    impl_extractor, raw_view,
     resolve::{self, AnyResolvable, Resolvable},
     views,
 };
+#[doc(inline)]
+pub use waterui_interaction::{event, key};
 
 // Selective re-exports only: `waterui::transition` stays free for the
 // `waterui-transition` pixel-effects crate re-export (#1389).
@@ -295,6 +335,41 @@ macro_rules! __export_preview {
 #[doc(hidden)]
 pub use pastey;
 
-// `configure_environment!` lives in `waterui-core` so generated backend crates
-// that do not depend on the facade can still install the app catalog.
-pub use waterui_core::configure_environment;
+/// Capture standalone resource roots once when creating an application environment.
+///
+/// # Contract
+/// When the native executable's location cannot be determined a debug build
+/// panics, and a release build logs the error and installs a context rooted
+/// at `waterui_assets` and `fonts` in the working directory.
+#[doc(hidden)]
+#[cfg_attr(target_arch = "wasm32", allow(clippy::missing_const_for_fn))]
+pub fn install_application_resources(env: &mut Environment) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if env.get::<ResourceContext>().is_none() {
+        let context = ResourceContext::application().unwrap_or_else(|error| {
+            contract_violation!(
+                "application resources could not be located ({error}); resolving them against the working directory"
+            );
+            ResourceContext::new("waterui_assets", "fonts")
+        });
+        env.insert(context);
+    }
+    #[cfg(target_arch = "wasm32")]
+    let _ = env;
+}
+
+/// Configures a freshly-created environment with compile-time discovered app plugins.
+///
+/// This currently installs the runtime translation catalog generated from the caller's
+/// `i18n/*.toml` files — or the directory `WATERUI_I18N_DIR` names when the caller is a
+/// CLI-generated backend crate without an `i18n/` of its own. It is intended to be used
+/// at environment creation boundaries such as backend entry points.
+#[macro_export]
+macro_rules! configure_environment {
+    ($env:expr) => {{
+        let mut __waterui_env = $env;
+        $crate::install_application_resources(&mut __waterui_env);
+        $crate::Plugin::install($crate::catalog!(), &mut __waterui_env);
+        __waterui_env
+    }};
+}

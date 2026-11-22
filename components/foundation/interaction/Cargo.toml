@@ -1,0 +1,21 @@
+[package]
+name = "waterui-interaction"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+readme = "../../../README.md"
+repository.workspace = true
+description = "Interaction, gesture, event, and keyboard semantics for WaterUI"
+keywords = ["interaction", "gesture", "event", "keyboard", "ui", "waterui"]
+categories = ["gui"]
+
+[dependencies]
+bitflags.workspace = true
+keyboard-types.workspace = true
+nami.workspace = true
+waterui-core = { workspace = true, default-features = false }
+
+[lints]
+workspace = true

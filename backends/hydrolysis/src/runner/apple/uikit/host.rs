@@ -387,7 +387,7 @@ impl PlatformWindow for UiKitHostWindow {
         self.size_px
     }
 
-    fn apply_properties(&mut self, window: &Window) {
+    fn apply_properties<C, T>(&mut self, window: &Window<C, T>) {
         if window.state.snapshot() == WindowState::Closed {
             return;
         }

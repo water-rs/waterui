@@ -126,7 +126,7 @@ pub fn i18n_locale_api_prose(env: &Environment) {
 // i18n.md § "## The system locale" — rust block 5/7
 // ---------------------------------------------------------------------------
 pub mod i18n_block_05 {
-    use waterui::app::App;
+    use waterui::app::{App, Windows};
     use waterui::locale::{Locale, locale_binding};
     use waterui::prelude::*;
 
@@ -134,7 +134,7 @@ pub mod i18n_block_05 {
         text("scene")
     }
 
-    pub fn app(env: Environment) -> App {
+    pub fn app(env: Environment) -> App<impl Windows> {
         let locale = locale_binding(&env);
         App::new(move || scene(locale.clone()), env)
     }

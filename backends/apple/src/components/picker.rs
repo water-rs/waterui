@@ -28,15 +28,15 @@ use waterui::resolve::Resolvable;
 use waterui::text::StyledStr;
 use waterui::text::font::{Body, ResolvedFont};
 use waterui_core::id::Id;
-use waterui_core::interaction::Disabled;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size, StretchAxis, SubView,
     ViewDimensions,
 };
+use waterui_interaction::interaction::Disabled;
 
 use super::font::platform_font;
 use crate::components::control_size::platform_control_size;
-use crate::contract::{Mounted, NativeLeaf};
+use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;
 
 #[cfg(target_os = "macos")]
@@ -294,7 +294,7 @@ impl SubView for PickerSubView {
     clippy::needless_pass_by_value,
     reason = "NativeBackend hands each payload by value"
 )]
-pub fn realize_picker_config(config: PickerConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
+pub fn realize_picker_config(config: PickerConfig<Held>, ctx: &RenderContext<'_>) -> NativeLeaf {
     let mtm = ctx.mtm();
     let host = HostView::new(mtm, Rect::ZERO);
     let stretch = waterui_core::NativeView::stretch_axis(&config);
@@ -336,9 +336,7 @@ pub fn realize_picker_config(config: PickerConfig, ctx: &RenderContext<'_>) -> N
             config.label().display_mode_preference(),
             LabelDisplayMode::Hidden
         ) {
-            let label = ctx
-                .render(waterui_backend_core::AnyView::new(config.label().clone()))
-                .mount(host_view);
+            let label = ctx.realize(config.label().build()).mount(host_view);
             cocoa_ui::view::hide_from_accessibility(label.view());
             state.borrow_mut().label = Some(label);
         }

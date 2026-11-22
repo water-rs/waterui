@@ -25,7 +25,7 @@ use waterui_core::layout::{
 
 #[cfg(target_os = "macos")]
 use crate::components::layer_transform;
-use crate::contract::{Mounted, NativeLeaf};
+use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;
 
 use crate::contract::RenderContext;
@@ -118,7 +118,7 @@ impl SubView for RotationSubView {
 
 /// The `rotation` realization.
 pub fn realize_rotation_metadata(
-    metadata: Metadata<Rotation>,
+    metadata: Metadata<Rotation, Held>,
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
     let rotation = metadata.value;
@@ -129,7 +129,7 @@ pub fn realize_rotation_metadata(
 
     let mtm = ctx.mtm();
     let host = HostView::new(mtm, Rect::ZERO);
-    let mounted = ctx.render(metadata.content).mount(&host);
+    let mounted = ctx.realize(metadata.content).mount(&host);
     crate::primary_content::forward(&host, mounted.view());
     view::set_translates_autoresizing(mounted.view(), true);
     // The transform needs a layer-backed content on `AppKit`; `UIKit`

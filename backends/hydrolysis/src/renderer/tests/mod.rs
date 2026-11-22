@@ -148,6 +148,7 @@ use waterui::gesture::{DragGesture, GestureObserver, MagnificationGesture};
 use waterui::interaction::InteractionState;
 use waterui::prelude::text;
 use waterui::style::FloatingStyle;
+use waterui::widget::Divider;
 use waterui::{Binding, Color, Computed, Signal, SignalExt as _, ViewExt as _};
 use waterui_controls::button::button;
 use waterui_controls::label::{LabelDisplayMode, label};
@@ -159,16 +160,16 @@ use waterui_form::picker::PickerStyle;
 #[cfg(feature = "accessibility")]
 use waterui_form::picker::{Picker, color::ColorPicker, date::DatePicker};
 use waterui_graphics::canvas::Canvas;
+use waterui_layout::scroll;
 use waterui_layout::stack::{VStackLayout, hstack, vstack, zstack};
-use waterui_layout::{Divider, scroll};
 #[cfg(feature = "accessibility")]
 use waterui_navigation::NavigationView;
 #[cfg(feature = "accessibility")]
-use waterui_navigation::tab::{NativeTabStyle, Tab, TabsLayout};
+use waterui_navigation::tab::{NativeTabStyle, Tab, Tabs};
 
 use crate::theme::WidgetTheme;
 use crate::theme::{
-    BadgeLook, ButtonLook, ButtonSpec, Chrome, CornerShape, Custom, DragMapping, Driven,
+    BadgeLook, ButtonLook, ButtonSpec, Chrome, CornerShape, Custom, DragMapping, Driven, Elevation,
     FocusIndicator, HitRegion, IndicatorLook, InputFieldMetrics, InteractionFocusBinding,
     InteractionMotion, Knob, Label, LinearProgressLook, ListLook, ListSpec, MenuLayout, MenuLook,
     MenuPickerLook, MenuSpec, ModalInteraction, Motion, NavigationBarLook, NavigationSpec,
@@ -792,6 +793,7 @@ fn text_input_target(
         model,
         selection,
         env: test_environment(),
+        show_context_menu: HydrolysisRenderer::<ParleyEngine>::show_text_context_menu,
         key_handlers: None,
         focus_binding: None,
         #[cfg(feature = "accessibility")]
@@ -1343,7 +1345,10 @@ fn a_segmented_picker_takes_the_width_it_is_offered() {
     let mut hydro = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
     let mut measure = |style, width: Option<f32>| {
         let mut node = crate::widgets::controls::picker::PickerRenderState::from_config(
-            waterui_core::view::ConfigurableView::config(picker(style)),
+            waterui_core::backend::MapSlots::map_slots(
+                picker(style).config(),
+                waterui_core::backend::ChildSlot::from_view,
+            ),
         );
         node.prebuild(&mut renderer, &env);
         crate::widgets::controls::picker::measure_picker_node(
@@ -1749,20 +1754,28 @@ fn a_container_with_an_explicit_label_still_consumes_its_text() {
 /// label, announced its own generated description instead.
 #[cfg(feature = "accessibility")]
 #[test]
-fn a_label_survives_the_environment_snapshot_a_view_hook_takes() {
+fn a_label_reaches_the_view_a_hook_realizes() {
     use waterui::map::{Coordinate, Map, MapConfig, Region};
-    use waterui_core::AnyView;
+    use waterui_core::view::hook::Hook;
 
-    let mut env = test_environment();
-    // The hooked body stands in for a real map realization — `Native<MapConfig>`
-    // is unreachable because the backend has no map engine and panics on it.
-    env.insert_hook::<MapConfig, AnyView>(|_env, _config| {
-        AnyView::new(text("map").a11y_role(AccessibilityRole::Image))
-    });
+    /// Stands in for a map realization: this build has no map engine.
+    #[derive(Clone)]
+    struct TextMap;
+
+    impl Hook for TextMap {
+        type Target = MapConfig;
+
+        fn apply(&self, _config: MapConfig, _env: &Environment) -> Result<impl View, MapConfig> {
+            Ok(text("map").a11y_role(AccessibilityRole::Image))
+        }
+    }
+
+    let env = test_environment();
     let mut renderer = test_renderer();
     // The frame puts the hooked map inside a layout container, one level below
     // the naming scope the build installs.
     let view = Map::new(Region::new(Coordinate::default(), 1.0, 1.0))
+        .hooks(TextMap)
         .a11y_label("City map")
         .size(120.0, 120.0);
 
@@ -1784,91 +1797,16 @@ fn a_label_survives_the_environment_snapshot_a_view_hook_takes() {
     assert_eq!(labelled[0].1.role(), AccessibilityNodeRole::Image);
 }
 
-/// A `WebView` created under an application-provided controller exists — the
-/// controller permits it — but on a build bridging no engine there is nothing
-/// to draw it with, and the backend fails rather than occupying a layout slot
-/// with no page behind it.
-#[cfg(not(hydrolysis_system_webview))]
+/// A `WebView` reaching a build bridging no engine fails cleanly through
+/// `UnavailableWebViewController` rather than occupying a layout slot with no
+/// page behind it.
+#[cfg(not(any(hydrolysis_webview_engine, hydrolysis_android_system_webview)))]
 #[test]
 #[cfg_attr(debug_assertions, should_panic(expected = "no web engine is bridged"))]
 fn a_webview_with_no_engine_to_draw_it_is_reported_and_not_drawn() {
-    use std::future::{Future, ready};
+    use waterui::webview::WebView;
 
-    use waterui::webview::{
-        BackendEvent, Cookie, CustomWebViewController, ScriptInjectionTime, ScriptMessageHandler,
-        WatcherGuard, WatcherSet, WebView, WebViewConfig, WebViewController, WebViewHandle,
-        WebViewOpenError,
-    };
-    use waterui_core::{Signal, Str};
-
-    /// The smallest controller that can still create a `WebView`: the handle
-    /// answers what construction asks and discards the rest, because the
-    /// assertion only needs the view to exist long enough for the backend to
-    /// refuse it.
-    struct TestWebViewController;
-
-    impl CustomWebViewController for TestWebViewController {
-        fn open(&self, _config: WebViewConfig) -> Result<impl WebViewHandle, WebViewOpenError> {
-            Ok(TestWebViewHandle {
-                watchers: WatcherSet::new(),
-            })
-        }
-
-        // No interception facility: the double has no engine to route an asset
-        // origin through, and the assertion it serves never opens assets.
-        fn asset_origin(&self) -> Option<waterui::webview::Url> {
-            None
-        }
-    }
-
-    struct TestWebViewHandle {
-        watchers: WatcherSet<BackendEvent>,
-    }
-
-    impl WebViewHandle for TestWebViewHandle {
-        fn go_back(&self) {}
-        fn go_forward(&self) {}
-        fn go_to(&self, _url: &waterui::webview::Url) {}
-        fn stop(&self) {}
-        fn refresh(&self) {}
-        fn set_user_agent(&self, _user_agent: &str) {}
-        fn can_go_back(&self) -> bool {
-            false
-        }
-        fn can_go_forward(&self) -> bool {
-            false
-        }
-        fn inject_script(&self, _key: &str, _script: &str, _time: ScriptInjectionTime) {}
-        fn add_handler(&self, _name: &str, _handler: Box<ScriptMessageHandler>) {}
-        fn remove_handler(&self, _name: &str) {}
-        fn set_cookie(&self, _cookie: Cookie<'static>) {}
-        fn set_redirects_enabled(&self, _enabled: impl Signal<Output = bool>) {}
-        fn watch(&self, f: impl Fn(BackendEvent) + 'static) -> WatcherGuard {
-            self.watchers.insert(f)
-        }
-        fn get_cookies(
-            &self,
-        ) -> impl Future<Output = Result<Vec<Cookie<'static>>, waterui_core::Error>> {
-            ready(Ok(Vec::new()))
-        }
-        #[expect(
-            clippy::future_not_send,
-            reason = "the returned future runs on the engine's single-threaded executor; the mock captures !Send test state that never crosses a thread"
-        )]
-        fn run_javascript(&self, _script: &str) -> impl Future<Output = Result<Str, Str>> {
-            ready(Err(Str::from_static("no page")))
-        }
-        #[expect(
-            clippy::future_not_send,
-            reason = "the returned future runs on the engine's single-threaded executor; the mock captures !Send test state that never crosses a thread"
-        )]
-        fn call_async_javascript(&self, _body: &str) -> impl Future<Output = Result<Str, Str>> {
-            ready(Err(Str::from_static("no page")))
-        }
-    }
-
-    let mut env = test_environment();
-    env.insert(WebViewController::new(TestWebViewController));
+    let env = test_environment();
     let mut renderer = test_renderer();
     let view = WebView::open("https://github.com/water-rs/waterui");
 
@@ -2211,14 +2149,13 @@ fn disabled_picker_family_and_tabs_expose_no_mutating_actions() {
     let picker_selection = Binding::container("Alpha");
     let date = Binding::container(Date::new(2025, 1, 10).expect("valid test date"));
     let color = Binding::container(Color::srgb(0, 0, 0));
-    let tab_items = waterui_core::views::SharedAnyViews::new(vec![
-        Tab::new("First tab", || NavigationView::new("First", text("One"))),
-        Tab::new("Second tab", || NavigationView::new("Second", text("Two"))),
-    ]);
-    let snapshot = waterui_core::views::Views::snapshot(&tab_items);
-    let first = waterui_core::views::ViewSnapshot::get_id(&snapshot, 0)
-        .expect("a non-empty tab set reports an id");
-    let tabs = TabsLayout::new(Binding::container(first), tab_items);
+    let tabs = Tabs::new(
+        &Binding::container(0usize),
+        (
+            Tab::new("First tab", || NavigationView::new("First", text("One"))),
+            Tab::new("Second tab", || NavigationView::new("Second", text("Two"))),
+        ),
+    );
     let view = vstack((
         Picker::new(
             "Letter",
@@ -3104,10 +3041,39 @@ impl MinimalTestTheme {
             min_width: 112.0,
             max_width: 320.0,
             width_per_char: 8.5,
-            corner_radius: 4.0,
             separator_horizontal_inset: 16.0,
             separator_thickness: 1.0,
         }
+    }
+
+    /// The theme's menu look: a 4-point panel under a level-2-like shadow
+    /// that reaches past 14 points, deep enough for tests to distinguish it
+    /// from the scrim's uniform dim and from a fixed popup margin. The
+    /// `WorkingColor` components are linear Display P3; the intended panel
+    /// colour is sRGB (0.96, 0.94, 0.97), so it converts rather than passing
+    /// raw.
+    #[cfg(feature = "menu")]
+    pub(crate) fn menu_look() -> MenuLook {
+        MenuLook::new(
+            Self::menu_layout(),
+            Surface::new(
+                CornerShape::radius(4.0),
+                crate::renderer::working_color(peniko::Color::new([0.96, 0.94, 0.97, 1.0])),
+            )
+            .elevation(Elevation::new(
+                Shadow::new(6.0, WorkingColor::new([0.0, 0.0, 0.0, 0.35]))
+                    .offset(kurbo::Vec2::new(0.0, 3.0)),
+                Elevation::NONE.ambient,
+            )),
+            Custom::new((), |_, _, ()| {}),
+        )
+    }
+
+    /// The transparent margin a popup menu window leaves around this
+    /// theme's menu panel: its elevation's reach.
+    #[cfg(feature = "menu")]
+    pub(crate) fn panel_margin() -> f64 {
+        Self::menu_look().panel_extent(Rect::ZERO)
     }
 }
 
@@ -3238,30 +3204,7 @@ impl WidgetTheme for MinimalTestTheme {
 
     #[cfg(feature = "menu")]
     fn menu(&self, _spec: &MenuSpec, _env: &Environment) -> MenuLook {
-        let layout = Self::menu_layout();
-        let radii = kurbo::RoundedRectRadii::from_single_radius(layout.corner_radius);
-        MenuLook::new(
-            layout,
-            Custom::new((), move |draw, bounds, ()| {
-                // A level-2-like shadow under the panel, deep enough for
-                // tests to distinguish it from the scrim's uniform dim.
-                draw.shadow(
-                    kurbo::RoundedRect::from_rect(bounds, radii),
-                    Shadow::new(6.0, WorkingColor::new([0.0, 0.0, 0.0, 0.35]))
-                        .offset(kurbo::Vec2::new(0.0, 3.0)),
-                );
-                draw.fill(
-                    kurbo::RoundedRect::from_rect(bounds, radii),
-                    // `WorkingColor` components are linear Display P3; the
-                    // intended panel colour is sRGB (0.96, 0.94, 0.97), so it
-                    // converts rather than passing raw.
-                    Paint::Solid(crate::renderer::working_color(peniko::Color::new([
-                        0.96, 0.94, 0.97, 1.0,
-                    ]))),
-                );
-            }),
-            Custom::new((), |_, _, ()| {}),
-        )
+        Self::menu_look()
     }
 
     #[cfg(any(feature = "picker", feature = "date-picker"))]
@@ -4094,7 +4037,7 @@ fn badge_indicator_anchors_to_the_content_trailing_edge() {
 
     // The renderer retains badge state by node, so each variant captures on a
     // fresh renderer.
-    let capture = |view: Badge, env: &Environment| {
+    let capture = |view: Badge<FillAnchor>, env: &Environment| {
         log.0.borrow_mut().clear();
         let mut renderer = test_renderer_with_theme(MinimalTestTheme {
             badge_draws: Rc::clone(&log.0),
@@ -4151,11 +4094,7 @@ fn tab_badge_draws_only_for_a_nonzero_count() {
             Some(count) => inbox.badge(count),
             None => inbox,
         };
-        let tab_items = waterui_core::views::SharedAnyViews::new(vec![inbox]);
-        let snapshot = waterui_core::views::Views::snapshot(&tab_items);
-        let first = waterui_core::views::ViewSnapshot::get_id(&snapshot, 0)
-            .expect("a non-empty tab set reports an id");
-        let tabs = TabsLayout::new(Binding::container(first), tab_items);
+        let tabs = Tabs::new(&Binding::container(0usize), vec![inbox]);
         let mut renderer = test_renderer_with_theme(MinimalTestTheme {
             badge_draws: Rc::clone(&log.0),
             ..Default::default()

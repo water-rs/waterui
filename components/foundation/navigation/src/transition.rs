@@ -19,7 +19,7 @@ impl MetadataKey for NavigationTransitionDestination {}
 /// Navigation transition metadata available on every view.
 pub trait NavigationTransitionViewExt: View + Sized {
     /// Marks this view as the source geometry for a matched transition.
-    fn navigation_transition_source(self, id: Id) -> Metadata<NavigationTransitionSource> {
+    fn navigation_transition_source(self, id: Id) -> Metadata<NavigationTransitionSource, Self> {
         Metadata::new(self, NavigationTransitionSource(id))
     }
 
@@ -27,7 +27,7 @@ pub trait NavigationTransitionViewExt: View + Sized {
     fn navigation_transition_destination(
         self,
         id: Id,
-    ) -> Metadata<NavigationTransitionDestination> {
+    ) -> Metadata<NavigationTransitionDestination, Self> {
         Metadata::new(self, NavigationTransitionDestination(id))
     }
 }

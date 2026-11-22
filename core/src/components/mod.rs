@@ -20,3 +20,5 @@ pub mod metadata;
 pub use metadata::{Metadata, Retain};
 pub mod native;
 pub use native::{Native, NativeView};
+pub mod one_of;
+pub use one_of::{OneOf2, OneOf3, OneOf4, OneOf5, OneOf6, OneOf7, OneOf8};

@@ -18,6 +18,12 @@ pub struct Command {
     pub subtitle: Option<String>,
     /// A system-symbol icon name.
     pub symbol: Option<String>,
+    /// A rendered platform icon image (used when the icon is not a system symbol).
+    #[cfg(target_os = "macos")]
+    pub image: Option<objc2::rc::Retained<objc2_app_kit::NSImage>>,
+    /// A rendered platform icon image (used when the icon is not a system symbol).
+    #[cfg(target_os = "ios")]
+    pub image: Option<objc2::rc::Retained<objc2_ui_kit::UIImage>>,
     /// Whether the item is destructive.
     pub destructive: bool,
     /// Whether the item can be chosen.
@@ -36,6 +42,7 @@ impl fmt::Debug for Command {
             .field("label", &self.label)
             .field("subtitle", &self.subtitle)
             .field("symbol", &self.symbol)
+            .field("has_image", &self.image.is_some())
             .field("destructive", &self.destructive)
             .field("enabled", &self.enabled)
             .field("selected", &self.selected)

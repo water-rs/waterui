@@ -6,10 +6,13 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.ColorSpace
 import android.graphics.PixelFormat
+import android.graphics.Rect
 import android.hardware.HardwareBuffer
 import android.media.Image
 import android.media.ImageReader
 import android.view.MotionEvent
+import android.view.View
+import android.widget.FrameLayout
 import dev.waterui.hydrolysis.HydrolysisSession
 import dev.waterui.hydrolysis.NativeBridge
 import dev.waterui.hydrolysis.RegionBand
@@ -64,10 +67,32 @@ class HydrolysisGpuRegionBand(
         isLongClickable = false
         isFocusable = false
         importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
-        setWillNotDraw(false)
+        setWillNotDraw(true)
+        background = null
+        visibility = INVISIBLE
     }
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean = false
+
+    private inner class SliceView(context: Context) : View(context) {
+        val srcRect = Rect()
+        val dstRect = Rect()
+
+        init {
+            isClickable = false
+            isLongClickable = false
+            isFocusable = false
+            importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
+            setWillNotDraw(false)
+        }
+
+        override fun dispatchTouchEvent(event: MotionEvent): Boolean = false
+
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            bitmap?.let { canvas.drawBitmap(it, srcRect, dstRect, null) }
+        }
+    }
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
@@ -118,10 +143,18 @@ class HydrolysisGpuRegionBand(
         current = null
         open.close()
         reader = null
+        clearSlices()
         invalidate()
     }
 
-    override fun show(colorSpace: ColorSpace) {
+    override fun show(colorSpace: ColorSpace, paintedRects: IntArray) {
+        require(paintedRects.size % 4 == 0) {
+            "hydrolysis: paintedRects length ${paintedRects.size} must be a multiple of 4"
+        }
+        if (paintedRects.isEmpty()) {
+            clear()
+            return
+        }
         val open = checkNotNull(reader) { "hydrolysis: the band above view $view showed without a reader" }
         // `null` only when the frame presented into a reader this band has
         // since replaced on a resize: the new reader's first frame follows.
@@ -136,11 +169,13 @@ class HydrolysisGpuRegionBand(
                 buffer.close()
             }
         replace(image, wrapped)
+        updateSlices(paintedRects)
     }
 
     override fun clear() {
         checkNotNull(reader) { "hydrolysis: the band above view $view cleared without a reader" }
         replace(null, null)
+        clearSlices()
     }
 
     private fun replace(image: Image?, wrapped: Bitmap?) {
@@ -148,12 +183,48 @@ class HydrolysisGpuRegionBand(
         previous = current
         current = image
         bitmap = wrapped
-        invalidate()
     }
 
-    override fun onDraw(canvas: Canvas) {
-        super.onDraw(canvas)
-        bitmap?.let { canvas.drawBitmap(it, 0f, 0f, null) }
+    private fun clearSlices() {
+        removeAllViews()
+        if (visibility != INVISIBLE) visibility = INVISIBLE
+    }
+
+    private fun updateSlices(paintedRects: IntArray) {
+        val count = paintedRects.size / 4
+        if (count == 0) {
+            clearSlices()
+            return
+        }
+        if (visibility != VISIBLE) visibility = VISIBLE
+        while (childCount > count) {
+            removeViewAt(childCount - 1)
+        }
+        while (childCount < count) {
+            addView(SliceView(context))
+        }
+        for (i in 0 until count) {
+            val slice = getChildAt(i) as SliceView
+            val x = paintedRects[i * 4]
+            val y = paintedRects[i * 4 + 1]
+            val w = paintedRects[i * 4 + 2]
+            val h = paintedRects[i * 4 + 3]
+            slice.srcRect.set(x, y, x + w, y + h)
+            slice.dstRect.set(0, 0, w, h)
+            val params =
+                (slice.layoutParams as? FrameLayout.LayoutParams)
+                    ?: FrameLayout.LayoutParams(w, h)
+            if (params.width != w || params.height != h ||
+                params.leftMargin != x || params.topMargin != y
+            ) {
+                params.width = w
+                params.height = h
+                params.leftMargin = x
+                params.topMargin = y
+                slice.layoutParams = params
+            }
+            slice.invalidate()
+        }
     }
 
     private companion object {

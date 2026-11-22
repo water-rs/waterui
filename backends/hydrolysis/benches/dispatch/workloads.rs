@@ -34,7 +34,7 @@ const STEP: Duration = Duration::from_secs(1);
 /// `Dynamic` swap, a navigation destination or any other rebuild takes.
 pub struct Remount {
     runtime: SemanticRuntime,
-    handler: DynamicHandler,
+    handler: DynamicHandler<AnyView>,
     at: Instant,
 }
 
@@ -72,7 +72,7 @@ impl Remount {
 
     /// Replaces the mounted subtree with `view` and pumps.
     pub fn mount(&mut self, view: impl View) {
-        self.handler.set(view);
+        self.handler.set(AnyView::new(view));
         self.pump();
     }
 

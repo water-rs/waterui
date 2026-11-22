@@ -18,6 +18,17 @@ compile_error!(
      (windows presenting `cpu` frames are water-rs/waterui#4064)"
 );
 
+#[cfg(any(
+    all(feature = "webview-system", feature = "webview-cef"),
+    all(feature = "webview-system", feature = "webview-wpe"),
+    all(feature = "webview-cef", feature = "webview-wpe"),
+))]
+compile_error!(
+    "hydrolysis: enable at most one webview engine feature (`webview-system`, `webview-cef`, `webview-wpe`)"
+);
+
+#[cfg(target_os = "android")]
+pub mod android_content;
 #[cfg(hydrolysis_runtime)]
 mod animation;
 #[cfg(hydrolysis_cherenkov)]
@@ -56,8 +67,7 @@ mod runner;
 pub mod testing;
 #[cfg(hydrolysis_runtime)]
 mod text;
-pub mod theme;
-#[cfg(hydrolysis_cherenkov)]
+#[cfg(hydrolysis_runtime)]
 mod view_renderer;
 #[cfg(hydrolysis_runtime)]
 mod widgets;
@@ -66,10 +76,13 @@ mod widgets;
 #[cfg(hydrolysis_runtime)]
 pub(crate) use waterui_backend_core::{gesture, scroll, time};
 
+#[cfg(target_os = "android")]
+pub use android_content::{
+    AndroidContent, AndroidInvalidator, AndroidLifecycle, AndroidMount, AndroidView, jni,
+};
 #[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
 pub use hosted::{HostedContent, HostedObject, HostedOcclusion, HostedView};
 use std::time::Duration;
-use waterui_core::Environment;
 
 /// The frame interval Hydrolysis budgets for: 120 Hz.
 ///
@@ -78,39 +91,11 @@ use waterui_core::Environment;
 /// paths, the first frame).
 pub const TARGET_FRAME_INTERVAL: Duration = Duration::from_nanos(8_333_333);
 
-/// A presentation style for the rendered Hydrolysis runtime: the type a style
-/// package implements, and what `run(app, env, style)` accepts.
-///
-/// A `Style` is the runtime's widget theme plus the package's token set:
-/// the runtime assembles the environment's theme tokens with framework
-/// defaults beneath [`Self::install_tokens`] beneath the application's own
-/// environment (`crate::theme::install_theme_tokens`), and finally owns the
-/// style itself and hands `&dyn` [`WidgetTheme`](theme::WidgetTheme) to the
-/// layout and encode contexts. The [`theme`] module documents the whole
-/// contract a style package targets.
-///
-/// The semantic runtime (`SemanticRuntime`) takes no `Style`: widget
-/// structure, roles, labels, values, states and actions never depend on one.
-/// A theme read during view build or patch is a compile error by
-/// construction — build and patch contexts cannot reach a theme.
-pub trait Style: theme::WidgetTheme + 'static {
-    /// Installs the style package's colour, font and other environment
-    /// tokens. The environment already carries the application's entries
-    /// layered over the framework defaults, so an installed value can be
-    /// read here (e.g. the application's colour scheme), and the
-    /// application's own entries still win in the assembled environment.
-    fn install_tokens(&self, env: &mut Environment);
-}
 /// The alpha convention a [`HeadlessSnapshot`]'s pixels read — what the
 /// producing surface presented with.
 #[cfg(all(not(target_arch = "wasm32"), hydrolysis_cherenkov))]
 pub use cherenkov::OutputAlpha;
-/// The drawing vocabulary of the style contract: the `Recorder` a
-/// [`WidgetTheme`](theme::WidgetTheme) and its looks record into, `Paint`,
-/// the shapes, the colour, material and animation types, and the `kurbo`
-/// geometry the [`theme`] signatures name. A style package draws with these,
-/// so it records with the same recorder the renderer consumes.
-pub use cherenkov_record as draw;
+pub use hydrolysis_style::{Style, draw, theme};
 /// The W3C UI Events key vocabulary this backend speaks, re-exported so hosts
 /// that synthesize key events use the same version of it.
 pub use keyboard_types;
@@ -174,9 +159,21 @@ pub use text::ParleyEngine;
 pub use text::fonts::native_collection;
 #[cfg(hydrolysis_runtime)]
 pub use text::{DeclaredFonts, FontFamilyResolution};
-#[cfg(hydrolysis_cherenkov)]
-pub use view_renderer::HydrolysisViewRenderer;
+#[cfg(hydrolysis_runtime)]
+pub use view_renderer::HydrolysisOffscreenRenderer;
 #[cfg(hydrolysis_macos_system_webview)]
 pub use widgets::platform::webview::MacSystemWebViewController;
+#[cfg(hydrolysis_macos_system_webview)]
+#[doc(hidden)]
+pub use widgets::platform::webview::MacSystemWebViewHandle;
+#[cfg(waterui_feature = "webview")]
+#[doc(hidden)]
+pub use widgets::platform::webview::SelectedWebViewController;
+#[cfg(hydrolysis_web_system_webview)]
+#[doc(hidden)]
+pub use widgets::platform::webview::WebIframeHandle;
 #[cfg(hydrolysis_web_system_webview)]
 pub use widgets::platform::webview::WebSystemWebViewController;
+#[cfg(hydrolysis_android_system_webview)]
+#[doc(hidden)]
+pub use widgets::platform::webview::{AndroidSystemWebViewController, AndroidSystemWebViewHandle};

@@ -444,6 +444,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
+name = "apple-availability"
+version = "0.5.1"
+dependencies = [
+ "objc2 0.6.5",
+ "waterui-macros",
+]
+
+[[package]]
 name = "apple-planes"
 version = "0.0.0"
 dependencies = [
@@ -3877,9 +3885,9 @@ dependencies = [
 
 [[package]]
 name = "form_urlencoded"
-version = "1.2.2"
+version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
+checksum = "afa489199eaffb1211795df1c6236ce1ad0d41a6fa45250add73e3b02420f06e"
 dependencies = [
  "percent-encoding",
 ]
@@ -4724,6 +4732,7 @@ dependencies = [
  "getrandom 0.4.3",
  "gungraun",
  "hydrolysis",
+ "hydrolysis-style",
  "icu_locale",
  "icu_properties",
  "icu_provider",
@@ -4775,15 +4784,18 @@ dependencies = [
  "waterui-assets",
  "waterui-assets-core",
  "waterui-backend-core",
+ "waterui-browser-cef",
+ "waterui-browser-wpe",
  "waterui-controls",
  "waterui-core",
  "waterui-form",
  "waterui-graphics",
- "waterui-icon",
  "waterui-image",
  "waterui-inspector-protocol",
+ "waterui-interaction",
  "waterui-layout",
  "waterui-locale",
+ "waterui-map-gpu",
  "waterui-navigation",
  "waterui-shape",
  "waterui-structural-transition",
@@ -4821,7 +4833,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis-m3"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis-m3?branch=main#3c12ebc1203c4f0754d810029873b6ee5f8ade4d"
+source = "git+https://github.com/water-rs/hydrolysis-m3?branch=refactor%2F4770-slim-core-ui#c1396c5529217a0e2c169604f7fc2b268c19db8e"
 dependencies = [
  "hydrolysis",
  "material-color-utils",
@@ -4830,6 +4842,23 @@ dependencies = [
  "waterui-controls",
  "waterui-core",
  "waterui-graphics",
+]
+
+[[package]]
+name = "hydrolysis-style"
+version = "0.5.1"
+dependencies = [
+ "approx",
+ "cherenkov-record",
+ "kurbo",
+ "nami",
+ "waterui",
+ "waterui-controls",
+ "waterui-core",
+ "waterui-graphics",
+ "waterui-interaction",
+ "waterui-shape",
+ "waterui-text",
 ]
 
 [[package]]
@@ -4973,9 +5002,9 @@ name = "icons-example"
 version = "0.1.0"
 dependencies = [
  "waterui",
+ "waterui-apple",
  "waterui-icons-lucide",
  "waterui-icons-material-icon",
- "waterui-icons-sf-symbol",
 ]
 
 [[package]]
@@ -6169,6 +6198,7 @@ name = "liquid-glass-example"
 version = "0.1.0"
 dependencies = [
  "waterui",
+ "waterui-apple",
 ]
 
 [[package]]
@@ -6877,8 +6907,7 @@ dependencies = [
 [[package]]
 name = "nami"
 version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fb9d0d54676f434e59decc077a6c67ad318933ec1ac7cebaf78204bea41f7d82"
+source = "git+https://github.com/water-rs/nami?branch=main#a549338055efa3e4f907055b90f18bf14a86a337"
 dependencies = [
  "async-channel",
  "async-io",
@@ -6895,8 +6924,7 @@ dependencies = [
 [[package]]
 name = "nami-core"
 version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d15d89a677ebfdd18f7085dabaff2fef8a17e127c79b77f869cab2854bc024d5"
+source = "git+https://github.com/water-rs/nami?branch=main#a549338055efa3e4f907055b90f18bf14a86a337"
 dependencies = [
  "kurbo",
 ]
@@ -6904,8 +6932,7 @@ dependencies = [
 [[package]]
 name = "nami-derive"
 version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5548d158e51d8a5f5a0a278f32d4d6297c15b8c17d2ebbc5c956052c06d6d121"
+source = "git+https://github.com/water-rs/nami?branch=main#a549338055efa3e4f907055b90f18bf14a86a337"
 dependencies = [
  "proc-macro2 1.0.107",
  "quote 1.0.47",
@@ -9268,6 +9295,13 @@ dependencies = [
  "time",
  "x509-parser",
  "yasna",
+]
+
+[[package]]
+name = "reachability-app"
+version = "0.1.0"
+dependencies = [
+ "waterui",
 ]
 
 [[package]]
@@ -11670,9 +11704,8 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
 name = "trybuild"
-version = "1.0.122"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62db9c92d704393fbf2132041720cc80b689f2d3f28521015c2ac866223c11b8"
+version = "1.0.125"
+source = "git+https://github.com/lexoliu/trybuild?branch=normalize-git-checkouts#6c053caa95978918651a75ca82fdda54078cac51"
 dependencies = [
  "glob",
  "serde",
@@ -11912,9 +11945,9 @@ dependencies = [
 
 [[package]]
 name = "url"
-version = "2.5.8"
+version = "2.5.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff67a8a4397373c3ef660812acab3268222035010ab8680ec4215f38ba3d0eed"
+checksum = "f00cd2407bb42c0ef17be88d4cf020f5cceffd121665bac9b8b9493a369b3b1a"
 dependencies = [
  "form_urlencoded",
  "idna",
@@ -12789,6 +12822,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "waterui-accessibility"
+version = "0.5.1"
+dependencies = [
+ "nami",
+ "suiteki",
+ "waterui-core",
+]
+
+[[package]]
 name = "waterui-apple"
 version = "0.1.0"
 dependencies = [
@@ -12827,15 +12869,21 @@ dependencies = [
  "waterkit-audio",
  "waterkit-build",
  "waterui",
+ "waterui-accessibility",
  "waterui-apple-menu",
  "waterui-backend-core",
+ "waterui-browser-cef",
+ "waterui-capture",
  "waterui-core",
  "waterui-graphics",
+ "waterui-interaction",
  "waterui-locale",
  "waterui-map",
  "waterui-meta",
  "waterui-preview-protocol",
+ "waterui-resources",
  "waterui-structural-transition",
+ "waterui-testing",
  "waterui-video",
  "waterui-webview",
  "wgpu-hal",
@@ -12853,14 +12901,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "waterui-apple-os"
-version = "0.5.1"
-dependencies = [
- "objc2 0.6.5",
- "waterui-macros",
-]
-
-[[package]]
 name = "waterui-assets"
 version = "0.5.1"
 dependencies = [
@@ -12873,6 +12913,7 @@ dependencies = [
  "waterui-assets-core",
  "waterui-core",
  "waterui-media",
+ "waterui-resources",
  "waterui-url",
  "waterui-video",
 ]
@@ -12925,8 +12966,11 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "waterui",
+ "waterui-accessibility",
  "waterui-core",
+ "waterui-interaction",
  "waterui-layout",
+ "waterui-meta",
  "waterui-structural-transition",
  "web-time",
 ]
@@ -12934,12 +12978,13 @@ dependencies = [
 [[package]]
 name = "waterui-barcode"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/barcode?branch=refactor%2Fstrict-metadata#c5212b61a76d93dc81056808812548e356d5dcc4"
+source = "git+https://github.com/water-rs/barcode?branch=main#3955172fbe2217978a5779d58a14dc0569eb7cad"
 dependencies = [
  "barcoders",
  "fast_qr",
  "nami",
  "thiserror 2.0.21",
+ "waterui-accessibility",
  "waterui-core",
  "waterui-graphics",
 ]
@@ -12947,7 +12992,7 @@ dependencies = [
 [[package]]
 name = "waterui-browser-cef"
 version = "0.1.0"
-source = "git+https://github.com/water-rs/browsers?branch=main#f3637e7d6017d44a755040132fd361446ed65114"
+source = "git+https://github.com/water-rs/browsers?branch=main#93a5a4d87f0ec93de0c2bab077a3f45272d2d335"
 dependencies = [
  "async-channel",
  "base64 0.23.1",
@@ -12974,6 +13019,7 @@ dependencies = [
  "suiteki",
  "thiserror 2.0.21",
  "tracing",
+ "waterui-accessibility",
  "waterui-chromium",
  "waterui-core",
  "waterui-graphics",
@@ -12987,7 +13033,7 @@ dependencies = [
 [[package]]
 name = "waterui-browser-wpe"
 version = "0.1.0"
-source = "git+https://github.com/water-rs/browsers?branch=main#f3637e7d6017d44a755040132fd361446ed65114"
+source = "git+https://github.com/water-rs/browsers?branch=main#93a5a4d87f0ec93de0c2bab077a3f45272d2d335"
 dependencies = [
  "cookie",
  "executor-core",
@@ -13002,6 +13048,7 @@ dependencies = [
  "serde_json",
  "suiteki",
  "tracing",
+ "waterui-accessibility",
  "waterui-core",
  "waterui-graphics",
  "waterui-url",
@@ -13013,15 +13060,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "waterui-capture"
+version = "0.5.1"
+dependencies = [
+ "nami",
+ "thiserror 2.0.21",
+ "waterui-core",
+]
+
+[[package]]
 name = "waterui-chart"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/chart?branch=refactor%2Frealized-stretch-axis#b51e871fc730b9c64b9f347c7ee8ae05f60a2417"
+source = "git+https://github.com/water-rs/chart?branch=main#2e99e1fb708f2f5808a83fb6a2943ba29bcb86a0"
 dependencies = [
  "bytemuck",
  "nami",
  "num-traits",
+ "waterui-accessibility",
  "waterui-core",
  "waterui-graphics",
+ "waterui-interaction",
  "waterui-layout",
  "waterui-shape",
  "waterui-text",
@@ -13041,7 +13099,9 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "tracing",
+ "waterui-accessibility",
  "waterui-core",
+ "waterui-graphics",
  "waterui-layout",
  "waterui-macros",
  "waterui-url",
@@ -13172,8 +13232,9 @@ dependencies = [
  "serde",
  "thiserror 2.0.21",
  "waterui",
+ "waterui-accessibility",
  "waterui-core",
- "waterui-icon",
+ "waterui-interaction",
  "waterui-layout",
  "waterui-locale",
  "waterui-macros",
@@ -13186,8 +13247,6 @@ name = "waterui-core"
 version = "0.5.1"
 dependencies = [
  "anyhow",
- "bitflags 2.13.2",
- "keyboard-types",
  "nami",
  "num-traits",
  "serde",
@@ -13197,6 +13256,7 @@ dependencies = [
  "waterui-contract",
  "waterui-easing",
  "waterui-macros",
+ "waterui-meta",
 ]
 
 [[package]]
@@ -13226,6 +13286,7 @@ dependencies = [
  "waterui-core",
  "waterui-form",
  "waterui-graphics",
+ "waterui-interaction",
  "waterui-layout",
  "waterui-locale",
  "waterui-macros",
@@ -13286,7 +13347,6 @@ dependencies = [
 name = "waterui-icon"
 version = "0.5.1"
 dependencies = [
- "suiteki",
  "waterui",
  "waterui-core",
  "waterui-graphics",
@@ -13329,6 +13389,7 @@ dependencies = [
  "waterui",
  "waterui-icon",
  "waterui-icons-codegen",
+ "waterui-svg",
  "waterui-testing",
 ]
 
@@ -13342,23 +13403,8 @@ dependencies = [
  "waterui",
  "waterui-icon",
  "waterui-icons-codegen",
+ "waterui-svg",
  "waterui-testing",
-]
-
-[[package]]
-name = "waterui-icons-native"
-version = "0.5.1"
-dependencies = [
- "suiteki",
- "waterui-icon",
-]
-
-[[package]]
-name = "waterui-icons-sf-symbol"
-version = "0.5.1"
-dependencies = [
- "suiteki",
- "waterui-icon",
 ]
 
 [[package]]
@@ -13412,6 +13458,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "waterui-inspector-runtime"
+version = "0.5.1"
+dependencies = [
+ "async-channel",
+ "getrandom 0.4.3",
+ "nami",
+ "tracing",
+ "tracing-subscriber",
+ "waterui-core",
+ "waterui-inspector-protocol",
+]
+
+[[package]]
+name = "waterui-interaction"
+version = "0.5.1"
+dependencies = [
+ "bitflags 2.13.2",
+ "keyboard-types",
+ "nami",
+ "waterui-core",
+]
+
+[[package]]
 name = "waterui-internal"
 version = "0.5.1"
 dependencies = [
@@ -13419,42 +13488,41 @@ dependencies = [
  "cpu-time",
  "executor-core",
  "futures",
- "getrandom 0.4.3",
  "nami",
  "native-executor",
  "object 0.40.0",
  "pastey 0.2.3",
- "pulldown-cmark",
  "suiteki",
  "thiserror 2.0.21",
  "tracing",
- "tracing-subscriber",
- "tree-sitter",
- "tree-sitter-md",
  "unicode-segmentation",
  "waterkit-deeplink",
  "waterkit-haptic",
  "waterui",
+ "waterui-accessibility",
  "waterui-assets",
  "waterui-assets-macros",
  "waterui-assets-planner",
  "waterui-barcode",
+ "waterui-capture",
  "waterui-chart",
  "waterui-controls",
  "waterui-core",
  "waterui-form",
  "waterui-graphics",
  "waterui-icon",
- "waterui-inspector-protocol",
+ "waterui-inspector-runtime",
+ "waterui-interaction",
  "waterui-layout",
  "waterui-locale",
  "waterui-macros",
  "waterui-map",
- "waterui-math",
+ "waterui-markdown",
  "waterui-media",
  "waterui-meta",
  "waterui-navigation",
  "waterui-particle",
+ "waterui-resources",
  "waterui-shape",
  "waterui-structural-transition",
  "waterui-svg",
@@ -13462,7 +13530,6 @@ dependencies = [
  "waterui-ts",
  "waterui-url",
  "waterui-video",
- "waterui-video-gpu",
  "waterui-webview",
  "waterui-widgets",
  "web-time",
@@ -13476,7 +13543,6 @@ dependencies = [
  "num-traits",
  "smallvec",
  "waterui",
- "waterui-color",
  "waterui-contract",
  "waterui-core",
  "waterui-testing",
@@ -13542,7 +13608,7 @@ dependencies = [
 [[package]]
 name = "waterui-map-gpu"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/map-gpu?branch=refactor%2Fstrict-metadata#ebfaa09ecc9b5cc25cbf38c114a37c28dcde278d"
+source = "git+https://github.com/water-rs/map-gpu?branch=main#001ab8296bf9fde845a50835f37e770de10456c6"
 dependencies = [
  "arc-swap",
  "blocking",
@@ -13569,12 +13635,36 @@ dependencies = [
  "thiserror 2.0.21",
  "tracing",
  "url",
+ "waterui-accessibility",
  "waterui-core",
  "waterui-graphics",
+ "waterui-interaction",
  "waterui-map",
  "waterui-url",
  "web-time",
  "zenwave 0.6.1",
+]
+
+[[package]]
+name = "waterui-markdown"
+version = "0.5.1"
+dependencies = [
+ "executor-core",
+ "nami",
+ "native-executor",
+ "pulldown-cmark",
+ "suiteki",
+ "tracing",
+ "tree-sitter",
+ "tree-sitter-md",
+ "waterkit-deeplink",
+ "waterui-color",
+ "waterui-controls",
+ "waterui-core",
+ "waterui-layout",
+ "waterui-math",
+ "waterui-media",
+ "waterui-text",
 ]
 
 [[package]]
@@ -13644,9 +13734,11 @@ dependencies = [
  "waterkit-dialog",
  "waterkit-fs",
  "waterui",
+ "waterui-capture",
  "waterui-controls",
  "waterui-core",
  "waterui-image",
+ "waterui-interaction",
  "waterui-layout",
  "waterui-macros",
  "waterui-media",
@@ -13673,7 +13765,6 @@ dependencies = [
  "waterui-controls",
  "waterui-core",
  "waterui-graphics",
- "waterui-icon",
  "waterui-icons-lucide",
  "waterui-testing",
  "waterui-text",
@@ -13703,6 +13794,13 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "waterui-resources"
+version = "0.5.1"
+dependencies = [
+ "waterui-core",
 ]
 
 [[package]]
@@ -13774,8 +13872,10 @@ dependencies = [
  "two-face",
  "waterkit-clipboard",
  "waterui",
+ "waterui-accessibility",
  "waterui-color",
  "waterui-core",
+ "waterui-interaction",
  "waterui-layout",
  "waterui-locale",
  "waterui-macros",
@@ -13890,7 +13990,7 @@ dependencies = [
 [[package]]
 name = "waterui-video-gpu"
 version = "0.4.0"
-source = "git+https://github.com/water-rs/video-gpu?branch=refactor%2Fstrict-metadata#924b62d4ea6e1b39f10e39a970bcc2f082b5be30"
+source = "git+https://github.com/water-rs/video-gpu?branch=main#b88342361c0876122116f2f3f47b6ecc811672e2"
 dependencies = [
  "async-channel",
  "executor-core",
@@ -13907,9 +14007,11 @@ dependencies = [
  "waterkit-core",
  "waterkit-fs",
  "waterkit-video",
+ "waterui-accessibility",
  "waterui-controls",
  "waterui-core",
  "waterui-graphics",
+ "waterui-interaction",
  "waterui-layout",
  "waterui-text",
  "waterui-video",
@@ -13923,13 +14025,12 @@ version = "0.5.1"
 name = "waterui-webview"
 version = "0.5.1"
 dependencies = [
+ "apple-availability",
  "base64 0.23.1",
  "cookie",
  "divan",
  "executor-core",
  "futures",
- "objc2 0.6.5",
- "objc2-web-kit",
  "percent-encoding",
  "serde",
  "serde_json",
@@ -13941,7 +14042,6 @@ dependencies = [
  "tracing",
  "waterkit-deeplink",
  "waterui",
- "waterui-apple-os",
  "waterui-core",
  "waterui-layout",
  "waterui-testing",

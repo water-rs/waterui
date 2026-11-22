@@ -31,7 +31,7 @@ impl CaretPaints {
     ) -> cherenkov_record::Paint {
         paint.target(&crate::theme::Inputs::at_rest(
             frame,
-            waterui_core::interaction::InteractionState::FOCUSED,
+            waterui_interaction::interaction::InteractionState::FOCUSED,
             &(),
         ))
     }
@@ -76,7 +76,7 @@ pub struct TextEditingState<E: crate::text::TextEngine> {
     pub(crate) clearance_surfaces: RefCell<Vec<ClearanceSurface<E>>>,
     pub(crate) text_input_targets: Vec<TextInputTarget<E>>,
     pub(crate) active_text_selection_drag: Option<ActiveTextSelectionDrag>,
-    pub(crate) active_text_context_menu: Option<ActiveTextContextMenu>,
+    pub(crate) active_text_context_menu: Option<ActiveTextContextMenu<E>>,
     focused_text_input: RefCell<Option<InteractionKey>>,
     /// The `.focused()` binding of the field holding text focus, captured
     /// while the target is emitted so unfocus writes still reach it after
@@ -226,6 +226,10 @@ pub struct TextInputTarget<E: crate::text::TextEngine> {
     /// The environment of the view the target was registered from — the
     /// context menu it opens runs inside it (water-rs/hydrolysis#140).
     pub(crate) env: Environment,
+    /// Context-menu opener attached by the registering text/secure field,
+    /// keeping `show_text_context_menu` / `popup_menu_window` unreachable
+    /// unless a text input widget is actually constructed.
+    pub(crate) show_context_menu: TextContextMenuOpener<E>,
     /// The `OnKeyPress` scopes enclosing the view this target was registered
     /// from — the chain a key the field did not consume bubbles through,
     /// innermost first at dispatch time.
@@ -315,7 +319,15 @@ pub struct TextInputTargetRegistration<E: crate::text::TextEngine> {
     /// The environment of the registering view; the context menu opens inside
     /// it (water-rs/hydrolysis#140).
     pub(crate) env: Environment,
+    /// Context-menu opener attached by the registering text/secure field.
+    pub(crate) show_context_menu: TextContextMenuOpener<E>,
 }
+
+pub type TextContextMenuOpener<E> =
+    fn(&mut HydrolysisRenderer<E>, usize, kurbo::Point, &Environment) -> bool;
+
+pub type TextContextMenuSubmenuOpener<E> =
+    fn(&mut SemanticCore<E>, &TextContextMenuOverlay<E>, kurbo::Rect, Vec<PopupMenuNode>);
 
 pub struct TextInputTargetData<E: crate::text::TextEngine> {
     pub target: TextInputTargetRegistration<E>,
@@ -345,16 +357,10 @@ fn text_context_menu_builtin_node(
 ) -> PopupMenuNode {
     let model = model.clone();
     let selection = Rc::clone(selection);
-    let semantic_text = label.clone();
-    let content = label.clone();
+    let styled_label = StyledStr::plain(label.clone());
     PopupMenuNode::Command {
-        label: waterui_controls::label::Label::new(semantic_text, move || {
-            AnyView::new(
-                waterui_layout::frame::Frame::new(Text::new(StyledStr::plain(content.clone())))
-                    .alignment(waterui_layout::alignment::Leading)
-                    .max_width(f32::INFINITY),
-            )
-        }),
+        semantic_text: Text::new(styled_label.clone()),
+        styled_label,
         plain_label: label,
         action: SharedAction::new(move |env: Environment| {
             let _ = execute_text_context_menu_action(action, &model, &selection, &env);
@@ -371,8 +377,7 @@ pub struct TextContextMenuOverlayRow {
     pub node: PopupMenuNode,
 }
 
-#[derive(Clone)]
-pub struct TextContextMenuOverlay {
+pub struct TextContextMenuOverlay<E: crate::text::TextEngine> {
     pub(crate) bounds: kurbo::Rect,
     pub rows: Vec<TextContextMenuOverlayRow>,
     /// Open/closed handles for the submenu popup windows this overlay opens.
@@ -388,18 +393,50 @@ pub struct TextContextMenuOverlay {
     /// with the same menu metrics and surface treatment.
     pub(crate) theme: Rc<dyn crate::theme::WidgetTheme>,
     pub(crate) env: Environment,
+    /// Submenu opener attached when the overlay is opened, keeping
+    /// `open_text_context_menu_submenu` / `popup_menu_window` unreachable
+    /// unless a text context menu is opened.
+    pub(crate) open_submenu: TextContextMenuSubmenuOpener<E>,
 }
 
-#[derive(Clone)]
-pub enum ActiveTextContextMenu {
+impl<E: crate::text::TextEngine> Clone for TextContextMenuOverlay<E> {
+    fn clone(&self) -> Self {
+        Self {
+            bounds: self.bounds,
+            rows: self.rows.clone(),
+            menu_group: self.menu_group.clone(),
+            dismiss_state: self.dismiss_state.clone(),
+            theme: Rc::clone(&self.theme),
+            env: self.env.clone(),
+            open_submenu: self.open_submenu,
+        }
+    }
+}
+
+pub enum ActiveTextContextMenu<E: crate::text::TextEngine> {
     Overlay {
         target: InteractionKey,
-        overlay: TextContextMenuOverlay,
+        overlay: TextContextMenuOverlay<E>,
     },
     NativeWindow {
         target: InteractionKey,
         group: PopupMenuStateGroup,
     },
+}
+
+impl<E: crate::text::TextEngine> Clone for ActiveTextContextMenu<E> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Overlay { target, overlay } => Self::Overlay {
+                target: target.clone(),
+                overlay: overlay.clone(),
+            },
+            Self::NativeWindow { target, group } => Self::NativeWindow {
+                target: target.clone(),
+                group: group.clone(),
+            },
+        }
+    }
 }
 
 impl TextInputModel {
@@ -1321,7 +1358,11 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         let metrics = menu.layout();
         {
             self.scene_mut().record_picture(transform, |draw| {
-                menu.record_panel(&mut *draw, overlay.bounds);
+                crate::renderer::chrome::record_surface_at_rest(
+                    menu.panel(),
+                    &mut *draw,
+                    overlay.bounds,
+                );
             });
         }
         for (index, row) in overlay.rows.iter().enumerate() {
@@ -1413,7 +1454,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                     if items.is_empty() {
                         return false;
                     }
-                    self.open_text_context_menu_submenu(&overlay, row.bounds, items.clone());
+                    (overlay.open_submenu)(self, &overlay, row.bounds, items.clone());
                     return true;
                 }
             }
@@ -1428,14 +1469,14 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// sentinel holds depth 0, standing in for the root window.
     fn open_text_context_menu_submenu(
         &mut self,
-        overlay: &TextContextMenuOverlay,
+        overlay: &TextContextMenuOverlay<E>,
         row_bounds: kurbo::Rect,
         items: Vec<PopupMenuNode>,
     ) {
         let env = &overlay.env;
         let theme = Rc::clone(&overlay.theme);
-        let metrics = menu_look(&theme, env).layout();
-        let text = self.popup_menu_text_metrics(&items, metrics, env, &theme);
+        let look = menu_look(&theme, env);
+        let text = self.popup_menu_text_metrics(&items, look.layout(), env, &theme);
         let Some(origin) = popup_window_origin(
             LayoutPoint::new(
                 crate::num_cast::f64_as_f32(row_bounds.x1),
@@ -1445,13 +1486,21 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         ) else {
             return;
         };
-        let Some(manager) = popup_window_manager(env, "text selection menus") else {
+        let Some(manager) = self.popup_window_manager("text selection menus") else {
             return;
         };
         let group = overlay.menu_group.clone();
         group.truncate(1);
-        let (window, state) =
-            popup_menu_window(items, origin, group.clone(), 1, metrics, text, &theme);
+        let (window, state) = popup_menu_window::<E>(
+            items,
+            origin,
+            group.clone(),
+            1,
+            &look,
+            text,
+            &theme,
+            manager.clone(),
+        );
         group.push(state);
         manager.show(window, env);
         self.popup_menu.active_popup_menu_group = Some(group);
@@ -2091,6 +2140,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                     dismiss_state,
                     theme: self.theme(),
                     env: menu_env,
+                    open_submenu: SemanticCore::<E>::open_text_context_menu_submenu,
                 },
             });
             self.context_mark_layout();
@@ -2348,6 +2398,7 @@ impl<E: crate::text::TextEngine> Clone for TextInputTarget<E> {
             model: self.model.clone(),
             selection: self.selection.clone(),
             env: self.env.clone(),
+            show_context_menu: self.show_context_menu,
             key_handlers: self.key_handlers.clone(),
             focus_binding: self.focus_binding.clone(),
             #[cfg(feature = "accessibility")]

@@ -28,17 +28,15 @@ use cocoa_ui::uikit::HostView;
 use cocoa_ui::view::retain_base;
 use waterui::reactive::Signal;
 use waterui::reactive::watcher::Context;
-use waterui_backend_core::{AnyView, Environment, Realize, View};
-use waterui_core::backend::{Backend, DynBackend, ErasedPayload, cast};
+use waterui_backend_core::{Child, ChildView, Environment, View};
 use waterui_core::layout::SubView;
-use waterui_core::metadata::MetadataKey;
-use waterui_core::{Metadata, NativeView};
 
 use cocoa_ui::Retained;
 
 use crate::backend::AppleBackend;
 use crate::measure_memo::MemoizingSubView;
 use crate::proposal::{self, CommittedGeometry};
+use crate::transition::adoption::AdoptionOffer;
 
 /// What a rendered component owns beyond its platform view: watcher guards,
 /// action targets, rendered children, the platform objects they act on.
@@ -576,10 +574,16 @@ pub(crate) fn adopt_controllers(
     adopted
 }
 
+/// A child view a metadata wrapper or payload held for the Apple backend.
+pub type Held = Child<AppleBackend>;
+
 /// What a handler sees while it renders.
 pub struct RenderContext<'a> {
     env: &'a Environment,
     mtm: cocoa_ui::MainThreadMarker,
+    /// The adoption offer this payload took, when it is the first payload
+    /// of a transition's content.
+    offer: Option<AdoptionOffer>,
 }
 
 impl fmt::Debug for RenderContext<'_> {
@@ -590,7 +594,28 @@ impl fmt::Debug for RenderContext<'_> {
 
 impl<'a> RenderContext<'a> {
     pub(crate) const fn new(env: &'a Environment, mtm: cocoa_ui::MainThreadMarker) -> Self {
-        Self { env, mtm }
+        Self {
+            env,
+            mtm,
+            offer: None,
+        }
+    }
+
+    /// The context a backend method realizes its payload in: it takes an
+    /// armed [`AdoptionOffer`] from `env`, so only the first payload of a
+    /// transition's content sees it.
+    pub(crate) fn entry(env: &'a Environment, mtm: cocoa_ui::MainThreadMarker) -> Self {
+        Self {
+            env,
+            mtm,
+            offer: env.get::<AdoptionOffer>().and_then(AdoptionOffer::take),
+        }
+    }
+
+    /// The adoption offer this payload took, if any.
+    #[must_use]
+    pub const fn offer(&self) -> Option<&AdoptionOffer> {
+        self.offer.as_ref()
     }
 
     /// The environment this subtree resolves against.
@@ -610,6 +635,12 @@ impl<'a> RenderContext<'a> {
     #[must_use]
     pub fn render(&self, view: impl View) -> NativeLeaf {
         crate::dispatch::render(view, self.env, self.mtm)
+    }
+
+    /// Realizes a child a payload or metadata wrapper held.
+    #[must_use]
+    pub fn realize(&self, child: Child<AppleBackend>) -> NativeLeaf {
+        child.realize(&mut AppleBackend::new(self.mtm), self.env, ())
     }
 
     /// The same context under another environment — for metadata handlers
@@ -643,103 +674,27 @@ pub struct Renderer {
 }
 
 impl Renderer {
+    /// The captured environment.
+    #[must_use]
+    pub const fn env(&self) -> &Environment {
+        &self.env
+    }
+
     /// Renders `view` under the captured environment.
     #[must_use]
     pub fn render(&self, view: impl View) -> NativeLeaf {
         crate::dispatch::render(view, &self.env, self.mtm)
     }
 
-    /// Renders `view` and answers the environment its leaf resolved
-    /// under: the scope of the *leading* `Metadata<Environment>` chain —
-    /// the environment layers at the root of `view` and the composite
-    /// bodies that produce them — and nothing below the first native
-    /// payload or other metadata, so a scope a descendant installs (a
-    /// `.disabled` child inside the content) never leaks into the answer.
-    /// Each `Metadata<Environment>` replaces the environment for its
-    /// subtree, matching `with_env`.
+    /// Realizes a child a payload handed over to be realized later.
     #[must_use]
-    pub fn render_resolved(&self, view: impl View) -> (NativeLeaf, Environment) {
-        let mut backend = AppleBackend::new(self.mtm);
-        view.dispatch(&mut ResolveEnvironment(&mut backend), &self.env, ())
+    pub fn realize(&self, child: Child<AppleBackend>) -> NativeLeaf {
+        child.realize(&mut AppleBackend::new(self.mtm), &self.env, ())
     }
 
     /// The captured environment as a context.
     #[must_use]
     pub const fn context(&self) -> RenderContext<'_> {
         RenderContext::new(&self.env, self.mtm)
-    }
-}
-
-/// Peels the leading `Metadata<Environment>` chain for
-/// [`Renderer::render_resolved`], then realizes the rest through
-/// [`AppleBackend`] under the environment the chain resolved to.
-struct ResolveEnvironment<'a>(&'a mut AppleBackend);
-
-impl Backend for ResolveEnvironment<'_> {
-    type Output = (NativeLeaf, Environment);
-    type Ctx = ();
-
-    fn native<T: NativeView + 'static>(
-        &mut self,
-        native: T,
-        env: &Environment,
-        (): (),
-    ) -> Self::Output {
-        (Realize::new(self.0).native(native, env, ()), env.clone())
-    }
-
-    fn metadata<K: MetadataKey>(
-        &mut self,
-        metadata: Metadata<K>,
-        env: &Environment,
-        (): (),
-    ) -> Self::Output {
-        match cast::<Metadata<K>, Metadata<Environment>>(metadata) {
-            Ok(Metadata { content, value }) => content.dispatch(self, &value, ()),
-            Err(metadata) => (
-                Realize::new(self.0).metadata(metadata, env, ()),
-                env.clone(),
-            ),
-        }
-    }
-
-    fn erased(&mut self, view: AnyView, env: &Environment, (): ()) -> Self::Output {
-        *view
-            .dispatch_dyn(self, env, Box::new(()))
-            .downcast::<(NativeLeaf, Environment)>()
-            .expect("the erased path returns this probe's own output")
-    }
-}
-
-impl DynBackend for ResolveEnvironment<'_> {
-    fn native_dyn(
-        &mut self,
-        native: ErasedPayload<'_>,
-        env: &Environment,
-        _cx: Box<dyn Any>,
-    ) -> Box<dyn Any> {
-        Box::new((
-            Realize::new(self.0).native_dyn(native, env, ()),
-            env.clone(),
-        ))
-    }
-
-    fn metadata_dyn(
-        &mut self,
-        mut metadata: ErasedPayload<'_>,
-        env: &Environment,
-        _cx: Box<dyn Any>,
-    ) -> Box<dyn Any> {
-        if let Some(Metadata { content, value }) = metadata.take::<Metadata<Environment>>() {
-            return Box::new(content.dispatch(self, &value, ()));
-        }
-        Box::new((
-            Realize::new(self.0).metadata_dyn(metadata, env, ()),
-            env.clone(),
-        ))
-    }
-
-    fn erased_dyn(&mut self, view: AnyView, env: &Environment, _cx: Box<dyn Any>) -> Box<dyn Any> {
-        Box::new(self.erased(view, env, ()))
     }
 }

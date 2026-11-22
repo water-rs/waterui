@@ -2,7 +2,7 @@
 //!
 //! [`View::dispatch`] turns a view into a backend's node through
 //! monomorphized code. A composite expands its `body` in place; a
-//! [`Native`] payload reaches [`Backend::native`] and a [`Metadata`]
+//! [`Native`](crate::components::Native) payload reaches [`Backend::native`] and a [`Metadata`]
 //! wrapper [`Backend::metadata`], each with its concrete type, so LLVM
 //! inlines across the tree and the linker drops what an application does
 //! not reach. Core names no component: the leaf entry is generic, and the
@@ -17,11 +17,13 @@
 
 use alloc::boxed::Box;
 use core::any::Any;
+use core::marker::PhantomData;
 
 #[cfg(test)]
 use crate::components::Native;
 use crate::components::{Metadata, NativeView};
 use crate::metadata::MetadataKey;
+use crate::view::hook::{ComposeErased, ErasedHooks, HookList, HookableView, compose_erased};
 use crate::{AnyView, Environment, View};
 
 /// A target a view tree resolves into: a platform's views, a retained
@@ -34,6 +36,11 @@ pub trait Backend {
     type Output;
     /// What a parent hands each child it dispatches.
     type Ctx;
+    /// What a native payload's child views become before the payload reaches
+    /// [`Backend::native`]: a payload holding views converts each into this
+    /// slot in its [`View::dispatch`], so the backend realizes the child
+    /// later, where it places it.
+    type Slot: ChildSlot;
 
     /// Realizes a native payload.
     fn native<T: NativeView + 'static>(
@@ -46,7 +53,7 @@ pub trait Backend {
     /// Realizes a metadata wrapper around its content.
     fn metadata<K: MetadataKey>(
         &mut self,
-        metadata: Metadata<K>,
+        metadata: Metadata<K, Self::Slot>,
         env: &Environment,
         cx: Self::Ctx,
     ) -> Self::Output;
@@ -54,6 +61,58 @@ pub trait Backend {
     /// Realizes an erased view, typically through
     /// [`AnyView::dispatch_dyn`].
     fn erased(&mut self, view: AnyView, env: &Environment, cx: Self::Ctx) -> Self::Output;
+
+    /// Realizes `view` with `hooks` offered every native payload below it
+    /// first, the scope a [`Hooks`](crate::view::hook::Hooks) modifier
+    /// installs. A backend that realizes nothing — a probe — looks through
+    /// the scope to `view`.
+    fn scoped<H: HookList, V: View>(
+        &mut self,
+        hooks: H,
+        view: V,
+        env: &Environment,
+        cx: Self::Ctx,
+    ) -> Self::Output;
+
+    /// Realizes a [`HookableView`]: a hook in scope that targets it, or else
+    /// its own composition.
+    fn hookable<T: HookableView>(
+        &mut self,
+        view: T,
+        env: &Environment,
+        cx: Self::Ctx,
+    ) -> Self::Output;
+}
+
+/// A native payload holding child views in a backend's slot `S`, which can
+/// move them into another slot.
+///
+/// A backend that decorates another — a hook scope — hands the payload on
+/// with each child in a slot that re-enters the decorator, so the children
+/// stay in its scope.
+pub trait MapSlots<S>: Sized {
+    /// The same payload with its children in the slot `T`.
+    type With<T: 'static>;
+
+    /// Moves every child through `f`, now or as the payload produces it.
+    fn map_slots<T: 'static>(self, f: impl Fn(S) -> T + Clone + 'static) -> Self::With<T>;
+}
+
+/// A child view of a native payload, held until the backend realizes it.
+///
+/// A payload generic over its child views converts each into its backend's
+/// slot when it dispatches, so the payload type a backend matches on is
+/// concrete, while the child's own type is kept wherever the slot keeps it.
+pub trait ChildSlot: 'static {
+    /// The slot holding `view`.
+    fn from_view<V: View>(view: V) -> Self;
+}
+
+/// The erased slot: the child dispatches through [`Backend::erased`].
+impl ChildSlot for AnyView {
+    fn from_view<V: View>(view: V) -> Self {
+        Self::new(view)
+    }
 }
 
 /// The object-safe face of a [`Backend`], for the one hop an [`AnyView`]
@@ -80,6 +139,27 @@ pub trait DynBackend {
 
     /// Realizes a further erased view.
     fn erased_dyn(&mut self, view: AnyView, env: &Environment, cx: Box<dyn Any>) -> Box<dyn Any>;
+
+    /// Realizes `view` inside the hook scope `hooks`, which an erased
+    /// [`Backend::scoped`] handed back.
+    fn scoped_dyn(
+        &mut self,
+        hooks: ErasedHooks,
+        view: AnyView,
+        env: &Environment,
+        cx: Box<dyn Any>,
+    ) -> Box<dyn Any>;
+
+    /// Realizes the [`HookableView`] `view` holds, which an erased
+    /// [`Backend::hookable`] handed back; `compose` draws it when no hook
+    /// claims it.
+    fn hookable_dyn(
+        &mut self,
+        view: ErasedPayload<'_>,
+        compose: ComposeErased,
+        env: &Environment,
+        cx: Box<dyn Any>,
+    ) -> Box<dyn Any>;
 }
 
 /// The [`Backend`] an erased view expands through: every leaf it reaches is
@@ -104,6 +184,7 @@ impl core::fmt::Debug for Erased<'_> {
 impl Backend for Erased<'_> {
     type Output = Box<dyn Any>;
     type Ctx = Box<dyn Any>;
+    type Slot = AnyView;
 
     fn native<T: NativeView + 'static>(
         &mut self,
@@ -112,12 +193,12 @@ impl Backend for Erased<'_> {
         cx: Self::Ctx,
     ) -> Self::Output {
         self.inner
-            .native_dyn(ErasedPayload::new(&mut Some(native)), env, cx)
+            .native_dyn(ErasedPayload::new_native(&mut Some(native)), env, cx)
     }
 
     fn metadata<K: MetadataKey>(
         &mut self,
-        metadata: Metadata<K>,
+        metadata: Metadata<K, Self::Slot>,
         env: &Environment,
         cx: Self::Ctx,
     ) -> Self::Output {
@@ -128,6 +209,53 @@ impl Backend for Erased<'_> {
     fn erased(&mut self, view: AnyView, env: &Environment, cx: Self::Ctx) -> Self::Output {
         self.inner.erased_dyn(view, env, cx)
     }
+
+    fn scoped<H: HookList, V: View>(
+        &mut self,
+        hooks: H,
+        view: V,
+        env: &Environment,
+        cx: Self::Ctx,
+    ) -> Self::Output {
+        self.inner
+            .scoped_dyn(ErasedHooks::new().with(hooks), AnyView::new(view), env, cx)
+    }
+
+    fn hookable<T: HookableView>(
+        &mut self,
+        view: T,
+        env: &Environment,
+        cx: Self::Ctx,
+    ) -> Self::Output {
+        self.inner.hookable_dyn(
+            ErasedPayload::new(&mut Some(view)),
+            compose_erased::<T>,
+            env,
+            cx,
+        )
+    }
+}
+
+type RealizeProvidedFn = fn(&mut dyn Any, &mut dyn Any, &Environment) -> bool;
+
+fn realize_provided_erased<T: NativeView + 'static>(
+    slot: &mut dyn Any,
+    context: &mut dyn Any,
+    env: &Environment,
+) -> bool {
+    let slot = slot
+        .downcast_mut::<Option<T>>()
+        .expect("`new_native` stored an `Option<T>` for this function");
+    let Some(native) = slot.take() else {
+        return false;
+    };
+    match native.realize_provided(context, env) {
+        Ok(()) => true,
+        Err(native) => {
+            *slot = Some(native);
+            false
+        }
+    }
 }
 
 /// A payload an erased view hands back to its [`DynBackend`]: the value,
@@ -136,6 +264,7 @@ impl Backend for Erased<'_> {
 pub struct ErasedPayload<'a> {
     slot: &'a mut dyn Any,
     type_name: &'static str,
+    realize_provided: Option<RealizeProvidedFn>,
 }
 
 impl<'a> ErasedPayload<'a> {
@@ -144,12 +273,48 @@ impl<'a> ErasedPayload<'a> {
         Self {
             slot,
             type_name: core::any::type_name::<T>(),
+            realize_provided: None,
+        }
+    }
+
+    /// The [`NativeView`] payload `slot` holds, preserving
+    /// [`NativeView::realize_provided`] across the erased boundary without
+    /// boxing the payload.
+    pub fn new_native<T: NativeView + 'static>(slot: &'a mut Option<T>) -> Self {
+        Self {
+            slot,
+            type_name: core::any::type_name::<T>(),
+            realize_provided: Some(realize_provided_erased::<T>),
         }
     }
 
     /// Takes the payload when it is a `T`, leaving the slot empty.
     pub fn take<T: 'static>(&mut self) -> Option<T> {
         self.slot.downcast_mut::<Option<T>>().and_then(Option::take)
+    }
+
+    /// Offers the native payload in this slot to `context` through
+    /// [`NativeView::realize_provided`].
+    ///
+    /// Consumes the slot and returns `true` when `context` claims the payload;
+    /// restores the payload into the slot and returns `false` otherwise.
+    pub fn realize_provided(&mut self, context: &mut dyn Any, env: &Environment) -> bool {
+        self.realize_provided
+            .is_some_and(|realize| realize(self.slot, context, env))
+    }
+
+    /// Puts back a payload [`take`](Self::take) took, for the next
+    /// receiver to take.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `payload` is not of the slot's type.
+    pub fn restore<T: 'static>(&mut self, payload: T) {
+        let slot = self
+            .slot
+            .downcast_mut::<Option<T>>()
+            .expect("a payload is restored into the slot it was taken from");
+        *slot = Some(payload);
     }
 
     /// The payload type's name.
@@ -197,7 +362,126 @@ pub fn dispatch<V: View, B: Backend>(
     env: &Environment,
     cx: B::Ctx,
 ) -> B::Output {
-    view.dispatch(backend, env, cx)
+    #[cfg(feature = "erased-dispatch")]
+    {
+        AnyView::new(view).dispatch(backend, env, cx)
+    }
+    #[cfg(not(feature = "erased-dispatch"))]
+    {
+        view.dispatch(backend, env, cx)
+    }
+}
+
+/// Reads the first [`Metadata<K>`] wrapper `view` resolves to, with its
+/// content erased, or `None` when the first leaf is anything else.
+///
+/// Composites expand on the way, erased views included, so this sees what a
+/// backend sees. It is a probe for code that inspects a tree, such as tests
+/// asserting what a modifier emits.
+pub fn peel_metadata<K: MetadataKey>(
+    view: impl View,
+    env: &Environment,
+) -> Option<Metadata<K, AnyView>> {
+    view.dispatch(&mut Peel::<Metadata<K, AnyView>>(PhantomData), env, ())
+}
+
+/// Reads the native payload `T` `view` resolves to, its child views erased,
+/// or `None` when the first leaf is anything else. See [`peel_metadata`].
+pub fn peel_native<T: NativeView + 'static>(view: impl View, env: &Environment) -> Option<T> {
+    view.dispatch(&mut Peel::<T>(PhantomData), env, ())
+}
+
+/// The probe behind [`peel_metadata`] and [`peel_native`]: it answers `Some`
+/// for the one leaf type `T` and `None` for any other.
+struct Peel<T>(PhantomData<fn() -> T>);
+
+impl<T: 'static> Backend for Peel<T> {
+    type Output = Option<T>;
+    type Ctx = ();
+    type Slot = AnyView;
+
+    fn native<N: NativeView + 'static>(
+        &mut self,
+        native: N,
+        _env: &Environment,
+        (): (),
+    ) -> Option<T> {
+        cast(native).ok()
+    }
+
+    fn metadata<K: MetadataKey>(
+        &mut self,
+        metadata: Metadata<K, AnyView>,
+        _env: &Environment,
+        (): (),
+    ) -> Option<T> {
+        cast(metadata).ok()
+    }
+
+    fn erased(&mut self, view: AnyView, env: &Environment, (): ()) -> Option<T> {
+        *view
+            .dispatch_dyn(self, env, Box::new(()))
+            .downcast::<Option<T>>()
+            .expect("the erased path returns this probe's own output")
+    }
+
+    fn scoped<H: HookList, V: View>(
+        &mut self,
+        _hooks: H,
+        view: V,
+        env: &Environment,
+        (): (),
+    ) -> Option<T> {
+        view.dispatch(self, env, ())
+    }
+
+    fn hookable<N: HookableView>(&mut self, view: N, _env: &Environment, (): ()) -> Option<T> {
+        cast(view).ok()
+    }
+}
+
+impl<T: 'static> DynBackend for Peel<T> {
+    fn native_dyn(
+        &mut self,
+        mut native: ErasedPayload<'_>,
+        _env: &Environment,
+        _cx: Box<dyn Any>,
+    ) -> Box<dyn Any> {
+        Box::new(native.take::<T>())
+    }
+
+    fn metadata_dyn(
+        &mut self,
+        mut metadata: ErasedPayload<'_>,
+        _env: &Environment,
+        _cx: Box<dyn Any>,
+    ) -> Box<dyn Any> {
+        Box::new(metadata.take::<T>())
+    }
+
+    fn erased_dyn(&mut self, view: AnyView, env: &Environment, _cx: Box<dyn Any>) -> Box<dyn Any> {
+        Box::new(Backend::erased(self, view, env, ()))
+    }
+
+    fn scoped_dyn(
+        &mut self,
+        _hooks: ErasedHooks,
+        view: AnyView,
+        env: &Environment,
+        _cx: Box<dyn Any>,
+    ) -> Box<dyn Any> {
+        Box::new(Backend::erased(self, view, env, ()))
+    }
+
+    fn hookable_dyn(
+        &mut self,
+        mut view: ErasedPayload<'_>,
+        _compose: ComposeErased,
+        _env: &Environment,
+        _cx: Box<dyn Any>,
+    ) -> Box<dyn Any> {
+        Box::new(view.take::<T>())
+    }
 }
 
 #[cfg(test)]
@@ -217,12 +501,18 @@ mod tests {
     impl Backend for Recorder {
         type Output = ();
         type Ctx = ();
+        type Slot = AnyView;
 
         fn native<T: NativeView + 'static>(&mut self, _native: T, _env: &Environment, (): ()) {
             self.leaves.push(type_name::<T>());
         }
 
-        fn metadata<K: MetadataKey>(&mut self, metadata: Metadata<K>, env: &Environment, (): ()) {
+        fn metadata<K: MetadataKey>(
+            &mut self,
+            metadata: Metadata<K, AnyView>,
+            env: &Environment,
+            (): (),
+        ) {
             self.leaves.push(type_name::<K>());
             metadata.content.dispatch(self, env, ());
         }
@@ -233,6 +523,14 @@ mod tests {
                 output.is::<()>(),
                 "the erased path returns the backend's output"
             );
+        }
+
+        fn scoped<H: HookList, V: View>(&mut self, _hooks: H, view: V, env: &Environment, (): ()) {
+            view.dispatch(self, env, ());
+        }
+
+        fn hookable<T: HookableView>(&mut self, _view: T, _env: &Environment, (): ()) {
+            self.leaves.push(type_name::<T>());
         }
     }
 
@@ -262,7 +560,7 @@ mod tests {
             _cx: Box<dyn Any>,
         ) -> Box<dyn Any> {
             let metadata = metadata
-                .take::<Metadata<Key>>()
+                .take::<Metadata<Key, AnyView>>()
                 .expect("only `Key` is attached");
             self.0.leaves.push(type_name::<Key>());
             metadata.content.dispatch(self.0, env, ());
@@ -276,6 +574,28 @@ mod tests {
             _cx: Box<dyn Any>,
         ) -> Box<dyn Any> {
             self.0.erased(view, env, ());
+            Box::new(())
+        }
+
+        fn scoped_dyn(
+            &mut self,
+            _hooks: ErasedHooks,
+            view: AnyView,
+            env: &Environment,
+            _cx: Box<dyn Any>,
+        ) -> Box<dyn Any> {
+            self.0.erased(view, env, ());
+            Box::new(())
+        }
+
+        fn hookable_dyn(
+            &mut self,
+            view: ErasedPayload<'_>,
+            _compose: ComposeErased,
+            _env: &Environment,
+            _cx: Box<dyn Any>,
+        ) -> Box<dyn Any> {
+            self.0.leaves.push(view.type_name());
             Box::new(())
         }
     }
@@ -323,5 +643,32 @@ mod tests {
     fn cast_matches_only_the_same_type() {
         assert_eq!(cast::<u8, u8>(7), Ok(7));
         assert_eq!(cast::<u8, String>(7), Err(7));
+    }
+
+    struct Claimed(u32);
+
+    impl NativeView for Claimed {
+        fn realize_provided(self, context: &mut dyn Any, _env: &Environment) -> Result<(), Self> {
+            let Some(out) = context.downcast_mut::<Option<u32>>() else {
+                return Err(self);
+            };
+            *out = Some(self.0);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn erased_payload_realize_provided_restores_on_miss_and_consumes_on_claim() {
+        let env = Environment::new();
+        let mut slot = Some(Claimed(42));
+        let mut payload = ErasedPayload::new_native(&mut slot);
+
+        let mut wrong_context = 0_u8;
+        assert!(!payload.realize_provided(&mut wrong_context, &env));
+
+        let mut out: Option<u32> = None;
+        assert!(payload.realize_provided(&mut out, &env));
+        assert_eq!(out, Some(42));
+        assert!(payload.take::<Claimed>().is_none());
     }
 }

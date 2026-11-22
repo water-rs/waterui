@@ -33,7 +33,7 @@ pub struct GlueRow {
 }
 
 /// Glue: the `row_view` free function rules 2 and 3 hand to a container.
-fn glue_row_view(row: GlueRow) -> ListItem {
+fn glue_row_view(row: GlueRow) -> ListItem<impl View> {
     ListItem::new(text(row.title))
 }
 
@@ -189,7 +189,7 @@ pub fn skill_block_06() {
 // SKILL.md § "## Quick start" — rust block 7/18
 // ---------------------------------------------------------------------------
 pub mod skill_block_07 {
-    use waterui::app::App;
+    use waterui::app::{App, Windows};
     use waterui::prelude::*;
 
     fn counter() -> impl View {
@@ -205,7 +205,7 @@ pub mod skill_block_07 {
         .padding()
     }
 
-    pub fn app(env: Environment) -> App {
+    pub fn app(env: Environment) -> App<impl Windows> {
         App::new(counter, env)
     }
 }

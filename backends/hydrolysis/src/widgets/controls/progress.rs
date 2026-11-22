@@ -1,7 +1,7 @@
 #[cfg(feature = "accessibility")]
 use crate::renderer::RenderContext;
 use crate::renderer::live_progress::LiveProgressParts;
-use crate::renderer::{HydroState, RetainedSubview, WidgetRenderContext};
+use crate::renderer::{HeldChild, HydroState, RetainedSubview, WidgetRenderContext};
 use crate::theme::{
     IndicatorLook, LinearProgressLook, ProgressControl, ProgressSpec, SpecTint, WidgetTheme,
 };
@@ -152,7 +152,7 @@ impl<E: crate::text::TextEngine> ProgressRenderState<E> {
             .or_else(|| self.value_label.accessibility_label(renderer))
     }
 
-    pub(crate) fn from_config(config: ProgressConfig) -> Self {
+    pub(crate) fn from_config(config: ProgressConfig<HeldChild<E>>) -> Self {
         let (label, value_label, value, style, four_color) = config.into_parts();
         let determinate = Binding::container(value.snapshot().is_finite());
         let determinacy = value.watch({
@@ -165,8 +165,8 @@ impl<E: crate::text::TextEngine> ProgressRenderState<E> {
             }
         });
         Self {
-            label: RetainedSubview::new(label),
-            value_label: RetainedSubview::new(value_label),
+            label: RetainedSubview::held(label),
+            value_label: RetainedSubview::held(value_label),
             value,
             style,
             four_color,
