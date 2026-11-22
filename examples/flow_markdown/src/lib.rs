@@ -435,6 +435,7 @@ pub fn demo() -> impl View {
         scroll(flow_markdown(markdown).configuration(flow_config).padding()).border(Grey, 1.0),
     ))
     .padding()
+    .snackbar_host()
 }
 
 /// Builds the flow-markdown example app.

@@ -852,10 +852,11 @@ A `Binding<BTreeSet<Date>>` needs the turbofish: `binding(BTreeSet::<Date>::new(
 
 ## Overlays: snackbars, cards, suspense, full screen
 
-Every `Window` installs a plain `SnackbarManager` through `.state()`; it is a `#[state]`-marked
-framework type, so handlers take it bare. For snackbars with icons of view type `V`, attach
-`let (snackbars, overlay) = SnackbarManager::with_icons::<V>();` with `.overlay(overlay).state(&snackbars)`
-and extract `m: SnackbarManager<SnackbarIcon<V>>`.
+Attach `.snackbar_host()` to a root view to install a plain `SnackbarManager` (and
+`CodeCopyFeedback` when `flow-markdown` is enabled) into its subtree; it is a `#[state]`-marked
+framework type, so descendant handlers take it bare. For snackbars with icons of view type `V`,
+attach `.snackbar_host_with_icons::<V>()` (or construct `SnackbarManager::with_icons::<V>()`
+manually with `.overlay(overlay).state(&snackbars)`) and extract `m: SnackbarManager<SnackbarIcon<V>>`.
 
 ```rust
 use core::time::Duration;
@@ -900,10 +901,10 @@ accordion(header, || body())                           // disclosure; Accordion:
 view.floating()                                        // themed elevated surface (FloatingStyle-aware)
 ```
 
-`FullScreenOverlayManager<V>` creates a typed overlay manager and overlay view via
-`FullScreenOverlayManager::<V>::new()`, installed with `.overlay(overlay_view).state(&overlay)` and
-taken bare by handlers (`overlay: FullScreenOverlayManager<V>`) to present modal, window-filling
-content: `overlay.show(view)` and `overlay.hide()`.
+Attach `.full_screen_overlay_host::<V>()` to a root view (or construct
+`FullScreenOverlayManager::<V>::new()` manually with `.overlay(overlay_view).state(&overlay)`)
+so descendant handlers can take `overlay: FullScreenOverlayManager<V>` bare to present modal,
+window-filling content: `overlay.show(view)` and `overlay.hide()`.
 
 `.secure()` on any view marks it as content that must not appear in screenshots. Only the
 iOS backend enforces it today; macOS and Hydrolysis (Android included) render the content

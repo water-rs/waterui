@@ -46,12 +46,7 @@ use super::window_close::{CloseRequest, Question};
 use super::window_focus::FocusRequest;
 
 use crate::app::{application_identifier, application_name};
-#[cfg(feature = "snackbar")]
-use crate::snackbar::SnackbarManager;
-use crate::{
-    ViewExt, background::Material, component::label::LabelDisplayMode,
-    prelude::FullScreenOverlayManager, theme::color::Background,
-};
+use crate::{background::Material, component::label::LabelDisplayMode, theme::color::Background};
 
 /// Represents a window in the UI.
 ///
@@ -346,9 +341,7 @@ impl<C, T> Debug for Window<C, T> {
     }
 }
 
-/// The content builder [`Window::new`] gives a window: the application's
-/// builder, with the full-screen overlay and snackbar hosts every window
-/// carries.
+/// The content builder [`Window::new`] gives a window.
 #[derive(Debug)]
 pub struct WindowContent<B>(B);
 
@@ -366,34 +359,11 @@ pub struct WindowRoot<V>(V);
 
 impl<V: View> View for WindowRoot<V> {
     fn body(self, _env: &Environment) -> impl View {
-        // Overlay and snackbar state are created per built instance, so each
-        // owns its own managers: a `Dynamic` is single-consumer and cannot be
-        // mounted by more than one scene.
-        let (overlay_manager, overlay_view) = FullScreenOverlayManager::<()>::new();
-        let content = self
-            .0
-            .overlay(overlay_view)
-            .with(overlay_manager.clone())
-            .state(&overlay_manager);
-        #[cfg(feature = "snackbar")]
-        let (snackbar_manager, snackbar_view) = SnackbarManager::new();
-        #[cfg(feature = "snackbar")]
-        let content = content
-            .overlay(snackbar_view)
-            .with(snackbar_manager.clone())
-            .state(&snackbar_manager);
-        #[cfg(all(feature = "snackbar", feature = "flow-markdown"))]
-        let content = content.with(waterui_markdown::CodeCopyFeedback(
-            waterui_text::code::OnCopied::new(|env| match env.extract::<SnackbarManager>() {
-                Ok(snackbar) => {
-                    snackbar.show(crate::snackbar::Snackbar::new("Copied to clipboard"));
-                }
-                Err(error) => crate::contract_violation!(
-                    "the window's environment carries no SnackbarManager, so the copy shows no feedback: {error}"
-                ),
-            }),
-        ));
-        content
+        self.0
+    }
+
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        self.0.dispatch(backend, env, cx)
     }
 }
 
@@ -2013,5 +1983,34 @@ mod tests {
             icon,
             WindowIcon::new(1, 1, vec![1_u8, 2, 3, 5]).expect("one pixel")
         );
+    }
+
+    #[test]
+    fn window_root_does_not_install_overlay_or_snackbar_managers() {
+        use core::any::{Any, TypeId};
+
+        use super::WindowRoot;
+        use crate::fullscreen::FullScreenOverlayManager;
+        #[cfg(feature = "snackbar")]
+        use crate::snackbar::SnackbarManager;
+        use crate::{View, ViewExt as _};
+
+        struct Probe;
+
+        impl View for Probe {
+            fn body(self, _env: &Environment) -> impl View {}
+        }
+
+        let env = Environment::new();
+        let root_body = WindowRoot(Probe).body(&env);
+        assert_eq!(Any::type_id(&root_body), TypeId::of::<Probe>());
+
+        let _overlay_host = Probe.full_screen_overlay_host::<()>();
+        assert!(env.get::<FullScreenOverlayManager<()>>().is_none());
+        #[cfg(feature = "snackbar")]
+        {
+            let _snackbar_host = Probe.snackbar_host();
+            assert!(env.get::<SnackbarManager>().is_none());
+        }
     }
 }
