@@ -20,6 +20,7 @@ members = [
     "src",
     "cli",
     "testing",
+    "testing/conformance",
     "macros",
     "examples/*",
     ".claude/skills/waterui/skill_snippets",
@@ -337,7 +338,7 @@ waterui-inspector-protocol = { version = "0.5.1", path = "components/devtools/in
 waterui-inspector-runtime = { version = "0.5.1", path = "components/devtools/inspector/runtime" }
 waterui-preview-protocol = { version = "0.5.1", path = "components/devtools/preview/protocol" }
 waterui-mcp-protocol = { version = "0.5.1", path = "components/devtools/mcp/protocol" }
-waterui-testing = { path = "testing" }
+waterui-testing = { version = "0.5.1", path = "testing" }
 waterui-internal = { version = "0.5.1", path = "src", default-features = false }
 waterui-dylib = { version = "0.5.1", path = "utils/dylib", default-features = false }
 hydrolysis = { version = "0.3.1", path = "backends/hydrolysis", default-features = false }

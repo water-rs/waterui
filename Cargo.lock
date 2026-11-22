@@ -13200,6 +13200,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "waterui-conformance"
+version = "0.5.1"
+dependencies = [
+ "askama",
+ "image",
+ "pollster",
+ "rayon",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "waterui",
+ "waterui-capture",
+ "waterui-core",
+ "waterui-testing",
+]
+
+[[package]]
 name = "waterui-contract"
 version = "0.5.1"
 dependencies = [
