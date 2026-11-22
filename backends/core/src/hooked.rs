@@ -19,7 +19,7 @@ use core::marker::PhantomData;
 use waterui::component::button::{ButtonConfig, ButtonStyleTarget};
 #[cfg(waterui_feature = "toggle")]
 use waterui::component::toggle::{ToggleConfig, ToggleStyleTarget};
-use waterui_core::backend::{ErasedPayload, MapSlots};
+use waterui_core::backend::{Backend, ErasedPayload, MapSlots};
 use waterui_core::view::hook::{ErasedHooks, HookList};
 use waterui_core::{AnyView, Environment, Native, NativeView, View};
 
@@ -426,12 +426,7 @@ impl<F: NativeBackendFamily> View for SlotView<F> {
         Native::new(self)
     }
 
-    fn dispatch<B: waterui_core::backend::Backend>(
-        self,
-        backend: &mut B,
-        env: &Environment,
-        cx: B::Ctx,
-    ) -> B::Output {
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
         backend.native(self, env, cx)
     }
 }

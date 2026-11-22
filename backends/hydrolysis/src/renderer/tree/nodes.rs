@@ -13,6 +13,7 @@ use super::*;
 use crate::renderer::ContextMenuPresenter;
 use crate::renderer::mount::motion::{LayerMotion, Motion};
 use crate::text::{TextEngine, TextLayout as _};
+use crate::theme::WidgetTheme;
 use waterui::gesture::TapGesture;
 use waterui_backend_core::Child;
 use waterui_layout::safe_area::IgnoreSafeArea;
@@ -910,7 +911,7 @@ pub trait WidgetBehavior<E: crate::text::TextEngine> {
         state: &mut HydroState<E>,
         proposal: ProposalSize,
         env: &Environment,
-        theme: &Rc<dyn crate::theme::WidgetTheme>,
+        theme: &Rc<dyn WidgetTheme>,
     ) -> ViewDimensions;
 
     /// Resolves this leaf's response geometry inside `bounds`, returning
@@ -920,7 +921,7 @@ pub trait WidgetBehavior<E: crate::text::TextEngine> {
         &self,
         _state: &mut HydroState<E>,
         _env: &Environment,
-        _theme: &Rc<dyn crate::theme::WidgetTheme>,
+        _theme: &Rc<dyn WidgetTheme>,
         _bounds: Rect,
         _proposal: ProposalSize,
     ) -> Result<Option<ResolvedExtent>, LayoutError> {

@@ -1896,6 +1896,7 @@ fn a_tap_region_names_itself_from_its_content_as_it_is_now() {
 
 #[test]
 fn provided_semantics_node_supports_and_dispatches_on_activate() {
+    use core::any::Any;
     use core::cell::Cell;
     use std::rc::Rc;
     use waterui::accessibility::AccessibilityRole;
@@ -1907,11 +1908,7 @@ fn provided_semantics_node_supports_and_dispatches_on_activate() {
     }
 
     impl NativeView for DummyProvided {
-        fn realize_provided(
-            self,
-            context: &mut dyn core::any::Any,
-            _env: &Environment,
-        ) -> Result<(), Self> {
+        fn realize_provided(self, context: &mut dyn Any, _env: &Environment) -> Result<(), Self> {
             let Some(semantics) = context.downcast_mut::<ProvidedSemantics>() else {
                 return Err(self);
             };

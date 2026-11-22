@@ -4,6 +4,10 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
+#[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
+use crate::renderer::accessibility::accessibility_role_to_accesskit_role;
+#[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
+use waterui_backend_core::ProvidedSemantics;
 // A build with no selected engine reports a WebView as a contract violation.
 #[cfg(all(
     waterui_feature = "webview",
@@ -392,7 +396,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     #[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
     pub(super) fn build_provided_semantics(
         renderer: &SemanticCore<E>,
-        semantics: waterui_backend_core::ProvidedSemantics,
+        semantics: ProvidedSemantics,
         stretch: StretchAxis,
         env: &Environment,
     ) -> Self {
@@ -403,7 +407,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
 
 #[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
 struct ProvidedSemanticsNode {
-    semantics: waterui_backend_core::ProvidedSemantics,
+    semantics: ProvidedSemantics,
 }
 
 #[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
@@ -453,7 +457,7 @@ impl<E: crate::text::TextEngine> WidgetBehavior<E> for ProvidedSemanticsNode {
             .semantics
             .role()
             .map_or(AccessibilityNodeRole::Group, |role| {
-                crate::renderer::accessibility::accessibility_role_to_accesskit_role(role.clone())
+                accessibility_role_to_accesskit_role(role.clone())
             });
         let mut node = AccessibilityNode::new(SemanticCore::<E>::resolve_accessibility_role(
             env,
