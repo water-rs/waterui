@@ -8849,18 +8849,23 @@ impl GpuRenderer {
         surf.draw_demand.update(
             &surf.frame,
             &surf.composition,
-            |index, _, pass_region, required| {
+            |index, target, pass_region, required| {
                 let changed = surf.propagated_damage.pass(index);
                 if changed.is_empty() {
                     return;
                 }
-                let pass = &surf.frame.passes[index];
+                let clears_target = surf
+                    .frame
+                    .passes
+                    .iter()
+                    .find(|pass| pass.target == target)
+                    .is_some_and(|pass| pass.clear.is_some());
                 let area = u64::from(pass_region[2]) * u64::from(pass_region[3]);
                 // Partial clear runs a load+store clear pass plus a load+store
                 // content pass (4 attachment transfers over the damaged area),
                 // whereas hardware LoadOp::Clear writes the target once with no
                 // attachment load. Past 1/4 of the target, full clear wins.
-                if pass.clear.is_some() && changed.pixel_area().saturating_mul(4) >= area {
+                if clears_target && changed.pixel_area().saturating_mul(4) >= area {
                     damage::add(required, pass_region);
                 } else {
                     for rect in changed.rectangles() {
