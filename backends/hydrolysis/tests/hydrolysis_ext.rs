@@ -21,7 +21,7 @@ use waterui::prelude::zstack;
 use waterui::shape::RoundedRectangle;
 use waterui::{FilterViewExt, ViewExt};
 use waterui_core::AnyView;
-use waterui_graphics::backend::{FilteredView, SceneViewMergeToParent};
+use waterui_graphics::backend::FilteredView;
 use waterui_graphics::filter_view::{
     Effect, EffectContext, EffectInput, EffectOutput, EffectRenderResult, EffectSetupResult,
     RetainedMemory,
@@ -311,7 +311,6 @@ fn render(view: impl View, width: u32, height: u32) -> Snapshot {
     let surface = platform.surface();
     renderer.reset_scene();
     renderer.begin_rebuild_frame();
-    let env = env.extending(SceneViewMergeToParent);
     renderer.capture_window_tree(
         AnyView::new(view),
         &env,

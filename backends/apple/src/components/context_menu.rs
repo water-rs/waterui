@@ -51,7 +51,7 @@ struct ContextMenuState {
     /// The environment command actions run against.
     env: Environment,
     /// The resolved items, snapshotted per menu presentation.
-    items: Computed<Vec<ResolvedMenuItem>>,
+    items: Computed<Vec<ResolvedMenuItem<Held>>>,
     /// The rendered `preview` and its one view controller (`UIKit` only —
     /// `AppKit` has no preview slot and drops it unresolved).
     #[cfg(target_os = "ios")]

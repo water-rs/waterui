@@ -6,8 +6,11 @@
 //! `Tab` lifts it out at construction.
 
 use waterui::Binding;
+use waterui::Environment;
 use waterui::View;
+use waterui::component::IntoLabel;
 use waterui::component::label::label;
+use waterui::handler::ViewBuilder;
 use waterui::navigation::NavigationView;
 use waterui::navigation::tab::Tab;
 use waterui::text::Text;
@@ -17,12 +20,13 @@ use waterui_icons_lucide as lucide;
 struct MarkerIcon;
 
 impl View for MarkerIcon {
-    fn body(self, _env: &waterui::Environment) -> impl View {}
+    fn body(self, _env: &Environment) -> impl View {}
 }
 
-fn tab(
-    label: impl waterui::component::IntoLabel,
-) -> Tab<impl waterui::handler::ViewBuilder<Output = NavigationView<Text>>> {
+fn tab<I: IntoLabel>(label: I) -> Tab<impl ViewBuilder<Output = NavigationView<Text>>, I::Kind>
+where
+    I::Kind: Clone,
+{
     Tab::new(label, || NavigationView::new("Root", Text::new("content")))
 }
 
@@ -31,18 +35,15 @@ fn a_packaged_icon_arrives_as_a_view() {
     let tab = tab(label("Browse").icon(lucide::compass()));
 
     assert!(
-        tab.icon().is_some(),
-        "an icon-bearing label should preserve its icon builder"
+        tab.has_icon(),
+        "an icon-bearing label should preserve its icon"
     );
 }
 
 #[test]
 fn a_label_without_an_icon_carries_none() {
     let tab = tab("Plain");
-    assert!(
-        tab.icon().is_none(),
-        "a title-only tab has no icon to place"
-    );
+    assert!(!tab.has_icon(), "a title-only tab has no icon to place");
 }
 
 #[test]

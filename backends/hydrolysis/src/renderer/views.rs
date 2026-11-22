@@ -29,8 +29,8 @@ pub fn call_action_discarding_result<T: 'static>(action: &SharedAction<T>, env: 
 /// — disabled for a non-closable `owner_closable` — and is omitted where
 /// the host's windows cannot be closed.
 #[cfg(feature = "menu")]
-pub fn popup_menu_nodes(
-    items: &[ResolvedMenuItem],
+pub fn popup_menu_nodes<S: 'static>(
+    items: &[ResolvedMenuItem<S>],
     env: &Environment,
     owner_closable: bool,
 ) -> Vec<PopupMenuNode> {
@@ -42,8 +42,8 @@ pub fn popup_menu_nodes(
 }
 
 #[cfg(feature = "menu")]
-fn popup_menu_node(
-    item: ResolvedMenuItem,
+fn popup_menu_node<S: 'static>(
+    item: ResolvedMenuItem<S>,
     env: &Environment,
     owner_closable: bool,
 ) -> Option<PopupMenuNode> {
@@ -51,7 +51,7 @@ fn popup_menu_node(
         ResolvedMenuItem::Command(command) => Some(command_node(command)),
         ResolvedMenuItem::Quit => env
             .get::<Quit>()
-            .map(|quit| command_node(quit.command(env))),
+            .map(|quit| command_node(quit.command::<waterui_controls::NoopSlot>(env))),
         ResolvedMenuItem::CloseWindow => {
             close_window_command(env, owner_closable).map(command_node)
         }
@@ -71,7 +71,7 @@ fn popup_menu_node(
 }
 
 #[cfg(feature = "menu")]
-fn command_node(command: ResolvedCommand) -> PopupMenuNode {
+fn command_node<S>(command: ResolvedCommand<S>) -> PopupMenuNode {
     let mut styled_label = command.label.content().snapshot();
     if command.selected.snapshot() {
         styled_label = StyledStr::plain("✓ ") + styled_label;

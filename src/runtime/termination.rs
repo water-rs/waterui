@@ -33,6 +33,8 @@ use core::pin::Pin;
 use executor_core::AnyLocalExecutorTask;
 #[cfg(feature = "menu")]
 use waterui_controls::menu::{CommandExt as _, ResolvedCommand, Shortcut};
+#[cfg(feature = "menu")]
+use waterui_core::backend::ChildSlot;
 use waterui_core::{Environment, impl_extractor};
 
 use crate::app::QuitReply;
@@ -388,7 +390,7 @@ impl Quit {
     #[doc(hidden)]
     #[must_use]
     #[cfg(feature = "menu")]
-    pub fn command(&self, env: &Environment) -> ResolvedCommand {
+    pub fn command<S: ChildSlot>(&self, env: &Environment) -> ResolvedCommand<S> {
         let quit = self.clone();
         // "Exit" is the Windows menu convention; "Quit" is macOS's and what
         // Linux desktops (GTK/Qt) use.
@@ -400,7 +402,7 @@ impl Quit {
         label
             .action(move || quit.request())
             .shortcut(Shortcut::new('q').command())
-            .resolve(env)
+            .resolve::<S>(env)
     }
 }
 
@@ -480,6 +482,8 @@ mod tests {
     #[test]
     #[cfg(feature = "menu")]
     fn the_quit_command_files_a_cancellable_request() {
+        use waterui_controls::NoopSlot;
+
         install_executor();
         let log = Log::default();
         let asked = log.clone();
@@ -491,7 +495,7 @@ mod tests {
         let command = env
             .get::<Quit>()
             .expect("start installs Quit into the runner's environment")
-            .command(&env);
+            .command::<NoopSlot>(&env);
 
         let label = if cfg!(target_os = "windows") {
             "Exit"

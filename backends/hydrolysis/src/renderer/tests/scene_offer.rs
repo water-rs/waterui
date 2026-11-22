@@ -29,7 +29,6 @@ use waterui_core::layout::{LayoutError, Rect, ResolvedExtent, StretchAxis, ViewD
 use waterui_core::views::ForEach;
 use waterui_graphics::backend::{
     NextFrame, RecordingResources, SceneContent, SceneInvalidator, SceneView,
-    SceneViewMergeToParent,
 };
 #[cfg(hydrolysis_gpu)]
 use waterui_graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
@@ -62,8 +61,8 @@ impl GpuContent for PaneProbe {
     fn render(&mut self, _frame: &mut GpuFrame<'_>) {}
 }
 
-/// The same pane as self-drawn scene content — the merged `SceneView` leaf a
-/// hydroterm-style window carries when `SceneViewMergeToParent` is installed.
+/// The same pane as self-drawn scene content — the `SceneView` leaf a
+/// hydroterm-style window carries.
 struct ScenePane;
 
 impl SceneContent for ScenePane {
@@ -255,7 +254,7 @@ fn build_issue_tree(
     crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine>,
     RenderNode<crate::text::ParleyEngine>,
 ) {
-    let env = test_environment().extending(SceneViewMergeToParent);
+    let env = test_environment();
     let mut renderer = test_renderer();
     let node = RenderNode::build(AnyView::new(issue_tree(kind)), &env, &mut renderer);
     (env, renderer, node)
@@ -458,7 +457,7 @@ fn scene_view_panes_take_their_offered_share() {
 fn lazy_stack_panes_split_the_divider_width() {
     use waterui_layout::stack::HStackLayout;
 
-    let env = test_environment().extending(SceneViewMergeToParent);
+    let env = test_environment();
     let mut renderer = test_renderer();
     let lazy_pane = || {
         LazyContainer::new(
@@ -536,7 +535,7 @@ fn lazy_stack_panes_split_the_divider_width() {
 /// offer — the leaf-level evidence of which answer beat its offer.
 #[test]
 fn input_scene_view_panes_split_the_divider_width() {
-    let env = test_environment().extending(SceneViewMergeToParent);
+    let env = test_environment();
     let mut renderer = test_renderer();
     let tree = hstack((
         SceneView::new(IntrinsicScenePane),

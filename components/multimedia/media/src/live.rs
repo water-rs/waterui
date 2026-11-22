@@ -1,3 +1,4 @@
+use core::time::Duration;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -8,13 +9,14 @@ use waterui_core::{
     Binding, Computed, Dynamic, Environment, Metadata, SerialDispatch, Signal, SignalExt, View,
     reactive::signal::IntoComputed,
 };
+use waterui_image::ContentMode;
 use waterui_interaction::gesture::{GestureObserver, LongPressGesture};
 use waterui_layout::overlay;
 
 use crate::{
     PlaybackSession, Playlist, Url,
     photo::Photo,
-    video::{Event as VideoEvent, Video},
+    video::{ContentMode as VideoContentMode, Event as VideoEvent, Video},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -65,8 +67,10 @@ pub enum Event {
 /// to every native FFI surface.
 pub struct LivePhoto {
     source: Computed<LivePhotoSource>,
-    activation_duration_ms: u32,
+    activation_duration: Duration,
     is_playing: Binding<bool>,
+    resizable: bool,
+    content_mode: Option<ContentMode>,
     on_event: Option<BoxedEventAction<Event>>,
 }
 
@@ -75,8 +79,10 @@ impl core::fmt::Debug for LivePhoto {
         formatter
             .debug_struct("LivePhoto")
             .field("source", &self.source)
-            .field("activation_duration_ms", &self.activation_duration_ms)
+            .field("activation_duration", &self.activation_duration)
             .field("is_playing", &self.is_playing)
+            .field("resizable", &self.resizable)
+            .field("content_mode", &self.content_mode)
             .finish_non_exhaustive()
     }
 }
@@ -95,8 +101,10 @@ impl LivePhoto {
     pub fn new(source: impl IntoComputed<LivePhotoSource>) -> Self {
         Self {
             source: source.into_computed(),
-            activation_duration_ms: 250,
+            activation_duration: Duration::from_millis(250),
             is_playing: Binding::bool(false),
+            resizable: false,
+            content_mode: None,
             on_event: None,
         }
     }
@@ -113,8 +121,24 @@ impl LivePhoto {
 
     /// Sets the long-press duration required to activate motion playback.
     #[must_use]
-    pub const fn activation_duration_ms(mut self, activation_duration_ms: u32) -> Self {
-        self.activation_duration_ms = activation_duration_ms;
+    pub const fn activation_duration(mut self, activation_duration: Duration) -> Self {
+        self.activation_duration = activation_duration;
+        self
+    }
+
+    /// Allows the live photo to stretch to the bounds proposed by its parent.
+    #[must_use]
+    pub const fn resizable(mut self) -> Self {
+        self.resizable = true;
+        self
+    }
+
+    /// Preserves the live photo's aspect ratio inside the bounds the parent
+    /// proposes: [`ContentMode::Fit`] letterboxes, [`ContentMode::Fill`] covers
+    /// the bounds and crops the overflow.
+    #[must_use]
+    pub const fn content_mode(mut self, mode: ContentMode) -> Self {
+        self.content_mode = Some(mode);
         self
     }
 }
@@ -122,8 +146,11 @@ impl LivePhoto {
 impl View for LivePhoto {
     fn body(self, env: &Environment) -> impl View {
         let source = self.source;
-        let activation_duration_ms = self.activation_duration_ms;
+        let activation_duration_ms =
+            u32::try_from(self.activation_duration.as_millis()).unwrap_or(u32::MAX);
         let is_playing = self.is_playing;
+        let resizable = self.resizable;
+        let content_mode = self.content_mode;
         let motion_source = source.clone();
         let still_source = source.map(|source| source.image).computed();
         let playback_state = is_playing.clone();
@@ -136,12 +163,21 @@ impl View for LivePhoto {
                     motion_source.snapshot(),
                     playback_state.clone(),
                     report.clone(),
+                    content_mode,
                 )
             })
         });
 
+        let mut still = Photo::new(still_source);
+        if resizable {
+            still = still.resizable();
+        }
+        if let Some(mode) = content_mode {
+            still = still.content_mode(mode);
+        }
+
         Metadata::new(
-            overlay(Photo::new(still_source).resizable(), motion),
+            overlay(still, motion),
             GestureObserver::new(LongPressGesture::new(activation_duration_ms), move || {
                 if !is_playing_on_press.snapshot() {
                     is_playing_on_press.set(true);
@@ -194,10 +230,19 @@ fn live_photo_video(
     source: LivePhotoSource,
     is_playing: Binding<bool>,
     report: LivePhotoReporter,
+    content_mode: Option<ContentMode>,
 ) -> Video {
     let session = PlaybackSession::new(Playlist::single(source.video)).autoplay();
     session.controller().muted().set(true);
-    Video::new(session).loops(false).on_event(move |event| {
+    let mut video = Video::new(session).loops(false);
+    if let Some(mode) = content_mode {
+        let video_mode = match mode {
+            ContentMode::Fit => VideoContentMode::Fit,
+            ContentMode::Fill => VideoContentMode::Fill,
+        };
+        video = video.content_mode(video_mode);
+    }
+    video.on_event(move |event| {
         // Both outcomes put the still photo back, but they are not the same
         // thing: one played, the other never could. An observer that cannot
         // tell them apart reads a failure as a completed playback.

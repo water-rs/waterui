@@ -13,14 +13,15 @@ use core::fmt;
 
 use waterui::component::LabelDisplayMode;
 use waterui::navigation::{
-    Bar, BarColor, NavigationSearch, NavigationTitleDisplayMode, NavigationToolbarItem,
-    NavigationToolbarPlacement,
+    Bar, BarColor, NavigationSearch, NavigationTitleDisplayMode, NavigationToolbarPlacement,
+    ResolvedNavigationToolbar, ResolvedNavigationToolbarItem,
 };
 use waterui::reactive::Computed;
 use waterui_backend_core::Environment;
 use waterui_core::layout::ProposalSize;
 
-use crate::contract::{NativeLeaf, RenderContext};
+use crate::contract::{Held, NativeLeaf, RenderContext};
+use crate::sf_symbol::SfSymbolProbe;
 
 use super::extract_title_text;
 
@@ -98,7 +99,7 @@ impl BarState {
     /// Builds the bar state: environment-dependent fields must already be
     /// resolved (`resolve_native_fields` runs in `NavigationView::body`), so
     /// every view renders against `ctx`'s environment directly.
-    pub fn new(bar: &mut Bar, ctx: &RenderContext<'_>) -> Self {
+    pub fn new(bar: &mut Bar<ResolvedNavigationToolbar<Held>>, ctx: &RenderContext<'_>) -> Self {
         let title = bar_title(bar.title.take(), ctx);
         let subtitle = bar_title(bar.subtitle.take(), ctx);
         let items = bar
@@ -217,22 +218,22 @@ fn bar_title(view: Option<waterui::text::Text>, ctx: &RenderContext<'_>) -> BarT
 /// keep precedence. That environment is also the toolbar's
 /// ([`ToolbarChrome`](crate::toolbar_chrome::ToolbarChrome)), so the item's
 /// button styles resolve the way the platform's toolbar draws them.
-fn bar_item(item: NavigationToolbarItem, ctx: &RenderContext<'_>) -> BarItem {
+fn bar_item(item: ResolvedNavigationToolbarItem<Held>, ctx: &RenderContext<'_>) -> BarItem {
     let (placement, content, title, icon, item_env) = item.into_parts();
     let toolbar_env = toolbar_environment(item_env.as_ref().unwrap_or_else(|| ctx.env()));
     let ctx = ctx.with_env(&toolbar_env);
 
-    let leaf = ctx.render(content);
+    let leaf = ctx.realize(content);
     let title = title.map(|title| title.resolve(ctx.env()).into_content());
-    let icon = icon.map(|builder| {
-        let icon_view = builder.build();
-        let symbol = icon_view
-            .downcast_ref::<crate::SfSymbol>()
-            .map(|symbol| String::from(symbol.as_str()));
-        symbol.map_or_else(
-            || BarItemIcon::View(ctx.render(icon_view)),
-            BarItemIcon::System,
-        )
+    let icon = icon.map(|slot| {
+        let mut probe = SfSymbolProbe::default();
+        if slot.probe(&mut probe, ctx.env())
+            && let Some(symbol) = probe.name
+        {
+            BarItemIcon::System(String::from(symbol))
+        } else {
+            BarItemIcon::View(ctx.realize(slot.build()))
+        }
     });
     BarItem {
         placement,

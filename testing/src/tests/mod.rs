@@ -24,9 +24,7 @@ use waterui::component::list::{List, ListItem};
 use waterui::component::{text, vstack};
 use waterui::graphics::WorkingColor;
 use waterui::graphics::backend::draw::{self, Draw as _, Recorder};
-use waterui::graphics::backend::{
-    NextFrame, RecordingResources, SceneContent, SceneView, SceneViewMergeToParent,
-};
+use waterui::graphics::backend::{NextFrame, RecordingResources, SceneContent, SceneView};
 use waterui::graphics::canvas::Canvas;
 use waterui::graphics::color::Srgb;
 use waterui::layout::scroll::ScrollView;
@@ -952,13 +950,13 @@ impl SceneContent for TestSceneContent {
 }
 
 #[test]
-fn scene_view_body_merges_to_native_when_marker_is_present() {
-    let env = waterui_core::Environment::new().extending(SceneViewMergeToParent);
+fn scene_view_body_resolves_to_native() {
+    let env = waterui_core::Environment::new();
     let body = SceneView::new(TestSceneContent(Rc::new(Cell::new(false)))).body(&env);
     let any = AnyView::new(body);
     assert!(
         any.is::<Native<SceneView>>(),
-        "expected SceneView body to resolve to Native<SceneView> when merge marker is present"
+        "expected SceneView body to resolve directly to Native<SceneView>"
     );
 }
 

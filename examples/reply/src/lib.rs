@@ -14,7 +14,9 @@ use waterui::app::{App, Windows};
 use waterui::component::list::{List, ListItem};
 use waterui::layout::ContentMode;
 use waterui::media::Photo;
-use waterui::navigation::{NavigationSplitView, NavigationStack, NavigationView};
+use waterui::navigation::{
+    NavigationSplitView, NavigationStack, NavigationToolbarItems, NavigationView,
+};
 use waterui::prelude::*;
 use waterui::reactive::collection::SignalCollection;
 use waterui::widget::avatar;
@@ -209,7 +211,7 @@ fn thread_row(thread: Thread) -> ListItem<impl View> {
 fn inbox(
     selected: &Binding<Option<u64>>,
     query: &Binding<Str>,
-) -> NavigationView<impl View + use<>> {
+) -> NavigationView<impl View + use<>, impl NavigationToolbarItems + use<>> {
     let visible = SignalCollection::new(
         query
             .clone()
@@ -265,7 +267,7 @@ fn message_card(message: &'static Message) -> impl View {
 
 /// The reading pane: the subject as the navigation title, the message count
 /// as its subtitle, and the thread's overflow actions in the bar.
-fn detail(thread: &'static Thread) -> NavigationView<impl View> {
+fn detail(thread: &'static Thread) -> NavigationView<impl View, impl NavigationToolbarItems> {
     scroll(vstack(thread.messages.iter().map(message_card).collect::<Vec<_>>()).leading())
         .title(thread.subject)
         .navigation_subtitle(text!("{#count} Messages", count = thread.messages.len()))

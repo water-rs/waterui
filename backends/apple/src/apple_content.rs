@@ -634,7 +634,7 @@ mod tests {
             #[cfg(waterui_feature = "list")]
             list<C>: waterui::component::list::ListConfig<C>,
             #[cfg(waterui_feature = "navigation")]
-            navigation_view<C>: waterui::navigation::NavigationView<C>,
+            navigation_view<C>: waterui::navigation::ResolvedNavigationView<C>,
             #[cfg(waterui_feature = "navigation")]
             navigation_split<C>: waterui::navigation::split::NavigationSplitLayout<C>,
             #[cfg(waterui_feature = "navigation")]

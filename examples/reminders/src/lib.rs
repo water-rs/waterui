@@ -13,6 +13,7 @@ use waterui::Identifiable;
 use waterui::app::{App, Windows};
 use waterui::background::Material;
 use waterui::component::list::{List, ListItem, Section};
+use waterui::navigation::NavigationToolbarItems;
 use waterui::prelude::theme_color::Foreground;
 use waterui::prelude::*;
 use waterui::reactive::collection::SignalCollection;
@@ -371,7 +372,7 @@ fn user_list_row(name: &'static str, count: i32, color: Srgb) -> impl View {
 fn detail_view(
     dest: SidebarDestination,
     search: &Binding<Str>,
-) -> NavigationView<impl View + use<>> {
+) -> NavigationView<impl View + use<>, impl NavigationToolbarItems + use<>> {
     let (today_rows, upcoming_rows) = reminders_for(dest);
 
     vstack((

@@ -297,6 +297,13 @@ macro_rules! native_backend {
                     Ok(slot) => return slot.into_child().realize(self.inner(), env, cx),
                     Err(native) => native,
                 };
+                let native = match cast::<T, waterui::component::StyleSlot>(native) {
+                    Ok(slot) => match slot.downcast::<$crate::Child<B::Family>>() {
+                        Ok(child) => return child.realize(self.inner(), env, cx),
+                        Err(slot) => return self.inner().provided(slot, env, cx),
+                    },
+                    Err(native) => native,
+                };
                 match self.offer(native, env, cx) {
                     Ok(output) => output,
                     Err((native, cx)) => self.inner().provided(native, env, cx),
@@ -306,6 +313,12 @@ macro_rules! native_backend {
             fn provided_dyn(&mut self, mut native: ErasedPayload<'_>, env: &Environment, cx: Self::Ctx) -> Self::Output {
                 if let Some(slot) = native.take::<$crate::hooked::SlotView<B::Family>>() {
                     return slot.into_child().realize(self.inner(), env, cx);
+                }
+                if let Some(slot) = native.take::<waterui::component::StyleSlot>() {
+                    return match slot.downcast::<$crate::Child<B::Family>>() {
+                        Ok(child) => child.realize(self.inner(), env, cx),
+                        Err(slot) => self.inner().provided(slot, env, cx),
+                    };
                 }
                 match self.offer_erased(&mut native, env, cx) {
                     Ok(output) => output,
@@ -349,6 +362,13 @@ macro_rules! native_backend {
         ) -> B::Output {
             let native = match cast::<T, $crate::hooked::SlotView<B::Family>>(native) {
                 Ok(slot) => return slot.into_child().realize(backend, env, cx),
+                Err(native) => native,
+            };
+            let native = match cast::<T, waterui::component::StyleSlot>(native) {
+                Ok(slot) => match slot.downcast::<$crate::Child<B::Family>>() {
+                    Ok(child) => return child.realize(backend, env, cx),
+                    Err(slot) => return backend.provided(slot, env, cx),
+                },
                 Err(native) => native,
             };
             $(
@@ -468,6 +488,12 @@ macro_rules! native_backend {
         ) -> B::Output {
             if let Some(slot) = native.take::<$crate::hooked::SlotView<B::Family>>() {
                 return slot.into_child().realize(backend, env, cx);
+            }
+            if let Some(slot) = native.take::<waterui::component::StyleSlot>() {
+                return match slot.downcast::<$crate::Child<B::Family>>() {
+                    Ok(child) => child.realize(backend, env, cx),
+                    Err(slot) => backend.provided(slot, env, cx),
+                };
             }
             $(
                 $(#[cfg($ncfg)])*
@@ -907,7 +933,7 @@ native_backend! {
         list<C>: waterui::component::list::ListConfig<C>,
         #[cfg(waterui_feature = "navigation")]
         /// A navigation bar around its content.
-        navigation_view<C>: waterui::navigation::NavigationView<C>,
+        navigation_view<C>: waterui::navigation::ResolvedNavigationView<C>,
         #[cfg(waterui_feature = "navigation")]
         /// A split navigation layout.
         navigation_split<C>: waterui::navigation::split::NavigationSplitLayout<C>,
@@ -1199,7 +1225,7 @@ mod tests {
     }
 
     #[cfg(waterui_feature = "navigation")]
-    impl<C> Parent<C> for waterui::navigation::NavigationView<C> {
+    impl<C> Parent<C> for waterui::navigation::ResolvedNavigationView<C> {
         fn children(self) -> Vec<C> {
             alloc::vec![self.content]
         }

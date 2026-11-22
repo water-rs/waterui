@@ -8,8 +8,6 @@ use waterui::ContentLedger;
 use waterui::view_renderer::{RenderError, RenderRequest, RenderResult, ViewRenderer};
 use waterui_core::{Environment, View};
 #[cfg(hydrolysis_cherenkov)]
-use waterui_graphics::backend::SceneViewMergeToParent;
-#[cfg(hydrolysis_cherenkov)]
 use waterui_text::FontCollection;
 
 #[cfg(hydrolysis_gpu_painter)]
@@ -344,9 +342,7 @@ impl ViewRenderer for HydrolysisOffscreenRenderer {
                 renderer.begin_rebuild_frame();
 
                 let ledger = ContentLedger::new();
-                let render_env = env
-                    .extending(SceneViewMergeToParent)
-                    .extending(ledger.clone());
+                let render_env = env.extending(ledger.clone());
                 let bounds = kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
                 renderer.capture_window_tree(
                     view,

@@ -460,7 +460,7 @@ pub fn run<W: Windows, M: AppMenuBar>(
         last_window: _,
         termination: _,
     } = app.into_parts();
-    let mut env = env.extending(waterui_graphics::backend::SceneViewMergeToParent);
+    let mut env = env;
     waterui::install_application_resources(&mut env);
     #[cfg(hydrolysis_inspector)]
     waterui::inspector::install(&mut env, inspector);
