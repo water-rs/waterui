@@ -8,9 +8,15 @@
 //! safe `objc2` API on the caller's own objects, all main-thread.
 
 use objc2::rc::Retained;
-#[cfg(target_os = "ios")]
 use objc2::runtime::NSObjectProtocol;
+#[cfg(target_os = "macos")]
+use objc2::{AllocAnyThread, MainThreadMarker, MainThreadOnly, define_class, msg_send};
+#[cfg(target_os = "ios")]
 use objc2::{AllocAnyThread, MainThreadOnly};
+#[cfg(target_os = "macos")]
+use objc2_app_kit::{NSBackingStoreType, NSWindow, NSWindowStyleMask};
+#[cfg(target_os = "macos")]
+use objc2_core_foundation::CGRect;
 use objc2_core_foundation::{CFData, CFRetained};
 use objc2_core_graphics::{
     CGBitmapContextCreateImage, CGColorRenderingIntent, CGColorSpace, CGContext, CGDataProvider,
@@ -199,30 +205,31 @@ pub fn template_image(image: &CGImage, size: Size) -> Retained<objc2_app_kit::NS
     ns
 }
 
-/// A borderless `NSWindow` that is never ordered in, for capture — it has
-/// no on-screen position to hide, but attaching a view to it drives
-/// `AppKit`'s window-dependent rendering paths.
+/// A borderless `NSWindow` that is never ordered in, for offscreen capture.
+///
+/// It has no on-screen position to hide, while attaching a view to it drives
+/// `AppKit`'s window-dependent rendering paths with key-window appearance so
+/// controls draw their active accent colors rather than inactive gray.
 #[cfg(target_os = "macos")]
 #[must_use]
 /// # Panics
 ///
 /// On a failure to allocate the window.
-pub fn capture_window(
-    mtm: objc2::MainThreadMarker,
-    size: Size,
-) -> Retained<objc2_app_kit::NSWindow> {
-    use objc2_app_kit::{NSBackingStoreType, NSWindow, NSWindowStyleMask};
+pub fn capture_window(mtm: MainThreadMarker, size: Size) -> Retained<NSWindow> {
+    use crate::dynamic_range::{DynamicRange, apply_to_view};
     // SAFETY: `initWithContentRect:styleMask:backing:defer:` is `NSWindow`'s
     // designated initializer; `setReleasedWhenClosed:false` keeps the object
     // owned by the `Retained` the caller drops.
     unsafe {
-        let window: Retained<NSWindow> = NSWindow::initWithContentRect_styleMask_backing_defer(
-            NSWindow::alloc(mtm),
-            Rect::new(0.0, 0.0, size.width, size.height).into(),
-            NSWindowStyleMask::Borderless,
-            NSBackingStoreType::Buffered,
-            false,
-        );
+        let rect: CGRect = Rect::new(0.0, 0.0, size.width, size.height).into();
+        let window: Retained<CaptureWindow> = msg_send![
+            CaptureWindow::alloc(mtm),
+            initWithContentRect: rect,
+            styleMask: NSWindowStyleMask::Borderless,
+            backing: NSBackingStoreType::Buffered,
+            defer: false
+        ];
+        let window: Retained<NSWindow> = Retained::into_super(window);
         window.setReleasedWhenClosed(false);
         // The offscreen render target is an RGBA8 bitmap, so the host
         // declares `DynamicRange::Standard` on its content view: a leaf
@@ -230,14 +237,56 @@ pub fn capture_window(
         // the tag rather than the missing display. `apply_to_view`
         // preserves any local tag content inside the capture carries.
         if let Some(content) = window.contentView() {
-            crate::dynamic_range::apply_to_view(
-                crate::dynamic_range::DynamicRange::Standard,
-                &content,
-            );
+            apply_to_view(DynamicRange::Standard, &content);
         }
         window
     }
 }
+
+#[cfg(target_os = "macos")]
+define_class!(
+    // SAFETY: `NSWindow`'s designated initializer is
+    // `initWithContentRect:styleMask:backing:defer:`, which `capture_window`
+    // calls, and the class holds no ivars and implements no `Drop`.
+    #[unsafe(super(NSWindow))]
+    #[name = "CocoaUiCaptureWindow"]
+    #[thread_kind = MainThreadOnly]
+    /// The never-ordered `NSWindow` a view is rehosted in for offscreen capture.
+    ///
+    /// Because a capture window is never ordered on screen or activated, a plain
+    /// `NSWindow` reports `isKeyWindow == false` and `hasKeyAppearance == false`,
+    /// causing `AppKit` controls (`NSButton`, `NSSwitch`, `NSSlider`,
+    /// `NSProgressIndicator`, `NSSegmentedControl`) and key-window-aware views
+    /// to render in their inactive gray state. Overriding the key/main state
+    /// and appearance queries gives captured views their active appearance
+    /// without ordering a window or changing application activation policy.
+    struct CaptureWindow;
+
+    // SAFETY: `NSObjectProtocol` asks nothing of an `NSWindow` subclass.
+    unsafe impl NSObjectProtocol for CaptureWindow {}
+
+    impl CaptureWindow {
+        #[unsafe(method(isKeyWindow))]
+        fn is_key_window(&self) -> bool {
+            true
+        }
+
+        #[unsafe(method(isMainWindow))]
+        fn is_main_window(&self) -> bool {
+            true
+        }
+
+        #[unsafe(method(hasKeyAppearance))]
+        fn has_key_appearance(&self) -> bool {
+            true
+        }
+
+        #[unsafe(method(hasMainAppearance))]
+        fn has_main_appearance(&self) -> bool {
+            true
+        }
+    }
+);
 
 /// An offscreen `UIWindow` in `scene`, attached so `UIView` captures see a
 /// real window.
