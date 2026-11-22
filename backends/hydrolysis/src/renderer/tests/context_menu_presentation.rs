@@ -869,7 +869,7 @@ fn a_divider_row_takes_the_themes_divider_spacing() {
         } else {
             0.0
         };
-    let expected = crate::renderer::POPUP_MENU_PANEL_MARGIN
+    let expected = MinimalTestTheme::panel_margin()
         .mul_add(2.0, f64::mul_add(menu_metrics.vertical_padding, 2.0, rows));
     assert!(
         (f64::from(frame.height()) - expected).abs() < 1.0,
@@ -889,7 +889,7 @@ fn the_plain_popup_draws_the_theme_panel() {
     let _ = secondary_click_label(&mut runtime, "host");
     let pop = runtime.popup_frame(0).expect("the popup mounts");
 
-    let m = crate::num_cast::f64_as_u32(crate::renderer::POPUP_MENU_PANEL_MARGIN);
+    let m = crate::num_cast::f64_as_u32(MinimalTestTheme::panel_margin());
     // The window's transparent ring: well outside the panel.
     assert!(
         pixel(&pop, 1, 1)[3] < 16,
@@ -945,7 +945,7 @@ fn a_disabled_command_draws_its_label_dimmed_and_stays_inert() {
     // Rows lay out under the panel margin: first the disabled `Copy`, then
     // `Paste` — each `row_height` tall inside `vertical_padding`.
     let metrics = MinimalTestTheme::menu_layout();
-    let margin = crate::num_cast::f64_as_u32(crate::renderer::POPUP_MENU_PANEL_MARGIN);
+    let margin = crate::num_cast::f64_as_u32(MinimalTestTheme::panel_margin());
     let row_top = margin + crate::num_cast::f64_as_u32(metrics.vertical_padding);
     let row_bottom = row_top + crate::num_cast::f64_as_u32(metrics.row_height);
     let (x0, x1) = (margin + 2, pop.width() - margin - 2);
