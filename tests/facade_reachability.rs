@@ -65,3 +65,37 @@ fn public_capabilities_are_reachable_through_the_facade() {
     // Reaching this point means every import above resolved.
     let _ = Metadata::new(waterui::component::text("water"), Retain::new(0_u8));
 }
+
+#[test]
+fn prelude_exports_app_window_widgets_and_collections_without_shadowing() {
+    use waterui::prelude::*;
+
+    #[derive(Clone, Identifiable)]
+    struct RowItem {
+        #[id]
+        id: i32,
+    }
+
+    fn sample_app(env: Environment) -> App<impl Windows, impl AppMenuBar> {
+        let _ = WindowState::Normal;
+        let _ = Window::new("Title", binding(WindowState::Normal), || {
+            let items = ReactiveList::from(vec![RowItem { id: 1 }, RowItem { id: 2 }]);
+            let _ = items.len();
+            let flag = Binding::bool(true);
+            let _ = when(flag, || "ok");
+            let _ = accordion("Header", || "Body");
+            let _ = error_view(std::io::Error::other("err"));
+            let _ = ErrorView::new(std::io::Error::other("err"));
+            let _ = Suspense::new(async { "ready" });
+            let _ = SignalCollection::new(Binding::container(vec![RowItem { id: 3 }]));
+            let _ = ForEach::new(items, |item| text!("{id}", id = item.id));
+            let _ = FullScreenOverlayManager::host(|overlay| {
+                overlay.show("Overlay");
+                "Main"
+            });
+            "Root"
+        });
+        App::new(|| text!("Hello"), env)
+    }
+    let _ = sample_app;
+}

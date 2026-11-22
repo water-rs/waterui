@@ -1345,9 +1345,7 @@ pub fn components_block_34() {
 // overlay manager. Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn components_snackbar_prose() {
-    use waterui::snackbar::{
-        Snackbar, SnackbarDismissReason, SnackbarIcon, SnackbarManager, SnackbarPosition,
-    };
+    use waterui::snackbar::{Snackbar, SnackbarDismissReason, SnackbarManager, SnackbarPosition};
 
     let value = Binding::i32(0);
 
@@ -1363,7 +1361,7 @@ pub fn components_snackbar_prose() {
     let _ = text("host").snackbar_host();
     let _ = text("host").snackbar_host_with_icons::<mdi::Svg>();
     let _ = SnackbarManager::with_icons::<mdi::Svg>();
-    let _ = button("x").action(|m: SnackbarManager<SnackbarIcon<mdi::Svg>>| {
+    let _ = button("x").action(|m: SnackbarManager<mdi::Svg>| {
         m.show(Snackbar::new("x").icon(mdi::delete()));
     });
     let _ = button("x").action(|manager: SnackbarManager| manager.dismiss());

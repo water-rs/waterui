@@ -405,7 +405,7 @@ impl core::fmt::Debug for DismissalCallback {
 ///     .duration(Duration::from_secs(3));
 /// ```
 #[derive(Clone)]
-pub struct Snackbar<I = ()> {
+pub struct Snackbar<I = NoIcon> {
     /// The message to display.
     message: Str,
     /// Optional icon to display before the message.
@@ -439,18 +439,55 @@ impl<I> core::fmt::Debug for Snackbar<I> {
     }
 }
 
-/// Leading-icon view wrapper carried by a typed [`Snackbar`].
-#[derive(Debug, Clone)]
-pub struct SnackbarIcon<V>(V);
+/// Marker type for a [`Snackbar`] with no leading icon.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NoIcon;
 
-impl<V: View> View for SnackbarIcon<V> {
-    fn body(self, _env: &waterui_core::Environment) -> impl View {
-        self.0
+mod icon_sealed {
+    pub trait Sealed {}
+}
+
+/// Leading-icon type accepted by [`Snackbar`], [`SnackbarManager`], and [`SnackbarHost`]:
+/// either [`NoIcon`] or any cloneable [`View`].
+#[doc(hidden)]
+pub trait SnackbarIconSlot: icon_sealed::Sealed + Clone + 'static {
+    type IconView: View + Clone;
+
+    fn into_icon_view(self) -> Option<Self::IconView>;
+
+    fn from_plain(snackbar: Snackbar<NoIcon>) -> Snackbar<Self>;
+}
+
+impl icon_sealed::Sealed for NoIcon {}
+
+impl SnackbarIconSlot for NoIcon {
+    type IconView = ();
+
+    fn into_icon_view(self) -> Option<Self::IconView> {
+        None
+    }
+
+    fn from_plain(snackbar: Snackbar<NoIcon>) -> Snackbar<Self> {
+        snackbar
     }
 }
 
-impl<V> From<Snackbar<()>> for Snackbar<SnackbarIcon<V>> {
-    fn from(snackbar: Snackbar<()>) -> Self {
+impl<V: View + Clone + 'static> icon_sealed::Sealed for V {}
+
+impl<V: View + Clone + 'static> SnackbarIconSlot for V {
+    type IconView = Self;
+
+    fn into_icon_view(self) -> Option<Self::IconView> {
+        Some(self)
+    }
+
+    fn from_plain(snackbar: Snackbar<NoIcon>) -> Snackbar<Self> {
+        snackbar.into()
+    }
+}
+
+impl<V: View> From<Snackbar<NoIcon>> for Snackbar<V> {
+    fn from(snackbar: Snackbar<NoIcon>) -> Self {
         Self {
             message: snackbar.message,
             icon: None,
@@ -464,7 +501,7 @@ impl<V> From<Snackbar<()>> for Snackbar<SnackbarIcon<V>> {
     }
 }
 
-impl Snackbar<()> {
+impl Snackbar<NoIcon> {
     /// Creates a new snackbar with the specified message.
     #[must_use]
     pub fn new(message: impl Into<Str>) -> Self {
@@ -487,13 +524,13 @@ impl<I> Snackbar<I> {
     /// Any view works; for portable apps prefer a packaged icon crate such as
     /// `waterui-icons-material-icon` (`waterui_apple::SfSymbol` is only
     /// available on Apple backends). Pair with
-    /// [`SnackbarManager::with_icons`] when showing snackbars that carry an icon
-    /// of type `V`.
+    /// [`SnackbarManager::with_icons`] or [`SnackbarManager::host`] when
+    /// showing snackbars that carry an icon of type `NewI`.
     #[must_use]
-    pub fn icon<NewI: View + Clone + 'static>(self, icon: NewI) -> Snackbar<SnackbarIcon<NewI>> {
+    pub fn icon<NewI: View + Clone + 'static>(self, icon: NewI) -> Snackbar<NewI> {
         Snackbar {
             message: self.message,
-            icon: Some(SnackbarIcon(icon)),
+            icon: Some(icon),
             action: self.action,
             duration: self.duration,
             position: self.position,
@@ -632,7 +669,7 @@ impl<I> Snackbar<I> {
 /// Cloning an `ActiveSnackbar` shares those bindings by reference count, so the
 /// snapshots the manager reflows from all refer to the same animated state.
 #[derive(Clone, crate::Identifiable)]
-struct ActiveSnackbar<I: 'static = ()> {
+struct ActiveSnackbar<I: 'static = NoIcon> {
     #[id]
     id: u64,
     snackbar: Snackbar<I>,
@@ -650,7 +687,7 @@ struct ActiveSnackbar<I: 'static = ()> {
 }
 
 /// Internal state for the snackbar manager.
-struct SnackbarManagerState<I: 'static = ()> {
+struct SnackbarManagerState<I: 'static = NoIcon> {
     /// The active on-screen snackbars, oldest first. A reactive [`List`] so the
     /// overlay's [`ForEach`] reconciles the stack item-by-item as snackbars are
     /// added and removed; per-row animation bindings live on each
@@ -680,7 +717,7 @@ struct SnackbarManagerState<I: 'static = ()> {
 /// }
 /// ```
 #[state]
-pub struct SnackbarManager<I: 'static = ()> {
+pub struct SnackbarManager<I: 'static = NoIcon> {
     state: Rc<RefCell<SnackbarManagerState<I>>>,
 }
 
@@ -700,7 +737,7 @@ impl<I: 'static> core::fmt::Debug for SnackbarManager<I> {
     }
 }
 
-impl SnackbarManager<()> {
+impl SnackbarManager<NoIcon> {
     /// Creates a new snackbar manager and returns the overlay view.
     ///
     /// Place the returned view in an overlay above the content and install the
@@ -716,13 +753,12 @@ impl SnackbarManager<()> {
 
     /// Creates a new snackbar manager whose snackbars may carry icons of view type `V`,
     /// alongside plain icon-less snackbars.
-    pub fn with_icons<V: View + Clone + 'static>()
-    -> (SnackbarManager<SnackbarIcon<V>>, impl View + Clone) {
-        SnackbarManager::<SnackbarIcon<V>>::typed()
+    pub fn with_icons<V: View + Clone + 'static>() -> (SnackbarManager<V>, impl View + Clone) {
+        SnackbarManager::<V>::typed()
     }
 }
 
-impl<I: View + Clone + 'static> SnackbarManager<I> {
+impl<I: SnackbarIconSlot> SnackbarManager<I> {
     /// Creates a new typed snackbar manager and returns the overlay view.
     pub fn typed() -> (Self, impl View + Clone) {
         let active = List::new();
@@ -741,6 +777,21 @@ impl<I: View + Clone + 'static> SnackbarManager<I> {
             manager: manager.clone(),
         };
         (manager, overlay)
+    }
+
+    /// Builds a view subtree paired with a snackbar overlay layer, inferring `I`
+    /// from how `build` uses the handed manager and installing it for descendants.
+    pub fn host<R: View>(build: impl FnOnce(Self) -> R) -> impl View {
+        let (manager, overlay) = Self::typed();
+        let content = build(manager.clone()).overlay(overlay).state(&manager);
+        #[cfg(feature = "flow-markdown")]
+        let content = content.with(CodeCopyFeedback(OnCopied::new({
+            let snackbar = manager;
+            move |_env| {
+                snackbar.show(I::from_plain(Snackbar::new("Copied to clipboard")));
+            }
+        })));
+        content
     }
 
     /// Shows a snackbar. Snackbars stack on screen simultaneously, oldest nearest
@@ -938,7 +989,7 @@ impl<I: View + Clone + 'static> SnackbarManager<I> {
 ///
 /// [`StretchAxis::Both`]: waterui_layout::StretchAxis
 /// [`Window`]: crate::runtime::window::Window
-struct SnackbarOverlay<I: 'static = ()> {
+struct SnackbarOverlay<I: 'static = NoIcon> {
     active: List<ActiveSnackbar<I>>,
     manager: SnackbarManager<I>,
 }
@@ -952,7 +1003,7 @@ impl<I: 'static> Clone for SnackbarOverlay<I> {
     }
 }
 
-impl<I: View + Clone + 'static> View for SnackbarOverlay<I> {
+impl<I: SnackbarIconSlot> View for SnackbarOverlay<I> {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         let Self { active, manager } = self;
         // Full-window absolute layer; the engine reconciles the ForEach
@@ -969,7 +1020,7 @@ impl<I: View + Clone + 'static> View for SnackbarOverlay<I> {
 }
 
 /// One snackbar in the reactive stack overlay.
-struct StackedSnackbarView<I: 'static = ()> {
+struct StackedSnackbarView<I: 'static = NoIcon> {
     item: ActiveSnackbar<I>,
     manager: SnackbarManager<I>,
 }
@@ -983,7 +1034,7 @@ impl<I: Clone + 'static> Clone for StackedSnackbarView<I> {
     }
 }
 
-impl<I: View + Clone + 'static> StackedSnackbarView<I> {
+impl<I: SnackbarIconSlot> StackedSnackbarView<I> {
     #[allow(
         clippy::needless_pass_by_value,
         reason = "consumes the snackbar to build its view"
@@ -996,16 +1047,17 @@ impl<I: View + Clone + 'static> StackedSnackbarView<I> {
     ) -> impl View + use<I> {
         let has_trailing_controls = snackbar.action.is_some() || snackbar.closeable;
         // Message with optional icon using Label component
-        let label_view = if let Some(icon) = snackbar.icon {
-            OneOf2::A(
-                label(snackbar.message)
-                    .icon(icon)
-                    .font(theme.supporting_text_font.clone()),
-            )
-        } else {
-            OneOf2::B(label(snackbar.message).font(theme.supporting_text_font.clone()))
-        }
-        .foreground(theme.supporting_text_color.clone());
+        let label_view =
+            if let Some(icon) = snackbar.icon.and_then(SnackbarIconSlot::into_icon_view) {
+                OneOf2::A(
+                    label(snackbar.message)
+                        .icon(icon)
+                        .font(theme.supporting_text_font.clone()),
+                )
+            } else {
+                OneOf2::B(label(snackbar.message).font(theme.supporting_text_font.clone()))
+            }
+            .foreground(theme.supporting_text_color.clone());
 
         // Optional trailing action: runs the handler with the live environment,
         // then dismisses this specific snackbar.
@@ -1123,7 +1175,7 @@ impl Layout for HugWidth {
     }
 }
 
-impl<I: View + Clone + 'static> View for StackedSnackbarView<I> {
+impl<I: SnackbarIconSlot> View for StackedSnackbarView<I> {
     fn body(self, env: &waterui_core::Environment) -> impl View {
         let theme = env.get::<SnackbarTheme>().cloned().unwrap_or_default();
         let Self { item, manager } = self;
@@ -1206,7 +1258,7 @@ impl<I: View + Clone + 'static> View for StackedSnackbarView<I> {
 /// also installs `CodeCopyFeedback` so copying a markdown code block presents
 /// `"Copied to clipboard"` through the hosted manager.
 #[derive(Debug)]
-pub struct SnackbarHost<V, I = ()> {
+pub struct SnackbarHost<V, I = NoIcon> {
     content: V,
     _icon: PhantomData<fn() -> I>,
 }
@@ -1222,29 +1274,22 @@ impl<V, I> SnackbarHost<V, I> {
     }
 }
 
-impl<V: View, I: View + Clone + 'static> View for SnackbarHost<V, I>
-where
-    Snackbar<()>: Into<Snackbar<I>>,
-{
+impl<V: View, I: SnackbarIconSlot> View for SnackbarHost<V, I> {
     fn body(self, _env: &Environment) -> impl View {
         let (manager, overlay) = SnackbarManager::<I>::typed();
-        let content = self
-            .content
-            .overlay(overlay)
-            .with(manager.clone())
-            .state(&manager);
+        let content = self.content.overlay(overlay).state(&manager);
         #[cfg(feature = "flow-markdown")]
         let content = content.with(CodeCopyFeedback(OnCopied::new({
             let snackbar = manager;
             move |_env| {
-                snackbar.show(Snackbar::new("Copied to clipboard"));
+                snackbar.show(I::from_plain(Snackbar::new("Copied to clipboard")));
             }
         })));
         content
     }
 }
 
-impl Default for SnackbarManager<()> {
+impl Default for SnackbarManager<NoIcon> {
     fn default() -> Self {
         Self::new().0
     }
@@ -1404,5 +1449,15 @@ mod tests {
 
         manager.finish_dismissal(1, SnackbarDismissReason::Action);
         assert_eq!(count.snapshot(), 1);
+    }
+
+    #[test]
+    fn typed_icon_host_accepts_plain_and_icon_snackbars() {
+        let view = SnackbarManager::host(|manager| {
+            manager.show(Snackbar::new("Plain"));
+            manager.show(Snackbar::new("Icon").icon("★"));
+            "Content"
+        });
+        let _ = view.body(&Environment::new());
     }
 }

@@ -136,15 +136,6 @@ where
 }
 
 impl<E, B> ErrorView<E, B> {
-    /// Creates an [`ErrorView`] with a custom [`ErrorViewBuilder`].
-    #[must_use]
-    pub const fn from_builder(error: E, builder: B) -> Self
-    where
-        B: ErrorViewBuilder<E>,
-    {
-        Self { error, builder }
-    }
-
     /// Replaces the error renderer with `builder`.
     #[must_use]
     pub fn builder<F, V>(self, builder: F) -> ErrorView<E, F>
@@ -152,15 +143,6 @@ impl<E, B> ErrorView<E, B> {
         F: FnOnce(E) -> V + 'static,
         V: View,
     {
-        ErrorView {
-            error: self.error,
-            builder,
-        }
-    }
-
-    /// Replaces the error renderer with an [`ErrorViewBuilder`] implementation.
-    #[must_use]
-    pub fn with_custom_builder<B2: ErrorViewBuilder<E>>(self, builder: B2) -> ErrorView<E, B2> {
         ErrorView {
             error: self.error,
             builder,
@@ -293,5 +275,33 @@ mod tests {
     fn from_error_constructs_default_error_view() {
         let view = ErrorView::from(SampleError("from-err"));
         assert_eq!(view.into_error().0, "from-err");
+    }
+
+    #[test]
+    fn closure_error_view_builder_infers_parameter_type() {
+        let built = ErrorView::with_builder(SampleError("one"), |err| {
+            text(format!("custom-builder: {}", err.0))
+        });
+        assert_eq!(
+            built
+                .body(&Environment::new())
+                .content()
+                .snapshot()
+                .to_plain()
+                .as_str(),
+            "custom-builder: one"
+        );
+
+        let replaced =
+            ErrorView::new(SampleError("two")).builder(|err| text(format!("replaced: {}", err.0)));
+        assert_eq!(
+            replaced
+                .body(&Environment::new())
+                .content()
+                .snapshot()
+                .to_plain()
+                .as_str(),
+            "replaced: two"
+        );
     }
 }

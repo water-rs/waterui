@@ -665,7 +665,7 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
                     Some((
                         span.rows.clone(),
                         section.label().is_some(),
-                        section.get_footer().is_some(),
+                        section.footer().is_some(),
                     ))
                 })
                 .collect::<Vec<_>>()
@@ -694,7 +694,7 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
                 .then(|| section.label().cloned())
                 .flatten(),
             footer: (index + 1 == span.rows.end)
-                .then(|| section.get_footer().cloned())
+                .then(|| section.footer().cloned())
                 .flatten(),
         }
     }
