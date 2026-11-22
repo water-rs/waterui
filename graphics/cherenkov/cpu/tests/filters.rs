@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 
 use cherenkov::kurbo::Rect;
 use cherenkov::{
-    BlendMode, Draw, Engine, FrameTime, Group, Next, Offscreen, OffscreenFormat, Visibility,
-    WorkingColor,
+    BlendMode, Draw, Engine, FrameRate, FrameTime, Group, Next, Offscreen, OffscreenFormat,
+    Visibility, WorkingColor,
 };
 use cherenkov_cpu::{BandPixels, Bands, Raster, RasterConfig};
 use cherenkov_oracle::F32Image;
@@ -424,13 +424,15 @@ fn animated_parameters_rerender_and_request_frames() {
     let engine = Engine::<Raster>::new(RasterConfig::default()).expect("engine");
     let surface = engine
         .surface(
-            Offscreen::new((4, 4), OffscreenFormat::LinearF32).rate(30..=60),
+            Offscreen::new((4, 4), OffscreenFormat::LinearF32)
+                .rate(FrameRate::range(30.0..=60.0, 60.0)),
             counting(&wakes),
         )
         .expect("surface");
     let other_surface = engine
         .surface(
-            Offscreen::new((4, 4), OffscreenFormat::LinearF32).rate(45..=90),
+            Offscreen::new((4, 4), OffscreenFormat::LinearF32)
+                .rate(FrameRate::range(45.0..=90.0, 90.0)),
             counting(&wakes),
         )
         .expect("other surface");
@@ -492,7 +494,7 @@ fn animated_parameters_rerender_and_request_frames() {
         .expect("animated frame");
     assert!(matches!(next, Next::At { .. }));
     if let Next::At { rate, .. } = next {
-        assert_eq!(rate, 30..=90);
+        assert_eq!(rate, FrameRate::range(45.0..=90.0, 90.0));
     }
     let mid = surface.readback().expect("mid readback").pixels[2 * 4 + 2];
     assert!((mid[0] - 0.6).abs() < 1.0e-6, "mid pixel: {mid:?}");

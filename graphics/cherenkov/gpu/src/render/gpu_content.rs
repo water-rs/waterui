@@ -440,7 +440,7 @@ impl Producer {
         #[cfg(not(target_vendor = "apple"))]
         let next = Some(next);
         let Some(buffer) = next else {
-            self.again = true;
+            self.again_rate.get_or_insert(FrameRate::FAST);
             return Ok(());
         };
         let time = frame_time.instant();

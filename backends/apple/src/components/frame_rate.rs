@@ -152,14 +152,6 @@ pub fn realize_frame_rate_metadata(
             }
         }
     });
-    host.set_hidden_handler({
-        let state = Rc::downgrade(&state);
-        move |_, _| {
-            if let Some(state) = state.upgrade() {
-                state.sync();
-            }
-        }
-    });
 
     let sink_guard = proposal::register_sink(host_view, {
         let state = Rc::clone(&state);

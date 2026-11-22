@@ -1048,7 +1048,7 @@ struct WinitRunner {
     /// console control handler — share with the `TerminationHost`.
     #[cfg(target_os = "windows")]
     session_end: Rc<SessionEnd>,
-    /// Whether DirectComposition compositor clock boost is currently enabled
+    /// Whether `DirectComposition` compositor clock boost is currently enabled
     /// for at least one window voting above 60Hz on Windows.
     #[cfg(target_os = "windows")]
     windows_boosted: bool,

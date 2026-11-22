@@ -33,7 +33,6 @@
 use kurbo::{Affine, Size};
 use rustc_hash::FxHashMap;
 use wasm_bindgen::JsCast as _;
-use waterui_contract::contract_violation;
 use web_sys::{Element, HtmlCanvasElement, HtmlElement};
 
 use cherenkov::{FillRule, LayerId, RenderError, ShapeData, SurfaceError};

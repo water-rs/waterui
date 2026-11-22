@@ -12,6 +12,7 @@ use waterui_frame_rate::{FrameRate, combine_all};
 struct VotesInner {
     next_id: u64,
     votes: BTreeMap<u64, FrameRate>,
+    #[cfg(any(test, feature = "gpu_surface"))]
     listeners: Vec<(u64, Rc<dyn Fn()>)>,
 }
 
@@ -64,6 +65,7 @@ impl WindowFrameRateVotes {
 
     /// Subscribes a presenter or clock to changes in [`Self::combined`].
     /// Dropping the returned handle unsubscribes it.
+    #[cfg(any(test, feature = "gpu_surface"))]
     #[must_use]
     pub fn subscribe(&self, listener: impl Fn() + 'static) -> VoteListener {
         let mut inner = self.0.borrow_mut();
@@ -77,6 +79,7 @@ impl WindowFrameRateVotes {
 }
 
 fn update_vote(table: &Rc<RefCell<VotesInner>>, id: u64, vote: Option<FrameRate>) {
+    #[cfg(any(test, feature = "gpu_surface"))]
     let listeners = {
         let mut inner = table.borrow_mut();
         let before = inner.combined();
@@ -93,8 +96,21 @@ fn update_vote(table: &Rc<RefCell<VotesInner>>, id: u64, vote: Option<FrameRate>
             .map(|(_, cb)| Rc::clone(cb))
             .collect::<Vec<_>>()
     };
+    #[cfg(any(test, feature = "gpu_surface"))]
     for cb in listeners {
         cb();
+    }
+    #[cfg(not(any(test, feature = "gpu_surface")))]
+    {
+        let mut inner = table.borrow_mut();
+        match vote {
+            Some(rate) => {
+                inner.votes.insert(id, rate);
+            }
+            None => {
+                inner.votes.remove(&id);
+            }
+        }
     }
 }
 
@@ -131,11 +147,13 @@ impl Drop for VoteRegistration {
 }
 
 /// Owned listener handle keeping a presenter/clock subscribed to window vote changes.
+#[cfg(any(test, feature = "gpu_surface"))]
 pub struct VoteListener {
     table: Weak<RefCell<VotesInner>>,
     id: u64,
 }
 
+#[cfg(any(test, feature = "gpu_surface"))]
 impl Debug for VoteListener {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         f.debug_struct("VoteListener")
@@ -144,6 +162,7 @@ impl Debug for VoteListener {
     }
 }
 
+#[cfg(any(test, feature = "gpu_surface"))]
 impl Drop for VoteListener {
     fn drop(&mut self) {
         if let Some(table) = self.table.upgrade() {

@@ -3910,11 +3910,11 @@ impl Renderer for GpuRenderer {
             GpuTarget::Texture(texture) => (None, Some(texture.textures), texture.refresh, false),
             #[cfg(target_os = "android")]
             GpuTarget::SurfaceControl(target) => {
-                let refresh = self.surface_control(id, target, waker.clone())?;
+                let refresh = self.surface_control(id, &target, waker.clone())?;
                 (None, None, refresh, true)
             }
             #[cfg(target_os = "linux")]
-            GpuTarget::Dmabuf(target) => (None, None, self.dmabuf_export(id, target)?, true),
+            GpuTarget::Dmabuf(target) => (None, None, self.dmabuf_export(id, &target)?, true),
             #[cfg(target_arch = "wasm32")]
             GpuTarget::Dom(target) => (None, None, self.dom_planes(id, &target)?, true),
             GpuTarget::Window(window) => {
@@ -5086,7 +5086,7 @@ impl GpuRenderer {
     fn surface_control(
         &mut self,
         id: SurfaceId,
-        target: crate::interop::android::SurfaceControlTarget,
+        target: &crate::interop::android::SurfaceControlTarget,
         waker: cherenkov::CompletionWaker,
     ) -> Result<cherenkov::FrameRate, SurfaceError> {
         // The context is built on first need (#170); a surface-control
@@ -5103,7 +5103,7 @@ impl GpuRenderer {
         let system = surface_control::planes::Planes::new(
             native.shared.clone(),
             std::sync::Arc::clone(&self.submit_lock),
-            &target,
+            target,
             waker,
         )?;
         self.planes.insert(id, system);
@@ -5144,7 +5144,7 @@ impl GpuRenderer {
     fn dmabuf_export(
         &mut self,
         id: SurfaceId,
-        target: crate::interop::dmabuf::DmabufTarget,
+        target: &crate::interop::dmabuf::DmabufTarget,
     ) -> Result<cherenkov::FrameRate, SurfaceError> {
         // The native context is built on first need (#170); the pool
         // allocates images and exports their memory through it.
@@ -5160,7 +5160,7 @@ impl GpuRenderer {
         let pool = dmabuf_export::Pool::new(
             &native.shared,
             std::sync::Arc::clone(&self.submit_lock),
-            &target,
+            target,
         )?;
         self.exports.insert(id, pool);
         self.presenter.get_or_insert_with(|| {
