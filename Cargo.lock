@@ -4729,6 +4729,7 @@ dependencies = [
  "getrandom 0.4.3",
  "gungraun",
  "hydrolysis",
+ "hydrolysis-style",
  "icu_locale",
  "icu_properties",
  "icu_provider",
@@ -4836,6 +4837,23 @@ dependencies = [
  "waterui-controls",
  "waterui-core",
  "waterui-graphics",
+]
+
+[[package]]
+name = "hydrolysis-style"
+version = "0.5.1"
+dependencies = [
+ "approx",
+ "cherenkov-record",
+ "kurbo",
+ "nami",
+ "waterui",
+ "waterui-controls",
+ "waterui-core",
+ "waterui-graphics",
+ "waterui-interaction",
+ "waterui-shape",
+ "waterui-text",
 ]
 
 [[package]]

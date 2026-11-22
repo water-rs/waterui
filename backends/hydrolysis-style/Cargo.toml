@@ -1,0 +1,67 @@
+[package]
+name = "hydrolysis-style"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+description = "Renderer-independent style and widget-theme contract for Hydrolysis"
+keywords = ["ui", "theme", "style", "waterui", "hydrolysis"]
+categories = ["gui", "graphics"]
+
+[dependencies]
+cherenkov-record.workspace = true
+kurbo.workspace = true
+nami.workspace = true
+waterui.workspace = true
+waterui-controls.workspace = true
+waterui-core.workspace = true
+waterui-graphics.workspace = true
+waterui-interaction.workspace = true
+waterui-shape.workspace = true
+waterui-text.workspace = true
+
+[features]
+default = ["all-controls"]
+all-controls = [
+    "menu",
+    "calendar",
+    "color-picker",
+    "date-picker",
+    "file-picker",
+    "multi-date-picker",
+    "picker",
+    "secure-field",
+    "slider",
+    "stepper",
+    "text-field",
+    "toggle",
+    "validation",
+    "list",
+    "table",
+    "navigation",
+]
+menu = ["waterui/menu"]
+calendar = ["waterui/calendar"]
+color-picker = ["waterui/color-picker"]
+date-picker = ["calendar", "stepper", "menu", "waterui/date-picker"]
+file-picker = ["waterui/file-picker"]
+multi-date-picker = ["calendar", "waterui/multi-date-picker"]
+picker = ["menu", "waterui/picker"]
+secure-field = ["menu", "waterui/secure-field"]
+slider = ["waterui/slider"]
+stepper = ["waterui/stepper"]
+text-field = ["menu", "waterui/text-field"]
+toggle = ["waterui/toggle"]
+validation = ["text-field", "waterui/validation"]
+list = ["waterui/list"]
+table = ["list", "waterui/table"]
+navigation = ["text-field", "waterui/navigation"]
+
+[dev-dependencies]
+approx = "0.5"
+
+[lints]
+workspace = true

@@ -29,6 +29,7 @@ members = [
     "backends/apple/Tests/IOSTestHost",
     "backends/core",
     "backends/hydrolysis",
+    "backends/hydrolysis-style",
     # The Android debug app's Rust half is a package nested inside the
     # backend's directory, so it joins the workspace explicitly.
     "backends/hydrolysis/android/test-app/rust",
@@ -340,6 +341,7 @@ waterui-testing = { path = "testing" }
 waterui-internal = { version = "0.5.1", path = "src", default-features = false }
 waterui-dylib = { version = "0.5.1", path = "utils/dylib", default-features = false }
 hydrolysis = { version = "0.3.1", path = "backends/hydrolysis", default-features = false }
+hydrolysis-style = { version = "0.5.1", path = "backends/hydrolysis-style", default-features = false }
 # default-features lives here, not on members: cargo rejects a member
 # `default-features` override when the workspace entry does not declare
 # one (the MSRV failure in #1551). Members name the features they need.

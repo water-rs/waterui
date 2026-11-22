@@ -18,7 +18,7 @@
 //! colour, radii.
 
 use core::marker::PhantomData;
-#[cfg(feature = "slider")]
+#[cfg(waterui_feature = "slider")]
 use core::ops::RangeInclusive;
 use core::time::Duration;
 use std::any::Any;
@@ -40,9 +40,8 @@ use waterui_interaction::interaction::{InteractionState, StateValue};
 use waterui_text::font::Font;
 
 use super::Chrome;
-#[cfg(hydrolysis_runtime)]
 use super::live::Operand;
-#[cfg(feature = "slider")]
+#[cfg(waterui_feature = "slider")]
 use super::{CornerShape, FocusIndicator, PressFeedback, StateLayer, Surface};
 
 /// The animations a change runs with as a condition sets in and as it
@@ -423,40 +422,44 @@ impl<T: 'static, V: 'static> Driven<T, V> {
 
     /// The track the engine runs this value along once its part records on
     /// `frame`, when it is [`repeating`](Self::repeating).
-    #[cfg(hydrolysis_runtime)]
-    pub(crate) fn get_repeating(&self, frame: Rect) -> Option<KeyframeAnimation> {
+    #[doc(hidden)]
+    #[must_use]
+    pub fn get_repeating(&self, frame: Rect) -> Option<KeyframeAnimation> {
         self.repeating.as_ref().map(|track| track(frame))
     }
 
     /// Calls `notify` with each change's animation whenever a signal this
     /// value follows changes; the returned guard keeps the subscription.
     /// `None` when the value follows no signal.
-    #[cfg(hydrolysis_runtime)]
-    pub(crate) fn subscribe(&self, notify: Rc<dyn Fn(Option<Animation>)>) -> Option<Box<dyn Any>> {
+    #[doc(hidden)]
+    pub fn subscribe(&self, notify: Rc<dyn Fn(Option<Animation>)>) -> Option<Box<dyn Any>> {
         self.follows.as_ref().map(|follows| follows(notify))
     }
 
     /// Whether this value follows a signal.
-    #[cfg(hydrolysis_runtime)]
-    pub(crate) const fn follows_signal(&self) -> bool {
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn follows_signal(&self) -> bool {
         self.follows.is_some()
     }
 
     /// Whether `other` is this value: the same derivation, not an equal
     /// one.
-    #[cfg(hydrolysis_runtime)]
-    pub(crate) fn same(&self, other: &Self) -> bool {
+    #[doc(hidden)]
+    #[must_use]
+    pub fn same(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.target, &other.target)
     }
 
     /// This value passed through `f`, following the same signals with the
     /// same motion.
-    #[cfg(hydrolysis_runtime)]
     ///
     /// A [repeating](Self::repeating) value's track holds values of the
     /// source type, so mapping one is the theme's contract violation: it is
     /// reported and the mapped value runs without the track.
-    pub(crate) fn map<U: 'static>(&self, f: impl Fn(T) -> U + 'static) -> Driven<U, V> {
+    #[doc(hidden)]
+    #[must_use]
+    pub fn map<U: 'static>(&self, f: impl Fn(T) -> U + 'static) -> Driven<U, V> {
         if self.repeating.is_some() {
             waterui_core::contract_violation!(
                 "a repeating value cannot be mapped: its keyframes hold the source type; the mapped value runs without the repeating track"
@@ -520,9 +523,7 @@ mod sealed {
     pub trait Sealed {}
 }
 
-/// The realization terms of a [`DrivenSet`]; nameable by Hydrolysis only, and
-/// compiled only where a renderer exists to realize a look.
-#[cfg(hydrolysis_runtime)]
+/// The realization terms of a [`DrivenSet`]; nameable by Hydrolysis only.
 mod realized {
     use std::any::Any;
     use std::rc::Rc;
@@ -532,18 +533,26 @@ mod realized {
     use super::{Inputs, Motion};
 
     /// What retargets one realized [`Driven`](super::Driven).
-    #[derive(Clone, Copy)]
+    #[derive(Clone, Copy, Debug)]
+    #[expect(
+        clippy::exhaustive_enums,
+        reason = "closed set of renderer retarget causes"
+    )]
     pub enum Change<'a> {
         /// The interaction state moved from `old` to the inputs' state; a
         /// value without motion of its own runs with `motion`.
         Interaction {
+            /// Previous interaction state.
             old: waterui_interaction::interaction::InteractionState,
+            /// Fallback motion when the driven value has none of its own.
             motion: &'a Motion,
         },
         /// The widget's value changed under `change`; a value without
         /// motion of its own runs with `motion`'s value motion.
         Value {
+            /// The value change animation context.
             change: &'a ChangeAnimation,
+            /// Fallback motion when the driven value has none of its own.
             motion: &'a Motion,
         },
         /// A signal the value follows, the frame or the press point
@@ -554,7 +563,9 @@ mod realized {
     /// One realized [`Driven`](super::Driven): its live operand, retargeted
     /// by the renderer.
     pub trait Retarget<V> {
+        /// Retargets the live operand to `inputs` under `change`.
         fn retarget(&self, inputs: &Inputs<'_, V>, change: Change<'_>);
+        /// Subscribes `notify` to any signal this driven value follows.
         fn subscribe(&self, notify: Rc<dyn Fn(Option<Animation>)>) -> Option<Box<dyn Any>>;
 
         /// Starts the track a repeating value runs once its part has
@@ -565,8 +576,10 @@ mod realized {
     /// A realized set: a factory for the tuple of [`Live`](cherenkov_record::Live)
     /// handles a recording closure receives, and the operands behind them.
     pub struct Realized<L, V> {
-        pub(crate) live: Box<dyn Fn() -> L>,
-        pub(crate) drivens: Vec<Rc<dyn Retarget<V>>>,
+        #[doc(hidden)]
+        pub live: Box<dyn Fn() -> L>,
+        #[doc(hidden)]
+        pub drivens: Vec<Rc<dyn Retarget<V>>>,
     }
 
     impl<L, V> core::fmt::Debug for Realized<L, V> {
@@ -578,17 +591,16 @@ mod realized {
     }
 }
 
-#[cfg(hydrolysis_runtime)]
+#[doc(hidden)]
 pub use realized::{Change, Realized, Retarget};
 
 /// One [`Driven`] realized as a live operand.
-#[cfg(hydrolysis_runtime)]
+#[doc(hidden)]
 pub struct LiveDriven<T: 'static, V> {
     driven: Driven<T, V>,
     operand: Operand<T>,
 }
 
-#[cfg(hydrolysis_runtime)]
 impl<T, V> core::fmt::Debug for LiveDriven<T, V> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("LiveDriven")
@@ -597,24 +609,28 @@ impl<T, V> core::fmt::Debug for LiveDriven<T, V> {
     }
 }
 
-#[cfg(hydrolysis_runtime)]
 impl<T: Clone + PartialEq + 'static, V: 'static> LiveDriven<T, V> {
-    pub(crate) fn new(driven: Driven<T, V>, inputs: &Inputs<'_, V>) -> Self {
+    #[doc(hidden)]
+    #[must_use]
+    pub fn new(driven: Driven<T, V>, inputs: &Inputs<'_, V>) -> Self {
         let operand = Operand::new(driven.target(inputs));
         Self { driven, operand }
     }
 
-    pub(crate) fn live(&self) -> Live<T> {
+    #[doc(hidden)]
+    #[must_use]
+    pub fn live(&self) -> Live<T> {
         self.operand.live()
     }
 
     /// The operand the value drives.
-    pub(crate) const fn operand(&self) -> &Operand<T> {
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn operand(&self) -> &Operand<T> {
         &self.operand
     }
 }
 
-#[cfg(hydrolysis_runtime)]
 impl<T: Clone + PartialEq + 'static, V: 'static> Retarget<V> for LiveDriven<T, V> {
     fn retarget(&self, inputs: &Inputs<'_, V>, change: Change<'_>) {
         let animation = match change {
@@ -665,7 +681,6 @@ pub trait DrivenSet<V>: sealed::Sealed {
     type Live;
 
     /// Realizes every value as a live operand at `inputs`.
-    #[cfg(hydrolysis_runtime)]
     #[doc(hidden)]
     fn realize(&self, inputs: &Inputs<'_, V>) -> Realized<Self::Live, V>;
 }
@@ -682,7 +697,6 @@ macro_rules! driven_set {
         {
             type Live = ($(Live<$ty>,)+);
 
-            #[cfg(hydrolysis_runtime)]
             fn realize(&self, inputs: &Inputs<'_, V>) -> Realized<Self::Live, V> {
                 let operands = ($(Rc::new(LiveDriven::new(self.$index.clone(), inputs)),)+);
                 let drivens: Vec<Rc<dyn Retarget<V>>> =
@@ -702,7 +716,6 @@ impl sealed::Sealed for () {}
 impl<V: 'static> DrivenSet<V> for () {
     type Live = ();
 
-    #[cfg(hydrolysis_runtime)]
     fn realize(&self, _inputs: &Inputs<'_, V>) -> Realized<Self::Live, V> {
         Realized {
             live: Box::new(|| ()),
@@ -815,46 +828,58 @@ impl<V, D: DrivenSet<V>> Custom<V, D> {
 }
 
 /// A [`Custom`] part realized: its recording, and the operands it reads.
-#[cfg(hydrolysis_runtime)]
+#[doc(hidden)]
 pub struct RealizedCustom<V> {
     record: RecordRealized,
-    pub(crate) drivens: Vec<Rc<dyn Retarget<V>>>,
+    #[doc(hidden)]
+    pub drivens: Vec<Rc<dyn Retarget<V>>>,
     rotations: Vec<LayerRotation>,
     /// The operand the part's layer opacity follows, when it has one.
     opacity: Option<Operand<f32>>,
 }
 
-#[cfg(hydrolysis_runtime)]
+impl<V> core::fmt::Debug for RealizedCustom<V> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("RealizedCustom")
+            .field("drivens", &self.drivens.len())
+            .field("rotations", &self.rotations.len())
+            .field("opacity", &self.opacity)
+            .finish_non_exhaustive()
+    }
+}
+
 type RecordRealized = Box<dyn Fn(&mut Recorder, Rect)>;
 
 /// The rotation a part's layer runs: its operand, the track and where the
 /// layer turns about.
-#[cfg(hydrolysis_runtime)]
-#[derive(Clone)]
+#[doc(hidden)]
+#[derive(Clone, Debug)]
 pub struct LayerRotation {
     operand: Operand<f64>,
     track: KeyframeAnimation,
 }
 
-#[cfg(hydrolysis_runtime)]
 impl LayerRotation {
     /// The rotation property's live angle.
-    pub(crate) fn live(&self) -> Live<f64> {
+    #[doc(hidden)]
+    #[must_use]
+    pub fn live(&self) -> Live<f64> {
         self.operand.live()
     }
 
     /// Starts the track along the layer's property, which must be bound to
     /// [`Self::live`] already.
-    pub(crate) fn run(&self) {
+    #[doc(hidden)]
+    pub fn run(&self) {
         self.operand.run(&self.track);
     }
 }
 
-#[cfg(hydrolysis_runtime)]
 impl<V> RealizedCustom<V> {
     /// Records the part on `frame`, then starts the tracks of its repeating
     /// values: the recording has subscribed to every operand by then.
-    pub(crate) fn record(&self, recorder: &mut Recorder, frame: Rect) {
+    #[doc(hidden)]
+    pub fn record(&self, recorder: &mut Recorder, frame: Rect) {
         (self.record)(recorder, frame);
         for driven in &self.drivens {
             driven.run(frame);
@@ -863,21 +888,26 @@ impl<V> RealizedCustom<V> {
 
     /// The part's rotation stages, innermost first; none when it does not
     /// turn.
-    pub(crate) fn rotations(&self) -> &[LayerRotation] {
+    #[doc(hidden)]
+    #[must_use]
+    pub fn rotations(&self) -> &[LayerRotation] {
         &self.rotations
     }
 
     /// The operand the part's layer opacity follows; `None` when the part
     /// is drawn whole, with no layer of its own.
-    pub(crate) const fn opacity(&self) -> Option<&Operand<f32>> {
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn opacity(&self) -> Option<&Operand<f32>> {
         self.opacity.as_ref()
     }
 }
 
 /// The object-safe face of a [`Custom`] part, so a look stores parts of
 /// different [`DrivenSet`]s side by side.
+#[doc(hidden)]
 pub trait CustomPart<V> {
-    #[cfg(hydrolysis_runtime)]
+    /// Realizes this part's recording and live operands at `inputs`.
     fn realize(&self, inputs: &Inputs<'_, V>) -> RealizedCustom<V>;
 }
 
@@ -885,7 +915,6 @@ impl<V: 'static, D: DrivenSet<V>> CustomPart<V> for Custom<V, D>
 where
     D::Live: 'static,
 {
-    #[cfg(hydrolysis_runtime)]
     fn realize(&self, inputs: &Inputs<'_, V>) -> RealizedCustom<V> {
         let Realized { live, mut drivens } = self.driven.realize(inputs);
         let record = Rc::clone(&self.record);
@@ -915,7 +944,7 @@ where
 /// Records `part` over `frame` with every value at rest: the way a look's
 /// parts that have no live state of their own draw into a widget's own
 /// recording.
-#[cfg(hydrolysis_runtime)]
+#[doc(hidden)]
 pub fn record_at_rest(part: &dyn CustomPart<()>, recorder: &mut Recorder, frame: Rect) {
     part.realize(&Inputs::at_rest(frame, InteractionState::empty(), &()))
         .record(recorder, frame);
@@ -1307,7 +1336,7 @@ impl ButtonLook {
 /// A spec change requests the look again; everything else reaches the look
 /// through its [`Driven`] values.
 #[derive(Debug, Clone, PartialEq)]
-#[cfg(feature = "slider")]
+#[cfg(waterui_feature = "slider")]
 pub struct SliderSpec {
     size: ControlSize,
     range: RangeInclusive<f64>,
@@ -1319,7 +1348,7 @@ pub struct SliderSpec {
     value_indicator: bool,
 }
 
-#[cfg(feature = "slider")]
+#[cfg(waterui_feature = "slider")]
 impl SliderSpec {
     /// The spec of a `size` slider over `range` moving in `step`s, laid out
     /// `direction` and drawn with `tint`.
@@ -1414,7 +1443,7 @@ impl SliderSpec {
 /// The slider is a label band above a control row. The row holds the track
 /// between its two ends, each end optionally taking a label beside it.
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[cfg(feature = "slider")]
+#[cfg(waterui_feature = "slider")]
 pub struct SliderLayout {
     /// The control row's height: the room the knob travels in.
     pub row_height: f64,
@@ -1435,7 +1464,7 @@ pub struct SliderLayout {
 /// The knob of a slider: the extent its parts draw it in, and where it takes
 /// touches.
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[cfg(feature = "slider")]
+#[cfg(waterui_feature = "slider")]
 pub struct Knob {
     /// The knob's resting extent, centred on the value's position on the
     /// track. A knob that changes size draws within its own parts.
@@ -1446,7 +1475,7 @@ pub struct Knob {
     pub hit: HitRegion,
 }
 
-#[cfg(feature = "slider")]
+#[cfg(waterui_feature = "slider")]
 impl Knob {
     /// The knob's touch target when centred on `center`.
     #[must_use]
@@ -1469,7 +1498,7 @@ impl Knob {
     clippy::exhaustive_enums,
     reason = "closed: a drag sets the value from the pointer's position or from its movement"
 )]
-#[cfg(feature = "slider")]
+#[cfg(waterui_feature = "slider")]
 pub enum DragMapping {
     /// The value is the pointer's position along the track, so a press
     /// anywhere on the slider moves it there.
@@ -1491,24 +1520,17 @@ pub enum DragMapping {
 /// follows it along the track; it is as wide as the widest formatted value
 /// needs, no narrower than `minimum`.
 #[derive(Clone)]
-#[cfg(feature = "slider")]
+#[cfg(waterui_feature = "slider")]
 pub struct ValueIndicator {
     font: Font,
     color: Color,
     padding: Vec2,
     minimum: Size,
     gap: f64,
-    #[cfg_attr(
-        not(hydrolysis_runtime),
-        expect(
-            dead_code,
-            reason = "only the renderer records the bubble's container; a build without a painter compiles the theme contract alone"
-        )
-    )]
     container: Rc<dyn CustomPart<f64>>,
 }
 
-#[cfg(feature = "slider")]
+#[cfg(waterui_feature = "slider")]
 impl core::fmt::Debug for ValueIndicator {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ValueIndicator")
@@ -1521,7 +1543,7 @@ impl core::fmt::Debug for ValueIndicator {
     }
 }
 
-#[cfg(feature = "slider")]
+#[cfg(waterui_feature = "slider")]
 impl ValueIndicator {
     /// An indicator whose text takes `font` and `color`, in a bubble that
     /// `container` records on the bubble's frame.
@@ -1598,8 +1620,9 @@ impl ValueIndicator {
     }
 
     /// The bubble's container part.
-    #[cfg(hydrolysis_runtime)]
-    pub(crate) fn container(&self) -> &Rc<dyn CustomPart<f64>> {
+    #[doc(hidden)]
+    #[must_use]
+    pub fn container(&self) -> &Rc<dyn CustomPart<f64>> {
         &self.container
     }
 }
@@ -1618,7 +1641,7 @@ impl ValueIndicator {
 /// drag and a change of hover or focus move the parts' operands under the
 /// look's [`Motion`] and record nothing.
 #[derive(Clone)]
-#[cfg(feature = "slider")]
+#[cfg(waterui_feature = "slider")]
 pub struct SliderLook {
     chrome: Chrome,
     layout: SliderLayout,
@@ -1630,7 +1653,7 @@ pub struct SliderLook {
     group_blend_space: Option<BlendSpace>,
 }
 
-#[cfg(feature = "slider")]
+#[cfg(waterui_feature = "slider")]
 impl core::fmt::Debug for SliderLook {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("SliderLook")
@@ -1646,7 +1669,7 @@ impl core::fmt::Debug for SliderLook {
     }
 }
 
-#[cfg(feature = "slider")]
+#[cfg(waterui_feature = "slider")]
 impl SliderLook {
     /// A slider laid out by `layout` around `knob`, its values running with
     /// `motion` and dragged by `drag`; it draws nothing until parts are
@@ -1761,14 +1784,16 @@ impl SliderLook {
     }
 
     /// The chrome Hydrolysis binds the slider's interaction with.
-    #[cfg(hydrolysis_runtime)]
-    pub(crate) const fn chrome(&self) -> &Chrome {
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn chrome(&self) -> &Chrome {
         &self.chrome
     }
 
     /// The parts, in paint order.
-    #[cfg(hydrolysis_runtime)]
-    pub(crate) fn parts(&self) -> &[Rc<dyn CustomPart<f64>>] {
+    #[doc(hidden)]
+    #[must_use]
+    pub fn parts(&self) -> &[Rc<dyn CustomPart<f64>>] {
         &self.parts
     }
 }
