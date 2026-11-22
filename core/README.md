@@ -287,7 +287,6 @@ AnalyticsPlugin {
 
 ### Core Traits
 - `View` - The fundamental UI component trait
-- `IntoView` - Convert types into views
 - `ViewSequence` - Convert tuples, arrays, and vectors of views into child slots
 
 ### Type Erasure

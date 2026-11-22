@@ -1893,3 +1893,60 @@ fn a_tap_region_names_itself_from_its_content_as_it_is_now() {
     find_by_label(&update, Role::Button, "Gamma Beta")
         .expect("the label follows the content's current text");
 }
+
+#[test]
+fn provided_semantics_node_supports_and_dispatches_on_activate() {
+    use core::cell::Cell;
+    use std::rc::Rc;
+    use waterui::accessibility::AccessibilityRole;
+    use waterui_backend_core::ProvidedSemantics;
+    use waterui_core::{Computed, Native, NativeView, View};
+
+    struct DummyProvided {
+        activated: Rc<Cell<u32>>,
+    }
+
+    impl NativeView for DummyProvided {
+        fn realize_provided(
+            self,
+            context: &mut dyn core::any::Any,
+            _env: &Environment,
+        ) -> Result<(), Self> {
+            let Some(semantics) = context.downcast_mut::<ProvidedSemantics>() else {
+                return Err(self);
+            };
+            let activated = Rc::clone(&self.activated);
+            *semantics = ProvidedSemantics::new()
+                .with_role(AccessibilityRole::Button)
+                .with_label(Computed::constant(Str::from_static("Embedded Control")))
+                .with_on_activate(move || {
+                    activated.set(activated.get() + 1);
+                });
+            Ok(())
+        }
+    }
+
+    impl View for DummyProvided {
+        fn body(self, _env: &Environment) -> impl View {
+            Native::new(self)
+        }
+    }
+
+    let activated = Rc::new(Cell::new(0));
+    let activated_for_view = Rc::clone(&activated);
+    let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
+        AnyView::new(DummyProvided {
+            activated: Rc::clone(&activated_for_view),
+        })
+    }));
+
+    let update = pumped(&mut runtime);
+    let (node_id, node) = find_by_label(&update, Role::Button, "Embedded Control")
+        .expect("ProvidedSemantics must emit its role and label on SemanticRuntime");
+    assert!(
+        node.supports_action(Action::Click),
+        "ProvidedSemantics with on_activate must advertise Click"
+    );
+    assert!(act(&mut runtime, Action::Click, node_id));
+    assert_eq!(activated.get(), 1);
+}

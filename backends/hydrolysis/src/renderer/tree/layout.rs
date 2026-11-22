@@ -450,13 +450,12 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Self::Collection(node) => node
                 .resolve_extent(state, theme, bounds, proposal)
                 .map(Some),
-            // Leaves: a scroll answers its offer, widgets and text measure
-            // themselves, scene/GPU/external content answers its intrinsic size.
-            Self::Color(_)
-            | Self::Text(_)
-            | Self::Scroll(_)
-            | Self::SceneView(_)
-            | Self::Widget(_) => Ok(None),
+            Self::Widget(node) => node
+                .behavior
+                .resolve_extent(state, &node.env, theme, bounds, proposal),
+            // Leaves: a scroll answers its offer, text measures itself, and
+            // scene/GPU/external content answers its intrinsic size.
+            Self::Color(_) | Self::Text(_) | Self::Scroll(_) | Self::SceneView(_) => Ok(None),
             #[cfg(hydrolysis_gpu)]
             Self::GpuContent(_) | Self::ExternalFrame(_) => Ok(None),
         }

@@ -257,8 +257,8 @@ pub use waterui_url::Url;
 pub use waterui_capture::{CaptureHandle, CaptureScope, UnwiredCaptureError};
 #[doc(inline)]
 pub use waterui_capture::{
-    ContentLedger, OffscreenRenderer, RenderError, RenderFuture, RenderRequest, RenderResult,
-    content_ledger, view_renderer,
+    ContentLedger, RenderError, RenderRequest, RenderResult, ViewRenderer, content_ledger,
+    view_renderer,
 };
 #[doc(inline)]
 pub use waterui_core::{

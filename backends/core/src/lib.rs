@@ -72,12 +72,83 @@ pub use waterui_meta::mark_reached;
 /// [`NativeView::realize_provided`](waterui_core::NativeView::realize_provided)
 /// by semantic runtimes that build an accessibility tree without mounting a
 /// platform view.
-#[derive(Debug, Default, Clone)]
+#[derive(Default, Clone)]
 pub struct ProvidedSemantics {
+    role: Option<waterui::accessibility::AccessibilityRole>,
+    label: Option<waterui_core::Computed<waterui_core::Str>>,
+    on_activate: Option<alloc::rc::Rc<dyn Fn()>>,
+}
+
+impl core::fmt::Debug for ProvidedSemantics {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ProvidedSemantics")
+            .field("role", &self.role)
+            .field("label", &self.label)
+            .field("on_activate", &self.on_activate.is_some())
+            .finish()
+    }
+}
+
+impl ProvidedSemantics {
+    /// Creates empty semantics with no role, label, or activation handler.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
     /// The component's declared default accessibility role, if any.
-    pub role: Option<waterui::accessibility::AccessibilityRole>,
+    #[must_use]
+    pub const fn role(&self) -> Option<&waterui::accessibility::AccessibilityRole> {
+        self.role.as_ref()
+    }
+
     /// The component's declared default reactive accessibility label, if any.
-    pub label: Option<waterui_core::Computed<waterui_core::Str>>,
+    #[must_use]
+    pub const fn label(&self) -> Option<&waterui_core::Computed<waterui_core::Str>> {
+        self.label.as_ref()
+    }
+
+    /// The component's semantic activation handler, if any.
+    #[must_use]
+    pub fn on_activate(&self) -> Option<&alloc::rc::Rc<dyn Fn()>> {
+        self.on_activate.as_ref()
+    }
+
+    /// Sets the component's default accessibility role.
+    pub const fn set_role(&mut self, role: Option<waterui::accessibility::AccessibilityRole>) {
+        self.role = role;
+    }
+
+    /// Sets the component's default reactive accessibility label.
+    pub fn set_label(&mut self, label: Option<waterui_core::Computed<waterui_core::Str>>) {
+        self.label = label;
+    }
+
+    /// Sets the component's semantic activation handler.
+    pub fn set_on_activate(&mut self, on_activate: Option<alloc::rc::Rc<dyn Fn()>>) {
+        self.on_activate = on_activate;
+    }
+
+    /// Sets the component's default accessibility role in builder style.
+    #[must_use]
+    pub const fn with_role(mut self, role: waterui::accessibility::AccessibilityRole) -> Self {
+        self.role = Some(role);
+        self
+    }
+
+    /// Sets the component's default reactive accessibility label in builder style.
+    #[must_use]
+    pub fn with_label(mut self, label: waterui_core::Computed<waterui_core::Str>) -> Self {
+        self.label = Some(label);
+        self
+    }
+
+    /// Sets the component's semantic activation handler in builder style.
+    #[must_use]
+    pub fn with_on_activate(mut self, on_activate: impl Fn() + 'static) -> Self {
+        self.on_activate = Some(alloc::rc::Rc::new(on_activate));
+        self
+    }
 }
 
 // Re-export common types from waterui-core
@@ -85,3 +156,38 @@ pub use waterui_core::{AnyView, Environment, Native, View};
 
 // Re-export layout types from waterui-core::layout
 pub use waterui_core::layout::{Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView};
+
+#[cfg(test)]
+mod tests {
+    use alloc::rc::Rc;
+    use core::cell::Cell;
+
+    use super::ProvidedSemantics;
+    use waterui::accessibility::AccessibilityRole;
+    use waterui_core::{Computed, Str};
+
+    #[test]
+    fn provided_semantics_builders_setters_and_getters_round_trip() {
+        let calls = Rc::new(Cell::new(0));
+        let calls_for_cb = Rc::clone(&calls);
+
+        let mut semantics = ProvidedSemantics::new()
+            .with_role(AccessibilityRole::Button)
+            .with_label(Computed::constant(Str::from_static("Play")))
+            .with_on_activate(move || {
+                calls_for_cb.set(calls_for_cb.get() + 1);
+            });
+
+        assert_eq!(semantics.role(), Some(&AccessibilityRole::Button));
+        assert!(semantics.label().is_some());
+        (semantics.on_activate().expect("activation handler"))();
+        assert_eq!(calls.get(), 1);
+
+        semantics.set_role(Some(AccessibilityRole::Section));
+        semantics.set_label(None);
+        semantics.set_on_activate(None);
+        assert_eq!(semantics.role(), Some(&AccessibilityRole::Section));
+        assert!(semantics.label().is_none());
+        assert!(semantics.on_activate().is_none());
+    }
+}

@@ -16,6 +16,8 @@
 use core::any::Any;
 use core::fmt;
 
+use alloc::rc::Rc;
+
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::HostView;
 #[cfg(target_os = "macos")]
@@ -179,6 +181,13 @@ pub trait AppleContent: 'static {
     fn accessibility_label(&self) -> Option<Computed<Str>> {
         None
     }
+
+    /// The semantic activation handler this content exposes for semantic test
+    /// runtimes without mounting a platform view.
+    #[must_use]
+    fn accessibility_activate(&self) -> Option<Rc<dyn Fn()>> {
+        None
+    }
 }
 
 /// Default leaf measurement from a platform view's `fitting` size and declared
@@ -279,8 +288,9 @@ impl<T: AppleContent> NativeView for AppleView<T> {
             return Ok(());
         }
         if let Some(semantics) = context.downcast_mut::<ProvidedSemantics>() {
-            semantics.role = self.content.accessibility_role();
-            semantics.label = self.content.accessibility_label();
+            semantics.set_role(self.content.accessibility_role());
+            semantics.set_label(self.content.accessibility_label());
+            semantics.set_on_activate(self.content.accessibility_activate());
             return Ok(());
         }
         Err(self)
@@ -463,10 +473,10 @@ mod tests {
             .expect("AppleView dispatches its unboxed concrete type");
         let mut semantics = ProvidedSemantics::default();
         assert!(peeled.realize_provided(&mut semantics, &env).is_ok());
-        assert_eq!(semantics.role, Some(AccessibilityRole::Button));
+        assert_eq!(semantics.role(), Some(&AccessibilityRole::Button));
         assert_eq!(
             semantics
-                .label
+                .label()
                 .expect("label populated")
                 .snapshot()
                 .as_str(),
@@ -521,7 +531,7 @@ mod tests {
     struct OtherOffscreen;
 
     #[cfg(waterui_feature = "capture")]
-    impl waterui_capture::OffscreenRenderer for OtherOffscreen {
+    impl waterui_capture::ViewRenderer for OtherOffscreen {
         fn render_to_rgba<V: View>(
             &self,
             _view: V,

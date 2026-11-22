@@ -437,27 +437,24 @@ impl<E: crate::text::TextEngine> WidgetBehavior<E> for ProvidedSemanticsNode {
         }
         let default_label = self
             .semantics
-            .label
-            .as_ref()
+            .label()
             .map(|signal| renderer.read_signal(signal).as_str().to_owned());
         let label = renderer.resolve_accessibility_label(env, default_label);
         let value = renderer.resolve_accessibility_value(env, None);
         if env.get::<AccessibilityRole>().is_none()
-            && self.semantics.role.is_none()
+            && self.semantics.role().is_none()
             && label.is_none()
             && value.is_none()
+            && self.semantics.on_activate().is_none()
         {
             return;
         }
-        let default_role =
-            self.semantics
-                .role
-                .as_ref()
-                .map_or(AccessibilityNodeRole::Group, |role| {
-                    crate::renderer::accessibility::accessibility_role_to_accesskit_role(
-                        role.clone(),
-                    )
-                });
+        let default_role = self
+            .semantics
+            .role()
+            .map_or(AccessibilityNodeRole::Group, |role| {
+                crate::renderer::accessibility::accessibility_role_to_accesskit_role(role.clone())
+            });
         let mut node = AccessibilityNode::new(SemanticCore::<E>::resolve_accessibility_role(
             env,
             default_role,
@@ -468,7 +465,18 @@ impl<E: crate::text::TextEngine> WidgetBehavior<E> for ProvidedSemanticsNode {
         if let Some(value) = value {
             node.set_value(value);
         }
-        let _ = renderer.register_accessibility_leaf(None, node, env, None);
+        let action_target = self.semantics.on_activate().cloned().map(|on_activate| {
+            node.add_action(AccessibilityAction::Click);
+            AccessibilityActionTarget::Activate {
+                action: Rc::new(RefCell::new(
+                    move |_renderer: &mut SemanticCore<E>, _env: &Environment| {
+                        on_activate();
+                        true
+                    },
+                )),
+            }
+        });
+        let _ = renderer.register_accessibility_leaf(None, node, env, action_target);
     }
 
     fn accessibility_label(
@@ -477,8 +485,7 @@ impl<E: crate::text::TextEngine> WidgetBehavior<E> for ProvidedSemanticsNode {
         _env: &Environment,
     ) -> Option<String> {
         self.semantics
-            .label
-            .as_ref()
+            .label()
             .map(|signal| renderer.read_signal(signal).as_str().to_owned())
     }
 }

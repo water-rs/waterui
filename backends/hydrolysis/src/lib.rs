@@ -27,7 +27,7 @@ compile_error!(
     "hydrolysis: enable at most one webview engine feature (`webview-system`, `webview-cef`, `webview-wpe`)"
 );
 
-#[cfg(all(target_os = "android", hydrolysis_runtime))]
+#[cfg(target_os = "android")]
 pub mod android_content;
 #[cfg(hydrolysis_runtime)]
 mod animation;
@@ -77,7 +77,7 @@ mod widgets;
 #[cfg(hydrolysis_runtime)]
 pub(crate) use waterui_backend_core::{gesture, scroll, time};
 
-#[cfg(all(target_os = "android", hydrolysis_runtime))]
+#[cfg(target_os = "android")]
 pub use android_content::{
     AndroidContent, AndroidInvalidator, AndroidLifecycle, AndroidMount, AndroidView, jni,
 };
