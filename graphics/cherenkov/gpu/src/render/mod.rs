@@ -1,5 +1,8 @@
 //! The render thread: sole owner of GPU state.
 
+use cherenkov::FrameRate;
+use waterui_frame_rate::combine_all;
+
 mod bindings;
 mod bitmap;
 mod capabilities;
@@ -884,11 +887,11 @@ impl SurfaceState {
     fn content_redraw_rate(
         &self,
         producers: &FxHashMap<ProducerId, gpu_content::Producer>,
-    ) -> Option<cherenkov::FrameRate> {
+    ) -> Option<FrameRate> {
         if self.bindings.is_empty() {
             return None;
         }
-        waterui_frame_rate::combine_all(self.frame.content.iter().map(|(id, _)| {
+        combine_all(self.frame.content.iter().map(|(id, _)| {
             producers
                 .get(id)
                 .and_then(gpu_content::Producer::redraw_rate)
@@ -898,11 +901,11 @@ impl SurfaceState {
     fn content_source_rate(
         &self,
         producers: &FxHashMap<ProducerId, gpu_content::Producer>,
-    ) -> Option<cherenkov::FrameRate> {
+    ) -> Option<FrameRate> {
         if self.bindings.is_empty() {
             return None;
         }
-        waterui_frame_rate::combine_all(
+        combine_all(
             self.frame
                 .content
                 .iter()
@@ -6130,7 +6133,7 @@ impl GpuRenderer {
     }
 
     /// Sets or clears a producer's latched non-redrawing source cadence vote.
-    pub fn set_producer_source_rate(&mut self, id: ProducerId, rate: Option<cherenkov::FrameRate>) {
+    pub fn set_producer_source_rate(&mut self, id: ProducerId, rate: Option<FrameRate>) {
         if let Some(producer) = self.producers.get_mut(&id) {
             producer.set_source_rate(rate);
         }

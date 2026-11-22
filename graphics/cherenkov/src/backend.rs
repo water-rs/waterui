@@ -5,7 +5,13 @@
 //! [`Backend`] implementation, its capability implementations and an
 //! `interop` module.
 
+#[cfg(target_arch = "wasm32")]
+use core::future::{Future, ready};
+
+use crate::FrameRate;
 use crate::WorkingColor;
+use rustc_hash::FxHashMap;
+use waterui_frame_rate::combine_all;
 
 /// Values crossing the native render-thread boundary. On wasm32 the render
 /// executor is local to the creating JS thread, so transfer is not required.
@@ -324,10 +330,8 @@ pub trait Renderer: 'static {
     /// # Errors
     /// Returns a timeout or readback error.
     #[cfg(target_arch = "wasm32")]
-    fn finish_timings(
-        &mut self,
-    ) -> impl core::future::Future<Output = Result<Vec<FrameTiming>, RenderError>> {
-        core::future::ready(Ok(Vec::new()))
+    fn finish_timings(&mut self) -> impl Future<Output = Result<Vec<FrameTiming>, RenderError>> {
+        ready(Ok(Vec::new()))
     }
 
     /// Reads back a surface's pixels.
@@ -429,17 +433,17 @@ pub struct SurfaceInfo {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FrameRedraw {
     /// The combined redraw request per surface that asked for the next frame.
-    requests: rustc_hash::FxHashMap<SurfaceId, crate::FrameRate>,
+    requests: FxHashMap<SurfaceId, FrameRate>,
     /// Non-redrawing source cadence votes per surface (e.g. a source-paced or
     /// paused video stream). Propagated through [`SurfaceNext::rate_vote`]
     /// without requesting another render pass.
-    votes: rustc_hash::FxHashMap<SurfaceId, crate::FrameRate>,
+    votes: FxHashMap<SurfaceId, FrameRate>,
 }
 
 impl FrameRedraw {
     /// Records that `surface` wants the next frame at `rate`, combining
     /// repeated requests for the same surface via field-wise max.
-    pub fn request(&mut self, surface: SurfaceId, rate: crate::FrameRate) {
+    pub fn request(&mut self, surface: SurfaceId, rate: FrameRate) {
         self.requests
             .entry(surface)
             .and_modify(|kept| *kept = kept.combine_with(rate))
@@ -448,7 +452,7 @@ impl FrameRedraw {
 
     /// Records a non-redrawing cadence vote for `surface`, combining repeated
     /// votes via field-wise max without requesting a redraw.
-    pub fn vote(&mut self, surface: SurfaceId, rate: crate::FrameRate) {
+    pub fn vote(&mut self, surface: SurfaceId, rate: FrameRate) {
         self.votes
             .entry(surface)
             .and_modify(|kept| *kept = kept.combine_with(rate))
@@ -463,26 +467,26 @@ impl FrameRedraw {
 
     /// The redraw request `surface` made, when it asked for the next frame.
     #[must_use]
-    pub fn for_surface(&self, surface: SurfaceId) -> Option<&crate::FrameRate> {
+    pub fn for_surface(&self, surface: SurfaceId) -> Option<&FrameRate> {
         self.requests.get(&surface)
     }
 
     /// The non-redrawing source cadence vote for `surface`, if any.
     #[must_use]
-    pub fn vote_only_for_surface(&self, surface: SurfaceId) -> Option<&crate::FrameRate> {
+    pub fn vote_only_for_surface(&self, surface: SurfaceId) -> Option<&FrameRate> {
         self.votes.get(&surface)
     }
 
     /// The requests, one per surface — unordered.
-    pub fn iter(&self) -> impl Iterator<Item = (&SurfaceId, &crate::FrameRate)> {
+    pub fn iter(&self) -> impl Iterator<Item = (&SurfaceId, &FrameRate)> {
         self.requests.iter()
     }
 
     /// The combined refresh-rate vote across every surface that asked for the
     /// next frame.
     #[must_use]
-    pub fn rate(&self) -> Option<crate::FrameRate> {
-        waterui_frame_rate::combine_all(self.requests.values().copied().map(Some))
+    pub fn rate(&self) -> Option<FrameRate> {
+        combine_all(self.requests.values().copied().map(Some))
     }
 }
 

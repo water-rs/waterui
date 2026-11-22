@@ -19,6 +19,8 @@ use waterui_graphics::backend::cherenkov::Next;
 use waterui_graphics::gpu::{Display, FrameTime, SharedGpuContext, wgpu};
 use waterui_graphics::offscreen::OffscreenSize;
 
+use waterui_frame_rate::FrameRate;
+
 use super::{FrameOutcome, HostedError, HostedRenderer};
 use crate::gpu_runtime::EngineGeneration;
 
@@ -310,7 +312,7 @@ impl FramePipeline {
         (next, renderer.submission_evidence())
     }
 
-    pub(super) fn rate_vote(&self) -> Option<waterui_frame_rate::FrameRate> {
+    pub(super) fn rate_vote(&self) -> Option<FrameRate> {
         match &self.bound {
             Some(Bound {
                 stage: Stage::Live { renderer, .. },

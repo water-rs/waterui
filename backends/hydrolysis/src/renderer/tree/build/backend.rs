@@ -3,6 +3,8 @@
 
 use core::marker::PhantomData;
 
+use waterui::animation::FrameRateVote;
+
 #[cfg(waterui_feature = "gpu")]
 use waterui::graphics::backend::Picture;
 #[cfg(waterui_feature = "navigation")]
@@ -1131,7 +1133,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
 
     fn frame_rate<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::animation::FrameRateVote, C>,
+        metadata: Metadata<FrameRateVote, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {

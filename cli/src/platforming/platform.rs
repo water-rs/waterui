@@ -129,8 +129,13 @@ impl TargetBackend {
                     return Ok(());
                 }
                 #[cfg(target_os = "macos")]
-                if platform != TargetPlatform::MacOS {
-                    bail!("Hydrolysis backend on macOS host requires --platform macos");
+                if !matches!(
+                    platform,
+                    TargetPlatform::MacOS | TargetPlatform::IOS | TargetPlatform::IOSSimulator
+                ) {
+                    bail!(
+                        "Hydrolysis backend on macOS host requires --platform macos, ios or ios-simulator"
+                    );
                 }
                 #[cfg(target_os = "linux")]
                 if platform != TargetPlatform::Linux {
@@ -274,10 +279,10 @@ impl TargetPlatform {
     #[must_use]
     pub const fn available_backends(&self) -> &[TargetBackend] {
         match self {
-            Self::MacOS => &[TargetBackend::Apple, TargetBackend::Hydrolysis],
-            Self::IOS
-            | Self::IOSSimulator
-            | Self::MacCatalyst
+            Self::MacOS | Self::IOS | Self::IOSSimulator => {
+                &[TargetBackend::Apple, TargetBackend::Hydrolysis]
+            }
+            Self::MacCatalyst
             | Self::TvOS
             | Self::TvOSSimulator
             | Self::WatchOS

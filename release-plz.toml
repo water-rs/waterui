@@ -98,6 +98,10 @@ name = "waterui-testing"
 version_group = "waterui"
 
 [[package]]
+name = "waterui-conformance"
+version_group = "waterui"
+
+[[package]]
 name = "waterui-dylib"
 version_group = "waterui"
 
@@ -274,6 +278,10 @@ version_group = "waterui"
 
 [[package]]
 name = "hydrolysis-style"
+version_group = "waterui"
+
+[[package]]
+name = "waterui-apple-menu"
 version_group = "waterui"
 
 # Hydrolysis is in the waterui version group for the reason the CLI is

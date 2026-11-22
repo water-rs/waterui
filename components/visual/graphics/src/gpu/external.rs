@@ -29,10 +29,13 @@ use alloc::string::String;
 use core::cell::RefCell;
 use core::fmt;
 use core::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use cherenkov_gpu::interop::{ExternalFrame, SharedDevice};
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
+use waterui_frame_rate::FrameRate;
+
+use super::SourceRateUpdate;
 use waterui_core::{Environment, Native, NativeView, View};
 use wgpu::{Device, Queue};
 
@@ -254,10 +257,10 @@ impl Mailbox {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    fn source_rate(&self) -> std::sync::MutexGuard<'_, Option<waterui_frame_rate::FrameRate>> {
+    fn source_rate(&self) -> MutexGuard<'_, Option<FrameRate>> {
         self.source_rate
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -285,7 +288,7 @@ impl FrameReceiver {
 
     /// The source's current non-redrawing cadence vote, if set.
     #[must_use]
-    pub fn source_rate(&self) -> Option<waterui_frame_rate::FrameRate> {
+    pub fn source_rate(&self) -> Option<FrameRate> {
         *self.mailbox.source_rate()
     }
 
@@ -293,13 +296,13 @@ impl FrameReceiver {
     /// [`FrameOutput::set_source_rate`], returning `Some(new_rate)` only when
     /// it changed since the previous call.
     #[must_use]
-    pub fn take_source_rate(&self) -> Option<super::SourceRateUpdate> {
+    pub fn take_source_rate(&self) -> Option<SourceRateUpdate> {
         self.mailbox
             .rate_dirty
             .swap(false, Ordering::AcqRel)
             .then(|| {
                 let value = *self.mailbox.source_rate();
-                value.map_or(super::SourceRateUpdate::Clear, super::SourceRateUpdate::Set)
+                value.map_or(SourceRateUpdate::Clear, SourceRateUpdate::Set)
             })
     }
 
@@ -555,6 +558,7 @@ impl View for ExternalFrameView {
 
 #[cfg(test)]
 mod tests {
+    use alloc::sync::Arc;
     use core::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
@@ -562,9 +566,9 @@ mod tests {
 
     #[test]
     fn mailbox_source_rate_latches_clears_and_wakes_only_on_change() {
-        let wakes = alloc::sync::Arc::new(AtomicUsize::new(0));
+        let wakes = Arc::new(AtomicUsize::new(0));
         let redraw = RedrawHandle::new({
-            let wakes = alloc::sync::Arc::clone(&wakes);
+            let wakes = Arc::clone(&wakes);
             move || {
                 wakes.fetch_add(1, Ordering::Relaxed);
             }
@@ -593,7 +597,7 @@ mod tests {
             }
         };
 
-        let cinema = waterui_frame_rate::FrameRate::fixed(24.0);
+        let cinema = FrameRate::fixed(24.0);
         update(Some(cinema));
         assert_eq!(wakes.load(Ordering::Relaxed), 1);
         assert_eq!(receiver.source_rate(), Some(cinema));

@@ -33,6 +33,14 @@ use waterui_core::contract_violation;
 use waterui_graphics::gpu::RedrawHandle;
 use waterui_text::FontCollection;
 
+#[cfg(target_os = "windows")]
+use super::window::should_boost_windows_clock;
+#[cfg(target_os = "windows")]
+use crate::num_cast::f64_as_f32;
+#[cfg(target_os = "windows")]
+use windows::Win32::Graphics::{
+    DirectComposition::DCompositionBoostCompositorClock, Dxgi::DXGIDisableVBlankVirtualization,
+};
 use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, DeviceId, ElementState, TouchPhase, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, DeviceEvents, EventLoop};
@@ -43,7 +51,7 @@ use winit::window::{Window as NativeWindow, WindowId};
 #[cfg(any(feature = "menu", feature = "color-picker"))]
 use super::window::runtime_window_origin;
 use super::window::{RootWindow, RootWindows};
-use crate::platform::{PlatformWindow, WinitGpuContext, WinitWindow};
+use crate::platform::{EngineGpuContext, PlatformWindow, WinitWindow};
 #[cfg(any(feature = "text-field", feature = "secure-field"))]
 use crate::renderer::HydrolysisTextContextMenuMode;
 #[cfg(any(feature = "menu", feature = "color-picker"))]
@@ -938,8 +946,7 @@ pub fn run<W: Windows, M: AppMenuBar>(
 
     #[cfg(target_os = "windows")]
     // SAFETY: process-wide DXGI opt-out so VRR/high-refresh swaps are not virtualized to 60Hz.
-    if let Err(error) = unsafe { windows::Win32::Graphics::Dxgi::DXGIDisableVBlankVirtualization() }
-    {
+    if let Err(error) = unsafe { DXGIDisableVBlankVirtualization() } {
         tracing::warn!("hydrolysis runner: DXGIDisableVBlankVirtualization failed: {error}");
     }
 
@@ -953,9 +960,7 @@ pub fn run<W: Windows, M: AppMenuBar>(
     #[cfg(target_os = "windows")]
     if runner.windows_boosted {
         // SAFETY: restore DirectComposition compositor clock boost on loop exit.
-        let _ = unsafe {
-            windows::Win32::Graphics::DirectComposition::DCompositionBoostCompositorClock(false)
-        };
+        let _ = unsafe { DCompositionBoostCompositorClock(false) };
         runner.windows_boosted = false;
     }
     waterui_locale::shutdown_current_thread_runtime_locale_state();
@@ -995,7 +1000,7 @@ struct WinitRunner {
     /// Transient popup windows (mounted through `PopupWindowManager`): a
     /// pointer press that lands outside every app window dismisses them.
     popup_window_ids: std::collections::HashSet<WindowId>,
-    gpu_context: Option<WinitGpuContext>,
+    gpu_context: Option<EngineGpuContext>,
     accesskit_adapters: HashMap<WindowId, AccessKitAdapter>,
     last_accessibility_updates: HashMap<WindowId, accesskit::TreeUpdate>,
     /// The executor is installed the first time the active event loop is
@@ -1714,20 +1719,14 @@ impl WinitRunner {
     #[cfg(target_os = "windows")]
     fn sync_windows_compositor_boost(&mut self) {
         let want_boost = self.windows.values().any(|runtime| {
-            let peak = runtime
-                .refresh_rate_hz
-                .map_or(60.0, crate::num_cast::f64_as_f32);
-            super::window::should_boost_windows_clock(runtime.effective_frame_rate_vote(), peak)
+            let peak = runtime.refresh_rate_hz.map_or(60.0, f64_as_f32);
+            should_boost_windows_clock(runtime.effective_frame_rate_vote(), peak)
         });
         if want_boost == self.windows_boosted {
             return;
         }
         // SAFETY: main-thread DirectComposition compositor clock boost toggle.
-        match unsafe {
-            windows::Win32::Graphics::DirectComposition::DCompositionBoostCompositorClock(
-                want_boost,
-            )
-        } {
+        match unsafe { DCompositionBoostCompositorClock(want_boost) } {
             Ok(()) => {
                 self.windows_boosted = want_boost;
             }

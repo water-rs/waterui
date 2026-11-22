@@ -12,7 +12,8 @@ use std::pin::Pin;
 use std::rc::Rc;
 use std::task::{Context, Poll};
 
-use ndk::native_window::NativeWindow;
+use ndk::native_window::{ChangeFrameRateStrategy, FrameRateCompatibility, NativeWindow};
+use waterui_frame_rate::{DisplayCapabilities, FrameRate, resolve};
 
 use super::native_window::{AndroidDisplay, AndroidWindow};
 use crate::platform::{DeviceLostError, GpuGeneration, PresentationSurface, SurfaceError};
@@ -284,7 +285,7 @@ pub struct AndroidSurface {
     ),
     pending: Option<cherenkov::PendingFrame<cherenkov_gpu::Gpu>>,
     pending_window: Option<crate::platform::PendingAndroidWindow>,
-    executor: crate::runner::android_executor::AndroidMainThreadExecutor,
+    executor: crate::runner::host_executor::AndroidExecutor,
     native_window: Option<WindowLease>,
     /// The Kotlin `SurfaceHolder`'s reported geometry, independent of the
     /// engine surface — valid while between surface generations too.
@@ -314,26 +315,20 @@ pub struct DisplayRefresh {
 
 #[derive(Default, PartialEq)]
 pub struct RefreshDemand {
-    pub rate: Option<waterui_frame_rate::FrameRate>,
+    pub rate: Option<FrameRate>,
 }
 
 impl DisplayRefresh {
-    fn requested(
-        self,
-        demand: &RefreshDemand,
-    ) -> (f32, ndk::native_window::FrameRateCompatibility) {
+    fn requested(self, demand: &RefreshDemand) -> (f32, FrameRateCompatibility) {
         let Some(vote) = demand.rate else {
-            return (0.0, ndk::native_window::FrameRateCompatibility::Default);
+            return (0.0, FrameRateCompatibility::Default);
         };
         let steps = [self.normal, self.high];
-        let rate = waterui_frame_rate::resolve(
-            vote,
-            waterui_frame_rate::DisplayCapabilities::discrete(self.peak, &steps),
-        );
+        let rate = resolve(vote, DisplayCapabilities::discrete(self.peak, &steps));
         let compatibility = if vote.is_fixed() {
-            ndk::native_window::FrameRateCompatibility::FixedSource
+            FrameRateCompatibility::FixedSource
         } else {
-            ndk::native_window::FrameRateCompatibility::Default
+            FrameRateCompatibility::Default
         };
         (rate, compatibility)
     }
@@ -342,7 +337,7 @@ impl DisplayRefresh {
 impl AndroidSurface {
     pub fn new(
         gpu: AndroidGpuContext,
-        executor: crate::runner::android_executor::AndroidMainThreadExecutor,
+        executor: crate::runner::host_executor::AndroidExecutor,
     ) -> Self {
         let handles = gpu.inner.gpu.generation();
         Self {
@@ -639,7 +634,7 @@ impl AndroidSurface {
             .set_frame_rate_with_change_strategy(
                 rate,
                 compatibility,
-                ndk::native_window::ChangeFrameRateStrategy::OnlyIfSeamless,
+                ChangeFrameRateStrategy::OnlyIfSeamless,
             )
             .map_err(|error| {
                 GpuError::new(format!(

@@ -9695,7 +9695,6 @@ mod navigation {
     use cocoa_ui::uikit::view_controller::owning_controller;
     use cocoa_ui::uikit::{NavContentController, NavPage};
     use cocoa_ui::{PlatformView, Retained, view};
-    use waterui::AnyView;
     use waterui::Str;
     use waterui::ViewExt as _;
     use waterui::component::toggle::toggle;
@@ -9711,7 +9710,6 @@ mod navigation {
     use waterui::theme::color::{Accent, Foreground};
     use waterui_apple::SfSymbol;
     use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, pump_main_until};
-    use waterui_core::handler::AnyViewBuilder;
 
     use super::{mtm, resolve};
 
@@ -9942,18 +9940,17 @@ mod navigation {
     fn a_text_toolbar_button_draws_its_title() {
         let title = binding(Str::from("Edit"));
         let leaf = resolve::render(NavigationStack::new(
-            NavigationView::new("Inbox", text("root")).navigation_toolbar(NavigationToolbar::new(
-                vec![
-                    NavigationToolbarItem::new(
+            NavigationView::new("Inbox", text("root")).navigation_toolbar(
+                NavigationToolbar::default()
+                    .item(NavigationToolbarItem::new(
                         NavigationToolbarPlacement::TopBarLeading,
                         button(waterui::text!("{title}")).style(ButtonStyle::Plain),
-                    ),
-                    NavigationToolbarItem::new(
+                    ))
+                    .item(NavigationToolbarItem::new(
                         NavigationToolbarPlacement::TopBarTrailing,
                         text("12 unread"),
-                    ),
-                ],
-            )),
+                    )),
+            ),
         ));
         let nav =
             nav_controller_in(leaf.view()).expect("the stack mounts a UINavigationController");
@@ -10073,15 +10070,13 @@ mod navigation {
     /// tracks the content button's `disabled` state.
     fn a_symbol_toolbar_item_follows_its_button_disabled_state() {
         let disabled = binding(true);
-        let mut item = NavigationToolbarItem::new(
+        let item = NavigationToolbarItem::new(
             NavigationToolbarPlacement::TopBarTrailing,
             button("Save")
                 .style(ButtonStyle::Plain)
                 .disabled(disabled.clone()),
-        );
-        item.set_icon(Some(AnyViewBuilder::new(|| {
-            AnyView::new(SfSymbol::CHECKMARK)
-        })));
+        )
+        .icon(SfSymbol::CHECKMARK);
         let leaf = resolve::render(NavigationStack::new(
             NavigationView::new("Inbox", text("root"))
                 .navigation_toolbar(NavigationToolbar::new(vec![item])),
@@ -10111,15 +10106,13 @@ mod navigation {
     fn a_checkbox_toolbar_item_follows_its_disabled_state() {
         let disabled = binding(true);
         let checked = binding(false);
-        let mut item = NavigationToolbarItem::new(
+        let item = NavigationToolbarItem::new(
             NavigationToolbarPlacement::TopBarTrailing,
             toggle("Done", &checked)
                 .checkbox()
                 .disabled(disabled.clone()),
-        );
-        item.set_icon(Some(AnyViewBuilder::new(|| {
-            AnyView::new(SfSymbol::CHECKMARK)
-        })));
+        )
+        .icon(SfSymbol::CHECKMARK);
         let leaf = resolve::render(NavigationStack::new(
             NavigationView::new("Inbox", text("root"))
                 .navigation_toolbar(NavigationToolbar::new(vec![item])),

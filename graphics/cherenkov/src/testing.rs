@@ -5,6 +5,8 @@
 /// The committed layer op a [`SurfaceTree`](crate::SurfaceTree) applies, for
 /// tests that build a sampled tree without an engine.
 pub use cherenkov_record::LayerOp;
+#[cfg(target_arch = "wasm32")]
+use core::future::ready;
 use std::collections::HashSet;
 use std::sync::mpsc::Sender;
 
@@ -596,7 +598,7 @@ impl Renderer for NullRenderer {
                 layers,
             }));
         }
-        core::future::ready(Ok((self.frame_redraw(), ())))
+        ready(Ok((self.frame_redraw(), ())))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -2392,6 +2394,7 @@ mod tests {
 
     #[test]
     fn a_frame_sink_source_rate_votes_without_requesting_redraw() {
+        use crate::FrameRate;
         let (engine, _rx) = engine();
         let surface = engine
             .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16), || {})
@@ -2405,10 +2408,10 @@ mod tests {
         assert_eq!(engine.render(FrameTime::now()).expect("render"), Next::Idle);
         assert_eq!(surface.rate_vote(), None);
 
-        sink.set_source_rate(Some(crate::FrameRate::fixed(24.0)));
+        sink.set_source_rate(Some(FrameRate::fixed(24.0)));
         assert_eq!(engine.render(FrameTime::now()).expect("render"), Next::Idle);
         assert_eq!(surface.next_frame(), Next::Idle);
-        assert_eq!(surface.rate_vote(), Some(crate::FrameRate::fixed(24.0)));
+        assert_eq!(surface.rate_vote(), Some(FrameRate::fixed(24.0)));
 
         sink.set_source_rate(None);
         assert_eq!(engine.render(FrameTime::now()).expect("render"), Next::Idle);

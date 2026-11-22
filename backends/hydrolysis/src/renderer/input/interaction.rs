@@ -6,6 +6,7 @@ use crate::renderer::interaction_layers::MAX_PRESS_WAVES;
 use crate::theme::InteractionMotion;
 use nami::Signal as _;
 use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
+use waterui_frame_rate::FrameRate;
 use waterui_interaction::interaction::{InteractionReport, InteractionState, Selected};
 
 const INTERACTION_STATE_LAYER_KEY: usize = 1;
@@ -389,7 +390,7 @@ impl<E: crate::text::TextEngine> InteractionEngine<E> {
             ),
             hover_target,
             state_layer_animation(hover_target, motion),
-            waterui_frame_rate::FrameRate::SLOW,
+            FrameRate::SLOW,
             now,
         );
         // Physical-press morph progress targets the physical press state —
@@ -407,7 +408,7 @@ impl<E: crate::text::TextEngine> InteractionEngine<E> {
             ),
             if pressed { 1.0 } else { 0.0 },
             motion.press_shape.clone(),
-            waterui_frame_rate::FrameRate::FAST,
+            FrameRate::FAST,
             now,
         );
         let waves = core::array::from_fn(|index| {
@@ -427,7 +428,7 @@ impl<E: crate::text::TextEngine> InteractionEngine<E> {
                     0.0
                 },
                 press_layer_opacity_animation(wave_visual, motion),
-                waterui_frame_rate::FrameRate::SLOW,
+                FrameRate::SLOW,
                 now,
             );
             // Material ripple geometry only ever plays forward: a wave grows
@@ -449,7 +450,7 @@ impl<E: crate::text::TextEngine> InteractionEngine<E> {
                 } else {
                     Animation::linear(Duration::ZERO)
                 },
-                waterui_frame_rate::FrameRate::FAST,
+                FrameRate::FAST,
                 now,
             );
             WaveLayer::new(alpha, progress)
@@ -616,13 +617,14 @@ mod tests {
     }
 
     fn handles(now: Instant) -> InteractionLayerHandles {
+        use waterui_frame_rate::FrameRate;
         let mut controller = AnimationController::default();
         let mut bind = |key: usize| {
             controller.bind_scalar_target(
                 AnimationKey::renderer_local_scalar_with_discriminator(0, key),
                 0.0,
                 Animation::linear(Duration::ZERO),
-                waterui_frame_rate::FrameRate::FAST,
+                FrameRate::FAST,
                 now,
             )
         };

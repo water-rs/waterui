@@ -29,6 +29,7 @@ use crate::projective::{Projective, ProjectiveError};
 use crate::shape::ShapeData;
 use crate::style::{BlendMode, BlendSpace, FilterId};
 use crate::target::Target;
+use waterui_frame_rate::combine;
 
 /// `prop` for a property other than `scroll_offset`, which takes no
 /// `Decay`: one that carries it lands without animation, after a contract
@@ -686,7 +687,7 @@ impl SurfaceTree {
             if owns(LayerId::new(raw)) {
                 continue;
             }
-            rate = waterui_frame_rate::combine(rate, node.animation_rate);
+            rate = combine(rate, node.animation_rate);
         }
         rate
     }
@@ -1369,12 +1370,12 @@ impl SurfaceTree {
             }
             node.restamp(&mut self.clock, outer_changed, inner_changed);
             node.animation_rate = node.classify_rate(scale, node_fast);
-            rate = waterui_frame_rate::combine(rate, node.animation_rate);
+            rate = combine(rate, node.animation_rate);
         }
         let (projective_step, projective_running) = self.sample_projective(time);
         stepped |= projective_step;
         if projective_running {
-            rate = waterui_frame_rate::combine(rate, Some(FrameRate::FAST));
+            rate = combine(rate, Some(FrameRate::FAST));
         }
         Sampling { stepped, rate }
     }

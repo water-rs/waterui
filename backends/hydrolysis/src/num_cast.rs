@@ -278,8 +278,9 @@ pub const fn usize_as_i64(v: usize) -> i64 {
     reason = "callers clamp the JNI value with max(0) before converting"
 )]
 #[cfg(any(
+    hydrolysis_range_editing,
     all(
-        any(target_os = "android", all(test, not(target_arch = "wasm32"))),
+        all(test, not(target_arch = "wasm32")),
         any(feature = "text-field", feature = "secure-field")
     ),
     all(target_os = "linux", hydrolysis_winit)

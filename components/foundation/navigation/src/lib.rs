@@ -994,6 +994,11 @@ pub enum NavigationToolbarPlacement {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CustomToolbarItem;
 
+/// Marker for a custom-view [`NavigationToolbarItem`] carrying a typed icon.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CustomIconToolbarItem;
+
 /// Marker for a semantic-action [`NavigationToolbarItem`].
 #[doc(hidden)]
 #[derive(Debug, Clone, Copy, Default)]
@@ -1063,6 +1068,21 @@ impl NavigationToolbarItem<(), CustomToolbarItem> {
     }
 }
 
+impl<C: View> NavigationToolbarItem<C, CustomToolbarItem> {
+    /// Attaches a typed icon view to this custom toolbar item without erasing
+    /// through `AnyView`.
+    pub fn icon<I: View + Clone + 'static>(
+        self,
+        icon: I,
+    ) -> NavigationToolbarItem<(C, I), CustomIconToolbarItem> {
+        NavigationToolbarItem {
+            placement: self.placement,
+            content: (self.content, icon),
+            kind: PhantomData,
+        }
+    }
+}
+
 /// A single authored toolbar item lowered into child slot `S`.
 #[doc(hidden)]
 pub trait NavigationToolbarItemSource: 'static {
@@ -1077,6 +1097,21 @@ impl<V: View> NavigationToolbarItemSource for NavigationToolbarItem<V, CustomToo
             content: S::from_view(self.content),
             title: None,
             icon: None,
+            env: None,
+        }
+    }
+}
+
+impl<V: View, I: View + Clone + 'static> NavigationToolbarItemSource
+    for NavigationToolbarItem<(V, I), CustomIconToolbarItem>
+{
+    fn into_resolved<S: ChildSlot>(self) -> ResolvedNavigationToolbarItem<S> {
+        let (content, icon) = self.content;
+        ResolvedNavigationToolbarItem {
+            placement: self.placement,
+            content: S::from_view(content),
+            title: None,
+            icon: Some(IconSlot::from_view(icon)),
             env: None,
         }
     }

@@ -3,9 +3,10 @@
 
 use alloc::rc::Rc;
 use core::cell::{Cell, RefCell};
+use core::fmt::{Debug, Formatter, Result as FmtResult};
 
 use cocoa_ui::visibility::{VisibilityWatch, presentable};
-use cocoa_ui::{PlatformView, Rect, view};
+use cocoa_ui::{PlatformView, Rect, Retained, view};
 use waterui::animation::{FrameRate, FrameRateVote};
 use waterui::reactive::Signal;
 use waterui_core::Metadata;
@@ -16,6 +17,7 @@ use waterui_core::layout::{
 
 use crate::contract::{Held, Mounted, NativeLeaf, RenderContext};
 use crate::frame_rate::{VoteRegistration, WindowFrameRateVotes};
+use crate::primary_content;
 use crate::proposal;
 
 #[cfg(target_os = "macos")]
@@ -25,14 +27,14 @@ use cocoa_ui::uikit::HostView;
 
 struct FrameRateState {
     child: Mounted,
-    view: cocoa_ui::Retained<PlatformView>,
+    view: Retained<PlatformView>,
     vote: Cell<Option<FrameRate>>,
     registration: Option<VoteRegistration>,
     visibility_watch: RefCell<Option<VisibilityWatch>>,
 }
 
-impl core::fmt::Debug for FrameRateState {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl Debug for FrameRateState {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         f.debug_struct("FrameRateState").finish_non_exhaustive()
     }
 }
@@ -55,8 +57,8 @@ struct FrameRateSubView {
     state: Rc<FrameRateState>,
 }
 
-impl core::fmt::Debug for FrameRateSubView {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl Debug for FrameRateSubView {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         f.debug_struct("FrameRateSubView").finish_non_exhaustive()
     }
 }
@@ -98,7 +100,7 @@ pub fn realize_frame_rate_metadata(
     let host_view: &PlatformView = &host;
 
     let mounted = ctx.realize(metadata.content).mount(host_view);
-    crate::primary_content::forward(&host, mounted.view());
+    primary_content::forward(&host, mounted.view());
     view::set_translates_autoresizing(mounted.view(), true);
 
     let registration = ctx

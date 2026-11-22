@@ -17,6 +17,7 @@ use crate::backend::{
 use crate::engine::{CompletionWaker, SurfaceWaker};
 use crate::error::{EngineError, ResourceError, SurfaceError, SurfaceRejection};
 use cherenkov_record::FrameRate;
+use waterui_frame_rate::{DisplayCapabilities, combine};
 
 use crate::frame::{FrameId, FrameStats, FrameTime, Next};
 use crate::image::ImageUpload;
@@ -968,9 +969,8 @@ fn finish_frame<B: Backend>(
         // The surface's own deadline combines its animation demand with
         // only the backend redraw requests that name it. Non-redrawing
         // source votes widen `rate_vote` without requesting another frame.
-        let mine = waterui_frame_rate::combine(running, redraw.for_surface(*id).copied());
-        let rate_vote =
-            waterui_frame_rate::combine(mine, redraw.vote_only_for_surface(*id).copied());
+        let mine = combine(running, redraw.for_surface(*id).copied());
+        let rate_vote = combine(mine, redraw.vote_only_for_surface(*id).copied());
         surface_next.insert(
             *id,
             SurfaceNext {
@@ -979,13 +979,13 @@ fn finish_frame<B: Backend>(
                 tracks: state.tree.running_tracks(|layer| owned.contains(&layer)),
             },
         );
-        rate = waterui_frame_rate::combine(rate, running);
+        rate = combine(rate, running);
         state.commits = Commits::Clean;
         state.plane_frames.clear();
         state.display_moved = false;
         state.presented();
     }
-    let rate = waterui_frame_rate::combine(rate, redraw.rate());
+    let rate = combine(rate, redraw.rate());
     (
         rate.map_or(Next::Idle, |rate| next_at(time, rate)),
         surface_next,
@@ -995,7 +995,7 @@ fn finish_frame<B: Backend>(
 /// The next frame time for a refresh vote: one interval at the resolved cadence
 /// (capping open upper bounds at 120 Hz) after `time`.
 fn next_at(time: crate::Instant, rate: FrameRate) -> Next {
-    let interval = rate.interval(waterui_frame_rate::DisplayCapabilities::continuous(120.0));
+    let interval = rate.interval(DisplayCapabilities::continuous(120.0));
     Next::At {
         time: time + interval,
         rate,

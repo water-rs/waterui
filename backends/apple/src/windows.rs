@@ -25,6 +25,7 @@ use waterui_backend_core::{ChildView as _, IntoChild};
 #[cfg(target_os = "macos")]
 use crate::backend::AppleBackend;
 use crate::contract::NativeLeaf;
+use crate::frame_rate::WindowFrameRateVotes;
 
 /// A window's content as this backend holds it: the content builder's type
 /// is erased behind the one call that renders the window's tree, so
@@ -118,6 +119,7 @@ mod imp {
     use core::cell::{Cell, RefCell};
 
     use super::RootWindow;
+    use super::WindowFrameRateVotes;
     use super::{into_kit_rect, into_kit_size, into_layout_rect};
     use cocoa_ui::appkit::{AttentionRequest, HostView, WindowLevel as KitLevel, WindowStyle};
     use cocoa_ui::{MainThreadMarker, Retained};
@@ -426,10 +428,7 @@ mod imp {
         // host each layout pass, at the safe-area-aware frame `content_frame`
         // resolves.
         let mut window_env = env.clone();
-        window_env.insert(crate::frame_rate::WindowFrameRateVotes::default());
-        let env = &window_env;
-        let mut window_env = env.clone();
-        window_env.insert(crate::frame_rate::WindowFrameRateVotes::default());
+        window_env.insert(WindowFrameRateVotes::default());
         let env = &window_env;
         let leaf = (declaration.content)(env, mtm);
 
@@ -915,6 +914,7 @@ mod imp {
     use core::cell::{Cell, RefCell};
 
     use super::RootWindow;
+    use super::WindowFrameRateVotes;
     use cocoa_ui::objc2_ui_kit::{NSObjectUIAccessibility as _, UIView, UIWindow};
     use cocoa_ui::uikit::{
         ColorSchemeObservation, HostView, ViewController, WindowScene, window_root,
@@ -1268,7 +1268,7 @@ mod imp {
         );
 
         let mut window_env = env.clone();
-        window_env.insert(crate::frame_rate::WindowFrameRateVotes::default());
+        window_env.insert(WindowFrameRateVotes::default());
         let env = &window_env;
         let leaf = (declaration.content)(env, mtm);
         let leaf_view = cocoa_ui::view::retain_base(leaf.view());

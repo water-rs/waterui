@@ -24,6 +24,7 @@ use waterui::ViewRenderer;
 #[cfg(waterui_feature = "capture")]
 use waterui::view_renderer::CaptureBinder;
 
+use waterui_core::animation::FrameRateVote;
 use waterui_core::backend::{Backend, DynBackend, ErasedPayload, MapSlots, cast};
 use waterui_core::metadata::MetadataKey;
 use waterui_core::view::hook::{ComposeErased, ErasedHooks, HookList, HookableView};
@@ -952,7 +953,7 @@ native_backend! {
         /// A layout priority.
         layout_priority: waterui_core::layout::LayoutPriority,
         /// A view subtree's refresh-rate vote.
-        frame_rate: waterui_core::animation::FrameRateVote,
+        frame_rate: FrameRateVote,
         /// A lifecycle hook.
         lifecycle_hook: waterui_interaction::event::LifeCycleHook,
         /// An event handler.

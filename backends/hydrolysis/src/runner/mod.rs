@@ -23,6 +23,7 @@ use std::{cell::RefCell, rc::Rc};
 #[cfg(all(
     not(target_arch = "wasm32"),
     not(hydrolysis_winit),
+    not(hydrolysis_uikit),
     not(target_os = "android")
 ))]
 use waterui::app::AppParts;
@@ -53,13 +54,12 @@ pub mod android_accessibility;
 /// JNI bridge and on host for the Kotlin-agreement test; dead elsewhere.
 #[cfg(any(target_os = "android", all(test, not(target_arch = "wasm32"))))]
 pub mod android_methods;
+/// The Apple hosts built on `cocoa-ui` views; the `UIKit` host runs iOS and
+/// iPadOS scenes.
+#[cfg(hydrolysis_uikit)]
+mod apple;
 // Bare wasm has no window pump to drive these modules' diagnostics
 // and menu-bar plumbing.
-/// The Android UI-thread executor and its `eventfd` wake — compiled on
-/// Android for the JNI bridge and, because `eventfd` is Linux-only, on a
-/// Linux host for the fd tests; dead elsewhere.
-#[cfg(any(target_os = "android", all(test, target_os = "linux")))]
-pub mod android_executor;
 /// The insets-region metrics the Android session's `set_metrics`
 /// change-detects on — compiled on Android for the session and on host
 /// for its tests; dead elsewhere.
@@ -73,15 +73,21 @@ mod content_tests;
     expect(dead_code, reason = "the GPU pump is the sole diagnostics consumer")
 )]
 mod diagnostics;
-/// The `InputConnection` protocol state machine — compiled on Android for the
-/// JNI bridge and on host for its tests; dead elsewhere.
-#[cfg(any(target_os = "android", all(test, not(target_arch = "wasm32"))))]
+/// The platform range-editing protocol state machine (UTF-16 ranges,
+/// composition, selection) — compiled where a host speaks it and on host for
+/// its tests; dead elsewhere.
+#[cfg(any(hydrolysis_range_editing, all(test, not(target_arch = "wasm32"))))]
 #[cfg(any(feature = "text-field", feature = "secure-field"))]
 pub mod editing;
 #[cfg(hydrolysis_cherenkov)]
 mod executor;
 #[cfg(all(not(target_arch = "wasm32"), hydrolysis_cherenkov))]
 mod headless;
+/// The host UI-thread executor and its wake — compiled where a platform
+/// schedules the frames (Android, UIKit) and, because `eventfd` is
+/// Linux-only, on a Linux host for the fd tests; dead elsewhere.
+#[cfg(any(hydrolysis_frame_transaction, all(test, target_os = "linux")))]
+pub mod host_executor;
 pub mod ime;
 #[cfg_attr(all(target_arch = "wasm32", not(feature = "web")), allow(dead_code))]
 #[cfg(feature = "menu")]
@@ -138,7 +144,11 @@ use window::{advance_runtime, handle_input_events};
 #[cfg(any(
     hydrolysis_winit,
     all(test, not(target_arch = "wasm32")),
-    all(not(target_arch = "wasm32"), not(target_os = "android")),
+    all(
+        not(target_arch = "wasm32"),
+        not(target_os = "android"),
+        not(hydrolysis_uikit)
+    ),
     all(target_arch = "wasm32", feature = "web")
 ))]
 use window::{WindowFrame, render_window};
@@ -189,6 +199,7 @@ pub use window::{FrameCounters, FramePhases, FrameProfile};
 #[cfg(all(
     not(target_arch = "wasm32"),
     not(hydrolysis_winit),
+    not(hydrolysis_uikit),
     not(target_os = "android")
 ))]
 use waterui_core::contract_violation;
@@ -302,6 +313,7 @@ fn init_main_thread_executors() -> Option<waterui::inspector::InspectorRuntime> 
 #[cfg(all(
     not(target_arch = "wasm32"),
     not(hydrolysis_winit),
+    not(hydrolysis_uikit),
     not(target_os = "android")
 ))]
 fn offscreen_scale_factor() -> f64 {
@@ -390,10 +402,12 @@ fn exit_without_gpu(error: impl core::error::Error + Send + Sync + 'static) -> !
 // must not silently dispatch an app to the one-shot offscreen pump there.
 // The Android host's entry point is `runner::android` — a missing `run` is a
 // compile error naming the real boundary, which is the plan's "no accidental
-// Android-to-headless dispatch" made mechanical.
+// Android-to-headless dispatch" made mechanical. The same holds on iOS, whose
+// entry point is the `UIKit` host.
 #[cfg(all(
     not(target_arch = "wasm32"),
     not(hydrolysis_winit),
+    not(hydrolysis_uikit),
     not(target_os = "android")
 ))]
 /// Runs `app` once offscreen and returns — the headless one-shot `run` that
@@ -587,6 +601,21 @@ pub fn run<W: Windows, M: AppMenuBar>(
     winit_runner::run(app, style, executors);
     #[cfg(not(hydrolysis_inspector))]
     winit_runner::run(app, style);
+}
+
+/// Runs `app` on the `UIKit` host and never returns: the process lives in
+/// `UIApplicationMain`.
+///
+/// `app` is a factory, not a built value: the subscriber and executors are
+/// installed before it runs, so events the application emits while building
+/// its `App` reach the log (water-rs/waterui#2513).
+#[cfg(hydrolysis_uikit)]
+pub fn run<W: Windows, M: AppMenuBar>(
+    app: impl FnOnce(Environment) -> App<W, M> + 'static,
+    env: Environment,
+    style: impl crate::Style,
+) -> ! {
+    apple::uikit::run(app, env, style)
 }
 
 /// Installs the process-wide tracing subscriber when `RUST_LOG` or

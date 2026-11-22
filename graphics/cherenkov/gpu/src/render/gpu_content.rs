@@ -13,11 +13,12 @@
 
 use crate::interop::{
     ExternalFrame, FrameColor, FramePlanes, GpuContentBox, RgbAlpha,
-    wgpu::{Context, Frame},
+    wgpu::{Context, Frame, SourceRateUpdate},
 };
-use cherenkov::{CompletionWaker, FrameTime, Instant, ProducerId, RenderError};
+use cherenkov::{CompletionWaker, FrameRate, FrameTime, Instant, ProducerId, RenderError};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
+use waterui_frame_rate::combine;
 
 use super::planes::Compositor;
 
@@ -191,19 +192,16 @@ impl Producer {
         let external_dirty = self.content.as_ref().is_some_and(|content| {
             self.current.is_none() || content.redraw.dirty.load(Ordering::Acquire)
         });
-        waterui_frame_rate::combine(
-            self.again_rate,
-            external_dirty.then_some(cherenkov::FrameRate::FAST),
-        )
+        combine(self.again_rate, external_dirty.then_some(FrameRate::FAST))
     }
 
     /// The producer's latched non-redrawing source cadence vote, if set.
-    pub const fn source_rate(&self) -> Option<cherenkov::FrameRate> {
+    pub const fn source_rate(&self) -> Option<FrameRate> {
         self.source_rate
     }
 
     /// Sets or clears the producer's latched non-redrawing source cadence vote.
-    pub const fn set_source_rate(&mut self, rate: Option<cherenkov::FrameRate>) {
+    pub const fn set_source_rate(&mut self, rate: Option<FrameRate>) {
         self.source_rate = rate;
     }
 
@@ -361,7 +359,7 @@ impl Producer {
                 .map_or(Duration::ZERO, |last| time.saturating_duration_since(last)),
             presentation_time: frame_time.presentation_time(),
             redraw_rate: None,
-            source_rate_update: crate::interop::wgpu::SourceRateUpdate::Unchanged,
+            source_rate_update: SourceRateUpdate::Unchanged,
         };
         self.content
             .as_mut()
@@ -370,9 +368,9 @@ impl Producer {
             .render(&mut frame);
         self.again_rate = frame.redraw_rate;
         match frame.source_rate_update {
-            crate::interop::wgpu::SourceRateUpdate::Unchanged => {}
-            crate::interop::wgpu::SourceRateUpdate::Clear => self.source_rate = None,
-            crate::interop::wgpu::SourceRateUpdate::Set(rate) => self.source_rate = Some(rate),
+            SourceRateUpdate::Unchanged => {}
+            SourceRateUpdate::Clear => self.source_rate = None,
+            SourceRateUpdate::Set(rate) => self.source_rate = Some(rate),
         }
         self.last_frame = Some(time);
         self.last_scale = Some(scale);
@@ -461,7 +459,7 @@ impl Producer {
                 .map_or(Duration::ZERO, |last| time.saturating_duration_since(last)),
             presentation_time: frame_time.presentation_time(),
             redraw_rate: None,
-            source_rate_update: crate::interop::wgpu::SourceRateUpdate::Unchanged,
+            source_rate_update: SourceRateUpdate::Unchanged,
         };
         self.content
             .as_mut()
@@ -470,9 +468,9 @@ impl Producer {
             .render(&mut frame);
         self.again_rate = frame.redraw_rate;
         match frame.source_rate_update {
-            crate::interop::wgpu::SourceRateUpdate::Unchanged => {}
-            crate::interop::wgpu::SourceRateUpdate::Clear => self.source_rate = None,
-            crate::interop::wgpu::SourceRateUpdate::Set(rate) => self.source_rate = Some(rate),
+            SourceRateUpdate::Unchanged => {}
+            SourceRateUpdate::Clear => self.source_rate = None,
+            SourceRateUpdate::Set(rate) => self.source_rate = Some(rate),
         }
         self.last_frame = Some(time);
         self.last_scale = Some(scale);

@@ -1,69 +1,86 @@
 //! The first responder for a view that takes its own input.
 //!
 //! An [`InputView`] sits on top of the view whose pixels host interactive
-//! content — a GPU surface — claims touch, keyboard and indirect-scroll
-//! input, and speaks `UITextInput` so an input method composes against the
-//! content's caret. The view draws nothing; every event is translated into
-//! the platform-neutral [`SurfaceEvent`] vocabulary and handed to the
-//! installed handler.
+//! content — a GPU surface, a text editor — claims touch, keyboard and
+//! indirect-scroll input, and speaks `UITextInput` against the content's
+//! document, a [`TextInputClient`]. Pointer, key and scroll input is
+//! translated into the platform-neutral [`SurfaceEvent`] vocabulary and
+//! handed to the installed handler; text input never is — the view applies
+//! it to the client's document.
 //!
 //! # Safety
 //!
 //! The `unsafe` here defines a `UIView` subclass implementing `UITextInput`
-//! plus the abstract `UITextPosition`/`UITextRange` subclasses the protocol
-//! requires. `UIKit` calls every override on the main thread; the pre-edit
-//! buffer lives in the view's ivars so the protocol's document model holds
-//! only the composition text.
+//! plus the abstract `UITextPosition`/`UITextRange`/`UITextSelectionRect`
+//! subclasses the protocol requires. `UIKit` calls every override on the
+//! main thread; the document lives in the installed client, never in the
+//! view.
 
 use std::cell::RefCell;
 use std::fmt;
+use std::ops::Range;
 use std::rc::Rc;
 
 use objc2::rc::{Retained, Weak};
-use objc2::runtime::{AnyObject, NSObjectProtocol};
+use objc2::runtime::{AnyObject, NSObjectProtocol, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_foundation::{
-    NSArray, NSAttributedStringKey, NSComparisonResult, NSDictionary, NSObject, NSRange, NSSet,
-    NSString,
+    NSArray, NSAttributedStringKey, NSComparisonResult, NSDictionary, NSNumber, NSObject, NSRange,
+    NSSet, NSString,
 };
 use objc2_ui_kit::{
-    UIEvent, UIGestureRecognizer, UIGestureRecognizerState, UIKeyInput, UIPanGestureRecognizer,
-    UIPasteboard, UIPress, UIPressesEvent, UIScrollTypeMask, UITextInput, UITextInputDelegate,
-    UITextInputStringTokenizer, UITextInputTokenizer, UITextInputTraits, UITextLayoutDirection,
-    UITextPosition, UITextRange, UITextSelectionRect, UITextStorageDirection, UITouch, UIView,
+    UIEvent, UIEventButtonMask, UIGestureRecognizer, UIGestureRecognizerDelegate,
+    UIGestureRecognizerState, UIHoverGestureRecognizer, UIKeyInput, UIKeyboardType,
+    UIPanGestureRecognizer, UIPasteboard, UIPinchGestureRecognizer, UIPress, UIPressesEvent,
+    UIReturnKeyType, UIRotationGestureRecognizer, UIScrollTypeMask, UITextAutocapitalizationType,
+    UITextAutocorrectionType, UITextInput, UITextInputDelegate, UITextInputStringTokenizer,
+    UITextInputTokenizer, UITextInputTraits, UITextLayoutDirection, UITextPosition, UITextRange,
+    UITextSelectionRect, UITextStorageDirection, UITouch, UITouchType, UIView,
 };
 
+use super::pointer::{CursorInteraction, PointerCursor};
+use super::surface_view::gesture_phase;
+use super::text_input::{
+    Autocapitalization, Autocorrection, KeyboardType, ReturnKey, TextInputClient,
+    TextInputNotifier, next_grapheme, previous_grapheme,
+};
 use crate::callback::guarded;
-use waterui_contract::contract_violation;
-
-use crate::geometry::Rect;
+use crate::geometry::{EdgeInsets, Rect};
 use crate::input::{
-    GesturePhase, PointerButton, ScrollPhase, ScrollUnit, SurfaceEvent, click_count,
-    is_paste_shortcut,
+    GesturePhase, Key, NamedKey, PointerButtons, ScrollPhase, ScrollUnit, SurfaceEvent, TouchKind,
+    TouchPhase, click_count, is_paste_shortcut,
 };
 use crate::keys;
 
 /// Delivers one surface event to the content.
 type EventHandler = Rc<dyn Fn(SurfaceEvent)>;
 
-/// The content's text caret, in logical surface-local points, if it has one.
-type CaretProvider = Rc<dyn Fn() -> Option<Rect>>;
+/// Receives the view's new safe-area insets.
+type SafeAreaHandler = Rc<dyn Fn(EdgeInsets)>;
 
 /// The ivars of an [`InputView`].
 #[derive(Default)]
 pub struct InputViewIvars {
     event_handler: RefCell<Option<EventHandler>>,
-    caret_provider: RefCell<Option<CaretProvider>>,
-    /// The pre-edit text the input method is currently composing, if any.
-    marked_text: RefCell<String>,
-    /// The selection the input method last reported, in UTF-16 units.
-    marked_selection: std::cell::Cell<usize>,
-    /// The target the scroll recognizers talk to — the view owns it.
-    scroll_target: RefCell<Option<Retained<ScrollTarget>>>,
-    /// The indirect-scroll recognizers — continuous (trackpad) and
-    /// discrete (wheel) so each callback knows its gesture's source and
-    /// completion behavior. Both report logical points.
-    scroll_recognizers: RefCell<Vec<Retained<UIGestureRecognizer>>>,
+    /// The document `UITextInput` edits; `None` is an empty, non-editing
+    /// document.
+    client: RefCell<Option<Rc<dyn TextInputClient>>>,
+    /// The input method's change delegate. `UIKit` declares it `weak`.
+    input_delegate: RefCell<Option<Weak<ProtocolObject<dyn UITextInputDelegate>>>>,
+    layout_handler: RefCell<Option<Rc<dyn Fn()>>>,
+    safe_area_handler: RefCell<Option<SafeAreaHandler>>,
+    /// The target the pointer recognizers talk to — the view owns it.
+    pointer_target: RefCell<Option<Retained<PointerTarget>>>,
+    /// The pointer recognizers: the indirect-scroll pair — continuous
+    /// (trackpad) and discrete (wheel) so each callback knows its gesture's
+    /// source and completion behavior, both in logical points — plus hover
+    /// and the trackpad pinch and rotation.
+    pointer_recognizers: RefCell<Vec<Retained<UIGestureRecognizer>>>,
+    /// The interaction that shows the content's cursor.
+    cursor: RefCell<Option<CursorInteraction>>,
+    /// The empty input view answered while no editor is focused, created on
+    /// first use.
+    silent_input: RefCell<Option<Retained<UIView>>>,
     /// The physical key of a Command-V press `UIKit` delivers as `paste:`,
     /// until its release goes by.
     paste_shortcut_key: std::cell::Cell<Option<keyboard_types::Code>>,
@@ -73,8 +90,7 @@ impl fmt::Debug for InputViewIvars {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("InputViewIvars")
             .field("event_handler", &self.event_handler.borrow().is_some())
-            .field("caret_provider", &self.caret_provider.borrow().is_some())
-            .field("marked_text", &self.marked_text)
+            .field("client", &self.client.borrow().is_some())
             .finish_non_exhaustive()
     }
 }
@@ -93,7 +109,7 @@ define_class!(
     #[thread_kind = MainThreadOnly]
     #[ivars = TextPositionIvars]
     #[derive(Debug)]
-    /// A position in the pre-edit buffer, counted in UTF-16 code units.
+    /// A position in the client's document, counted in UTF-16 code units.
     pub struct TextPosition;
 
     // SAFETY: `NSObjectProtocol` asks nothing of a `UITextPosition`
@@ -102,7 +118,7 @@ define_class!(
 );
 
 impl TextPosition {
-    /// A text position at `offset` UTF-16 code units into the buffer.
+    /// A text position at `offset` UTF-16 code units into the document.
     #[must_use]
     pub fn new(mtm: MainThreadMarker, offset: usize) -> Retained<Self> {
         let ivars = TextPositionIvars::default();
@@ -112,7 +128,7 @@ impl TextPosition {
         unsafe { msg_send![super(this), init] }
     }
 
-    /// The offset this position counts from the buffer's start.
+    /// The offset this position counts from the document's start.
     #[must_use]
     pub fn offset(&self) -> usize {
         self.ivars().offset.get()
@@ -134,7 +150,7 @@ define_class!(
     #[thread_kind = MainThreadOnly]
     #[ivars = TextRangeIvars]
     #[derive(Debug)]
-    /// A range of the pre-edit buffer, counted in UTF-16 code units.
+    /// A range of the client's document, counted in UTF-16 code units.
     pub struct TextRange;
 
     // SAFETY: `NSObjectProtocol` asks nothing of a `UITextRange` subclass.
@@ -175,24 +191,97 @@ impl TextRange {
         unsafe { msg_send![super(this), init] }
     }
 
-    /// The buffer offsets this range covers.
+    /// The document offsets this range covers.
     #[must_use]
     pub fn offsets(&self) -> (usize, usize) {
         (self.ivars().start.get(), self.ivars().end.get())
     }
 }
 
-/// The ivars of a [`ScrollTarget`].
+/// The ivars of a [`SelectionRect`].
+#[derive(Debug)]
+pub struct SelectionRectIvars {
+    rect: objc2_core_foundation::CGRect,
+    contains_start: bool,
+    contains_end: bool,
+}
+
+define_class!(
+    // SAFETY: `UITextSelectionRect` is an abstract base whose geometry
+    // properties the subclass supplies from its ivars.
+    #[unsafe(super(UITextSelectionRect))]
+    #[name = "CocoaUiTextSelectionRect"]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = SelectionRectIvars]
+    #[derive(Debug)]
+    /// One line's rectangle of a selection.
+    pub struct SelectionRect;
+
+    // SAFETY: `NSObjectProtocol` asks nothing of a `UITextSelectionRect`
+    // subclass.
+    unsafe impl NSObjectProtocol for SelectionRect {}
+
+    impl SelectionRect {
+        // SAFETY: plain state read.
+        #[unsafe(method(rect))]
+        fn rect_override(&self) -> objc2_core_foundation::CGRect {
+            self.ivars().rect
+        }
+
+        // SAFETY: plain state read; the surface owns its writing direction.
+        #[unsafe(method(writingDirection))]
+        fn writing_direction_override(&self) -> objc2_ui_kit::NSWritingDirection {
+            objc2_ui_kit::NSWritingDirection::Natural
+        }
+
+        // SAFETY: plain state read.
+        #[unsafe(method(containsStart))]
+        fn contains_start_override(&self) -> bool {
+            self.ivars().contains_start
+        }
+
+        // SAFETY: plain state read.
+        #[unsafe(method(containsEnd))]
+        fn contains_end_override(&self) -> bool {
+            self.ivars().contains_end
+        }
+
+        // SAFETY: plain state read; selection rects are horizontal lines.
+        #[unsafe(method(isVertical))]
+        fn is_vertical_override(&self) -> bool {
+            false
+        }
+    }
+);
+
+impl SelectionRect {
+    fn new(
+        mtm: MainThreadMarker,
+        rect: Rect,
+        contains_start: bool,
+        contains_end: bool,
+    ) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(SelectionRectIvars {
+            rect: cg_rect(rect),
+            contains_start,
+            contains_end,
+        });
+        // SAFETY: `init` is `UITextSelectionRect`'s initializer.
+        unsafe { msg_send![super(this), init] }
+    }
+}
+
+/// The ivars of a [`PointerTarget`].
 #[derive(Default)]
-struct ScrollTargetIvars {
-    /// The view the scroll recognizers forward to — weak, since the view
+struct PointerTargetIvars {
+    /// The view the pointer recognizers forward to — weak, since the view
     /// owns both the recognizers and the target.
     view: RefCell<Option<Weak<InputView>>>,
 }
 
-impl fmt::Debug for ScrollTargetIvars {
+impl fmt::Debug for PointerTargetIvars {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ScrollTargetIvars").finish_non_exhaustive()
+        f.debug_struct("PointerTargetIvars").finish_non_exhaustive()
     }
 }
 
@@ -200,29 +289,49 @@ define_class!(
     // SAFETY: `NSObject` has no subclassing requirements; the class holds
     // a weak view reference and does not implement `Drop`.
     #[unsafe(super(NSObject))]
-    #[name = "CocoaUiInputScrollTarget"]
+    #[name = "CocoaUiInputPointerTarget"]
     #[thread_kind = MainThreadOnly]
-    #[ivars = ScrollTargetIvars]
+    #[ivars = PointerTargetIvars]
     #[derive(Debug)]
-    /// Receives the indirect-scroll recognizers' actions for an
-    /// [`InputView`]. `UIKit` delivers trackpad and wheel scrolling to a
-    /// view as `UIPanGestureRecognizer`s whose `allowedScrollTypesMask`
-    /// admits the scroll types — one recognizer per type, so each
-    /// callback knows its gesture's source and completion behavior. Both
-    /// report logical points, never a mask-selected unit.
-    struct ScrollTarget;
+    /// Receives the pointer recognizers' actions for an [`InputView`].
+    /// `UIKit` delivers trackpad and wheel scrolling to a view as
+    /// `UIPanGestureRecognizer`s whose `allowedScrollTypesMask` admits the
+    /// scroll types — one recognizer per type, so each callback knows its
+    /// gesture's source and completion behavior. Both report logical
+    /// points, never a mask-selected unit. Hover, and the trackpad's pinch
+    /// and rotation, arrive through their own recognizers.
+    struct PointerTarget;
 
     // SAFETY: `NSObjectProtocol` asks nothing of an `NSObject` subclass.
-    unsafe impl NSObjectProtocol for ScrollTarget {}
+    unsafe impl NSObjectProtocol for PointerTarget {}
 
-    impl ScrollTarget {
+    // SAFETY: `UIGestureRecognizerDelegate`'s method is implemented with its
+    // declared signature.
+    unsafe impl UIGestureRecognizerDelegate for PointerTarget {
+        // SAFETY: both recognizers are UIKit's.
+        #[unsafe(method(gestureRecognizer:shouldRecognizeSimultaneouslyWithGestureRecognizer:))]
+        fn gesture_recognizer_should_recognize_simultaneously_with_gesture_recognizer(
+            &self,
+            _gesture_recognizer: &UIGestureRecognizer,
+            _other_gesture_recognizer: &UIGestureRecognizer,
+        ) -> bool {
+            // A trackpad pinch and rotation are one two-finger motion.
+            true
+        }
+    }
+
+    impl PointerTarget {
         // SAFETY: `scrollContinuous:` is the `UIGestureRecognizer` action
         // signature.
         #[unsafe(method(scrollContinuous:))]
         fn scroll_continuous(&self, gesture: &UIPanGestureRecognizer) {
-            guarded("CocoaUiInputScrollTarget scrollContinuous:", || {
-                if let Some(view) = self.ivars().view.borrow().as_ref().and_then(Weak::load) {
-                    view.handle_scroll(gesture, ScrollPhase::Contact(contact_phase(gesture.state())));
+            guarded("CocoaUiInputPointerTarget scrollContinuous:", || {
+                if let Some(view) = self.ivars().view.borrow().as_ref().and_then(Weak::load)
+                    && let Some(phase) = gesture_phase(gesture.state())
+                {
+                    // `UIKit` reports no momentum phase: the receiver owns
+                    // the glide after the fingers lift.
+                    view.handle_scroll(gesture, ScrollPhase::Contact(phase));
                 }
             });
         }
@@ -231,10 +340,44 @@ define_class!(
         // signature.
         #[unsafe(method(scrollDiscrete:))]
         fn scroll_discrete(&self, gesture: &UIPanGestureRecognizer) {
-            guarded("CocoaUiInputScrollTarget scrollDiscrete:", || {
+            guarded("CocoaUiInputPointerTarget scrollDiscrete:", || {
                 if let Some(view) = self.ivars().view.borrow().as_ref().and_then(Weak::load) {
                     // A wheel notch is a complete scroll on its own.
                     view.handle_scroll(gesture, ScrollPhase::Discrete);
+                }
+            });
+        }
+
+        // SAFETY: `hover:` is the `UIGestureRecognizer` action signature.
+        #[unsafe(method(hover:))]
+        fn hover(&self, gesture: &UIHoverGestureRecognizer) {
+            guarded("CocoaUiInputPointerTarget hover:", || {
+                if let Some(view) = self.ivars().view.borrow().as_ref().and_then(Weak::load) {
+                    view.handle_hover(gesture);
+                }
+            });
+        }
+
+        // SAFETY: `pinch:` is the `UIGestureRecognizer` action signature.
+        #[unsafe(method(pinch:))]
+        fn pinch(&self, gesture: &UIPinchGestureRecognizer) {
+            guarded("CocoaUiInputPointerTarget pinch:", || {
+                if let Some(view) = self.ivars().view.borrow().as_ref().and_then(Weak::load)
+                    && let Some(phase) = gesture_phase(gesture.state())
+                {
+                    view.handle_magnification(gesture, phase);
+                }
+            });
+        }
+
+        // SAFETY: `rotate:` is the `UIGestureRecognizer` action signature.
+        #[unsafe(method(rotate:))]
+        fn rotate(&self, gesture: &UIRotationGestureRecognizer) {
+            guarded("CocoaUiInputPointerTarget rotate:", || {
+                if let Some(view) = self.ivars().view.borrow().as_ref().and_then(Weak::load)
+                    && let Some(phase) = gesture_phase(gesture.state())
+                {
+                    view.handle_rotation(gesture, phase);
                 }
             });
         }
@@ -257,32 +400,39 @@ define_class!(
     // SAFETY: `NSObjectProtocol` asks nothing of a `UIView` subclass.
     unsafe impl NSObjectProtocol for InputView {}
 
-    // SAFETY: `UITextInputTraits` carries only optional selectors.
+    // SAFETY: `UITextInputTraits` carries only optional selectors; the
+    // ones this view answers are implemented in the `InputView` block
+    // below with the protocol's declared signatures.
     unsafe impl UITextInputTraits for InputView {}
 
     // SAFETY: `UIKeyInput`'s requirements are implemented with their
     // declared signatures.
     unsafe impl UIKeyInput for InputView {
-        // SAFETY: plain state read; the pre-edit buffer is the only text the
-        // host knows.
+        // SAFETY: plain state read against the client.
         #[unsafe(method(hasText))]
         fn has_text(&self) -> bool {
-            self.has_marked_text()
+            self.client()
+                .is_some_and(|client| client.is_editing() && !client.is_empty())
         }
 
         // SAFETY: `text` is the string UIKit delivers.
         #[unsafe(method(insertText:))]
         fn insert_text(&self, text: &NSString) {
             guarded("InputView insertText:", || {
-                let was_composing = self.has_marked_text();
-                self.clear_marked_text();
-                // Text that ends a composition is that session's commit;
-                // text typed outside one is a plain insertion.
-                self.emit(if was_composing {
-                    SurfaceEvent::CompositionCommit(text.to_string())
-                } else {
-                    SurfaceEvent::TextInput(text.to_string())
-                });
+                let Some(client) = self.editing_client() else {
+                    return;
+                };
+                let text = text.to_string();
+                // The return key arrives as a newline; what it means —
+                // a line break or a submit — is the editor's call.
+                if text == "\n" {
+                    client.perform_return();
+                    return;
+                }
+                let range = client
+                    .marked_range()
+                    .unwrap_or_else(|| client.selection());
+                client.replace(range, &text);
             });
         }
 
@@ -290,75 +440,59 @@ define_class!(
         #[unsafe(method(deleteBackward))]
         fn delete_backward(&self) {
             guarded("InputView deleteBackward", || {
-                // The software keyboard's delete key is a key press, not an
-                // edit the host can perform: the surface owns the document.
-                for pressed in [true, false] {
-                    self.emit(SurfaceEvent::Key {
-                        pressed,
-                        key: keyboard_types::Key::Named(keyboard_types::NamedKey::Backspace),
-                        code: keyboard_types::Code::Backspace,
-                        modifiers: keyboard_types::Modifiers::empty(),
-                        repeat: false,
-                    });
-                }
+                let Some(client) = self.editing_client() else {
+                    return;
+                };
+                client.delete_backward();
             });
         }
     }
 
     // SAFETY: `UITextInput`'s required methods are implemented with their
-    // declared signatures; the protocol's document model is the pre-edit
-    // buffer alone, which the ivars own.
+    // declared signatures; the document is the installed client's.
     unsafe impl UITextInput for InputView {
         // SAFETY: `range` is one of this class's `TextRange`s — UIKit
         // passes back only ranges this view handed it.
         #[unsafe(method_id(textInRange:))]
         fn text_in_range(&self, range: &UITextRange) -> Option<Retained<NSString>> {
-            downcast_range(range).and_then(|(start, end)| {
-                let text = self.ivars().marked_text.borrow();
-                text.get(utf16_byte_offset(&text, start)..utf16_byte_offset(&text, end))
-                    .map(NSString::from_str)
-            })
+            self.text_in(range)
         }
 
         // SAFETY: `range` is one of this class's `TextRange`s.
         #[unsafe(method(replaceRange:withText:))]
         fn replace_range_with_text(&self, range: &UITextRange, text: &NSString) {
-            let _ = range;
-            // The host holds no document to edit; a replacement is the input
-            // method rewriting its own pre-edit, which arrives as
-            // `setMarkedText:` instead.
-            self.insert_marked_text(text);
+            guarded("InputView replaceRange:withText:", || {
+                let (Some(client), Some(range)) = (self.client(), downcast_range(range)) else {
+                    return;
+                };
+                client.replace(clamped(range, client.len()), &text.to_string());
+            });
         }
 
         // SAFETY: plain state read.
         #[unsafe(method_id(selectedTextRange))]
         fn selected_text_range(&self) -> Option<Retained<UITextRange>> {
-            let selection = self.ivars().marked_selection.get();
-            // SAFETY: `TextRange::new` runs on the main thread.
-            Some(
-                TextRange::new(self.mtm(), selection, selection).into_super(),
-            )
+            let selection = self.client().map_or(0..0, |client| client.selection());
+            Some(self.range(selection))
         }
 
         // SAFETY: `selected_text_range` is one of this class's `TextRange`s.
         #[unsafe(method(setSelectedTextRange:))]
         fn set_selected_text_range(&self, selected_text_range: Option<&UITextRange>) {
-            let Some((start, _)) = selected_text_range.and_then(downcast_range) else {
-                return;
-            };
-            self.ivars().marked_selection.set(start);
+            guarded("InputView setSelectedTextRange:", || {
+                let (Some(client), Some(range)) =
+                    (self.client(), selected_text_range.and_then(downcast_range))
+                else {
+                    return;
+                };
+                client.set_selection(clamped(range, client.len()));
+            });
         }
 
         // SAFETY: plain state read.
         #[unsafe(method_id(markedTextRange))]
         fn marked_text_range(&self) -> Option<Retained<UITextRange>> {
-            if self.has_marked_text() {
-                let length = utf16_len(&self.ivars().marked_text.borrow());
-                // SAFETY: `TextRange::new` runs on the main thread.
-                Some(TextRange::new(self.mtm(), 0, length).into_super())
-            } else {
-                None
-            }
+            self.marked_text_range_value()
         }
 
         // SAFETY: plain state read.
@@ -367,8 +501,8 @@ define_class!(
             None
         }
 
-        // SAFETY: `style` is whatever UIKit supplied; the host ignores
-        // styling.
+        // SAFETY: `style` is whatever UIKit supplied; the content draws its
+        // own marked-text styling.
         #[unsafe(method(setMarkedTextStyle:))]
         fn set_marked_text_style(
             &self,
@@ -385,53 +519,43 @@ define_class!(
             selected_range: NSRange,
         ) {
             guarded("InputView setMarkedText:", || {
-                let text = marked_text.map_or_else(String::new, std::string::ToString::to_string);
-                let was_composing = self.has_marked_text();
+                let Some(client) = self.editing_client() else {
+                    return;
+                };
+                let text = marked_text.map_or_else(String::new, ToString::to_string);
                 if text.is_empty() {
-                    self.clear_marked_text();
-                    if was_composing {
-                        self.emit(SurfaceEvent::CompositionCancel);
+                    // An empty composition abandons it.
+                    if let Some(marked) = client.marked_range() {
+                        client.replace(marked, "");
                     }
                     return;
                 }
-                if !was_composing {
-                    self.emit(SurfaceEvent::CompositionStart);
-                }
-                let selection =
-                    selected_range.location.min(utf16_len(&text));
-                self.ivars().marked_text.replace(text.clone());
-                self.ivars().marked_selection.set(selection);
-                self.emit(SurfaceEvent::CompositionUpdate {
-                    caret: composition_caret(&text, selection),
-                    text,
-                });
+                let length = NSString::from_str(&text).length();
+                let start = selected_range.location.min(length);
+                let end = selected_range
+                    .location
+                    .saturating_add(selected_range.length)
+                    .min(length);
+                client.set_marked_text(&text, start..end);
             });
         }
 
         // SAFETY: plain call.
         #[unsafe(method(unmarkText))]
         fn unmark_text(&self) {
-            guarded("InputView unmarkText", || {
-                if !self.has_marked_text() {
-                    return;
-                }
-                let text = self.ivars().marked_text.borrow().clone();
-                self.clear_marked_text();
-                self.emit(SurfaceEvent::CompositionCommit(text));
-            });
+            guarded("InputView unmarkText", || self.unmark_document());
         }
 
         // SAFETY: `TextPosition::new` runs on the main thread.
         #[unsafe(method_id(beginningOfDocument))]
         fn beginning_of_document(&self) -> Retained<UITextPosition> {
-            TextPosition::new(self.mtm(), 0).into_super()
+            self.position(0)
         }
 
         // SAFETY: `TextPosition::new` runs on the main thread.
         #[unsafe(method_id(endOfDocument))]
         fn end_of_document(&self) -> Retained<UITextPosition> {
-            let length = utf16_len(&self.ivars().marked_text.borrow());
-            TextPosition::new(self.mtm(), length).into_super()
+            self.position(self.document_len())
         }
 
         // SAFETY: both positions are this class's `TextPosition`s.
@@ -442,9 +566,7 @@ define_class!(
             to_position: &UITextPosition,
         ) -> Option<Retained<UITextRange>> {
             match (downcast_position(from_position), downcast_position(to_position)) {
-                (Some(from), Some(to)) => Some(
-                    TextRange::new(self.mtm(), from.min(to), from.max(to)).into_super(),
-                ),
+                (Some(from), Some(to)) => Some(self.range(from.min(to)..from.max(to))),
                 _ => None,
             }
         }
@@ -467,13 +589,7 @@ define_class!(
             direction: UITextLayoutDirection,
             offset: isize,
         ) -> Option<Retained<UITextPosition>> {
-            let signed = if direction == UITextLayoutDirection::Left
-                || direction == UITextLayoutDirection::Up
-            {
-                -offset
-            } else {
-                offset
-            };
+            let signed = if towards_start(direction) { -offset } else { offset };
             self.offset_position(position, signed)
         }
 
@@ -513,26 +629,29 @@ define_class!(
             to.cast_signed() - from.cast_signed()
         }
 
-        // SAFETY: `input_delegate` is whatever UIKit supplied.
+        // SAFETY: plain state read.
         #[unsafe(method_id(inputDelegate))]
-        fn input_delegate(
+        fn input_delegate_protocol(
             &self,
-        ) -> Option<Retained<objc2::runtime::ProtocolObject<dyn UITextInputDelegate>>> {
-            None
+        ) -> Option<Retained<ProtocolObject<dyn UITextInputDelegate>>> {
+            self.delegate()
         }
 
-        // SAFETY: `input_delegate` is whatever UIKit supplied.
+        // SAFETY: `input_delegate` is whatever UIKit supplied; it is held
+        // weakly, as the property is declared `weak`.
         #[unsafe(method(setInputDelegate:))]
         fn set_input_delegate(
             &self,
-            input_delegate: Option<&objc2::runtime::ProtocolObject<dyn UITextInputDelegate>>,
+            input_delegate: Option<&ProtocolObject<dyn UITextInputDelegate>>,
         ) {
-            let _ = input_delegate;
+            self.ivars()
+                .input_delegate
+                .replace(input_delegate.map(Weak::new));
         }
 
         // SAFETY: `initWithTextInput:` takes the view as its text input.
         #[unsafe(method_id(tokenizer))]
-        fn tokenizer_protocol(&self) -> Retained<objc2::runtime::ProtocolObject<dyn UITextInputTokenizer>> {
+        fn tokenizer_protocol(&self) -> Retained<ProtocolObject<dyn UITextInputTokenizer>> {
             let this: &objc2_ui_kit::UIResponder = self;
             // SAFETY: `initWithTextInput:` wires the tokenizer to this input.
             let tokenizer = unsafe {
@@ -543,7 +662,7 @@ define_class!(
             };
             // SAFETY: `UITextInputStringTokenizer` implements
             // `UITextInputTokenizer`.
-            objc2::runtime::ProtocolObject::<dyn UITextInputTokenizer>::from_retained(tokenizer)
+            ProtocolObject::<dyn UITextInputTokenizer>::from_retained(tokenizer)
         }
 
         // SAFETY: `range` is this class's `TextRange`.
@@ -554,11 +673,7 @@ define_class!(
             direction: UITextLayoutDirection,
         ) -> Option<Retained<UITextPosition>> {
             downcast_range(range).map(|(start, end)| {
-                let towards_start = direction == UITextLayoutDirection::Left
-                    || direction == UITextLayoutDirection::Up;
-                // SAFETY: `TextPosition::new` runs on the main thread.
-                TextPosition::new(self.mtm(), if towards_start { start } else { end })
-                    .into_super()
+                self.position(if towards_start(direction) { start } else { end })
             })
         }
 
@@ -569,23 +684,7 @@ define_class!(
             position: &UITextPosition,
             direction: UITextLayoutDirection,
         ) -> Option<Retained<UITextRange>> {
-            downcast_position(position).and_then(|offset| {
-                let towards_start = direction == UITextLayoutDirection::Left
-                    || direction == UITextLayoutDirection::Up;
-                let other = if towards_start {
-                    offset.checked_sub(1)?
-                } else {
-                    offset + 1
-                };
-                if other > utf16_len(&self.ivars().marked_text.borrow()) {
-                    None
-                } else {
-                    Some(
-                        TextRange::new(self.mtm(), offset.min(other), offset.max(other))
-                            .into_super(),
-                    )
-                }
-            })
+            self.extended_range(position, direction)
         }
 
         // SAFETY: plain query; the surface lays out its own text and owns
@@ -612,31 +711,55 @@ define_class!(
             let _ = (writing_direction, range);
         }
 
-        // SAFETY: `range` is this class's `TextRange`; the caret provider
-        // answers in surface-local points, already in this view's coordinate
-        // system.
+        // SAFETY: `range` is this class's `TextRange`; the client answers
+        // in this view's own coordinate system.
         #[unsafe(method(firstRectForRange:))]
         fn first_rect_for_range(&self, range: &UITextRange) -> objc2_core_foundation::CGRect {
-            let _ = range;
-            self.caret_rect()
+            guarded("InputView firstRectForRange:", || {
+                match (self.client(), downcast_range(range)) {
+                    (Some(client), Some(range)) => {
+                        cg_rect(client.first_rect(clamped(range, client.len())))
+                    }
+                    _ => self.bounds(),
+                }
+            })
         }
 
         // SAFETY: `position` is this class's `TextPosition`.
         #[unsafe(method(caretRectForPosition:))]
         fn caret_rect_for_position(&self, position: &UITextPosition) -> objc2_core_foundation::CGRect {
-            let _ = position;
-            self.caret_rect()
+            guarded("InputView caretRectForPosition:", || {
+                match (self.client(), downcast_position(position)) {
+                    (Some(client), Some(offset)) => {
+                        cg_rect(client.caret_rect(offset.min(client.len())))
+                    }
+                    _ => self.bounds(),
+                }
+            })
         }
 
-        // SAFETY: `range` is this class's `TextRange`; the host tracks no
-        // selection rects.
+        // SAFETY: `range` is this class's `TextRange`.
         #[unsafe(method_id(selectionRectsForRange:))]
         fn selection_rects_for_range(
             &self,
             range: &UITextRange,
         ) -> Retained<NSArray<UITextSelectionRect>> {
-            let _ = range;
-            NSArray::from_slice(&[])
+            guarded("InputView selectionRectsForRange:", || {
+                let (Some(client), Some(range)) = (self.client(), downcast_range(range)) else {
+                    return NSArray::from_slice(&[]);
+                };
+                let rects = client.selection_rects(clamped(range, client.len()));
+                let last = rects.len().saturating_sub(1);
+                let rects: Vec<Retained<UITextSelectionRect>> = rects
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, rect)| {
+                        SelectionRect::new(self.mtm(), rect, index == 0, index == last)
+                            .into_super()
+                    })
+                    .collect();
+                NSArray::from_retained_slice(&rects)
+            })
         }
 
         // SAFETY: `point` is in this view's coordinates.
@@ -655,26 +778,122 @@ define_class!(
             point: objc2_core_foundation::CGPoint,
             range: &UITextRange,
         ) -> Option<Retained<UITextPosition>> {
-            let _ = range;
-            Some(self.closest_position_for_point(point))
+            self.closest_position_within(point, range)
         }
 
-        // SAFETY: `point` comes from UIKit; no hit-testable document exists.
+        // SAFETY: `point` comes from UIKit.
         #[unsafe(method_id(characterRangeAtPoint:))]
         fn character_range_at_point(
             &self,
             point: objc2_core_foundation::CGPoint,
         ) -> Option<Retained<UITextRange>> {
-            let _ = point;
-            None
+            self.character_range_near(point)
         }
     }
 
     impl InputView {
+        // SAFETY: plain state read; the keyboard layout the client asks for.
+        #[unsafe(method(keyboardType))]
+        fn keyboard_type_override(&self) -> UIKeyboardType {
+            match self.traits().keyboard_type {
+                KeyboardType::Default => UIKeyboardType::Default,
+                KeyboardType::Ascii => UIKeyboardType::ASCIICapable,
+                KeyboardType::NumbersAndPunctuation => UIKeyboardType::NumbersAndPunctuation,
+                KeyboardType::Url => UIKeyboardType::URL,
+                KeyboardType::NumberPad => UIKeyboardType::NumberPad,
+                KeyboardType::PhonePad => UIKeyboardType::PhonePad,
+                KeyboardType::NamePhonePad => UIKeyboardType::NamePhonePad,
+                KeyboardType::EmailAddress => UIKeyboardType::EmailAddress,
+                KeyboardType::DecimalPad => UIKeyboardType::DecimalPad,
+                KeyboardType::Twitter => UIKeyboardType::Twitter,
+                KeyboardType::WebSearch => UIKeyboardType::WebSearch,
+                KeyboardType::AsciiNumberPad => UIKeyboardType::ASCIICapableNumberPad,
+            }
+        }
+
+        // SAFETY: plain state read.
+        #[unsafe(method(returnKeyType))]
+        fn return_key_type_override(&self) -> UIReturnKeyType {
+            match self.traits().return_key {
+                ReturnKey::Default => UIReturnKeyType::Default,
+                ReturnKey::Go => UIReturnKeyType::Go,
+                ReturnKey::Google => UIReturnKeyType::Google,
+                ReturnKey::Join => UIReturnKeyType::Join,
+                ReturnKey::Next => UIReturnKeyType::Next,
+                ReturnKey::Route => UIReturnKeyType::Route,
+                ReturnKey::Search => UIReturnKeyType::Search,
+                ReturnKey::Send => UIReturnKeyType::Send,
+                ReturnKey::Yahoo => UIReturnKeyType::Yahoo,
+                ReturnKey::Done => UIReturnKeyType::Done,
+                ReturnKey::EmergencyCall => UIReturnKeyType::EmergencyCall,
+                ReturnKey::Continue => UIReturnKeyType::Continue,
+            }
+        }
+
+        // SAFETY: plain state read.
+        #[unsafe(method(isSecureTextEntry))]
+        fn is_secure_text_entry_override(&self) -> bool {
+            self.traits().secure
+        }
+
+        // SAFETY: plain state read.
+        #[unsafe(method(autocorrectionType))]
+        fn autocorrection_type_override(&self) -> UITextAutocorrectionType {
+            match self.traits().autocorrection {
+                Autocorrection::Default => UITextAutocorrectionType::Default,
+                Autocorrection::Disabled => UITextAutocorrectionType::No,
+                Autocorrection::Enabled => UITextAutocorrectionType::Yes,
+            }
+        }
+
+        // SAFETY: plain state read.
+        #[unsafe(method(autocapitalizationType))]
+        fn autocapitalization_type_override(&self) -> UITextAutocapitalizationType {
+            match self.traits().autocapitalization {
+                Autocapitalization::None => UITextAutocapitalizationType::None,
+                Autocapitalization::Words => UITextAutocapitalizationType::Words,
+                Autocapitalization::Sentences => UITextAutocapitalizationType::Sentences,
+                Autocapitalization::AllCharacters => UITextAutocapitalizationType::AllCharacters,
+            }
+        }
+
+        // SAFETY: plain state read; `nil` is a valid content type.
+        #[unsafe(method_id(textContentType))]
+        fn text_content_type_override(&self) -> Option<Retained<NSString>> {
+            self.traits()
+                .content_type
+                .map(|content_type| Retained::from(content_type.native()))
+        }
+
         // SAFETY: see the module safety note.
         #[unsafe(method(canBecomeFirstResponder))]
         fn can_become_first_responder_override(&self) -> bool {
             true
+        }
+
+        // SAFETY: plain state read; `nil` asks for the system keyboard.
+        #[unsafe(method_id(inputView))]
+        fn input_view_override(&self) -> Option<Retained<UIView>> {
+            // The view is the first responder for hardware keys and touch
+            // whenever it is on screen, but the soft keyboard belongs to a
+            // focused editor: with none, the input view is an empty one, so
+            // the keyboard has nothing to show. `reset` reloads the input
+            // views when the focused document changes.
+            if self.editing_client().is_some() {
+                None
+            } else {
+                let mut silent = self.ivars().silent_input.borrow_mut();
+                Some(
+                    silent
+                        .get_or_insert_with(|| {
+                            UIView::initWithFrame(
+                                UIView::alloc(self.mtm()),
+                                objc2_core_foundation::CGRect::ZERO,
+                            )
+                        })
+                        .clone(),
+                )
+            }
         }
 
         // SAFETY: see the module safety note.
@@ -728,98 +947,127 @@ define_class!(
         }
 
         // SAFETY: see the module safety note.
+        #[unsafe(method(layoutSubviews))]
+        fn layout_subviews_override(&self) {
+            guarded("InputView layoutSubviews", || {
+                // SAFETY: `super(layoutSubviews)` forwards to UIView.
+                let _: () = unsafe { msg_send![super(self), layoutSubviews] };
+                let handler = self.ivars().layout_handler.borrow().clone();
+                if let Some(handler) = handler {
+                    handler();
+                }
+            });
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(safeAreaInsetsDidChange))]
+        fn safe_area_insets_did_change_override(&self) {
+            guarded("InputView safeAreaInsetsDidChange", || {
+                // SAFETY: `super(safeAreaInsetsDidChange)` forwards to UIView.
+                let _: () = unsafe { msg_send![super(self), safeAreaInsetsDidChange] };
+                let handler = self.ivars().safe_area_handler.borrow().clone();
+                if let Some(handler) = handler {
+                    handler(self.safe_area_insets());
+                }
+            });
+        }
+
+        // SAFETY: see the module safety note.
         #[unsafe(method(touchesBegan:withEvent:))]
         fn touches_began(&self, touches: &NSSet<UITouch>, event: Option<&UIEvent>) {
-            let _ = event;
-            if !self.isFirstResponder() {
-                self.becomeFirstResponder();
-            }
-            self.send_pointer(touches, None);
-            self.send_pointer(touches, Some(true));
+            guarded("InputView touchesBegan:", || {
+                if !self.isFirstResponder() {
+                    self.becomeFirstResponder();
+                }
+                self.send_touches(touches, event, TouchPhase::Began);
+            });
         }
 
         // SAFETY: see the module safety note.
         #[unsafe(method(touchesMoved:withEvent:))]
         fn touches_moved(&self, touches: &NSSet<UITouch>, event: Option<&UIEvent>) {
-            let _ = event;
-            self.send_pointer(touches, None);
+            guarded("InputView touchesMoved:", || {
+                self.send_touches(touches, event, TouchPhase::Moved);
+            });
         }
 
         // SAFETY: see the module safety note.
         #[unsafe(method(touchesEnded:withEvent:))]
         fn touches_ended(&self, touches: &NSSet<UITouch>, event: Option<&UIEvent>) {
-            let _ = event;
-            self.send_pointer(touches, Some(false));
+            guarded("InputView touchesEnded:", || {
+                self.send_touches(touches, event, TouchPhase::Ended);
+            });
         }
 
         // SAFETY: see the module safety note.
         #[unsafe(method(touchesCancelled:withEvent:))]
         fn touches_cancelled(&self, touches: &NSSet<UITouch>, event: Option<&UIEvent>) {
-            let _ = event;
-            self.send_pointer(touches, Some(false));
+            guarded("InputView touchesCancelled:", || {
+                self.send_touches(touches, event, TouchPhase::Cancelled);
+            });
         }
 
         // SAFETY: see the module safety note.
         #[unsafe(method(pressesBegan:withEvent:))]
         fn presses_began(&self, presses: &NSSet<UIPress>, event: Option<&UIPressesEvent>) {
-            if !self.send_presses(presses, true) {
-                // SAFETY: `super(pressesBegan:withEvent:)` forwards to
-                // UIResponder's default.
-                // SAFETY: see the module safety note.
-                let _: () = unsafe { msg_send![super(self), pressesBegan: presses, withEvent: event] };
-            }
+            guarded("InputView pressesBegan:", || {
+                let forwarded = self.send_presses(presses, PressPhase::Began);
+                if !forwarded.is_empty() {
+                    let forwarded = NSSet::from_retained_slice(&forwarded);
+                    // SAFETY: `super(pressesBegan:withEvent:)` forwards to
+                    // UIResponder's default.
+                    unsafe {
+                        let _: () = msg_send![super(self), pressesBegan: &*forwarded, withEvent: event];
+                    }
+                }
+            });
         }
 
         // SAFETY: see the module safety note.
         #[unsafe(method(pressesEnded:withEvent:))]
         fn presses_ended(&self, presses: &NSSet<UIPress>, event: Option<&UIPressesEvent>) {
-            if !self.send_presses(presses, false) {
-                // SAFETY: see the module safety note.
-                let _: () = unsafe { msg_send![super(self), pressesEnded: presses, withEvent: event] };
-            }
+            guarded("InputView pressesEnded:", || {
+                let forwarded = self.send_presses(presses, PressPhase::Ended);
+                if !forwarded.is_empty() {
+                    let forwarded = NSSet::from_retained_slice(&forwarded);
+                    // SAFETY: see `pressesBegan:withEvent:`.
+                    unsafe {
+                        let _: () = msg_send![super(self), pressesEnded: &*forwarded, withEvent: event];
+                    }
+                }
+            });
         }
 
         // SAFETY: see the module safety note.
         #[unsafe(method(pressesCancelled:withEvent:))]
         fn presses_cancelled(&self, presses: &NSSet<UIPress>, event: Option<&UIPressesEvent>) {
-            if !self.send_presses(presses, false) {
-                // SAFETY: forwards the unhandled cancellation to `UIResponder`.
-                let _: () =
-                    // SAFETY: `pressesCancelled:withEvent:` is a `UIView` responder method.
-                    unsafe { msg_send![super(self), pressesCancelled: presses, withEvent: event] };
-            }
+            guarded("InputView pressesCancelled:", || {
+                let forwarded = self.send_presses(presses, PressPhase::Cancelled);
+                if !forwarded.is_empty() {
+                    let forwarded = NSSet::from_retained_slice(&forwarded);
+                    // SAFETY: see `pressesBegan:withEvent:`.
+                    unsafe {
+                        let _: () = msg_send![super(self), pressesCancelled: &*forwarded, withEvent: event];
+                    }
+                }
+            });
         }
     }
 );
+
+/// The phase of a hardware-key press batch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PressPhase {
+    Began,
+    Ended,
+    Cancelled,
+}
 
 /// The text on the general pasteboard, if it holds any.
 fn pasteboard_text() -> Option<String> {
     // SAFETY: `string` is a plain pasteboard read on the main thread, made
     // for the paste command the user just issued.
     unsafe { UIPasteboard::generalPasteboard().string() }.map(|text| text.to_string())
-}
-
-/// The gesture phase a continuous indirect-scroll recognizer's state is.
-///
-/// A failed recognizer abandoned the gesture, which is a cancellation.
-///
-/// A recognizer calling its action in the `Possible` state, which `UIKit`
-/// never does, breaks the contract: it is reported and read as a cancellation.
-fn contact_phase(state: UIGestureRecognizerState) -> GesturePhase {
-    match state {
-        UIGestureRecognizerState::Began => GesturePhase::Began,
-        UIGestureRecognizerState::Changed => GesturePhase::Changed,
-        UIGestureRecognizerState::Ended => GesturePhase::Ended,
-        UIGestureRecognizerState::Cancelled | UIGestureRecognizerState::Failed => {
-            GesturePhase::Cancelled
-        }
-        other => {
-            contract_violation!(
-                "UIKit called a scroll recognizer's action in state {other:?}; the gesture is cancelled"
-            );
-            GesturePhase::Cancelled
-        }
-    }
 }
 
 /// A `UITextPosition` subclass's offset, if `position` is one this view
@@ -835,32 +1083,72 @@ fn downcast_range(range: &UITextRange) -> Option<(usize, usize)> {
     range.downcast_ref::<TextRange>().map(TextRange::offsets)
 }
 
-/// The buffer's length in UTF-16 code units.
-fn utf16_len(text: &str) -> usize {
-    text.chars().map(char::len_utf16).sum()
+/// `(start, end)` ordered and clamped into a document of `len` code units.
+fn clamped((start, end): (usize, usize), len: usize) -> Range<usize> {
+    let (start, end) = (start.min(end).min(len), start.max(end).min(len));
+    start..end
 }
 
-/// The byte offset of `utf16_offset` code units into `text`, saturating at
-/// the end.
-fn utf16_byte_offset(text: &str, utf16_offset: usize) -> usize {
-    let mut units = 0usize;
-    let mut byte = 0usize;
-    for ch in text.chars() {
-        if units >= utf16_offset {
-            return byte;
-        }
-        units += ch.len_utf16();
-        byte += ch.len_utf8();
-    }
-    byte
+/// Whether `direction` reads towards the document's start.
+fn towards_start(direction: UITextLayoutDirection) -> bool {
+    direction == UITextLayoutDirection::Left || direction == UITextLayoutDirection::Up
 }
 
-/// The caret's byte offset into the pre-edit text.
-fn composition_caret(text: &str, utf16_offset: usize) -> Option<usize> {
-    if utf16_offset > utf16_len(text) {
-        return None;
+const fn cg_rect(rect: Rect) -> objc2_core_foundation::CGRect {
+    objc2_core_foundation::CGRect::new(
+        objc2_core_foundation::CGPoint::new(rect.origin.x, rect.origin.y),
+        objc2_core_foundation::CGSize::new(rect.size.width, rect.size.height),
+    )
+}
+
+/// Whether the text system, not the content, handles `key` while an editor
+/// is focused: caret movement, deletion and the return key, with or without
+/// modifiers.
+const fn is_text_system_key(key: &Key) -> bool {
+    matches!(
+        key,
+        Key::Named(
+            NamedKey::ArrowLeft
+                | NamedKey::ArrowRight
+                | NamedKey::ArrowUp
+                | NamedKey::ArrowDown
+                | NamedKey::Home
+                | NamedKey::End
+                | NamedKey::PageUp
+                | NamedKey::PageDown
+                | NamedKey::Backspace
+                | NamedKey::Delete
+                | NamedKey::Enter
+        )
+    )
+}
+
+/// The `UIKit` touch kind as the surface vocabulary's.
+///
+/// # Panics
+///
+/// Panics on `UITouchTypeIndirect`, the Apple TV remote, which no
+/// supported platform produces.
+fn touch_kind(touch_type: UITouchType) -> TouchKind {
+    match touch_type {
+        UITouchType::Direct => TouchKind::Direct,
+        UITouchType::Pencil => TouchKind::Pencil,
+        UITouchType::IndirectPointer => TouchKind::IndirectPointer,
+        other => panic!("unsupported touch type {other:?}"),
     }
-    Some(utf16_byte_offset(text, utf16_offset))
+}
+
+/// The held buttons `UIEvent.buttonMask` reports. Buttons past the
+/// secondary have no stable `UIKit` meaning and are not delivered.
+fn pointer_buttons(mask: UIEventButtonMask) -> PointerButtons {
+    let mut buttons = PointerButtons::empty();
+    if mask.contains(UIEventButtonMask::Primary) {
+        buttons |= PointerButtons::PRIMARY;
+    }
+    if mask.contains(UIEventButtonMask::Secondary) {
+        buttons |= PointerButtons::SECONDARY;
+    }
+    buttons
 }
 
 impl InputView {
@@ -884,8 +1172,8 @@ impl InputView {
         // never selects a unit. `maximumNumberOfTouches = 0` keeps a
         // finger drag out of the scroll channel: a touch pan is pointer
         // input, not a scroll.
-        let target: Retained<ScrollTarget> = {
-            let this = ScrollTarget::alloc(mtm).set_ivars(ScrollTargetIvars::default());
+        let target: Retained<PointerTarget> = {
+            let this = PointerTarget::alloc(mtm).set_ivars(PointerTargetIvars::default());
             // SAFETY: `init` is `NSObject`'s designated initializer.
             unsafe { msg_send![super(this), init] }
         };
@@ -914,12 +1202,69 @@ impl InputView {
             discrete.setCancelsTouchesInView(false);
             view.addGestureRecognizer(&discrete);
 
-            view.ivars()
-                .scroll_recognizers
-                .replace(vec![continuous.into_super(), discrete.into_super()]);
+            // Hover covers a pointer and a hovering pencil alike. Pinch and
+            // rotation are the trackpad's only: a pinch of direct touches
+            // is recognized from the touch streams, so it must not also
+            // arrive here.
+            let hover = UIHoverGestureRecognizer::initWithTarget_action(
+                UIHoverGestureRecognizer::alloc(mtm),
+                Some(&*target),
+                Some(sel!(hover:)),
+            );
+            view.addGestureRecognizer(&hover);
+
+            let indirect_pointer = NSArray::from_retained_slice(&[NSNumber::new_isize(
+                UITouchType::IndirectPointer.0,
+            )]);
+            let delegate = ProtocolObject::from_ref(&*target);
+            let pinch = UIPinchGestureRecognizer::initWithTarget_action(
+                UIPinchGestureRecognizer::alloc(mtm),
+                Some(&*target),
+                Some(sel!(pinch:)),
+            );
+            pinch.setAllowedTouchTypes(&indirect_pointer);
+            pinch.setCancelsTouchesInView(false);
+            pinch.setDelegate(Some(delegate));
+            view.addGestureRecognizer(&pinch);
+
+            let rotation = UIRotationGestureRecognizer::initWithTarget_action(
+                UIRotationGestureRecognizer::alloc(mtm),
+                Some(&*target),
+                Some(sel!(rotate:)),
+            );
+            rotation.setAllowedTouchTypes(&indirect_pointer);
+            rotation.setCancelsTouchesInView(false);
+            rotation.setDelegate(Some(delegate));
+            view.addGestureRecognizer(&rotation);
+
+            view.ivars().pointer_recognizers.replace(vec![
+                continuous.into_super(),
+                discrete.into_super(),
+                hover.into_super(),
+                pinch.into_super(),
+                rotation.into_super(),
+            ]);
         }
-        view.ivars().scroll_target.replace(Some(target));
+        view.ivars().pointer_target.replace(Some(target));
+        view.ivars()
+            .cursor
+            .replace(Some(CursorInteraction::install(&view)));
         view
+    }
+
+    /// Shows `cursor` as the pointer over the view.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the view was not built by [`InputView::new`], which
+    /// installs the cursor interaction.
+    pub fn set_pointer_cursor(&self, cursor: PointerCursor) {
+        self.ivars()
+            .cursor
+            .borrow()
+            .as_ref()
+            .expect("InputView installs its cursor interaction on creation")
+            .set(cursor);
     }
 
     /// Installs `handler` as the receiver of every surface event.
@@ -927,14 +1272,190 @@ impl InputView {
         self.ivars().event_handler.replace(Some(Rc::new(handler)));
     }
 
-    /// Installs `provider` as the source of the content's text caret, in
-    /// logical surface-local points.
-    pub fn set_caret_provider(&self, provider: impl Fn() -> Option<Rect> + 'static) {
-        self.ivars().caret_provider.replace(Some(Rc::new(provider)));
+    /// Installs `client` as the document `UITextInput` edits, replacing any
+    /// previous one.
+    pub fn set_text_input_client(&self, client: Rc<dyn TextInputClient>) {
+        self.ivars().client.replace(Some(client));
     }
 
-    fn insert_marked_text(&self, text: &NSString) {
-        self.insert_text(sel!(insertText:), text);
+    /// Removes the installed document; the view then reports an empty,
+    /// non-editing one.
+    pub fn clear_text_input_client(&self) {
+        self.ivars().client.replace(None);
+    }
+
+    /// The handle the content announces its own document changes through.
+    #[must_use]
+    pub fn text_input_notifier(&self) -> TextInputNotifier {
+        TextInputNotifier::new(Weak::new(self))
+    }
+
+    /// Device pixels per point where the view is drawn.
+    ///
+    /// `None` while the view is outside any window scene, where the scale is
+    /// not yet known.
+    #[must_use]
+    pub fn display_scale(&self) -> Option<f64> {
+        // SAFETY: a plain trait-collection read, on the main thread.
+        let scale = unsafe {
+            let view: &UIView = self;
+            objc2_ui_kit::UITraitEnvironment::traitCollection(view).displayScale()
+        };
+        (scale > 0.0).then_some(scale)
+    }
+
+    /// The highest rate, in frames per second, the screen the view is drawn
+    /// on can display; `None` while the view is outside any window scene.
+    #[must_use]
+    pub fn max_frames_per_second(&self) -> Option<u32> {
+        let scene = self.window()?.windowScene()?;
+        u32::try_from(scene.screen().maximumFramesPerSecond()).ok()
+    }
+
+    /// The identity of the screen the view is drawn on; `None` while the view
+    /// is outside any window scene. Two values are equal exactly when the
+    /// screen is the same one, which is all it is good for.
+    #[must_use]
+    pub fn screen_id(&self) -> Option<usize> {
+        let scene = self.window()?.windowScene()?;
+        Some(Retained::as_ptr(&scene.screen()) as usize)
+    }
+
+    /// Installs `handler`, called after every layout pass of the view.
+    pub fn set_layout_handler(&self, handler: impl Fn() + 'static) {
+        self.ivars().layout_handler.replace(Some(Rc::new(handler)));
+    }
+
+    /// Installs `handler`, called with the new insets whenever the view's
+    /// safe area changes — a notch, the home indicator, window chrome, a
+    /// rotation or a resize.
+    pub fn set_safe_area_handler(&self, handler: impl Fn(EdgeInsets) + 'static) {
+        self.ivars()
+            .safe_area_handler
+            .replace(Some(Rc::new(handler)));
+    }
+
+    /// The distances from each edge of the view within which content is
+    /// obscured by bars, the sensor housing or window chrome.
+    #[must_use]
+    pub fn safe_area_insets(&self) -> EdgeInsets {
+        let objc2_ui_kit::UIEdgeInsets {
+            top,
+            left,
+            bottom,
+            right,
+        } = self.safeAreaInsets();
+        EdgeInsets::new(top, left, bottom, right)
+    }
+
+    /// The input method's change delegate, while one is set and alive.
+    pub(crate) fn delegate(&self) -> Option<Retained<ProtocolObject<dyn UITextInputDelegate>>> {
+        self.ivars()
+            .input_delegate
+            .borrow()
+            .as_ref()
+            .and_then(Weak::load)
+    }
+
+    /// Commits the client's marked text, if any.
+    pub(crate) fn unmark_document(&self) {
+        if let Some(client) = self.client()
+            && client.marked_range().is_some()
+        {
+            client.unmark_text();
+        }
+    }
+
+    /// The installed document.
+    fn client(&self) -> Option<Rc<dyn TextInputClient>> {
+        self.ivars().client.borrow().clone()
+    }
+
+    /// The installed document, while an editor is focused.
+    fn editing_client(&self) -> Option<Rc<dyn TextInputClient>> {
+        self.client().filter(|client| client.is_editing())
+    }
+
+    /// The keyboard traits the focused editor asks for; the defaults while
+    /// there is none.
+    fn traits(&self) -> super::text_input::TextInputTraits {
+        self.client()
+            .map_or_default(|client| guarded("InputView traits", || client.traits()))
+    }
+
+    fn text_in(&self, range: &UITextRange) -> Option<Retained<NSString>> {
+        let client = self.client()?;
+        let range = clamped(downcast_range(range)?, client.len());
+        Some(NSString::from_str(&client.text(range)))
+    }
+
+    fn marked_text_range_value(&self) -> Option<Retained<UITextRange>> {
+        self.client()?
+            .marked_range()
+            .map(|marked| self.range(marked))
+    }
+
+    /// The grapheme `position` extends over in `direction`.
+    fn extended_range(
+        &self,
+        position: &UITextPosition,
+        direction: UITextLayoutDirection,
+    ) -> Option<Retained<UITextRange>> {
+        let offset = downcast_position(position)?;
+        let client = self.client()?;
+        let len = client.len();
+        if offset > len {
+            return None;
+        }
+        let extended = if towards_start(direction) {
+            if offset == 0 {
+                return None;
+            }
+            previous_grapheme(&*client, offset)
+        } else {
+            if offset == len {
+                return None;
+            }
+            next_grapheme(&*client, offset)
+        };
+        Some(self.range(extended))
+    }
+
+    fn closest_position_within(
+        &self,
+        point: objc2_core_foundation::CGPoint,
+        range: &UITextRange,
+    ) -> Option<Retained<UITextPosition>> {
+        let (start, end) = downcast_range(range)?;
+        let offset = downcast_position(&self.closest_position_for_point(point))?;
+        Some(self.position(offset.clamp(start.min(end), start.max(end))))
+    }
+
+    fn character_range_near(
+        &self,
+        point: objc2_core_foundation::CGPoint,
+    ) -> Option<Retained<UITextRange>> {
+        let client = self.client()?;
+        let offset = guarded("InputView characterRangeAtPoint:", || {
+            client.closest_offset(kurbo::Point::new(point.x, point.y))
+        })
+        .min(client.len());
+        if offset == client.len() {
+            return Some(self.range(offset..offset));
+        }
+        Some(self.range(next_grapheme(&*client, offset)))
+    }
+
+    fn document_len(&self) -> usize {
+        self.client().map_or(0, |client| client.len())
+    }
+
+    fn position(&self, offset: usize) -> Retained<UITextPosition> {
+        TextPosition::new(self.mtm(), offset).into_super()
+    }
+
+    fn range(&self, range: Range<usize>) -> Retained<UITextRange> {
+        TextRange::new(self.mtm(), range.start, range.end).into_super()
     }
 
     fn offset_position(
@@ -942,21 +1463,21 @@ impl InputView {
         position: &UITextPosition,
         offset: isize,
     ) -> Option<Retained<UITextPosition>> {
-        match downcast_position(position).and_then(|start| start.checked_add_signed(offset)) {
-            Some(moved) if moved <= utf16_len(&self.ivars().marked_text.borrow()) => {
-                Some(TextPosition::new(self.mtm(), moved).into_super())
-            }
-            _ => None,
-        }
+        let moved = downcast_position(position)?.checked_add_signed(offset)?;
+        (moved <= self.document_len()).then(|| self.position(moved))
     }
 
     fn closest_position_for_point(
         &self,
         point: objc2_core_foundation::CGPoint,
     ) -> Retained<UITextPosition> {
-        let _ = point;
-        let selection = self.ivars().marked_selection.get();
-        TextPosition::new(self.mtm(), selection).into_super()
+        let offset = self.client().map_or(0, |client| {
+            guarded("InputView closestPositionToPoint:", || {
+                client.closest_offset(kurbo::Point::new(point.x, point.y))
+            })
+            .min(client.len())
+        });
+        self.position(offset)
     }
 
     fn emit(&self, event: SurfaceEvent) {
@@ -964,32 +1485,6 @@ impl InputView {
         if let Some(handler) = handler {
             handler(event);
         }
-    }
-
-    fn caret_rect(&self) -> objc2_core_foundation::CGRect {
-        self.ivars()
-            .caret_provider
-            .borrow()
-            .as_ref()
-            .and_then(|provider| provider())
-            .map_or_else(
-                || self.bounds(),
-                |rect| {
-                    objc2_core_foundation::CGRect::new(
-                        objc2_core_foundation::CGPoint::new(rect.origin.x, rect.origin.y),
-                        objc2_core_foundation::CGSize::new(rect.size.width, rect.size.height),
-                    )
-                },
-            )
-    }
-
-    fn has_marked_text(&self) -> bool {
-        !self.ivars().marked_text.borrow().is_empty()
-    }
-
-    fn clear_marked_text(&self) {
-        self.ivars().marked_text.borrow_mut().clear();
-        self.ivars().marked_selection.set(0);
     }
 
     /// Sends `gesture` through the indirect-scroll path the recognizer
@@ -1010,10 +1505,10 @@ impl InputView {
         gesture: &UIPanGestureRecognizer,
         source: UIScrollTypeMask,
     ) {
-        let target = self.ivars().scroll_target.borrow();
+        let target = self.ivars().pointer_target.borrow();
         let target = target
             .as_ref()
-            .expect("InputView always owns a scroll target");
+            .expect("InputView always owns a pointer target");
         match source {
             // SAFETY: the ivars own `target`; the action takes one
             // `UIPanGestureRecognizer`.
@@ -1039,7 +1534,8 @@ impl InputView {
     /// masks; the masks select the gesture's source and completion
     /// behavior, never a unit. `phase` says which part of a scroll this
     /// callback is: a wheel notch is complete on its own; a trackpad glide
-    /// follows its recognizer's state.
+    /// follows its recognizer's state, and `UIKit` reports no momentum, so
+    /// the receiver owns the glide after the fingers lift.
     fn handle_scroll(&self, gesture: &UIPanGestureRecognizer, phase: ScrollPhase) {
         let this: &UIView = self;
         let point = gesture.locationInView(Some(this));
@@ -1054,64 +1550,140 @@ impl InputView {
         });
     }
 
-    /// `UIKit`'s first touch as a pointer event: every touch is primary.
-    /// `UITouch.tapCount` is the tap's place in a run of rapid taps, and is
-    /// the same on the touch's release.
-    fn send_pointer(&self, touches: &NSSet<UITouch>, pressed: Option<bool>) {
-        let Some(touch) = touches.into_iter().next() else {
-            return;
+    /// A hover recognizer's report: the position while the pointer or pencil
+    /// hovers, `None` when it leaves.
+    ///
+    /// `UIKit` reports no device for a hover; only a pencil has a height
+    /// above the glass, so a non-zero `zOffset` is the pencil.
+    fn handle_hover(&self, gesture: &UIHoverGestureRecognizer) {
+        let kind = if gesture.zOffset() > 0.0 {
+            TouchKind::Pencil
+        } else {
+            TouchKind::IndirectPointer
         };
-        let this: &UIView = self;
-        let point = touch.locationInView(Some(this));
-        let position = kurbo::Point::new(point.x, point.y);
-        self.emit(
-            pressed.map_or(SurfaceEvent::PointerMove { position }, |pressed| {
-                SurfaceEvent::PointerButton {
-                    pressed,
-                    button: PointerButton::Primary,
-                    position,
-                    click_count: click_count(touch.tapCount()),
-                }
-            }),
-        );
+        let position = match gesture.state() {
+            UIGestureRecognizerState::Began | UIGestureRecognizerState::Changed => {
+                let this: &UIView = self;
+                let point = gesture.locationInView(Some(this));
+                Some(kurbo::Point::new(point.x, point.y))
+            }
+            UIGestureRecognizerState::Ended
+            | UIGestureRecognizerState::Cancelled
+            | UIGestureRecognizerState::Failed => None,
+            _ => return,
+        };
+        self.emit(SurfaceEvent::Hover { position, kind });
     }
 
-    /// A press batch as `Modifiers` + `Key` events, one pair per key;
-    /// whether every press delivered an event.
+    /// A trackpad pinch as the scale change since the last callback:
+    /// `scale` is reset to 1 after each read, so it is `1 + delta`.
+    fn handle_magnification(&self, gesture: &UIPinchGestureRecognizer, phase: GesturePhase) {
+        let this: &UIView = self;
+        let point = gesture.locationInView(Some(this));
+        let delta = gesture.scale() - 1.0;
+        gesture.setScale(1.0);
+        self.emit(SurfaceEvent::Magnification {
+            position: kurbo::Point::new(point.x, point.y),
+            delta,
+            phase,
+        });
+    }
+
+    /// A trackpad rotation as the angle change since the last callback, in
+    /// radians: `rotation` is reset to 0 after each read.
+    fn handle_rotation(&self, gesture: &UIRotationGestureRecognizer, phase: GesturePhase) {
+        let this: &UIView = self;
+        let point = gesture.locationInView(Some(this));
+        let delta = gesture.rotation();
+        gesture.setRotation(0.0);
+        self.emit(SurfaceEvent::Rotation {
+            position: kurbo::Point::new(point.x, point.y),
+            delta,
+            phase,
+        });
+    }
+
+    /// Every touch in `touches` as a [`SurfaceEvent::Touch`] in `phase`.
     ///
-    /// The paste shortcut is the paste command: `UIKit` delivers it as
-    /// `paste:`, so its press and the release that follows are consumed here
-    /// without being key events too.
-    fn send_presses(&self, press_set: &NSSet<UIPress>, pressed: bool) -> bool {
+    /// The phase comes from the `UIResponder` callback, so a cancellation is
+    /// reported as such and never as a release. `event` supplies the held
+    /// buttons of an indirect pointer.
+    fn send_touches(&self, touches: &NSSet<UITouch>, event: Option<&UIEvent>, phase: TouchPhase) {
+        let this: &UIView = self;
+        for touch in touches {
+            let kind = touch_kind(touch.r#type());
+            let point = touch.locationInView(Some(this));
+            let buttons = match (kind, event) {
+                (TouchKind::IndirectPointer, Some(event)) => pointer_buttons(event.buttonMask()),
+                _ => PointerButtons::empty(),
+            };
+            self.emit(SurfaceEvent::Touch {
+                id: Retained::as_ptr(&touch).addr() as u64,
+                phase,
+                position: kurbo::Point::new(point.x, point.y),
+                kind,
+                buttons,
+                tap_count: click_count(touch.tapCount()),
+            });
+        }
+    }
+
+    /// A press batch as `Modifiers` + `Key` events, one pair per key the
+    /// content receives, or one [`SurfaceEvent::KeyboardCancel`] for a
+    /// cancelled batch.
+    ///
+    /// While an editor is focused the text system's keys are left for
+    /// `UIKit`; those presses, and any without a key, are returned to be
+    /// forwarded to `super`.
+    fn send_presses(
+        &self,
+        press_set: &NSSet<UIPress>,
+        phase: PressPhase,
+    ) -> Vec<Retained<UIPress>> {
+        let editing = self.editing_client().is_some();
+        let mut forwarded = Vec::new();
         let mut delivered = false;
-        for press_item in press_set {
-            let Some(key) = press_item.key(self.mtm()) else {
+        for press in press_set {
+            let Some(key) = press.key(self.mtm()) else {
+                forwarded.push(press);
                 continue;
             };
+            let logical = keys::surface_key(&key);
+            if editing && is_text_system_key(&logical) {
+                forwarded.push(press);
+                continue;
+            }
+            delivered = true;
             let modifiers = keys::surface_modifiers(key.modifierFlags());
             let code = keys::surface_code(&key);
+            // The paste shortcut is the paste command: `UIKit` delivers it
+            // as `paste:`, so its press and the release that follows are
+            // consumed here without being key events too.
             let shortcut = &self.ivars().paste_shortcut_key;
-            if pressed {
-                if is_paste_shortcut(modifiers, &keys::surface_key(&key)) {
+            match phase {
+                PressPhase::Began if is_paste_shortcut(modifiers, &logical) => {
                     shortcut.set(Some(code));
-                    delivered = true;
                     continue;
                 }
-            } else if shortcut.get() == Some(code) {
-                shortcut.set(None);
-                delivered = true;
-                continue;
+                PressPhase::Ended | PressPhase::Cancelled if shortcut.get() == Some(code) => {
+                    shortcut.set(None);
+                    continue;
+                }
+                PressPhase::Cancelled => continue,
+                PressPhase::Began | PressPhase::Ended => {}
             }
             self.emit(SurfaceEvent::Modifiers(modifiers));
             self.emit(SurfaceEvent::Key {
-                pressed,
-                key: keys::surface_key(&key),
+                pressed: phase == PressPhase::Began,
+                key: logical,
                 code,
                 modifiers,
                 repeat: false,
             });
-            delivered = true;
         }
-        delivered
+        if delivered && phase == PressPhase::Cancelled {
+            self.emit(SurfaceEvent::KeyboardCancel);
+        }
+        forwarded
     }
 }

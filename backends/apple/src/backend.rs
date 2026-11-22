@@ -10,7 +10,9 @@ use waterui_core::backend::{ErasedPayload, MapSlots};
 use waterui_core::metadata::MetadataKey;
 use waterui_core::{Metadata, NativeView};
 
+use crate::components::frame_rate::realize_frame_rate_metadata;
 use crate::contract::{NativeLeaf, RenderContext};
+use waterui::animation::FrameRateVote;
 
 /// Realizes views into `AppKit`/`UIKit` leaves.
 #[derive(Debug, Clone)]
@@ -1059,13 +1061,13 @@ impl NativeBackend for AppleBackend {
 
     fn frame_rate<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::animation::FrameRateVote, C>,
+        metadata: Metadata<FrameRateVote, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
         mark_reached!("frame_rate");
         let metadata = metadata.map_content(C::into_child);
-        crate::components::frame_rate::realize_frame_rate_metadata(metadata, &self.entry(env))
+        realize_frame_rate_metadata(metadata, &self.entry(env))
     }
 
     fn high_dynamic_range<C: ChildView<Self>>(

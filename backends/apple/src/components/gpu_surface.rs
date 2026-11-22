@@ -19,6 +19,7 @@ use core::cell::{Cell, RefCell};
 use core::fmt;
 use core::num::NonZeroU32;
 
+use cocoa_ui::PlatformView;
 use cocoa_ui::Retained;
 use cocoa_ui::metal_presenter::{DrawableFrame, MetalPresenter};
 use objc2::MainThreadMarker;
@@ -27,6 +28,7 @@ use waterui_core::NativeView;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
 };
+use waterui_frame_rate::{FrameRate, combine};
 use waterui_graphics::backend::cherenkov::Next;
 use waterui_graphics::gpu::{
     Display, ExternalFrameRenderer, ExternalFrameStream, ExternalFrameView, FrameTime, GpuContent,
@@ -37,9 +39,10 @@ use waterui_graphics::input::SurfaceInputEvent;
 use waterui_graphics::offscreen::OffscreenSize;
 
 use crate::contract::NativeLeaf;
-use crate::gpu_runtime::EngineGeneration;
+use crate::frame_rate::{VoteListener, WindowFrameRateVotes};
 #[cfg(all(feature = "native-test", target_os = "macos"))]
 use crate::gpu_runtime::SceneEngine;
+use crate::gpu_runtime::{EngineGeneration, display_rate};
 use crate::presentation_time::PresentationTime;
 use crate::publication_park::PublicationPark;
 
@@ -178,7 +181,7 @@ trait HostedRenderer {
     }
 
     /// The surface's latest combined refresh-rate vote, if available.
-    fn rate_vote(&self) -> Option<waterui_frame_rate::FrameRate> {
+    fn rate_vote(&self) -> Option<FrameRate> {
         None
     }
 }
@@ -208,7 +211,7 @@ trait LayerRenderer {
 
     fn composite(&mut self, frame: &RenderedFrame, target: &wgpu::Texture, display: Display);
 
-    fn rate_vote(&self) -> Option<waterui_frame_rate::FrameRate>;
+    fn rate_vote(&self) -> Option<FrameRate>;
 }
 
 impl LayerRenderer for GpuContentRenderer {
@@ -225,7 +228,7 @@ impl LayerRenderer for GpuContentRenderer {
         Self::composite(self, frame, target, display);
     }
 
-    fn rate_vote(&self) -> Option<waterui_frame_rate::FrameRate> {
+    fn rate_vote(&self) -> Option<FrameRate> {
         Self::rate_vote(self)
     }
 }
@@ -244,7 +247,7 @@ impl LayerRenderer for ExternalFrameRenderer {
         Self::composite(self, frame, target, display);
     }
 
-    fn rate_vote(&self) -> Option<waterui_frame_rate::FrameRate> {
+    fn rate_vote(&self) -> Option<FrameRate> {
         Self::rate_vote(self)
     }
 }
@@ -307,7 +310,7 @@ impl<R: LayerRenderer> HostedRenderer for Layered<R> {
         self.rendered = None;
     }
 
-    fn rate_vote(&self) -> Option<waterui_frame_rate::FrameRate> {
+    fn rate_vote(&self) -> Option<FrameRate> {
         self.layer.rate_vote()
     }
 }
@@ -602,9 +605,9 @@ struct SurfaceState {
     /// for an unarmed surface — its drawables stay framebuffer-only.
     armed: Option<crate::frozen_frame::SharedFrozenFrameSlot>,
     /// Window-scoped `.frame_rate(...)` votes active on the owning window.
-    window_votes: Option<crate::frame_rate::WindowFrameRateVotes>,
+    window_votes: Option<WindowFrameRateVotes>,
     /// Latest refresh-rate vote reported by this surface's content or engine.
-    content_rate: Cell<Option<waterui_frame_rate::FrameRate>>,
+    content_rate: Cell<Option<FrameRate>>,
 }
 
 /// The presentation lifecycle: the drawable-path epoch and the open
@@ -646,7 +649,7 @@ struct Attached {
     /// What the link's next update must answer this epoch.
     demand: Demand,
     /// Subscription keeping the presenter aligned with window `.frame_rate(...)` votes.
-    _vote_listener: Option<crate::frame_rate::VoteListener>,
+    _vote_listener: Option<VoteListener>,
 }
 
 /// The demand bits an attach epoch owns — everything the link's next
@@ -859,9 +862,7 @@ impl SurfaceState {
             armed: env
                 .get::<crate::transition::SnapshotDemand>()
                 .map(|_| Rc::new(crate::frozen_frame::FrozenFrameSlot::new())),
-            window_votes: env
-                .get::<crate::frame_rate::WindowFrameRateVotes>()
-                .cloned(),
+            window_votes: env.get::<WindowFrameRateVotes>().cloned(),
             content_rate: Cell::new(None),
         }
     }
@@ -944,11 +945,9 @@ impl SurfaceState {
                         Next::At { rate, .. } => Some(*rate),
                         Next::Idle => None,
                     };
-                    let vote = waterui_frame_rate::combine(
-                        waterui_frame_rate::combine(pipeline.rate_vote(), next_rate),
-                        self.dirty
-                            .get()
-                            .then_some(waterui_frame_rate::FrameRate::FAST),
+                    let vote = combine(
+                        combine(pipeline.rate_vote(), next_rate),
+                        self.dirty.get().then_some(FrameRate::FAST),
                     );
                     self.content_rate.set(vote);
                     if needs_redraw && matches!(pipelining, Pipelining::Continuous) {
@@ -1500,16 +1499,15 @@ fn prepare_presentation(
     true
 }
 
-fn apply_presenter_rate(state: &SurfaceState, view: &cocoa_ui::PlatformView) {
-    let Some(maximum) = crate::gpu_runtime::display_rate(view) else {
+fn apply_presenter_rate(state: &SurfaceState, view: &PlatformView) {
+    let Some(maximum) = display_rate(view) else {
         return;
     };
     let window_vote = state
         .window_votes
         .as_ref()
-        .and_then(crate::frame_rate::WindowFrameRateVotes::combined);
-    let vote = waterui_frame_rate::combine(state.content_rate.get(), window_vote)
-        .unwrap_or(waterui_frame_rate::FrameRate::FAST);
+        .and_then(WindowFrameRateVotes::combined);
+    let vote = combine(state.content_rate.get(), window_vote).unwrap_or(FrameRate::FAST);
     if let Some(attached) = state.presentation.borrow().attached() {
         attached.presenter.set_frame_rate(vote, maximum);
     }
@@ -2283,12 +2281,14 @@ fn install_input(
     // handler → host` would pin the whole graph past teardown. Both
     // captures stay weak.
     let host = objc2::rc::Weak::new(&**view);
-    input.set_event_handler(move |event| {
+    let translator = crate::gpu_input::Translator::default();
+    let deliver: Rc<dyn Fn(cocoa_ui::input::SurfaceEvent)> = Rc::new(move |event| {
         let (Some(state), Some(host)) = (weak.upgrade(), host.load()) else {
             return;
         };
-        let event = crate::gpu_input::translate(&event);
-        state.view.borrow().input(&event);
+        for event in translator.translate(&event) {
+            state.view.borrow().input(&event);
+        }
         // The event's frame request rides the same coalescing as a redraw
         // request.
         let external_redraw = state.presentation.borrow().external().map(External::redraw);
@@ -2301,7 +2301,11 @@ fn install_input(
             update_presentation_demand(&state, &host);
         }
     });
-    input.set_caret_provider({
+    input.set_event_handler({
+        let deliver = deliver.clone();
+        move |event| deliver(event)
+    });
+    let caret = {
         let weak = Rc::downgrade(state);
         move || {
             weak.upgrade().and_then(|state| {
@@ -2315,7 +2319,15 @@ fn install_input(
                 })
             })
         }
-    });
+    };
+    #[cfg(target_os = "macos")]
+    input.set_caret_provider(caret);
+    #[cfg(target_os = "ios")]
+    input.set_text_input_client(Rc::new(crate::gpu_text::GpuSurfaceTextClient::new(
+        deliver,
+        caret,
+        objc2::rc::Weak::new(&*input),
+    )));
     // The responder fills the surface and sits on top of it.
     cocoa_ui::view::add_subview(view.as_platform_view(), input.as_ref());
     Some(Retained::into_super(input))

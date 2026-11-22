@@ -916,6 +916,36 @@ impl<E: crate::text::TextEngine> HitTestState<E> {
 }
 
 impl<E: crate::text::TextEngine> SemanticCore<E> {
+    /// Delivers the platform's paste command, carrying `text`, to the
+    /// content holding keyboard focus: the focused surface hears it as
+    /// [`SurfaceInputEvent::Paste`], in order with the pastes its shortcut
+    /// started, and a focused text input has its selection replaced.
+    ///
+    /// Returns whether focused content took the paste.
+    #[cfg_attr(
+        not(any(feature = "text-field", feature = "secure-field")),
+        expect(
+            clippy::needless_pass_by_ref_mut,
+            reason = "the text-input leg, which writes the focused selection, needs the mutable core"
+        )
+    )]
+    pub(crate) fn paste_text(&mut self, text: &str) -> bool {
+        if let Some(sink) = self.hit_test.focused_embedded_sink.clone() {
+            let text = text.to_owned();
+            let carried: ClipboardRead = Rc::new(move || {
+                let text = text.clone();
+                Box::pin(async move { Some(text) })
+            });
+            sink.paste(&carried);
+            return true;
+        }
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
+        let pasted = self.paste_text_into_focused_target(text);
+        #[cfg(not(any(feature = "text-field", feature = "secure-field")))]
+        let pasted = false;
+        pasted
+    }
+
     /// Handles the platform's paste shortcut for the surface holding
     /// keyboard focus: the press starts a paste of the clipboard's text, the
     /// matching release is consumed with it, and neither reaches the surface

@@ -10,10 +10,12 @@ use waterui::accessibility::AccessibilityRole;
 use waterui::animation::Animation;
 use waterui::animation::FrameRate;
 use waterui::gesture::TapGesture;
-use waterui::prelude::when;
+use waterui::prelude::{text, when};
 use waterui::{AnyView, Color, ViewExt as _};
 use waterui_core::Binding;
 use waterui_core::handler::AnyViewBuilder;
+#[cfg(hydrolysis_gpu_painter)]
+use waterui_frame_rate::combine;
 
 #[cfg(not(target_arch = "wasm32"))]
 use super::capture_root_window;
@@ -22,6 +24,8 @@ use super::{Rect, test_environment, test_renderer};
 use crate::HeadlessRuntime;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::platform::{InputEvent, PointerButton, PointerKind};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::testing::TestStyle;
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
@@ -29,12 +33,7 @@ fn static_view_has_no_frame_rate_vote() {
     let mut renderer = test_renderer();
     let env = test_environment();
     let bounds = Rect::new(0.0, 0.0, 200.0, 200.0);
-    capture_root_window(
-        &mut renderer,
-        waterui::prelude::text("Static"),
-        &env,
-        bounds,
-    );
+    capture_root_window(&mut renderer, text("Static"), &env, bounds);
     assert_eq!(renderer.frame_rate_vote(), None);
 }
 
@@ -48,7 +47,7 @@ fn mounted_visible_frame_rate_modifier_votes_and_unmounting_clears() {
     let rate = FrameRate::fixed(24.0);
     let view = || {
         when(mounted.clone(), move || {
-            waterui::prelude::text("Cinema").frame_rate(Some(rate))
+            text("Cinema").frame_rate(Some(rate))
         })
     };
 
@@ -68,7 +67,7 @@ fn zero_opacity_suppresses_frame_rate_vote() {
     let bounds = Rect::new(0.0, 0.0, 200.0, 200.0);
     let opacity = Binding::container(0.0_f32);
     let view = || {
-        waterui::prelude::text("Hidden")
+        text("Hidden")
             .frame_rate(Some(FrameRate::FAST))
             .opacity(opacity.clone())
     };
@@ -89,7 +88,7 @@ fn hidden_modifier_suppresses_frame_rate_vote() {
     let bounds = Rect::new(0.0, 0.0, 200.0, 200.0);
     let visible = Binding::container(false);
     let view = || {
-        waterui::prelude::text("Conditional")
+        text("Conditional")
             .frame_rate(Some(FrameRate::FAST))
             .visible(visible.clone())
     };
@@ -113,8 +112,7 @@ fn pointer_down_votes_fast_until_pointer_up() {
                 .a11y_role(AccessibilityRole::Button),
         )
     });
-    let mut runtime =
-        HeadlessRuntime::new_for_tests(env, builder, 120, 120, crate::testing::TestStyle::new());
+    let mut runtime = HeadlessRuntime::new_for_tests(env, builder, 120, 120, TestStyle::new());
     let _ = runtime.pump(false);
     assert_eq!(runtime.renderer_frame_rate_vote(), None);
 
@@ -150,7 +148,7 @@ fn lower_app_vote_never_lowers_active_fade_rate() {
     let visible = Binding::container(true);
     let rate = FrameRate::fixed(24.0);
     let view = || {
-        waterui::prelude::text("Combo")
+        text("Combo")
             .opacity(
                 visible
                     .clone()
@@ -171,7 +169,7 @@ fn lower_app_vote_never_lowers_active_fade_rate() {
     let mid = started + Duration::from_millis(50);
     renderer.set_frame_instant(mid);
     assert_eq!(
-        waterui_frame_rate::combine(
+        combine(
             renderer.frame_rate_vote(),
             renderer.mirror().sample(mid).rate,
         ),

@@ -50,7 +50,7 @@ fn opacity_fade_refreshes_at_the_slow_rate_until_the_fade_finishes() {
     assert_eq!(renderer.frame_rate_vote(), None);
     assert_eq!(
         renderer.mirror().sample(mid).rate,
-        Some(waterui_frame_rate::FrameRate::SLOW)
+        Some(waterui::animation::FrameRate::SLOW)
     );
 
     let settled = started + Duration::from_secs(2);

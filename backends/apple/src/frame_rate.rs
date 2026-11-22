@@ -4,6 +4,7 @@
 use alloc::collections::BTreeMap;
 use alloc::rc::{Rc, Weak};
 use core::cell::RefCell;
+use core::fmt::{Debug, Formatter, Result as FmtResult};
 
 use waterui_frame_rate::{FrameRate, combine_all};
 
@@ -34,8 +35,8 @@ impl VotesInner {
 #[derive(Clone, Default)]
 pub struct WindowFrameRateVotes(Rc<RefCell<VotesInner>>);
 
-impl core::fmt::Debug for WindowFrameRateVotes {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl Debug for WindowFrameRateVotes {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         f.debug_struct("WindowFrameRateVotes")
             .field("combined", &self.combined())
             .finish_non_exhaustive()
@@ -103,8 +104,8 @@ pub struct VoteRegistration {
     id: u64,
 }
 
-impl core::fmt::Debug for VoteRegistration {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl Debug for VoteRegistration {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         f.debug_struct("VoteRegistration")
             .field("id", &self.id)
             .finish_non_exhaustive()
@@ -135,8 +136,8 @@ pub struct VoteListener {
     id: u64,
 }
 
-impl core::fmt::Debug for VoteListener {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl Debug for VoteListener {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         f.debug_struct("VoteListener")
             .field("id", &self.id)
             .finish_non_exhaustive()

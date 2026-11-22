@@ -37,6 +37,7 @@ use objc2_quartz_core::{
     CAFrameRateRange, CAMetalDisplayLink, CAMetalDisplayLinkDelegate, CAMetalDisplayLinkUpdate,
     CAMetalDrawable, CAMetalLayer,
 };
+use waterui_frame_rate::FrameRate;
 
 use crate::callback::guarded;
 
@@ -442,7 +443,7 @@ impl MetalPresenter {
 
     /// Arms the link for the display's cadence using `vote` clamped against
     /// `display_peak_fps`.
-    pub fn set_frame_rate(&self, vote: waterui_frame_rate::FrameRate, display_peak_fps: f32) {
+    pub fn set_frame_rate(&self, vote: FrameRate, display_peak_fps: f32) {
         let clamped = vote.clamped(display_peak_fps);
         self.link.setPreferredFrameRateRange(CAFrameRateRange::new(
             clamped.minimum(),

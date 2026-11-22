@@ -1,6 +1,7 @@
 //! Header-free embedding ABI. Handles and callbacks are main-thread owned.
 
 use crate::contract::{KeepAlive, Mounted, NativeLeaf};
+use crate::frame_rate::WindowFrameRateVotes;
 use cocoa_ui::{MainThreadMarker, PlatformView, Retained};
 #[cfg(target_os = "ios")]
 use objc2::Message;
@@ -371,7 +372,7 @@ pub unsafe fn mount<W: Windows, M: AppMenuBar>(
     #[cfg(target_os = "ios")]
     cocoa_ui::uikit::view_controller::did_move_to_parent(&controller);
     let mut mount_env = env.clone();
-    mount_env.insert(crate::frame_rate::WindowFrameRateVotes::default());
+    mount_env.insert(WindowFrameRateVotes::default());
     let leaf = (declaration.content)(&mount_env, mtm);
     let content = mount_leaf(&root, leaf, &mount_env, &mut keepalive);
     #[cfg(target_os = "macos")]

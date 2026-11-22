@@ -11,11 +11,13 @@ use std::sync::Arc;
 
 use waterui_contract::contract_violation;
 
+use crate::FrameRate;
 use crate::ImageLimits;
 use crate::ShaderId;
 use crate::error::ResourceError;
 use crate::glyph::FontId;
 use crate::image::{Format, ImageData, ImageUpload};
+use crate::message::{Message, ResOp};
 use cherenkov_record::{
     BackdropEffect, BackdropId, BackdropSample, BackdropShaderId, LayerContent, TextLayoutId,
 };
@@ -715,9 +717,9 @@ impl<B: crate::GpuContent> FrameSink<B> {
 
     /// Declares or clears a non-redrawing source cadence vote (e.g. a video
     /// decoder's frame rate) on this producer without submitting a frame.
-    pub fn set_source_rate(&self, rate: Option<crate::FrameRate>) {
+    pub fn set_source_rate(&self, rate: Option<FrameRate>) {
         let id = self.id;
-        let op: crate::message::ResOp<B> = Box::new(move |r| B::set_source_rate(r, id, rate));
-        let _ = self.tx.send(crate::message::Message::Resource(op));
+        let op: ResOp<B> = Box::new(move |r| B::set_source_rate(r, id, rate));
+        let _ = self.tx.send(Message::Resource(op));
     }
 }

@@ -14,7 +14,7 @@ use std::sync::Mutex;
 use wgpu::{Adapter, Device, Instance, Queue, TextureFormat};
 
 use super::external::{ExternalFrameStream, FrameReceiver, PresentedSize};
-use super::{GpuContent, GpuView, RedrawHandle, Shared};
+use super::{GpuContent, GpuView, RedrawHandle, Shared, SourceRateUpdate};
 use crate::draw::kurbo::Affine;
 use crate::offscreen::{OffscreenImage, OffscreenSize};
 use cherenkov::{Display, Engine, FrameTime, Layer, Next, Surface};
@@ -1613,9 +1613,9 @@ impl ExternalFrameRenderer {
         });
         if let Some(update) = self.frames.take_source_rate() {
             let rate = match update {
-                super::SourceRateUpdate::Unchanged => None,
-                super::SourceRateUpdate::Clear => Some(None),
-                super::SourceRateUpdate::Set(rate) => Some(Some(rate)),
+                SourceRateUpdate::Unchanged => None,
+                SourceRateUpdate::Clear => Some(None),
+                SourceRateUpdate::Set(rate) => Some(Some(rate)),
             };
             if let Some(rate) = rate {
                 self.sink.set_source_rate(rate);

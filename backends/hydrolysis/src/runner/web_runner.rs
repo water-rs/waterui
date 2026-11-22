@@ -34,9 +34,9 @@ use crate::platform::{BrowserWindow, PlatformWindow};
 use crate::renderer::HydrolysisTextContextMenuMode;
 #[cfg(feature = "menu")]
 use crate::renderer::MenuShortcutRegistry;
-use crate::renderer::{FontFamilyResolution, HydrolysisRenderer};
+use crate::renderer::{FontFamilyResolution, HydrolysisRenderer, Next};
 use crate::runner::web_accessibility::WebAccessibilityBridge;
-use crate::runner::window::{RootWindow, RootWindows};
+use crate::runner::window::{RootWindow, RootWindows, self_pace_interval};
 use crate::runner::{
     RenderDiagnosticsConfig, RuntimeWindow, WindowFrame, advance_runtime, handle_input_events,
     render_window,
@@ -335,13 +335,13 @@ impl BrowserRunner {
         // immediate.
         let redraw_requested = self.runtime.renderer.take_redraw_request();
         let vote = self.runtime.effective_frame_rate_vote();
-        let self_paced = super::window::self_pace_interval(vote, 60.0);
+        let self_paced = self_pace_interval(vote, 60.0);
         let should_render = if self.runtime.is_hidden() {
             false
         } else if matches!(self.runtime.mode, FrameMode::Refresh) || redraw_requested {
             true
         } else if self.runtime.mode.is_pending()
-            || matches!(self.runtime.engine_next, crate::renderer::Next::At { .. })
+            || matches!(self.runtime.engine_next, Next::At { .. })
         {
             match (self_paced, self.next_paced_due_ms, browser_now_ms()) {
                 (Some(_), Some(due_ms), Some(now_ms)) if now_ms + 0.5 < due_ms => false,
@@ -365,10 +365,9 @@ impl BrowserRunner {
                 return false;
             }
             let next_vote = self.runtime.effective_frame_rate_vote();
-            if let (Some(interval), Some(now_ms)) = (
-                super::window::self_pace_interval(next_vote, 60.0),
-                browser_now_ms(),
-            ) {
+            if let (Some(interval), Some(now_ms)) =
+                (self_pace_interval(next_vote, 60.0), browser_now_ms())
+            {
                 self.next_paced_due_ms = Some(now_ms + interval.as_secs_f64() * 1000.0);
             } else {
                 self.next_paced_due_ms = None;
@@ -401,7 +400,7 @@ impl BrowserRunner {
         !self.runtime.is_hidden()
             && (self.runtime.platform.take_redraw_request()
                 || self.runtime.mode.is_pending()
-                || matches!(self.runtime.engine_next, crate::renderer::Next::At { .. })
+                || matches!(self.runtime.engine_next, Next::At { .. })
                 || !self.runnable_queue.borrow().is_empty())
     }
 }

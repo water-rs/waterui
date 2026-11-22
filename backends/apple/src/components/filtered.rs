@@ -38,8 +38,12 @@ use waterui_structural_transition::{
     EmptyBodySlot, EmptyBodyVisitor, TransitionFrame, TransitionState,
 };
 
+use waterui_frame_rate::{FrameRate, combine};
+
 use crate::backend::AppleBackend;
 use crate::contract::{Mounted, NativeLeaf, RenderContext};
+use crate::frame_rate::{VoteListener, WindowFrameRateVotes};
+use crate::gpu_runtime::display_rate;
 use crate::publication_park::PublicationPark;
 
 #[cfg(target_os = "macos")]
@@ -280,9 +284,9 @@ pub struct FilteredState {
     /// for an unarmed surface — its drawables stay framebuffer-only.
     armed: Option<crate::frozen_frame::SharedFrozenFrameSlot>,
     /// Window-scoped `.frame_rate(...)` votes active on the owning window.
-    window_votes: Option<crate::frame_rate::WindowFrameRateVotes>,
+    window_votes: Option<WindowFrameRateVotes>,
     /// Subscription keeping the live presenter aligned with window votes.
-    vote_listener: RefCell<Option<crate::frame_rate::VoteListener>>,
+    vote_listener: RefCell<Option<VoteListener>>,
 }
 
 impl fmt::Debug for FilteredState {
@@ -607,15 +611,14 @@ fn attach_if_needed(
 }
 
 fn apply_filtered_rate(state: &FilteredState) {
-    let Some(maximum) = crate::gpu_runtime::display_rate(&state.view) else {
+    let Some(maximum) = display_rate(&state.view) else {
         return;
     };
     let window_vote = state
         .window_votes
         .as_ref()
-        .and_then(crate::frame_rate::WindowFrameRateVotes::combined);
-    let vote = waterui_frame_rate::combine(Some(waterui_frame_rate::FrameRate::FAST), window_vote)
-        .unwrap_or(waterui_frame_rate::FrameRate::FAST);
+        .and_then(WindowFrameRateVotes::combined);
+    let vote = combine(Some(FrameRate::FAST), window_vote).unwrap_or(FrameRate::FAST);
     if let Some(presenter) = state.presenter.borrow().as_ref() {
         presenter.set_frame_rate(vote, maximum);
     }
@@ -2857,9 +2860,7 @@ fn wire_filtered_state(
             armed: env
                 .get::<crate::transition::SnapshotDemand>()
                 .map(|_| Rc::new(crate::frozen_frame::FrozenFrameSlot::new())),
-            window_votes: env
-                .get::<crate::frame_rate::WindowFrameRateVotes>()
-                .cloned(),
+            window_votes: env.get::<WindowFrameRateVotes>().cloned(),
             vote_listener: RefCell::new(None),
         }
     });
