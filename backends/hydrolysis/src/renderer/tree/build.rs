@@ -1,6 +1,7 @@
-//! Building the retained tree: [`RenderNode::build`] downcasts a dispatched
-//! `View` onto the closed node set, plus the structural builders (wrapper,
-//! env scope, collection, lazy stack, scene/GPU/effect, `Dynamic` host).
+//! Building the retained tree: [`RenderNode::build`] dispatches a `View`
+//! statically through [`backend::HydroBackend`] (`View::dispatch` and
+//! `NativeBackend`) onto the closed node set, plus the structural builders
+//! (wrapper, env scope, collection, lazy stack, scene/GPU/effect, `Dynamic` host).
 
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 use super::collection::{item_id, item_view_or_empty};
@@ -8,15 +9,14 @@ use super::collection::{item_id, item_view_or_empty};
 use super::*;
 #[cfg(hydrolysis_gpu)]
 use crate::gpu_view::{ExternalFrameRuntime, GpuContentRuntime};
-use crate::platform_view::PlatformView;
 #[cfg(feature = "calendar")]
 use waterui::component::form::CalendarGrid;
 #[cfg(feature = "multi-date-picker")]
 use waterui::component::form::picker::MultiDatePickerGrid;
+use waterui_backend_core::Child;
 use waterui_core::contract_violation;
-use waterui_core::views::ViewSnapshot;
 
-mod backend;
+pub mod backend;
 
 /// A retained node's layout-dirty mark and the callback its input
 /// subscriptions fire: the callback sets the mark, which an enclosing
@@ -43,15 +43,38 @@ fn layout_invalidation<E: crate::text::TextEngine>(
 }
 
 impl<E: crate::text::TextEngine> RenderNode<E> {
-    /// Builds a node from a view, capturing live reactive inputs. Native
-    /// leaves and layout containers map to concrete nodes; composite views
-    /// expand via `body()` once and recurse. Then it wires the subtree's cell
-    /// parent links (`attach_subtree`): the tree root attaches to the
-    /// window's root cell, every other node to its structural parent's cell.
-    pub(crate) fn build(view: AnyView, env: &Environment, renderer: &mut SemanticCore<E>) -> Self {
+    /// Builds a node from a view, capturing live reactive inputs. It dispatches
+    /// statically through [`backend::HydroBackend`] (`View::dispatch` and
+    /// `NativeBackend`), so native leaves and layout containers map to concrete
+    /// nodes while composite views expand and recurse. Then it wires the
+    /// subtree's cell parent links (`attach_subtree`): the tree root attaches
+    /// to the window's root cell, every other node to its structural parent's
+    /// cell.
+    pub(crate) fn build(
+        view: impl View,
+        env: &Environment,
+        renderer: &mut SemanticCore<E>,
+    ) -> Self {
         let node = Self::build_view(view, env, renderer);
         node.attach_subtree();
         node
+    }
+
+    /// Builds a child a node held to realize later, like [`build`](Self::build).
+    pub(super) fn build_held(
+        child: HeldChild<E>,
+        env: &Environment,
+        renderer: &mut SemanticCore<E>,
+    ) -> Self {
+        let node = backend::HydroBackend::new(renderer).build_child(child, env);
+        node.attach_subtree();
+        node
+    }
+
+    /// Builds a held child through [`backend::HydroBackend`], leaving its
+    /// cell for the caller to parent.
+    fn build_slot(child: HeldChild<E>, env: &Environment, renderer: &mut SemanticCore<E>) -> Self {
+        backend::HydroBackend::new(renderer).build_child(child, env)
     }
 
     /// Builds `view` through [`backend::HydroBackend`]: `View::dispatch`
@@ -74,11 +97,11 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// first node means the env is unchanged, so the child sees no new scope.
     fn build_wrapper(
         effect: WrapperEffect<E>,
-        content: AnyView,
+        content: HeldChild<E>,
         env: &Environment,
         renderer: &mut SemanticCore<E>,
     ) -> Self {
-        let child = Self::build_view(content, env, renderer);
+        let child = Self::build_slot(content, env, renderer);
         Self::wrap(effect, child, env, renderer)
     }
 
@@ -196,11 +219,11 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// `.state(&s)` between the view and `.on_appear` reaches the hook.
     fn build_lifecycle(
         hook: LifeCycleHook,
-        content: AnyView,
+        content: HeldChild<E>,
         env: &Environment,
         renderer: &mut SemanticCore<E>,
     ) -> Self {
-        let child = Self::build_view(content, env, renderer);
+        let child = Self::build_slot(content, env, renderer);
         let env = Self::resolved_handler_env(&child, env).clone();
         let effect = match hook.lifecycle() {
             LifeCycle::Appear => LifeCycleEffect {
@@ -236,7 +259,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// it dirty and schedules a refresh, which reconciles by id).
     fn build_collection(
         layout: Box<dyn Layout>,
-        views: &AnyViews<AnyView>,
+        views: &AnyViews<HeldChild<E>>,
         env: &Environment,
         renderer: &mut SemanticCore<E>,
         layout_guards: Vec<BoxWatcherGuard>,
@@ -298,7 +321,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 let view = item_view_or_empty(&snapshot, index);
                 let entry_core = renderer.new_core();
                 entry_core.cell.set_parent(&core.cell);
-                let node = Self::build_view(view, env, renderer);
+                let node = backend::HydroBackend::new(renderer).build_child(view, env);
                 node.core().cell.set_parent(&entry_core.cell);
                 Some(CollectionEntry::new(id, node, entry_core))
             })
@@ -335,7 +358,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// re-resolves). Items are materialized lazily at flush, not here.
     fn build_lazy_stack(
         axis: LazyStackAxisConfig,
-        views: &AnyViews<AnyView>,
+        views: &AnyViews<HeldChild<E>>,
         env: &Environment,
         renderer: &mut SemanticCore<E>,
         layout_guards: Vec<BoxWatcherGuard>,
@@ -465,8 +488,8 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// producer inside is taken exactly once, when the node's install layer
     /// first commits it on the window's engine.
     #[cfg(hydrolysis_gpu)]
-    fn build_gpu_content(
-        view: GpuView,
+    fn build_gpu_content<T: waterui_graphics::gpu::GpuContent>(
+        view: GpuView<T>,
         renderer: &SemanticCore<E>,
         #[cfg_attr(not(hydrolysis_hwui_gpu), expect(unused_variables))] env: &Environment,
     ) -> Self {
@@ -507,7 +530,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// its wrapped content as a persistent child [`RenderNode`], so reactive
     /// descendants inside the filtered subtree stay live.
     fn build_filtered(
-        filtered: FilteredView,
+        filtered: FilteredView<HeldChild<E>>,
         env: &Environment,
         renderer: &mut SemanticCore<E>,
     ) -> Self {
@@ -517,7 +540,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             guards,
         } = filtered;
         let runtime = Rc::new(RefCell::new(FilteredRuntime::new(effect, guards)));
-        let child = Self::build_view(content, env, renderer);
+        let child = Self::build_slot(content, env, renderer);
         Self::Filtered(Box::new(FilteredNode {
             core: renderer.new_core(),
             runtime,
@@ -528,12 +551,16 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
 
     /// Build a reactive `Dynamic` host: connect to receive content updates, build
     /// the initial child, and wrap it so later content changes patch in isolation.
-    fn build_dynamic_host(
-        dynamic: waterui_core::dynamic::Dynamic,
+    ///
+    /// `into_child` holds each delivered view as the backend's [`Child`].
+    fn build_dynamic_host<C: 'static>(
+        dynamic: waterui_core::dynamic::Dynamic<C>,
+        into_child: fn(C) -> Child<backend::HydroFamily<E>>,
         env: &Environment,
         renderer: &mut SemanticCore<E>,
     ) -> Self {
-        let pending: Rc<RefCell<Option<AnyView>>> = Rc::new(RefCell::new(None));
+        let pending: Rc<RefCell<Option<Child<backend::HydroFamily<E>>>>> =
+            Rc::new(RefCell::new(None));
         let signals = renderer.signals.clone();
         let core = renderer.new_core();
         let cell = Rc::downgrade(&core.cell);
@@ -542,7 +569,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         // exactly that view, so it is never a change to mark.
         let render_generation = signals.rebuild_generation();
         let rebuild_active = renderer.rebuild_active_flag();
-        dynamic.connect_with_pending_view(Rc::clone(&pending), {
+        dynamic.connect({
             let pending = Rc::clone(&pending);
             move |update| {
                 let is_initial = update
@@ -550,7 +577,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                     .try_get::<DynamicInitialContent>()
                     .is_some()
                     || signals.initial_dynamic_content_already_rendered(render_generation);
-                *pending.borrow_mut() = Some(update.into_value());
+                *pending.borrow_mut() = Some(into_child(update.into_value()));
                 // A real content change marks the host structure-dirty; the
                 // flush rebuilds only this node's child. A rebuild already in
                 // flight covers it, so the mark is gated on one not running.
@@ -564,8 +591,8 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         });
         let initial = pending.borrow_mut().take();
         let child = match initial {
-            Some(content) => Self::build_view(content, env, renderer),
-            None => Self::build_view(AnyView::new(()), env, renderer),
+            Some(content) => backend::HydroBackend::new(renderer).build_child(content, env),
+            None => Self::build_view((), env, renderer),
         };
         let child = Rc::new(RefCell::new(child));
         let host = DynamicHostNode {
@@ -579,59 +606,6 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         };
         host.claim_initial();
         Self::Dynamic(Box::new(host))
-    }
-}
-impl<E: crate::text::TextEngine> RenderNode<E> {
-    /// Builds the [`RenderNode::Container`] for a `Native<FixedContainer>`
-    /// whose background slot was already identified — `Some(slot)` wraps the
-    /// slot's fill in [`RenderNode::Fill`], the type §7.1's paint extension
-    /// records on. The identification happens once here, while the layout
-    /// type is still concrete; a declaration
-    /// wrapping the fill (`.ignore_safe_area` on the fill itself) stops the
-    /// predicate, so it replaces the default rather than stacking with it.
-    fn build_fixed_container(
-        container: Native<FixedContainer>,
-        env: &Environment,
-        renderer: &mut SemanticCore<E>,
-        background_slot: Option<usize>,
-    ) -> Self {
-        let (layout, children) = container.into_inner().into_inner();
-        let core = renderer.new_core();
-        let (layout_dirty, invalidate) = layout_invalidation(&core.cell);
-        let guards = layout.watch_invalidation(invalidate);
-        #[cfg(feature = "accessibility")]
-        let accessibility_child_env = accessibility_container_child_environment(env);
-        #[cfg(feature = "accessibility")]
-        let child_env = accessibility_child_env.as_ref().unwrap_or(env);
-        #[cfg(not(feature = "accessibility"))]
-        let child_env = env;
-        let children: Vec<Self> = children
-            .into_iter()
-            .enumerate()
-            .map(|(index, child)| {
-                let node = Self::build_view(child, child_env, renderer);
-                if Some(index) == background_slot && is_background_fill_leaf(&node) {
-                    Self::Fill(Box::new(FillNode::new(node, renderer.new_core())))
-                } else {
-                    node
-                }
-            })
-            .collect();
-        Self::Container(Box::new(ContainerNode {
-            memo_gate: Cell::default(),
-            memo_slots: RefCell::default(),
-            accessibility_identity: Rc::new(()),
-            core,
-            layout,
-            children,
-            #[cfg(feature = "accessibility")]
-            accessibility_child_env,
-            placed: Vec::new(),
-            #[cfg(feature = "accessibility")]
-            geometry: None,
-            layout_dirty,
-            _guards: guards,
-        }))
     }
 }
 

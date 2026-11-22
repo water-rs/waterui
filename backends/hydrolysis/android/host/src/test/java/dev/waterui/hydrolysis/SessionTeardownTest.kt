@@ -602,6 +602,45 @@ class SessionTeardownTest {
         )
     }
 
+    @Test
+    fun instanceContextTracksReboundHostAndLifecycleForwardsResumePause() {
+        val firstActivity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val session = HydrolysisSession(firstActivity, {})
+        val firstHost = HydrolysisHostView(firstActivity, session)
+        firstActivity.setContentView(firstHost)
+
+        val instanceContext = session.acquireInstanceContext(42L)
+        assertEquals(
+            firstHost.context,
+            (instanceContext as android.content.ContextWrapper).baseContext,
+        )
+        val mountedView = View(instanceContext)
+        session.registerPlatformViewInstance(42L, mountedView)
+        ShadowNativeBridge.platformViewFrames =
+            """[{"id":1,"instance":42,"x":0,"y":0,"width":80,"height":40,"order":0,"visible":true}]"""
+        firstHost.platformViewRegistry.publishIfPending()
+        assertEquals(listOf(mountedView), firstHost.platformViewRegistry.accessibilityChildren())
+        val rootA11yInfo = firstHost.accessibilityNodeProvider.createAccessibilityNodeInfo(
+            android.view.accessibility.AccessibilityNodeProvider.HOST_VIEW_ID,
+        )
+        assertTrue(rootA11yInfo != null && rootA11yInfo.childCount >= 1)
+
+        val secondActivity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        (firstHost.parent as ViewGroup).removeView(firstHost)
+        val secondHost = HydrolysisHostView(secondActivity, session)
+        secondActivity.setContentView(secondHost)
+        assertEquals(secondHost.context, instanceContext.baseContext)
+
+        session.setResumed(true)
+        session.setResumed(false)
+        assertTrue(ShadowNativeBridge.resumptions.contains(true))
+        assertTrue(ShadowNativeBridge.resumptions.contains(false))
+
+        session.unregisterPlatformViewInstance(42L)
+        (secondHost.parent as ViewGroup).removeView(secondHost)
+        session.destroy()
+    }
+
     private companion object {
         /** Long enough for Robolectric's Choreographer to run a posted frame. */
         val FRAME_WINDOW: Duration = Duration.ofSeconds(1)
@@ -694,6 +733,9 @@ class ShadowNativeBridge {
         /** Every `nativeSetVisible` call, in order. */
         val visibilities = mutableListOf<Boolean>()
 
+        /** Every `nativeSetResumed` call, in order. */
+        val resumptions = mutableListOf<Boolean>()
+
         /** The night-mode flag each `nativeCreateSession` carried. */
         val createNightModes = mutableListOf<Boolean>()
 
@@ -731,6 +773,7 @@ class ShadowNativeBridge {
             deadlineNanos = 0L
             highRefreshDemands.clear()
             visibilities.clear()
+            resumptions.clear()
             createNightModes.clear()
             colorSchemes.clear()
             backEvents.clear()
@@ -829,6 +872,13 @@ class ShadowNativeBridge {
         fun nativeSetVisible(sessionPtr: Long, visible: Boolean) {
             assertLive(sessionPtr)
             visibilities += visible
+        }
+
+        @JvmStatic
+        @Implementation
+        fun nativeSetResumed(sessionPtr: Long, resumed: Boolean) {
+            assertLive(sessionPtr)
+            resumptions += resumed
         }
 
         @JvmStatic

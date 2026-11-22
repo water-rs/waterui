@@ -6,7 +6,8 @@ use nami::{Computed, Signal, SignalExt};
 use num_traits::ToPrimitive;
 use waterui_contract::contract_violation;
 use waterui_core::{
-    AnyView, Environment, IntoSignalF32, View, layout::LayoutInvalidationCallback, view::TupleViews,
+    Environment, IntoSignalF32, View, backend::ChildSlot, layout::LayoutInvalidationCallback,
+    view::ViewSequence,
 };
 
 use crate::{
@@ -323,16 +324,144 @@ fn usize_to_f32(value: usize) -> f32 {
 /// A row holds at most as many views as the grid has columns; a shorter row
 /// leaves its trailing cells empty.
 #[derive(Debug)]
-pub struct GridRow {
-    pub(crate) contents: Vec<AnyView>,
+pub struct GridRow<S> {
+    pub(crate) contents: S,
 }
 
-impl GridRow {
+impl<S: ViewSequence> GridRow<S> {
     /// Creates a new `GridRow` with the given contents.
-    pub fn new(contents: impl TupleViews) -> Self {
-        Self {
-            contents: contents.into_views(),
+    pub const fn new(contents: S) -> Self {
+        Self { contents }
+    }
+}
+
+/// The rows of a [`Grid`]: a tuple, an array or a `Vec` of [`GridRow`]s.
+pub trait GridRows: 'static {
+    /// How many rows there are.
+    fn row_count(&self) -> usize;
+
+    /// How many cells the rows hold, before padding.
+    fn cell_count(&self) -> usize;
+
+    /// Appends each row's cells to `cells`, the row at `first_index` first,
+    /// each row but the grid's last followed by empty cells up to the next
+    /// multiple of `columns`.
+    fn push_rows<S: ChildSlot>(self, first_index: usize, grid: GridShape, cells: &mut Vec<S>);
+}
+
+/// The number of columns and rows a [`Grid`] lays its cells out in.
+#[derive(Debug, Clone, Copy)]
+pub struct GridShape {
+    columns: usize,
+    rows: usize,
+}
+
+impl<S: ViewSequence> GridRow<S> {
+    /// Appends the row's cells, then the empty cells that close it unless
+    /// it is the grid's last row.
+    ///
+    /// `GridLayout` assigns cells to rows by position, so each row's
+    /// children are followed by empty cells up to the next row boundary: a
+    /// short row leaves its trailing cells empty and the next row still
+    /// starts in column 0 (docs/layout-spec.md §5). The last row needs no
+    /// padding, since no row follows it.
+    fn push_cells<C: ChildSlot>(self, index: usize, grid: GridShape, cells: &mut Vec<C>) {
+        let len = self.contents.len();
+        if len > grid.columns {
+            // The overflow wraps onto further rows of its own, which the
+            // padding below closes, so later rows keep their cells.
+            contract_violation!(
+                "GridRow {index} has {len} cells but the grid has {} columns",
+                grid.columns
+            );
         }
+        self.contents.push_slots(cells);
+        if index + 1 < grid.rows {
+            let padding = len.next_multiple_of(grid.columns) - len;
+            cells.extend(core::iter::repeat_with(|| C::from_view(())).take(padding));
+        }
+    }
+}
+
+impl<S: ViewSequence> GridRows for Vec<GridRow<S>> {
+    fn row_count(&self) -> usize {
+        self.len()
+    }
+
+    fn cell_count(&self) -> usize {
+        self.iter().map(|row| row.contents.len()).sum()
+    }
+
+    fn push_rows<C: ChildSlot>(self, first_index: usize, grid: GridShape, cells: &mut Vec<C>) {
+        for (offset, row) in self.into_iter().enumerate() {
+            row.push_cells(first_index + offset, grid, cells);
+        }
+    }
+}
+
+impl<S: ViewSequence, const N: usize> GridRows for [GridRow<S>; N] {
+    fn row_count(&self) -> usize {
+        N
+    }
+
+    fn cell_count(&self) -> usize {
+        self.iter().map(|row| row.contents.len()).sum()
+    }
+
+    fn push_rows<C: ChildSlot>(self, first_index: usize, grid: GridShape, cells: &mut Vec<C>) {
+        for (offset, row) in self.into_iter().enumerate() {
+            row.push_cells(first_index + offset, grid, cells);
+        }
+    }
+}
+
+macro_rules! impl_grid_rows {
+    ($($ty:ident),*) => {
+        #[allow(non_snake_case, unused_variables, unused_mut, unused_assignments)]
+        impl<$($ty: ViewSequence),*> GridRows for ($(GridRow<$ty>,)*) {
+            fn row_count(&self) -> usize {
+                let rows: &[&str] = &[$(stringify!($ty)),*];
+                rows.len()
+            }
+
+            fn cell_count(&self) -> usize {
+                let ($($ty,)*) = self;
+                0 $(+ $ty.contents.len())*
+            }
+
+            fn push_rows<C: ChildSlot>(self, first_index: usize, grid: GridShape, cells: &mut Vec<C>) {
+                let ($($ty,)*) = self;
+                let mut index = first_index;
+                $(
+                    $ty.push_cells(index, grid, cells);
+                    index += 1;
+                )*
+            }
+        }
+    };
+}
+
+waterui_core::tuples!(impl_grid_rows);
+
+/// A grid's rows as the one sequence of cells its layout places.
+#[derive(Debug)]
+struct GridCells<R> {
+    rows: R,
+    columns: usize,
+}
+
+impl<R: GridRows> ViewSequence for GridCells<R> {
+    fn len(&self) -> usize {
+        // An upper bound: rows are padded to whole rows of `columns`.
+        self.rows.cell_count() + self.rows.row_count() * self.columns
+    }
+
+    fn push_slots<S: ChildSlot>(self, slots: &mut Vec<S>) {
+        let grid = GridShape {
+            columns: self.columns,
+            rows: self.rows.row_count(),
+        };
+        self.rows.push_rows(0, grid, slots);
     }
 }
 
@@ -359,7 +488,8 @@ impl GridRow {
 /// ```rust
 /// # use waterui::layout::grid::{Grid, GridRow};
 /// # use waterui::prelude::*;
-/// # fn gallery(rows: Vec<GridRow>) -> impl View {
+/// # use waterui::text::Text;
+/// # fn gallery(rows: Vec<GridRow<(Text, Text, Text)>>) -> impl View {
 /// Grid::new(3, rows)
 ///     .spacing(16.0)
 ///     .alignment(Alignment::Leading)
@@ -369,19 +499,19 @@ impl GridRow {
 /// The grid sizes columns equally based on available width, and row heights
 /// are determined by the tallest item in each row.
 #[derive(Debug)]
-pub struct Grid {
+pub struct Grid<R> {
     layout: GridLayout,
-    rows: Vec<GridRow>,
+    rows: R,
 }
 
-impl Grid {
+impl<R: GridRows> Grid<R> {
     /// Creates a new Grid.
     ///
     /// - `columns`: The number of columns in the grid. Must be greater than 0;
     ///   0 is a contract violation — a debug build panics, a release build
     ///   logs it and uses 1 column.
-    /// - `rows`: A tuple of `GridRow` views.
-    pub fn new(columns: usize, rows: impl IntoIterator<Item = GridRow>) -> Self {
+    /// - `rows`: A tuple, array or `Vec` of [`GridRow`]s.
+    pub fn new(columns: usize, rows: R) -> Self {
         let columns = NonZeroUsize::new(columns).unwrap_or_else(|| {
             contract_violation!("Grid columns must be greater than 0; using 1 column");
             NonZeroUsize::MIN
@@ -392,7 +522,7 @@ impl Grid {
                 Size::new(8.0, 8.0), // Default spacing
                 Alignment::Center,   // Default alignment
             ),
-            rows: rows.into_iter().collect(),
+            rows,
         }
     }
 
@@ -420,33 +550,16 @@ impl Grid {
     crate::alignment::two_dimensional_alignment_methods!();
 }
 
-impl View for Grid {
+impl<R: GridRows> View for Grid<R> {
     fn body(self, _env: &Environment) -> impl View {
-        // `GridLayout` assigns cells to rows by position, so each row's
-        // children are followed by empty cells up to the next row boundary:
-        // a short row leaves its trailing cells empty and the next row still
-        // starts in column 0 (docs/layout-spec.md §5). The last row needs no
-        // padding, since no row follows it.
         let columns = self.layout.columns.get();
-        let row_count = self.rows.len();
-        let mut cells = Vec::with_capacity(row_count * columns);
-        for (index, row) in self.rows.into_iter().enumerate() {
-            let len = row.contents.len();
-            if len > columns {
-                // The overflow wraps onto further rows of its own, which the
-                // padding below closes, so later rows keep their cells.
-                contract_violation!(
-                    "GridRow {index} has {len} cells but the grid has {columns} columns"
-                );
-            }
-            cells.extend(row.contents);
-            if index + 1 < row_count {
-                let padding = len.next_multiple_of(columns) - len;
-                cells.extend(core::iter::repeat_with(AnyView::default).take(padding));
-            }
-        }
-
-        FixedContainer::new(self.layout, cells)
+        FixedContainer::new(
+            self.layout,
+            GridCells {
+                rows: self.rows,
+                columns,
+            },
+        )
     }
 }
 
@@ -457,14 +570,14 @@ impl View for Grid {
 /// # Panics
 ///
 /// Panics if `columns` is 0.
-pub fn grid(columns: usize, rows: impl IntoIterator<Item = GridRow>) -> Grid {
+pub fn grid<R: GridRows>(columns: usize, rows: R) -> Grid<R> {
     Grid::new(columns, rows)
 }
 
 /// Creates a new grid row containing the specified views.
 ///
 /// This is a convenience function for creating `GridRow` instances.
-pub fn row(contents: impl TupleViews) -> GridRow {
+pub const fn row<S: ViewSequence>(contents: S) -> GridRow<S> {
     GridRow::new(contents)
 }
 
@@ -526,7 +639,7 @@ mod tests {
         should_panic(expected = "Grid columns must be greater than 0")
     )]
     fn a_zero_column_grid_uses_one_column() {
-        let grid = Grid::new(0, []);
+        let grid = Grid::new(0, Vec::<GridRow<()>>::new());
         assert_eq!(grid.layout.columns.get(), 1);
     }
 

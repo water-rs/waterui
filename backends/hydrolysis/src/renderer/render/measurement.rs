@@ -8,10 +8,10 @@ use crate::theme::{NavigationBarLook, NavigationMetrics, NavigationSpec};
 use crate::widgets::controls::field_look::placeholder_text;
 #[cfg(any(feature = "text-field", feature = "secure-field"))]
 use crate::widgets::controls::field_look::value_text;
-#[cfg(any(feature = "text-field", feature = "secure-field"))]
-use waterui_core::interaction::InteractionState;
 #[cfg(feature = "list")]
 use waterui_core::views::AnyViewsSnapshot;
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
+use waterui_interaction::interaction::InteractionState;
 #[cfg(feature = "list")]
 use waterui_layout::padding::EdgeInsets;
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
@@ -26,8 +26,6 @@ use std::rc::Rc;
 use waterui_core::contract_violation;
 #[cfg(any(feature = "list", feature = "navigation"))]
 use waterui_core::layout::layout_direction;
-#[cfg(feature = "list")]
-use waterui_core::views::ViewSnapshot;
 #[cfg(feature = "picker")]
 use waterui_form::picker::PickerStyle;
 
@@ -443,9 +441,9 @@ pub fn list_spec(env: &Environment) -> crate::theme::ListSpec {
 /// The list's own size from its first row's measured content, which every
 /// row is estimated at: `insets` are that row's `ListItem::insets`.
 #[cfg(feature = "list")]
-pub fn list_intrinsic_for_first_row<E: crate::text::TextEngine>(
-    list: &ListConfig,
-    contents: &AnyViewsSnapshot<ListItem>,
+pub fn list_intrinsic_for_first_row<E: crate::text::TextEngine, C>(
+    list: &ListConfig<C>,
+    contents: &AnyViewsSnapshot<ListItem<C>>,
     content_size: LayoutSize,
     insets: Option<&EdgeInsets>,
     state: &mut HydroState<E>,
@@ -503,15 +501,17 @@ pub fn list_intrinsic_for_first_row<E: crate::text::TextEngine>(
 /// snapshot of the row collection, so the caller's whole pass (section walk,
 /// accessibility emit, or draw loop) reads one coherent membership.
 #[cfg(feature = "list")]
-pub fn materialize_list_item(
-    contents: &impl ViewSnapshot<View = ListItem>,
+pub fn materialize_list_item<E: crate::text::TextEngine>(
+    contents: &AnyViewsSnapshot<ListItem<crate::renderer::HeldChild<E>>>,
     index: usize,
-) -> ListItem {
+) -> ListItem<crate::renderer::HeldChild<E>> {
     contents.get_view(index).unwrap_or_else(|| {
         contract_violation!(
             "ListConfig failed to materialize item at index {index}; the row is empty"
         );
-        ListItem::new(())
+        ListItem::new(()).map_content(
+            <crate::renderer::HeldChild<E> as waterui_core::backend::ChildSlot>::from_view,
+        )
     })
 }
 
@@ -546,8 +546,8 @@ pub fn list_row_height_for_content(
 /// look's `min_width` floored at the label. Height is the intrinsic height,
 /// whose text line an empty field measures too.
 #[cfg(feature = "text-field")]
-pub fn measure_text_field_size_with_label_size<E: crate::text::TextEngine>(
-    text_field: &ResolvedTextFieldConfig,
+pub fn measure_text_field_size_with_label_size<E: crate::text::TextEngine, S>(
+    text_field: &ResolvedTextFieldConfig<S>,
     label_size: LayoutSize,
     state: &mut HydroState<E>,
     env: &Environment,
@@ -608,8 +608,8 @@ fn input_field_width(proposal: Option<f32>, ideal: f64, minimum: f64) -> f64 {
 /// proposal floored at the label's extent and never the masked text; `None`
 /// answers the look's `min_width` ideal.
 #[cfg(feature = "secure-field")]
-pub fn measure_secure_field_size_with_label_size<E: crate::text::TextEngine>(
-    secure_field: &SecureFieldConfig,
+pub fn measure_secure_field_size_with_label_size<E: crate::text::TextEngine, S>(
+    secure_field: &SecureFieldConfig<S>,
     label_size: LayoutSize,
     state: &mut HydroState<E>,
     env: &Environment,
@@ -837,8 +837,8 @@ fn measure_radio_picker_intrinsic<E: crate::text::TextEngine>(
 /// built [`crate::renderer::RetainedSubview`], so layout and the in-field
 /// label render agree on the label height.
 #[cfg(feature = "picker")]
-pub fn measure_picker_intrinsic_with_label_size<E: crate::text::TextEngine>(
-    picker: &PickerConfig,
+pub fn measure_picker_intrinsic_with_label_size<E: crate::text::TextEngine, S>(
+    picker: &PickerConfig<S>,
     label_size: LayoutSize,
     state: &mut HydroState<E>,
     env: &Environment,

@@ -25,7 +25,7 @@ use waterui_core::layout::{
 
 #[cfg(target_os = "macos")]
 use crate::components::layer_transform;
-use crate::contract::{Mounted, NativeLeaf};
+use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;
 
 use crate::contract::RenderContext;
@@ -123,13 +123,16 @@ impl SubView for ScaleSubView {
     clippy::too_many_lines,
     reason = "one component's whole realization, as the handler it replaces"
 )]
-pub fn realize_scale_metadata(metadata: Metadata<Scale>, ctx: &RenderContext<'_>) -> NativeLeaf {
+pub fn realize_scale_metadata(
+    metadata: Metadata<Scale, Held>,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
     let scale = metadata.value;
     let anchor = Point::new(f64::from(scale.anchor().x), f64::from(scale.anchor().y));
 
     let mtm = ctx.mtm();
     let host = HostView::new(mtm, Rect::ZERO);
-    let mounted = ctx.render(metadata.content).mount(&host);
+    let mounted = ctx.realize(metadata.content).mount(&host);
     crate::primary_content::forward(&host, mounted.view());
     view::set_translates_autoresizing(mounted.view(), true);
     // The transform needs a layer-backed content on `AppKit`; `UIKit`

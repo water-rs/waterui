@@ -41,7 +41,7 @@ fn detail_content() -> impl View {
 
 /// The chat-detail shape from the issue: a title, a subtitle under it, and
 /// content.
-fn chat_detail_view() -> NavigationView {
+fn chat_detail_view() -> NavigationView<impl View> {
     NavigationView::new("dogfood crew", text("chat body")).navigation_subtitle(text("5 members"))
 }
 
@@ -79,7 +79,7 @@ fn navigation_subtitle_emits_on_offscreen_mount(ui: UiBuilder<Styled<TestStyle>>
 
 /// One toolbar action in each group the bar draws: leading, principal (the
 /// title area), trailing, and bottom.
-fn toolbar_view() -> NavigationView {
+fn toolbar_view() -> NavigationView<impl View> {
     NavigationView::new("Inbox", text("mail body")).navigation_toolbar(
         NavigationToolbar::default()
             .item(NavigationToolbarItem::new(

@@ -1,4 +1,5 @@
 [package]
+publish = false
 name = "meta-static"
 version = "0.0.0"
 edition = "2024"

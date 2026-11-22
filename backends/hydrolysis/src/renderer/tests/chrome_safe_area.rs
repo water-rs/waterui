@@ -260,10 +260,10 @@ fn tab_bar_and_nested_navigation_bar_extend() {
     let renderer = capture(
         Tabs::new(
             &selection,
-            vec![
+            (
                 Tab::new("First", || NavigationView::new("One", text("one"))),
                 Tab::new("Second", || NavigationView::new("Two", text("two"))),
-            ],
+            ),
         ),
         &env_with_insets(edge_insets(), EdgeInsets::default()),
         theme,
@@ -319,10 +319,10 @@ fn sidebar_strip_extends_through_the_top_inset_with_a_trailing_divider() {
     let _renderer = capture(
         Tabs::new(
             &selection,
-            vec![
+            (
                 Tab::new("First", || NavigationView::new("One", text("one"))),
                 Tab::new("Second", || NavigationView::new("Two", text("two"))),
-            ],
+            ),
         )
         .style(tab_style::Sidebar),
         &env_with_insets(edge_insets(), EdgeInsets::default()),
@@ -419,10 +419,10 @@ fn the_docked_tab_bar_surface_reaches_the_window_edge_under_the_keyboard() {
     capture(
         Tabs::new(
             &selection,
-            vec![
+            (
                 Tab::new("First", || NavigationView::new("One", text("one"))),
                 Tab::new("Second", || NavigationView::new("Two", text("two"))),
-            ],
+            ),
         ),
         &env_with_insets(
             edge_insets(),
@@ -460,7 +460,7 @@ fn a_nested_bottom_bar_inside_tab_content_does_not_extend() {
     let renderer = capture(
         Tabs::new(
             &selection,
-            vec![
+            (
                 Tab::new("First", || {
                     NavigationView::new("Nested", text("nested page")).navigation_toolbar(
                         NavigationToolbar::default().item(NavigationToolbarItem::new(
@@ -470,7 +470,7 @@ fn a_nested_bottom_bar_inside_tab_content_does_not_extend() {
                     )
                 }),
                 Tab::new("Second", || NavigationView::new("Other", text("other"))),
-            ],
+            ),
         ),
         &env_with_insets(edge_insets(), EdgeInsets::default()),
         theme,

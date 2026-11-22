@@ -15,6 +15,11 @@ android {
         targetCompatibility = JavaVersion.VERSION_21
     }
 
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+        unitTests.all { it.jvmArgs("--add-opens=java.base/jdk.internal.access=ALL-UNNAMED") }
+    }
+
     lint {
         abortOnError = true
         warningsAsErrors = true
@@ -26,4 +31,6 @@ android {
 
 dependencies {
     api(project(":host"))
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.17")
 }

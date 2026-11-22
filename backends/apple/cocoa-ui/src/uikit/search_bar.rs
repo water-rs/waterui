@@ -93,9 +93,7 @@ impl SearchBar {
     /// The bar's current text.
     #[must_use]
     pub fn text(&self) -> String {
-        UISearchBar::text(self)
-            .map(|text| text.to_string())
-            .unwrap_or_default()
+        UISearchBar::text(self).map_or_default(|text| text.to_string())
     }
 
     /// Sets the bar's text without firing `on_change`.

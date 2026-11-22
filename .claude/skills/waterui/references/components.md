@@ -105,11 +105,12 @@ corners `TopLeading` …) convert only into the axis they are legal for, so
 `vstack(..).alignment(Top)` does not compile.
 
 Children are a tuple for a fixed set. For a runtime-length static set, collect — the
-iterator item must be a single concrete type, so heterogeneous helpers return `AnyView`:
+iterator item must be a single concrete type, so a helper whose branches differ returns
+a `OneOfN`:
 
 ```rust
 let row: HStack<_> = tabs.iter().map(|t| button(t.label())).collect();
-let tiles: VStack<_> = (0..6).map(photo_tile).collect();   // photo_tile: fn(usize) -> AnyView
+let tiles: VStack<_> = (0..6).map(photo_tile).collect();   // photo_tile: fn(usize) -> impl View
 ```
 
 Spacing and separation:
@@ -167,15 +168,17 @@ pivot on an `Anchor` (in the prelude; normalized, `(0, 0)` top-left: `CENTER`, `
 `TOP_RIGHT`, `BOTTOM_LEFT`, `BOTTOM_RIGHT`, or `Anchor::new(x, y)`). Factors and angles take
 signals; the anchor is a plain value.
 
-Grid — note the import and the `row` name collision with the list row builder:
+Grid — note the import and the `row` name collision with the list row builder. Rows go in
+a tuple, which lets each row hold different views; an array or `Vec` works when every row
+has the same view types:
 
 ```rust
 use waterui::layout::grid::{grid as layout_grid, row as grid_row};
 
-layout_grid(3, [
+layout_grid(3, (
     grid_row((a, b, c)),
     grid_row((d, e)),          // short rows are fine
-])
+))
 .spacing(10.0)
 ```
 
@@ -344,13 +347,96 @@ Style shorthands on `Button` — `.plain()`, `.link()`, `.borderless()`, `.borde
 `.bordered_prominent()` — equal `.style(..)` and work before or after `.action(..)`.
 `.borderless()` is the idiomatic toolbar-button style; `Link` shows the
 pointing-hand cursor on pointer platforms. `TextField::line_limit(NonZeroUsize)` caps the
-lines; `TextField::styled(label, &Binding<StyledStr>)` binds styled text. Switch and
-checkbox map to different accessibility roles (`SWITCH` vs `CHECKBOX`), which matters to
+lines; `TextField::styled(label, &Binding<StyledStr>)` binds styled text. `Switch` and `checkbox` map to different accessibility roles (`SWITCH` vs `CHECKBOX`), which matters to
 tests. `ToggleStyle::Automatic` is the platform's style — a switch on iOS and Android, a
 checkbox on macOS — so a test that must pass on every host queries a default toggle
 with `Role::toggle(ToggleStyle::Automatic)`. A switch with a visible label fills the
 width it is offered (label leading, switch trailing); a checkbox and a toggle with a
 hidden label are content-sized.
+
+### Custom button and toggle styles
+
+Implement `CustomButtonStyle`, `PrimitiveButtonStyle`, or `CustomToggleStyle`, and pass an
+instance either to a single control with `.style(..)` or to an entire subtree with
+`.button_style(..)` / `.toggle_style(..)`. `CustomButtonStyle` and `CustomToggleStyle`
+receive the semantic `label()` / `into_label()`, interaction-state signals (`is_pressed()`,
+`is_hovered()`, `is_focused()`, `is_disabled()`, `interaction_state()`), `role()` / `is_on()`,
+and automatically preserve tap activation, disabled gating, and accessibility semantics;
+`PrimitiveButtonStyle` receives `trigger()` so the style owns its gesture.
+An explicit `.style(..)` on a control wins over an enclosing subtree hook, and an inner
+`.button_style(ButtonStyle::Bordered)` or `.toggle_style(ToggleStyle::Checkbox)` overrides
+an outer custom style.
+
+```rust
+use waterui::gesture::TapGesture;
+use waterui::prelude::theme_color::{Accent, Error, SurfaceVariant};
+use waterui::shape::Capsule;
+
+struct PillButtonStyle;
+
+impl CustomButtonStyle for PillButtonStyle {
+    fn make_body<L: View>(&self, configuration: ButtonStyleConfiguration<L>) -> impl View + use<L> {
+        let base = if configuration.role() == Some(ButtonRole::Destructive) {
+            Color::new(Error)
+        } else {
+            Color::new(SurfaceVariant)
+        };
+        let bg = configuration
+            .is_pressed()
+            .select(Color::new(Accent), base);
+        configuration
+            .into_label()
+            .padding_with((8.0, 16.0))
+            .background(signal_color(bg))
+            .clip(Capsule)
+    }
+}
+
+struct DoubleTapButtonStyle;
+
+impl PrimitiveButtonStyle for DoubleTapButtonStyle {
+    fn make_body<L: View>(
+        &self,
+        configuration: PrimitiveButtonStyleConfiguration<L>,
+    ) -> impl View + use<L> {
+        let trigger = configuration.trigger().clone();
+        configuration
+            .into_label()
+            .padding_with((8.0, 16.0))
+            .gesture(TapGesture::repeat(2), move || trigger.trigger())
+    }
+}
+
+struct PillToggleStyle;
+
+impl CustomToggleStyle for PillToggleStyle {
+    fn make_body<L: View>(&self, configuration: ToggleStyleConfiguration<L>) -> impl View + use<L> {
+        let bg = configuration
+            .is_on()
+            .select(Color::new(Accent), Color::new(SurfaceVariant));
+        hstack((
+            configuration.into_label(),
+            spacer(),
+            signal_color(bg)
+                .size(44.0, 26.0)
+                .clip(Capsule),
+        ))
+    }
+}
+
+let styled = button("Delete")
+    .role(ButtonRole::Destructive)
+    .style(PillButtonStyle)
+    .action(|| {});
+
+let scoped = vstack((
+    button("Save").action(|| {}),
+    button("Reset").style(DoubleTapButtonStyle).action(|| {}),
+    toggle("Wi-Fi", &enabled),
+))
+.button_style(PillButtonStyle)
+.toggle_style(PillToggleStyle);
+```
 
 `Label` composes text with an icon; `Label::new` makes a whole composed row read as one
 accessibility node:
@@ -368,10 +454,11 @@ label("Mode").icon(mdi::tune()).display_mode(LabelDisplayMode::TitleAndIcon)
 Label::new(text!("{sender}, {subject}"), move || message_row(message.clone()))
 ```
 
-`.icon(..)` accepts any cloneable view, not only an icon-set glyph.
-`label("Home").system_icon(SystemIcon::new("house"))` (`waterui::icon::SystemIcon`) names an
-SF Symbol: it renders on Apple platforms only and is deliberately unsupported elsewhere
-(styling.md, Icons), so portable code uses `.icon(..)`. It panics on a `Label::new` label.
+`.icon(..)` accepts any cloneable view, not only an icon-set glyph. On Apple
+platforms, `waterui_apple::SfSymbol::HOUSE` (and the rest of Apple's typed
+catalog) is realized natively by the Apple backend and projected directly into
+menus, toolbars, and tab bars; other icons are rasterized when placed in
+platform chrome. `.icon(..)` panics on a `Label::new` label.
 
 ## Menus, commands, context menus
 
@@ -665,7 +752,7 @@ of another type does not compile, and neither does a selection over a `List::con
 whose rows are all untagged. Rows carrying the same value are selected together.
 At most one mode per list: a later call replaces an earlier one.
 `List::for_each` takes any collection whose items are `Clone`; `List::content` takes the
-structural tree above; `List::new(views)` takes pre-built `Views<View = ListItem>`. An
+structural tree above; `List::new(views)` takes pre-built `Views<View = ListItem<C>>`. An
 enum row type implements `Identifiable` by hand (`type Id; fn id(&self)`),
 keeping the id ranges of different variants disjoint.
 
@@ -765,8 +852,11 @@ A `Binding<BTreeSet<Date>>` needs the turbofish: `binding(BTreeSet::<Date>::new(
 
 ## Overlays: snackbars, cards, suspense, full screen
 
-Every `Window` installs a `SnackbarManager` through `.state()`; it is a `#[state]`-marked
-framework type, so handlers take it bare.
+Attach `.snackbar_host()` to a root view to install a plain `SnackbarManager` (and
+`CodeCopyFeedback` when `flow-markdown` is enabled) into its subtree; it is a `#[state]`-marked
+framework type, so descendant handlers take it bare. For snackbars with icons of view type `V`,
+attach `.snackbar_host_with_icons::<V>()` (or construct `SnackbarManager::with_icons::<V>()`
+manually with `.overlay(overlay).state(&snackbars)`) and extract `m: SnackbarManager<SnackbarIcon<V>>`.
 
 ```rust
 use core::time::Duration;
@@ -775,7 +865,6 @@ use waterui::snackbar::{Snackbar, SnackbarManager, SnackbarPosition};
 button("Save").action(|m: SnackbarManager| {
     m.show(
         Snackbar::new("Item moved to trash")
-            .icon(mdi::delete())
             .action("Undo", || restore())
             .position(SnackbarPosition::BottomCenter)   // BottomCenter | TopCenter | BottomLeading | BottomTrailing
             .closeable()
@@ -785,7 +874,8 @@ button("Save").action(|m: SnackbarManager| {
 ```
 
 Placements are independent stacks: a top snackbar never evicts a bottom one, and multiple
-at one placement stack and reflow. `.state(&v)` injects state for the `.action(..)` and
+at one placement stack and reflow. `.icon(view)` attaches a typed leading icon (`Snackbar<SnackbarIcon<V>>`),
+`.state(&v)` injects state for the `.action(..)` and
 `.on_dismiss(..)` handlers; `.on_dismiss(|reason: SnackbarDismissReason| ..)` runs once per
 presentation with why it went (`Action`, `Timeout`, `Closed`, `Replaced`, `Programmatic`),
 and `manager.dismiss()` dismisses the current one.
@@ -811,24 +901,23 @@ accordion(header, || body())                           // disclosure; Accordion:
 view.floating()                                        // themed elevated surface (FloatingStyle-aware)
 ```
 
-`FullScreenOverlayManager` (also installed per window, taken bare by a handler) presents
-modal, window-filling content: `overlay.show(view)` and `overlay.hide()`.
+Attach `.full_screen_overlay_host::<V>()` to a root view (or construct
+`FullScreenOverlayManager::<V>::new()` manually with `.overlay(overlay_view).state(&overlay)`)
+so descendant handlers can take `overlay: FullScreenOverlayManager<V>` bare to present modal,
+window-filling content: `overlay.show(view)` and `overlay.hide()`.
 
 `.secure()` on any view marks it as content that must not appear in screenshots. Only the
 iOS backend enforces it today; macOS and Hydrolysis (Android included) render the content
 unprotected.
 
-An error an author wants rendered as a view uses `waterui::widget::error`: `Error::new(err)`
-or `Error::from_view(view)` is itself a `View`, so a body may return `Result<impl View,
-Error>`; `result.error_view(|e| text(e.to_string()))` (`ResultExt`) turns a `Result`'s error
-into one. `Error::new(err)` and `UseDefaultErrorView::new(err)` render through the
-environment entry `DefaultErrorView::new(|e: BoxedStdError| view)` installed above them, and
-draw nothing when none is installed; `Error::from_view` draws its own view. A separate
-`waterui::error::{ErrorView, ErrorViewBuilder}` pair — not the same-named items inside
-`widget::error` — is an independent mechanism: `ErrorView::from(err)` renders through an
-installed `ErrorViewBuilder::new(|e: Box<dyn std::error::Error>, env: &Environment| view.anyview())`,
-or as plain text without one. The two do not read each other's environment entry, so pick
-one per app.
+An error an author wants rendered as a view uses `waterui::error` (re-exported as
+`waterui::widget::error`): `ErrorView::new(err)` (or `ErrorView::from(err)` /
+`error_view(err)`) renders the error's `Display` text by default through
+`DefaultErrorView`, and `.builder(|err| view)` or `ErrorView::with_builder(err, |err| view)`
+customizes it statically with no `Environment` lookup or type erasure;
+`result.error_view(|e| text(e.to_string()))` (`ResultExt`) turns a `Result`'s error into a
+typed `View`, and `result.default_error_view()` turns it into an `ErrorView<E>`, so a
+body can return `Result<impl View, ErrorView<_>>` or `Result<impl View, impl View>`.
 
 ## Badges, avatars, tables, focus
 

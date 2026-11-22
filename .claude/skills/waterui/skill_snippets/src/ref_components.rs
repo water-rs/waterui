@@ -4,6 +4,7 @@
 extern crate alloc;
 
 use waterui::Identifiable;
+use waterui::app::{App, AppMenuBar, Windows};
 use waterui::prelude::*;
 
 use waterui_icons_lucide as lucide;
@@ -65,16 +66,18 @@ pub fn components_block_03() {
             "tab"
         }
     }
-    // The doc mandates `fn(usize) -> AnyView`: heterogeneous helpers erase so
-    // the collect below can unify them.
-    #[allow(unknown_lints, needless_anyview)]
-    fn photo_tile(i: usize) -> AnyView {
-        text!("tile {i}").anyview()
+    // Glue: a helper whose branches differ, unified by a `OneOfN`.
+    fn photo_tile(i: usize) -> impl View {
+        if i.is_multiple_of(2) {
+            OneOf2::A(text!("tile {i}"))
+        } else {
+            OneOf2::B(Divider)
+        }
     }
     let tabs = [Tab, Tab];
 
     let row: HStack<_> = tabs.iter().map(|t| button(t.label())).collect();
-    let tiles: VStack<_> = (0..6).map(photo_tile).collect(); // photo_tile: fn(usize) -> AnyView
+    let tiles: VStack<_> = (0..6).map(photo_tile).collect(); // photo_tile: fn(usize) -> impl View
 
     let _ = (row, tiles);
 }
@@ -208,10 +211,10 @@ pub fn components_block_07() {
     let _ = {
         layout_grid(
             3,
-            [
+            (
                 grid_row((a, b, c)),
                 grid_row((d, e)), // short rows are fine
-            ],
+            ),
         )
         .spacing(10.0)
     };
@@ -321,7 +324,7 @@ pub fn components_block_12() {
     use waterui::animation::Animation;
     use waterui::layout::scroll::ScrollController;
 
-    fn row_view(r: Record) -> ListItem {
+    fn row_view(r: Record) -> ListItem<impl View> {
         ListItem::new(text(r.title))
     }
     let records = vec![Record {
@@ -530,6 +533,86 @@ pub fn components_button_style_shorthands() {
 }
 
 // ---------------------------------------------------------------------------
+// components.md § "### Custom button and toggle styles"
+// ---------------------------------------------------------------------------
+pub fn components_custom_control_styles() {
+    let enabled = Binding::bool(true);
+
+    use waterui::gesture::TapGesture;
+    use waterui::prelude::theme_color::{Accent, Error, SurfaceVariant};
+    use waterui::shape::Capsule;
+
+    struct PillButtonStyle;
+
+    impl CustomButtonStyle for PillButtonStyle {
+        fn make_body<L: View>(
+            &self,
+            configuration: ButtonStyleConfiguration<L>,
+        ) -> impl View + use<L> {
+            let base = if configuration.role() == Some(ButtonRole::Destructive) {
+                Color::new(Error)
+            } else {
+                Color::new(SurfaceVariant)
+            };
+            let bg = configuration.is_pressed().select(Color::new(Accent), base);
+            configuration
+                .into_label()
+                .padding_with((8.0, 16.0))
+                .background(signal_color(bg))
+                .clip(Capsule)
+        }
+    }
+
+    struct DoubleTapButtonStyle;
+
+    impl PrimitiveButtonStyle for DoubleTapButtonStyle {
+        fn make_body<L: View>(
+            &self,
+            configuration: PrimitiveButtonStyleConfiguration<L>,
+        ) -> impl View + use<L> {
+            let trigger = configuration.trigger().clone();
+            configuration
+                .into_label()
+                .padding_with((8.0, 16.0))
+                .gesture(TapGesture::repeat(2), move || trigger.trigger())
+        }
+    }
+
+    struct PillToggleStyle;
+
+    impl CustomToggleStyle for PillToggleStyle {
+        fn make_body<L: View>(
+            &self,
+            configuration: ToggleStyleConfiguration<L>,
+        ) -> impl View + use<L> {
+            let (label, is_on, _, _) = configuration.into_parts();
+            hstack((
+                label,
+                spacer(),
+                signal_color(is_on.select(Color::new(Accent), Color::new(SurfaceVariant)))
+                    .size(44.0, 26.0)
+                    .clip(Capsule),
+            ))
+        }
+    }
+
+    let styled = button("Delete")
+        .role(ButtonRole::Destructive)
+        .style(PillButtonStyle)
+        .action(|| {});
+
+    let scoped = vstack((
+        button("Save").action(|| {}),
+        button("Reset").style(DoubleTapButtonStyle).action(|| {}),
+        toggle("Wi-Fi", &enabled),
+    ))
+    .button_style(PillButtonStyle)
+    .toggle_style(PillToggleStyle);
+
+    let _ = (styled, scoped);
+}
+
+// ---------------------------------------------------------------------------
 // components.md § "## Controls" — rust block 15/39
 // ---------------------------------------------------------------------------
 // components.md writes `mdi::` qualified so the icon set stays visible.
@@ -566,9 +649,6 @@ pub fn components_block_15() {
 
     // `.leading()` — the default side, named in the trailing comment.
     let _ = label("Compose").icon(mdi::pencil()).leading();
-
-    // Prose (not counted): `label("Home").system_icon(SystemIcon::new("house"))`.
-    let _ = label("Home").system_icon(waterui::icon::SystemIcon::new("house"));
 }
 
 // ---------------------------------------------------------------------------
@@ -638,7 +718,7 @@ pub fn components_block_17() {
     clippy::redundant_closure,
     reason = "the snippet is transcribed verbatim from the skill; rewriting it to satisfy the lint would defeat this crate's purpose"
 )]
-pub fn components_block_18(env: Environment) -> waterui::app::App {
+pub fn components_block_18(env: Environment) -> App<impl Windows, impl AppMenuBar> {
     fn content() -> impl View {
         text("demo")
     }
@@ -1149,13 +1229,14 @@ pub mod components_block_32 {
         let _ = Picker::new("Size", sizes(), &choice).segmented();
 
         // Keep the other picker imports live so they are proven to resolve.
-        let _: Option<ColorPicker> = None;
+        use waterui::component::label::TitleLabel;
+        let _: Option<ColorPicker<TitleLabel>> = None;
         let _: Option<DatePickerType> = None;
-        let _: Option<FilePicker> = None;
+        let _: Option<FilePicker<TitleLabel>> = None;
         let _ = (
-            core::marker::PhantomData::<DatePicker>,
-            core::marker::PhantomData::<MultiDatePicker>,
-            core::marker::PhantomData::<Calendar>,
+            core::marker::PhantomData::<DatePicker<TitleLabel>>,
+            core::marker::PhantomData::<MultiDatePicker<TitleLabel>>,
+            core::marker::PhantomData::<Calendar<TitleLabel>>,
         );
     }
 }
@@ -1250,7 +1331,6 @@ pub fn components_block_34() {
     button("Save").action(|m: SnackbarManager| {
         m.show(
             Snackbar::new("Item moved to trash")
-                .icon(mdi::delete())
                 .action("Undo", || restore())
                 .position(SnackbarPosition::BottomCenter) // BottomCenter | TopCenter | BottomLeading | BottomTrailing
                 .closeable()
@@ -1261,11 +1341,13 @@ pub fn components_block_34() {
 
 // ---------------------------------------------------------------------------
 // components.md § "## Overlays: snackbars, cards, suspense, full screen" (prose): the other snackbar placements,
-// `.state`, `.on_dismiss`, `SnackbarManager::dismiss` and the full-screen
+// `.icon`, `.state`, `.on_dismiss`, `SnackbarManager::dismiss` and the full-screen
 // overlay manager. Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn components_snackbar_prose() {
-    use waterui::snackbar::{Snackbar, SnackbarDismissReason, SnackbarManager, SnackbarPosition};
+    use waterui::snackbar::{
+        Snackbar, SnackbarDismissReason, SnackbarIcon, SnackbarManager, SnackbarPosition,
+    };
 
     let value = Binding::i32(0);
 
@@ -1273,12 +1355,21 @@ pub fn components_snackbar_prose() {
     let _ = SnackbarPosition::BottomLeading;
     let _ = SnackbarPosition::BottomTrailing;
     let _ = Snackbar::new("x")
+        .icon(mdi::delete())
         .state(&value)
         .on_dismiss(|reason: SnackbarDismissReason| {
             let _ = reason;
         });
+    let _ = text("host").snackbar_host();
+    let _ = text("host").snackbar_host_with_icons::<mdi::Svg>();
+    let _ = SnackbarManager::with_icons::<mdi::Svg>();
+    let _ = button("x").action(|m: SnackbarManager<SnackbarIcon<mdi::Svg>>| {
+        m.show(Snackbar::new("x").icon(mdi::delete()));
+    });
     let _ = button("x").action(|manager: SnackbarManager| manager.dismiss());
-    let _ = button("x").action(|overlay: FullScreenOverlayManager| {
+    let _ = text("host").full_screen_overlay_host::<Text>();
+    let (_overlay_mgr, _overlay_view) = FullScreenOverlayManager::<Text>::new();
+    let _ = button("x").action(|overlay: FullScreenOverlayManager<Text>| {
         overlay.show(text("modal"));
         overlay.hide();
     });
@@ -1357,29 +1448,19 @@ pub fn components_overlay_extras_prose() {
 // ---------------------------------------------------------------------------
 pub fn components_secure_and_error_prose() -> impl View {
     use std::io;
-    use waterui::widget::error::{
-        BoxedStdError, DefaultErrorView, Error, ResultExt, UseDefaultErrorView,
-    };
+    use waterui::error::{ErrorView, ResultExt, error_view};
 
     let _ = Divider.secure();
 
-    let _ = Error::new(io::Error::other("failed"));
-    let _ = Error::from_view(text("failed"));
+    let _ = ErrorView::new(io::Error::other("failed"));
+    let _ = ErrorView::from(io::Error::other("failed"));
+    let _ = error_view(io::Error::other("failed")).builder(|e| text(e.to_string()));
+    let _ = ErrorView::with_builder(io::Error::other("failed"), |e| text(e.to_string()));
     let loaded: Result<Str, io::Error> = Ok(Str::from("data"));
-    let _: Result<Str, Error> = loaded.error_view(|e| text(e.to_string()));
-    let _ = Environment::new().with(DefaultErrorView::new(|e: BoxedStdError| {
-        text(e.to_string())
-    }));
-    let _ = UseDefaultErrorView::new(io::Error::other("failed"));
+    let _: Result<Str, Text> = loaded.error_view(|e| text(e.to_string()));
 
-    // The independent runtime pair.
-    let _ = waterui::error::ErrorView::from(io::Error::other("failed"));
-    let _ = waterui::error::ErrorViewBuilder::new(
-        |e: Box<dyn std::error::Error>, _env: &Environment| text(e.to_string()).anyview(),
-    );
-
-    // A body may return `Result<impl View, Error>`.
-    let body: Result<_, Error> = Ok(text("ok"));
+    // A body may return `Result<impl View, ErrorView<_>>`.
+    let body: Result<_, ErrorView<io::Error>> = Ok(text("ok"));
     body
 }
 

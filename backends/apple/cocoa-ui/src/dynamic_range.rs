@@ -113,9 +113,7 @@ fn set_preferred(layer: &CALayer, mode: DynamicRange) {
 
 fn sublayers(layer: &CALayer) -> Vec<Retained<CALayer>> {
     // SAFETY: `layer` is live and the hierarchy is read on the main thread.
-    unsafe { layer.sublayers() }
-        .map(|layers| layers.to_vec())
-        .unwrap_or_default()
+    unsafe { layer.sublayers() }.map_or_default(|layers| layers.to_vec())
 }
 
 /// Applies `mode` to `layer` and recursively to its sublayers.

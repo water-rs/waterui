@@ -253,8 +253,8 @@ fn retained_list_measurement_reuses_the_watcher_snapshot() {
     use nami::Computed;
     use nami::collection::CollectionChange;
     use nami::watcher::Context;
+    use waterui_core::backend::{ChildSlot, MapSlots as _};
     use waterui_core::layout::ProposalSize;
-    use waterui_core::view::ConfigurableView as _;
     use waterui_core::views::{ForEach, Views};
 
     use crate::renderer::WidgetBehavior as _;
@@ -300,7 +300,12 @@ fn retained_list_measurement_reuses_the_watcher_snapshot() {
     let env = test_environment();
     let mut renderer = super::test_renderer();
     let theme = renderer.theme();
-    let widget = RefCell::new(ListRenderState::from_config(list.config(), &env, &renderer));
+    let widget = RefCell::new(ListRenderState::from_config(
+        list.config()
+            .map_slots(<crate::renderer::HeldChild<_> as ChildSlot>::from_view),
+        &env,
+        &renderer,
+    ));
     widget.prepare(&mut renderer, &env);
     let mounted_captures = captures.get();
     assert!(mounted_captures > 0);
@@ -321,8 +326,8 @@ fn specified_list_viewport_does_not_materialize_rows() {
     use core::cell::{Cell, RefCell};
     use std::rc::Rc;
 
+    use waterui_core::backend::{ChildSlot, MapSlots as _};
     use waterui_core::layout::ProposalSize;
-    use waterui_core::view::ConfigurableView as _;
 
     use crate::renderer::WidgetBehavior as _;
     use crate::widgets::layout::list::ListRenderState;
@@ -337,7 +342,12 @@ fn specified_list_viewport_does_not_materialize_rows() {
     let env = test_environment();
     let mut renderer = super::test_renderer();
     let theme = renderer.theme();
-    let widget = RefCell::new(ListRenderState::from_config(list.config(), &env, &renderer));
+    let widget = RefCell::new(ListRenderState::from_config(
+        list.config()
+            .map_slots(<crate::renderer::HeldChild<_> as ChildSlot>::from_view),
+        &env,
+        &renderer,
+    ));
     let mounted = materializations.get();
     let bounded = widget.measure(
         &mut renderer.state,

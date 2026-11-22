@@ -5,7 +5,7 @@
 //! This file only wires it to the platform entry point, so there is no
 //! meaningful logic here to drift out of date.
 
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::prelude::*;
 
 /// The Inspector's root view.
@@ -14,6 +14,6 @@ pub fn main() -> impl View {
 }
 
 /// Application entry point.
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     waterui_inspector_app::app(env)
 }

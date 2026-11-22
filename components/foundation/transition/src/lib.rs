@@ -9,16 +9,21 @@
 
 extern crate alloc;
 
+use alloc::boxed::Box;
 use alloc::rc::Rc;
 use core::{fmt, time::Duration};
 
 use waterui_core::animation::Animation;
+use waterui_core::backend::{Backend, ChildSlot, ErasedPayload};
 use waterui_core::layout::{
     LayoutDirection, LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView,
     ViewDimensions,
 };
 use waterui_core::metadata::MetadataKey;
-use waterui_core::{AnyView, Binding, Computed, Environment, Metadata, Signal, SignalExt, View};
+use waterui_core::view::hook::{HookList, HookableView};
+use waterui_core::{
+    AnyView, Binding, Computed, Environment, Metadata, NativeView, OneOf2, Signal, SignalExt, View,
+};
 
 /// The structural event starting an independent transition instance.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -314,7 +319,7 @@ pub trait Transition: 'static {
     }
 
     /// Wraps content in the existing GPU effect path when capture is declared.
-    fn body(&self, content: AnyView, transition_context: TransitionContext) -> impl View {
+    fn body<V: View>(&self, content: V, transition_context: TransitionContext) -> impl View {
         let _ = transition_context;
         content
     }
@@ -345,6 +350,83 @@ pub trait Transition: 'static {
     }
 }
 
+/// Visitor for probing a `captures_content` transition's empty-content
+/// effect tree without erasing through `AnyView`.
+pub trait EmptyBodyVisitor {
+    /// Visits one native payload reached in the transition's body tree, with
+    /// child views packaged as [`EmptyBodySlot`]. Returning `false` aborts
+    /// traversal and rejects the transition body.
+    fn native(&mut self, native: ErasedPayload<'_>, env: &Environment) -> bool;
+}
+
+type EmptyBodyDispatch = Box<dyn FnOnce(&mut dyn EmptyBodyVisitor, &Environment) -> bool>;
+
+/// Child slot for [`EmptyBodyVisitor`], preserving each child's concrete
+/// `View::dispatch` closure without wrapping it in `AnyView`.
+pub struct EmptyBodySlot(EmptyBodyDispatch);
+
+impl fmt::Debug for EmptyBodySlot {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EmptyBodySlot").finish_non_exhaustive()
+    }
+}
+
+impl EmptyBodySlot {
+    /// Dispatches the wrapped child view into `visitor`.
+    #[must_use]
+    pub fn visit(self, visitor: &mut dyn EmptyBodyVisitor, env: &Environment) -> bool {
+        (self.0)(visitor, env)
+    }
+}
+
+impl ChildSlot for EmptyBodySlot {
+    fn from_view<V: View>(view: V) -> Self {
+        Self(Box::new(move |visitor, env| {
+            view.dispatch(&mut EmptyBodyBackend(visitor), env, ())
+        }))
+    }
+}
+
+struct EmptyBodyBackend<'a>(&'a mut dyn EmptyBodyVisitor);
+
+impl Backend for EmptyBodyBackend<'_> {
+    type Output = bool;
+    type Ctx = ();
+    type Slot = EmptyBodySlot;
+
+    fn native<T: NativeView + 'static>(&mut self, native: T, env: &Environment, (): ()) -> bool {
+        self.0
+            .native(ErasedPayload::new_native(&mut Some(native)), env)
+    }
+
+    fn metadata<K: MetadataKey>(
+        &mut self,
+        _metadata: Metadata<K, EmptyBodySlot>,
+        _env: &Environment,
+        (): (),
+    ) -> bool {
+        false
+    }
+
+    fn erased(&mut self, _view: AnyView, _env: &Environment, (): ()) -> bool {
+        false
+    }
+
+    fn scoped<H: HookList, V: View>(
+        &mut self,
+        _hooks: H,
+        view: V,
+        env: &Environment,
+        (): (),
+    ) -> bool {
+        view.dispatch(self, env, ())
+    }
+
+    fn hookable<T: HookableView>(&mut self, view: T, env: &Environment, (): ()) -> bool {
+        view.compose(env).dispatch(self, env, ())
+    }
+}
+
 trait TransitionImpl {
     fn properties_erased(
         &self,
@@ -353,6 +435,12 @@ trait TransitionImpl {
         geometry: TransitionGeometry,
     ) -> TransitionProperties;
     fn body_erased(&self, content: AnyView, transition_context: TransitionContext) -> AnyView;
+    fn visit_empty_body_erased(
+        &self,
+        transition_context: TransitionContext,
+        visitor: &mut dyn EmptyBodyVisitor,
+        env: &Environment,
+    ) -> Option<bool>;
     fn captures_content_erased(&self, phase: TransitionPhase) -> bool;
     fn reduced_erased(&self) -> AnyTransition;
 }
@@ -368,6 +456,21 @@ impl<T: Transition> TransitionImpl for T {
     }
     fn body_erased(&self, content: AnyView, transition_context: TransitionContext) -> AnyView {
         AnyView::new(Transition::body(self, content, transition_context))
+    }
+    fn visit_empty_body_erased(
+        &self,
+        transition_context: TransitionContext,
+        visitor: &mut dyn EmptyBodyVisitor,
+        env: &Environment,
+    ) -> Option<bool> {
+        if !Transition::captures_content(self, transition_context.phase) {
+            return None;
+        }
+        Some(Transition::body(self, (), transition_context).dispatch(
+            &mut EmptyBodyBackend(visitor),
+            env,
+            (),
+        ))
     }
     fn captures_content_erased(&self, phase: TransitionPhase) -> bool {
         Transition::captures_content(self, phase)
@@ -414,8 +517,9 @@ impl Transition for AnyTransition {
     ) -> TransitionProperties {
         self.0.properties_erased(phase, progress, geometry)
     }
-    fn body(&self, content: AnyView, transition_context: TransitionContext) -> impl View {
-        self.0.body_erased(content, transition_context)
+    fn body<V: View>(&self, content: V, transition_context: TransitionContext) -> impl View {
+        self.0
+            .body_erased(AnyView::new(content), transition_context)
     }
     fn captures_content(&self, phase: TransitionPhase) -> bool {
         self.0.captures_content_erased(phase)
@@ -535,9 +639,9 @@ impl<A: Transition, B: Transition> Transition for Combined<A, B> {
             .properties(phase, progress, geometry)
             .combined(self.second.properties(phase, progress, geometry))
     }
-    fn body(&self, content: AnyView, transition_context: TransitionContext) -> impl View {
+    fn body<V: View>(&self, content: V, transition_context: TransitionContext) -> impl View {
         self.second.body(
-            AnyView::new(self.first.body(content, transition_context.clone())),
+            self.first.body(content, transition_context.clone()),
             transition_context,
         )
     }
@@ -568,14 +672,12 @@ impl<I: Transition, R: Transition> Transition for Asymmetric<I, R> {
             TransitionPhase::Removal => self.removal.properties(phase, progress, geometry),
         }
     }
-    fn body(&self, content: AnyView, transition_context: TransitionContext) -> impl View {
+    fn body<V: View>(&self, content: V, transition_context: TransitionContext) -> impl View {
         match transition_context.phase {
             TransitionPhase::Insertion => {
-                AnyView::new(self.insertion.body(content, transition_context))
+                OneOf2::A(self.insertion.body(content, transition_context))
             }
-            TransitionPhase::Removal => {
-                AnyView::new(self.removal.body(content, transition_context))
-            }
+            TransitionPhase::Removal => OneOf2::B(self.removal.body(content, transition_context)),
         }
     }
     fn captures_content(&self, phase: TransitionPhase) -> bool {
@@ -759,14 +861,34 @@ impl TransitionState {
     ///
     /// A backend may pass an empty content view when it already owns the captured
     /// realization, then give the resulting `FilteredView` that GPU texture.
-    pub fn body(&self, content: AnyView, frame: Computed<TransitionFrame>) -> AnyView {
+    pub fn body<V: View>(&self, content: V, frame: Computed<TransitionFrame>) -> AnyView {
         self.transition.0.body_erased(
-            content,
+            AnyView::new(content),
             TransitionContext {
                 phase: self.phase,
                 progress: self.progress.clone().computed(),
                 frame,
             },
+        )
+    }
+
+    /// Dispatches the effect over `()` into `visitor` when this transition
+    /// captures content, without erasing the body through `AnyView`.
+    #[must_use]
+    pub fn visit_empty_body(
+        &self,
+        frame: Computed<TransitionFrame>,
+        visitor: &mut dyn EmptyBodyVisitor,
+        env: &Environment,
+    ) -> Option<bool> {
+        self.transition.0.visit_empty_body_erased(
+            TransitionContext {
+                phase: self.phase,
+                progress: self.progress.clone().computed(),
+                frame,
+            },
+            visitor,
+            env,
         )
     }
 

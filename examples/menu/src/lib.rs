@@ -9,8 +9,9 @@
 
 use std::time::Duration;
 
-use waterui::app::{App, QuitReply};
+use waterui::app::{App, AppMenuBar, QuitReply, Windows};
 use waterui::color::Srgb;
+use waterui::component::MenuBarView;
 use waterui::log::info;
 use waterui::prelude::*;
 use waterui::preview;
@@ -31,14 +32,14 @@ fn toolbar_action(
     icon_tag: &'static str,
     message: &'static str,
     status: &Binding<String>,
-) -> impl View {
+) -> impl View + use<> {
     button(label(title).icon(text(icon_tag).caption().bold()))
         .borderless()
         .action(move |State(status): State<Binding<String>>| status.set(message.to_string()))
         .state(status)
 }
 
-fn toolbar_actions(status: &Binding<String>) -> impl View {
+fn toolbar_actions(status: &Binding<String>) -> impl View + use<> {
     hstack((
         toolbar_action("Search", "[S]", "Toolbar search", status),
         toolbar_action("Compose", "[+]", "Toolbar compose", status),
@@ -47,7 +48,7 @@ fn toolbar_actions(status: &Binding<String>) -> impl View {
     .spacing(8.0)
 }
 
-fn toolbar_scene_section(status: &Binding<String>) -> impl View {
+fn toolbar_scene_section(status: &Binding<String>) -> impl View + use<> {
     vstack((
         text("Toolbar Labels").sub_headline(),
         text("The same semantic labels can render with text in content and icon-only in compact chrome. Screen readers keep reading the semantic title.")
@@ -67,11 +68,11 @@ fn toolbar_scene_section(status: &Binding<String>) -> impl View {
     .padding()
 }
 
-fn window_toolbar(status: &Binding<String>) -> impl View {
+fn window_toolbar(status: &Binding<String>) -> impl View + use<> {
     toolbar_actions(status).padding_with((6.0, 8.0))
 }
 
-fn menu_section(selected: &Binding<String>) -> impl View {
+fn menu_section(selected: &Binding<String>) -> impl View + use<> {
     vstack((
         text("Menu Component").sub_headline(),
         text("Tap the menu button to see nested buttons, submenus, and separators")
@@ -118,7 +119,7 @@ fn menu_section(selected: &Binding<String>) -> impl View {
     .padding()
 }
 
-fn styled_menu_section(action_log: &Binding<String>) -> impl View {
+fn styled_menu_section(action_log: &Binding<String>) -> impl View + use<> {
     vstack((
         text("Styled Menu").sub_headline(),
         text("The popup label stays a normal label, and menu rows can now be plain buttons")
@@ -155,7 +156,7 @@ fn styled_menu_section(action_log: &Binding<String>) -> impl View {
     .padding()
 }
 
-fn context_menu_section(context_action: &Binding<String>) -> impl View {
+fn context_menu_section(context_action: &Binding<String>) -> impl View + use<> {
     vstack((
         text("Context Menu").sub_headline(),
         text("Long press the box below to see context menu")
@@ -196,7 +197,7 @@ fn context_menu_section(context_action: &Binding<String>) -> impl View {
 fn context_menu_accessory_section(
     context_action: &Binding<String>,
     like_label: &Binding<waterui::Str>,
-) -> impl View {
+) -> impl View + use<> {
     vstack((
         text("Context Menu with Accessory").sub_headline(),
         text("Long press to preview with an inline accessory bar")
@@ -272,7 +273,7 @@ fn context_menu_accessory_section(
     .padding()
 }
 
-fn selection_menu_section(selection_action: &Binding<String>) -> impl View {
+fn selection_menu_section(selection_action: &Binding<String>) -> impl View + use<> {
     let draft = binding(Str::from("Select some of this text, then open the menu"));
     vstack((
         text("Selection Menu").sub_headline(),
@@ -298,7 +299,7 @@ fn selection_menu_section(selection_action: &Binding<String>) -> impl View {
     .padding()
 }
 
-fn context_menu_views_section(view_action: &Binding<String>) -> impl View {
+fn context_menu_views_section(view_action: &Binding<String>) -> impl View + use<> {
     vstack((
         text("Context Menu on Views").sub_headline(),
         text("Long press any colored box").body().muted(),
@@ -361,7 +362,7 @@ fn context_menu_views_section(view_action: &Binding<String>) -> impl View {
     .padding()
 }
 
-fn quit_section(quit_answer: &Binding<String>) -> impl View {
+fn quit_section(quit_answer: &Binding<String>) -> impl View + use<> {
     vstack((
         text("Quitting").sub_headline(),
         text("Quit asks the application, which answers after two seconds. Check Quitting > Refuse Quit in the menu bar to make it refuse.")
@@ -428,7 +429,7 @@ pub fn demo() -> impl View {
 
 /// The application menu bar: a checked "Refuse Quit" command that makes
 /// `on_quit_request` cancel every quit answered while it is checked.
-fn quit_menu(refuse_quit: &Binding<bool>) -> Menu {
+fn quit_menu(refuse_quit: &Binding<bool>) -> impl MenuBarView + use<> {
     Menu::new(
         "Quitting",
         "Refuse Quit"
@@ -440,7 +441,7 @@ fn quit_menu(refuse_quit: &Binding<bool>) -> Menu {
 
 /// Builds the menu example app: menu bar, toolbar and the quit-refusal window.
 #[must_use]
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows, impl AppMenuBar> {
     let toolbar_status = Binding::container(String::from("No toolbar action yet"));
     let content_toolbar_status = toolbar_status.clone();
     let refuse_quit = Binding::bool(false);

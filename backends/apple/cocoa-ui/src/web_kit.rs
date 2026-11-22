@@ -864,7 +864,7 @@ fn respond_to_scheme_task(task: &ProtocolObject<dyn WKURLSchemeTask>, handler: &
         // `NSMutableURLRequest`.
         msg_send![&request, HTTPMethod]
     };
-    let method = method.map(|method| method.to_string()).unwrap_or_default();
+    let method = method.map_or_default(|method| method.to_string());
 
     let served = url
         .as_ref()
@@ -1027,8 +1027,7 @@ define_class!(
                 url: raw
                     .URL()
                     .and_then(|url| url.absoluteString())
-                    .map(|text| text.to_string())
-                    .unwrap_or_default(),
+                    .map_or_default(|text| text.to_string()),
                 redirect_location: http.and_then(|http| {
                     http.valueForHTTPHeaderField(&NSString::from_str("Location"))
                         .map(|value| value.to_string())
@@ -1106,8 +1105,7 @@ define_class!(
                 current_url: web_view
                     .url()
                     .and_then(|url| url.absoluteString())
-                    .map(|text| text.to_string())
-                    .unwrap_or_default(),
+                    .map_or_default(|text| text.to_string()),
             };
             let handlers = self.ivars().handlers.clone();
             let decision = crate::callback::guarded("web view authentication challenge", || {
@@ -1712,5 +1710,66 @@ fn cookie_record(cookie: &NSHTTPCookie) -> CookieRecord {
         secure: cookie.isSecure(),
         http_only: cookie.isHTTPOnly(),
         same_site: cookie.sameSitePolicy().map(|policy| policy.to_string()),
+    }
+}
+
+/// The `WKNavigation`s whose policy question is already answered.
+///
+/// `WKNavigationAction.mainFrameNavigation` names the navigation an action
+/// belongs to, and it is exact where counting or URL comparison cannot be:
+///
+/// - the calls that issue a navigation — `loadRequest:`, `goBack`,
+///   `goForward`, `reload` — return the same object the later action
+///   reports, because a `WebKit` API object has one wrapper;
+/// - a server redirect continues its navigation instead of starting one,
+///   so the action `WebKit` asks about for the redirect carries the same
+///   `WKNavigation` again;
+/// - a subframe action reports `nil`, and a page action carries its own
+///   navigation, so neither can be mistaken for a load the application
+///   issued.
+///
+/// Recording the `WKNavigation` a load call returned — or the one an
+/// action's `mainFrameNavigation` names when the policy allows it —
+/// therefore answers every action the navigation produces: itself and each
+/// of its redirects.
+///
+/// The references are weak. `WebKit` drops a navigation once it finishes
+/// or fails, the entry dies with it, and dead entries are pruned on each
+/// access — nothing is counted, and no URL is compared.
+#[derive(Debug, Default)]
+pub struct AnsweredNavigations {
+    navigations: RefCell<Vec<Weak<WKNavigation>>>,
+}
+
+impl AnsweredNavigations {
+    /// An empty set.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Records `navigation` as answered: a load the application issued, the
+    /// in-place reroute of a targetless action, or a navigation the policy
+    /// allowed.
+    pub fn answer(&self, navigation: &WKNavigation) {
+        let mut navigations = self.navigations.borrow_mut();
+        navigations.retain(|weak| weak.load().is_some());
+        navigations.push(Weak::new(navigation));
+    }
+
+    /// Whether `navigation` — an action's `mainFrameNavigation`, which is
+    /// `None` for a subframe action — is one already answered.
+    pub fn is_answered(&self, navigation: Option<&WKNavigation>) -> bool {
+        let Some(navigation) = navigation else {
+            return false;
+        };
+        let mut answered = false;
+        self.navigations.borrow_mut().retain(|weak| {
+            weak.load().is_some_and(|live| {
+                answered |= std::ptr::eq(Retained::as_ptr(&live), navigation);
+                true
+            })
+        });
+        answered
     }
 }

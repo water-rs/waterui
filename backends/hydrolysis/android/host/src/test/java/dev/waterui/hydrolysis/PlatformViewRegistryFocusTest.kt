@@ -466,12 +466,16 @@ class PlatformViewRegistryFocusTest {
         val events = mutableListOf<String>()
         registry.bandFactory = { id ->
             object : RegionBand(hostView.context) {
+                init {
+                    setWillNotDraw(false)
+                }
+
                 override fun draw(canvas: Canvas) {
                     super.draw(canvas)
                     events += "band$id:draw"
                 }
 
-                override fun show(colorSpace: android.graphics.ColorSpace) = Unit
+                override fun show(colorSpace: android.graphics.ColorSpace, paintedRects: IntArray) = Unit
 
                 override fun clear() = Unit
             }
@@ -515,6 +519,29 @@ class PlatformViewRegistryFocusTest {
         registry.container.draw(Canvas())
         assertEquals(paintOrder, events)
         assertTrue(hostView.touches.isEmpty())
+    }
+
+    @Test
+    fun `accessibilityChildren returns mounted views in placement order and omits hidden views`() {
+        val (hostView, registry) = host()
+        val firstView = View(hostView.context)
+        val secondView = View(hostView.context)
+        val hiddenView = View(hostView.context).apply {
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+        }
+        registry.registerFactory("first") { firstView }
+        registry.registerFactory("second") { secondView }
+        registry.registerFactory("hidden") { hiddenView }
+
+        registry.applyJson(
+            """[
+                {"id":10,"kind":"second","x":0,"y":0,"width":50,"height":50,"order":2,"visible":true},
+                {"id":11,"kind":"hidden","x":0,"y":0,"width":50,"height":50,"order":1,"visible":true},
+                {"id":12,"kind":"first","x":0,"y":0,"width":50,"height":50,"order":0,"visible":true}
+            ]""",
+        )
+
+        assertEquals(listOf(firstView, secondView), registry.accessibilityChildren())
     }
 
     private companion object {

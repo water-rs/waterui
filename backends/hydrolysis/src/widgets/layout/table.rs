@@ -22,12 +22,12 @@ use accesskit::{
 };
 use nami::Signal;
 use waterui::component::table::{TableColumn, TableConfig};
+use waterui_core::Environment;
 #[cfg(feature = "accessibility")]
 use waterui_core::contract_violation;
 use waterui_core::id::Identifiable;
 use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
-use waterui_core::views::{ViewSnapshot, Views};
-use waterui_core::{AnyView, Environment};
+use waterui_core::views::ViewSnapshot;
 use waterui_layout::scroll::Axis as ScrollAxis;
 
 use crate::widgets::{draw_scroll_indicators, inset_rect};
@@ -110,7 +110,7 @@ impl<E: crate::text::TextEngine> TableRenderState<E> {
                 .position(|(kept, _)| *kept == id)
                 .map_or_else(
                     || {
-                        let mut header = RetainedSubview::new(AnyView::new(column.label()));
+                        let mut header = RetainedSubview::new(column.label());
                         header.ensure_built(renderer, env);
                         header
                     },
@@ -196,7 +196,7 @@ impl<E: crate::text::TextEngine> TableRenderState<E> {
             return false;
         };
         cache
-            .entry(key, || AnyView::new(cell))
+            .entry(key, || RetainedSubview::new(cell))
             .ensure_built(renderer, env);
         true
     }
@@ -901,7 +901,7 @@ pub fn render_table_parts<E: crate::text::TextEngine>(
                     ctx,
                     env,
                     inset,
-                    cache.entry(key, move || AnyView::new(cell)),
+                    cache.entry(key, move || RetainedSubview::new(cell)),
                 );
             }
             ctx.draw_context(|draw| {

@@ -952,6 +952,17 @@ impl Project {
         Ok(self.enabled_features(target).await?.contains("video-gpu"))
     }
 
+    /// Whether the application's graph links the GPU map
+    /// (`waterui-map-gpu`) for `target`, which Hydrolysis then realizes `Map`
+    /// with.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Cargo metadata cannot be resolved.
+    pub async fn uses_map_gpu(&self, target: &Triple) -> eyre::Result<bool> {
+        self.links_runtime_package(target, "waterui-map-gpu").await
+    }
+
     /// Whether the application's graph turns on the `video` component for
     /// `target`: a `video` feature enabled inside the application's own
     /// subtree, resolved the way [`Self::uses_standard_webview`] resolves
@@ -977,7 +988,7 @@ impl Project {
         section: GraphSection,
     ) -> eyre::Result<crate::templates::WebAnswers> {
         let targets = crate::platform::wasm_target_triples();
-        let (video, webview) = futures_util::future::try_join(
+        let (video, webview, map_gpu) = futures_util::future::try_join3(
             self.unanimous_graph_answer(
                 &targets,
                 "the video usage",
@@ -992,9 +1003,20 @@ impl Project {
                 |enabled: &bool| enabled.to_string(),
                 |project, target| async move { project.uses_standard_webview(&target).await },
             ),
+            self.unanimous_graph_answer(
+                &targets,
+                "the GPU map usage",
+                section,
+                |enabled: &bool| enabled.to_string(),
+                |project, target| async move { project.uses_map_gpu(&target).await },
+            ),
         )
         .await?;
-        Ok(crate::templates::WebAnswers { video, webview })
+        Ok(crate::templates::WebAnswers {
+            video,
+            webview,
+            map_gpu,
+        })
     }
 
     /// The two `WebView` answers `os`'s generated-manifest table gets from
@@ -1029,7 +1051,7 @@ impl Project {
         targets: &[Triple],
         section: GraphSection,
     ) -> eyre::Result<crate::templates::BrowserAnswers> {
-        let (webview_enabled, engine, video_gpu) = futures_util::future::try_join3(
+        let (webview_enabled, engine, video_gpu, map_gpu) = futures_util::future::try_join4(
             self.uses_standard_webview_for(targets, section),
             self.linked_browser_engine_for(targets, section),
             self.unanimous_graph_answer(
@@ -1039,12 +1061,20 @@ impl Project {
                 |enabled: &bool| enabled.to_string(),
                 |project, target| async move { project.uses_video_gpu(&target).await },
             ),
+            self.unanimous_graph_answer(
+                targets,
+                "the GPU map usage",
+                section,
+                |enabled: &bool| enabled.to_string(),
+                |project, target| async move { project.uses_map_gpu(&target).await },
+            ),
         )
         .await?;
         Ok(crate::templates::BrowserAnswers {
             webview_enabled,
             engine,
             video_gpu,
+            map_gpu,
         })
     }
 

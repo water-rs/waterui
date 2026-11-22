@@ -10,11 +10,11 @@ use hydrolysis::{
     AccessibilityActivationPointError, FontFamilyResolution, HeadlessRuntime, KeyCode, Modifiers,
     PainterUnavailable, PointerKind, SemanticRuntime, Style,
 };
-use waterui::app::{App, AppParts};
-use waterui::window::Window;
-use waterui::{Plugin, ViewExt as _};
-use waterui_core::handler::AnyViewBuilder;
-use waterui_core::{AnyView, ContentLedger, Environment, View};
+use waterui::app::{App, AppMenuBar, AppParts, WindowSink, Windows};
+use waterui::window::{Window, WindowChannel, WindowToolbar};
+use waterui::{ContentLedger, Plugin, ViewExt as _};
+use waterui_core::handler::{AnyViewBuilder, ViewBuilder};
+use waterui_core::{AnyView, Environment, View};
 
 use crate::artifacts::{CapturedSnapshot, TestArtifacts};
 use crate::driver::{
@@ -75,18 +75,9 @@ pub fn ui() -> UiBuilder {
 /// Panics if the app declares no window, or if the initial Hydrolysis
 /// offscreen frame does not produce an accessibility tree.
 #[must_use]
-pub fn mount_app(app: App, style: impl Style) -> OffscreenApp {
-    let window = app
-        .windows()
-        .first()
-        .expect("mount_app mounts the app's first window, and the app declares none");
-    let size = *waterui_core::Signal::snapshot(&window.frame).size();
+pub fn mount_app<W: Windows, M: AppMenuBar>(app: App<W, M>, style: impl Style) -> OffscreenApp {
     ui().theme(style)
-        .viewport(
-            frame_points_as_u32(size.width),
-            frame_points_as_u32(size.height),
-        )
-        .mount_app(app)
+        .mount_first_window(app, Viewport::FromWindow)
 }
 
 /// Converts a window's declared frame extent — positive logical points —
@@ -245,19 +236,6 @@ impl<S> UiBuilder<S> {
 
     fn mount_env(&self) -> Environment {
         let mut env = self.env.clone();
-        // The harness mounts views without going through `App::new`, which is
-        // where a real app installs the self-drawn realizations the facade
-        // carries. Install them here so a test binary that enables
-        // `waterui/video-gpu` exercises the same hooks an app would. A
-        // realization from a component crate of its own — `waterui-map-gpu` —
-        // is installed by the test itself, into the environment it passes here,
-        // exactly as an application installs it in `app(env)`.
-        waterui::realization::install(&mut env);
-        // Hydrolysis owns no platform media bridge, so the self-drawn video
-        // realization applies on every host OS, including the ones
-        // `realization::install` skips because their system backend would
-        // bridge a native player.
-        waterui::realization::install_video(&mut env);
         // An application's declared fonts are staged by the `water` CLI; a
         // test binary resolves the package under test's crate-local ones
         // itself, styled or not, as the application path loads them. A host
@@ -315,6 +293,52 @@ struct StyleTokens<S: Style>(Rc<S>);
 impl<S: Style> Plugin for StyleTokens<S> {
     fn install(self, env: &mut Environment) {
         self.0.install_tokens(env);
+    }
+}
+
+/// Where the viewport of a mounted app's window comes from.
+#[derive(Debug, Clone, Copy)]
+enum Viewport {
+    /// The builder's configured viewport.
+    Configured,
+    /// The window's declared frame.
+    FromWindow,
+}
+
+/// Mounts the first window an app declares and drops the rest.
+struct FirstWindow<S: Style> {
+    builder: Option<UiBuilder<Styled<S>>>,
+    env: Option<Environment>,
+    viewport: Viewport,
+    mounted: Option<OffscreenApp>,
+}
+
+impl<S: Style> WindowSink for FirstWindow<S> {
+    fn window<C: ViewBuilder, T: WindowToolbar>(&mut self, window: Window<C, T>) {
+        let Some(mut builder) = self.builder.take() else {
+            return;
+        };
+        if matches!(self.viewport, Viewport::FromWindow) {
+            let size = *waterui_core::Signal::snapshot(&window.frame).size();
+            builder = builder.viewport(
+                frame_points_as_u32(size.width),
+                frame_points_as_u32(size.height),
+            );
+        }
+        let env = self
+            .env
+            .take()
+            .expect("the first window takes the environment once");
+        self.mounted = Some(builder.mount_rendered_window(env, window));
+    }
+
+    fn channel<C: ViewBuilder, T: WindowToolbar>(&mut self, channel: WindowChannel<C, T>) {
+        let mut queued = channel.drain().into_iter();
+        if self.builder.is_some()
+            && let Some(first) = queued.next()
+        {
+            self.window(first);
+        }
     }
 }
 
@@ -423,29 +447,40 @@ impl<S: Style> UiBuilder<Styled<S>> {
     /// initial Hydrolysis offscreen frame does not produce an accessibility
     /// tree.
     #[must_use]
-    pub fn mount_app(self, app: App) -> OffscreenApp {
+    pub fn mount_app<W: Windows, M: AppMenuBar>(self, app: App<W, M>) -> OffscreenApp {
+        self.mount_first_window(app, Viewport::Configured)
+    }
+
+    /// Mounts `app`'s first window, see [`Self::mount_app`].
+    fn mount_first_window<W: Windows, M: AppMenuBar>(
+        self,
+        app: App<W, M>,
+        viewport: Viewport,
+    ) -> OffscreenApp {
         let AppParts {
             windows,
             env: app_env,
             ..
         } = app.into_parts();
-        let window = windows.into_iter().next().expect(
-            "UiBuilder::mount_app mounts the app's first window, and the app declares none",
-        );
         // The app's environment is the composition root, so it layers over
         // the builder's — what the test installed applies underneath it.
         let mut env = app_env.layered_on(&self.env);
-        // As on `mount_env`, Hydrolysis owns no platform media bridge, so the
-        // self-drawn video realization applies even where `App::new`'s
-        // `realization::install` skipped it.
-        waterui::realization::install_video(&mut env);
         // As on `mount_env`, the package under test's crate-local declared
         // fonts resolve here unless the layered environment — the app's or
         // the test's — already carries a `DeclaredFonts`, as a CLI-launched
         // runtime binary's does (the CLI staged the fonts into the resource
         // directory).
         crate::declared_fonts::install_declared_fonts(&mut env);
-        self.mount_rendered_window(env, window)
+        let mut first = FirstWindow {
+            builder: Some(self),
+            env: Some(env),
+            viewport,
+            mounted: None,
+        };
+        windows.for_each(&mut first);
+        first
+            .mounted
+            .expect("mount_app mounts the app's first window, and the app declares none")
     }
 
     /// Mounts `content` on the rendered runtime — the mount a view-only
@@ -484,7 +519,11 @@ impl<S: Style> UiBuilder<Styled<S>> {
     /// app's `frame` binding at its initial value, so every signal derived
     /// from it — a `max_width` computed from the frame, a `when()` keyed on
     /// width — would resolve against a size the mounted viewport never had.
-    fn mount_rendered_window(self, mut env: Environment, window: Window) -> OffscreenApp {
+    fn mount_rendered_window<C: ViewBuilder, T: WindowToolbar>(
+        self,
+        mut env: Environment,
+        window: Window<C, T>,
+    ) -> OffscreenApp {
         let Self {
             width,
             height,

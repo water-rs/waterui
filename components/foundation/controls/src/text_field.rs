@@ -8,25 +8,26 @@ use core::num::NonZeroUsize;
 use alloc::vec::Vec;
 use nami::{Binding, Computed};
 use waterui_core::Str;
+use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::handler::{Handler, SharedAction};
-use waterui_core::{AnyView, Environment, View, layout::StretchAxis};
-use waterui_core::{configurable, contract_violation};
+use waterui_core::layout::StretchAxis;
+use waterui_core::{AnyView, Environment, Native, NativeView, View, contract_violation};
 use waterui_text::{IntoText, Text, TextConfig, styled::StyledStr};
 
-use crate::label::{IntoLabel, Label, impl_label_style_methods};
+use crate::label::{ControlLabel, IntoLabel, Label, LabelKind, impl_label_style_methods};
 use crate::menu::{MenuItem, MenuView, ResolvedMenuItem, resolve_menu_items};
 
 /// Configuration options for a `TextField`.
 #[non_exhaustive]
 #[derive(Debug)]
-pub struct TextFieldConfig {
+pub struct TextFieldConfig<L> {
     /// The label displayed for the text field.
     ///
     /// Always present: it is required at construction so assistive technology
     /// has a name to announce, even when
     /// [`LabelDisplayMode::Hidden`](crate::label::LabelDisplayMode::Hidden)
     /// removes the visible chrome.
-    label: Label,
+    label: Label<L>,
     /// The binding to the text value.
     value: Binding<StyledStr>,
     /// The placeholder text shown when the field is empty.
@@ -50,7 +51,7 @@ pub struct TextFieldConfig {
     on_submit: Option<SharedAction>,
 }
 
-impl TextFieldConfig {
+impl<L> TextFieldConfig<L> {
     /// The label displayed for the text field.
     ///
     /// Always present: it is required at construction so assistive technology
@@ -58,17 +59,17 @@ impl TextFieldConfig {
     /// [`LabelDisplayMode::Hidden`](crate::label::LabelDisplayMode::Hidden)
     /// removes the visible chrome.
     #[must_use]
-    pub const fn label(&self) -> &Label {
+    pub const fn label(&self) -> &Label<L> {
         &self.label
     }
 
     /// Sets the `label`.
-    pub fn set_label(&mut self, label: Label) {
+    pub fn set_label(&mut self, label: Label<L>) {
         self.label = label;
     }
 
     /// The label displayed for the control, for editing it in place.
-    pub const fn label_mut(&mut self) -> &mut Label {
+    pub const fn label_mut(&mut self) -> &mut Label<L> {
         &mut self.label
     }
 
@@ -125,9 +126,9 @@ impl TextFieldConfig {
 /// Native-resolved text field payload.
 #[derive(Debug)]
 #[non_exhaustive]
-pub struct ResolvedTextFieldConfig {
+pub struct ResolvedTextFieldConfig<S> {
     /// The label displayed for the text field.
-    label: Label,
+    label: ControlLabel<S>,
     /// The binding to the text value.
     value: Binding<StyledStr>,
     /// The resolved placeholder text shown when the field is empty.
@@ -147,10 +148,10 @@ pub struct ResolvedTextFieldConfig {
     on_submit: Option<SharedAction>,
 }
 
-impl ResolvedTextFieldConfig {
+impl<S> ResolvedTextFieldConfig<S> {
     /// The label displayed for the text field.
     #[must_use]
-    pub const fn label(&self) -> &Label {
+    pub const fn label(&self) -> &ControlLabel<S> {
         &self.label
     }
 
@@ -208,7 +209,7 @@ impl ResolvedTextFieldConfig {
     pub fn into_parts(
         self,
     ) -> (
-        Label,
+        ControlLabel<S>,
         Binding<StyledStr>,
         TextConfig,
         KeyboardType,
@@ -230,18 +231,59 @@ impl ResolvedTextFieldConfig {
     }
 }
 
-configurable!(
-    /// Resolved text field view passed to native backends.
-    ResolvedTextField,
-    ResolvedTextFieldConfig,
-    StretchAxis::Horizontal
-);
+impl<S: 'static> NativeView for ResolvedTextFieldConfig<S> {
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::Horizontal
+    }
+}
+
+impl<S: 'static> MapSlots<S> for ResolvedTextFieldConfig<S> {
+    type With<T: 'static> = ResolvedTextFieldConfig<T>;
+
+    fn map_slots<T: 'static>(
+        self,
+        f: impl Fn(S) -> T + Clone + 'static,
+    ) -> ResolvedTextFieldConfig<T> {
+        ResolvedTextFieldConfig {
+            label: self.label.map_slots(f),
+            value: self.value,
+            prompt: self.prompt,
+            keyboard: self.keyboard,
+            content_type: self.content_type,
+            selection_menu: self.selection_menu,
+            line_limit: self.line_limit,
+            on_submit: self.on_submit,
+        }
+    }
+}
+
+/// Resolved text field view passed to native backends.
+#[derive(Debug)]
+#[must_use]
+pub struct ResolvedTextField<S>(pub ResolvedTextFieldConfig<S>);
+
+impl<S: View> From<ResolvedTextFieldConfig<S>> for ResolvedTextField<S> {
+    fn from(value: ResolvedTextFieldConfig<S>) -> Self {
+        Self(value)
+    }
+}
+
+impl<S: View> View for ResolvedTextField<S> {
+    fn body(self, _env: &Environment) -> impl View {
+        Native::new(self.0.map_slots(AnyView::new))
+    }
+
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        backend.native(self.0.map_slots(B::Slot::from_view), env, cx)
+    }
+}
 
 /// A single-line text input field.
 #[derive(Debug)]
-pub struct TextField(TextFieldConfig);
+#[must_use]
+pub struct TextField<L>(TextFieldConfig<L>);
 
-impl TextField {
+impl<L> TextField<L> {
     /// Creates a new `TextField` with the given label and value binding.
     ///
     /// The label is mandatory — see [the label module](mod@crate::label). It names
@@ -249,16 +291,14 @@ impl TextField {
     /// [`Self::prompt`], which is the placeholder shown inside an empty field.
     /// Chain [`Self::hide_label`] to drop the visible label while keeping the
     /// accessibility name.
-    #[must_use]
-    pub fn new(label: impl IntoLabel, value: &Binding<Str>) -> Self {
+    pub fn new<I: IntoLabel<Kind = L>>(label: I, value: &Binding<Str>) -> Self {
         let styled_value = map_plain_binding(value);
         Self::styled(label, &styled_value)
     }
 
     /// Creates a new `TextField` with the given label, backed by a styled text
     /// binding.
-    #[must_use]
-    pub fn styled(label: impl IntoLabel, value: &Binding<StyledStr>) -> Self {
+    pub fn styled<I: IntoLabel<Kind = L>>(label: I, value: &Binding<StyledStr>) -> Self {
         Self(TextFieldConfig {
             label: label.into_label(),
             value: value.clone(),
@@ -271,19 +311,21 @@ impl TextField {
         })
     }
 
+    pub(crate) const fn label_mut(&mut self) -> &mut Label<L> {
+        self.0.label_mut()
+    }
+
     /// Sets the maximum number of lines to show.
     ///
     /// By default, the line limit is 1. The argument is a [`NonZeroUsize`] so
     /// that "zero lines" is rejected at the type level rather than at runtime.
     /// Use [`Self::disable_line_limit`] to remove the limit entirely.
-    #[must_use]
     pub const fn line_limit(mut self, line_limit: NonZeroUsize) -> Self {
         self.0.line_limit = Some(line_limit);
         self
     }
 
     /// Disables the line limit.
-    #[must_use]
     pub const fn disable_line_limit(mut self) -> Self {
         self.0.line_limit = None;
         self
@@ -293,21 +335,18 @@ impl TextField {
     ///
     /// In a field without a line limit Return inserts a line break and never
     /// submits.
-    #[must_use]
     pub fn on_submit<Args>(mut self, action: impl Handler<Args, ()>) -> Self {
         self.0.on_submit = Some(SharedAction::new(action));
         self
     }
 
     /// Sets the prompt for the text field.
-    #[must_use]
     pub fn prompt(mut self, prompt: impl IntoText) -> Self {
         self.0.prompt = prompt.into_text();
         self
     }
 
     /// Sets custom selected-text menu items for this text field.
-    #[must_use]
     pub fn selection_menu(mut self, items: impl MenuView) -> Self {
         self.0.selection_menu = items.into_menu_items();
         self
@@ -318,7 +357,6 @@ impl TextField {
     /// This is the escape hatch that lets wrappers observe or replace the
     /// field's text source — `waterui_form::valid::ValidatableView` uses it to
     /// splice a validating binding in front of the field.
-    #[must_use]
     pub const fn value_binding(&mut self) -> &mut Binding<StyledStr> {
         &mut self.0.value
     }
@@ -326,7 +364,6 @@ impl TextField {
     /// Sets the on-screen keyboard the field requests while editing.
     ///
     /// Platforms without a software keyboard ignore this hint.
-    #[must_use]
     pub const fn keyboard(mut self, keyboard: KeyboardType) -> Self {
         self.0.keyboard = keyboard;
         self
@@ -337,19 +374,17 @@ impl TextField {
     /// this drives the autofill suggestions above the keyboard, including the
     /// one-time code the system offers for a received SMS; on Android the
     /// autofill service sees the matching hint.
-    #[must_use]
     pub const fn content_type(mut self, content_type: ContentType) -> Self {
         self.0.content_type = Some(content_type);
         self
     }
 }
 
-impl View for TextField {
-    fn body(self, env: &Environment) -> impl View {
+impl<L: LabelKind> TextField<L> {
+    fn into_resolved<S: ChildSlot>(self, env: &Environment) -> ResolvedTextFieldConfig<S> {
         let selection_menu = resolve_menu_items(&self.0.selection_menu, env);
-
-        AnyView::new(ResolvedTextField(ResolvedTextFieldConfig {
-            label: self.0.label.resolve(env),
+        ResolvedTextFieldConfig {
+            label: self.0.label.into_control_label::<S>(env),
             value: self.0.value,
             prompt: self.0.prompt.resolve(env),
             keyboard: self.0.keyboard,
@@ -357,14 +392,24 @@ impl View for TextField {
             selection_menu,
             line_limit: self.0.line_limit,
             on_submit: self.0.on_submit,
-        }))
+        }
     }
 }
 
-impl_label_style_methods!(TextField);
+impl<L: LabelKind> View for TextField<L> {
+    fn body(self, env: &Environment) -> impl View {
+        Native::new(self.into_resolved::<AnyView>(env))
+    }
+
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        backend.native(self.into_resolved::<B::Slot>(env), env, cx)
+    }
+}
+
+impl_label_style_methods!(TextField<L>);
 
 /// Creates a new [`TextField`] with the specified label and value binding.
-pub fn field(label: impl IntoLabel, value: &Binding<Str>) -> TextField {
+pub fn field<L: IntoLabel>(label: L, value: &Binding<Str>) -> TextField<L::Kind> {
     TextField::new(label, value)
 }
 

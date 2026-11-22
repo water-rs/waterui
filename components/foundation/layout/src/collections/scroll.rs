@@ -1,7 +1,7 @@
 //! Scroll containers that defer behaviour to the active renderer backend.
 
 use nami::{Binding, Computed};
-use waterui_core::backend::{Backend, ChildSlot};
+use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::{AnyView, Environment, Native, NativeView, View, animation::Animation};
 
 use crate::{Point, Size, StretchAxis};
@@ -57,7 +57,7 @@ impl<T> ScrollRequest<T> {
 ///
 /// `at_start`/`at_end` report edge contact across every axis the view
 /// scrolls along: a view smaller than its viewport is both at start and at
-/// end. Follow-tail UIs read them through [`Computed::map`] — for example
+/// end. Follow-tail UIs read them through [`SignalExt::map`](nami::SignalExt::map) — for example
 /// `controller.position().map(|p| p.is_some_and(|p| p.at_end))`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[non_exhaustive]
@@ -218,7 +218,7 @@ impl<T: Clone + 'static> ScrollController<T> {
     /// read-only for the app — writing it does not scroll; use
     /// [`Self::scroll_to`] for that.
     ///
-    /// Read edge contact through [`Computed::map`], e.g.
+    /// Read edge contact through [`SignalExt::map`](nami::SignalExt::map), e.g.
     /// `controller.position().map(|p| p.is_some_and(|p| p.at_end))` for a
     /// follow-tail chat view.
     #[must_use]
@@ -288,7 +288,7 @@ where
 /// The content keeps its own type, `C`, until the view reaches a backend,
 /// which receives it as its child slot and realizes it in place.
 #[derive(Debug)]
-pub struct ScrollView<C = AnyView> {
+pub struct ScrollView<C> {
     axis: Axis,
     content: C,
     controller: Option<ScrollController<Point>>,
@@ -299,7 +299,7 @@ pub struct ScrollView<C = AnyView> {
 /// hands them to a backend.
 #[derive(Debug)]
 #[non_exhaustive]
-pub struct ScrollViewParts<C = AnyView> {
+pub struct ScrollViewParts<C> {
     /// The axis or axes the view scrolls along.
     axis: Axis,
     /// The scrolled content.
@@ -498,7 +498,26 @@ impl<C: View> View for ScrollView<C> {
 
     /// Reaches the backend with the content in the backend's child slot.
     fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
-        backend.native(self.map_content(B::Slot::from_view), env, cx)
+        #[cfg(feature = "erased-dispatch")]
+        {
+            backend.native(
+                self.map_content(|content| B::Slot::from_view(AnyView::new(content))),
+                env,
+                cx,
+            )
+        }
+        #[cfg(not(feature = "erased-dispatch"))]
+        {
+            backend.native(self.map_content(B::Slot::from_view), env, cx)
+        }
+    }
+}
+
+impl<C> MapSlots<C> for ScrollView<C> {
+    type With<T: 'static> = ScrollView<T>;
+
+    fn map_slots<T: 'static>(self, f: impl Fn(C) -> T + Clone + 'static) -> ScrollView<T> {
+        self.map_content(f)
     }
 }
 

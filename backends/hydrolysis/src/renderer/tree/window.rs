@@ -386,7 +386,27 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// Like the rendered path, a call made with a tree already built applies
     /// the pending patch and re-emits instead of re-dispatching.
     #[cfg(hydrolysis_cherenkov)]
-    pub(crate) fn capture_window_semantics(&mut self, content: AnyView, env: &Environment) {
+    pub(crate) fn capture_window_semantics(&mut self, content: impl View, env: &Environment) {
+        self.capture_window_semantics_with(env, |core, env| RenderNode::build(content, env, core));
+    }
+
+    #[cfg(hydrolysis_cherenkov)]
+    pub(crate) fn capture_held_window_semantics(
+        &mut self,
+        content: HeldChild<E>,
+        env: &Environment,
+    ) {
+        self.capture_window_semantics_with(env, |core, env| {
+            RenderNode::build_held(content, env, core)
+        });
+    }
+
+    #[cfg(hydrolysis_cherenkov)]
+    fn capture_window_semantics_with(
+        &mut self,
+        env: &Environment,
+        build: impl FnOnce(&mut Self, &Environment) -> RenderNode<E>,
+    ) {
         if self.render_tree.is_some() {
             assert!(
                 self.flush_window_semantics(env),
@@ -400,7 +420,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         self.begin_rebuild();
         self.begin_semantic_rebuild_frame();
         self.render_depth = 0;
-        let tree = RenderNode::build(content, env, self);
+        let tree = build(self, env);
         // Marks on the window tree propagate to the window's root cell,
         // which the pump polls.
         tree.core().cell.set_parent(self.root_cell());
@@ -523,10 +543,13 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         });
         // The `.dialog` modal layer draws above everything: scrim, card and
         // the modal input scope the card registers through its environment.
-        let host = self.core.presentation_hosts.dialog.clone();
-        self.record_host(&host, |renderer| {
-            renderer.render_dialogs(transform, safe_area);
-        });
+        #[cfg(waterui_feature = "dialog")]
+        {
+            let host = self.core.presentation_hosts.dialog.clone();
+            self.record_host(&host, |renderer| {
+                renderer.render_dialogs(transform, safe_area);
+            });
+        }
     }
 }
 
@@ -534,7 +557,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// Build the retained tree before its first sized frame, so statically
     /// reachable nodes exist before the first render target is presented.
     #[cfg(test)]
-    pub(crate) fn prepare_window_tree(&mut self, content: AnyView, env: &Environment) {
+    pub(crate) fn prepare_window_tree(&mut self, content: impl View, env: &Environment) {
         assert!(
             self.render_tree.is_none(),
             "hydrolysis renderer: window tree prepared more than once"
@@ -557,11 +580,39 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// `render_tree` for subsequent per-frame flushes.
     pub fn capture_window_tree(
         &mut self,
-        content: AnyView,
+        content: impl View,
         env: &Environment,
         bounds: kurbo::Rect,
         transform: kurbo::Affine,
         hit_transform: kurbo::Affine,
+    ) {
+        self.capture_window_tree_with(env, bounds, transform, hit_transform, |core, env| {
+            RenderNode::build(content, env, core)
+        });
+    }
+
+    /// [`Self::capture_window_tree`] for a window dispatched from the view
+    /// tree, whose content is held in [`HeldChild`].
+    pub(crate) fn capture_held_window_tree(
+        &mut self,
+        content: HeldChild<E>,
+        env: &Environment,
+        bounds: kurbo::Rect,
+        transform: kurbo::Affine,
+        hit_transform: kurbo::Affine,
+    ) {
+        self.capture_window_tree_with(env, bounds, transform, hit_transform, |core, env| {
+            RenderNode::build_held(content, env, core)
+        });
+    }
+
+    fn capture_window_tree_with(
+        &mut self,
+        env: &Environment,
+        bounds: kurbo::Rect,
+        transform: kurbo::Affine,
+        hit_transform: kurbo::Affine,
+        build: impl FnOnce(&mut SemanticCore<E>, &Environment) -> RenderNode<E>,
     ) {
         let _flush_span = tracing::debug_span!("hydrolysis_capture_window_tree").entered();
         let (content_rect, size, safe_area) = window_root_layout(self, env, bounds, transform);
@@ -627,7 +678,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 .set_update(self.frame_stage_times.update() + update_started_at.elapsed());
         }
         self.render_depth = 0;
-        let mut node = RenderNode::build(content, env, self);
+        let mut node = build(self, env);
         node.core().cell.set_parent(self.root_cell());
         // The build is the flush for every mark it raised (dev's rebuild
         // generation dropped the same marks): only a mark raised by the

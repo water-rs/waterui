@@ -20,6 +20,7 @@ use waterui::component::list::{List, ListItem};
 use waterui::component::progress::progress;
 use waterui::component::table::{col, table};
 use waterui::theme::color::Error;
+use waterui::widget::Divider;
 use waterui_controls::button::button;
 use waterui_controls::menu::{CommandExt as _, Menu};
 use waterui_controls::slider::slider;
@@ -40,7 +41,7 @@ use waterui_graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
 use waterui_graphics::{GpuContent, GpuView};
 use waterui_layout::spacer::spacer;
 use waterui_layout::stack::{VStackLayout, hstack, vstack};
-use waterui_layout::{Divider, LazyContainer, scroll};
+use waterui_layout::{LazyContainer, scroll};
 use waterui_navigation::NavigationView;
 use waterui_navigation::tab::{Tab, Tabs};
 use waterui_navigation::{NavigationLink, NavigationSplitView, NavigationStack};
@@ -1090,10 +1091,10 @@ fn tabs_emit_tab_list_and_click_selects() {
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
         AnyView::new(Tabs::new(
             &selection_for_view,
-            vec![
+            (
                 Tab::new("First", || NavigationView::new("One", text("one"))),
                 Tab::new("Second", || NavigationView::new("Two", text("two"))),
-            ],
+            ),
         ))
     }));
 

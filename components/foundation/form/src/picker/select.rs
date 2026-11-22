@@ -2,9 +2,11 @@ use alloc::vec::Vec;
 use nami::SignalExt;
 use nami::signal::IntoComputed;
 use nami::{Binding, Computed};
-use waterui_controls::label::Label;
+use waterui_controls::label::{ControlLabel, Label, LabelKind};
 use waterui_controls::{ControlSize, IntoLabel, impl_label_style_methods};
-use waterui_core::{Environment, configurable, layout::StretchAxis};
+use waterui_core::backend::{Backend, ChildSlot, MapSlots};
+use waterui_core::layout::StretchAxis;
+use waterui_core::{AnyView, Environment, Native, NativeView, View};
 
 use waterui_core::id::{Id, Mapping, TaggedView};
 use waterui_locale::locale_binding;
@@ -40,16 +42,16 @@ pub enum PickerStyle {
 }
 
 #[non_exhaustive]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 /// Configuration for the `Picker` component.
-pub struct PickerConfig {
+pub struct PickerConfig<S> {
     /// The label displayed for the picker.
     ///
     /// Always present: it is required at construction so assistive technology
     /// has a name to announce, even when
     /// [`LabelDisplayMode::Hidden`](waterui_controls::label::LabelDisplayMode::Hidden)
     /// removes the visible chrome.
-    label: Label,
+    label: ControlLabel<S>,
     /// The items to display in the picker.
     items: Computed<Vec<PickerItem<Id>>>,
     /// The binding to the currently selected item.
@@ -60,25 +62,20 @@ pub struct PickerConfig {
     size: ControlSize,
 }
 
-impl PickerConfig {
+impl<S> PickerConfig<S> {
     /// The label displayed for the picker.
-    ///
-    /// Always present: it is required at construction so assistive technology
-    /// has a name to announce, even when
-    /// [`LabelDisplayMode::Hidden`](waterui_controls::label::LabelDisplayMode::Hidden)
-    /// removes the visible chrome.
     #[must_use]
-    pub const fn label(&self) -> &Label {
+    pub const fn label(&self) -> &ControlLabel<S> {
         &self.label
     }
 
     /// Sets the `label`.
-    pub fn set_label(&mut self, label: Label) {
+    pub fn set_label(&mut self, label: ControlLabel<S>) {
         self.label = label;
     }
 
     /// The label displayed for the control, for editing it in place.
-    pub const fn label_mut(&mut self) -> &mut Label {
+    pub const fn label_mut(&mut self) -> &mut ControlLabel<S> {
         &mut self.label
     }
 
@@ -105,51 +102,7 @@ impl PickerConfig {
     pub const fn size(&self) -> ControlSize {
         self.size
     }
-}
 
-configurable!(
-    /// A control for selecting from a list of options.
-    ///
-    /// Picker displays a selection UI (menu, wheel, or segmented style depending on context).
-    ///
-    /// The label is required at construction; hide it visually with
-    /// [`Picker::hide_label`] when the surrounding chrome already names the
-    /// control.
-    ///
-    /// # Layout Behavior
-    ///
-    /// A segmented picker takes the width it is offered: it answers the
-    /// proposed width and its intrinsic height, dividing the width into equal
-    /// segments, and answers its intrinsic width when the width is unbounded.
-    /// Every other style (automatic, menu, radio) answers the platform
-    /// control's intrinsic size and never stretches to fill extra space
-    /// (`docs/layout-spec.md` §6).
-    //
-    // ═══════════════════════════════════════════════════════════════════════════
-    // INTERNAL: Layout Contract for Backend Implementers
-    // ═══════════════════════════════════════════════════════════════════════════
-    //
-    // - Segmented: stretchAxis `.horizontal`; sizeThatFits answers the
-    //   proposed width (never below the row's intrinsic width) and the
-    //   intrinsic height; the row is divided into equal segments.
-    // - Every other style: stretchAxis `.none`; sizeThatFits answers the
-    //   control's intrinsic size.
-    // - Read the axis from `NativeView::stretch_axis` on the payload; do not
-    //   restate the rule in the backend.
-    //
-    // ═══════════════════════════════════════════════════════════════════════════
-    //
-    Picker,
-    PickerConfig,
-    |config| config.layout_stretch_axis(),
-    resolve | config,
-    env | config.resolve(env)
-);
-
-/// A picker item that associates a value of type `T` with a text display.
-pub type PickerItem<T> = TaggedView<T, Text>;
-
-impl PickerConfig {
     /// `docs/layout-spec.md` §6: a picker is `Horizontal` in the segmented
     /// style and `None` in every other.
     const fn layout_stretch_axis(&self) -> StretchAxis {
@@ -161,7 +114,6 @@ impl PickerConfig {
 
     #[must_use]
     fn resolve(mut self, env: &Environment) -> Self {
-        self.label = self.label.resolve(env);
         let env = env.clone();
         let locale = locale_binding(&env);
         self.items = self
@@ -178,7 +130,56 @@ impl PickerConfig {
     }
 }
 
-impl Picker {
+impl<S: 'static> NativeView for PickerConfig<S> {
+    fn stretch_axis(&self) -> StretchAxis {
+        self.layout_stretch_axis()
+    }
+}
+
+impl<S: 'static> MapSlots<S> for PickerConfig<S> {
+    type With<T: 'static> = PickerConfig<T>;
+
+    fn map_slots<T: 'static>(self, f: impl Fn(S) -> T + Clone + 'static) -> PickerConfig<T> {
+        PickerConfig {
+            label: self.label.map_slots(f),
+            items: self.items,
+            selection: self.selection,
+            style: self.style,
+            size: self.size,
+        }
+    }
+}
+
+/// A picker item that associates a value of type `T` with a text display.
+pub type PickerItem<T> = TaggedView<T, Text>;
+
+/// A control for selecting from a list of options.
+///
+/// Picker displays a selection UI (menu, wheel, or segmented style depending on context).
+///
+/// The label is required at construction; hide it visually with
+/// [`Picker::hide_label`] when the surrounding chrome already names the
+/// control.
+///
+/// # Layout Behavior
+///
+/// A segmented picker takes the width it is offered: it answers the
+/// proposed width and its intrinsic height, dividing the width into equal
+/// segments, and answers its intrinsic width when the width is unbounded.
+/// Every other style (automatic, menu, radio) answers the platform
+/// control's intrinsic size and never stretches to fill extra space
+/// (`docs/layout-spec.md` §6).
+#[derive(Debug, Clone)]
+#[must_use]
+pub struct Picker<L> {
+    label: Label<L>,
+    items: Computed<Vec<PickerItem<Id>>>,
+    selection: Binding<Id>,
+    style: PickerStyle,
+    size: ControlSize,
+}
+
+impl<L> Picker<L> {
     /// Creates a new `Picker` with the given label, items, and selection
     /// binding.
     ///
@@ -186,8 +187,8 @@ impl Picker {
     /// [the label module](mod@waterui_controls::label). Chain [`Self::hide_label`]
     /// when the surrounding chrome already names the picker; the label stays in
     /// the accessibility tree.
-    pub fn new<T: Ord + Clone + 'static>(
-        label: impl IntoLabel,
+    pub fn new<T: Ord + Clone + 'static, I: IntoLabel<Kind = L>>(
+        label: I,
         items: impl IntoComputed<Vec<PickerItem<T>>>,
         selection: &Binding<T>,
     ) -> Self {
@@ -205,27 +206,22 @@ impl Picker {
                 .computed()
         };
 
-        Self(PickerConfig {
+        Self {
             label: label.into_label(),
             items,
             selection: mapping.binding(selection),
             style: PickerStyle::default(),
             size: ControlSize::Small,
-        })
+        }
+    }
+
+    pub(crate) const fn label_mut(&mut self) -> &mut Label<L> {
+        &mut self.label
     }
 
     /// Sets the visual style of the picker.
-    ///
-    /// # Arguments
-    ///
-    /// * `style` - The picker style to apply
-    ///
-    /// # Returns
-    ///
-    /// The modified picker with the style set
-    #[must_use]
     pub const fn style(mut self, style: PickerStyle) -> Self {
-        self.0.style = style;
+        self.style = style;
         self
     }
 
@@ -233,28 +229,76 @@ impl Picker {
     /// [`ControlSize::Small`], like a
     /// [`Button`](waterui_controls::button::Button), when none is chosen; a
     /// theme decides what each size changes.
-    #[must_use]
     pub const fn size(mut self, size: ControlSize) -> Self {
-        self.0.size = size;
+        self.size = size;
         self
     }
 
     /// Changes the picker to segmented button style.
-    #[must_use]
     pub const fn segmented(self) -> Self {
         self.style(PickerStyle::Segmented)
     }
 }
 
-impl_label_style_methods!(Picker);
+impl<L: LabelKind> Picker<L> {
+    fn into_config<S: ChildSlot>(self, env: &Environment) -> PickerConfig<S> {
+        PickerConfig {
+            label: self.label.into_control_label::<S>(env),
+            items: self.items,
+            selection: self.selection,
+            style: self.style,
+            size: self.size,
+        }
+        .resolve(env)
+    }
+}
+
+impl<L: LabelKind> Picker<L> {
+    /// Returns the configuration for this picker.
+    #[must_use]
+    pub fn config(self) -> PickerConfig<Label<L>> {
+        PickerConfig {
+            label: self.label.into_unscoped_control_label(),
+            items: self.items,
+            selection: self.selection,
+            style: self.style,
+            size: self.size,
+        }
+    }
+}
+
+impl<S: View> From<PickerConfig<S>> for Picker<ControlLabel<S>> {
+    fn from(value: PickerConfig<S>) -> Self {
+        let mode = value.label.display_mode_preference();
+        Self {
+            label: Label::from_control_label(value.label, mode),
+            items: value.items,
+            selection: value.selection,
+            style: value.style,
+            size: value.size,
+        }
+    }
+}
+
+impl<L: LabelKind> View for Picker<L> {
+    fn body(self, env: &Environment) -> impl View {
+        Native::new(self.into_config::<AnyView>(env))
+    }
+
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        backend.native(self.into_config::<B::Slot>(env), env, cx)
+    }
+}
+
+impl_label_style_methods!(Picker<L>);
 
 /// Creates a new `Picker` with the given label, items, and selection binding.
 /// See [`Picker`] for more details.
-pub fn picker<T: Ord + Clone + 'static>(
-    label: impl IntoLabel,
+pub fn picker<T: Ord + Clone + 'static, L: IntoLabel>(
+    label: L,
     items: impl IntoComputed<Vec<PickerItem<T>>>,
     selection: &Binding<T>,
-) -> Picker {
+) -> Picker<L::Kind> {
     Picker::new(label, items, selection)
 }
 
@@ -286,7 +330,7 @@ mod tests {
             )
             .style(style);
             assert_eq!(
-                NativeView::stretch_axis(&picker.0),
+                NativeView::stretch_axis(&picker.config()),
                 expected,
                 "{style:?} (payload)"
             );

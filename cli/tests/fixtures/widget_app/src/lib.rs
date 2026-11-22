@@ -7,7 +7,12 @@ fn steps(context: &WidgetContext) -> Timeline {
     // The FFI probe asserts the context travels intact — echo the family
     // and proposed size into the produced content.
     let size = context.display_size();
-    let steps = format!("{:?} {:.0}x{:.0}", context.family(), size.width, size.height);
+    let steps = format!(
+        "{:?} {:.0}x{:.0}",
+        context.family(),
+        size.width,
+        size.height
+    );
     Timeline::new([
         TimelineEntry::new(
             Date::unix_timestamp(1_700_000_000.0),
@@ -31,7 +36,7 @@ fn steps(context: &WidgetContext) -> Timeline {
     families = [systemSmall]
 )]
 fn now() -> impl WidgetContent {
-    hstack((text("now"), Image::system("clock.fill")))
+    hstack((text("now"), Image::sf_symbol("clock.fill")))
 }
 
 /// A serializable widget action — `#[widget_intent]` on the type declares

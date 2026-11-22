@@ -6,8 +6,8 @@
 //! surface.
 //!
 //! The tests mount the shape a real engine deployment has — a
-//! [`WebViewController`] carried in the environment plus the `Hook<WebView>`
-//! that draws the component — with [`TestController`] standing in for the
+//! [`WebViewController`] carried in the environment plus the engine's
+//! `WebView` hook scoped over the view — with [`TestController`] standing in for the
 //! engine so no page ever loads. What they assert is what the harness can
 //! still observe: the realization publishes exactly one accessibility node,
 //! and writing a new URL into a bound `Binding` navigates the web view it
@@ -20,17 +20,18 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use waterui::ViewExt as _;
+use waterui::accessibility::{AccessibilityRole, default_role};
 use waterui::component::vstack;
 use waterui::shape::{Rectangle, ShapeExt as _};
 use waterui::text;
 use waterui::{Color, Environment, SignalExt as _, Str};
-use waterui_core::accessibility::{AccessibilityRole, default_role};
-use waterui_core::{AnyView, Metadata, Retain, Signal, binding};
+use waterui_core::view::hook::Hook;
+use waterui_core::{Metadata, Retain, Signal, View, binding};
 use waterui_testing::{Role, UiBuilder};
 use waterui_webview::{
-    AssetResponse, BackendEvent, Cookie, CustomWebViewController, ScriptInjectionTime,
-    ScriptMessageHandler, Url, UserScript, WatcherGuard, WatcherSet, WebView, WebViewConfig,
-    WebViewController, WebViewHandle, WebViewOpenError, WebViewProxy,
+    AssetResponse, BackendEvent, Cookie, OpenedWebView, ScriptInjectionTime, ScriptMessageHandler,
+    Url, UserScript, WatcherGuard, WatcherSet, WebView, WebViewConfig, WebViewController,
+    WebViewHandle, WebViewOpen, WebViewOpenError, WebViewProxy, open_webview, open_webview_with,
 };
 
 const DOCS_URL: &str = "https://waterui.dev/docs";
@@ -64,8 +65,10 @@ impl TestController {
     }
 }
 
-impl CustomWebViewController for TestController {
-    fn open(&self, _config: WebViewConfig) -> Result<impl WebViewHandle, WebViewOpenError> {
+impl WebViewController for TestController {
+    type Handle = TestHandle;
+
+    fn open(&self, _config: WebViewConfig) -> Result<Self::Handle, WebViewOpenError> {
         self.opens.set(self.opens.get() + 1);
         Ok(TestHandle {
             navigations: Rc::clone(&self.navigations),
@@ -165,22 +168,45 @@ impl WebViewHandle for TestHandle {
     }
 }
 
-/// The realization both tests install in place of a linked engine.
+/// The engine the tests scope in place of a backend-selected engine.
 ///
-/// It stands in for `waterui_browser_cef::install` / `..._wpe::install` the
-/// way those look from the tree: [`default_role`] wrapped around opaque
-/// self-drawn content, holding the `WebView` alive for the surface's
-/// lifetime. A filled shape stands in for the surface because it reaches the
-/// renderer's self-drawn-graphics leaf the same way and needs no GPU device.
-fn realization(env: &Environment, webview: WebView) -> AnyView {
-    AnyView::new(Metadata::new(
-        default_role(
-            env,
-            Rectangle.fill(Color::srgb_hex("#3B82F6")),
-            AccessibilityRole::Group,
-        ),
-        Retain::new(webview),
-    ))
+/// It stands in for a GPU-backed engine realization the way it looks from the
+/// tree: [`default_role`] wrapped around opaque self-drawn content, holding the
+/// `WebView` alive for the surface's lifetime. A filled shape stands in for the
+/// surface because it reaches the renderer's self-drawn-graphics leaf the same
+/// way and needs no GPU device.
+#[derive(Clone)]
+struct TestEngine {
+    controller: TestController,
+    drawn: Rc<Cell<bool>>,
+}
+
+impl TestEngine {
+    fn new(controller: TestController) -> Self {
+        Self {
+            controller,
+            drawn: Rc::new(Cell::new(false)),
+        }
+    }
+}
+
+impl Hook for TestEngine {
+    type Target = WebViewOpen;
+
+    fn apply(&self, open: WebViewOpen, env: &Environment) -> Result<impl View, WebViewOpen> {
+        self.drawn.set(true);
+        let opened = open.open_with(&self.controller, env);
+        // The realization owns the semantic component for the surface's
+        // lifetime, the way every engine does.
+        Ok(Metadata::new(
+            default_role(
+                env,
+                Rectangle.fill(Color::srgb_hex("#3B82F6")),
+                AccessibilityRole::Group,
+            ),
+            Retain::new(opened.map(OpenedWebView::into_webview)),
+        ))
+    }
 }
 
 /// Writing a new URL into the binding a web view opened with navigates that
@@ -194,10 +220,8 @@ fn changing_the_url_binding_keeps_the_same_webview(ui: UiBuilder) {
     let url_for_view = url.clone();
 
     let controller = TestController::new();
-    let mut env = Environment::new();
-    env.insert(WebViewController::new(controller.clone()));
-    env.insert_hook::<WebView, AnyView>(realization);
-    let mut app = ui.environment(env).mount(move || {
+    let engine = TestEngine::new(controller.clone());
+    let mut app = ui.mount(move || {
         let address = url_for_view
             .clone()
             .map(|url: Url| Str::from(url.as_str().to_owned()));
@@ -207,6 +231,7 @@ fn changing_the_url_binding_keeps_the_same_webview(ui: UiBuilder) {
                 .a11y_label("Docs WebView")
                 .size(WEBVIEW_WIDTH, WEBVIEW_HEIGHT),
         ))
+        .hooks(engine.clone())
     });
 
     app.query()
@@ -236,10 +261,9 @@ fn changing_the_url_binding_keeps_the_same_webview(ui: UiBuilder) {
     );
 }
 
-/// A browser engine the application links installs a `Hook<WebView>`, and that
-/// realization is what draws the component — including on a backend that
-/// bridges a platform engine of its own and would otherwise take the
-/// component by type before `body` ever ran.
+/// A browser engine's hook scoped over the views is what draws the
+/// component — including on a backend that bridges a platform engine of its
+/// own and would otherwise realize the component itself.
 ///
 /// The filled shape the hook returns also proves the accessibility half of
 /// the engine path: the node a screen reader gets when nothing in the host
@@ -247,23 +271,14 @@ fn changing_the_url_binding_keeps_the_same_webview(ui: UiBuilder) {
 /// of the `Image` a graphics leaf would default to.
 #[waterui::test(viewport = (420, 420))]
 fn an_installed_realization_draws_the_webview_and_keeps_its_node(ui: UiBuilder) {
-    let drawn = Rc::new(Cell::new(false));
-    let mut env = Environment::new();
-    env.insert(WebViewController::new(TestController::new()));
-    env.insert_hook::<WebView, AnyView>({
-        let drawn = Rc::clone(&drawn);
-        move |env: &Environment, webview: WebView| {
-            drawn.set(true);
-            // The realization owns the semantic component for the surface's
-            // lifetime, the way every engine install does.
-            realization(env, webview)
-        }
-    });
+    let engine = TestEngine::new(TestController::new());
+    let drawn = Rc::clone(&engine.drawn);
 
-    let mut app = ui.environment(env).mount(|| {
+    let mut app = ui.mount(move || {
         WebView::open(DOCS_URL)
             .a11y_label("Docs WebView")
             .size(WEBVIEW_WIDTH, WEBVIEW_HEIGHT)
+            .hooks(engine.clone())
     });
 
     assert!(
@@ -293,7 +308,8 @@ fn an_installed_realization_draws_the_webview_and_keeps_its_node(ui: UiBuilder) 
 #[test]
 fn inject_script_rejects_a_creation_time_key_before_the_backend() {
     let controller = TestController::new();
-    let webview = WebViewController::new(controller.clone()).open_with(
+    let webview = open_webview_with(
+        &controller,
         WebViewConfig::default().with_scripts(vec![UserScript::new(
             "theme",
             "document.body.dataset.theme = 'dark';",
@@ -363,14 +379,13 @@ fn inject_script_rejects_a_creation_time_key_before_the_backend() {
 )]
 fn open_assets_without_an_asset_origin_opens_no_view(ui: UiBuilder) {
     let controller = TestController::new();
-    let mut env = Environment::new();
-    env.insert(WebViewController::new(controller.clone()));
-    env.insert_hook::<WebView, AnyView>(realization);
+    let engine = TestEngine::new(controller.clone());
 
-    let _app = ui.environment(env).mount(|| {
+    let _app = ui.mount(move || {
         WebView::open_assets(|_request| AssetResponse::not_found(), "/index.html")
             .a11y_label("Bundled site")
             .size(WEBVIEW_WIDTH, WEBVIEW_HEIGHT)
+            .hooks(engine.clone())
     });
 
     assert_eq!(
@@ -383,9 +398,11 @@ fn open_assets_without_an_asset_origin_opens_no_view(ui: UiBuilder) {
 /// An engine that cannot create a view.
 struct RefusingController;
 
-impl CustomWebViewController for RefusingController {
-    fn open(&self, _config: WebViewConfig) -> Result<impl WebViewHandle, WebViewOpenError> {
-        Err::<TestHandle, _>(WebViewOpenError::MainThreadRequired)
+impl WebViewController for RefusingController {
+    type Handle = TestHandle;
+
+    fn open(&self, _config: WebViewConfig) -> Result<Self::Handle, WebViewOpenError> {
+        Err(WebViewOpenError::MainThreadRequired)
     }
 
     fn asset_origin(&self) -> Option<Url> {
@@ -399,7 +416,7 @@ impl CustomWebViewController for RefusingController {
 #[test]
 #[cfg_attr(debug_assertions, should_panic(expected = "could not open a web view"))]
 fn a_view_the_engine_cannot_open_is_unavailable_and_inert() {
-    let webview = WebViewController::new(RefusingController).open();
+    let webview = open_webview(&RefusingController);
 
     assert!(webview.handle().is_unavailable());
     webview.handle().go_to(&Url::new(DOCS_URL));

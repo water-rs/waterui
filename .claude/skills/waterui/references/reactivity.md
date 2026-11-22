@@ -429,44 +429,45 @@ Before writing one, check all three replacements:
 
 The associated-function spelling `Dynamic::watch(signal, closure)` is the same thing as
 the free `watch(..)`; the closure takes the value by move and must return one uniform
-type, so heterogeneous arms erase with `AnyView::new(..)`:
+type, so heterogeneous arms return the variants of one `OneOfN`:
 
 ```rust
 Dynamic::watch(mode.clone(), |mode| match mode {
-    ChartMode::Bar => AnyView::new(bar_chart()),
-    ChartMode::Line => AnyView::new(line_chart()),
+    ChartMode::Bar => OneOf2::A(bar_chart()),
+    ChartMode::Line => OneOf2::B(line_chart()),
 })
 ```
 
 That usage is legitimate — the arms are genuinely different view types and this is
 structural control flow, not a stand-in for a reactive property. The other legitimate
-form is a handler-driven swap through `Dynamic::new()`:
+form is a handler-driven swap through `Dynamic::<V>::new()`:
 
 ```rust
-let (handler, slot) = Dynamic::new();
+let (handler, slot) = Dynamic::<Photo>::new();
 
 button("Load")
     .action(
         |State(url): State<Binding<Str>>,
          State(blur): State<Binding<f64>>,
-         h: DynamicHandler| {
+         h: DynamicHandler<Photo>| {
             let Ok(parsed) = url.snapshot().as_str().parse::<Url>() else { return };
-            h.set(Photo::new(parsed).blur(blur.clone()));
+            h.set(Photo::new(parsed));
         },
     )
     .state(&url)
-    .state(&blur)
     .state(&handler);
 
-vstack((slot, /* … */))
+vstack((slot.blur(blur.clone()), /* … */))
 ```
 
-`DynamicHandler` is `#[state]`-marked, so `h: DynamicHandler` reads the `.state(&handler)`
-injection bare while the `Binding`s stay wrapped in `State<..>` (they are foreign types).
+`DynamicHandler<V>` is `#[state]`-marked, so `h: DynamicHandler<Photo>` reads the
+`.state(&handler)` injection bare while the `Binding`s stay wrapped in `State<..>` (they are
+foreign types). The handler names the view type it delivers, so the swap dispatches
+statically; when the replacements differ in type, deliver the variants of one `OneOfN`.
 
-Even there, keep the *reactive* properties reactive — the replacement above is built with
-`.blur(blur.clone())`, not `.blur(blur.snapshot())`, so the slider keeps working without
-another swap.
+Even there, keep the *reactive* properties reactive and outside the swap — the blur above
+is applied to the slot with `.blur(blur.clone())`, not baked into each replacement, so the
+slider keeps working without another swap.
 
 ## Async, tasks, and lifecycle
 

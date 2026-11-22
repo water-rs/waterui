@@ -197,15 +197,15 @@ fn folder_chip(name: &'static str, active: bool) -> impl View {
     use waterui::shape::{RoundedRectangle, ShapeExt as _};
     use waterui::theme::color::{Accent, SurfaceVariant};
 
-    let label_view: waterui::AnyView = if active {
-        text(name).caption().bold().foreground(Accent).anyview()
+    let label_view = if active {
+        waterui::OneOf2::A(text(name).caption().bold().foreground(Accent))
     } else {
-        text(name).caption().muted().anyview()
+        waterui::OneOf2::B(text(name).caption().muted())
     };
     label_view.padding_with((3.0, 10.0)).background(if active {
-        RoundedRectangle::new(0.5).fill(SurfaceVariant).anyview()
+        waterui::OneOf2::A(RoundedRectangle::new(0.5).fill(SurfaceVariant))
     } else {
-        waterui::AnyView::default()
+        waterui::OneOf2::B(())
     })
 }
 
@@ -223,7 +223,7 @@ fn folder_icon_button() -> impl View {
 fn folder_rail_row(
     chips: &[(&'static str, i32)],
     controller: &waterui_layout::scroll::ScrollController<waterui::layout::Point>,
-) -> impl View {
+) -> impl View + use<> {
     use waterui::component::lazy::Lazy;
     use waterui::id::SelfId;
     use waterui::views::ForEach;
@@ -233,7 +233,7 @@ fn folder_rail_row(
             chips.iter().copied().map(SelfId::new).collect::<Vec<_>>(),
             |tab| {
                 let (name, id) = tab.into_inner();
-                folder_chip(name, id == 0).anyview()
+                folder_chip(name, id == 0)
             },
         )))
         .scroll_controller(controller)
@@ -483,7 +483,7 @@ fn report_offset_writes_the_offset_on_controller_scroll_to() {
 fn nav_rail(
     offset: &Binding<waterui::layout::Point>,
     controller: &waterui_layout::scroll::ScrollController<waterui::layout::Point>,
-) -> impl View {
+) -> impl View + use<> {
     scroll(
         vstack((
             labeled_card("Item 1", 120.0, 60.0, Srgb::new(1.0, 0.1, 0.1)),

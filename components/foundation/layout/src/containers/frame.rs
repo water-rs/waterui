@@ -3,7 +3,7 @@
 use alloc::{collections::BTreeSet, vec, vec::Vec};
 use nami::{Computed, Signal, SignalExt};
 use waterui_core::{
-    AnyView, IntoSignalF32, View,
+    IntoSignalF32, View,
     layout::{LayoutInvalidationCallback, StretchAxis},
 };
 
@@ -390,22 +390,22 @@ fn frame_resolved_axis(
 /// The Frame view allows you to specify minimum, ideal, and maximum dimensions
 /// for width and height, and controls how the child is aligned within the frame.
 #[derive(Debug)]
-pub struct Frame {
+pub struct Frame<C> {
     layout: FrameLayout,
-    content: AnyView,
+    content: C,
 }
 
-impl Frame {
+impl<C: View> Frame<C> {
     /// Creates a new Frame with the specified content and alignment.
     ///
     /// # Arguments
     /// * `content` - The child view to be contained within the frame
     /// * `alignment` - How the child should be aligned within the frame
     #[must_use]
-    pub fn new(content: impl View) -> Self {
+    pub fn new(content: C) -> Self {
         Self {
             layout: FrameLayout::default(),
-            content: AnyView::new(content),
+            content,
         }
     }
 
@@ -496,10 +496,10 @@ impl Frame {
     }
 }
 
-impl View for Frame {
+impl<C: View> View for Frame<C> {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         // The Frame view's body is just a Container with our custom layout and the child content.
-        FixedContainer::new(self.layout, vec![self.content])
+        FixedContainer::new(self.layout, (self.content,))
     }
 }
 

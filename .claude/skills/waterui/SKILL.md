@@ -176,7 +176,7 @@ adding them is an architectural error.
 ## Quick start
 
 ```rust
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::prelude::*;
 
 fn counter() -> impl View {
@@ -192,7 +192,7 @@ fn counter() -> impl View {
     .padding()
 }
 
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     App::new(counter, env)
 }
 ```
@@ -234,10 +234,12 @@ the same types as the facade, including with dynamic linking. Maps have the faca
 feature `map` (`waterui::map`, the same types as a direct `waterui-map` dependency).
 Mermaid diagrams use a direct dependency on `waterui-mermaid`, which lives
 in its own repository (water-rs/mermaid) and is a git dependency until it can be
-published. Mermaid additionally needs one call at the root of the app: a
-```` ```mermaid ```` fence in Markdown stays plain code until the environment has
-`waterui_mermaid::install(&mut env)` (do it inside `use_env` at the root view, as the
-component repository's `examples/markdown` shows, so `water preview` gets it too). Keep
+published. Mermaid additionally needs one modifier at the root of the app: a
+```` ```mermaid ```` fence in Markdown stays plain code until its hook is scoped over it with
+`.hooks(waterui_mermaid::MermaidFences)` (on the root view, as the component repository's
+`examples/markdown` shows, so `water preview` gets it too). A hook
+(`waterui::view::hook::Hook`) realizes one payload type — `CodeConfig` here — or declines
+it; `.hooks(..)` takes one hook or a tuple, and the nearest scope is asked first. Keep
 the generated `dev = ["waterui/dynamic_linking"]` feature — it is what makes `water preview`
 and the fast dev loop link dynamically ([references/project.md](references/project.md)).
 
@@ -279,8 +281,10 @@ impl View for ColorSwatch {
 }
 ```
 
-`AnyView` is the erased view type — `.anyview()` or `AnyView::new(v)` — for match arms,
-struct fields, and heterogeneous `collect()`s.
+Branches that return different view types return `OneOf2`..`OneOf8` (in the prelude):
+`if wide { OneOf2::A(sidebar()) } else { OneOf2::B(tabs()) }`. Each branch keeps its own
+type and dispatches statically. `AnyView::new(v)` is the erased view type, for a set of
+view types that is genuinely open at run time.
 
 ### State
 
@@ -399,15 +403,15 @@ The distinction matters: `Option<impl View>` is a view, but a *signal* of
 `Option<impl View>` is not, so `flag.map(|b| b.then(|| view))` on a `Binding` does not
 compile. Reach for `when` or `.visible` there.
 
-For many branches over a plain (non-reactive) value, a `match` returning `.anyview()` is
-clearer than a long `when` chain.
+For many branches over a plain (non-reactive) value, a `match` whose arms return the
+variants of one `OneOfN` is clearer than a long `when` chain.
 
 `#[view_builder]` (a non-async function or method returning `-> impl View`) and
 `view! { .. }` (a block expression) let branches return different view types without
-`.anyview()`. They rewrite only tail-position `if`, `if let` and `match` expressions
+naming a `OneOfN`. They rewrite only tail-position `if`, `if let` and `match` expressions
 (and `return` values): the condition or scrutinee is evaluated once and bound as the
 signal, and the expression becomes `watch(signal.clone(), move |value| ..)`, the `if`
-or `match` running on each value; branches are wrapped in `Result`/`Option` so the
+or `match` running on each value; branches are wrapped in `OneOfN`/`Option` so the
 types unify (an `if` without `else` renders nothing when false). So the condition must
 itself be a `Clone` signal: `if flag` on a `Binding<bool>` or `match tab` on a
 `Binding<i32>` is reactive, a plain `bool` or integer is a constant signal read once,
@@ -520,11 +524,11 @@ web, graphics, and data rows live in [references/media.md](references/media.md).
 | Content | `Avatar` `Link` `Accordion` `.badge(n)` `loading()` |
 | Navigation | `Tabs` `Tab` `NavigationStack` `NavigationLink` `NavigationSplitView` `Window` |
 | Forms | `#[form]` `form()` `DatePicker` `Calendar` `ColorPicker` `FilePicker` |
-| Overlays | `Snackbar` `SnackbarManager` `FullScreenOverlayManager` `Card` `suspense` `.anchored_overlay` `AnchoredOverlay` `.dialog` `Dialog` `DialogAction` |
+| Overlays | `.snackbar_host` `.snackbar_host_with_icons` `Snackbar` `SnackbarManager` `.full_screen_overlay_host` `FullScreenOverlayManager` `Card` `suspense` `.anchored_overlay` `AnchoredOverlay` `.dialog` `Dialog` `DialogAction` |
 | Media | `Photo` `Image` `VideoPlayer` `PlaybackSession` `MediaPicker` |
 | Data | `waterui::chart` (13 kinds: `line_chart` `bar_chart` `pie_chart` …) `Map` |
 | Graphics | `Canvas` `Barcode::qr()` `Svg` `shader!` `ParticleSystem` `GpuView` `ExternalFrameView` icon sets |
-| Platform | `WebView` `#[js_api]` `waterui-chromium` |
+| Platform | `WebView` `#[js_api]` `waterui-chromium` `waterui_apple::AppleView` `hydrolysis::AndroidView` |
 
 ## Verify before declaring done
 

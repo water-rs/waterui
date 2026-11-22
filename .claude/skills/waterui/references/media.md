@@ -189,14 +189,14 @@ open.with_proxy(move || hstack((
 
 `proxy.run_javascript(expr)` is async (`Result<Str, Str>`, the JSON of the value) — await
 it in `.action_async`. The proxy also has `go_forward`, `refresh`, `stop`, `set_cookie`,
-`get_cookies().await` and `set_user_agent`. On a `WebView` handle (not the proxy) — the
-value `WebViewController::open()` returns, the controller being an extractor —
+`get_cookies().await` and `set_user_agent`. Inside a backend realization or test that holds
+an opened `WebView` handle (not the proxy),
 `eval!(webview, "expr @{value}").await` decodes the result into a Rust type and
 `exec!(webview, "program").await` runs for effect (`exec_file!(webview, "scripts/setup.js")`
 is the fused `webview.exec(&js_file!(..))`, awaited the same way); `@{..}` holes are passed as bound
-arguments, never spliced into the source. `with_proxy` always places the page below the
-content; on such a handle `webview.proxy_scope(|| controls)` attaches the proxy and leaves
-placement to you.
+arguments, never spliced into the source. Application views use `WebView::open(url).with_proxy(|| controls)`
+(placing the page below the content); backend realizations with an opened handle can also use
+`webview.proxy_scope(|| controls)` to attach the proxy alongside a custom surface.
 
 The Rust↔page bridge is declared with `#[js_api]` on an impl block and served on the
 builder; the method's *asyncness* is the discriminator:
@@ -234,20 +234,23 @@ synchronous method with arguments is a compile error.
 macro only writes what `.handler(name, closure)` and `.expose(name, signal)` express by
 hand.
 
-Which browser engine draws a `WebView` follows the app's own dependencies, not a project
-setting. Link nothing and the platform's engine is used (`WKWebView`, Android `WebView`,
-`WebKitGTK`). To pick one of WaterUI's bundled engines instead, add `waterui-browser-cef`
-(with its `webview` feature) or `waterui-browser-wpe` as a dependency and call its
-`install(&mut env)` in `app` before
-`App::new` — the `WebView` code above is unchanged either way. Installing two engines
-panics: one component, one engine. Linux outside GTK bridges no system engine, so a
-`WebView` there needs one of these crates.
+Which browser engine draws a `WebView` is selected at compile time from the app's own
+dependencies, not a project setting or runtime hook. Link neither engine crate and the
+platform's engine is used (`WKWebView`, Android `WebView`, `WebKitGTK`). To pick one of
+WaterUI's bundled engines instead, add `waterui-browser-cef` (with its `webview` feature)
+or `waterui-browser-wpe` (with its `webview` feature) as a dependency; the backend
+enables `webview-cef` or `webview-wpe` at compile time, uses its `WebViewController`
+through `NativeBackend`, and realizes every `WebView` through that engine with plain
+`App::new(root, env)`. The `WebView` code above is unchanged either way. Linux outside GTK bridges no system engine,
+so a `WebView` there needs one of these crates.
 
 `waterui-chromium` is the separate, heavier component for a full Chromium surface,
 headless pages, screenshots, and DevTools Protocol access. It is a direct crate
 dependency (not a `waterui` feature), paired with `waterui-browser-cef`'s `chromium`
-feature; calling `waterui_browser_cef::install_chromium(&mut env)` in `app` installs a
-`ChromiumController` into the environment (`env.get::<ChromiumController>()`);
+feature; starting `let runtime = waterui_browser_cef::CefRuntime::packaged()` in `app`
+and inserting `runtime.chromium_controller()` and `runtime` into `env` installs a
+`ChromiumController` into the environment (`env.get::<ChromiumController>()`), and
+`ChromiumView` draws its GPU surface directly without any hook;
 `controller.open(ChromiumConfiguration::new(url))` (`.profile(..)`, `.proxy(..)`,
 `.language(..)`, `.user_agent(..)`) returns a value that is both a `View` and a handle (`.page()` — clone the page out *before* the
 view moves into the layout); `page.watch(|event: ChromiumEvent| ..)` observes lifecycle
@@ -506,22 +509,20 @@ title).subtitle(..)`, `.is_interactive(false)`, `.shows_user_location(true)`,
 `.follows_location(signal)`, and `.status(&Binding<MapStatus>)`, which the map fills with
 `Loading | Ready | Failed(reason)` so the app can draw its own spinner or error over it.
 
-`waterui-map` is the semantic component; who *draws* it is the application's choice, made
-in `app(env)`. Apple platforms bridge MapKit and need nothing. Every other platform draws
-the map itself, from `waterui-map-gpu`, which the app installs and gives a tile source —
-there is no built-in one, and without both lines the map draws nothing (`waterui-map-gpu` +
-`waterui-url` as direct deps). `MapStyle::Satellite` and `Hybrid` render there only when the
-options also carry `.satellite_style_url(url)` / `.hybrid_style_url(url)`; otherwise the map
-reports `MapStatus::Failed` instead of drawing the standard style. Tile limits, cache size,
-timeout and retry are further `MapGpuOptions` builders. `install` yields to a backend that
-already registered a platform map, so the guard below only keeps the GPU map out of Apple
-builds:
+`waterui-map` is the semantic component; who *draws* it follows the backend and the app's
+dependencies. The Apple backend bridges MapKit and needs nothing. Hydrolysis — Android,
+Windows, Linux, the web — draws the map itself with `waterui-map-gpu`: depend on it
+(`waterui-map-gpu` + `waterui-url` as direct deps) and `water` builds Hydrolysis with the GPU
+map. It needs a tile source in `app(env)` — there is no built-in one, and a map without it,
+or a Hydrolysis build without `waterui-map-gpu`, draws nothing. `MapStyle::Satellite` and
+`Hybrid` render there only when the options also carry `.satellite_style_url(url)` /
+`.hybrid_style_url(url)`; otherwise the map reports `MapStatus::Failed` instead of drawing
+the standard style. Tile limits, cache size, timeout and retry are further `MapGpuOptions`
+builders:
 
 ```rust
 use waterui_map_gpu::MapGpuOptions;
 env.insert(MapGpuOptions::new(waterui_url::Url::new("https://tiles.openfreemap.org/styles/positron")));
-#[cfg(not(target_vendor = "apple"))] // Apple bridges MapKit; keeps the GPU map out of Apple builds
-waterui_map_gpu::install(&mut env);
 ```
 
 Maps need the `internet` permission; showing the user's location needs the `location`

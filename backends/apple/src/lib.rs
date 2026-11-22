@@ -6,25 +6,51 @@
 
 extern crate alloc;
 
+#[cfg(all(feature = "webview", feature = "webview-cef"))]
+compile_error!(
+    "waterui-apple: `webview` and `webview-cef` are mutually exclusive; enable only one engine feature"
+);
+
+#[cfg(all(feature = "webview-cef", not(target_os = "macos")))]
+compile_error!("waterui-apple: `webview-cef` is only supported on macOS");
+
+pub mod apple_content;
 pub mod backend;
 /// The offscreen capture shared by `view_renderer` and the `preview`
 /// entry — nothing else references it. With `gpu_surface` the captures go
 /// through `capture_image`'s `ViewCapture` instead, so the
 /// bitmap-readback half only exists without it.
-#[cfg(not(feature = "gpu_surface"))]
+#[cfg(all(
+    not(feature = "gpu_surface"),
+    any(waterui_feature = "capture", preview_entry, feature = "native-test")
+))]
 pub(crate) mod capture;
 /// Awaiting the content a captured subtree owes — shared by the same two
 /// captures.
+#[cfg(any(waterui_feature = "capture", preview_entry, feature = "native-test"))]
 pub(crate) mod content;
 pub mod contract;
 pub mod dispatch;
 pub mod embedding;
 pub mod entry;
 mod native_layout;
+#[cfg(feature = "inspector")]
 mod native_log;
 #[cfg(preview_entry)]
 pub mod preview;
 pub mod resources;
+mod sf_symbol;
+
+pub use sf_symbol::SfSymbol;
+
+#[cfg(target_os = "macos")]
+pub use apple_content::objc2_app_kit;
+#[cfg(target_os = "ios")]
+pub use apple_content::objc2_ui_kit;
+pub use apple_content::{
+    AppleContent, AppleInvalidator, AppleMount, AppleView, MainThreadMarker, PlatformView,
+    Retained, objc2,
+};
 
 mod animation;
 #[cfg(feature = "gpu_surface")]
@@ -38,7 +64,9 @@ mod frozen_frame;
 mod gpu_completion;
 #[cfg(feature = "gpu_surface")]
 mod gpu_input;
+#[cfg(feature = "gpu_surface")]
 mod gpu_runtime;
+#[cfg(feature = "inspector")]
 mod inspector;
 mod invalidation;
 pub(crate) mod locale;
@@ -52,7 +80,7 @@ pub(crate) mod locale;
 ))]
 pub(crate) mod main_queue_owned;
 pub(crate) mod measure_memo;
-#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[cfg(all(any(target_os = "macos", target_os = "ios"), waterui_feature = "menu"))]
 pub(crate) mod menus;
 #[cfg(feature = "gpu_surface")]
 mod presentation_time;

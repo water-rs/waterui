@@ -99,7 +99,7 @@ pub const HOST_METHODS: &[HostMethod] = &[
     },
     HostMethod {
         name: "onNativeBandShow",
-        signature: "(JLjava/lang/String;)V",
+        signature: "(JLjava/lang/String;[I)V",
     },
     HostMethod {
         name: "onNativeBandClear",
@@ -140,6 +140,7 @@ mod tests {
         match kotlin {
             "Boolean" => "Z",
             "Int" => "I",
+            "IntArray" => "[I",
             "Long" => "J",
             "String" => "Ljava/lang/String;",
             other => {

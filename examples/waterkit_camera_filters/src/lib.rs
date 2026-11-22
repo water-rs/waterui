@@ -11,7 +11,7 @@ use futures::StreamExt;
 use shaderloom::CompiledShader;
 use waterkit_camera::{Camera, FrameConverter};
 use waterkit_permission::{Permission, PermissionStatus, check, request};
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::graphics::gpu::bytemuck;
 use waterui::graphics::{Context, Frame, GpuContent, GpuView};
 use waterui::prelude::slider::slider;
@@ -195,7 +195,7 @@ fn filter_button(
     label: &'static str,
     filter_index: usize,
     active_filter: &Binding<usize>,
-) -> impl View {
+) -> impl View + use<> {
     button(label)
         .action(move |State(selected): State<Binding<usize>>| selected.set(filter_index))
         .state(active_filter)
@@ -279,7 +279,7 @@ impl SyntheticCameraPreviewRenderer {
         }
     }
 
-    fn into_view(self) -> GpuView {
+    fn into_view(self) -> GpuView<SyntheticCameraPreviewContent> {
         let uniforms = Arc::new(Mutex::new(FilterUniforms(filter_params(0, 0.75))));
         let bridge = std::cell::RefCell::new(self);
         GpuView::new(SyntheticCameraPreviewContent {
@@ -360,7 +360,7 @@ impl CameraFilterRenderer {
         }
     }
 
-    fn into_view(self) -> GpuView {
+    fn into_view(self) -> GpuView<CameraFilterContent> {
         let shared = Arc::clone(&self.shared);
         let bridge = std::cell::RefCell::new(self);
         GpuView::new(CameraFilterContent {
@@ -843,6 +843,6 @@ const CAMERA_FILTER_SHADER: CompiledShader =
     include!(concat!(env!("OUT_DIR"), "/camera_filter.rs"));
 
 /// Builds the camera filter lab app around [`demo`].
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     App::new(demo, env)
 }

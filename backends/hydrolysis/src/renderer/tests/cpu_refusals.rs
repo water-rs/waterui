@@ -113,9 +113,7 @@ fn a_filter_output_size_is_refused_with_its_reason() {
         || {
             AnyView::new(
                 FilteredView {
-                    content: AnyView::new(
-                        ().size(32.0, 32.0).background(Color::srgb_hex("#36343B")),
-                    ),
+                    content: ().size(32.0, 32.0).background(Color::srgb_hex("#36343B")),
                     effect: AnyEffect::filter(filters::Blur(2.0f32)),
                     guards: ParamGuards::default(),
                 }

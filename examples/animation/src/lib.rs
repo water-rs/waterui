@@ -14,7 +14,7 @@
 
 use core::time::Duration;
 use waterui::animation::Animation;
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::prelude::slider::slider;
 use waterui::prelude::*;
 use waterui::preview;
@@ -34,13 +34,13 @@ fn transform_stage(content: impl View, side: f32) -> impl View {
     content.size(side, side)
 }
 
-fn set_f32_button(label: &'static str, value: f32, binding: &Binding<f32>) -> impl View {
+fn set_f32_button(label: &'static str, value: f32, binding: &Binding<f32>) -> impl View + use<> {
     button(label)
         .action(move |State(current): State<Binding<f32>>| current.set(value))
         .state(binding)
 }
 
-fn set_f64_button(label: &'static str, value: f64, binding: &Binding<f64>) -> impl View {
+fn set_f64_button(label: &'static str, value: f64, binding: &Binding<f64>) -> impl View + use<> {
     button(label)
         .action(move |State(current): State<Binding<f64>>| current.set(value))
         .state(binding)
@@ -64,7 +64,7 @@ struct ScaleRotation {
 }
 
 /// Demo: Scale animation - visual transform on colored boxes
-fn scale_animation_section(scale: &Binding<f32>) -> impl View {
+fn scale_animation_section(scale: &Binding<f32>) -> impl View + use<> {
     let animated_scale = scale.with(Animation::spring(300.0, 15.0));
 
     vstack((
@@ -86,7 +86,7 @@ fn scale_animation_section(scale: &Binding<f32>) -> impl View {
 }
 
 /// Demo: Rotation animation - spinning box
-fn rotation_animation_section(rotation: &Binding<f32>) -> impl View {
+fn rotation_animation_section(rotation: &Binding<f32>) -> impl View + use<> {
     let animated_rotation = rotation.with(Animation::ease_in_out(Duration::from_millis(500)));
 
     vstack((
@@ -122,7 +122,10 @@ fn rotation_animation_section(rotation: &Binding<f32>) -> impl View {
 }
 
 /// Demo: Translation animation - moving box
-fn translation_animation_section(offset_x: &Binding<f32>, offset_y: &Binding<f32>) -> impl View {
+fn translation_animation_section(
+    offset_x: &Binding<f32>,
+    offset_y: &Binding<f32>,
+) -> impl View + use<> {
     let animated_x = offset_x.with(Animation::spring(200.0, 20.0));
     let animated_y = offset_y.with(Animation::spring(200.0, 20.0));
     let axes = TranslationAxes {
@@ -163,7 +166,7 @@ fn translation_animation_section(offset_x: &Binding<f32>, offset_y: &Binding<f32
 fn combined_transform_section(
     combined_scale: &Binding<f32>,
     combined_rotation: &Binding<f32>,
-) -> impl View {
+) -> impl View + use<> {
     let animated_scale = combined_scale.with(Animation::spring(250.0, 18.0));
     let animated_rotation =
         combined_rotation.with(Animation::ease_in_out(Duration::from_millis(400)));
@@ -210,7 +213,7 @@ fn combined_transform_section(
 }
 
 /// Demo: Animated progress bar - the most visually impressive animation
-fn progress_animation_section(progress_value: &Binding<f64>) -> impl View {
+fn progress_animation_section(progress_value: &Binding<f64>) -> impl View + use<> {
     let animated_progress = progress_value.with(Animation::ease_in_out(Duration::from_millis(800)));
 
     vstack((
@@ -233,7 +236,7 @@ fn progress_animation_section(progress_value: &Binding<f64>) -> impl View {
 }
 
 /// Demo: Progress with spring physics - bouncy feel
-fn spring_progress_section(spring_value: &Binding<f64>) -> impl View {
+fn spring_progress_section(spring_value: &Binding<f64>) -> impl View + use<> {
     let animated_progress = spring_value.with(Animation::spring(200.0, 12.0));
     let status = spring_value.gt(0.5).select("High", "Low").animated();
 
@@ -261,7 +264,7 @@ fn spring_progress_section(spring_value: &Binding<f64>) -> impl View {
 }
 
 /// Demo: Animation curves comparison using visual bars
-fn animation_curves_section(bar_scale: &Binding<f32>) -> impl View {
+fn animation_curves_section(bar_scale: &Binding<f32>) -> impl View + use<> {
     // Same value animated with different curves - visually compare timing
     let linear_scale = bar_scale.with(Animation::linear(Duration::from_millis(1000)));
     let ease_in_scale = bar_scale.with(Animation::ease_in(Duration::from_millis(1000)));
@@ -313,7 +316,7 @@ fn animation_curves_section(bar_scale: &Binding<f32>) -> impl View {
 }
 
 /// Demo: Toggle with animated indicator
-fn toggle_animation_section(toggle_state: &Binding<bool>) -> impl View {
+fn toggle_animation_section(toggle_state: &Binding<bool>) -> impl View + use<> {
     // Animated scale for the indicator
     let indicator_scale = toggle_state
         .select(1.0, 0.3)
@@ -343,7 +346,7 @@ fn toggle_animation_section(toggle_state: &Binding<bool>) -> impl View {
 }
 
 /// Demo: Staggered animations with bars
-fn staggered_section(expanded: &Binding<bool>) -> impl View {
+fn staggered_section(expanded: &Binding<bool>) -> impl View + use<> {
     // Each bar has different spring stiffness, creating a cascading effect
     let bar1_scale = expanded
         .select(1.0, 0.2)
@@ -390,7 +393,7 @@ fn staggered_section(expanded: &Binding<bool>) -> impl View {
 }
 
 /// Demo: Animated size indicator - visual elements respond to value
-fn size_indicator_section(size_value: &Binding<f64>) -> impl View {
+fn size_indicator_section(size_value: &Binding<f64>) -> impl View + use<> {
     // Animated scale based on value (0-100 maps to 0.1-1.0 scale)
     let animated_scale = size_value
         .clone()
@@ -533,6 +536,6 @@ pub fn demo() -> impl View {
 }
 
 /// Builds the animation example app.
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     App::new(demo, env)
 }

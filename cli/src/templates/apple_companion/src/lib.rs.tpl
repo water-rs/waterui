@@ -1,9 +1,9 @@
 //! Native companion crate for {{ ctx.app_display_name }}.
 
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::env::Environment;
 
-fn app(env: Environment) -> App {
+fn app(env: Environment) -> App<impl Windows> {
     {{ ctx.crate_name_ident() }}::app(env)
 }
 

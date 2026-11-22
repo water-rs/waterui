@@ -8,6 +8,11 @@
 //! [`ForEach`] over a reactive collection, [`super::Section`], tuples up to
 //! 15 elements, fixed-size arrays, [`Vec<T>`], and `Option<T>`.
 //!
+//! Every row keeps its content's type: [`ListContent::Row`] is the one view
+//! type all of a content's rows share, and content holding differently typed
+//! rows — a tuple — unifies them as nested [`OneOf2`] branches, so a row
+//! reaches the backend without erasure.
+//!
 //! Static rows are *builders*, not finished [`super::ListItem`] values,
 //! because the list rematerializes a row every time it needs one — write
 //! `|| ListItem::new(…)`, not `ListItem::new(…)`. A [`ForEach`] keeps its
@@ -27,11 +32,11 @@
 use alloc::vec::Vec;
 
 use nami::collection::Collection;
-use waterui_core::AnyView;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::TaggedView;
+use waterui_core::{Environment, OneOf2, View};
 
-use waterui_controls::label::{IntoLabel, Label};
+use waterui_controls::label::{IntoLabel, Label, LabelKind};
 use waterui_layout::{
     padding::EdgeInsets,
     spacer::spacer,
@@ -78,8 +83,15 @@ pub struct SectionScope;
 /// surface in the same spirit as the `MenuView` trait, so user code cannot
 /// leak arbitrary `View` types into list rows by accident.
 pub trait ListContent<Scope = ListScope> {
-    /// Pushes the rows produced by this content into `sink`.
-    fn collect_items(self, sink: &mut ListItemSink);
+    /// The content type every row of this content carries.
+    type Row: View;
+
+    /// Pushes the rows produced by this content into `sink`, each row's
+    /// content passed through `wrap` into the sink's row type.
+    fn collect_items<R, W>(self, sink: &mut ListItemSink<R>, wrap: W)
+    where
+        R: View,
+        W: Fn(Self::Row) -> R + Clone + 'static;
 }
 
 mod sealed {
@@ -183,7 +195,14 @@ impl<T, C: ContentTags<T, Presence = Tagged> + ?Sized> TaggedBy<T> for C {}
 // ----------------------------------------------------------------------------
 
 impl<S> ListContent<S> for () {
-    fn collect_items(self, _sink: &mut ListItemSink) {}
+    type Row = ();
+
+    fn collect_items<R, W>(self, _sink: &mut ListItemSink<R>, _wrap: W)
+    where
+        R: View,
+        W: Fn(Self::Row) -> R + Clone + 'static,
+    {
+    }
 }
 
 impl<T> ContentTags<T> for () {
@@ -191,9 +210,15 @@ impl<T> ContentTags<T> for () {
 }
 
 impl<S, C: ListContent<S>> ListContent<S> for Option<C> {
-    fn collect_items(self, sink: &mut ListItemSink) {
+    type Row = C::Row;
+
+    fn collect_items<R, W>(self, sink: &mut ListItemSink<R>, wrap: W)
+    where
+        R: View,
+        W: Fn(Self::Row) -> R + Clone + 'static,
+    {
         if let Some(content) = self {
-            content.collect_items(sink);
+            content.collect_items(sink, wrap);
         }
     }
 }
@@ -203,9 +228,15 @@ impl<T, C: ContentTags<T>> ContentTags<T> for Option<C> {
 }
 
 impl<S, C: ListContent<S>> ListContent<S> for Vec<C> {
-    fn collect_items(self, sink: &mut ListItemSink) {
+    type Row = C::Row;
+
+    fn collect_items<R, W>(self, sink: &mut ListItemSink<R>, wrap: W)
+    where
+        R: View,
+        W: Fn(Self::Row) -> R + Clone + 'static,
+    {
         for item in self {
-            item.collect_items(sink);
+            item.collect_items(sink, wrap.clone());
         }
     }
 }
@@ -215,9 +246,15 @@ impl<T, C: ContentTags<T>> ContentTags<T> for Vec<C> {
 }
 
 impl<S, C: ListContent<S>, const N: usize> ListContent<S> for [C; N] {
-    fn collect_items(self, sink: &mut ListItemSink) {
+    type Row = C::Row;
+
+    fn collect_items<R, W>(self, sink: &mut ListItemSink<R>, wrap: W)
+    where
+        R: View,
+        W: Fn(Self::Row) -> R + Clone + 'static,
+    {
         for item in self {
-            item.collect_items(sink);
+            item.collect_items(sink, wrap.clone());
         }
     }
 }
@@ -231,39 +268,67 @@ impl<T, C: ContentTags<T>, const N: usize> ContentTags<T> for [C; N] {
 /// pre-built items from another module — without forcing them through
 /// [`Row`]. The closure is called by the framework whenever the row needs to
 /// be (re)materialized, so it must be `Fn`, not `FnOnce`.
-impl<S, F> ListContent<S> for F
+impl<S, F, V> ListContent<S> for F
 where
-    F: Fn() -> ListItem + 'static,
+    F: Fn() -> ListItem<V> + 'static,
+    V: View,
 {
-    fn collect_items(self, sink: &mut ListItemSink) {
-        sink.push(AnyViewBuilder::new(self));
+    type Row = V;
+
+    fn collect_items<R, W>(self, sink: &mut ListItemSink<R>, wrap: W)
+    where
+        R: View,
+        W: Fn(Self::Row) -> R + Clone + 'static,
+    {
+        sink.push(wrapped_builder(self, wrap));
     }
+}
+
+/// The builder of a static row whose content `wrap` carries into the sink's
+/// row type.
+fn wrapped_builder<V, R, W>(
+    build: impl Fn() -> ListItem<V> + 'static,
+    wrap: W,
+) -> AnyViewBuilder<ListItem<R>>
+where
+    V: View,
+    R: View,
+    W: Fn(V) -> R + 'static,
+{
+    AnyViewBuilder::new(move || build().map_content(&wrap))
 }
 
 /// An untagged row builder is not selectable, so it fits a list selected by
 /// any type and gives it nothing to select.
-impl<T, F> ContentTags<T> for F
+impl<T, F, V> ContentTags<T> for F
 where
-    F: Fn() -> ListItem + 'static,
+    F: Fn() -> ListItem<V> + 'static,
 {
     type Presence = Untagged;
 }
 
 /// A row builder tagged with [`ViewExt::tag`](crate::ViewExt::tag) is
 /// selected by its tag: `(|| ListItem::new(…)).tag(value)`.
-impl<S, T, F> ListContent<S> for TaggedView<T, F>
+impl<S, T, F, V> ListContent<S> for TaggedView<T, F>
 where
     T: 'static,
-    F: Fn() -> ListItem + 'static,
+    F: Fn() -> ListItem<V> + 'static,
+    V: View,
 {
-    fn collect_items(self, sink: &mut ListItemSink) {
-        sink.push_tagged(AnyViewBuilder::new(self.content), self.tag);
+    type Row = V;
+
+    fn collect_items<R, W>(self, sink: &mut ListItemSink<R>, wrap: W)
+    where
+        R: View,
+        W: Fn(Self::Row) -> R + Clone + 'static,
+    {
+        sink.push_tagged(wrapped_builder(self.content, wrap), self.tag);
     }
 }
 
-impl<T, F> ContentTags<T> for TaggedView<T, F>
+impl<T, F, V> ContentTags<T> for TaggedView<T, F>
 where
-    F: Fn() -> ListItem + 'static,
+    F: Fn() -> ListItem<V> + 'static,
 {
     type Presence = Tagged;
 }
@@ -273,21 +338,29 @@ where
 /// items it inserts, removes or moves are inserted, removed or moved in
 /// place, and inside a [`super::Section`] the header opens whichever row
 /// currently leads it.
-impl<S, C, F> ListContent<S> for ForEach<C, F, ListItem>
+impl<S, C, F, V> ListContent<S> for ForEach<C, F, ListItem<V>>
 where
     C: Collection + Clone + 'static,
     C::Item: Clone,
-    F: Fn(C::Item) -> ListItem + 'static,
+    F: Fn(C::Item) -> ListItem<V> + 'static,
+    V: View,
 {
-    fn collect_items(self, sink: &mut ListItemSink) {
-        sink.push_rows(self);
+    type Row = V;
+
+    fn collect_items<R, W>(self, sink: &mut ListItemSink<R>, wrap: W)
+    where
+        R: View,
+        W: Fn(Self::Row) -> R + Clone + 'static,
+    {
+        sink.push_rows(self, move |item: ListItem<V>| item.map_content(&wrap));
     }
 }
 
-impl<C, F> ContentTags<C::Id> for ForEach<C, F, ListItem>
+impl<C, F, V> ContentTags<C::Id> for ForEach<C, F, ListItem<V>>
 where
     C: Collection,
-    F: Fn(C::Item) -> ListItem,
+    F: Fn(C::Item) -> ListItem<V>,
+    V: View,
 {
     type Presence = Tagged;
 }
@@ -295,6 +368,10 @@ where
 // ----------------------------------------------------------------------------
 // Tuple impls (1..=15)
 // ----------------------------------------------------------------------------
+//
+// A tuple's rows are its first element's rows, then the rest's: the row type
+// is `OneOf2<first, rest>`, the rest being the same tuple without its first
+// element, so every element keeps its own row type.
 
 macro_rules! list_content_tuples {
     ($macro:ident) => {
@@ -319,19 +396,44 @@ macro_rules! list_content_tuples {
 }
 
 macro_rules! impl_tuple_list_content {
-    ($($T:ident),+) => {
-        #[allow(non_snake_case)]
-        impl<S, $($T: ListContent<S>),+> ListContent<S> for ($($T,)+) {
-            fn collect_items(self, sink: &mut ListItemSink) {
-                let ($($T,)+) = self;
-                $(
-                    $T.collect_items(sink);
-                )+
+    ($T:ident) => {
+        impl<S, $T: ListContent<S>> ListContent<S> for ($T,) {
+            type Row = $T::Row;
+
+            fn collect_items<R, W>(self, sink: &mut ListItemSink<R>, wrap: W)
+            where
+                R: View,
+                W: Fn(Self::Row) -> R + Clone + 'static,
+            {
+                self.0.collect_items(sink, wrap);
             }
         }
 
-        impl<Tag, $($T: ContentTags<Tag>),+> ContentTags<Tag> for ($($T,)+) {
-            type Presence = any_tagged!(Tag; $($T),+);
+        impl<Tag, $T: ContentTags<Tag>> ContentTags<Tag> for ($T,) {
+            type Presence = $T::Presence;
+        }
+    };
+    ($First:ident, $($T:ident),+) => {
+        #[allow(non_snake_case)]
+        impl<S, $First: ListContent<S>, $($T: ListContent<S>),+> ListContent<S> for ($First, $($T,)+) {
+            type Row = OneOf2<$First::Row, <($($T,)+) as ListContent<S>>::Row>;
+
+            fn collect_items<R, W>(self, sink: &mut ListItemSink<R>, wrap: W)
+            where
+                R: View,
+                W: Fn(Self::Row) -> R + Clone + 'static,
+            {
+                let ($First, $($T,)+) = self;
+                $First.collect_items(sink, {
+                    let wrap = wrap.clone();
+                    move |row| wrap(OneOf2::A(row))
+                });
+                ($($T,)+).collect_items(sink, move |row| wrap(OneOf2::B(row)));
+            }
+        }
+
+        impl<Tag, $First: ContentTags<Tag>, $($T: ContentTags<Tag>),+> ContentTags<Tag> for ($First, $($T,)+) {
+            type Presence = any_tagged!(Tag; $First, $($T),+);
         }
     };
 }
@@ -371,15 +473,15 @@ pub enum RowLayout {
 /// the customizations callers actually need (value foreground color, layout
 /// switch, deletability).
 #[derive(Clone)]
-pub struct Row {
-    label: Label,
+pub struct Row<L> {
+    label: Label<L>,
     value: Text,
     layout: RowLayout,
     value_color: Option<Color>,
     deletable: Option<bool>,
 }
 
-impl core::fmt::Debug for Row {
+impl<L> core::fmt::Debug for Row<L> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Row")
             .field("layout", &self.layout)
@@ -389,7 +491,7 @@ impl core::fmt::Debug for Row {
     }
 }
 
-impl Row {
+impl<L> Row<L> {
     /// Switches this row to the two-line [`RowLayout::Detail`] layout, where
     /// the value renders below the label and stretches to the full row width.
     #[must_use]
@@ -428,37 +530,48 @@ impl Row {
     pub const fn tag<T>(self, tag: T) -> TaggedView<T, Self> {
         TaggedView { tag, content: self }
     }
+}
 
-    /// The builder the list calls whenever it realizes this row.
-    fn into_builder(self) -> AnyViewBuilder<ListItem> {
-        AnyViewBuilder::new(move || {
-            let item = self.build_item();
-            match self.deletable {
-                Some(deletable) => item.deletable(deletable),
-                None => item,
-            }
-        })
+impl<L: LabelKind> Row<L> {
+    /// The row the list builds whenever it realizes this one.
+    fn build_item(&self) -> ListItem<RowContent<L>> {
+        let item = ListItem::new(RowContent {
+            label: self.label.clone(),
+            value: self.value.clone(),
+            layout: self.layout,
+            value_color: self.value_color.clone(),
+        });
+        match self.deletable {
+            Some(deletable) => item.deletable(deletable),
+            None => item,
+        }
     }
+}
 
-    fn build_item(&self) -> ListItem {
-        let label = self.label.clone();
-        let value = self.value.clone();
-        let value_view: AnyView = match self.value_color.clone() {
-            Some(color) => AnyView::new(value.foreground(color)),
-            None => AnyView::new(value),
+/// The content of a [`Row`]: its label and value laid out as its
+/// [`RowLayout`] says.
+#[derive(Debug, Clone)]
+pub struct RowContent<L> {
+    label: Label<L>,
+    value: Text,
+    layout: RowLayout,
+    value_color: Option<Color>,
+}
+
+impl<L: LabelKind> View for RowContent<L> {
+    fn body(self, _env: &Environment) -> impl View {
+        let value = match self.value_color {
+            Some(color) => OneOf2::A(self.value.foreground(color)),
+            None => OneOf2::B(self.value),
         };
-        ListItem::new(self.assemble(label, value_view))
-    }
-
-    fn assemble(&self, label: Label, value: AnyView) -> AnyView {
         match self.layout {
-            RowLayout::Inline => AnyView::new(
-                hstack((label, spacer(), value))
+            RowLayout::Inline => OneOf2::A(
+                hstack((self.label, spacer(), value))
                     .spacing(12.0)
                     .padding_with(EdgeInsets::symmetric(10.0, 16.0)),
             ),
-            RowLayout::Detail => AnyView::new(
-                vstack((label, value))
+            RowLayout::Detail => OneOf2::B(
+                vstack((self.label, value))
                     .alignment(HorizontalAlignment::Leading)
                     .spacing(6.0)
                     .padding_with(EdgeInsets::symmetric(10.0, 16.0)),
@@ -467,26 +580,39 @@ impl Row {
     }
 }
 
-impl<S> ListContent<S> for Row {
-    fn collect_items(self, sink: &mut ListItemSink) {
-        sink.push(self.into_builder());
+impl<S, L: LabelKind> ListContent<S> for Row<L> {
+    type Row = RowContent<L>;
+
+    fn collect_items<R, W>(self, sink: &mut ListItemSink<R>, wrap: W)
+    where
+        R: View,
+        W: Fn(Self::Row) -> R + Clone + 'static,
+    {
+        sink.push(wrapped_builder(move || self.build_item(), wrap));
     }
 }
 
 /// An untagged [`Row`] is not selectable, so it fits a list selected by any
 /// type and gives it nothing to select.
-impl<T> ContentTags<T> for Row {
+impl<T, L> ContentTags<T> for Row<L> {
     type Presence = Untagged;
 }
 
 /// A [`Row`] tagged with [`Row::tag`] is selected by its tag.
-impl<S, T: 'static> ListContent<S> for TaggedView<T, Row> {
-    fn collect_items(self, sink: &mut ListItemSink) {
-        sink.push_tagged(self.content.into_builder(), self.tag);
+impl<S, T: 'static, L: LabelKind> ListContent<S> for TaggedView<T, Row<L>> {
+    type Row = RowContent<L>;
+
+    fn collect_items<R, W>(self, sink: &mut ListItemSink<R>, wrap: W)
+    where
+        R: View,
+        W: Fn(Self::Row) -> R + Clone + 'static,
+    {
+        let row = self.content;
+        sink.push_tagged(wrapped_builder(move || row.build_item(), wrap), self.tag);
     }
 }
 
-impl<T> ContentTags<T> for TaggedView<T, Row> {
+impl<T, L> ContentTags<T> for TaggedView<T, Row<L>> {
     type Presence = Tagged;
 }
 
@@ -500,7 +626,7 @@ impl<T> ContentTags<T> for TaggedView<T, Row> {
 /// [`Row::detail`] to switch to the multi-line layout used for free-form
 /// payloads such as truncating timestamps or backtraces.
 #[must_use]
-pub fn row(label: impl IntoLabel, value: impl IntoText) -> Row {
+pub fn row<L: IntoLabel>(label: L, value: impl IntoText) -> Row<L::Kind> {
     Row {
         label: label.into_label(),
         value: value.into_text(),
@@ -513,6 +639,6 @@ pub fn row(label: impl IntoLabel, value: impl IntoText) -> Row {
 /// Builds a two-line [`Row`] with the value stacked below the label and
 /// stretched to the full row width. Equivalent to [`Row::detail`].
 #[must_use]
-pub fn detail_row(label: impl IntoLabel, value: impl IntoText) -> Row {
+pub fn detail_row<L: IntoLabel>(label: L, value: impl IntoText) -> Row<L::Kind> {
     row(label, value).detail()
 }

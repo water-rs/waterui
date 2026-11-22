@@ -20,27 +20,20 @@ use std::cell::Cell;
 use std::collections::VecDeque;
 use std::time::Duration;
 use std::{cell::RefCell, rc::Rc};
-#[cfg(hydrolysis_run)]
-use waterui::app::App;
 #[cfg(all(
     not(target_arch = "wasm32"),
     not(hydrolysis_winit),
     not(target_os = "android")
 ))]
 use waterui::app::AppParts;
-#[cfg(feature = "table")]
-use waterui::component::table::TableConfig;
+#[cfg(hydrolysis_run)]
+use waterui::app::{App, AppMenuBar};
+use waterui::app::{WindowSink, Windows};
 use waterui::window::Window;
-use waterui::window::WindowManager;
-#[cfg(hydrolysis_cherenkov)]
-use waterui_core::AnyView;
 use waterui_core::Environment;
 use waterui_core::Retain;
-#[cfg(hydrolysis_cherenkov)]
-use waterui_core::handler::AnyViewBuilder;
-use waterui_core::key::KeyPress;
-#[cfg(feature = "table")]
-use waterui_core::{Native, view::Hook};
+use waterui_core::handler::ViewBuilder;
+use waterui_interaction::key::KeyPress;
 #[cfg(hydrolysis_cherenkov)]
 use waterui_text::FontCollection;
 
@@ -257,8 +250,8 @@ use crate::time::Instant;
 /// `env` must carry the installed theme — colour scheme and colour slots —
 /// the resolved background reads; every runner installs it before mounting
 /// a window.
-fn subscribe_window_declaration_signals<E: crate::text::TextEngine>(
-    window: &Window,
+fn subscribe_window_declaration_signals<E: crate::text::TextEngine, C, T>(
+    window: &Window<C, T>,
     env: &Environment,
     core: &SemanticCore<E>,
 ) -> Vec<Retain> {
@@ -341,44 +334,32 @@ fn offscreen_scale_factor() -> f64 {
     parsed
 }
 
-/// Hooks for the platform services this renderer itself provides.
-///
-/// The self-drawn realizations of semantic components — the GPU video player,
-/// the vector map — are not among them: which realization draws a component is
-/// the application's choice, installed by `waterui::app::App` from the
-/// `video-gpu` / `map-gpu` features. What this renderer installs are the
-/// platform's own primitives it bridges: the system web view on macOS and the
-/// `<video>` element on the web.
-#[cfg(any(test, hydrolysis_component_hooks))]
-fn install_native_component_hooks(env: &mut Environment) {
+/// The environment services this renderer provides: the localization catalog.
+#[cfg(any(test, hydrolysis_platform_services))]
+fn install_platform_services(env: &mut Environment) {
     #[cfg(any(test, hydrolysis_localization))]
     crate::localization::install(env);
-    // The only web engine this backend knows about is the platform's own: a
-    // browser engine an application links installs its realization itself.
-    #[cfg(hydrolysis_system_webview)]
-    crate::widgets::platform::webview::install_controller(env);
-    // The page's own `<video>` element is the web's native player.
-    #[cfg(all(target_arch = "wasm32", feature = "web", feature = "video"))]
-    crate::widgets::platform::video::install(env);
-    #[cfg(feature = "table")]
-    env.insert(Hook::new(|_env: &Environment, config: TableConfig| {
-        Native::new(config)
-    }));
 }
 
-fn install_headless_window_managers<E: crate::text::TextEngine>(
-    env: &mut Environment,
-    pending_windows: Rc<RefCell<Vec<Window>>>,
+fn queue_window_opener<E: crate::text::TextEngine>(
+    pending_windows: &Rc<RefCell<Vec<window::RootWindow<E>>>>,
+) -> Rc<dyn Fn(window::RootWindow<E>)> {
+    let pending_windows = Rc::clone(pending_windows);
+    Rc::new(move |window| {
+        pending_windows.borrow_mut().push(window);
+    })
+}
+
+fn install_core_window_openers<E: crate::text::TextEngine>(
+    core: &mut SemanticCore<E>,
+    opener: Rc<dyn Fn(window::RootWindow<E>)>,
 ) {
     #[cfg(any(feature = "menu", feature = "color-picker"))]
-    let popup_windows = Rc::clone(&pending_windows);
-    env.insert(WindowManager::new(move |window| {
-        pending_windows.borrow_mut().push(window);
-    }));
-    #[cfg(any(feature = "menu", feature = "color-picker"))]
-    env.insert(PopupWindowManager::new(move |window| {
-        popup_windows.borrow_mut().push(window);
-    }));
+    core.set_popup_window_manager(PopupWindowManager::from_opener(Rc::clone(&opener)));
+    core.set_window_opener(opener);
+}
+
+fn install_window_registries<E: crate::text::TextEngine>(env: &mut Environment) {
     let _ = env.get_or_insert_with::<crate::renderer::WindowIdentities, _>(
         crate::renderer::WindowIdentities::default,
     );
@@ -428,13 +409,17 @@ fn exit_without_gpu(error: impl core::error::Error + Send + Sync + 'static) -> !
 ///
 /// # Panics
 /// Panics when the seeded environment lost its `MenuShortcutRegistry`.
-pub fn run(app: impl FnOnce(Environment) -> App, env: Environment, style: impl crate::Style) {
+pub fn run<W: Windows, M: AppMenuBar>(
+    app: impl FnOnce(Environment) -> App<W, M>,
+    env: Environment,
+    style: impl crate::Style,
+) {
     init_tracing();
     let inspector = init_main_thread_executors();
     let app = app(env);
     let inspector_probe = inspector
         .as_ref()
-        .map(waterui::inspector::InspectorRuntime::runtime_probe);
+        .map(|inspector| inspector.task_probe() as std::sync::Arc<dyn waterui::task::RuntimeProbe>);
     // This path renders each window once offscreen and returns; it owns no event
     // loop, so it supplies the headless executor rather than a platform one.
     // Keep a handle on the executor: the render loop below has to drive it, or
@@ -464,25 +449,28 @@ pub fn run(app: impl FnOnce(Environment) -> App, env: Environment, style: impl c
         windows,
         #[cfg(feature = "menu")]
         menu_bar,
+        #[cfg(not(feature = "menu"))]
+            menu_bar: _,
         env,
         last_window: _,
         termination: _,
     } = app.into_parts();
     let mut env = env.extending(waterui_graphics::backend::SceneViewMergeToParent);
-    waterui_core::install_application_resources(&mut env);
+    waterui::install_application_resources(&mut env);
     waterui::inspector::install(&mut env, inspector);
     let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
     let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
-    #[cfg(any(test, hydrolysis_component_hooks))]
-    install_native_component_hooks(&mut env);
-    install_headless_window_managers::<crate::text::ParleyEngine>(
-        &mut env,
-        Rc::clone(&pending_window_queue),
-    );
+    #[cfg(any(test, hydrolysis_platform_services))]
+    install_platform_services(&mut env);
+    install_window_registries::<crate::text::ParleyEngine>(&mut env);
     // App-level menu bar: arms its chords on the shared registry. The
     // headless host renders no chrome, so there is no surface to draw.
     #[cfg(feature = "menu")]
-    menu_bar::register_menu_bar::<crate::text::ParleyEngine>(&menu_bar, &env);
+    if M::HAS_DECLARED
+        && let Some(menu_bar) = menu_bar.declared()
+    {
+        menu_bar::register_menu_bar::<crate::text::ParleyEngine>(menu_bar, &env);
+    }
     #[cfg(any(feature = "text-field", feature = "secure-field"))]
     env.insert(HydrolysisTextContextMenuMode::Overlay);
     // A headless host has no platform appearance: the scheme is Light
@@ -495,24 +483,15 @@ pub fn run(app: impl FnOnce(Environment) -> App, env: Environment, style: impl c
     // system's fonts for itself.
     let fonts = crate::text::fonts::native_collection(&env);
     fonts.clone().install(&mut env);
-    // The capture service mounts its subtree under a snapshot of the
-    // assembled environment — the theme tokens, hooks and font collection a
-    // window's subtree resolves — so it must be installed last
-    // (water-rs/waterui#2703).
     let painter = OffscreenPainter::select().unwrap_or_else(|error| exit_without_gpu(error));
-    env.insert(waterui_core::ViewRenderer::new(
-        crate::view_renderer::HydrolysisViewRenderer::on_painter(
-            &painter,
-            Rc::clone(&theme),
-            env.clone(),
-            FontFamilyResolution::Lenient,
-        ),
-    ));
     let identities = env
         .get::<crate::renderer::WindowIdentities>()
-        .expect("install_headless_window_managers seeds WindowIdentities")
+        .expect("install_window_registries seeds WindowIdentities")
         .clone();
-    let mut pending_windows = VecDeque::from(windows);
+    let window::RootWindows { initial, channels } = window::RootWindows::collect(windows);
+    let opener = queue_window_opener(&pending_window_queue);
+    window::RootWindows::connect_channels(channels, &opener);
+    let mut pending_windows = VecDeque::from(initial);
     while let Some(window) = pending_windows.pop_front() {
         let frame = crate::platform::validated_window_frame(window.frame.snapshot());
         let width = crate::num_cast::f32_as_u32(frame.width().max(1.0));
@@ -526,8 +505,11 @@ pub fn run(app: impl FnOnce(Environment) -> App, env: Environment, style: impl c
             Rc::clone(&theme),
             ParleyEngine::from_collection(&fonts, FontFamilyResolution::Lenient),
         );
+        #[cfg(waterui_feature = "capture")]
+        renderer.set_offscreen_painter(&painter, FontFamilyResolution::Lenient);
         renderer.set_window_id(identities.mint_window_id());
         renderer.set_window_closable(window.closable);
+        install_core_window_openers(&mut renderer, Rc::clone(&opener));
         let mut runtime =
             RuntimeWindow::new_painted(window, platform, renderer, render_diagnostics_config, &env);
         // The one offscreen frame is the window's only one: a surface that
@@ -553,7 +535,11 @@ pub fn run(app: impl FnOnce(Environment) -> App, env: Environment, style: impl c
 ///
 /// # Panics
 /// Propagates panics from `web_runner::run`.
-pub fn run(app: impl FnOnce(Environment) -> App, env: Environment, style: impl crate::Style) {
+pub fn run<W: Windows, M: AppMenuBar>(
+    app: impl FnOnce(Environment) -> App<W, M>,
+    env: Environment,
+    style: impl crate::Style,
+) {
     // The page has no stderr, so the default hook's report goes nowhere;
     // this one sends the message and location to `console.error`, and shows
     // it on the page: a panic traps the wasm instance, so the app is gone and
@@ -580,7 +566,11 @@ pub fn run(app: impl FnOnce(Environment) -> App, env: Environment, style: impl c
 /// # Panics
 /// Propagates panics from `winit_runner::run` and tracing initialization.
 #[cfg(all(not(target_arch = "wasm32"), hydrolysis_winit))]
-pub fn run(app: impl FnOnce(Environment) -> App, env: Environment, style: impl crate::Style) {
+pub fn run<W: Windows, M: AppMenuBar>(
+    app: impl FnOnce(Environment) -> App<W, M>,
+    env: Environment,
+    style: impl crate::Style,
+) {
     init_tracing();
     let executors = init_main_thread_executors();
     let app = app(env);

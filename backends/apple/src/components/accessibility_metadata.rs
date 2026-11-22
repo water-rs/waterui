@@ -36,11 +36,11 @@ use waterui::accessibility::{
     AccessibilityValue,
 };
 use waterui::reactive::Computed;
+use waterui_core::Metadata;
 use waterui_core::SignalExt;
-use waterui_core::interaction::Selected;
-use waterui_core::{AnyView, Metadata};
+use waterui_interaction::interaction::Selected;
 
-use crate::contract::{NativeLeaf, RenderContext};
+use crate::contract::{Held, NativeLeaf, RenderContext};
 use crate::proposal::in_view;
 
 #[cfg(target_os = "macos")]
@@ -186,7 +186,7 @@ fn apply_hidden(target: &PlatformView, hidden: bool, original: bool) {
 /// ([`NativeLeaf::claim_accessibility_state`]). Each delivery applies the
 /// whole merged state plus the `hidden` channel's restore semantics.
 fn render_state(
-    content: AnyView,
+    content: Held,
     local: Computed<AccessibilityState>,
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
@@ -197,7 +197,7 @@ fn render_state(
         .expect("install inserts the merged state scope")
         .state()
         .clone();
-    let mut leaf = ctx.with_env(&env).render(content);
+    let mut leaf = ctx.with_env(&env).realize(content);
     leaf.keep(env);
     if !leaf.claim_accessibility_state() {
         return leaf;
@@ -238,14 +238,14 @@ fn render_state(
 
 /// Registers the constant and reactive state handlers on the shared bind.
 pub fn realize_accessibility_state_metadata(
-    metadata: Metadata<AccessibilityState>,
+    metadata: Metadata<AccessibilityState, Held>,
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
     render_state(metadata.content, Computed::constant(metadata.value), ctx)
 }
 
 pub fn realize_accessibility_state_signal_metadata(
-    metadata: Metadata<AccessibilityStateSignal>,
+    metadata: Metadata<AccessibilityStateSignal, Held>,
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
     render_state(metadata.content, metadata.value.state().clone(), ctx)
@@ -253,10 +253,10 @@ pub fn realize_accessibility_state_signal_metadata(
 
 /// The accessibility metadata realizations.
 pub fn realize_accessibility_label_metadata(
-    metadata: Metadata<AccessibilityLabel>,
+    metadata: Metadata<AccessibilityLabel, Held>,
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
-    let mut leaf = ctx.render(metadata.content);
+    let mut leaf = ctx.realize(metadata.content);
     let target = view::retain_base(leaf.view());
     leaf.keep(target.clone());
     leaf.bind(metadata.value.signal(), move |label| {
@@ -266,10 +266,10 @@ pub fn realize_accessibility_label_metadata(
 }
 
 pub fn realize_accessibility_value_metadata(
-    metadata: Metadata<AccessibilityValue>,
+    metadata: Metadata<AccessibilityValue, Held>,
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
-    let mut leaf = ctx.render(metadata.content);
+    let mut leaf = ctx.realize(metadata.content);
     let target = view::retain_base(leaf.view());
     leaf.keep(target.clone());
     leaf.bind(metadata.value.signal(), move |value| {
@@ -279,10 +279,10 @@ pub fn realize_accessibility_value_metadata(
 }
 
 pub fn realize_accessibility_role_metadata(
-    metadata: Metadata<AccessibilityRole>,
+    metadata: Metadata<AccessibilityRole, Held>,
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
-    let mut leaf = ctx.render(metadata.content);
+    let mut leaf = ctx.realize(metadata.content);
     let target = view::retain_base(leaf.view());
     a11y::set_role(target::of(&target), role(&metadata.value));
     leaf.keep(target);
@@ -290,19 +290,19 @@ pub fn realize_accessibility_role_metadata(
 }
 
 pub fn realize_accessibility_geometry_metadata(
-    metadata: Metadata<AccessibilityGeometry>,
+    metadata: Metadata<AccessibilityGeometry, Held>,
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
-    let leaf = ctx.render(metadata.content);
+    let leaf = ctx.realize(metadata.content);
     name_geometry(&leaf, metadata.value);
     leaf
 }
 
 pub fn realize_accessibility_hidden_metadata(
-    metadata: Metadata<AccessibilityHidden>,
+    metadata: Metadata<AccessibilityHidden, Held>,
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
-    let mut leaf = ctx.render(metadata.content);
+    let mut leaf = ctx.realize(metadata.content);
     let target = view::retain_base(leaf.view());
     a11y::set_hidden(target::of(&target), metadata.value.is_hidden());
     leaf.keep(target);
@@ -310,10 +310,10 @@ pub fn realize_accessibility_hidden_metadata(
 }
 
 pub fn realize_accessibility_children_metadata(
-    metadata: Metadata<AccessibilityChildren>,
+    metadata: Metadata<AccessibilityChildren, Held>,
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
-    let mut leaf = ctx.render(metadata.content);
+    let mut leaf = ctx.realize(metadata.content);
     let target = view::retain_base(leaf.view());
     if metadata.value.excludes_descendants() {
         a11y::exclude_children(target::of(&target));
@@ -326,7 +326,7 @@ pub fn realize_accessibility_children_metadata(
 /// the signal reads `true`, through the same state scope as
 /// [`AccessibilityState`].
 pub fn realize_selected_metadata(
-    metadata: Metadata<Selected>,
+    metadata: Metadata<Selected, Held>,
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
     let Selected(selected) = metadata.value;

@@ -90,7 +90,7 @@ fn rows(model: &Model, filter: &Binding<Str>) -> SignalCollection<Computed<Vec<T
 /// A node the application asked to inspect is marked, so that opening the
 /// inspector on an element lands the eye on that element rather than on the
 /// top of a long tree.
-fn row_view(row: TreeRow, revealed: Computed<bool>) -> ListItem {
+fn row_view(row: TreeRow, revealed: Computed<bool>) -> ListItem<impl View> {
     let (_, depth, role, label, value, bounds, hidden, enabled) = row.into_parts();
     #[expect(
         clippy::cast_precision_loss,
@@ -121,10 +121,10 @@ fn row_view(row: TreeRow, revealed: Computed<bool>) -> ListItem {
 
 /// A node without a label is called out rather than rendered as blank space —
 /// an unlabelled control is invisible to a screen reader.
-fn label_view(label: Option<Str>) -> AnyView {
+fn label_view(label: Option<Str>) -> impl View {
     label.map_or_else(
-        || text("(no label)").caption().foreground(Orange).anyview(),
-        |label| text(label).anyview(),
+        || OneOf2::A(text("(no label)").caption().foreground(Orange)),
+        |label| OneOf2::B(text(label)),
     )
 }
 
@@ -132,22 +132,15 @@ fn label_view(label: Option<Str>) -> AnyView {
 ///
 /// Reactive rather than baked in, so a second "inspect element" moves the mark
 /// instead of rebuilding the tree.
-fn revealed_badge(revealed: Computed<bool>) -> AnyView {
-    when(revealed, || text("inspected").caption().foreground(Accent)).anyview()
+fn revealed_badge(revealed: Computed<bool>) -> impl View {
+    when(revealed, || text("inspected").caption().foreground(Accent))
 }
 
-fn hidden_badge(hidden: bool) -> AnyView {
-    if hidden {
-        text("hidden")
-            .caption()
-            .foreground(MutedForeground)
-            .anyview()
-    } else {
-        ().anyview()
-    }
+fn hidden_badge(hidden: bool) -> impl View {
+    hidden.then(|| text("hidden").caption().foreground(MutedForeground))
 }
 
-fn detail_view(value: Option<Str>, bounds: Option<Str>) -> AnyView {
+fn detail_view(value: Option<Str>, bounds: Option<Str>) -> impl View {
     let mut parts: Vec<Str> = Vec::new();
     if let Some(value) = value {
         parts.push(Str::from(format!("value {value}")));
@@ -155,11 +148,9 @@ fn detail_view(value: Option<Str>, bounds: Option<Str>) -> AnyView {
     if let Some(bounds) = bounds {
         parts.push(bounds);
     }
-    if parts.is_empty() {
-        return ().anyview();
-    }
-    text(Str::from(parts.join("   ")))
-        .caption()
-        .foreground(MutedForeground)
-        .anyview()
+    (!parts.is_empty()).then(|| {
+        text(Str::from(parts.join("   ")))
+            .caption()
+            .foreground(MutedForeground)
+    })
 }

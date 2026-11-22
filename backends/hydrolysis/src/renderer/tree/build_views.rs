@@ -4,10 +4,10 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
-// Only the Android bridge and a build with no bridged engine report a WebView.
+// A build with no selected engine reports a WebView as a contract violation.
 #[cfg(all(
     waterui_feature = "webview",
-    any(hydrolysis_android_system_webview, not(hydrolysis_system_webview))
+    not(any(hydrolysis_webview_engine, hydrolysis_android_system_webview))
 ))]
 use waterui_core::contract_violation;
 
@@ -123,7 +123,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// fill the proposal (`StretchAxis::Both`, read from the config).
     #[cfg(feature = "list")]
     pub(super) fn build_list(
-        config: ListConfig,
+        config: ListConfig<HeldChild<E>>,
         env: &Environment,
         renderer: &mut SemanticCore<E>,
     ) -> Self {
@@ -171,7 +171,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// bar re-renders. Stretch is `Both` (read from the config).
     #[cfg(feature = "navigation")]
     pub(super) fn build_navigation_view(
-        navigation: NavigationView,
+        navigation: NavigationView<HeldChild<E>>,
         env: &Environment,
         renderer: &mut SemanticCore<E>,
     ) -> Self {
@@ -195,7 +195,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// `Both` (read from the config).
     #[cfg(feature = "navigation")]
     pub(super) fn build_navigation_split(
-        split: NavigationSplitLayout,
+        split: NavigationSplitLayout<HeldChild<E>>,
         env: &Environment,
         renderer: &mut SemanticCore<E>,
     ) -> Self {
@@ -222,7 +222,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     #[cfg(feature = "navigation")]
     pub(super) fn build_navigation_stack(
         renderer: &SemanticCore<E>,
-        stack: NavigationStack<(), ()>,
+        stack: NavigationStackLayout<HeldChild<E>>,
         env: &Environment,
     ) -> Self {
         use crate::widgets::nav::navigation::NavigationStackRenderState;
@@ -238,7 +238,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// content/indicator updates. Stretch is `Both` (read from the config).
     #[cfg(feature = "navigation")]
     pub(super) fn build_tabs(
-        tabs: TabsLayout,
+        tabs: TabsLayout<HeldChild<E>>,
         env: &Environment,
         renderer: &mut SemanticCore<E>,
     ) -> Self {
@@ -299,45 +299,37 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// long as the leaf that embeds it. Where no engine is bridged at all a
     /// `WebView` that still reaches the backend has nothing to draw it — a
     /// missing realization, not a drawable stand-in.
-    #[cfg(waterui_feature = "webview")]
+    #[cfg(all(
+        waterui_feature = "webview",
+        not(any(hydrolysis_cef_webview, hydrolysis_wpe_webview))
+    ))]
     pub(super) fn build_webview(
-        webview: &WebView,
+        open: waterui::webview::WebViewOpen,
         env: &Environment,
         renderer: &SemanticCore<E>,
     ) -> Self {
         #[cfg(hydrolysis_system_webview)]
         {
-            crate::widgets::platform::webview::hosted(webview).map_or_else(
-                || Self::build_empty(renderer, env),
-                |hosted| Self::build_hosted(hosted, env, renderer),
-            )
+            let controller =
+                crate::widgets::platform::webview::SelectedWebViewController::default();
+            let Some(opened) = open.open_with(&controller, env) else {
+                return Self::build_empty(renderer, env);
+            };
+            let hosted = crate::widgets::platform::webview::hosted_from_handle(opened.handle());
+            Self::build_hosted_retained(hosted, env, renderer, opened.into_webview())
         }
         #[cfg(hydrolysis_android_system_webview)]
         {
             use crate::widgets::platform::platform_view::PlatformViewRenderState;
             use crate::widgets::platform::webview::AndroidSystemWebViewHandle;
 
-            let handle = webview.handle();
-            // The controller failed to open this view and `waterui-webview`
-            // already reported it: nothing to draw.
-            if handle.is_unavailable() {
-                return Self::build_empty(renderer, env);
-            }
-            let Some(instance) = handle
-                .downcast_ref::<AndroidSystemWebViewHandle>()
-                .map(AndroidSystemWebViewHandle::instance)
-            else {
-                contract_violation!(
-                    "hydrolysis android: a WebView handle that is not \
-                     AndroidSystemWebViewHandle reached the backend; the \
-                     Android system bridge only draws views `WebView::open` \
-                     made through its controller — another engine must \
-                     install its `Hook<WebView>` realization; the web view is not drawn"
-                );
+            let stretch = waterui_core::NativeView::stretch_axis(&open);
+            let controller = renderer.android_webview_controller();
+            let Some(opened) = open.open_with(&controller, env) else {
                 return Self::build_empty(renderer, env);
             };
-            let stretch = waterui_core::NativeView::stretch_axis(webview);
-            let owner: Rc<dyn core::any::Any> = Rc::new(handle.clone());
+            let instance = AndroidSystemWebViewHandle::instance(opened.handle());
+            let owner: Rc<dyn core::any::Any> = Rc::new(opened.into_webview());
             let Some(state) = PlatformViewRenderState::from_instance(instance, owner, env) else {
                 return Self::build_empty(renderer, env);
             };
@@ -346,7 +338,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         }
         #[cfg(not(any(hydrolysis_system_webview, hydrolysis_android_system_webview)))]
         {
-            let _ = webview;
+            drop(open);
             contract_violation!("{UNSUPPORTED_WEBVIEW}; the web view is not drawn");
             Self::build_empty(renderer, env)
         }
@@ -392,5 +384,101 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     pub(super) fn build_str(renderer: &SemanticCore<E>, text: Str, env: &Environment) -> Self {
         let text = Rc::new(RefCell::new(text));
         Self::build_widget(renderer, text, StretchAxis::None, env)
+    }
+
+    /// Build a semantic-only leaf for a backend-provided component (`AppleView`,
+    /// `AndroidView`, …) that answered [`waterui_backend_core::ProvidedSemantics`]
+    /// on [`crate::SemanticRuntime`]. Never constructed on rendered runtimes.
+    #[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
+    pub(super) fn build_provided_semantics(
+        renderer: &SemanticCore<E>,
+        semantics: waterui_backend_core::ProvidedSemantics,
+        stretch: StretchAxis,
+        env: &Environment,
+    ) -> Self {
+        let state = Rc::new(ProvidedSemanticsNode { semantics });
+        Self::build_widget(renderer, state, stretch, env)
+    }
+}
+
+#[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
+struct ProvidedSemanticsNode {
+    semantics: waterui_backend_core::ProvidedSemantics,
+}
+
+#[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
+impl<E: crate::text::TextEngine> WidgetBehavior<E> for ProvidedSemanticsNode {
+    fn measure(
+        &self,
+        _state: &mut HydroState<E>,
+        _proposal: ProposalSize,
+        _env: &Environment,
+        _theme: &Rc<dyn crate::theme::WidgetTheme>,
+    ) -> ViewDimensions {
+        ViewDimensions::new(Size::zero())
+    }
+
+    fn render(
+        self: Rc<Self>,
+        _renderer: &mut HydrolysisRenderer<E>,
+        _ctx: RenderContext,
+        _env: &Environment,
+        _safe_area: Option<safe_area::SafeAreaLayout>,
+    ) {
+        unreachable!("ProvidedSemanticsNode is built only on SemanticRuntime (`semantic_walk`)");
+    }
+
+    fn emit_accessibility(self: Rc<Self>, renderer: &mut SemanticCore<E>, env: &Environment) {
+        if env
+            .get::<AccessibilityHidden>()
+            .is_some_and(AccessibilityHidden::is_hidden)
+        {
+            return;
+        }
+        let default_label = self
+            .semantics
+            .label
+            .as_ref()
+            .map(|signal| renderer.read_signal(signal).as_str().to_owned());
+        let label = renderer.resolve_accessibility_label(env, default_label);
+        let value = renderer.resolve_accessibility_value(env, None);
+        if env.get::<AccessibilityRole>().is_none()
+            && self.semantics.role.is_none()
+            && label.is_none()
+            && value.is_none()
+        {
+            return;
+        }
+        let default_role =
+            self.semantics
+                .role
+                .as_ref()
+                .map_or(AccessibilityNodeRole::Group, |role| {
+                    crate::renderer::accessibility::accessibility_role_to_accesskit_role(
+                        role.clone(),
+                    )
+                });
+        let mut node = AccessibilityNode::new(SemanticCore::<E>::resolve_accessibility_role(
+            env,
+            default_role,
+        ));
+        if let Some(label) = label {
+            node.set_label(label);
+        }
+        if let Some(value) = value {
+            node.set_value(value);
+        }
+        let _ = renderer.register_accessibility_leaf(None, node, env, None);
+    }
+
+    fn accessibility_label(
+        &self,
+        renderer: &mut SemanticCore<E>,
+        _env: &Environment,
+    ) -> Option<String> {
+        self.semantics
+            .label
+            .as_ref()
+            .map(|signal| renderer.read_signal(signal).as_str().to_owned())
     }
 }

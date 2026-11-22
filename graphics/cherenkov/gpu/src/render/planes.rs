@@ -1187,6 +1187,10 @@ pub struct Part<'a> {
     /// Pixels written by the latest engine encoding, stable across present retries.
     #[cfg(target_os = "android")]
     pub damage: &'a cherenkov::damage::Region,
+    /// Disjoint device-pixel rectangles actually painted into this part in the
+    /// latest lowered frame (non-transparent clears and draw footprints).
+    #[cfg(target_os = "android")]
+    pub painted: &'a cherenkov::damage::Region,
     /// The engine texture holding the part.
     pub view: &'a wgpu::TextureView,
 }

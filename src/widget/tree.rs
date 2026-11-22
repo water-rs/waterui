@@ -28,22 +28,18 @@ impl<T, ID: Clone + Hash + Ord> Identifiable for TreeNode<T, ID> {
 
 /// A helper view that recursively renders a single node and its children.
 #[derive(Debug)]
-struct NodeView<T, ID, F>
-where
-    T: Clone + 'static,
-    ID: Clone + Hash + Eq + Ord + 'static,
-    F: Fn(T) -> AnyView + Clone + 'static,
-{
+struct NodeView<T, ID, F> {
     node: TreeNode<T, ID>,
     expanded: Binding<HashSet<ID>>,
     render_leaf: F,
 }
 
-impl<T, ID, F> View for NodeView<T, ID, F>
+impl<T, ID, F, V> View for NodeView<T, ID, F>
 where
     T: Clone + 'static,
     ID: Clone + Hash + Eq + Ord + 'static,
-    F: Fn(T) -> AnyView + Clone + 'static,
+    F: Fn(T) -> V + Clone + 'static,
+    V: View,
 {
     fn body(self, _env: &Environment) -> impl View {
         let expanded = self.expanded.clone();
@@ -101,22 +97,18 @@ where
 
 /// A view that renders hierarchical data in a collapsible tree structure.
 #[derive(Debug)]
-pub struct TreeView<T, ID, F>
-where
-    T: Clone + 'static,
-    ID: Clone + Hash + Eq + Ord + 'static,
-    F: Fn(T) -> AnyView + Clone + 'static,
-{
+pub struct TreeView<T, ID, F> {
     nodes: Vec<TreeNode<T, ID>>,
     expanded: Binding<HashSet<ID>>,
     render_leaf: F,
 }
 
-impl<T, ID, F> TreeView<T, ID, F>
+impl<T, ID, F, V> TreeView<T, ID, F>
 where
     T: Clone + 'static,
     ID: Clone + Hash + Eq + Ord + 'static,
-    F: Fn(T) -> AnyView + Clone + 'static,
+    F: Fn(T) -> V + Clone + 'static,
+    V: View,
 {
     /// Creates a new `TreeView`.
     pub const fn new(
@@ -132,11 +124,12 @@ where
     }
 }
 
-impl<T, ID, F> View for TreeView<T, ID, F>
+impl<T, ID, F, V> View for TreeView<T, ID, F>
 where
     T: Clone + 'static,
     ID: Clone + Hash + Eq + Ord + 'static,
-    F: Fn(T) -> AnyView + Clone + 'static,
+    F: Fn(T) -> V + Clone + 'static,
+    V: View,
 {
     fn body(self, _env: &Environment) -> impl View {
         self.nodes
@@ -152,7 +145,7 @@ where
 
 #[allow(clippy::implicit_hasher)]
 /// Convenience function to create a new `TreeView`.
-pub const fn tree_view<T, ID, F>(
+pub const fn tree_view<T, ID, F, V>(
     nodes: Vec<TreeNode<T, ID>>,
     expanded: Binding<HashSet<ID>>,
     render_leaf: F,
@@ -160,7 +153,8 @@ pub const fn tree_view<T, ID, F>(
 where
     T: Clone + 'static,
     ID: Clone + Hash + Eq + Ord + 'static,
-    F: Fn(T) -> AnyView + Clone + 'static,
+    F: Fn(T) -> V + Clone + 'static,
+    V: View,
 {
     TreeView::new(nodes, expanded, render_leaf)
 }

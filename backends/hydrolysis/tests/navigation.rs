@@ -191,7 +191,7 @@ fn tabs_content_fits_pane() {
             vstack((
                 Tabs::new(
                     &selection,
-                    vec![
+                    (
                         Tab::new("Messages", move || {
                             NavigationView::new(
                                 "Messages",
@@ -201,7 +201,7 @@ fn tabs_content_fits_pane() {
                         Tab::new("Settings", move || {
                             NavigationView::new("Settings", text("settings"))
                         }),
-                    ],
+                    ),
                 ),
                 text("dock").height(BAR_HEIGHT).a11y_label("dock"),
             ))

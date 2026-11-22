@@ -103,18 +103,30 @@ mod build_controls;
 mod build_views;
 mod collection;
 mod flush;
-#[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
-mod hosted;
 #[cfg(feature = "accessibility")]
 mod label;
 mod layout;
 mod nodes;
+mod provided;
 pub(super) mod safe_area;
 mod subview;
 pub(super) mod transition;
 mod window;
 
+pub use build::backend::held_with_foreground;
 pub use collection::*;
+#[cfg(all(
+    feature = "accessibility",
+    hydrolysis_cherenkov,
+    hydrolysis_hosted,
+    hydrolysis_gpu
+))]
+pub use provided::HydroProvidedA11yHost;
+pub use provided::{HydroProvidedBehavior, HydroProvidedRenderHost, HydroProvidedSlot};
+
+/// A child view held for Hydrolysis to build later: a payload's child in
+/// Hydrolysis's child slot.
+pub type HeldChild<E> = waterui_backend_core::Child<build::backend::HydroFamily<E>>;
 pub use nodes::*;
 use subview::NodeSubView;
 
@@ -134,7 +146,7 @@ use std::rc::{Rc, Weak};
 use waterui_core::MainThreadBound;
 use waterui_core::id::Id as RawId;
 use waterui_core::layout::{LayoutPriority, PlacedGeometry, Point, Rect, Size, UnitPoint};
-use waterui_core::views::{AnyViews, AnyViewsSnapshot, ViewSnapshot, Views};
+use waterui_core::views::{AnyViews, AnyViewsSnapshot};
 use waterui_layout::scroll::{Axis as ScrollAxis, ScrollController};
 
 /// The type-erased item identity used by [`CollectionNode`]'s reconcile.

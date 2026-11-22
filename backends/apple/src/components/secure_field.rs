@@ -25,14 +25,14 @@ use waterui::component::form::secure::{Secure, SecureFieldConfig};
 use waterui::resolve::Resolvable;
 use waterui::text::StyledStr;
 use waterui::text::font::Body;
-use waterui_core::interaction::Disabled;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size, StretchAxis, SubView,
     ViewDimensions,
 };
+use waterui_interaction::interaction::Disabled;
 
 use super::font::platform_font;
-use crate::contract::{Mounted, NativeLeaf};
+use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;
 
 #[cfg(target_os = "macos")]
@@ -189,7 +189,7 @@ impl SubView for SecureFieldSubView {
 /// secure field and the mounted label child; the binding, the theme font,
 /// disabled state and accessibility stay live through watchers.
 pub fn realize_secure_field_config(
-    config: SecureFieldConfig,
+    config: SecureFieldConfig<Held>,
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
     let mtm = ctx.mtm();
@@ -205,9 +205,7 @@ pub fn realize_secure_field_config(
     let (label, value) = config.into_parts();
     let accessibility_label = label.accessibility_label();
     let host_view: &PlatformView = &host;
-    let mounted = ctx
-        .render(waterui_backend_core::AnyView::new(label))
-        .mount(host_view);
+    let mounted = ctx.realize(label.build()).mount(host_view);
     view::hide_from_accessibility(mounted.view());
 
     let state = Rc::new(FieldState {

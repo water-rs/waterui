@@ -12,8 +12,8 @@
 use std::rc::Rc;
 
 use kurbo::Rect;
-use waterui_core::interaction::InteractionState;
 use waterui_core::layout::LayoutDirection;
+use waterui_interaction::interaction::InteractionState;
 
 use super::Surface;
 #[cfg(hydrolysis_runtime)]

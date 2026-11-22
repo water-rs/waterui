@@ -27,7 +27,7 @@ use kurbo::{Affine, Point, Rect, Vec2};
 use nami::{Computed, Signal};
 use waterui_core::Environment;
 use waterui_core::animation::{Animation, ChangeAnimation};
-use waterui_core::interaction::InteractionState;
+use waterui_interaction::interaction::InteractionState;
 
 use crate::renderer::interaction_layers::MAX_PRESS_WAVES;
 use crate::renderer::recording::{LoweredResources, SceneResources};

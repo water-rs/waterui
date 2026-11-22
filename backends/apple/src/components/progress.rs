@@ -37,7 +37,7 @@ use waterui_core::layout::{
 };
 
 use crate::components::button_chrome;
-use crate::contract::{Mounted, NativeLeaf};
+use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;
 
 #[cfg(target_os = "macos")]
@@ -509,7 +509,10 @@ fn tint_tick(state: &Weak<RefCell<ProgressState>>, host: &PlatformView) {
 /// The `progress` realization: `Native<ProgressConfig>`
 /// maps to a container view with the platform indicator and the label pair
 /// `WuiProgress` stacks around it.
-pub fn realize_progress_config(config: ProgressConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
+pub fn realize_progress_config(
+    config: ProgressConfig<Held>,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
     let mtm = ctx.mtm();
     let host = HostView::new(mtm, Rect::ZERO);
     let host_view: &PlatformView = &host;
@@ -532,12 +535,8 @@ pub fn realize_progress_config(config: ProgressConfig, ctx: &RenderContext<'_>) 
     let value = config.value().snapshot();
     let (label, value_label, value_signal, _, four_color) = config.into_parts();
     let children = Children {
-        label: ctx
-            .render(waterui_backend_core::AnyView::new(label))
-            .mount(host_view),
-        value_label: ctx
-            .render(waterui_backend_core::AnyView::new(value_label))
-            .mount(host_view),
+        label: ctx.realize(label).mount(host_view),
+        value_label: ctx.realize(value_label).mount(host_view),
     };
 
     let state = Rc::new(RefCell::new(ProgressState {

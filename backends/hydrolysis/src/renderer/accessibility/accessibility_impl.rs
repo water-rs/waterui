@@ -316,13 +316,10 @@ pub enum AccessibilityActionTarget<E: crate::text::TextEngine> {
         value: nami::Binding<DateTime>,
         range: RangeInclusive<DateTime>,
         ty: DatePickerType,
-        /// The popup's window anchor when the node was emitted by a rendered
-        /// frame; `None` in the semantic tree, where activation mounts the
-        /// same window with no placement at all.
-        origin: Option<LayoutPoint>,
-        /// The node's own environment — its popup opens inside it
-        /// (water-rs/hydrolysis#140).
-        env: Environment,
+        /// Widget-registered popup opener invoked on `Click`, so
+        /// `date_picker_window_base` (`Calendar`/`Stepper`) is only reachable
+        /// when a `DatePicker` is constructed.
+        open_popup: AccessibilityActivation<E>,
     },
     #[cfg(feature = "text-field")]
     TextField {
@@ -370,7 +367,7 @@ pub enum AccessibilityActionTarget<E: crate::text::TextEngine> {
         /// then writes the binding like a pointer click on the row, and
         /// arrow-key navigation moves the selection along with the focus
         /// (water-rs/waterui#1226).
-        selection: Option<Rc<crate::widgets::layout::list::ListRowSelection>>,
+        selection: Option<Rc<crate::widgets::layout::list::ListRowSelection<E>>>,
     },
 }
 
@@ -1670,15 +1667,13 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 value,
                 range,
                 ty,
-                origin,
-                env: picker_env,
+                open_popup,
             } => handle_accessibility_date_picker_action(
                 self,
                 &value,
                 &range,
                 ty,
-                origin,
-                &picker_env,
+                &open_popup,
                 action,
                 action_data,
                 env,
@@ -2199,6 +2194,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         // A presented dialog's card: the window's modal alert. Publication
         // keeps a modal node alone under the window, so the content beneath
         // the modal layer is inert for assistive technology.
+        #[cfg(waterui_feature = "dialog")]
         if node.role() == AccessibilityNodeRole::Dialog
             && env
                 .get::<crate::renderer::input::DialogLayerScope>()
@@ -2649,22 +2645,17 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     }
 
     /// Resolves the spoken accessibility text directly from a typed
-    /// [`Label`](waterui_controls::label::Label) without any view-tree
+    /// [`ControlLabel`](waterui_controls::label::ControlLabel) without any view-tree
     /// traversal. Backends should prefer this over `accessibility_label_from_view`
     /// when the source is already a known label, so that `LabelDisplayMode::Hidden`
     /// labels still surface their semantic text in the accessibility tree.
     #[cfg(feature = "accessibility")]
-    pub(crate) fn accessibility_label_from_label(
-        label: &waterui_controls::label::Label,
-        env: &Environment,
+    pub(crate) fn accessibility_label_from_label<S>(
+        label: &waterui_controls::label::ControlLabel<S>,
+        _env: &Environment,
     ) -> Option<String> {
         use waterui_core::Signal;
-        let plain = label
-            .clone()
-            .resolve(env)
-            .accessibility_label()
-            .snapshot()
-            .to_semantic();
+        let plain = label.accessibility_label().snapshot().to_semantic();
         let trimmed = plain.as_str().trim();
         if trimmed.is_empty() {
             None
@@ -2738,7 +2729,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
 }
 
 #[cfg(feature = "accessibility")]
-fn accessibility_role_to_accesskit_role(role: AccessibilityRole) -> AccessibilityNodeRole {
+pub fn accessibility_role_to_accesskit_role(role: AccessibilityRole) -> AccessibilityNodeRole {
     match role {
         AccessibilityRole::Button => AccessibilityNodeRole::Button,
         AccessibilityRole::Link => AccessibilityNodeRole::Link,
@@ -2980,29 +2971,13 @@ fn handle_accessibility_date_picker_action<E: crate::text::TextEngine>(
     value: &nami::Binding<DateTime>,
     range: &RangeInclusive<DateTime>,
     ty: DatePickerType,
-    origin: Option<LayoutPoint>,
-    picker_env: &Environment,
+    open_popup: &AccessibilityActivation<E>,
     action: AccessibilityAction,
     data: Option<AccessibilityActionData>,
     env: &Environment,
 ) -> bool {
     match action {
-        // A rendered node carries its trigger anchor; a semantic node carries
-        // none and mounts the same window with no placement at all.
-        AccessibilityAction::Click => {
-            // The picker's own environment layers over the dispatch's
-            // (water-rs/hydrolysis#140).
-            let env = picker_env.layered_on(env);
-            match origin {
-                Some(origin) => {
-                    renderer.show_date_picker(value.clone(), range.clone(), ty, origin, &env);
-                }
-                None => {
-                    renderer.activate_date_picker(value.clone(), range.clone(), ty, &env);
-                }
-            }
-            true
-        }
+        AccessibilityAction::Click => (open_popup.borrow_mut())(renderer, env),
         AccessibilityAction::Focus => true,
         AccessibilityAction::SetValue => {
             let Some(AccessibilityActionData::Value(text)) = data else {
@@ -3228,14 +3203,12 @@ impl<E: crate::text::TextEngine> Clone for AccessibilityActionTarget<E> {
                 value,
                 range,
                 ty,
-                origin,
-                env,
+                open_popup,
             } => Self::DatePicker {
                 value: value.clone(),
                 range: range.clone(),
                 ty: *ty,
-                origin: *origin,
-                env: env.clone(),
+                open_popup: Rc::clone(open_popup),
             },
             #[cfg(feature = "text-field")]
             Self::TextField { value, line_limit } => Self::TextField {

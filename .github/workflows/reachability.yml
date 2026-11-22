@@ -1,0 +1,208 @@
+name: Reachability
+
+# Builds the minimal release application (`tests/reachability`, using only
+# `text` and `button`) through `water package` on both mainline backends and
+# inspects its `.wreach` (`__DATA,__wreach` on Apple) linker section (#4694).
+#
+# Fails when the erased dispatch entry (`erased`) or any unused component
+# realization survives dead-code elimination into the shipped artifact, or when
+# the application's own `text` and `button` realizations are missing.
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+  merge_group:
+  push:
+    branches: [main]
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - "src/**"
+      - "core/**"
+      - "components/**"
+      - "backends/core/**"
+      - "backends/apple/**"
+      - "backends/hydrolysis/**"
+      - "graphics/**"
+      - "macros/**"
+      - "utils/**"
+      - "cli/**"
+      - "tests/reachability/**"
+      - ".cargo/**"
+      - rust-toolchain.toml
+      - ".github/tools/reachability/**"
+      - .github/workflows/reachability.yml
+      - ".github/actions/**"
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, synchronize]
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - "src/**"
+      - "core/**"
+      - "components/**"
+      - "backends/core/**"
+      - "backends/apple/**"
+      - "backends/hydrolysis/**"
+      - "graphics/**"
+      - "macros/**"
+      - "utils/**"
+      - "cli/**"
+      - "tests/reachability/**"
+      - ".cargo/**"
+      - rust-toolchain.toml
+      - ".github/tools/reachability/**"
+      - .github/workflows/reachability.yml
+      - ".github/actions/**"
+
+concurrency:
+  group: reachability-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_NET_RETRY: "10"
+  RUSTUP_MAX_RETRIES: "10"
+  RUSTC_WRAPPER: ""
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  hydrolysis:
+    name: hydrolysis (linux)
+    if: ${{ github.event_name != 'pull_request' || !startsWith(github.head_ref, 'release-plz-') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache: "false"
+      - name: Restore Cargo sources
+        uses: ./.github/actions/cargo-sources
+      - uses: ./.github/actions/setup-linux-deps
+        with:
+          runtime-fonts: "false"
+          extra-packages: libclang-dev
+      - uses: actions/cache@v4
+        id: reachability-tool
+        with:
+          path: .github/tools/reachability/target/release/reachability
+          key: reachability-tool-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/tools/reachability/Cargo.lock', '.github/tools/reachability/Cargo.toml', '.github/tools/reachability/src/**', 'utils/meta/Cargo.toml', 'utils/meta/src/**') }}
+      - name: Build and test the reachability checker
+        run: |
+          cargo test --locked --manifest-path .github/tools/reachability/Cargo.toml
+          if [ "${{ steps.reachability-tool.outputs.cache-hit }}" != "true" ]; then
+            cargo build --timings --locked --release --manifest-path .github/tools/reachability/Cargo.toml
+          fi
+      - name: Build the water CLI
+        run: cargo build --timings --locked --profile ci-check -p waterui-cli --bin water
+      - name: Package minimal release application (Hydrolysis)
+        id: package
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
+        run: |
+          set -euo pipefail
+          export PATH="$GITHUB_WORKSPACE/target/ci-check:$PATH"
+          water package --platform linux --backend hydrolysis --path tests/reachability --release --yes 2>&1 | tee package.log
+          artifact=$(sed -n 's/.*Packaged at //p' package.log | tail -n 1)
+          [ -f "$artifact" ] || { echo "::error::water package reported '$artifact', which is not a file"; exit 1; }
+          echo "artifact=$artifact" >> "$GITHUB_OUTPUT"
+      - name: Check reachability markers
+        run: |
+          set -euo pipefail
+          tool=".github/tools/reachability/target/release/reachability"
+          artifact="${{ steps.package.outputs.artifact }}"
+          {
+            echo "### Reached realizations (Hydrolysis)"
+            echo '```'
+            "$tool" list "$artifact"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          "$tool" check "$artifact" \
+            --require text \
+            --require button \
+            --require fixed_container \
+            --allow empty \
+            --allow environment \
+            --allow label \
+            --allow retain \
+            --allow accessibility_label \
+            --allow accessibility_role \
+            --allow accessibility_hidden
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: reachability-hydrolysis
+
+  apple:
+    name: apple (macos)
+    if: ${{ github.event_name != 'pull_request' || !startsWith(github.head_ref, 'release-plz-') }}
+    runs-on: xcode-27
+    timeout-minutes: 40
+    env:
+      CARGO_BUILD_TARGET: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Setup Rust & caches
+        uses: ./.github/actions/apple-rust-setup
+        with:
+          targets: aarch64-apple-darwin
+      - uses: ./.github/actions/metal-toolchain
+      - uses: actions/cache@v4
+        id: reachability-tool
+        with:
+          path: .github/tools/reachability/target/release/reachability
+          key: reachability-tool-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/tools/reachability/Cargo.lock', '.github/tools/reachability/Cargo.toml', '.github/tools/reachability/src/**', 'utils/meta/Cargo.toml', 'utils/meta/src/**') }}
+      - name: Build and test the reachability checker
+        run: |
+          unset CARGO_BUILD_TARGET
+          cargo test --locked --manifest-path .github/tools/reachability/Cargo.toml
+          if [ "${{ steps.reachability-tool.outputs.cache-hit }}" != "true" ]; then
+            cargo build --timings --locked --release --manifest-path .github/tools/reachability/Cargo.toml
+          fi
+      - name: Build the water CLI
+        run: cargo build --timings --locked --profile ci-check -p waterui-cli --bin water
+      - name: Package minimal release application (Apple)
+        id: package
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
+        run: |
+          set -euo pipefail
+          export PATH="$GITHUB_WORKSPACE/target/aarch64-apple-darwin/ci-check:$GITHUB_WORKSPACE/target/ci-check:$PATH"
+          water package --platform macos --backend apple --path tests/reachability --release --yes 2>&1 | tee package.log
+          artifact=$(sed -n 's/.*Packaged at //p' package.log | tail -n 1)
+          [ -d "$artifact" ] || [ -f "$artifact" ] || { echo "::error::water package reported '$artifact', which does not exist"; exit 1; }
+          echo "artifact=$artifact" >> "$GITHUB_OUTPUT"
+      - name: Check reachability markers
+        run: |
+          set -euo pipefail
+          tool=".github/tools/reachability/target/release/reachability"
+          artifact="${{ steps.package.outputs.artifact }}"
+          {
+            echo "### Reached realizations (Apple)"
+            echo '```'
+            "$tool" list "$artifact"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          "$tool" check "$artifact" \
+            --require text \
+            --require button \
+            --require fixed_container \
+            --allow empty \
+            --allow environment \
+            --allow label \
+            --allow retain \
+            --allow accessibility_label \
+            --allow accessibility_role \
+            --allow accessibility_hidden
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: reachability-apple

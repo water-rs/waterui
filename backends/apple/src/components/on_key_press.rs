@@ -14,13 +14,13 @@ use cocoa_ui::keys::KeyEvent;
 use cocoa_ui::view;
 use waterui_backend_core::Environment;
 use waterui_core::Metadata;
-use waterui_core::key::{KeyHandling, KeyPress, OnKeyPress};
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
     ViewDimensions,
 };
+use waterui_interaction::key::{KeyHandling, KeyPress, OnKeyPress};
 
-use crate::contract::{Mounted, NativeLeaf};
+use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;
 
 use crate::contract::RenderContext;
@@ -86,12 +86,12 @@ impl SubView for OnKeyPressSubView {
 
 /// The `on_key_press` realization.
 pub fn realize_on_key_press_metadata(
-    metadata: Metadata<OnKeyPress>,
+    metadata: Metadata<OnKeyPress, Held>,
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
     let mtm = ctx.mtm();
     let host = HostView::new(mtm, Rect::ZERO);
-    let mounted = ctx.render(metadata.content).mount(&host);
+    let mounted = ctx.realize(metadata.content).mount(&host);
     // §7.1: the fill answer resolves through the `cocoaUiPrimaryContent`
     // chain — `Color.opacity(..)` in a background slot stays a fill.
     crate::primary_content::forward(&host, mounted.view());

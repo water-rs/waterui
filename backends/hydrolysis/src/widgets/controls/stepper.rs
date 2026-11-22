@@ -2,7 +2,8 @@
 use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::chrome::{ChromeContent, LiveChromeParts};
 use crate::renderer::{
-    HydroState, InteractionKey, RenderContext, SemanticCore, WidgetRenderContext,
+    HeldChild, HydroState, InteractionKey, RenderContext, RetainedSubview, SemanticCore,
+    WidgetRenderContext,
 };
 use crate::theme::{Chrome, SpecTint, StepperLook, StepperSpec, WidgetTheme};
 #[cfg(feature = "accessibility")]
@@ -15,13 +16,12 @@ use std::cell::RefCell;
 use std::ops::RangeInclusive;
 use std::rc::Rc;
 use waterui_controls::stepper::StepperConfig;
+use waterui_core::Environment;
 use waterui_core::contract_violation;
-use waterui_core::interaction::InteractionState;
 use waterui_core::layout::Size as LayoutSize;
 use waterui_core::layout::{LayoutDirection, ProposalSize, ViewDimensions};
-use waterui_core::{AnyView, Environment};
+use waterui_interaction::interaction::InteractionState;
 
-use crate::renderer::RetainedSubview;
 use crate::widgets::util::{label_beside_control_bounds, mirrored_in, widget_disabled};
 
 /// The retained render state of a stepper: the cloneable [`StepperConfig`] drives the
@@ -30,7 +30,7 @@ use crate::widgets::util::{label_beside_control_bounds, mirrored_in, widget_disa
 /// The look the theme gave, and the parts recorded from it, are held across
 /// renders while the stepper's spec and frame stay the same.
 pub struct StepperRenderState<E: crate::text::TextEngine> {
-    config: StepperConfig,
+    config: StepperConfig<HeldChild<E>>,
     label_view: RetainedSubview<E>,
     look: Option<(StepperSpec, StepperLook)>,
     decrement: EndParts,
@@ -89,9 +89,9 @@ impl<E: crate::text::TextEngine> StepperRenderState<E> {
         crate::renderer::SemanticCore::<E>::accessibility_label_from_label(self.config.label(), env)
     }
 
-    pub(crate) fn from_config(config: StepperConfig) -> Self {
+    pub(crate) fn from_config(config: StepperConfig<HeldChild<E>>) -> Self {
         Self {
-            label_view: RetainedSubview::new(AnyView::new(config.label().clone())),
+            label_view: RetainedSubview::held(config.label().build()),
             config,
             look: None,
             decrement: EndParts::new(),
@@ -158,10 +158,10 @@ fn stepper_spec(env: &Environment) -> StepperSpec {
 /// path so both produce the same a11y tree.
 // empty when the accessibility feature is off
 #[cfg_attr(not(feature = "accessibility"), allow(clippy::missing_const_for_fn))]
-pub fn stepper_accessibility<E: crate::text::TextEngine>(
+pub fn stepper_accessibility<E: crate::text::TextEngine, S>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     ctx: Option<RenderContext>,
-    stepper: &StepperConfig,
+    stepper: &StepperConfig<S>,
     env: &Environment,
     focus_keys: &[crate::renderer::InteractionKey],
 ) {

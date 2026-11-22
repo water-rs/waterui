@@ -14,10 +14,10 @@ use nami::Binding;
 use waterui_controls::TextField;
 use waterui_core::Str;
 use waterui_core::handler::AnyViewBuilder;
-use waterui_core::interaction::{InteractionState, StateValue};
 use waterui_core::layout::LayoutDirection;
 use waterui_core::{AnyView, Environment};
 use waterui_form::secure::{Secure, secure};
+use waterui_interaction::interaction::{InteractionState, StateValue};
 use waterui_layout::stack::vstack;
 
 use super::chrome_primitives::Frames;
@@ -433,9 +433,12 @@ fn a_spec_change_follows_the_looks_label_font() {
         env.insert(Tint::new(tint));
         env
     };
-    let label = "Name".into_label();
+    let env = crate::renderer::tests::test_environment();
+    let label = "Name"
+        .into_label()
+        .into_control_label::<crate::renderer::HeldChild<_>>(&env);
     let mut field = FieldChrome::new();
-    let mut view = RetainedSubview::new(field.label_view(label.clone()));
+    let mut view = RetainedSubview::held(field.label_view(label.build()));
     let width = |view: &mut RetainedSubview<_>, renderer: &mut _, env: &Environment| {
         f64::from(view.measure_intrinsic(renderer, env).width)
     };
