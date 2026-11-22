@@ -173,7 +173,7 @@ impl UiBuilder<NoStyle> {
     /// environment resolves only the framework default tokens the runtime
     /// installs; a view whose body reads a style package's tokens mounts
     /// through [`UiBuilder::theme`] instead. Geometry, pointer gestures and
-    /// capture live on the styled builder's [`UiBuilder::mount_offscreen`].
+    /// capture live on the styled builder's `mount_offscreen`.
     ///
     /// # Panics
     ///
@@ -247,7 +247,7 @@ impl<S> UiBuilder<S> {
 
     /// `view` with the session's TypeScript runtime installed for its
     /// subtree, so a view that reaches a `tsx!` mount finds the runtime
-    /// loaded from the bundle `water test` named.
+    /// loaded from the bundle `WATERUI_TS_BUNDLE` names.
     ///
     /// The install is scoped to the mounted view, not to
     /// [`Self::mount_env`]: a module reads the host's theme out of the
@@ -431,9 +431,9 @@ impl<S: Style> UiBuilder<Styled<S>> {
     /// [`Environment`] — the composition root [`App::new`] configured,
     /// realizations included — layered over the builder's, so the values the
     /// app carries win while what the test installed still applies
-    /// underneath. The builder's [`Self::viewport`], [`Self::runtime`] and
-    /// [`Self::scale_factor`] apply; [`mount_app`](crate::mount_app) is this
-    /// method with the viewport sized from the window's declared frame.
+    /// underneath. The builder's [`Self::viewport`] and [`Self::scale_factor`]
+    /// apply; [`mount_app`](crate::mount_app) is this method with the viewport
+    /// sized from the window's declared frame.
     ///
     /// Only the app's first window is mounted: the headless runtime hosts a
     /// single window, so the app's menu bar and any further windows are not
@@ -612,7 +612,7 @@ pub struct DragOptions {
     /// real device's finger produces: the scroll claim, the touch slop and
     /// the fling all key on the pointer kind, which `PointerKind::Mouse`
     /// never reaches. The runtime reports no touch-scroll configuration
-    /// until [`OffscreenApp::set_touch_scroll_config`] supplies it — on a
+    /// until [`SemanticApp::set_touch_scroll_config`] supplies it — on a
     /// host without one a touch drag still dispatches but claims nothing.
     pointer: PointerKind,
 }
@@ -636,7 +636,7 @@ impl DragOptions {
     /// real device's finger produces: the scroll claim, the touch slop and
     /// the fling all key on the pointer kind, which `PointerKind::Mouse`
     /// never reaches. The runtime reports no touch-scroll configuration
-    /// until [`OffscreenApp::set_touch_scroll_config`] supplies it — on a
+    /// until [`SemanticApp::set_touch_scroll_config`] supplies it — on a
     /// host without one a touch drag still dispatches but claims nothing.
     #[must_use]
     pub const fn pointer(&self) -> PointerKind {
@@ -1532,7 +1532,7 @@ impl<R: RuntimeDriver> SemanticApp<R> {
     /// virtual time: work the runtime counts as finite that never ends is a
     /// runtime defect, and returning would hand the test a scene still in
     /// motion. A test that samples a transition mid-flight steps it with
-    /// [`Self::pump_for`] instead of settling.
+    /// [`OffscreenApp::pump_for`] instead of settling.
     pub fn settle(&mut self) {
         /// Guard against finite work that never ends, not a budget for work
         /// that does: a minute of virtual time outlasts any transition a UI

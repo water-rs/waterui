@@ -23,7 +23,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use waterui::cursor::CursorStyle;
 #[cfg(feature = "text-field")]
-use waterui_controls::text_field::ResolvedTextFieldConfig;
+use waterui_controls::text_field::TextFieldConfig;
 use waterui_core::Environment;
 #[cfg(feature = "text-field")]
 use waterui_core::Str;
@@ -38,13 +38,13 @@ use waterui_interaction::interaction::InteractionState;
 use waterui_text::styled::Style;
 use waterui_text::styled::StyledStr;
 
-/// The retained render state of a text field: the cloneable [`ResolvedTextFieldConfig`]
+/// The retained render state of a text field: the cloneable [`TextFieldConfig`]
 /// drives the input model + accessibility, and its floating label is held as a
 /// [`RetainedSubview`] built once and placed each frame at its resting place,
 /// riding the look's float operands, so reactive label content stays live.
 #[cfg(feature = "text-field")]
 pub struct TextFieldRenderState<E: crate::text::TextEngine> {
-    config: ResolvedTextFieldConfig<HeldChild<E>>,
+    config: TextFieldConfig<HeldChild<E>>,
     label_view: RetainedSubview<E>,
     /// The look the field was requested for, its container's live chrome and
     /// the operands its label floats on.
@@ -68,7 +68,7 @@ impl<E: crate::text::TextEngine> TextFieldRenderState<E> {
         crate::renderer::SemanticCore::<E>::accessibility_label_from_label(self.config.label(), env)
     }
 
-    pub(crate) fn from_config(config: ResolvedTextFieldConfig<HeldChild<E>>) -> Self {
+    pub(crate) fn from_config(config: TextFieldConfig<HeldChild<E>>) -> Self {
         let field = FieldChrome::new();
         Self {
             label_view: RetainedSubview::held(field.label_view(config.label().build())),

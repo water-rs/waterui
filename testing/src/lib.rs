@@ -41,9 +41,10 @@
 //! }
 //! ```
 //!
-//! A rendered test names its style with `theme =`, and a whole [`App`]
-//! mounts through [`mount_app`] — or `ui().theme(style).mount_app(app)` when
-//! the session needs its own viewport or scale factor:
+//! A rendered test names its style with `theme =`, and a whole
+//! [`App`](waterui::app::App) mounts through [`mount_app`] — or
+//! `ui().theme(style).mount_app(app)` when the session needs its own viewport
+//! or scale factor:
 //!
 //! ```ignore
 //! #[waterui::test(login_view, theme = hydrolysis_m3::Material3::defaults(), offscreen)]
@@ -108,16 +109,14 @@
 //!
 //! With the `ts` feature on, a session mounts a view that reaches a `tsx!`
 //! mount: [`ui`] installs the runtime loaded from the bundle
-//! `WATERUI_TS_BUNDLE` names — `water test` builds the crate's bundle and
-//! sets the variable before it runs `cargo nextest` — into the environment
-//! the view is mounted in. An absolute path is used as written; a relative
-//! one is resolved against `CARGO_MANIFEST_DIR`, which cargo and nextest set
-//! for every test binary. When the variable is unset no runtime is installed
-//! and a test that mounts no TypeScript is unaffected; a view that does reach
-//! a mount then fails with the message naming the variable and `water test`.
-//! [`UiBuilder::mount_app`] runs the application's own environment, where the
-//! application's bundle loader installs the runtime, and does not read the
-//! variable.
+//! `WATERUI_TS_BUNDLE` names into the environment the view is mounted in. An
+//! absolute path is used as written; a relative one is resolved against
+//! `CARGO_MANIFEST_DIR`, which cargo and nextest set for every test binary.
+//! When the variable is unset no runtime is installed and a test that mounts
+//! no TypeScript is unaffected; a view that does reach a mount then fails
+//! naming `WATERUI_TS_BUNDLE`. [`mount_app`] runs the application's own
+//! environment, where the application's bundle loader installs the runtime,
+//! and does not read the variable.
 
 mod app;
 mod artifacts;
