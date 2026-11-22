@@ -66,9 +66,9 @@ pub use crate::backend::{
     Backend, Display, Frame, FrameRedraw, Renderer, SurfaceFrame, SurfaceInfo, Visibility,
 };
 pub use crate::capability::{
-    Backdrop, BackdropChain, BackdropRuns, BackdropShaders, DrainedProducer, Effects, Filters,
-    GpuContent, HdrOutput, HostedLayers, Planes, Runs, ShaderPaint as ShaderPaintCapability,
-    ShaderSource, Uploads,
+    Backdrop, BackdropChain, BackdropRuns, BackdropShaders, ContentShaders, DrainedProducer,
+    Effects, Filters, GpuContent, HdrOutput, HostedLayers, Planes, Runs,
+    ShaderPaint as ShaderPaintCapability, ShaderSource, Uploads,
 };
 pub use crate::color::{
     Color, ColorSpace, DisplayP3, DynColor, LinearDisplayP3, LinearSrgb, Rec2020, Srgb,
@@ -104,8 +104,8 @@ pub use crate::record::{
     Recorder, SampleFlag, StaticRecorder,
 };
 pub use crate::resource::{
-    BackdropGroup, BackdropShader, Filter, Font, FontSource, FrameSink, GpuProducer, Hosted, Image,
-    Shader, TextLayoutHandle,
+    BackdropGroup, BackdropShader, ContentShader, Filter, Font, FontSource, FrameSink, GpuProducer,
+    Hosted, Image, Shader, TextLayoutHandle,
 };
 pub use crate::shape::{
     ContinuousRect, EvenOdd, FillRule, PATH_TOLERANCE, PathRef, Semantic, Shape, ShapeData,
@@ -122,11 +122,11 @@ pub use cherenkov_record::{
     BackdropOuterError, BackdropSample, BackdropSampling, BackdropShaderEffect, BackdropShaderId,
     BackdropShaderSource, BackdropSpec, BackdropUnion, BackdropUnionError, CaptureLevels,
     CaptureLevelsError, CapturePyramid, CaptureScale, CaptureScaleError, ColorMatrix, ContentOp,
-    FrameRate, GpuInstalls, ImageLimits, ImageStorage, Install, KeyframeProp, Layer,
-    LayerAnimations, LayerContent, LayerEdit, LayerId, LayerKeyframes, LayerNode, LayerOwner,
-    LevelRamp, LevelRampError, Projective, ProjectiveError, ProjectiveLayers, Prop, Queue, Realize,
-    RecordingScale, RecordingScaleError, Refraction, ResourceId, Retarget, Rim, Shared, SurfaceId,
-    SurfaceTree, Target, TextLayoutId, TrackOrigin, TrackStart, Transaction, TransformComponents,
-    snap_animating,
+    ContentShaderEffect, ContentShaderId, ContentShaderSource, FrameRate, GpuInstalls, ImageLimits,
+    ImageStorage, Install, KeyframeProp, Layer, LayerAnimations, LayerContent, LayerEdit, LayerId,
+    LayerKeyframes, LayerNode, LayerOwner, LevelRamp, LevelRampError, Projective, ProjectiveError,
+    ProjectiveLayers, Prop, Queue, Realize, RecordingScale, RecordingScaleError, Refraction,
+    ResourceId, Retarget, Rim, Shared, SurfaceId, SurfaceTree, Target, TextLayoutId, TrackOrigin,
+    TrackStart, Transaction, TransformComponents, snap_animating,
 };
 pub use kurbo::Stroke;

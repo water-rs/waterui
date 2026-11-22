@@ -441,13 +441,13 @@ pub trait WidgetTheme {
     ///
     /// [`ContainerRecipe`]: cherenkov_record::ContainerRecipe
     ///
-    /// The contract a backend that realizes backdrop materials follows: it
-    /// calls this once, before it draws any chrome, and keeps the
-    /// registry; it registers every shader with each engine it attaches
+    /// The contract a backend that realizes materials follows: it calls this
+    /// once, before it draws any chrome, and keeps the registry; it registers
+    /// every backdrop shader and content shader with each engine it attaches
     /// and creates material groups from the capture classes, or from the
-    /// class a container recipe resolves. The theme
-    /// holds no engine handles. The default registers nothing, which is
-    /// right for a theme that records no backdrop material.
+    /// class a container recipe resolves. The theme holds no engine handles.
+    /// The default registers nothing, which is right for a theme that records
+    /// neither backdrop materials nor content effects.
     fn register_backdrop_shaders(&self, _registry: &mut MaterialRegistry) {}
 
     /// The space the window surface stores and composites in: every level

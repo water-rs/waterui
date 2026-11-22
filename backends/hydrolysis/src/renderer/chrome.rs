@@ -20,8 +20,9 @@ use std::ops::Range;
 use std::rc::{Rc, Weak};
 
 use cherenkov_record::{
-    BackdropMaterial, ColorStop, Content, Draw as _, Fixed, LayoutSize, MaterialEffect,
-    MaterialScope, Paint, RadialGradient, Recorder, Shadow, ShapeData, Stroke, WorkingColor,
+    BackdropMaterial, ColorStop, Content, ContentShader, Draw as _, Fixed, LayoutSize,
+    MaterialEffect, MaterialScope, Paint, RadialGradient, Recorder, Shadow, ShapeData, Stroke,
+    WorkingColor,
 };
 use kurbo::{Affine, Point, Rect, Vec2};
 use nami::{Computed, Signal};
@@ -30,8 +31,10 @@ use waterui_core::animation::{Animation, ChangeAnimation};
 use waterui_interaction::interaction::InteractionState;
 
 use crate::renderer::interaction_layers::MAX_PRESS_WAVES;
+use crate::renderer::mount::ScopeKey;
 use crate::renderer::recording::{LoweredResources, SceneResources};
 use crate::renderer::{HydrolysisRenderer, RenderContext};
+use crate::text::TextEngine;
 use crate::theme::live::Operand;
 use crate::theme::{
     Change, Chrome, Corners, CustomPart, Driven, Elevation, Fill, FocusIndicator, Inputs,
@@ -449,6 +452,9 @@ struct SurfaceOperands {
     border: Option<BorderOperands>,
     /// The key and ambient shadows; `None` when the surface never elevates.
     elevation: Option<(Operand<Shadow>, Operand<Shadow>)>,
+    /// The per-member content-effect uniforms; `None` when the surface applies
+    /// no content effect.
+    content_effect: Option<Operand<MaterialEffect>>,
 }
 
 impl SurfaceOperands {
@@ -480,11 +486,15 @@ impl SurfaceOperands {
                 FillOperands::Backdrop(Operand::new(backdrop.effect().target(inputs)))
             }
         };
+        let content_effect = surface
+            .get_content_effect()
+            .map(|effect| Operand::new(effect.effect().target(inputs)));
         Self {
             shape: Operand::new(shape.shape(silhouette, corners)),
             fill,
             border,
             elevation,
+            content_effect,
         }
     }
 
@@ -1033,6 +1043,9 @@ impl LiveChrome {
                 Fill::Paint(paint) => paint.subscribe(Rc::clone(&notify)),
                 Fill::Backdrop(backdrop) => backdrop.effect().subscribe(Rc::clone(&notify)),
             }),
+            surface
+                .get_content_effect()
+                .map(|effect| effect.effect().subscribe(Rc::clone(&notify))),
         ];
         guards.extend(drivens.into_iter().flatten().flatten());
         let watch_color = |color: &Computed<WorkingColor>| -> Box<dyn Any> {
@@ -1253,6 +1266,14 @@ impl LiveChrome {
             }
             _ => unreachable!("a live chrome's fill operands follow its surface's fill"),
         }
+        if let (Some(operand), Some(content_effect)) =
+            (&self.surface.content_effect, surface.get_content_effect())
+        {
+            operand.set(
+                content_effect.effect().target(&inputs),
+                self.driven_animation(content_effect.effect(), retargeting),
+            );
+        }
         if let (Some(operands), Some(border)) = (&self.surface.border, surface.get_border()) {
             let resolved = border.target(&inputs);
             let animation = self.driven_animation(border, retargeting);
@@ -1449,6 +1470,16 @@ impl LiveChrome {
     /// Whether a press scales the chrome and the content that follows it.
     pub(crate) fn scales_content(&self) -> bool {
         self.spec.press().get_scale().is_some()
+    }
+
+    /// The content-effect shader, uniform operand and live silhouette operand
+    /// when the surface declares a content effect; `None` otherwise.
+    pub(crate) fn content_effect_operands(
+        &self,
+    ) -> Option<(ContentShader, Operand<MaterialEffect>, Operand<ShapeData>)> {
+        let effect = self.spec.surface().get_content_effect()?;
+        let operand = self.surface.content_effect.as_ref()?;
+        Some((effect.shader(), operand.clone(), self.surface.shape.clone()))
     }
 
     /// Moves the interaction layers over the content — the tint, the press
@@ -2028,6 +2059,60 @@ impl LiveChromeParts {
             )]
         })
         .push(renderer, ctx, "slider-indicator-part");
+    }
+
+    /// Opens the isolated content-effect scope when this chrome's surface
+    /// declares a [`ContentEffect`](crate::theme::ContentEffect); returns
+    /// `true` when a scope was opened and must be closed with
+    /// [`Self::close_content_effect`] before [`Self::push_above`].
+    ///
+    /// When the surface declares no content effect, opens nothing and returns
+    /// `false` so zero extra layers or passes are emitted.
+    pub(crate) fn open_content_effect<E: TextEngine>(
+        &self,
+        renderer: &mut HydrolysisRenderer<E>,
+        ctx: RenderContext,
+    ) -> bool {
+        let Some((shader, effect, shape)) = self.chrome.content_effect_operands() else {
+            return false;
+        };
+        renderer.open_content_effect_scope(
+            ScopeKey {
+                role: "chrome-content-effect",
+                item: Rc::as_ptr(&self.chrome) as usize as u64,
+            },
+            shape,
+            shader,
+            effect,
+            ctx,
+        );
+        true
+    }
+
+    /// Closes the scope opened by [`Self::open_content_effect`] when `opened`
+    /// is `true`.
+    pub(crate) fn close_content_effect<E: TextEngine>(
+        &self,
+        renderer: &mut HydrolysisRenderer<E>,
+        opened: bool,
+    ) {
+        let _ = self;
+        if opened {
+            renderer.close_scope();
+        }
+    }
+
+    /// Runs `render_content` inside the chrome's content-effect scope when one
+    /// is declared, or directly with zero extra scope otherwise.
+    pub(crate) fn wrap_content<E: TextEngine>(
+        &self,
+        renderer: &mut HydrolysisRenderer<E>,
+        ctx: RenderContext,
+        render_content: impl FnOnce(&mut HydrolysisRenderer<E>),
+    ) {
+        let opened = self.open_content_effect(renderer, ctx);
+        render_content(renderer);
+        self.close_content_effect(renderer, opened);
     }
 
     /// Lists the chrome's interaction layers above the widget's content.

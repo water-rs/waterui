@@ -32,6 +32,7 @@
 pub mod animation;
 pub mod backdrop;
 pub mod color;
+pub mod content_effect;
 pub mod display_list;
 pub mod error;
 pub mod frame;
@@ -72,6 +73,7 @@ pub use crate::color::{
     Color, ColorSpace, DisplayP3, DynColor, LinearDisplayP3, LinearSrgb, Rec2020, Srgb,
     WorkingColor,
 };
+pub use crate::content_effect::{ContentShaderEffect, ContentShaderSource};
 pub use crate::display_list::{
     Command, Dirty, DisplayList, DisplayListView, Edit, Operand, OperandKind, OperandRef, Operands,
     Picture, ScopeError, Slot, SlotUpdate, Splice, blends_within, translucent_within,
@@ -84,9 +86,10 @@ pub use crate::image::{
     Rgba16F,
 };
 pub use crate::material::{
-    BackdropMaterial, CaptureClass, ContainerRecipe, GroupMember, LayeredContent, MaterialCapture,
-    MaterialEffect, MaterialGrouping, MaterialRegistry, MaterialRun, MaterialScope, MaterialShader,
-    OuterExtent, OuterExtentError, UnionSmoothing, UnionSmoothingError,
+    BackdropMaterial, CaptureClass, ContainerRecipe, ContentShader, GroupMember, LayeredContent,
+    MaterialCapture, MaterialEffect, MaterialGrouping, MaterialRegistry, MaterialRun,
+    MaterialScope, MaterialShader, OuterExtent, OuterExtentError, UnionSmoothing,
+    UnionSmoothingError,
 };
 pub use crate::ops::{
     AnimationOrigin, AnimationStart, Axis, BackdropId, ChangeSet, ContentOp, Install, KeyframeProp,
@@ -103,7 +106,9 @@ pub use crate::record::{
     Recorder, SampleFlag, SharedLive, StaticRecorder,
 };
 pub use crate::region::Region;
-pub use crate::resource::{BackdropShaderId, ImageLimits, ImageStorage, ResourceId};
+pub use crate::resource::{
+    BackdropShaderId, ContentShaderId, ImageLimits, ImageStorage, ResourceId,
+};
 pub use crate::shape::{
     ContinuousRect, EvenOdd, FillRule, PATH_TOLERANCE, PathRef, Semantic, Shape, ShapeData,
 };

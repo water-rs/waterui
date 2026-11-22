@@ -41,7 +41,7 @@ pub use render::diag;
 /// The registered-effect module text the renderer compiles; exposed for
 /// `tests/shader.rs`, which translates it through every naga backend.
 #[doc(hidden)]
-pub use render::shaders::backdrop_effect_text;
+pub use render::shaders::{backdrop_effect_text, content_effect_text};
 
 use std::path::PathBuf;
 
@@ -791,5 +791,39 @@ impl cherenkov::BackdropShaders for Gpu {
     }
     fn remove_backdrop_shader(r: &mut Self::Renderer, id: cherenkov::BackdropShaderId) {
         r.remove_backdrop_shader(id);
+    }
+}
+
+impl cherenkov::ContentShaders for Gpu {
+    fn validate_content_shader(
+        source: &cherenkov::ContentShaderSource,
+    ) -> Result<(), cherenkov::ResourceError> {
+        render::GpuRenderer::validate_content_shader(source)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn add_content_shader(
+        r: &mut Self::Renderer,
+        id: cherenkov::ContentShaderId,
+        source: cherenkov::ContentShaderSource,
+    ) -> Result<(), cherenkov::ResourceError> {
+        r.add_content_shader(id, &source)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[expect(
+        clippy::future_not_send,
+        reason = "the browser engine is single-threaded and its futures run on the page's event loop"
+    )]
+    async fn add_content_shader(
+        r: &mut Self::Renderer,
+        id: cherenkov::ContentShaderId,
+        source: cherenkov::ContentShaderSource,
+    ) -> Result<(), cherenkov::ResourceError> {
+        r.add_content_shader(id, &source).await
+    }
+
+    fn remove_content_shader(r: &mut Self::Renderer, id: cherenkov::ContentShaderId) {
+        r.remove_content_shader(id);
     }
 }

@@ -910,7 +910,13 @@ fn record_button_chrome<E: crate::text::TextEngine>(
     let body = |ctx: &mut WidgetRenderContext<'_, E>| {
         let render_ctx = ctx.render_context();
         rendered.parts.push_below(ctx.renderer_mut(), render_ctx);
+        let content_scoped = rendered
+            .parts
+            .open_content_effect(ctx.renderer_mut(), render_ctx);
         render_label(ctx);
+        rendered
+            .parts
+            .close_content_effect(ctx.renderer_mut(), content_scoped);
         let render_ctx = ctx.render_context();
         rendered.parts.push_above(ctx.renderer_mut(), render_ctx);
     };

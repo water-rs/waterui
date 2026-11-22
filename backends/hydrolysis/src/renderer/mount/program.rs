@@ -12,7 +12,9 @@ use std::num::NonZeroU64;
 use std::rc::Rc;
 
 use cherenkov_record::BlendSpace;
+use cherenkov_record::ContentShader;
 use cherenkov_record::Live;
+use cherenkov_record::MaterialEffect;
 use cherenkov_record::ShapeData;
 use nami::Signal as _;
 use rustc_hash::FxHashSet;
@@ -93,6 +95,10 @@ pub struct ScopeLive {
     pub opacity: Option<LiveOpacity>,
     /// The layer transform over its at-rest one.
     pub transform: Option<LiveTransform>,
+    /// The layer clip silhouette following a live operand.
+    pub clip: Option<LiveClip>,
+    /// The content-effect shader applied to this isolated scope's subtree.
+    pub content_effect: Option<LiveContentEffect>,
 }
 
 impl ScopeLive {
@@ -100,7 +106,72 @@ impl ScopeLive {
     pub const NONE: Self = Self {
         opacity: None,
         transform: None,
+        clip: None,
+        content_effect: None,
     };
+}
+
+/// A layer clip silhouette following a live operand.
+#[derive(Clone)]
+pub struct LiveClip(Operand<ShapeData>);
+
+impl LiveClip {
+    pub(crate) const fn new(operand: Operand<ShapeData>) -> Self {
+        Self(operand)
+    }
+
+    /// The clip shape, live.
+    pub(crate) fn live(&self) -> Live<ShapeData> {
+        self.0.live()
+    }
+}
+
+impl PartialEq for LiveClip {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.same(&other.0)
+    }
+}
+
+impl core::fmt::Debug for LiveClip {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_tuple("LiveClip").field(&self.0.snapshot()).finish()
+    }
+}
+
+/// A layer content-effect shader following a live [`MaterialEffect`] operand.
+#[derive(Clone)]
+pub struct LiveContentEffect {
+    shader: ContentShader,
+    effect: Operand<MaterialEffect>,
+}
+
+impl LiveContentEffect {
+    pub(crate) const fn new(shader: ContentShader, effect: Operand<MaterialEffect>) -> Self {
+        Self { shader, effect }
+    }
+
+    pub(crate) const fn shader(&self) -> ContentShader {
+        self.shader
+    }
+
+    pub(crate) const fn effect(&self) -> &Operand<MaterialEffect> {
+        &self.effect
+    }
+}
+
+impl PartialEq for LiveContentEffect {
+    fn eq(&self, other: &Self) -> bool {
+        self.shader == other.shader && self.effect.same(&other.effect)
+    }
+}
+
+impl core::fmt::Debug for LiveContentEffect {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("LiveContentEffect")
+            .field("shader", &self.shader)
+            .field("effect", &self.effect.snapshot())
+            .finish()
+    }
 }
 
 /// A layer opacity following an operand.

@@ -8,23 +8,24 @@
 //! and its elevation — recorded behind the content, with every value that
 //! follows the inputs a live operand.
 
-use super::{Backdrop, Border, Driven, Elevation, Motion};
+use super::{Backdrop, Border, ContentEffect, Driven, Elevation, Motion};
 
 /// The look of a `.background(Glass…)`: what fills the glass's outline and
 /// how it answers interaction. The outline is the `Glass`'s shape on the
 /// content's frame, which Hydrolysis supplies.
 ///
-/// The [`Backdrop`] material, the border and the elevation are the same
-/// vocabulary a [`Surface`](super::Surface) is made of, and are recorded the
-/// way a surface records them. Their [`Driven`] values follow the live
-/// [`Inputs`](super::Inputs) — the frame, the interaction state and the press
-/// point; the glass's value type is `()`.
+/// The [`Backdrop`] material, optional [`ContentEffect`], border and elevation
+/// are the same vocabulary a [`Surface`](super::Surface) is made of, and are
+/// recorded the way a surface records them. Their [`Driven`] values follow the
+/// live [`Inputs`](super::Inputs) — the frame, the interaction state and the
+/// press point; the glass's value type is `()`.
 #[derive(Debug, Clone)]
 pub struct GlassLook {
     material: Backdrop,
     motion: Motion,
     border: Option<Driven<Border>>,
     elevation: Driven<Elevation>,
+    content_effect: Option<ContentEffect>,
 }
 
 impl GlassLook {
@@ -37,6 +38,7 @@ impl GlassLook {
             motion,
             border: None,
             elevation: Driven::constant(Elevation::NONE),
+            content_effect: None,
         }
     }
 
@@ -51,6 +53,13 @@ impl GlassLook {
     #[must_use]
     pub fn elevation(mut self, elevation: impl Into<Driven<Elevation>>) -> Self {
         self.elevation = elevation.into();
+        self
+    }
+
+    /// Applies `effect` to the isolated content painted inside the outline.
+    #[must_use]
+    pub fn content_effect(mut self, effect: ContentEffect) -> Self {
+        self.content_effect = Some(effect);
         self
     }
 
@@ -76,5 +85,12 @@ impl GlassLook {
     #[must_use]
     pub const fn get_elevation(&self) -> &Driven<Elevation> {
         &self.elevation
+    }
+
+    /// The optional content effect shading the view's own content; `None`
+    /// paints the content directly without an isolation layer.
+    #[must_use]
+    pub const fn get_content_effect(&self) -> Option<&ContentEffect> {
+        self.content_effect.as_ref()
     }
 }

@@ -285,6 +285,43 @@ impl cherenkov::BackdropShaders for Raster {
     }
 }
 
+// Content effect shaders run on the lane executor over an isolated layer
+// window (`render::shader`).
+#[cfg(feature = "shaders")]
+impl cherenkov::ContentShaders for Raster {
+    fn validate_content_shader(
+        source: &cherenkov::ContentShaderSource,
+    ) -> Result<(), cherenkov::ResourceError> {
+        render::shader::ContentProgram::compile(source).map(drop)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn add_content_shader(
+        renderer: &mut Self::Renderer,
+        id: cherenkov::ContentShaderId,
+        source: cherenkov::ContentShaderSource,
+    ) -> Result<(), cherenkov::ResourceError> {
+        let program = render::shader::ContentProgram::compile(&source)?;
+        renderer.filters.add_content_shader(id, program);
+        Ok(())
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn add_content_shader(
+        renderer: &mut Self::Renderer,
+        id: cherenkov::ContentShaderId,
+        source: cherenkov::ContentShaderSource,
+    ) -> impl core::future::Future<Output = Result<(), cherenkov::ResourceError>> {
+        let result = render::shader::ContentProgram::compile(&source)
+            .map(|program| renderer.filters.add_content_shader(id, program));
+        core::future::ready(result)
+    }
+
+    fn remove_content_shader(renderer: &mut Self::Renderer, id: cherenkov::ContentShaderId) {
+        renderer.filters.remove_content_shader(id);
+    }
+}
+
 // Shader paints render on the lane executor into an image per use, which
 // the draw then samples (`render::shader`).
 #[cfg(feature = "shaders")]

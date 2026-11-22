@@ -719,6 +719,43 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         self.close_scope();
     }
 
+    /// Opens a content-effect isolation scope in `ctx`'s record space: its
+    /// layer clips to the live `clip` silhouette and shades its isolated
+    /// subtree through `shader` driven by `effect`. Close with
+    /// [`Self::close_scope`].
+    pub(crate) fn open_content_effect_scope(
+        &mut self,
+        key: mount::ScopeKey,
+        clip: Operand<cherenkov_record::ShapeData>,
+        shader: cherenkov_record::ContentShader,
+        effect: Operand<cherenkov_record::MaterialEffect>,
+        ctx: RenderContext,
+    ) {
+        let delta = self.program().origin().inverse() * ctx.local();
+        let scope = ScopeDelta {
+            transform: delta,
+            hit_alpha: 1.0,
+        };
+        self.push_placement_scope(scope, None);
+        let placement = self.current_placement();
+        self.program().open_scope(
+            key,
+            mount::ScopeProps {
+                transform: delta,
+                clip: None,
+                alpha: 1.0,
+                blend_space: None,
+                live: mount::ScopeLive {
+                    opacity: None,
+                    transform: None,
+                    clip: Some(mount::LiveClip::new(clip)),
+                    content_effect: Some(mount::LiveContentEffect::new(shader, effect)),
+                },
+            },
+            placement,
+        );
+    }
+
     fn open_scope_layer(
         &mut self,
         key: mount::ScopeKey,
@@ -740,6 +777,8 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             transform: operands.transform.map(|transform| {
                 mount::LiveTransform::new(transform, space.inverse() * clip_space)
             }),
+            clip: None,
+            content_effect: None,
         };
         let shape = clip.map(|clip| clip.in_space(space.inverse() * clip_space));
         self.push_placement_scope(scope, clip.map(ScopeClip::hit_bounds));

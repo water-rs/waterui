@@ -42,6 +42,8 @@ mod dynamic_remeasure;
 mod emoji_atlas;
 // Drives the GPU mirror's `SurfaceTree`, the sampler the GPU painter runs.
 #[cfg(hydrolysis_gpu_painter)]
+mod content_effect;
+#[cfg(hydrolysis_gpu_painter)]
 mod engine_motion;
 mod gesture_buttons;
 mod gesture_capture;
@@ -181,8 +183,9 @@ use crate::theme::{
 };
 use crate::theme::{CheckboxLook, SwitchDrag, SwitchLook};
 use cherenkov_record::{
-    BackdropShaderSource, CaptureClass, ContainerRecipe, Draw, GroupMember, MaterialCapture,
-    MaterialEffect, MaterialRegistry, MaterialShader, Paint, Shadow, SharedLive, WorkingColor,
+    BackdropShaderSource, CaptureClass, ContainerRecipe, ContentShader, ContentShaderSource, Draw,
+    GroupMember, MaterialCapture, MaterialEffect, MaterialRegistry, MaterialShader, Paint, Shadow,
+    SharedLive, WorkingColor,
 };
 use waterui_core::handler::SharedAction;
 
@@ -2813,6 +2816,8 @@ pub struct MinimalTestTheme {
     button_group_opacity: Option<crate::theme::Driven<f32>>,
     /// The space the button look's group composites in.
     button_group_blend_space: cherenkov_record::BlendSpace,
+    /// Content shaders registered by `register_backdrop_shaders`.
+    content_shaders: Vec<(ContentShader, ContentShaderSource)>,
     /// Optional override for the menu look returned by `WidgetTheme::menu`.
     #[cfg(feature = "menu")]
     menu_look: Option<MenuLook>,
@@ -2927,6 +2932,20 @@ impl MinimalTestTheme {
         + 'static,
     ) -> Self {
         self.glass_look = Some(Rc::new(look));
+        self
+    }
+
+    /// Registers a content-effect shader on the theme's [`MaterialRegistry`].
+    #[cfg_attr(
+        not(hydrolysis_gpu_painter),
+        expect(
+            dead_code,
+            reason = "content-effect tests mirror GPU/CPU shader layers and build with the GPU painter"
+        )
+    )]
+    #[must_use]
+    pub fn with_content_shader(mut self, key: ContentShader, source: ContentShaderSource) -> Self {
+        self.content_shaders.push((key, source));
         self
     }
 
@@ -3146,6 +3165,9 @@ impl WidgetTheme for MinimalTestTheme {
         }
         for (shader, recipe) in &self.chrome.containers {
             registry.register_container_recipe(*shader, SharedRecipe(Rc::clone(recipe)));
+        }
+        for (key, source) in &self.content_shaders {
+            registry.register_content_shader(*key, source.clone());
         }
     }
 

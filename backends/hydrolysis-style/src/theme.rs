@@ -83,8 +83,8 @@ pub use cherenkov_record::MaterialRegistry;
 #[doc(hidden)]
 pub use chrome::path_commands_to_path;
 pub use chrome::{
-    Backdrop, Border, Chrome, CornerShape, Corners, Elevation, Fill, FocusIndicator, PressFeedback,
-    Ripple, StateLayer, Surface, Wash,
+    Backdrop, Border, Chrome, ContentEffect, CornerShape, Corners, Elevation, Fill, FocusIndicator,
+    PressFeedback, Ripple, StateLayer, Surface, Wash,
 };
 pub use glass::GlassLook;
 #[cfg(waterui_feature = "list")]

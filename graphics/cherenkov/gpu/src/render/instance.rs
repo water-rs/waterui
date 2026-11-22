@@ -66,6 +66,8 @@ pub const EFFECT_SAMPLE: u32 = 5;
 /// A blur-level ramp over the clip's signed distance: the trilinear
 /// `backdrop_sample_level` at `interior + (edge − interior)·t`.
 pub const EFFECT_LEVEL: u32 = 6;
+/// A registered content effect shader sampling an isolated layer scratch.
+pub const EFFECT_CONTENT: u32 = 7;
 /// Smooth colour weights; low 16 bits still identify the mesh paint kind.
 pub const PAINT_MESH_SMOOTH: u32 = 1 << 17;
 

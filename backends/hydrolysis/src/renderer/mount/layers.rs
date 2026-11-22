@@ -274,10 +274,11 @@ fn write_props<T: LayerTarget<E>, E: crate::text::TextEngine>(
             None => edit.clear_blend_space(),
         };
     }
-    if written.clip != props.clip {
-        match &props.clip {
-            Some(clip) => edit.clip(clip.clone()),
-            None => edit.clear_clip(),
+    if written.clip != props.clip || written.live.clip != props.live.clip {
+        match (&props.live.clip, &props.clip) {
+            (Some(live), _) => edit.clip(live.live()),
+            (None, Some(clip)) => edit.clip(clip.clone()),
+            (None, None) => edit.clear_clip(),
         };
     }
     if written.filter != props.filter {
@@ -325,6 +326,8 @@ pub struct ScopeLayer<E: crate::text::TextEngine> {
     layer: Layer,
     placement: Rc<Placement>,
     props: LayerProps,
+    /// Display scale at which `props.live.content_effect` was last mounted.
+    content_effect_scale: f64,
     runs: Vec<RunLayer<E>>,
     /// The `ChromeMaterial` member layers inside the scope, in program
     /// order.
@@ -830,15 +833,20 @@ impl<T: LayerTarget<E>, E: crate::text::TextEngine> Mount<T, E> {
         if let Some(refusal) = T::BACKDROP_SHADER_REFUSAL
             && !registry.is_empty()
         {
+            let names = registry
+                .shaders()
+                .map(|(key, _)| format!("{key:?}"))
+                .chain(
+                    registry
+                        .content_shaders()
+                        .map(|(key, _)| format!("{key:?}")),
+                )
+                .collect::<Vec<_>>()
+                .join(", ");
             contract_violation!(
-                "hydrolysis materials: the theme registered the backdrop shaders {}, but {refusal}; \
-                 the material chrome is not drawn; attach the theme to a GPU engine or register \
-                 no shaders",
-                registry
-                    .shaders()
-                    .map(|(key, _)| format!("{key:?}"))
-                    .collect::<Vec<_>>()
-                    .join(", "),
+                "hydrolysis materials: the theme registered the material shaders {names}, but \
+                 {refusal}; the material chrome is not drawn; attach the theme to a GPU or CPU \
+                 engine or register no shaders"
             );
         }
         let root = Shared::root(&shared);
@@ -1255,6 +1263,7 @@ pub fn commit_cell<T: LayerTarget<E>, E: crate::text::TextEngine>(
             .then(|| layers.frame.id())
             .or(canvas);
         commit_chrome(cx, &mut layers, child_canvas);
+        refresh_scope_content_effects(cx, &mut layers.scopes);
         for child in committed_cells(&layers) {
             commit_cell(cx, &child, child_canvas, true);
         }
@@ -2199,6 +2208,29 @@ fn lower_live<T: LayerTarget<E>, E: crate::text::TextEngine>(
     lives.len() - 1
 }
 
+/// Rebinds mounted scope content effects when the display scale changed
+/// without a node re-flush.
+fn refresh_scope_content_effects<T: LayerTarget<E>, E: crate::text::TextEngine>(
+    cx: &mut CommitCx<'_, '_, '_, T, E>,
+    scopes: &mut [ScopeLayer<E>],
+) {
+    for scope in scopes {
+        if let Some(effect) = &scope.props.live.content_effect
+            && scope.content_effect_scale.to_bits() != cx.display_scale.to_bits()
+        {
+            T::mount_content_effect(
+                cx.host,
+                cx.tx,
+                &scope.layer,
+                effect.shader(),
+                effect.effect(),
+                cx.display_scale,
+            );
+            scope.content_effect_scale = cx.display_scale;
+        }
+    }
+}
+
 /// Lowers one scope, kept by its key across commits; returns its index in
 /// `scopes_new`.
 fn lower_scope<T: LayerTarget<E>, E: crate::text::TextEngine>(
@@ -2218,6 +2250,7 @@ fn lower_scope<T: LayerTarget<E>, E: crate::text::TextEngine>(
                 layer: cx.layer(),
                 placement: Rc::clone(placement),
                 props: LayerProps::DEFAULT,
+                content_effect_scale: 0.0,
                 runs: Vec::new(),
                 members: Vec::new(),
                 lives: Vec::new(),
@@ -2228,6 +2261,25 @@ fn lower_scope<T: LayerTarget<E>, E: crate::text::TextEngine>(
             |at| scopes_old.swap_remove(at),
         );
     scope.placement = Rc::clone(placement);
+    if scope.props.live.content_effect != props.live.content_effect
+        || (props.live.content_effect.is_some()
+            && scope.content_effect_scale.to_bits() != cx.display_scale.to_bits())
+    {
+        if let Some(effect) = &props.live.content_effect {
+            T::mount_content_effect(
+                cx.host,
+                cx.tx,
+                &scope.layer,
+                effect.shader(),
+                effect.effect(),
+                cx.display_scale,
+            );
+            scope.content_effect_scale = cx.display_scale;
+        } else {
+            T::clear_content_effect(cx.tx, &scope.layer);
+            scope.content_effect_scale = 0.0;
+        }
+    }
     write_props(
         cx.tx,
         &scope.layer,

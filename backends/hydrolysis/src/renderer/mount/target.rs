@@ -4,7 +4,9 @@
 use std::rc::Rc;
 use std::sync::Arc;
 
-use cherenkov_record::{FilterId, Layer, MaterialRegistry, Transaction};
+use cherenkov_record::{
+    ContentShader, FilterId, Layer, MaterialEffect, MaterialRegistry, Transaction,
+};
 use rustc_hash::FxHashMap;
 use waterui_graphics::backend::Reactive;
 use waterui_graphics::backend::filtrate::filters::OverscrollStretch;
@@ -20,6 +22,7 @@ use crate::renderer::mount::backdrop::{
 };
 use crate::renderer::recording::SceneResources;
 use crate::text::TextService;
+use crate::theme::live::Operand;
 
 /// A layer target: recorded runs land through `Transaction`, and the
 /// producer, filter and backdrop installs through the target's host.
@@ -35,6 +38,11 @@ pub trait LayerTarget<E: crate::text::TextEngine>: cherenkov_record::Target {
     /// sources resolve to at attach — `cherenkov::BackdropShader` on the
     /// GPU target.
     type Shader: Clone + 'static;
+
+    /// The engine's content-shader handle the material registry's content
+    /// shader sources resolve to at attach — `cherenkov::ContentShader` on
+    /// Cherenkov targets.
+    type ContentShader: Clone + 'static;
 
     /// Why the target's engine cannot realize backdrop shaders, or `None`
     /// when it can. A refusal makes a [`Mount`](super::Mount::new) attach
@@ -137,7 +145,26 @@ pub trait LayerTarget<E: crate::text::TextEngine>: cherenkov_record::Target {
     /// The per-engine terms the theme's material registry resolved to at
     /// attach — the registry itself plus each registered shader's engine
     /// handle.
-    fn material_terms(host: &Self::Host) -> &MaterialTerms<Self::Shader>;
+    fn material_terms(host: &Self::Host) -> &MaterialTerms<Self::Shader, Self::ContentShader>;
+
+    /// Binds a content-effect shader on `layer` at `display_scale`. Targets
+    /// without content shaders leave the default no-op (their attach refusal
+    /// already reported the unsupported shader registration).
+    fn mount_content_effect(
+        host: &Self::Host,
+        tx: &mut Transaction<'_, Self>,
+        layer: &Layer,
+        shader: ContentShader,
+        effect: &Operand<MaterialEffect>,
+        display_scale: f64,
+    ) {
+        let _ = (host, tx, layer, shader, effect, display_scale);
+    }
+
+    /// Clears any content effect installed on `layer`.
+    fn clear_content_effect(tx: &mut Transaction<'_, Self>, layer: &Layer) {
+        let _ = (tx, layer);
+    }
 
     /// Joins `layer` — a `ChromeMaterial` member — to the chrome group
     /// `key` names, sharing the group's unfiltered capture with every
@@ -193,18 +220,22 @@ pub trait LayerTarget<E: crate::text::TextEngine>: cherenkov_record::Target {
 /// registry and each registered shader's handle on this engine. A host
 /// with no backdrop shaders fills this only when the registry is empty —
 /// `Mount`'s attach assertion covers the rest (water-rs/waterui#1788).
-pub struct MaterialTerms<S> {
+pub struct MaterialTerms<S, C = ()> {
     /// The theme's registry: capture classes resolve at member install.
     pub registry: Rc<MaterialRegistry>,
-    /// Each registered shader's engine handle, filled at attach by
+    /// Each registered backdrop shader's engine handle, filled at attach by
     /// registering its source with the engine.
     pub shaders: FxHashMap<cherenkov_record::MaterialShader, S>,
+    /// Each registered content shader's engine handle, filled at attach by
+    /// registering its source with the engine.
+    pub content_shaders: FxHashMap<cherenkov_record::ContentShader, C>,
 }
-impl<S> std::fmt::Debug for MaterialTerms<S> {
+impl<S, C> std::fmt::Debug for MaterialTerms<S, C> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MaterialTerms")
             .field("registry", &self.registry)
             .field("shaders", &self.shaders.keys())
+            .field("content_shaders", &self.content_shaders.keys())
             .finish()
     }
 }
@@ -265,6 +296,9 @@ pub use cpu::RasterHost;
 #[cfg(all(test, hydrolysis_gpu_painter))]
 pub use engine_target::install_engine_text;
 #[cfg(all(test, hydrolysis_gpu_painter))]
-pub use engine_target::{attach_material_shaders, chrome_sample, chrome_spec, recording_scale_of};
+pub use engine_target::{
+    attach_content_shaders, attach_material_shaders, chrome_sample, chrome_spec,
+    mount_content_effect, recording_scale_of,
+};
 #[cfg(hydrolysis_gpu_painter)]
 pub use gpu::CherenkovHost;
