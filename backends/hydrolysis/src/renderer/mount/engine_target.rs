@@ -7,7 +7,12 @@ use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 
-use cherenkov_record::{Layer, MaterialRegistry, ResourceError, Transaction};
+use cherenkov::{
+    BackdropShader, BackdropShaders, ContentShader as EngineContentShader, ContentShaders, Engine,
+};
+use cherenkov_record::{
+    ContentShader, Layer, MaterialEffect, MaterialRegistry, ResourceError, Target, Transaction,
+};
 use rustc_hash::FxHashMap;
 use waterui_core::contract_violation;
 use waterui_graphics::backend::filtrate::Filter;
@@ -22,6 +27,7 @@ use crate::renderer::mount::backdrop::{
 use crate::renderer::recording::SceneResources;
 use crate::text::TextService;
 use crate::text::{CanvasLayout, shape_canvas_text};
+use crate::theme::live::Operand;
 
 /// Installs on `resources` the registry that lays canvas text out through
 /// `text` and registers it with `engine`.
@@ -84,15 +90,71 @@ impl super::FilterRegistration for cherenkov::Filter {
     }
 }
 
-impl MaterialTerms<cherenkov::BackdropShader> {
+impl MaterialTerms<BackdropShader, EngineContentShader> {
     /// Attaches the registry to `engine` (water-rs/waterui#1788).
-    pub(crate) fn resolve<B: cherenkov::BackdropShaders>(
-        engine: &cherenkov::Engine<B>,
+    pub(crate) fn resolve<B: BackdropShaders + ContentShaders>(
+        engine: &Engine<B>,
         registry: Rc<MaterialRegistry>,
     ) -> Self {
         let shaders = attach_material_shaders(engine, &registry);
-        Self { registry, shaders }
+        let content_shaders = attach_content_shaders(engine, &registry);
+        Self {
+            registry,
+            shaders,
+            content_shaders,
+        }
     }
+}
+
+/// Attaches `registry`'s content shaders to `engine`. A source the engine
+/// rejects is reported at attach, naming the key, and stays out of the table.
+pub fn attach_content_shaders<B: ContentShaders>(
+    engine: &Engine<B>,
+    registry: &MaterialRegistry,
+) -> FxHashMap<ContentShader, EngineContentShader> {
+    registry
+        .content_shaders()
+        .filter_map(|(key, source)| {
+            let shader = engine
+                .content_shader(source.clone())
+                .inspect_err(|error| {
+                    contract_violation!(
+                        "hydrolysis materials: content shader {key:?} failed to register on the \
+                         attached engine: {error}; the content effect that names it is not applied"
+                    );
+                })
+                .ok()?;
+            Some((key, shader))
+        })
+        .collect()
+}
+
+/// Binds a live content-effect shader on `layer` at `display_scale` using the
+/// resolved handle in `materials`.
+pub fn mount_content_effect<B: Target>(
+    materials: &MaterialTerms<BackdropShader, EngineContentShader>,
+    tx: &mut Transaction<'_, B>,
+    layer: &Layer,
+    shader: ContentShader,
+    effect: &Operand<MaterialEffect>,
+    display_scale: f64,
+) {
+    let Some(handle) = materials.content_shaders.get(&shader).cloned() else {
+        contract_violation!(
+            "hydrolysis materials: content shader {shader:?} is not attached on this engine; \
+             the content effect is not applied"
+        );
+        tx[layer].clear_content_effect();
+        return;
+    };
+    let Ok(recording) = recording_scale_of(display_scale) else {
+        tx[layer].clear_content_effect();
+        return;
+    };
+    let live = effect
+        .live()
+        .map(move |value| handle.effect(value.uniforms().to_vec()).scale(recording));
+    tx[layer].content_effect(live);
 }
 
 /// Attaches `registry` to `engine`: each shader source registers with the

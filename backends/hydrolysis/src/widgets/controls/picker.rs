@@ -1073,6 +1073,7 @@ pub fn render_menu_picker<E: crate::text::TextEngine>(
         );
     }
 
+    let content_scoped = parts.open_content_effect(ctx.renderer_mut(), render_ctx);
     let label_size = owner
         .borrow_mut()
         .label_view
@@ -1087,6 +1088,7 @@ pub fn render_menu_picker<E: crate::text::TextEngine>(
     }
     let styled = label_styled(look.get_value(), StyledStr::plain(selected_text));
     ctx.render_styled_text(styled, HorizontalAlignment::Leading, env, text_bounds);
+    parts.close_content_effect(ctx.renderer_mut(), content_scoped);
     let render_ctx = ctx.render_context();
     parts.push_above(ctx.renderer_mut(), render_ctx);
 }

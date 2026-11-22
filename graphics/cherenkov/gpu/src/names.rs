@@ -35,6 +35,8 @@ pub const GLYPH_STROKE: &str = "glyph-stroke";
 /// The unsupported feature: a refraction or shader backdrop effect on a
 /// member whose clip has no analytic shape (a path/mask clip).
 pub const BACKDROP_EFFECT_SDF_PATH: &str = "backdrop-effect-sdf-path";
+/// A content effect shader on a layer without an analytic clip shape.
+pub const CONTENT_EFFECT_SDF_PATH: &str = "content-effect-sdf-path";
 /// A colour font (COLR, CBDT or sbix).
 pub const COLOR_FONT: &str = "color-font";
 /// A backdrop union group with more members than the fragment-side fold

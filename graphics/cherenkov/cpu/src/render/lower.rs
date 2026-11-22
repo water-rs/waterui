@@ -5,6 +5,8 @@ mod silhouette;
 
 use cherenkov::lowering::hidden::HiddenLayers;
 use cherenkov::lowering::{Realization, shape_outline};
+#[cfg(feature = "shaders")]
+use std::mem::{replace, take};
 use std::sync::Arc;
 
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -19,6 +21,8 @@ use super::filter::{Erased, Registry};
 use super::geometry::{Frame, GeometryCache, Offers, Resolved, same_linear};
 use super::intersect;
 use super::prepared::Op;
+#[cfg(feature = "shaders")]
+use super::shader::{ContentProgram, PARAM_SLOTS};
 use crate::names;
 use crate::render::paint::PaintData;
 use crate::render::raster::{Edge, coverage_mask};
@@ -250,6 +254,28 @@ pub enum Item {
         /// The clip in force at the pop.
         clip: Option<ClipRef>,
     },
+    /// Start rendering a content-effect scope with a vertical apron.
+    #[cfg(feature = "shaders")]
+    PushContentEffect {
+        /// The index of the paired [`Item::PopContentEffect`].
+        end: u32,
+        /// Rows of apron above and below each band.
+        apron: usize,
+        /// The scope's storage space.
+        space: cherenkov::BlendSpace,
+    },
+    /// Shade and composite the current isolated content window.
+    #[cfg(feature = "shaders")]
+    PopContentEffect {
+        /// The bound content shader program, uniforms and silhouette geometry.
+        effect: Box<ContentEffectRun>,
+        /// The opacity multiplier.
+        opacity: f32,
+        /// Group compositing mode and working space.
+        blend: (BlendMode, cherenkov::BlendSpace),
+        /// The clip in force at the pop (ancestor clip intersected with member clip).
+        clip: Option<ClipRef>,
+    },
     /// Capture the rows a backdrop group's members can sample: flatten
     /// the trailing `flatten` looked-through isolation levels —
     /// pass-through and translucent alike — over the nearest semantic
@@ -422,6 +448,26 @@ pub struct ShaderEffect {
     pub scale: f32,
     /// The registered source's reach in device pixels.
     pub reach: f32,
+}
+
+/// A content effect shader bound to one layer: its compiled program, uniforms,
+/// and the layer silhouette geometry `ContentPixel` reads.
+#[cfg(feature = "shaders")]
+#[derive(Clone, Debug)]
+pub struct ContentEffectRun {
+    pub program: Arc<ContentProgram>,
+    /// The uniforms packed four per `vec4`, zero-filled.
+    pub params: Arc<[f32; PARAM_SLOTS]>,
+    /// The layer's own analytic clip silhouette.
+    pub clip: Arc<BoxClip>,
+    /// Clamped integer device-pixel bounds of the silhouette (expanded by 1px for AA).
+    pub bounds: IRect,
+    /// Device → layer-local affine in kurbo coefficient order: `px.local`.
+    pub local: [f32; 6],
+    /// The silhouette's unclipped device bounds size: `px.size`.
+    pub size: [f32; 2],
+    /// The layer's recording scale: `px.scale`.
+    pub scale: f32,
 }
 
 /// An SDF-reading member effect and the clip boundary it reads.
@@ -2290,6 +2336,161 @@ impl<'a, 'b> Lowering<'a, 'b> {
         result
     }
 
+    #[cfg(feature = "shaders")]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one content-effect layer's context, matching layer_inner"
+    )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one isolated content-effect pass: validate, bound, isolate inner content, push pop"
+    )]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_possible_wrap,
+        clippy::cast_precision_loss,
+        reason = "bounded device coordinates and finite non-negative reach fit integer/f32 bounds"
+    )]
+    fn content_effect_isolate(
+        &mut self,
+        id: LayerId,
+        node: &cherenkov::LayerNode,
+        tree: &SurfaceTree,
+        caches: &mut FxHashMap<LayerId, ContentData>,
+        effect: &cherenkov::ContentShaderEffect,
+        transform: Affine,
+        content_space: Affine,
+        backdrop: Option<u64>,
+        outer: Option<&ClipRef>,
+        opacity: f32,
+        blend: (BlendMode, cherenkov::BlendSpace),
+    ) -> Result<(), RenderError> {
+        if effect.uniforms.len() > PARAM_SLOTS
+            || !effect.uniforms.iter().all(|v| v.is_finite())
+            || !(effect.reach().is_finite() && effect.reach() >= 0.0)
+        {
+            return Err(RenderError::Render(
+                "content shader effect needs at most 64 finite uniforms and a finite non-negative reach"
+                    .into(),
+            ));
+        }
+        let program = self
+            .filters
+            .as_deref()
+            .and_then(|f| f.content_shader(effect.shader))
+            .cloned()
+            .ok_or_else(|| {
+                RenderError::Render(format!(
+                    "content shader {:?} is not registered",
+                    effect.shader
+                ))
+            })?;
+        let Some(clip_shape) = node.clip.as_ref() else {
+            return Err(RenderError::Unsupported(names::CONTENT_EFFECT_SDF_PATH));
+        };
+        let box_clip = match box_form(clip_shape) {
+            BoxForm::Empty => return Ok(()),
+            BoxForm::Box { extra, shape } => BoxClip::new(extra, shape, transform),
+            BoxForm::Path => {
+                return Err(RenderError::Unsupported(names::CONTENT_EFFECT_SDF_PATH));
+            }
+        };
+        if transform.determinant().abs() < 1e-12 || !transform.is_finite() {
+            return Err(RenderError::Render(
+                "a content effect layer's transform is not invertible".into(),
+            ));
+        }
+        let member_bounds = clip_device_bounds(transform, clip_shape);
+        let bounds = IRect {
+            x0: (member_bounds.x0.floor() as i32 - 1).clamp(0, self.width as i32),
+            y0: (member_bounds.y0.floor() as i32 - 1).clamp(0, self.height as i32),
+            x1: (member_bounds.x1.ceil() as i32 + 1).clamp(0, self.width as i32),
+            y1: (member_bounds.y1.ceil() as i32 + 1).clamp(0, self.height as i32),
+        };
+        if bounds.is_empty() {
+            return Ok(());
+        }
+        let mut params = [0.0; PARAM_SLOTS];
+        params[..effect.uniforms.len()].copy_from_slice(&effect.uniforms);
+        let local = transform.inverse().as_coeffs().map(|v| v as f32);
+        let size = [member_bounds.width() as f32, member_bounds.height() as f32];
+        let reach_apron = if effect.reach() >= self.height as f32 {
+            self.height
+        } else {
+            effect.reach().ceil() as usize + 1
+        };
+        let apron = self
+            .scope_aprons
+            .get(&id)
+            .copied()
+            .unwrap_or(0)
+            .max(reach_apron);
+        let run = ContentEffectRun {
+            program,
+            params: Arc::new(params),
+            clip: Arc::new(box_clip),
+            bounds,
+            local,
+            size,
+            scale: effect.recording_scale().get(),
+        };
+        self.with_clip(Some(clip_shape), |s| {
+            if let Some(gid) = backdrop {
+                s.emit_backdrop_sample(gid, id, outer);
+            }
+            let composite_clip = s.clip.clone();
+            let push = s.items.len();
+            s.items.push(Item::PushContentEffect {
+                end: 0,
+                apron,
+                space: blend.1,
+            });
+            let saved_kinds = take(&mut s.iso_kinds);
+            let saved_spaces = replace(&mut s.iso_spaces, vec![blend.1]);
+            let saved_clip = s.clip.take();
+            s.transform = transform;
+            let inner_result = s.with_clip(Some(clip_shape), |s| {
+                s.transform = content_space;
+                if let Some(filter) = node.filter {
+                    let inner_clip = s.clip.clone();
+                    s.filter_isolate(
+                        filter,
+                        1.0,
+                        (BlendMode::Normal, blend.1),
+                        inner_clip,
+                        |s| s.layer_items(id, node, tree, caches),
+                        Some(id),
+                    )
+                } else {
+                    s.layer_items(id, node, tree, caches)
+                }
+            });
+            s.clip = saved_clip;
+            s.iso_kinds = saved_kinds;
+            s.iso_spaces = saved_spaces;
+            inner_result?;
+            let end = u32::try_from(s.items.len()).map_err(|_| {
+                RenderError::Render(format!(
+                    "content effect {:?} scope is too large",
+                    effect.shader
+                ))
+            })?;
+            s.items[push] = Item::PushContentEffect {
+                end,
+                apron,
+                space: blend.1,
+            };
+            s.items.push(Item::PopContentEffect {
+                effect: Box::new(run),
+                opacity,
+                blend,
+                clip: composite_clip,
+            });
+            Ok(())
+        })
+    }
+
     /// A layer: push its transform, then clip, then isolate for opacity,
     /// then content followed by children. The clip applies in `transform`
     /// space; content and children draw in `content_transform` space,
@@ -2329,6 +2530,10 @@ impl<'a, 'b> Lowering<'a, 'b> {
         result
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "single layer walk dispatching projection, backdrop, content effect, filter, and isolation"
+    )]
     fn layer_inner(
         &mut self,
         id: LayerId,
@@ -2371,6 +2576,30 @@ impl<'a, 'b> Lowering<'a, 'b> {
             self.emit_capture(gid, id);
         }
         let outer = self.clip.clone();
+        if let Some(content_effect) = &node.content_effect {
+            #[cfg(feature = "shaders")]
+            let result = self.content_effect_isolate(
+                id,
+                node,
+                tree,
+                caches,
+                content_effect,
+                transform,
+                content_space,
+                backdrop,
+                outer.as_ref(),
+                opacity,
+                blend,
+            );
+            #[cfg(not(feature = "shaders"))]
+            let result = {
+                let _ = content_effect;
+                Err(RenderError::Unsupported(names::CONTENT_SHADER))
+            };
+            self.transform = saved;
+            self.animating = saved_animating;
+            return result;
+        }
         // A filtered member composites as a whole — its sample and its
         // filtered content — with the member's opacity, blend and blend
         // space. When the composite is not a no-op an outer member scope

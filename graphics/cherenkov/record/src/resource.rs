@@ -25,6 +25,8 @@ pub enum ResourceId {
     Shader(ShaderId),
     /// A backdrop effect shader.
     BackdropShader(BackdropShaderId),
+    /// A content effect shader.
+    ContentShader(ContentShaderId),
 }
 
 impl std::fmt::Display for ResourceId {
@@ -35,6 +37,7 @@ impl std::fmt::Display for ResourceId {
             Self::TextLayout(id) => write!(f, "text layout {}", id.raw()),
             Self::Shader(id) => write!(f, "shader {}", id.raw()),
             Self::BackdropShader(id) => write!(f, "backdrop shader {}", id.raw()),
+            Self::ContentShader(id) => write!(f, "content shader {}", id.raw()),
         }
     }
 }
@@ -223,6 +226,26 @@ impl std::fmt::Display for ImageLimits {
 pub struct BackdropShaderId(u64);
 
 impl BackdropShaderId {
+    /// Creates an identifier from a target-assigned raw value.
+    #[must_use]
+    pub const fn new(raw: u64) -> Self {
+        Self(raw)
+    }
+
+    /// The raw value.
+    #[must_use]
+    pub const fn raw(self) -> u64 {
+        self.0
+    }
+}
+
+/// Identifier of a content effect shader, allocated by the target that
+/// registers it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ContentShaderId(u64);
+
+impl ContentShaderId {
     /// Creates an identifier from a target-assigned raw value.
     #[must_use]
     pub const fn new(raw: u64) -> Self {

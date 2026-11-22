@@ -81,6 +81,7 @@ pub struct Engine<B: Backend> {
     next_shader: Cell<u64>,
     next_filter: Cell<u64>,
     next_backdrop_shader: Cell<u64>,
+    next_content_shader: Cell<u64>,
     next_producer: Cell<u64>,
     thread: Cell<Option<std::thread::JoinHandle<()>>>,
     /// The type-erased sender resource drops use; a render thread that is
@@ -200,6 +201,7 @@ impl<B: Backend> Engine<B> {
             next_shader: Cell::new(1),
             next_filter: Cell::new(1),
             next_backdrop_shader: Cell::new(1),
+            next_content_shader: Cell::new(1),
             next_producer: Cell::new(1),
             thread: Cell::new(render_thread),
             post: Rc::new(move |message| {
@@ -701,6 +703,40 @@ impl<B: crate::BackdropShaders> Engine<B> {
             id,
             reach,
             self.on_release(resource, move |r| B::remove_backdrop_shader(r, id)),
+        ))
+    }
+}
+
+impl<B: crate::ContentShaders> Engine<B> {
+    /// Registers a content effect shader. The source is validated here,
+    /// before anything is queued; pipeline creation is queued in order with
+    /// every render and does not wait for the backend.
+    ///
+    /// # Errors
+    /// [`ResourceError::Shader`] when the source fails validation or its
+    /// `reach` is not a finite non-negative number;
+    /// [`ResourceError::Lost`] when the render thread is gone.
+    pub fn content_shader(
+        &self,
+        source: crate::ContentShaderSource,
+    ) -> Result<crate::ContentShader, ResourceError> {
+        if !(source.reach.is_finite() && source.reach >= 0.0) {
+            return Err(ResourceError::Shader(
+                "content shader reach must be a finite non-negative number".into(),
+            ));
+        }
+        B::validate_content_shader(&source)?;
+        let id = crate::ContentShaderId::new(Self::alloc(&self.next_content_shader));
+        let reach = source.reach;
+        let resource = ResourceId::ContentShader(id);
+        self.register(
+            resource,
+            Box::new(move |r: &mut B::Renderer| B::add_content_shader(r, id, source)),
+        )?;
+        Ok(crate::ContentShader::new(
+            id,
+            reach,
+            self.on_release(resource, move |r| B::remove_content_shader(r, id)),
         ))
     }
 }

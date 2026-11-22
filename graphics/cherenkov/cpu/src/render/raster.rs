@@ -5,16 +5,22 @@ use arrayvec::ArrayVec;
 use half::slice::HalfFloatSliceExt;
 use rayon::prelude::*;
 use rustc_hash::FxHashMap;
+#[cfg(feature = "shaders")]
+use std::array::from_fn;
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 use std::num::NonZeroUsize;
 use std::ops::Range;
+#[cfg(feature = "shaders")]
+use std::slice::from_mut;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use cherenkov::FillRule;
 use cherenkov_simd::math::erf4;
 
 use crate::render::bins::{FrameIndex, FrameMeter, Selection, SelectionBuffer};
+#[cfg(feature = "shaders")]
+use crate::render::lower::ContentEffectRun;
 use crate::render::lower::{
     BoxClip, CaptureItem, ClipMask, ClipRef, FrameFilter, IRect, Item, SampleEffect, SdfEffect,
     SdfKind, UnionSample,
@@ -23,13 +29,19 @@ use crate::render::paint::PaintData;
 use crate::render::shadow;
 use crate::render::tiles::EdgeTiles;
 use crate::{Band as BandOut, BandPixels};
-use cherenkov::OffscreenFormat;
+#[cfg(feature = "shaders")]
+use cherenkov::BlendSpace;
+use cherenkov::{OffscreenFormat, RenderError};
+#[cfg(feature = "shaders")]
+use cherenkov_shader::lanes::{Host, ImageOp, LANES, Lanes, Mask};
 use cherenkov_simd::math::{exp4, ln4};
 use fearless_simd::{Select, Simd, SimdBase, SimdInterleaved, f32x4};
 use filtrate_core::space::{
     P3_TO_SRGB, SRGB_ENCODED_BREAK, SRGB_GAMMA, SRGB_INVERSE_GAMMA, SRGB_LINEAR_BREAK, SRGB_OFFSET,
     SRGB_SCALE, SRGB_SLOPE, SRGB_TO_P3,
 };
+#[cfg(feature = "shaders")]
+use filtrate_core::space::{from_srgb, to_srgb};
 use filtrate_core::{CpuFilterError, CpuImage, WorkingSpace};
 
 /// Rows per rasterization band.
@@ -384,6 +396,14 @@ fn sample_rows(
                     (w, h),
                     meter,
                 );
+                rows = (rows.0.min(nested.0), rows.1.max(nested.1));
+                i = end;
+            }
+            #[cfg(feature = "shaders")]
+            Item::PushContentEffect { end, apron, .. } => {
+                let (end, apron) = (*end as usize, *apron);
+                let sub = (band.0.saturating_sub(apron), (band.1 + apron).min(h));
+                let nested = sample_rows_at(level, items, i + 1..end, group, sub, (w, h), meter);
                 rows = (rows.0.min(nested.0), rows.1.max(nested.1));
                 i = end;
             }
@@ -1151,6 +1171,190 @@ impl<S: Simd> cherenkov_shader::lanes::Host for BackdropHost<'_, S> {
         unreachable!(
             "a backdrop effect's entry takes a pixel and its parameters, no texture: {op:?}"
         );
+    }
+}
+
+/// The content reads a content-effect shader calls (`content_sample(q)`),
+/// against one isolated layer window. Reads return premultiplied extended
+/// linear Display P3 and transparent outside the silhouette bounds.
+#[cfg(feature = "shaders")]
+struct ContentHost<'a> {
+    window: &'a [[f32; 4]],
+    w: usize,
+    top: usize,
+    bottom: usize,
+    bounds: IRect,
+    space: BlendSpace,
+}
+
+#[cfg(feature = "shaders")]
+impl ContentHost<'_> {
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        reason = "clamped finite coordinates map to bounded window indices"
+    )]
+    fn sample(&self, qx: f32, qy: f32) -> [f32; 4] {
+        if !qx.is_finite() || !qy.is_finite() {
+            return [0.0; 4];
+        }
+        let fx = qx - 0.5;
+        let fy = qy - 0.5;
+        let x0 = fx.floor() as i32;
+        let y0 = fy.floor() as i32;
+        let tx = fx - x0 as f32;
+        let ty = fy - y0 as f32;
+        let texel = |ix: i32, iy: i32| -> [f32; 4] {
+            if ix < self.bounds.x0
+                || ix >= self.bounds.x1
+                || iy < self.bounds.y0
+                || iy >= self.bounds.y1
+                || ix < 0
+                || ix >= self.w as i32
+                || iy < self.top as i32
+                || iy >= self.bottom as i32
+            {
+                return [0.0; 4];
+            }
+            self.window[(iy as usize - self.top) * self.w + ix as usize]
+        };
+        let c00 = texel(x0, y0);
+        let c10 = texel(x0 + 1, y0);
+        let c01 = texel(x0, y0 + 1);
+        let c11 = texel(x0 + 1, y0 + 1);
+        let mut c = from_fn(|k| {
+            let top = (c10[k] - c00[k]).mul_add(tx, c00[k]);
+            let bot = (c11[k] - c01[k]).mul_add(tx, c01[k]);
+            (bot - top).mul_add(ty, top)
+        });
+        if self.space == BlendSpace::SrgbEncoded {
+            from_srgb(from_mut(&mut c));
+        }
+        c
+    }
+}
+
+#[cfg(feature = "shaders")]
+impl Host for ContentHost<'_> {
+    fn call(&mut self, function: usize, args: &[Lanes], out: &mut [Lanes], active: &Mask) {
+        use crate::render::shader::CONTENT_SAMPLE;
+        for (l, &live) in active.iter().enumerate() {
+            if !live {
+                continue;
+            }
+            let values = match function {
+                CONTENT_SAMPLE => self.sample(args[0][l], args[1][l]),
+                other => unreachable!("the content prelude declares no host function {other}"),
+            };
+            for (slot, value) in out.iter_mut().zip(values) {
+                slot[l] = value;
+            }
+        }
+    }
+
+    fn image(&mut self, op: ImageOp<'_>, _: &mut [Lanes; 4], _: &Mask) {
+        unreachable!(
+            "a content effect's entry takes a pixel and its parameters, no texture: {op:?}"
+        );
+    }
+}
+
+/// Evaluates `effect`'s content shader over the band rows intersecting
+/// `effect.bounds`, reading from the isolated `window` and writing shaded
+/// pixels in `dst_space` into `out` (`w * bh`).
+#[cfg(feature = "shaders")]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "device pixel coordinates fit f32"
+)]
+fn shade_content_effect(
+    effect: &ContentEffectRun,
+    window: &[[f32; 4]],
+    (width, top, bottom): (usize, usize, usize),
+    src_space: BlendSpace,
+    out: &mut [[f32; 4]],
+    (band_y0, bh): (usize, usize),
+    dst_space: BlendSpace,
+) {
+    let y_lo = usize::try_from(effect.bounds.y0)
+        .unwrap_or(0)
+        .max(band_y0)
+        .min(band_y0 + bh);
+    let y_hi = usize::try_from(effect.bounds.y1)
+        .unwrap_or(0)
+        .max(band_y0)
+        .min(band_y0 + bh);
+    let x_lo = usize::try_from(effect.bounds.x0).unwrap_or(0).min(width);
+    let x_hi = usize::try_from(effect.bounds.x1).unwrap_or(0).min(width);
+    if y_lo >= y_hi || x_lo >= x_hi {
+        return;
+    }
+
+    let compiled = &*effect.program;
+    let program = &compiled.program;
+    let mut regs = program.registers();
+    for (&reg, &value) in compiled.params.iter().zip(effect.params.iter()) {
+        regs.splat(reg, value);
+    }
+    let mut host = ContentHost {
+        window,
+        w: width,
+        top,
+        bottom,
+        bounds: effect.bounds,
+        space: src_space,
+    };
+    let local = effect.local;
+    let mut at = [0usize; LANES];
+    for qy in (y_lo & !1..y_hi).step_by(2) {
+        for x0 in (x_lo & !1..x_hi).step_by(LANES / 2) {
+            let mut active = [false; LANES];
+            for lane in 0..LANES {
+                let px = x0 + (lane >> 2) * 2 + (lane & 1);
+                let py = qy + ((lane >> 1) & 1);
+                let (cx, cy) = (px as f32 + 0.5, py as f32 + 0.5);
+                let (sdf, nx, ny) = box_sdf_at(&effect.clip, cx, cy);
+                let inside = (x_lo..x_hi).contains(&px) && (y_lo..y_hi).contains(&py);
+                active[lane] = inside;
+                at[lane] = if inside {
+                    (py - band_y0) * width + px
+                } else {
+                    0
+                };
+                let values = [
+                    cx,
+                    cy,
+                    sdf,
+                    nx,
+                    ny,
+                    effect.size[0],
+                    effect.size[1],
+                    effect.scale,
+                    local[0].mul_add(cx, local[2].mul_add(cy, local[4])),
+                    local[1].mul_add(cx, local[3].mul_add(cy, local[5])),
+                ];
+                for (&reg, value) in compiled.pixel.iter().zip(values) {
+                    regs.get_mut(reg)[lane] = value;
+                }
+            }
+            if !active.contains(&true) {
+                continue;
+            }
+            let done = program.run(&mut regs, active, &mut host);
+            let result = program.result();
+            for lane in 0..LANES {
+                if !done[lane] {
+                    continue;
+                }
+                let mut pixel = from_fn(|k| regs.get(result[k])[lane]);
+                if dst_space == BlendSpace::SrgbEncoded {
+                    to_srgb(from_mut(&mut pixel));
+                }
+                out[at[lane]] = pixel;
+            }
+        }
     }
 }
 
@@ -2213,6 +2417,8 @@ impl Background {
                     }
                 }
                 Item::PushFilter { .. } => return linear,
+                #[cfg(feature = "shaders")]
+                Item::PushContentEffect { .. } => return linear,
                 _ if depth == 0 => return linear,
                 _ => {}
             }
@@ -2348,6 +2554,10 @@ fn top_captures(
     for (i, item) in items.iter().enumerate() {
         match item {
             Item::PushFilter { end, .. } if i >= scope_end => {
+                scope_end = usize::try_from(*end).unwrap_or(items.len());
+            }
+            #[cfg(feature = "shaders")]
+            Item::PushContentEffect { end, .. } if i >= scope_end => {
                 scope_end = usize::try_from(*end).unwrap_or(items.len());
             }
             Item::Capture(capture) if i >= scope_end => {
@@ -2976,9 +3186,7 @@ fn run<S: Simd>(
                 let scope_end = usize::try_from(*end)
                     .map_err(|_| cherenkov::RenderError::Render("invalid filter scope".into()))?;
                 if scope_end <= i || scope_end >= limit {
-                    return Err(cherenkov::RenderError::Render(
-                        "invalid filter scope".into(),
-                    ));
+                    return Err(RenderError::Render("invalid filter scope".into()));
                 }
                 let Some(Item::PopFilter {
                     filter,
@@ -2987,9 +3195,7 @@ fn run<S: Simd>(
                     clip,
                 }) = items.get(scope_end)
                 else {
-                    return Err(cherenkov::RenderError::Render(
-                        "invalid filter scope".into(),
-                    ));
+                    return Err(RenderError::Render("invalid filter scope".into()));
                 };
                 let y1 = band.y0 + bh;
                 let top = band.y0.saturating_sub(*apron);
@@ -3062,9 +3268,100 @@ fn run<S: Simd>(
                 skip = scope_end + 1;
             }
             Item::PopFilter { .. } => {
-                return Err(cherenkov::RenderError::Render(
-                    "unpaired filter scope".into(),
-                ));
+                return Err(RenderError::Render("unpaired filter scope".into()));
+            }
+            #[cfg(feature = "shaders")]
+            Item::PushContentEffect { end, apron, space } => {
+                let scope_end = usize::try_from(*end)
+                    .map_err(|_| RenderError::Render("invalid content-effect scope".into()))?;
+                if scope_end <= i || scope_end >= limit {
+                    return Err(RenderError::Render("invalid content-effect scope".into()));
+                }
+                let Some(Item::PopContentEffect {
+                    effect,
+                    opacity,
+                    blend,
+                    clip,
+                }) = items.get(scope_end)
+                else {
+                    return Err(RenderError::Render("invalid content-effect scope".into()));
+                };
+                let y1 = band.y0 + bh;
+                let top = band.y0.saturating_sub(*apron);
+                let bottom = y1.saturating_add(*apron).min(h);
+                let mut window = buffers.take_color(band.w * (bottom - top));
+                let coverage = buffers.take_coverage(
+                    band.w,
+                    index.coverage_capacity(true).unwrap_or(0),
+                    bottom - top,
+                );
+                let mut nested = buffers.take_sel_items(depth, ctx.meter);
+                index.query_items(i + 1..scope_end, (top, bottom), &mut nested);
+                buffers.charge_sel_items(depth, &nested, ctx.meter);
+                let nested_result = {
+                    let mut scope_band = Band {
+                        fb: &mut window,
+                        w: band.w,
+                        y0: top,
+                        space: *space,
+                    };
+                    let mut scope_acc = coverage;
+                    let mut scope_stack = Vec::new();
+                    let result = run_at(
+                        ctx.level,
+                        items,
+                        index,
+                        index.selected(&nested, items),
+                        scope_end,
+                        &mut scope_band,
+                        &mut scope_acc,
+                        &mut scope_stack,
+                        buffers,
+                        ctx,
+                        depth + 1,
+                    );
+                    for plane in scope_stack {
+                        buffers.give_color(plane.buf);
+                    }
+                    buffers.give_coverage(scope_acc);
+                    result
+                };
+                buffers.give_sel_items(depth, nested);
+                if let Err(error) = nested_result {
+                    buffers.give_color(window);
+                    return Err(error);
+                }
+                let mut shaded = buffers.take_color(band.w * bh);
+                shade_content_effect(
+                    effect,
+                    &window,
+                    (band.w, top, bottom),
+                    *space,
+                    &mut shaded,
+                    (band.y0, bh),
+                    blend.1,
+                );
+                buffers.give_color(window);
+                band.composite_isolate(
+                    simd,
+                    (&shaded, blend.1),
+                    *opacity,
+                    *blend,
+                    clips.prepare(
+                        clip.as_ref(),
+                        band.y0..band.y0 + bh,
+                        band.w,
+                        acc,
+                        ctx.meter.map(|m| (&mut buffers.clip_charge, m)),
+                    ),
+                    stack,
+                );
+                buffers.give_color(shaded);
+                skip = scope_end + 1;
+            }
+            #[cfg(feature = "shaders")]
+            Item::PopContentEffect { .. } => {
+                return Err(RenderError::Render("unpaired content-effect scope".into()));
             }
             Item::Capture(capture) => {
                 let rows = match ctx.top.iter().find(|(j, _)| *j == i) {

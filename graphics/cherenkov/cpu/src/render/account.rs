@@ -5,6 +5,8 @@ use std::mem::size_of;
 
 use cherenkov::lowering::memory::{command_bytes, glyph_run_bytes, shape_bytes};
 
+#[cfg(feature = "shaders")]
+use super::lower::ContentEffectRun;
 use super::lower::{ContentData, Emission, Item, clip_bytes};
 use super::paint::{PaintData, TransformedPaint};
 use super::prepared::Op;
@@ -87,12 +89,18 @@ fn item_bytes(item: &Item) -> u64 {
         | Item::PopIsolate { clip, .. }
         | Item::PopFilter { clip, .. }
         | Item::Sample { clip, .. } => clip.as_deref().map_or(0, clip_bytes),
+        #[cfg(feature = "shaders")]
+        Item::PopContentEffect { clip, .. } => {
+            size_of::<ContentEffectRun>() as u64 + clip.as_deref().map_or(0, clip_bytes)
+        }
         // The image itself is counted by the projective image cache.
         Item::Project(item) => {
             size_of::<super::lower::ProjectItem>() as u64
                 + item.clip.as_deref().map_or(0, clip_bytes)
         }
         Item::PushIsolate { .. } | Item::PushFilter { .. } | Item::Capture(_) => 0,
+        #[cfg(feature = "shaders")]
+        Item::PushContentEffect { .. } => 0,
     }
 }
 

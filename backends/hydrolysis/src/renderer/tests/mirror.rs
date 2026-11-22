@@ -12,7 +12,7 @@ use cherenkov::{
     BackdropId, ContentOp, FilterId, Layer, LayerContent, LayerId, LayerNode, Picture, Realize,
     Shared, SurfaceId, SurfaceTree, Transaction,
 };
-use cherenkov_record::{ChangeSet, MaterialRegistry};
+use cherenkov_record::{ChangeSet, ContentShader, MaterialEffect, MaterialRegistry};
 use rustc_hash::FxHashMap;
 
 use crate::engine::GpuEngine;
@@ -21,11 +21,13 @@ use crate::renderer::effects::{AppliedFilterMetrics, FilteredRuntime};
 use crate::renderer::mount::backdrop::{MemberBind, MemberJoin};
 use crate::renderer::mount::layers::NodeLayers;
 use crate::renderer::mount::target::{
-    LayerTarget, MaterialTerms, attach_material_shaders, install_engine_text,
+    LayerTarget, MaterialTerms, attach_content_shaders, attach_material_shaders,
+    install_engine_text, mount_content_effect,
 };
 use crate::renderer::mount::{Mount, MountStats};
 use crate::renderer::recording::SceneResources;
 use crate::renderer::{HydrolysisRenderer, ProducerWake};
+use crate::theme::live::Operand;
 
 /// The test target.
 pub struct MirrorTarget;
@@ -134,7 +136,7 @@ pub struct MirrorHost {
     resources: Rc<SceneResources>,
     engine: Rc<GpuEngine>,
     metrics: Arc<AppliedFilterMetrics>,
-    materials: MaterialTerms<cherenkov::BackdropShader>,
+    materials: MaterialTerms<cherenkov::BackdropShader, cherenkov::ContentShader>,
     /// Each chrome group's spec at creation — what
     /// [`mount::target::chrome_spec`] resolved for the key's class at the
     /// group's display scale.
@@ -155,6 +157,7 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for MirrorTarget {
     type Group = BackdropId;
     /// The mirror's engine realizes real backdrop shaders.
     type Shader = cherenkov::BackdropShader;
+    type ContentShader = cherenkov::ContentShader;
     const BACKDROP_SHADER_REFUSAL: Option<&'static str> = None;
 
     fn resources(host: &MirrorHost) -> &Rc<SceneResources> {
@@ -250,8 +253,23 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for MirrorTarget {
         );
     }
 
-    fn material_terms(host: &MirrorHost) -> &MaterialTerms<Self::Shader> {
+    fn material_terms(host: &MirrorHost) -> &MaterialTerms<Self::Shader, Self::ContentShader> {
         &host.materials
+    }
+
+    fn mount_content_effect(
+        host: &MirrorHost,
+        tx: &mut Transaction<'_, Self>,
+        layer: &Layer,
+        shader: ContentShader,
+        effect: &Operand<MaterialEffect>,
+        display_scale: f64,
+    ) {
+        mount_content_effect(&host.materials, tx, layer, shader, effect, display_scale);
+    }
+
+    fn clear_content_effect(tx: &mut Transaction<'_, Self>, layer: &Layer) {
+        tx[layer].clear_content_effect();
     }
 
     fn mount_chrome(
@@ -414,6 +432,7 @@ impl MirrorWindow {
             materials: MaterialTerms {
                 registry: Rc::clone(registry),
                 shaders: attach_material_shaders(&engine, registry),
+                content_shaders: attach_content_shaders(&engine, registry),
             },
             spec_log: RefCell::new(Vec::new()),
         };
@@ -466,6 +485,16 @@ impl MirrorWindow {
             .tree
             .layers()
             .filter_map(|(id, node)| node.backdrop.is_some().then_some(id))
+            .collect()
+    }
+
+    /// Every layer that carries a content-effect shader.
+    pub fn content_effect_layers(&self) -> Vec<LayerId> {
+        self.mirrored
+            .borrow()
+            .tree
+            .layers()
+            .filter_map(|(id, node)| node.content_effect.is_some().then_some(id))
             .collect()
     }
 
@@ -569,7 +598,7 @@ impl MirrorWindow {
     }
 
     /// The theme's material terms on the mirror's engine.
-    pub fn materials(&self) -> &MaterialTerms<cherenkov::BackdropShader> {
+    pub fn materials(&self) -> &MaterialTerms<cherenkov::BackdropShader, cherenkov::ContentShader> {
         &self.host.materials
     }
 
@@ -666,6 +695,7 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for NoShaderTarget {
     type Host = NoShaderHost;
     type Group = ();
     type Shader = ();
+    type ContentShader = ();
     const BACKDROP_SHADER_REFUSAL: Option<&'static str> =
         Some("this engine has no backdrop shaders");
 
@@ -729,7 +759,7 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for NoShaderTarget {
     ) {
     }
 
-    fn material_terms(host: &NoShaderHost) -> &MaterialTerms<Self::Shader> {
+    fn material_terms(host: &NoShaderHost) -> &MaterialTerms<Self::Shader, Self::ContentShader> {
         &host.materials
     }
 

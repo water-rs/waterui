@@ -2,6 +2,8 @@
 //! backend composes a producer, a shader paint or a backdrop shader with, so
 //! a shader means the same on each.
 
+use filtrate_core::space::WGSL;
+
 /// The colour prelude: the conversions a producer writes premultiplied
 /// working colour through. It is written against
 /// [`filtrate_core::space::WGSL`], which precedes it.
@@ -29,6 +31,17 @@ pub const BACKDROP: &str = include_str!("wgsl/backdrop.wgsl");
 /// `fn(BackdropPixel, array<vec4<f32>, 16>) -> vec4<f32>`.
 pub const BACKDROP_ENTRY: &str = "backdrop_effect";
 
+/// The content-effect shader contract as declarations.
+///
+/// It holds `ContentPixel`, `move_space`, the `SPACE_*` constants, and
+/// `content_sample(q)` over the layer's isolated content image. It is
+/// written against [`filtrate_core::space::WGSL`], which precedes it.
+pub const CONTENT: &str = include_str!("wgsl/content.wgsl");
+
+/// The function a content-effect shader defines:
+/// `fn(ContentPixel, array<vec4<f32>, 16>) -> vec4<f32>`.
+pub const CONTENT_ENTRY: &str = "content_effect";
+
 /// `source` composed after the working-space conversions and [`COLOR`]:
 /// the module a producer's shader compiles to.
 #[must_use]
@@ -52,4 +65,11 @@ pub fn paint_module(source: &str) -> String {
 #[must_use]
 pub fn backdrop_module(source: &str) -> String {
     [filtrate_core::space::WGSL, BACKDROP, source].join("\n")
+}
+
+/// The module a content-effect shader's `source` is validated and evaluated
+/// in when the evaluator binds `content_sample`.
+#[must_use]
+pub fn content_module(source: &str) -> String {
+    [WGSL, CONTENT, source].join("\n")
 }

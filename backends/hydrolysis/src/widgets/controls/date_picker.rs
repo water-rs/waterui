@@ -418,6 +418,7 @@ pub fn render_date_picker_parts<E: crate::text::TextEngine>(
     handles.attach_live(Rc::clone(parts.chrome()));
     let render_ctx = ctx.render_context();
     parts.push_below(ctx.renderer_mut(), render_ctx);
+    let content_scoped = parts.open_content_effect(ctx.renderer_mut(), render_ctx);
     let text_bounds = date_picker_value_bounds(
         field_bounds,
         metrics.horizontal_inset,
@@ -431,6 +432,7 @@ pub fn render_date_picker_parts<E: crate::text::TextEngine>(
         env,
         text_bounds,
     );
+    parts.close_content_effect(ctx.renderer_mut(), content_scoped);
     let render_ctx = ctx.render_context();
     parts.push_above(ctx.renderer_mut(), render_ctx);
 

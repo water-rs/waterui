@@ -19,7 +19,8 @@ use crate::glyph::FontId;
 use crate::image::{Format, ImageData, ImageUpload};
 use crate::message::{Message, ResOp};
 use cherenkov_record::{
-    BackdropEffect, BackdropId, BackdropSample, BackdropShaderId, LayerContent, TextLayoutId,
+    BackdropEffect, BackdropId, BackdropSample, BackdropShaderId, ContentShaderEffect,
+    ContentShaderId, LayerContent, TextLayoutId,
 };
 
 use crate::paint::ImageId;
@@ -481,6 +482,48 @@ impl BackdropShader {
     #[must_use]
     pub fn effect(&self, uniforms: Vec<f32>) -> crate::BackdropShaderEffect {
         crate::BackdropShaderEffect::new(self.id(), uniforms, self.reach)
+    }
+}
+
+/// A content effect shader registered with an engine.
+///
+/// Made by [`Engine::content_shader`](crate::Engine::content_shader).
+/// Dropping the last clone unregisters it once no layer references it.
+#[derive(Debug)]
+pub struct ContentShader {
+    inner: Rc<Inner<ContentShaderId>>,
+    reach: f32,
+}
+
+impl Clone for ContentShader {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Rc::clone(&self.inner),
+            reach: self.reach,
+        }
+    }
+}
+
+impl ContentShader {
+    pub(crate) fn new(id: ContentShaderId, reach: f32, on_drop: impl FnOnce() + 'static) -> Self {
+        Self {
+            inner: handle(id, on_drop),
+            reach,
+        }
+    }
+
+    /// The identifier [`ContentShaderEffect`] references.
+    #[must_use]
+    pub fn id(&self) -> ContentShaderId {
+        self.inner.id
+    }
+
+    /// A [`ContentShaderEffect`] for [`LayerEdit::content_effect`](crate::LayerEdit::content_effect),
+    /// with `uniforms` in the shader's declared order (at most 64 finite
+    /// values, packed four per `vec4`).
+    #[must_use]
+    pub fn effect(&self, uniforms: Vec<f32>) -> ContentShaderEffect {
+        ContentShaderEffect::new(self.id(), uniforms, self.reach)
     }
 }
 

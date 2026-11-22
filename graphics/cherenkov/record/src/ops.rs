@@ -13,6 +13,7 @@ use nami_core::watcher::Metadata;
 
 use crate::animation::{Animatable, Animation, Keyframes, Repeat};
 use crate::backdrop::BackdropSample;
+use crate::content_effect::ContentShaderEffect;
 use crate::display_list::{Edit, Picture, SlotUpdate};
 use crate::projective::Projective;
 use crate::shape::ShapeData;
@@ -334,6 +335,9 @@ pub enum LayerOp {
     BlendSpace(LayerId, Option<BlendSpace>),
     /// Set or clear the filter.
     Filter(LayerId, Option<FilterId>),
+    /// Set or clear the content effect applied to the layer's isolated
+    /// subtree; a set animates from the effect the layer shows.
+    ContentEffect(LayerId, Option<Retarget<ContentShaderEffect>>),
     /// Set or clear the backdrop sample (group and optional per-member
     /// effect); a set animates from the sample the layer shows.
     Backdrop(LayerId, Option<Retarget<BackdropSample>>),
@@ -397,6 +401,7 @@ impl LayerOp {
             | Self::Blend(id, _)
             | Self::BlendSpace(id, _)
             | Self::Filter(id, _)
+            | Self::ContentEffect(id, _)
             | Self::Backdrop(id, _)
             | Self::HostWindow(id, _)
             | Self::Content(id, _)
@@ -431,6 +436,7 @@ impl LayerOp {
             Self::Opacity(_, prop) => Some(&mut prop.animation),
             Self::ScrollOffset(_, prop) => Some(&mut prop.animation),
             Self::Clip(_, Some(change)) => Some(&mut change.animation),
+            Self::ContentEffect(_, Some(change)) => Some(&mut change.animation),
             Self::Backdrop(_, Some(change)) => Some(&mut change.animation),
             _ => None,
         }

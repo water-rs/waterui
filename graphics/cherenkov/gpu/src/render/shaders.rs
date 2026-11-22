@@ -179,6 +179,27 @@ pub fn backdrop_effect_text(user: &str, union: bool) -> Cow<'static, str> {
     format!("{head}{tail}\n{user}").into()
 }
 
+/// The effect-module text for a user `content_effect` source.
+///
+/// The full non-union engine module (`ENGINE_F32[5]`) with the stub
+/// `content_effect` removed and the user source appended.
+///
+/// # Panics
+///
+/// If the stub markers are missing from `shader.wgsl` (a build bug).
+#[must_use]
+pub fn content_effect_text(user: &str) -> Cow<'static, str> {
+    const MARK: &str = "// content-effect-stub";
+    let (head, rest) = ENGINE_F32[5]
+        .wgsl
+        .split_once(MARK)
+        .expect("the content-effect stub marker is part of shader.wgsl");
+    let (_, tail) = rest
+        .split_once(MARK)
+        .expect("the content-effect stub has a closing marker");
+    format!("{head}{tail}\n{user}").into()
+}
+
 /// Whether the validated effect module's entry points reach the
 /// prelude's `backdrop_sample_blur`, which reads a Gaussian pyramid only.
 /// Compaction drops every function no entry point reaches, so the

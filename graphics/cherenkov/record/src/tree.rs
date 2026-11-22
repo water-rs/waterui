@@ -20,6 +20,7 @@ use crate::animation::{
     eval_lanes, rubber_band_spring,
 };
 use crate::backdrop::BackdropSample;
+use crate::content_effect::ContentShaderEffect;
 use crate::display_list::{Operand, SlotUpdate, blends_within, translucent_within};
 use crate::frame::FrameRate;
 use crate::ops::{
@@ -202,6 +203,8 @@ pub struct LayerNode {
     pub blend_space: Option<BlendSpace>,
     /// The filter applied to this layer's subtree.
     pub filter: Option<FilterId>,
+    /// The content effect shader applied to this layer's isolated subtree.
+    pub content_effect: Option<ContentShaderEffect>,
     /// The backdrop group (and optional per-member effect) this layer
     /// samples.
     pub backdrop: Option<BackdropSample>,
@@ -238,6 +241,8 @@ pub struct LayerNode {
     scroll_track: Option<Track<Vec2>>,
     /// The clip shape's running track, lane by lane.
     clip_track: Option<LaneTrack<ShapeData>>,
+    /// The content effect's running track: its shader uniforms.
+    content_effect_track: Option<LaneTrack<ContentShaderEffect>>,
     /// The backdrop sample's running track: its effect parameters.
     backdrop_track: Option<LaneTrack<BackdropSample>>,
     projective: bool,
@@ -324,6 +329,7 @@ impl LayerNode {
         if self.projective
             || self.scroll_track.is_some()
             || self.clip_track.is_some()
+            || self.content_effect_track.is_some()
             || self.backdrop_track.is_some()
         {
             return None;
@@ -362,6 +368,7 @@ impl LayerNode {
             blend: BlendMode::default(),
             blend_space: None,
             filter: None,
+            content_effect: None,
             backdrop: None,
             children: Vec::new(),
             blending_children: 0,
@@ -376,6 +383,7 @@ impl LayerNode {
             opacity_track: None,
             scroll_track: None,
             clip_track: None,
+            content_effect_track: None,
             backdrop_track: None,
             projective: false,
             animation_rate: None,
@@ -449,7 +457,11 @@ impl LayerNode {
     /// smooth at 30–60 Hz. A keyframed opacity keeps the fast class, and a
     /// clip or backdrop track, which moves what the layer shows, runs fast.
     fn classify_rate(&self, scale: f64, components_running: bool) -> Option<FrameRate> {
-        if components_running || self.clip_track.is_some() || self.backdrop_track.is_some() {
+        if components_running
+            || self.clip_track.is_some()
+            || self.content_effect_track.is_some()
+            || self.backdrop_track.is_some()
+        {
             return Some(FrameRate::FAST);
         }
         let mut rate = None;
@@ -708,6 +720,9 @@ impl SurfaceTree {
             running.note_track(node.opacity_track.as_ref());
             running.note_track(node.scroll_track.as_ref());
             if let Some(track) = &node.clip_track {
+                running.note(track.repeats_forever());
+            }
+            if let Some(track) = &node.content_effect_track {
                 running.note(track.repeats_forever());
             }
             if let Some(track) = &node.backdrop_track {
@@ -1040,6 +1055,7 @@ impl SurfaceTree {
             | LayerOp::ScrollOffset(id, _)
             | LayerOp::Clip(id, _)
             | LayerOp::Filter(id, _)
+            | LayerOp::ContentEffect(id, _)
             | LayerOp::Backdrop(id, _)
             | LayerOp::HostWindow(id, _)
             | LayerOp::Content(id, _) => Some((id, true)),
@@ -1085,6 +1101,10 @@ impl SurfaceTree {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one dispatch arm per LayerOp variant"
+    )]
     fn apply_layer_op(&mut self, op: LayerOp) {
         match op {
             LayerOp::Create(id) => {
@@ -1136,6 +1156,14 @@ impl SurfaceTree {
             LayerOp::Blend(id, blend) => self.set_blend(id, blend),
             LayerOp::BlendSpace(id, space) => self.node_mut(id).blend_space = space,
             LayerOp::Filter(id, filter) => self.node_mut(id).filter = filter,
+            LayerOp::ContentEffect(id, effect) => {
+                let node = self.node_mut(id);
+                retarget(
+                    &mut node.content_effect_track,
+                    &mut node.content_effect,
+                    effect,
+                );
+            }
             LayerOp::Backdrop(id, backdrop) => {
                 let node = self.node_mut(id);
                 retarget(&mut node.backdrop_track, &mut node.backdrop, backdrop);
@@ -1290,8 +1318,14 @@ impl SurfaceTree {
             let mut outer_changed = node.opacity_track.is_some();
             let inner_changed = node.scroll_track.is_some()
                 || node.clip_track.is_some()
+                || node.content_effect_track.is_some()
                 || node.backdrop_track.is_some();
             stepped |= sample_lanes(&mut node.clip_track, &mut node.clip, time);
+            stepped |= sample_lanes(
+                &mut node.content_effect_track,
+                &mut node.content_effect,
+                time,
+            );
             stepped |= sample_lanes(&mut node.backdrop_track, &mut node.backdrop, time);
             let mut transform_changed = false;
             if let Some(track) = &mut node.transform_track {
