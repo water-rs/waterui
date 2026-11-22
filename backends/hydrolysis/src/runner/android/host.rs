@@ -36,9 +36,8 @@ use waterui::theme::ColorScheme;
 use waterui::window::WindowState;
 use waterui_core::contract_violation;
 use waterui_core::layout::LayoutDirection;
-use waterui_frame_rate::FrameRate;
 #[cfg(hydrolysis_gpu_painter)]
-use waterui_frame_rate::combine;
+use waterui_frame_rate::{FrameRate, combine};
 
 #[cfg(hydrolysis_gpu_painter)]
 use super::gpu::RefreshDemand;
@@ -1334,8 +1333,6 @@ pub struct FrameOutcome {
     pub(crate) deadline_in_nanos: Option<i64>,
     /// The window's content asked to close (its `Window::state` is Closed).
     pub(crate) should_close: bool,
-    /// Active refresh-rate vote for this window, or `None` when idle or hidden.
-    pub(crate) frame_rate_vote: Option<FrameRate>,
 }
 
 /// The mounted app session: one runtime window, its environment, the
@@ -2112,7 +2109,6 @@ impl AndroidSession {
             wants_next_frame: outcome.wants_next_frame,
             deadline_in_nanos,
             should_close: outcome.should_close,
-            frame_rate_vote,
         }
     }
 

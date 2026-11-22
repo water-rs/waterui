@@ -313,7 +313,7 @@ pub struct DisplayRefresh {
     pub high: f32,
 }
 
-#[derive(Default, PartialEq)]
+#[derive(Default, PartialEq, Eq)]
 pub struct RefreshDemand {
     pub rate: Option<FrameRate>,
 }

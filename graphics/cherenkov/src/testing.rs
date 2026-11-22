@@ -1758,7 +1758,10 @@ fn next_schedules_the_frame_rate() {
                 // A running spring wants the fast class.
                 match $crate::__engine_wait!(render_at(&engine, t0 + TICK)) {
                     Next::At { rate, .. } => {
-                        assert!(*rate.start() <= 60 && *rate.end() >= 120, "rate {rate:?}");
+                        assert!(
+                            rate.minimum() >= 80.0 && rate.maximum() >= 120.0,
+                            "rate {rate:?}"
+                        );
                     }
                     next => panic!("expected At while the spring runs, got {next:?}"),
                 }
@@ -1779,7 +1782,7 @@ fn next_schedules_the_frame_rate() {
                 let next = $crate::__engine_wait!(render_at(&engine, t2));
                 match next {
                     Next::At { rate, .. } => {
-                        assert!(*rate.end() <= 60, "rate {rate:?}");
+                        assert!(rate.maximum() <= 60.0, "rate {rate:?}");
                     }
                     Next::Idle => {}
                 }
