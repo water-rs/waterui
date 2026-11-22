@@ -25,12 +25,13 @@ use cocoa_ui::{MainThreadMarker, PlatformView, Retained, view};
 use objc2::runtime::ProtocolObject;
 use objc2_metal::MTLTexture;
 use waterui::reactive::{Binding, SignalExt};
-use waterui_backend_core::{AnyView, Environment};
+use waterui_backend_core::Environment;
 use waterui_core::layout::{LayoutDirection, Point, Rect as CoreRect, Size};
+use waterui_graphics::backend::{AnyEffect, ParamGuards};
 use waterui_graphics::gpu::GpuRuntime;
 use waterui_structural_transition::{TransitionFrame, TransitionState};
 
-use crate::components::filtered::{FrozenEffect, LiveEffect, Sendable};
+use crate::components::filtered::{FrozenEffect, LiveEffect, Sendable, effects_from_transition};
 use crate::transition::ghost::GhostRun;
 use crate::transition::host::TransitionHost;
 use crate::transition::retire::RetiredVisual;
@@ -273,9 +274,9 @@ pub struct PixelRemoval {
     overlay: PixelOverlay,
     /// The published frame — written on every tick.
     frame: Binding<TransitionFrame>,
-    /// The transition's effect body — consumed when the capture lands.
-    body: RefCell<Option<AnyView>>,
-    /// The site's environment — `FrozenEffect::from_body` reads its GPU
+    /// The probed transition effect chain — consumed when the capture lands.
+    effects: RefCell<Option<Vec<(AnyEffect, ParamGuards)>>>,
+    /// The site's environment — `FrozenEffect::from_effects` reads its GPU
     /// services from it.
     env: Environment,
     /// A frozen capture is in flight — the next tick waits for it.
@@ -297,8 +298,8 @@ impl core::fmt::Debug for PixelRemoval {
 }
 
 impl PixelRemoval {
-    /// Builds the removal's overlay, frame binding and effect body. The
-    /// first frozen capture waits for the first [`update`] — the tick
+    /// Builds the removal's overlay, frame binding and probed effect chain.
+    /// The first frozen capture waits for the first [`update`] — the tick
     /// runs after the site's borrow released, where the capture's
     /// synchronous layout preparation cannot re-enter the site's own
     /// layout handler.
@@ -309,11 +310,11 @@ impl PixelRemoval {
             &visual.host,
             visual.geometry.direction(),
         ));
-        let body = state.empty_body(frame.computed());
+        let effects = effects_from_transition(state, frame.computed(), env);
         Rc::new(Self {
             overlay,
             frame,
-            body: RefCell::new(body),
+            effects: RefCell::new(effects),
             env: env.clone(),
             pending: Cell::new(false),
             first_presented: Cell::new(false),
@@ -350,6 +351,14 @@ impl PixelRemoval {
     /// installs on its texture, a `Deferred` outcome waits a tick and a
     /// `Failed` one ends the run (§10).
     fn attempt(this: &Rc<Self>, visual: &RetiredVisual, weak_run: Weak<GhostRun>) {
+        // An invalid body chain already reported in `start` — end at once
+        // without issuing a capture.
+        if this.effects.borrow().is_none() {
+            if let Some(run) = weak_run.upgrade() {
+                run.complete();
+            }
+            return;
+        }
         // No GPU runtime: nothing can capture or draw the effect, so the
         // removal ends at once instead of retrying every tick.
         let Some(runtime) = crate::gpu_runtime::runtime(&this.env) else {
@@ -371,12 +380,12 @@ impl PixelRemoval {
                     let Some(run) = weak_run.upgrade() else {
                         return;
                     };
-                    let body = this
-                        .body
+                    let effects = this
+                        .effects
                         .borrow_mut()
                         .take()
-                        .expect("the effect body is consumed exactly once");
-                    match FrozenEffect::from_body(body, &this.env, texture) {
+                        .expect("the effect chain is consumed exactly once");
+                    match FrozenEffect::from_effects(effects, &this.env, texture) {
                         Some(effect) => {
                             view::add_subview(this.overlay.view(), effect.view());
                             view::set_frame(effect.view(), view::bounds(this.overlay.view()));
@@ -445,8 +454,8 @@ impl PixelInsertion {
     ) -> Option<Self> {
         let overlay = PixelOverlay::over(&host.host);
         let frame = Binding::container(frame_now(overlay.view(), &host.host, direction));
-        let body = state.empty_body(frame.computed())?;
-        let effect = LiveEffect::from_body(body, &host.content_view, overlay.view(), env)?;
+        let effects = effects_from_transition(state, frame.computed(), env)?;
+        let effect = LiveEffect::from_effects(effects, &host.content_view, overlay.view(), env)?;
         Some(Self {
             overlay,
             frame,
