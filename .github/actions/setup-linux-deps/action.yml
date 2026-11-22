@@ -27,6 +27,12 @@ inputs:
       job installs them through the same verified path.
     required: false
     default: ""
+  packages:
+    description: >
+      Explicit space-separated Ubuntu package list replacing the default
+      workspace desktop list when a lane needs a narrower host set.
+    required: false
+    default: ""
   runtime-fonts:
     description: >
       Install the system fallback font faces used by rendering tests.
@@ -48,13 +54,17 @@ runs:
       id: pkgs
       shell: bash
       run: |
-        # libegl-dev carries egl.pc, which the `khronos-egl` build script needs
-        # (xcap -> waterkit-screen pulls it in under --all-features). It has so
-        # far arrived only as a transitive dependency of libgtk-4-dev; declare
-        # what the workspace actually links rather than inheriting it.
-        # spirv-tools: cherenkov-gpu's build script optimizes its precompiled
-        # SPIR-V with spirv-opt on every non-Apple native target.
-        packages="nasm libasound2-dev libva-dev libfontconfig1-dev libgbm-dev libegl-dev libxcb1-dev libglib2.0-dev libpango1.0-dev libgdk-pixbuf-2.0-dev libgtk-4-dev libpipewire-0.3-dev libudev-dev spirv-tools"
+        if [ -n "${{ inputs.packages }}" ]; then
+          packages="${{ inputs.packages }}"
+        else
+          # libegl-dev carries egl.pc, which the `khronos-egl` build script needs
+          # (xcap -> waterkit-screen pulls it in under --all-features). It has so
+          # far arrived only as a transitive dependency of libgtk-4-dev; declare
+          # what the workspace actually links rather than inheriting it.
+          # spirv-tools: cherenkov-gpu's build script optimizes its precompiled
+          # SPIR-V with spirv-opt on every non-Apple native target.
+          packages="nasm libasound2-dev libva-dev libfontconfig1-dev libgbm-dev libegl-dev libxcb1-dev libglib2.0-dev libpango1.0-dev libgdk-pixbuf-2.0-dev libgtk-4-dev libpipewire-0.3-dev libudev-dev spirv-tools"
+        fi
         if [ "${{ inputs.runtime-fonts }}" = "true" ]; then
           packages="$packages fonts-noto-core fonts-noto-cjk"
         fi
