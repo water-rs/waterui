@@ -4,7 +4,6 @@
 //!
 //! The primary types include:
 //! - `View`: The fundamental trait for UI components
-//! - `IntoView`: A trait for converting values into views
 //! - `ViewSequence`: A trait for sequences of child views (tuples, arrays, `Vec`)
 //!
 //! These abstractions support a declarative and composable approach to UI building, allowing
@@ -12,8 +11,10 @@
 
 pub mod hook;
 
+#[cfg(feature = "erased-dispatch")]
+use crate::AnyView;
 use crate::backend::{Backend, ChildSlot};
-use crate::{AnyView, Environment};
+use crate::{Environment, OneOf2};
 use alloc::vec::Vec;
 
 /// View represents a part of the user interface.
@@ -67,8 +68,8 @@ impl<F: 'static + FnOnce() -> V, V: View> View for F {
 impl<V: View, E: View> View for Result<V, E> {
     fn body(self, _env: &Environment) -> impl View {
         match self {
-            Ok(view) => AnyView::new(view),
-            Err(view) => AnyView::new(view),
+            Ok(view) => OneOf2::A(view),
+            Err(view) => OneOf2::B(view),
         }
     }
 
@@ -82,7 +83,7 @@ impl<V: View, E: View> View for Result<V, E> {
 
 impl<V: View> View for Option<V> {
     fn body(self, _env: &Environment) -> impl View {
-        self.map_or_else(|| AnyView::new(()), AnyView::new)
+        self.map_or_else(|| OneOf2::B(()), OneOf2::A)
     }
 
     fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
@@ -93,38 +94,11 @@ impl<V: View> View for Option<V> {
     }
 }
 
-/// A trait for converting values into views.
-///
-/// This trait allows different types to be converted into View implementations,
-/// enabling more flexible composition of UI elements.
-pub trait IntoView {
-    /// The resulting View type after conversion.
-    type Output: View;
-
-    /// Converts the implementing type into a View.
-    ///
-    /// # Arguments
-    ///
-    /// * `env` - The environment containing context for the view conversion.
-    ///
-    /// # Returns
-    ///
-    /// A View implementation that can be used in the UI.
-    fn into_view(self, env: &Environment) -> Self::Output;
-}
-
-impl<V: View> IntoView for V {
-    type Output = V;
-    fn into_view(self, _env: &Environment) -> Self::Output {
-        self
-    }
-}
-
 /// The children of a container: a tuple, an array or a `Vec` of views.
 ///
 /// A container keeps its children's own types until it reaches a backend,
 /// which receives each child in its [`Backend::Slot`]: a typed child stays
-/// statically dispatched, and only an erased backend sees [`AnyView`]s.
+/// statically dispatched, and only an erased backend sees `AnyView`s.
 pub trait ViewSequence: 'static {
     /// How many views the sequence holds.
     fn len(&self) -> usize;

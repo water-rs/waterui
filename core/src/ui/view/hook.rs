@@ -244,14 +244,17 @@ impl<V, H: HookList> Hooks<V, H> {
     /// violation: which of them realizes the payload would depend on the
     /// order they were written in.
     pub fn new(content: V, hooks: H) -> Self {
-        let mut targets = Vec::new();
-        hooks.targets(&mut targets);
-        for (index, (target, name)) in targets.iter().enumerate() {
-            if targets[..index].iter().any(|(seen, _)| seen == target) {
-                crate::contract_violation!(
-                    "a hook list holds two hooks for {name}; a payload type has at most one hook per list"
-                );
-            }
+        if let Some(duplicate_index) = H::TARGET_IDS
+            .iter()
+            .enumerate()
+            .find_map(|(index, target)| H::TARGET_IDS[..index].contains(target).then_some(index))
+        {
+            let mut targets = Vec::new();
+            hooks.targets(&mut targets);
+            let name = targets[duplicate_index].1;
+            crate::contract_violation!(
+                "a hook list holds two hooks for {name}; a payload type has at most one hook per list"
+            );
         }
         Self { content, hooks }
     }

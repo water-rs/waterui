@@ -5,6 +5,7 @@ use super::layout::resolved_or_collapsed;
 #[cfg(feature = "frame-profile")]
 use super::layout::{SignatureHasher, hash_size};
 use waterui_core::backend::ChildSlot;
+use waterui_core::layout::{LayoutError, ResolvedExtent};
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
@@ -12,6 +13,7 @@ use super::*;
 use crate::renderer::ContextMenuPresenter;
 use crate::renderer::mount::motion::{LayerMotion, Motion};
 use crate::text::{TextEngine, TextLayout as _};
+use crate::theme::WidgetTheme;
 use waterui::gesture::TapGesture;
 use waterui_backend_core::Child;
 use waterui_layout::safe_area::IgnoreSafeArea;
@@ -909,8 +911,22 @@ pub trait WidgetBehavior<E: crate::text::TextEngine> {
         state: &mut HydroState<E>,
         proposal: ProposalSize,
         env: &Environment,
-        theme: &Rc<dyn crate::theme::WidgetTheme>,
+        theme: &Rc<dyn WidgetTheme>,
     ) -> ViewDimensions;
+
+    /// Resolves this leaf's response geometry inside `bounds`, returning
+    /// `Ok(None)` when the leaf uses the default [`ResolvedExtent::centred`]
+    /// answer from [`Self::measure`].
+    fn resolve_extent(
+        &self,
+        _state: &mut HydroState<E>,
+        _env: &Environment,
+        _theme: &Rc<dyn WidgetTheme>,
+        _bounds: Rect,
+        _proposal: ProposalSize,
+    ) -> Result<Option<ResolvedExtent>, LayoutError> {
+        Ok(None)
+    }
 
     /// Consume the layout-dirty marks of the [`RetainedSubview`]s this
     /// leaf owns — labels, bar parts, badge content — and report whether

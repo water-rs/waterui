@@ -278,7 +278,24 @@ impl WindowToolbar for () {
     }
 }
 
-impl<V: View, P: Plugin> WindowToolbar for Installed<V, P> {
+/// Opaque wrapper for a window's configured toolbar subtree.
+///
+/// Returned by [`Window::toolbar`], preserving the toolbar view's concrete type
+/// while scoping [`LabelDisplayMode::IconOnly`] into its environment.
+#[derive(Debug)]
+pub struct ToolbarContent<V>(Installed<V, LabelDisplayMode>);
+
+impl<V: View> View for ToolbarContent<V> {
+    fn body(self, _env: &Environment) -> impl View {
+        self.0
+    }
+
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        self.0.dispatch(backend, env, cx)
+    }
+}
+
+impl<V: View> WindowToolbar for ToolbarContent<V> {
     type View = Self;
 
     fn into_view(self) -> Option<Self::View> {
@@ -1286,10 +1303,10 @@ impl<C, T> Window<C, T> {
     /// accessibility text. Individual labels can opt back into
     /// [`LabelDisplayMode::TitleOnly`] or [`LabelDisplayMode::TitleAndIcon`].
     #[must_use]
-    pub fn toolbar<V: View>(self, toolbar: V) -> Window<C, Installed<V, LabelDisplayMode>> {
+    pub fn toolbar<V: View>(self, toolbar: V) -> Window<C, ToolbarContent<V>> {
         self.map(
             |content| content,
-            |_| Installed::new(toolbar, LabelDisplayMode::IconOnly),
+            |_| ToolbarContent(Installed::new(toolbar, LabelDisplayMode::IconOnly)),
         )
     }
 
@@ -1948,7 +1965,8 @@ mod tests {
         let mut queued = channel.drain();
         assert_eq!(queued.len(), 1);
         let delivered = queued.pop().expect("one queued window");
-        assert!(delivered.toolbar.into_view().is_some());
+        let toolbar: super::ToolbarContent<_> = delivered.toolbar;
+        assert!(toolbar.into_view().is_some());
     }
 
     /// The icon validates its pixel buffer against its size.
