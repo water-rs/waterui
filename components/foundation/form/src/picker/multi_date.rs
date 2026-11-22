@@ -1,6 +1,6 @@
 //! Multi-date picker component.
 
-use alloc::{collections::BTreeSet, vec::Vec};
+use alloc::collections::BTreeSet;
 use core::ops::RangeInclusive;
 
 use jiff::civil::Date;
@@ -22,12 +22,12 @@ use crate::calendar::{
 pub struct MultiDatePickerConfig<S> {
     /// The label displayed for the picker.
     label: ControlLabel<S>,
-    /// The selected dates as an ordered vector for backend/FFI transport.
-    value: Binding<Vec<Date>>,
+    /// The selected dates.
+    value: Binding<BTreeSet<Date>>,
     /// The valid date range.
     range: RangeInclusive<Date>,
     /// Passively decorated dates.
-    decorated: Computed<Vec<Date>>,
+    decorated: Computed<BTreeSet<Date>>,
     /// The month the picker shows.
     visible_month: Binding<Date>,
 }
@@ -49,9 +49,9 @@ impl<S> MultiDatePickerConfig<S> {
         &mut self.label
     }
 
-    /// The selected dates as an ordered vector for backend/FFI transport.
+    /// The selected dates.
     #[must_use]
-    pub const fn value(&self) -> &Binding<Vec<Date>> {
+    pub const fn value(&self) -> &Binding<BTreeSet<Date>> {
         &self.value
     }
 
@@ -63,7 +63,7 @@ impl<S> MultiDatePickerConfig<S> {
 
     /// Passively decorated dates.
     #[must_use]
-    pub const fn decorated(&self) -> &Computed<Vec<Date>> {
+    pub const fn decorated(&self) -> &Computed<BTreeSet<Date>> {
         &self.decorated
     }
 
@@ -80,9 +80,9 @@ impl<S> MultiDatePickerConfig<S> {
 #[must_use]
 pub struct MultiDatePicker<L> {
     label: Label<L>,
-    value: Binding<Vec<Date>>,
+    value: Binding<BTreeSet<Date>>,
     range: RangeInclusive<Date>,
-    decorated: Computed<Vec<Date>>,
+    decorated: Computed<BTreeSet<Date>>,
     visible_month: Binding<Date>,
 }
 
@@ -151,9 +151,9 @@ impl<L> MultiDatePicker<L> {
         let range = Date::MIN..=Date::MAX;
         Self {
             label: label.into_label(),
-            value: map_multi_date_binding(date),
+            value: date.clone(),
             range,
-            decorated: Computed::constant(Vec::new()),
+            decorated: Computed::constant(BTreeSet::new()),
             visible_month: visible_month.clone(),
         }
     }
@@ -176,10 +176,7 @@ impl<L> MultiDatePicker<L> {
 
     /// Marks calendar days with a passive decoration dot.
     pub fn decorated(mut self, decorated: impl IntoComputed<BTreeSet<Date>>) -> Self {
-        self.decorated = decorated
-            .into_computed()
-            .map(|dates| dates.into_iter().collect())
-            .computed();
+        self.decorated = decorated.into_computed();
         self
     }
 }
@@ -211,44 +208,25 @@ impl<L: LabelKind> View for MultiDatePicker<L> {
 /// The multi-date picker composed from `WaterUI` views: how a self-drawn
 /// backend realizes [`MultiDatePickerConfig`].
 #[derive(Debug)]
-pub struct MultiDatePickerGrid<S> {
-    label: ControlLabel<S>,
-    value: Binding<BTreeSet<Date>>,
-    range: RangeInclusive<Date>,
-    decorated: Computed<BTreeSet<Date>>,
-    visible_month: Binding<VisibleMonth>,
-}
+pub struct MultiDatePickerGrid<S>(MultiDatePickerConfig<S>);
 
 impl<S> MultiDatePickerGrid<S> {
     /// The grid for `config`.
     #[must_use]
-    pub fn new(config: MultiDatePickerConfig<S>, _env: &Environment) -> Self {
-        let value = Binding::mapping(
-            &config.value,
-            |dates: Vec<Date>| dates.into_iter().collect::<BTreeSet<_>>(),
-            |binding: &Binding<Vec<Date>>, dates: BTreeSet<Date>| {
-                binding.set(dates.into_iter().collect());
-            },
-        );
-        Self {
-            label: config.label,
-            value,
-            range: config.range,
-            decorated: config
-                .decorated
-                .map(|dates: Vec<Date>| dates.into_iter().collect::<BTreeSet<_>>())
-                .computed(),
-            visible_month: map_visible_month_binding(&config.visible_month),
-        }
+    pub const fn new(config: MultiDatePickerConfig<S>) -> Self {
+        Self(config)
     }
 
     /// Splits this grid into its resolved label and its composed calendar body.
     pub fn into_parts(self, env: &Environment) -> (ControlLabel<S>, impl View + use<S>) {
-        let label = self.label;
-        let selection = self.value;
-        let range = self.range;
-        let decorated = self.decorated;
-        let visible_month = self.visible_month;
+        let MultiDatePickerConfig {
+            label,
+            value: selection,
+            range,
+            decorated,
+            visible_month,
+        } = self.0;
+        let visible_month = map_visible_month_binding(&visible_month);
         let locale = locale_binding(env).computed();
 
         let cell_range = range.clone();
@@ -267,14 +245,4 @@ impl<S: View> View for MultiDatePickerGrid<S> {
         let (label, calendar) = self.into_parts(env);
         waterui_layout::stack::vstack((label, calendar)).spacing(10.0)
     }
-}
-
-fn map_multi_date_binding(dates: &Binding<BTreeSet<Date>>) -> Binding<Vec<Date>> {
-    Binding::mapping(
-        dates,
-        |dates| dates.into_iter().collect(),
-        |binding, dates: Vec<Date>| {
-            binding.set(dates.into_iter().collect());
-        },
-    )
 }

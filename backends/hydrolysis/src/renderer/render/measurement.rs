@@ -547,7 +547,7 @@ pub fn list_row_height_for_content(
 /// whose text line an empty field measures too.
 #[cfg(feature = "text-field")]
 pub fn measure_text_field_size_with_label_size<E: crate::text::TextEngine, S>(
-    text_field: &ResolvedTextFieldConfig<S>,
+    text_field: &TextFieldConfig<S>,
     label_size: LayoutSize,
     state: &mut HydroState<E>,
     env: &Environment,

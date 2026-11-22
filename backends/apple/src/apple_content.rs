@@ -608,7 +608,7 @@ mod tests {
             #[cfg(waterui_feature = "stepper")]
             stepper<C>: waterui::component::stepper::StepperConfig<C>,
             #[cfg(waterui_feature = "text-field")]
-            text_field<C>: waterui::component::text_field::ResolvedTextFieldConfig<C>,
+            text_field<C>: waterui::component::text_field::TextFieldConfig<C>,
             #[cfg(waterui_feature = "secure-field")]
             secure_field<C>: waterui::form::secure::SecureFieldConfig<C>,
             #[cfg(waterui_feature = "picker")]
