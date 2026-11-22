@@ -8,13 +8,10 @@
 
 use std::rc::Rc;
 
-#[cfg(hydrolysis_runtime)]
 use cherenkov_record::Recorder;
-#[cfg(hydrolysis_runtime)]
 use kurbo::Rect;
 
 use super::TableMetrics;
-#[cfg(hydrolysis_runtime)]
 use super::look::record_at_rest;
 use super::look::{Custom, CustomPart, DrivenSet};
 
@@ -27,23 +24,9 @@ use super::look::{Custom, CustomPart, DrivenSet};
 #[derive(Clone)]
 pub struct TableLook {
     metrics: TableMetrics,
-    #[cfg_attr(
-        not(hydrolysis_runtime),
-        expect(
-            dead_code,
-            reason = "only the renderer records the table's parts; a build without a painter compiles the theme contract alone"
-        )
-    )]
     parts: Rc<TableParts>,
 }
 
-#[cfg_attr(
-    not(hydrolysis_runtime),
-    expect(
-        dead_code,
-        reason = "only the renderer records the table's parts; a build without a painter compiles the theme contract alone"
-    )
-)]
 struct TableParts {
     background: Rc<dyn CustomPart<()>>,
     header_background: Rc<dyn CustomPart<()>>,
@@ -100,27 +83,27 @@ impl TableLook {
     }
 
     /// Records the table's background over `frame`.
-    #[cfg(hydrolysis_runtime)]
-    pub(crate) fn record_background(&self, recorder: &mut Recorder, frame: Rect) {
+    #[doc(hidden)]
+    pub fn record_background(&self, recorder: &mut Recorder, frame: Rect) {
         record_at_rest(&*self.parts.background, recorder, frame);
     }
 
     /// Records the header background over `frame`.
-    #[cfg(hydrolysis_runtime)]
-    pub(crate) fn record_header_background(&self, recorder: &mut Recorder, frame: Rect) {
+    #[doc(hidden)]
+    pub fn record_header_background(&self, recorder: &mut Recorder, frame: Rect) {
         record_at_rest(&*self.parts.header_background, recorder, frame);
     }
 
     /// Records a cell's border over `frame`.
-    #[cfg(hydrolysis_runtime)]
-    pub(crate) fn record_cell_border(&self, recorder: &mut Recorder, frame: Rect) {
+    #[doc(hidden)]
+    pub fn record_cell_border(&self, recorder: &mut Recorder, frame: Rect) {
         record_at_rest(&*self.parts.cell_border, recorder, frame);
     }
 
     /// Records a column separator over the zero-width `frame` between its
     /// two ends.
-    #[cfg(hydrolysis_runtime)]
-    pub(crate) fn record_column_separator(&self, recorder: &mut Recorder, frame: Rect) {
+    #[doc(hidden)]
+    pub fn record_column_separator(&self, recorder: &mut Recorder, frame: Rect) {
         record_at_rest(&*self.parts.column_separator, recorder, frame);
     }
 }

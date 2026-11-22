@@ -2,7 +2,6 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use waterui_core::Computed;
-use waterui_core::contract_violation;
 use waterui_core::metadata::MetadataKey;
 
 /// Defaults an environment scope gives every environment snapshot below it.
@@ -362,109 +361,7 @@ fn append_corner(
     path.curve_to(c1, c2, end_point);
 }
 
-pub fn path_commands_to_path(commands: &[PathCommand], bounds: kurbo::Rect) -> kurbo::BezPath {
-    let width = bounds.width();
-    let height = bounds.height();
-    let mut path = kurbo::BezPath::new();
-    let mut has_current = false;
-
-    for command in commands {
-        match command {
-            PathCommand::MoveTo { x, y } => {
-                path.move_to(kurbo::Point::new(
-                    f64::from(*x) * width,
-                    f64::from(*y) * height,
-                ));
-                has_current = true;
-            }
-            PathCommand::LineTo { x, y } => {
-                if !has_current {
-                    contract_violation!(
-                        "PathCommand::LineTo requires an active current point; the command is ignored"
-                    );
-                    continue;
-                }
-                path.line_to(kurbo::Point::new(
-                    f64::from(*x) * width,
-                    f64::from(*y) * height,
-                ));
-            }
-            PathCommand::QuadTo { cx, cy, x, y } => {
-                if !has_current {
-                    contract_violation!(
-                        "PathCommand::QuadTo requires an active current point; the command is ignored"
-                    );
-                    continue;
-                }
-                path.quad_to(
-                    kurbo::Point::new(f64::from(*cx) * width, f64::from(*cy) * height),
-                    kurbo::Point::new(f64::from(*x) * width, f64::from(*y) * height),
-                );
-            }
-            PathCommand::CubicTo {
-                c1x,
-                c1y,
-                c2x,
-                c2y,
-                x,
-                y,
-            } => {
-                if !has_current {
-                    contract_violation!(
-                        "PathCommand::CubicTo requires an active current point; the command is ignored"
-                    );
-                    continue;
-                }
-                path.curve_to(
-                    kurbo::Point::new(f64::from(*c1x) * width, f64::from(*c1y) * height),
-                    kurbo::Point::new(f64::from(*c2x) * width, f64::from(*c2y) * height),
-                    kurbo::Point::new(f64::from(*x) * width, f64::from(*y) * height),
-                );
-            }
-            PathCommand::Arc {
-                cx,
-                cy,
-                rx,
-                ry,
-                start,
-                sweep,
-            } => {
-                let center_x = f64::from(*cx) * width;
-                let center_y = f64::from(*cy) * height;
-                let radius_x = f64::from(*rx) * width;
-                let radius_y = f64::from(*ry) * height;
-                let start = f64::from(*start);
-                let step = f64::from(*sweep) / 32.0;
-
-                let start_point = kurbo::Point::new(
-                    radius_x.mul_add(start.cos(), center_x),
-                    radius_y.mul_add(start.sin(), center_y),
-                );
-                if has_current {
-                    path.line_to(start_point);
-                } else {
-                    path.move_to(start_point);
-                    has_current = true;
-                }
-
-                let mut angle = start;
-                for _ in 0..32 {
-                    angle += step;
-                    path.line_to(kurbo::Point::new(
-                        radius_x.mul_add(angle.cos(), center_x),
-                        radius_y.mul_add(angle.sin(), center_y),
-                    ));
-                }
-            }
-            PathCommand::Close => {
-                path.close_path();
-                has_current = false;
-            }
-        }
-    }
-
-    path
-}
+pub use crate::theme::path_commands_to_path;
 
 pub fn anchor_point(bounds: kurbo::Rect, anchor: waterui::style::Anchor) -> kurbo::Point {
     kurbo::Point::new(

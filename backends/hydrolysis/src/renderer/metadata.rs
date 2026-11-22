@@ -264,7 +264,11 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         {
             let look = crate::renderer::input::menu_look(&renderer.theme(), env);
             renderer.scene_mut().record_picture(ctx.local(), |draw| {
-                look.record_panel(&mut *draw, ctx.bounds());
+                crate::renderer::chrome::record_surface_at_rest(
+                    look.panel(),
+                    &mut *draw,
+                    ctx.bounds(),
+                );
                 if let Some(row) = selected_row {
                     let bounds = ctx.bounds();
                     look.record_selected_row(

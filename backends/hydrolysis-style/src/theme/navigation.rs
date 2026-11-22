@@ -117,13 +117,6 @@ pub struct NavigationBarLook {
     metrics: NavigationMetrics,
     motion: NavigationMotion,
     back: Chrome,
-    #[cfg_attr(
-        not(hydrolysis_runtime),
-        expect(
-            dead_code,
-            reason = "only the renderer records the bar's surface; a build without a painter compiles the theme contract alone"
-        )
-    )]
     bar: Rc<dyn CustomPart<BarSurface>>,
     separator: Option<Rc<dyn CustomPart<BarSurface>>>,
 }
@@ -194,14 +187,16 @@ impl NavigationBarLook {
     }
 
     /// The bar's surface part.
-    #[cfg(hydrolysis_runtime)]
-    pub(crate) fn bar(&self) -> &Rc<dyn CustomPart<BarSurface>> {
+    #[doc(hidden)]
+    #[must_use]
+    pub fn bar(&self) -> &Rc<dyn CustomPart<BarSurface>> {
         &self.bar
     }
 
     /// The separator part, when the look draws one.
-    #[cfg(hydrolysis_runtime)]
-    pub(crate) fn separator_part(&self) -> Option<&Rc<dyn CustomPart<BarSurface>>> {
+    #[doc(hidden)]
+    #[must_use]
+    pub fn separator_part(&self) -> Option<&Rc<dyn CustomPart<BarSurface>>> {
         self.separator.as_ref()
     }
 }

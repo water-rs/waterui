@@ -19,19 +19,17 @@ use std::rc::Rc;
 
 use cherenkov_record::{BlendSpace, ShapeData};
 use kurbo::{Rect, Size, Vec2};
-#[cfg(feature = "toggle")]
+#[cfg(waterui_feature = "toggle")]
 use waterui_controls::ControlSize;
-#[cfg(feature = "toggle")]
+#[cfg(waterui_feature = "toggle")]
 use waterui_controls::toggle::ToggleStyle;
 use waterui_core::layout::LayoutDirection;
-#[cfg(feature = "toggle")]
+#[cfg(waterui_feature = "toggle")]
 use waterui_graphics::color::Color;
 
-#[cfg(feature = "toggle")]
+#[cfg(waterui_feature = "toggle")]
 use super::look::SpecTint;
-use super::look::{Custom, CustomPart, DrivenSet, HitRegion, Motion};
-#[cfg(all(hydrolysis_runtime, any(feature = "toggle", feature = "picker")))]
-use super::look::{Inputs, RealizedCustom};
+use super::look::{Custom, CustomPart, DrivenSet, HitRegion, Inputs, Motion, RealizedCustom};
 use super::{Backdrop, Driven};
 
 /// What Hydrolysis asks a theme's [`switch`](super::WidgetTheme::switch) or
@@ -41,7 +39,7 @@ use super::{Backdrop, Driven};
 /// A spec change requests the look again; everything else reaches the look
 /// through its [`Driven`](super::Driven) values.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg(feature = "toggle")]
+#[cfg(waterui_feature = "toggle")]
 pub struct ToggleSpec {
     style: ToggleStyle,
     size: ControlSize,
@@ -49,7 +47,7 @@ pub struct ToggleSpec {
     tint: SpecTint,
 }
 
-#[cfg(feature = "toggle")]
+#[cfg(waterui_feature = "toggle")]
 impl ToggleSpec {
     /// The spec of a `style` toggle of `size`, laid out `direction`, drawn
     /// with `tint`.
@@ -332,9 +330,9 @@ impl ToggleControl {
 
     /// The parts recorded below the backdrop, bottom first, realized at
     /// `inputs`.
-    #[cfg(hydrolysis_runtime)]
-    #[cfg(any(feature = "toggle", feature = "picker"))]
-    pub(crate) fn realize_below(&self, inputs: &Inputs<'_, bool>) -> Vec<RealizedCustom<bool>> {
+    #[doc(hidden)]
+    #[must_use]
+    pub fn realize_below(&self, inputs: &Inputs<'_, bool>) -> Vec<RealizedCustom<bool>> {
         self.0
             .below
             .iter()
@@ -344,9 +342,9 @@ impl ToggleControl {
 
     /// The parts recorded above the backdrop, bottom first, realized at
     /// `inputs`.
-    #[cfg(hydrolysis_runtime)]
-    #[cfg(any(feature = "toggle", feature = "picker"))]
-    pub(crate) fn realize_above(&self, inputs: &Inputs<'_, bool>) -> Vec<RealizedCustom<bool>> {
+    #[doc(hidden)]
+    #[must_use]
+    pub fn realize_above(&self, inputs: &Inputs<'_, bool>) -> Vec<RealizedCustom<bool>> {
         self.0
             .above
             .iter()
@@ -355,9 +353,9 @@ impl ToggleControl {
     }
 
     /// Whether `other` is this control.
-    #[cfg(hydrolysis_runtime)]
-    #[cfg(any(feature = "toggle", feature = "picker"))]
-    pub(crate) fn same(&self, other: &Self) -> bool {
+    #[doc(hidden)]
+    #[must_use]
+    pub fn same(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.0, &other.0)
     }
 }

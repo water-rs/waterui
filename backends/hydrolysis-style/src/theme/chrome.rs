@@ -116,13 +116,10 @@ enum Outline {
     /// A rectangle with the shape's corners.
     Rect,
     /// A custom path, its unit-space commands resolved against the rect.
-    #[cfg(hydrolysis_runtime)]
     Path(std::rc::Rc<[waterui_shape::PathCommand]>),
     /// The circle inscribed in the rect, centred in it.
-    #[cfg(hydrolysis_runtime)]
     Circle,
     /// The ellipse filling the rect.
-    #[cfg(hydrolysis_runtime)]
     Ellipse,
 }
 
@@ -139,9 +136,9 @@ impl CornerShape {
 
     /// The circle inscribed in the surface and centred in it, whatever its
     /// aspect.
-    #[cfg(hydrolysis_runtime)]
+    #[doc(hidden)]
     #[must_use]
-    pub(crate) fn circle() -> Self {
+    pub fn circle() -> Self {
         Self {
             outline: Outline::Circle,
             ..Self::full()
@@ -149,9 +146,9 @@ impl CornerShape {
     }
 
     /// A custom path, resolved against the surface.
-    #[cfg(hydrolysis_runtime)]
+    #[doc(hidden)]
     #[must_use]
-    pub(crate) fn path(commands: &[waterui_shape::PathCommand]) -> Self {
+    pub fn path(commands: &[waterui_shape::PathCommand]) -> Self {
         Self {
             outline: Outline::Path(commands.into()),
             ..Self::full()
@@ -159,9 +156,9 @@ impl CornerShape {
     }
 
     /// The ellipse filling the surface.
-    #[cfg(hydrolysis_runtime)]
+    #[doc(hidden)]
     #[must_use]
-    pub(crate) fn ellipse() -> Self {
+    pub fn ellipse() -> Self {
         Self {
             outline: Outline::Ellipse,
             ..Self::full()
@@ -236,23 +233,17 @@ impl CornerShape {
             Outline::Rect => {}
             // A path has no offset curve: a grown or shrunk silhouette is
             // the path resolved against the grown or shrunk rect.
-            #[cfg(hydrolysis_runtime)]
             Outline::Path(commands) => {
-                let path = crate::renderer::path_commands_to_path(
-                    commands,
-                    rect.inflate(distance, distance),
-                );
+                let path = path_commands_to_path(commands, rect.inflate(distance, distance));
                 return ShapeData::Path {
                     elements: path.elements().into(),
                     rule: cherenkov_record::FillRule::NonZero,
                 };
             }
-            #[cfg(hydrolysis_runtime)]
             Outline::Circle => {
                 let radius = (rect.width().min(rect.height()) / 2.0 + distance).max(0.0);
                 return ShapeData::Circle(Circle::new(rect.center(), radius));
             }
-            #[cfg(hydrolysis_runtime)]
             Outline::Ellipse => {
                 let radii = (
                     (rect.width() / 2.0 + distance).max(0.0),
@@ -921,14 +912,16 @@ impl Chrome {
     }
 
     /// The custom parts.
-    #[cfg(hydrolysis_runtime)]
-    pub(crate) fn customs(&self) -> &[Rc<dyn CustomPart<()>>] {
+    #[doc(hidden)]
+    #[must_use]
+    pub fn customs(&self) -> &[Rc<dyn CustomPart<()>>] {
         &self.0.customs
     }
 
     /// Whether `other` is this chrome.
-    #[cfg(hydrolysis_runtime)]
-    pub(crate) fn same(&self, other: &Self) -> bool {
+    #[doc(hidden)]
+    #[must_use]
+    pub fn same(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.0, &other.0)
     }
 
@@ -952,4 +945,111 @@ impl Chrome {
     pub fn target(&self, bounds: Rect) -> Rect {
         self.0.hit.target(bounds, self.frame(bounds))
     }
+}
+
+/// Resolves unit-space [`waterui_shape::PathCommand`]s against `bounds`.
+#[doc(hidden)]
+#[must_use]
+pub fn path_commands_to_path(
+    commands: &[waterui_shape::PathCommand],
+    bounds: Rect,
+) -> kurbo::BezPath {
+    use waterui_core::contract_violation;
+    use waterui_shape::PathCommand;
+
+    let width = bounds.width();
+    let height = bounds.height();
+    let mut path = kurbo::BezPath::new();
+    let mut has_current = false;
+
+    for command in commands {
+        match command {
+            PathCommand::MoveTo { x, y } => {
+                path.move_to(Point::new(f64::from(*x) * width, f64::from(*y) * height));
+                has_current = true;
+            }
+            PathCommand::LineTo { x, y } => {
+                if !has_current {
+                    contract_violation!(
+                        "PathCommand::LineTo requires an active current point; the command is ignored"
+                    );
+                    continue;
+                }
+                path.line_to(Point::new(f64::from(*x) * width, f64::from(*y) * height));
+            }
+            PathCommand::QuadTo { cx, cy, x, y } => {
+                if !has_current {
+                    contract_violation!(
+                        "PathCommand::QuadTo requires an active current point; the command is ignored"
+                    );
+                    continue;
+                }
+                path.quad_to(
+                    Point::new(f64::from(*cx) * width, f64::from(*cy) * height),
+                    Point::new(f64::from(*x) * width, f64::from(*y) * height),
+                );
+            }
+            PathCommand::CubicTo {
+                c1x,
+                c1y,
+                c2x,
+                c2y,
+                x,
+                y,
+            } => {
+                if !has_current {
+                    contract_violation!(
+                        "PathCommand::CubicTo requires an active current point; the command is ignored"
+                    );
+                    continue;
+                }
+                path.curve_to(
+                    Point::new(f64::from(*c1x) * width, f64::from(*c1y) * height),
+                    Point::new(f64::from(*c2x) * width, f64::from(*c2y) * height),
+                    Point::new(f64::from(*x) * width, f64::from(*y) * height),
+                );
+            }
+            PathCommand::Arc {
+                cx,
+                cy,
+                rx,
+                ry,
+                start,
+                sweep,
+            } => {
+                let center_x = f64::from(*cx) * width;
+                let center_y = f64::from(*cy) * height;
+                let radius_x = f64::from(*rx) * width;
+                let radius_y = f64::from(*ry) * height;
+                let start = f64::from(*start);
+                let step = f64::from(*sweep) / 32.0;
+
+                let start_point = Point::new(
+                    radius_x.mul_add(start.cos(), center_x),
+                    radius_y.mul_add(start.sin(), center_y),
+                );
+                if has_current {
+                    path.line_to(start_point);
+                } else {
+                    path.move_to(start_point);
+                    has_current = true;
+                }
+
+                let mut angle = start;
+                for _ in 0..32 {
+                    angle += step;
+                    path.line_to(Point::new(
+                        radius_x.mul_add(angle.cos(), center_x),
+                        radius_y.mul_add(angle.sin(), center_y),
+                    ));
+                }
+            }
+            PathCommand::Close => {
+                path.close_path();
+                has_current = false;
+            }
+        }
+    }
+
+    path
 }

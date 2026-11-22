@@ -32,7 +32,7 @@
 //! Drawing goes through the render-target-neutral recording vocabulary of
 //! `cherenkov-record` ([`Recorder`](cherenkov_record::Recorder),
 //! [`Paint`](cherenkov_record::Paint),
-//! [`MaterialRegistry`](cherenkov_record::MaterialRegistry)), never through a
+//! [`MaterialRegistry`]), never through a
 //! render engine, so a theme renders on every target Hydrolysis draws
 //! through. A style package depends on Hydrolysis, the framework crates whose
 //! configuration types the contract names, and `cherenkov-record`.
@@ -53,48 +53,51 @@
 mod badge;
 mod chrome;
 mod glass;
-#[cfg(feature = "list")]
+#[cfg(waterui_feature = "list")]
 mod list;
-#[cfg(hydrolysis_runtime)]
-pub(crate) mod live;
+#[doc(hidden)]
+pub mod live;
 mod look;
-#[cfg(feature = "slider")]
+#[cfg(waterui_feature = "slider")]
 pub use look::{DragMapping, Knob, SliderLayout, SliderLook, SliderSpec, ValueIndicator};
-#[cfg(feature = "menu")]
+#[cfg(waterui_feature = "menu")]
 mod menu;
-#[cfg(feature = "navigation")]
+#[cfg(waterui_feature = "navigation")]
 mod navigation;
 mod picker;
 mod progress;
 mod scroll_indicator;
-#[cfg(feature = "picker")]
+#[cfg(waterui_feature = "picker")]
 mod segmented;
 mod stepper;
-#[cfg(feature = "table")]
+#[cfg(waterui_feature = "table")]
 mod table;
-#[cfg(feature = "navigation")]
+#[cfg(waterui_feature = "navigation")]
 mod tabs;
 mod text_field;
 mod toggle;
 mod widget;
 
 pub use badge::BadgeLook;
+pub use cherenkov_record::MaterialRegistry;
+#[doc(hidden)]
+pub use chrome::path_commands_to_path;
 pub use chrome::{
     Backdrop, Border, Chrome, CornerShape, Corners, Elevation, Fill, FocusIndicator, PressFeedback,
     Ripple, StateLayer, Surface, Wash,
 };
 pub use glass::GlassLook;
-#[cfg(feature = "list")]
+#[cfg(waterui_feature = "list")]
 pub use list::{ListControls, ListGestures, ListLook, ListSpec};
 pub use look::{
     ButtonLook, ButtonSpec, Custom, Driven, DrivenSet, HitRegion, Inputs, Label, Motion, SpecTint,
     Transition, ValueMotion,
 };
-#[cfg(hydrolysis_runtime)]
-pub(crate) use look::{Change, CustomPart, LayerRotation, LiveDriven, RealizedCustom, Retarget};
-#[cfg(feature = "menu")]
+#[doc(hidden)]
+pub use look::{Change, CustomPart, LayerRotation, LiveDriven, RealizedCustom, Retarget};
+#[cfg(waterui_feature = "menu")]
 pub use menu::{MenuLayout, MenuLook, MenuSpec};
-#[cfg(feature = "navigation")]
+#[cfg(waterui_feature = "navigation")]
 pub use navigation::{
     BarSurface, NavigationBarLook, NavigationMetrics, NavigationMotion, NavigationSpec,
 };
@@ -103,18 +106,18 @@ pub use progress::{
     IndicatorLook, LinearLayout, LinearProgressLook, ProgressControl, ProgressSpec,
 };
 pub use scroll_indicator::ScrollIndicatorLook;
-#[cfg(feature = "picker")]
+#[cfg(waterui_feature = "picker")]
 pub use segmented::{
     Segment, SegmentLabel, SegmentedDrag, SegmentedLayout, SegmentedLook, SegmentedSpec,
     SegmentedValue,
 };
 pub use stepper::{StepperLook, StepperSpec};
-#[cfg(feature = "table")]
+#[cfg(waterui_feature = "table")]
 pub use table::TableLook;
-#[cfg(feature = "navigation")]
+#[cfg(waterui_feature = "navigation")]
 pub use tabs::{TabItem, TabItemGeometry, TabItemLayout, TabsLook, TabsMetrics, TabsSpec};
 pub use text_field::{Caret, FloatingLabel, TextFieldLook, TextFieldSpec};
-#[cfg(feature = "toggle")]
+#[cfg(waterui_feature = "toggle")]
 pub use toggle::ToggleSpec;
 pub use toggle::{CheckboxLook, SwitchDrag, SwitchLook, ToggleBackdrop, ToggleControl};
 pub use widget::{
@@ -123,7 +126,6 @@ pub use widget::{
     ListTrailingControlMetrics, ModalInteraction, TableMetrics, TextCaretMotion, WidgetTheme,
 };
 
-#[cfg(hydrolysis_runtime)]
 use waterui::{
     Environment, Plugin,
     color::{Srgb, WorkingColor},
@@ -140,7 +142,6 @@ use waterui::{
 /// neither a style package nor the application installs its own. The scrim
 /// is the same in both schemes and is not part of it, nor is the disabled
 /// foreground, which derives from the scheme's foreground.
-#[cfg(hydrolysis_runtime)]
 struct Palette {
     background: u32,
     surface: u32,
@@ -163,11 +164,10 @@ struct Palette {
 
 /// The disabled foreground is the scheme's foreground at this alpha, the
 /// contrast Material gives disabled content (on-surface at 38%).
-#[cfg(hydrolysis_runtime)]
-pub(crate) const DISABLED_FOREGROUND_ALPHA: f32 = 0.38;
+#[doc(hidden)]
+pub const DISABLED_FOREGROUND_ALPHA: f32 = 0.38;
 
 /// Dark content on light surfaces.
-#[cfg(hydrolysis_runtime)]
 const LIGHT: Palette = Palette {
     background: 0xFF_FF_FF,
     surface: 0xFF_FF_FF,
@@ -191,7 +191,6 @@ const LIGHT: Palette = Palette {
 /// Light content on dark surfaces, from the same neutral, blue, violet and
 /// red ramps as [`LIGHT`]: the fills lighten so they keep their contrast
 /// against the dark background, and the content drawn on them darkens.
-#[cfg(hydrolysis_runtime)]
 const DARK: Palette = Palette {
     background: 0x11_18_27,
     surface: 0x1F_29_37,
@@ -212,7 +211,6 @@ const DARK: Palette = Palette {
     error_foreground: 0x45_0A_0A,
 };
 
-#[cfg(hydrolysis_runtime)]
 const fn palette(scheme: ColorScheme) -> &'static Palette {
     match scheme {
         ColorScheme::Light => &LIGHT,
@@ -220,7 +218,6 @@ const fn palette(scheme: ColorScheme) -> &'static Palette {
     }
 }
 
-#[cfg(hydrolysis_runtime)]
 fn color(rgb: u32) -> WorkingColor {
     Srgb::from_u32(rgb).resolve()
 }
@@ -228,7 +225,6 @@ fn color(rgb: u32) -> WorkingColor {
 /// Installs every palette slot as a derivation from the colour scheme: a
 /// scheme change re-resolves exactly the views that read a slot, and a scheme
 /// installed on a subtree re-derives the slots that subtree resolves.
-#[cfg(hydrolysis_runtime)]
 fn install_default_colors(env: &mut Environment) {
     macro_rules! slots {
         ($( $slot:ident => $field:ident ),* $(,)?) => {
@@ -273,11 +269,8 @@ fn install_default_colors(env: &mut Environment) {
 /// winit's theme reports on Windows, the portal's `color-scheme` on Linux —
 /// and a report repeating the held scheme writes nothing, so the token
 /// slots never re-resolve for a report that moved nothing.
-#[cfg(any(
-    test,
-    all(hydrolysis_winit, any(target_os = "windows", target_os = "linux"))
-))]
-pub(crate) fn sync_color_scheme(scheme: &nami::Binding<ColorScheme>, resolved: ColorScheme) {
+#[doc(hidden)]
+pub fn sync_color_scheme(scheme: &nami::Binding<ColorScheme>, resolved: ColorScheme) {
     use nami::Signal as _;
     if scheme.snapshot() != resolved {
         scheme.set(resolved);
@@ -303,8 +296,8 @@ pub(crate) fn sync_color_scheme(scheme: &nami::Binding<ColorScheme>, resolved: C
 /// colours binding `installed_color_scheme` — sees the application's
 /// installed values. The application's entries are then layered back on top,
 /// so a `Theme` it installed is never replaced.
-#[cfg(hydrolysis_runtime)]
-pub(crate) fn install_theme_tokens(
+#[doc(hidden)]
+pub fn install_theme_tokens(
     env: &mut Environment,
     style: Option<&dyn crate::Style>,
     appearance: impl IntoComputed<ColorScheme>,
@@ -332,7 +325,6 @@ pub(crate) fn install_theme_tokens(
 /// This is the `None`-style arm of `install_theme_tokens`. External test
 /// harnesses (`waterui-testing`) call this; the runners go through
 /// `install_theme_tokens`.
-#[cfg(hydrolysis_runtime)]
 pub fn install_default_tokens(env: &mut Environment) {
     install_theme_tokens(env, None, ColorScheme::Light);
 }
