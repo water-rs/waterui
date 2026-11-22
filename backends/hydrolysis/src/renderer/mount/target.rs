@@ -1,6 +1,7 @@
 //! The target seam a [`Mount`](super::Mount) commits through (§A.1): what
 //! a node's layers need from the engine beyond recorded content.
 
+use std::fmt::{Debug, Formatter, Result as FmtResult};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -230,8 +231,8 @@ pub struct MaterialTerms<S, C = ()> {
     /// registering its source with the engine.
     pub content_shaders: FxHashMap<cherenkov_record::ContentShader, C>,
 }
-impl<S, C> std::fmt::Debug for MaterialTerms<S, C> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl<S, C> Debug for MaterialTerms<S, C> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         f.debug_struct("MaterialTerms")
             .field("registry", &self.registry)
             .field("shaders", &self.shaders.keys())

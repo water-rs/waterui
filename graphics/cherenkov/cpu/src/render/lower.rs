@@ -5,6 +5,8 @@ mod silhouette;
 
 use cherenkov::lowering::hidden::HiddenLayers;
 use cherenkov::lowering::{Realization, shape_outline};
+#[cfg(feature = "shaders")]
+use std::mem::{replace, take};
 use std::sync::Arc;
 
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -2444,8 +2446,8 @@ impl<'a, 'b> Lowering<'a, 'b> {
                 apron,
                 space: blend.1,
             });
-            let saved_kinds = std::mem::take(&mut s.iso_kinds);
-            let saved_spaces = std::mem::replace(&mut s.iso_spaces, vec![blend.1]);
+            let saved_kinds = take(&mut s.iso_kinds);
+            let saved_spaces = replace(&mut s.iso_spaces, vec![blend.1]);
             let saved_clip = s.clip.take();
             s.transform = transform;
             let inner_result = s.with_clip(Some(clip_shape), |s| {

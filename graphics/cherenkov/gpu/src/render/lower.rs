@@ -4,6 +4,7 @@
 use cherenkov::lowering::Realization;
 use cherenkov::lowering::hidden::HiddenLayers;
 use std::hash::{Hash, Hasher};
+use std::mem::take;
 use std::num::NonZeroU64;
 use std::ops::Range;
 use std::sync::Arc;
@@ -3179,7 +3180,7 @@ impl<'a> Lowering<'a> {
         let inst_start = self.frame.instances.len();
         let saved_capture = self.capture_isolation;
         let saved_target = self.semantic_target;
-        let saved_scratches = std::mem::take(&mut self.looked_through_scratches);
+        let saved_scratches = take(&mut self.looked_through_scratches);
         self.capture_isolation = false;
         if semantic {
             self.semantic_target = Target::Scratch(scratch);
@@ -4567,7 +4568,7 @@ impl<'a> Lowering<'a> {
         self.begin_pass(Target::Scratch(scratch), Some([0.0; 4]));
         let saved_capture = self.capture_isolation;
         let saved_target = self.semantic_target;
-        let saved_scratches = std::mem::take(&mut self.looked_through_scratches);
+        let saved_scratches = take(&mut self.looked_through_scratches);
         self.capture_isolation = false;
         self.semantic_target = Target::Scratch(scratch);
         self.space_stack.push(space);

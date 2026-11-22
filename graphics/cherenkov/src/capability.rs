@@ -7,12 +7,14 @@
 //! owned `FnOnce(&mut B::Renderer) + Send` op that travels in the commit
 //! with the layer ops, in order.
 
+#[cfg(target_arch = "wasm32")]
+use core::future::Future;
 use std::borrow::Cow;
 
-use crate::ShaderId;
 use crate::backend::Backend;
 use crate::error::ResourceError;
 use crate::image::Format;
+use crate::{ContentShaderSource, ShaderId};
 use cherenkov_record::{
     BackdropId, BackdropSampling, BackdropShaderId, ContentShaderId, GpuInstalls, LayerId,
     SurfaceId,
@@ -292,7 +294,7 @@ pub trait ContentShaders: Backend {
     ///
     /// # Errors
     /// [`ResourceError::Shader`] when the source fails validation.
-    fn validate_content_shader(source: &crate::ContentShaderSource) -> Result<(), ResourceError>;
+    fn validate_content_shader(source: &ContentShaderSource) -> Result<(), ResourceError>;
 
     /// Registers a content effect shader
     /// [`ContentShaders::validate_content_shader`] accepted, on the render
@@ -304,7 +306,7 @@ pub trait ContentShaders: Backend {
     fn add_content_shader(
         r: &mut Self::Renderer,
         id: ContentShaderId,
-        source: crate::ContentShaderSource,
+        source: ContentShaderSource,
     ) -> Result<(), ResourceError>;
 
     /// Registers a content effect shader
@@ -317,8 +319,8 @@ pub trait ContentShaders: Backend {
     fn add_content_shader(
         r: &mut Self::Renderer,
         id: ContentShaderId,
-        source: crate::ContentShaderSource,
-    ) -> impl core::future::Future<Output = Result<(), ResourceError>>;
+        source: ContentShaderSource,
+    ) -> impl Future<Output = Result<(), ResourceError>>;
 
     /// Unregisters a content effect shader no layer references any more.
     fn remove_content_shader(r: &mut Self::Renderer, id: ContentShaderId);

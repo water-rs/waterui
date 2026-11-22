@@ -43,6 +43,7 @@ use super::target::LayerTarget;
 use crate::renderer::ProducerWake;
 use crate::renderer::chrome::LiveSource;
 use crate::renderer::recording::{LoweredResources, SolidRect};
+use crate::text::TextEngine;
 
 /// The liveness token of one node's layers: parents list children by
 /// `(LayerId, Weak<LayerToken>)`, so a dropped child is told apart from a
@@ -2210,7 +2211,7 @@ fn lower_live<T: LayerTarget<E>, E: crate::text::TextEngine>(
 
 /// Rebinds mounted scope content effects when the display scale changed
 /// without a node re-flush.
-fn refresh_scope_content_effects<T: LayerTarget<E>, E: crate::text::TextEngine>(
+fn refresh_scope_content_effects<T: LayerTarget<E>, E: TextEngine>(
     cx: &mut CommitCx<'_, '_, '_, T, E>,
     scopes: &mut [ScopeLayer<E>],
 ) {

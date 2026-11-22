@@ -5,10 +5,14 @@ use arrayvec::ArrayVec;
 use half::slice::HalfFloatSliceExt;
 use rayon::prelude::*;
 use rustc_hash::FxHashMap;
+#[cfg(feature = "shaders")]
+use std::array::from_fn;
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 use std::num::NonZeroUsize;
 use std::ops::Range;
+#[cfg(feature = "shaders")]
+use std::slice::from_mut;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use cherenkov::FillRule;
@@ -1220,13 +1224,13 @@ impl ContentHost<'_> {
         let c10 = texel(x0 + 1, y0);
         let c01 = texel(x0, y0 + 1);
         let c11 = texel(x0 + 1, y0 + 1);
-        let mut c = std::array::from_fn(|k| {
+        let mut c = from_fn(|k| {
             let top = (c10[k] - c00[k]).mul_add(tx, c00[k]);
             let bot = (c11[k] - c01[k]).mul_add(tx, c01[k]);
             (bot - top).mul_add(ty, top)
         });
         if self.space == BlendSpace::SrgbEncoded {
-            from_srgb(std::slice::from_mut(&mut c));
+            from_srgb(from_mut(&mut c));
         }
         c
     }
@@ -1344,9 +1348,9 @@ fn shade_content_effect(
                 if !done[lane] {
                     continue;
                 }
-                let mut pixel = std::array::from_fn(|k| regs.get(result[k])[lane]);
+                let mut pixel = from_fn(|k| regs.get(result[k])[lane]);
                 if dst_space == BlendSpace::SrgbEncoded {
-                    to_srgb(std::slice::from_mut(&mut pixel));
+                    to_srgb(from_mut(&mut pixel));
                 }
                 out[at[lane]] = pixel;
             }

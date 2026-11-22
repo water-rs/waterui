@@ -55,7 +55,14 @@ mod render;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 
+#[cfg(all(feature = "shaders", target_arch = "wasm32"))]
+use core::future::{Future, ready};
+
 use cherenkov::{Backend, EngineError, Offscreen, OffscreenFormat};
+#[cfg(feature = "shaders")]
+use cherenkov::{ContentShaderId, ContentShaderSource, ContentShaders, ResourceError};
+#[cfg(feature = "shaders")]
+use render::shader::ContentProgram;
 
 /// CPU worker information for provenance.
 #[derive(Clone, Debug)]
@@ -288,20 +295,18 @@ impl cherenkov::BackdropShaders for Raster {
 // Content effect shaders run on the lane executor over an isolated layer
 // window (`render::shader`).
 #[cfg(feature = "shaders")]
-impl cherenkov::ContentShaders for Raster {
-    fn validate_content_shader(
-        source: &cherenkov::ContentShaderSource,
-    ) -> Result<(), cherenkov::ResourceError> {
-        render::shader::ContentProgram::compile(source).map(drop)
+impl ContentShaders for Raster {
+    fn validate_content_shader(source: &ContentShaderSource) -> Result<(), ResourceError> {
+        ContentProgram::compile(source).map(drop)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     fn add_content_shader(
         renderer: &mut Self::Renderer,
-        id: cherenkov::ContentShaderId,
-        source: cherenkov::ContentShaderSource,
-    ) -> Result<(), cherenkov::ResourceError> {
-        let program = render::shader::ContentProgram::compile(&source)?;
+        id: ContentShaderId,
+        source: ContentShaderSource,
+    ) -> Result<(), ResourceError> {
+        let program = ContentProgram::compile(&source)?;
         renderer.filters.add_content_shader(id, program);
         Ok(())
     }
@@ -309,15 +314,15 @@ impl cherenkov::ContentShaders for Raster {
     #[cfg(target_arch = "wasm32")]
     fn add_content_shader(
         renderer: &mut Self::Renderer,
-        id: cherenkov::ContentShaderId,
-        source: cherenkov::ContentShaderSource,
-    ) -> impl core::future::Future<Output = Result<(), cherenkov::ResourceError>> {
-        let result = render::shader::ContentProgram::compile(&source)
+        id: ContentShaderId,
+        source: ContentShaderSource,
+    ) -> impl Future<Output = Result<(), ResourceError>> {
+        let result = ContentProgram::compile(&source)
             .map(|program| renderer.filters.add_content_shader(id, program));
-        core::future::ready(result)
+        ready(result)
     }
 
-    fn remove_content_shader(renderer: &mut Self::Renderer, id: cherenkov::ContentShaderId) {
+    fn remove_content_shader(renderer: &mut Self::Renderer, id: ContentShaderId) {
         renderer.filters.remove_content_shader(id);
     }
 }

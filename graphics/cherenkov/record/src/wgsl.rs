@@ -2,6 +2,8 @@
 //! backend composes a producer, a shader paint or a backdrop shader with, so
 //! a shader means the same on each.
 
+use filtrate_core::space::WGSL;
+
 /// The colour prelude: the conversions a producer writes premultiplied
 /// working colour through. It is written against
 /// [`filtrate_core::space::WGSL`], which precedes it.
@@ -69,5 +71,5 @@ pub fn backdrop_module(source: &str) -> String {
 /// in when the evaluator binds `content_sample`.
 #[must_use]
 pub fn content_module(source: &str) -> String {
-    [filtrate_core::space::WGSL, CONTENT, source].join("\n")
+    [WGSL, CONTENT, source].join("\n")
 }

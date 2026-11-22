@@ -7,6 +7,7 @@
 //! [`Item::Scope`]. The finished [`Program`] waits on the node until the
 //! commit lowers it.
 
+use core::fmt::{Debug, Formatter, Result as FmtResult};
 use std::cell::RefCell;
 use std::num::NonZeroU64;
 use std::rc::Rc;
@@ -132,8 +133,8 @@ impl PartialEq for LiveClip {
     }
 }
 
-impl core::fmt::Debug for LiveClip {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl Debug for LiveClip {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         f.debug_tuple("LiveClip").field(&self.0.snapshot()).finish()
     }
 }
@@ -165,8 +166,8 @@ impl PartialEq for LiveContentEffect {
     }
 }
 
-impl core::fmt::Debug for LiveContentEffect {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl Debug for LiveContentEffect {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         f.debug_struct("LiveContentEffect")
             .field("shader", &self.shader)
             .field("effect", &self.effect.snapshot())

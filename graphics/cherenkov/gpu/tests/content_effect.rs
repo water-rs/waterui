@@ -1,5 +1,7 @@
 //! Content effect shaders on the GPU backend.
 
+use std::error::Error;
+
 use cherenkov::kurbo::{BezPath, Rect, RoundedRect};
 use cherenkov::{__engine_test as split_test, __engine_wait as wait};
 use cherenkov::{
@@ -24,7 +26,7 @@ fn assert_pixel(actual: [f32; 4], expected: [f32; 4], tolerance: f32) {
 }
 
 split_test! {
-fn invalid_content_shader_is_rejected_at_registration() -> Result<(), Box<dyn std::error::Error>> {
+fn invalid_content_shader_is_rejected_at_registration() -> Result<(), Box<dyn Error>> {
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
 
     let syntax = engine
@@ -58,7 +60,7 @@ fn invalid_content_shader_is_rejected_at_registration() -> Result<(), Box<dyn st
 
 split_test! {
 fn unclipped_or_path_clipped_content_effect_is_unsupported()
--> Result<(), Box<dyn std::error::Error>> {
+-> Result<(), Box<dyn Error>> {
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
     let shader = engine.content_shader(ContentShaderSource::wgsl(
         "fn content_effect(px: ContentPixel, params: array<vec4<f32>, 16>) -> vec4<f32> {
@@ -97,7 +99,7 @@ fn unclipped_or_path_clipped_content_effect_is_unsupported()
 
 split_test! {
 fn content_effect_displaces_isolated_content_without_refracting_backdrop()
--> Result<(), Box<dyn std::error::Error>> {
+-> Result<(), Box<dyn Error>> {
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
     let shader = engine.content_shader(
         ContentShaderSource::wgsl(
@@ -148,7 +150,7 @@ fn content_effect_displaces_isolated_content_without_refracting_backdrop()
 
 split_test! {
 fn content_effect_receives_sdf_normal_scale_and_live_uniforms()
--> Result<(), Box<dyn std::error::Error>> {
+-> Result<(), Box<dyn Error>> {
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
     let shader = engine.content_shader(
         ContentShaderSource::wgsl(
