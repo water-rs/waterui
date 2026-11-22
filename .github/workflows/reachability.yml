@@ -127,6 +127,7 @@ jobs:
             --require text \
             --require button \
             --require fixed_container \
+            --allow empty \
             --allow environment \
             --allow label \
             --allow retain \
@@ -195,6 +196,7 @@ jobs:
             --require text \
             --require button \
             --require fixed_container \
+            --allow empty \
             --allow environment \
             --allow label \
             --allow retain \
