@@ -98,23 +98,23 @@ surrounding scope installed. Installing a mode on a subtree adapts a whole strip
 of chrome at once:
 
 ```rust,no_run
-use waterui::icon::system_icon;
 use waterui::prelude::*;
+use waterui_icons_lucide as lucide;
 
 fn toolbar() -> impl View {
     hstack((
-        button(label("Search").system_icon(system_icon::search())).action(|| {}),
-        button(label("Settings").system_icon(system_icon::settings())).action(|| {}),
+        button(label("Search").icon(lucide::search())).action(|| {}),
+        button(label("Settings").icon(lucide::settings())).action(|| {}),
     ))
     // Both buttons render icon-only; both still announce their titles.
     .install(LabelDisplayMode::IconOnly)
 }
 ```
 
-`system_icon` renders SF Symbols on Apple platforms and is deliberately
-unsupported elsewhere. For portable icons pass any view to `Label::icon` — the
-`waterui-icons-lucide`, `waterui-icons-material-icon`, and
-`waterui-icons-fontawesome7` packs are built for this.
+Pass any icon view to `Label::icon` — `waterui-icons-lucide`,
+`waterui-icons-material-icon`, and `waterui-icons-fontawesome7` provide
+portable packs across all backends, and on Apple platforms `waterui_apple::SfSymbol`
+projects natively as SF Symbols.
 
 When the visible label is an arbitrary composition rather than text, `Label::new`
 keeps the spoken text separate from what is drawn:
@@ -252,7 +252,7 @@ formatter styles the inline value only — the semantic label is untouched.
 
 ```rust,no_run
 use core::num::NonZeroUsize;
-use text_field::KeyboardType;
+use input::KeyboardType;
 use waterui::prelude::*;
 
 fn email(value: &Binding<Str>) -> impl View {
@@ -286,10 +286,11 @@ those. `CommandExt` lets any label-like value start a command directly.
 
 ```rust,no_run
 use waterui::prelude::*;
+use waterui_icons_lucide as lucide;
 
 fn actions(log: &Binding<Str>) -> impl View {
     Menu::new(
-        label("Actions").system_icon(waterui::icon::system_icon::plus()),
+        label("Actions").icon(lucide::plus()),
         (
             "Refresh"
                 .action(|State(log): State<Binding<Str>>| log.set(Str::from("refreshed")))
@@ -379,7 +380,7 @@ fn note(value: &Binding<Str>) -> impl View {
 - `ControlSize` — `ExtraSmall`, `Small`, `Medium`, `Large`, `ExtraLarge`, shared by buttons and sliders;
   scales height, padding, icon size, and corner shape together.
 - `ToggleStyle` — `Automatic`, `Switch`, `Checkbox`.
-- `text_field::KeyboardType` — `Text`, `Email`, `URL`, `Number`, `PhoneNumber`.
+- `input::KeyboardType` — `Text`, `Email`, `URL`, `Number`, `PhoneNumber`.
 
 ### Backend-facing configuration
 
@@ -395,7 +396,5 @@ names them; theme hooks that restyle a control receive one and hand back a view.
   `Environment`, extractors, and the handler machinery behind `action`.
 - [`waterui-text`](https://crates.io/crates/waterui-text) — `Text`, `StyledStr`,
   and the i18n-aware pipeline every label flows through.
-- [`waterui-icon`](https://crates.io/crates/waterui-icon) — `SystemIcon` and the
-  `system_icon` catalog used by labels.
 - [`waterui-form`](https://crates.io/crates/waterui-form) — form building and
   validation layered on these controls, plus `Picker` and friends.

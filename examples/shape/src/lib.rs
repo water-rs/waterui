@@ -11,7 +11,7 @@
 //! - Use `.frame()` or container constraints to size them
 
 use core::f32::consts::{FRAC_PI_2, PI};
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::metadata::secure::ColorSpace;
 use waterui::prelude::*;
 use waterui::preview;
@@ -225,7 +225,7 @@ fn hdr_shapes() -> impl View {
 }
 
 /// Demo: HDR shapes
-fn hdr_shape_demo(show_hdr: &Binding<bool>) -> impl View {
+fn hdr_shape_demo(show_hdr: &Binding<bool>) -> impl View + use<> {
     let show_hdr = show_hdr.clone();
     let hdr_opacity = show_hdr.select(1.0, 0.0);
     let sdr_opacity = show_hdr.select(0.0, 1.0);
@@ -432,6 +432,6 @@ pub fn demo() -> impl View {
 }
 
 /// Builds the example app, showing the shape demo.
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     App::new(demo, env)
 }

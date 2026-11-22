@@ -25,6 +25,7 @@ impl LazyState {
 }
 
 #[derive(Debug, Default)]
+#[cfg(feature = "table")]
 pub struct LazyTableSlot {
     pub(crate) column_widths: Vec<f64>,
     pub max_rows: usize,
@@ -38,6 +39,7 @@ pub struct VisibleIndexWindow {
 }
 
 #[derive(Debug, Clone, Copy)]
+#[cfg(feature = "table")]
 pub struct VisibleColumnWindow {
     pub(crate) start: usize,
     pub(crate) end: usize,
@@ -96,6 +98,7 @@ impl LazyStackAxisConfig {
     }
 }
 
+#[cfg(feature = "table")]
 impl LazyTableSlot {
     pub(crate) fn prepare_columns(&mut self, len: usize, metrics: crate::theme::TableMetrics) {
         self.column_widths.resize(len, metrics.min_column_width);
@@ -268,11 +271,13 @@ impl VirtualExtentIndex {
     }
 
     #[must_use]
+    #[cfg(any(test, feature = "list"))]
     pub(crate) fn measured(&self, index: usize) -> Option<f64> {
         self.measured[index]
     }
 
     #[must_use]
+    #[cfg(any(test, feature = "list"))]
     pub(crate) fn offset_of(&self, index: usize) -> f64 {
         assert!(
             index <= self.measured.len(),
@@ -357,6 +362,7 @@ impl VirtualExtentIndex {
     }
 }
 
+#[cfg(feature = "table")]
 pub fn resolve_visible_column_window(
     widths: &[f64],
     start_offset: f64,
@@ -395,6 +401,7 @@ pub fn resolve_visible_column_window(
     }
 }
 
+#[cfg(feature = "table")]
 pub fn resolve_table_visible_rows(
     offset_y: f64,
     viewport_height: f64,
@@ -413,6 +420,7 @@ pub fn resolve_table_visible_rows(
     }
 }
 
+#[cfg(feature = "table")]
 pub fn table_metrics_from_slot(
     slot: &LazyTableSlot,
     metrics: crate::theme::TableMetrics,

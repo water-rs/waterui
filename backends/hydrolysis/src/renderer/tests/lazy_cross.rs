@@ -1,11 +1,10 @@
-//! Cross-axis contract for water-rs/waterui#1232: a `VStack::for_each`
-//! measured through the view path (`measure_view_dimensions_with_proposal` →
-//! `Native<LazyContainer>::dimensions`) must answer what its item answers
-//! under the same proposal — the retained `LazyStackNode` already measures
-//! the sample item under `(cross, None)`, so the two paths must agree.
+//! Cross-axis contract for water-rs/waterui#1232: a realized
+//! `VStack::for_each` must answer what its item answers under the same
+//! proposal — the `LazyStackNode` measures its first item under
+//! `(cross, None)`.
 
 use super::*;
-use crate::renderer::normalize_layout_view;
+
 use waterui::prelude::*;
 use waterui_core::id::SelfId;
 
@@ -56,10 +55,9 @@ fn row_long_wrap() -> AnyView {
     clippy::float_cmp,
     reason = "the comparison is exact by design: the lazy stack's cross answer and the item's answer come from the same measurement of the same item, so they must be bit-identical"
 )]
-fn lazy_view_path_answers_what_its_item_answers() {
+fn a_lazy_stack_answers_what_its_item_answers() {
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
 
     let shapes: [(&str, RowFactory); 7] = [
         ("one-line", row_one_line),
@@ -74,25 +72,17 @@ fn lazy_view_path_answers_what_its_item_answers() {
     let mut mismatches = Vec::new();
     for (name, make_row) in shapes {
         let proposal = ProposalSize::new(Some(308.0), None);
-        // Each measurement runs in a fresh frame: `view_dimensions` entries
-        // are keyed by the `stable_ptr` of views dropped after the previous
-        // shape, and the cache contract requires `begin_frame` before the
-        // next frame's measurements (frame.rs, window.rs).
-        let lazy = normalize_layout_view(
-            AnyView::new(VStack::for_each(
-                (0..40).map(SelfId::new).collect::<Vec<_>>(),
-                move |_| make_row(),
-            )),
-            &env,
-        );
-        state.measurement.begin_frame();
-        let lazy_answer =
-            measure_view_dimensions_with_proposal(&lazy, proposal, &mut state, &env, &theme).size;
-        let row_view = normalize_layout_view(make_row(), &env);
-        state.measurement.begin_frame();
-        let item_answer =
-            measure_view_dimensions_with_proposal(&row_view, proposal, &mut state, &env, &theme)
-                .size;
+        let lazy = AnyView::new(VStack::for_each(
+            (0..40).map(SelfId::new).collect::<Vec<_>>(),
+            move |_| make_row(),
+        ));
+        let lazy_answer = Realized::with_theme(lazy, &env, &theme)
+            .measure(proposal)
+            .size;
+        let row_view = make_row();
+        let item_answer = Realized::with_theme(row_view, &env, &theme)
+            .measure(proposal)
+            .size;
         if lazy_answer.width != item_answer.width {
             mismatches.push(format!(
                 "{name}: lazy {lazy_answer:?} vs item {item_answer:?}"
@@ -106,7 +96,7 @@ fn lazy_view_path_answers_what_its_item_answers() {
     );
 }
 
-/// The issue's shell through the same view path: a `scroll` wrapping the
+/// The issue's shell: a `scroll` wrapping the
 /// lazy stack must report the offered cross extent — the content's intrinsic
 /// is what the viewport clips, not what the scroll is.
 #[test]
@@ -117,22 +107,13 @@ fn lazy_view_path_answers_what_its_item_answers() {
 fn scroll_shell_answers_its_proposal() {
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
-    let shell = normalize_layout_view(
-        AnyView::new(scroll(vstack((VStack::for_each(
-            (0..40).map(SelfId::new).collect::<Vec<_>>(),
-            move |_| row_long_wrap(),
-        ),)))),
-        &env,
-    );
-    let answer = measure_view_dimensions_with_proposal(
-        &shell,
-        ProposalSize::new(Some(308.0), None),
-        &mut state,
-        &env,
-        &theme,
-    )
-    .size;
+    let shell = AnyView::new(scroll(vstack((VStack::for_each(
+        (0..40).map(SelfId::new).collect::<Vec<_>>(),
+        move |_| row_long_wrap(),
+    ),))));
+    let answer = Realized::with_theme(shell, &env, &theme)
+        .measure(ProposalSize::new(Some(308.0), None))
+        .size;
     assert!(
         answer.width == 308.0,
         "scroll wrapping a lazy stack answered {answer:?} under (308, None): left {:?}, right {:?}",

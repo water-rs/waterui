@@ -8,7 +8,7 @@
 //! compiled, linted, and tested along with the rest of the workspace. A devtool
 //! that the compiler cannot see is a devtool that rots.
 
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::prelude::*;
 
 pub mod connection;
@@ -28,26 +28,24 @@ pub fn main() -> impl View {
     let view = ui::inspector(model.clone(), sender);
 
     match connection::Target::from_env() {
-        Ok(target) => view
-            .task({
-                let model = model;
-                async move {
-                    connection::run(model, target, receiver).await;
-                }
-            })
-            .anyview(),
+        Ok(target) => OneOf2::A(view.task({
+            let model = model;
+            async move {
+                connection::run(model, target, receiver).await;
+            }
+        })),
         Err(error) => {
             model
                 .connection
                 .set(model::Connection::Failed(Str::from(error)));
-            view.anyview()
+            OneOf2::B(view)
         }
     }
 }
 
 /// Application entry point.
 #[must_use]
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     App::new(main, env)
 }
 

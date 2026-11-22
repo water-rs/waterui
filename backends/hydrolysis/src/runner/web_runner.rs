@@ -22,18 +22,21 @@ use nami::Signal;
 use serde::Deserialize;
 use wasm_bindgen::{JsCast, closure::Closure};
 use wasm_bindgen_futures::JsFuture;
-use waterui::app::{App, AppParts};
-use waterui::window::{Window, WindowState};
+use waterui::app::{App, AppMenuBar, AppParts, Windows};
+use waterui::window::WindowState;
 use waterui_core::{Environment, contract_violation};
 use web_sys::Response;
 
 use crate::text::fonts::WebFonts;
 
 use crate::platform::{BrowserWindow, PlatformWindow};
-use crate::renderer::{
-    FontFamilyResolution, HydrolysisRenderer, HydrolysisTextContextMenuMode, MenuShortcutRegistry,
-};
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
+use crate::renderer::HydrolysisTextContextMenuMode;
+#[cfg(feature = "menu")]
+use crate::renderer::MenuShortcutRegistry;
+use crate::renderer::{FontFamilyResolution, HydrolysisRenderer};
 use crate::runner::web_accessibility::WebAccessibilityBridge;
+use crate::runner::window::{RootWindow, RootWindows};
 use crate::runner::{
     RenderDiagnosticsConfig, RuntimeWindow, WindowFrame, advance_runtime, handle_input_events,
     render_window,
@@ -442,7 +445,7 @@ impl BrowserRunnerHandle {
     clippy::too_many_lines,
     reason = "the runner wires every browser subsystem once at startup; the length is the enumeration, not logic"
 )]
-pub fn run(app: App, style: impl crate::Style) {
+pub fn run<W: Windows, M: AppMenuBar>(app: App<W, M>, style: impl crate::Style) {
     wasm_bindgen_futures::spawn_local(async move {
         let schedule_frame_ref: ScheduleFrameSlot = Rc::new(RefCell::new(None));
         let browser_schedule = {
@@ -496,13 +499,27 @@ pub fn run(app: App, style: impl crate::Style) {
         // is never started.
         let AppParts {
             windows,
+            #[cfg(feature = "menu")]
             menu_bar,
+            #[cfg(not(feature = "menu"))]
+                menu_bar: _,
             env,
             last_window: _,
             termination: _,
         } = app.into_parts();
+        let RootWindows {
+            initial: windows,
+            channels,
+        } = RootWindows::<crate::text::ParleyEngine>::collect(windows);
+        let unsupported_opener: Rc<dyn Fn(RootWindow<crate::text::ParleyEngine>)> = Rc::new(|_| {
+            contract_violation!(
+                "hydrolysis web runner: secondary windows are unsupported — a browser \
+                 page is the application's only window; the window is not shown"
+            );
+        });
+        RootWindows::connect_channels(channels, &unsupported_opener);
         let window_count = windows.len();
-        let Ok([window]) = <[Window; 1]>::try_from(windows) else {
+        let Ok([window]) = <[RootWindow<crate::text::ParleyEngine>; 1]>::try_from(windows) else {
             let message = format!(
                 "hydrolysis web runner requires exactly one window, got {window_count}: a browser \
                  page is the application's only window and has no windowless state"
@@ -514,15 +531,26 @@ pub fn run(app: App, style: impl crate::Style) {
 
         let mut env = env.extending(waterui_graphics::backend::SceneViewMergeToParent);
         let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
-        super::install_native_component_hooks(&mut env);
+        #[cfg(any(test, hydrolysis_platform_services))]
+        super::install_platform_services(&mut env);
         // Every runner seeds the chord table so mounted menus resolve
         // shortcuts through the same path (water-rs/hydrolysis#247).
+        let _ = env.get_or_insert_with::<crate::renderer::WindowIdentities, _>(
+            crate::renderer::WindowIdentities::default,
+        );
+        #[cfg(feature = "menu")]
         let _ = env.get_or_insert_with::<MenuShortcutRegistry<crate::text::ParleyEngine>, _>(
             MenuShortcutRegistry::default,
         );
         // A browser page cannot own the browser's menu bar, so the app menus
         // contribute their chords only — nothing renders.
-        super::menu_bar::register_menu_bar::<crate::text::ParleyEngine>(&menu_bar, &env);
+        #[cfg(feature = "menu")]
+        if M::HAS_DECLARED
+            && let Some(menu_bar) = menu_bar.declared()
+        {
+            super::menu_bar::register_menu_bar::<crate::text::ParleyEngine>(menu_bar, &env);
+        }
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         env.insert(HydrolysisTextContextMenuMode::Overlay);
         // The page's `prefers-color-scheme` media query is the host's
         // appearance: `matches` seeds the scheme so the first frame already
@@ -575,27 +603,17 @@ pub fn run(app: App, style: impl crate::Style) {
         // backgrounds reach under the browser and system chrome around it.
         env.insert(crate::platform::WindowSafeArea(platform.safe_area()));
         fonts.collection().clone().install(&mut env);
-        // The capture service mounts its subtree under a snapshot of the
-        // assembled environment — the theme tokens, hooks and font
-        // collection a window's subtree resolves — so it must be installed
-        // last (water-rs/waterui#2703).
-        env.insert(waterui_core::ViewRenderer::new(
-            crate::view_renderer::HydrolysisViewRenderer::new(
-                Rc::clone(&theme),
-                env.clone(),
-                FontFamilyResolution::Lenient,
-            ),
-        ));
         let mut renderer = HydrolysisRenderer::with_engine(
             theme,
             ParleyEngine::from_collection(fonts.collection(), FontFamilyResolution::Lenient),
         );
         renderer.set_window_id(
-            env.get::<MenuShortcutRegistry<crate::text::ParleyEngine>>()
-                .expect("the web runner seeds MenuShortcutRegistry")
+            env.get::<crate::renderer::WindowIdentities>()
+                .expect("the web runner seeds WindowIdentities")
                 .mint_window_id(),
         );
         renderer.set_window_closable(window.closable);
+        super::install_core_window_openers(&mut renderer, unsupported_opener);
         let runtime =
             RuntimeWindow::new_painted(window, platform, renderer, render_diagnostics_config, &env);
         let accessibility_actions = Rc::new(RefCell::new(VecDeque::new()));

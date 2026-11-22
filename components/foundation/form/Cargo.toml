@@ -12,20 +12,21 @@ categories = ["gui"]
 
 
 [dependencies]
-jiff.workspace = true
+jiff = { workspace = true, optional = true }
 # `calendar.rs` renders month, year and weekday names through `format::date`.
-waterui-locale = { workspace = true, features = ["datetime"] }
+waterui-locale = { workspace = true, optional = true }
 waterui-core.workspace = true
-waterui-layout.workspace = true
+waterui-interaction = { workspace = true, optional = true }
+waterui-layout = { workspace = true, optional = true }
 nami.workspace = true
 waterui-controls.workspace = true
-waterui-text.workspace = true
-waterui-url.workspace = true
-waterui-graphics = { workspace = true, default-features = false }
-waterui-shape.workspace = true
-waterui-macros.workspace = true
-tracing.workspace = true
-zeroize = { version = "1.9.1", default-features = false }
+waterui-text = { workspace = true, optional = true }
+waterui-url = { workspace = true, optional = true }
+waterui-graphics = { workspace = true, default-features = false, optional = true }
+waterui-shape = { workspace = true, optional = true }
+waterui-macros = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
+zeroize = { version = "1.9.1", default-features = false, optional = true }
 bcrypt = { version = "0.19.3", optional = true }
 # `Regex` is only ever matched against form text, so the Unicode tables beyond
 # the perl classes (`\w`, `\d`, `\s`) that character classes need are dead
@@ -44,15 +45,28 @@ getrandom = { version = "0.4", default-features = false, features = ["wasm_js"] 
 waterkit-dialog = { workspace = true, optional = true }
 
 [features]
-default = ["std"]
-std = ["dep:waterkit-dialog"]
+default = ["std", "all"]
+all = ["calendar", "color-picker", "date-picker", "file-picker", "multi-date-picker", "picker", "secure-field", "slider", "stepper", "text-field", "toggle", "validation"]
+calendar = ["dep:jiff", "dep:waterui-interaction", "dep:waterui-layout", "dep:waterui-graphics", "dep:waterui-shape", "dep:waterui-macros", "dep:waterui-text", "dep:waterui-locale", "waterui-locale/datetime"]
+color-picker = ["dep:waterui-graphics"]
+date-picker = ["dep:jiff"]
+file-picker = ["std", "dep:waterkit-dialog", "dep:waterui-url", "dep:tracing"]
+multi-date-picker = ["calendar"]
+picker = ["dep:waterui-locale", "dep:waterui-text"]
+secure-field = ["dep:zeroize"]
+slider = ["waterui-controls/slider"]
+stepper = ["waterui-controls/stepper"]
+text-field = ["waterui-controls/text-field"]
+toggle = ["waterui-controls/toggle"]
+validation = ["text-field", "dep:waterui-layout", "dep:waterui-text"]
+std = []
 # `SecureString::hash`, which derives a bcrypt hash from the field's contents.
 # Off by default: a form that only collects a password and hands it to a server
 # never hashes it locally, and bcrypt is a cost nobody should pay by accident.
-password-hash = ["dep:bcrypt"]
+password-hash = ["secure-field", "dep:bcrypt"]
 # The `Regex` validators. Off by default so a form validated by `Required`,
 # ranges, or its own closures does not link a regex engine.
-regex-validation = ["dep:regex"]
+regex-validation = ["validation", "dep:regex"]
 
 [dev-dependencies]
 waterui = { path = "../../.." }

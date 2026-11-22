@@ -1,7 +1,7 @@
 //! Native application startup. GPU setup completes on the main executor
 //! before services, application declarations, and windows are realized.
 
-use waterui::app::App;
+use waterui::app::{App, AppMenuBar, Windows};
 use waterui_backend_core::Environment;
 
 /// Runs `app` on `env`, which the caller's `configure_environment!` already
@@ -16,13 +16,18 @@ use waterui_backend_core::Environment;
 /// is lent to native services for the rest of the process, so the
 /// caller's frame must live that long — this function does not return, which
 /// is what guarantees it.
-pub unsafe fn run(
-    app: impl FnOnce(Environment) -> App + 'static,
+pub unsafe fn run<W: Windows, M: AppMenuBar>(
+    app: impl FnOnce(Environment) -> App<W, M> + 'static,
     env: &mut Environment,
     accessory: bool,
 ) -> ! {
-    let inspector = crate::startup::initialize();
-    waterui::inspector::install(env, inspector);
+    #[cfg(feature = "inspector")]
+    {
+        let inspector = crate::startup::initialize();
+        waterui::inspector::install(env, inspector);
+    }
+    #[cfg(not(feature = "inspector"))]
+    crate::startup::initialize();
     waterui::text::install_system_font_collection(env);
     let mut fonts = crate::fonts::FontRegistrations::default();
     crate::resources::install_application(env, &mut fonts);
@@ -45,7 +50,7 @@ mod imp {
     use cocoa_ui::appkit::{
         ActivationPolicy, Application, ApplicationHandlers, ColorSchemeObservation, TerminateReply,
     };
-    use waterui::app::App;
+    use waterui::app::{App, AppMenuBar, Windows};
     use waterui_backend_core::Environment;
 
     use crate::termination::Session;
@@ -54,8 +59,8 @@ mod imp {
     /// What GPU preparation finishes the launch with — everything alive at
     /// launch-handler time that must live for the rest of the process, plus
     /// the user's `app` and the environment it runs under.
-    struct Launch {
-        app: Option<Box<dyn FnOnce(Environment) -> App>>,
+    struct Launch<F> {
+        app: Option<F>,
         env: *mut Environment,
         _theme: Rc<ThemeSignals>,
         _appearance: ColorSchemeObservation,
@@ -67,35 +72,36 @@ mod imp {
 
     /// GPU preparation has installed native services; `app(env)` now declares
     /// its windows under the native window manager.
-    unsafe extern "C" fn prepared(context: *mut c_void) {
+    unsafe extern "C" fn prepared<
+        F: FnOnce(Environment) -> App<W, M>,
+        W: Windows,
+        M: AppMenuBar,
+    >(
+        context: *mut c_void,
+    ) {
         let mtm = MainThreadMarker::new().expect("GPU completion runs on the main thread");
         // SAFETY: `context` is the `Launch` box transferred by GPU completion,
         // which calls this function exactly once.
-        let mut launch = unsafe { Box::from_raw(context.cast::<Launch>()) };
+        let mut launch = unsafe { Box::from_raw(context.cast::<Launch<F>>()) };
         let app = launch
             .app
             .take()
             .expect("GPU completion must run exactly once");
         // SAFETY: `run` lent `env` for the process and never returned.
         let env = unsafe { &mut *launch.env };
-        crate::windows::install_manager(env);
         let parts = app(env.clone()).into_parts();
         // Content renders under the environment `app` returned: its own
-        // installs (`install_chromium`, `.state(..)` chains) landed as
-        // overlays on the clone it was handed, which the host env cannot
-        // see — `insert` never propagates between clones.
+        // installs (`.state(..)` chains) landed as overlays on the clone it
+        // was handed, which the host env cannot see — `insert` never
+        // propagates between clones.
         let mut app_env = parts.env;
-        // The web view controller fills its slot late and only when the
-        // `webview` port is enabled — an application bundling its own
-        // engine installed it during `app(env)`.
-        #[cfg(feature = "webview")]
-        crate::components::webview::install_service(&mut app_env);
         // The machine installs the `Quit` service into `app_env` before the
         // menus and windows realize under it, so a `|quit: Quit|` action
         // finds it. A declared `MenuItem::Quit` does not use the service: it
         // renders as the standard Quit item, whose `terminate:` reaches the
         // machine through `applicationShouldTerminate:`.
         let session = Session::start(parts.termination, &mut app_env, parts.last_window, mtm);
+        crate::windows::install_root_environment(&mut app_env);
         assert!(
             launch.termination.set(session).is_ok(),
             "`prepared` consumes the one-shot `Launch`, so the termination slot is still empty"
@@ -107,18 +113,24 @@ mod imp {
         // `installMenuBar`: the declared menus resolve and rebuild under the
         // environment `app` returned, exactly as windows do. The guard lives
         // for the process.
-        core::mem::forget(crate::menus::install_declared(
-            mtm,
-            &Application::shared(mtm),
-            &parts.menu_bar,
-            &app_env,
-        ));
-        if parts.windows.is_empty() {
+        #[cfg(waterui_feature = "menu")]
+        if M::HAS_DECLARED
+            && let Some(menu_bar) = parts.menu_bar.declared()
+        {
+            core::mem::forget(crate::menus::install_declared(
+                mtm,
+                &Application::shared(mtm),
+                menu_bar,
+                &app_env,
+            ));
+        }
+        let initial = crate::windows::connect_windows(parts.windows, &app_env);
+        if initial.is_empty() {
             // A zero-window application acts on its policy at launch.
             session.no_window_left();
         } else {
-            for window in parts.windows {
-                let host = crate::windows::realize(window, &app_env, mtm);
+            for window in initial {
+                let host = crate::windows::realize_root(window, &app_env, mtm);
                 crate::windows::track(host);
             }
         }
@@ -127,8 +139,8 @@ mod imp {
         core::mem::forget(launch);
     }
 
-    pub fn launch(
-        app: impl FnOnce(Environment) -> App + 'static,
+    pub fn launch<W: Windows, M: AppMenuBar, F: FnOnce(Environment) -> App<W, M> + 'static>(
+        app: F,
         env: &mut Environment,
         accessory: bool,
     ) -> ! {
@@ -141,6 +153,7 @@ mod imp {
         } else {
             ActivationPolicy::Regular
         });
+        #[cfg(waterui_feature = "menu")]
         crate::menus::install_default(mtm, &application);
 
         let theme = Rc::new(crate::theme::install(env, application.color_scheme()));
@@ -152,7 +165,7 @@ mod imp {
 
         let termination = Rc::new(OnceCell::new());
         let launch = Box::new(Launch {
-            app: Some(Box::new(app)),
+            app: Some(app),
             env: core::ptr::from_mut(env),
             _theme: theme,
             _appearance: appearance,
@@ -162,17 +175,27 @@ mod imp {
 
         let handlers = ApplicationHandlers::new()
             .did_finish_launching(move |_| {
+                #[cfg(feature = "gpu_surface")]
                 let env_ptr = launch.env;
                 // SAFETY: `launch` is consumed by `prepared` exactly once —
                 // this handler runs once — and `env` is `run`'s borrow, lent
                 // for the process.
                 // Install native services only after the GPU context is ready.
+                let finish = move || {
+                    // SAFETY: `launch` is consumed by `prepared` exactly once —
+                    // this handler runs once — and `env` is `run`'s borrow, lent
+                    // for the process.
+                    unsafe {
+                        prepared::<F, W, M>(Box::into_raw(launch).cast::<c_void>());
+                    }
+                };
+                #[cfg(feature = "gpu_surface")]
+                // SAFETY: `env_ptr` stays live until `finish` runs on the main thread.
                 unsafe {
-                    crate::gpu_runtime::prepare(env_ptr, move || {
-                        crate::embedding::install_services(&mut *env_ptr);
-                        prepared(Box::into_raw(launch).cast::<c_void>());
-                    });
+                    crate::gpu_runtime::prepare(env_ptr, finish);
                 }
+                #[cfg(not(feature = "gpu_surface"))]
+                finish();
             })
             .should_terminate({
                 let termination = Rc::clone(&termination);
@@ -207,7 +230,7 @@ mod imp {
 
     use cocoa_ui::MainThreadMarker;
     use cocoa_ui::uikit::{self, ApplicationHandlers};
-    use waterui::app::App;
+    use waterui::app::{App, AppMenuBar, Windows};
     use waterui::graphics::Color;
     use waterui::theme::color::Background;
     use waterui_backend_core::Environment;
@@ -217,10 +240,9 @@ mod imp {
     /// The same hand-off as macOS's `Launch`; the appearance side of the
     /// theme arrives per scene instead, through each controller's trait
     /// observation.
-    struct Launch {
-        app: Option<Box<dyn FnOnce(Environment) -> App>>,
+    struct Launch<F> {
+        app: Option<F>,
         env: *mut Environment,
-        declared: crate::menus::Declared,
         scenes: crate::scene_registry::Registration<crate::windows::Scenes>,
         _theme: Rc<ThemeSignals>,
         _locale: Box<dyn Any>,
@@ -228,54 +250,52 @@ mod imp {
 
     /// GPU completion: `app(env)` declares its windows, and each fills
     /// the scene already waiting for it — or queues for the next connection.
-    unsafe extern "C" fn prepared(context: *mut c_void) {
+    unsafe extern "C" fn prepared<
+        F: FnOnce(Environment) -> App<W, M>,
+        W: Windows,
+        M: AppMenuBar,
+    >(
+        context: *mut c_void,
+    ) {
         let mtm = MainThreadMarker::new().expect("GPU completion runs on the main thread");
         // SAFETY: `context` is the `Launch` box transferred by GPU completion,
         // which calls this function exactly once.
-        let mut launch = unsafe { Box::from_raw(context.cast::<Launch>()) };
+        let mut launch = unsafe { Box::from_raw(context.cast::<Launch<F>>()) };
         let app = launch
             .app
             .take()
             .expect("GPU completion must run exactly once");
         // SAFETY: `run` lent `env` for the process and never returned.
         let env = unsafe { &mut *launch.env };
-        crate::windows::install_manager(env);
         let parts = app(env.clone()).into_parts();
-        if parts.windows.is_empty() {
-            waterui::contract_violation!(
-                "an iOS application must declare at least one window; the app shows no window"
-            );
-        }
         // iOS ends the process without notice, so `on_quit_request` and
         // `on_terminate` are never called: the machine is never started and
         // no `Quit` is installed, so extracting `Quit` fails here.
         let _ = parts.termination;
         // Same hand-off as macOS: content renders under the env `app`
         // returned — its installs are invisible to the host env.
-        // `mut` only serves the `webview` install below; without the port
-        // nothing borrows `app_env` mutably.
-        #[allow(unused_mut)]
-        let mut app_env = parts.env;
-        // The web view controller fills its slot late and only when the
-        // `webview` port is enabled — an application bundling its own
-        // engine installed it during `app(env)`.
-        #[cfg(feature = "webview")]
-        crate::components::webview::install_service(&mut app_env);
-        // `installMenuBar`: `declared` feeds the `build_menus` handler the
-        // delegate registered at launch; the watch rebuilds on every change.
-        // The guard lives for the process.
-        core::mem::forget(crate::menus::install_declared(
-            mtm,
-            &parts.menu_bar,
-            &app_env,
-            &launch.declared,
-        ));
-        crate::windows::declare(&launch.scenes.state, parts.windows, &app_env, 0, mtm);
+        let app_env = parts.env;
+        let initial = crate::windows::connect_windows(parts.windows, &app_env);
+        if initial.is_empty() {
+            waterui::contract_violation!(
+                "an iOS application must declare at least one window; the app shows no window"
+            );
+        }
+        // `installMenuBar`: declared menus install the main menu system's
+        // build handler once `app(env)` declares them; apps without a menu bar
+        // leave the system menu alone and never reach menu icon rendering.
+        #[cfg(waterui_feature = "menu")]
+        if M::HAS_DECLARED
+            && let Some(menu_bar) = parts.menu_bar.declared()
+        {
+            core::mem::forget(crate::menus::install_declared(mtm, menu_bar, &app_env));
+        }
+        crate::windows::declare(&launch.scenes.state, initial, &app_env, 0, mtm);
         core::mem::forget(launch);
     }
 
-    pub fn launch(
-        app: impl FnOnce(Environment) -> App + 'static,
+    pub fn launch<W: Windows, M: AppMenuBar, F: FnOnce(Environment) -> App<W, M> + 'static>(
+        app: F,
         env: &mut Environment,
         _accessory: bool,
     ) -> ! {
@@ -289,19 +309,14 @@ mod imp {
         let background = Color::new(Background).resolve(env);
         let locale = crate::locale::install(env, mtm);
 
-        // Filled by `prepared`: `build_menus` can fire before `app(env)`
-        // runs, so the declared menus sit behind this slot.
-        let declared = crate::menus::declared();
-        let build_menus = crate::menus::build_handler(Rc::clone(&declared));
         let scenes = env
             .get::<crate::scene_registry::SceneRegistry<crate::windows::Scenes>>()
             .expect("application owns scene routing")
             .register(crate::windows::Scenes::default());
         let scene_state = scenes.state.clone();
         let launch = Box::new(Launch {
-            app: Some(Box::new(app)),
+            app: Some(app),
             env: core::ptr::from_mut(env),
-            declared,
             scenes,
             _theme: Rc::clone(&theme),
             _locale: Box::new(locale),
@@ -316,19 +331,27 @@ mod imp {
         })
         // Releases the scene's host, leaf and keep-alive, as the embedding
         // path's `waterui_apple_scene_disconnect` does.
-        .scene_did_disconnect(move |id| disconnected.disconnect(id))
-        .build_menus(build_menus)
-        .did_finish_launching(move |_| {
+        .scene_did_disconnect(move |id| disconnected.disconnect(id));
+        let handlers = handlers.did_finish_launching(move |_| {
+            #[cfg(feature = "gpu_surface")]
             let env_ptr = launch.env;
             // SAFETY: `launch` is consumed by `prepared` exactly once, and
             // `env` is `run`'s borrow, lent for the process.
             // Install native services only after the GPU context is ready.
+            let finish = move || {
+                // SAFETY: `launch` is consumed by `prepared` exactly once, and
+                // `env` is `run`'s borrow, lent for the process.
+                unsafe {
+                    prepared::<F, W, M>(Box::into_raw(launch).cast::<c_void>());
+                }
+            };
+            #[cfg(feature = "gpu_surface")]
+            // SAFETY: `env_ptr` stays live until `finish` runs on the main thread.
             unsafe {
-                crate::gpu_runtime::prepare(env_ptr, move || {
-                    crate::embedding::install_services(&mut *env_ptr);
-                    prepared(Box::into_raw(launch).cast::<c_void>());
-                });
+                crate::gpu_runtime::prepare(env_ptr, finish);
             }
+            #[cfg(not(feature = "gpu_surface"))]
+            finish();
         });
         uikit::run(mtm, handlers)
     }

@@ -2,10 +2,10 @@
 //!
 //! An embedded surface is a rectangle of the window that draws its own
 //! interactive content and therefore owns the input landing on it: a browser
-//! engine, any [`GpuContentView`](waterui_graphics::GpuContentView) or
+//! engine, any [`GpuView`](waterui_graphics::GpuView) or
 //! [`ExternalFrameView`](waterui_graphics::ExternalFrameView) whose view asks
 //! for input with
-//! [`wants_input_events`](waterui_graphics::GpuContentView::wants_input_events),
+//! [`wants_input_events`](waterui_graphics::GpuView::wants_input_events),
 //! or any [`SceneView`](waterui_graphics::backend::SceneView) whose content asks the same
 //! through
 //! [`SceneContent::wants_input_events`](waterui_graphics::backend::SceneContent::wants_input_events).
@@ -31,6 +31,38 @@ use waterui_graphics::backend::SceneContent;
 use waterui_graphics::input::{
     Code, Key, NamedKey, ScrollPhase, ScrollUnit, SurfaceInputEvent, SurfacePointerButton,
 };
+
+#[cfg_attr(
+    target_arch = "wasm32",
+    expect(
+        clippy::future_not_send,
+        reason = "wasm32 is single-threaded; the browser Clipboard handle is a JS object and `!Send` by design"
+    )
+)]
+pub async fn read_clipboard_text_async() -> Option<String> {
+    let clipboard = match Clipboard::new() {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::warn!(
+                target: "waterui::hydrolysis::input",
+                error = %error,
+                "failed to initialize clipboard for paste"
+            );
+            return None;
+        }
+    };
+    match clipboard.text().await {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::warn!(
+                target: "waterui::hydrolysis::input",
+                error = %error,
+                "failed to read clipboard text"
+            );
+            None
+        }
+    }
+}
 
 /// Where a surface paste reads the clipboard's text from. The renderer reads
 /// the system clipboard through [`read_clipboard_text_async`], the one reader
@@ -170,7 +202,7 @@ pub struct BubbledKeySink {
 }
 
 /// Something that consumes the neutral [`SurfaceInputEvent`] vocabulary: the
-/// runtime of an embedded [`GpuContentView`](waterui_graphics::GpuContentView),
+/// runtime of an embedded [`GpuView`](waterui_graphics::GpuView),
 /// or the content of a self-drawn [`SceneView`](waterui_graphics::backend::SceneView).
 pub trait SurfaceInputReceiver {
     fn input(&mut self, event: &SurfaceInputEvent);
@@ -491,7 +523,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     }
 
     /// Registers a surface whose drawing asked for input: an embedded
-    /// [`GpuContentView`](waterui_graphics::GpuContentView) runtime or a
+    /// [`GpuView`](waterui_graphics::GpuView) runtime or a
     /// [`SceneView`](waterui_graphics::backend::SceneView)'s content.
     ///
     /// `focus_node` is the surface's semantic node, when the semantic tree
@@ -570,8 +602,11 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         // through `active_embedded_target` above.
         if self.gesture_engine.has_active_recognizer()
             || self.hit_test.active_pointer_drag_target.is_some()
-            || self.text_editing.selection_drag_index().is_some()
         {
+            return false;
+        }
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
+        if self.text_editing.selection_drag_index().is_some() {
             return false;
         }
         let pointer_priority = self
@@ -582,10 +617,13 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             .filter(|(_, target)| target.bounds.contains(point))
             .map(|(index, target)| Self::target_hit_priority(target.depth, target.order, index))
             .max();
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         let text_priority = self.topmost_text_input_index_at_point(point).map(|index| {
             let target = &self.text_editing.text_input_targets[index];
             Self::target_hit_priority(target.depth, target.order, index)
         });
+        #[cfg(not(any(feature = "text-field", feature = "secure-field")))]
+        let text_priority = None;
         let Some((_, target, position)) =
             self.embedded_target_wins_at(point, pointer_priority, text_priority)
         else {
@@ -786,7 +824,10 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             changed |= self.hit_test.set_embedded_focus_index(index);
             // Landing on a surface ends text editing exactly as a
             // pointer press on one does (#95's rule).
-            changed |= self.set_focused_text_input(None);
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
+            {
+                changed |= self.set_focused_text_input(None);
+            }
         } else {
             if self.hit_test.keyboard_focus == previous {
                 changed |= self.set_keyboard_focus_impl(

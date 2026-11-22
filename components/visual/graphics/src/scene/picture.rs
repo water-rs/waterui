@@ -12,7 +12,7 @@ use waterui_core::{Str, contract_violation};
 
 use crate::canvas::positive_extent;
 use waterui_core::reactive::signal::IntoComputed;
-use waterui_core::{AnyView, Environment, Native, NativeView, View};
+use waterui_core::{Environment, Native, NativeView, OneOf2, View};
 
 use crate::scene::resources::{HeldResources, RecordingResources, SceneResources};
 use crate::scene_view::{
@@ -298,14 +298,14 @@ impl NativeView for Picture {}
 impl View for Picture {
     fn body(self, env: &Environment) -> impl View {
         if env.get::<SceneViewMergeToParent>().is_some() {
-            return AnyView::new(SceneView::new(RecordedScene {
+            return OneOf2::A(SceneView::new(RecordedScene {
                 picture: self,
                 watcher: None,
                 current: None,
                 rebuild_recording: false,
             }));
         }
-        AnyView::new(Native::new(self))
+        OneOf2::B(Native::new(self))
     }
 }
 
@@ -452,11 +452,19 @@ mod tests {
     #[test]
     fn a_backend_that_draws_its_own_scene_gets_a_scene_view_and_the_rest_a_raw_picture() {
         let picture = || Picture::new(Size::new(10.0, 10.0), constant(square(WorkingColor::BLACK)));
-        let merged =
-            AnyView::new(picture().body(&Environment::new().extending(SceneViewMergeToParent)));
-        assert!(merged.downcast::<SceneView>().is_ok());
-        let raw = AnyView::new(picture().body(&Environment::new()));
-        assert!(raw.downcast::<Native<Picture>>().is_ok());
+        let merged_env = Environment::new().extending(SceneViewMergeToParent);
+        assert!(
+            waterui_core::backend::peel_native::<SceneView>(
+                picture().body(&merged_env),
+                &merged_env
+            )
+            .is_some()
+        );
+        let raw_env = Environment::new();
+        assert!(
+            waterui_core::backend::peel_native::<Picture>(picture().body(&raw_env), &raw_env)
+                .is_some()
+        );
     }
 
     #[test]

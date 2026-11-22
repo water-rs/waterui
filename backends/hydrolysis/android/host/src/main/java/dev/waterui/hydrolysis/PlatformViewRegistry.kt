@@ -354,7 +354,15 @@ class PlatformViewRegistry internal constructor(
 
     /** Mounted platform views, in `order`, grafted onto the a11y host node. */
     internal fun accessibilityChildren(): List<View> =
-        slots.values.filter { it.view.isVisible }.map { it.view }
+        slots.values
+            .filter {
+                it.view.isVisible &&
+                    !isSurface(it.placement.id) &&
+                    it.mounted.importantForAccessibility !=
+                        View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+            }
+            .sortedBy { it.placement.order }
+            .map { it.mounted }
 
     /**
      * Whether a point in the container's coordinate space (== host view

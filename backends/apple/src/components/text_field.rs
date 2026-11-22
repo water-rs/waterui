@@ -1,4 +1,4 @@
-//! The `text_field` leaf: `Native<ResolvedTextFieldConfig>` rendered
+//! The `text_field` leaf: `Native<TextFieldConfig>` rendered
 //! through the kit's editable text field inside a container that also
 //! holds the label child.
 //!
@@ -27,10 +27,11 @@ use cocoa_ui::{PlatformView, Rect, Retained, focus, view};
 use objc2::rc::Weak;
 use objc2_foundation::{NSRange, NSString};
 use waterui::Str;
-use waterui::component::menu::ResolvedMenuItem;
+use waterui::component::input::ContentType;
 #[cfg(target_os = "ios")]
-use waterui::component::text_field::KeyboardType;
-use waterui::component::text_field::{ContentType, ResolvedTextFieldConfig};
+use waterui::component::input::KeyboardType;
+use waterui::component::menu::ResolvedMenuItem;
+use waterui::component::text_field::TextFieldConfig;
 use waterui::component::text_selection::{CustomTextSelection, TextSelection};
 use waterui::graphics::color::WorkingColor;
 use waterui::reactive::Computed;
@@ -42,15 +43,14 @@ use waterui::text::font::Body;
 use waterui::text::font::ResolvedFont;
 use waterui::theme::color::Foreground;
 use waterui_backend_core::Environment;
-use waterui_core::interaction::Disabled;
 use waterui_core::layout::{
     HorizontalAlignment, LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size,
     StretchAxis, SubView, ViewDimensions,
 };
+use waterui_interaction::interaction::Disabled;
 
 use super::font::platform_font;
-use crate::contract::{Mounted, NativeLeaf};
-use crate::dispatch::Dispatcher;
+use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;
 
 #[cfg(target_os = "macos")]
@@ -68,6 +68,7 @@ mod platform {
     pub(super) use cocoa_ui::uikit::{HostView, TextField};
 }
 
+use crate::contract::RenderContext;
 use platform::{HostView, TextField};
 
 /// The platform color a [`StyledPush`]'s default foreground draws in.
@@ -586,138 +587,137 @@ impl SubView for TextFieldSubView {
     }
 }
 
-/// Installs the `text_field` handler on the dispatcher:
-/// `Native<ResolvedTextFieldConfig>` maps to a container with the platform
+/// The `text_field` realization:
+/// `Native<TextFieldConfig>` maps to a container with the platform
 /// field and the mounted label child; binding, prompt, disabled state and
 /// accessibility stay live through watchers.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<ResolvedTextFieldConfig>(|config, ctx| {
-        let mtm = ctx.mtm();
-        let host = HostView::new(mtm, Rect::ZERO);
+pub fn realize_text_field_config(
+    config: TextFieldConfig<Held>,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    let mtm = ctx.mtm();
+    let host = HostView::new(mtm, Rect::ZERO);
 
-        #[cfg(target_os = "ios")]
-        let field = {
-            let field = TextField::new(mtm);
-            field.set_keyboard(keyboard(config.keyboard()));
-            field
-        };
-        #[cfg(target_os = "macos")]
-        let field = TextField::new(mtm, config.line_limit().map(core::num::NonZero::get));
+    #[cfg(target_os = "ios")]
+    let field = {
+        let field = TextField::new(mtm);
+        field.set_keyboard(keyboard(config.keyboard()));
+        field
+    };
+    #[cfg(target_os = "macos")]
+    let field = TextField::new(mtm, config.line_limit().map(core::num::NonZero::get));
 
-        // The declared content type is the whole one-time-code feature on
-        // both kits — `UITextContentType`/`NSTextContentType` is what the
-        // system offers an SMS code for.
-        if let Some(declared) = config.content_type() {
-            field.set_content_type(content_type(declared));
-        }
+    // The declared content type is the whole one-time-code feature on
+    // both kits — `UITextContentType`/`NSTextContentType` is what the
+    // system offers an SMS code for.
+    if let Some(declared) = config.content_type() {
+        field.set_content_type(content_type(declared));
+    }
 
-        let field_view: &PlatformView = &field;
-        host.add_subview(field_view);
+    let field_view: &PlatformView = &field;
+    host.add_subview(field_view);
 
-        // The label renders above the field; its semantic text names the
-        // control while the visual label leaves the accessibility tree —
-        // `WuiControlAccessibility`'s split.
-        let (label, value, prompt, _, _, selection_menu, _, on_submit) = config.into_parts();
-        let accessibility_label = label.accessibility_label();
-        let host_view: &PlatformView = &host;
-        let mounted = ctx
-            .render(waterui_backend_core::AnyView::new(label))
-            .mount(host_view);
-        view::hide_from_accessibility(mounted.view());
+    // The label renders above the field; its semantic text names the
+    // control while the visual label leaves the accessibility tree —
+    // `WuiControlAccessibility`'s split.
+    let (label, value, prompt, _, _, selection_menu, _, on_submit) = config.into_parts();
+    let accessibility_label = label.accessibility_label();
+    let host_view: &PlatformView = &host;
+    let mounted = ctx.realize(label.build()).mount(host_view);
+    view::hide_from_accessibility(mounted.view());
 
-        let state = Rc::new(FieldState {
-            field: field.clone(),
-            label: mounted,
-        });
-        host.set_layout_handler({
-            let state = Rc::clone(&state);
-            move |view| layout_children(view, proposal::response(view), &state)
-        });
-
-        let control = view::retain_base(field_view);
-        let mut leaf = NativeLeaf::new(
-            host_view,
-            TextFieldSubView {
-                state: Rc::clone(&state),
-            },
-        );
-
-        // Signal → field: the resolved attributed string for the current
-        // binding value, re-pushed by every per-chunk style signal too.
-        let value_state = styled_push(
-            mtm,
-            ctx.env(),
-            platform_color(&Foreground.resolve(ctx.env()).snapshot()),
-            &value.snapshot(),
-            {
-                let field = field.clone();
-                move |state| {
-                    crate::measure_memo::invalidate();
-                    let attributed = render_attributed(state);
-                    #[cfg(target_os = "ios")]
-                    field.set_attributed_text(&attributed);
-                    #[cfg(target_os = "macos")]
-                    field.set_attributed_string(&attributed);
-                }
-            },
-        );
-
-        wire_value(&mut leaf, &value, ctx, &field, &value_state);
-
-        // Return submits through the configured action.
-        if let Some(on_submit) = on_submit {
-            let env = ctx.env().clone();
-            #[cfg(target_os = "ios")]
-            leaf.keep(field.install_submit_handler(move |_| on_submit.run(&env)));
-            #[cfg(target_os = "macos")]
-            field.on_submit(move |_| on_submit.run(&env));
-        }
-
-        // The prompt renders into the placeholder under the placeholder
-        // color — `WuiStyledStrRenderer`'s `defaultForegroundColor`.
-        wire_prompt(mtm, &mut leaf, ctx, &field, &prompt);
-
-        // The theme `Body` font is the field's own font, as in the secure
-        // field: a single-line `NSTextField` cell positions its line by that
-        // font, not by the attributed value or placeholder, and typing into
-        // an empty field starts in it.
-        #[cfg(target_os = "macos")]
-        leaf.bind(&Body.resolve(ctx.env()), {
-            let field = field.clone();
-            move |font| {
-                crate::measure_memo::invalidate();
-                field.set_font(&platform_font(mtm, &font, false));
-            }
-        });
-
-        // Announce the label's semantic text on the field.
-        leaf.bind(&accessibility_label, {
-            move |styled| {
-                let plain = cocoa_ui::text::strip_bidi_controls(&styled.to_plain());
-                view::set_accessibility_label(&control, &plain);
-            }
-        });
-
-        // A disabled subtree must not respond to input.
-        let disabled = Disabled::resolve(ctx.env(), false);
-        leaf.bind(&disabled, {
-            let field = field.clone();
-            move |is_disabled| field.set_enabled(!is_disabled)
-        });
-
-        // The field is this subtree's focus anchor: `Metadata<Focused>`
-        // resolves it by walking the view hierarchy, as
-        // `installWuiFocusTarget` marked it in Swift.
-        leaf.keep(focus::install(mtm, field_view));
-
-        // `selection_menu` rows ride the platform edit menu, on an
-        // environment carrying the field's live `TextSelection`.
-        install_selection_menu(mtm, ctx.env(), &selection_menu, &field, &value);
-
-        leaf.keep(state);
-        leaf.keep(value_state);
-        leaf
+    let state = Rc::new(FieldState {
+        field: field.clone(),
+        label: mounted,
     });
+    host.set_layout_handler({
+        let state = Rc::clone(&state);
+        move |view| layout_children(view, proposal::response(view), &state)
+    });
+
+    let control = view::retain_base(field_view);
+    let mut leaf = NativeLeaf::new(
+        host_view,
+        TextFieldSubView {
+            state: Rc::clone(&state),
+        },
+    );
+
+    // Signal → field: the resolved attributed string for the current
+    // binding value, re-pushed by every per-chunk style signal too.
+    let value_state = styled_push(
+        mtm,
+        ctx.env(),
+        platform_color(&Foreground.resolve(ctx.env()).snapshot()),
+        &value.snapshot(),
+        {
+            let field = field.clone();
+            move |state| {
+                crate::measure_memo::invalidate();
+                let attributed = render_attributed(state);
+                #[cfg(target_os = "ios")]
+                field.set_attributed_text(&attributed);
+                #[cfg(target_os = "macos")]
+                field.set_attributed_string(&attributed);
+            }
+        },
+    );
+
+    wire_value(&mut leaf, &value, ctx, &field, &value_state);
+
+    // Return submits through the configured action.
+    if let Some(on_submit) = on_submit {
+        let env = ctx.env().clone();
+        #[cfg(target_os = "ios")]
+        leaf.keep(field.install_submit_handler(move |_| on_submit.run(&env)));
+        #[cfg(target_os = "macos")]
+        field.on_submit(move |_| on_submit.run(&env));
+    }
+
+    // The prompt renders into the placeholder under the placeholder
+    // color — `WuiStyledStrRenderer`'s `defaultForegroundColor`.
+    wire_prompt(mtm, &mut leaf, ctx, &field, &prompt);
+
+    // The theme `Body` font is the field's own font, as in the secure
+    // field: a single-line `NSTextField` cell positions its line by that
+    // font, not by the attributed value or placeholder, and typing into
+    // an empty field starts in it.
+    #[cfg(target_os = "macos")]
+    leaf.bind(&Body.resolve(ctx.env()), {
+        let field = field.clone();
+        move |font| {
+            crate::measure_memo::invalidate();
+            field.set_font(&platform_font(mtm, &font, false));
+        }
+    });
+
+    // Announce the label's semantic text on the field.
+    leaf.bind(&accessibility_label, {
+        move |styled| {
+            let plain = cocoa_ui::text::strip_bidi_controls(&styled.to_plain());
+            view::set_accessibility_label(&control, &plain);
+        }
+    });
+
+    // A disabled subtree must not respond to input.
+    let disabled = Disabled::resolve(ctx.env(), false);
+    leaf.bind(&disabled, {
+        let field = field.clone();
+        move |is_disabled| field.set_enabled(!is_disabled)
+    });
+
+    // The field is this subtree's focus anchor: `Metadata<Focused>`
+    // resolves it by walking the view hierarchy, as
+    // `installWuiFocusTarget` marked it in Swift.
+    leaf.keep(focus::install(mtm, field_view));
+
+    // `selection_menu` rows ride the platform edit menu, on an
+    // environment carrying the field's live `TextSelection`.
+    install_selection_menu(mtm, ctx.env(), &selection_menu, &field, &value);
+
+    leaf.keep(state);
+    leaf.keep(value_state);
+    leaf
 }
 
 /// A `TextSelection`'s byte range as the UTF-16 units the kit's selection

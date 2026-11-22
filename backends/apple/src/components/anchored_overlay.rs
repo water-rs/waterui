@@ -33,13 +33,13 @@ use waterui_core::layout::{
     LayoutDirection, LayoutError, Point, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis,
     SubView, ViewDimensions, layout_direction,
 };
-use waterui_core::{Computed, Metadata};
+use waterui_core::{AnyView, Computed, Metadata};
 
-use crate::contract::{Mounted, NativeLeaf, Renderer};
-use crate::dispatch::Dispatcher;
+use crate::contract::{Held, Mounted, NativeLeaf, Renderer};
 use crate::transition::ghost::Ghost;
 use crate::transition::live::{LiveChild, Removal};
 
+use crate::contract::RenderContext;
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::{HostView, Panel, window_of};
 #[cfg(target_os = "ios")]
@@ -55,7 +55,7 @@ struct OverlayState {
     /// The anchor's content, laid out over the host's full bounds.
     child: Mounted,
     /// Builds a fresh overlay view for each presentation.
-    builder: AnyViewBuilder,
+    builder: AnyViewBuilder<AnyView>,
     /// A `'static` render handle the builder's output mounts through.
     renderer: Renderer,
     /// The overlay content, moved into the presentation surface while shown;
@@ -559,89 +559,90 @@ impl SubView for AnchoredSubView {
     }
 }
 
-/// Installs the `anchored_overlay` handler on the dispatcher:
+/// The `anchored_overlay` realization:
 /// `Metadata<AnchoredOverlay>` maps to a transparent container that
 /// presents the overlay content in a window-level surface against the
 /// anchor's frame.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_view::<Metadata<AnchoredOverlay>>(|metadata, ctx| {
-        let mtm = ctx.mtm();
-        let host = HostView::new(mtm, KitRect::ZERO);
-        let host_view: &PlatformView = &host;
-        let mounted = ctx.render(metadata.content).mount(host_view);
-        crate::primary_content::forward(&host, mounted.view());
+pub fn realize_anchored_overlay_metadata(
+    metadata: Metadata<AnchoredOverlay, Held>,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    let mtm = ctx.mtm();
+    let host = HostView::new(mtm, KitRect::ZERO);
+    let host_view: &PlatformView = &host;
+    let mounted = ctx.realize(metadata.content).mount(host_view);
+    crate::primary_content::forward(&host, mounted.view());
 
-        let state = Rc::new(OverlayState {
-            mtm,
-            host: host.clone(),
-            child: mounted,
-            builder: metadata.value.content,
-            renderer: ctx.renderer(),
-            overlay: RefCell::new(None),
-            env: ctx.env().clone(),
-            ghosts: Rc::new(RefCell::new(Vec::new())),
-            is_presented: metadata.value.is_presented,
-            placed_edge: metadata.value.placed_edge,
-            placement: metadata.value.placement,
-            dismissal: metadata.value.dismissal,
-            direction: layout_direction(ctx.env()),
-            pending: Cell::new(false),
-            presentation: RefCell::new(None),
-            #[cfg(target_os = "macos")]
-            watchers: RefCell::new(None),
-            #[cfg(target_os = "ios")]
-            overlay_frame: Rc::new(Cell::new(KitRect::ZERO)),
-        });
-
-        // `layout`/`layoutSubviews`: the content fills the host and the
-        // overlay follows the anchor's new position.
-        host.set_layout_handler({
-            let child = view::retain_base(state.child.view());
-            let state = Rc::clone(&state);
-            move |view| {
-                view::set_frame(&child, view::bounds(view));
-                reposition(&state);
-            }
-        });
-        host.set_window_handler({
-            let state = Rc::clone(&state);
-            move |_| {
-                attachment_changed(&state);
-            }
-        });
-
-        let mut leaf = NativeLeaf::new(
-            host_view,
-            AnchoredSubView {
-                state: Rc::clone(&state),
-            },
-        );
-
-        // The objects the watchers fire on are kept first so the guards
-        // — kept after — drop before them (reverse insertion order).
-        leaf.keep(Rc::clone(&state));
-        leaf.watch(&state.is_presented, {
-            let state = Rc::downgrade(&state);
-            move |ctx| {
-                let Some(state) = state.upgrade() else {
-                    return;
-                };
-                if *ctx.value() {
-                    present(&state);
-                } else {
-                    dismiss(&state);
-                }
-            }
-        });
-
-        // An initially-presented overlay before the window exists is
-        // replayed on attach, as `presentOverlay`'s pending path did.
-        if state.is_presented.snapshot() {
-            present(&state);
-        }
-
-        leaf
+    let state = Rc::new(OverlayState {
+        mtm,
+        host: host.clone(),
+        child: mounted,
+        builder: metadata.value.content,
+        renderer: ctx.renderer(),
+        overlay: RefCell::new(None),
+        env: ctx.env().clone(),
+        ghosts: Rc::new(RefCell::new(Vec::new())),
+        is_presented: metadata.value.is_presented,
+        placed_edge: metadata.value.placed_edge,
+        placement: metadata.value.placement,
+        dismissal: metadata.value.dismissal,
+        direction: layout_direction(ctx.env()),
+        pending: Cell::new(false),
+        presentation: RefCell::new(None),
+        #[cfg(target_os = "macos")]
+        watchers: RefCell::new(None),
+        #[cfg(target_os = "ios")]
+        overlay_frame: Rc::new(Cell::new(KitRect::ZERO)),
     });
+
+    // `layout`/`layoutSubviews`: the content fills the host and the
+    // overlay follows the anchor's new position.
+    host.set_layout_handler({
+        let child = view::retain_base(state.child.view());
+        let state = Rc::clone(&state);
+        move |view| {
+            view::set_frame(&child, view::bounds(view));
+            reposition(&state);
+        }
+    });
+    host.set_window_handler({
+        let state = Rc::clone(&state);
+        move |_| {
+            attachment_changed(&state);
+        }
+    });
+
+    let mut leaf = NativeLeaf::new(
+        host_view,
+        AnchoredSubView {
+            state: Rc::clone(&state),
+        },
+    );
+
+    // The objects the watchers fire on are kept first so the guards
+    // — kept after — drop before them (reverse insertion order).
+    leaf.keep(Rc::clone(&state));
+    leaf.watch(&state.is_presented, {
+        let state = Rc::downgrade(&state);
+        move |ctx| {
+            let Some(state) = state.upgrade() else {
+                return;
+            };
+            if *ctx.value() {
+                present(&state);
+            } else {
+                dismiss(&state);
+            }
+        }
+    });
+
+    // An initially-presented overlay before the window exists is
+    // replayed on attach, as `presentOverlay`'s pending path did.
+    if state.is_presented.snapshot() {
+        present(&state);
+    }
+
+    leaf
 }
 
 #[cfg(test)]

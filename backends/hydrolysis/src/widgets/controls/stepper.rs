@@ -2,8 +2,8 @@
 use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::chrome::{ChromeContent, LiveChromeParts};
 use crate::renderer::{
-    HydroNativeView, HydroState, InteractionKey, RenderContext, SemanticCore, WidgetRenderContext,
-    measure_label_intrinsic,
+    HeldChild, HydroState, InteractionKey, RenderContext, RetainedSubview, SemanticCore,
+    WidgetRenderContext,
 };
 use crate::theme::{Chrome, SpecTint, StepperLook, StepperSpec, WidgetTheme};
 #[cfg(feature = "accessibility")]
@@ -16,13 +16,12 @@ use std::cell::RefCell;
 use std::ops::RangeInclusive;
 use std::rc::Rc;
 use waterui_controls::stepper::StepperConfig;
+use waterui_core::Environment;
 use waterui_core::contract_violation;
-use waterui_core::interaction::InteractionState;
 use waterui_core::layout::Size as LayoutSize;
 use waterui_core::layout::{LayoutDirection, ProposalSize, ViewDimensions};
-use waterui_core::{AnyView, Environment, Native};
+use waterui_interaction::interaction::InteractionState;
 
-use crate::renderer::RetainedSubview;
 use crate::widgets::util::{label_beside_control_bounds, mirrored_in, widget_disabled};
 
 /// The retained render state of a stepper: the cloneable [`StepperConfig`] drives the
@@ -31,7 +30,7 @@ use crate::widgets::util::{label_beside_control_bounds, mirrored_in, widget_disa
 /// The look the theme gave, and the parts recorded from it, are held across
 /// renders while the stepper's spec and frame stay the same.
 pub struct StepperRenderState<E: crate::text::TextEngine> {
-    config: StepperConfig,
+    config: StepperConfig<HeldChild<E>>,
     label_view: RetainedSubview<E>,
     look: Option<(StepperSpec, StepperLook)>,
     decrement: EndParts,
@@ -79,9 +78,20 @@ fn positive_step(step: i32) -> bool {
 }
 
 impl<E: crate::text::TextEngine> StepperRenderState<E> {
-    pub(crate) fn from_config(config: StepperConfig) -> Self {
+    /// The label this control contributes to a node naming itself from its
+    /// content: its own label.
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn contributed_label(
+        &self,
+        _renderer: &mut crate::renderer::SemanticCore<E>,
+        env: &Environment,
+    ) -> Option<String> {
+        crate::renderer::SemanticCore::<E>::accessibility_label_from_label(self.config.label(), env)
+    }
+
+    pub(crate) fn from_config(config: StepperConfig<HeldChild<E>>) -> Self {
         Self {
-            label_view: RetainedSubview::new(AnyView::new(config.label().clone())),
+            label_view: RetainedSubview::held(config.label().build()),
             config,
             look: None,
             decrement: EndParts::new(),
@@ -143,26 +153,15 @@ fn stepper_spec(env: &Environment) -> StepperSpec {
     )
 }
 
-impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<StepperConfig> {
-    fn intrinsic(
-        state: &mut crate::renderer::HydroState<E>,
-        view: &Self,
-        env: &Environment,
-        theme: &Rc<dyn crate::theme::WidgetTheme>,
-    ) -> LayoutSize {
-        measure_stepper_intrinsic(view.as_inner(), state, env, theme)
-    }
-}
-
 /// Emits a stepper's accessibility node from its config. Shared by the dispatch
 /// path ([`Native<StepperConfig>::accessibility`]) and the retained `Widget`-node
 /// path so both produce the same a11y tree.
 // empty when the accessibility feature is off
 #[cfg_attr(not(feature = "accessibility"), allow(clippy::missing_const_for_fn))]
-pub fn stepper_accessibility<E: crate::text::TextEngine>(
+pub fn stepper_accessibility<E: crate::text::TextEngine, S>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     ctx: Option<RenderContext>,
-    stepper: &StepperConfig,
+    stepper: &StepperConfig<S>,
     env: &Environment,
     focus_keys: &[crate::renderer::InteractionKey],
 ) {
@@ -504,21 +503,11 @@ fn stepper_size(look: &StepperLook, label: LayoutSize) -> LayoutSize {
     )
 }
 
-pub fn measure_stepper_intrinsic<E: crate::text::TextEngine>(
-    stepper: &StepperConfig,
-    state: &mut HydroState<E>,
-    env: &Environment,
-    theme: &Rc<dyn crate::theme::WidgetTheme>,
-) -> LayoutSize {
-    let look = theme.stepper(&stepper_spec(env), env);
-    let label_size = measure_label_intrinsic(stepper.label(), state, env, theme);
-    stepper_size(&look, label_size)
-}
-
 /// Emits a retained stepper's accessibility node for the semantic walk — the
 /// same node `stepper_accessibility` registers, with no bounds. The label
 /// sub-view flushes visual-only, so there is nothing else to emit.
 #[cfg(feature = "accessibility")]
+#[cfg(hydrolysis_cherenkov)]
 pub fn emit_stepper_accessibility<E: crate::text::TextEngine>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     state: &Rc<RefCell<StepperRenderState<E>>>,

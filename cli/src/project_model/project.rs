@@ -752,11 +752,13 @@ impl Project {
         &self,
         build_manifest: &Path,
         target: &Triple,
-    ) -> eyre::Result<Arc<BTreeMap<String, BTreeSet<String>>>> {
+        features: &[String],
+    ) -> eyre::Result<Arc<ResolvedManifestFeatures>> {
         self.facts
             .answer(&ManifestFeatures {
                 manifest: build_manifest.to_path_buf(),
                 target: target.to_string(),
+                features: features.to_vec(),
                 permits: Arc::clone(&self.cargo_resolve_permits),
             })
             .await
@@ -950,6 +952,17 @@ impl Project {
         Ok(self.enabled_features(target).await?.contains("video-gpu"))
     }
 
+    /// Whether the application's graph links the GPU map
+    /// (`waterui-map-gpu`) for `target`, which Hydrolysis then realizes `Map`
+    /// with.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Cargo metadata cannot be resolved.
+    pub async fn uses_map_gpu(&self, target: &Triple) -> eyre::Result<bool> {
+        self.links_runtime_package(target, "waterui-map-gpu").await
+    }
+
     /// Whether the application's graph turns on the `video` component for
     /// `target`: a `video` feature enabled inside the application's own
     /// subtree, resolved the way [`Self::uses_standard_webview`] resolves
@@ -975,7 +988,7 @@ impl Project {
         section: GraphSection,
     ) -> eyre::Result<crate::templates::WebAnswers> {
         let targets = crate::platform::wasm_target_triples();
-        let (video, webview) = futures_util::future::try_join(
+        let (video, webview, map_gpu) = futures_util::future::try_join3(
             self.unanimous_graph_answer(
                 &targets,
                 "the video usage",
@@ -990,9 +1003,20 @@ impl Project {
                 |enabled: &bool| enabled.to_string(),
                 |project, target| async move { project.uses_standard_webview(&target).await },
             ),
+            self.unanimous_graph_answer(
+                &targets,
+                "the GPU map usage",
+                section,
+                |enabled: &bool| enabled.to_string(),
+                |project, target| async move { project.uses_map_gpu(&target).await },
+            ),
         )
         .await?;
-        Ok(crate::templates::WebAnswers { video, webview })
+        Ok(crate::templates::WebAnswers {
+            video,
+            webview,
+            map_gpu,
+        })
     }
 
     /// The two `WebView` answers `os`'s generated-manifest table gets from
@@ -1027,7 +1051,7 @@ impl Project {
         targets: &[Triple],
         section: GraphSection,
     ) -> eyre::Result<crate::templates::BrowserAnswers> {
-        let (webview_enabled, engine, video_gpu) = futures_util::future::try_join3(
+        let (webview_enabled, engine, video_gpu, map_gpu) = futures_util::future::try_join4(
             self.uses_standard_webview_for(targets, section),
             self.linked_browser_engine_for(targets, section),
             self.unanimous_graph_answer(
@@ -1037,12 +1061,20 @@ impl Project {
                 |enabled: &bool| enabled.to_string(),
                 |project, target| async move { project.uses_video_gpu(&target).await },
             ),
+            self.unanimous_graph_answer(
+                targets,
+                "the GPU map usage",
+                section,
+                |enabled: &bool| enabled.to_string(),
+                |project, target| async move { project.uses_map_gpu(&target).await },
+            ),
         )
         .await?;
         Ok(crate::templates::BrowserAnswers {
             webview_enabled,
             engine,
             video_gpu,
+            map_gpu,
         })
     }
 
@@ -3152,19 +3184,30 @@ fn select_wpe_package<'m>(
 /// Every package's enabled features in a manifest's resolved graph for
 /// one target — the answer `Project::generated_manifest_features` replays
 /// instead of the whole `cargo metadata --filter-platform` document.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct ResolvedManifestFeatures {
+    pub(crate) enabled: BTreeMap<String, BTreeSet<String>>,
+    pub(crate) declared: BTreeMap<String, BTreeSet<String>>,
+}
+
 struct ManifestFeatures {
     manifest: PathBuf,
     target: String,
+    features: Vec<String>,
     permits: Arc<async_lock::Semaphore>,
 }
 
 impl Fact for ManifestFeatures {
     const KIND: &'static str = "manifest-features";
-    type Question = (PathBuf, String);
-    type Value = BTreeMap<String, BTreeSet<String>>;
+    type Question = (PathBuf, String, Vec<String>);
+    type Value = ResolvedManifestFeatures;
 
     fn question(&self) -> Self::Question {
-        (self.manifest.clone(), self.target.clone())
+        (
+            self.manifest.clone(),
+            self.target.clone(),
+            self.features.clone(),
+        )
     }
 
     async fn resolve(&self, scope: &Scope<'_>) -> eyre::Result<Self::Value> {
@@ -3174,27 +3217,52 @@ impl Fact for ManifestFeatures {
             command
                 .manifest_path(&self.manifest)
                 .other_options(vec!["--filter-platform".to_string(), self.target.clone()]);
+            command.features(cargo_metadata::CargoOpt::SomeFeatures(
+                self.features.clone(),
+            ));
             scope.cargo_metadata(&command).await?
         };
-        let packages: BTreeMap<_, _> = metadata
-            .packages
-            .iter()
-            .map(|package| (&package.id, package.name.as_str()))
-            .collect();
-        let mut features: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-        if let Some(resolve) = &metadata.resolve {
-            for node in &resolve.nodes {
-                let Some(name) = packages.get(&node.id) else {
-                    continue;
-                };
-                features
-                    .entry((*name).to_owned())
-                    .or_default()
-                    .extend(node.features.iter().map(ToString::to_string));
-            }
-        }
-        Ok(features)
+        resolved_manifest_features(&metadata)
     }
+}
+
+fn resolved_manifest_features(
+    metadata: &cargo_metadata::Metadata,
+) -> eyre::Result<ResolvedManifestFeatures> {
+    let resolve = metadata
+        .resolve
+        .as_ref()
+        .ok_or_else(|| eyre::eyre!("cargo metadata returned no resolve graph"))?;
+    let root = metadata
+        .root_package()
+        .ok_or_else(|| eyre::eyre!("the generated build manifest has no root package"))?;
+    let packages: BTreeMap<_, _> = normal_dependency_packages(metadata, root.id.repr.as_str())?
+        .into_iter()
+        .chain(std::iter::once(root))
+        .map(|package| (&package.id, package.name.as_str()))
+        .collect();
+    let mut features: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for node in &resolve.nodes {
+        if let Some(name) = packages.get(&node.id) {
+            features
+                .entry((*name).to_owned())
+                .or_default()
+                .extend(node.features.iter().map(ToString::to_string));
+        }
+    }
+    let mut declared: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for package in &metadata.packages {
+        if packages.contains_key(&package.id) {
+            declared
+                .entry(package.name.to_string())
+                .or_default()
+                .extend(package.features.keys().map(ToString::to_string));
+        }
+    }
+    Ok(ResolvedManifestFeatures {
+        enabled: features,
+        declared,
+    })
 }
 
 /// The framework's local source roots — directories whose packages are the
@@ -6940,6 +7008,70 @@ mod wpe_metadata_tests {
         });
         MetadataCommand::parse(serde_json::to_string(&document).unwrap())
             .expect("the synthetic Cargo metadata graph must decode")
+    }
+
+    #[test]
+    fn resolved_features_exclude_build_and_test_only_packages() {
+        let mut enabled = node("left", &[]);
+        enabled["features"] = json!(["list"]);
+        let metadata = graph(&[
+            node(
+                "app",
+                &[
+                    ("left", None),
+                    ("right", Some("dev")),
+                    ("wpe-one", Some("build")),
+                ],
+            ),
+            enabled,
+            node("right", &[]),
+            node("wpe-one", &[]),
+        ]);
+        let features = super::resolved_manifest_features(&metadata).expect("runtime feature graph");
+        assert_eq!(
+            features
+                .enabled
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["app", "left"]
+        );
+        assert!(features.enabled["left"].contains("list"));
+    }
+
+    #[test]
+    fn resolved_features_merge_declarations_of_runtime_package_versions() {
+        let mut metadata = graph(&[
+            node("app", &[("wpe-one", None), ("wpe-two", None)]),
+            node("wpe-one", &[]),
+            node("wpe-two", &[]),
+        ]);
+        metadata.packages[3]
+            .features
+            .insert("first".into(), Vec::new());
+        metadata.packages[4]
+            .features
+            .insert("second".into(), Vec::new());
+        let features = super::resolved_manifest_features(&metadata).expect("runtime feature graph");
+        assert_eq!(
+            features.declared["waterui-browser-wpe"],
+            std::collections::BTreeSet::from(["first".to_owned(), "second".to_owned()])
+        );
+        assert!(!features.declared.contains_key("left"));
+    }
+
+    #[test]
+    fn manifest_feature_cache_distinguishes_cargo_selections() {
+        use super::super::facts::Fact as _;
+        let mut query = super::ManifestFeatures {
+            manifest: "/workspace/Cargo.toml".into(),
+            target: "aarch64-linux-android".into(),
+            features: Vec::new(),
+            permits: std::sync::Arc::new(async_lock::Semaphore::new(1)),
+        };
+        let defaults = query.question();
+        query.features.push("app/extra-controls".into());
+        assert_ne!(defaults, query.question());
     }
 
     #[test]

@@ -1,10 +1,10 @@
 //! The TypeScript runtime a session installs, when the `ts` feature is on.
 //!
 //! A `#[waterui::test]` has no bundle loader of its own, so the session takes
-//! the bundle `water test` names in `WATERUI_TS_BUNDLE` and installs the
-//! runtime loaded from it for the view it mounts. The reading of the
-//! variable, the path rule and the messages live in `waterui-ts` beside the
-//! mount they serve; this is the one call a session makes.
+//! the bundle `WATERUI_TS_BUNDLE` names and installs the runtime loaded from
+//! it for the view it mounts. The reading of the variable, the path rule and
+//! the messages live in `waterui-ts` beside the mount they serve; this is the
+//! one call a session makes.
 //!
 //! The install is scoped to the mounted view rather than to the environment
 //! the runtime is constructed with, because a module reads the host's theme

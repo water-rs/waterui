@@ -11,9 +11,8 @@ use crate::renderer::lazy::{
 #[cfg(feature = "accessibility")]
 use crate::renderer::lazy::{VisibleColumnWindow, VisibleIndexWindow};
 use crate::renderer::{
-    HydroNativeView, HydroState, MeasuredTableMetrics, RenderContext, VisibleCells,
-    VisibleSubviewCache, WidgetRenderContext, measure_table_metrics, refresh_table_slot_baseline,
-    table_data_cell_rect, table_header_cell_rect, update_table_slot_visible_cell_widths,
+    HydroState, MeasuredTableMetrics, RenderContext, RetainedSubview, VisibleCells,
+    VisibleSubviewCache, WidgetRenderContext, table_data_cell_rect, table_header_cell_rect,
 };
 use crate::scroll::ScrollHandle;
 use crate::theme::TableLook;
@@ -23,26 +22,24 @@ use accesskit::{
 };
 use nami::Signal;
 use waterui::component::table::{TableColumn, TableConfig};
+use waterui_core::Environment;
 #[cfg(feature = "accessibility")]
 use waterui_core::contract_violation;
+use waterui_core::id::Identifiable;
 use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
-use waterui_core::views::{ViewSnapshot, Views};
-use waterui_core::{AnyView, Environment, Native};
+use waterui_core::views::ViewSnapshot;
 use waterui_layout::scroll::Axis as ScrollAxis;
 
 use crate::widgets::{draw_scroll_indicators, inset_rect};
 
-/// The cache key for a table's retained cell sub-views. The table re-reads its
-/// `Vec<TableColumn>` each frame with no stable per-column id, so cells are keyed by
-/// their position in the visible window (the same index model the table already uses
-/// for its column-width / row-count slot caches). A column header and the data cells
-/// in that column are distinct entries.
-#[derive(Clone, PartialEq, Eq, Hash)]
-enum TableCellKey {
-    /// A column header cell, keyed by column index.
-    Header(usize),
-    /// A data cell, keyed by `(column_index, row_index)`.
-    Cell(usize, usize),
+/// The cache key for a table's retained data-cell sub-views: the cell's
+/// position, the same index model the table uses for its column-width and
+/// row-count slot. Column headers are retained per column identity in
+/// [`TableRenderState::headers`] instead.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct TableCellKey {
+    column: usize,
+    row: usize,
 }
 
 /// Retained state for a table `Widget` node: the consumed config plus a per-widget
@@ -60,6 +57,10 @@ pub struct TableRenderState<E: crate::text::TextEngine> {
     /// so a steady scroll reuses each visible cell's node (keeping its reactive
     /// content live) and only builds cells entering the window.
     item_cache: RefCell<VisibleSubviewCache<TableCellKey, E>>,
+    /// Every column's header, realized once per column identity in column
+    /// order: the header widths every column measures against, the header
+    /// cells the flush places and the header labels the table emits.
+    headers: RefCell<Vec<(usize, RetainedSubview<E>)>>,
     /// §7.1's scroll-surface bookkeeping: the extension and clearance
     /// bounds layout computed once (the scroll handle is rebound with
     /// them inside [`Self::bind_scroll`]), plus the focused-field state
@@ -77,8 +78,172 @@ impl<E: crate::text::TextEngine> TableRenderState<E> {
             slot: RefCell::new(LazyTableSlot::default()),
             scroll: RefCell::new(None),
             item_cache: RefCell::new(VisibleSubviewCache::new()),
+            headers: RefCell::new(Vec::new()),
             surface: std::rc::Rc::default(),
             look: RefCell::new(None),
+        }
+    }
+
+    /// Keeps [`Self::headers`] realized for `columns`: a column keeps its
+    /// header while its identity stays, a new column's header is built.
+    /// Runs at build, before each measure the table is prepared for, and at
+    /// the start of each render and semantic emit.
+    pub(crate) fn refresh_headers(
+        &self,
+        columns: &[TableColumn],
+        env: &Environment,
+        renderer: &mut crate::renderer::SemanticCore<E>,
+    ) {
+        let mut headers = self.headers.borrow_mut();
+        if headers
+            .iter()
+            .map(|(id, _)| *id)
+            .eq(columns.iter().map(Identifiable::id))
+        {
+            return;
+        }
+        let mut previous = core::mem::take(&mut *headers);
+        for column in columns {
+            let id = column.id();
+            let header = previous
+                .iter()
+                .position(|(kept, _)| *kept == id)
+                .map_or_else(
+                    || {
+                        let mut header = RetainedSubview::new(column.label());
+                        header.ensure_built(renderer, env);
+                        header
+                    },
+                    |index| previous.swap_remove(index).1,
+                );
+            headers.push((id, header));
+        }
+    }
+
+    /// [`Self::refresh_headers`] as the widget's layout-time prepare.
+    pub(crate) fn prepare_headers(
+        &self,
+        renderer: &mut crate::renderer::HydrolysisRenderer<E>,
+        env: &Environment,
+    ) {
+        let columns = renderer.read_signal(&self.config.columns);
+        self.refresh_headers(&columns, env, renderer);
+    }
+
+    /// Each column's width floor from its realized header: the header's
+    /// width plus the cell padding, never under the minimum column width.
+    /// Columns that arrived since the headers were last refreshed answer the
+    /// minimum until the next render realizes them.
+    fn header_widths(
+        &self,
+        column_count: usize,
+        state: &mut HydroState<E>,
+        env: &Environment,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
+        metrics: crate::theme::TableMetrics,
+    ) -> Vec<f64> {
+        let headers = self.headers.borrow();
+        (0..column_count)
+            .map(|index| {
+                headers
+                    .get(index)
+                    .map_or(metrics.min_column_width, |(_, header)| {
+                        let size = header.measure_built(state, env, theme);
+                        (f64::from(size.width) + metrics.cell_horizontal_padding)
+                            .max(metrics.min_column_width)
+                    })
+            })
+            .collect()
+    }
+
+    /// Rebases the slot on the columns: their count, their header widths and
+    /// the longest column's row count.
+    fn refresh_slot_baseline(
+        &self,
+        columns: &[TableColumn],
+        state: &mut HydroState<E>,
+        env: &Environment,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
+        metrics: crate::theme::TableMetrics,
+    ) {
+        let widths = self.header_widths(columns.len(), state, env, theme, metrics);
+        let mut slot = self.slot.borrow_mut();
+        slot.prepare_columns(columns.len(), metrics);
+        slot.max_rows = 0;
+        for (index, (column, width)) in columns.iter().zip(widths).enumerate() {
+            if slot.column_widths[index] < width {
+                slot.column_widths[index] = width;
+            }
+            slot.max_rows = slot.max_rows.max(column.rows().len().snapshot());
+        }
+    }
+
+    /// Realizes the cell at `key` of `rows` if the cache does not hold it,
+    /// marking it visible this frame. `false` when the column has no row
+    /// there.
+    fn realize_cell(
+        &self,
+        key: TableCellKey,
+        rows: &impl ViewSnapshot<View = waterui_text::Text>,
+        env: &Environment,
+        renderer: &mut crate::renderer::SemanticCore<E>,
+    ) -> bool {
+        let mut cache = self.item_cache.borrow_mut();
+        if cache.touch(&key) {
+            return true;
+        }
+        let Some(cell) = rows.get_view(key.row) else {
+            return false;
+        };
+        cache
+            .entry(key, || RetainedSubview::new(cell))
+            .ensure_built(renderer, env);
+        true
+    }
+
+    /// Widens the slot's columns to the visible cells: each cell is realized
+    /// and measured from its node.
+    fn widen_to_visible_cells(
+        &self,
+        columns: &[TableColumn],
+        visible: VisibleCells,
+        renderer: &mut crate::renderer::SemanticCore<E>,
+        env: &Environment,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
+        metrics: crate::theme::TableMetrics,
+    ) {
+        let VisibleCells {
+            rows: row_window,
+            columns: col_window,
+        } = visible;
+        for (column_index, column) in columns
+            .iter()
+            .enumerate()
+            .take(col_window.end)
+            .skip(col_window.start)
+        {
+            let rows = column.rows().snapshot();
+            for row_index in row_window.start..row_window.end {
+                let key = TableCellKey {
+                    column: column_index,
+                    row: row_index,
+                };
+                if !self.realize_cell(key, &rows, env, renderer) {
+                    continue;
+                }
+                let size = self
+                    .item_cache
+                    .borrow()
+                    .get(&key)
+                    .expect("hydrolysis table: a realized cell is cached")
+                    .measure_built(renderer.state_mut(), env, theme);
+                let width = (f64::from(size.width) + metrics.cell_horizontal_padding)
+                    .max(metrics.min_column_width);
+                let mut slot = self.slot.borrow_mut();
+                if slot.column_widths[column_index] < width {
+                    slot.column_widths[column_index] = width;
+                }
+            }
         }
     }
 
@@ -136,35 +301,6 @@ impl<E: crate::text::TextEngine> TableRenderState<E> {
     }
 }
 
-impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<TableConfig> {
-    fn intrinsic(
-        state: &mut HydroState<E>,
-        view: &Self,
-        env: &Environment,
-        theme: &Rc<dyn crate::theme::WidgetTheme>,
-    ) -> LayoutSize {
-        measure_table_intrinsic(view.as_inner(), state, env, theme)
-    }
-}
-
-/// Measures a table's intrinsic size from its (reactive) columns.
-fn measure_table_intrinsic<E: crate::text::TextEngine>(
-    table: &TableConfig,
-    state: &mut HydroState<E>,
-    env: &Environment,
-    theme: &Rc<dyn crate::theme::WidgetTheme>,
-) -> LayoutSize {
-    let columns = state.measure_signal(&table.columns);
-    if columns.is_empty() {
-        return LayoutSize::zero();
-    }
-    let metrics = measure_table_metrics(&columns, state, env, theme, theme.table(env).metrics());
-    LayoutSize::new(
-        crate::num_cast::f64_as_f32(metrics.table_width),
-        crate::num_cast::f64_as_f32(metrics.table_height),
-    )
-}
-
 /// Emits a table's accessibility tree from its node-owned retained state.
 ///
 /// The rendered flush passes its [`RenderContext`] and theme: column widths and
@@ -190,20 +326,16 @@ pub fn table_accessibility<E: crate::text::TextEngine>(
     if columns.is_empty() {
         return;
     }
+    state.borrow().refresh_headers(&columns, env, renderer);
     let layout_metrics = theme.map(|theme| state.borrow().look(theme, env).metrics());
-    {
-        let state_ref = state.borrow();
-        let mut slot = state_ref.slot.borrow_mut();
-        if let Some((theme, metrics)) = theme.zip(layout_metrics) {
-            refresh_table_slot_baseline(
-                &columns,
-                &mut slot,
-                renderer.state_mut(),
-                env,
-                theme,
-                metrics,
-            );
-        } else {
+    if let Some((theme, metrics)) = theme.zip(layout_metrics) {
+        state
+            .borrow()
+            .refresh_slot_baseline(&columns, renderer.state_mut(), env, theme, metrics);
+    } else {
+        {
+            let state_ref = state.borrow();
+            let mut slot = state_ref.slot.borrow_mut();
             // The semantic walk has no theme to measure against: it keeps the
             // row count current so the scroll handle and cell emission cover
             // the full table.
@@ -289,22 +421,17 @@ pub fn table_accessibility<E: crate::text::TextEngine>(
             );
         }
         if let Some((metrics, theme)) = layout_metrics.zip(theme) {
-            {
-                let state_ref = state.borrow();
-                let mut slot = state_ref.slot.borrow_mut();
-                update_table_slot_visible_cell_widths(
-                    &columns,
-                    &mut slot,
-                    VisibleCells {
-                        rows: row_window,
-                        columns: column_window,
-                    },
-                    renderer.state_mut(),
-                    env,
-                    theme,
-                    metrics,
-                );
-            }
+            state.borrow().widen_to_visible_cells(
+                &columns,
+                VisibleCells {
+                    rows: row_window,
+                    columns: column_window,
+                },
+                renderer,
+                env,
+                theme,
+                metrics,
+            );
             let state_ref = state.borrow();
             let slot = state_ref.slot.borrow();
             column_window = resolve_visible_column_window(
@@ -339,6 +466,11 @@ pub fn table_accessibility<E: crate::text::TextEngine>(
 
         let origin_x = viewport.x0 - scroll_metrics.offset_x;
         let origin_y = viewport.y0 - scroll_metrics.offset_y;
+        // The semantic walk emits every cell: it keeps realized exactly the
+        // cells it emitted. A rendered emit leaves the frame to the flush.
+        if !rendered {
+            state.borrow().item_cache.borrow_mut().begin_frame();
+        }
         let mut x_offset = column_window.leading_offset;
         for (column_index, column) in columns
             .iter()
@@ -350,14 +482,18 @@ pub fn table_accessibility<E: crate::text::TextEngine>(
             let header_cell = layout_metrics.map_or(kurbo::Rect::ZERO, |m| {
                 table_header_cell_rect(origin_x, origin_y, x_offset, width, m)
             });
-            let header_view = AnyView::new(column.label());
             let mut header_node = AccessibilityNode::new(
                 crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
                     env,
                     AccessibilityNodeRole::ColumnHeader,
                 ),
             );
-            let default_label = renderer.accessibility_label_from_view(&header_view, env);
+            let default_label = state
+                .borrow()
+                .headers
+                .borrow()
+                .get(column_index)
+                .and_then(|(_, header)| header.accessibility_label(renderer));
             let label = renderer.resolve_accessibility_label(env, default_label);
             if let Some(label) = label {
                 header_node.set_label(label);
@@ -395,15 +531,23 @@ pub fn table_accessibility<E: crate::text::TextEngine>(
                 let cell_rect = layout_metrics.map_or(kurbo::Rect::ZERO, |m| {
                     table_data_cell_rect(origin_x, origin_y, x_offset, width, row_index, m)
                 });
-                if let Some(cell) = rows.get_view(row_index) {
-                    let cell_view = AnyView::new(cell);
+                let key = TableCellKey {
+                    column: column_index,
+                    row: row_index,
+                };
+                if state.borrow().realize_cell(key, &rows, env, renderer) {
                     let mut cell_node = AccessibilityNode::new(
                         crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
                             env,
                             AccessibilityNodeRole::Cell,
                         ),
                     );
-                    let default_label = renderer.accessibility_label_from_view(&cell_view, env);
+                    let default_label = state
+                        .borrow()
+                        .item_cache
+                        .borrow()
+                        .get(&key)
+                        .and_then(|cell| cell.accessibility_label(renderer));
                     let label = renderer.resolve_accessibility_label(env, default_label);
                     if let Some(label) = label {
                         cell_node.set_label(label);
@@ -436,6 +580,9 @@ pub fn table_accessibility<E: crate::text::TextEngine>(
             }
             x_offset += width;
         }
+        if !rendered {
+            state.borrow().item_cache.borrow_mut().end_frame();
+        }
 
         let _ = renderer.register_accessibility_leaf(
             ctx,
@@ -453,15 +600,34 @@ pub fn table_accessibility<E: crate::text::TextEngine>(
     }
 }
 
-/// Measures a table leaf from its config (intrinsic-sized; proposal-independent).
+/// Measures a table leaf: its columns' widths from their realized headers
+/// over the header and row bands (intrinsic-sized; proposal-independent).
 pub fn measure_table_node<E: crate::text::TextEngine>(
-    table: &TableConfig,
+    table: &TableRenderState<E>,
     _proposal: ProposalSize,
     state: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
-    ViewDimensions::new(measure_table_intrinsic(table, state, env, theme))
+    let columns = state.measure_signal(&table.config.columns);
+    if columns.is_empty() {
+        return ViewDimensions::new(LayoutSize::zero());
+    }
+    let metrics = table.look(theme, env).metrics();
+    let widths = table.header_widths(columns.len(), state, env, theme, metrics);
+    let max_rows = columns
+        .iter()
+        .map(|column| state.measure_signal(&column.rows().len()))
+        .max()
+        .unwrap_or(0);
+    let height = metrics.row_height.mul_add(
+        crate::num_cast::usize_as_f64(max_rows),
+        metrics.header_height,
+    );
+    ViewDimensions::new(LayoutSize::new(
+        crate::num_cast::f64_as_f32(widths.iter().sum()),
+        crate::num_cast::f64_as_f32(height),
+    ))
 }
 
 /// Renders a retained table leaf every flush.
@@ -520,18 +686,12 @@ pub fn render_table_parts<E: crate::text::TextEngine>(
     let theme = ctx.theme();
     let look = state.borrow().look(&theme, env);
     let layout_metrics = look.metrics();
-    {
-        let state_ref = state.borrow();
-        let mut slot = state_ref.slot.borrow_mut();
-        refresh_table_slot_baseline(
-            &columns,
-            &mut slot,
-            ctx.state_mut(),
-            env,
-            &theme,
-            layout_metrics,
-        );
-    }
+    state
+        .borrow()
+        .refresh_headers(&columns, env, ctx.renderer_mut());
+    state
+        .borrow()
+        .refresh_slot_baseline(&columns, ctx.state_mut(), env, &theme, layout_metrics);
     let initial_table_metrics = {
         let state_ref = state.borrow();
         table_metrics_from_slot(&state_ref.slot.borrow(), layout_metrics)
@@ -545,6 +705,7 @@ pub fn render_table_parts<E: crate::text::TextEngine>(
     // The keyboard-moving clearance runs before the cells paint: while the
     // host's keyboard animation is in flight the offset follows it frame by
     // frame, so this flush paints the field already clear.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     state
         .borrow()
         .surface
@@ -573,22 +734,17 @@ pub fn render_table_parts<E: crate::text::TextEngine>(
         let slot = state_ref.slot.borrow();
         resolve_visible_column_window(&slot.column_widths, column_span.start, column_span.end)
     };
-    {
-        let state_ref = state.borrow();
-        let mut slot = state_ref.slot.borrow_mut();
-        update_table_slot_visible_cell_widths(
-            &columns,
-            &mut slot,
-            VisibleCells {
-                rows: row_window,
-                columns: column_window,
-            },
-            ctx.state_mut(),
-            env,
-            &theme,
-            layout_metrics,
-        );
-    }
+    state.borrow().widen_to_visible_cells(
+        &columns,
+        VisibleCells {
+            rows: row_window,
+            columns: column_window,
+        },
+        ctx.renderer_mut(),
+        env,
+        &theme,
+        layout_metrics,
+    );
     let table_metrics = {
         let state_ref = state.borrow();
         table_metrics_from_slot(&state_ref.slot.borrow(), layout_metrics)
@@ -705,24 +861,19 @@ pub fn render_table_parts<E: crate::text::TextEngine>(
         let header_cell =
             table_header_cell_rect(origin_x, origin_y, x_offset, width, layout_metrics);
         let cell_horizontal_inset = layout_metrics.cell_horizontal_padding * 0.5;
-        // Render the header cell through a persistent node held in the per-widget cache,
-        // keyed by column index, instead of re-dispatching it each frame. Cell a11y is
-        // emitted by `table_accessibility`, so suppress the sub-view's own a11y
-        // (matching the old `dispatch_in_rect_without_accessibility`).
-        let header_view = AnyView::new(column.label());
         let header_rect = inset_rect(
             header_cell,
             cell_horizontal_inset,
             layout_metrics.cell_vertical_inset,
         );
-        flush_cell_subview(
-            ctx,
-            state,
-            env,
-            TableCellKey::Header(column_index),
-            header_view,
-            header_rect,
-        );
+        {
+            let state_ref = state.borrow();
+            let mut headers = state_ref.headers.borrow_mut();
+            let (_, header) = headers
+                .get_mut(column_index)
+                .expect("hydrolysis table: every column's header is realized before the flush");
+            flush_cell_subview(ctx, env, header_rect, header);
+        }
 
         let rows = column.rows().snapshot();
         for row_index in row_window.start..row_window.end {
@@ -735,19 +886,22 @@ pub fn render_table_parts<E: crate::text::TextEngine>(
                 layout_metrics,
             );
             if let Some(cell) = rows.get_view(row_index) {
-                let cell_view = AnyView::new(cell);
                 let inset = inset_rect(
                     cell_rect,
                     cell_horizontal_inset,
                     layout_metrics.cell_vertical_inset,
                 );
+                let key = TableCellKey {
+                    column: column_index,
+                    row: row_index,
+                };
+                let state_ref = state.borrow();
+                let mut cache = state_ref.item_cache.borrow_mut();
                 flush_cell_subview(
                     ctx,
-                    state,
                     env,
-                    TableCellKey::Cell(column_index, row_index),
-                    cell_view,
                     inset,
+                    cache.entry(key, move || RetainedSubview::new(cell)),
                 );
             }
             ctx.draw_context(|draw| {
@@ -779,6 +933,7 @@ pub fn render_table_parts<E: crate::text::TextEngine>(
 
     // The focused-field clearance runs after recording, over the retained
     // input targets (§7.1).
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     state
         .borrow()
         .surface
@@ -795,20 +950,14 @@ pub fn render_table_parts<E: crate::text::TextEngine>(
     );
 }
 
-/// Render one table cell's content through the per-widget [`VisibleSubviewCache`],
-/// keyed by [`TableCellKey`], instead of re-dispatching it each frame. The cache
-/// keeps a cell's node only while it stays visible (built on first appearance,
-/// evicted by `end_frame` once it scrolls out), so reactive cell content stays live
-/// across frames while virtualization is preserved. Cell a11y is emitted by
-/// `table_accessibility`, so the sub-view's own a11y is suppressed (matching the old
-/// `dispatch_in_rect_without_accessibility`).
+/// Places one table cell's retained content in `rect`. The cell's own
+/// accessibility is suppressed — `table_accessibility` emits the table's
+/// cells.
 fn flush_cell_subview<E: crate::text::TextEngine>(
     ctx: &mut WidgetRenderContext<'_, E>,
-    state: &Rc<RefCell<TableRenderState<E>>>,
     env: &Environment,
-    key: TableCellKey,
-    view: AnyView,
     rect: kurbo::Rect,
+    subview: &mut RetainedSubview<E>,
 ) {
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
@@ -816,21 +965,16 @@ fn flush_cell_subview<E: crate::text::TextEngine>(
     #[cfg(feature = "accessibility")]
     ctx.renderer_mut().push_accessibility_suppression();
     let render_ctx = ctx.render_context();
-    {
-        let state_ref = state.borrow();
-        let mut cache = state_ref.item_cache.borrow_mut();
-        let subview = cache.entry(key, move || view);
-        // A table cell is scroll content: it lays out with no §7.1
-        // context (its surface owns the edges).
-        subview.place(
-            ctx.renderer_mut(),
-            render_ctx,
-            env,
-            bounded_proposal(rect),
-            rect,
-            None,
-        );
-    }
+    // A table cell is scroll content: it lays out with no §7.1 context (its
+    // surface owns the edges).
+    subview.place(
+        ctx.renderer_mut(),
+        render_ctx,
+        env,
+        bounded_proposal(rect),
+        rect,
+        None,
+    );
     #[cfg(feature = "accessibility")]
     ctx.renderer_mut().pop_accessibility_suppression();
 }
@@ -839,6 +983,7 @@ fn flush_cell_subview<E: crate::text::TextEngine>(
 /// same nodes `table_accessibility` registers, with no bounds and every cell
 /// present.
 #[cfg(feature = "accessibility")]
+#[cfg(hydrolysis_cherenkov)]
 pub fn emit_table_accessibility<E: crate::text::TextEngine>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     state: &Rc<RefCell<TableRenderState<E>>>,

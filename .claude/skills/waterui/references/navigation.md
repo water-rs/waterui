@@ -34,11 +34,15 @@ compensate for it with an `hstack` that imitates a bar.
 
 ## Tabs
 
-`Tabs::new(&selection, tabs)` takes any `Views` collection of `Tab`s; the collection's
-element id is the tab's identity *and* the type `selection` binds, so you never name an
-`Id`. A fixed set is a `vec![Tab::container(..), ..]` selected by a `Binding<usize>`
-position. To key tabs by your own enum, build them with `ForEach` over a `List` of
-`SelfId`s:
+`Tabs::new(&selection, tabs)` takes a tab set, and each tab keeps the type of the
+builder that makes its root, so a tab reaches the backend without an `AnyView`. The set's
+id is the tab's identity *and* the type `selection` binds, so you never name an `Id`:
+
+- a tuple of tabs — `(Tab::container(..), Tab::container(..))`, up to twelve — holds tabs
+  whose roots differ and is selected by a `Binding<usize>` position;
+- a `Vec` or array of tabs sharing one builder type, also selected by position;
+- `ForEach` over a `List` of `SelfId`s keys tabs by your own enum. Its tabs share one
+  builder, so the builder returns the variant of one `OneOfN` its item picks:
 
 ```rust
 use waterui::{id::SelfId, reactive::collection::List, views::ForEach};
@@ -49,13 +53,27 @@ enum Pane { Inbox, Library, Settings, Search }
 let pane = binding(Pane::Inbox);
 let panes = [Pane::Inbox, Pane::Library, Pane::Settings, Pane::Search].map(SelfId::new);
 
-Tabs::new(&pane, ForEach::new(List::from(panes.to_vec()), move |pane: SelfId<Pane>| match *pane {
-    Pane::Inbox => Tab::container(label("Inbox").icon(mdi::inbox()), inbox_stack)
-        .badge(unread_count.clone()),
-    Pane::Library => Tab::container(label("Library").icon(mdi::image_album()), library_split),
-    Pane::Settings => Tab::container(label("Settings").icon(mdi::cog()), settings_stack),
-    Pane::Search => Tab::container(label("Search").icon(mdi::magnify()), search_stack)
-        .role(TabRole::Search),             // iOS: the trailing system search tab; elsewhere a regular tab
+Tabs::new(&pane, ForEach::new(List::from(panes.to_vec()), move |pane: SelfId<Pane>| {
+    let pane = *pane;
+    let tab = Tab::container(
+        match pane {
+            Pane::Inbox => label("Inbox").icon(mdi::inbox()),
+            Pane::Library => label("Library").icon(mdi::image_album()),
+            Pane::Settings => label("Settings").icon(mdi::cog()),
+            Pane::Search => label("Search").icon(mdi::magnify()),
+        },
+        move || match pane {
+            Pane::Inbox => OneOf4::A(inbox_stack()),
+            Pane::Library => OneOf4::B(library_split()),
+            Pane::Settings => OneOf4::C(settings_stack()),
+            Pane::Search => OneOf4::D(search_stack()),
+        },
+    );
+    match pane {
+        Pane::Inbox => tab.badge(unread_count.clone()),
+        Pane::Search => tab.role(TabRole::Search), // iOS: the trailing system search tab; elsewhere a regular tab
+        Pane::Library | Pane::Settings => tab,
+    }
 }))
 .style(tab_style::automatic())
 .minimize_behavior(TabBarMinimizeBehavior::OnScrollDown)   // iOS 26 collapses the bar while scrolling; ignored elsewhere
@@ -86,8 +104,8 @@ enum MailRoute { Message(u64), Compose }
 fn inbox_stack(mail: Mail) -> impl View {
     NavigationStack::with_path(NavigationPath::<MailRoute>::new(), inbox_root(mail.clone()))
         .destination(move |route| match route {
-            MailRoute::Message(id) => message_detail(mail.clone(), id),
-            MailRoute::Compose => compose_page(mail.clone()),
+            MailRoute::Message(id) => message_detail(mail.clone(), id).map_content(OneOf2::A),
+            MailRoute::Compose => compose_page(mail.clone()).map_content(OneOf2::B),
         })
 }
 ```
@@ -95,7 +113,11 @@ fn inbox_stack(mail: Mail) -> impl View {
 The stack's root and every destination are **`NavigationView`s** — give each page a
 `.title(..)` (which performs that conversion) or build it with
 `NavigationView::new(title, content)`; a helper returning plain `impl View` satisfies
-neither the root parameter nor the destination closure.
+neither the root parameter nor the destination closure. A `NavigationView<V>` keeps its
+content's type, so a helper returns `NavigationView<impl View>`, and destinations whose
+pages differ return the variants of one `OneOfN`:
+`message_detail(..).map_content(OneOf2::A)` and `compose_page(..).map_content(OneOf2::B)`.
+The stack builds each pushed page for its backend from the route, so no page is erased.
 
 Two ways to travel:
 
@@ -176,7 +198,7 @@ converts a plain view into the concrete **`NavigationView`** — which is theref
 return type of a helper that builds a destination:
 
 ```rust
-fn message_list_page(mail: Mail) -> NavigationView {
+fn message_list_page(mail: Mail) -> NavigationView<impl View> {
     message_list(mail)
         .title("Inbox")                             // or .title(text!("{subject}"))
         .large_title()                              // or .inline_title()
@@ -189,7 +211,7 @@ fn message_list_page(mail: Mail) -> NavigationView {
 }
 ```
 
-`SnackbarManager` is `#[state]`-marked — the window installs it through `.state()` —
+`SnackbarManager` is `#[state]`-marked — attach `.snackbar_host()` to an ancestor view —
 so the handler takes it bare rather than wrapped in `State<..>`.
 
 The rest of the destination's chrome: `.navigation_title_display_mode(NavigationTitleDisplayMode::Medium)`
@@ -319,14 +341,20 @@ App::new_with_windows(
 )
 ```
 
+The windows are a window set, and `fn app(env: Environment) -> App<impl Windows>` (with
+`waterui::app::{App, Windows}`) returns it unnamed: one `Window`, a tuple of windows whose
+contents each keep their own type, an array or `Vec` of windows with one content type, or
+`()` for none. `App::new(view, env)` declares one window, and `.window(w)` appends another.
+Each window's content and toolbar keep their types up to the backend, so nothing in the tree is erased.
+
 The `Window` builder, precisely:
 
 - `Window::new(title, state, content)` — the title is `impl IntoComputed<Str>` (a
   reactive window title is free), `state` is a `Binding<WindowState>` **by value**, and
   `content` is any `Fn() -> impl View`, so a bare function item works. An empty title
   (`App::new` uses one) is shown as the application's own name; `.title(..)` sets it later.
-  Each window installs its own overlay manager (and, with `snackbar`, its own
-  `SnackbarManager`) into its content.
+  Windows mount only their own content; attach `.snackbar_host()` or
+  `.full_screen_overlay_host::<V>()` to a root view when the window uses those overlays.
 - `.style(..)` — a `WindowStyle` or a `Binding<WindowStyle>`; exactly three variants:
   `Titled` (default), `Borderless`, `FullSizeContentView` (content extends under the
   title bar). The style is reactive: setting the binding (or
@@ -475,31 +503,35 @@ an app that opens windows on demand). iOS and Android have no windowless foregro
 their runners reject an app that declares no window whatever its policy.
 
 `conditional_window` lives only as long as the window hosting it, so it cannot reopen a
-window after the last one closed. `window.show(&env)` opens one independently of any
-view — from any handler that takes `Environment`, including `App::menu_bar` commands, which
-run under the application environment:
+window after the last one closed. `WindowManager::new()` returns a `(WindowManager<C>, WindowChannel<C>)`
+pair: pass `channel` to `App::new_with_windows` (or `App::window(channel)` alongside initial
+windows) so the runner monomorphizes `C` directly into its root window type, and call
+`window.show(&windows)` from any handler — including `App::menu_bar` commands, or nested
+handlers when `.state(&windows)` is attached:
 
 ```rust
-use waterui::app::{App, LastWindowPolicy, QuitReply};
-use waterui::window::{Window, WindowState};
+use waterui::app::{App, AppMenuBar, LastWindowPolicy, QuitReply, Windows};
+use waterui::window::{Window, WindowManager, WindowState};
 
-fn app(env: Environment) -> App {
-    App::new_with_windows(Vec::<Window>::new(), env)
+fn app(env: Environment) -> App<impl Windows, impl AppMenuBar> {
+    let (windows, channel) = WindowManager::new();
+    App::new_with_windows(channel, env)
         .on_last_window_closed(LastWindowPolicy::StayResident)
         .on_quit_request(|| async { QuitReply::Quit })
         .on_terminate(|| async {})
         .menu_bar(Menu::new(
             "App",
-            "New Window".action(|env: Environment| {
-                Window::new("Scratch", binding(WindowState::Normal), scratch_content).show(&env);
+            "New Window".action(move || {
+                Window::new("Scratch", binding(WindowState::Normal), scratch_content)
+                    .show(&windows);
             }),
         ))
 }
 ```
 
-The window's state binding must start at `Normal` here: `show` opens it as declared. An
-environment with no window manager is a contract violation (a debug panic, a logged error
-in release).
+The window's state binding must start at `Normal` here: `show` opens it as declared. Showing a
+window after its `WindowChannel` was dropped without being handed to a runner is a contract
+violation (a debug panic, a logged error in release).
 
 Quitting: `App::on_quit_request(handler)` is asked on a *cancellable* quit (menu Quit,
 the platform quit gesture, `MenuItem::Quit`, `Quit::request`) and its future must return

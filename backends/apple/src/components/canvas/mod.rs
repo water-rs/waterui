@@ -18,13 +18,12 @@ mod resources;
 mod text;
 mod tree;
 
+use crate::contract::{NativeLeaf, RenderContext};
 use waterui_graphics::canvas::CanvasView;
 
-use crate::dispatch::Dispatcher;
-
-/// Installs the `Native<CanvasView>` handler.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<CanvasView>(host::mount);
+/// The `Native<CanvasView>` realization.
+pub fn realize_canvas_view(value: CanvasView, ctx: &RenderContext<'_>) -> NativeLeaf {
+    host::mount(value, ctx)
 }
 
 #[cfg(test)]

@@ -1,8 +1,7 @@
+#[cfg(feature = "accessibility")]
+use crate::renderer::RenderContext;
 use crate::renderer::live_progress::LiveProgressParts;
-use crate::renderer::{
-    HydroNativeView, HydroState, RenderContext, RetainedSubview, WidgetRenderContext,
-    measure_progress_intrinsic,
-};
+use crate::renderer::{HeldChild, HydroState, RetainedSubview, WidgetRenderContext};
 use crate::theme::{
     IndicatorLook, LinearProgressLook, ProgressControl, ProgressSpec, SpecTint, WidgetTheme,
 };
@@ -15,7 +14,6 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use waterui::component::progress::{ProgressConfig, ProgressStyle};
 use waterui_core::Environment;
-use waterui_core::Native;
 use waterui_core::contract_violation;
 use waterui_core::layout::Size as LayoutSize;
 use waterui_core::layout::{ProposalSize, ViewDimensions};
@@ -141,7 +139,20 @@ pub struct ProgressRenderState<E: crate::text::TextEngine> {
 }
 
 impl<E: crate::text::TextEngine> ProgressRenderState<E> {
-    pub(crate) fn from_config(config: ProgressConfig) -> Self {
+    /// The label a progress view contributes to a node naming itself from
+    /// its content: its label, else its value label.
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn contributed_label(
+        &self,
+        renderer: &mut crate::renderer::SemanticCore<E>,
+        _env: &Environment,
+    ) -> Option<String> {
+        self.label
+            .accessibility_label(renderer)
+            .or_else(|| self.value_label.accessibility_label(renderer))
+    }
+
+    pub(crate) fn from_config(config: ProgressConfig<HeldChild<E>>) -> Self {
         let (label, value_label, value, style, four_color) = config.into_parts();
         let determinate = Binding::container(value.snapshot().is_finite());
         let determinacy = value.watch({
@@ -154,8 +165,8 @@ impl<E: crate::text::TextEngine> ProgressRenderState<E> {
             }
         });
         Self {
-            label: RetainedSubview::new(label),
-            value_label: RetainedSubview::new(value_label),
+            label: RetainedSubview::held(label),
+            value_label: RetainedSubview::held(value_label),
             value,
             style,
             four_color,
@@ -219,34 +230,10 @@ impl<E: crate::text::TextEngine> ProgressRenderState<E> {
     }
 }
 
-impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<ProgressConfig> {
-    fn intrinsic(
-        state: &mut HydroState<E>,
-        view: &Self,
-        env: &Environment,
-        theme: &Rc<dyn crate::theme::WidgetTheme>,
-    ) -> LayoutSize {
-        measure_progress_intrinsic(view.as_inner(), state, env, theme)
-    }
-}
-
-/// The measured size of the indicator `config` describes, from its labels'
-/// measured sizes.
-pub fn progress_size(
-    theme: &Rc<dyn WidgetTheme>,
-    style: ProgressStyle,
-    four_color: bool,
-    determinate: bool,
-    labels: (LayoutSize, LayoutSize),
-    env: &Environment,
-) -> LayoutSize {
-    let spec = progress_spec(style, four_color, determinate, labels, env);
-    ProgressLook::resolve(theme, &spec, env).size(ProgressLook::spec_bands(&spec, labels))
-}
-
-/// Emits a progress indicator's accessibility node. Shared by the dispatch path
-/// (passing the config label's extracted default text) and the retained node path
-/// (passing the [`RetainedSubview`]'s build-time default text).
+/// Emits a progress indicator's accessibility node, named by `default_label`
+/// — the label its retained label sub-view derives now — unless the
+/// environment names it.
+#[cfg(feature = "accessibility")]
 pub fn progress_accessibility<E: crate::text::TextEngine>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     ctx: Option<RenderContext>,
@@ -254,33 +241,26 @@ pub fn progress_accessibility<E: crate::text::TextEngine>(
     value: &Computed<f64>,
     env: &Environment,
 ) {
-    #[cfg(feature = "accessibility")]
-    {
-        let mut node = AccessibilityNode::new(
-            crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
-                env,
-                AccessibilityNodeRole::ProgressIndicator,
-            ),
-        );
-        let resolved = renderer.resolve_accessibility_label(env, default_label);
-        if let Some(resolved) = resolved {
-            node.set_label(resolved);
-        }
-        if let Some(value) = renderer.resolve_accessibility_value(env, None) {
-            node.set_value(value);
-        }
-        node.set_min_numeric_value(0.0);
-        node.set_max_numeric_value(1.0);
-        let current = renderer.read_signal(value);
-        if current.is_finite() {
-            node.set_numeric_value(current.clamp(0.0, 1.0));
-        }
-        let _ = renderer.register_accessibility_leaf(ctx, node, env, None);
+    let mut node = AccessibilityNode::new(
+        crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
+            env,
+            AccessibilityNodeRole::ProgressIndicator,
+        ),
+    );
+    let resolved = renderer.resolve_accessibility_label(env, default_label);
+    if let Some(resolved) = resolved {
+        node.set_label(resolved);
     }
-    #[cfg(not(feature = "accessibility"))]
-    {
-        let _ = (renderer, ctx, default_label, value, env);
+    if let Some(value) = renderer.resolve_accessibility_value(env, None) {
+        node.set_value(value);
     }
+    node.set_min_numeric_value(0.0);
+    node.set_max_numeric_value(1.0);
+    let current = renderer.read_signal(value);
+    if current.is_finite() {
+        node.set_numeric_value(current.clamp(0.0, 1.0));
+    }
+    let _ = renderer.register_accessibility_leaf(ctx, node, env, None);
 }
 
 /// Measures a retained progress leaf from its [`ProgressRenderState`], reading
@@ -321,14 +301,18 @@ pub fn render_progress_node<E: crate::text::TextEngine>(
     state: &Rc<RefCell<ProgressRenderState<E>>>,
     env: &Environment,
 ) {
-    let hidden = env
+    #[cfg(feature = "accessibility")]
+    if !env
         .get::<waterui::accessibility::AccessibilityHidden>()
-        .is_some_and(waterui::accessibility::AccessibilityHidden::is_hidden);
-    if !hidden {
+        .is_some_and(waterui::accessibility::AccessibilityHidden::is_hidden)
+    {
         let render_ctx = ctx.render_context();
         let (default_label, value) = {
             let progress = state.borrow();
-            (progress.label.default_a11y_label(), progress.value.clone())
+            (
+                progress.label.accessibility_label(ctx.renderer_mut()),
+                progress.value.clone(),
+            )
         };
         progress_accessibility(
             ctx.renderer_mut(),
@@ -419,6 +403,7 @@ fn place_label<E: crate::text::TextEngine>(
 /// The label and value-label sub-views flush visual-only, so there is nothing
 /// else to emit.
 #[cfg(feature = "accessibility")]
+#[cfg(hydrolysis_cherenkov)]
 pub fn emit_progress_accessibility<E: crate::text::TextEngine>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     state: &Rc<RefCell<ProgressRenderState<E>>>,
@@ -426,7 +411,10 @@ pub fn emit_progress_accessibility<E: crate::text::TextEngine>(
 ) {
     let (default_label, value) = {
         let progress = state.borrow();
-        (progress.label.default_a11y_label(), progress.value.clone())
+        (
+            progress.label.accessibility_label(renderer),
+            progress.value.clone(),
+        )
     };
     progress_accessibility(renderer, None, default_label, &value, env);
 }

@@ -346,10 +346,11 @@ impl core::fmt::Debug for RealizedScene {
 #[must_use]
 pub fn realize_into_shown_scene(
     mtm: MainThreadMarker,
-    declaration: &waterui::window::Window,
+    declaration: waterui::window::Window<impl waterui::handler::ViewBuilder>,
     env: &Environment,
     window: cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIWindow>,
 ) -> RealizedScene {
+    let declaration = crate::windows::root_window(declaration);
     let controller = cocoa_ui::uikit::ViewController::new(mtm, cocoa_ui::uikit::window_root(mtm));
     window.setRootViewController(Some(&controller));
     window.makeKeyAndVisible();
@@ -371,7 +372,7 @@ pub fn realize_into_shown_scene(
         &waterui::graphics::Color::new(waterui::theme::color::Background).resolve(&env),
     );
     let host = crate::windows::realize(
-        declaration,
+        &declaration,
         crate::windows::Pending {
             session_id: String::new(),
             window: window.clone(),
@@ -508,17 +509,27 @@ use waterui::window::{WindowBackground, WindowState, WindowStyle};
 #[cfg(target_os = "macos")]
 use waterui_core::layout::{Point, Rect, Size};
 
-/// Checks that native service installation provides a window manager.
-///
-/// Uses the embedding runtime's installer after installing the dispatcher.
+/// Checks that connecting a `WindowChannel` drains pre-queued windows as
+/// typed `RootWindow` declarations without erasing through `Environment`.
 ///
 /// # Panics
-/// Panics if service installation does not provide a window manager.
-pub fn manager_installs_into_the_environment(_mtm: MainThreadMarker) {
+/// Panics if the queued window declaration is lost or altered.
+pub fn channel_connects_typed_declarations(_mtm: MainThreadMarker) {
     let mut env = Environment::new();
     crate::dispatch::install(&mut env);
-    crate::embedding::install_services(&mut env);
-    assert!(env.get::<WindowManager>().is_some());
+    let (manager, channel) = WindowManager::new();
+    waterui::window::Window::new(
+        "Queued Root",
+        waterui::reactive::binding(waterui::window::WindowState::Closed),
+        || (),
+    )
+    .show(&manager);
+    let declarations = crate::windows::connect_windows(channel, &env);
+    assert_eq!(declarations.len(), 1);
+    assert_eq!(
+        waterui::reactive::Signal::snapshot(&declarations[0].title).as_str(),
+        "Queued Root"
+    );
 }
 
 /// The environment `embedding` prepares for a window's mount on macOS.
@@ -535,7 +546,6 @@ pub fn manager_installs_into_the_environment(_mtm: MainThreadMarker) {
 pub fn window_environment(mtm: MainThreadMarker) -> (Environment, crate::theme::ThemeSignals) {
     let mut env = Environment::new();
     crate::dispatch::install(&mut env);
-    crate::embedding::install_services(&mut env);
     let theme = crate::theme::install(
         &mut env,
         cocoa_ui::appkit::Application::shared(mtm).color_scheme(),
@@ -925,7 +935,11 @@ pub mod toolbar_reach {
 
     /// The fixtures' list: three plain rows.
     fn rows() -> impl waterui::View {
-        List::content(vec![row_item as fn() -> ListItem; 3])
+        List::content(vec![
+            row_item
+                as fn() -> ListItem<waterui::component::text::Text>;
+            3
+        ])
     }
 
     /// Window → `NavigationStack` → page whose content is a `List`.
@@ -949,7 +963,11 @@ pub mod toolbar_reach {
             || {
                 NavigationStack::new(NavigationView::new(
                     "Inbox",
-                    List::content(vec![row_item as fn() -> ListItem; 60]),
+                    List::content(vec![
+                        row_item
+                            as fn() -> ListItem<waterui::component::text::Text>;
+                        60
+                    ]),
                 ))
             },
             false,
@@ -996,16 +1014,17 @@ pub mod toolbar_reach {
 
     /// `Tabs` whose first tab is a `NavigationStack` over `inbox`, each tab
     /// a `Tab::container` — the picker sits in the window toolbar.
-    fn tabbed(inbox: impl Fn() -> NavigationView + 'static) -> impl waterui::View {
-        let inbox = std::rc::Rc::new(inbox);
+    fn tabbed<V: waterui::View>(
+        inbox: impl Fn() -> NavigationView<V> + 'static,
+    ) -> impl waterui::View {
         Tabs::new(
             &binding(0usize),
-            vec![
+            (
                 Tab::container("Inbox", move || NavigationStack::new(inbox())),
                 Tab::container("Settings", || {
                     NavigationStack::new(NavigationView::new("Settings", text("settings")))
                 }),
-            ],
+            ),
         )
     }
 
@@ -1051,7 +1070,7 @@ pub mod toolbar_reach {
         let content = std::rc::Rc::new(content);
         Tabs::new(
             &binding(0usize),
-            vec![
+            (
                 Tab::container("Inbox", move || {
                     NavigationStack::with_path(
                         NavigationPath::<u64>::new(),
@@ -1068,7 +1087,7 @@ pub mod toolbar_reach {
                 Tab::container("Settings", || {
                     NavigationStack::new(NavigationView::new("Settings", text("settings")))
                 }),
-            ],
+            ),
         )
         .style(tab_style::Automatic)
     }
@@ -1128,19 +1147,19 @@ pub mod gpu_surface {
 }
 
 /// Re-exports the transition clock a trial drives by hand.
-#[cfg(feature = "transition_sites")]
 pub mod transition {
     pub use crate::transition::clock::ManualTransitionClock;
 }
 
-/// Re-exports the pieces a `ViewRenderer::render` trial needs.
+/// Re-exports the pieces an [`OffscreenRenderer`](waterui_capture::OffscreenRenderer) trial needs.
 ///
-/// The service installer, the shared-runtime handles a sealed generation
-/// is reached through, and the failure carriers the cause chain asserts
-/// on.
+/// The Apple backend/offscreen renderer, the shared-runtime handles a sealed
+/// generation is reached through, and the failure carriers the cause chain
+/// asserts on.
 #[cfg(all(target_os = "macos", feature = "gpu_surface"))]
 pub mod view_renderer {
-    pub use crate::components::view_renderer::install_service;
+    pub use crate::backend::AppleBackend;
+    pub use crate::components::view_renderer::AppleOffscreenRenderer;
     pub use crate::gpu_runtime::{EngineGeneration, SceneEngine, scene_engine};
     pub use waterui_graphics::gpu::GpuRuntime;
     pub use waterui_graphics::gpu::runtime::HostedLayerError;
@@ -1160,28 +1179,19 @@ pub mod filtered {
 
 /// The web view leaf's harness reach.
 ///
-/// Opens a real `WKWebView` through the same late install an application
-/// gets — `install_service` fills the environment's `WebViewController`
-/// slot exactly the way `embedding::mount` does — so a case can drive the
-/// engine without mounting a view tree.
+/// Opens a real `WKWebView` through the backend's [`AppleWebViewController`]
+/// so a case can drive the engine without mounting a view tree.
 #[cfg(feature = "webview")]
 pub mod webview {
     use cocoa_ui::MainThreadMarker;
-    use waterui_backend_core::Environment;
 
-    /// The `WebViewController` the leaf's `install_service` installs.
+    /// The Apple backend's [`WebViewController`](waterui_webview::WebViewController).
     ///
-    /// This is the same construction `open` drives, so a case that opens
-    /// several views shares the one service install. `mtm` is the proof
-    /// the call happened on the real main thread, which `WKWebView`
-    /// requires.
+    /// `mtm` is the proof the call happened on the real main thread, which
+    /// `WKWebView` requires.
     #[must_use]
-    pub fn controller(_mtm: MainThreadMarker) -> waterui_webview::WebViewController {
-        let mut env = Environment::new();
-        crate::components::webview::install_service(&mut env);
-        env.get::<waterui_webview::WebViewController>()
-            .expect("the webview leaf installs its WebViewController")
-            .clone()
+    pub fn controller(_mtm: MainThreadMarker) -> impl waterui_webview::WebViewController {
+        crate::components::webview::AppleWebViewController
     }
 
     /// A fresh `WebView` backed by the backend's own `WKWebView`, never
@@ -1189,7 +1199,7 @@ pub mod webview {
     /// thread, which `WKWebView` requires.
     #[must_use]
     pub fn open(mtm: MainThreadMarker) -> waterui_webview::WebView {
-        controller(mtm).open()
+        waterui_webview::open_webview(&controller(mtm))
     }
 }
 
@@ -1357,7 +1367,6 @@ pub fn install_gpu(
         env,
         objc2::MainThreadMarker::new().expect("GPU owners install on the main thread"),
     );
-    crate::components::view_renderer::install_service(env);
     // The dispatcher captures the environment at install time — re-run
     // the install so its root env sees the GPU services just inserted
     // (`handler.set`-driven remounts render through it).
@@ -2165,15 +2174,15 @@ pub fn scroll_surface(
 /// The list suites' row body — identical one-line rows; the cases assert
 /// positions, not labels.
 #[must_use]
-pub fn row_item() -> waterui::component::list::ListItem {
+pub fn row_item() -> waterui::component::list::ListItem<waterui::component::text::Text> {
     waterui::component::list::ListItem::new(waterui::prelude::text("row"))
 }
 
 /// The list suites' table, rendered but not mounted: `rows` in a list
 /// driven by `controller`, with the leaf that owns its wiring.
 #[must_use]
-pub fn row_list(
-    rows: Vec<fn() -> waterui::component::list::ListItem>,
+pub fn row_list<V: waterui::View>(
+    rows: Vec<fn() -> waterui::component::list::ListItem<V>>,
     controller: &waterui::layout::scroll::ScrollController<usize>,
 ) -> (crate::contract::NativeLeaf, cocoa_ui::Retained<ListSurface>) {
     use objc2::Message;
@@ -2462,10 +2471,10 @@ pub mod chrome_top {
             || {
                 Tabs::new(
                     &binding(0usize),
-                    vec![
+                    (
                         Tab::container("First", || text(MARKER)),
                         Tab::container("Second", || text("second")),
-                    ],
+                    ),
                 )
                 .style(tab_style::Automatic)
             },

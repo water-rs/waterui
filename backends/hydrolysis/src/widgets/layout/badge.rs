@@ -2,14 +2,12 @@ use nami::{Computed, Signal};
 use std::cell::RefCell;
 use std::rc::Rc;
 use waterui::component::badge::BadgeConfig;
-use waterui_core::layout::{HorizontalAlignment, ProposalSize, Size as LayoutSize, ViewDimensions};
-use waterui_core::{Environment, Native};
+use waterui_core::Environment;
+use waterui_core::layout::{HorizontalAlignment, ProposalSize, ViewDimensions};
 use waterui_text::styled::StyledStr;
 
 use crate::renderer::{
-    HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, RetainedSubview,
-    WidgetRenderContext, measure_transient_view_intrinsic, measure_view_dimensions_with_proposal,
-    normalize_view_for_render,
+    HeldChild, HydroState, HydrolysisRenderer, RenderContext, RetainedSubview, WidgetRenderContext,
 };
 use crate::theme::BadgeLook;
 #[cfg(feature = "accessibility")]
@@ -26,11 +24,11 @@ pub struct BadgeRenderState<E: crate::text::TextEngine> {
 }
 
 impl<E: crate::text::TextEngine> BadgeRenderState<E> {
-    pub(crate) fn from_config(config: BadgeConfig) -> Self {
+    pub(crate) fn from_config(config: BadgeConfig<HeldChild<E>>) -> Self {
         let BadgeConfig { value, content, .. } = config;
         Self {
             value,
-            content: RetainedSubview::new(content.build()),
+            content: RetainedSubview::held(content),
         }
     }
 
@@ -52,42 +50,10 @@ impl<E: crate::text::TextEngine> BadgeRenderState<E> {
     }
 }
 
-fn badge_content_size<E: crate::text::TextEngine>(
-    state: &mut HydroState<E>,
-    badge: &Native<BadgeConfig>,
-    env: &Environment,
-    theme: &Rc<dyn crate::theme::WidgetTheme>,
-) -> LayoutSize {
-    let content = normalize_view_for_render(badge.as_inner().content.build(), env);
-    measure_transient_view_intrinsic(&content, state, env, theme)
-}
-
 fn badge_large_label(value: i32, look: &BadgeLook) -> StyledStr {
     StyledStr::plain(value.to_string())
         .font(look.label_font().clone())
         .foreground(look.label_color().clone())
-}
-
-impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<BadgeConfig> {
-    fn intrinsic(
-        state: &mut HydroState<E>,
-        badge: &Self,
-        env: &Environment,
-        theme: &Rc<dyn crate::theme::WidgetTheme>,
-    ) -> LayoutSize {
-        badge_content_size(state, badge, env, theme)
-    }
-
-    fn dimensions(
-        state: &mut HydroState<E>,
-        badge: &Self,
-        env: &Environment,
-        theme: &Rc<dyn crate::theme::WidgetTheme>,
-        proposal: ProposalSize,
-    ) -> ViewDimensions {
-        let content = normalize_view_for_render(badge.as_inner().content.build(), env);
-        measure_view_dimensions_with_proposal(&content, proposal, state, env, theme)
-    }
 }
 
 /// Measures a retained badge leaf from its [`BadgeRenderState`]: the badge sizes
@@ -238,6 +204,7 @@ pub fn draw_badge_indicator<E: crate::text::TextEngine>(
 /// count indicator's `Label` node — a vector-drawn badge value is otherwise
 /// invisible to assistive technology.
 #[cfg(feature = "accessibility")]
+#[cfg(hydrolysis_cherenkov)]
 pub fn emit_badge_accessibility<E: crate::text::TextEngine>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     state: &Rc<RefCell<BadgeRenderState<E>>>,

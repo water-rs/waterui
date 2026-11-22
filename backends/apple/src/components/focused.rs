@@ -26,9 +26,9 @@ use waterui_core::layout::{
     ViewDimensions,
 };
 
-use crate::contract::{Mounted, NativeLeaf};
-use crate::dispatch::Dispatcher;
+use crate::contract::{Held, Mounted, NativeLeaf};
 
+use crate::contract::RenderContext;
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::HostView;
 #[cfg(target_os = "ios")]
@@ -138,86 +138,87 @@ impl SubView for FocusedSubView {
     }
 }
 
-/// Installs the `focused` handler on the dispatcher: `Metadata<Focused>`
+/// The `focused` realization: `Metadata<Focused>`
 /// maps to a transparent container that keeps the child's focus anchor
 /// and the `Binding<bool>` in sync both ways.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_view::<Metadata<Focused>>(|metadata, ctx| {
-        let mtm = ctx.mtm();
-        let host = HostView::new(mtm, Rect::ZERO);
-        let host_view: &PlatformView = &host;
-        let mounted = ctx.render(metadata.content).mount(host_view);
-        // §7.1: the fill answer resolves through the `cocoaUiPrimaryContent`
-        // chain — `Color.opacity(..)` in a background slot stays a fill.
-        crate::primary_content::forward(&host, mounted.view());
+pub fn realize_focused_metadata(
+    metadata: Metadata<Focused, Held>,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    let mtm = ctx.mtm();
+    let host = HostView::new(mtm, Rect::ZERO);
+    let host_view: &PlatformView = &host;
+    let mounted = ctx.realize(metadata.content).mount(host_view);
+    // §7.1: the fill answer resolves through the `cocoaUiPrimaryContent`
+    // chain — `Color.opacity(..)` in a background slot stays a fill.
+    crate::primary_content::forward(&host, mounted.view());
 
-        // The wrapper lays its child out over its full bounds —
-        // `WuiFocused`'s `contentView.frame = bounds`.
-        host.set_layout_handler({
-            let child = view::retain_base(mounted.view());
-            move |view| view::set_frame(&child, bounds(view))
-        });
-
-        let state = Rc::new(FocusedState { child: mounted });
-
-        let mut leaf = NativeLeaf::new(
-            host_view,
-            FocusedSubView {
-                state: Rc::clone(&state),
-            },
-        );
-
-        // `requireSingleWuiFocusTarget`: exactly one anchor in the subtree.
-        // Without one the wrapper stays a transparent container.
-        let Some(target) = require_single_target(focus::targets_in(host_view)) else {
-            leaf.keep(state);
-            return leaf;
-        };
-
-        let sync = Rc::new(FocusSync {
-            container: cocoa_ui::objc2::rc::Weak::new(&*view::retain_base(host_view)),
-            target,
-            binding: metadata.value.0,
-            scheduled: Cell::new(false),
-        });
-
-        // `didMoveToWindow`/`viewDidMoveToWindow` re-drives the sync: a
-        // request that arrived before the window did is replayed on attach.
-        host.set_window_handler({
-            let sync = Rc::clone(&sync);
-            move |_| request_sync(&sync, mtm)
-        });
-
-        // The objects the watchers fire on are kept first so the guards
-        // — kept after — drop before them (reverse insertion order).
-        leaf.keep(state);
-        leaf.keep(Rc::clone(&sync));
-
-        // Platform → binding: an editing-begin/end on the anchor writes
-        // back when it disagrees, so a user-driven focus change lands in
-        // the binding instead of being overwritten.
-        leaf.keep(sync.target.on_change({
-            let sync = Rc::clone(&sync);
-            move |has_focus| {
-                if sync.binding.snapshot() != has_focus {
-                    sync.binding.set(has_focus);
-                }
-            }
-        }));
-
-        // Binding → platform: every external write schedules a sync.
-        let binding = sync.binding.clone();
-        leaf.watch(&binding, {
-            let sync = Rc::clone(&sync);
-            move |_ctx| request_sync(&sync, mtm)
-        });
-
-        // The initial value's sync: deferred until the view reaches a
-        // window, as `syncRequestedFocusState` already is.
-        request_sync(&sync, mtm);
-
-        leaf
+    // The wrapper lays its child out over its full bounds —
+    // `WuiFocused`'s `contentView.frame = bounds`.
+    host.set_layout_handler({
+        let child = view::retain_base(mounted.view());
+        move |view| view::set_frame(&child, bounds(view))
     });
+
+    let state = Rc::new(FocusedState { child: mounted });
+
+    let mut leaf = NativeLeaf::new(
+        host_view,
+        FocusedSubView {
+            state: Rc::clone(&state),
+        },
+    );
+
+    // `requireSingleWuiFocusTarget`: exactly one anchor in the subtree.
+    // Without one the wrapper stays a transparent container.
+    let Some(target) = require_single_target(focus::targets_in(host_view)) else {
+        leaf.keep(state);
+        return leaf;
+    };
+
+    let sync = Rc::new(FocusSync {
+        container: cocoa_ui::objc2::rc::Weak::new(&*view::retain_base(host_view)),
+        target,
+        binding: metadata.value.0,
+        scheduled: Cell::new(false),
+    });
+
+    // `didMoveToWindow`/`viewDidMoveToWindow` re-drives the sync: a
+    // request that arrived before the window did is replayed on attach.
+    host.set_window_handler({
+        let sync = Rc::clone(&sync);
+        move |_| request_sync(&sync, mtm)
+    });
+
+    // The objects the watchers fire on are kept first so the guards
+    // — kept after — drop before them (reverse insertion order).
+    leaf.keep(state);
+    leaf.keep(Rc::clone(&sync));
+
+    // Platform → binding: an editing-begin/end on the anchor writes
+    // back when it disagrees, so a user-driven focus change lands in
+    // the binding instead of being overwritten.
+    leaf.keep(sync.target.on_change({
+        let sync = Rc::clone(&sync);
+        move |has_focus| {
+            if sync.binding.snapshot() != has_focus {
+                sync.binding.set(has_focus);
+            }
+        }
+    }));
+
+    // Binding → platform: every external write schedules a sync.
+    let binding = sync.binding.clone();
+    leaf.watch(&binding, {
+        let sync = Rc::clone(&sync);
+        move |_ctx| request_sync(&sync, mtm)
+    });
+
+    // The initial value's sync: deferred until the view reaches a
+    // window, as `syncRequestedFocusState` already is.
+    request_sync(&sync, mtm);
+
+    leaf
 }
 
 /// `requireSingleWuiFocusTarget`: `Metadata<Focused>` wraps exactly one

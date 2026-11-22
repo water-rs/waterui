@@ -5,15 +5,19 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::renderer::recording::transform_paint;
+#[cfg(feature = "menu")]
 use waterui::app::Quit;
-use waterui_core::handler::ReportExtraction as _;
 
+#[cfg(feature = "menu")]
+use waterui_core::handler::ReportExtraction as _;
+#[cfg(feature = "slider")]
 pub fn slider_value_epsilon(span: f64, track_width: f64) -> f64 {
     (span / track_width).abs().max(f64::EPSILON)
 }
 
 /// Runs `action` for its effect: a result is discarded, and an action whose
 /// parameters cannot be extracted does not run and is reported.
+#[cfg(feature = "menu")]
 pub fn call_action_discarding_result<T: 'static>(action: &SharedAction<T>, env: &Environment) {
     action.call(env).report_extraction();
 }
@@ -24,6 +28,7 @@ pub fn call_action_discarding_result<T: 'static>(action: &SharedAction<T>, env: 
 /// `MenuItem::CloseWindow` becomes the row [`close_window_command`] builds
 /// — disabled for a non-closable `owner_closable` — and is omitted where
 /// the host's windows cannot be closed.
+#[cfg(feature = "menu")]
 pub fn popup_menu_nodes(
     items: &[ResolvedMenuItem],
     env: &Environment,
@@ -36,6 +41,7 @@ pub fn popup_menu_nodes(
         .collect()
 }
 
+#[cfg(feature = "menu")]
 fn popup_menu_node(
     item: ResolvedMenuItem,
     env: &Environment,
@@ -51,18 +57,12 @@ fn popup_menu_node(
         }
         ResolvedMenuItem::Divider => Some(PopupMenuNode::Divider),
         ResolvedMenuItem::Menu(menu) => {
-            let styled = menu.label.content().snapshot() + StyledStr::plain(" ›");
-            let plain_label = styled.to_plain().to_string();
+            let styled_label = menu.label.content().snapshot() + StyledStr::plain(" ›");
+            let plain_label = styled_label.to_plain().to_string();
             let semantic_text = menu.semantic_label.semantic_text().clone();
-            let label = SemanticLabel::new(semantic_text, move || {
-                AnyView::new(
-                    waterui_layout::frame::Frame::new(Text::new(styled.clone()))
-                        .alignment(waterui_layout::alignment::Leading)
-                        .max_width(f32::INFINITY),
-                )
-            });
             Some(PopupMenuNode::Menu {
-                label,
+                semantic_text,
+                styled_label,
                 plain_label,
                 items: popup_menu_nodes(&menu.items.snapshot(), env, owner_closable),
             })
@@ -70,52 +70,27 @@ fn popup_menu_node(
     }
 }
 
-#[expect(
-    clippy::option_if_let_else,
-    reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
-)]
+#[cfg(feature = "menu")]
 fn command_node(command: ResolvedCommand) -> PopupMenuNode {
-    let mut styled = command.label.content().snapshot();
+    let mut styled_label = command.label.content().snapshot();
     if command.selected.snapshot() {
-        styled = StyledStr::plain("✓ ") + styled;
+        styled_label = StyledStr::plain("✓ ") + styled_label;
     }
     // The destructive role lives in the styled label itself: an explicit
     // span colour survives the button's environment-level foreground,
     // so the theme's error colour wins (water-rs/hydrolysis#200).
     if command.role == CommandRole::Destructive {
-        styled = styled.foreground(waterui::Color::new(waterui::theme::color::Error));
+        styled_label = styled_label.foreground(waterui::Color::new(waterui::theme::color::Error));
     }
-    let plain_label = styled.to_plain().to_string();
-    // `Label::new` keeps the semantic text for accessibility while the
-    // custom content fills the row's label slot and aligns it leading —
-    // plain and subtitled rows share one leading edge.
+    let plain_label = styled_label.to_plain().to_string();
     let semantic_text = command.semantic_label.semantic_text().clone();
-    let subtitle = command.subtitle.clone();
-    let shortcut = command.shortcut.clone();
-    let label = SemanticLabel::new(semantic_text, move || {
-        let leading = match subtitle.clone() {
-            Some(subtitle) => AnyView::new(
-                waterui_layout::stack::vstack((
-                    Text::new(styled.clone()),
-                    waterui_text::text(subtitle).caption().muted(),
-                ))
-                .alignment(HorizontalAlignment::Leading)
-                .spacing(0.0),
-            ),
-            None => AnyView::new(Text::new(styled.clone())),
-        };
-        AnyView::new(
-            waterui_layout::frame::Frame::new(leading)
-                .alignment(waterui_layout::alignment::Leading)
-                .max_width(f32::INFINITY),
-        )
-    });
     PopupMenuNode::Command {
-        label,
+        semantic_text,
+        styled_label,
         plain_label,
         action: command.action,
         disabled: command.disabled,
-        shortcut,
+        shortcut: command.shortcut,
         subtitle: command.subtitle,
     }
 }
@@ -346,9 +321,8 @@ pub fn str_accessibility<E: crate::text::TextEngine>(
     }
 }
 
-/// Measures a retained string leaf from its immutable content, mirroring how
-/// [`measure_view_dimensions_with_proposal`] measures a `Str` (plain styled text,
-/// leading alignment, wrapped at the proposal width).
+/// Measures a retained string leaf from its immutable content: plain styled
+/// text, leading alignment, wrapped at the proposal width.
 pub fn measure_str_node<E: crate::text::TextEngine>(
     text: &Str,
     proposal: ProposalSize,
@@ -393,6 +367,7 @@ pub fn render_str_parts<E: crate::text::TextEngine>(
 /// Emits a retained `Str` leaf's accessibility node for the semantic walk —
 /// the same node `str_accessibility` registers, with no bounds.
 #[cfg(feature = "accessibility")]
+#[cfg(hydrolysis_cherenkov)]
 pub fn emit_str_accessibility<E: crate::text::TextEngine>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     text: &Rc<RefCell<Str>>,
@@ -405,6 +380,7 @@ pub fn emit_str_accessibility<E: crate::text::TextEngine>(
 /// walk — the same node `graphics_image_accessibility` registers, with no
 /// bounds.
 #[cfg(feature = "accessibility")]
+#[cfg(hydrolysis_cherenkov)]
 pub fn emit_graphics_leaf_accessibility<T, E: crate::text::TextEngine>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     _state: &Rc<RefCell<T>>,

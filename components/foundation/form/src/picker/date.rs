@@ -5,17 +5,17 @@ use core::ops::RangeInclusive;
 
 pub use jiff::civil::{Date, DateTime, Time};
 use nami::Binding;
-use waterui_controls::label::Label;
+use waterui_controls::label::{ControlLabel, Label, LabelKind};
 use waterui_controls::{IntoLabel, impl_label_style_methods};
-use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
+use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::{AnyView, Environment, Native, NativeView, View};
 
 /// Configuration for the `DatePicker` component.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
-pub struct DatePickerConfig {
+pub struct DatePickerConfig<S> {
     /// The label displayed for the date picker.
-    label: Label,
+    label: ControlLabel<S>,
     /// The binding to the selected value.
     value: Binding<DateTime>,
     /// The range of valid values.
@@ -24,20 +24,20 @@ pub struct DatePickerConfig {
     ty: DatePickerType,
 }
 
-impl DatePickerConfig {
+impl<S> DatePickerConfig<S> {
     /// The label displayed for the date picker.
     #[must_use]
-    pub const fn label(&self) -> &Label {
+    pub const fn label(&self) -> &ControlLabel<S> {
         &self.label
     }
 
     /// Sets the `label`.
-    pub fn set_label(&mut self, label: Label) {
+    pub fn set_label(&mut self, label: ControlLabel<S>) {
         self.label = label;
     }
 
     /// The label displayed for the control, for editing it in place.
-    pub const fn label_mut(&mut self) -> &mut Label {
+    pub const fn label_mut(&mut self) -> &mut ControlLabel<S> {
         &mut self.label
     }
 
@@ -154,61 +154,81 @@ pub trait DatePickable: Clone + 'static {
 /// hidden components without loss. Use [`DatePicker::new`] with any binding
 /// whose value type implements [`DatePickable`] (`Date`, `Time`, or
 /// `DateTime`).
-#[derive(Debug)]
-pub struct DatePicker(DatePickerConfig);
-
-impl ConfigurableView for DatePicker {
-    type Config = DatePickerConfig;
-
-    fn config(self) -> Self::Config {
-        self.0
-    }
+#[derive(Debug, Clone)]
+#[must_use]
+pub struct DatePicker<L> {
+    label: Label<L>,
+    value: Binding<DateTime>,
+    range: RangeInclusive<DateTime>,
+    ty: DatePickerType,
 }
 
-impl ViewConfiguration for DatePickerConfig {
-    type View = DatePicker;
-
-    fn render(self) -> Self::View {
-        DatePicker(self)
-    }
-}
-
-impl From<DatePickerConfig> for DatePicker {
-    fn from(value: DatePickerConfig) -> Self {
-        Self(value)
-    }
-}
-
-impl NativeView for DatePickerConfig {
-    fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
-        waterui_core::layout::StretchAxis::None
-    }
-}
-
-impl DatePickerConfig {
+impl<L: LabelKind> DatePicker<L> {
+    /// Returns the configuration for this date picker.
     #[must_use]
-    fn resolve(mut self, env: &Environment) -> Self {
-        self.label = self.label.resolve(env);
-        self
-    }
-}
-
-impl View for DatePicker {
-    fn body(self, env: &Environment) -> impl View {
-        let config = self.0;
-        if let Some(hook) = env.get::<Hook<DatePickerConfig>>() {
-            AnyView::new(hook.apply(env, config))
-        } else {
-            AnyView::new(Native::new(config.resolve(env)))
+    pub fn config(self) -> DatePickerConfig<Label<L>> {
+        DatePickerConfig {
+            label: self.label.into_unscoped_control_label(),
+            value: self.value,
+            range: self.range,
+            ty: self.ty,
         }
     }
+}
 
+impl<S: View> From<DatePickerConfig<S>> for DatePicker<ControlLabel<S>> {
+    fn from(value: DatePickerConfig<S>) -> Self {
+        let mode = value.label.display_mode_preference();
+        Self {
+            label: Label::from_control_label(value.label, mode),
+            value: value.value,
+            range: value.range,
+            ty: value.ty,
+        }
+    }
+}
+
+impl<S: 'static> NativeView for DatePickerConfig<S> {
     fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
         waterui_core::layout::StretchAxis::None
     }
 }
 
-impl DatePicker {
+impl<S: 'static> MapSlots<S> for DatePickerConfig<S> {
+    type With<T: 'static> = DatePickerConfig<T>;
+
+    fn map_slots<T: 'static>(self, f: impl Fn(S) -> T + Clone + 'static) -> DatePickerConfig<T> {
+        DatePickerConfig {
+            label: self.label.map_slots(f),
+            value: self.value,
+            range: self.range,
+            ty: self.ty,
+        }
+    }
+}
+
+impl<L: LabelKind> DatePicker<L> {
+    fn into_config<S: ChildSlot>(self, env: &Environment) -> DatePickerConfig<S> {
+        DatePickerConfig {
+            label: self.label.into_control_label::<S>(env),
+            value: self.value,
+            range: self.range,
+            ty: self.ty,
+        }
+    }
+}
+
+impl<L: LabelKind> View for DatePicker<L> {
+    fn body(self, env: &Environment) -> impl View {
+        Native::new(self.into_config::<AnyView>(env))
+    }
+
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        backend.native(self.into_config::<B::Slot>(env), env, cx)
+    }
+}
+
+impl<L> DatePicker<L> {
     /// Creates a picker bound to `value` with the given semantic label,
     /// dispatching on the binding's type (`Date`, `Time`, or `DateTime`) via
     /// [`DatePickable`].
@@ -216,34 +236,35 @@ impl DatePicker {
     /// The label is required so screen readers always have meaningful text to
     /// announce. Use [`hide_label`](Self::hide_label) to omit it visually
     /// while keeping it in the accessibility tree.
-    #[must_use]
-    pub fn new<T: DatePickable>(label: impl IntoLabel, value: &Binding<T>) -> Self {
-        Self(DatePickerConfig {
+    pub fn new<T: DatePickable, I: IntoLabel<Kind = L>>(label: I, value: &Binding<T>) -> Self {
+        Self {
             label: label.into_label(),
             value: T::into_datetime_binding(value),
             range: T::full_range(),
             ty: T::default_picker_type(),
-        })
+        }
+    }
+
+    pub(crate) const fn label_mut(&mut self) -> &mut Label<L> {
+        &mut self.label
     }
 
     /// Sets the valid range for the picker.
-    #[must_use]
     pub fn range<T: DatePickable>(mut self, range: RangeInclusive<T>) -> Self {
         let mapped = T::into_picker_range(range);
-        self.0.value = self.0.value.clamp(mapped.clone());
-        self.0.range = mapped;
+        self.value = self.value.clamp(mapped.clone());
+        self.range = mapped;
         self
     }
 
     /// Sets the type of date picker.
-    #[must_use]
     pub const fn ty(mut self, ty: DatePickerType) -> Self {
-        self.0.ty = ty;
+        self.ty = ty;
         self
     }
 }
 
-impl_label_style_methods!(DatePicker);
+impl_label_style_methods!(DatePicker<L>);
 
 impl DatePickable for Date {
     fn into_datetime_binding(binding: &Binding<Self>) -> Binding<DateTime> {

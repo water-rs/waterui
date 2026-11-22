@@ -328,8 +328,8 @@ fn trials() -> Vec<Trial> {
     #[cfg(all(target_os = "macos", feature = "native-test"))]
     {
         tests.extend([
-            Trial::test("window::manager_installs_into_the_environment", || {
-                window::manager_installs_into_the_environment(mtm());
+            Trial::test("window::channel_connects_typed_declarations", || {
+                window::channel_connects_typed_declarations(mtm());
                 Ok(())
             }),
             Trial::test("window::a_declared_window_realizes_its_declaration", || {
@@ -346,9 +346,8 @@ fn trials() -> Vec<Trial> {
         tests.extend(gesture_ax::trials());
         tests.extend(a11y_frame::trials());
         tests.extend(gesture_events::trials());
-        #[cfg(all(feature = "scale", feature = "rotation"))]
         tests.extend(transform_modifiers::trials());
-        #[cfg(all(target_os = "macos", feature = "border"))]
+        #[cfg(target_os = "macos")]
         tests.extend(border_modifier::trials());
         #[cfg(feature = "gpu_surface")]
         {
@@ -383,6 +382,7 @@ fn trials() -> Vec<Trial> {
     tests.extend(owner_lifetimes::trials());
     tests.extend(scroll::trials());
     tests.extend(list_scroll::trials());
+    tests.extend(apple_content::trials());
     #[cfg(all(feature = "native-test", feature = "gpu_surface"))]
     tests.extend(capture_colour::trials());
     #[cfg(feature = "webview")]
@@ -430,14 +430,6 @@ fn base_trials() -> Vec<Trial> {
         }),
         Trial::test("resolve::an_unclaimed_metadata_view_panics", || {
             resolve::an_unclaimed_metadata_view_panics();
-            Ok(())
-        }),
-        Trial::test("resolve::ignorable_metadata_renders_its_content", || {
-            resolve::ignorable_metadata_renders_its_content();
-            Ok(())
-        }),
-        Trial::test("resolve::a_native_with_fallback_resolves_to_it", || {
-            resolve::a_native_with_fallback_resolves_to_it();
             Ok(())
         }),
         Trial::test(
@@ -1029,15 +1021,15 @@ mod resolve {
     use waterui::component::text_field::TextField;
     use waterui::component::toggle::Toggle;
     use waterui::filter::Opacity;
-    use waterui::icon::SystemIcon;
     use waterui::layout::Spacer;
     use waterui::reactive::binding;
+    use waterui_apple::SfSymbol;
     use waterui_apple::contract::NativeLeaf;
     use waterui_apple::native_test_support::transition::ManualTransitionClock;
     use waterui_backend_core::{AnyView, View};
     use waterui_core::layout::{ProposalSize, Size, StretchAxis};
     use waterui_core::metadata::MetadataKey;
-    use waterui_core::{IgnorableMetadata, Metadata, Native, NativeView};
+    use waterui_core::{Metadata, Native, NativeView};
 
     use super::{HostView, Label, PlatformView, Retained, mtm};
 
@@ -1171,26 +1163,6 @@ mod resolve {
         assert!(render_or_panic(Metadata::new((), Unregistered)).is_none());
     }
 
-    /// `IgnorableMetadata` is transparent: its `body()` returns the
-    /// content, so an unregistered key renders through to the content's
-    /// leaf.
-    pub fn ignorable_metadata_renders_its_content() {
-        let leaf = render(IgnorableMetadata::new((), Unregistered));
-        let view = cocoa_ui::view::retain_base(leaf.view());
-        assert!(view.downcast_ref::<HostView>().is_some());
-        assert!(cocoa_ui::view::is_hidden(&view));
-    }
-
-    /// `Native::with_fallback` is the honest port of "not claimed here":
-    /// the dispatcher expands to the embedded fallback and resolves it —
-    /// here, to the spacer host — inside the one `render` call.
-    pub fn a_native_with_fallback_resolves_to_it() {
-        let leaf = render(Native::new(UnclaimedNative).with_fallback(Spacer::new(8.0)));
-        let view = cocoa_ui::view::retain_base(leaf.view());
-        assert!(view.downcast_ref::<HostView>().is_some());
-        assert_eq!(leaf.layout().stretch_axis(), StretchAxis::MainAxis);
-    }
-
     /// The typed unclaimed-view contract: a view whose `body()` panics —
     /// `Metadata`/`Native` wrappers nobody claims — propagates the panic
     /// out of `render`; composable views resolve.
@@ -1199,7 +1171,6 @@ mod resolve {
         assert!(render_or_panic(Native::new(UnclaimedNative)).is_none());
         render(());
         render(Spacer::new(8.0));
-        render(IgnorableMetadata::new((), Unregistered));
     }
 
     /// §6's control contract: a finite height offer is advice, not an
@@ -1541,7 +1512,7 @@ mod resolve {
     /// icon and its title — the `SwiftUI` `Label` and Material 3 default
     /// the composition reproduces on every backend.
     pub fn a_label_leaves_8pt_between_icon_and_title() {
-        let leaf = render(label("Play").icon(SystemIcon::new("play.fill")));
+        let leaf = render(label("Play").icon(SfSymbol::PLAY_FILL));
         let size = leaf.layout().measure(ProposalSize::UNSPECIFIED).size;
         let row = leaf.view();
         cocoa_ui::view::set_frame(
@@ -1937,10 +1908,10 @@ mod tabs {
         let leaf = resolve::render(
             Tabs::new(
                 &pane,
-                vec![
+                (
                     Tab::container(label("One"), || text("pane one")),
                     Tab::container(label("Two"), || text("pane two")),
-                ],
+                ),
             )
             .bottom_accessory(accessory),
         );
@@ -2084,14 +2055,14 @@ mod tabs {
         let pane = binding(0usize);
         let leaf = resolve::render(Tabs::new(
             &pane,
-            vec![
+            (
                 Tab::container(label("One"), || {
                     scroll(vstack((text("one"), text("two"), text("three"))))
                 }),
                 Tab::container(label("Two"), || {
                     vstack((text("aside"), scroll(text("nested"))))
                 }),
-            ],
+            ),
         ));
         let controllers = tab_bar_controller(&leaf)
             .viewControllers()
@@ -2118,10 +2089,10 @@ mod tabs {
         let pane = binding(0usize);
         let leaf = resolve::render(Tabs::new(
             &pane,
-            vec![
+            (
                 Tab::container(label("One"), || scroll(text("scrollable"))),
                 Tab::container(label("Two"), || text("static")),
-            ],
+            ),
         ));
         let controllers = tab_bar_controller(&leaf)
             .viewControllers()
@@ -2396,7 +2367,7 @@ mod tabs {
 #[cfg(all(target_os = "macos", feature = "native-test"))]
 mod window {
     pub use waterui_apple::native_test_support::{
-        a_declared_window_realizes_its_declaration, manager_installs_into_the_environment,
+        a_declared_window_realizes_its_declaration, channel_connects_typed_declarations,
     };
 }
 
@@ -2663,7 +2634,7 @@ mod navigation {
         let detail = binding(Some(1_i32));
         let leaf = resolve::render(Tabs::new(
             &tab,
-            vec![
+            (
                 Tab::new("Inbox", move || {
                     NavigationView::new("Inbox", text("inbox")).navigation_toolbar(
                         NavigationToolbar::new(vec![NavigationToolbarItem::action(
@@ -2678,7 +2649,7 @@ mod navigation {
                         NavigationView::new(format!("Detail {id}"), text("detail"))
                     })
                 }),
-            ],
+            ),
         ));
         let window = super::mount_and_order_front(leaf.view());
         assert!(
@@ -2852,13 +2823,13 @@ mod navigation {
     pub fn toolbar_labels_default_to_icons_and_preserve_explicit_titles() {
         use cocoa_ui::appkit::first_symbol_view;
         use waterui::component::{ButtonStyle, button, label};
-        use waterui::icon::SystemIcon;
         use waterui::navigation::NavigationStack;
+        use waterui_apple::SfSymbol;
 
         const LEADING: &str = "dev.cocoaui.navigation.leading";
         const TRAILING: &str = "dev.cocoaui.navigation.trailing";
 
-        let icon = || SystemIcon::new("plus");
+        let icon = || SfSymbol::PLUS;
         let leaf = resolve::render(NavigationStack::new(
             NavigationView::new("Inbox", text("root")).navigation_toolbar(NavigationToolbar::new(
                 vec![
@@ -4270,7 +4241,7 @@ mod gpu_surface {
         );
     }
 
-    /// `ViewRenderer::render` over a GPU child on a sealed-failure
+    /// `OffscreenRenderer::render_to_rgba` over a GPU child on a sealed-failure
     /// generation resolves `Err(RenderError::Gpu(_))` — the Arc'd
     /// `HostedLayerError` stays in `source()` — instead of hanging or
     /// panicking: the central capture's terminal `Failed` arm answers
@@ -4281,10 +4252,10 @@ mod gpu_surface {
         use waterui_apple::dispatch;
         use waterui_apple::native_test_support::gpu_surface::{fixture_env, fixture_scene_view};
         use waterui_apple::native_test_support::view_renderer::{
-            GpuRuntime, HostedLayerError, install_service, scene_engine,
+            AppleBackend, GpuRuntime, HostedLayerError, scene_engine,
         };
-        use waterui_backend_core::AnyView;
-        use waterui_core::view_renderer::{RenderError, RenderRequest, ViewRenderer};
+        use waterui_backend_core::NativeBackend as _;
+        use waterui_capture::view_renderer::{OffscreenRenderer as _, RenderError, RenderRequest};
         use waterui_graphics::backend::cherenkov::SurfaceError;
 
         let (runtime, mut env) = pollster::block_on(async {
@@ -4294,7 +4265,6 @@ mod gpu_surface {
         })
         .map_err(|error| format!("the fixture environment: {error}"))?;
         dispatch::install(&mut env);
-        install_service(&mut env);
 
         // Seal the shared generation the rendered leaf's `SceneView`
         // mounts on — the same typed carrier a real surface rejection
@@ -4312,16 +4282,15 @@ mod gpu_surface {
             max,
         }));
 
-        let renderer = env
-            .get::<ViewRenderer>()
-            .ok_or("the installed ViewRenderer service")?;
+        let renderer = AppleBackend::new(super::mtm()).offscreen(&env);
         // `block_on_main`, not `pollster`: the capture's completions
         // land on `DispatchQueue::main()`, which only a turning run
         // loop services.
         let Err(RenderError::Gpu(cause)) = waterui_apple::native_test_support::block_on_main(
             30.0,
-            renderer.render(
-                AnyView::new(fixture_scene_view()),
+            renderer.render_to_rgba(
+                fixture_scene_view(),
+                &env,
                 RenderRequest::new(
                     waterui_core::layout::Size::new(64.0, 64.0),
                     std::time::Duration::from_secs(10),
@@ -4351,7 +4320,7 @@ mod gpu_surface {
         Ok(())
     }
 
-    /// A windowless `ViewRenderer::render` over a healthy `SceneView`
+    /// A windowless `OffscreenRenderer::render_to_rgba` over a healthy `SceneView`
     /// resolves `Ok` with real pixels: the offscreen capture window
     /// declares `DynamicRange::Standard` for the hosted subtree (the
     /// render target is RGBA8), so the leaf's GPU surface resolves a
@@ -4359,9 +4328,9 @@ mod gpu_surface {
     pub fn view_render_succeeds_over_a_healthy_gpu_child() -> Result<(), libtest_mimic::Failed> {
         use waterui_apple::dispatch;
         use waterui_apple::native_test_support::gpu_surface::{fixture_env, fixture_scene_view};
-        use waterui_apple::native_test_support::view_renderer::{GpuRuntime, install_service};
-        use waterui_backend_core::AnyView;
-        use waterui_core::view_renderer::{RenderRequest, ViewRenderer};
+        use waterui_apple::native_test_support::view_renderer::{AppleBackend, GpuRuntime};
+        use waterui_backend_core::NativeBackend as _;
+        use waterui_capture::view_renderer::{OffscreenRenderer as _, RenderRequest};
 
         let (_runtime, mut env) = pollster::block_on(async {
             let runtime = GpuRuntime::new().await.map_err(|error| error.to_string())?;
@@ -4370,15 +4339,13 @@ mod gpu_surface {
         })
         .map_err(|error| format!("the fixture environment: {error}"))?;
         dispatch::install(&mut env);
-        install_service(&mut env);
 
-        let renderer = env
-            .get::<ViewRenderer>()
-            .ok_or("the installed ViewRenderer service")?;
+        let renderer = AppleBackend::new(super::mtm()).offscreen(&env);
         let result = waterui_apple::native_test_support::block_on_main(
             30.0,
-            renderer.render(
-                AnyView::new(fixture_scene_view()),
+            renderer.render_to_rgba(
+                fixture_scene_view(),
+                &env,
                 RenderRequest::new(
                     waterui_core::layout::Size::new(64.0, 64.0),
                     std::time::Duration::from_secs(10),
@@ -5136,7 +5103,6 @@ mod capture_colour {
         use waterui::graphics::backend::filtrate::filters::Brightness;
         use waterui::graphics::backend::{AnyEffect, FilteredView, OutputSize, ParamGuards};
         use waterui::layout::{PinConstraints, PositionExt, absolute};
-        use waterui_backend_core::AnyView;
 
         let _mtm = mtm();
         let column_pin = |leading: f64| {
@@ -5147,7 +5113,7 @@ mod capture_colour {
                 .height(COLUMN_EDGE)
         };
         let filtered = FilteredView {
-            content: AnyView::new(column_subtree()),
+            content: column_subtree(),
             effect: AnyEffect::filter(Brightness(0.0_f32)),
             guards: ParamGuards::default(),
         }
@@ -5408,7 +5374,7 @@ mod capture_order {
         // reproduces it (#3528), so only the GPU column runs the nested
         // capture — the filtered output is its one resolved surface.
         let filtered = FilteredView {
-            content: AnyView::new(content(gpu_child())),
+            content: content(gpu_child()),
             effect: AnyEffect::filter(Brightness(0.0_f32)),
             guards: ParamGuards::default(),
         }
@@ -7524,9 +7490,9 @@ mod safe_area {
             (0..40).map(SelfId::new).collect::<Vec<_>>(),
             move |item| {
                 if *item == field_row {
-                    ListItem::new(AnyView::new(field("Notes", &value).size(350.0, 44.0)))
+                    ListItem::new(waterui::OneOf2::A(field("Notes", &value).size(350.0, 44.0)))
                 } else {
-                    ListItem::new(text(format!("row-{}", *item)))
+                    ListItem::new(waterui::OneOf2::B(text(format!("row-{}", *item))))
                 }
             },
         ));
@@ -7841,21 +7807,21 @@ mod safe_area {
         let inner_selection = binding(0usize);
         let mount = mount(Tabs::new(
             &selection,
-            vec![
+            (
                 Tab::new("Outer", move || {
                     NavigationView::new(
                         "Outer",
                         vstack((
                             Tabs::new(
                                 &inner_selection,
-                                vec![
+                                (
                                     Tab::new("Inner A", move || {
                                         NavigationView::new("A", text("a"))
                                     }),
                                     Tab::new("Inner B", move || {
                                         NavigationView::new("B", text("b"))
                                     }),
-                                ],
+                                ),
                             )
                             .size(390.0, 200.0),
                             card("below").a11y_id("below-inner"),
@@ -7864,7 +7830,7 @@ mod safe_area {
                     )
                 }),
                 Tab::new("Other", move || NavigationView::new("Other", text("other"))),
-            ],
+            ),
         ));
         // Two bars: the inner controller's inside its 200pt host and the
         // outer one docked at the window bottom — order them by where
@@ -9104,9 +9070,12 @@ mod scroll {
 mod list_scroll {
     use std::time::Duration;
 
+    use waterui::OneOf2;
     use waterui::ViewExt;
     use waterui::animation::Animation;
     use waterui::component::list::ListItem;
+    use waterui::component::text::Text;
+    use waterui::layout::padding::Padding;
     use waterui::layout::scroll::ScrollController;
     use waterui::prelude::text;
     use waterui_apple::contract::NativeLeaf;
@@ -9193,14 +9162,17 @@ mod list_scroll {
         }
     }
 
+    /// A row of a list mixing plain and tall rows.
+    type MixedRow = ListItem<OneOf2<Text, Padding<Text>>>;
+
     /// A row taller than the rest — mixed heights keep the last row's
     /// offset an honest measure instead of a multiple of the first.
-    fn tall_row_item() -> ListItem {
+    fn tall_row_item() -> ListItem<Padding<Text>> {
         ListItem::new(text("row").padding_with(24.0))
     }
 
     /// Mounts `rows` in a list driven by a fresh `usize` controller.
-    fn mounted_with(rows: Vec<fn() -> ListItem>) -> Fixture {
+    fn mounted_with<V: waterui::View>(rows: Vec<fn() -> ListItem<V>>) -> Fixture {
         let controller = ScrollController::new(0usize);
         let (leaf, table) = row_list(rows, &controller);
         let window = mount_and_order_front(leaf.view());
@@ -9222,7 +9194,7 @@ mod list_scroll {
 
     /// Mounts a uniform list.
     fn mounted() -> Fixture {
-        mounted_with(vec![row_item as fn() -> ListItem; ROWS])
+        mounted_with(vec![row_item as fn() -> ListItem<Text>; ROWS])
     }
 
     /// Mounts a list whose rows differ in height — every fourth row
@@ -9232,9 +9204,9 @@ mod list_scroll {
             (0..ROWS)
                 .map(|index| {
                     if index % 4 == 0 {
-                        tall_row_item as fn() -> ListItem
+                        (|| tall_row_item().map_content(OneOf2::B)) as fn() -> MixedRow
                     } else {
-                        row_item as fn() -> ListItem
+                        (|| row_item().map_content(OneOf2::A)) as fn() -> MixedRow
                     }
                 })
                 .collect(),
@@ -9304,7 +9276,7 @@ mod list_scroll {
     /// through intermediate offsets from there; `Default` is the
     /// platform's wall-clock animation from the approach row.
     fn a_far_animation_jumps_to_the_approach_row_first(name: &'static str, animation: Animation) {
-        let fixture = mounted_with(vec![row_item as fn() -> ListItem; APPROACH_LIST_ROWS]);
+        let fixture = mounted_with(vec![row_item as fn() -> ListItem<Text>; APPROACH_LIST_ROWS]);
         let native = matches!(animation, Animation::Default);
         let request = || {
             fixture
@@ -9723,21 +9695,23 @@ mod navigation {
     use cocoa_ui::uikit::view_controller::owning_controller;
     use cocoa_ui::uikit::{NavContentController, NavPage};
     use cocoa_ui::{PlatformView, Retained, view};
+    use waterui::AnyView;
     use waterui::Str;
     use waterui::ViewExt as _;
     use waterui::component::toggle::toggle;
     use waterui::component::{ButtonStyle, button};
     use waterui::graphics::color::WorkingColor;
-    use waterui::icon::SystemIcon;
     use waterui::navigation::{
         NavigationStack, NavigationToolbar, NavigationToolbarItem, NavigationToolbarPlacement,
-        NavigationView, ToolbarItemIcon,
+        NavigationView,
     };
     use waterui::prelude::text;
     use waterui::reactive::{Signal as _, SignalExt as _, binding};
     use waterui::resolve::Resolvable as _;
     use waterui::theme::color::{Accent, Foreground};
+    use waterui_apple::SfSymbol;
     use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, pump_main_until};
+    use waterui_core::handler::AnyViewBuilder;
 
     use super::{mtm, resolve};
 
@@ -9857,7 +9831,7 @@ mod navigation {
         use waterui::component::label;
         use waterui_core::layout::ProposalSize;
 
-        let icon = || SystemIcon::new("plus");
+        let icon = || SfSymbol::PLUS;
         let icon_leaf = resolve::render(icon());
         let icon_width = f64::from(
             icon_leaf
@@ -10017,7 +9991,7 @@ mod navigation {
         use cocoa_ui::{Point, Rect};
         use waterui_core::layout::ProposalSize;
 
-        let leaf = resolve::render(SystemIcon::new("plus"));
+        let leaf = resolve::render(SfSymbol::PLUS);
         let measured = leaf.layout().measure(ProposalSize::UNSPECIFIED).size;
         let (width, height) = (f64::from(measured.width), f64::from(measured.height));
         view::set_frame(leaf.view(), Rect::new(0.0, 0.0, width, height));
@@ -10105,7 +10079,9 @@ mod navigation {
                 .style(ButtonStyle::Plain)
                 .disabled(disabled.clone()),
         );
-        item.set_icon(Some(ToolbarItemIcon::System(SystemIcon::new("checkmark"))));
+        item.set_icon(Some(AnyViewBuilder::new(|| {
+            AnyView::new(SfSymbol::CHECKMARK)
+        })));
         let leaf = resolve::render(NavigationStack::new(
             NavigationView::new("Inbox", text("root"))
                 .navigation_toolbar(NavigationToolbar::new(vec![item])),
@@ -10141,7 +10117,9 @@ mod navigation {
                 .checkbox()
                 .disabled(disabled.clone()),
         );
-        item.set_icon(Some(ToolbarItemIcon::System(SystemIcon::new("checkmark"))));
+        item.set_icon(Some(AnyViewBuilder::new(|| {
+            AnyView::new(SfSymbol::CHECKMARK)
+        })));
         let leaf = resolve::render(NavigationStack::new(
             NavigationView::new("Inbox", text("root"))
                 .navigation_toolbar(NavigationToolbar::new(vec![item])),
@@ -10534,7 +10512,8 @@ mod webview {
     /// and the record of its loads.
     fn probed_view(origins: BridgeOrigins) -> (AnyWebViewHandle, Loads) {
         let initial: Url = "https://waterui.dev".parse().expect("parses");
-        let webview = waterui_apple::native_test_support::webview::controller(mtm()).open_with(
+        let webview = waterui_webview::open_webview_with(
+            &waterui_apple::native_test_support::webview::controller(mtm()),
             WebViewConfig::default()
                 .with_bridge_origins(OriginPolicy::new(origins, &initial))
                 .with_scripts(vec![UserScript::new(
@@ -10642,6 +10621,7 @@ mod list_ax {
     use objc2_app_kit::{NSAccessibilityChildrenAttribute, NSTableView};
     use objc2_foundation::{NSArray, NSIndexSet};
     use waterui::component::list::ListItem;
+    use waterui::component::text::Text;
     use waterui::layout::scroll::ScrollController;
     use waterui_apple::native_test_support::{row_item, row_list, sectioned_row_list};
 
@@ -10696,7 +10676,7 @@ mod list_ax {
 
     fn mounted() -> Fixture {
         let controller = ScrollController::new(0usize);
-        let (leaf, surface) = row_list(vec![row_item as fn() -> ListItem; ROWS], &controller);
+        let (leaf, surface) = row_list(vec![row_item as fn() -> ListItem<Text>; ROWS], &controller);
         let window = leaf::attach(mtm(), leaf.view());
         leaf.view().setNeedsLayout(true);
         leaf.view().layoutSubtreeIfNeeded();
@@ -10938,13 +10918,13 @@ mod a11y_frame {
     use waterui::component::list::{List, ListItem};
     use waterui::component::toggle::Toggle;
     use waterui::graphics::color::Srgb;
-    use waterui::icon::SystemIcon;
     use waterui::layout::container::LazyContainer;
     use waterui::layout::padding::EdgeInsets;
     use waterui::layout::stack::HStackLayout;
     use waterui::prelude::{scroll, text};
     use waterui::reactive::binding;
     use waterui::views::ForEach;
+    use waterui_apple::SfSymbol;
     use waterui_apple::contract::NativeLeaf;
     use waterui_apple::dispatch;
     use waterui_backend_core::{AnyView, View};
@@ -11162,7 +11142,7 @@ mod a11y_frame {
     /// the symbol unscaled at the centre of that frame — its response — and
     /// announces that rectangle.
     fn an_image_draws_and_reports_its_response() {
-        let (leaf, _window) = attached(SystemIcon::new("star.fill").a11y_label("Favourite"));
+        let (leaf, _window) = attached(SfSymbol::STAR_FILL.a11y_label("Favourite"));
         let view = leaf.view();
         let image = view
             .downcast_ref::<ImageView>()
@@ -11335,11 +11315,10 @@ mod a11y_frame {
     #[cfg(feature = "webview")]
     fn a_region_on_a_web_view_reports_the_named_region() {
         use cocoa_ui::web_kit::LeafWebView;
-        use waterui_apple::native_test_support::webview::controller;
-        use waterui_webview::WebViewConfig;
+        use waterui_webview::WebView;
 
         let region = Rect::new(Point::new(8.0, 12.0), Size::new(40.0, 24.0));
-        let page = controller(mtm()).open_with(WebViewConfig::default());
+        let page = WebView::open("about:blank");
         let (leaf, _window) = attached(
             page.a11y_label("Page")
                 .a11y_geometry(AccessibilityGeometry::Region(region)),
@@ -11615,7 +11594,7 @@ mod a11y_frame {
         use cocoa_ui::appkit::surface_view::SurfaceView;
         use waterui_apple::native_test_support::{block_on_main, install_gpu, pump_main_until};
         use waterui_graphics::gpu::wgpu;
-        use waterui_graphics::gpu::{Context, Frame, GpuContent, GpuContentView, GpuRuntime};
+        use waterui_graphics::gpu::{Context, Frame, GpuContent, GpuRuntime, GpuView};
 
         /// A content of a fixed natural size that clears its frame.
         struct Clear;
@@ -11657,7 +11636,7 @@ mod a11y_frame {
         let mut env = resolve::env();
         let runtime = block_on_main(30.0, GpuRuntime::new()).expect("the harness has a GPU");
         install_gpu(&mut env, runtime);
-        let leaf = dispatch::render(AnyView::new(GpuContentView::new(Clear)), &env, mtm());
+        let leaf = dispatch::render(AnyView::new(GpuView::new(Clear)), &env, mtm());
         let _window = mount_and_order_front(leaf.view());
         view::layout_immediately(leaf.view());
         let view = leaf.view();
@@ -11799,15 +11778,16 @@ mod embedding {
     };
     use cocoa_ui::objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
     use cocoa_ui::{MainThreadMarker, Retained, view};
-    use waterui::app::App;
+    use waterui::app::{App, AppMenuBar, Windows};
     use waterui::component::menu::{Command, Menu, MenuItem};
     use waterui::component::text::Text;
     use waterui::graphics::color::ColorScheme;
+    use waterui::handler::ViewBuilder;
     use waterui::layout::container::FixedContainer;
     use waterui::reactive::{Computed, binding};
     use waterui::regional;
     use waterui::text::font::ResolvedFont;
-    use waterui::window::WindowState;
+    use waterui::window::{Window, WindowContent, WindowState};
     use waterui::{Environment, Signal};
 
     use crate::mtm;
@@ -11820,16 +11800,19 @@ mod embedding {
     }
 
     impl Embed {
-        fn new(host: &NSView, app: impl FnOnce(Environment) -> App) -> Self {
+        fn new<W: Windows, M: AppMenuBar>(
+            host: &NSView,
+            app: impl FnOnce(Environment) -> App<W, M>,
+        ) -> Self {
             Self::new_with_environment(host, None, app)
         }
 
         /// `environment` is the scoped host snapshot a `SwiftUI` host would
         /// declare; `None` mounts under the ambient platform.
-        fn new_with_environment(
+        fn new_with_environment<W: Windows, M: AppMenuBar>(
             host: &NSView,
             environment: Option<waterui_apple::embedding::HostEnvironment>,
-            app: impl FnOnce(Environment) -> App,
+            app: impl FnOnce(Environment) -> App<W, M>,
         ) -> Self {
             let runtime = Box::new(waterui_apple::embedding::Runtime::for_test());
             // SAFETY: `_runtime` keeps the runtime box alive past the mount's
@@ -12057,7 +12040,7 @@ mod embedding {
                     c"/tmp/waterui-embed-test-assets".as_ptr(),
                     c"/tmp/waterui-embed-test-fonts".as_ptr(),
                     None,
-                    |env| App::new_with_windows(Vec::<waterui::window::Window>::new(), env),
+                    |env| App::new_with_windows((), env),
                 )
             }
         }));
@@ -12140,6 +12123,25 @@ mod embedding {
     struct ProbeLayout {
         seen: Rc<RefCell<Vec<ProposalSize>>>,
     }
+
+    /// The probe mount's window content: a container laid out by
+    /// [`ProbeLayout`].
+    struct ProbeContent {
+        seen: Rc<RefCell<Vec<ProposalSize>>>,
+    }
+
+    impl ViewBuilder for ProbeContent {
+        type Output = FixedContainer<(Text,)>;
+
+        fn build(&self) -> Self::Output {
+            FixedContainer::new(
+                ProbeLayout {
+                    seen: Rc::clone(&self.seen),
+                },
+                (Text::new("probe"),),
+            )
+        }
+    }
     impl Layout for ProbeLayout {
         fn size_that_fits(&self, proposal: ProposalSize, _children: &[&dyn SubView]) -> Size {
             self.seen.borrow_mut().push(proposal);
@@ -12196,7 +12198,7 @@ mod embedding {
         fn app(
             &self,
             seen: Rc<RefCell<Vec<ProposalSize>>>,
-        ) -> impl FnOnce(Environment) -> App + use<> {
+        ) -> impl FnOnce(Environment) -> App<Window<WindowContent<ProbeContent>>> + use<> {
             let (bodies, scheme, fonts, direction, locale) = (
                 Rc::clone(&self.bodies),
                 Rc::clone(&self.scheme),
@@ -12226,17 +12228,7 @@ mod embedding {
                     &binding.snapshot()
                 );
                 *locale.borrow_mut() = Some(binding);
-                App::new(
-                    move || {
-                        FixedContainer::new(
-                            ProbeLayout {
-                                seen: Rc::clone(&seen),
-                            },
-                            (Text::new("probe"),),
-                        )
-                    },
-                    env,
-                )
+                App::new(ProbeContent { seen }, env)
             }
         }
         fn scheme_now(&self) -> ColorScheme {
@@ -13252,7 +13244,7 @@ mod transition {
     use waterui_backend_core::AnyView;
     use waterui_core::Metadata;
     use waterui_core::metadata::Retain;
-    use waterui_core::transition::{PropertyTransition, Transition, TransitionSpec};
+    use waterui_structural_transition::{PropertyTransition, Transition, TransitionSpec};
 
     use cocoa_ui::objc2::rc::{Weak, autoreleasepool};
     use cocoa_ui::view;
@@ -14143,11 +14135,11 @@ mod transition {
         // tree in the caller's pool — without these pools the weak probe
         // could never see the release.
         autoreleasepool(|_| {
-            handler.set(Metadata::new(
+            handler.set(AnyView::new(Metadata::new(
                 Metadata::new(label("gone"), Retain::new(Died(Rc::clone(&died)))),
                 TransitionSpec::new(PropertyTransition::opacity())
                     .with_animation(Animation::linear(Duration::from_millis(60))),
-            ));
+            )));
         });
         let ghost_ptr: Cell<*const PlatformView> = Cell::new(std::ptr::null());
         let live_ptr: Cell<*const PlatformView> = Cell::new(std::ptr::null());
@@ -14158,7 +14150,7 @@ mod transition {
             Weak::new(&*subviews[0])
         });
 
-        autoreleasepool(|_| handler.set(label("here")));
+        autoreleasepool(|_| handler.set(AnyView::new(label("here"))));
         // The semantic boundary: the old leaf — its watchers, guards and
         // retained values — is dead immediately.
         assert!(died.get(), "the removed leaf's keepalive ended at removal");
@@ -14447,11 +14439,11 @@ mod transition {
             nested_view,
         ));
         let (handler, view) = Dynamic::new();
-        handler.set(Metadata::new(
+        handler.set(AnyView::new(Metadata::new(
             child,
             TransitionSpec::new(PropertyTransition::opacity())
                 .with_animation(Animation::linear(Duration::from_millis(60))),
-        ));
+        )));
         // Every kit call below runs in its own pool: the update path
         // autoreleases `subviews` arrays that retain the tree, and the weak
         // probe sees the release only once they drain.
@@ -14462,7 +14454,7 @@ mod transition {
             (mounted, window)
         });
         assert!(!d1.get() && !d2.get(), "the mounted child's Retains live");
-        autoreleasepool(|_| handler.set(label("after")));
+        autoreleasepool(|_| handler.set(AnyView::new(label("after"))));
         assert!(d1.get(), "the removed child's Retain dies at the swap");
         assert!(d2.get(), "the nested Dynamic's Retain dies at the swap");
         let weak: Weak<PlatformView> = autoreleasepool(|_| {
@@ -14494,15 +14486,15 @@ mod transition {
     pub fn opacity_composes_with_the_contents_own_opacity() {
         let _mtm = mtm();
         let (handler, view) = Dynamic::new();
-        handler.set(label("before"));
+        handler.set(AnyView::new(label("before")));
         let (leaf, clock) = super::resolve::render_on_manual_clock(view);
         let mounted = leaf.mount(&HostView::new(mtm(), cocoa_ui::Rect::ZERO));
         let window = super::mount_and_order_front(mounted.view());
-        handler.set(Metadata::new(
+        handler.set(AnyView::new(Metadata::new(
             label("coming").opacity(0.5),
             TransitionSpec::new(PropertyTransition::opacity())
                 .with_animation(Animation::linear(Duration::from_millis(60))),
-        ));
+        )));
         clock.advance(Duration::from_millis(30));
         autoreleasepool(|_| {
             let host = transition_host(&mounted);
@@ -14529,15 +14521,15 @@ mod transition {
     pub fn scale_composes_with_the_contents_own_scale() {
         let _mtm = mtm();
         let (handler, view) = Dynamic::new();
-        handler.set(label("before"));
+        handler.set(AnyView::new(label("before")));
         let (leaf, clock) = super::resolve::render_on_manual_clock(view);
         let mounted = leaf.mount(&HostView::new(mtm(), cocoa_ui::Rect::ZERO));
         let window = super::mount_and_order_front(mounted.view());
-        handler.set(Metadata::new(
+        handler.set(AnyView::new(Metadata::new(
             label("coming").scale(0.5, 0.5),
             TransitionSpec::new(PropertyTransition::scale(0.5))
                 .with_animation(Animation::linear(Duration::from_millis(60))),
-        ));
+        )));
         clock.advance(Duration::from_millis(30));
         autoreleasepool(|_| {
             let host = transition_host(&mounted);
@@ -14578,17 +14570,17 @@ mod transition {
     pub fn combined_transition_samples_every_frame() {
         let _mtm = mtm();
         let (handler, view) = Dynamic::new();
-        handler.set(label("before"));
+        handler.set(AnyView::new(label("before")));
         let (leaf, clock) = super::resolve::render_on_manual_clock(view);
         let mounted = leaf.mount(&HostView::new(mtm(), cocoa_ui::Rect::ZERO));
         let window = super::mount_and_order_front(mounted.view());
-        handler.set(Metadata::new(
+        handler.set(AnyView::new(Metadata::new(
             label("coming"),
             TransitionSpec::new(
                 PropertyTransition::opacity().combined(PropertyTransition::scale(0.5)),
             )
             .with_animation(Animation::linear(Duration::from_millis(120))),
-        ));
+        )));
         clock.advance(Duration::from_millis(60));
         autoreleasepool(|_| {
             let host = transition_host(&mounted);
@@ -14670,12 +14662,12 @@ mod transition {
         let (leaf, clock) = super::resolve::render_on_manual_clock(leaf_view);
         let mounted = leaf.mount(&HostView::new(mtm(), cocoa_ui::Rect::ZERO));
         let window = super::mount_and_order_front(mounted.view());
-        handler.set(Metadata::new(
+        handler.set(AnyView::new(Metadata::new(
             label("a"),
             TransitionSpec::new(PropertyTransition::scale(0.5))
                 .with_animation(Animation::linear(Duration::from_millis(60))),
-        ));
-        handler.set(label("b"));
+        )));
+        handler.set(AnyView::new(label("b")));
         clock.advance(Duration::from_millis(30));
         autoreleasepool(|_| {
             let host = transition_host(&mounted);
@@ -14722,15 +14714,15 @@ mod transition {
     pub fn zero_duration_removal_detaches_at_once() {
         let _mtm = mtm();
         let (handler, view) = Dynamic::new();
-        handler.set(Metadata::new(
+        handler.set(AnyView::new(Metadata::new(
             label("a"),
             TransitionSpec::new(PropertyTransition::opacity())
                 .with_animation(Animation::linear(Duration::ZERO)),
-        ));
+        )));
         let leaf = super::resolve::render(view);
         let mounted = leaf.mount(&HostView::new(mtm(), cocoa_ui::Rect::ZERO));
         let window = super::mount_and_order_front(mounted.view());
-        handler.set(label("b"));
+        handler.set(AnyView::new(label("b")));
         autoreleasepool(|_| {
             assert_eq!(
                 view::subviews(mounted.view()).len(),
@@ -14748,11 +14740,11 @@ mod transition {
     pub fn ghost_completion_does_not_need_the_site() {
         let _mtm = mtm();
         let (handler, view) = Dynamic::new();
-        handler.set(Metadata::new(
+        handler.set(AnyView::new(Metadata::new(
             label("a"),
             TransitionSpec::new(PropertyTransition::opacity())
                 .with_animation(Animation::linear(Duration::from_millis(60))),
-        ));
+        )));
         // Every kit call below runs in its own pool: the update path
         // autoreleases `subviews` arrays that retain the tree, and the weak
         // probe sees the release only once they drain.
@@ -14762,7 +14754,7 @@ mod transition {
             let window = super::mount_and_order_front(mounted.view());
             (mounted, window)
         });
-        autoreleasepool(|_| handler.set(label("b")));
+        autoreleasepool(|_| handler.set(AnyView::new(label("b"))));
         let weak: Weak<PlatformView> = autoreleasepool(|_| {
             let ghost = transition_host(&mounted);
             Weak::from(&ghost)
@@ -14776,15 +14768,15 @@ mod transition {
 
         // With the site live, the ghost completes through `on_complete`.
         let (handler2, view2) = Dynamic::new();
-        handler2.set(Metadata::new(
+        handler2.set(AnyView::new(Metadata::new(
             label("a"),
             TransitionSpec::new(PropertyTransition::opacity())
                 .with_animation(Animation::linear(Duration::from_millis(30))),
-        ));
+        )));
         let leaf2 = super::resolve::render(view2);
         let mounted2 = leaf2.mount(&HostView::new(mtm(), cocoa_ui::Rect::ZERO));
         let window2 = super::mount_and_order_front(mounted2.view());
-        handler2.set(label("b"));
+        handler2.set(AnyView::new(label("b")));
         autoreleasepool(|_| {
             let completed = pump_main_until(2.0, || view::subviews(mounted2.view()).len() == 1);
             assert!(completed, "the ghost completes through on_complete");
@@ -15791,7 +15783,7 @@ mod transition {
         let leaf = gpu_leaf(dynamic);
         let _window = super::mount_and_order_front(leaf.view());
         autoreleasepool(|_| {
-            handler.set(Metadata::new(gpu_picture(), frozen_spec()));
+            handler.set(AnyView::new(Metadata::new(gpu_picture(), frozen_spec())));
         });
         assert!(
             pump_main_until(5.0, || autoreleasepool(|_| {
@@ -15806,7 +15798,7 @@ mod transition {
             assert_eq!(entries.len(), 1, "one capturable surface in the subtree");
             Rc::downgrade(&entries[0].1)
         });
-        autoreleasepool(|_| handler.set(label("gone")));
+        autoreleasepool(|_| handler.set(AnyView::new(label("gone"))));
         assert!(
             live.upgrade().is_none(),
             "the removal dropped the live capturable with the leaf"
@@ -15847,7 +15839,7 @@ mod transition {
         let leaf = gpu_leaf(dynamic);
         let _window = super::mount_and_order_front(leaf.view());
         autoreleasepool(|_| {
-            handler.set(Metadata::new(filtered_label(), frozen_spec()));
+            handler.set(AnyView::new(Metadata::new(filtered_label(), frozen_spec())));
         });
         assert!(
             pump_main_until(5.0, || autoreleasepool(|_| {
@@ -15866,7 +15858,7 @@ mod transition {
             );
             Rc::downgrade(&entries[0].1)
         });
-        autoreleasepool(|_| handler.set(label("gone")));
+        autoreleasepool(|_| handler.set(AnyView::new(label("gone"))));
         assert!(
             live.upgrade().is_none(),
             "the removal dropped the live capturable with the leaf"
@@ -15911,7 +15903,7 @@ mod transition {
         let _window = super::mount_and_order_front(leaf.view());
         autoreleasepool(|_| {
             outer.set(dynamic.blur(2.0));
-            handler.set(Metadata::new(gpu_picture(), frozen_spec()));
+            handler.set(AnyView::new(Metadata::new(gpu_picture(), frozen_spec())));
         });
         assert!(
             pump_main_until(5.0, || autoreleasepool(|_| {
@@ -15927,7 +15919,7 @@ mod transition {
                 .map(|(_, surface)| Rc::downgrade(surface))
                 .collect()
         });
-        autoreleasepool(|_| handler.set(label("gone")));
+        autoreleasepool(|_| handler.set(AnyView::new(label("gone"))));
         autoreleasepool(|_| {
             let entries = capturables_deep(leaf.view());
             assert_eq!(
@@ -16079,7 +16071,7 @@ mod transition {
         let (handler, dynamic) = Dynamic::new();
         let (leaf, clock) = gpu_leaf_on_manual_clock(dynamic);
         let _window = super::mount_and_order_front(leaf.view());
-        autoreleasepool(|_| handler.set(label("before")));
+        autoreleasepool(|_| handler.set(AnyView::new(label("before"))));
         assert!(
             pump_main_until(3.0, || {
                 autoreleasepool(|_| !view::subviews(leaf.view()).is_empty())
@@ -16087,7 +16079,7 @@ mod transition {
             "the first child mounts"
         );
         autoreleasepool(|_| {
-            handler.set(Metadata::new(blur_picture(), blur_spec()));
+            handler.set(AnyView::new(Metadata::new(blur_picture(), blur_spec())));
         });
         let host_ptr: Cell<*const PlatformView> = Cell::new(std::ptr::null());
         let content_ptr: Cell<*const PlatformView> = Cell::new(std::ptr::null());
@@ -16143,7 +16135,7 @@ mod transition {
         let (leaf, clock) = gpu_leaf_on_manual_clock(dynamic);
         let _window = super::mount_and_order_front(leaf.view());
         autoreleasepool(|_| {
-            handler.set(Metadata::new(blur_picture(), blur_spec()));
+            handler.set(AnyView::new(Metadata::new(blur_picture(), blur_spec())));
         });
         assert!(
             pump_main_until(5.0, || autoreleasepool(|_| {
@@ -16178,7 +16170,7 @@ mod transition {
                 &*view::subviews(&host).into_iter().next().expect("content"),
             ));
         });
-        autoreleasepool(|_| handler.set(label("gone")));
+        autoreleasepool(|_| handler.set(AnyView::new(label("gone"))));
         // The root is still visible right at removal — it hides only
         // when the effect's first frame lands.
         let root_view = autoreleasepool(|_| {
@@ -16235,7 +16227,7 @@ mod transition {
     /// sample, and keeps it until the instance ends (§8.2).
     #[cfg(feature = "gpu_surface")]
     pub fn blur_returning_to_zero_keeps_one_effect() {
-        use waterui_core::transition::{
+        use waterui_structural_transition::{
             Transition, TransitionGeometry, TransitionPhase, TransitionProperties,
         };
         /// Blur `0 → 8 → 0` across the middle of the progress ramp —
@@ -16258,7 +16250,7 @@ mod transition {
         let (handler, dynamic) = Dynamic::new();
         let leaf = gpu_leaf(dynamic);
         let _window = super::mount_and_order_front(leaf.view());
-        autoreleasepool(|_| handler.set(label("before")));
+        autoreleasepool(|_| handler.set(AnyView::new(label("before"))));
         assert!(
             pump_main_until(3.0, || {
                 autoreleasepool(|_| !view::subviews(leaf.view()).is_empty())
@@ -16266,11 +16258,11 @@ mod transition {
             "the first child mounts"
         );
         autoreleasepool(|_| {
-            handler.set(Metadata::new(
+            handler.set(AnyView::new(Metadata::new(
                 label("pulse"),
                 TransitionSpec::new(PulseBlur)
                     .with_animation(Animation::linear(Duration::from_millis(400))),
-            ));
+            )));
         });
         let first_effect: Cell<*const PlatformView> = Cell::new(std::ptr::null());
         let saw_effect = Cell::new(false);
@@ -16327,20 +16319,22 @@ mod transition {
     struct PixelProbe {
         /// The frame signal the body's `TransitionContext` published.
         frame: Rc<
-            RefCell<Option<waterui::reactive::Computed<waterui_core::transition::TransitionFrame>>>,
+            RefCell<
+                Option<waterui::reactive::Computed<waterui_structural_transition::TransitionFrame>>,
+            >,
         >,
     }
 
     #[cfg(feature = "gpu_surface")]
     impl Transition for PixelProbe {
-        fn captures_content(&self, _phase: waterui_core::transition::TransitionPhase) -> bool {
+        fn captures_content(&self, _phase: waterui_structural_transition::TransitionPhase) -> bool {
             true
         }
 
-        fn body(
+        fn body<V: waterui_backend_core::View>(
             &self,
-            content: AnyView,
-            transition_context: waterui_core::transition::TransitionContext,
+            content: V,
+            transition_context: waterui_structural_transition::TransitionContext,
         ) -> impl waterui_backend_core::View {
             *self.frame.borrow_mut() = Some(transition_context.frame().clone());
             let shader =
@@ -16359,7 +16353,11 @@ mod transition {
     /// [`PIXEL_PROBE_DURATION`].
     #[cfg(feature = "gpu_surface")]
     fn pixel_probe() -> (
-        Rc<RefCell<Option<waterui::reactive::Computed<waterui_core::transition::TransitionFrame>>>>,
+        Rc<
+            RefCell<
+                Option<waterui::reactive::Computed<waterui_structural_transition::TransitionFrame>>,
+            >,
+        >,
         TransitionSpec,
     ) {
         let frame = Rc::new(RefCell::new(None));
@@ -16479,7 +16477,7 @@ mod transition {
     #[cfg(feature = "gpu_surface")]
     fn published_source(
         frame: &RefCell<
-            Option<waterui::reactive::Computed<waterui_core::transition::TransitionFrame>>,
+            Option<waterui::reactive::Computed<waterui_structural_transition::TransitionFrame>>,
         >,
     ) -> waterui_core::layout::Rect {
         use waterui::reactive::Signal as _;
@@ -16504,11 +16502,11 @@ mod transition {
         let (leaf, clock) = gpu_leaf_on_manual_clock(dynamic);
         let window = super::mount_and_order_front(leaf.view());
         autoreleasepool(|_| {
-            handler.set(Metadata::new(blur_picture(), spec));
+            handler.set(AnyView::new(Metadata::new(blur_picture(), spec)));
         });
         await_gpu_presented(leaf.view());
         finish_pixel_run(&window, &clock);
-        autoreleasepool(|_| handler.set(label("gone")));
+        autoreleasepool(|_| handler.set(AnyView::new(label("gone"))));
         // The frozen capture lands and the effect mounts in the window
         // overlay — the ghost stays beneath the live child.
         assert!(
@@ -16588,7 +16586,7 @@ mod transition {
         let (handler, dynamic) = Dynamic::new();
         let (leaf, clock) = gpu_leaf_on_manual_clock(dynamic);
         let window = super::mount_and_order_front(leaf.view());
-        autoreleasepool(|_| handler.set(label("before")));
+        autoreleasepool(|_| handler.set(AnyView::new(label("before"))));
         assert!(
             pump_main_until(3.0, || {
                 autoreleasepool(|_| !view::subviews(leaf.view()).is_empty())
@@ -16597,10 +16595,10 @@ mod transition {
         );
         let died = Rc::new(Cell::new(false));
         autoreleasepool(|_| {
-            handler.set(Metadata::new(
+            handler.set(AnyView::new(Metadata::new(
                 Metadata::new(blur_picture(), Retain::new(Died(Rc::clone(&died)))),
                 spec,
-            ));
+            )));
         });
         // The claimed child mounts inside the transition host — its
         // content view keeps that parent while the effect lives in the
@@ -16717,11 +16715,11 @@ mod transition {
             window
         };
         autoreleasepool(|_| {
-            handler.set(Metadata::new(blur_picture(), spec));
+            handler.set(AnyView::new(Metadata::new(blur_picture(), spec)));
         });
         await_gpu_presented(leaf.view());
         finish_pixel_run(&window, &clock);
-        autoreleasepool(|_| handler.set(label("gone")));
+        autoreleasepool(|_| handler.set(AnyView::new(label("gone"))));
         assert!(
             pump_main_until(5.0, || autoreleasepool(
                 |_| retired_overlay(&window).is_some()
@@ -16777,7 +16775,7 @@ mod transition {
 /// `AppKit`'s display-time geometry sync does not rewrite (#3504). After
 /// `displayIfNeeded` the anchored matrix must still be there, and a
 /// wrapper resize must recompute it for the new bounds size.
-#[cfg(all(target_os = "macos", feature = "scale", feature = "rotation"))]
+#[cfg(target_os = "macos")]
 mod transform_modifiers {
     use cocoa_ui::objc2::msg_send;
     use cocoa_ui::objc2::rc::autoreleasepool;
@@ -16940,7 +16938,7 @@ mod transform_modifiers {
 /// A `Border` strokes its edge and never clips what it wraps: a rounded
 /// border leaves its host layer unmasked, as Hydrolysis does, so content
 /// that extends past the rounded outline stays visible (#4277).
-#[cfg(all(target_os = "macos", feature = "border"))]
+#[cfg(target_os = "macos")]
 mod border_modifier {
     use cocoa_ui::objc2::rc::autoreleasepool;
     use cocoa_ui::{layer, view};
@@ -16980,5 +16978,331 @@ mod border_modifier {
                 "a border strokes only and never clips its content"
             );
         });
+    }
+}
+
+/// Embedding `AppKit` (`NSView`) and `UIKit` (`UIView`) views through
+/// `AppleContent` and `AppleView` (#4659): static and erased dispatch, subview
+/// mounting, leaf-rule measurement and placement, and signal-guard lifetime.
+mod apple_content {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use cocoa_ui::objc2_foundation::NSString;
+    use cocoa_ui::view;
+    use libtest_mimic::Trial;
+    use waterui::Str;
+    use waterui::reactive::{Binding, Signal, binding};
+    use waterui_apple::{
+        AppleContent, AppleMount, AppleView, MainThreadMarker, PlatformView, Retained,
+    };
+    use waterui_backend_core::{AnyView, View};
+    use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
+
+    use super::{HostView, mtm};
+
+    pub fn trials() -> Vec<Trial> {
+        vec![
+            Trial::test(
+                "apple_content::static_and_erased_dispatch_mount_the_platform_view_as_a_subview",
+                || {
+                    static_and_erased_dispatch_mount_the_platform_view_as_a_subview();
+                    Ok(())
+                },
+            ),
+            Trial::test(
+                "apple_content::signal_guards_live_with_the_mounted_view_and_stop_on_drop",
+                || {
+                    signal_guards_live_with_the_mounted_view_and_stop_on_drop();
+                    Ok(())
+                },
+            ),
+            Trial::test(
+                "apple_content::horizontal_stretcher_expands_width_and_centres_fitting_height",
+                || {
+                    horizontal_stretcher_expands_width_and_centres_fitting_height();
+                    Ok(())
+                },
+            ),
+            Trial::test(
+                "apple_content::custom_measure_override_drives_layout",
+                || {
+                    custom_measure_override_drives_layout();
+                    Ok(())
+                },
+            ),
+        ]
+    }
+
+    #[cfg(target_os = "macos")]
+    type ControlView = waterui_apple::objc2_app_kit::NSButton;
+    #[cfg(target_os = "ios")]
+    type ControlView = waterui_apple::objc2_ui_kit::UILabel;
+
+    #[cfg(target_os = "macos")]
+    fn make_control(title: &str, mtm: MainThreadMarker) -> Retained<ControlView> {
+        // SAFETY: `target` and `action` are `None`, so the button stores no
+        // pointer that could dangle.
+        unsafe {
+            waterui_apple::objc2_app_kit::NSButton::buttonWithTitle_target_action(
+                &NSString::from_str(title),
+                None,
+                None,
+                mtm,
+            )
+        }
+    }
+
+    #[cfg(target_os = "ios")]
+    fn make_control(title: &str, mtm: MainThreadMarker) -> Retained<ControlView> {
+        let label = waterui_apple::objc2_ui_kit::UILabel::new(mtm);
+        label.setText(Some(&NSString::from_str(title)));
+        label
+    }
+
+    #[cfg(target_os = "macos")]
+    fn set_control_title(control: &ControlView, title: &str) {
+        control.setTitle(&NSString::from_str(title));
+    }
+
+    #[cfg(target_os = "ios")]
+    fn set_control_title(control: &ControlView, title: &str) {
+        control.setText(Some(&NSString::from_str(title)));
+    }
+
+    #[cfg(target_os = "macos")]
+    fn control_title(control: &ControlView) -> String {
+        control.title().to_string()
+    }
+
+    #[cfg(target_os = "ios")]
+    fn control_title(control: &ControlView) -> String {
+        control.text().map_or_default(|text| text.to_string())
+    }
+
+    struct DropCounter(Rc<Cell<usize>>);
+
+    impl Drop for DropCounter {
+        fn drop(&mut self) {
+            self.0.set(self.0.get() + 1);
+        }
+    }
+
+    struct ReactiveControl {
+        title: Binding<Str>,
+        stretch: StretchAxis,
+        updates: Rc<Cell<usize>>,
+        dropped: Rc<Cell<usize>>,
+        created: Rc<Cell<Option<usize>>>,
+    }
+
+    impl AppleContent for ReactiveControl {
+        type View = ControlView;
+
+        fn make_view(&mut self, mount: &mut AppleMount<'_>) -> Retained<Self::View> {
+            let control = make_control(self.title.snapshot().as_str(), mount.mtm());
+            let base: &PlatformView = control.as_ref();
+            self.created
+                .set(Some(core::ptr::from_ref(base).cast::<u8>() as usize));
+            let invalidator = mount.invalidator();
+            let updates = Rc::clone(&self.updates);
+            let target = control.clone();
+            mount.watch(&self.title, move |change| {
+                updates.set(updates.get() + 1);
+                set_control_title(&target, change.value().as_str());
+                invalidator.invalidate_layout();
+            });
+            mount.keep(DropCounter(Rc::clone(&self.dropped)));
+            control
+        }
+
+        fn stretch_axis(&self) -> StretchAxis {
+            self.stretch
+        }
+    }
+
+    fn render_static(view: impl View) -> waterui_apple::contract::NativeLeaf {
+        let env = super::resolve::env();
+        waterui_apple::dispatch::render(view, &env, mtm())
+    }
+
+    fn static_and_erased_dispatch_mount_the_platform_view_as_a_subview() {
+        for erased in [false, true] {
+            let title = binding(Str::from_static("Buy"));
+            let updates = Rc::new(Cell::new(0));
+            let dropped = Rc::new(Cell::new(0));
+            let created = Rc::new(Cell::new(None));
+            let apple_view = AppleView::new(ReactiveControl {
+                title,
+                stretch: StretchAxis::None,
+                updates,
+                dropped,
+                created: Rc::clone(&created),
+            });
+            let leaf = if erased {
+                render_static(AnyView::new(apple_view))
+            } else {
+                render_static(apple_view)
+            };
+
+            let subviews = view::subviews(leaf.view());
+            assert_eq!(
+                subviews.len(),
+                1,
+                "AppleView mounts its platform view as a subview"
+            );
+            let subview_ptr = core::ptr::from_ref(&*subviews[0]).cast::<u8>() as usize;
+            assert_eq!(
+                Some(subview_ptr),
+                created.get(),
+                "the subview is the exact object `AppleContent::make_view` returned"
+            );
+
+            let parent = HostView::new(mtm(), cocoa_ui::Rect::new(0.0, 0.0, 300.0, 120.0));
+            let _window = super::leaf::attach(mtm(), &parent);
+            let mounted = leaf.mount(&parent);
+            let host_view = view::retain_base(mounted.view());
+            parent.set_layout_handler(move |parent| {
+                view::set_frame(&host_view, view::bounds(parent));
+            });
+            parent.set_needs_layout();
+            parent.layout_if_needed();
+            mounted
+                .view()
+                .downcast_ref::<HostView>()
+                .expect("AppleView mounts inside HostView")
+                .layout_if_needed();
+
+            let fit = view::fitting_size(&subviews[0]);
+            assert!(fit.width > 0.0 && fit.height > 0.0);
+            let placed = view::to_layout_space(mounted.view(), view::frame(&subviews[0]));
+            let parent_bounds = view::bounds(mounted.view());
+            assert!((placed.size.width - fit.width).abs() < 1.0);
+            assert!((placed.size.height - fit.height).abs() < 1.0);
+            assert!(
+                (placed.origin.x - (parent_bounds.size.width - fit.width) / 2.0).abs() < 1.0,
+                "leaf rule centres a non-stretching AppleView horizontally in its allocation"
+            );
+            assert!(
+                (placed.origin.y - (parent_bounds.size.height - fit.height) / 2.0).abs() < 1.0,
+                "leaf rule centres a non-stretching AppleView vertically in its allocation"
+            );
+        }
+    }
+
+    fn signal_guards_live_with_the_mounted_view_and_stop_on_drop() {
+        let title = binding(Str::from_static("Pay"));
+        let updates = Rc::new(Cell::new(0));
+        let dropped = Rc::new(Cell::new(0));
+        let created = Rc::new(Cell::new(None));
+        let leaf = render_static(AppleView::new(ReactiveControl {
+            title: title.clone(),
+            stretch: StretchAxis::None,
+            updates: Rc::clone(&updates),
+            dropped: Rc::clone(&dropped),
+            created,
+        }));
+
+        let initial_width = leaf.layout().measure(ProposalSize::UNSPECIFIED).size.width;
+        let subview = view::subviews(leaf.view())
+            .into_iter()
+            .next()
+            .expect("subview mounted");
+        let control: &ControlView = subview
+            .downcast_ref::<ControlView>()
+            .expect("subview is ControlView");
+        assert_eq!(control_title(control), "Pay");
+
+        title.set(Str::from_static("Subscribe with Apple Pay — Annual Plan"));
+        assert_eq!(updates.get(), 1);
+        assert_eq!(
+            control_title(control),
+            "Subscribe with Apple Pay — Annual Plan"
+        );
+        let expanded_width = leaf.layout().measure(ProposalSize::UNSPECIFIED).size.width;
+        assert!(
+            expanded_width > initial_width,
+            "invalidator.invalidate_layout() refreshes memoized fitting-size measurement ({expanded_width} <= {initial_width})"
+        );
+        assert_eq!(dropped.get(), 0);
+
+        drop(leaf);
+        assert_eq!(dropped.get(), 1, "kept guards drop with the leaf");
+        title.set(Str::from_static("After drop"));
+        assert_eq!(
+            updates.get(),
+            1,
+            "signal watcher stops firing once the mounted view's leaf drops"
+        );
+    }
+
+    fn horizontal_stretcher_expands_width_and_centres_fitting_height() {
+        let leaf = render_static(AppleView::new(ReactiveControl {
+            title: binding(Str::from_static("Buy")),
+            stretch: StretchAxis::Horizontal,
+            updates: Rc::new(Cell::new(0)),
+            dropped: Rc::new(Cell::new(0)),
+            created: Rc::new(Cell::new(None)),
+        }));
+
+        let ideal = leaf.layout().measure(ProposalSize::UNSPECIFIED).size;
+        let stretched = leaf
+            .layout()
+            .measure(ProposalSize::new(Some(360.0), Some(120.0)))
+            .size;
+        assert!(ideal.width > 0.0 && ideal.width < 360.0);
+        assert!((stretched.width - 360.0).abs() < 0.01);
+        assert!((stretched.height - ideal.height).abs() < 0.01);
+
+        let parent = HostView::new(mtm(), cocoa_ui::Rect::new(0.0, 0.0, 360.0, 120.0));
+        let _window = super::leaf::attach(mtm(), &parent);
+        let subview = view::subviews(leaf.view())
+            .into_iter()
+            .next()
+            .expect("subview mounted");
+        let mounted = leaf.mount(&parent);
+        let host_view = view::retain_base(mounted.view());
+        parent.set_layout_handler(move |parent| {
+            let bounds = cocoa_ui::Rect::new(0.0, 0.0, 360.0, 120.0);
+            view::set_frame(parent, bounds);
+            view::set_frame(&host_view, view::bounds(parent));
+        });
+        parent.set_needs_layout();
+        parent.layout_if_needed();
+        mounted
+            .view()
+            .downcast_ref::<HostView>()
+            .expect("AppleView mounts inside HostView")
+            .layout_if_needed();
+
+        let placed = view::to_layout_space(mounted.view(), view::frame(&subview));
+        let host_width = view::bounds(mounted.view()).size.width;
+        let host_height = view::bounds(mounted.view()).size.height;
+        assert!((placed.size.width - host_width).abs() < 1.0);
+        assert!((placed.size.height - f64::from(ideal.height)).abs() < 1.0);
+        assert!((placed.origin.y - (host_height - f64::from(ideal.height)) / 2.0).abs() < 1.0);
+    }
+
+    struct CustomSizedBox;
+
+    impl AppleContent for CustomSizedBox {
+        type View = PlatformView;
+
+        fn make_view(&mut self, mount: &mut AppleMount<'_>) -> Retained<Self::View> {
+            let host = HostView::new(mount.mtm(), cocoa_ui::Rect::ZERO);
+            view::retain_base(&*host)
+        }
+
+        fn measure(&self, _view: &Self::View, _proposal: ProposalSize) -> ViewDimensions {
+            ViewDimensions::new(Size::new(96.0, 44.0))
+        }
+    }
+
+    fn custom_measure_override_drives_layout() {
+        let leaf = render_static(AppleView::new(CustomSizedBox));
+        assert_eq!(
+            leaf.layout().measure(ProposalSize::UNSPECIFIED).size,
+            Size::new(96.0, 44.0)
+        );
     }
 }

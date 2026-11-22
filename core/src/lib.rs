@@ -87,6 +87,8 @@
 //! This enables modular functionality like theming, localization, and platform-specific features.
 
 #![cfg_attr(not(feature = "std"), no_std)]
+extern crate self as waterui_core;
+
 extern crate alloc;
 
 #[macro_use]
@@ -104,38 +106,6 @@ pub use anyview::AnyView;
 pub use components::*;
 pub use easing::{EasingCurve, Interpolatable};
 pub use env::Environment;
-#[cfg(feature = "std")]
-pub use foundation::resources::ResourceContext;
-pub use waterui_contract::contract_violation;
-
-/// Capture standalone resource roots once when creating an application environment.
-///
-/// # Contract
-/// When the native executable's location cannot be determined a debug build
-/// panics, and a release build logs the error and installs a context rooted
-/// at `waterui_assets` and `fonts` in the working directory.
-#[doc(hidden)]
-// On wasm32 or without std the whole body below collapses to a no-op, so
-// the function is const-eligible only under those cfgs.
-#[cfg_attr(
-    any(not(feature = "std"), target_arch = "wasm32"),
-    allow(clippy::missing_const_for_fn)
-)]
-pub fn install_application_resources(env: &mut Environment) {
-    #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
-    if env.get::<ResourceContext>().is_none() {
-        let context = ResourceContext::application().unwrap_or_else(|error| {
-            contract_violation!(
-                "application resources could not be located ({error}); resolving them against the working directory"
-            );
-            ResourceContext::new("waterui_assets", "fonts")
-        });
-        env.insert(context);
-    }
-    #[cfg(any(not(feature = "std"), target_arch = "wasm32"))]
-    let _ = env;
-}
-pub use content_ledger::ContentLedger;
 pub use extract::State;
 pub use foundation::main_thread::MainThreadBound;
 pub use foundation::serial::{LatestDispatch, SerialDispatch};
@@ -146,12 +116,6 @@ pub use nami::signal::IntoSignal;
 pub use nami::{Binding, Computed, Signal, SignalExt, binding, constant, impl_constant};
 pub use state::IntoSignalF32;
 pub use suiteki::Str;
-pub use ui::{
-    accessibility, content_ledger, event, gesture, interaction, key, layout, transition, view,
-    view_renderer, views,
-};
+pub use ui::{backend, layout, view, views};
 pub use view::View;
-pub use view_renderer::{
-    CustomViewRenderer, RenderError, RenderRequest, RenderResult, ViewRenderer,
-};
-pub use waterui_macros::catalog;
+pub use waterui_contract::contract_violation;

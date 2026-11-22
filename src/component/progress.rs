@@ -23,14 +23,14 @@
 
 use crate::AnyView;
 use crate::SignalExt;
-use crate::ViewExt;
 use nami::Computed;
 use nami::signal::IntoComputed;
-use waterui_controls::IntoLabel;
-use waterui_core::View;
-use waterui_core::configurable;
+use waterui_controls::{IntoLabel, Label};
+use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::layout::StretchAxis;
+use waterui_core::{Environment, Native, NativeView, View};
 use waterui_macros::text;
+use waterui_text::Text;
 
 fn progress_value_label(value: &Computed<f64>) -> Computed<String> {
     value
@@ -44,16 +44,17 @@ fn progress_value_label(value: &Computed<f64>) -> Computed<String> {
         })
         .computed()
 }
+
 /// Configuration for progress indicators.
 ///
 /// Contains the visual and behavioral properties of a progress indicator.
 #[non_exhaustive]
-#[derive(Debug)]
-pub struct ProgressConfig {
+#[derive(Debug, Clone)]
+pub struct ProgressConfig<S> {
     /// The label displayed alongside the progress indicator.
-    label: AnyView,
+    label: S,
     /// The label displaying the numerical value of the progress.
-    value_label: AnyView,
+    value_label: S,
     /// The computed progress value between 0.0 and 1.0.
     value: Computed<f64>,
     /// The visual style of the progress indicator (linear or circular).
@@ -62,9 +63,9 @@ pub struct ProgressConfig {
     four_color: bool,
 }
 
-impl ProgressConfig {
+impl<S> ProgressConfig<S> {
     /// Takes the value apart into its fields, in declaration order.
-    pub fn into_parts(self) -> (AnyView, AnyView, Computed<f64>, ProgressStyle, bool) {
+    pub fn into_parts(self) -> (S, S, Computed<f64>, ProgressStyle, bool) {
         (
             self.label,
             self.value_label,
@@ -77,8 +78,8 @@ impl ProgressConfig {
     /// Creates a `ProgressConfig` from its parts.
     #[must_use]
     pub const fn new(
-        label: AnyView,
-        value_label: AnyView,
+        label: S,
+        value_label: S,
         value: Computed<f64>,
         style: ProgressStyle,
         four_color: bool,
@@ -94,13 +95,13 @@ impl ProgressConfig {
 
     /// The label displayed alongside the progress indicator.
     #[must_use]
-    pub const fn label(&self) -> &AnyView {
+    pub const fn label(&self) -> &S {
         &self.label
     }
 
     /// The label displaying the numerical value of the progress.
     #[must_use]
-    pub const fn value_label(&self) -> &AnyView {
+    pub const fn value_label(&self) -> &S {
         &self.value_label
     }
 
@@ -142,93 +143,107 @@ pub enum ProgressStyle {
     Loading,
 }
 
-configurable!(
-    /// A view that shows the progress of a task.
-    ///
-    /// Progress can be displayed as a linear bar or circular spinner.
-    ///
-    /// # Layout Behavior
-    ///
-    /// - **Linear style:** Expands horizontally to fill available space, fixed height
-    /// - **Circular style:** Sizes itself to fit the spinner, never stretches
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use waterui::prelude::*;
-    /// use waterui::component::progress::{loading, progress};
-    ///
-    /// // Determinate progress (75% complete)
-    /// let bar = progress(0.75);
-    ///
-    /// // Circular spinner
-    /// let ring = progress(0.5).circular();
-    ///
-    /// // Indeterminate loading spinner
-    /// let spinner = loading();
-    ///
-    /// // With custom label
-    /// let labelled = progress(0.3).label("Downloading...");
-    /// ```
-    //
-    // ═══════════════════════════════════════════════════════════════════════════
-    // INTERNAL: Layout Contract for Backend Implementers
-    // ═══════════════════════════════════════════════════════════════════════════
-    //
-    // Linear style:
-    //   Stretch Axis: `Horizontal` - Expands to fill available width.
-    //   Height: Fixed intrinsic (platform-determined track height)
-    //
-    // Circular and Loading styles:
-    //   Stretch Axis: `None` - Content-sized, does not expand.
-    //
-    // ═══════════════════════════════════════════════════════════════════════════
-    //
-    Progress,
-    ProgressConfig,
-    |config| match config.style {
-        ProgressStyle::Linear => StretchAxis::Horizontal,
-        ProgressStyle::Circular | ProgressStyle::Loading => StretchAxis::None,
+impl<S: 'static> NativeView for ProgressConfig<S> {
+    fn stretch_axis(&self) -> StretchAxis {
+        match self.style {
+            ProgressStyle::Linear => StretchAxis::Horizontal,
+            ProgressStyle::Circular | ProgressStyle::Loading => StretchAxis::None,
+        }
     }
-);
+}
+
+impl<S: 'static> MapSlots<S> for ProgressConfig<S> {
+    type With<T: 'static> = ProgressConfig<T>;
+
+    fn map_slots<T: 'static>(self, f: impl Fn(S) -> T + Clone + 'static) -> ProgressConfig<T> {
+        ProgressConfig {
+            label: f(self.label),
+            value_label: f(self.value_label),
+            value: self.value,
+            style: self.style,
+            four_color: self.four_color,
+        }
+    }
+}
+
+/// A view that shows the progress of a task.
+///
+/// Progress can be displayed as a linear bar or circular spinner.
+///
+/// # Layout Behavior
+///
+/// - **Linear style:** Expands horizontally to fill available space, fixed height
+/// - **Circular style:** Sizes itself to fit the spinner, never stretches
+///
+/// # Examples
+///
+/// ```rust
+/// use waterui::prelude::*;
+/// use waterui::component::progress::{loading, progress};
+///
+/// // Determinate progress (75% complete)
+/// let bar = progress(0.75);
+///
+/// // Circular spinner
+/// let ring = progress(0.5).circular();
+///
+/// // Indeterminate loading spinner
+/// let spinner = loading();
+///
+/// // With custom label
+/// let labelled = progress(0.3).label("Downloading...");
+/// ```
+#[derive(Debug, Clone)]
+#[must_use]
+pub struct Progress<L, V> {
+    label: L,
+    value_label: V,
+    value: Computed<f64>,
+    style: ProgressStyle,
+    four_color: bool,
+}
 
 /// A progress indicator with a calculated total.
 ///
 /// Created by calling `total()` on a `Progress` instance.
-#[derive(Debug)]
-pub struct ProgressWithTotal(Progress);
+#[derive(Debug, Clone)]
+#[must_use]
+pub struct ProgressWithTotal<L, V>(Progress<L, V>);
 
-impl ProgressWithTotal {
+impl<L, V> ProgressWithTotal<L, V> {
     /// Sets a custom label for the progress indicator.
     ///
     /// # Arguments
     ///
     /// * `label` - The view to use as the progress label.
-    #[must_use]
-    pub fn label(self, label: impl IntoLabel) -> Self {
-        Self(self.0.label(label))
+    pub fn label<NewL: IntoLabel>(self, label: NewL) -> ProgressWithTotal<Label<NewL::Kind>, V> {
+        ProgressWithTotal(self.0.label(label))
     }
 
     /// Changes the progress indicator to a circular style.
-    #[must_use]
-    pub fn circular(self) -> Self {
-        Self(self.0.circular())
+    pub const fn circular(mut self) -> Self {
+        self.0.style = ProgressStyle::Circular;
+        self
     }
 
     /// Changes the progress indicator to a linear style.
-    #[must_use]
-    pub fn linear(self) -> Self {
-        Self(self.0.linear())
+    pub const fn linear(mut self) -> Self {
+        self.0.style = ProgressStyle::Linear;
+        self
     }
 }
 
-impl View for ProgressWithTotal {
-    fn body(self, _env: &waterui_core::Environment) -> impl View {
+impl<L: View, V: View> View for ProgressWithTotal<L, V> {
+    fn body(self, _env: &Environment) -> impl View {
         self.0
     }
+
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        self.0.dispatch(backend, env, cx)
+    }
 }
 
-impl Progress {
+impl Progress<Text, Text> {
     /// Creates a new progress indicator with the specified value.
     ///
     /// # Arguments
@@ -237,35 +252,39 @@ impl Progress {
     pub fn new(value: impl IntoComputed<f64>) -> Self {
         let value = value.into_signal().computed();
         let value_label = progress_value_label(&value);
-        Self(ProgressConfig {
-            label: text!("Please wait...").anyview(),
-            value_label: text!("{value_label}").anyview(),
+        Self {
+            label: text!("Please wait..."),
+            value_label: text!("{value_label}"),
             value,
             style: ProgressStyle::Linear,
             four_color: false,
-        })
+        }
     }
 
+    /// Creates an infinite progress indicator, typically shown as an indeterminate spinner.
+    /// Note: This uses `f32::INFINITY` as the progress value.
+    pub fn infinity() -> Self {
+        Self::new(f32::INFINITY)
+    }
+}
+
+impl<L, V> Progress<L, V> {
     /// Creates a progress indicator that calculates its value as a fraction of the total.
     ///
     /// # Arguments
     ///
     /// * `total` - The total value against which progress is measured.
-    pub fn total(mut self, total: impl IntoComputed<f64>) -> ProgressWithTotal {
+    pub fn total(self, total: impl IntoComputed<f64>) -> ProgressWithTotal<L, Text> {
         let total = total.into_signal();
-        let value = self.0.value;
-        self.0.value = total.zip(&value).map(|(t, v)| v / t).computed();
-        let value_label = progress_value_label(&self.0.value);
-        self.0.value_label = text!("{value_label}").anyview();
-
-        ProgressWithTotal(self)
-    }
-
-    /// Creates an infinite progress indicator, typically shown as an indeterminate spinner.
-    /// Note: This uses `f32::INFINITY` as the progress value.
-    #[must_use]
-    pub fn infinity() -> Self {
-        Self::new(f32::INFINITY)
+        let value = total.zip(&self.value).map(|(t, v)| v / t).computed();
+        let value_label = progress_value_label(&value);
+        ProgressWithTotal(Progress {
+            label: self.label,
+            value_label: text!("{value_label}"),
+            value,
+            style: self.style,
+            four_color: self.four_color,
+        })
     }
 
     /// Sets a custom label for the progress indicator.
@@ -273,30 +292,28 @@ impl Progress {
     /// # Arguments
     ///
     /// * `label` - The view to use as the progress label.
-    #[must_use]
-    pub fn label(mut self, label: impl IntoLabel) -> Self {
-        self.0.label = label.into_label().anyview();
-        self
+    pub fn label<NewL: IntoLabel>(self, label: NewL) -> Progress<Label<NewL::Kind>, V> {
+        Progress {
+            label: label.into_label(),
+            value_label: self.value_label,
+            value: self.value,
+            style: self.style,
+            four_color: self.four_color,
+        }
     }
 
     /// Changes the visual style of the progress indicator.
-    ///
-    /// # Arguments
-    ///
-    /// * `style` - The style to apply to the progress indicator.
     const fn style(mut self, style: ProgressStyle) -> Self {
-        self.0.style = style;
+        self.style = style;
         self
     }
 
     /// Changes the progress indicator to a circular style.
-    #[must_use]
     pub const fn circular(self) -> Self {
         self.style(ProgressStyle::Circular)
     }
 
     /// Changes the progress indicator to a linear style.
-    #[must_use]
     pub const fn linear(self) -> Self {
         self.style(ProgressStyle::Linear)
     }
@@ -307,16 +324,62 @@ impl Progress {
     /// report how far along an operation is. Each backend draws its own: the
     /// Material theme morphs a shape while it turns, and platforms whose
     /// loading indicator is a spinner draw that.
-    #[must_use]
     pub const fn loading(self) -> Self {
         self.style(ProgressStyle::Loading)
     }
 
     /// Render indeterminate progress with the Material four-color cycle.
-    #[must_use]
     pub const fn four_color(mut self) -> Self {
-        self.0.four_color = true;
+        self.four_color = true;
         self
+    }
+}
+
+impl<L: View, V: View> Progress<L, V> {
+    fn into_config<S: ChildSlot>(self) -> ProgressConfig<S> {
+        ProgressConfig {
+            label: S::from_view(self.label),
+            value_label: S::from_view(self.value_label),
+            value: self.value,
+            style: self.style,
+            four_color: self.four_color,
+        }
+    }
+}
+
+impl<S: View> Progress<S, S> {
+    /// Returns the configuration for this progress view.
+    #[must_use]
+    pub fn config(self) -> ProgressConfig<S> {
+        ProgressConfig {
+            label: self.label,
+            value_label: self.value_label,
+            value: self.value,
+            style: self.style,
+            four_color: self.four_color,
+        }
+    }
+}
+
+impl<S: View> From<ProgressConfig<S>> for Progress<S, S> {
+    fn from(value: ProgressConfig<S>) -> Self {
+        Self {
+            label: value.label,
+            value_label: value.value_label,
+            value: value.value,
+            style: value.style,
+            four_color: value.four_color,
+        }
+    }
+}
+
+impl<L: View, V: View> View for Progress<L, V> {
+    fn body(self, _env: &Environment) -> impl View {
+        Native::new(self.into_config::<AnyView>())
+    }
+
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        backend.native(self.into_config::<B::Slot>(), env, cx)
     }
 }
 
@@ -325,13 +388,12 @@ impl Progress {
 /// # Arguments
 ///
 /// * `value` - The progress value between 0.0 and 1.0.
-pub fn progress(value: impl IntoComputed<f64>) -> Progress {
+pub fn progress(value: impl IntoComputed<f64>) -> Progress<Text, Text> {
     Progress::new(value)
 }
 
 /// Creates the platform's indeterminate loading indicator.
-#[must_use]
-pub fn loading() -> Progress {
+pub fn loading() -> Progress<Text, Text> {
     Progress::infinity().loading()
 }
 

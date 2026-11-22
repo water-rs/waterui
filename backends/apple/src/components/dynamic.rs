@@ -1,8 +1,8 @@
-//! The `dynamic` leaf: `Native<Dynamic>` rendered through a [`HostView`].
+//! The `dynamic` leaf: a `Dynamic` rendered through a [`HostView`].
 //!
 //! Mirrors `WuiDynamic`: a host container that owns at most one mounted
-//! child. `Dynamic::connect` delivers each `set` as a `Context<AnyView>`;
-//! the receiver renders the view through the captured [`Renderer`], hands
+//! child. `Dynamic::connect` delivers each `set` in the backend's child
+//! slot; the receiver realizes it through the captured [`Renderer`], hands
 //! the previous [`LiveChild`] to `LiveChild::remove` — which retires a
 //! claimed instance into a ghost beneath the live content — and mounts
 //! the new leaf. The leaf's layout face delegates to the current child
@@ -10,8 +10,9 @@
 //! file's header states. A render miss keeps the previous child.
 //!
 //! A `.transition(...)` placed directly on the conditional is adopted:
-//! [`render_adopting`] renders the `Dynamic` leaf unclaimed and stores
-//! the claim in [`DynamicState::adopted`], so every child the host swaps
+//! the leaf takes the declaration's [`AdoptionOffer`] from its context,
+//! stays unclaimed itself and stores the claim in
+//! [`DynamicState::adopted`], so every child the host swaps
 //! gets it as its `adopted` claim — a child's own declaration still wins
 //! (`effective()`'s rule, §5.1).
 //!
@@ -26,18 +27,17 @@ use core::cell::{Cell, RefCell};
 use cocoa_ui::geometry::Rect;
 use cocoa_ui::{Retained, view};
 use waterui::component::Dynamic;
-use waterui_backend_core::AnyView;
-use waterui_core::Metadata;
+use waterui_backend_core::{Child, ChildView};
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size, StretchAxis, SubView,
     ViewDimensions,
 };
-use waterui_core::metadata::Retain;
 
+use crate::backend::AppleBackend;
 use crate::contract::{NativeLeaf, RenderContext, Renderer};
-use crate::dispatch::Dispatcher;
 use crate::proposal::{self, Placement, to_proposal};
 use crate::transition::TransitionClaim;
+use crate::transition::adoption::AdoptionOffer;
 use crate::transition::ghost::Ghost;
 use crate::transition::live::{LiveChild, Removal};
 
@@ -48,7 +48,7 @@ use cocoa_ui::uikit::HostView;
 
 /// The leaf's live state.
 struct DynamicState {
-    /// The render capability each delivered `AnyView` is realized through.
+    /// The render capability each delivered child is realized through.
     renderer: Renderer,
     /// The host view — the leaf's platform object.
     host: Retained<HostView>,
@@ -140,64 +140,18 @@ impl SubView for DynamicSubView {
     }
 }
 
-/// Peels the conditional shapes a `.transition(...)` declaration adopts
-/// through (§5.1): `Dynamic` itself, `Native<Dynamic>`, and the
-/// `Metadata<Retain>` a `watch` puts around either — the same nodes
-/// Hydrolysis's `adopt_by_dynamic` reaches. Anything else comes back
-/// unchanged as `Err`. The `Retain` guard travels with the answer: it
-/// owns the watcher keeping the conditional live, so it must outlive
-/// the render.
-pub fn expand_to_dynamic(view: AnyView) -> Result<(Dynamic, Option<Retain>), AnyView> {
-    let (content, retained) = match view.downcast::<Metadata<Retain>>() {
-        Ok(metadata) => (metadata.content, Some(metadata.value)),
-        Err(view) => (view, None),
-    };
-    let dynamic = match content.downcast::<Dynamic>() {
-        Ok(dynamic) => Ok(*dynamic),
-        Err(content) => content
-            .downcast::<waterui_backend_core::Native<Dynamic>>()
-            .map(|native| native.into_inner()),
-    };
-    match (dynamic, retained) {
-        (Ok(dynamic), retained) => Ok((dynamic, retained)),
-        (Err(content), Some(retained)) => Err(AnyView::new(Metadata {
-            content,
-            value: retained,
-        })),
-        (Err(content), None) => Err(content),
-    }
-}
-
-/// Renders `dynamic` with `claim` adopted (§5.1): the leaf itself stays
-/// unclaimed — the conditional's own mount never transitions — and every
-/// child it swaps in or out carries the claim as `adopted`. `retained`
-/// is the `Metadata<Retain>` guard `expand_to_dynamic` peeled, kept
-/// alive with the leaf.
-pub fn render_adopting(
-    dynamic: Dynamic,
-    retained: Option<Retain>,
-    claim: TransitionClaim,
-    ctx: &RenderContext<'_>,
-) -> NativeLeaf {
-    let mut leaf = render(dynamic, ctx, Some(claim));
-    if let Some(retained) = retained {
-        leaf.keep(retained);
-    }
-    leaf
-}
-
-/// `updateChild`: render `view`, retire the previous child, mount the
+/// `updateChild`: realize `child`, retire the previous child, mount the
 /// new leaf into the host, then re-forward the negotiated proposal and
 /// invalidate up the hierarchy.
 ///
 /// The borrow is released before `layout_if_needed`: that call runs the
 /// host's layout handler synchronously, and the handler borrows the same
 /// state.
-fn update_child(state: &Rc<RefCell<DynamicState>>, view: AnyView) {
+fn update_child(state: &Rc<RefCell<DynamicState>>, child: Child<AppleBackend>) {
     let host = {
         let state_rc = Rc::clone(state);
         let mut state = state.borrow_mut();
-        let leaf = state.renderer.render(view);
+        let leaf = state.renderer.realize(child);
         // The outgoing child leaves the semantic tree now: a claimed
         // instance retires into a ghost painted beneath the incoming
         // child — a conditional holds no slot (§4.5) — and an unclaimed
@@ -252,13 +206,14 @@ fn update_child(state: &Rc<RefCell<DynamicState>>, view: AnyView) {
     host.layout_if_needed();
 }
 
-/// Builds the `dynamic` leaf with `adopted` as the claim every child
-/// inherits — `None` for an ordinary conditional.
-fn render(
-    dynamic: Dynamic,
+/// The `dynamic` realization: a host whose single child the handler's
+/// receiver swaps per delivered view, with the claim of a transition it
+/// adopted as the claim every child inherits.
+pub fn realize_dynamic<C: ChildView<AppleBackend>>(
+    dynamic: Dynamic<C>,
     ctx: &RenderContext<'_>,
-    adopted: Option<TransitionClaim>,
 ) -> NativeLeaf {
+    let adopted = ctx.offer().map(AdoptionOffer::adopt);
     let host = HostView::new(ctx.mtm(), Rect::ZERO);
     let state = Rc::new(RefCell::new(DynamicState {
         renderer: ctx.renderer(),
@@ -325,20 +280,13 @@ fn render(
     let weak = Rc::downgrade(&state);
     dynamic.connect(move |ctx| {
         if let Some(state) = weak.upgrade() {
-            update_child(&state, ctx.into_value());
+            update_child(&state, ctx.into_value().into_child());
         }
     });
 
     let mut leaf = NativeLeaf::new(&*host, DynamicSubView { state });
     leaf.keep(sink_guard);
     leaf
-}
-
-/// Installs the `dynamic` handler on the dispatcher: `Native<Dynamic>`
-/// becomes a host whose single child the handler's receiver swaps per
-/// delivered `Context<AnyView>`.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<Dynamic>(|dynamic, ctx| render(dynamic, ctx, None));
 }
 
 #[cfg(test)]

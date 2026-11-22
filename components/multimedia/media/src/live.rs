@@ -1,14 +1,14 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use waterui_core::gesture::{GestureObserver, LongPressGesture};
 use waterui_core::handler::{
     BoxedEventAction, EventHandler, ReportExtraction, boxed_event_handler,
 };
 use waterui_core::{
-    AnyView, Binding, Computed, Dynamic, Environment, Metadata, SerialDispatch, Signal, SignalExt,
-    View, layout::StretchAxis, reactive::signal::IntoComputed,
+    Binding, Computed, Dynamic, Environment, Metadata, SerialDispatch, Signal, SignalExt, View,
+    reactive::signal::IntoComputed,
 };
+use waterui_interaction::gesture::{GestureObserver, LongPressGesture};
 use waterui_layout::overlay;
 
 use crate::{
@@ -131,15 +131,13 @@ impl View for LivePhoto {
         let report = LivePhotoReporter::new(self.on_event, env.clone());
         let report_on_press = report.clone();
         let motion = Dynamic::watch(is_playing, move |is_playing_now| {
-            if is_playing_now {
-                AnyView::new(live_photo_video(
+            is_playing_now.then(|| {
+                live_photo_video(
                     motion_source.snapshot(),
                     playback_state.clone(),
                     report.clone(),
-                ))
-            } else {
-                AnyView::new(())
-            }
+                )
+            })
         });
 
         Metadata::new(
@@ -151,14 +149,6 @@ impl View for LivePhoto {
                 }
             }),
         )
-    }
-
-    /// Resolves to `overlay(resizable still, motion)`; the overlay is
-    /// transparent to its base, so the axis is the resizable still photo's.
-    /// The `motion` child is a `Dynamic` and never stretches.
-    fn stretch_axis(&self) -> StretchAxis {
-        let still_source = self.source.clone().map(|source| source.image).computed();
-        Photo::new(still_source).resizable().stretch_axis()
     }
 }
 

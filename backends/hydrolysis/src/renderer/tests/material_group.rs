@@ -1,4 +1,4 @@
-//! `.material_group()` (water-rs/waterui#1999): the `IgnorableMetadata`
+//! `.material_group()` (water-rs/waterui#1999): the `Metadata`
 //! wrapper opens a material scope the flush keeps on a stack, and the mount
 //! table's group key `(scope, within-window level, resolved colour scheme,
 //! install canvas)` makes the members under one scope share one
@@ -27,30 +27,25 @@ use waterui::metadata::anchored_overlay::{AnchorEdge, AnchoredOverlay};
 use waterui::prelude::text;
 use waterui::theme::ColorScheme;
 use waterui::widget::condition::when;
-use waterui_backend_core::View;
 use waterui_controls::button::button;
 use waterui_core::AnyView;
 use waterui_core::env::Store;
 use waterui_core::extract::Use;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::SelfId;
-use waterui_core::transition::PropertyTransition;
 use waterui_layout::scroll;
 use waterui_layout::stack::{VStack, hstack, vstack, zstack};
+use waterui_structural_transition::PropertyTransition;
 
 use super::{
-    MinimalTestTheme, capture_bytes, inner_layers, material_layers, mounted_anchor_parent_children,
-    mounts, pumped_test_environment, swap_host_surface, test_environment, test_renderer,
-    window_mount,
+    MinimalTestTheme, Realized, capture_bytes, inner_layers, material_layers,
+    mounted_anchor_parent_children, mounts, pumped_test_environment, swap_host_surface,
+    test_environment, test_renderer, window_mount,
 };
 use crate::HeadlessRuntime;
 use crate::platform::{InputEvent, PointerButton, PointerKind};
+use crate::renderer::ProposalSize;
 use crate::renderer::mount::backdrop::BackdropScope;
-use crate::renderer::{
-    FontFamilyResolution, HydroState, ProposalSize, measure_view_dimensions_with_proposal,
-    normalize_layout_view, view_renders_nothing,
-};
-use crate::text::ParleyEngine;
 use crate::theme::WidgetTheme;
 
 /// The window, in points.
@@ -642,21 +637,19 @@ fn a_material_in_an_anchored_overlay_does_not_join_the_outer_group() {
 /// instead of panicking on an unsupported view type.
 #[test]
 fn a_grouped_row_in_a_lazy_stack_measures_and_renders() {
-    // The item measurement the lazy stack runs before building its rows:
-    // `measure_view_dimensions_with_proposal` on a grouped row must answer
-    // the `hstack` the group wraps, not the wrapper.
+    // A grouped row must measure as the `hstack` the group wraps, not the
+    // wrapper.
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
     let proposal = ProposalSize::new(Some(crate::num_cast::u32_as_f32(WIDTH)), None);
-    let grouped = normalize_layout_view(AnyView::new(row().material_group()), &env);
-    let plain = normalize_layout_view(AnyView::new(row()), &env);
-    state.measurement.begin_frame();
-    let grouped_size =
-        measure_view_dimensions_with_proposal(&grouped, proposal, &mut state, &env, &theme).size;
-    state.measurement.begin_frame();
-    let plain_size =
-        measure_view_dimensions_with_proposal(&plain, proposal, &mut state, &env, &theme).size;
+    let grouped = AnyView::new(row().material_group());
+    let plain = AnyView::new(row());
+    let grouped_size = Realized::with_theme(grouped, &env, &theme)
+        .measure(proposal)
+        .size;
+    let plain_size = Realized::with_theme(plain, &env, &theme)
+        .measure(proposal)
+        .size;
     assert_eq!(
         grouped_size, plain_size,
         "a grouped row measures exactly like the same row ungrouped"
@@ -751,30 +744,21 @@ fn a_group_wrapping_a_lazy_stack_groups_every_flushed_row() {
     assert_eq!(mounts.backdrop_group_count(), 1);
 }
 
-/// `view_renders_nothing` looks through `.material_group()`: a grouped
-/// empty view claims no stack slot, so the stack measures exactly as if
-/// the member were absent.
+/// A grouped empty view claims no stack slot: the stack measures exactly
+/// as if the member were absent.
 #[test]
 fn a_grouped_empty_view_claims_no_stack_slot() {
-    assert!(
-        view_renders_nothing(&AnyView::new(().material_group())),
-        "a grouped `()` answers renders-nothing like a bare `()`"
-    );
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
     let proposal = ProposalSize::new(Some(200.0), None);
-    let grouped = normalize_layout_view(
-        AnyView::new(vstack((text("a"), ().material_group(), text("b")))),
-        &env,
-    );
-    let plain = normalize_layout_view(AnyView::new(vstack((text("a"), text("b")))), &env);
-    state.measurement.begin_frame();
-    let grouped_size =
-        measure_view_dimensions_with_proposal(&grouped, proposal, &mut state, &env, &theme).size;
-    state.measurement.begin_frame();
-    let plain_size =
-        measure_view_dimensions_with_proposal(&plain, proposal, &mut state, &env, &theme).size;
+    let grouped = AnyView::new(vstack((text("a"), ().material_group(), text("b"))));
+    let plain = AnyView::new(vstack((text("a"), text("b"))));
+    let grouped_size = Realized::with_theme(grouped, &env, &theme)
+        .measure(proposal)
+        .size;
+    let plain_size = Realized::with_theme(plain, &env, &theme)
+        .measure(proposal)
+        .size;
     assert_eq!(
         grouped_size, plain_size,
         "a grouped `()` claims no stack slot"

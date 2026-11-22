@@ -288,9 +288,7 @@ AnalyticsPlugin {
 ### Core Traits
 - `View` - The fundamental UI component trait
 - `IntoView` - Convert types into views
-- `TupleViews` - Convert tuples of views into collections
-- `ConfigurableView` - Views with configuration objects
-- `ViewConfiguration` - Configuration types for configurable views
+- `ViewSequence` - Convert tuples, arrays, and vectors of views into child slots
 
 ### Type Erasure
 - `AnyView` - Type-erased view container
@@ -310,7 +308,6 @@ AnalyticsPlugin {
 
 ### Metadata & Hooks
 - `Metadata<T>` - Attach metadata to views (must be handled by renderer)
-- `IgnorableMetadata<T>` - Optional metadata (can be ignored by renderer)
 - `Retain` - Keep values alive for view lifetime
 - `Hook<C>` - Intercept and modify view configurations
 
@@ -325,7 +322,6 @@ AnalyticsPlugin {
 - `Event` - Enumeration of UI events (`Appear`, `Disappear`)
 - `OnEvent` - Event handler component
 - `Handler<T>`, `HandlerOnce<T>` - Handler traits for environment-based callbacks
-- `ActionObject` - Type alias for action handlers
 
 ### View Collections
 - `Views` - Trait for collections with stable identities

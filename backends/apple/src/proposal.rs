@@ -245,7 +245,7 @@ pub fn response(view: &PlatformView) -> Rect {
 
 /// Where `view` draws its intrinsic content: its committed response
 /// rectangle, or its bounds before its first placement committed one.
-#[cfg(feature = "picture")]
+#[cfg(all(feature = "picture", waterui_feature = "gpu"))]
 pub fn content_rect(view: &PlatformView) -> Rect {
     slot_of(view).content_rect(view)
 }
@@ -314,6 +314,13 @@ impl Placement {
 
     /// The same placement with the view's response positioned by the
     /// parent's rule at `anchor` inside the frame it assigns.
+    #[cfg(any(
+        feature = "calendar",
+        feature = "multi_date_picker",
+        feature = "text_field",
+        feature = "secure_field",
+        feature = "list",
+    ))]
     #[must_use]
     pub const fn anchored(self, anchor: UnitPoint) -> Self {
         Self {
@@ -405,6 +412,12 @@ pub fn place_painted(
 /// frame's top staying the response's top. The frame stays the allocation,
 /// so a leaf that draws in its response (a label) lands at the leading
 /// edge rather than centred in a frame wider than its content.
+#[cfg(any(
+    feature = "calendar",
+    feature = "multi_date_picker",
+    feature = "text_field",
+    feature = "secure_field",
+))]
 pub fn place_leading(view: &PlatformView, frame: Rect, proposal: ProposalSize, rtl: bool) {
     let anchor = if rtl {
         UnitPoint::TOP_TRAILING
@@ -417,38 +430,6 @@ pub fn place_leading(view: &PlatformView, frame: Rect, proposal: ProposalSize, r
 
 /// Registers `sink` as the channel `view` answers placements through; the
 /// returned guard unregisters on drop.
-#[cfg(any(
-    feature = "border",
-    feature = "clip_shape",
-    feature = "container",
-    feature = "context_menu",
-    feature = "cursor",
-    feature = "draggable",
-    feature = "drop_destination",
-    feature = "dynamic",
-    feature = "dynamic_range",
-    feature = "fixed_container",
-    feature = "gesture",
-    feature = "glass_background",
-    feature = "hittable",
-    feature = "ignore_safe_area",
-    feature = "layout_priority",
-    feature = "lifecycle_hook",
-    feature = "material_background",
-    feature = "menu",
-    feature = "offset",
-    feature = "on_event",
-    feature = "on_key_press",
-    feature = "opacity",
-    feature = "retain",
-    feature = "rotation",
-    feature = "scale",
-    feature = "scroll",
-    feature = "secure",
-    feature = "shadow",
-    feature = "env",
-    feature = "transition_sites",
-))]
 pub fn register_sink(view: &PlatformView, sink: impl Fn(Placement) + 'static) -> SinkGuard {
     CHANNELS.with(|channels| {
         channels.borrow_mut().insert(key(view), Rc::new(sink));
@@ -457,75 +438,11 @@ pub fn register_sink(view: &PlatformView, sink: impl Fn(Placement) + 'static) ->
 }
 
 /// The guard [`register_sink`] returns; drops the registration.
-#[cfg(any(
-    feature = "border",
-    feature = "clip_shape",
-    feature = "container",
-    feature = "context_menu",
-    feature = "cursor",
-    feature = "draggable",
-    feature = "drop_destination",
-    feature = "dynamic",
-    feature = "dynamic_range",
-    feature = "fixed_container",
-    feature = "gesture",
-    feature = "glass_background",
-    feature = "hittable",
-    feature = "ignore_safe_area",
-    feature = "layout_priority",
-    feature = "lifecycle_hook",
-    feature = "material_background",
-    feature = "menu",
-    feature = "offset",
-    feature = "on_event",
-    feature = "on_key_press",
-    feature = "opacity",
-    feature = "retain",
-    feature = "rotation",
-    feature = "scale",
-    feature = "scroll",
-    feature = "secure",
-    feature = "shadow",
-    feature = "env",
-    feature = "transition_sites",
-))]
 #[derive(Debug)]
 pub struct SinkGuard {
     view: usize,
 }
 
-#[cfg(any(
-    feature = "border",
-    feature = "clip_shape",
-    feature = "container",
-    feature = "context_menu",
-    feature = "cursor",
-    feature = "draggable",
-    feature = "drop_destination",
-    feature = "dynamic",
-    feature = "dynamic_range",
-    feature = "fixed_container",
-    feature = "gesture",
-    feature = "glass_background",
-    feature = "hittable",
-    feature = "ignore_safe_area",
-    feature = "layout_priority",
-    feature = "lifecycle_hook",
-    feature = "material_background",
-    feature = "menu",
-    feature = "offset",
-    feature = "on_event",
-    feature = "on_key_press",
-    feature = "opacity",
-    feature = "retain",
-    feature = "rotation",
-    feature = "scale",
-    feature = "scroll",
-    feature = "secure",
-    feature = "shadow",
-    feature = "env",
-    feature = "transition_sites",
-))]
 impl Drop for SinkGuard {
     fn drop(&mut self) {
         CHANNELS.with(|channels| {

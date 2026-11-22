@@ -986,11 +986,6 @@ impl View for FilledShape {
             fill: self.fill.resolve(env).computed(),
         }
     }
-
-    /// Resolves to `ResolvedShape`, which fills both axes.
-    fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
-        waterui_core::layout::StretchAxis::Both
-    }
 }
 
 // ============================================================================

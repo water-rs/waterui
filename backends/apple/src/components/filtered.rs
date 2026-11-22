@@ -22,7 +22,9 @@ use futures::FutureExt;
 use objc2::MainThreadMarker;
 use objc2_metal::{MTLDevice as _, MTLTexture as _};
 use objc2_quartz_core::CAMetalLayer;
-use waterui_backend_core::{AnyView, View};
+use waterui::reactive::Computed;
+use waterui_backend_core::{ChildView, Environment};
+use waterui_core::backend::ErasedPayload;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
 };
@@ -32,9 +34,12 @@ use waterui_graphics::backend::filtrate::{
 };
 use waterui_graphics::backend::{AnyEffect, ErasedEffect, FilteredView, ParamGuards};
 use waterui_graphics::gpu::{GpuRuntime, SharedGpuContext, wgpu};
+use waterui_structural_transition::{
+    EmptyBodySlot, EmptyBodyVisitor, TransitionFrame, TransitionState,
+};
 
+use crate::backend::AppleBackend;
 use crate::contract::{Mounted, NativeLeaf, RenderContext};
-use crate::dispatch::{Dispatcher, is_native_boundary};
 use crate::publication_park::PublicationPark;
 
 #[cfg(target_os = "macos")]
@@ -2400,126 +2405,202 @@ impl Drop for FilteredGuard {
     }
 }
 
+/// Accumulates directly enclosed [`FilteredView`] payloads into one chain
+/// before the innermost content payload realizes.
+#[derive(Clone, Debug)]
+pub struct FilterFusion(Rc<FilterFusionInner>);
+
+#[derive(Debug)]
+struct FilterFusionInner {
+    /// Armed only until the first non-`FilteredView` payload or metadata
+    /// wrapper opens its [`RenderContext`], so filters inside a container or
+    /// beneath a modifier never fuse into an ancestor chain.
+    armed: Cell<bool>,
+    effects: RefCell<Vec<(AnyEffect, ParamGuards)>>,
+}
+
+impl FilterFusion {
+    fn new(effect: AnyEffect, guards: ParamGuards) -> Self {
+        Self(Rc::new(FilterFusionInner {
+            armed: Cell::new(true),
+            effects: RefCell::new(vec![(effect, guards)]),
+        }))
+    }
+
+    /// Disarms the enclosing filter chain once a non-filter payload or
+    /// metadata boundary is crossed.
+    pub fn disarm(&self) {
+        self.0.armed.set(false);
+    }
+
+    fn is_armed(&self) -> bool {
+        self.0.armed.get()
+    }
+
+    fn push(&self, effect: AnyEffect, guards: ParamGuards) {
+        self.0.effects.borrow_mut().push((effect, guards));
+    }
+
+    fn into_effects(self) -> Vec<(AnyEffect, ParamGuards)> {
+        self.0.effects.take()
+    }
+}
+
+enum FusedFilter<'a> {
+    /// An outer [`FilteredView`] already owns this chain; `leaf` is the
+    /// realized innermost content bubbling back up to it.
+    Enclosed(NativeLeaf),
+    /// The outermost [`FilteredView`] of the chain: `chained` holds every
+    /// directly enclosed filter in outer-to-inner order, and `content` is
+    /// the realized leaf beneath the chain.
+    Outermost {
+        content: NativeLeaf,
+        chained: Vec<(AnyEffect, ParamGuards)>,
+        ctx: RenderContext<'a>,
+    },
+}
+
 /// `fuseEnclosedFilters` — folds the filters this one directly encloses
-/// into the chain this leaf renders, returning the view the chain captures.
+/// into the chain this leaf renders, realizing the content view beneath the
+/// fused chain through static dispatch.
 ///
-/// The resolve walk expands `body()` on every composable view; when it
-/// lands on another
-/// `Native<FilteredView>` its effect joins the chain behind this one's —
-/// one capture, one presentation target and one submission instead of two.
-fn fuse_enclosed_filters(
-    filtered: FilteredView,
-    ctx: &RenderContext<'_>,
-) -> (AnyView, Vec<(AnyEffect, ParamGuards)>) {
-    let mut effects = Vec::new();
+/// Composite views and hook scopes expand in place; when the next payload
+/// reached is another [`FilteredView`], its effect joins the chain behind
+/// this one's — one capture, one presentation target and one submission
+/// instead of two. Any non-filter payload or metadata wrapper disarms the
+/// walk before realizing its own children.
+fn fuse_enclosed_filters<'a, C: ChildView<AppleBackend>>(
+    backend: &mut AppleBackend,
+    filtered: FilteredView<C>,
+    env: &'a Environment,
+) -> FusedFilter<'a> {
     let FilteredView {
-        mut content,
+        content,
         effect,
         guards,
     } = filtered;
-    effects.push((effect, guards));
-    loop {
-        while !is_native_boundary(&content) {
-            content = AnyView::new(content.body(ctx.env()));
-        }
-        match content.downcast::<waterui_core::Native<FilteredView>>() {
-            Ok(inner) => {
-                let inner = (*inner).into_inner();
-                content = inner.content;
-                effects.push((inner.effect, inner.guards));
-            }
-            Err(content) => return (content, effects),
-        }
+    if let Some(fusion) = backend.filter_fusion.as_ref()
+        && fusion.is_armed()
+    {
+        fusion.push(effect, guards);
+        return FusedFilter::Enclosed(content.realize(backend, env, ()));
+    }
+    let ctx = backend.entry(env);
+    let fusion = FilterFusion::new(effect, guards);
+    backend.filter_fusion = Some(fusion.clone());
+    let content = content.realize(backend, ctx.env(), ());
+    backend.filter_fusion = None;
+    FusedFilter::Outermost {
+        content,
+        chained: fusion.into_effects(),
+        ctx,
     }
 }
 
-/// Peels the chain `body` forms into `(effect, guards)` pairs in
-/// presentation order — `fuse_enclosed_filters`'s walk without a
-/// `RenderContext`, for the shape `TransitionState::body(AnyView::new(()),
-/// frame)` produces under a `captures_content` transition: a chain of
-/// `Native<FilteredView>` terminating at the empty `Native<()>` the
-/// backend passed in. Anything else is a user-triggerable violation of
-/// the transition contract; a release build reports it once and answers
-/// `None`, so the caller ends the transition (§10).
-fn effects_from_body(
-    mut body: AnyView,
-    env: &waterui_backend_core::Environment,
-) -> Option<Vec<(AnyEffect, ParamGuards)>> {
-    let mut effects = Vec::new();
-    loop {
-        while !is_native_boundary(&body) {
-            body = AnyView::new(body.body(env));
-        }
-        match body.downcast::<waterui_core::Native<FilteredView>>() {
-            Ok(inner) => {
-                let inner = (*inner).into_inner();
-                body = inner.content;
-                effects.push((inner.effect, inner.guards));
-            }
-            Err(body) => {
-                if body.downcast::<waterui_core::Native<()>>().is_ok() {
-                    return Some(effects);
-                }
-                waterui::contract_violation!(
-                    "waterui-apple: a `captures_content` transition's body must expand to a \
-                     `FilteredView` chain over the empty content"
-                );
-                return None;
-            }
-        }
-    }
+/// Collects a `captures_content` transition's `(effect, guards)` chain in
+/// presentation order, confirming it terminates at the empty `()` content
+/// view without erasing through `AnyView`.
+#[derive(Default)]
+struct TransitionEffects {
+    effects: Vec<(AnyEffect, ParamGuards)>,
 }
 
-/// Installs the `filtered` handler — `applied_filter` and `view_effect`
-/// collapse into one leaf under the cutover's `Native<FilteredView>`.
-#[allow(clippy::too_many_lines)]
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<FilteredView>(|filtered, ctx| {
-        let mtm = ctx.mtm();
-        let (content, chained) = fuse_enclosed_filters(filtered, ctx);
-        // `NativeFilteredView` on AppKit: a complete native `CIFilter`
-        // plan mounts the content visibly on `CALayer.filters` — no
-        // capture, no GPU setup (#1748). Any unmapped stage, GPU effect or
-        // output-size policy falls through to the capture path. A chain
-        // under a transition declaration always takes the GPU
-        // realization: a `CAFilter`-backed native filter cannot hand off
-        // a frozen GPU frame (§2.2, maintainer decision 10).
-        #[cfg(all(target_os = "macos", feature = "applied_filter"))]
-        if ctx
-            .env()
-            .get::<crate::transition::SnapshotDemand>()
-            .is_none()
-            && let Some(plan) = crate::components::native_filter::plan(&chained)
+impl EmptyBodyVisitor for TransitionEffects {
+    fn native(&mut self, mut native: ErasedPayload<'_>, env: &Environment) -> bool {
+        if let Some(FilteredView {
+            content,
+            effect,
+            guards,
+        }) = native.take::<FilteredView<EmptyBodySlot>>()
         {
-            return crate::components::native_filter::mount(mtm, ctx, content, chained, &plan);
+            self.effects.push((effect, guards));
+            return content.visit(self, env);
         }
-        let Some(services) = services(ctx.env()) else {
-            return crate::gpu_runtime::unavailable_leaf(mtm, "filtered");
-        };
-        let (sources, guard_list): (Vec<AnyEffect>, Vec<ParamGuards>) = chained.into_iter().unzip();
-        // The chain presents outermost-last: effects render content-adjacent
-        // first, so reverse the collection order.
-        let effects: Vec<Box<dyn ErasedEffect>> =
-            sources.into_iter().rev().map(AnyEffect::build).collect();
+        native.take::<()>().is_some()
+    }
+}
 
-        let view = HostView::new(mtm, cocoa_ui::Rect::ZERO);
-        #[cfg(target_os = "macos")]
-        cocoa_ui::view::ensure_layer_backed(&view);
+/// Peels the chain `state` forms over `()` into `(effect, guards)` pairs in
+/// presentation order for a `captures_content` transition: a chain of
+/// [`FilteredView`] payloads terminating at the empty `()` view. Anything
+/// else when `state.captures_content()` is true is a user-triggerable
+/// violation of the transition contract; a release build reports it once and
+/// answers `None`, so the caller ends the transition (§10).
+pub fn effects_from_transition(
+    state: &TransitionState,
+    frame: Computed<TransitionFrame>,
+    env: &Environment,
+) -> Option<Vec<(AnyEffect, ParamGuards)>> {
+    let mut probe = TransitionEffects::default();
+    if state.visit_empty_body(frame, &mut probe, env)? {
+        return Some(probe.effects);
+    }
+    waterui::contract_violation!(
+        "waterui-apple: a `captures_content` transition's body must expand to a \
+         `FilteredView` chain over the empty content"
+    );
+    None
+}
 
-        let mounted = ctx.render(content).mount(&view);
-        let child_view = cocoa_ui::view::retain_base(mounted.view());
-        build_filtered_parts(
-            mtm,
-            services,
-            &view,
-            &child_view,
-            Some(mounted),
-            effects,
-            guard_list,
-            ctx.env(),
-        )
-        .leaf
-    });
+/// The `filtered` realization — `applied_filter` and `view_effect`
+/// collapse into one leaf under [`FilteredView`].
+pub fn realize_filtered_view<C: ChildView<AppleBackend>>(
+    backend: &mut AppleBackend,
+    filtered: FilteredView<C>,
+    env: &Environment,
+) -> NativeLeaf {
+    let (content, chained, ctx) = match fuse_enclosed_filters(backend, filtered, env) {
+        FusedFilter::Enclosed(leaf) => return leaf,
+        FusedFilter::Outermost {
+            content,
+            chained,
+            ctx,
+        } => (content, chained, ctx),
+    };
+    let mtm = ctx.mtm();
+    // `NativeFilteredView` on AppKit: a complete native `CIFilter`
+    // plan mounts the content visibly on `CALayer.filters` — no
+    // capture, no GPU setup (#1748). Any unmapped stage, GPU effect or
+    // output-size policy falls through to the capture path. A chain
+    // under a transition declaration always takes the GPU
+    // realization: a `CAFilter`-backed native filter cannot hand off
+    // a frozen GPU frame (§2.2, maintainer decision 10).
+    #[cfg(all(target_os = "macos", feature = "applied_filter"))]
+    if ctx
+        .env()
+        .get::<crate::transition::SnapshotDemand>()
+        .is_none()
+        && let Some(plan) = crate::components::native_filter::plan(&chained)
+    {
+        return crate::components::native_filter::mount(mtm, &ctx, content, chained, &plan);
+    }
+    let Some(services) = services(ctx.env()) else {
+        drop(content);
+        return crate::gpu_runtime::unavailable_leaf(mtm, "filtered");
+    };
+    let (sources, guard_list): (Vec<AnyEffect>, Vec<ParamGuards>) = chained.into_iter().unzip();
+    // The chain presents outermost-last: effects render content-adjacent
+    // first, so reverse the collection order.
+    let effects: Vec<Box<dyn ErasedEffect>> =
+        sources.into_iter().rev().map(AnyEffect::build).collect();
+
+    let view = HostView::new(mtm, cocoa_ui::Rect::ZERO);
+    #[cfg(target_os = "macos")]
+    cocoa_ui::view::ensure_layer_backed(&view);
+
+    let mounted = content.mount(&view);
+    let child_view = cocoa_ui::view::retain_base(mounted.view());
+    build_filtered_parts(
+        mtm,
+        services,
+        &view,
+        &child_view,
+        Some(mounted),
+        effects,
+        guard_list,
+        ctx.env(),
+    )
+    .leaf
 }
 
 /// The device-wide services a filtered view mounts against.
@@ -2536,7 +2617,7 @@ struct GpuServices {
 /// `install` keeps the leaf; the native-test fixture drives the state and
 /// capturable handles directly.
 struct FilteredParts {
-    /// The mounted leaf the dispatcher returns.
+    /// The mounted leaf the realization returns.
     leaf: NativeLeaf,
     /// The leaf's render state — read by the native-test fixture.
     #[cfg_attr(
@@ -2898,16 +2979,13 @@ impl FrozenEffect {
     }
 
     /// A `captures_content` transition's effect over the frozen `input`
-    /// frame (§2.7): `body` is the `TransitionState::body(AnyView::new(()),
-    /// frame)` product — a `FilteredView` chain over empty content. `None`
-    /// only when the body is no such chain — a user-triggerable violation
-    /// the macro already reported, so the caller ends the transition.
-    pub fn from_body(
-        body: AnyView,
+    /// frame (§2.7), realized from the probed `FilteredView` chain
+    /// `effects`. `None` (reported) when the process has no GPU runtime.
+    pub fn from_effects(
+        effects: Vec<(AnyEffect, ParamGuards)>,
         env: &waterui_backend_core::Environment,
         input: Retained<MetalTexture>,
     ) -> Option<Self> {
-        let effects = effects_from_body(body, env)?;
         Self::new(effects, FilteredInput::Frozen { texture: input }, env)
     }
 
@@ -3064,20 +3142,17 @@ impl LiveEffect {
         })
     }
 
-    /// A `captures_content` transition's live-capture effect (§2.7):
-    /// `body` is the `TransitionState::body(AnyView::new(()), frame)`
-    /// product — a `FilteredView` chain over empty content — realized
-    /// over `content_view` captured in place, its output presented in
-    /// the window-level `output_parent`. `None` only when the body is no
-    /// such chain — a user-triggerable violation the macro already
-    /// reported, so the caller ends the transition.
-    pub fn from_body(
-        body: AnyView,
+    /// A `captures_content` transition's live-capture effect (§2.7),
+    /// realized from the probed `FilteredView` chain `effects` over
+    /// `content_view` captured in place, with its output presented in the
+    /// window-level `output_parent`. `None` (reported) when the process has
+    /// no GPU runtime.
+    pub fn from_effects(
+        effects: Vec<(AnyEffect, ParamGuards)>,
         content_view: &PlatformView,
         output_parent: &PlatformView,
         env: &waterui_backend_core::Environment,
     ) -> Option<Self> {
-        let effects = effects_from_body(body, env)?;
         let Some(services) = services(env) else {
             tracing::error!("GPU runtime unavailable; the transition effect is not drawn");
             return None;
@@ -3184,6 +3259,12 @@ impl Drop for LiveEffect {
 
 #[cfg(test)]
 mod tests {
+    use waterui_core::View;
+    use waterui_graphics::FilterViewExt as _;
+    use waterui_structural_transition::{
+        Transition, TransitionContext, TransitionPhase, TransitionSpec,
+    };
+
     use super::*;
 
     /// The presentation format is the extended-range half-float target the
@@ -3195,6 +3276,81 @@ mod tests {
             cocoa_ui::metal::wgpu_to_metal_format(PRESENTATION_FORMAT),
             objc2_metal::MTLPixelFormat::RGBA16Float
         );
+    }
+
+    fn test_frame() -> Computed<TransitionFrame> {
+        use waterui_core::layout::{LayoutDirection, Point};
+        Computed::constant(TransitionFrame::new(
+            Rect::new(Point::new(0.0, 0.0), Size::new(0.0, 0.0)),
+            Size::new(0.0, 0.0),
+            1.0,
+            LayoutDirection::LeftToRight,
+        ))
+    }
+
+    #[test]
+    fn transition_effects_peel_nested_filtered_views_in_presentation_order() {
+        struct Inner<V>(V);
+        impl<V: View> View for Inner<V> {
+            fn body(self, _env: &Environment) -> impl View {
+                self.0
+            }
+        }
+
+        struct NestedFilters;
+        impl Transition for NestedFilters {
+            fn body<V: View>(&self, content: V, _ctx: TransitionContext) -> impl View {
+                Inner(content.blur(2.0_f32)).brightness(0.5_f32)
+            }
+
+            fn captures_content(&self, _phase: TransitionPhase) -> bool {
+                true
+            }
+        }
+
+        let env = Environment::new();
+        let state = TransitionSpec::new(NestedFilters).start(TransitionPhase::Insertion, false);
+        let effects = effects_from_transition(&state, test_frame(), &env)
+            .expect("valid FilteredView chain over ()");
+        assert_eq!(effects.len(), 2);
+        assert_eq!(
+            effects[0]
+                .0
+                .description()
+                .expect("outer brightness is portable")
+                .params(),
+            [0.5]
+        );
+        assert_eq!(
+            effects[1]
+                .0
+                .description()
+                .expect("inner blur is portable")
+                .params(),
+            [2.0]
+        );
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "must expand to a `FilteredView` chain over the empty content")
+    )]
+    fn transition_effects_reject_non_empty_leaf() {
+        struct NonEmptyLeaf;
+        impl Transition for NonEmptyLeaf {
+            fn body<V: View>(&self, _content: V, _ctx: TransitionContext) -> impl View {
+                "not empty".blur(2.0_f32)
+            }
+
+            fn captures_content(&self, _phase: TransitionPhase) -> bool {
+                true
+            }
+        }
+
+        let env = Environment::new();
+        let state = TransitionSpec::new(NonEmptyLeaf).start(TransitionPhase::Insertion, false);
+        assert!(effects_from_transition(&state, test_frame(), &env).is_none());
     }
 }
 

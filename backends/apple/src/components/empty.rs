@@ -12,8 +12,7 @@ use waterui_core::layout::{
     LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
 };
 
-use crate::contract::NativeLeaf;
-use crate::dispatch::Dispatcher;
+use crate::contract::{NativeLeaf, RenderContext};
 
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::HostView;
@@ -49,12 +48,10 @@ impl SubView for EmptySubView {
     }
 }
 
-/// Installs the `()` handler on the dispatcher: `Native<()>` maps to a
+/// The `()` realization: `Native<()>` maps to a
 /// hidden, zero-size view that never participates in layout.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<()>(|(), ctx| {
-        let view = HostView::new(ctx.mtm(), cocoa_ui::Rect::ZERO);
-        cocoa_ui::view::set_hidden(&view, true);
-        NativeLeaf::new(&*view, EmptySubView)
-    });
+pub fn realize_empty((): (), ctx: &RenderContext<'_>) -> NativeLeaf {
+    let view = HostView::new(ctx.mtm(), cocoa_ui::Rect::ZERO);
+    cocoa_ui::view::set_hidden(&view, true);
+    NativeLeaf::new(&*view, EmptySubView)
 }

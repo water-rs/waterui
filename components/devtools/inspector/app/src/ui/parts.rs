@@ -37,7 +37,7 @@ pub fn metric(label: impl Into<Str>, value: Computed<Str>) -> impl View {
 }
 
 /// The number shown against a section in the sidebar.
-pub fn count_badge(section: Section, model: &Model) -> impl View {
+pub fn count_badge(section: Section, model: &Model) -> impl View + use<> {
     let count: Computed<Str> = match section {
         Section::Overview => model
             .dropped

@@ -12,15 +12,15 @@
 //! and accessibility actions addressed to nodes directly.
 
 use super::executor::{DrainExecutorOnDrop, HeadlessMainThreadExecutor};
+use super::window::{RootWindow, root_window};
 use super::*;
 use crate::animation::PerpetualAnimation;
 #[cfg(feature = "accessibility")]
 use crate::renderer::accessibility::{
     AccessibilityContentTypes, MergedAccessibilityUpdate, WINDOW_ID_STRIDE,
 };
-use crate::renderer::{MenuShortcutRegistry, SemanticCore, WindowId};
+use crate::renderer::{SemanticCore, WindowId};
 use std::rc::Rc;
-#[cfg(target_arch = "wasm32")]
 use std::sync::Arc;
 use waterui_core::contract_violation;
 
@@ -107,7 +107,7 @@ impl SemanticPumpResult {
 /// state, content builder), the [`SemanticCore`] owning its retained tree,
 /// and the input events queued for the next pump.
 struct SemanticWindow {
-    window: Window,
+    window: RootWindow<crate::text::ParleyEngine>,
     core: SemanticCore<crate::text::ParleyEngine>,
     pending_events: VecDeque<InputEvent>,
     /// Set when state changed outside a pump (an accessibility action, a
@@ -132,10 +132,11 @@ struct SemanticWindow {
 
 impl SemanticWindow {
     fn new(
-        window: Window,
+        window: RootWindow<crate::text::ParleyEngine>,
         fonts: &FontCollection,
         window_id: WindowId,
         family_resolution: FontFamilyResolution,
+        opener: Rc<dyn Fn(RootWindow<crate::text::ParleyEngine>)>,
         env: &Environment,
     ) -> Self {
         let mut core = SemanticCore::new(
@@ -144,6 +145,7 @@ impl SemanticWindow {
         );
         core.set_window_id(window_id);
         core.set_window_closable(window.closable);
+        install_core_window_openers(&mut core, opener);
         // The semantic pump is driven explicitly by the harness — a request
         // recorded on the frame signals is consumed by the next `pump` the
         // test calls, so the host wake does nothing.
@@ -183,7 +185,7 @@ impl SemanticWindow {
 pub struct SemanticRuntime {
     env: Environment,
     window: SemanticWindow,
-    pending_window_queue: Rc<RefCell<Vec<Window>>>,
+    pending_window_queue: Rc<RefCell<Vec<RootWindow<crate::text::ParleyEngine>>>>,
     popup_windows: Vec<SemanticWindow>,
     /// The application's font collection: popup windows' cores are seeded
     /// from it so they shape with the same faces as the main window.
@@ -213,25 +215,30 @@ impl SemanticRuntime {
     #[must_use]
     pub fn new(
         env: Environment,
-        content: AnyViewBuilder<AnyView>,
+        content: impl ViewBuilder,
         width: u32,
         height: u32,
         family_resolution: FontFamilyResolution,
     ) -> Self {
+        let window = root_window(Window::new(
+            "",
+            waterui_core::binding(waterui::window::WindowState::Normal),
+            content,
+        ));
         // A native app loads the fonts its `ResourceContext` stages; a browser
         // page has no synchronous resource directory to scan, so the semantic
         // runtime there shapes with the default collection alone.
         #[cfg(not(target_arch = "wasm32"))]
         return Self::on_env(
             env,
-            content,
+            window,
             width,
             height,
             family_resolution,
             crate::text::fonts::native_collection,
         );
         #[cfg(target_arch = "wasm32")]
-        Self::on_env(env, content, width, height, family_resolution, |_| {
+        Self::on_env(env, window, width, height, family_resolution, |_| {
             crate::text::fonts::system_collection()
         })
     }
@@ -242,7 +249,7 @@ impl SemanticRuntime {
     )]
     fn on_env(
         env: Environment,
-        content: AnyViewBuilder<AnyView>,
+        window: RootWindow<crate::text::ParleyEngine>,
         width: u32,
         height: u32,
         family_resolution: FontFamilyResolution,
@@ -255,7 +262,7 @@ impl SemanticRuntime {
         #[cfg(not(target_arch = "wasm32"))]
         let inspector_probe = inspector
             .as_ref()
-            .map(waterui::inspector::InspectorRuntime::runtime_probe);
+            .map(|inspector| inspector.task_probe() as Arc<dyn waterui::task::RuntimeProbe>);
         #[cfg(target_arch = "wasm32")]
         let inspector_probe: Option<Arc<dyn waterui::task::RuntimeProbe>> = {
             init_global_executor();
@@ -263,15 +270,14 @@ impl SemanticRuntime {
         };
         let mut env = env.extending(waterui_graphics::backend::SceneViewMergeToParent);
         #[cfg(not(target_arch = "wasm32"))]
-        waterui_core::install_application_resources(&mut env);
+        waterui::install_application_resources(&mut env);
         #[cfg(not(target_arch = "wasm32"))]
         waterui::inspector::install(&mut env, inspector);
         let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
-        install_native_component_hooks(&mut env);
-        install_headless_window_managers::<crate::text::ParleyEngine>(
-            &mut env,
-            Rc::clone(&pending_window_queue),
-        );
+        #[cfg(any(test, hydrolysis_platform_services))]
+        install_platform_services(&mut env);
+        install_window_registries::<crate::text::ParleyEngine>(&mut env);
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         env.insert(HydrolysisTextContextMenuMode::Overlay);
         // Framework tokens only: the semantic runtime has no `Style`, so no
         // style-package tokens ever install — widget structure, roles, labels
@@ -297,12 +303,6 @@ impl SemanticRuntime {
             inspector_probe,
         ));
 
-        let content_builder = content;
-        let window = Window::new(
-            "",
-            waterui_core::binding(waterui::window::WindowState::Normal),
-            move || content_builder.build(),
-        );
         window.frame.set(waterui_core::layout::Rect::new(
             waterui_core::layout::Point::zero(),
             waterui_core::layout::Size::new(
@@ -312,12 +312,18 @@ impl SemanticRuntime {
         ));
 
         let window_id = env
-            .get::<MenuShortcutRegistry<crate::text::ParleyEngine>>()
-            .expect("install_headless_window_managers seeds MenuShortcutRegistry")
+            .get::<crate::renderer::WindowIdentities>()
+            .expect("install_window_registries seeds WindowIdentities")
             .mint_window_id();
         window.arm_close_requests(&env);
-        let semantic_window =
-            SemanticWindow::new(window, &fonts, window_id, family_resolution, &env);
+        let semantic_window = SemanticWindow::new(
+            window,
+            &fonts,
+            window_id,
+            family_resolution,
+            queue_window_opener(&pending_window_queue),
+            &env,
+        );
         Self {
             env,
             window: semantic_window,
@@ -380,10 +386,11 @@ impl SemanticRuntime {
         } else {
             (&mut self.window, request)
         };
-        let action_env = self.env.extending(semantic_window_origin(window));
-        let changed = window
-            .core
-            .handle_accessibility_action(request, &action_env);
+        #[cfg(any(feature = "menu", feature = "color-picker"))]
+        let action_env = &self.env.extending(semantic_window_origin(window));
+        #[cfg(not(any(feature = "menu", feature = "color-picker")))]
+        let action_env = &self.env;
+        let changed = window.core.handle_accessibility_action(request, action_env);
         if changed {
             window.refresh_requested = true;
         }
@@ -450,6 +457,7 @@ impl SemanticRuntime {
 
     /// Drops UI focus, if any text input holds it.
     #[cfg(feature = "accessibility")]
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub fn clear_ui_focus(&mut self) -> bool {
         let changed = self.window.core.clear_ui_focus();
         if changed {
@@ -556,8 +564,8 @@ impl SemanticRuntime {
             let fonts = self.fonts.clone();
             let window_id = self
                 .env
-                .get::<MenuShortcutRegistry<crate::text::ParleyEngine>>()
-                .expect("install_headless_window_managers seeds MenuShortcutRegistry")
+                .get::<crate::renderer::WindowIdentities>()
+                .expect("install_window_registries seeds WindowIdentities")
                 .mint_window_id();
             window.arm_close_requests(&self.env);
             self.popup_windows.push(SemanticWindow::new(
@@ -565,6 +573,7 @@ impl SemanticRuntime {
                 &fonts,
                 window_id,
                 self.family_resolution,
+                queue_window_opener(&self.pending_window_queue),
                 &self.env,
             ));
         }
@@ -611,6 +620,7 @@ fn kurbo_frame(frame: waterui_core::layout::Rect) -> kurbo::Rect {
 /// The window's origin as an environment value — the `input_env` the rendered
 /// runner builds around each event. Kept identical so key dispatch resolves
 /// the same environment in both runtimes.
+#[cfg(any(feature = "menu", feature = "color-picker"))]
 fn semantic_window_origin(window: &SemanticWindow) -> HydrolysisWindowOrigin {
     HydrolysisWindowOrigin {
         x: window.window.frame.snapshot().x(),
@@ -634,10 +644,15 @@ fn handle_semantic_input_events(window: &mut SemanticWindow, env: &Environment) 
     // Same consumed-press suppression as the rendered runner: the press
     // precedes its paired `TextInput`, so this flag set at the press is read
     // by the very next `TextInput` event.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     let mut suppress_key_text = false;
     for (event, ime_owned) in events.into_iter().zip(ime_owned) {
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         let key_consumed = suppress_key_text;
-        suppress_key_text = false;
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
+        {
+            suppress_key_text = false;
+        }
         let changed = match event {
             InputEvent::CloseRequested => {
                 // The rendered runner's close gate (`handle_input_events`):
@@ -677,9 +692,11 @@ fn handle_semantic_input_events(window: &mut SemanticWindow, env: &Environment) 
                 window.core.set_window_frame(kurbo_frame(frame));
                 false
             }
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             InputEvent::TextInput { text } => {
                 !ime_owned && window.core.handle_text_input(text.as_str())
             }
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             InputEvent::KeyText { text } => {
                 !ime_owned && !key_consumed && window.core.handle_text_input(text.as_str())
             }
@@ -698,12 +715,18 @@ fn handle_semantic_input_events(window: &mut SemanticWindow, env: &Environment) 
                     window.core.swallow_ime_key_press(physical_code);
                     false
                 } else {
-                    let key_env = env.extending(semantic_window_origin(window));
+                    #[cfg(any(feature = "menu", feature = "color-picker"))]
+                    let key_env = &env.extending(semantic_window_origin(window));
+                    #[cfg(not(any(feature = "menu", feature = "color-picker")))]
+                    let key_env = &env;
                     let press = KeyPress::new(logical_key, physical_code, modifiers.into(), repeat);
                     let outcome = window
                         .core
-                        .handle_key_press(&key, modifiers, &key_env, &press);
-                    suppress_key_text = outcome == KeyPressOutcome::Consumed;
+                        .handle_key_press(&key, modifiers, key_env, &press);
+                    #[cfg(any(feature = "text-field", feature = "secure-field"))]
+                    {
+                        suppress_key_text = outcome == KeyPressOutcome::Consumed;
+                    }
                     outcome != KeyPressOutcome::Ignored
                 }
             }
@@ -715,7 +738,10 @@ fn handle_semantic_input_events(window: &mut SemanticWindow, env: &Environment) 
                 state: KeyState::Released,
                 modifiers,
             } => {
-                let key_env = env.extending(semantic_window_origin(window));
+                #[cfg(any(feature = "menu", feature = "color-picker"))]
+                let key_env = &env.extending(semantic_window_origin(window));
+                #[cfg(not(any(feature = "menu", feature = "color-picker")))]
+                let key_env = &env;
                 !window.core.take_ime_swallowed_release(physical_code)
                     && !ime_owned
                     && (window.core.handle_bubbled_key_release(&KeyDelivery {
@@ -724,13 +750,22 @@ fn handle_semantic_input_events(window: &mut SemanticWindow, env: &Environment) 
                         code: physical_code,
                         repeat,
                         modifiers,
-                    }) || window.core.handle_key_release_with_env(&key, &key_env))
+                    }) || window.core.handle_key_release_with_env(&key, key_env))
             }
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             InputEvent::ImePreedit { text, caret } => {
                 window.core.handle_ime_preedit(text.as_str(), caret)
             }
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             InputEvent::ImeCommit { text } => window.core.handle_ime_commit(text.as_str()),
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             InputEvent::ImeDisabled => window.core.handle_ime_disabled(),
+            #[cfg(not(any(feature = "text-field", feature = "secure-field")))]
+            InputEvent::TextInput { .. }
+            | InputEvent::KeyText { .. }
+            | InputEvent::ImePreedit { .. }
+            | InputEvent::ImeCommit { .. }
+            | InputEvent::ImeDisabled => false,
             InputEvent::Focused(focused) => window.core.handle_window_focused(focused),
             InputEvent::KeyboardCancel => window.core.cancel_keyboard_press(),
             InputEvent::ModifiersChanged(modifiers) => {
@@ -745,9 +780,15 @@ fn handle_semantic_input_events(window: &mut SemanticWindow, env: &Environment) 
             InputEvent::FileHovered { .. }
             | InputEvent::FileDropped { .. }
             | InputEvent::FileHoverCancelled => false,
+            #[cfg(not(feature = "navigation"))]
+            InputEvent::BackNavigation(_) => false,
+            #[cfg(feature = "navigation")]
             InputEvent::BackNavigation(navigation) => {
-                let event_env = env.extending(semantic_window_origin(window));
-                window.core.handle_back_navigation(navigation, &event_env)
+                #[cfg(any(feature = "menu", feature = "color-picker"))]
+                let event_env = &env.extending(semantic_window_origin(window));
+                #[cfg(not(any(feature = "menu", feature = "color-picker")))]
+                let event_env = &env;
+                window.core.handle_back_navigation(navigation, event_env)
             }
             geometric => {
                 tracing::trace!(
@@ -824,8 +865,10 @@ fn pump_semantic_window(window: &mut SemanticWindow, env: &Environment) -> bool 
         window.refresh_requested = false;
         return true;
     }
-    let content = window.window.build_content();
-    window.core.capture_window_semantics(content, env);
+    window
+        .window
+        .content
+        .capture_semantics(&mut window.core, env);
     window.refresh_requested = false;
     true
 }
@@ -844,6 +887,7 @@ mod tests {
     use waterui::ViewExt as _;
     use waterui_controls::button::button;
     use waterui_controls::menu::{CommandExt, Menu, MenuItem};
+    use waterui_core::AnyView;
     use waterui_core::handler::AnyViewBuilder;
     use waterui_layout::stack::{hstack, vstack};
     use waterui_text::text;
@@ -1143,7 +1187,7 @@ mod tests {
     use crate::platform::{KeyCode, Modifiers};
     use keyboard_types::Code;
     use waterui_core::extract::Use;
-    use waterui_core::key::{Key, KeyHandling, KeyPress, NamedKey};
+    use waterui_interaction::key::{Key, KeyHandling, KeyPress, NamedKey};
 
     /// A synthetic press of a named key, carrying both the legacy `KeyCode`
     /// the editor matches on and the W3C pair the bubble handlers read.

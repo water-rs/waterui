@@ -2831,8 +2831,7 @@ mod tests {
         let ops = shared
             .borrow_mut()
             .take_changes(crate::Instant::now())
-            .map(|changes| changes.ops)
-            .unwrap_or_default();
+            .map_or_default(|changes| changes.ops);
         assert!(
             matches!(
                 ops.as_slice(),
@@ -3216,8 +3215,7 @@ mod tests {
         let ops = shared
             .borrow_mut()
             .take_changes(crate::Instant::now())
-            .map(|changes| changes.ops)
-            .unwrap_or_default();
+            .map_or_default(|changes| changes.ops);
         assert!(
             ops.iter().any(|op| matches!(
                 op,
@@ -3239,14 +3237,14 @@ mod tests {
         struct PanicGuardSignal;
         impl Signal for PanicGuardSignal {
             type Output = Rect;
-            type Guard = nami_core::watcher::OnDrop<fn()>;
+            type Guard = core::mem::DropGuard<(), fn(())>;
 
             fn snapshot(&self) -> Rect {
                 Rect::new(0.0, 0.0, 1.0, 1.0)
             }
 
             fn watch(&self, _: impl Fn(Context<Rect>) + 'static) -> Self::Guard {
-                nami_core::watcher::OnDrop::new(guard_panics)
+                core::mem::DropGuard::new((), (|()| guard_panics()) as fn(()))
             }
         }
 
@@ -3408,8 +3406,7 @@ mod tests {
         let ops = shared
             .borrow_mut()
             .take_changes(crate::Instant::now())
-            .map(|changes| changes.ops)
-            .unwrap_or_default();
+            .map_or_default(|changes| changes.ops);
         assert!(
             ops.iter().any(|op| matches!(
                 op,

@@ -20,11 +20,15 @@ use std::rc::{Rc, Weak};
 
 use cherenkov_record::{MaterialEffect, Recorder, ShapeData};
 use kurbo::{Point, Rect, Vec2};
-use nami::{Binding, Signal};
+#[cfg(feature = "toggle")]
+use nami::Binding;
+use nami::Signal;
 use waterui_core::animation::{Animation, ChangeAnimation};
-use waterui_core::interaction::InteractionState;
+use waterui_interaction::interaction::InteractionState;
 
-use crate::renderer::chrome::{LiveSource, opacity_runs, varies_live};
+#[cfg(feature = "toggle")]
+use crate::renderer::chrome::varies_live;
+use crate::renderer::chrome::{LiveSource, opacity_runs};
 use crate::renderer::recording::{LoweredResources, SceneResources};
 use crate::renderer::{HydrolysisRenderer, RenderContext};
 use crate::theme::live::Operand;
@@ -83,6 +87,7 @@ pub struct LiveToggle {
     backdrop: Option<RealizedBackdrop>,
     /// The parts above the backdrop, bottom first.
     above: Vec<RealizedCustom<bool>>,
+    #[cfg(feature = "toggle")]
     group_opacity: Rc<LiveDriven<f32, bool>>,
     /// Every operand of the control, for retargeting.
     drivens: Vec<Rc<dyn Retarget<bool>>>,
@@ -118,6 +123,7 @@ impl LiveToggle {
             )),
             material: backdrop.material().clone(),
         });
+        #[cfg(feature = "toggle")]
         let group_opacity = Rc::new(LiveDriven::new(
             control.get_group_opacity().clone(),
             &inputs,
@@ -131,6 +137,7 @@ impl LiveToggle {
             drivens.push(Rc::new(EffectOperand(Rc::clone(&backdrop.effect))));
         }
         drivens.extend(above.iter().flat_map(|part| part.drivens.iter().cloned()));
+        #[cfg(feature = "toggle")]
         drivens.push(Rc::clone(&group_opacity) as Rc<dyn Retarget<bool>>);
         Self {
             control,
@@ -142,6 +149,7 @@ impl LiveToggle {
             below,
             backdrop,
             above,
+            #[cfg(feature = "toggle")]
             group_opacity,
             drivens,
             guards: RefCell::new(Vec::new()),
@@ -188,6 +196,7 @@ impl LiveToggle {
     /// The group opacity operand, when the control's group opacity varies
     /// between renders in `state`: with a signal, with hover, press, focus
     /// or the value. A fixed opacity is [`Self::fixed_group_opacity`].
+    #[cfg(feature = "toggle")]
     pub(crate) fn live_group_opacity(&self, state: InteractionState) -> Option<Operand<f32>> {
         varies_live(
             self.control.get_group_opacity(),
@@ -199,6 +208,7 @@ impl LiveToggle {
     }
 
     /// The group opacity of the control at rest in `state`.
+    #[cfg(feature = "toggle")]
     pub(crate) fn fixed_group_opacity(&self, state: InteractionState) -> f32 {
         self.control.get_group_opacity().target(&Inputs::at_rest(
             self.frame,
@@ -208,11 +218,13 @@ impl LiveToggle {
     }
 
     /// The space the control's group composites in.
+    #[cfg(feature = "toggle")]
     pub(crate) fn group_blend_space(&self) -> Option<cherenkov_record::BlendSpace> {
         self.control.get_group_blend_space()
     }
 
     /// The area the control's parts draw in: its frame and its reach.
+    #[cfg(feature = "toggle")]
     pub(crate) fn visual_bounds(&self) -> Rect {
         let reach = self.control.get_reach();
         self.frame.inflate(reach, reach)
@@ -290,12 +302,14 @@ impl LiveToggle {
     }
 
     /// Starts a drag of the knob: the toggle reads as dragged.
+    #[cfg(feature = "toggle")]
     pub(crate) fn begin_drag(&self) {
         self.set_flag(InteractionState::DRAGGED, true);
     }
 
     /// Moves the drag to `offset` from where the press landed. The operands
     /// track it with no animation, so they follow the finger.
+    #[cfg(feature = "toggle")]
     pub(crate) fn drag_to(&self, offset: Vec2) {
         self.drag.set(Some(offset));
         self.retarget(Change::Animated(None));
@@ -305,6 +319,7 @@ impl LiveToggle {
     /// on `binding` when it differs, and the operands settle there under
     /// their value motion from the position and velocity the drag left them
     /// at.
+    #[cfg(feature = "toggle")]
     pub(crate) fn end_drag(&self, settled: bool, binding: &Binding<bool>) {
         self.drag.set(None);
         if binding.snapshot() == settled {

@@ -30,10 +30,11 @@ use mdi::inbox;
 use mdi::pencil;
 use mdi::view_gallery;
 use waterui::Identifiable;
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::component::list::{
     List, ListContent, ListDelete, ListItem, ListMove, Section, SectionScope, TaggedBy, row,
 };
+use waterui::handler::ViewBuilder;
 use waterui::id::{Id, SelfId};
 use waterui::navigation::{NavigationSplitView, NavigationView, Navigator};
 use waterui::prelude::theme_color::{Accent, Foreground, SurfaceVariant};
@@ -280,40 +281,44 @@ pub fn demo() -> impl View {
     let mail = Mail::new();
     let pane = binding(Pane::Inbox);
 
-    let tabs = std::collections::BTreeMap::from([
-        (
-            Pane::Inbox,
-            Tab::container(label("Inbox").icon(inbox()), {
-                let mail = mail.clone();
-                move || inbox_stack(mail.clone())
-            })
-            .badge(mail.unread_count()),
-        ),
-        (
-            Pane::Library,
-            Tab::container(label("Library").icon(image_album()), library_split),
-        ),
-        (
-            Pane::Gallery,
-            Tab::container(label("Gallery").icon(view_gallery()), gallery_stack),
-        ),
-        (
-            Pane::Settings,
-            Tab::container(label("Settings").icon(cog()), settings_stack),
-        ),
-    ]);
     let panes = [Pane::Inbox, Pane::Library, Pane::Gallery, Pane::Settings].map(SelfId::new);
     Tabs::new(
         &pane,
         ForEach::new(panes.to_vec(), move |pane: SelfId<Pane>| {
-            tabs.get(&pane.into_inner())
-                .expect("a keyed tab collection reports a tab for every id")
-                .clone()
+            pane_tab(pane.into_inner(), &mail)
         }),
     )
     // A tab bar on a phone, a sidebar or navigation rail on a large window: the
     // backend decides from the platform and the current window size.
     .style(tab_style::automatic())
+    .snackbar_host()
+}
+
+/// The tab for `pane`. Every tab shares one root builder, whose page is the
+/// variant of one `OneOf4` its pane picks.
+fn pane_tab(
+    pane: Pane,
+    mail: &Mail,
+) -> Tab<impl ViewBuilder<Output = NavigationView<impl View + use<>>> + use<>> {
+    let (title, icon) = match pane {
+        Pane::Inbox => ("Inbox", inbox()),
+        Pane::Library => ("Library", image_album()),
+        Pane::Gallery => ("Gallery", view_gallery()),
+        Pane::Settings => ("Settings", cog()),
+    };
+    let tab = Tab::container(label(title).icon(icon), {
+        let mail = mail.clone();
+        move || match pane {
+            Pane::Inbox => OneOf4::A(inbox_stack(mail.clone())),
+            Pane::Library => OneOf4::B(library_split()),
+            Pane::Gallery => OneOf4::C(gallery_stack()),
+            Pane::Settings => OneOf4::D(settings_stack()),
+        }
+    });
+    match pane {
+        Pane::Inbox => tab.badge(mail.unread_count()),
+        Pane::Library | Pane::Gallery | Pane::Settings => tab,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -323,13 +328,13 @@ pub fn demo() -> impl View {
 fn inbox_stack(mail: Mail) -> impl View {
     NavigationStack::with_path(NavigationPath::<MailRoute>::new(), inbox_root(&mail)).destination(
         move |route| match route {
-            MailRoute::Message(id) => message_detail(&mail, id),
-            MailRoute::Compose => compose_page(&mail),
+            MailRoute::Message(id) => message_detail(&mail, id).map_content(OneOf2::A),
+            MailRoute::Compose => compose_page(&mail).map_content(OneOf2::B),
         },
     )
 }
 
-fn inbox_root(mail: &Mail) -> NavigationView {
+fn inbox_root(mail: &Mail) -> NavigationView<impl View + use<>> {
     let unread = mail.unread_count();
     let edit_title = mail.editing.select(Str::from("Done"), Str::from("Edit"));
 
@@ -394,7 +399,7 @@ fn message_list(mail: Mail) -> impl View {
     .on_move(|list_move: ListMove, mail: Mail| move_message(list_move, &mail))
 }
 
-fn message_row(mail: &Mail, message: Message) -> ListItem {
+fn message_row(mail: &Mail, message: Message) -> ListItem<impl View + use<>> {
     let id = message.id;
     // The dot has to *derive* from the state that owns it. `List::for_each`
     // diffs membership by id, so marking every message read changes no ids and
@@ -484,7 +489,7 @@ fn visible_id(mail: &Mail, index: usize) -> Option<u64> {
     visible.as_slice().get(index).map(|message| message.id)
 }
 
-fn message_detail(mail: &Mail, id: u64) -> NavigationView {
+fn message_detail(mail: &Mail, id: u64) -> NavigationView<impl View + use<>> {
     let message = mail.message(id);
     let subject =
         message.map(|message| message.map_or_else(Str::default, |message| message.subject));
@@ -526,7 +531,7 @@ fn message_detail(mail: &Mail, id: u64) -> NavigationView {
 
 /// An editing flow: confirmation and cancellation are semantic placements, and
 /// the platform's own back gesture is refused while the draft is dirty.
-fn compose_page(mail: &Mail) -> NavigationView {
+fn compose_page(mail: &Mail) -> NavigationView<impl View + use<>> {
     let is_empty = mail.draft_is_empty();
 
     vstack((
@@ -663,7 +668,7 @@ fn album_row(album: Album) -> impl ListContent<SectionScope> + TaggedBy<Album> {
     .tag(album)
 }
 
-fn album_detail(album: Album) -> NavigationView {
+fn album_detail(album: Album) -> NavigationView<impl View + use<>> {
     let count = album.count();
 
     scroll(
@@ -703,7 +708,7 @@ fn gallery_stack() -> impl View {
         .destination(|PhotoRoute(index)| photo_page(index))
 }
 
-fn gallery_root() -> NavigationView {
+fn gallery_root() -> NavigationView<impl View + use<>> {
     let tiles: VStack<_> = (0..6).map(photo_tile).collect();
 
     scroll(tiles.spacing(12.0).padding_with(16.0))
@@ -725,7 +730,7 @@ fn photo_tile(index: usize) -> impl View {
     .navigation_transition_source(photo_transition(index))
 }
 
-fn photo_page(index: usize) -> NavigationView {
+fn photo_page(index: usize) -> NavigationView<impl View + use<>> {
     vstack((
         photo_color(index)
             .height(280.0)
@@ -771,12 +776,15 @@ fn settings_stack() -> impl View {
         settings_root(&notifications, &compact),
     )
     .destination(move |route| match route {
-        SettingsRoute::Appearance => appearance_page(compact.clone()),
-        SettingsRoute::About => about_page(),
+        SettingsRoute::Appearance => appearance_page(compact.clone()).map_content(OneOf2::A),
+        SettingsRoute::About => about_page().map_content(OneOf2::B),
     })
 }
 
-fn settings_root(notifications: &Binding<bool>, compact: &Binding<bool>) -> NavigationView {
+fn settings_root(
+    notifications: &Binding<bool>,
+    compact: &Binding<bool>,
+) -> NavigationView<impl View + use<>> {
     // `List::content` with sections is the grouped list every platform already
     // has: inset-grouped on iOS, section headers on macOS, Material groups on
     // Android.
@@ -799,14 +807,14 @@ fn settings_root(notifications: &Binding<bool>, compact: &Binding<bool>) -> Navi
     .large_title()
 }
 
-fn settings_link(title: &'static str, route: SettingsRoute) -> ListItem {
+fn settings_link(title: &'static str, route: SettingsRoute) -> ListItem<impl View> {
     // No disclosure indicator here: whether a row that pushes shows one is the
     // platform's own convention — iOS draws a chevron, a Mac does not — so the
     // link decides, not the application.
     ListItem::new(NavigationLink::value(title, route))
 }
 
-fn appearance_page(compact: Binding<bool>) -> NavigationView {
+fn appearance_page(compact: Binding<bool>) -> NavigationView<impl View + use<>> {
     let density = compact.select(Str::from("Compact"), Str::from("Comfortable"));
 
     List::content((Section::new("Density")
@@ -819,7 +827,7 @@ fn appearance_page(compact: Binding<bool>) -> NavigationView {
     .inline_title()
 }
 
-fn about_page() -> NavigationView {
+fn about_page() -> NavigationView<impl View + use<>> {
     vstack((
         text("Navigation chrome tour")
             .sub_headline()
@@ -840,6 +848,6 @@ fn about_page() -> NavigationView {
 }
 
 /// Builds the navigation tour app around [`demo`].
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     App::new(demo, env)
 }

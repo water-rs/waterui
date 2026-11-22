@@ -12,7 +12,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-hydrolysis = { workspace = true, features = ["accessibility", "testing"] }
+hydrolysis = { workspace = true, features = ["accessibility", "testing", "all-controls"] }
 waterui-core.workspace = true
 waterui = { workspace = true, features = ["assets", "snackbar", "highlight", "locale-datetime", "locale-list"] }
 # `TestHost`'s offscreen texture format; the `gpu` feature.
@@ -40,10 +40,18 @@ gpu = ["hydrolysis/gpu", "waterui/gpu", "dep:wgpu"]
 # otherwise.
 cpu = ["hydrolysis/cpu", "waterui/cpu"]
 # TypeScript views in a test: `ui()` installs the runtime loaded from the
-# bundle `WATERUI_TS_BUNDLE` names — set by `water test` — into the test
-# environment, so a view that reaches a `tsx!` mount renders. A test that
-# mounts no TypeScript never needs the variable.
+# bundle `WATERUI_TS_BUNDLE` names into the test environment, so a view that
+# reaches a `tsx!` mount renders. A test that mounts no TypeScript never
+# needs the variable.
 ts = ["waterui/ts"]
+# The GPU video player as Hydrolysis's realization of `Video`, as an
+# application selecting `waterui/video-gpu` gets it.
+video-gpu = ["hydrolysis/video-gpu", "waterui/video-gpu"]
+# The GPU map as Hydrolysis's realization of `Map`, as an application linking
+# `waterui-map-gpu` gets it.
+map-gpu = ["hydrolysis/map-gpu", "waterui/map"]
+# Build strategy: run tests through the erased-dispatch path.
+erased-dispatch = ["waterui/erased-dispatch", "waterui-core/erased-dispatch"]
 
 [dev-dependencies]
 approx = "0.5"

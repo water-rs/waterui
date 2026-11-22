@@ -21,8 +21,8 @@ use waterui::metadata::anchored_overlay::{
     AnchorEdge, AnchoredOverlay, Clamp, Dismissal, EdgeAlignment,
 };
 use waterui_controls::button::button;
+use waterui_core::AnyView;
 use waterui_core::handler::AnyViewBuilder;
-use waterui_core::{AnyView, View as _};
 use waterui_graphics::Color;
 use waterui_layout::frame::Frame;
 use waterui_layout::spacer::spacer;
@@ -747,7 +747,7 @@ fn an_overlay_body_transition_runs_on_present_and_dismiss() {
                 AnyView::new(
                     button("inside")
                         .action(|| {})
-                        .transition(waterui_core::transition::PropertyTransition::opacity())
+                        .transition(waterui_structural_transition::PropertyTransition::opacity())
                         .animation(Animation::linear(Duration::from_millis(1_000))),
                 )
             })

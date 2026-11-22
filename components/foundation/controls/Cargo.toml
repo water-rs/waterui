@@ -13,19 +13,26 @@ categories = ["gui"]
 
 [dependencies]
 waterui-core.workspace = true
+waterui-accessibility.workspace = true
+waterui-interaction.workspace = true
 waterui-macros.workspace = true
 waterui-layout.workspace = true
 nami.workspace = true
 waterui-text.workspace = true
 waterui-locale.workspace = true
-waterui-icon.workspace = true
 executor-core.workspace = true
 serde = { workspace = true, optional = true, features = ["derive"] }
 thiserror = { version = "2.0.21", default-features = false }
 
 
 [features]
-default = []
+default = ["all"]
+all = ["menu", "slider", "stepper", "text-field", "toggle"]
+menu = []
+slider = []
+stepper = []
+text-field = ["menu"]
+toggle = []
 # Serialize `ContentType` (camelCase names) — the Hydrolysis Android publish
 # and the MCP snapshot tree both cross a JSON boundary with it.
 serde = ["dep:serde"]

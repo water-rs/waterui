@@ -586,6 +586,26 @@ impl ResolvedFramework {
         self.rust_version.as_ref()
     }
 
+    /// Features the selected framework requires for the native demo scaffold.
+    /// Revisions predating feature-gated controls declare no additional features.
+    pub(crate) fn scaffold_features(&self) -> Result<Vec<&str>> {
+        let Some(value) = self.metadata.get("scaffold-features") else {
+            return Ok(Vec::new());
+        };
+        value
+            .as_array()
+            .ok_or_else(|| eyre!("package.metadata.waterui.scaffold-features must be an array"))?
+            .iter()
+            .map(|feature| {
+                feature.as_str().ok_or_else(|| {
+                    eyre!(
+                        "package.metadata.waterui.scaffold-features entries must be feature names"
+                    )
+                })
+            })
+            .collect()
+    }
+
     /// The canonical path `member` occupies inside the framework tree —
     /// the `member.subdirectory` workspace member — as the selected
     /// revision's `[package.metadata.waterui]` declares it under

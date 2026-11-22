@@ -2,50 +2,36 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use waterui_core::Computed;
-use waterui_core::contract_violation;
-use waterui_core::interaction::Selected;
-use waterui_core::layout::LayoutPriority;
 use waterui_core::metadata::MetadataKey;
 
-pub fn gesture_group_identity(view: &AnyView) -> usize {
-    gesture_group_identity_with_budget(view, 64)
-}
+/// Defaults an environment scope gives every environment snapshot below it.
+///
+/// A `Metadata<Environment>` snapshot replaces the environment wholesale, so
+/// a scope that sets a default for its whole subtree (a bar item's icon-only
+/// labels) would stop at the first snapshot inside it. The build applies
+/// these defaults to each snapshot it installs below the scope and carries
+/// them on, so the subtree keeps one scope however its content was wrapped.
+#[derive(Clone, Copy)]
+pub struct SnapshotDefaults(pub fn(&Environment) -> Environment);
 
-pub fn flatten_environment_metadata_ref<'a>(
-    mut view: &'a AnyView,
-    env: &Environment,
-) -> (&'a AnyView, Environment) {
-    let mut scoped_env = env.clone();
-    while let Some(metadata) = view.downcast_ref::<Metadata<Environment>>() {
-        scoped_env = metadata.value.clone();
-        view = &metadata.content;
-    }
-    (view, scoped_env)
-}
-
-pub fn flatten_environment_metadata_owned(
-    mut view: AnyView,
-    env: &Environment,
-) -> (AnyView, Environment) {
-    let mut scoped_env = env.clone();
-    while view.is::<Metadata<Environment>>() {
-        let Metadata { content, value } = *view
-            .downcast::<Metadata<Environment>>()
-            .expect("environment metadata flattening downcast must succeed");
-        scoped_env = value;
-        view = content;
-    }
-    (view, scoped_env)
+/// `snapshot` with the [`SnapshotDefaults`] `outer` carries applied and
+/// carried on.
+pub fn apply_snapshot_defaults(outer: &Environment, snapshot: Environment) -> Environment {
+    let Some(&defaults) = outer.get::<SnapshotDefaults>() else {
+        return snapshot;
+    };
+    let mut snapshot = (defaults.0)(&snapshot);
+    snapshot.insert(defaults);
+    snapshot
 }
 
 /// Extends `env` with an accessibility metadata value exactly like the retained
-/// build's `Env`-scoping arm does. Layout normalization pre-resolves composite
-/// bodies (`view.body(env)`), and a body may snapshot its environment into a
-/// `Metadata<Environment>` override (the `With`-style env wrappers behind
-/// `.foreground()` and friends), so normalization must resolve content under
-/// the same scoped environment the build-time `Env` node installs — otherwise
-/// the snapshot, which replaces the environment wholesale when flattened,
-/// silently drops the accessibility scoping above it.
+/// build's `Env`-scoping arm does. A composite body may snapshot its
+/// environment into a `Metadata<Environment>` override (the `With`-style env
+/// wrappers behind `.foreground()` and friends), so content resolves under the
+/// same scoped environment the build-time `Env` node installs — otherwise the
+/// snapshot, which replaces the environment wholesale when flattened, silently
+/// drops the accessibility scoping above it.
 pub fn a11y_scoped_env<T: MetadataKey + Clone + 'static>(
     env: &Environment,
     value: &T,
@@ -86,22 +72,19 @@ pub fn a11y_naming_scoped_env<T: MetadataKey + Clone + 'static, E: crate::text::
 /// Carries the accessibility naming scope across a `Metadata<Environment>`
 /// override.
 ///
-/// Naming metadata is *nearest-consumer*: layout normalization deliberately
-/// leaves `.a11y_label()` / `.a11y_role()` / `.a11y_id()` out of the
-/// environments composite bodies snapshot, because a group label baked into one
+/// Naming metadata is *nearest-consumer*: the build deliberately leaves
+/// `.a11y_label()` / `.a11y_role()` / `.a11y_id()` out of the environments
+/// composite bodies snapshot, because a group label baked into one
 /// would relabel every descendant leaf. The build-time `Env` node above is what
 /// the emitting leaf reads instead — which works right up until the body
 /// *itself* produces a snapshot, because flattening one replaces the
 /// environment wholesale and takes that `Env` scope with it.
 ///
-/// A view hook does exactly that. [`Hook`](waterui_core::view::Hook) wraps
-/// whatever it returns in a snapshot of the environment it was called with, and
-/// hooks are how the self-drawn realizations install themselves, so with
-/// `map-gpu` or `video-gpu` selected every `Map` and `Video` sits under one.
-/// Without this, `.a11y_label("City map")` on such a map reached neither the
-/// engine — `waterui-map-gpu` only generates its own description when it finds
-/// no ambient label — nor the node hydrolysis emitted, and the caller's name was
-/// silently replaced by a generated one.
+/// A view that wraps its content in a snapshot of the environment it was built
+/// with does exactly that. Without this, `.a11y_label("City map")` above such a
+/// view reached neither the content — `waterui-map-gpu` only generates its own
+/// description when it finds no ambient label — nor the node hydrolysis
+/// emitted, and the caller's name was silently replaced by a generated one.
 ///
 /// Only what the snapshot does not already carry is restored, so a snapshot
 /// taken *below* a naming scope still speaks for itself.
@@ -181,556 +164,49 @@ pub fn a11y_scoped_env_for_state_signal(
 /// Without an accessibility tree there is nothing to name, so the value drops
 /// and the environment passes through.
 #[cfg(feature = "accessibility")]
-fn a11y_scoped_identifier_env(env: &Environment, value: &AccessibilityIdentifier) -> Environment {
+pub fn a11y_scoped_identifier_env(
+    env: &Environment,
+    value: &AccessibilityIdentifier,
+) -> Environment {
     a11y_scoped_env(env, &ScopedAccessibilityIdentifier::new(value.clone()))
 }
 
 #[cfg(not(feature = "accessibility"))]
-fn a11y_scoped_identifier_env(env: &Environment, _value: &AccessibilityIdentifier) -> Environment {
+pub fn a11y_scoped_identifier_env(
+    env: &Environment,
+    _value: &AccessibilityIdentifier,
+) -> Environment {
     env.clone()
 }
 
-/// If `view`'s outermost wrapper is an accessibility `IgnorableMetadata`
-/// scope, peel it and return its content with `env` extended for it — the
-/// single definition of the metadata-type → scoping table. The retained
-/// build's `Env` arms and the List-row hoist both peel through this, so
-/// registering a new accessibility scope touches one place. `Err` hands the
-/// view back untouched when the outer wrapper is not one of these scopes.
-pub fn a11y_scoped_env_for_view<E: crate::text::TextEngine>(
-    view: AnyView,
-    env: &Environment,
-) -> Result<(AnyView, Environment), AnyView> {
-    macro_rules! try_scope {
-        ($view:expr, $( $ty:ty => $install:expr ),+ $(,)?) => {{
-            let mut view = $view;
-            $(
-                match view.downcast::<IgnorableMetadata<$ty>>() {
-                    Ok(metadata) => {
-                        let IgnorableMetadata { content, value } = *metadata;
-                        let install: fn(&Environment, &$ty) -> Environment = $install;
-                        return Ok((content, install(env, &value)));
-                    }
-                    Err(back) => view = back,
-                }
-            )+
-            Err(view)
-        }};
-    }
-    try_scope!(
-        view,
-        AccessibilityLabel => a11y_naming_scoped_env::<AccessibilityLabel, E>,
-        // `.a11y_value(..)` is naming metadata like the label: the node that
-        // represents the wrapped view owns the semantic payload — once — and a
-        // container that no control spoke for synthesizes the node carrying it.
-        AccessibilityValue => a11y_naming_scoped_env::<AccessibilityValue, E>,
-        AccessibilityIdentifier => a11y_scoped_identifier_env,
-        AccessibilityRole => a11y_naming_scoped_env::<AccessibilityRole, E>,
-        AccessibilityHidden => a11y_scoped_env::<AccessibilityHidden>,
-        AccessibilityChildren => a11y_scoped_env::<AccessibilityChildren>,
-        // The geometry source names the element the way a label does: the
-        // node that represents the wrapped view reads it from the scope.
-        AccessibilityGeometry => a11y_scoped_env::<AccessibilityGeometry>,
-        AccessibilityState => a11y_scoped_env_for_state,
-        AccessibilityStateSignal => a11y_scoped_env_for_state_signal,
-    )
-}
-
-/// Peels the accessibility metadata wrappers off `view`, installing each into a
-/// scoped copy of `env` the way the retained build's `Env`-scoping arms do —
-/// naming metadata grows a fresh [`ScopedAccessibilitySemantics`] so the first
-/// node registered under the result claims it.
-///
-/// A `List` row uses this so the row's own `ListItem` node — rather than a
-/// leaf inside its content — claims the content's explicit label, role, or
-/// identifier; the subtree then emits under the container-child environment
-/// that strips that naming ([`accessibility_container_child_environment`]).
-/// `Metadata<Environment>` snapshots and `IgnorableMetadata<MaterialGroup>`
-/// scope markers are transparent to hoisting. A snapshot stays on the
-/// returned view while the naming metadata inside it lifts, because every
-/// row's content arrives wrapped in the selection theme's `use_env`
-/// snapshot, which is not a view the user named. A group marker stays the
-/// same way — a pure scope marker is not a view the user named either.
-/// Any other `Metadata<T>` (a `.padding()` between
-/// the modifier and the named view) still belongs to the subtree's own build,
-/// so hoisting stops at one.
-#[cfg(feature = "accessibility")]
-pub fn hoist_accessibility_metadata<E: crate::text::TextEngine>(
-    view: AnyView,
-    env: &Environment,
-) -> (AnyView, Environment) {
-    let mut scoped = env.clone();
-    let view = hoist_accessibility_metadata_inner::<E>(view, &mut scoped);
-    (view, scoped)
-}
-
-#[cfg(feature = "accessibility")]
-fn hoist_accessibility_metadata_inner<E: crate::text::TextEngine>(
-    mut view: AnyView,
-    scoped: &mut Environment,
-) -> AnyView {
-    view = match view.downcast::<Metadata<Environment>>() {
-        Ok(metadata) => {
-            let Metadata { content, value } = *metadata;
-            let content = hoist_accessibility_metadata_inner::<E>(content, scoped);
-            return AnyView::new(Metadata { content, value });
+/// Applies `$callback` to the accessibility metadata scopes: each key's
+/// `NativeBackend` method, its type, and the function extending an
+/// environment for it — the single definition of the metadata-type →
+/// scoping table, so registering a new accessibility scope touches one
+/// place.
+/// `E` names the text engine at the expansion site.
+macro_rules! accessibility_scope_table {
+    ($callback:ident) => {
+        $callback! {
+            accessibility_label: AccessibilityLabel => a11y_naming_scoped_env::<AccessibilityLabel, E>;
+            // `.a11y_value(..)` is naming metadata like the label: the node
+            // that represents the wrapped view owns the semantic payload —
+            // once — and a container that no control spoke for synthesizes
+            // the node carrying it.
+            accessibility_value: AccessibilityValue => a11y_naming_scoped_env::<AccessibilityValue, E>;
+            accessibility_identifier: AccessibilityIdentifier => a11y_scoped_identifier_env;
+            accessibility_role: AccessibilityRole => a11y_naming_scoped_env::<AccessibilityRole, E>;
+            accessibility_hidden: AccessibilityHidden => a11y_scoped_env::<AccessibilityHidden>;
+            accessibility_children: AccessibilityChildren => a11y_scoped_env::<AccessibilityChildren>;
+            // The geometry source names the element the way a label does: the
+            // node that represents the wrapped view reads it from the scope.
+            accessibility_geometry: AccessibilityGeometry => a11y_scoped_env::<AccessibilityGeometry>;
+            accessibility_state: AccessibilityState => a11y_scoped_env_for_state;
+            accessibility_state_signal: AccessibilityStateSignal => a11y_scoped_env_for_state_signal;
         }
-        Err(view) => view,
     };
-    // A `.material_group()` is a pure scope marker, like the
-    // `Metadata<Environment>` snapshot above: it stays on the returned
-    // view while the naming metadata inside it lifts.
-    view = match view.downcast::<IgnorableMetadata<MaterialGroup>>() {
-        Ok(metadata) => {
-            let IgnorableMetadata { content, value } = *metadata;
-            let content = hoist_accessibility_metadata_inner::<E>(content, scoped);
-            return AnyView::new(IgnorableMetadata { content, value });
-        }
-        Err(view) => view,
-    };
-    match a11y_scoped_env_for_view::<E>(view, scoped) {
-        Ok((content, next)) => {
-            *scoped = next;
-            hoist_accessibility_metadata_inner::<E>(content, scoped)
-        }
-        Err(view) => view,
-    }
 }
-
-fn gesture_group_identity_with_budget(view: &AnyView, remaining: usize) -> usize {
-    if remaining == 0 {
-        contract_violation!(
-            "hydrolysis gesture group identity extraction exceeded recursion budget for {}; the group is identified by this view",
-            view.name()
-        );
-        return view.stable_ptr() as usize;
-    }
-    if let Some(metadata) = view.downcast_ref::<Metadata<Environment>>() {
-        return gesture_group_identity_with_budget(&metadata.content, remaining - 1);
-    }
-    if let Some(content) = passthrough_content(view) {
-        return gesture_group_identity_with_budget(content, remaining - 1);
-    }
-    view.stable_ptr() as usize
-}
-
-pub fn passthrough_content(view: &AnyView) -> Option<&AnyView> {
-    macro_rules! passthrough_metadata_content {
-        ($($ty:ty),+ $(,)?) => {
-            $(
-                if let Some(metadata) = view.downcast_ref::<Metadata<$ty>>() {
-                    return Some(&metadata.content);
-                }
-            )+
-        };
-    }
-
-    macro_rules! passthrough_ignorable_metadata_content {
-        ($($ty:ty),+ $(,)?) => {
-            $(
-                if let Some(metadata) = view.downcast_ref::<IgnorableMetadata<$ty>>() {
-                    return Some(&metadata.content);
-                }
-            )+
-        };
-    }
-
-    #[cfg(hydrolysis_video_plane)]
-    if let Some(metadata) =
-        view.downcast_ref::<Metadata<crate::runner::android::video_plane::VideoPlaneHost>>()
-    {
-        return Some(&metadata.content);
-    }
-    passthrough_metadata_content!(
-        Environment,
-        Retain,
-        Opacity,
-        Scale,
-        Rotation,
-        Offset,
-        ClipShape,
-        Border,
-        Shadow,
-        Focused,
-        Hittable,
-        GestureObserver,
-        LifeCycleHook,
-        OnEvent,
-        OnChange,
-        OnKeyPress,
-        Secure,
-        StandardDynamicRange,
-        HighDynamicRange,
-        Cursor,
-        IgnoreSafeArea,
-        ContextMenu,
-        ResolvedContextMenu,
-        AnchoredOverlay,
-        waterui::dialog::Dialog,
-        PopupMenuSurface,
-        Draggable,
-        DropDestination,
-        Background,
-        Selected,
-        NavigationTransitionSource,
-        NavigationTransitionDestination,
-        waterui_core::transition::TransitionSpec
-    );
-    passthrough_ignorable_metadata_content!(
-        MaterialBackground,
-        GlassBackground,
-        // `.material_group()` marks a scope for backdrop capture only:
-        // every measure/identity/label lookup sees the content it wraps.
-        MaterialGroup,
-        AccessibilityIdentifier,
-        AccessibilityLabel,
-        AccessibilityValue,
-        AccessibilityRole,
-        AccessibilityHidden,
-        AccessibilityChildren,
-        AccessibilityGeometry,
-        AccessibilityState,
-        AccessibilityStateSignal
-    );
-
-    None
-}
-
-pub fn effective_stretch_axis(view: &AnyView) -> StretchAxis {
-    if let Some(content) = passthrough_content(view) {
-        return effective_stretch_axis(content);
-    }
-    if view.downcast_ref::<Divider>().is_some() {
-        return StretchAxis::CrossAxis;
-    }
-    view.stretch_axis()
-}
-
-/// Whether a view is the empty view `()`, possibly under layout-transparent
-/// wrappers or hosted by a `Dynamic`.
-///
-/// Layout-transparent wrappers forward the content's answer — the same
-/// delegation [`effective_stretch_axis`] walks. A `Dynamic` answers for its
-/// current snapshot, so a conditional flipping between `()` and content is a
-/// membership change the next layout pass sees. This is a semantic answer,
-/// not a measured size: a zero-size `Color` or a collapsed `Spacer` still
-/// renders and still answers `false`, and so does a structured container
-/// like `().size(w, h)` — it explicitly claims a slot. A stack treats a
-/// child answering `true` as a non-member (§4.4: no slot, no spacing).
-pub fn view_renders_nothing(view: &AnyView) -> bool {
-    if let Some(content) = passthrough_content(view) {
-        return view_renders_nothing(content);
-    }
-    if view.downcast_ref::<()>().is_some() || view.downcast_ref::<Native<()>>().is_some() {
-        return true;
-    }
-    if let Some(dynamic) = view.downcast_ref::<Dynamic>() {
-        return dynamic
-            .with_unconnected_view(|view| view.is_some_and(view_renders_nothing))
-            .unwrap_or(false);
-    }
-    if let Some(dynamic) = view.downcast_ref::<Native<Dynamic>>() {
-        return dynamic
-            .as_inner()
-            .with_unconnected_view(|view| view.is_some_and(view_renders_nothing))
-            .unwrap_or(false);
-    }
-    false
-}
-
-fn is_layout_terminal(view: &AnyView) -> bool {
-    if view.downcast_ref::<Str>().is_some() || view.downcast_ref::<Divider>().is_some() {
-        return true;
-    }
-    super::is_hydro_native_view(view)
-}
-
-pub fn normalize_view_for_render(view: AnyView, env: &Environment) -> AnyView {
-    normalize_layout_view(view, env)
-}
-
-pub fn normalize_layout_view(view: AnyView, env: &Environment) -> AnyView {
-    normalize_layout_view_with_budget(view, env, 64)
-}
-
-#[expect(
-    clippy::too_many_lines,
-    reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
-)]
-fn normalize_layout_view_with_budget(
-    view: AnyView,
-    env: &Environment,
-    remaining: usize,
-) -> AnyView {
-    if remaining == 0 {
-        contract_violation!(
-            "hydrolysis layout normalization exceeded recursion budget for {}; the view is replaced by an empty view",
-            view.name()
-        );
-        return AnyView::new(());
-    }
-    let next_remaining = remaining - 1;
-    let mut view = view;
-
-    // The GPU video player's host is unwrapped here: its picture is only
-    // reachable by consuming it, so layout and build see a passthrough.
-    #[cfg(hydrolysis_video_plane)]
-    if view.is::<Native<waterui_video_gpu::AndroidVideoSurfaceHost>>() {
-        let host = *view
-            .downcast::<Native<waterui_video_gpu::AndroidVideoSurfaceHost>>()
-            .expect("layout normalization failed to downcast the video surface host");
-        return normalize_layout_view_with_budget(
-            crate::runner::android::video_plane::unwrap_host(host),
-            env,
-            remaining,
-        );
-    }
-    #[cfg(hydrolysis_video_plane)]
-    if view.is::<Metadata<crate::runner::android::video_plane::VideoPlaneHost>>() {
-        let Metadata { content, value } = *view
-            .downcast::<Metadata<crate::runner::android::video_plane::VideoPlaneHost>>()
-            .expect("layout normalization failed to downcast the video plane host");
-        return AnyView::new(Metadata {
-            content: normalize_layout_view_with_budget(content, env, remaining),
-            value,
-        });
-    }
-    if view.is::<Metadata<Environment>>() {
-        let Metadata { content, value } = *view
-            .downcast::<Metadata<Environment>>()
-            .expect("layout normalization failed to downcast Metadata<Environment>");
-        let normalized_content = normalize_layout_view_with_budget(content, &value, remaining);
-        return AnyView::new(Metadata {
-            content: normalized_content,
-            value,
-        });
-    }
-    macro_rules! normalize_passthrough_metadata {
-        ($($ty:ty),+ $(,)?) => {
-            $(
-                if view.is::<Metadata<$ty>>() {
-                    let Metadata { content, value } = *view
-                        .downcast::<Metadata<$ty>>()
-                        .expect("layout normalization failed to downcast metadata");
-                    let normalized_content =
-                        normalize_layout_view_with_budget(content, env, remaining);
-                    return AnyView::new(Metadata {
-                        content: normalized_content,
-                        value,
-                    });
-                }
-            )+
-        };
-    }
-    macro_rules! normalize_passthrough_ignorable_metadata {
-        ($($ty:ty),+ $(,)?) => {
-            $(
-                if view.is::<IgnorableMetadata<$ty>>() {
-                    let IgnorableMetadata { content, value } = *view
-                        .downcast::<IgnorableMetadata<$ty>>()
-                        .expect("layout normalization failed to downcast ignorable metadata");
-                    let normalized_content =
-                        normalize_layout_view_with_budget(content, env, remaining);
-                    return AnyView::new(IgnorableMetadata {
-                        content: normalized_content,
-                        value,
-                    });
-                }
-            )+
-        };
-    }
-
-    normalize_passthrough_metadata!(
-        LayoutPriority,
-        Retain,
-        Opacity,
-        Scale,
-        Rotation,
-        Offset,
-        ClipShape,
-        Border,
-        Shadow,
-        Focused,
-        Hittable,
-        Selected,
-        GestureObserver,
-        LifeCycleHook,
-        OnEvent,
-        OnChange,
-        OnKeyPress,
-        Secure,
-        StandardDynamicRange,
-        HighDynamicRange,
-        Cursor,
-        IgnoreSafeArea,
-        ContextMenu,
-        ResolvedContextMenu,
-        AnchoredOverlay,
-        waterui::dialog::Dialog,
-        PopupMenuSurface,
-        Draggable,
-        DropDestination,
-        Background,
-        NavigationTransitionSource,
-        NavigationTransitionDestination,
-        waterui_core::transition::TransitionSpec
-    );
-    // Label/role/children stay plain passthrough here: they are
-    // nearest-consumer metadata — the leaf that emits the semantic node reads
-    // them from the build-time `Env` scope, and they must not be baked into the
-    // environments that composite bodies snapshot below (a group label would
-    // then relabel every descendant leaf).
-    normalize_passthrough_ignorable_metadata!(
-        MaterialBackground,
-        GlassBackground,
-        // `.material_group()` is a scope marker with no environment effect:
-        // its wrapper must reach the tree build so the flush can push the
-        // scope its member materials join (water-rs/waterui#1999).
-        MaterialGroup,
-        AccessibilityIdentifier,
-        AccessibilityLabel,
-        AccessibilityValue,
-        AccessibilityRole,
-        AccessibilityChildren,
-        AccessibilityGeometry
-    );
-
-    // Hidden and (reactive) state have *subtree* semantics: every emission
-    // below resolves them from its environment. Their content must therefore be
-    // normalized under the same scoped environment the build arm installs — a
-    // composite body resolved below may snapshot its environment into a
-    // `Metadata<Environment>` override, and a snapshot taken without the
-    // scoping would drop the hidden/state scope wholesale at flush (an
-    // `a11y_state_signal(hidden)` overlay stayed visible exactly this way).
-    macro_rules! normalize_env_scoping_ignorable_metadata {
-        ($($ty:ty, $scope:expr);+ $(;)?) => {
-            $(
-                if view.is::<IgnorableMetadata<$ty>>() {
-                    let IgnorableMetadata { content, value } = *view
-                        .downcast::<IgnorableMetadata<$ty>>()
-                        .expect("layout normalization failed to downcast ignorable metadata");
-                    let scoped = $scope(env, &value);
-                    let normalized_content =
-                        normalize_layout_view_with_budget(content, &scoped, remaining);
-                    return AnyView::new(IgnorableMetadata {
-                        content: normalized_content,
-                        value,
-                    });
-                }
-            )+
-        };
-    }
-    normalize_env_scoping_ignorable_metadata!(
-        AccessibilityHidden, a11y_scoped_env;
-        AccessibilityStateSignal, a11y_scoped_env_for_state_signal;
-        AccessibilityState, a11y_scoped_env_for_state
-    );
-
-    // A plain `FixedContainer` has not run `body()` yet: its layout object
-    // is still the one the modifier built — the only moment
-    // `BackgroundLayout` is identifiable, because `body` wraps it in
-    // `DirectionalLayout`. Keep the container plain: the tree build
-    // identifies the slot while the layout is still concrete and then runs
-    // `body` itself; normalization only descends into the children.
-    if view.is::<FixedContainer>() {
-        let container = *view
-            .downcast::<FixedContainer>()
-            .expect("layout normalization failed to downcast FixedContainer");
-        let (layout, children) = container.into_inner();
-        let mut normalized_children = Vec::with_capacity(children.len());
-        for child in children {
-            normalized_children.push(normalize_layout_view_with_budget(
-                child,
-                env,
-                next_remaining,
-            ));
-        }
-        return AnyView::new(FixedContainer::from_parts(layout, normalized_children));
-    }
-
-    if view.is::<Native<FixedContainer>>() {
-        let native = *view
-            .downcast::<Native<FixedContainer>>()
-            .expect("layout normalization failed to downcast Native<FixedContainer>");
-        let (layout, children) = native.into_inner().into_inner();
-        let mut normalized_children = Vec::with_capacity(children.len());
-        for child in children {
-            normalized_children.push(normalize_layout_view_with_budget(child, env, remaining));
-        }
-        return AnyView::new(Native::new(FixedContainer::from_parts(
-            layout,
-            normalized_children,
-        )));
-    }
-
-    if view.is::<Native<LazyContainer>>() {
-        return view;
-    }
-
-    if view.is::<Native<ScrollView>>() {
-        let native = *view
-            .downcast::<Native<ScrollView>>()
-            .expect("layout normalization failed to downcast Native<ScrollView>");
-        let (axis, content, controller, offset) = native.into_inner().into_inner().into_parts();
-        let normalized_content = normalize_layout_view_with_budget(content, env, remaining);
-        let scroll = ScrollView::new(axis, normalized_content);
-        let scroll = match controller {
-            Some(controller) => scroll.scroll_controller(&controller),
-            None => scroll,
-        };
-        let scroll = match offset {
-            Some(offset) => scroll.report_offset(&offset),
-            None => scroll,
-        };
-        return AnyView::new(Native::new(scroll));
-    }
-
-    if view.is::<Native<NavigationView>>() {
-        let native = *view
-            .downcast::<Native<NavigationView>>()
-            .expect("layout normalization failed to downcast Native<NavigationView>");
-        let mut navigation = native.into_inner();
-        navigation.bar.title =
-            normalize_layout_view_with_budget(navigation.bar.title, env, remaining);
-        navigation.bar.subtitle =
-            normalize_layout_view_with_budget(navigation.bar.subtitle, env, remaining);
-        for item in navigation.bar.toolbar.items_mut() {
-            // Normalization resolves a label against the environment, so the
-            // bar scope has to wrap the item before it runs.
-            let content = normalize_layout_view_with_budget(
-                crate::widgets::nav::navigation::toolbar_item_view(item.take_content(), env),
-                env,
-                remaining,
-            );
-            item.set_content(content);
-        }
-        navigation.content = normalize_layout_view_with_budget(navigation.content, env, remaining);
-        return AnyView::new(Native::new(navigation));
-    }
-
-    if is_layout_terminal(&view) {
-        return view;
-    }
-
-    view = AnyView::new(view.body(env));
-    normalize_layout_view_with_budget(view, env, next_remaining)
-}
-
-pub fn estimate_layout_intrinsic<'a, E: crate::text::TextEngine>(
-    layout: &dyn Layout,
-    children: impl IntoIterator<Item = &'a AnyView>,
-    state: &mut HydroState<E>,
-    env: &Environment,
-    theme: &Rc<dyn crate::theme::WidgetTheme>,
-) -> LayoutSize {
-    let state = RefCell::new(state);
-    let children: Vec<&AnyView> = children.into_iter().collect();
-    let mut subviews = Vec::new();
-    for child in children {
-        subviews.push(HydroSubview::from_view(child, &state, env, theme));
-    }
-    let refs: Vec<&dyn SubView> = subviews.iter().map(|view| view as &dyn SubView).collect();
-    layout.size_that_fits(ProposalSize::UNSPECIFIED, &refs)
-}
+pub(crate) use accessibility_scope_table;
 
 /// Resolves a shape into a concrete path for `bounds`.
 ///
@@ -885,109 +361,7 @@ fn append_corner(
     path.curve_to(c1, c2, end_point);
 }
 
-pub fn path_commands_to_path(commands: &[PathCommand], bounds: kurbo::Rect) -> kurbo::BezPath {
-    let width = bounds.width();
-    let height = bounds.height();
-    let mut path = kurbo::BezPath::new();
-    let mut has_current = false;
-
-    for command in commands {
-        match command {
-            PathCommand::MoveTo { x, y } => {
-                path.move_to(kurbo::Point::new(
-                    f64::from(*x) * width,
-                    f64::from(*y) * height,
-                ));
-                has_current = true;
-            }
-            PathCommand::LineTo { x, y } => {
-                if !has_current {
-                    contract_violation!(
-                        "PathCommand::LineTo requires an active current point; the command is ignored"
-                    );
-                    continue;
-                }
-                path.line_to(kurbo::Point::new(
-                    f64::from(*x) * width,
-                    f64::from(*y) * height,
-                ));
-            }
-            PathCommand::QuadTo { cx, cy, x, y } => {
-                if !has_current {
-                    contract_violation!(
-                        "PathCommand::QuadTo requires an active current point; the command is ignored"
-                    );
-                    continue;
-                }
-                path.quad_to(
-                    kurbo::Point::new(f64::from(*cx) * width, f64::from(*cy) * height),
-                    kurbo::Point::new(f64::from(*x) * width, f64::from(*y) * height),
-                );
-            }
-            PathCommand::CubicTo {
-                c1x,
-                c1y,
-                c2x,
-                c2y,
-                x,
-                y,
-            } => {
-                if !has_current {
-                    contract_violation!(
-                        "PathCommand::CubicTo requires an active current point; the command is ignored"
-                    );
-                    continue;
-                }
-                path.curve_to(
-                    kurbo::Point::new(f64::from(*c1x) * width, f64::from(*c1y) * height),
-                    kurbo::Point::new(f64::from(*c2x) * width, f64::from(*c2y) * height),
-                    kurbo::Point::new(f64::from(*x) * width, f64::from(*y) * height),
-                );
-            }
-            PathCommand::Arc {
-                cx,
-                cy,
-                rx,
-                ry,
-                start,
-                sweep,
-            } => {
-                let center_x = f64::from(*cx) * width;
-                let center_y = f64::from(*cy) * height;
-                let radius_x = f64::from(*rx) * width;
-                let radius_y = f64::from(*ry) * height;
-                let start = f64::from(*start);
-                let step = f64::from(*sweep) / 32.0;
-
-                let start_point = kurbo::Point::new(
-                    radius_x.mul_add(start.cos(), center_x),
-                    radius_y.mul_add(start.sin(), center_y),
-                );
-                if has_current {
-                    path.line_to(start_point);
-                } else {
-                    path.move_to(start_point);
-                    has_current = true;
-                }
-
-                let mut angle = start;
-                for _ in 0..32 {
-                    angle += step;
-                    path.line_to(kurbo::Point::new(
-                        radius_x.mul_add(angle.cos(), center_x),
-                        radius_y.mul_add(angle.sin(), center_y),
-                    ));
-                }
-            }
-            PathCommand::Close => {
-                path.close_path();
-                has_current = false;
-            }
-        }
-    }
-
-    path
-}
+pub use crate::theme::path_commands_to_path;
 
 pub fn anchor_point(bounds: kurbo::Rect, anchor: waterui::style::Anchor) -> kurbo::Point {
     kurbo::Point::new(

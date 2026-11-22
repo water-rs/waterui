@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use cherenkov_record::WorkingColor;
 use kurbo::Rect;
-use waterui_core::interaction::InteractionState;
+use waterui_interaction::interaction::InteractionState;
 
 use crate::renderer::chrome::{PartRuns, PartStep};
 use crate::renderer::{HydrolysisRenderer, RenderContext};

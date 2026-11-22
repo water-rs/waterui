@@ -26,7 +26,7 @@ use waterui::resolve::{AnyResolvable, Resolvable};
 
 // View metadata and lifecycle events.
 use waterui::event::Event;
-use waterui::metadata::{IgnorableMetadata, Metadata, MetadataKey, Retain};
+use waterui::metadata::{Metadata, MetadataKey, Retain};
 
 // Implementing `Animatable` for a custom data shape.
 use waterui::easing::{EasingCurve, Interpolatable};

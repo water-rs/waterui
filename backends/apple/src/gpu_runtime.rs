@@ -922,7 +922,7 @@ mod tests {
             generation
                 .engine()
                 .gpu_producer(waterui_graphics::gpu::interop::GpuContentBox::new(
-                    waterui_graphics::gpu::GpuContentView::new(Paused(Some((announce, gate))))
+                    waterui_graphics::gpu::GpuView::new(Paused(Some((announce, gate))))
                         .engine_content(),
                 ));
         first_part.surface.update(|tx| {

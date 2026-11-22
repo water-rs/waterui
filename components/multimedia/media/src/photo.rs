@@ -26,16 +26,17 @@ use futures::StreamExt;
 use std::path::Path;
 #[cfg(target_arch = "wasm32")]
 use waterkit_fs::WaterFs;
-use waterui_core::content_ledger::OwedContent;
+use waterui_capture::ContentLedger;
+use waterui_capture::content_ledger::OwedContent;
 use waterui_core::contract_violation;
-use waterui_core::event::{LifeCycle, LifeCycleHook};
 use waterui_core::handler::ReportExtraction as _;
 use waterui_core::reactive::signal::IntoComputed;
 use waterui_core::reactive::watcher::BoxWatcherGuard;
-use waterui_core::{AnyView, Computed, ContentLedger, Environment, Metadata, Retain, Signal, View};
+use waterui_core::{Computed, Environment, Metadata, Retain, Signal, View};
 use waterui_image::{
     ContentMode, Image, ImageStatus, ReactiveImage, ReactiveImageHandle, reactive_image,
 };
+use waterui_interaction::event::{LifeCycle, LifeCycleHook};
 #[cfg(feature = "remote")]
 use zenwave::{Client, Method};
 
@@ -209,7 +210,7 @@ impl View for Photo {
         };
         let guard = subscribe_photo_source(&source, &load_state, owe, start.clone());
 
-        AnyView::new(Metadata::new(
+        Metadata::new(
             Metadata::new(
                 content,
                 LifeCycleHook::new(LifeCycle::Appear, {
@@ -218,14 +219,7 @@ impl View for Photo {
                 }),
             ),
             Retain::new((guard, source, load_state)),
-        ))
-    }
-
-    /// Resolves through transparent `Metadata` layers to the inner
-    /// `ReactiveImage`; forwards its axis (non-resizable by default,
-    /// both-axes after `.resizable()`).
-    fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
-        self.content.stretch_axis()
+        )
     }
 }
 
@@ -630,10 +624,9 @@ mod tests {
         SceneContent, SceneResources,
     };
     use waterui::graphics::canvas::{Canvas, CanvasView};
+    use waterui_capture::ContentLedger;
     use waterui_core::handler::BoxedEventAction;
-    use waterui_core::{
-        AnyView, Binding, ContentLedger, Environment, Signal, View, reactive::watcher::Context,
-    };
+    use waterui_core::{AnyView, Binding, Environment, Signal, View, reactive::watcher::Context};
     use waterui_image::{DecodePath, Image, ReactiveImage, ReactiveImageHandle, reactive_image};
     use waterui_layout::container::FixedContainer;
 
@@ -797,13 +790,11 @@ mod tests {
         let env = Environment::new();
         let body = AnyView::new(image.body(&env));
         let container = body
-            .downcast::<FixedContainer>()
-            .unwrap_or_else(|_| panic!("a reactive image mounts inside a fixed container"));
-        let (_, mut contents) = container.into_inner();
-        let canvas = contents
-            .pop()
-            .and_then(|view| view.downcast::<Canvas>().ok())
-            .expect("a reactive image's only content is a canvas");
+            .downcast::<FixedContainer<(Canvas,)>>()
+            .unwrap_or_else(|_| {
+                panic!("a reactive image mounts a canvas inside a fixed container")
+            });
+        let (_, (canvas,)) = container.into_inner();
 
         (AnyView::new(canvas.body(&env))
             .downcast::<CanvasView>()

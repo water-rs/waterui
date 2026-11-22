@@ -17,14 +17,59 @@ use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+use cocoa_ui::Retained;
 #[cfg(target_os = "macos")]
 use waterui::component::menu::{CloseWindowChord, CloseWindowPlacement};
 use waterui::component::menu::{
-    CommandRole, Menu as DeclaredMenu, NamedKey, ResolvedCommand, ResolvedMenuItem,
-    ResolvedNestedMenu, ShortcutKey,
+    CommandRole, Menu, NamedKey, ResolvedCommand, ResolvedMenuItem, ResolvedNestedMenu, ShortcutKey,
 };
 use waterui::reactive::{Computed, Signal};
-use waterui_backend_core::Environment;
+use waterui_backend_core::{AnyView, Environment};
+use waterui_core::handler::AnyViewBuilder;
+use waterui_core::layout::ProposalSize;
+
+#[cfg(target_os = "macos")]
+pub type PlatformMenuImage = cocoa_ui::objc2_app_kit::NSImage;
+#[cfg(target_os = "ios")]
+pub type PlatformMenuImage = cocoa_ui::objc2_ui_kit::UIImage;
+
+type DeclaredMenu = Menu<waterui::component::label::SemanticLabel>;
+
+/// Resolves a label's icon builder for native Apple menus: direct [`crate::SfSymbol`]
+/// travels as a system symbol name, and any other view is rendered and rasterized
+/// into a template platform image.
+pub fn resolve_menu_icon(
+    icon: Option<&AnyViewBuilder<AnyView>>,
+    env: &Environment,
+) -> (Option<String>, Option<Retained<PlatformMenuImage>>) {
+    let Some(builder) = icon else {
+        return (None, None);
+    };
+    let icon_view = builder.build();
+    if let Some(symbol) = icon_view.downcast_ref::<crate::SfSymbol>() {
+        return (Some(String::from(symbol.as_str())), None);
+    }
+    let Some(mtm) = cocoa_ui::MainThreadMarker::new() else {
+        tracing::warn!("menu icon view could not be rasterized off the main thread");
+        return (None, None);
+    };
+    let leaf = crate::contract::RenderContext::entry(env, mtm).render(icon_view);
+    let size = leaf
+        .layout()
+        .measure(ProposalSize {
+            width: None,
+            height: None,
+        })
+        .size;
+    cocoa_ui::view::set_frame(
+        leaf.view(),
+        cocoa_ui::Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height)),
+    );
+    (
+        None,
+        cocoa_ui::bitmap::view_template_image(leaf.view(), 16.0),
+    )
+}
 
 /// Resolves `menu_bar` against `env` — items live-resolve under the
 /// environment's locale.
@@ -37,23 +82,30 @@ fn resolve(
 }
 
 /// A resolved command as the kit's shared `Command` payload — label text,
-/// subtitle, symbol name, destructive flag and shortcut.
-fn kit_command(command: &ResolvedCommand) -> cocoa_ui::menu::Command {
+/// subtitle, icon, destructive flag and shortcut.
+fn kit_command(command: &ResolvedCommand, env: &Environment) -> cocoa_ui::menu::Command {
+    let (symbol, image) = resolve_menu_icon(command.icon.as_ref(), env);
     kit_command_fields(
         command.label.content().snapshot().to_plain().to_string(),
         command.subtitle.as_ref().map(ToString::to_string),
-        command.icon.as_ref().map(|icon| icon.name().to_string()),
+        symbol,
+        image,
         command.role,
         command.shortcut.as_ref(),
     )
 }
 
 /// A resolved nested menu's header as the kit's shared `Command` payload.
-pub fn kit_command_for_menu(menu: &ResolvedNestedMenu) -> cocoa_ui::menu::Command {
+pub fn kit_command_for_menu(
+    menu: &ResolvedNestedMenu,
+    env: &Environment,
+) -> cocoa_ui::menu::Command {
+    let (symbol, image) = resolve_menu_icon(menu.icon.as_ref(), env);
     kit_command_fields(
         menu.label.content().snapshot().to_plain().to_string(),
         None,
-        menu.icon.as_ref().map(|icon| icon.name().to_string()),
+        symbol,
+        image,
         CommandRole::Standard,
         None,
     )
@@ -63,6 +115,7 @@ fn kit_command_fields(
     label: String,
     subtitle: Option<String>,
     symbol: Option<String>,
+    image: Option<Retained<PlatformMenuImage>>,
     role: CommandRole,
     shortcut: Option<&waterui::component::menu::Shortcut>,
 ) -> cocoa_ui::menu::Command {
@@ -87,6 +140,7 @@ fn kit_command_fields(
         label,
         subtitle,
         symbol,
+        image,
         destructive: matches!(role, CommandRole::Destructive),
         enabled: true,
         selected: false,
@@ -276,14 +330,14 @@ pub fn menu_tree(
                 let action = command.action.clone();
                 let env = env.clone();
                 Some(cocoa_ui::menu::MenuTreeNode::Command(
-                    kit_command(command),
+                    kit_command(command, &env),
                     Rc::new(move || {
                         action.run(&env);
                     }),
                 ))
             }
             ResolvedMenuItem::Menu(menu) => Some(cocoa_ui::menu::MenuTreeNode::Submenu(
-                kit_command_for_menu(menu),
+                kit_command_for_menu(menu, env),
                 menu_tree(&menu.items.snapshot(), env),
             )),
             // macOS: the standard application menu already ends with Quit
@@ -318,13 +372,11 @@ mod imp {
 
     use cocoa_ui::MainThreadMarker;
     use cocoa_ui::appkit::{Application, KeyModifiers, Menu, MenuAction, MenuItem};
-    use waterui::component::menu::{
-        CloseWindowChord, CommandRole, Menu as DeclaredMenu, ResolvedMenuItem, Shortcut,
-    };
+    use waterui::component::menu::{CloseWindowChord, CommandRole, ResolvedMenuItem, Shortcut};
     use waterui::reactive::{Computed, Signal};
     use waterui_backend_core::Environment;
 
-    use super::{CloseWindowPlacement, kit_command_fields, menu_tree, resolve};
+    use super::{CloseWindowPlacement, DeclaredMenu, kit_command_fields, menu_tree, resolve};
 
     /// What this application calls itself in its own menu: the display name a
     /// bundle chooses for people to read, then the bundle name, then the
@@ -375,6 +427,7 @@ mod imp {
     fn standard_close_window_command(chord: Option<&Shortcut>) -> cocoa_ui::menu::Command {
         kit_command_fields(
             String::from(CLOSE_WINDOW_TITLE),
+            None,
             None,
             None,
             CommandRole::Standard,
@@ -571,85 +624,68 @@ mod imp {
 #[cfg(target_os = "ios")]
 mod imp {
     use alloc::boxed::Box;
-    use alloc::rc::Rc;
     use alloc::vec::Vec;
     use core::any::Any;
-    use core::cell::RefCell;
 
     use cocoa_ui::MainThreadMarker;
     use cocoa_ui::uikit::MenuBuilder;
-    use waterui::component::menu::{Menu as DeclaredMenu, ResolvedMenuItem};
+    use waterui::component::menu::ResolvedMenuItem;
     use waterui::reactive::{Computed, Signal};
     use waterui_backend_core::Environment;
 
-    use super::{kit_command_for_menu, menu_tree, resolve};
+    use super::{DeclaredMenu, kit_command_for_menu, menu_tree, resolve};
 
-    /// What `install_declared` shares with the `build_menus` handler: the
-    /// resolved items plus the environment their actions run under, filled
-    /// once `app(env)` has returned its own environment.
-    pub type Declared = Rc<RefCell<Option<(Computed<Vec<ResolvedMenuItem>>, Environment)>>>;
-
-    /// The slot `build_menus` reads — empty until `app(env)` has run.
-    #[must_use]
-    pub fn declared() -> Declared {
-        Rc::new(RefCell::new(None))
-    }
-
-    /// The `build_menus` handler: each top-level declared `Menu` becomes a
-    /// `UIMenu` at the end of the root bar, replaced in place on rebuild.
-    pub fn build_handler(declared: Declared) -> impl Fn(&MenuBuilder<'_>) + 'static {
-        move |builder| {
-            let Some((resolved, env)) = declared.borrow().clone() else {
-                tracing::debug!("main menu built before the application declared its menus");
-                return;
-            };
-            let mtm =
-                MainThreadMarker::new().expect("UIKit calls `build_menus` on the main thread");
-            let items = resolved.snapshot();
-            for (index, item) in items.iter().enumerate() {
-                let ResolvedMenuItem::Menu(menu) = item else {
-                    waterui::contract_violation!(
-                        "App::menu_bar only accepts top-level Menu values; the item is skipped"
-                    );
-                    continue;
-                };
-                let identifier = alloc::format!("dev.waterui.menu.{index}");
-                let command = kit_command_for_menu(menu);
-                let nodes = menu_tree(&menu.items.snapshot(), &env);
-                let ui_menu = cocoa_ui::uikit::menu_with_identifier(
-                    mtm,
-                    builder.key_commands(),
-                    &command,
-                    Some(&identifier),
-                    &nodes,
+    fn build_menus(
+        resolved: &Computed<Vec<ResolvedMenuItem>>,
+        env: &Environment,
+        builder: &MenuBuilder<'_>,
+    ) {
+        let mtm = MainThreadMarker::new().expect("UIKit calls `build_menus` on the main thread");
+        let items = resolved.snapshot();
+        for (index, item) in items.iter().enumerate() {
+            let ResolvedMenuItem::Menu(menu) = item else {
+                waterui::contract_violation!(
+                    "App::menu_bar only accepts top-level Menu values; the item is skipped"
                 );
-                if builder.contains(&identifier) {
-                    builder.replace(&identifier, &ui_menu);
-                } else {
-                    builder.insert_at_root_end(&ui_menu);
-                }
-            }
-            tracing::debug!(
-                menus = items.len(),
-                "main menu built with the declared menus"
+                continue;
+            };
+            let identifier = alloc::format!("dev.waterui.menu.{index}");
+            let command = kit_command_for_menu(menu, env);
+            let nodes = menu_tree(&menu.items.snapshot(), env);
+            let ui_menu = cocoa_ui::uikit::menu_with_identifier(
+                mtm,
+                builder.key_commands(),
+                &command,
+                Some(&identifier),
+                &nodes,
             );
+            if builder.contains(&identifier) {
+                builder.replace(&identifier, &ui_menu);
+            } else {
+                builder.insert_at_root_end(&ui_menu);
+            }
         }
+        tracing::debug!(
+            menus = items.len(),
+            "main menu built with the declared menus"
+        );
     }
 
-    /// Fills `declared` and flags each change for rebuild. The returned
-    /// guard keeps the watcher alive; hold it for the process.
+    /// Installs `menu_bar` as the main menu system's build handler and rebuilds
+    /// when items change. The returned guard keeps the watcher alive; hold it
+    /// for the process.
     pub fn install_declared(
         mtm: MainThreadMarker,
         menu_bar: &Computed<Vec<DeclaredMenu>>,
         env: &Environment,
-        declared: &Declared,
     ) -> Box<dyn Any> {
         let resolved = resolve(menu_bar, env);
         let guard = resolved.watch(move |_| cocoa_ui::uikit::request_main_menu_rebuild(mtm));
-        *declared.borrow_mut() = Some((resolved, env.clone()));
-        // `UIKit` may have built the main menu before the slot was filled;
-        // the watcher only flags later changes.
-        cocoa_ui::uikit::request_main_menu_rebuild(mtm);
+        let handler_resolved = resolved.clone();
+        let handler_env = env.clone();
+        cocoa_ui::uikit::set_main_menu_builder(mtm, move |builder| {
+            build_menus(&handler_resolved, &handler_env, builder);
+        });
         Box::new(guard)
     }
 }
@@ -666,7 +702,7 @@ mod tests {
     use waterui::reactive::{Computed, Signal};
     use waterui_backend_core::Environment;
 
-    use super::{NamedKey, ShortcutKey, key_equivalent_for, menu_tree, resolve};
+    use super::{NamedKey, ShortcutKey, key_equivalent_for, menu_tree};
 
     fn function_key(code: u32) -> String {
         String::from(char::from_u32(code).expect("function keys are scalar values"))
@@ -703,8 +739,14 @@ mod tests {
     }
 
     /// `menus` resolved as the declared menu bar.
-    fn declared(menus: Vec<Menu>) -> Vec<ResolvedMenuItem> {
-        resolve(&Computed::constant(menus), &Environment::new()).snapshot()
+    fn declared<L: waterui::component::label::LabelKind + Clone>(
+        menus: Vec<Menu<L>>,
+    ) -> Vec<ResolvedMenuItem> {
+        waterui::component::menu::resolve_menu_bar_items(
+            &Computed::constant(menus),
+            &Environment::new(),
+        )
+        .snapshot()
     }
 
     /// A bare environment with the application's decided chord installed,
@@ -745,5 +787,21 @@ mod tests {
             ),
             "a nested Close Window emits the standard Close node: {children:?}"
         );
+    }
+
+    #[test]
+    fn sf_symbol_command_projects_directly_without_rasterization() {
+        let env = chord_env();
+        let command = waterui::component::menu::Command::builder(
+            waterui::component::label::label("Add").icon(crate::SfSymbol::PLUS),
+        )
+        .action(|| {})
+        .resolve(&env);
+        let nodes = menu_tree(&[ResolvedMenuItem::Command(command)], &env);
+        let [MenuTreeNode::Command(cmd, _)] = nodes.as_slice() else {
+            panic!("expected command node: {nodes:?}");
+        };
+        assert_eq!(cmd.symbol.as_deref(), Some("plus"));
+        assert!(cmd.image.is_none());
     }
 }

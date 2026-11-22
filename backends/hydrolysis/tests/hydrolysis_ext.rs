@@ -16,7 +16,7 @@ use waterui::View;
 use waterui::color::WorkingColor;
 use waterui::env::Environment;
 use waterui::graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
-use waterui::graphics::{GpuContent, GpuContentView};
+use waterui::graphics::{GpuContent, GpuView};
 use waterui::prelude::zstack;
 use waterui::shape::RoundedRectangle;
 use waterui::{FilterViewExt, ViewExt};
@@ -154,7 +154,7 @@ struct GpuSurfaceOpacityView;
 
 impl View for GpuSurfaceOpacityView {
     fn body(self, _env: &Environment) -> impl View {
-        GpuContentView::new(SolidClearRenderer {
+        GpuView::new(SolidClearRenderer {
             color: wgpu::Color {
                 r: 0.9,
                 g: 0.3,
@@ -172,7 +172,7 @@ struct GpuSurfaceUnderOverlayView;
 impl View for GpuSurfaceUnderOverlayView {
     fn body(self, _env: &Environment) -> impl View {
         zstack((
-            GpuContentView::new(SolidClearRenderer {
+            GpuView::new(SolidClearRenderer {
                 color: wgpu::Color {
                     r: 0.9,
                     g: 0.3,
@@ -192,7 +192,7 @@ struct TransparentGpuSurfaceOpacityView {
 
 impl View for TransparentGpuSurfaceOpacityView {
     fn body(self, _env: &Environment) -> impl View {
-        GpuContentView::new(CountingClearRenderer {
+        GpuView::new(CountingClearRenderer {
             color: wgpu::Color {
                 r: 0.9,
                 g: 0.3,
@@ -210,7 +210,7 @@ struct GpuSurfaceClipView;
 
 impl View for GpuSurfaceClipView {
     fn body(self, _env: &Environment) -> impl View {
-        GpuContentView::new(SolidClearRenderer {
+        GpuView::new(SolidClearRenderer {
             color: wgpu::Color {
                 r: 0.2,
                 g: 0.8,
@@ -228,7 +228,7 @@ struct GpuSurfaceFilteredView;
 impl View for GpuSurfaceFilteredView {
     fn body(self, _env: &Environment) -> impl View {
         FilteredView::new(
-            GpuContentView::new(SolidClearRenderer {
+            GpuView::new(SolidClearRenderer {
                 color: wgpu::Color {
                     r: 0.35,
                     g: 0.55,
@@ -246,7 +246,7 @@ struct GpuSurfaceAppliedFilterView;
 
 impl View for GpuSurfaceAppliedFilterView {
     fn body(self, _env: &Environment) -> impl View {
-        GpuContentView::new(SolidClearRenderer {
+        GpuView::new(SolidClearRenderer {
             color: wgpu::Color {
                 r: 0.85,
                 g: 0.45,
@@ -294,7 +294,7 @@ fn render(view: impl View, width: u32, height: u32) -> Snapshot {
     let height = height.max(1);
     let style = TestStyle::new();
     let mut env = Environment::new();
-    waterui_core::install_application_resources(&mut env);
+    waterui::install_application_resources(&mut env);
     hydrolysis::theme::install_default_tokens(&mut env);
     hydrolysis::Style::install_tokens(&style, &mut env);
     let fonts = hydrolysis::native_collection(&env);
@@ -401,7 +401,7 @@ fn hydrolysis_ext_skips_transparent_gpu_surface_inside_opacity_layer() {
     assert_eq!(
         calls.load(Ordering::Relaxed),
         0,
-        "transparent opacity layer should not render hidden GpuContentView content"
+        "transparent opacity layer should not render hidden GpuView content"
     );
     let center =
         ((output.width as usize / 2) + (output.height as usize / 2) * output.width as usize) * 4;
@@ -432,7 +432,7 @@ fn hydrolysis_ext_captures_gpu_surface_inside_filtered_view() {
     let center_alpha = center_pixel(&output.rgba8, output.width, output.height)[3];
     assert!(
         center_alpha > 200,
-        "FilteredView must capture its nested GpuContentView"
+        "FilteredView must capture its nested GpuView"
     );
 }
 
@@ -443,7 +443,7 @@ fn hydrolysis_ext_captures_gpu_surface_inside_applied_filter() {
     let center_alpha = center_pixel(&output.rgba8, output.width, output.height)[3];
     assert!(
         center_alpha > 200,
-        "AppliedFilter must capture its nested GpuContentView"
+        "AppliedFilter must capture its nested GpuView"
     );
 }
 

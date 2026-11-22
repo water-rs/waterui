@@ -4,10 +4,10 @@ use std::rc::Rc;
 
 #[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
+use crate::renderer::HeldChild;
 use crate::renderer::live_tabs::{LiveTabsParts, TabsFrames};
 use crate::renderer::{
-    Edge, HydroNativeView, HydroState, RetainedSubview, WidgetRenderContext, measure_tabs_layout,
-    tabs_button_rect, tabs_content_proposal,
+    Edge, HydroState, RetainedSubview, WidgetRenderContext, tabs_button_rect, tabs_content_proposal,
 };
 use crate::theme::{TabItemGeometry, TabItemLayout, TabsLook, TabsSpec, WidgetTheme};
 #[cfg(feature = "accessibility")]
@@ -16,13 +16,13 @@ use accesskit::{
 };
 use nami::watcher::BoxWatcherGuard;
 use nami::{Binding, Signal};
-use waterui::navigation::tab::{NativeTabStyle, Tab, TabIcon, TabsLayout};
+use waterui::navigation::tab::{NativeTabStyle, TabItem, TabsLayout};
 use waterui_controls::label::LabelDisplayMode;
 use waterui_core::contract_violation;
 use waterui_core::id::Id;
 use waterui_core::layout::{LayoutDirection, ProposalSize, Size as LayoutSize, ViewDimensions};
-use waterui_core::views::{AnyViewsSnapshot, ViewSnapshot, Views};
-use waterui_core::{AnyView, Environment, Native};
+use waterui_core::views::AnyViewsSnapshot;
+use waterui_core::{Environment, Native};
 
 #[cfg(feature = "accessibility")]
 use crate::widgets::util::widget_disabled;
@@ -44,18 +44,13 @@ struct TabRenderState<E: crate::text::TextEngine> {
 }
 
 impl<E: crate::text::TextEngine> TabRenderState<E> {
-    fn from_tab(tag: Id, tab: Tab) -> Self {
+    fn from_tab(tag: Id, tab: TabItem<HeldChild<E>>) -> Self {
         let (label, icon, content, badge, enabled, _) = tab.into_parts();
         Self {
             tag,
-            label: RetainedSubview::new(label.build()),
-            icon: icon.map(|icon| {
-                RetainedSubview::new(match icon {
-                    TabIcon::System(icon) => AnyView::new(icon),
-                    TabIcon::View(builder) => builder.build(),
-                })
-            }),
-            content: RetainedSubview::new(AnyView::new(content.build())),
+            label: RetainedSubview::held(label.build()),
+            icon: icon.map(|builder| RetainedSubview::new(builder.build())),
+            content: RetainedSubview::new(Native::new(content.build())),
             enabled,
             badge,
         }
@@ -76,7 +71,7 @@ pub struct TabsRenderState<E: crate::text::TextEngine> {
     tabs: Vec<TabRenderState<E>>,
     /// The collection snapshot the last applied change reported — every
     /// reconcile works this membership, never the live collection.
-    snapshot: Rc<RefCell<AnyViewsSnapshot<Tab>>>,
+    snapshot: Rc<RefCell<AnyViewsSnapshot<TabItem<HeldChild<E>>>>>,
     /// A relocation [`reconcile`] decided but has not published: callers run
     /// it under a `borrow_mut` of the whole state, and writing `selection`
     /// there would let a user watcher re-enter the borrowed state. The id
@@ -94,7 +89,10 @@ pub struct TabsRenderState<E: crate::text::TextEngine> {
 }
 
 impl<E: crate::text::TextEngine> TabsRenderState<E> {
-    pub(crate) fn from_tabs(tabs: TabsLayout, renderer: &crate::renderer::SemanticCore<E>) -> Self {
+    pub(crate) fn from_tabs(
+        tabs: TabsLayout<HeldChild<E>>,
+        renderer: &crate::renderer::SemanticCore<E>,
+    ) -> Self {
         let (selection, tabs, style, ..) = tabs.into_parts();
         let snapshot = Rc::new(RefCell::new(tabs.snapshot()));
         // Membership changes mark the owning widget's cell — the node whose
@@ -312,39 +310,6 @@ impl<E: crate::text::TextEngine> TabsRenderState<E> {
     }
 }
 
-impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<TabsLayout> {
-    fn intrinsic(
-        state: &mut HydroState<E>,
-        view: &Self,
-        env: &Environment,
-        theme: &Rc<dyn crate::theme::WidgetTheme>,
-    ) -> LayoutSize {
-        measure_tabs_layout(
-            view.as_inner(),
-            ProposalSize::UNSPECIFIED,
-            state,
-            env,
-            theme,
-        )
-    }
-
-    fn dimensions(
-        state: &mut HydroState<E>,
-        view: &Self,
-        env: &Environment,
-        theme: &Rc<dyn crate::theme::WidgetTheme>,
-        proposal: ProposalSize,
-    ) -> ViewDimensions {
-        ViewDimensions::new(measure_tabs_layout(
-            view.as_inner(),
-            proposal,
-            state,
-            env,
-            theme,
-        ))
-    }
-}
-
 /// One tab's accessibility inputs: `(tag, interaction_key, default_label,
 /// is_selected, badge_count)`; a zero badge count is not announced.
 #[cfg(feature = "accessibility")]
@@ -553,6 +518,7 @@ pub fn render_tabs_node<E: crate::text::TextEngine>(
                 st.prebuild_labels(ctx.renderer_mut(), env);
                 let selected_index = st.selected_index(selected_id);
                 let badges = st.badge_counts(ctx.renderer_mut());
+                let renderer = ctx.renderer_mut();
                 let labels: Vec<TabAccessibilityEntry> = st
                     .tabs
                     .iter()
@@ -564,7 +530,7 @@ pub fn render_tabs_node<E: crate::text::TextEngine>(
                                 state,
                                 crate::num_cast::i32_as_u32(i32::from(tab.tag)) as usize,
                             ),
-                            tab.label.default_a11y_label(),
+                            tab.label.accessibility_label(renderer),
                             Some(index) == selected_index,
                             badges[index],
                         )
@@ -1102,6 +1068,7 @@ fn tabs_label_rect(
 /// the selected tab's content subtree — it flushes unsuppressed in the
 /// rendered path, so it emits its own nodes here too.
 #[cfg(feature = "accessibility")]
+#[cfg(hydrolysis_cherenkov)]
 pub fn emit_tabs_accessibility<E: crate::text::TextEngine>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     state: &Rc<RefCell<TabsRenderState<E>>>,
@@ -1136,7 +1103,7 @@ pub fn emit_tabs_accessibility<E: crate::text::TextEngine>(
                         owner,
                         crate::num_cast::i32_as_u32(i32::from(tab.tag)) as usize,
                     ),
-                    tab.label.default_a11y_label(),
+                    tab.label.accessibility_label(renderer),
                     Some(index) == selected_index,
                     badges[index],
                 )

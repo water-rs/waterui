@@ -148,6 +148,7 @@ use waterui::gesture::{DragGesture, GestureObserver, MagnificationGesture};
 use waterui::interaction::InteractionState;
 use waterui::prelude::text;
 use waterui::style::FloatingStyle;
+use waterui::widget::Divider;
 use waterui::{Binding, Color, Computed, Signal, SignalExt as _, ViewExt as _};
 use waterui_controls::button::button;
 use waterui_controls::label::{LabelDisplayMode, label};
@@ -159,16 +160,16 @@ use waterui_form::picker::PickerStyle;
 #[cfg(feature = "accessibility")]
 use waterui_form::picker::{Picker, color::ColorPicker, date::DatePicker};
 use waterui_graphics::canvas::Canvas;
+use waterui_layout::scroll;
 use waterui_layout::stack::{VStackLayout, hstack, vstack, zstack};
-use waterui_layout::{Divider, scroll};
 #[cfg(feature = "accessibility")]
 use waterui_navigation::NavigationView;
 #[cfg(feature = "accessibility")]
-use waterui_navigation::tab::{NativeTabStyle, Tab, TabsLayout};
+use waterui_navigation::tab::{NativeTabStyle, Tab, Tabs};
 
 use crate::theme::WidgetTheme;
 use crate::theme::{
-    BadgeLook, ButtonLook, ButtonSpec, Chrome, CornerShape, Custom, DragMapping, Driven,
+    BadgeLook, ButtonLook, ButtonSpec, Chrome, CornerShape, Custom, DragMapping, Driven, Elevation,
     FocusIndicator, HitRegion, IndicatorLook, InputFieldMetrics, InteractionFocusBinding,
     InteractionMotion, Knob, Label, LinearProgressLook, ListLook, ListSpec, MenuLayout, MenuLook,
     MenuPickerLook, MenuSpec, ModalInteraction, Motion, NavigationBarLook, NavigationSpec,
@@ -183,6 +184,63 @@ use cherenkov_record::{
     MaterialEffect, MaterialRegistry, MaterialShader, Paint, Shadow, SharedLive, WorkingColor,
 };
 use waterui_core::handler::SharedAction;
+
+/// A view realized into a retained node and measured through it — the path
+/// layout measures every child on.
+pub(super) struct Realized {
+    renderer: HydrolysisRenderer<ParleyEngine>,
+    node: RenderNode<ParleyEngine>,
+    env: Environment,
+}
+
+impl Realized {
+    pub(super) fn new(view: impl View, env: &Environment) -> Self {
+        Self::with_renderer(view, env, test_renderer())
+    }
+
+    pub(super) fn with_theme(
+        view: impl View,
+        env: &Environment,
+        theme: &Rc<dyn WidgetTheme>,
+    ) -> Self {
+        Self::with_renderer(
+            view,
+            env,
+            HydrolysisRenderer::with_engine(
+                Rc::clone(theme),
+                ParleyEngine::system(FontFamilyResolution::Strict),
+            ),
+        )
+    }
+
+    pub(super) fn with_renderer(
+        view: impl View,
+        env: &Environment,
+        mut renderer: HydrolysisRenderer<ParleyEngine>,
+    ) -> Self {
+        let node = RenderNode::build(AnyView::new(view), env, &mut renderer);
+        Self {
+            renderer,
+            node,
+            env: env.clone(),
+        }
+    }
+
+    pub(super) fn measure(&mut self, proposal: ProposalSize) -> ViewDimensions {
+        self.node.prepare_for_measure(&mut self.renderer);
+        let theme = self.renderer.theme();
+        self.node
+            .measure(&mut self.renderer.state, &self.env, &theme, proposal)
+    }
+
+    pub(super) fn intrinsic(&mut self) -> LayoutSize {
+        self.measure(ProposalSize::UNSPECIFIED).size
+    }
+
+    pub(super) fn stretch_axis(&self) -> StretchAxis {
+        self.node.stretch()
+    }
+}
 
 fn test_renderer() -> HydrolysisRenderer<crate::text::ParleyEngine> {
     test_renderer_with_theme(MinimalTestTheme::default())
@@ -486,15 +544,6 @@ pub fn capture_bytes(runtime: &crate::HeadlessRuntime) -> u64 {
 #[derive(Clone, Default)]
 pub struct BadgeDrawLog(pub Rc<RefCell<Vec<Rect>>>);
 
-#[derive(Clone, Copy)]
-struct RecursivelyErasedView;
-
-impl View for RecursivelyErasedView {
-    fn body(self, _env: &Environment) -> impl View {
-        AnyView::new(self)
-    }
-}
-
 #[derive(Clone)]
 struct EmitsDuringSignalSubscription<T> {
     subscribed: Rc<Cell<bool>>,
@@ -744,6 +793,7 @@ fn text_input_target(
         model,
         selection,
         env: test_environment(),
+        show_context_menu: HydrolysisRenderer::<ParleyEngine>::show_text_context_menu,
         key_handlers: None,
         focus_binding: None,
         #[cfg(feature = "accessibility")]
@@ -752,29 +802,19 @@ fn text_input_target(
 }
 
 #[test]
-fn measure_layout_dimensions_collects_alignment_keys_from_wrapper_layouts() {
+fn a_stack_collects_alignment_keys_from_wrapper_layouts() {
+    use waterui_layout::container::FixedContainer;
     let env = test_environment();
-    let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-    let child = normalize_layout_view(
-        AnyView::new(().size(20.0, 10.0).horizontal_alignment_guide(
-            HorizontalAlignment::Leading,
-            |dimensions: &ViewDimensions| dimensions.size.width * 0.5,
-        )),
-        &env,
-    );
+    let child = AnyView::new(().size(20.0, 10.0).horizontal_alignment_guide(
+        HorizontalAlignment::Leading,
+        |dimensions: &ViewDimensions| dimensions.size.width * 0.5,
+    ));
     let layout = VStackLayout {
         alignment: HorizontalAlignment::Leading,
         spacing: Computed::constant(0.0),
     };
-    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
-    let dimensions = measure_layout_dimensions(
-        &layout,
-        [&child],
-        ProposalSize::UNSPECIFIED,
-        &mut state,
-        &env,
-        &theme,
-    );
+    let dimensions = Realized::new(FixedContainer::new(layout, vec![child]), &env)
+        .measure(ProposalSize::UNSPECIFIED);
 
     assert_eq!(
         dimensions.explicit_horizontal(HorizontalAlignment::Leading),
@@ -782,8 +822,8 @@ fn measure_layout_dimensions_collects_alignment_keys_from_wrapper_layouts() {
     );
 }
 
-/// A plain `FixedContainer` — normalization's form, before `body` wraps its
-/// layout in `DirectionalLayout` — must still resolve explicit horizontal
+/// A plain `FixedContainer` — before `body` wraps its layout in
+/// `DirectionalLayout` — must still resolve explicit horizontal
 /// guides against the placements `DirectionalLayout` produces: under RTL the
 /// leading-aligned child sits on the trailing edge, so a guide anchored in
 /// its frame mirrors to `width - offset`.
@@ -794,24 +834,20 @@ fn plain_fixed_container_measurement_mirrors_guides_under_rtl() {
     let mut env = test_environment();
     env.insert(LayoutDirection::RightToLeft);
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-    let view = normalize_layout_view(
-        AnyView::new(FixedContainer::new(
-            VStackLayout {
-                alignment: HorizontalAlignment::Leading,
-                spacing: Computed::constant(0.0),
-            },
-            vec![
-                AnyView::new(().size(20.0, 10.0).horizontal_alignment_guide(
-                    HorizontalAlignment::Leading,
-                    |dimensions: &ViewDimensions| dimensions.size.width * 0.5,
-                )),
-                AnyView::new(().size(100.0, 10.0)),
-            ],
-        )),
-        &env,
-    );
-    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
-    let dimensions = measure_view_dimensions(&view, &mut state, &env, &theme);
+    let view = AnyView::new(FixedContainer::new(
+        VStackLayout {
+            alignment: HorizontalAlignment::Leading,
+            spacing: Computed::constant(0.0),
+        },
+        vec![
+            AnyView::new(().size(20.0, 10.0).horizontal_alignment_guide(
+                HorizontalAlignment::Leading,
+                |dimensions: &ViewDimensions| dimensions.size.width * 0.5,
+            )),
+            AnyView::new(().size(100.0, 10.0)),
+        ],
+    ));
+    let dimensions = Realized::with_theme(view, &env, &theme).measure(ProposalSize::UNSPECIFIED);
 
     // Under RTL the 20-wide leading child mirrors to the trailing edge —
     // placed at `width - 20`, so its mid-child guide resolves at
@@ -824,70 +860,31 @@ fn plain_fixed_container_measurement_mirrors_guides_under_rtl() {
 }
 
 #[test]
-fn layout_normalization_does_not_charge_metadata_depth_to_component_recursion() {
-    let env = test_environment();
-    let mut view = AnyView::new(text("Leaf"));
-    for _ in 0..80 {
-        view = AnyView::new(view.opacity(1.0));
-    }
-
-    let normalized = normalize_layout_view(view, &env);
-
-    assert!(normalized.is::<Metadata<Opacity>>());
-}
-
-#[test]
-#[cfg_attr(
-    debug_assertions,
-    should_panic(expected = "hydrolysis layout normalization exceeded recursion budget")
-)]
-fn layout_normalization_reports_recursive_component_bodies_and_draws_nothing() {
-    let env = test_environment();
-
-    let view = normalize_layout_view(AnyView::new(RecursivelyErasedView), &env);
-    assert!(
-        view.is::<()>(),
-        "the recursive body is replaced by an empty view"
-    );
-}
-
-#[test]
 fn scale_metadata_is_layout_transparent() {
     let env = test_environment();
-    let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
     let scale = Binding::f32(1.0);
-    let view = normalize_layout_view(
-        AnyView::new(
-            ().size(80.0, 80.0)
-                .scale(scale.clone(), scale.clone())
-                .min_height(120.0),
-        ),
+    let mut realized = Realized::new(
+        ().size(80.0, 80.0)
+            .scale(scale.clone(), scale.clone())
+            .min_height(120.0),
         &env,
     );
 
-    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
-    let initial = measure_view_dimensions(&view, &mut state, &env, &theme).size;
-
+    let initial = realized.intrinsic();
     scale.set(2.0);
-    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
-    let scaled = measure_view_dimensions(&view, &mut state, &env, &theme).size;
+    let scaled = realized.intrinsic();
 
     assert_eq!(initial, LayoutSize::new(80.0, 120.0));
     assert_eq!(scaled, initial);
 }
 
 #[test]
-fn hydro_subview_preserves_stretch_control_minimum_under_zero_width_proposal() {
+fn a_stretch_control_keeps_its_minimum_under_a_zero_width_proposal() {
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
     let value = Binding::f64(0.5);
-    let view = normalize_layout_view(
-        AnyView::new(slider("Playback position", &value).hide_label()),
-        &env,
-    );
-    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
-    let state = RefCell::new(&mut state);
-    let subview = HydroSubview::from_view(&view, &state, &env, &theme);
+    let view = AnyView::new(slider("Playback position", &value).hide_label());
+    let mut subview = Realized::with_theme(view, &env, &theme);
 
     let measured = subview.measure(ProposalSize::new(Some(0.0), None));
 
@@ -897,24 +894,31 @@ fn hydro_subview_preserves_stretch_control_minimum_under_zero_width_proposal() {
     );
 }
 
+/// A tighter proposal caps a button's minimum-size floor but never its
+/// padded label: every proposal below that footprint answers it.
 #[test]
-fn hydro_subview_preserves_non_stretch_button_intrinsic_under_zero_width_proposal() {
+fn a_compressed_button_keeps_its_padded_label() {
     let env = test_environment();
-    let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-    let view = normalize_layout_view(AnyView::new(button("Medium (0.7)").action(|| {})), &env);
-    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
-    let state = RefCell::new(&mut state);
-    let subview = HydroSubview::from_view(&view, &state, &env, &theme);
+    let mut subview = Realized::new(button("Medium (0.7)").action(|| {}), &env);
 
     let intrinsic = subview.measure(ProposalSize::UNSPECIFIED);
-    let constrained = subview.measure(ProposalSize::new(Some(0.0), None));
+    let zero = subview.measure(ProposalSize::new(Some(0.0), None));
+    let narrow = subview.measure(ProposalSize::new(Some(10.0), None));
 
     assert!(
-        approx::relative_eq!(constrained.size.width, intrinsic.size.width),
-        "Hydrolysis non-stretch controls must not be compressed below their intrinsic text width: left {:?}, right {:?}",
-        constrained.size.width,
-        intrinsic.size.width
+        zero.size.width > 0.0 && zero.size.width <= intrinsic.size.width,
+        "the zero-width answer is the padded label, within the floored intrinsic: {zero:?} vs {intrinsic:?}"
     );
+    assert!(
+        approx::relative_eq!(narrow.size.width, zero.size.width),
+        "Hydrolysis non-stretch controls must not be compressed below their padded label: left {:?}, right {:?}",
+        narrow.size.width,
+        zero.size.width
+    );
+    assert!(approx::relative_eq!(
+        zero.size.height,
+        intrinsic.size.height
+    ));
 }
 
 #[test]
@@ -922,19 +926,14 @@ fn state_wrapped_button_remains_non_stretch_for_layout() {
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
     let expanded = Binding::bool(false);
-    let view = normalize_layout_view(
-        AnyView::new(
-            button("Toggle Bars")
-                .action(|waterui::State(value): waterui::State<Binding<bool>>| {
-                    value.toggle();
-                })
-                .state(&expanded),
-        ),
-        &env,
+    let view = AnyView::new(
+        button("Toggle Bars")
+            .action(|waterui::State(value): waterui::State<Binding<bool>>| {
+                value.toggle();
+            })
+            .state(&expanded),
     );
-    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
-    let state = RefCell::new(&mut state);
-    let subview = HydroSubview::from_view(&view, &state, &env, &theme);
+    let mut subview = Realized::with_theme(view, &env, &theme);
 
     let intrinsic = subview.measure(ProposalSize::UNSPECIFIED);
     let proposed = subview.measure(ProposalSize::new(Some(720.0), None));
@@ -1166,25 +1165,29 @@ fn draggable_metadata_delivers_typed_payload_to_drop_destination() {
 }
 
 #[test]
-fn gesture_group_identity_collapses_nested_gesture_observers_on_same_view() {
-    let view = AnyView::new(Metadata::new(
+fn nested_gesture_observers_on_one_view_share_a_group() {
+    let env = test_environment();
+    let mut renderer = test_renderer();
+    let view = Metadata::new(
         Metadata::new(
-            ().size(20.0, 10.0),
+            ().size(20.0, 10.0).opacity(0.5),
             GestureObserver::new(DragGesture::new(8.0), || {}),
         ),
         GestureObserver::new(MagnificationGesture::new(1.0), || {}),
-    ));
-    let outer = view
-        .downcast_ref::<Metadata<GestureObserver>>()
-        .expect("expected outer gesture observer metadata");
-    let inner = outer
-        .content
-        .downcast_ref::<Metadata<GestureObserver>>()
-        .expect("expected inner gesture observer metadata");
+    );
+    let node = RenderNode::build(AnyView::new(view), &env, &mut renderer);
 
-    assert_eq!(
-        gesture_group_identity(&outer.content),
-        gesture_group_identity(&inner.content)
+    let (outer, inner) = node
+        .observed_gesture_group()
+        .expect("the outer gesture observer wraps the tree");
+    let (inner, observed) = inner
+        .observed_gesture_group()
+        .expect("the inner gesture observer wraps the view");
+    assert_eq!(outer, inner);
+    assert_ne!(
+        inner,
+        Rc::as_ptr(&observed.core().cell) as usize,
+        "the opacity wrapper is transparent to the group"
     );
 }
 
@@ -1247,37 +1250,15 @@ fn renderer_magnification_targets_outer_observer_in_stacked_gesture_chain() {
 fn string_views_measure_through_body_recursion() {
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
     let proposal = ProposalSize::UNSPECIFIED;
 
-    let raw = measure_view_dimensions_with_proposal(
-        &AnyView::new(Str::from("Hydrolysis")),
-        proposal,
-        &mut state,
-        &env,
-        &theme,
-    );
-    let borrowed = measure_view_dimensions_with_proposal(
-        &AnyView::new("Hydrolysis"),
-        proposal,
-        &mut state,
-        &env,
-        &theme,
-    );
-    let owned = measure_view_dimensions_with_proposal(
-        &AnyView::new(String::from("Hydrolysis")),
-        proposal,
-        &mut state,
-        &env,
-        &theme,
-    );
-    let cow = measure_view_dimensions_with_proposal(
-        &AnyView::new(Cow::Borrowed("Hydrolysis")),
-        proposal,
-        &mut state,
-        &env,
-        &theme,
-    );
+    let raw =
+        Realized::with_theme(AnyView::new(Str::from("Hydrolysis")), &env, &theme).measure(proposal);
+    let borrowed = Realized::with_theme(AnyView::new("Hydrolysis"), &env, &theme).measure(proposal);
+    let owned = Realized::with_theme(AnyView::new(String::from("Hydrolysis")), &env, &theme)
+        .measure(proposal);
+    let cow = Realized::with_theme(AnyView::new(Cow::Borrowed("Hydrolysis")), &env, &theme)
+        .measure(proposal);
 
     assert_eq!(borrowed.size, raw.size);
     assert_eq!(owned.size, raw.size);
@@ -1364,7 +1345,10 @@ fn a_segmented_picker_takes_the_width_it_is_offered() {
     let mut hydro = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
     let mut measure = |style, width: Option<f32>| {
         let mut node = crate::widgets::controls::picker::PickerRenderState::from_config(
-            waterui_core::view::ConfigurableView::config(picker(style)),
+            waterui_core::backend::MapSlots::map_slots(
+                picker(style).config(),
+                waterui_core::backend::ChildSlot::from_view,
+            ),
         );
         node.prebuild(&mut renderer, &env);
         crate::widgets::controls::picker::measure_picker_node(
@@ -1762,29 +1746,36 @@ fn a_container_with_an_explicit_label_still_consumes_its_text() {
 }
 
 /// A view hook wraps whatever it returns in a snapshot of the environment it was
-/// called with, and layout normalization resolves that body before the naming
-/// scope exists — so the snapshot carries no label, and flattening it replaces
-/// the scoped environment the build installed. Every `Map` in a `map-gpu` build
+/// called with; when that body resolves before the naming scope exists, the
+/// snapshot carries no label, and flattening it replaces the scoped
+/// environment the build installed. Every `Map` in a `map-gpu` build
 /// and every `Video` in a `video-gpu` one sits under such a hook, and
 /// `.a11y_label()` on them named nothing at all: the engine, finding no ambient
 /// label, announced its own generated description instead.
 #[cfg(feature = "accessibility")]
 #[test]
-fn a_label_survives_the_environment_snapshot_a_view_hook_takes() {
-    use waterui_core::AnyView;
-    use waterui_map::{Coordinate, Map, MapConfig, Region};
+fn a_label_reaches_the_view_a_hook_realizes() {
+    use waterui::map::{Coordinate, Map, MapConfig, Region};
+    use waterui_core::view::hook::Hook;
 
-    let mut env = test_environment();
-    // The hooked body stands in for a real map realization — `Native<MapConfig>`
-    // is unreachable because the backend has no map engine and panics on it.
-    env.insert_hook::<MapConfig, AnyView>(|_env, _config| {
-        AnyView::new(text("map").a11y_role(AccessibilityRole::Image))
-    });
+    /// Stands in for a map realization: this build has no map engine.
+    #[derive(Clone)]
+    struct TextMap;
+
+    impl Hook for TextMap {
+        type Target = MapConfig;
+
+        fn apply(&self, _config: MapConfig, _env: &Environment) -> Result<impl View, MapConfig> {
+            Ok(text("map").a11y_role(AccessibilityRole::Image))
+        }
+    }
+
+    let env = test_environment();
     let mut renderer = test_renderer();
-    // The frame matters: a layout container normalizes its children, and it is
-    // normalization that resolves the hooked body — one level above the naming
-    // scope the build installs.
+    // The frame puts the hooked map inside a layout container, one level below
+    // the naming scope the build installs.
     let view = Map::new(Region::new(Coordinate::default(), 1.0, 1.0))
+        .hooks(TextMap)
         .a11y_label("City map")
         .size(120.0, 120.0);
 
@@ -1806,91 +1797,16 @@ fn a_label_survives_the_environment_snapshot_a_view_hook_takes() {
     assert_eq!(labelled[0].1.role(), AccessibilityNodeRole::Image);
 }
 
-/// A `WebView` created under an application-provided controller exists — the
-/// controller permits it — but on a build bridging no engine there is nothing
-/// to draw it with, and the backend fails rather than occupying a layout slot
-/// with no page behind it.
-#[cfg(not(hydrolysis_system_webview))]
+/// A `WebView` reaching a build bridging no engine fails cleanly through
+/// `UnavailableWebViewController` rather than occupying a layout slot with no
+/// page behind it.
+#[cfg(not(any(hydrolysis_webview_engine, hydrolysis_android_system_webview)))]
 #[test]
 #[cfg_attr(debug_assertions, should_panic(expected = "no web engine is bridged"))]
 fn a_webview_with_no_engine_to_draw_it_is_reported_and_not_drawn() {
-    use std::future::{Future, ready};
+    use waterui::webview::WebView;
 
-    use waterui_core::{Signal, Str};
-    use waterui_webview::{
-        BackendEvent, Cookie, CustomWebViewController, ScriptInjectionTime, ScriptMessageHandler,
-        WatcherGuard, WatcherSet, WebView, WebViewConfig, WebViewController, WebViewHandle,
-        WebViewOpenError,
-    };
-
-    /// The smallest controller that can still create a `WebView`: the handle
-    /// answers what construction asks and discards the rest, because the
-    /// assertion only needs the view to exist long enough for the backend to
-    /// refuse it.
-    struct TestWebViewController;
-
-    impl CustomWebViewController for TestWebViewController {
-        fn open(&self, _config: WebViewConfig) -> Result<impl WebViewHandle, WebViewOpenError> {
-            Ok(TestWebViewHandle {
-                watchers: WatcherSet::new(),
-            })
-        }
-
-        // No interception facility: the double has no engine to route an asset
-        // origin through, and the assertion it serves never opens assets.
-        fn asset_origin(&self) -> Option<waterui_webview::Url> {
-            None
-        }
-    }
-
-    struct TestWebViewHandle {
-        watchers: WatcherSet<BackendEvent>,
-    }
-
-    impl WebViewHandle for TestWebViewHandle {
-        fn go_back(&self) {}
-        fn go_forward(&self) {}
-        fn go_to(&self, _url: &waterui_webview::Url) {}
-        fn stop(&self) {}
-        fn refresh(&self) {}
-        fn set_user_agent(&self, _user_agent: &str) {}
-        fn can_go_back(&self) -> bool {
-            false
-        }
-        fn can_go_forward(&self) -> bool {
-            false
-        }
-        fn inject_script(&self, _key: &str, _script: &str, _time: ScriptInjectionTime) {}
-        fn add_handler(&self, _name: &str, _handler: Box<ScriptMessageHandler>) {}
-        fn remove_handler(&self, _name: &str) {}
-        fn set_cookie(&self, _cookie: Cookie<'static>) {}
-        fn set_redirects_enabled(&self, _enabled: impl Signal<Output = bool>) {}
-        fn watch(&self, f: impl Fn(BackendEvent) + 'static) -> WatcherGuard {
-            self.watchers.insert(f)
-        }
-        fn get_cookies(
-            &self,
-        ) -> impl Future<Output = Result<Vec<Cookie<'static>>, waterui_core::Error>> {
-            ready(Ok(Vec::new()))
-        }
-        #[expect(
-            clippy::future_not_send,
-            reason = "the returned future runs on the engine's single-threaded executor; the mock captures !Send test state that never crosses a thread"
-        )]
-        fn run_javascript(&self, _script: &str) -> impl Future<Output = Result<Str, Str>> {
-            ready(Err(Str::from_static("no page")))
-        }
-        #[expect(
-            clippy::future_not_send,
-            reason = "the returned future runs on the engine's single-threaded executor; the mock captures !Send test state that never crosses a thread"
-        )]
-        fn call_async_javascript(&self, _body: &str) -> impl Future<Output = Result<Str, Str>> {
-            ready(Err(Str::from_static("no page")))
-        }
-    }
-
-    let mut env = test_environment();
-    env.insert(WebViewController::new(TestWebViewController));
+    let env = test_environment();
     let mut renderer = test_renderer();
     let view = WebView::open("https://github.com/water-rs/waterui");
 
@@ -2233,14 +2149,13 @@ fn disabled_picker_family_and_tabs_expose_no_mutating_actions() {
     let picker_selection = Binding::container("Alpha");
     let date = Binding::container(Date::new(2025, 1, 10).expect("valid test date"));
     let color = Binding::container(Color::srgb(0, 0, 0));
-    let tab_items = waterui_core::views::SharedAnyViews::new(vec![
-        Tab::new("First tab", || NavigationView::new("First", text("One"))),
-        Tab::new("Second tab", || NavigationView::new("Second", text("Two"))),
-    ]);
-    let snapshot = waterui_core::views::Views::snapshot(&tab_items);
-    let first = waterui_core::views::ViewSnapshot::get_id(&snapshot, 0)
-        .expect("a non-empty tab set reports an id");
-    let tabs = TabsLayout::new(Binding::container(first), tab_items);
+    let tabs = Tabs::new(
+        &Binding::container(0usize),
+        (
+            Tab::new("First tab", || NavigationView::new("First", text("One"))),
+            Tab::new("Second tab", || NavigationView::new("Second", text("Two"))),
+        ),
+    );
     let view = vstack((
         Picker::new(
             "Letter",
@@ -3126,10 +3041,39 @@ impl MinimalTestTheme {
             min_width: 112.0,
             max_width: 320.0,
             width_per_char: 8.5,
-            corner_radius: 4.0,
             separator_horizontal_inset: 16.0,
             separator_thickness: 1.0,
         }
+    }
+
+    /// The theme's menu look: a 4-point panel under a level-2-like shadow
+    /// that reaches past 14 points, deep enough for tests to distinguish it
+    /// from the scrim's uniform dim and from a fixed popup margin. The
+    /// `WorkingColor` components are linear Display P3; the intended panel
+    /// colour is sRGB (0.96, 0.94, 0.97), so it converts rather than passing
+    /// raw.
+    #[cfg(feature = "menu")]
+    pub(crate) fn menu_look() -> MenuLook {
+        MenuLook::new(
+            Self::menu_layout(),
+            Surface::new(
+                CornerShape::radius(4.0),
+                crate::renderer::working_color(peniko::Color::new([0.96, 0.94, 0.97, 1.0])),
+            )
+            .elevation(Elevation::new(
+                Shadow::new(6.0, WorkingColor::new([0.0, 0.0, 0.0, 0.35]))
+                    .offset(kurbo::Vec2::new(0.0, 3.0)),
+                Elevation::NONE.ambient,
+            )),
+            Custom::new((), |_, _, ()| {}),
+        )
+    }
+
+    /// The transparent margin a popup menu window leaves around this
+    /// theme's menu panel: its elevation's reach.
+    #[cfg(feature = "menu")]
+    pub(crate) fn panel_margin() -> f64 {
+        Self::menu_look().panel_extent(Rect::ZERO)
     }
 }
 
@@ -3193,6 +3137,7 @@ impl WidgetTheme for MinimalTestTheme {
         }
     }
 
+    #[cfg(feature = "toggle")]
     fn switch(&self, spec: &ToggleSpec, env: &Environment) -> SwitchLook {
         self.switch_look.as_ref().map_or_else(
             || {
@@ -3205,10 +3150,12 @@ impl WidgetTheme for MinimalTestTheme {
         )
     }
 
+    #[cfg(feature = "toggle")]
     fn checkbox(&self, _spec: &ToggleSpec, _env: &Environment) -> CheckboxLook {
         CheckboxLook::new(crate::testing::plain_toggle_control())
     }
 
+    #[cfg(feature = "stepper")]
     fn stepper(&self, spec: &StepperSpec, env: &Environment) -> StepperLook {
         self.stepper_specs.borrow_mut().push(spec.clone());
         self.stepper_look
@@ -3216,6 +3163,7 @@ impl WidgetTheme for MinimalTestTheme {
             .map_or_else(crate::testing::plain_stepper_look, |look| look(spec, env))
     }
 
+    #[cfg(feature = "picker")]
     fn segmented_picker(
         &self,
         spec: &crate::theme::SegmentedSpec,
@@ -3234,6 +3182,12 @@ impl WidgetTheme for MinimalTestTheme {
         self.glass_look.as_ref().and_then(|look| look(glass, env))
     }
 
+    #[cfg(any(
+        feature = "text-field",
+        feature = "secure-field",
+        feature = "date-picker",
+        feature = "color-picker"
+    ))]
     fn text_field(&self, spec: &TextFieldSpec, env: &Environment) -> TextFieldLook {
         self.text_field_specs.borrow_mut().push(spec.clone());
         self.text_field_look.as_ref().map_or_else(
@@ -3248,37 +3202,17 @@ impl WidgetTheme for MinimalTestTheme {
         )
     }
 
+    #[cfg(feature = "menu")]
     fn menu(&self, _spec: &MenuSpec, _env: &Environment) -> MenuLook {
-        let layout = Self::menu_layout();
-        let radii = kurbo::RoundedRectRadii::from_single_radius(layout.corner_radius);
-        MenuLook::new(
-            layout,
-            Custom::new((), move |draw, bounds, ()| {
-                // A level-2-like shadow under the panel, deep enough for
-                // tests to distinguish it from the scrim's uniform dim.
-                draw.shadow(
-                    kurbo::RoundedRect::from_rect(bounds, radii),
-                    Shadow::new(6.0, WorkingColor::new([0.0, 0.0, 0.0, 0.35]))
-                        .offset(kurbo::Vec2::new(0.0, 3.0)),
-                );
-                draw.fill(
-                    kurbo::RoundedRect::from_rect(bounds, radii),
-                    // `WorkingColor` components are linear Display P3; the
-                    // intended panel colour is sRGB (0.96, 0.94, 0.97), so it
-                    // converts rather than passing raw.
-                    Paint::Solid(crate::renderer::working_color(peniko::Color::new([
-                        0.96, 0.94, 0.97, 1.0,
-                    ]))),
-                );
-            }),
-            Custom::new((), |_, _, ()| {}),
-        )
+        Self::menu_look()
     }
 
+    #[cfg(any(feature = "picker", feature = "date-picker"))]
     fn menu_picker(&self, _spec: &PickerSpec, _env: &Environment) -> MenuPickerLook {
         crate::testing::plain_menu_picker_look()
     }
 
+    #[cfg(feature = "picker")]
     fn radio_group(&self, _spec: &PickerSpec, _env: &Environment) -> RadioGroupLook {
         let realizations = Rc::clone(&self.radio_indicator_realizations);
         let plain = crate::testing::plain_radio_group_look();
@@ -3296,6 +3230,7 @@ impl WidgetTheme for MinimalTestTheme {
         )
     }
 
+    #[cfg(feature = "slider")]
     fn slider(&self, spec: &SliderSpec, env: &Environment) -> SliderLook {
         self.slider_specs.borrow_mut().push(spec.clone());
         if let Some(look) = &self.slider_look {
@@ -3397,6 +3332,7 @@ impl WidgetTheme for MinimalTestTheme {
         })
     }
 
+    #[cfg(feature = "navigation")]
     fn navigation_bar(&self, _spec: &NavigationSpec, _env: &Environment) -> NavigationBarLook {
         let bar_draws = Rc::clone(&self.navigation_bar_draws);
         let separator_draws = Rc::clone(&self.navigation_bar_separator_draws);
@@ -3413,6 +3349,7 @@ impl WidgetTheme for MinimalTestTheme {
         }))
     }
 
+    #[cfg(feature = "navigation")]
     fn tabs(&self, _spec: &TabsSpec, _env: &Environment) -> TabsLook {
         let bar_draws = Rc::clone(&self.tabs_bar_draws);
         let divider_draws = Rc::clone(&self.tabs_bar_divider_draws);
@@ -3473,10 +3410,12 @@ impl WidgetTheme for MinimalTestTheme {
         )
     }
 
+    #[cfg(feature = "list")]
     fn list(&self, _spec: &ListSpec, _env: &Environment) -> ListLook {
         crate::testing::plain_list_look()
     }
 
+    #[cfg(feature = "table")]
     fn table(&self, _env: &Environment) -> TableLook {
         crate::testing::plain_table_look()
     }
@@ -3928,44 +3867,6 @@ fn text_shaping_produces_nonzero_intrinsic_in_tests() {
 }
 
 #[test]
-fn resolved_text_fast_path_matches_the_recursive_measure() {
-    use core::cell::RefCell;
-
-    let env = test_environment();
-    let proposal = ProposalSize::UNSPECIFIED;
-
-    // A text leaf resolves once into a layout input and is then shaped through the
-    // text service directly, skipping the general recursion through `HydroState`.
-    // That shortcut is only sound while it reports what the path it bypasses would.
-    // Covers a bare `Str` and a string-like (`String`) bodied into text and recursed.
-    let str_view = AnyView::new(Str::from("probe"));
-    let string_view = AnyView::new(String::from("hello world"));
-
-    for view in [&str_view, &string_view] {
-        let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
-        let state_cell = RefCell::new(&mut state);
-        let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-        let fast_path = HydroSubview::from_view(view, &state_cell, &env, &theme).measure(proposal);
-        let recursive = {
-            let mut state = state_cell.borrow_mut();
-            measure_view_dimensions_with_proposal(view, proposal, &mut state, &env, &theme)
-        };
-
-        assert_eq!(
-            fast_path.size,
-            recursive.size,
-            "the resolved-text fast path for {} must equal the recursive measure",
-            view.name()
-        );
-        assert!(
-            fast_path.size.width > 0.0 && fast_path.size.height > 0.0,
-            "text shaping must produce a non-zero size for {}",
-            view.name()
-        );
-    }
-}
-
-#[test]
 #[cfg(hydrolysis_gpu_painter)]
 fn bare_str_renders_into_page() {
     let mut renderer = test_renderer();
@@ -4017,8 +3918,6 @@ fn render_path_text_layout_has_lines() {
 /// same invariant; verifying that needs a test in each of those languages.
 #[test]
 fn every_view_answers_the_three_point_probe_consistently() {
-    use core::cell::RefCell;
-
     let env = test_environment();
 
     let cases: Vec<(&str, AnyView)> = vec![
@@ -4052,13 +3951,7 @@ fn every_view_answers_the_three_point_probe_consistently() {
     ];
 
     for (name, view) in cases {
-        // The layout path measures normalized views, so the contract is about
-        // those, not about raw bodies.
-        let view = normalize_layout_view(view, &env);
-        let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
-        let cell = RefCell::new(&mut state);
-        let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-        let subview = HydroSubview::from_view(&view, &cell, &env, &theme);
+        let mut subview = Realized::new(view, &env);
 
         let ideal = subview.measure(ProposalSize::UNSPECIFIED).size;
 
@@ -4144,7 +4037,7 @@ fn badge_indicator_anchors_to_the_content_trailing_edge() {
 
     // The renderer retains badge state by node, so each variant captures on a
     // fresh renderer.
-    let capture = |view: Badge, env: &Environment| {
+    let capture = |view: Badge<FillAnchor>, env: &Environment| {
         log.0.borrow_mut().clear();
         let mut renderer = test_renderer_with_theme(MinimalTestTheme {
             badge_draws: Rc::clone(&log.0),
@@ -4201,11 +4094,7 @@ fn tab_badge_draws_only_for_a_nonzero_count() {
             Some(count) => inbox.badge(count),
             None => inbox,
         };
-        let tab_items = waterui_core::views::SharedAnyViews::new(vec![inbox]);
-        let snapshot = waterui_core::views::Views::snapshot(&tab_items);
-        let first = waterui_core::views::ViewSnapshot::get_id(&snapshot, 0)
-            .expect("a non-empty tab set reports an id");
-        let tabs = TabsLayout::new(Binding::container(first), tab_items);
+        let tabs = Tabs::new(&Binding::container(0usize), vec![inbox]);
         let mut renderer = test_renderer_with_theme(MinimalTestTheme {
             badge_draws: Rc::clone(&log.0),
             ..Default::default()
@@ -4231,15 +4120,9 @@ fn tab_badge_draws_only_for_a_nonzero_count() {
 fn a_collapsed_naming_scope_reports_the_containers_resolved_extent() {
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
-    let measured = measure_view_dimensions_with_proposal(
-        &normalize_layout_view(AnyView::new(button("OK").padding_with(8.0)), &env),
-        ProposalSize::new(Some(160.0), Some(160.0)),
-        &mut state,
-        &env,
-        &theme,
-    )
-    .size;
+    let measured = Realized::with_theme(AnyView::new(button("OK").padding_with(8.0)), &env, &theme)
+        .measure(ProposalSize::new(Some(160.0), Some(160.0)))
+        .size;
     let mut renderer = test_renderer();
     let view = button("OK").padding_with(8.0).a11y_label("Named");
     capture_root_window(&mut renderer, view, &env, Rect::new(0.0, 0.0, 160.0, 160.0));
@@ -4281,17 +4164,12 @@ fn a_collapsed_naming_scope_reports_the_containers_resolved_extent() {
 fn a_collapsed_naming_scope_centres_the_resolved_extent_on_the_assigned_frame() {
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
-    let measured = measure_view_dimensions_with_proposal(
-        &normalize_layout_view(
-            AnyView::new(button("OK").padding_with([0.0, 20.0, 0.0, 0.0])),
-            &env,
-        ),
-        ProposalSize::new(Some(160.0), Some(160.0)),
-        &mut state,
+    let measured = Realized::with_theme(
+        AnyView::new(button("OK").padding_with([0.0, 20.0, 0.0, 0.0])),
         &env,
         &theme,
     )
+    .measure(ProposalSize::new(Some(160.0), Some(160.0)))
     .size;
     let mut renderer = test_renderer();
     let view = button("OK")
@@ -4383,4 +4261,28 @@ fn diagnostic_gpu() -> (
         },
     );
     (gpu, diagnostics)
+}
+
+/// A bar item's icon-only default reaches through an environment snapshot
+/// wrapping its content, which replaces the environment wholesale — as the
+/// navigation stack's retained environment wraps every bar slot.
+#[cfg(feature = "navigation")]
+#[test]
+fn a_toolbar_item_keeps_icon_only_labels_inside_an_environment_snapshot() {
+    let env = test_environment();
+    let mut renderer = test_renderer();
+    let item = AnyView::new(Metadata::new(text("Share"), Environment::new()));
+    let node = RenderNode::build(
+        crate::widgets::nav::navigation::toolbar_item_view(item, &env),
+        &env,
+        &mut renderer,
+    );
+
+    let scope = node
+        .leading_scope_env()
+        .expect("the item opens with its environment scope");
+    assert!(matches!(
+        scope.get::<LabelDisplayMode>(),
+        Some(LabelDisplayMode::IconOnly)
+    ));
 }

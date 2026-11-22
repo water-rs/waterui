@@ -22,7 +22,7 @@ use waterui::shape::{Circle, ShapeExt as _};
 use waterui_core::Environment;
 use waterui_graphics::Gradient;
 use waterui_graphics::backend::Picture;
-// `FlowingGradient` and `ShaderPaintView` render through `GpuContentView`,
+// `FlowingGradient` and `ShaderPaintView` render through `GpuView`,
 // user GPU content only the GPU painter realizes; the CPU painter refuses it
 // by name.
 #[cfg(hydrolysis_gpu_painter)]

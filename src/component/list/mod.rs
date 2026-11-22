@@ -15,11 +15,11 @@ use nami::collection::{Collection, CollectionChange};
 use nami::watcher::Context;
 use nami::{Binding, Computed, signal::IntoComputed};
 
-use crate::views::{AnyViews, ForEach, SharedAnyViews, ViewSnapshot, Views, ViewsExt};
+use crate::views::{AnyViews, ForEach, SharedAnyViews, ViewSnapshot, Views};
+use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::id::Mapping;
-use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
 use waterui_core::{
-    AnyView, Environment, Metadata, Native, NativeView, View,
+    AnyView, Environment, Metadata, Native, NativeView, OneOf2, View,
     handler::{Handler, shared_action},
     impl_extractor,
     layout::StretchAxis,
@@ -34,8 +34,8 @@ mod section;
 mod selection;
 
 pub use content::{
-    ContentTags, HoldsTag, ListContent, ListScope, Row, RowLayout, SectionScope, TagPresence,
-    Tagged, TaggedBy, Untagged, detail_row, row,
+    ContentTags, HoldsTag, ListContent, ListScope, Row, RowContent, RowLayout, SectionScope,
+    TagPresence, Tagged, TaggedBy, Untagged, detail_row, row,
 };
 use rows::RowSections;
 pub use rows::{
@@ -90,10 +90,13 @@ pub type OnDelete = Box<dyn Fn(&Environment, usize)>;
 pub type OnMove = Box<dyn Fn(&Environment, Move)>;
 
 /// Configuration for a list component.
+///
+/// `C` is the content every row carries: the rows' own view type up to
+/// dispatch, then the backend's child slot.
 #[non_exhaustive]
-pub struct ListConfig {
+pub struct ListConfig<C> {
     /// Content items to be displayed in the list.
-    contents: SharedAnyViews<ListItem>,
+    contents: SharedAnyViews<ListItem<C>>,
     /// The list's selection bindings, keyed by the erased tags `tags`
     /// answers for the rows. `ListSelection::None` when the list is not
     /// selectable.
@@ -116,10 +119,10 @@ pub struct ListConfig {
     min_row_height: Option<f32>,
 }
 
-impl ListConfig {
+impl<C> ListConfig<C> {
     /// Content items to be displayed in the list.
     #[must_use]
-    pub const fn contents(&self) -> &SharedAnyViews<ListItem> {
+    pub const fn contents(&self) -> &SharedAnyViews<ListItem<C>> {
         &self.contents
     }
 
@@ -189,7 +192,32 @@ impl ListConfig {
     }
 }
 
-impl_debug!(ListConfig);
+impl<C> core::fmt::Debug for ListConfig<C> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(core::any::type_name::<Self>())
+    }
+}
+
+/// Moves every row's content into the slot `T`, as rows are realized.
+impl<C: 'static> MapSlots<C> for ListConfig<C> {
+    type With<T: 'static> = ListConfig<T>;
+
+    fn map_slots<T: 'static>(self, f: impl Fn(C) -> T + Clone + 'static) -> ListConfig<T> {
+        ListConfig {
+            contents: self
+                .contents
+                .map_views(move |item: ListItem<C>| item.map_content(&f)),
+            selection: self.selection,
+            tags: self.tags,
+            editing: self.editing,
+            on_delete: self.on_delete,
+            on_move: self.on_move,
+            scroll_controller: self.scroll_controller,
+            sections: self.sections,
+            min_row_height: self.min_row_height,
+        }
+    }
+}
 
 /// The minimum height of every row in the lists below it, in points.
 ///
@@ -210,7 +238,7 @@ pub struct ListMinRowHeight(pub f32);
 #[doc(hidden)]
 pub struct SidebarContent;
 
-impl NativeView for ListConfig {
+impl<C: 'static> NativeView for ListConfig<C> {
     fn stretch_axis(&self) -> StretchAxis {
         StretchAxis::Both
     }
@@ -225,14 +253,14 @@ impl NativeView for ListConfig {
 /// offering the click action. The row's content still renders with its label
 /// and disabled state intact.
 #[derive(Debug)]
-pub struct List<V: Views<View = ListItem> = AnyViews<ListItem>> {
+pub struct List<V: Views> {
     contents: V,
     sections: RowSections<V::Id>,
 }
 
-impl<V> List<V>
+impl<V, C> List<V>
 where
-    V: Views<View = ListItem>,
+    V: Views<View = ListItem<C>>,
 {
     /// Creates a new list with the specified contents, all in one section
     /// without chrome.
@@ -327,11 +355,12 @@ where
     }
 }
 
-impl<C, F> List<ForEach<C, F, ListItem>>
+impl<C, F, V> List<ForEach<C, F, ListItem<V>>>
 where
     C: Collection + Clone,
     C::Item: Clone,
-    F: 'static + Fn(C::Item) -> ListItem,
+    F: 'static + Fn(C::Item) -> ListItem<V>,
+    V: View,
 {
     /// Creates a lazy list over an identity-keyed reactive collection.
     ///
@@ -345,7 +374,7 @@ where
     }
 }
 
-impl<C: ListContent> List<ContentRows<C>> {
+impl<C: ListContent> List<ContentRows<C, C::Row>> {
     /// Creates a list from a [`ListContent`] tree.
     ///
     /// `ListContent` accepts `|| ListItem::new(…)` row builders, [`Row`] (the
@@ -384,41 +413,39 @@ impl<C: ListContent> List<ContentRows<C>> {
     #[must_use]
     pub fn content(content: C) -> Self {
         let mut sink = ListItemSink::new();
-        content.collect_items(&mut sink);
+        content.collect_items(&mut sink, |row| row);
         let (contents, sections) = sink.finish();
         Self { contents, sections }
     }
 }
 
-impl<V> ConfigurableView for List<V>
+impl<V, C> List<V>
 where
-    V: Views<View = ListItem> + 'static,
+    V: Views<View = ListItem<C>> + 'static,
+    C: View,
 {
-    type Config = ListConfig;
-
-    fn config(self) -> Self::Config {
+    /// Returns the configuration for this list.
+    #[must_use]
+    pub fn config(self) -> ListConfig<C> {
         self.builder().config()
     }
 }
 
-impl ViewConfiguration for ListConfig {
-    type View = List<SharedAnyViews<ListItem>>;
-
-    fn render(self) -> Self::View {
-        List {
-            contents: self.contents,
-            sections: RowSections::from_erased(self.sections),
+impl<C: View> From<ListConfig<C>> for List<SharedAnyViews<ListItem<C>>> {
+    fn from(value: ListConfig<C>) -> Self {
+        Self {
+            contents: value.contents,
+            sections: RowSections::from_erased(value.sections),
         }
     }
 }
 
-impl From<ListConfig> for List<SharedAnyViews<ListItem>> {
-    fn from(value: ListConfig) -> Self {
-        value.render()
-    }
-}
-
-fn render_list_config(mut config: ListConfig, env: &Environment) -> impl View {
+/// `config` as it reaches a backend: every row themed for the selection, the
+/// sections resolved and the row metrics read from `env`.
+fn resolve_list_config<C: View>(
+    config: ListConfig<C>,
+    env: &Environment,
+) -> ListConfig<SelectionThemed<C>> {
     // Erasing the themed contents again re-keys every row id, so the row
     // tags and sections travel through the same generator — a backend's
     // `get_id` must return exactly the ids both are keyed by. The selection
@@ -426,23 +453,39 @@ fn render_list_config(mut config: ListConfig, env: &Environment) -> impl View {
     let selection = config.selection.clone();
     let tags = config.tags.clone();
     let (contents, ids) = AnyViews::new_with_ids(WithId {
-        contents: config.contents.clone(),
+        contents: config.contents,
         transform: Rc::new(move |id, item| selection_themed(item, &selection, tags.tag(id))),
     });
-    config.contents = SharedAnyViews::from(contents);
-    config.tags = config.tags.clone().rekeyed(&ids);
-    // Section headers and footers are semantic text: they localize, and they
-    // may be driven by a signal. Resolving them here is the one place the
-    // environment is in hand.
-    config.sections = config.sections.clone().rekeyed(&ids).resolved(env);
-    config.min_row_height = env.get::<ListMinRowHeight>().map(|height| height.0);
-    if let Some(hook) = env.get::<Hook<ListConfig>>() {
-        AnyView::new(hook.apply(env, config))
-    } else {
-        let fallback =
-            crate::component::lazy::Lazy::vstack(config.contents.clone().map(|item| item.content));
-        AnyView::new(Native::new(config).with_fallback(fallback))
+    ListConfig {
+        contents: SharedAnyViews::from(contents),
+        tags: config.tags.rekeyed(&ids),
+        // Section headers and footers are semantic text: they localize, and
+        // they may be driven by a signal. Resolving them here is the one
+        // place the environment is in hand.
+        sections: config.sections.rekeyed(&ids).resolved(env),
+        min_row_height: env.get::<ListMinRowHeight>().map(|height| height.0),
+        selection: config.selection,
+        editing: config.editing,
+        on_delete: config.on_delete,
+        on_move: config.on_move,
+        scroll_controller: config.scroll_controller,
     }
+}
+
+/// The erased form of a list, for code that expands views by hand.
+fn erased_list<C: View>(config: ListConfig<C>, env: &Environment) -> Native<ListConfig<AnyView>> {
+    Native::new(resolve_list_config(config, env).map_slots(AnyView::new))
+}
+
+/// Realizes a list through `backend`, each row in the backend's child slot.
+fn dispatch_list<B: Backend, C: View>(
+    config: ListConfig<C>,
+    backend: &mut B,
+    env: &Environment,
+    cx: B::Ctx,
+) -> B::Output {
+    let config = resolve_list_config(config, env).map_slots(B::Slot::from_view);
+    backend.native(config, env, cx)
 }
 
 /// `Views` adapter that hands each element's id to the mapping closure — the
@@ -554,41 +597,61 @@ where
 /// muted-foreground, or accent slots follows the `selected` signal reactively;
 /// the row itself is not rebuilt. A row without a tag is never selected and
 /// is left as it is.
-fn selection_themed(
-    mut item: ListItem,
+fn selection_themed<C>(
+    item: ListItem<C>,
     selection: &ListSelection<ListTagId>,
     tag: Option<ListTagId>,
-) -> ListItem {
-    use crate::color::WorkingColor;
-    use crate::theme::{color, install_color_signal};
+) -> ListItem<SelectionThemed<C>> {
     use nami::SignalExt;
-    use waterui_core::env::use_env;
-    use waterui_core::resolve::Resolvable;
 
-    let Some(tag) = tag else {
-        return item;
-    };
     // A row's selected state derives from the list selection and the row's
-    // tag: the row is selected exactly when its tag is in the binding.
-    let selected: Computed<bool> = match selection {
-        ListSelection::None => return item,
-        ListSelection::Single(selection) => selection
-            .clone()
-            .map(move |current| current == Some(tag))
-            .computed(),
-        ListSelection::Multiple(selection) => selection
-            .clone()
-            .map(move |current| current.contains(&tag))
-            .computed(),
-    };
-    let content = core::mem::take(&mut item.content);
-    item.content = AnyView::new(use_env(move |mut env: Environment| {
+    // tag: the row is selected exactly when its tag is in the binding. A row
+    // without a tag is never selected.
+    let selected = tag.and_then(|tag| -> Option<Computed<bool>> {
+        match selection {
+            ListSelection::None => None,
+            ListSelection::Single(selection) => Some(
+                selection
+                    .clone()
+                    .map(move |current| current == Some(tag))
+                    .computed(),
+            ),
+            ListSelection::Multiple(selection) => Some(
+                selection
+                    .clone()
+                    .map(move |current| current.contains(&tag))
+                    .computed(),
+            ),
+        }
+    });
+    item.map_content(|content| SelectionThemed { content, selected })
+}
+
+/// A row's content re-themed while the row is selected; see
+/// [`selection_themed`].
+struct SelectionThemed<C> {
+    content: C,
+    /// Whether the row is selected; `None` for a row that never is.
+    selected: Option<Computed<bool>>,
+}
+
+impl<C: View> View for SelectionThemed<C> {
+    fn body(self, env: &Environment) -> impl View {
+        use crate::color::WorkingColor;
+        use crate::theme::{color, install_color_signal};
+        use nami::SignalExt;
+        use waterui_core::resolve::Resolvable;
+
+        let Some(selected) = self.selected else {
+            return OneOf2::A(self.content);
+        };
         // A sidebar's selection chrome is the unemphasised pill, not the
         // accent fill `SelectionForeground` is written for — a selected
         // sidebar row keeps its own colors (water-rs/waterui#1495).
         if env.get::<SidebarContent>().is_some() {
-            return AnyView::new(content);
+            return OneOf2::A(self.content);
         }
+        let mut env = env.clone();
         let on_selection = color::SelectionForeground.resolve(&env).computed();
         let flip = |normal: Computed<WorkingColor>| {
             selected
@@ -604,21 +667,21 @@ fn selection_themed(
         install_color_signal::<color::Foreground>(&mut env, foreground);
         install_color_signal::<color::MutedForeground>(&mut env, muted);
         install_color_signal::<color::Accent>(&mut env, accent);
-        AnyView::new(Metadata::new(content, env))
-    }));
-    item
+        OneOf2::B(Metadata::new(self.content, env))
+    }
 }
 
-impl<V> View for List<V>
+impl<V, C> View for List<V>
 where
-    V: Views<View = ListItem> + 'static,
+    V: Views<View = ListItem<C>> + 'static,
+    C: View,
 {
     fn body(self, env: &Environment) -> impl View {
-        render_list_config(ConfigurableView::config(self), env)
+        erased_list(self.config(), env)
     }
 
-    fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::Both
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        dispatch_list(self.config(), backend, env, cx)
     }
 }
 
@@ -627,7 +690,7 @@ where
 // ============================================================================
 
 /// Builder for configuring a list with editing, delete, and move capabilities.
-pub struct ListBuilder<V: Views<View = ListItem>> {
+pub struct ListBuilder<V: Views> {
     contents: V,
     /// The selection, already erased into tags through the value mapping
     /// `tags` erases the rows' values with.
@@ -640,15 +703,15 @@ pub struct ListBuilder<V: Views<View = ListItem>> {
     sections: RowSections<V::Id>,
 }
 
-impl<V: Views<View = ListItem>> core::fmt::Debug for ListBuilder<V> {
+impl<V: Views> core::fmt::Debug for ListBuilder<V> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str("ListBuilder")
     }
 }
 
-impl<V> ListBuilder<V>
+impl<V, C> ListBuilder<V>
 where
-    V: Views<View = ListItem>,
+    V: Views<View = ListItem<C>>,
 {
     /// Enables edit mode with the given reactive signal.
     #[must_use]
@@ -717,13 +780,14 @@ where
     }
 }
 
-impl<V> ConfigurableView for ListBuilder<V>
+impl<V, C> ListBuilder<V>
 where
-    V: Views<View = ListItem> + 'static,
+    V: Views<View = ListItem<C>> + 'static,
+    C: View,
 {
-    type Config = ListConfig;
-
-    fn config(self) -> Self::Config {
+    /// Returns the configuration for this list builder.
+    #[must_use]
+    pub fn config(self) -> ListConfig<C> {
         let (contents, ids) = AnyViews::new_with_ids(self.contents);
         ListConfig {
             contents: SharedAnyViews::from(contents),
@@ -739,16 +803,17 @@ where
     }
 }
 
-impl<V> View for ListBuilder<V>
+impl<V, C> View for ListBuilder<V>
 where
-    V: Views<View = ListItem> + 'static,
+    V: Views<View = ListItem<C>> + 'static,
+    C: View,
 {
     fn body(self, env: &Environment) -> impl View {
-        render_list_config(ConfigurableView::config(self), env)
+        erased_list(self.config(), env)
     }
 
-    fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::Both
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        dispatch_list(self.config(), backend, env, cx)
     }
 }
 
@@ -876,10 +941,13 @@ impl ListSection {
 /// [`.disabled(true)`](crate::ViewExt::disabled) to make the row inert to
 /// selection — the way a disabled `Button` cannot be pressed — while its
 /// label and disabled accessibility state still report.
+///
+/// `C` is the row's content, kept as its own view type until the backend
+/// realizes the row.
 #[non_exhaustive]
-pub struct ListItem {
+pub struct ListItem<C> {
     /// The view content to display for this item.
-    content: AnyView,
+    content: C,
     /// Read-only signal indicating whether this item can be deleted.
     deletable: Computed<bool>,
     /// The insets between the row's edges and its content. `None` uses the
@@ -887,26 +955,25 @@ pub struct ListItem {
     insets: Option<EdgeInsets>,
 }
 
-impl ListItem {
+impl<C> ListItem<C> {
     /// The view content to display for this item.
     #[must_use]
-    pub const fn content(&self) -> &AnyView {
+    pub const fn content(&self) -> &C {
         &self.content
     }
 
     /// Takes the `content` out of the value.
-    pub fn into_content(self) -> AnyView {
+    pub fn into_content(self) -> C {
         self.content
     }
 
-    /// Takes the `content` out of the item, leaving an empty view behind.
-    pub fn take_content(&mut self) -> AnyView {
-        core::mem::take(&mut self.content)
-    }
-
-    /// Sets the `content`.
-    pub fn set_content(&mut self, content: AnyView) {
-        self.content = content;
+    /// The same item with its content passed through `f`.
+    pub fn map_content<D>(self, f: impl FnOnce(C) -> D) -> ListItem<D> {
+        ListItem {
+            content: f(self.content),
+            deletable: self.deletable,
+            insets: self.insets,
+        }
     }
 
     /// Read-only signal indicating whether this item can be deleted.
@@ -923,28 +990,32 @@ impl ListItem {
     }
 
     /// Takes the value apart into its fields, in declaration order.
-    pub fn into_parts(self) -> (AnyView, Computed<bool>, Option<EdgeInsets>) {
+    pub fn into_parts(self) -> (C, Computed<bool>, Option<EdgeInsets>) {
         (self.content, self.deletable, self.insets)
     }
 }
 
-impl NativeView for ListItem {}
+impl<C: 'static> NativeView for ListItem<C> {}
 
-impl View for ListItem {
+impl<C: View> View for ListItem<C> {
     fn body(self, _env: &Environment) -> impl View {
         self.content
     }
 }
 
-impl_debug!(ListItem);
+impl<C> core::fmt::Debug for ListItem<C> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(core::any::type_name::<Self>())
+    }
+}
 
-impl ListItem {
+impl<C: View> ListItem<C> {
     /// Creates a new list item with the given content.
     ///
     /// By default, the item is deletable when the list has `on_delete`.
-    pub fn new(content: impl View) -> Self {
+    pub fn new(content: C) -> Self {
         Self {
-            content: AnyView::new(content),
+            content,
             deletable: Computed::new(true),
             insets: None,
         }
@@ -975,28 +1046,21 @@ impl ListItem {
 mod tests {
     use super::*;
     use crate::ViewExt;
+    use waterui_controls::label::TitleLabel;
+    use waterui_core::backend::peel_metadata;
     use waterui_macros::text;
 
-    /// Renders `config` the way `List::body` does and returns the `Native`
-    /// payload, so the resolved metrics can be asserted on.
-    fn render_config(config: ListConfig, env: &Environment) -> ListConfig {
-        AnyView::new(render_list_config(config, env))
-            .downcast::<Native<ListConfig>>()
-            .map_or_else(
-                |_| panic!("the list did not render a Native<ListConfig>"),
-                |native| native.into_inner(),
-            )
+    /// Resolves `config` the way `List` does before it reaches a backend,
+    /// so the resolved metrics can be asserted on.
+    fn render_config<C: View>(config: ListConfig<C>, env: &Environment) -> ListConfig<impl View> {
+        resolve_list_config(config, env)
     }
 
     /// Unpacks the `Metadata<Environment>` an environment modifier emits —
     /// the same step a renderer runs before realizing the wrapped view.
     fn modifier_parts(view: impl View) -> (AnyView, Environment) {
-        let metadata = AnyView::new(view.body(&Environment::new()))
-            .downcast::<Metadata<Environment>>()
-            .map_or_else(
-                |_| panic!("the modifier did not emit environment metadata"),
-                |metadata| *metadata,
-            );
+        let metadata = peel_metadata::<Environment>(view, &Environment::new())
+            .expect("the modifier emits environment metadata");
         (metadata.content, metadata.value)
     }
 
@@ -1009,16 +1073,22 @@ mod tests {
             List::content((row("Alice", "joined"), row("Hello", ""))).list_min_row_height(0.0),
         );
         let list = *content
-            .downcast::<List<ContentRows<(Row, Row)>>>()
+            .downcast::<List<
+                ContentRows<
+                    (Row<TitleLabel>, Row<TitleLabel>),
+                    OneOf2<RowContent<TitleLabel>, RowContent<TitleLabel>>,
+                >,
+            >>()
             .unwrap_or_else(|_| panic!("the metadata did not wrap the list"));
-        let with_floor = render_config(ConfigurableView::config(list), &env);
+        let with_floor = render_config(list.config(), &env);
         assert_eq!(with_floor.min_row_height, Some(0.0));
 
         let without = render_config(
-            ConfigurableView::config(List::content((
+            List::content((
                 || ListItem::new(text!("Alice joined")),
                 || ListItem::new(text!("Hello")),
-            ))),
+            ))
+            .config(),
             &Environment::new(),
         );
         assert_eq!(without.min_row_height, None);
@@ -1030,13 +1100,12 @@ mod tests {
     fn row_insets_survive_the_section_and_selection_transform() {
         let selection = nami::Binding::container(Option::<i32>::None);
         let config = render_config(
-            ConfigurableView::config(
-                List::content((
-                    (|| ListItem::new(text!("Alice joined")).insets(EdgeInsets::all(4.0))).tag(1),
-                    (|| ListItem::new(text!("Hello"))).tag(2),
-                ))
-                .selection(&selection),
-            ),
+            List::content((
+                (|| ListItem::new(text!("Alice joined")).insets(EdgeInsets::all(4.0))).tag(1),
+                (|| ListItem::new(text!("Hello"))).tag(2),
+            ))
+            .selection(&selection)
+            .config(),
             &Environment::new(),
         );
         let contents = config.contents.snapshot();

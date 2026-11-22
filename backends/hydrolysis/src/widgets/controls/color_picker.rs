@@ -9,17 +9,14 @@ use kurbo::Rect;
 use nami::Signal;
 use std::cell::RefCell;
 use std::rc::Rc;
+use waterui_core::Environment;
 use waterui_core::layout::{HorizontalAlignment, ProposalSize, Size as LayoutSize, ViewDimensions};
-use waterui_core::{AnyView, Environment, Native};
 use waterui_form::picker::color::ColorPickerConfig;
 use waterui_graphics::color::Color;
 use waterui_text::styled::StyledStr;
 
-use crate::renderer::RetainedSubview;
-use crate::renderer::{
-    HydroNativeView, HydroState, RenderContext, WidgetRenderContext, measure_label_intrinsic,
-};
-use crate::widgets::controls::field_look::{FieldChrome, field_look};
+use crate::renderer::{HeldChild, HydroState, RenderContext, RetainedSubview, WidgetRenderContext};
+use crate::widgets::controls::field_look::FieldChrome;
 use crate::widgets::util::inset_rect;
 #[cfg(feature = "accessibility")]
 use crate::widgets::util::widget_disabled;
@@ -33,16 +30,27 @@ const COLOR_PICKER_MIN_WIDTH: f32 = 160.0;
 /// [`RetainedSubview`] built once and re-flushed each frame so reactive label
 /// content stays live.
 pub struct ColorPickerRenderState<E: crate::text::TextEngine> {
-    config: ColorPickerConfig,
+    config: ColorPickerConfig<HeldChild<E>>,
     label_view: RetainedSubview<E>,
     /// The field container the picker wears: its look and live chrome.
     field: FieldChrome,
 }
 
 impl<E: crate::text::TextEngine> ColorPickerRenderState<E> {
-    pub(crate) fn from_config(config: ColorPickerConfig) -> Self {
+    /// The label this control contributes to a node naming itself from its
+    /// content: its own label.
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn contributed_label(
+        &self,
+        _renderer: &mut crate::renderer::SemanticCore<E>,
+        env: &Environment,
+    ) -> Option<String> {
+        crate::renderer::SemanticCore::<E>::accessibility_label_from_label(self.config.label(), env)
+    }
+
+    pub(crate) fn from_config(config: ColorPickerConfig<HeldChild<E>>) -> Self {
         Self {
-            label_view: RetainedSubview::new(AnyView::new(config.label().clone())),
+            label_view: RetainedSubview::held(config.label().build()),
             config,
             field: FieldChrome::new(),
         }
@@ -66,26 +74,15 @@ impl<E: crate::text::TextEngine> ColorPickerRenderState<E> {
     }
 }
 
-impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<ColorPickerConfig> {
-    fn intrinsic(
-        state: &mut HydroState<E>,
-        view: &Self,
-        env: &Environment,
-        theme: &Rc<dyn crate::theme::WidgetTheme>,
-    ) -> LayoutSize {
-        measure_color_picker_intrinsic(view.as_inner(), state, env, theme)
-    }
-}
-
 /// Emits a color picker's accessibility node from its config. Shared by the
 /// dispatch path ([`Native<ColorPickerConfig>::accessibility`]) and the retained
 /// `Widget`-node path so both produce the same a11y tree.
 // empty when the accessibility feature is off
 #[cfg_attr(not(feature = "accessibility"), allow(clippy::missing_const_for_fn))]
-pub fn color_picker_accessibility<E: crate::text::TextEngine>(
+pub fn color_picker_accessibility<E: crate::text::TextEngine, S>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     ctx: Option<RenderContext>,
-    color_picker: &ColorPickerConfig,
+    color_picker: &ColorPickerConfig<S>,
     env: &Environment,
     focus_keys: &[crate::renderer::InteractionKey],
 ) {
@@ -225,25 +222,6 @@ pub fn render_color_picker_node<E: crate::text::TextEngine>(
         );
     }
     render_color_picker_parts(ctx, state, env);
-}
-
-fn measure_color_picker_intrinsic<E: crate::text::TextEngine>(
-    color_picker: &ColorPickerConfig,
-    state: &mut HydroState<E>,
-    env: &Environment,
-    theme: &Rc<dyn crate::theme::WidgetTheme>,
-) -> LayoutSize {
-    let input_metrics = field_look(theme, env).metrics();
-    let label_size = measure_label_intrinsic(color_picker.label(), state, env, theme);
-    let label_height = if label_size.width > 0.0 || label_size.height > 0.0 {
-        f64::from(label_size.height).max(input_metrics.label_height)
-    } else {
-        0.0
-    };
-    LayoutSize::new(
-        COLOR_PICKER_MIN_WIDTH,
-        crate::num_cast::f64_as_f32(label_height + input_metrics.min_height),
-    )
 }
 
 #[expect(
@@ -394,6 +372,7 @@ pub fn render_color_picker_parts<E: crate::text::TextEngine>(
 /// the same node `color_picker_accessibility` registers, with no bounds. The
 /// label sub-view flushes visual-only, so there is nothing else to emit.
 #[cfg(feature = "accessibility")]
+#[cfg(hydrolysis_cherenkov)]
 pub fn emit_color_picker_accessibility<E: crate::text::TextEngine>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     state: &Rc<RefCell<ColorPickerRenderState<E>>>,

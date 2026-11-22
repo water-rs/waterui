@@ -11,7 +11,7 @@
 //! A leaf answering more than the offer it was just measured at is the contract
 //! break; the layout must never clip it back (layout-spec §4.2).
 
-// The `GpuContentView` cases build GPU-content nodes, which only a build with
+// The `GpuView` cases build GPU-content nodes, which only a build with
 // the `gpu` feature realizes: without it the leaf is refused by name
 // (`cpu_refusals`).
 
@@ -21,6 +21,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use cherenkov_record::Recorder;
+use waterui::widget::Divider;
 use waterui::{AnyView, Color, View, ViewExt as _};
 use waterui_core::Environment;
 use waterui_core::id::SelfId;
@@ -34,10 +35,10 @@ use waterui_graphics::backend::{
 use waterui_graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
 use waterui_graphics::input::SurfaceInputEvent;
 #[cfg(hydrolysis_gpu)]
-use waterui_graphics::{GpuContent, GpuContentView};
+use waterui_graphics::{GpuContent, GpuView};
 use waterui_layout::LazyContainer;
 use waterui_layout::stack::hstack;
-use waterui_layout::{Divider, ProposalSize, Size, SubView};
+use waterui_layout::{ProposalSize, Size, SubView};
 
 use super::{test_environment, test_renderer};
 use crate::renderer::HydroState;
@@ -231,7 +232,7 @@ impl SubView for OfferProbe<'_> {
 fn pane_view(kind: Pane) -> AnyView {
     match kind {
         #[cfg(hydrolysis_gpu)]
-        Pane::GpuSurface => AnyView::new(GpuContentView::new(PaneProbe).on_input(|_| {})),
+        Pane::GpuSurface => AnyView::new(GpuView::new(PaneProbe).on_input(|_| {})),
         Pane::Scene => AnyView::new(SceneView::new(ScenePane)),
     }
 }
@@ -385,105 +386,6 @@ fn assert_no_answer_beats_its_offer(log: &MeasureLog) {
     }
 }
 
-/// The failing half of #162: a pane that is a `Dynamic` wrapping an
-/// input-receiving `SceneView` — the shape a terminal pane takes when its
-/// scene content is swapped reactively — answers through the dispatch path
-/// (`measure_dynamic`) once the retained tree has connected it, and the
-/// dispatch answer must still honor the offer.
-///
-/// Sequence: an intrinsic probe while the `Dynamic`s are unconnected fills
-/// `dynamic_intrinsic` with each pane's natural size; the retained build then
-/// connects the `Dynamic` sources; a container that later sizes the same
-/// `Dynamic` leaves via `measure_layout_dimensions` (a scroll sample, a lazy
-/// estimate, a transient content measure) must get the offer-shaped answer,
-/// not the stale intrinsic.
-#[test]
-fn connected_dynamic_panes_answer_the_offer_not_their_intrinsic() {
-    use crate::renderer::{
-        measure_view_dimensions, measure_view_dimensions_with_proposal, normalize_layout_view,
-    };
-    use waterui_core::dynamic::Dynamic;
-
-    let (h1, d1) = Dynamic::new();
-    h1.set(SceneView::new(IntrinsicScenePane));
-    let (h2, d2) = Dynamic::new();
-    h2.set(SceneView::new(IntrinsicScenePane));
-
-    let make_stack = |d1: &Dynamic, d2: &Dynamic| -> AnyView {
-        AnyView::new(
-            hstack((
-                d1.clone(),
-                Color::srgb_hex("#3F3F46").width(HANDLE_WIDTH),
-                d2.clone(),
-            ))
-            .spacing(0.0),
-        )
-    };
-    let env = test_environment().extending(SceneViewMergeToParent);
-    let mut renderer = test_renderer();
-    let theme = renderer.theme();
-
-    // A: an intrinsic probe while the dynamics are still unconnected populates
-    // `dynamic_intrinsic` with each pane's natural (400x600) size — the same
-    // thing a container intrinsic estimate does before the window exists.
-    let stack_a = normalize_layout_view(make_stack(&d1, &d2), &env);
-    let intrinsic = measure_view_dimensions(&stack_a, &mut renderer.state, &env, &theme);
-    eprintln!("intrinsic of the stack = {:?}", intrinsic.size);
-
-    // B: the retained build connects each Dynamic source (its content moves
-    // into DynamicHostNode children and the unconnected snapshot is gone).
-    let stack_b = normalize_layout_view(make_stack(&d1, &d2), &env);
-    let _node = RenderNode::build(stack_b, &env, &mut renderer);
-
-    // Print every connected leaf's answer to its min probe, its max probe and
-    // the offer the stack computes for it — the leaf-level evidence.
-    let proposal = ProposalSize::new(Some(WINDOW_WIDTH), Some(WINDOW_HEIGHT));
-    for (label, dynamic) in [("pane (leading)", &d1), ("pane (trailing)", &d2)] {
-        for (probe, probe_proposal) in [
-            ("ideal", ProposalSize::new(None, Some(WINDOW_HEIGHT))),
-            ("min", ProposalSize::new(Some(0.0), Some(WINDOW_HEIGHT))),
-            (
-                "max",
-                ProposalSize::new(Some(f32::INFINITY), Some(WINDOW_HEIGHT)),
-            ),
-            ("offer", ProposalSize::new(Some(390.0), Some(WINDOW_HEIGHT))),
-        ] {
-            let leaf = normalize_layout_view(AnyView::new(dynamic.clone()), &env);
-            let answer = measure_view_dimensions_with_proposal(
-                &leaf,
-                probe_proposal,
-                &mut renderer.state,
-                &env,
-                &theme,
-            );
-            eprintln!(
-                "  {label:<14} probe={probe:<6} proposal=({:?}, {:?})  answer=({:.1}, {:.1})",
-                probe_proposal.width, probe_proposal.height, answer.size.width, answer.size.height,
-            );
-        }
-    }
-
-    // C: the dispatch measure of the same stack at the window's offer — what
-    // `measure_layout_dimensions` returns to a container sizing it.
-    let stack_c = normalize_layout_view(make_stack(&d1, &d2), &env);
-    let dims = measure_view_dimensions_with_proposal(
-        &stack_c,
-        proposal,
-        &mut renderer.state,
-        &env,
-        &theme,
-    );
-    eprintln!("dispatch dims of the stack at 800x600 = {:?}", dims.size);
-    assert!(
-        approx::relative_eq!(dims.size.width, WINDOW_WIDTH),
-        "the hstack must fit the 800-point window: a connected `Dynamic` pane \
-         must answer its offered share, not the intrinsic cached before the \
-         retained tree connected it (the issue saw 820 = 400 + 20 + 400): left {:?}, right {:?}",
-        dims.size.width,
-        WINDOW_WIDTH
-    );
-}
-
 #[cfg(hydrolysis_gpu)]
 #[test]
 fn gpu_surface_panes_take_their_offered_share() {
@@ -554,7 +456,6 @@ fn scene_view_panes_take_their_offered_share() {
 /// axis still reads the full extent (spec §5, §6 `ScrollView`).
 #[test]
 fn lazy_stack_panes_split_the_divider_width() {
-    use crate::renderer::{measure_view_dimensions_with_proposal, normalize_layout_view};
     use waterui_layout::stack::HStackLayout;
 
     let env = test_environment().extending(SceneViewMergeToParent);
@@ -622,50 +523,6 @@ fn lazy_stack_panes_split_the_divider_width() {
         vec![396.5, DIVIDER_WIDTH, 396.5],
         "the three children must share the 800-point row"
     );
-
-    // The dispatch path (`Native<LazyContainer>::dimensions`, used whenever a
-    // lazy stack is measured transiently — a `FixedContainer` intrinsic
-    // estimate, a scroll sample, a button's content) answers by the same
-    // rule: an open main axis reads the membership's intrinsic extent, a
-    // finite offer caps it, a zero probe reports zero.
-    let leaf = normalize_layout_view(AnyView::new(lazy_pane()), &env);
-    for (probe, probe_proposal, expected) in [
-        ("ideal", ProposalSize::new(None, Some(WINDOW_HEIGHT)), 400.0),
-        (
-            "min",
-            ProposalSize::new(Some(0.0), Some(WINDOW_HEIGHT)),
-            0.0,
-        ),
-        (
-            "max",
-            ProposalSize::new(Some(f32::INFINITY), Some(WINDOW_HEIGHT)),
-            400.0,
-        ),
-        (
-            "offer",
-            ProposalSize::new(Some(396.5), Some(WINDOW_HEIGHT)),
-            396.5,
-        ),
-    ] {
-        let dims = measure_view_dimensions_with_proposal(
-            &leaf,
-            probe_proposal,
-            &mut renderer.state,
-            &env,
-            &theme,
-        );
-        eprintln!(
-            "  lazy pane probe={probe:<6} proposal=({:?}, {:?})  answer=({:.1}, {:.1})",
-            probe_proposal.width, probe_proposal.height, dims.size.width, dims.size.height,
-        );
-        assert!(
-            approx::relative_eq!(dims.size.width, expected),
-            "a lazy hstack measured through the dispatch path must answer \
-             {expected} to its {probe} probe: left {:?}, right {:?}",
-            dims.size.width,
-            expected
-        );
-    }
 }
 
 /// #162 reopened: `hstack((pane, divider.width(7), pane))` in an 800-point
@@ -741,9 +598,9 @@ fn input_scene_view_panes_split_the_divider_width() {
     );
 }
 
-/// water-rs/waterui#1958 — a `GpuContentView` is sized by
+/// water-rs/waterui#1958 — a `GpuView` is sized by
 /// `GpuContent::measure`, not by the `intrinsic_size` snapshot
-/// `GpuContentView::new` took at construction. The probe keeps
+/// `GpuView::new` took at construction. The probe keeps
 /// `intrinsic_size` `None` and reports 100x200 through `measure` once the
 /// source knows its size, the deferred-source contract a camera or decoded
 /// stream implements.
@@ -759,7 +616,7 @@ fn gpu_content_is_sized_by_its_live_measure() {
     let theme = renderer.theme();
     let natural = Arc::new(Mutex::new(None));
     let node = RenderNode::build(
-        AnyView::new(GpuContentView::new(DeferredSizeProbe {
+        AnyView::new(GpuView::new(DeferredSizeProbe {
             natural: Arc::clone(&natural),
             declared: None,
         })),
@@ -791,23 +648,6 @@ fn gpu_content_is_sized_by_its_live_measure() {
         StretchAxis::Both,
         "a leaf constructed with no intrinsic size keeps its declared stretch"
     );
-
-    // The semantic measure path (`Native<GpuContentView>::dimensions`, used
-    // for transient measures) answers the same live contract.
-    let leaf = AnyView::new(waterui_core::Native::new(GpuContentView::new(
-        DeferredSizeProbe {
-            natural: Arc::clone(&natural),
-            declared: None,
-        },
-    )));
-    let dims = crate::renderer::measure_transient_view_with_proposal(
-        &leaf,
-        ProposalSize::UNSPECIFIED,
-        &mut renderer.state,
-        &env,
-        &theme,
-    );
-    assert_eq!(dims, Size::new(100.0, 200.0));
 }
 
 /// The drift half of water-rs/waterui#1958: the leaf carries no consumable
@@ -822,7 +662,7 @@ fn gpu_content_measure_drift_marks_layout() {
     let env = test_environment();
     let mut renderer = test_renderer();
     let natural = Arc::new(Mutex::new(None));
-    let mut retained = RetainedSubview::new(AnyView::new(GpuContentView::new(DeferredSizeProbe {
+    let mut retained = RetainedSubview::new(AnyView::new(GpuView::new(DeferredSizeProbe {
         natural: Arc::clone(&natural),
         declared: None,
     })));
@@ -880,7 +720,7 @@ fn gpu_content_stretch_uses_its_declared_contract() {
             // The retained node answers the declared stretch and the live
             // measured size independently.
             let node = RenderNode::build(
-                AnyView::new(GpuContentView::new(DeferredSizeProbe {
+                AnyView::new(GpuView::new(DeferredSizeProbe {
                     natural: Arc::clone(&cell),
                     declared,
                 })),
@@ -897,19 +737,6 @@ fn gpu_content_stretch_uses_its_declared_contract() {
                     .size,
                 natural,
                 "the retained leaf answers the live measured size regardless of the declared contract"
-            );
-
-            // The transient/native path reads the same declaration.
-            let leaf = AnyView::new(waterui_core::Native::new(GpuContentView::new(
-                DeferredSizeProbe {
-                    natural: Arc::clone(&cell),
-                    declared,
-                },
-            )));
-            assert_eq!(
-                crate::renderer::render::effective_stretch_axis(&leaf),
-                want,
-                "the transient path must answer the declared stretch too"
             );
         }
     }

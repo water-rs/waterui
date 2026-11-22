@@ -220,12 +220,17 @@ pub async fn build_hydrolysis_with_envs_and_features(
             }
         })?;
 
+    let strategy_feature = (options.uses_erased_dispatch()
+        && crate::templates::generated_manifest_declares(&cargo_toml, "erased-dispatch")?)
+    .then_some("erased-dispatch");
+
     let mut build = RustBuild::for_project(project, &backend_path, platform.triple())
         .with_target_dir(project.water_target_dir(options.linkage()).await?)
         .with_features(
             render_features
                 .into_iter()
-                .chain(extra_features.iter().copied()),
+                .chain(extra_features.iter().copied())
+                .chain(strategy_feature),
         )
         .with_linkage(
             options.linkage(),
@@ -236,6 +241,15 @@ pub async fn build_hydrolysis_with_envs_and_features(
         .with_features(options.app_features(project))
         .with_envs(options.cargo_envs().iter().cloned())
         .with_envs(extra_envs.iter().cloned());
+    let widget_features = assets::widget_features(
+        project,
+        &backend_path.join("Cargo.toml"),
+        &platform.triple(),
+        build.features(),
+        &["hydrolysis", "hydrolysis-m3"],
+    )
+    .await?;
+    build = build.with_features(widget_features);
     if let Some(sccache_path) = options.sccache_path() {
         build = build.with_sccache(sccache_path.to_path_buf());
     }
@@ -1160,6 +1174,7 @@ mod tests {
                 webview_enabled: true,
                 engine: Some(ResolvedWebViewBackend::Cef),
                 video_gpu: false,
+                map_gpu: false,
             },
         );
         let package_name = "demo-hydrolysis-deadbeef";
@@ -1304,6 +1319,7 @@ mod tests {
                 webview_enabled: false,
                 engine: Some(ResolvedWebViewBackend::Wpe),
                 video_gpu: false,
+                map_gpu: false,
             },
         );
         assert_eq!(rendered_bin_names(&ctx, package_name), [package_name]);

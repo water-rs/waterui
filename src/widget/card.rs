@@ -1,6 +1,7 @@
 //! A card is a styled container that groups related content.
 use crate::prelude::*;
 use crate::style::{Shadow, Vector};
+use waterui_core::OneOf2;
 use waterui_graphics::color::Color;
 use waterui_layout::stack::vstack;
 use waterui_shape::{FixedRoundedRectangle, ShapeExt};
@@ -129,7 +130,7 @@ where
 {
     fn body(self, env: &Environment) -> impl View {
         let Some(theme) = env.get::<CardTheme>() else {
-            return AnyView::new(vstack((self.title, self.subtitle, self.content)));
+            return OneOf2::A(vstack((self.title, self.subtitle, self.content)));
         };
         let tokens = theme.tokens(self.style);
         let shape = FixedRoundedRectangle::new(tokens.corner_radius);
@@ -145,7 +146,7 @@ where
             tokens.ambient_shadow_radius,
             shape,
         );
-        AnyView::new(
+        OneOf2::B(
             vstack((self.title, self.subtitle, self.content))
                 .spacing(theme.content_spacing)
                 .padding_with(theme.content_padding)

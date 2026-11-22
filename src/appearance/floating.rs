@@ -1,7 +1,8 @@
 //! Floating-surface presentation for elevated interactive views.
 
 use nami::binding;
-use waterui_core::{Dynamic, Environment, View, interaction::InteractionState, plugin::Plugin};
+use waterui_core::{Dynamic, Environment, View, plugin::Plugin};
+use waterui_interaction::interaction::InteractionState;
 use waterui_shape::{RoundedRectangle, ShapeExt as _};
 
 use crate::{
@@ -111,9 +112,10 @@ mod tests {
 
     use nami::Binding;
     use waterui_core::{
-        AnyView, Dynamic, Environment, Metadata, Retain, View,
-        interaction::{InteractionReport, InteractionState, StateValue},
+        AnyView, Dynamic, Environment, Retain, View,
+        backend::{peel_metadata, peel_native},
     };
+    use waterui_interaction::interaction::{InteractionReport, InteractionState, StateValue};
     use waterui_layout::container::FixedContainer;
     use waterui_shape::{ClipShape, ShapeKind};
     use waterui_text::Text;
@@ -121,10 +123,13 @@ mod tests {
     use super::{Floating, FloatingStyle};
     use crate::style::{FloatingElevation, Shadow};
 
-    /// Evaluates a view one step, the way a renderer would, leaving the result
-    /// type-erased so intermediates keep their own names out of the test.
-    fn render(view: impl View, env: &Environment) -> AnyView {
-        AnyView::new(view.body(env))
+    /// The children of a fixed container, read from its erased form: a typed
+    /// `FixedContainer` expands to a native container of erased children.
+    fn container_children(container: impl View, env: &Environment, role: &str) -> Vec<AnyView> {
+        peel_native::<FixedContainer<Vec<AnyView>>>(container, env)
+            .unwrap_or_else(|| panic!("{role} resolves to a fixed container"))
+            .into_inner()
+            .1
     }
 
     /// Explodes a `Floating` body into the pieces a backend sees: the binding
@@ -139,33 +144,24 @@ mod tests {
         Retain,
     ) {
         let env = Environment::new();
-        let surface = render(
-            Floating::with_style(Text::new("label"), style).body(&env),
-            &env,
-        );
-        let fixed = *surface
-            .downcast::<FixedContainer>()
-            .expect("a background modifier resolves to a fixed container");
-        let mut children = fixed.into_inner().1.into_iter();
+        let surface = Floating::with_style(Text::new("label"), style);
+        let mut children = container_children(surface, &env, "a background modifier").into_iter();
         let shadows = children.next().expect("the shadow layer is the background");
         let clipped = children.next().expect("the clipped surface is the content");
 
-        let clip = *clipped
-            .downcast::<Metadata<ClipShape>>()
-            .expect("the surface is clipped to its shape");
+        let clip =
+            peel_metadata::<ClipShape>(clipped, &env).expect("the surface is clipped to its shape");
         let clip_kind = clip.value.kind();
 
         // Inside the clip is the fill background over the content; the
         // environment modifier `.interaction_state` installs carries the
         // InteractionReport plugin.
-        let inner = *render(clip.content, &env)
-            .downcast::<FixedContainer>()
-            .expect("the surface fill is a background layer");
-        let mut inner_children = inner.into_inner().1.into_iter();
+        let mut inner_children =
+            container_children(clip.content, &env, "the surface fill").into_iter();
         let _fill = inner_children.next();
-        let env_meta = *render(inner_children.next().expect("the styled content"), &env)
-            .downcast::<Metadata<Environment>>()
-            .expect(".interaction_state installs an environment");
+        let env_meta =
+            peel_metadata::<Environment>(inner_children.next().expect("the styled content"), &env)
+                .expect(".interaction_state installs an environment");
         let report = env_meta
             .value
             .get::<InteractionReport>()
@@ -176,12 +172,9 @@ mod tests {
         // The background is a watched Dynamic; unroll one step to reach it,
         // then connect a receiver as a renderer would. The Retain keeps the
         // watcher guard alive, so it is handed back to the caller.
-        let retained = *render(shadows, &env)
-            .downcast::<Metadata<Retain>>()
-            .expect("the shadow layer is a watched Dynamic");
-        let dynamic = *retained
-            .content
-            .downcast::<Dynamic>()
+        let retained =
+            peel_metadata::<Retain>(shadows, &env).expect("the shadow layer is a watched Dynamic");
+        let dynamic = peel_native::<Dynamic<AnyView>>(retained.content, &env)
             .expect("the retained view is the Dynamic");
         let layers = Rc::new(RefCell::new(Vec::new()));
         let sink = Rc::clone(&layers);
@@ -191,15 +184,19 @@ mod tests {
     }
 
     /// The ambient and key shadow radii of one shadow layer, innermost first.
-    fn shadow_radii(layer: &AnyView) -> (f32, f32) {
-        let key = layer
-            .downcast_ref::<Metadata<Shadow>>()
+    fn shadow_radii(layer: AnyView) -> (f32, f32) {
+        let (key, ambient) = shadow_pair(layer);
+        (ambient.radius(), key.radius())
+    }
+
+    /// The key shadow of one shadow layer and the ambient shadow inside it.
+    fn shadow_pair(layer: AnyView) -> (Shadow, Shadow) {
+        let env = Environment::new();
+        let key = peel_metadata::<Shadow>(layer, &env)
             .expect("the outermost shadow layer is the key shadow");
-        let ambient = key
-            .content
-            .downcast_ref::<Metadata<Shadow>>()
+        let ambient = peel_metadata::<Shadow>(key.content, &env)
             .expect("inside the key shadow is the ambient shadow");
-        (ambient.value.radius(), key.value.radius())
+        (key.value, ambient.value)
     }
 
     /// A floating surface fills, clips, and shadows with one shape, so each
@@ -216,20 +213,15 @@ mod tests {
             ShapeKind::RoundedRect { corner_radius: 0.4 },
             "Floating clips with RoundedRectangle::new(clip_radius)"
         );
-        let layers = layers.borrow();
         let layer = layers
-            .first()
+            .take()
+            .into_iter()
+            .next()
             .expect("connecting delivers the resting shadow layer");
-        let key = layer
-            .downcast_ref::<Metadata<Shadow>>()
-            .expect("the outermost shadow layer is the key shadow");
-        let ambient = key
-            .content
-            .downcast_ref::<Metadata<Shadow>>()
-            .expect("inside the key shadow is the ambient shadow");
+        let (key, ambient) = shadow_pair(layer);
         for (name, kind) in [
-            ("key", key.value.silhouette().kind()),
-            ("ambient", ambient.value.silhouette().kind()),
+            ("key", key.silhouette().kind()),
+            ("ambient", ambient.silhouette().kind()),
         ] {
             assert_eq!(
                 kind, clip_kind,
@@ -254,17 +246,16 @@ mod tests {
         );
         let (report, _clip, layers, _live) = floating_parts(style);
 
-        let (ambient_rest, key_rest) = {
-            let layers = layers.borrow();
-            assert_eq!(layers.len(), 1, "connect delivers the resting layer");
-            shadow_radii(&layers[0])
-        };
+        let resting = layers.take();
+        assert_eq!(resting.len(), 1, "connect delivers the resting layer");
+        let (ambient_rest, key_rest) = shadow_radii(resting.into_iter().next().expect("one layer"));
 
         report.set(InteractionState::HOVERED);
 
-        let layers = layers.borrow();
-        assert_eq!(layers.len(), 2, "a reported state rebuilds the layer");
-        let (ambient_hover, key_hover) = shadow_radii(&layers[1]);
+        let hovered = layers.take();
+        assert_eq!(hovered.len(), 1, "a reported state rebuilds the layer");
+        let (ambient_hover, key_hover) =
+            shadow_radii(hovered.into_iter().next().expect("one layer"));
         assert!(
             ambient_hover > ambient_rest && key_hover > key_rest,
             "a reported HOVERED state must raise the shadows: \

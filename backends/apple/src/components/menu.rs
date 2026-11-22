@@ -34,8 +34,7 @@ use waterui_core::layout::{
 };
 
 use crate::components::button_chrome;
-use crate::contract::{Mounted, NativeLeaf};
-use crate::dispatch::Dispatcher;
+use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal::{self, Placement};
 
 #[cfg(target_os = "macos")]
@@ -54,6 +53,7 @@ mod platform {
     pub(super) use cocoa_ui::uikit::{HitTest, HostView, MenuButton};
 }
 
+use crate::contract::RenderContext;
 use platform::{HostView, MenuButton};
 
 /// The padding the trigger keeps around its label, in points: `leading`
@@ -236,7 +236,15 @@ fn rebuild_menu(state: &Rc<RefCell<MenuState>>) {
         )
     };
     let key_commands = button.menu_commands();
-    button.set_menu(&build_menu(mtm, &key_commands, "", None, &items, &env));
+    button.set_menu(&build_menu(
+        mtm,
+        &key_commands,
+        "",
+        None,
+        None,
+        &items,
+        &env,
+    ));
     // `setMenu:` has replaced the rows of a menu that is open, so the
     // previous menu's commands are unreachable and retire with its scope.
     state.borrow_mut().key_commands = Some(key_commands);
@@ -300,168 +308,166 @@ impl SubView for MenuSubView {
     }
 }
 
-/// Installs the `menu` handler on the dispatcher: `Native<ResolvedMenu>`
+/// The `menu` realization: `Native<ResolvedMenu>`
 /// maps to a host view holding the pull-down trigger and its label child.
 #[expect(
     clippy::too_many_lines,
-    reason = "the handler's wiring is sequential; splitting it would obscure the mount order"
+    reason = "one component's whole realization, as the handler it replaces"
 )]
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<ResolvedMenu>(|config, ctx| {
-        let mtm = ctx.mtm();
-        let host = HostView::new(mtm, Rect::ZERO);
-        let button = MenuButton::new(mtm);
-        let label_container = HostView::new(mtm, Rect::ZERO);
-        // The label never intercepts input meant for the trigger.
-        label_container.set_hit_test_handler(|_, _| platform::HitTest::Pass);
+pub fn realize_resolved_menu(config: &ResolvedMenu<Held>, ctx: &RenderContext<'_>) -> NativeLeaf {
+    let mtm = ctx.mtm();
+    let host = HostView::new(mtm, Rect::ZERO);
+    let button = MenuButton::new(mtm);
+    let label_container = HostView::new(mtm, Rect::ZERO);
+    // The label never intercepts input meant for the trigger.
+    label_container.set_hit_test_handler(|_, _| platform::HitTest::Pass);
 
-        let host_view: &PlatformView = &host;
-        view::add_subview(host_view, button.view());
-        view::add_subview(button.view(), &label_container);
+    let host_view: &PlatformView = &host;
+    view::add_subview(host_view, button.view());
+    view::add_subview(button.view(), &label_container);
 
-        // The trigger and its label take the menu's style and size the way
-        // a `Button` of that style and size does.
-        let style = config.style;
-        #[cfg(target_os = "macos")]
-        let padding = {
-            button_chrome::apply_bezel(
-                &button.button(),
-                style,
-                button_chrome::control_size(config.size),
-            );
-            label_padding(style)
-        };
+    // The trigger and its label take the menu's style and size the way
+    // a `Button` of that style and size does.
+    let style = config.style;
+    #[cfg(target_os = "macos")]
+    let padding = {
+        button_chrome::apply_bezel(
+            &button.button(),
+            style,
+            button_chrome::control_size(config.size),
+        );
+        label_padding(style)
+    };
+    #[cfg(target_os = "ios")]
+    let padding = label_padding(style, mtm);
+    let label_env = button_chrome::label_environment(style, config.size, ctx.env());
+
+    let label_leaf = ctx.with_env(&label_env).realize(config.label.build());
+    let child_view = view::retain_base(label_leaf.view());
+    let mounted = label_leaf.mount(&label_container);
+    {
+        let child_view = child_view.clone();
+        label_container.set_layout_handler(move |host| {
+            view::set_frame(&child_view, view::bounds(host));
+        });
+    }
+
+    let state = Rc::new(RefCell::new(MenuState {
+        button,
+        host: host.clone(),
+        env: ctx.env().clone(),
+        items: Vec::new(),
+        item_watchers: Vec::new(),
+        placement: Cell::new(Placement::UNPLACED),
         #[cfg(target_os = "ios")]
-        let padding = label_padding(style, mtm);
-        let label_env = button_chrome::label_environment(style, config.size, ctx.env());
+        key_commands: None,
+        mtm,
+    }));
 
-        let label_leaf = ctx.with_env(&label_env).render(config.label);
-        let child_view = view::retain_base(label_leaf.view());
-        let mounted = label_leaf.mount(&label_container);
-        {
-            let child_view = child_view.clone();
-            label_container.set_layout_handler(move |host| {
-                view::set_frame(&child_view, view::bounds(host));
+    // `layoutSubviews` / `layout`: the trigger fills the host's
+    // response, the label sits inside it under the platform's padding,
+    // and the selected proposal — or the bounds — reaches the label as
+    // its offer.
+    host.set_layout_handler({
+        let state = Rc::clone(&state);
+        move |host| {
+            // The trigger draws in its response rectangle, centred in
+            // the frame it was assigned (docs/layout-spec.md §2.4).
+            let bounds = proposal::response(host);
+            let state = state.borrow();
+            view::set_frame(state.button.view(), bounds);
+            let width = bounds.size.width;
+            let height = bounds.size.height;
+            view::set_frame(
+                &label_container,
+                padding.label_frame(width, height, view::is_right_to_left(host)),
+            );
+
+            let placement = state.placement.get();
+            let base = placement.proposal.unwrap_or({
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "the layout contract is f32; host bounds always fit"
+                )]
+                ProposalSize {
+                    width: Some(width as f32),
+                    height: Some(height as f32),
+                }
+            });
+            // The label sits at its layout frame inside the host, so it
+            // aligns under the host's own offset.
+            proposal::deliver(
+                &child_view,
+                Placement {
+                    proposal: Some(padding.label_offer(base)),
+                    offset: placement.offset,
+                    ..Placement::UNPLACED
+                },
+            );
+        }
+    });
+
+    #[cfg(all(target_os = "ios", target_abi = "macabi"))]
+    let button_for_teardown = state.borrow().button.clone();
+    let mut leaf = NativeLeaf::new(
+        host_view,
+        MenuSubView {
+            label: mounted,
+            padding,
+        },
+    );
+    leaf.keep(label_env);
+
+    // Items → menu: rebuild on every change (`watch` so the rebuild
+    // carries the watcher's animation metadata), with the initial list
+    // applied up front.
+    apply_items(&state, config.items.snapshot());
+    leaf.watch(&config.items, {
+        let state = Rc::clone(&state);
+        move |wctx| {
+            let items = wctx.value().clone();
+            let state = Rc::clone(&state);
+            crate::animation::with_platform_animation(wctx.metadata(), move || {
+                apply_items(&state, items);
             });
         }
-
-        let state = Rc::new(RefCell::new(MenuState {
-            button,
-            host: host.clone(),
-            env: ctx.env().clone(),
-            items: Vec::new(),
-            item_watchers: Vec::new(),
-            placement: Cell::new(Placement::UNPLACED),
-            #[cfg(target_os = "ios")]
-            key_commands: None,
-            mtm,
-        }));
-
-        // `layoutSubviews` / `layout`: the trigger fills the host's
-        // response, the label sits inside it under the platform's padding,
-        // and the selected proposal — or the bounds — reaches the label as
-        // its offer.
-        host.set_layout_handler({
-            let state = Rc::clone(&state);
-            move |host| {
-                // The trigger draws in its response rectangle, centred in
-                // the frame it was assigned (docs/layout-spec.md §2.4).
-                let bounds = proposal::response(host);
-                let state = state.borrow();
-                view::set_frame(state.button.view(), bounds);
-                let width = bounds.size.width;
-                let height = bounds.size.height;
-                view::set_frame(
-                    &label_container,
-                    padding.label_frame(width, height, view::is_right_to_left(host)),
-                );
-
-                let placement = state.placement.get();
-                let base = placement.proposal.unwrap_or({
-                    #[expect(
-                        clippy::cast_possible_truncation,
-                        reason = "the layout contract is f32; host bounds always fit"
-                    )]
-                    ProposalSize {
-                        width: Some(width as f32),
-                        height: Some(height as f32),
-                    }
-                });
-                // The label sits at its layout frame inside the host, so it
-                // aligns under the host's own offset.
-                proposal::deliver(
-                    &child_view,
-                    Placement {
-                        proposal: Some(padding.label_offer(base)),
-                        offset: placement.offset,
-                        ..Placement::UNPLACED
-                    },
-                );
-            }
-        });
-
-        #[cfg(all(target_os = "ios", target_abi = "macabi"))]
-        let button_for_teardown = state.borrow().button.clone();
-        let mut leaf = NativeLeaf::new(
-            host_view,
-            MenuSubView {
-                label: mounted,
-                padding,
-            },
-        );
-        leaf.keep(label_env);
-
-        // Items → menu: rebuild on every change (`watch` so the rebuild
-        // carries the watcher's animation metadata), with the initial list
-        // applied up front.
-        apply_items(&state, config.items.snapshot());
-        leaf.watch(&config.items, {
-            let state = Rc::clone(&state);
-            move |wctx| {
-                let items = wctx.value().clone();
-                let state = Rc::clone(&state);
-                crate::animation::with_platform_animation(wctx.metadata(), move || {
-                    apply_items(&state, items);
-                });
-            }
-        });
-
-        // The proposal a Rust parent selected invalidates placement even
-        // when the frame does not move.
-        let sink_guard = proposal::register_sink(&host, {
-            let state = Rc::clone(&state);
-            let host = host.clone();
-            move |placement| {
-                let state = state.borrow();
-                if state.placement.get() != placement {
-                    state.placement.set(placement);
-                    host.set_needs_layout();
-                    crate::measure_memo::invalidate();
-                }
-            }
-        });
-        leaf.keep(sink_guard);
-
-        // `accessibility_label` speaks on the trigger — and carries its
-        // `AppKit` tooltip.
-        let trigger = view::retain_base(state.borrow().button.view());
-        leaf.bind(&config.accessibility_label, move |styled| {
-            view::set_accessibility_label(&trigger, &item_title(&styled));
-        });
-
-        // The tint colours the trigger as it colours a `Button` of its style.
-        #[cfg(target_os = "macos")]
-        let styled = state.borrow().button.button();
-        #[cfg(target_os = "ios")]
-        let styled = state.borrow().button.button().clone();
-        button_chrome::bind_tint(&mut leaf, styled, style, ctx.env(), mtm);
-
-        leaf.keep(state);
-        // Kept after the state, so it drops first (reverse order).
-        #[cfg(all(target_os = "ios", target_abi = "macabi"))]
-        leaf.keep(EndOpenMenu(button_for_teardown));
-        leaf
     });
+
+    // The proposal a Rust parent selected invalidates placement even
+    // when the frame does not move.
+    let sink_guard = proposal::register_sink(&host, {
+        let state = Rc::clone(&state);
+        let host = host.clone();
+        move |placement| {
+            let state = state.borrow();
+            if state.placement.get() != placement {
+                state.placement.set(placement);
+                host.set_needs_layout();
+                crate::measure_memo::invalidate();
+            }
+        }
+    });
+    leaf.keep(sink_guard);
+
+    // `accessibility_label` speaks on the trigger — and carries its
+    // `AppKit` tooltip.
+    let trigger = view::retain_base(state.borrow().button.view());
+    leaf.bind(&config.accessibility_label, move |styled| {
+        view::set_accessibility_label(&trigger, &item_title(&styled));
+    });
+
+    // The tint colours the trigger as it colours a `Button` of its style.
+    #[cfg(target_os = "macos")]
+    let styled = state.borrow().button.button();
+    #[cfg(target_os = "ios")]
+    let styled = state.borrow().button.button().clone();
+    button_chrome::bind_tint(&mut leaf, styled, style, ctx.env(), mtm);
+
+    leaf.keep(state);
+    // Kept after the state, so it drops first (reverse order).
+    #[cfg(all(target_os = "ios", target_abi = "macabi"))]
+    leaf.keep(EndOpenMenu(button_for_teardown));
+    leaf
 }
 
 #[cfg(test)]

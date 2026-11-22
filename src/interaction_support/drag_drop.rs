@@ -447,7 +447,7 @@ pub trait DropDestinationExt {
     fn on_exit(self, handler: impl FnMut() + 'static) -> Self;
 }
 
-impl DropDestinationExt for Metadata<DropDestination> {
+impl<C> DropDestinationExt for Metadata<DropDestination, C> {
     fn drop_hover(self, is_hovering: &Binding<bool>) -> Self {
         let enter = is_hovering.clone();
         let exit = is_hovering.clone();

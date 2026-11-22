@@ -23,7 +23,7 @@
 //! re-dispatching the same screen from the `View` tree costs ~15ms.
 
 macro_rules! impl_widget_behavior {
-    ($state:ty, $render:path, $measure:expr $(, $priority:expr)? $(; prepare: $prepare:ident)? $(; dirty: $dirty:ident)? $(; a11y: $a11y:path)? $(; renders_nothing: $renders_nothing:literal)? $(; surface: $surface:ident)? $(; page: $page:path)?) => {
+    ($state:ty, $render:path, $measure:expr $(, $priority:expr)? $(; prepare: $prepare:ident)? $(; dirty: $dirty:ident)? $(; a11y: $a11y:path)? $(; renders_nothing: $renders_nothing:literal)? $(; surface: $surface:ident)? $(; page: $page:path)? $(; label: $label:ident)?) => {
         impl<E: crate::text::TextEngine> WidgetBehavior<E> for RefCell<$state> {
             $(fn priority(&self) -> i32 { $priority })?
 
@@ -61,8 +61,19 @@ macro_rules! impl_widget_behavior {
             $(
                 fn claim_page_transition(
                     &self,
-                ) -> Option<waterui_core::transition::TransitionSpec> {
+                ) -> Option<waterui_structural_transition::TransitionSpec> {
                     $page(&self.borrow())
+                }
+            )?
+
+            $(
+                #[cfg(feature = "accessibility")]
+                fn accessibility_label(
+                    &self,
+                    renderer: &mut SemanticCore<E>,
+                    env: &Environment,
+                ) -> Option<String> {
+                    self.borrow().$label(renderer, env)
                 }
             )?
 
@@ -74,6 +85,7 @@ macro_rules! impl_widget_behavior {
 
             $(
                 #[cfg(feature = "accessibility")]
+                #[cfg(hydrolysis_cherenkov)]
                 fn emit_accessibility(
                     self: Rc<Self>,
                     renderer: &mut SemanticCore<E>,
@@ -91,16 +103,30 @@ mod build_controls;
 mod build_views;
 mod collection;
 mod flush;
-#[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
-mod hosted;
+#[cfg(feature = "accessibility")]
+mod label;
 mod layout;
 mod nodes;
+mod provided;
 pub(super) mod safe_area;
 mod subview;
 pub(super) mod transition;
 mod window;
 
+pub use build::backend::held_with_foreground;
 pub use collection::*;
+#[cfg(all(
+    feature = "accessibility",
+    hydrolysis_cherenkov,
+    hydrolysis_hosted,
+    hydrolysis_gpu
+))]
+pub use provided::HydroProvidedA11yHost;
+pub use provided::{HydroProvidedBehavior, HydroProvidedRenderHost, HydroProvidedSlot};
+
+/// A child view held for Hydrolysis to build later: a payload's child in
+/// Hydrolysis's child slot.
+pub type HeldChild<E> = waterui_backend_core::Child<build::backend::HydroFamily<E>>;
 pub use nodes::*;
 use subview::NodeSubView;
 
@@ -120,8 +146,8 @@ use std::rc::{Rc, Weak};
 use waterui_core::MainThreadBound;
 use waterui_core::id::Id as RawId;
 use waterui_core::layout::{LayoutPriority, PlacedGeometry, Point, Rect, Size, UnitPoint};
-use waterui_core::views::{AnyViews, AnyViewsSnapshot, ViewSnapshot, Views};
-use waterui_layout::scroll::{Axis as ScrollAxis, ScrollController, ScrollView};
+use waterui_core::views::{AnyViews, AnyViewsSnapshot};
+use waterui_layout::scroll::{Axis as ScrollAxis, ScrollController};
 
 /// The type-erased item identity used by [`CollectionNode`]'s reconcile.
 type CollectionItemId = RawId;
@@ -175,7 +201,7 @@ pub enum RenderNode<E: crate::text::TextEngine> {
     /// rather than through a frame-ordered effect slot, so a `Dynamic` swap to a
     /// different scene renders the new content instead of the previous scene's.
     SceneView(Box<SceneViewNode<E>>),
-    /// An embedded `GpuContentView` leaf owning its `GpuContentRuntime`
+    /// An embedded `GpuView` leaf owning its `GpuContentRuntime`
     /// directly (no cursor-bound slot), composited through an `Rc`-carrying layer.
     #[cfg(hydrolysis_gpu)]
     GpuContent(Box<GpuContentNode<E>>),
@@ -208,7 +234,7 @@ pub enum RenderNode<E: crate::text::TextEngine> {
     /// marker, not a frame.
     Fill(Box<FillNode<E>>),
     /// A native widget leaf (button, toggle, slider, picker, text field, …) rendered
-    /// by its `HydroNativeView` handler **every flush** from a retained,
+    /// by its widget behavior **every flush** from a retained,
     /// signal-holding config — never baked. Its `builder` reconstructs the leaf view
     /// (actions retained as `Rc`, label/value signals kept) and the flush re-dispatches
     /// it, so the handler re-reads its live signals and reactive content (a `text!`

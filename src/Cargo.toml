@@ -16,6 +16,8 @@ path = "lib.rs"
 [dependencies]
 nami.workspace = true
 waterui-core.workspace = true
+waterui-capture.workspace = true
+waterui-resources.workspace = true
 suiteki.workspace = true
 waterui-url.workspace = true
 waterui-layout.workspace = true
@@ -23,10 +25,11 @@ waterui-text.workspace = true
 waterui-media = { workspace = true, optional = true }
 waterui-video = { workspace = true, optional = true }
 native-executor.workspace = true
-waterui-navigation.workspace = true
-waterui-form.workspace = true
+waterui-navigation = { workspace = true, optional = true }
+waterui-form = { workspace = true, optional = true }
 waterui-controls.workspace = true
 waterui-webview = { workspace = true, optional = true }
+waterui-map = { workspace = true, optional = true }
 waterui-widgets = { workspace = true, optional = true }
 # `number` is not optional here: `text!` interpolates every numeric argument
 # through `waterui_locale::LocalizedArgument`, so a WaterUI application that
@@ -40,52 +43,82 @@ futures.workspace = true
 tracing.workspace = true
 thiserror = { version = "2.0.21", default-features = false }
 # `Link` opens its URL in the system handler.
-waterkit-deeplink.workspace = true
+waterkit-deeplink = { workspace = true, optional = true }
 # Grapheme clusters for the avatar monogram: a name's first "letter" is a
 # cluster, not a `char`, wherever a combining mark or an emoji sequence is one.
-unicode-segmentation = "1.13"
+unicode-segmentation = { version = "1.13", optional = true }
 tracing-subscriber = { workspace = true, optional = true }
 async-channel.workspace = true
 web-time.workspace = true
-pulldown-cmark = { version = "0.13", optional = true }
 waterui-macros.workspace = true
-waterui-graphics = { workspace = true, default-features = false }
+waterui-graphics = { workspace = true, default-features = false, features = ["text"] }
 waterui-icon.workspace = true
 waterui-shape = { workspace = true, default-features = false }
+waterui-structural-transition.workspace = true
+waterui-accessibility.workspace = true
+waterui-interaction.workspace = true
 waterui-svg = { workspace = true, optional = true }
 waterui-chart = { workspace = true, optional = true }
 waterui-barcode = { workspace = true, optional = true }
 waterui-particle = { workspace = true, optional = true }
-waterui-math = { workspace = true, optional = true }
+waterui-markdown = { workspace = true, optional = true }
 waterui-assets = { workspace = true, optional = true }
 waterui-assets-macros = { workspace = true, optional = true }
-waterui-inspector-protocol = { workspace = true, optional = true }
 waterui-ts = { workspace = true, optional = true }
 waterkit-haptic = { workspace = true, optional = true }
 pastey.workspace = true
-# The document parser `FlowMarkdown` re-parses incrementally as a stream
-# arrives. Only the Markdown grammar: fenced code is highlighted by the `Code`
-# widget through syntect, not by a per-language tree-sitter grammar.
-tree-sitter = { version = "0.27", optional = true }
-tree-sitter-md = { version = "0.5.3", optional = true }
 
-# The self-drawn video realization. Selected by `video-gpu` rather than by
-# `video`, because whether it is the realization is a property of the platform's
-# own frameworks, not of the semantic component. The web plays video through
-# the browser's `<video>` element, so a wasm32 build never links it.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-waterui-video-gpu = { workspace = true, optional = true }
-# Inspector session tokens come from the OS RNG; the endpoint exists only on
-# native targets, so the entropy source is declared beside it.
-getrandom = { workspace = true, optional = true }
+# The inspector endpoint is a TCP server that also launches the inspector
+# application on the developer's machine; a browser page can do neither.
+waterui-inspector-runtime = { workspace = true, optional = true }
 
 # CPU-time profiling (cpu-time) needs a per-thread CPU clock; the runtime guard
 # uses a zero-cost stand-in where there is none.
 [target.'cfg(any(unix, windows))'.dependencies]
-cpu-time.workspace = true
+cpu-time = { workspace = true, optional = true }
 
 [features]
+form = ["dep:waterui-form"]
+link = ["dep:waterkit-deeplink"]
+avatar = ["dep:unicode-segmentation"]
+cpu-time = ["dep:cpu-time"]
+list = []
+table = ["list"]
+navigation = ["dep:waterui-navigation"]
+menu = ["waterui-controls/menu"]
+calendar = ["form", "waterui-form/calendar"]
+color-picker = ["form", "waterui-form/color-picker"]
+date-picker = ["form", "waterui-form/date-picker"]
+file-picker = ["form", "waterui-form/file-picker"]
+multi-date-picker = ["calendar", "waterui-form/multi-date-picker"]
+picker = ["form", "waterui-form/picker"]
+secure-field = ["form", "waterui-form/secure-field"]
+slider = ["form", "waterui-form/slider"]
+stepper = ["form", "waterui-form/stepper"]
+text-field = ["menu", "form", "waterui-form/text-field"]
+toggle = ["form", "waterui-form/toggle"]
+validation = ["text-field", "waterui-form/validation"]
 default = [
+    "avatar",
+    "cpu-time",
+    "link",
+    "list",
+    "table",
+    "navigation",
+    "menu",
+    "calendar",
+    "color-picker",
+    "date-picker",
+    "file-picker",
+    "multi-date-picker",
+    "picker",
+    "secure-field",
+    "slider",
+    "stepper",
+    "text-field",
+    "toggle",
+    "validation",
     "gpu",
     "assets",
     "dialog",
@@ -109,12 +142,12 @@ highlight = ["waterui-text/highlight"]
 # stack out, and embedded firmware disables it anyway — the hub is desktop
 # tooling, and its 64-bit sequence counters do not even exist on RV32
 # targets.
-inspector = ["dep:getrandom", "dep:waterui-inspector-protocol", "dep:tracing-subscriber"]
+inspector = ["dep:waterui-inspector-runtime"]
 # Reactive-graph tracing for the Inspector's `signals` channel. Development
 # only: it attributes every state-owning signal node and reports every
 # notification. Off by default so release builds pay nothing — see
 # `nami_core::observe`.
-inspector-signals = ["inspector", "nami/observability"]
+inspector-signals = ["inspector", "waterui-inspector-runtime/signals"]
 # Window-modal confirmation / alert dialogs: the `Dialog` semantic and its
 # composed card realization for self-drawn backends.
 dialog = []
@@ -142,7 +175,7 @@ cpu = ["effects", "waterui-graphics/cpu"]
 # `waterui::video` (`VideoAsset`, behind `waterui-assets`' `video` feature);
 # each is enabled only when both sides are present.
 assets = ["dep:waterui-assets", "dep:waterui-assets-macros", "dep:waterui-meta"]
-media = ["dep:waterui-media", "waterui-assets?/media"]
+media = ["dep:waterui-media", "waterui-assets?/media", "waterui-graphics/image-decode", "waterui-markdown?/media"]
 video = ["dep:waterui-video", "waterui-media?/video", "waterui-assets?/video"]
 # Remote fetching (`Url::fetch`, `Data::from_remote`, remote `Photo` sources)
 # links the `zenwave` HTTP client through `waterui-url`/`waterui-media`. Off by
@@ -153,13 +186,15 @@ remote = [
     "waterui-media?/remote",
     "waterui-assets?/remote",
 ]
-# `WaterUI`'s own GPU video player, installed as the video realization. Not
-# implied by `video`: Apple bridges AVPlayer and the web the `<video>` element,
-# so an application there would otherwise link and pay for a player it never
-# runs. The backend that has no native player to bridge selects this; on
-# wasm32 it links nothing.
-video-gpu = ["video", "gpu", "dep:waterui-video-gpu"]
+# Selects `WaterUI`'s own GPU video player as the video realization where the
+# platform has no player to bridge: the `water` CLI reads it and enables the
+# self-drawn backend's player. Not implied by `video`: Apple bridges AVPlayer
+# and the web the `<video>` element, so an application there would otherwise
+# link and pay for a player it never runs.
+video-gpu = ["video", "gpu"]
 webview = ["dep:waterui-webview"]
+# Maps (`waterui::map`).
+map = ["dep:waterui-map"]
 # The `#[waterui::widget]` authoring surface and its `WidgetKit` snapshot
 # schema (`waterui::widgets`). Off by default: an application that declares
 # no widgets pays for none of the schema or its FFI glue — and the `water`
@@ -173,26 +208,23 @@ widgets = ["dep:waterui-widgets", "waterui-macros/widgets"]
 # links a JavaScript engine. An application that writes no `tsx!` and leaves
 # this off links none of it — `waterui-ts` is an optional dependency and no
 # other feature pulls it in.
-ts = ["dep:waterui-ts"]
+ts = ["dep:waterui-ts", "avatar", "link", "navigation", "table", "picker", "slider", "stepper", "text-field", "toggle"]
 # The over-the-air update client for TypeScript view bundles: fetches a
 # signed manifest and bundle, verifies them, and caches them for the next
 # launch. Separate from `ts` because it links an HTTP client, a signature
 # verifier and the file-system kit; an application that ships only its
 # baseline bundle leaves it off and opens no connection by construction.
 ts-ota = ["ts", "waterui-ts/ota"]
-navigation-restoration = ["waterui-navigation/serde"]
+navigation-restoration = ["navigation", "waterui-navigation/serde"]
 # Markdown rendering: `RichText` and `include_markdown!`, which parse CommonMark
 # with `pulldown-cmark`, plus `FlowMarkdown`'s streaming renderer, which
 # re-parses the document incrementally with the tree-sitter Markdown grammar.
 # Off by default — a CommonMark parser and a document grammar are a lot of
 # binary for an application that shows no Markdown.
 flow-markdown = [
-    "dep:pulldown-cmark",
-    "waterui-text/markdown",
+    "dep:waterui-markdown",
     # A fenced code block in a `RichText` renders through the `Code` widget.
     "highlight",
-    "dep:tree-sitter",
-    "dep:tree-sitter-md",
 ]
 # Mathematical formulas in Markdown: `$…$` and `$$…$$` are parsed and typeset
 # through `waterui-math`. Off by default, and deliberately so — it brings a
@@ -203,19 +235,45 @@ flow-markdown = [
 #
 # With this off the Markdown parser is built without `ENABLE_MATH`, so a dollar
 # sign in prose stays a dollar sign, exactly as it does today.
-markdown-math = ["flow-markdown", "dep:waterui-math"]
+markdown-math = ["flow-markdown", "waterui-markdown?/math"]
 std = ["dep:waterkit-haptic"]
+# In-tree offscreen view capture (`CaptureHandle`, `CaptureScope`, `ViewExt::capture`)
+# and `NativeBackend::offscreen` wiring. Opt-in so `route_metadata_dyn` does not pull
+# the offscreen renderer into binaries that never capture views from inside the tree.
+capture = []
 # `waterui::canvas`: the target-neutral drawing API, `waterui_graphics::canvas`.
 # It costs no dependency; the feature only exposes the re-export.
 canvas = []
 chart = ["dep:waterui-chart"]
 barcode = ["dep:waterui-barcode"]
 particle = ["dep:waterui-particle"]
+# Build strategy: erase views at generic dispatch boundaries.
+erased-dispatch = ["waterui-core/erased-dispatch", "waterui-layout/erased-dispatch"]
 # `ts` is deliberately absent: the TypeScript runtime will link a JavaScript
 # engine and a bundle loader, so an application that mounts TypeScript view
 # modules opts in explicitly rather than paying for them through the
 # full-feature set — the same reasoning `markdown-math` carries above.
 all = [
+    "avatar",
+    "cpu-time",
+    "link",
+    "list",
+    "table",
+    "navigation",
+    "menu",
+    "calendar",
+    "color-picker",
+    "date-picker",
+    "file-picker",
+    "multi-date-picker",
+    "picker",
+    "secure-field",
+    "slider",
+    "stepper",
+    "text-field",
+    "toggle",
+    "validation",
+    "capture",
     "canvas",
     "chart",
     "barcode",
@@ -228,6 +286,7 @@ all = [
     "assets",
     "media",
     "webview",
+    "map",
     "widgets",
     "flow-markdown",
     "markdown-math",

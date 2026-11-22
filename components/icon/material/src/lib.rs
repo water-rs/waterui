@@ -11,7 +11,7 @@
 //!
 //! # Features
 //!
-//! - `svg` (default) - Icons as [`Svg`] components for native rendering
+//! - `svg` (default) - Icons as `Svg` components for native rendering
 //! - `webfont` - Icons as styled text using Material Icons font (requires font installation)
 //!
 //! # Usage
@@ -40,9 +40,9 @@
 
 #![no_std]
 
-// Re-export from waterui-icon
+// Re-export Svg and IconGlyph behind their respective feature gates.
 #[cfg(feature = "svg")]
-pub use waterui_icon::Svg;
+pub use waterui_svg::Svg;
 
 #[cfg(feature = "webfont")]
 pub use waterui_icon::IconGlyph;

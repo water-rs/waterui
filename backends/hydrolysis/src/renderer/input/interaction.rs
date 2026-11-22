@@ -6,7 +6,7 @@ use crate::renderer::interaction_layers::MAX_PRESS_WAVES;
 use crate::theme::InteractionMotion;
 use nami::Signal as _;
 use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
-use waterui_core::interaction::{InteractionReport, InteractionState, Selected};
+use waterui_interaction::interaction::{InteractionReport, InteractionState, Selected};
 
 const INTERACTION_STATE_LAYER_KEY: usize = 1;
 /// Scalar key of the physical-press morph progress.
@@ -293,6 +293,7 @@ impl<E: crate::text::TextEngine> InteractionEngine<E> {
 
     /// Every bound control's live toggle.
     #[cfg(test)]
+    #[cfg(any(feature = "toggle", feature = "picker"))]
     pub(crate) fn live_toggles(&self) -> Vec<Rc<crate::renderer::live_toggle::LiveToggle>> {
         self.states
             .values()
@@ -302,6 +303,7 @@ impl<E: crate::text::TextEngine> InteractionEngine<E> {
 
     /// Every bound segment's live segmented picker, one per segment.
     #[cfg(test)]
+    #[cfg(feature = "picker")]
     pub(crate) fn live_segmenteds(
         &self,
     ) -> Vec<Rc<crate::renderer::live_segmented::LiveSegmented>> {
@@ -313,6 +315,7 @@ impl<E: crate::text::TextEngine> InteractionEngine<E> {
 
     /// Every bound tab item's live tab container, one per item.
     #[cfg(test)]
+    #[cfg(feature = "navigation")]
     pub(crate) fn live_tabs(&self) -> Vec<Rc<crate::renderer::live_tabs::LiveTabs>> {
         self.states
             .values()

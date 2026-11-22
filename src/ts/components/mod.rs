@@ -23,16 +23,17 @@ use core::cell::RefCell;
 
 use nami::{Computed, SignalExt as _};
 use suiteki::Str;
-use waterui_controls::label::Label;
+use waterui_controls::label::{Label, TitleLabel};
 use waterui_controls::{Button, Slider, Stepper, TextField, Toggle};
+use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::SelfId;
 use waterui_core::layout::{Alignment, HorizontalAlignment, VerticalAlignment};
 use waterui_core::views::ForEach;
 use waterui_core::{AnyView, Environment, Error, View};
 use waterui_form::picker::{Picker, PickerItem};
 use waterui_layout::ScrollView;
+use waterui_layout::Spacer;
 use waterui_layout::stack::{HStack, HStackLayout, VStack, VStackLayout, ZStack};
-use waterui_layout::{Divider, Spacer};
 use waterui_navigation::tab::{Tab, Tabs};
 use waterui_navigation::{NavigationLink, NavigationStack, NavigationView};
 
@@ -40,6 +41,7 @@ use crate::component::badge::Badge;
 use crate::component::link::Link;
 use crate::component::progress::Progress;
 use crate::component::table::{TableColumn, table};
+use crate::widget::Divider;
 use crate::widget::accordion::Accordion;
 use crate::widget::avatar::Avatar;
 use crate::widget::card::Card;
@@ -414,9 +416,9 @@ fn navigation(
             let attributes = TabsAttributes::from_js(config, bridge)?;
             let pairs = children::content(bridge, children)?
                 .into_iter()
-                .map(|child| Carried::<(Str, Tab)>::take_from(child, "Tab", "Tabs"))
+                .map(|child| Carried::<(Str, ScriptTab)>::take_from(child, "Tab", "Tabs"))
                 .collect::<Result<Vec<_>, _>>()?;
-            let tabs: std::collections::BTreeMap<Str, Tab> = pairs.iter().cloned().collect();
+            let tabs: std::collections::BTreeMap<Str, ScriptTab> = pairs.iter().cloned().collect();
             let ids = pairs
                 .into_iter()
                 .map(|(value, _)| SelfId::new(value))
@@ -437,14 +439,22 @@ fn navigation(
             let title = title_of(title);
             AnyView::new(Carried::new((
                 value,
-                Tab::new(label, move || {
-                    NavigationView::new(title.clone(), content.build())
-                }),
+                Tab::new(
+                    label,
+                    AnyViewBuilder::new(move || {
+                        NavigationView::new(title.clone(), content.build())
+                    }),
+                ),
             )))
         }
         _ => return Ok(None),
     }))
 }
+
+/// A tab a script declares: its root is built by a closure the script's
+/// attributes chose at run time, so every scripted tab shares one builder
+/// type.
+type ScriptTab = Tab<AnyViewBuilder<NavigationView<AnyView>>>;
 
 /// A navigation title, which every destination carries whether or not the
 /// element named one.
@@ -535,15 +545,18 @@ fn controls(
 /// one, and the two carry different styles: `loading` is indeterminate, so it
 /// has no meaning beside a total and the pair is refused rather than silently
 /// dropping one of them.
-fn progress_of(attributes: ProgressAttributes, label: Option<Label>) -> Result<AnyView, JsError> {
+fn progress_of(
+    attributes: ProgressAttributes,
+    label: Option<Label<TitleLabel>>,
+) -> Result<AnyView, JsError> {
     let (value, total, style) = attributes.into_parts();
     let style = style.unwrap_or_default();
     let Some(value) = value else {
         let progress = Progress::infinity();
-        return Ok(AnyView::new(match label {
-            Some(label) => progress.label(label),
-            None => progress,
-        }));
+        return Ok(match label {
+            Some(label) => AnyView::new(progress.label(label)),
+            None => AnyView::new(progress),
+        });
     };
     if let Some(total) = total {
         let progress = Progress::new(value).total(total);
@@ -557,10 +570,10 @@ fn progress_of(attributes: ProgressAttributes, label: Option<Label>) -> Result<A
                 ));
             }
         };
-        return Ok(AnyView::new(match label {
-            Some(label) => progress.label(label),
-            None => progress,
-        }));
+        return Ok(match label {
+            Some(label) => AnyView::new(progress.label(label)),
+            None => AnyView::new(progress),
+        });
     }
     let progress = Progress::new(value);
     let progress = match style {
@@ -568,10 +581,10 @@ fn progress_of(attributes: ProgressAttributes, label: Option<Label>) -> Result<A
         ProgressStyleValue::Circular => progress.circular(),
         ProgressStyleValue::Loading => progress.loading(),
     };
-    Ok(AnyView::new(match label {
-        Some(label) => progress.label(label),
-        None => progress,
-    }))
+    Ok(match label {
+        Some(label) => AnyView::new(progress.label(label)),
+        None => AnyView::new(progress),
+    })
 }
 
 /// A JavaScript builder used where the framework takes a view it may build

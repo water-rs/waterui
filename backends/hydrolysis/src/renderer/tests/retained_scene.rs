@@ -19,26 +19,25 @@ use std::time::Instant;
 
 use waterui::animation::Animation;
 use waterui::{Binding, SignalExt as _, ViewExt as _};
-use waterui_core::AnyView;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::SelfId;
+use waterui_core::{AnyView, OneOf2};
 use waterui_layout::scroll;
 use waterui_layout::stack::{VStack, vstack, zstack};
 
 use nami::collection::List;
 use waterui::graphics::Color;
-use waterui_backend_core::View;
 use waterui_core::dynamic::watch;
 use waterui_core::layout::{
     Layout, LayoutError, PlacementInput, ProposalSize, Rect, Size, SubView, SubviewPlacement,
 };
-use waterui_core::transition::PropertyTransition;
 use waterui_core::views::ForEach;
 use waterui_graphics::color::signal_color;
 use waterui_layout::AbsoluteLayout;
 use waterui_layout::container::LazyContainer;
 use waterui_layout::frame::Frame;
 use waterui_layout::stack::ZStackLayout;
+use waterui_structural_transition::PropertyTransition;
 
 #[cfg(hydrolysis_cherenkov)]
 use super::pumped_test_environment;
@@ -635,7 +634,7 @@ fn dynamic_growth_from_empty_renders_content_without_rebuild() {
     // Mirror the runtime window composition: overlay Dynamic layered in a ZStack
     // above the main content, sized by its own (initially zero) measurement.
     let (handler, dynamic) = Dynamic::new();
-    handler.set(());
+    handler.set(OneOf2::A(()));
     let builder = AnyViewBuilder::<AnyView>::new(move || {
         AnyView::new(zstack((().size(360.0, 600.0), dynamic.clone())))
     });
@@ -646,7 +645,7 @@ fn dynamic_growth_from_empty_renders_content_without_rebuild() {
     let start = Instant::now();
     let _ = runtime.pump_at(true, start);
 
-    handler.set(overlay_content());
+    handler.set(OneOf2::B(overlay_content()));
     let result = runtime.pump_at(true, start + Duration::from_millis(16));
     assert_eq!(
         result.profile().counters().rebuild_iterations(),
@@ -760,7 +759,7 @@ fn transition_color_stack(list: &List<SelfId<u64>>) -> AnyView {
 }
 
 /// The same fixture with a caller-chosen transition declaration.
-fn transition_color_stack_with<T: waterui_core::transition::Transition + Clone>(
+fn transition_color_stack_with<T: waterui_structural_transition::Transition + Clone>(
     list: &List<SelfId<u64>>,
     transition: T,
 ) -> AnyView {
@@ -1475,8 +1474,8 @@ fn transition_outside_a_structural_site_is_reported_and_drawn_without_it() {
 #[derive(Clone, Copy)]
 struct CaptureOnlyTransition;
 
-impl waterui_core::transition::Transition for CaptureOnlyTransition {
-    fn captures_content(&self, _phase: waterui_core::transition::TransitionPhase) -> bool {
+impl waterui_structural_transition::Transition for CaptureOnlyTransition {
+    fn captures_content(&self, _phase: waterui_structural_transition::TransitionPhase) -> bool {
         true
     }
 }
@@ -1519,7 +1518,7 @@ fn reduced_pixel_transition_runs_as_opacity() {
         })
     };
     let mut env = test_environment();
-    env.insert(waterui_core::transition::ReduceMotion(true));
+    env.insert(waterui_structural_transition::ReduceMotion(true));
     let mut runtime =
         HeadlessRuntime::new_for_tests(env, builder, 400, 640, MinimalTestTheme::default());
     let start = Instant::now();

@@ -19,6 +19,7 @@ use waterui_core::handler::ReportExtraction as _;
 /// post-walk single-child collapse. An explicit `a11y_role` claim is the
 /// element the author declared, so it never collapses.
 #[cfg(feature = "accessibility")]
+#[cfg(hydrolysis_cherenkov)]
 pub(super) struct GestureA11yClaim {
     /// The registered claim node.
     pub(super) node_id: AccessibilityNodeId,
@@ -247,10 +248,12 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// is `md.comp.menu.container.color` (`surface-container`), the extra-small
     /// 4 dp `md.sys.shape.corner.extra-small` shape and
     /// `md.comp.menu.container.elevation` level 2 — drawn by the panel part
-    /// of the theme's `MenuLook`, with the look's selected-row part over
-    /// `selected_row` (a picker popup's selected row, in the panel's own
-    /// space). The window leaves the panel's shadow room inside its own
-    /// bounds via `POPUP_MENU_PANEL_MARGIN`.
+    /// of the theme's `MenuLook`, recorded as the surface it states, with the
+    /// look's selected-row part over `selected_row` (a picker popup's
+    /// selected row, in the panel's own space). The window leaves the
+    /// panel's shadow room inside its own bounds: the panel's elevation
+    /// extent (`popup_menu_panel_margin`) on every side.
+    #[cfg(feature = "menu")]
     pub(super) fn apply_popup_menu_surface(
         renderer: &mut Self,
         ctx: RenderContext,
@@ -261,7 +264,11 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         {
             let look = crate::renderer::input::menu_look(&renderer.theme(), env);
             renderer.scene_mut().record_picture(ctx.local(), |draw| {
-                look.record_panel(&mut *draw, ctx.bounds());
+                crate::renderer::chrome::record_surface_at_rest(
+                    look.panel(),
+                    &mut *draw,
+                    ctx.bounds(),
+                );
                 if let Some(row) = selected_row {
                     let bounds = ctx.bounds();
                     look.record_selected_row(
@@ -298,6 +305,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// wiring over the text-input and surface targets the semantic walk
     /// registered, with no renderer in hand.
     #[cfg(feature = "accessibility")]
+    #[cfg(hydrolysis_cherenkov)]
     pub(super) fn apply_focused_semantic(
         renderer: &mut SemanticCore<E>,
         value: &Focused,
@@ -392,11 +400,19 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         clippy::too_many_lines,
         reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
     )]
+    #[cfg_attr(
+        not(feature = "accessibility"),
+        expect(
+            unused_variables,
+            reason = "the content only names the synthesized accessibility claim"
+        )
+    )]
     pub(super) fn apply_gesture_observer(
         renderer: &mut Self,
         ctx: RenderContext,
         env: &Environment,
         effect: &GestureObserverEffect,
+        content: &RenderNode<E>,
         render_content: impl FnOnce(&mut Self, &Environment),
     ) {
         // The action environment contract (water-rs/hydrolysis#177,
@@ -410,7 +426,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         // `captured_env.layered_on(runtime_env)` rule.
         let bounds = ctx.bounds();
         let disabled = env
-            .get::<waterui_core::interaction::Disabled>()
+            .get::<waterui_interaction::interaction::Disabled>()
             .is_some_and(|disabled| renderer.read_signal(disabled.signal()));
         #[cfg(feature = "accessibility")]
         let mut claimed_naming_node = None;
@@ -453,9 +469,8 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                         AccessibilityNodeRole::Button,
                     ),
                 );
-                if let Some(label) =
-                    renderer.resolve_accessibility_label(env, effect.default_a11y_label.clone())
-                {
+                let default_label = content.accessibility_label(renderer);
+                if let Some(label) = renderer.resolve_accessibility_label(env, default_label) {
                     node.set_label(label);
                 }
                 if let Some(value) = renderer.resolve_accessibility_value(env, None) {
@@ -619,6 +634,50 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             return;
         }
 
+        if let Gesture::Tap(tap) = &effect.gesture
+            && tap.count() == 1
+            && tap.get_buttons() == waterui_interaction::gesture::PointerButtons::PRIMARY
+            && env
+                .get::<waterui_interaction::interaction::InteractionReport>()
+                .is_some()
+            && env.get::<crate::theme::Chrome>().is_none()
+        {
+            let interaction_key = InteractionKey::for_rc(&effect.action, 0);
+            #[cfg(feature = "accessibility")]
+            let focus_key = interaction_key.clone();
+            let (_state, press_slot, _handles) =
+                renderer.bind_reported_tap_target(interaction_key, bounds, env, disabled);
+            #[cfg(feature = "accessibility")]
+            if let Some(node_id) = claimed_naming_node {
+                renderer.push_accessibility_parent(node_id);
+            }
+            Self::render_gesture_content(renderer, env, content_env, scope_claimed, render_content);
+            #[cfg(feature = "accessibility")]
+            if claimed_naming_node.is_some() {
+                renderer.pop_accessibility_parent();
+            }
+            #[cfg(feature = "accessibility")]
+            if let Some(node_id) = claimed_naming_node {
+                renderer.register_accessibility_focus_link(&focus_key, node_id);
+                renderer.drain_claim_scope(node_id, claim_env.as_ref().unwrap_or(env));
+                if claim_synthesized {
+                    renderer.collapse_synthesized_claim(node_id);
+                }
+            }
+            if !disabled {
+                renderer.register_interactive_pointer_target_with_keyboard(
+                    bounds,
+                    press_slot,
+                    true,
+                    move |_renderer, _point, runtime_env| {
+                        layered_action(runtime_env).report_extraction();
+                        false
+                    },
+                );
+            }
+            return;
+        }
+
         if let Some(target) = effect.gesture_target.take() {
             renderer.register_retained_gesture_target(&target, bounds, group_id);
             effect.gesture_target.set(Some(target));
@@ -696,16 +755,18 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// When a scope exists that the tap did not claim, the activation is
     /// delegated to the scope's representative instead, and `None` returns.
     #[cfg(feature = "accessibility")]
+    #[cfg(hydrolysis_cherenkov)]
     pub(super) fn emit_gesture_observer_accessibility(
         renderer: &mut SemanticCore<E>,
         env: &Environment,
         effect: &GestureObserverEffect,
+        content: &RenderNode<E>,
     ) -> Option<GestureA11yClaim> {
         if !matches!(effect.gesture, Gesture::Tap(_)) {
             return None;
         }
         let disabled = env
-            .get::<waterui_core::interaction::Disabled>()
+            .get::<waterui_interaction::interaction::Disabled>()
             .is_some_and(|disabled| renderer.read_signal(disabled.signal()));
         // A hidden subtree publishes nothing, the claim included.
         if env
@@ -737,9 +798,8 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                     AccessibilityNodeRole::Button,
                 ),
             );
-            if let Some(label) =
-                renderer.resolve_accessibility_label(env, effect.default_a11y_label.clone())
-            {
+            let default_label = content.accessibility_label(renderer);
+            if let Some(label) = renderer.resolve_accessibility_label(env, default_label) {
                 node.set_label(label);
             }
             node.add_action(AccessibilityAction::Focus);
@@ -839,6 +899,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// registration and the preview/accessory slots travel with the target for
     /// the open presentation to mount. The node's environment travels with the
     /// target so the popup opens inside it (water-rs/hydrolysis#140).
+    #[cfg(feature = "menu")]
     pub(super) fn apply_context_menu(
         renderer: &mut Self,
         ctx: RenderContext,
@@ -847,14 +908,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         render_content: impl FnOnce(&mut Self),
     ) {
         let bounds = ctx.bounds();
-        renderer.register_context_menu_target(
-            bounds,
-            value.items.clone(),
-            env,
-            value.dismiss_requests.clone(),
-            Rc::clone(&value.preview),
-            Rc::clone(&value.accessory),
-        );
+        renderer.register_context_menu_target(bounds, value, env);
         render_content(renderer);
     }
 
@@ -885,7 +939,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 is_presented: value.is_presented.clone(),
                 placed_edge: value.placed_edge.clone(),
                 env: env.clone(),
-                builder: value.builder.clone(),
+                builder: Rc::clone(&value.builder),
                 presentations: Rc::clone(&value.presentations),
                 marker: Rc::clone(&value.marker),
             });
@@ -898,6 +952,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// carries the modal environment — the node's environment plus the
     /// `ModalInteraction` scope that routes Escape to the dialog's cancel
     /// path — so the layer presents modal the moment it draws.
+    #[cfg(waterui_feature = "dialog")]
     pub(super) fn apply_dialog(
         renderer: &mut Self,
         env: &Environment,

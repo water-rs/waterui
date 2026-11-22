@@ -218,13 +218,6 @@ where
         } = self;
         FixedContainer::new(layout, (base, layer))
     }
-
-    /// Resolves to `FixedContainer` over the same layout and children in
-    /// `[base, layer]` order; reports what that container would.
-    fn stretch_axis(&self) -> StretchAxis {
-        self.layout
-            .stretch_axis(&[self.base.stretch_axis(), self.layer.stretch_axis()])
-    }
 }
 
 /// Convenience constructor for creating an [`Overlay`] with the default alignment.
@@ -239,7 +232,7 @@ mod tests {
     use super::*;
     use crate::container::FixedContainer;
     use crate::{LayoutError, Rect, ResolvedExtent, StretchAxis, ViewDimensions};
-    use waterui_core::{AnyView, Environment, View};
+    use waterui_core::{AnyView, Environment, View, view::ViewSequence};
 
     struct MockSubView {
         size: Size,
@@ -261,16 +254,6 @@ mod tests {
         }
         fn priority(&self) -> i32 {
             0
-        }
-    }
-
-    struct StretchingBase;
-
-    impl View for StretchingBase {
-        fn body(self, _env: &Environment) -> impl View {}
-
-        fn stretch_axis(&self) -> StretchAxis {
-            StretchAxis::Horizontal
         }
     }
 
@@ -343,14 +326,16 @@ mod tests {
     #[test]
     fn test_overlay_body_preserves_base_stretch_axis() {
         let env = Environment::default();
-        let body = overlay(StretchingBase, ()).body(&env);
+        let body = overlay((), ()).body(&env);
         let container = AnyView::new(body)
-            .downcast::<FixedContainer>()
+            .downcast::<FixedContainer<((), ())>>()
             .expect("overlay body should be a FixedContainer");
         let (layout, children) = container.as_parts();
 
-        assert_eq!(children.len(), 2);
-        let child_axes: Vec<StretchAxis> = children.iter().map(View::stretch_axis).collect();
-        assert_eq!(layout.stretch_axis(&child_axes), StretchAxis::Horizontal);
+        assert_eq!(ViewSequence::len(children), 2);
+        assert_eq!(
+            layout.stretch_axis(&[StretchAxis::Horizontal, StretchAxis::None]),
+            StretchAxis::Horizontal
+        );
     }
 }

@@ -2,8 +2,8 @@
 use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::live_toggle::LiveToggleParts;
 use crate::renderer::{
-    GroupOpacity, HydroNativeView, HydroState, InteractionKey, RenderContext, Track, TrackAction,
-    WidgetRenderContext, measure_label_intrinsic,
+    GroupOpacity, HeldChild, HydroState, InteractionKey, RenderContext, RetainedSubview, Track,
+    TrackAction, WidgetRenderContext,
 };
 use crate::theme::{
     CheckboxLook, SpecTint, SwitchDrag, SwitchLook, ToggleControl, ToggleSpec, WidgetTheme,
@@ -18,13 +18,12 @@ use nami::Signal as _;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use waterui_controls::toggle::{ToggleConfig, ToggleStyle};
+use waterui_core::Environment;
 use waterui_core::contract_violation;
-use waterui_core::interaction::InteractionState;
 use waterui_core::layout::{LayoutDirection, Size as LayoutSize};
 use waterui_core::layout::{ProposalSize, StretchAxis, ViewDimensions};
-use waterui_core::{AnyView, Environment, Native};
+use waterui_interaction::interaction::InteractionState;
 
-use crate::renderer::RetainedSubview;
 use crate::widgets::util::{label_beside_control_bounds, mirrored_in, widget_disabled};
 
 /// A toggle's look: the theme's switch or checkbox for a [`ToggleSpec`].
@@ -52,7 +51,7 @@ impl ToggleLook {
 }
 
 /// The spec of the toggle `config` describes in `env`.
-fn toggle_spec(config: &ToggleConfig, env: &Environment) -> ToggleSpec {
+fn toggle_spec<S>(config: &ToggleConfig<S>, env: &Environment) -> ToggleSpec {
     ToggleSpec::new(
         config.style(),
         config.size(),
@@ -67,16 +66,27 @@ fn toggle_spec(config: &ToggleConfig, env: &Environment) -> ToggleSpec {
 /// The look the theme gave, and the parts recorded from it, are held across
 /// renders while the toggle's spec and frame stay the same.
 pub struct ToggleRenderState<E: crate::text::TextEngine> {
-    config: ToggleConfig,
+    config: ToggleConfig<HeldChild<E>>,
     label_view: RetainedSubview<E>,
     look: Option<(ToggleSpec, ToggleLook)>,
     parts: Option<LiveToggleParts>,
 }
 
 impl<E: crate::text::TextEngine> ToggleRenderState<E> {
-    pub(crate) fn from_config(config: ToggleConfig) -> Self {
+    /// The label this control contributes to a node naming itself from its
+    /// content: its own label.
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn contributed_label(
+        &self,
+        _renderer: &mut crate::renderer::SemanticCore<E>,
+        env: &Environment,
+    ) -> Option<String> {
+        crate::renderer::SemanticCore::<E>::accessibility_label_from_label(self.config.label(), env)
+    }
+
+    pub(crate) fn from_config(config: ToggleConfig<HeldChild<E>>) -> Self {
         Self {
-            label_view: RetainedSubview::new(AnyView::new(config.label().clone())),
+            label_view: RetainedSubview::held(config.label().build()),
             config,
             look: None,
             parts: None,
@@ -136,26 +146,15 @@ impl<E: crate::text::TextEngine> ToggleRenderState<E> {
     }
 }
 
-impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<ToggleConfig> {
-    fn intrinsic(
-        state: &mut crate::renderer::HydroState<E>,
-        view: &Self,
-        env: &Environment,
-        theme: &Rc<dyn crate::theme::WidgetTheme>,
-    ) -> LayoutSize {
-        measure_toggle_intrinsic(view.as_inner(), state, env, theme)
-    }
-}
-
 /// Emits a toggle's accessibility node from its config. Shared by the rendered
 /// `Widget`-node flush (which passes its [`RenderContext`]) and the semantic
 /// emission walk (which passes `None` — a semantic node carries no bounds).
 // empty when the accessibility feature is off
 #[cfg_attr(not(feature = "accessibility"), allow(clippy::missing_const_for_fn))]
-pub fn toggle_accessibility<E: crate::text::TextEngine>(
+pub fn toggle_accessibility<E: crate::text::TextEngine, S>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     ctx: Option<RenderContext>,
-    toggle: &ToggleConfig,
+    toggle: &ToggleConfig<S>,
     env: &Environment,
     focus_keys: &[crate::renderer::InteractionKey],
 ) {
@@ -514,21 +513,6 @@ fn toggle_binding_action<E: crate::text::TextEngine>(
     }
 }
 
-pub fn measure_toggle_intrinsic<E: crate::text::TextEngine>(
-    toggle: &ToggleConfig,
-    state: &mut HydroState<E>,
-    env: &Environment,
-    theme: &Rc<dyn crate::theme::WidgetTheme>,
-) -> LayoutSize {
-    let look = ToggleLook::resolve(theme, &toggle_spec(toggle, env), env);
-    let label_size = measure_label_intrinsic(toggle.label(), state, env, theme);
-    let (width, height) = toggle_size(look.control(), label_size);
-    LayoutSize::new(
-        crate::num_cast::f64_as_f32(width),
-        crate::num_cast::f64_as_f32(height),
-    )
-}
-
 /// What a toggle of `style` in `bounds` proposes to its label: a checkbox's
 /// label takes its fitted size after the control, a switch's label is offered
 /// the room up to the control, so a label that stretches fills it while text
@@ -608,6 +592,7 @@ fn left_to_right_bounds(
 /// same node `toggle_accessibility` registers, with no bounds. The label
 /// sub-view flushes visual-only, so there is nothing else to emit.
 #[cfg(feature = "accessibility")]
+#[cfg(hydrolysis_cherenkov)]
 pub fn emit_toggle_accessibility<E: crate::text::TextEngine>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     state: &Rc<RefCell<ToggleRenderState<E>>>,

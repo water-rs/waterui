@@ -1,10 +1,12 @@
 //! Pump-based headless runtime for tests, snapshots and offscreen rendering.
 
+use super::window::{RootWindow, root_window};
 use super::*;
 use crate::animation::PerpetualAnimation;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::platform::PainterUnavailable;
-use crate::renderer::MenuShortcutRegistry;
+use waterui::window::WindowContent;
+
 #[cfg(feature = "accessibility")]
 use crate::renderer::accessibility::{
     AccessibilityActivationPointError, AccessibilityContentTypes, WINDOW_ID_STRIDE,
@@ -53,6 +55,13 @@ impl HeadlessSurface {
     /// Whether the driver reported the device generation this target
     /// renders on lost — the next frame recovers it under its context's
     /// recovery budget. The CPU painter has no device to lose.
+    #[cfg_attr(
+        not(hydrolysis_gpu_painter),
+        expect(
+            clippy::missing_const_for_fn,
+            reason = "the same query reads driver state when the GPU painter is enabled"
+        )
+    )]
     fn device_lost(&self) -> bool {
         match self {
             #[cfg(hydrolysis_gpu_painter)]
@@ -232,7 +241,7 @@ impl PlatformWindow for HeadlessPlatformWindow {
         self.inner.content_size()
     }
 
-    fn apply_properties(&mut self, window: &Window) {
+    fn apply_properties<C, T>(&mut self, window: &Window<C, T>) {
         self.inner.apply_properties(window);
     }
 
@@ -491,7 +500,7 @@ impl HeadlessPumpResult {
 pub struct HeadlessRuntime {
     env: Environment,
     runtime: RuntimeWindow<HeadlessPlatformWindow, crate::text::ParleyEngine>,
-    pending_window_queue: Rc<RefCell<Vec<Window>>>,
+    pending_window_queue: Rc<RefCell<Vec<RootWindow<crate::text::ParleyEngine>>>>,
     popup_windows: Vec<RuntimeWindow<HeadlessPlatformWindow, crate::text::ParleyEngine>>,
     /// The style the runtime was launched with, kept so popup windows'
     /// renderers measure and encode with the same widget theme.
@@ -546,12 +555,11 @@ impl Drop for ReclaimGpuOnDrop {
 /// offscreen captures match what `water run` renders from the very first
 /// frame.
 #[cfg(not(target_arch = "wasm32"))]
-fn default_window(content: AnyViewBuilder<AnyView>) -> Window {
-    let content_builder = content;
+fn default_window<B: ViewBuilder>(content: B) -> Window<WindowContent<B>> {
     Window::new(
         "",
         waterui_core::binding(waterui::window::WindowState::Normal),
-        move || content_builder.build(),
+        content,
     )
 }
 
@@ -569,7 +577,7 @@ impl HeadlessRuntime {
     /// [`OffscreenPainter::select`] chose cannot render on this host.
     pub fn new(
         env: Environment,
-        content: AnyViewBuilder<AnyView>,
+        content: impl ViewBuilder,
         width: u32,
         height: u32,
         style: impl crate::Style,
@@ -578,7 +586,7 @@ impl HeadlessRuntime {
         Ok(Self::on_painter(
             OffscreenPainter::select()?,
             env,
-            default_window(content),
+            root_window(default_window(content)),
             width,
             height,
             style,
@@ -599,9 +607,9 @@ impl HeadlessRuntime {
     ///
     /// # Errors
     /// [`PainterUnavailable`], as [`Self::new`].
-    pub fn new_with_window(
+    pub fn new_with_window<C: ViewBuilder, T: waterui::window::WindowToolbar>(
         env: Environment,
-        window: Window,
+        window: Window<C, T>,
         width: u32,
         height: u32,
         style: impl crate::Style,
@@ -610,7 +618,7 @@ impl HeadlessRuntime {
         Ok(Self::on_painter(
             OffscreenPainter::select()?,
             env,
-            window,
+            root_window(window),
             width,
             height,
             style,
@@ -646,9 +654,18 @@ impl HeadlessRuntime {
     pub fn set_scale_factor(&mut self, scale_factor: f64) {
         let before = self.runtime.platform.scale_factor();
         self.runtime.platform.set_scale_factor(scale_factor);
-        if self.runtime.platform.scale_factor().to_bits() != before.to_bits() {
+        let after = self.runtime.platform.scale_factor();
+        if after.to_bits() != before.to_bits() {
             self.runtime.request_refresh();
             self.runtime.request_redraw();
+            // Popup windows already mounted follow the main window's scale
+            // the same way: the surface reallocates and the next pump
+            // refreshes and renders at it.
+            for popup in &mut self.popup_windows {
+                popup.platform.set_scale_factor(after);
+                popup.request_refresh();
+                popup.request_redraw();
+            }
         }
     }
 
@@ -667,7 +684,7 @@ impl HeadlessRuntime {
     #[must_use]
     pub fn new_for_tests(
         env: Environment,
-        content: AnyViewBuilder<AnyView>,
+        content: impl ViewBuilder,
         width: u32,
         height: u32,
         style: impl crate::Style,
@@ -675,7 +692,7 @@ impl HeadlessRuntime {
         Self::on_painter(
             OffscreenPainter::for_tests(),
             env,
-            default_window(content),
+            root_window(default_window(content)),
             width,
             height,
             style,
@@ -692,9 +709,9 @@ impl HeadlessRuntime {
     /// [`Self::new_for_tests`].
     #[cfg(any(test, feature = "testing"))]
     #[must_use]
-    pub fn new_for_tests_with_window(
+    pub fn new_for_tests_with_window<C: ViewBuilder, T: waterui::window::WindowToolbar>(
         env: Environment,
-        window: Window,
+        window: Window<C, T>,
         width: u32,
         height: u32,
         style: impl crate::Style,
@@ -702,7 +719,7 @@ impl HeadlessRuntime {
         Self::on_painter(
             OffscreenPainter::for_tests(),
             env,
-            window,
+            root_window(window),
             width,
             height,
             style,
@@ -727,7 +744,7 @@ impl HeadlessRuntime {
     pub fn new_for_tests_on_context(
         painter: impl Into<OffscreenPainter>,
         env: Environment,
-        content: AnyViewBuilder<AnyView>,
+        content: impl ViewBuilder,
         width: u32,
         height: u32,
         style: impl crate::Style,
@@ -735,7 +752,7 @@ impl HeadlessRuntime {
         Self::on_painter(
             painter.into(),
             env,
-            default_window(content),
+            root_window(default_window(content)),
             width,
             height,
             style,
@@ -750,7 +767,7 @@ impl HeadlessRuntime {
     fn on_painter(
         painter: OffscreenPainter,
         env: Environment,
-        window: Window,
+        window: RootWindow<crate::text::ParleyEngine>,
         width: u32,
         height: u32,
         style: impl crate::Style,
@@ -759,16 +776,15 @@ impl HeadlessRuntime {
         let inspector = init_main_thread_executors();
         let inspector_probe = inspector
             .as_ref()
-            .map(waterui::inspector::InspectorRuntime::runtime_probe);
+            .map(|inspector| inspector.task_probe() as Arc<dyn waterui::task::RuntimeProbe>);
         let mut env = env.extending(waterui_graphics::backend::SceneViewMergeToParent);
-        waterui_core::install_application_resources(&mut env);
+        waterui::install_application_resources(&mut env);
         waterui::inspector::install(&mut env, inspector);
         let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
-        install_native_component_hooks(&mut env);
-        install_headless_window_managers::<crate::text::ParleyEngine>(
-            &mut env,
-            Rc::clone(&pending_window_queue),
-        );
+        #[cfg(any(test, hydrolysis_platform_services))]
+        install_platform_services(&mut env);
+        install_window_registries::<crate::text::ParleyEngine>(&mut env);
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         env.insert(HydrolysisTextContextMenuMode::Overlay);
         // A headless host has no platform appearance: the scheme is Light
         // unless the application installs its own.
@@ -786,18 +802,6 @@ impl HeadlessRuntime {
         // environment instead of enumerating the system's fonts for itself.
         let fonts = crate::text::fonts::native_collection(&env);
         fonts.clone().install(&mut env);
-        // The capture service mounts its subtree under a snapshot of the
-        // assembled environment — the theme tokens, hooks and font
-        // collection a window's subtree resolves — so it must be installed
-        // last (water-rs/waterui#2703).
-        env.insert(waterui_core::ViewRenderer::new(
-            crate::view_renderer::HydrolysisViewRenderer::on_painter(
-                &painter,
-                Rc::clone(&theme),
-                env.clone(),
-                family_resolution,
-            ),
-        ));
 
         // Headless binaries (preview, tests) have no platform runner to install
         // a tracing subscriber; honor `RUST_LOG` and `WATERUI_LOG` here so they
@@ -832,12 +836,15 @@ impl HeadlessRuntime {
             Rc::clone(&theme),
             ParleyEngine::from_collection(&fonts, family_resolution),
         );
+        #[cfg(waterui_feature = "capture")]
+        renderer.set_offscreen_painter(&painter, family_resolution);
         renderer.set_window_id(
-            env.get::<MenuShortcutRegistry<crate::text::ParleyEngine>>()
-                .expect("install_headless_window_managers seeds MenuShortcutRegistry")
+            env.get::<crate::renderer::WindowIdentities>()
+                .expect("install_window_registries seeds WindowIdentities")
                 .mint_window_id(),
         );
         renderer.set_window_closable(window.closable);
+        install_core_window_openers(&mut renderer, queue_window_opener(&pending_window_queue));
         let runtime = RuntimeWindow::new_painted(
             window,
             platform,
@@ -867,7 +874,7 @@ impl HeadlessRuntime {
 
     fn create_popup_runtime(
         &self,
-        window: Window,
+        window: RootWindow<crate::text::ParleyEngine>,
     ) -> RuntimeWindow<HeadlessPlatformWindow, crate::text::ParleyEngine> {
         let frame = crate::platform::validated_window_frame(window.frame.snapshot());
         let width = crate::num_cast::f32_as_u32(frame.width().max(1.0));
@@ -879,18 +886,27 @@ impl HeadlessRuntime {
         platform
             .touch_scroll_config
             .set(self.runtime.platform.touch_scroll_config.get());
+        // A popup renders at the main window's scale factor: `apply_properties`
+        // below allocates its surface from the logical frame at that scale.
+        platform.set_scale_factor(self.runtime.platform.scale_factor());
         platform.apply_properties(&window);
         let mut renderer = HydrolysisRenderer::with_engine(
             Rc::clone(&self.theme),
             ParleyEngine::from_collection(&self.fonts, self.family_resolution),
         );
+        #[cfg(waterui_feature = "capture")]
+        renderer.set_offscreen_painter(&self.painter, self.family_resolution);
         renderer.set_window_id(
             self.env
-                .get::<MenuShortcutRegistry<crate::text::ParleyEngine>>()
-                .expect("install_headless_window_managers seeds MenuShortcutRegistry")
+                .get::<crate::renderer::WindowIdentities>()
+                .expect("install_window_registries seeds WindowIdentities")
                 .mint_window_id(),
         );
         renderer.set_window_closable(window.closable);
+        install_core_window_openers(
+            &mut renderer,
+            queue_window_opener(&self.pending_window_queue),
+        );
         window.arm_close_requests(&self.env);
         RuntimeWindow::new_painted(
             window,
@@ -1008,10 +1024,13 @@ impl HeadlessRuntime {
         } else {
             (&mut self.runtime, request)
         };
-        let action_env = self.env.extending(runtime_window_origin(window));
+        #[cfg(any(feature = "menu", feature = "color-picker"))]
+        let action_env = &self.env.extending(runtime_window_origin(window));
+        #[cfg(not(any(feature = "menu", feature = "color-picker")))]
+        let action_env = &self.env;
         let changed = window
             .renderer
-            .handle_accessibility_action(request, &action_env);
+            .handle_accessibility_action(request, action_env);
         if changed {
             window.request_refresh();
             window.request_redraw();
@@ -1119,6 +1138,7 @@ impl HeadlessRuntime {
 
     #[cfg(feature = "accessibility")]
     /// Clears UI focus; returns whether focus changed.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub fn clear_ui_focus(&mut self) -> bool {
         let changed = self.runtime.renderer.clear_ui_focus();
         if changed {
@@ -1272,7 +1292,10 @@ impl HeadlessRuntime {
     /// popup machinery emitted — so a test can assert on the window the
     /// platform layer will realize.
     #[cfg(test)]
-    pub(crate) fn popup_window(&self, index: usize) -> Option<&Window> {
+    pub(crate) fn popup_window(
+        &self,
+        index: usize,
+    ) -> Option<&RootWindow<crate::text::ParleyEngine>> {
         self.popup_windows.get(index).map(|runtime| &runtime.window)
     }
 
@@ -1305,6 +1328,7 @@ impl HeadlessRuntime {
     /// The drawn menu mounts no popup window, so `popup_frames` stays empty
     /// while it is up.
     #[cfg(test)]
+    #[cfg(feature = "menu")]
     pub(crate) fn context_menu_presentation_frames(
         &self,
     ) -> Option<(kurbo::Rect, Option<kurbo::Rect>)> {
@@ -1314,6 +1338,7 @@ impl HeadlessRuntime {
     /// The row frames inside the open drawn menu, in hit order — empty when
     /// no drawn presentation is open.
     #[cfg(test)]
+    #[cfg(feature = "menu")]
     pub(crate) fn context_menu_row_frames(&self) -> Vec<kurbo::Rect> {
         self.runtime.renderer.context_menu_row_frames()
     }
@@ -1329,6 +1354,7 @@ impl HeadlessRuntime {
     /// presentation — the source's rect unless fitting the stack moved or
     /// cropped it — or `None` when none is open.
     #[cfg(test)]
+    #[cfg(feature = "menu")]
     pub(crate) fn context_menu_lift_frame(&self) -> Option<kurbo::Rect> {
         self.runtime.renderer.context_menu_lift_frame()
     }
@@ -1454,8 +1480,9 @@ impl HeadlessRuntime {
             .as_mut()
             .and_then(|result| result.snapshot.as_mut())
         {
+            let scale_factor = self.runtime.platform.scale_factor();
             for (_, frame, popup_snapshot) in popup_snapshots {
-                composite_popup_snapshot(snapshot, &popup_snapshot, frame);
+                composite_popup_snapshot(snapshot, &popup_snapshot, frame, scale_factor);
             }
         }
         let executor_after_started_at = Instant::now();
@@ -1523,9 +1550,13 @@ fn composite_popup_snapshot(
     target: &mut HeadlessSnapshot,
     source: &HeadlessSnapshot,
     frame: waterui_core::layout::Rect,
+    scale_factor: f64,
 ) {
-    let offset_x = crate::num_cast::f32_as_i32(frame.x().round());
-    let offset_y = crate::num_cast::f32_as_i32(frame.y().round());
+    // The frame is in logical units and both snapshots are physical pixels:
+    // the origin lands on the pixel grid the way the window's own surface
+    // size does (`resize_to_logical` rounds the scaled value).
+    let offset_x = crate::num_cast::f64_as_i32((f64::from(frame.x()) * scale_factor).round());
+    let offset_y = crate::num_cast::f64_as_i32((f64::from(frame.y()) * scale_factor).round());
     for source_y in 0..source.height() {
         let target_y = offset_y + i32::try_from(source_y).expect("source y should fit i32");
         if target_y < 0
@@ -1686,6 +1717,7 @@ mod generation_tests {
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
     use std::time::Instant;
+    use waterui_core::{AnyView, handler::AnyViewBuilder};
     use waterui_graphics::backend::{
         FontSource, ImageData, NextFrame, RecordingResources, Registered, Rgba8, SceneContent,
         SceneInvalidator, SceneView,
@@ -2046,6 +2078,7 @@ mod generation_tests {
 mod painter_selection_tests {
     use super::*;
     use crate::renderer::tests::{MinimalTestTheme, test_environment};
+    use waterui_core::{AnyView, handler::AnyViewBuilder};
 
     /// A host without a hardware GPU takes the CPU painter, and a runtime
     /// on it renders and reads back its frames through the CPU engine —

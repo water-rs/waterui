@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 use core::fmt;
 
 use nami::{Computed, SignalExt};
-use waterui_core::layout::{Point, Rect, Size, StretchAxis};
+use waterui_core::layout::{Point, Rect, Size};
 use waterui_core::reactive::signal::IntoComputed;
 use waterui_core::{Environment, View, contract_violation};
 
@@ -442,10 +442,6 @@ impl View for AnimatedMeshGradient {
                 cx.fill(size.map(Rect::from_size), mesh);
             });
         })
-    }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::Both
     }
 }
 

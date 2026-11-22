@@ -9,10 +9,12 @@ use std::path::PathBuf;
 use waterui::Url;
 use waterui::drag_drop::{DragPayload, Files};
 use waterui::gesture::PointerButton as WuiPointerButton;
-use waterui_backend_core::gesture::{GesturePlacement, LONG_PRESS_SLOP};
+use waterui_backend_core::gesture::GesturePlacement;
+#[cfg(feature = "menu")]
+use waterui_backend_core::gesture::LONG_PRESS_SLOP;
 use waterui_core::contract_violation;
-use waterui_core::interaction::{InteractionReport, InteractionState, Selected};
 use waterui_graphics::input::{Code, GesturePhase, ScrollPhase, ScrollUnit};
+use waterui_interaction::interaction::{InteractionReport, InteractionState, Selected};
 use waterui_layout::scroll::Axis as ScrollAxis;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -126,6 +128,7 @@ pub struct PointerTarget<E: crate::text::TextEngine> {
     /// The control's own handling of a press on this target, when it tracks
     /// the press instead of acting on release ([`Track`]). The action still
     /// answers keyboard activation.
+    #[cfg(any(feature = "toggle", feature = "picker"))]
     pub(crate) track: Option<TrackAction>,
     pub(crate) keyboard_step: Option<KeyboardStepAction>,
     /// Whether a press at a window point inside `bounds` is this target's,
@@ -144,6 +147,41 @@ pub struct PointerTarget<E: crate::text::TextEngine> {
 pub type PressFilter = Rc<dyn Fn(kurbo::Point) -> bool>;
 
 impl<E: crate::text::TextEngine> PointerTarget<E> {
+    fn release(&self, renderer: &mut SemanticCore<E>, point: kurbo::Point, env: &Environment) {
+        // A release within the slot's cancel distance of the target
+        // still activates it.
+        let reach = self
+            .press_slot
+            .as_ref()
+            .map_or(0.0, |slot| slot.cancel_distance);
+        let within_reach = self.bounds.inflate(reach, reach).contains(point);
+        #[cfg(any(feature = "toggle", feature = "picker"))]
+        if let Some(track) = self.track.as_ref() {
+            (track.borrow_mut())(Track::Release {
+                #[cfg(feature = "toggle")]
+                point: self.to_local * point,
+                within_reach,
+            });
+        }
+        if within_reach && {
+            #[cfg(any(feature = "toggle", feature = "picker"))]
+            {
+                self.track.is_none()
+            }
+            #[cfg(not(any(feature = "toggle", feature = "picker")))]
+            {
+                true
+            }
+        } {
+            // The action's verdict is "the tap landed", not a layout
+            // input: whatever it writes marks its own readers through
+            // the signal guards, so an ordinary activation marks
+            // nothing and counts nothing toward this release's
+            // `changed` (water-rs/waterui#2941).
+            let _ = (self.action.borrow_mut())(renderer, point, env);
+        }
+    }
+
     /// Whether a press at `point` lands on this target.
     fn takes_press_at(&self, point: kurbo::Point) -> bool {
         self.bounds.contains(point)
@@ -188,6 +226,7 @@ pub struct PendingPointerPress {
 /// slop constant, and the same start-instant-plus-duration deadline; the
 /// detector itself is private to that crate.
 #[derive(Clone, Copy)]
+#[cfg(feature = "menu")]
 pub struct PendingContextMenuHold {
     /// The press origin in window hit-test space — the menu anchors there.
     pub(crate) point: kurbo::Point,
@@ -197,6 +236,7 @@ pub struct PendingContextMenuHold {
 
 /// How long a touch or pen press must hold to earn the gesture — the
 /// hold threshold Android, iOS, GTK and Windows all share.
+#[cfg(feature = "menu")]
 pub const CONTEXT_MENU_HOLD_DURATION: Duration = Duration::from_millis(500);
 
 pub struct CursorTarget<E: crate::text::TextEngine> {
@@ -330,6 +370,7 @@ pub type PointerAction<E> =
 /// press was a tap or a drag. The target's action still answers keyboard
 /// activation.
 #[derive(Debug, Clone, Copy)]
+#[cfg(any(feature = "toggle", feature = "picker"))]
 pub enum Track {
     /// The press landed at this point.
     Begin(kurbo::Point),
@@ -338,6 +379,7 @@ pub enum Track {
     /// The pointer lifted at `point`; `within_reach` says whether that is
     /// within the press slot's cancel distance of the target.
     Release {
+        #[cfg(feature = "toggle")]
         point: kurbo::Point,
         within_reach: bool,
     },
@@ -347,6 +389,7 @@ pub enum Track {
 }
 
 /// A control's handler for [`Track`] steps.
+#[cfg(any(feature = "toggle", feature = "picker"))]
 pub type TrackAction = Rc<RefCell<dyn FnMut(Track)>>;
 pub type KeyboardStepAction = Rc<RefCell<dyn FnMut(bool) -> bool>>;
 pub type HoverAction = Rc<RefCell<dyn FnMut(&Environment) -> bool>>;
@@ -379,6 +422,11 @@ const NO_TOUCH_SCROLL_CONFIG: &str =
 // so a state-machine refactor would invent transitions that do not exist.
 #[allow(clippy::struct_excessive_bools)]
 pub struct HitTestState<E: crate::text::TextEngine> {
+    /// How many primary presses have landed on an editable target. A
+    /// platform with a soft keyboard shows it again when this changes, so a
+    /// tap on the field already holding focus brings back a keyboard the
+    /// user dismissed.
+    activations: u64,
     /// Surfaces that own the input landing on them — embedded browsers and
     /// `GpuSurface`s whose view asked for input. Re-emitted every frame.
     pub(crate) embedded_input_targets: Vec<EmbeddedInputTarget<E>>,
@@ -418,6 +466,7 @@ pub struct HitTestState<E: crate::text::TextEngine> {
     /// threshold, armed where a secondary press would resolve a menu.
     /// Kept across frames; its deadline joins
     /// [`SemanticCore::next_gesture_deadline`].
+    #[cfg(feature = "menu")]
     pub(crate) pending_context_menu_hold: Option<PendingContextMenuHold>,
     pub(crate) keyboard_focus: Option<InteractionKey>,
     /// The cell owning `keyboard_focus`'s target, captured when focus
@@ -452,9 +501,11 @@ pub struct HitTestState<E: crate::text::TextEngine> {
     /// System-back targets registered this frame, in paint order. The last
     /// entry is the frontmost stack. Cleared with the other per-frame target
     /// lists.
+    #[cfg(feature = "navigation")]
     pub(crate) back_targets: Vec<NavigationBackTarget<E>>,
     /// The system-back gesture in flight. Survives `reset_scene`, the same
     /// way `active_pointer_drag_target` does.
+    #[cfg(feature = "navigation")]
     pub(crate) system_back: SystemBackGesture,
     /// The in-flight scrollbar-thumb drag, if any.
     pub(crate) active_scrollbar_drag: Option<ScrollbarDrag<E>>,
@@ -466,6 +517,7 @@ pub struct HitTestState<E: crate::text::TextEngine> {
     pub(crate) active_drag: Option<ActiveDrag>,
     /// The in-flight OS file drag, if any — see [`OsFileDrag`].
     pub(crate) os_file_drag: Option<OsFileDrag>,
+    #[cfg(feature = "menu")]
     pub(crate) context_menu_targets: Vec<ContextMenuTarget<E>>,
     pub(crate) interaction: InteractionEngine<E>,
     pub(crate) active_press_bounds: Option<kurbo::Rect>,
@@ -756,12 +808,15 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         let mut staged_hover: Vec<Staged<HoverTarget<E>>> = Vec::new();
         let mut staged_observers: Vec<PointerObserver<E>> = Vec::new();
         let mut staged_drop: Vec<Staged<DropTarget<E>>> = Vec::new();
+        #[cfg(feature = "menu")]
         let mut staged_menus: Vec<Staged<ContextMenuTarget<E>>> = Vec::new();
         let mut staged_scroll: Vec<Staged<ScrollTarget<E>>> = Vec::new();
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         let mut staged_text: Vec<Staged<TextInputTarget<E>>> = Vec::new();
         let mut staged_embedded: Vec<Staged<EmbeddedInputTarget<E>>> = Vec::new();
         let mut staged_occlusions: Vec<Staged<NativeViewOcclusion>> = Vec::new();
         let mut staged_platform: Vec<StagedPlatform<E>> = Vec::new();
+        #[cfg(feature = "navigation")]
         let mut staged_back: Vec<Staged<crate::renderer::NavigationBackTarget<E>>> = Vec::new();
         let mut modal: Option<(mount::PaintOrder, crate::theme::ModalInteraction)> = None;
 
@@ -909,6 +964,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 }
             }
 
+            #[cfg(feature = "menu")]
             for entry in &regs.context_menu_targets {
                 if let Some((transform, clip)) =
                     paint_gate(&entry.region.placement, HitClasses::CONTEXT_MENU)
@@ -946,6 +1002,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             // Text inputs keep four rectangles (field, cursor area, text
             // bounds, text clip) under the hit chain plus the clip
             // intersect, behind the input gate.
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             for entry in &regs.text_input_targets {
                 if !entry.region.placement.admits(HitClasses::INPUT) {
                     continue;
@@ -1049,6 +1106,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             // resolved datum, so they stage into the rank sort like
             // everything else. No gate applies: dev registered them under
             // neither its truncation nor its hit opacity.
+            #[cfg(feature = "navigation")]
             for entry in &regs.back_targets {
                 orders.push(entry.order.clone());
                 staged_back.push(Staged {
@@ -1134,12 +1192,15 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             drop_targets.push(target);
         }
 
-        let context_menu_targets = &mut self.hit_test.context_menu_targets;
-        context_menu_targets.clear();
-        for staged in staged_menus {
-            let mut target = staged.payload;
-            target.order = rank(&staged.entry_order);
-            context_menu_targets.push(target);
+        #[cfg(feature = "menu")]
+        {
+            let context_menu_targets = &mut self.hit_test.context_menu_targets;
+            context_menu_targets.clear();
+            for staged in staged_menus {
+                let mut target = staged.payload;
+                target.order = rank(&staged.entry_order);
+                context_menu_targets.push(target);
+            }
         }
 
         let scroll_targets = &mut self.hit_test.scroll_targets;
@@ -1150,14 +1211,16 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             scroll_targets.push(target);
         }
 
-        let text_input_targets = &mut self.text_editing.text_input_targets;
-        text_input_targets.clear();
-        for staged in staged_text {
-            let mut target = staged.payload;
-            target.order = rank(&staged.entry_order);
-            text_input_targets.push(target);
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
+        {
+            let text_input_targets = &mut self.text_editing.text_input_targets;
+            text_input_targets.clear();
+            for staged in staged_text {
+                let mut target = staged.payload;
+                target.order = rank(&staged.entry_order);
+                text_input_targets.push(target);
+            }
         }
-
         let embedded_input_targets = &mut self.hit_test.embedded_input_targets;
         embedded_input_targets.clear();
         for staged in staged_embedded {
@@ -1200,10 +1263,13 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 }
             }));
 
-        self.hit_test.back_targets = staged_back
-            .into_iter()
-            .map(|staged| staged.payload)
-            .collect();
+        #[cfg(feature = "navigation")]
+        {
+            self.hit_test.back_targets = staged_back
+                .into_iter()
+                .map(|staged| staged.payload)
+                .collect();
+        }
 
         self.hit_test.modal_interaction = modal.map(|(_, payload)| payload);
 
@@ -1223,6 +1289,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         for target in &self.hit_test.embedded_input_targets {
             fold(&target.key_handlers);
         }
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         for target in &self.text_editing.text_input_targets {
             fold(&target.key_handlers);
         }
@@ -1334,6 +1401,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         self.hit_test
             .interactive_regions_above(
                 placed.placement.order() as usize,
+                #[cfg(any(feature = "text-field", feature = "secure-field"))]
                 &self.text_editing.text_input_targets,
             )
             .any(|bounds| bounds.contains(point))
@@ -1341,6 +1409,19 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
 }
 
 impl<E: crate::text::TextEngine> HitTestState<E> {
+    /// Records a primary press on an editable target.
+    pub(crate) const fn note_activation(&mut self) {
+        self.activations = self
+            .activations
+            .checked_add(1)
+            .expect("text input activation count overflow");
+    }
+
+    /// The press count [`Self::note_activation`] maintains.
+    pub(crate) const fn activations(&self) -> u64 {
+        self.activations
+    }
+
     /// The flat lists are materialized views of the retained registries —
     /// `reset_scene` no longer clears them; the interaction engine's own
     /// per-frame begin stays, since its handles live outside the registries.
@@ -1349,10 +1430,17 @@ impl<E: crate::text::TextEngine> HitTestState<E> {
         self.interaction.begin_rebuild_frame();
     }
 
-    pub(crate) fn finish_rebuild_frame(&mut self, text_inputs: &[TextInputTarget<E>]) {
+    pub(crate) fn finish_rebuild_frame(
+        &mut self,
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
+        text_inputs: &[TextInputTarget<E>],
+    ) {
         self.interaction.finish_rebuild_frame();
         self.retire_absent_embedded_focus();
-        self.publish_native_view_occlusion(text_inputs);
+        self.publish_native_view_occlusion(
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
+            text_inputs,
+        );
     }
 
     /// Moves embedded focus to `index` — the single transition every
@@ -1446,13 +1534,22 @@ impl<E: crate::text::TextEngine> HitTestState<E> {
             reason = "no hosted content exists on targets without system-compositor planes"
         )
     )]
-    fn publish_native_view_occlusion(&self, text_inputs: &[TextInputTarget<E>]) {
+    fn publish_native_view_occlusion(
+        &self,
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
+        text_inputs: &[TextInputTarget<E>],
+    ) {
         #[cfg(not(all(hydrolysis_hosted, hydrolysis_gpu)))]
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         let _ = text_inputs;
         #[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
         for occlusion in &self.native_view_occlusions {
             let rects: Vec<kurbo::Rect> = self
-                .interactive_regions_above(occlusion.order, text_inputs)
+                .interactive_regions_above(
+                    occlusion.order,
+                    #[cfg(any(feature = "text-field", feature = "secure-field"))]
+                    text_inputs,
+                )
                 .map(|bounds| bounds.intersect(occlusion.bounds))
                 .filter(|overlap| !overlap.is_zero_area())
                 .collect();
@@ -1469,19 +1566,30 @@ impl<E: crate::text::TextEngine> HitTestState<E> {
     /// blocks a native view. Embedded targets answer their transformed
     /// bounding box, as every rect here is axis-aligned.
     #[cfg(any(hydrolysis_hosted, hydrolysis_cherenkov, test))]
+    #[cfg_attr(
+        not(any(feature = "text-field", feature = "secure-field")),
+        expect(
+            clippy::elidable_lifetime_names,
+            reason = "enabled text inputs borrow the separate editor state for the same lifetime"
+        )
+    )]
     fn interactive_regions_above<'a>(
         &'a self,
         order: usize,
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         text_inputs: &'a [TextInputTarget<E>],
     ) -> impl Iterator<Item = kurbo::Rect> + 'a {
-        self.pointer_targets
+        let regions = self
+            .pointer_targets
             .iter()
-            .map(|target| (target.order, target.bounds))
-            .chain(
-                text_inputs
-                    .iter()
-                    .map(|target| (target.order, target.bounds)),
-            )
+            .map(|target| (target.order, target.bounds));
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
+        let regions = regions.chain(
+            text_inputs
+                .iter()
+                .map(|target| (target.order, target.bounds)),
+        );
+        regions
             .chain(self.embedded_input_targets.iter().map(|target| {
                 (
                     target.order,
@@ -2013,7 +2121,10 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         self.clear_scrollbar_drag();
         self.hit_test.active_pointer_target = None;
         self.hit_test.pending_pointer_press = None;
-        self.hit_test.pending_context_menu_hold = None;
+        #[cfg(feature = "menu")]
+        {
+            self.hit_test.pending_context_menu_hold = None;
+        }
         self.hit_test.active_press_bounds = None;
         self.hit_test.active_press_origin = None;
         self.hit_test.pointer_press_origin = None;
@@ -2027,15 +2138,18 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         if button == PointerButton::Primary {
             refresh_requested |= self.observe_press(point, at);
         }
-        self.text_editing.active_text_selection_drag = None;
-        let overlay_hit = matches!(
-            self.text_editing.active_text_context_menu,
-            Some(ActiveTextContextMenu::Overlay { .. })
-        );
-        if overlay_hit {
-            let changed = self.handle_text_context_menu_overlay_pointer_down(point);
-            if changed || self.text_editing.active_text_context_menu.is_none() {
-                return visual_changed || changed;
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
+        {
+            self.text_editing.active_text_selection_drag = None;
+            let overlay_hit = matches!(
+                self.text_editing.active_text_context_menu,
+                Some(ActiveTextContextMenu::Overlay { .. })
+            );
+            if overlay_hit {
+                let changed = self.handle_text_context_menu_overlay_pointer_down(point);
+                if changed || self.text_editing.active_text_context_menu.is_none() {
+                    return visual_changed || changed;
+                }
             }
         }
         // A press inside the open context-menu presentation — its drawn menu
@@ -2043,10 +2157,15 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         // neither dismisses the menu nor opens a new one, because accessory
         // actions do not close the menu by themselves
         // (water-rs/waterui#1245).
+        #[cfg(feature = "menu")]
         let in_context_menu_presentation = self.context_menu_presentation_contains(point);
+        #[cfg(not(feature = "menu"))]
+        let in_context_menu_presentation = false;
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         if button != PointerButton::Secondary {
             self.dismiss_active_text_context_menu();
         }
+        #[cfg(any(feature = "menu", feature = "color-picker"))]
         if !in_context_menu_presentation {
             self.dismiss_active_popup_menu();
         }
@@ -2054,13 +2173,17 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         // when the press lands outside them; the press still reaches its
         // target below, exactly like the menu dismissals above.
         self.dismiss_anchored_overlays_outside(point);
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
+        let text_inputs = self.text_editing.text_input_targets.len();
+        #[cfg(not(any(feature = "text-field", feature = "secure-field")))]
+        let text_inputs = 0;
         tracing::trace!(
             target: "waterui::hydrolysis::input",
             x,
             y,
             button = ?button,
             pointer_targets = self.hit_test.pointer_targets.len(),
-            text_inputs = self.text_editing.text_input_targets.len(),
+            text_inputs,
             gesture_targets = self.gesture_engine.target_count(),
             "pointer down begin"
         );
@@ -2083,15 +2206,21 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                     *left,
                 ))
         });
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         let focused = self.topmost_text_input_index_at_point(point);
+        #[cfg(not(any(feature = "text-field", feature = "secure-field")))]
+        let focused: Option<usize> = None;
         let top_pointer_priority = pointer_indices.first().map(|index| {
             let target = &self.hit_test.pointer_targets[*index];
             SemanticCore::<E>::target_hit_priority(target.depth, target.order, *index)
         });
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         let focused_priority = focused.map(|index| {
             let target = &self.text_editing.text_input_targets[index];
             SemanticCore::<E>::target_hit_priority(target.depth, target.order, index)
         });
+        #[cfg(not(any(feature = "text-field", feature = "secure-field")))]
+        let focused_priority = None;
         let focus_wins = matches!(
             (focused_priority, top_pointer_priority),
             (Some(focus_priority), Some(pointer_priority)) if focus_priority > pointer_priority
@@ -2101,6 +2230,9 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         // embedded surface, the focused text input's own menu, or the
         // topmost `.context_menu` region at the point — opens that menu
         // instead of arming recognizers (water-rs/waterui#1290).
+        #[cfg(not(feature = "menu"))]
+        let context_menu_claims_secondary = false;
+        #[cfg(feature = "menu")]
         let context_menu_claims_secondary = button == PointerButton::Secondary
             && !in_context_menu_presentation
             && if let Some((_, surface, _)) =
@@ -2148,6 +2280,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         // enclosing its window rect, anything else to the topmost region
         // containing the point. A held primary *mouse* button never arms —
         // the platforms bind the gesture to touch and pen only.
+        #[cfg(feature = "menu")]
         if button == PointerButton::Primary
             && matches!(pointer_kind, PointerKind::Touch | PointerKind::Pen)
             && !in_context_menu_presentation
@@ -2181,9 +2314,12 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             // surface's own interaction identity, which drives the
             // `Focus(true)`/`Focus(false)` sink transition.
             self.set_keyboard_focus(Some(target.interaction_key.clone()), false);
-            self.set_focused_text_input(None);
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
+            {
+                self.set_focused_text_input(None);
+            }
             if button == PointerButton::Primary {
-                self.text_editing.note_activation();
+                self.hit_test.note_activation();
             }
             target.sink.pointer_move(local_position);
             // A secondary press still focuses the surface, but a context menu
@@ -2191,6 +2327,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             // focused surface, so the button itself is not delivered. A surface
             // with no enclosing menu, or whose menu has no items, receives the
             // secondary button as before.
+            #[cfg(feature = "menu")]
             if button == PointerButton::Secondary {
                 let surface_bounds = target.to_window_rect(kurbo::Rect::from_origin_size(
                     kurbo::Point::ORIGIN,
@@ -2213,7 +2350,8 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                         // layered over this dispatch's, so `.state(&value)`
                         // overlays reach the item actions.
                         let menu_env = menu_target.env.layered_on(env);
-                        self.show_context_menu(
+                        (menu_target.present)(
+                            self,
                             items,
                             Some(&menu_target),
                             LayoutPoint::new(
@@ -2253,6 +2391,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             focus_wins,
             "pointer down candidates"
         );
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         if focus_wins {
             if let Some(index) = focused {
                 let key = self.text_editing.text_input_targets[index]
@@ -2266,7 +2405,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             if let Some(index) = focused {
                 match button {
                     PointerButton::Primary => {
-                        self.text_editing.note_activation();
+                        self.hit_test.note_activation();
                         let click_count = self.next_text_selection_click_count(index, point, at);
                         if let Some((anchor, focus, gesture_changed)) =
                             self.apply_text_selection_click_gesture(index, point, click_count)
@@ -2294,7 +2433,9 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                         if !keep_selection {
                             changed |= self.update_text_selection_from_pointer(index, point, false);
                         }
-                        changed |= self.show_text_context_menu(index, point, env);
+                        let show_context_menu =
+                            self.text_editing.text_input_targets[index].show_context_menu;
+                        changed |= show_context_menu(self, index, point, env);
                     }
                     _ => {}
                 }
@@ -2303,28 +2444,33 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         }
 
         if button != PointerButton::Primary {
-            if button == PointerButton::Secondary && !in_context_menu_presentation {
-                let menu_target = self.topmost_context_menu_target_at_point(point);
-                let mut items = menu_target.as_ref().map_or_default(|target| {
-                    popup_menu_nodes(&target.items.snapshot(), &target.env, self.window_closable)
-                });
+            #[cfg(feature = "menu")]
+            if button == PointerButton::Secondary
+                && !in_context_menu_presentation
+                && let Some(menu_target) = self.topmost_context_menu_target_at_point(point)
+            {
+                let mut items = popup_menu_nodes(
+                    &menu_target.items.snapshot(),
+                    &menu_target.env,
+                    self.window_closable,
+                );
                 if !items.is_empty() {
                     // The debug inspect entry extends a menu, it does not
                     // create one — an empty `.context_menu` must behave the
                     // same in every build (water-rs/hydrolysis#188).
                     self.append_inspect_element_item(&mut items, point);
+                    #[cfg(any(feature = "text-field", feature = "secure-field"))]
                     if self.set_focused_text_input(focused) {
                         refresh_requested = true;
                     }
                     // Same inheritance as the embedded-surface arm: the
                     // declaring view's environment layers over this
                     // dispatch's.
-                    let menu_env = menu_target
-                        .as_ref()
-                        .map_or_else(|| env.clone(), |target| target.env.layered_on(env));
-                    let changed = self.show_context_menu(
+                    let menu_env = menu_target.env.layered_on(env);
+                    let changed = (menu_target.present)(
+                        self,
                         items,
-                        menu_target.as_ref(),
+                        Some(&menu_target),
                         LayoutPoint::new(
                             crate::num_cast::f64_as_f32(point.x),
                             crate::num_cast::f64_as_f32(point.y),
@@ -2336,6 +2482,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 }
             }
             if matches!(button, PointerButton::Other(_)) {
+                #[cfg(any(feature = "text-field", feature = "secure-field"))]
                 if self.set_focused_text_input(focused) {
                     refresh_requested = true;
                 }
@@ -2410,7 +2557,10 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             }
             let keyboard_key = target.press_slot.as_ref().map(|slot| slot.key.clone());
             self.set_keyboard_focus_for_press(keyboard_key, point);
-            refresh_requested |= self.set_focused_text_input(None);
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
+            {
+                refresh_requested |= self.set_focused_text_input(None);
+            }
             if let Some(slot) = target.press_slot.as_ref() {
                 let repaint = target
                     .interaction
@@ -2470,6 +2620,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 // Material controls commit on release, not on pointer-down. Keep
                 // the topmost opaque target captured so a release inside its
                 // bounds activates it exactly once; a release outside cancels.
+                #[cfg(any(feature = "toggle", feature = "picker"))]
                 if let Some(track) = target.track.as_ref() {
                     (track.borrow_mut())(Track::Begin(target.to_local * point));
                 }
@@ -2504,6 +2655,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             focused_candidate = ?focused,
             "pointer down text-input fallback"
         );
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         if self.set_focused_text_input(focused) {
             refresh_requested = true;
         }
@@ -2634,38 +2786,28 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             }
         }
         if let Some(target) = self.hit_test.active_pointer_target.take() {
-            // A release within the slot's cancel distance of the target
-            // still activates it.
-            let reach = target
-                .press_slot
-                .as_ref()
-                .map_or(0.0, |slot| slot.cancel_distance);
-            let within_reach = target.bounds.inflate(reach, reach).contains(point);
-            if let Some(track) = target.track.as_ref() {
-                (track.borrow_mut())(Track::Release {
-                    point: target.to_local * point,
-                    within_reach,
-                });
-            } else if within_reach {
-                // The action's verdict is "the tap landed", not a layout
-                // input: whatever it writes marks its own readers through
-                // the signal guards, so an ordinary activation marks
-                // nothing and counts nothing toward this release's
-                // `changed` (water-rs/waterui#2941).
-                let _ = (target.action.borrow_mut())(self, point, env);
-            }
+            target.release(self, point, env);
         }
         let drop_changed = self.finish_active_drag(point, env);
         changed |= drop_changed;
-        changed |=
-            self.finish_interactive_navigation_pop(NavigationInteractivePopOutcome::ByProgress);
-        self.text_editing.active_text_selection_drag = None;
+        #[cfg(feature = "navigation")]
+        {
+            changed |=
+                self.finish_interactive_navigation_pop(NavigationInteractivePopOutcome::ByProgress);
+        }
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
+        {
+            self.text_editing.active_text_selection_drag = None;
+        }
         self.hit_test.active_pointer_drag_target = None;
         self.hit_test.active_pointer_drag_owner = Weak::new();
         self.hit_test.active_pointer_drag_signature = None;
         self.clear_scrollbar_drag();
         self.hit_test.active_pointer_target = None;
-        self.hit_test.pending_context_menu_hold = None;
+        #[cfg(feature = "menu")]
+        {
+            self.hit_test.pending_context_menu_hold = None;
+        }
         self.hit_test.active_press_bounds = None;
         self.hit_test.active_press_origin = None;
         self.hit_test.pointer_press_origin = None;
@@ -2719,11 +2861,19 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         // starts under the finger never shows or activates it.
         // A tracked press owns its movement, so a drag never cancels it.
         if pointer_kind != PointerKind::Mouse
-            && self
-                .hit_test
-                .active_pointer_target
-                .as_ref()
-                .is_none_or(|target| target.track.is_none())
+            && {
+                #[cfg(any(feature = "toggle", feature = "picker"))]
+                {
+                    self.hit_test
+                        .active_pointer_target
+                        .as_ref()
+                        .is_none_or(|target| target.track.is_none())
+                }
+                #[cfg(not(any(feature = "toggle", feature = "picker")))]
+                {
+                    true
+                }
+            }
             && self
                 .hit_test
                 .pending_pointer_press
@@ -2758,10 +2908,14 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         }
         // The hold dies when the press leaves the recognizer's slop — the
         // same move check `LongPressDetector` applies.
+        #[cfg(feature = "menu")]
         if let Some(hold) = self.hit_test.pending_context_menu_hold
             && (point.x - hold.point.x).hypot(point.y - hold.point.y) > LONG_PRESS_SLOP
         {
-            self.hit_test.pending_context_menu_hold = None;
+            #[cfg(feature = "menu")]
+            {
+                self.hit_test.pending_context_menu_hold = None;
+            }
         }
         // Same first look the press path gives: an active recognizer
         // receives the move before any embedded surface can claim it, so a
@@ -2782,11 +2936,13 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         }
         let mut refresh_requested = false;
         let mut drag_changed = false;
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         if let Some(index) = self.text_editing.selection_drag_index() {
             let text_drag_changed = self.update_text_selection_drag(index, point);
             drag_changed |= text_drag_changed;
             refresh_requested |= text_drag_changed;
         }
+        #[cfg(any(feature = "toggle", feature = "picker"))]
         if let Some(target) = self.hit_test.active_pointer_target.as_ref()
             && let Some(track) = target.track.clone()
         {
@@ -2860,6 +3016,7 @@ struct KeyboardFocusCandidate {
     key: Option<InteractionKey>,
     #[cfg(feature = "accessibility")]
     node: AccessibilityNodeId,
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     text_input: Option<usize>,
     /// The candidate's index in `embedded_input_targets`, when it names an
     /// input surface — the keyboard-focus slot such a surface occupies.
@@ -2879,24 +3036,22 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// to `None` here rather than to the id a previous flush registered.
     #[cfg(feature = "accessibility")]
     pub(crate) fn focus_node_for_key(&self, key: &InteractionKey) -> Option<AccessibilityNodeId> {
-        self.accessibility
-            .interaction_nodes
-            .get(key)
-            .copied()
-            .or_else(|| {
-                self.text_editing
-                    .text_input_targets
-                    .iter()
-                    .find(|target| &target.interaction_key == key)
-                    .and_then(|target| target.accessibility_node_id)
-            })
-            .or_else(|| {
-                self.hit_test
-                    .embedded_input_targets
-                    .iter()
-                    .find(|target| &target.interaction_key == key)
-                    .and_then(|target| target.accessibility_node_id)
-            })
+        let candidate = self.accessibility.interaction_nodes.get(key).copied();
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
+        let candidate = candidate.or_else(|| {
+            self.text_editing
+                .text_input_targets
+                .iter()
+                .find(|target| &target.interaction_key == key)
+                .and_then(|target| target.accessibility_node_id)
+        });
+        candidate.or_else(|| {
+            self.hit_test
+                .embedded_input_targets
+                .iter()
+                .find(|target| &target.interaction_key == key)
+                .and_then(|target| target.accessibility_node_id)
+        })
     }
 
     /// The interaction identity behind `node` — the press slot, text-input
@@ -2922,11 +3077,18 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                     || (self.semantic_walk && self.emitted_node_is_live(node))
             })
             .or_else(|| {
-                self.text_editing
-                    .text_input_targets
-                    .iter()
-                    .find(|target| target.accessibility_node_id == Some(node))
-                    .map(|target| target.interaction_key.clone())
+                #[cfg(any(feature = "text-field", feature = "secure-field"))]
+                {
+                    self.text_editing
+                        .text_input_targets
+                        .iter()
+                        .find(|target| target.accessibility_node_id == Some(node))
+                        .map(|target| target.interaction_key.clone())
+                }
+                #[cfg(not(any(feature = "text-field", feature = "secure-field")))]
+                {
+                    None
+                }
             })
             .or_else(|| {
                 self.hit_test
@@ -2947,11 +3109,19 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 .pointer_targets
                 .iter()
                 .any(|target| target.modal)
-            || self
-                .text_editing
-                .text_input_targets
-                .iter()
-                .any(|target| target.modal)
+            || {
+                #[cfg(any(feature = "text-field", feature = "secure-field"))]
+                {
+                    self.text_editing
+                        .text_input_targets
+                        .iter()
+                        .any(|target| target.modal)
+                }
+                #[cfg(not(any(feature = "text-field", feature = "secure-field")))]
+                {
+                    false
+                }
+            }
     }
 
     /// Whether `key` is backed by input machinery emitted this frame — a
@@ -2967,16 +3137,23 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                     .press_slot
                     .as_ref()
                     .is_some_and(|slot| &slot.key == key)
-        }) || self
-            .text_editing
-            .text_input_targets
+        }) || {
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
+            {
+                self.text_editing
+                    .text_input_targets
+                    .iter()
+                    .any(|target| (!modal_active || target.modal) && &target.interaction_key == key)
+            }
+            #[cfg(not(any(feature = "text-field", feature = "secure-field")))]
+            {
+                false
+            }
+        } || self
+            .hit_test
+            .embedded_input_targets
             .iter()
-            .any(|target| (!modal_active || target.modal) && &target.interaction_key == key)
-            || self
-                .hit_test
-                .embedded_input_targets
-                .iter()
-                .any(|target| &target.interaction_key == key)
+            .any(|target| &target.interaction_key == key)
     }
 
     /// Moves keyboard focus to `node` — the semantic-tree identity every
@@ -2997,6 +3174,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         visible: bool,
     ) -> bool {
         let key = node.and_then(|node| self.focus_key_for_node(node));
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         let text_input = node.and_then(|node| {
             self.text_editing
                 .text_input_targets
@@ -3006,6 +3184,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         let embedded = node.and_then(|node| self.embedded_index_for_node(node));
         let mut changed = self.set_keyboard_focus_impl(key, node, visible);
         changed |= self.hit_test.set_embedded_focus_index(embedded);
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         if let Some(index) = text_input {
             changed |= self.set_focused_text_input(Some(index));
         }
@@ -3088,6 +3267,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     ) -> bool {
         #[cfg(feature = "accessibility")]
         let node = focus.as_ref().and_then(|key| self.focus_node_for_key(key));
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         let text_input = focus.as_ref().and_then(|key| {
             self.text_editing
                 .text_input_targets
@@ -3107,6 +3287,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         // This setter claims the caret only for a text-input key. Ending
         // editing is the caller's decision — traversal and pointer presses
         // clear it through `set_focused_text_input(None)`.
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         if let Some(index) = text_input {
             changed |= self.set_focused_text_input(Some(index));
         }
@@ -3211,6 +3392,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             // leaves UI focus — and the binding — on the field. Only a
             // transition that actually moves the caret (a new text target) or
             // ends text focus lets this write stand.
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             let caret_keeps_binding = self.hit_test.keyboard_focus.is_some()
                 && self.hit_test.keyboard_focus == self.text_editing.focused_key()
                 && !self
@@ -3218,6 +3400,8 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                     .text_input_targets
                     .iter()
                     .any(|target| Some(&target.interaction_key) == focus.as_ref());
+            #[cfg(not(any(feature = "text-field", feature = "secure-field")))]
+            let caret_keeps_binding = false;
             if let Some(binding) = self.hit_test.keyboard_focus_binding.take()
                 && !caret_keeps_binding
             {
@@ -3327,7 +3511,8 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     #[cfg(not(feature = "accessibility"))]
     fn focused_candidate_order(&self) -> Option<usize> {
         self.hit_test.keyboard_focus.as_ref().and_then(|focused| {
-            self.hit_test
+            let candidate = self
+                .hit_test
                 .pointer_targets
                 .iter()
                 .find(|target| {
@@ -3336,21 +3521,22 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                         .as_ref()
                         .is_some_and(|slot| &slot.key == focused)
                 })
-                .map(|target| target.order)
-                .or_else(|| {
-                    self.text_editing
-                        .text_input_targets
-                        .iter()
-                        .find(|target| &target.interaction_key == focused)
-                        .map(|target| target.order)
-                })
-                .or_else(|| {
-                    self.hit_test
-                        .embedded_input_targets
-                        .iter()
-                        .find(|target| &target.interaction_key == focused)
-                        .map(|target| target.order)
-                })
+                .map(|target| target.order);
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
+            let candidate = candidate.or_else(|| {
+                self.text_editing
+                    .text_input_targets
+                    .iter()
+                    .find(|target| &target.interaction_key == focused)
+                    .map(|target| target.order)
+            });
+            candidate.or_else(|| {
+                self.hit_test
+                    .embedded_input_targets
+                    .iter()
+                    .find(|target| &target.interaction_key == focused)
+                    .map(|target| target.order)
+            })
         })
     }
 
@@ -3370,6 +3556,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             })
             .filter_map(|(order, (node_id, _))| {
                 let node_id = *node_id;
+                #[cfg(any(feature = "text-field", feature = "secure-field"))]
                 let text_input = self
                     .text_editing
                     .text_input_targets
@@ -3399,8 +3586,11 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                                     .as_ref()
                                     .is_some_and(|slot| &slot.key == key)
                         })
-                    }) || text_input
-                        .is_some_and(|index| self.text_editing.text_input_targets[index].modal);
+                    });
+                    #[cfg(any(feature = "text-field", feature = "secure-field"))]
+                    let modal = modal
+                        || text_input
+                            .is_some_and(|index| self.text_editing.text_input_targets[index].modal);
                     if !modal {
                         return None;
                     }
@@ -3409,6 +3599,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 Some(KeyboardFocusCandidate {
                     key,
                     node: node_id,
+                    #[cfg(any(feature = "text-field", feature = "secure-field"))]
                     text_input,
                     embedded,
                     order,
@@ -3435,11 +3626,13 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             }
             candidates.push(KeyboardFocusCandidate {
                 key: Some(slot.key.clone()),
+                #[cfg(any(feature = "text-field", feature = "secure-field"))]
                 text_input: None,
                 embedded: None,
                 order: target.order,
             });
         }
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         for (index, target) in self.text_editing.text_input_targets.iter().enumerate() {
             if (modal_active && !target.modal)
                 || candidates
@@ -3465,6 +3658,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             }
             candidates.push(KeyboardFocusCandidate {
                 key: Some(target.interaction_key.clone()),
+                #[cfg(any(feature = "text-field", feature = "secure-field"))]
                 text_input: None,
                 embedded: Some(index),
                 order: target.order,
@@ -3527,6 +3721,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             )
         };
         let candidate = &candidates[next];
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         let text_input = candidate.text_input;
         let embedded = candidate.embedded;
         #[cfg(feature = "accessibility")]
@@ -3539,7 +3734,10 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         // The caret follows keyboard focus: traversal onto a field focuses
         // it for editing, and a non-text candidate ends editing exactly as
         // a pointer press on one does.
-        changed |= self.set_focused_text_input(text_input);
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
+        {
+            changed |= self.set_focused_text_input(text_input);
+        }
         changed
     }
 
@@ -3552,6 +3750,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// hoisting and chrome nodes can neither fake nor lose row membership
     /// (water-rs/waterui#1223).
     #[cfg(feature = "accessibility")]
+    #[cfg(feature = "list")]
     fn list_row_context(
         &self,
         node: AccessibilityNodeId,
@@ -3592,6 +3791,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// destination row and Shift extends the anchored range
     /// (water-rs/waterui#1226).
     #[cfg(feature = "accessibility")]
+    #[cfg(feature = "list")]
     fn navigate_list_row(
         &mut self,
         dest: AccessibilityNodeId,
@@ -3630,6 +3830,8 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         modifiers: Modifiers,
         env: &Environment,
     ) -> bool {
+        #[cfg(not(feature = "menu"))]
+        let _ = logical_key;
         self.registries();
         // A declared menu chord claims its key before any built-in key
         // handling — Escape, Tab traversal, arrow stepping, activation and
@@ -3642,15 +3844,21 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         // types J, while J with nothing editable focused fires its chord —
         // the space bar included — and a bare `Delete` chord does not
         // steal the field's own delete either (water-rs/waterui#2118).
-        let registry =
-            menu_shortcut_registry::<E>(env, "menu chords are not dispatched for this key");
-        let typing = !(modifiers.control || modifiers.alt || modifiers.super_key)
-            && self.text_editing.has_focus();
-        if !typing
-            && let Some(registry) = registry
-            && registry.dispatch(self.window_id, logical_key, modifiers, env)
+        #[cfg(feature = "menu")]
         {
-            return true;
+            let registry =
+                menu_shortcut_registry::<E>(env, "menu chords are not dispatched for this key");
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
+            let typing = !(modifiers.control || modifiers.alt || modifiers.super_key)
+                && self.text_editing.has_focus();
+            #[cfg(not(any(feature = "text-field", feature = "secure-field")))]
+            let typing = false;
+            if !typing
+                && let Some(registry) = registry
+                && registry.dispatch(self.window_id, logical_key, modifiers, env)
+            {
+                return true;
+            }
         }
         if matches!(key, KeyCode::Named(value) if value == "Escape")
             && let Some(modal) = self.hit_test.modal_interaction.clone()
@@ -3663,6 +3871,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         // whatever control holds focus — Space still activates the focused
         // one — as an alert's default button does. A dialog without a
         // primary action leaves Return to the focused control.
+        #[cfg(waterui_feature = "dialog")]
         if matches!(key, KeyCode::Named(value) if value == "Enter")
             && let Some(dialog) = self.popup_menu.dialog_stack.front().cloned()
             && let Some(primary) = dialog.primary_action().cloned()
@@ -3717,6 +3926,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 // step between sibling rows. The cross-axis pair keeps its
                 // other meanings and falls through to the stepper handling
                 // below.
+                #[cfg(feature = "list")]
                 if let Some(node) = self.keyboard_focus_node()
                     && let Some((siblings, index, axis)) = self.list_row_context(node)
                 {
@@ -3798,6 +4008,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         // `Home`/`End` jump the focused `List` row to the first and last row
         // — consumed, so the keys do not fall through to whoever else would
         // claim them.
+        #[cfg(feature = "list")]
         if let KeyCode::Named(name) = key
             && (name == "Home" || name == "End")
             && let Some(node) = self.keyboard_focus_node()
@@ -3820,7 +4031,11 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             let Some(node) = self.keyboard_focus_node() else {
                 return false;
             };
-            if self.focused_text_input_accessibility_node() != Some(node)
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
+            let editing = self.focused_text_input_accessibility_node() == Some(node);
+            #[cfg(not(any(feature = "text-field", feature = "secure-field")))]
+            let editing = false;
+            if !editing
                 && self.accessibility.nodes.iter().any(|(id, emitted)| {
                     *id == node && emitted.supports_action(AccessibilityAction::Click)
                 })
@@ -3953,22 +4168,33 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     pub fn handle_gesture_tick(&mut self, at: Instant, env: &Environment) -> bool {
         self.registries();
         let _fired = self.core.handle_gesture_tick(at, env);
-        let Some(hold) = self.hit_test.pending_context_menu_hold else {
-            return false;
-        };
-        if at.duration_since(hold.started_at) < CONTEXT_MENU_HOLD_DURATION {
-            return false;
+        #[cfg(not(feature = "menu"))]
+        {
+            false
         }
-        self.hit_test.pending_context_menu_hold = None;
-        if !self.open_context_menu_at(hold.point, env) {
-            return false;
+        #[cfg(feature = "menu")]
+        {
+            let Some(hold) = self.hit_test.pending_context_menu_hold else {
+                return false;
+            };
+            if at.duration_since(hold.started_at) < CONTEXT_MENU_HOLD_DURATION {
+                return false;
+            }
+            #[cfg(feature = "menu")]
+            {
+                self.hit_test.pending_context_menu_hold = None;
+            }
+            if !self.open_context_menu_at(hold.point, env) {
+                return false;
+            }
+            self.consume_active_press(at, env);
+            true
         }
-        self.consume_active_press(at, env);
-        true
     }
 
     /// Tells the active press's control, when it tracks its press, that the
     /// press was taken away.
+    #[cfg(any(feature = "toggle", feature = "picker"))]
     fn cancel_tracked_press(&self) {
         if let Some(track) = self
             .hit_test
@@ -3987,13 +4213,17 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// steals the sequence through.
     fn consume_active_press(&mut self, at: Instant, env: &Environment) {
         self.hit_test.pending_pointer_press = None;
+        #[cfg(any(feature = "toggle", feature = "picker"))]
         self.cancel_tracked_press();
         self.hit_test.active_pointer_target = None;
         self.hit_test.active_pointer_drag_target = None;
         self.hit_test.active_pointer_drag_owner = Weak::new();
         self.hit_test.active_pointer_drag_signature = None;
         self.clear_scrollbar_drag();
-        self.text_editing.active_text_selection_drag = None;
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
+        {
+            self.text_editing.active_text_selection_drag = None;
+        }
         self.hit_test.active_press_bounds = None;
         self.hit_test.active_press_origin = None;
         let press_clear = self.hit_test.interaction.clear_all_presses(at);
@@ -4009,6 +4239,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// press-and-hold resolves here once it earns the gesture, so it takes
     /// the drawn presentation: the source lifts and the menu sits beside it.
     /// Returns whether a menu opened.
+    #[cfg(feature = "menu")]
     fn open_context_menu_at(&mut self, point: kurbo::Point, env: &Environment) -> bool {
         let pointer_priority = self
             .hit_test
@@ -4020,10 +4251,13 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 SemanticCore::<E>::target_hit_priority(target.depth, target.order, index)
             })
             .max();
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         let text_priority = self.topmost_text_input_index_at_point(point).map(|index| {
             let target = &self.text_editing.text_input_targets[index];
             SemanticCore::<E>::target_hit_priority(target.depth, target.order, index)
         });
+        #[cfg(not(any(feature = "text-field", feature = "secure-field")))]
+        let text_priority = None;
         let menu_target = if let Some((_, surface, _)) =
             self.embedded_target_wins_at(point, pointer_priority, text_priority)
         {
@@ -4035,21 +4269,46 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         } else {
             self.topmost_context_menu_target_at_point(point)
         };
-        let mut items = menu_target.as_ref().map_or_default(|target| {
-            popup_menu_nodes(&target.items.snapshot(), &target.env, self.window_closable)
-        });
+        let Some(menu_target) = menu_target else {
+            #[cfg(debug_assertions)]
+            {
+                let mut items = Vec::new();
+                self.append_inspect_element_item(&mut items, point);
+                if items.is_empty() {
+                    return false;
+                }
+                return self.show_context_menu(
+                    items,
+                    None,
+                    LayoutPoint::new(
+                        crate::num_cast::f64_as_f32(point.x),
+                        crate::num_cast::f64_as_f32(point.y),
+                    ),
+                    env,
+                    true,
+                );
+            }
+            #[cfg(not(debug_assertions))]
+            {
+                return false;
+            }
+        };
+        let mut items = popup_menu_nodes(
+            &menu_target.items.snapshot(),
+            &menu_target.env,
+            self.window_closable,
+        );
         self.append_inspect_element_item(&mut items, point);
         if items.is_empty() {
             return false;
         }
         // Same inheritance the secondary-press arms apply: the declaring
         // view's environment layers over this dispatch's.
-        let menu_env = menu_target
-            .as_ref()
-            .map_or_else(|| env.clone(), |target| target.env.layered_on(env));
-        self.show_context_menu(
+        let menu_env = menu_target.env.layered_on(env);
+        (menu_target.present)(
+            self,
             items,
-            menu_target.as_ref(),
+            Some(&menu_target),
             LayoutPoint::new(
                 crate::num_cast::f64_as_f32(point.x),
                 crate::num_cast::f64_as_f32(point.y),
@@ -4082,20 +4341,30 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             return pointer_kind == PointerKind::Mouse && self.end_hover(env);
         }
         let at = self.frame_instant();
+        #[cfg(feature = "navigation")]
         let mut refresh_requested =
             self.finish_interactive_navigation_pop(NavigationInteractivePopOutcome::Cancel);
-        self.text_editing.active_text_selection_drag = None;
+        #[cfg(not(feature = "navigation"))]
+        let mut refresh_requested = false;
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
+        {
+            self.text_editing.active_text_selection_drag = None;
+        }
         self.hit_test.active_pointer_drag_target = None;
         self.hit_test.active_pointer_drag_owner = Weak::new();
         self.hit_test.active_pointer_drag_signature = None;
         self.clear_scrollbar_drag();
+        #[cfg(any(feature = "toggle", feature = "picker"))]
         self.cancel_tracked_press();
         self.hit_test.active_pointer_target = None;
         self.hit_test.active_embedded_target = None;
         self.hit_test.active_pointer = None;
         self.hit_test.active_pointer_button = None;
         self.hit_test.pending_pointer_press = None;
-        self.hit_test.pending_context_menu_hold = None;
+        #[cfg(feature = "menu")]
+        {
+            self.hit_test.pending_context_menu_hold = None;
+        }
         self.hit_test.active_press_bounds = None;
         self.hit_test.active_press_origin = None;
         self.hit_test.pointer_press_origin = None;
@@ -4216,12 +4485,20 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             if let Some(cell) = target.owner.upgrade() {
                 cell.mark(Dirty::LAYOUT);
             }
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             self.dismiss_active_text_context_menu();
             // A scroll inside the context-menu presentation — its
             // drawn menu or its accessory — belongs to it and does
             // not close the menu.
-            if !self.context_menu_presentation_contains(point) {
-                self.dismiss_active_popup_menu();
+            #[cfg(any(feature = "menu", feature = "color-picker"))]
+            {
+                #[cfg(feature = "menu")]
+                let in_context_menu = self.context_menu_presentation_contains(point);
+                #[cfg(not(feature = "menu"))]
+                let in_context_menu = false;
+                if !in_context_menu {
+                    self.dismiss_active_popup_menu();
+                }
             }
             return true;
         }
@@ -4481,7 +4758,10 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 // The claim steals the sequence: the content's press is
                 // cancelled — never completed — through the same teardown a
                 // context-menu hold commits with.
-                self.hit_test.pending_context_menu_hold = None;
+                #[cfg(feature = "menu")]
+                {
+                    self.hit_test.pending_context_menu_hold = None;
+                }
                 self.consume_active_press(at, env);
                 // The crossing move applies its excess over the slop at
                 // once — the content slides under the finger with no jump,
@@ -4619,6 +4899,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         chain
     }
 
+    #[cfg(feature = "navigation")]
     pub(crate) fn register_pointer_drag_target<F>(&mut self, bounds: kurbo::Rect, action: F)
     where
         F: 'static + FnMut(&mut Self, kurbo::Point, &Environment) -> bool,
@@ -4680,6 +4961,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 owners: self.owner_stack.clone(),
                 interaction,
                 action,
+                #[cfg(any(feature = "toggle", feature = "picker"))]
                 track: None,
                 keyboard_step: None,
                 press_filter: None,
@@ -4734,6 +5016,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 action: Rc::new(RefCell::new(
                     |_: &mut Self, _: kurbo::Point, _: &Environment| true,
                 )),
+                #[cfg(any(feature = "toggle", feature = "picker"))]
                 track: None,
                 keyboard_step: None,
                 press_filter: None,
@@ -4843,6 +5126,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 owners: self.owner_stack.clone(),
                 interaction: None,
                 action: Rc::new(RefCell::new(action)),
+                #[cfg(any(feature = "toggle", feature = "picker"))]
                 track: None,
                 keyboard_step: None,
                 press_filter: None,
@@ -4931,6 +5215,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
 }
 
 impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
+    #[cfg(any(test, feature = "list"))]
     pub(crate) fn bind_interaction_target(
         &mut self,
         key: InteractionKey,
@@ -4991,6 +5276,11 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// whose focus is the text caret's: `focused` shows focus on the chrome
     /// whether or not keyboard focus is visible, as a field draws it for a
     /// click as much as for a key.
+    #[cfg(any(
+        feature = "text-field",
+        feature = "secure-field",
+        feature = "color-picker"
+    ))]
     pub(crate) fn bind_live_field_target(
         &mut self,
         key: InteractionKey,
@@ -5012,10 +5302,23 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         )
     }
 
+    /// Binds a non-chrome tap target that reports interaction state through
+    /// [`InteractionReport`](waterui_interaction::interaction::InteractionReport).
+    pub(crate) fn bind_reported_tap_target(
+        &mut self,
+        key: InteractionKey,
+        bounds: kurbo::Rect,
+        env: &Environment,
+        disabled: bool,
+    ) -> (InteractionState, PressSlot, Rc<InteractionLayerHandles>) {
+        self.bind_interaction_target_with_focus(key, bounds, env, None, disabled, None)
+    }
+
     /// Binds the interaction target of a toggle whose parts are
     /// engine-realized ([`LiveToggle`](crate::renderer::live_toggle::LiveToggle))
     /// from `control`, on its touch `target`: the same live binding
     /// [`Self::bind_live_chrome_target`] makes.
+    #[cfg(any(feature = "toggle", feature = "picker"))]
     pub(crate) fn bind_live_toggle_target(
         &mut self,
         key: InteractionKey,
@@ -5034,6 +5337,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// from `look`, on the segment's touch `target`, the segment wearing
     /// `chrome`: the same live binding [`Self::bind_live_chrome_target`]
     /// makes.
+    #[cfg(feature = "picker")]
     pub(crate) fn bind_live_segment_target(
         &mut self,
         key: InteractionKey,
@@ -5299,6 +5603,15 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         }
     }
 
+    #[cfg(any(
+        all(hydrolysis_hosted, hydrolysis_gpu),
+        feature = "navigation",
+        feature = "color-picker",
+        feature = "date-picker",
+        feature = "picker",
+        feature = "toggle",
+        feature = "list"
+    ))]
     pub(crate) fn register_interactive_pointer_target<F>(
         &mut self,
         bounds: kurbo::Rect,
@@ -5319,11 +5632,19 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     ) where
         F: 'static + FnMut(&mut Self, kurbo::Point, &Environment) -> bool,
     {
-        self.register_press_target(bounds, press_slot, keyboard_focusable, action, None);
+        self.register_press_target(
+            bounds,
+            press_slot,
+            keyboard_focusable,
+            action,
+            #[cfg(any(feature = "toggle", feature = "picker"))]
+            None,
+        );
     }
 
     /// Registers a keyboard-focusable press target whose control tracks its
     /// press itself ([`Track`]); `action` answers keyboard activation.
+    #[cfg(any(feature = "toggle", feature = "picker"))]
     pub(crate) fn register_tracked_pointer_target<F>(
         &mut self,
         bounds: kurbo::Rect,
@@ -5342,7 +5663,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         press_slot: PressSlot,
         keyboard_focusable: bool,
         action: F,
-        track: Option<TrackAction>,
+        #[cfg(any(feature = "toggle", feature = "picker"))] track: Option<TrackAction>,
     ) where
         F: 'static + FnMut(&mut Self, kurbo::Point, &Environment) -> bool,
     {
@@ -5361,6 +5682,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 owners: self.owner_stack.clone(),
                 interaction,
                 action: Rc::new(RefCell::new(action)),
+                #[cfg(any(feature = "toggle", feature = "picker"))]
                 track,
                 keyboard_step: None,
                 press_filter: None,
@@ -5373,6 +5695,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         );
     }
 
+    #[cfg(feature = "slider")]
     pub(crate) fn register_interactive_pointer_drag_target<F, K>(
         &mut self,
         bounds: kurbo::Rect,
@@ -5399,6 +5722,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 owners: self.owner_stack.clone(),
                 interaction,
                 action: Rc::new(RefCell::new(action)),
+                #[cfg(any(feature = "toggle", feature = "picker"))]
                 track: None,
                 keyboard_step: Some(Rc::new(RefCell::new(keyboard_step))),
                 press_filter,
@@ -5716,6 +6040,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
 impl<E: crate::text::TextEngine> Default for HitTestState<E> {
     fn default() -> Self {
         Self {
+            activations: 0,
             embedded_input_targets: Vec::default(),
             active_embedded_target: Option::default(),
             active_embedded_click_count: core::num::NonZeroU32::MIN,
@@ -5730,6 +6055,7 @@ impl<E: crate::text::TextEngine> Default for HitTestState<E> {
             active_pointer: Option::default(),
             active_pointer_button: Option::default(),
             pending_pointer_press: Option::default(),
+            #[cfg(feature = "menu")]
             pending_context_menu_hold: Option::default(),
             keyboard_focus: Option::default(),
             keyboard_focus_owner: Weak::default(),
@@ -5745,7 +6071,9 @@ impl<E: crate::text::TextEngine> Default for HitTestState<E> {
             active_pointer_drag_target: Option::default(),
             active_pointer_drag_owner: Weak::default(),
             active_pointer_drag_signature: Option::default(),
+            #[cfg(feature = "navigation")]
             back_targets: Vec::default(),
+            #[cfg(feature = "navigation")]
             system_back: SystemBackGesture::default(),
             active_scrollbar_drag: Option::default(),
             cursor_targets: Vec::default(),
@@ -5754,6 +6082,7 @@ impl<E: crate::text::TextEngine> Default for HitTestState<E> {
             drop_targets: Vec::default(),
             active_drag: Option::default(),
             os_file_drag: Option::default(),
+            #[cfg(feature = "menu")]
             context_menu_targets: Vec::default(),
             interaction: InteractionEngine::default(),
             active_press_bounds: Option::default(),
@@ -5843,6 +6172,7 @@ impl<E: crate::text::TextEngine> Clone for PointerTarget<E> {
             owner: self.owner.clone(),
             interaction: self.interaction.clone(),
             action: self.action.clone(),
+            #[cfg(any(feature = "toggle", feature = "picker"))]
             track: self.track.clone(),
             keyboard_step: self.keyboard_step.clone(),
             press_filter: self.press_filter.clone(),

@@ -7,9 +7,9 @@
 //! ## Components
 //!
 //! - [`Photo`]: Display static images with customizable placeholders
-//! - [`Video`]: Video sources that can be used with [`VideoPlayer`]
-//! - [`VideoPlayer`]: Video playback with reactive volume control
-//! - [`LivePhoto`]: Live media display with paired still and motion resources
+//! - `Video`: Video sources that can be used with `VideoPlayer` (feature: `video`)
+//! - `VideoPlayer`: Video playback with reactive volume control (feature: `video`)
+//! - `LivePhoto`: Live media display with paired still and motion resources (feature: `video`)
 //! - [`Media`]: Unified enum for different media types
 //!
 //! ## Features
@@ -67,12 +67,15 @@ pub mod live;
 pub mod photo;
 
 /// Media picker functionality for platform-native media selection.
+#[cfg(feature = "media-picker")]
 pub mod media_picker;
 /// Video components and types re-exported from `waterui-video`.
 #[cfg(feature = "video")]
 pub mod video {
     pub use waterui_video::video::*;
 }
+#[cfg(feature = "media-picker")]
+pub use media_picker::MediaPicker;
 #[cfg(feature = "video")]
 pub use {
     live::LivePhoto,
@@ -85,7 +88,7 @@ pub use {
         PlayerController, Playlist, RepeatMode, SubtitleTrack, video_player,
     },
 };
-pub use {media_picker::MediaPicker, photo::Photo, waterui_image::Image};
+pub use {photo::Photo, waterui_image::Image};
 
 /// Re-export the stable [`Filter`] trait from `filtrate-core` for
 /// GPU-accelerated image filters.
@@ -106,8 +109,8 @@ use crate::live::LivePhotoSource;
 ///
 /// This enum automatically chooses the appropriate component when used as a View:
 /// - [`Media::Image`] renders as a [`Photo`] component
-/// - [`Media::Video`] renders as a [`VideoPlayer`] component
-/// - [`Media::LivePhoto`] renders as a [`LivePhoto`] component
+/// - `Media::Video` renders as a `VideoPlayer` component (requires `video`)
+/// - `Media::LivePhoto` renders as a `LivePhoto` component (requires `video`)
 ///
 /// # Examples
 ///
@@ -151,18 +154,6 @@ impl View for Media {
             Self::LivePhoto(live) => AnyView::new(LivePhoto::new(live)),
             #[cfg(feature = "video")]
             Self::Video(url) => AnyView::new(waterui_video::video_player(url)),
-        }
-    }
-
-    /// The axis depends on the variant; each resolves to a different leaf, so
-    /// ask that leaf.
-    fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
-        match self {
-            Self::Image(url) => Photo::new(url.clone()).stretch_axis(),
-            #[cfg(feature = "video")]
-            Self::LivePhoto(live) => LivePhoto::new(live.clone()).stretch_axis(),
-            #[cfg(feature = "video")]
-            Self::Video(url) => waterui_video::video_player(url.clone()).stretch_axis(),
         }
     }
 }

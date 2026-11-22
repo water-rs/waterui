@@ -10,7 +10,7 @@ use mdi::format_list_bulleted;
 use mdi::inbox;
 use mdi::plus;
 use waterui::Identifiable;
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::background::Material;
 use waterui::component::list::{List, ListItem, Section};
 use waterui::prelude::theme_color::Foreground;
@@ -368,7 +368,10 @@ fn user_list_row(name: &'static str, count: i32, color: Srgb) -> impl View {
     .padding_with((4.0, 8.0))
 }
 
-fn detail_view(dest: SidebarDestination, search: &Binding<Str>) -> NavigationView {
+fn detail_view(
+    dest: SidebarDestination,
+    search: &Binding<Str>,
+) -> NavigationView<impl View + use<>> {
     let (today_rows, upcoming_rows) = reminders_for(dest);
 
     vstack((
@@ -436,7 +439,7 @@ fn matching_rows(
 // `row.flagged` is immutable fixture data: the `&'static [ReminderRow]` rows
 // never change, so reading the field in the row builder cannot go stale.
 #[allow(unknown_lints, collection_item_snapshot)]
-fn reminder_item(row: &ReminderRow) -> ListItem {
+fn reminder_item(row: &ReminderRow) -> ListItem<impl View + use<>> {
     ListItem::new(
         hstack((
             circle_outline().size(16.0, 16.0).muted(),
@@ -461,7 +464,7 @@ fn reminder_list(
     today_rows: &'static [ReminderRow],
     upcoming_rows: &'static [ReminderRow],
     search: &Binding<Str>,
-) -> impl View {
+) -> impl View + use<> {
     List::content((
         Section::new("Today").content(ForEach::new(matching_rows(today_rows, search), |row| {
             reminder_item(&row)
@@ -474,6 +477,6 @@ fn reminder_list(
 }
 
 /// Builds the reminders example app.
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     App::new(demo, env)
 }

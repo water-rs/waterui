@@ -18,9 +18,7 @@ use waterui_core::handler::AnyViewBuilder;
 use waterui_graphics::backend::{AnyEffect, FilteredView, OutputSize, ParamGuards};
 use waterui_graphics::filter_view::filters;
 use waterui_graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
-use waterui_graphics::{
-    ExternalFrameSource, ExternalFrameView, FrameOutput, GpuContent, GpuContentView,
-};
+use waterui_graphics::{ExternalFrameSource, ExternalFrameView, FrameOutput, GpuContent, GpuView};
 
 use super::{MinimalTestTheme, pumped_test_environment};
 use crate::{HeadlessRuntime, OffscreenPainter};
@@ -61,20 +59,20 @@ impl ExternalFrameSource for NoFrames {
 #[cfg_attr(
     all(debug_assertions, hydrolysis_gpu),
     should_panic(
-        expected = "hydrolysis: GpuContentView needs a GPU device, but this runtime renders on the \
+        expected = "hydrolysis: GpuView needs a GPU device, but this runtime renders on the \
                     Cherenkov CPU backend"
     )
 )]
 #[cfg_attr(
     all(debug_assertions, not(hydrolysis_gpu)),
     should_panic(
-        expected = "hydrolysis: GpuContentView needs a GPU device, but this Hydrolysis build has \
+        expected = "hydrolysis: GpuView needs a GPU device, but this Hydrolysis build has \
                     no GPU painter"
     )
 )]
 fn gpu_content_is_refused_by_name() {
     render_on_cpu(
-        || AnyView::new(GpuContentView::new(NoContent)),
+        || AnyView::new(GpuView::new(NoContent)),
         MinimalTestTheme::default(),
     );
 }
@@ -115,9 +113,7 @@ fn a_filter_output_size_is_refused_with_its_reason() {
         || {
             AnyView::new(
                 FilteredView {
-                    content: AnyView::new(
-                        ().size(32.0, 32.0).background(Color::srgb_hex("#36343B")),
-                    ),
+                    content: ().size(32.0, 32.0).background(Color::srgb_hex("#36343B")),
                     effect: AnyEffect::filter(filters::Blur(2.0f32)),
                     guards: ParamGuards::default(),
                 }

@@ -955,8 +955,7 @@ impl LiveState {
             .regions
             .borrow_mut()
             .as_mut()
-            .map(|table| std::mem::take(&mut table.retired))
-            .unwrap_or_default();
+            .map_or_default(|table| std::mem::take(&mut table.retired));
         drop(retired);
     }
 

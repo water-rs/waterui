@@ -20,6 +20,7 @@ use waterui::component::list::{List, ListItem};
 use waterui::component::progress::progress;
 use waterui::component::table::{col, table};
 use waterui::theme::color::Error;
+use waterui::widget::Divider;
 use waterui_controls::button::button;
 use waterui_controls::menu::{CommandExt as _, Menu};
 use waterui_controls::slider::slider;
@@ -37,10 +38,10 @@ use waterui_graphics::backend::{NextFrame, RecordingResources, SceneContent, Sce
 #[cfg(hydrolysis_gpu)]
 use waterui_graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
 #[cfg(hydrolysis_gpu)]
-use waterui_graphics::{GpuContent, GpuContentView};
+use waterui_graphics::{GpuContent, GpuView};
 use waterui_layout::spacer::spacer;
 use waterui_layout::stack::{VStackLayout, hstack, vstack};
-use waterui_layout::{Divider, LazyContainer, scroll};
+use waterui_layout::{LazyContainer, scroll};
 use waterui_navigation::NavigationView;
 use waterui_navigation::tab::{Tab, Tabs};
 use waterui_navigation::{NavigationLink, NavigationSplitView, NavigationStack};
@@ -1090,10 +1091,10 @@ fn tabs_emit_tab_list_and_click_selects() {
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
         AnyView::new(Tabs::new(
             &selection_for_view,
-            vec![
+            (
                 Tab::new("First", || NavigationView::new("One", text("one"))),
                 Tab::new("Second", || NavigationView::new("Two", text("two"))),
-            ],
+            ),
         ))
     }));
 
@@ -1741,7 +1742,7 @@ impl GpuContent for GpuChart {
 fn gpu_surface_emits_an_image_leaf_with_its_label_and_value() {
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
         AnyView::new(
-            GpuContentView::new(GpuChart)
+            GpuView::new(GpuChart)
                 .labeled("weekly chart")
                 .described("up 12% week over week"),
         )
@@ -1859,4 +1860,36 @@ fn focused_binding_moves_ui_focus_and_tree_focus() {
     assert_eq!(update.focus, name_node);
     assert_eq!(runtime.focused_ui_node(), Some(name_node));
     assert_eq!(focus.snapshot(), Some(Field::Name));
+}
+
+#[test]
+fn a_tap_region_over_a_composite_derives_its_label_from_the_content() {
+    let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
+        AnyView::new(vstack((
+            hstack((text("Alpha"), text("Beta"))).on_tap(|| {}),
+        )))
+    }));
+    let update = pumped(&mut runtime);
+    assert_rooted(&update);
+    find_by_label(&update, Role::Button, "Alpha Beta")
+        .expect("the tap region's button takes its composite content's label");
+}
+
+#[test]
+fn a_tap_region_names_itself_from_its_content_as_it_is_now() {
+    let name = Binding::container(Str::from("Alpha"));
+    let shown = name.clone();
+    let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
+        AnyView::new(vstack((
+            hstack((text(shown.clone()), text("Beta"))).on_tap(|| {}),
+        )))
+    }));
+    let update = pumped(&mut runtime);
+    find_by_label(&update, Role::Button, "Alpha Beta")
+        .expect("the tap region's button takes its composite content's label");
+
+    name.set(Str::from("Gamma"));
+    let update = pumped(&mut runtime);
+    find_by_label(&update, Role::Button, "Gamma Beta")
+        .expect("the label follows the content's current text");
 }

@@ -3,7 +3,7 @@
 use alloc::{vec, vec::Vec};
 use nami::{Computed, Signal, SignalExt};
 use waterui_contract::contract_violation;
-use waterui_core::{AnyView, IntoSignalF32, View, layout::LayoutInvalidationCallback};
+use waterui_core::{IntoSignalF32, View, layout::LayoutInvalidationCallback};
 
 use crate::{
     Layout, LayoutError, PlacementInput, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
@@ -132,43 +132,37 @@ impl Layout for AspectRatioLayout {
 
 /// A view constrained to a width-to-height ratio.
 #[derive(Debug)]
-pub struct AspectRatio {
+pub struct AspectRatio<C> {
     layout: AspectRatioLayout,
-    content: AnyView,
+    content: C,
 }
 
-impl AspectRatio {
+impl<C: View> AspectRatio<C> {
     /// Constrains `content` to `ratio`, expressed as width divided by height.
     ///
     /// A ratio that is not positive and finite is a contract violation: a
     /// debug build panics when it is measured, a release build logs it and
     /// lays out with a ratio of 1.0.
     #[must_use]
-    pub fn new(content: impl View, ratio: impl IntoSignalF32 + 'static, mode: ContentMode) -> Self {
+    pub fn new(content: C, ratio: impl IntoSignalF32 + 'static, mode: ContentMode) -> Self {
         Self {
             layout: AspectRatioLayout {
                 ratio: ratio.into_signal_f32().computed(),
                 mode,
             },
-            content: AnyView::new(content),
+            content,
         }
     }
 }
 
-impl View for AspectRatio {
+impl<C: View> View for AspectRatio<C> {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         FixedContainer::new(self.layout, (self.content,))
-    }
-
-    /// Resolves to `FixedContainer` over the same layout and single child;
-    /// reports what that container would.
-    fn stretch_axis(&self) -> StretchAxis {
-        self.layout.stretch_axis(&[self.content.stretch_axis()])
     }
 }
 
 /// Constrains `content` to `ratio`, shrinking to fit inside what is offered.
-pub fn aspect_ratio(content: impl View, ratio: impl IntoSignalF32 + 'static) -> AspectRatio {
+pub fn aspect_ratio<C: View>(content: C, ratio: impl IntoSignalF32 + 'static) -> AspectRatio<C> {
     AspectRatio::new(content, ratio, ContentMode::Fit)
 }
 

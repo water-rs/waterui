@@ -2,7 +2,7 @@
 
 use crate::ViewExt;
 use nami::{Binding, SignalExt as _};
-use waterui_core::accessibility::{AccessibilityChildren, AccessibilityRole, AccessibilityState};
+use waterui_accessibility::{AccessibilityChildren, AccessibilityRole, AccessibilityState};
 use waterui_core::{View, handler::ViewBuilder};
 use waterui_layout::stack::vstack;
 

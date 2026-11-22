@@ -107,6 +107,7 @@ pub struct OwnerRegistrations<E: crate::text::TextEngine> {
     /// Pointer targets, in emission order.
     pub pointer_targets: Vec<RetainedEntry<crate::renderer::PointerTarget<E>, E>>,
     /// System-back targets, frontmost last after materialization.
+    #[cfg(feature = "navigation")]
     pub back_targets: Vec<RetainedEntry<crate::renderer::NavigationBackTarget<E>, E>>,
     /// Gesture-recognizer regions, parallel to `pointer_targets`.
     pub gesture_regions: Vec<RetainedEntry<RegisteredGesture<E>, E>>,
@@ -122,11 +123,13 @@ pub struct OwnerRegistrations<E: crate::text::TextEngine> {
     /// Drop destinations.
     pub drop_targets: Vec<RetainedEntry<crate::renderer::DropTarget<E>, E>>,
     /// Context-menu targets.
+    #[cfg(feature = "menu")]
     pub context_menu_targets: Vec<RetainedEntry<crate::renderer::ContextMenuTarget<E>, E>>,
     /// Scroll targets.
     pub scroll_targets: Vec<RetainedEntry<crate::renderer::ScrollTarget<E>, E>>,
     /// Text-input targets: the payload keeps its rects in the node's
     /// local space; materialization resolves them through the region.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub text_input_targets: Vec<RetainedEntry<crate::renderer::TextInputTarget<E>, E>>,
     /// Embedded-surface input targets.
     pub embedded_input_targets: Vec<RetainedEntry<crate::renderer::EmbeddedInputTarget<E>, E>>,
@@ -221,6 +224,7 @@ impl<E: crate::text::TextEngine> RetainedRegistry<E> {
 
     /// The live owners without pruning — the lookup paths that run with
     /// the registry shared (`&self`) walk it through here.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) fn live_owners(&self) -> impl Iterator<Item = Rc<NodeCell<E>>> + '_ {
         self.owners.iter().filter_map(Weak::upgrade)
     }
@@ -320,12 +324,15 @@ owner_tagged!(
     crate::renderer::input::PointerObserver<E>,
     crate::renderer::input::DropTarget<E>,
     crate::renderer::input::ScrollTarget<E>,
-    crate::renderer::input::ContextMenuTarget<E>,
-    crate::renderer::NavigationBackTarget<E>,
-    crate::renderer::input::TextInputTarget<E>,
     crate::renderer::input::EmbeddedInputTarget<E>,
     RegisteredGesture<E>,
 );
+
+#[cfg(feature = "navigation")]
+owner_tagged!(crate::renderer::NavigationBackTarget<E>);
+
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
+owner_tagged!(crate::renderer::input::TextInputTarget<E>);
 
 impl<E: crate::text::TextEngine> SetRegistrationOwner<E> for () {}
 impl<E: crate::text::TextEngine> SetRegistrationOwner<E>
@@ -339,6 +346,7 @@ impl<E: crate::text::TextEngine> Default for OwnerRegistrations<E> {
     fn default() -> Self {
         Self {
             pointer_targets: Vec::default(),
+            #[cfg(feature = "navigation")]
             back_targets: Vec::default(),
             gesture_regions: Vec::default(),
             gesture_occluders: Vec::default(),
@@ -346,8 +354,10 @@ impl<E: crate::text::TextEngine> Default for OwnerRegistrations<E> {
             hover_targets: Vec::default(),
             pointer_observers: Vec::default(),
             drop_targets: Vec::default(),
+            #[cfg(feature = "menu")]
             context_menu_targets: Vec::default(),
             scroll_targets: Vec::default(),
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             text_input_targets: Vec::default(),
             embedded_input_targets: Vec::default(),
             native_view_occlusions: Vec::default(),
@@ -356,3 +366,6 @@ impl<E: crate::text::TextEngine> Default for OwnerRegistrations<E> {
         }
     }
 }
+
+#[cfg(feature = "menu")]
+owner_tagged!(crate::renderer::input::ContextMenuTarget<E>);

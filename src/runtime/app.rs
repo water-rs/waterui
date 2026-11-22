@@ -10,14 +10,97 @@ use waterui_core::{
     handler::{Handler, HandlerOnce, ViewBuilder, boxed_action, boxed_action_once},
 };
 
-use crate::{
-    component::menu::{CloseWindowChord, Menu, MenuBarView},
-    window::Window,
+#[cfg(feature = "menu")]
+use crate::component::{
+    label::SemanticLabel,
+    menu::{CloseWindowChord, Menu, MenuBarView},
 };
+use crate::window::{AnyWindow, Window, WindowChannel, WindowContent, WindowToolbar};
 
 pub use crate::runtime::termination::{
     Quit, Termination, TerminationHandle, TerminationHost, TerminationKind,
 };
+
+/// Menu bar declaration carried by [`App`] and [`AppParts`].
+///
+/// [`NoMenuBar`] is the default so applications without `.menu_bar(...)`
+/// resolve [`Self::HAS_DECLARED`] as `false` at compile time, allowing
+/// backends to omit declared menu-bar installation without relying on
+/// cross-function inlining.
+pub trait AppMenuBar: 'static {
+    /// Whether this declaration type may carry application menus.
+    const HAS_DECLARED: bool;
+
+    /// Borrows the declared menu bar signal when [`Self::HAS_DECLARED`] is `true`.
+    #[cfg(feature = "menu")]
+    fn declared(&self) -> Option<&Computed<Vec<Menu<SemanticLabel>>>>;
+
+    /// Consumes this declaration into its menu bar signal when present.
+    #[cfg(feature = "menu")]
+    fn into_declared(self) -> Option<Computed<Vec<Menu<SemanticLabel>>>>;
+}
+
+/// Marker type for an [`App`] without a declared menu bar.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoMenuBar;
+
+impl AppMenuBar for NoMenuBar {
+    const HAS_DECLARED: bool = false;
+
+    #[cfg(feature = "menu")]
+    fn declared(&self) -> Option<&Computed<Vec<Menu<SemanticLabel>>>> {
+        None
+    }
+
+    #[cfg(feature = "menu")]
+    fn into_declared(self) -> Option<Computed<Vec<Menu<SemanticLabel>>>> {
+        None
+    }
+}
+
+/// Declared application menu bar attached via [`App::menu_bar`].
+#[cfg(feature = "menu")]
+#[derive(Debug, Clone)]
+pub struct DeclaredMenuBar(Computed<Vec<Menu<SemanticLabel>>>);
+
+#[cfg(feature = "menu")]
+impl DeclaredMenuBar {
+    /// Wraps a resolved menu bar signal.
+    #[must_use]
+    pub const fn new(menus: Computed<Vec<Menu<SemanticLabel>>>) -> Self {
+        Self(menus)
+    }
+}
+
+#[cfg(feature = "menu")]
+impl AppMenuBar for DeclaredMenuBar {
+    const HAS_DECLARED: bool = true;
+
+    fn declared(&self) -> Option<&Computed<Vec<Menu<SemanticLabel>>>> {
+        Some(&self.0)
+    }
+
+    fn into_declared(self) -> Option<Computed<Vec<Menu<SemanticLabel>>>> {
+        Some(self.0)
+    }
+}
+
+#[cfg(feature = "menu")]
+impl AppMenuBar for Option<DeclaredMenuBar> {
+    const HAS_DECLARED: bool = true;
+
+    fn declared(&self) -> Option<&Computed<Vec<Menu<SemanticLabel>>>> {
+        self.as_ref().map(|menus| &menus.0)
+    }
+
+    #[expect(
+        clippy::single_option_map,
+        reason = "trait implementation preserves the Option<DeclaredMenuBar> signature"
+    )]
+    fn into_declared(self) -> Option<Computed<Vec<Menu<SemanticLabel>>>> {
+        self.map(|menus| menus.0)
+    }
+}
 
 /// Represents a `WaterUI` application.
 ///
@@ -26,13 +109,13 @@ pub use crate::runtime::termination::{
 /// once the last one closes — or when there is none to begin with — is the
 /// application's [`LastWindowPolicy`].
 #[derive(Debug)]
-pub struct App {
+pub struct App<W, M = NoMenuBar> {
     /// The windows opened at startup, in declaration order.
-    windows: Vec<Window>,
+    windows: W,
     /// What the application does once it has no window left.
     last_window: LastWindowPolicy,
     /// Optional system menu bar menus.
-    pub menu_bar: Computed<Vec<Menu>>,
+    pub menu_bar: M,
     /// The application environment containing injected services. Values
     /// installed with [`App::state`] are layered over it when the runner
     /// takes the application apart with [`App::into_parts`].
@@ -75,13 +158,149 @@ pub enum LastWindowPolicy {
     StayResident,
 }
 
+/// The windows and runtime window channels an application declares, in
+/// declaration order, each keeping its content's type up to the runner that
+/// opens it.
+///
+/// A single [`Window`], a [`WindowChannel`] paired with a
+/// [`WindowManager`](crate::window::WindowManager), a tuple of window sets
+/// (nesting included, which is what [`App::window`] builds), an array or a
+/// `Vec` of windows of one type, and `()` for none are window sets.
+pub trait Windows: 'static {
+    /// How many startup windows the set currently holds.
+    fn len(&self) -> usize;
+
+    /// Whether the set holds no startup window.
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Hands each window and runtime window channel to `sink`, in declaration
+    /// order.
+    fn for_each<S: WindowSink>(self, sink: &mut S);
+
+    /// The startup windows with their content types erased, in declaration
+    /// order.
+    fn erase(self) -> Vec<AnyWindow>
+    where
+        Self: Sized,
+    {
+        struct Erase(Vec<AnyWindow>);
+        impl WindowSink for Erase {
+            fn window<C: ViewBuilder, T: WindowToolbar>(&mut self, window: Window<C, T>) {
+                self.0.push(window.erase());
+            }
+
+            fn channel<C: ViewBuilder, T: WindowToolbar>(&mut self, channel: WindowChannel<C, T>) {
+                self.0
+                    .extend(channel.drain().into_iter().map(Window::erase));
+            }
+        }
+        let mut erase = Erase(Vec::with_capacity(self.len()));
+        self.for_each(&mut erase);
+        erase.0
+    }
+}
+
+/// Receives an application's startup windows and runtime window channels, each
+/// with its own content and toolbar types.
+///
+/// A runner implements it to turn each window and channel into the form it
+/// holds, so the content and toolbar dispatch statically below the window.
+pub trait WindowSink {
+    /// Receives the next startup window.
+    fn window<C: ViewBuilder, T: WindowToolbar>(&mut self, window: Window<C, T>);
+
+    /// Connects a channel of windows opened while the application runs.
+    fn channel<C: ViewBuilder, T: WindowToolbar>(&mut self, channel: WindowChannel<C, T>);
+}
+
+impl Windows for () {
+    fn len(&self) -> usize {
+        0
+    }
+
+    fn for_each<S: WindowSink>(self, _sink: &mut S) {}
+}
+
+impl<C: ViewBuilder, T: WindowToolbar> Windows for Window<C, T> {
+    fn len(&self) -> usize {
+        1
+    }
+
+    fn for_each<S: WindowSink>(self, sink: &mut S) {
+        sink.window(self);
+    }
+}
+
+impl<C: ViewBuilder, T: WindowToolbar> Windows for WindowChannel<C, T> {
+    fn len(&self) -> usize {
+        self.queued_len()
+    }
+
+    fn for_each<S: WindowSink>(self, sink: &mut S) {
+        sink.channel(self);
+    }
+}
+
+impl<C: ViewBuilder, T: WindowToolbar> Windows for Vec<Window<C, T>> {
+    fn len(&self) -> usize {
+        self.as_slice().len()
+    }
+
+    fn for_each<S: WindowSink>(self, sink: &mut S) {
+        for window in self {
+            sink.window(window);
+        }
+    }
+}
+
+impl<C: ViewBuilder, T: WindowToolbar, const N: usize> Windows for [Window<C, T>; N] {
+    fn len(&self) -> usize {
+        N
+    }
+
+    fn for_each<S: WindowSink>(self, sink: &mut S) {
+        for window in self {
+            sink.window(window);
+        }
+    }
+}
+
+macro_rules! tuple_windows {
+    ($($name:ident),+) => {
+        impl<$($name: Windows),+> Windows for ($($name,)+) {
+            fn len(&self) -> usize {
+                #[allow(non_snake_case, reason = "the bindings are named after their type parameters")]
+                let ($($name,)+) = self;
+                0 $(+ $name.len())+
+            }
+
+            fn for_each<S: WindowSink>(self, sink: &mut S) {
+                #[allow(non_snake_case, reason = "the bindings are named after their type parameters")]
+                let ($($name,)+) = self;
+                $($name.for_each(sink);)+
+            }
+        }
+    };
+}
+
+tuple_windows!(A);
+tuple_windows!(A, B);
+tuple_windows!(A, B, C);
+tuple_windows!(A, B, C, D);
+tuple_windows!(A, B, C, D, E);
+tuple_windows!(A, B, C, D, E, F);
+tuple_windows!(A, B, C, D, E, F, G);
+tuple_windows!(A, B, C, D, E, F, G, H);
+
 /// An [`App`] taken apart for a runner, see [`App::into_parts`].
 #[derive(Debug)]
-pub struct AppParts {
+pub struct AppParts<W, M = NoMenuBar> {
     /// The windows opened at startup, in declaration order; possibly none.
-    pub windows: Vec<Window>,
+    pub windows: W,
     /// The application menu bar.
-    pub menu_bar: Computed<Vec<Menu>>,
+    pub menu_bar: M,
     /// The application environment, the composition root every window renders
     /// under.
     pub env: Environment,
@@ -91,6 +310,47 @@ pub struct AppParts {
     /// with [`Termination::start`] once its local executor exists, then
     /// reports every quit path through the returned handle.
     pub termination: Termination,
+}
+
+impl<W, M> AppParts<W, M> {
+    /// The same parts with the windows replaced by `f(windows)`: a runner
+    /// that stores the application turns its windows into the form it holds.
+    #[inline]
+    pub fn map_windows<V>(self, f: impl FnOnce(W) -> V) -> AppParts<V, M> {
+        let Self {
+            windows,
+            menu_bar,
+            env,
+            last_window,
+            termination,
+        } = self;
+        AppParts {
+            windows: f(windows),
+            menu_bar,
+            env,
+            last_window,
+            termination,
+        }
+    }
+
+    /// The same parts with the menu bar replaced by `f(menu_bar)`.
+    #[inline]
+    pub fn map_menu_bar<N>(self, f: impl FnOnce(M) -> N) -> AppParts<W, N> {
+        let Self {
+            windows,
+            menu_bar,
+            env,
+            last_window,
+            termination,
+        } = self;
+        AppParts {
+            windows,
+            menu_bar: f(menu_bar),
+            env,
+            last_window,
+            termination,
+        }
+    }
 }
 
 /// What this application is called, or empty when nothing said.
@@ -119,7 +379,7 @@ pub fn application_identifier() -> Str {
     Str::from(option_env!("WATERUI_APP_ID").unwrap_or_default())
 }
 
-impl App {
+impl<B: ViewBuilder> App<Window<WindowContent<B>>> {
     /// Create an application with a single window showing `content`.
     ///
     /// The window opens immediately (state is initialized to
@@ -130,18 +390,22 @@ impl App {
     /// means: it is shown under the application's own name, which the platform
     /// knows and this does not. To title it, declare the window yourself with
     /// [`Window::title`] and pass it to [`App::new_with_windows`].
-    pub fn new(content: impl ViewBuilder, env: Environment) -> Self {
+    #[inline]
+    pub fn new(content: B, env: Environment) -> Self {
         let state = nami::binding(crate::window::WindowState::Normal);
-        Self::new_with_windows([Window::new("", state, content)], env)
+        Self::new_with_windows(Window::new("", state, content), env)
     }
+}
 
+impl<W: Windows> App<W, NoMenuBar> {
     /// Create an application with the given windows and environment.
     ///
     /// Any number of windows is valid, none included: an application with no
     /// window opens its windows on demand, or lives in a status item, and
     /// pairs this with [`LastWindowPolicy::StayResident`] so its runner keeps
     /// it alive (see [`App::on_last_window_closed`]).
-    pub fn new_with_windows(windows: impl Into<Vec<Window>>, mut env: Environment) -> Self {
+    #[inline]
+    pub fn new_with_windows(windows: W, mut env: Environment) -> Self {
         if env
             .get::<Computed<waterui_core::layout::LayoutDirection>>()
             .is_none()
@@ -154,38 +418,51 @@ impl App {
                 waterui_locale::layout_direction_computed(&env),
             ));
         }
-        // Realizations have to be in place before any view resolves, and this
-        // is the last moment the environment is still the composition root's.
-        crate::realization::install(&mut env);
         Self {
-            windows: windows.into(),
+            windows,
             last_window: LastWindowPolicy::default(),
-            menu_bar: Computed::constant(Vec::new()),
+            menu_bar: NoMenuBar,
             env,
             states: Environment::new(),
             termination: Termination::default(),
         }
     }
+}
 
+impl<W: Windows, M: AppMenuBar> App<W, M> {
     /// The windows opened at startup, in declaration order.
     #[must_use]
-    pub const fn windows(&self) -> &[Window] {
-        self.windows.as_slice()
+    pub const fn windows(&self) -> &W {
+        &self.windows
     }
 
     /// Mutable access to the windows opened at startup.
     #[must_use]
-    pub const fn windows_mut(&mut self) -> &mut [Window] {
-        self.windows.as_mut_slice()
+    pub const fn windows_mut(&mut self) -> &mut W {
+        &mut self.windows
     }
 
-    /// Add a window to the application.
+    /// Add a window or [`WindowChannel`] to the application.
     ///
     /// Use this for multi-window applications on platforms that support it.
     #[must_use]
-    pub fn window(mut self, window: Window) -> Self {
-        self.windows.push(window);
-        self
+    pub fn window<N: Windows>(self, window: N) -> App<(W, N), M> {
+        let Self {
+            windows,
+            last_window,
+            menu_bar,
+            env,
+            states,
+            termination,
+        } = self;
+        App {
+            windows: (windows, window),
+            last_window,
+            menu_bar,
+            env,
+            states,
+            termination,
+        }
     }
 
     /// Sets what the application does once it has no open window.
@@ -209,10 +486,26 @@ impl App {
     }
 
     /// Sets the application system menu bar.
+    #[inline]
     #[must_use]
-    pub fn menu_bar(mut self, menus: impl MenuBarView) -> Self {
-        self.menu_bar = menus.into_menus();
-        self
+    #[cfg(feature = "menu")]
+    pub fn menu_bar(self, menus: impl MenuBarView) -> App<W, DeclaredMenuBar> {
+        let Self {
+            windows,
+            last_window,
+            menu_bar: _,
+            env,
+            states,
+            termination,
+        } = self;
+        App {
+            windows,
+            last_window,
+            menu_bar: DeclaredMenuBar(menus.into_menus()),
+            env,
+            states,
+            termination,
+        }
     }
 
     /// Injects cloneable state into the application's environment.
@@ -229,12 +522,12 @@ impl App {
     ///
     /// ```
     /// # use waterui::prelude::*;
-    /// # use waterui::app::App;
+    /// # use waterui::app::{App, AppMenuBar, Windows};
     /// #[waterui::state]
     /// #[derive(Clone)]
     /// struct Store;
     ///
-    /// fn app(env: Environment) -> App {
+    /// fn app(env: Environment) -> App<impl Windows, impl AppMenuBar> {
     ///     App::new(|| text!("Counter"), env)
     ///         .state(&Store)
     ///         .menu_bar(Menu::new("App", "Quit".action(|_store: Store| {})))
@@ -331,7 +624,7 @@ impl App {
 
     /// Consume the app and return its windows, in declaration order.
     #[must_use]
-    pub fn into_windows(self) -> Vec<Window> {
+    pub fn into_windows(self) -> W {
         self.windows
     }
 
@@ -339,10 +632,25 @@ impl App {
     /// installed by [`App::state`] layered over its environment, and the
     /// Close Window chord decided from its menu bar installed — every
     /// environment a runner hands its menus carries the one decision.
+    #[inline]
     #[must_use]
-    pub fn into_parts(self) -> AppParts {
-        let mut env = self.states.layered_on(&self.env);
-        env.insert(CloseWindowChord::new(&self.menu_bar, &env));
+    pub fn into_parts(self) -> AppParts<W, M> {
+        let env = self.states.layered_on(&self.env);
+        #[cfg(feature = "menu")]
+        let env = {
+            let mut env = env;
+            let chord = if M::HAS_DECLARED {
+                self.menu_bar
+                    .declared()
+                    .map_or_else(CloseWindowChord::standard, |menu_bar| {
+                        CloseWindowChord::new(menu_bar, &env)
+                    })
+            } else {
+                CloseWindowChord::standard()
+            };
+            env.insert(chord);
+            env
+        };
         AppParts {
             windows: self.windows,
             menu_bar: self.menu_bar,
@@ -378,6 +686,7 @@ mod tests {
     use waterui_locale::locales;
 
     use super::*;
+    #[cfg(feature = "menu")]
     use crate::component::menu::{CommandExt as _, Shortcut};
 
     #[test]
@@ -408,21 +717,11 @@ mod tests {
 
     #[test]
     fn an_application_may_declare_no_window() {
-        let app = App::new_with_windows(Vec::new(), Environment::new())
+        let app = App::new_with_windows((), Environment::new())
             .on_last_window_closed(LastWindowPolicy::StayResident);
 
-        assert!(
-            app.windows().is_empty(),
-            "expected no windows, got {:?}",
-            app.windows()
-        );
         assert_eq!(app.last_window_policy(), LastWindowPolicy::StayResident);
         let parts = app.into_parts();
-        assert!(
-            parts.windows.is_empty(),
-            "expected no windows, got {:?}",
-            parts.windows
-        );
         assert_eq!(parts.last_window, LastWindowPolicy::StayResident);
     }
 
@@ -436,11 +735,16 @@ mod tests {
 
     /// Resolves `app`'s menu bar under the environment its runner receives
     /// and runs the first command of its first menu.
-    fn run_first_menu_bar_command(app: App) {
+    #[cfg(feature = "menu")]
+    fn run_first_menu_bar_command<W: Windows, M: AppMenuBar>(app: App<W, M>) {
         use crate::component::menu::{ResolvedMenuItem, resolve_menu_bar_items};
 
         let parts = app.into_parts();
-        let bars = resolve_menu_bar_items(&parts.menu_bar, &parts.env).snapshot();
+        let menu_bar = parts
+            .menu_bar
+            .declared()
+            .expect("the test application must declare a menu bar");
+        let bars = resolve_menu_bar_items(menu_bar, &parts.env).snapshot();
         let [ResolvedMenuItem::Menu(menu)] = bars.as_slice() else {
             panic!("expected one resolved menu, got {bars:?}");
         };
@@ -460,6 +764,7 @@ mod tests {
     /// Window chord once, from the declared menu bar: a bar that binds ⌘W
     /// on its own command leaves every Close Window item ⇧⌘W.
     #[test]
+    #[cfg(feature = "menu")]
     fn the_menu_bar_decides_the_close_window_chord() {
         let parts = App::new(|| (), Environment::new())
             .menu_bar(Menu::new(
@@ -477,6 +782,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "menu")]
     fn a_menu_bar_command_extracts_state_installed_with_app_state() {
         #[waterui_macros::state]
         #[derive(Clone)]
@@ -504,6 +810,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "menu")]
     fn same_typed_app_state_binds_in_call_order() {
         let seen = Rc::new(RefCell::new(Vec::new()));
         let record = Rc::clone(&seen);

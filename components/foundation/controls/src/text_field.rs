@@ -1,131 +1,28 @@
 //! A text input component wired to a reactive string binding.
 //!
 //! ![`TextField`](https://raw.githubusercontent.com/water-rs/waterui/dev/docs/illustrations/text_field.svg)
+pub use crate::input::{ContentType, KeyboardType};
+
 use core::num::NonZeroUsize;
 
 use alloc::vec::Vec;
 use nami::{Binding, Computed};
 use waterui_core::Str;
+use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::handler::{Handler, SharedAction};
-use waterui_core::{AnyView, Environment, View, layout::StretchAxis};
-use waterui_core::{configurable, contract_violation};
+use waterui_core::layout::StretchAxis;
+use waterui_core::{AnyView, Environment, Native, NativeView, View, contract_violation};
 use waterui_text::{IntoText, Text, TextConfig, styled::StyledStr};
 
-use crate::label::{IntoLabel, Label, impl_label_style_methods};
+use crate::label::{ControlLabel, IntoLabel, Label, LabelKind, impl_label_style_methods};
 use crate::menu::{MenuItem, MenuView, ResolvedMenuItem, resolve_menu_items};
 
-/// Configuration options for a `TextField`.
-#[non_exhaustive]
-#[derive(Debug)]
-pub struct TextFieldConfig {
-    /// The label displayed for the text field.
-    ///
-    /// Always present: it is required at construction so assistive technology
-    /// has a name to announce, even when
-    /// [`LabelDisplayMode::Hidden`](crate::label::LabelDisplayMode::Hidden)
-    /// removes the visible chrome.
-    label: Label,
-    /// The binding to the text value.
-    value: Binding<StyledStr>,
-    /// The placeholder text shown when the field is empty.
-    prompt: Text,
-    /// The type of keyboard to use for input.
-    keyboard: KeyboardType,
-    /// The semantic content type the field declares for autofill.
-    ///
-    /// `None` declares none — the field is not offered to autofill services.
-    content_type: Option<ContentType>,
-    /// Optional selected-text menu items.
-    ///
-    /// These actions are shown by native text selection UI.
-    selection_menu: Computed<Vec<MenuItem>>,
-    /// Maximum number of lines the field renders. `None` removes the limit.
-    line_limit: Option<NonZeroUsize>,
-    /// The action run when the user submits the field with Return or Enter.
-    ///
-    /// A field without one leaves Return unconsumed, so it bubbles to the
-    /// field's ancestors like any other key it does not use.
-    on_submit: Option<SharedAction>,
-}
-
-impl TextFieldConfig {
-    /// The label displayed for the text field.
-    ///
-    /// Always present: it is required at construction so assistive technology
-    /// has a name to announce, even when
-    /// [`LabelDisplayMode::Hidden`](crate::label::LabelDisplayMode::Hidden)
-    /// removes the visible chrome.
-    #[must_use]
-    pub const fn label(&self) -> &Label {
-        &self.label
-    }
-
-    /// Sets the `label`.
-    pub fn set_label(&mut self, label: Label) {
-        self.label = label;
-    }
-
-    /// The label displayed for the control, for editing it in place.
-    pub const fn label_mut(&mut self) -> &mut Label {
-        &mut self.label
-    }
-
-    /// The binding to the text value.
-    #[must_use]
-    pub const fn value(&self) -> &Binding<StyledStr> {
-        &self.value
-    }
-
-    /// The placeholder text shown when the field is empty.
-    #[must_use]
-    pub const fn prompt(&self) -> &Text {
-        &self.prompt
-    }
-
-    /// The type of keyboard to use for input.
-    #[must_use]
-    pub const fn keyboard(&self) -> &KeyboardType {
-        &self.keyboard
-    }
-
-    /// The semantic content type the field declares for autofill.
-    ///
-    /// `None` declares none — the field is not offered to autofill services.
-    #[must_use]
-    pub const fn content_type(&self) -> Option<ContentType> {
-        self.content_type
-    }
-
-    /// Optional selected-text menu items.
-    ///
-    /// These actions are shown by native text selection UI.
-    #[must_use]
-    pub const fn selection_menu(&self) -> &Computed<Vec<MenuItem>> {
-        &self.selection_menu
-    }
-
-    /// Maximum number of lines the field renders. `None` removes the limit.
-    #[must_use]
-    pub const fn line_limit(&self) -> Option<NonZeroUsize> {
-        self.line_limit
-    }
-
-    /// The action run when the user submits the field with Return or Enter.
-    ///
-    /// A field without one leaves Return unconsumed, so it bubbles to the
-    /// field's ancestors like any other key it does not use.
-    #[must_use]
-    pub const fn on_submit(&self) -> Option<&SharedAction> {
-        self.on_submit.as_ref()
-    }
-}
-
-/// Native-resolved text field payload.
+/// Configuration for the [`TextField`] component.
 #[derive(Debug)]
 #[non_exhaustive]
-pub struct ResolvedTextFieldConfig {
+pub struct TextFieldConfig<S> {
     /// The label displayed for the text field.
-    label: Label,
+    label: ControlLabel<S>,
     /// The binding to the text value.
     value: Binding<StyledStr>,
     /// The resolved placeholder text shown when the field is empty.
@@ -145,11 +42,21 @@ pub struct ResolvedTextFieldConfig {
     on_submit: Option<SharedAction>,
 }
 
-impl ResolvedTextFieldConfig {
+impl<S> TextFieldConfig<S> {
     /// The label displayed for the text field.
     #[must_use]
-    pub const fn label(&self) -> &Label {
+    pub const fn label(&self) -> &ControlLabel<S> {
         &self.label
+    }
+
+    /// Sets the `label`.
+    pub fn set_label(&mut self, label: ControlLabel<S>) {
+        self.label = label;
+    }
+
+    /// The label displayed for the control, for editing it in place.
+    pub const fn label_mut(&mut self) -> &mut ControlLabel<S> {
+        &mut self.label
     }
 
     /// The binding to the text value.
@@ -206,7 +113,7 @@ impl ResolvedTextFieldConfig {
     pub fn into_parts(
         self,
     ) -> (
-        Label,
+        ControlLabel<S>,
         Binding<StyledStr>,
         TextConfig,
         KeyboardType,
@@ -228,74 +135,64 @@ impl ResolvedTextFieldConfig {
     }
 }
 
-configurable!(
-    /// Resolved text field view passed to native backends.
-    ResolvedTextField,
-    ResolvedTextFieldConfig,
-    StretchAxis::Horizontal
-);
+impl<S: 'static> NativeView for TextFieldConfig<S> {
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::Horizontal
+    }
+}
+
+impl<S: 'static> MapSlots<S> for TextFieldConfig<S> {
+    type With<T: 'static> = TextFieldConfig<T>;
+
+    fn map_slots<T: 'static>(self, f: impl Fn(S) -> T + Clone + 'static) -> TextFieldConfig<T> {
+        TextFieldConfig {
+            label: self.label.map_slots(f),
+            value: self.value,
+            prompt: self.prompt,
+            keyboard: self.keyboard,
+            content_type: self.content_type,
+            selection_menu: self.selection_menu,
+            line_limit: self.line_limit,
+            on_submit: self.on_submit,
+        }
+    }
+}
 
 /// A single-line text input field.
 #[derive(Debug)]
-pub struct TextField(TextFieldConfig);
-
-#[derive(Debug, Default)]
-#[non_exhaustive]
-/// Enum representing the type of keyboard to use for text input.
-pub enum KeyboardType {
-    #[default]
-    /// Default keyboard type, typically used for general text input.
-    Text,
-    /// Keyboard for email input, which may include special characters like `@` and `.`
-    Email,
-    /// Keyboard for URL input, which may include characters like `:`, `/`, and `.`
-    URL,
-    /// Keyboard for numeric input, which may include digits and a decimal point.
-    Number,
-    /// Keyboard for phone number input, which may include digits and special characters like `+`, `-`, and `()`.
-    PhoneNumber,
+#[must_use]
+pub struct TextField<L> {
+    /// The label displayed for the text field.
+    ///
+    /// Always present: it is required at construction so assistive technology
+    /// has a name to announce, even when
+    /// [`LabelDisplayMode::Hidden`](crate::label::LabelDisplayMode::Hidden)
+    /// removes the visible chrome.
+    label: Label<L>,
+    /// The binding to the text value.
+    value: Binding<StyledStr>,
+    /// The placeholder text shown when the field is empty.
+    prompt: Text,
+    /// The type of keyboard to use for input.
+    keyboard: KeyboardType,
+    /// The semantic content type the field declares for autofill.
+    ///
+    /// `None` declares none — the field is not offered to autofill services.
+    content_type: Option<ContentType>,
+    /// Optional selected-text menu items.
+    ///
+    /// These actions are shown by native text selection UI.
+    selection_menu: Computed<Vec<MenuItem>>,
+    /// Maximum number of lines the field renders. `None` removes the limit.
+    line_limit: Option<NonZeroUsize>,
+    /// The action run when the user submits the field with Return or Enter.
+    ///
+    /// A field without one leaves Return unconsumed, so it bubbles to the
+    /// field's ancestors like any other key it does not use.
+    on_submit: Option<SharedAction>,
 }
 
-/// The semantic content type a text field declares: what the field's content
-/// *means*, for autofill and password/one-time-code services.
-///
-/// This is the shared vocabulary of Apple's text content types and Android's
-/// autofill hints. On Apple platforms it is what makes the system offer a
-/// received SMS code above the keyboard; on Android it hands the autofill
-/// service the matching hint rather than guessing from the label's language.
-/// It is a semantic attribute of the field, not a keyboard layout — a
-/// one-time-code field typically pairs it with `KeyboardType::Number`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
-#[expect(
-    clippy::exhaustive_enums,
-    reason = "backends realize each content type variant by variant; a new content type must fail their build instead of falling into a wildcard arm"
-)]
-pub enum ContentType {
-    /// A username or account identifier.
-    Username,
-    /// An existing password.
-    Password,
-    /// A new password, in account creation or password change.
-    NewPassword,
-    /// An email address.
-    EmailAddress,
-    /// A telephone number.
-    PhoneNumber,
-    /// A one-time code delivered out of band — an SMS OTP and similar.
-    OneTimeCode,
-    /// A person's full name.
-    PersonName,
-    /// A full street address.
-    PostalAddress,
-    /// A postal or ZIP code.
-    PostalCode,
-    /// A payment card number.
-    CreditCardNumber,
-}
-
-impl TextField {
+impl<L> TextField<L> {
     /// Creates a new `TextField` with the given label and value binding.
     ///
     /// The label is mandatory — see [the label module](mod@crate::label). It names
@@ -303,17 +200,15 @@ impl TextField {
     /// [`Self::prompt`], which is the placeholder shown inside an empty field.
     /// Chain [`Self::hide_label`] to drop the visible label while keeping the
     /// accessibility name.
-    #[must_use]
-    pub fn new(label: impl IntoLabel, value: &Binding<Str>) -> Self {
+    pub fn new<I: IntoLabel<Kind = L>>(label: I, value: &Binding<Str>) -> Self {
         let styled_value = map_plain_binding(value);
         Self::styled(label, &styled_value)
     }
 
     /// Creates a new `TextField` with the given label, backed by a styled text
     /// binding.
-    #[must_use]
-    pub fn styled(label: impl IntoLabel, value: &Binding<StyledStr>) -> Self {
-        Self(TextFieldConfig {
+    pub fn styled<I: IntoLabel<Kind = L>>(label: I, value: &Binding<StyledStr>) -> Self {
+        Self {
             label: label.into_label(),
             value: value.clone(),
             prompt: Text::default(),
@@ -322,7 +217,11 @@ impl TextField {
             selection_menu: Computed::constant(Vec::new()),
             line_limit: NonZeroUsize::new(1),
             on_submit: None,
-        })
+        }
+    }
+
+    pub(crate) const fn label_mut(&mut self) -> &mut Label<L> {
+        &mut self.label
     }
 
     /// Sets the maximum number of lines to show.
@@ -330,16 +229,14 @@ impl TextField {
     /// By default, the line limit is 1. The argument is a [`NonZeroUsize`] so
     /// that "zero lines" is rejected at the type level rather than at runtime.
     /// Use [`Self::disable_line_limit`] to remove the limit entirely.
-    #[must_use]
     pub const fn line_limit(mut self, line_limit: NonZeroUsize) -> Self {
-        self.0.line_limit = Some(line_limit);
+        self.line_limit = Some(line_limit);
         self
     }
 
     /// Disables the line limit.
-    #[must_use]
     pub const fn disable_line_limit(mut self) -> Self {
-        self.0.line_limit = None;
+        self.line_limit = None;
         self
     }
 
@@ -347,23 +244,20 @@ impl TextField {
     ///
     /// In a field without a line limit Return inserts a line break and never
     /// submits.
-    #[must_use]
     pub fn on_submit<Args>(mut self, action: impl Handler<Args, ()>) -> Self {
-        self.0.on_submit = Some(SharedAction::new(action));
+        self.on_submit = Some(SharedAction::new(action));
         self
     }
 
     /// Sets the prompt for the text field.
-    #[must_use]
     pub fn prompt(mut self, prompt: impl IntoText) -> Self {
-        self.0.prompt = prompt.into_text();
+        self.prompt = prompt.into_text();
         self
     }
 
     /// Sets custom selected-text menu items for this text field.
-    #[must_use]
     pub fn selection_menu(mut self, items: impl MenuView) -> Self {
-        self.0.selection_menu = items.into_menu_items();
+        self.selection_menu = items.into_menu_items();
         self
     }
 
@@ -372,17 +266,15 @@ impl TextField {
     /// This is the escape hatch that lets wrappers observe or replace the
     /// field's text source — `waterui_form::valid::ValidatableView` uses it to
     /// splice a validating binding in front of the field.
-    #[must_use]
     pub const fn value_binding(&mut self) -> &mut Binding<StyledStr> {
-        &mut self.0.value
+        &mut self.value
     }
 
     /// Sets the on-screen keyboard the field requests while editing.
     ///
     /// Platforms without a software keyboard ignore this hint.
-    #[must_use]
     pub const fn keyboard(mut self, keyboard: KeyboardType) -> Self {
-        self.0.keyboard = keyboard;
+        self.keyboard = keyboard;
         self
     }
 
@@ -391,38 +283,42 @@ impl TextField {
     /// this drives the autofill suggestions above the keyboard, including the
     /// one-time code the system offers for a received SMS; on Android the
     /// autofill service sees the matching hint.
-    #[must_use]
     pub const fn content_type(mut self, content_type: ContentType) -> Self {
-        self.0.content_type = Some(content_type);
+        self.content_type = Some(content_type);
         self
     }
 }
 
-impl View for TextField {
-    fn body(self, env: &Environment) -> impl View {
-        let selection_menu = resolve_menu_items(&self.0.selection_menu, env);
-
-        AnyView::new(ResolvedTextField(ResolvedTextFieldConfig {
-            label: self.0.label.resolve(env),
-            value: self.0.value,
-            prompt: self.0.prompt.resolve(env),
-            keyboard: self.0.keyboard,
-            content_type: self.0.content_type,
+impl<L: LabelKind> TextField<L> {
+    fn into_config<S: ChildSlot>(self, env: &Environment) -> TextFieldConfig<S> {
+        let selection_menu = resolve_menu_items(&self.selection_menu, env);
+        TextFieldConfig {
+            label: self.label.into_control_label::<S>(env),
+            value: self.value,
+            prompt: self.prompt.resolve(env),
+            keyboard: self.keyboard,
+            content_type: self.content_type,
             selection_menu,
-            line_limit: self.0.line_limit,
-            on_submit: self.0.on_submit,
-        }))
-    }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::Horizontal
+            line_limit: self.line_limit,
+            on_submit: self.on_submit,
+        }
     }
 }
 
-impl_label_style_methods!(TextField);
+impl<L: LabelKind> View for TextField<L> {
+    fn body(self, env: &Environment) -> impl View {
+        Native::new(self.into_config::<AnyView>(env))
+    }
+
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        backend.native(self.into_config::<B::Slot>(env), env, cx)
+    }
+}
+
+impl_label_style_methods!(TextField<L>);
 
 /// Creates a new [`TextField`] with the specified label and value binding.
-pub fn field(label: impl IntoLabel, value: &Binding<Str>) -> TextField {
+pub fn field<L: IntoLabel>(label: L, value: &Binding<Str>) -> TextField<L::Kind> {
     TextField::new(label, value)
 }
 

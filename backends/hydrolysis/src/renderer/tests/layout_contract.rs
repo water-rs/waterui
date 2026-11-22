@@ -800,3 +800,38 @@ fn nested_collections_preserve_intrinsic_cross_axes() {
         assert_eq!(size, Size::new(316.0, 348.0));
     }
 }
+
+/// §4.1: a stack's cross envelope is `max(g) + max(e - g)` over its
+/// children's guides, so a realized child's explicit guide reaches the stack —
+/// a 20-wide child guided at 10 beside a 100-wide one needs 110.
+#[test]
+fn a_child_guide_widens_the_stack_envelope() {
+    use waterui::Computed;
+    use waterui_layout::stack::VStackLayout;
+    use waterui_layout::{HorizontalAlignment, ViewDimensions};
+    let env = test_environment();
+    let mut renderer = test_renderer();
+    let theme = renderer.theme();
+    let node = RenderNode::build(
+        AnyView::new(FixedContainer::new(
+            VStackLayout {
+                alignment: HorizontalAlignment::Leading,
+                spacing: Computed::constant(0.0),
+            },
+            vec![
+                AnyView::new(().size(20.0, 10.0).horizontal_alignment_guide(
+                    HorizontalAlignment::Leading,
+                    |dimensions: &ViewDimensions| dimensions.size.width * 0.5,
+                )),
+                AnyView::new(().size(100.0, 10.0)),
+            ],
+        )),
+        &env,
+        &mut renderer,
+    );
+    assert_eq!(
+        node.measure(&mut renderer.state, &env, &theme, ProposalSize::UNSPECIFIED)
+            .size,
+        Size::new(110.0, 20.0)
+    );
+}

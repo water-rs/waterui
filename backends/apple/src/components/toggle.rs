@@ -14,16 +14,15 @@ use waterui::component::ControlSize;
 use waterui::component::toggle::{ToggleConfig, ToggleStyle};
 use waterui::reactive::Signal;
 use waterui::reactive::watcher::Metadata;
-use waterui_core::interaction::Disabled;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
 };
+use waterui_interaction::interaction::Disabled;
 
 #[cfg(target_os = "ios")]
 use crate::components::button_chrome;
 use crate::components::control_size::platform_control_size;
-use crate::contract::{Mounted, NativeLeaf};
-use crate::dispatch::Dispatcher;
+use crate::contract::{Held, Mounted, NativeLeaf};
 
 #[cfg(target_os = "macos")]
 mod platform {
@@ -35,6 +34,7 @@ mod platform {
     pub(super) use cocoa_ui::uikit::toggle::{Kind, StateChange, Toggle};
 }
 
+use crate::contract::RenderContext;
 use platform::{Kind, StateChange, Toggle};
 
 /// The control a resolved style draws. The native payload never carries
@@ -179,81 +179,79 @@ impl SubView for ToggleSubView {
     }
 }
 
-/// Installs the `toggle` handler on the dispatcher: `Native<ToggleConfig>`
+/// The `toggle` realization: `Native<ToggleConfig>`
 /// maps to a kit row whose binding, enabled state, and accessibility name
 /// stay live through watchers.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<ToggleConfig>(|config, ctx| {
-        let mtm = ctx.mtm();
-        let stretch = waterui_core::NativeView::stretch_axis(&config);
-        let (label, binding, style, size) = config.into_parts();
-        let toggle = Toggle::new(mtm, kind(style), binding.snapshot());
-        // `Toggle`'s documented default size is `Small`; the mapping is
-        // relative to it, so a bare toggle draws at the platform's regular
-        // size like a bare `NSSwitch` or checkbox. `AppKit` honours every
-        // size on the switch and the checkbox; `UIKit` draws one size at
-        // every control size, so the platform fixes the size on iOS and
-        // `set_control_size` ignores the value there.
-        toggle.set_control_size(platform_control_size(size, ControlSize::Small));
-        let disabled = Disabled::resolve(ctx.env(), false);
+pub fn realize_toggle_config(config: ToggleConfig<Held>, ctx: &RenderContext<'_>) -> NativeLeaf {
+    let mtm = ctx.mtm();
+    let stretch = waterui_core::NativeView::stretch_axis(&config);
+    let (label, binding, style, size) = config.into_parts();
+    let toggle = Toggle::new(mtm, kind(style), binding.snapshot());
+    // `Toggle`'s documented default size is `Small`; the mapping is
+    // relative to it, so a bare toggle draws at the platform's regular
+    // size like a bare `NSSwitch` or checkbox. `AppKit` honours every
+    // size on the switch and the checkbox; `UIKit` draws one size at
+    // every control size, so the platform fixes the size on iOS and
+    // `set_control_size` ignores the value there.
+    toggle.set_control_size(platform_control_size(size, ControlSize::Small));
+    let disabled = Disabled::resolve(ctx.env(), false);
 
-        // The label's spoken name lands on the control; the visual label
-        // leaves the accessibility tree — `WuiControlAccessibility`'s split.
-        let accessibility_label = label.accessibility_label();
+    // The label's spoken name lands on the control; the visual label
+    // leaves the accessibility tree — `WuiControlAccessibility`'s split.
+    let accessibility_label = label.accessibility_label();
 
-        // The label renders as a mounted child of the row's container.
-        let child = ctx.render(waterui_backend_core::AnyView::new(label));
-        let mounted = child.mount(toggle.container());
-        toggle.set_label(mounted.view());
-        cocoa_ui::view::hide_from_accessibility(mounted.view());
+    // The label renders as a mounted child of the row's container.
+    let child = ctx.realize(label.build());
+    let mounted = child.mount(toggle.container());
+    toggle.set_label(mounted.view());
+    cocoa_ui::view::hide_from_accessibility(mounted.view());
 
-        let mut leaf = NativeLeaf::new(
-            toggle.container(),
-            ToggleSubView {
-                toggle: toggle.clone(),
-                stretch,
-                label: mounted,
-            },
-        );
+    let mut leaf = NativeLeaf::new(
+        toggle.container(),
+        ToggleSubView {
+            toggle: toggle.clone(),
+            stretch,
+            label: mounted,
+        },
+    );
 
-        // Signal → control, under the watcher metadata's animation.
-        leaf.watch(&binding, {
-            let toggle = toggle.clone();
-            move |ctx| {
-                toggle.set_on(*ctx.value(), state_change(ctx.metadata()));
-            }
-        });
-
-        // Control → binding: user edits write back through the action.
-        leaf.keep(toggle.on_change({
-            let toggle = toggle.clone();
-            move |_| binding.set(toggle.is_on())
-        }));
-
-        leaf.bind(&disabled, {
-            let toggle = toggle.clone();
-            move |is_disabled| toggle.set_enabled(!is_disabled)
-        });
-
-        // The tint colours the on state: a switch's track, a checkbox's
-        // glyph. `AppKit` has no per-control tint for `NSSwitch` or the
-        // checkbox `NSButton` (`contentTintColor` touches borderless
-        // buttons only, `bezelColor` bordered ones), so they draw with the
-        // application's accent colour there.
-        #[cfg(target_os = "ios")]
-        leaf.bind(&button_chrome::tint_signal(ctx.env()), {
-            let toggle = toggle.clone();
-            move |color| toggle.set_tint(&button_chrome::platform_color(&color))
-        });
-
-        let control = cocoa_ui::view::retain_base(toggle.control());
-        leaf.bind(&accessibility_label, move |styled| {
-            let plain = cocoa_ui::text::strip_bidi_controls(&styled.to_plain());
-            cocoa_ui::view::set_accessibility_label(&control, &plain);
-        });
-
-        leaf
+    // Signal → control, under the watcher metadata's animation.
+    leaf.watch(&binding, {
+        let toggle = toggle.clone();
+        move |ctx| {
+            toggle.set_on(*ctx.value(), state_change(ctx.metadata()));
+        }
     });
+
+    // Control → binding: user edits write back through the action.
+    leaf.keep(toggle.on_change({
+        let toggle = toggle.clone();
+        move |_| binding.set(toggle.is_on())
+    }));
+
+    leaf.bind(&disabled, {
+        let toggle = toggle.clone();
+        move |is_disabled| toggle.set_enabled(!is_disabled)
+    });
+
+    // The tint colours the on state: a switch's track, a checkbox's
+    // glyph. `AppKit` has no per-control tint for `NSSwitch` or the
+    // checkbox `NSButton` (`contentTintColor` touches borderless
+    // buttons only, `bezelColor` bordered ones), so they draw with the
+    // application's accent colour there.
+    #[cfg(target_os = "ios")]
+    leaf.bind(&button_chrome::tint_signal(ctx.env()), {
+        let toggle = toggle.clone();
+        move |color| toggle.set_tint(&button_chrome::platform_color(&color))
+    });
+
+    let control = cocoa_ui::view::retain_base(toggle.control());
+    leaf.bind(&accessibility_label, move |styled| {
+        let plain = cocoa_ui::text::strip_bidi_controls(&styled.to_plain());
+        cocoa_ui::view::set_accessibility_label(&control, &plain);
+    });
+
+    leaf
 }
 
 #[cfg(test)]

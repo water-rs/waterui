@@ -1,5 +1,5 @@
 //! The `accessibility_identifier` metadata:
-//! `IgnorableMetadata<AccessibilityIdentifier>` wrapped around a child.
+//! `Metadata<AccessibilityIdentifier>` wrapped around a child.
 //!
 //! Mirrors `WuiAccessibilityIdentifier`: the stable automation identifier
 //! lands on the content's platform view — `accessibilityIdentifier` on
@@ -8,14 +8,13 @@
 //! the child's own, so nested metadata wrappers reach the same view the
 //! Swift `accessibilityTarget` chain did.
 
+use crate::contract::{Held, NativeLeaf, RenderContext};
 use cocoa_ui::PlatformView;
 use cocoa_ui::accessibility as a11y;
 use cocoa_ui::view;
 use objc2_foundation::NSString;
 use waterui::accessibility::AccessibilityIdentifier;
-use waterui_core::IgnorableMetadata;
-
-use crate::dispatch::Dispatcher;
+use waterui_core::Metadata;
 
 #[cfg(target_os = "macos")]
 fn set_identifier(target: &PlatformView, identifier: &NSString) {
@@ -29,13 +28,14 @@ fn set_identifier(target: &PlatformView, identifier: &NSString) {
     a11y::set_identifier(target, identifier);
 }
 
-/// Installs the `accessibility_identifier` handler on the dispatcher.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_view::<IgnorableMetadata<AccessibilityIdentifier>>(|metadata, ctx| {
-        let mut leaf = ctx.render(metadata.content);
-        let target = view::retain_base(leaf.view());
-        set_identifier(&target, &NSString::from_str(metadata.value.as_str()));
-        leaf.keep(target);
-        leaf
-    });
+/// The `accessibility_identifier` realization.
+pub fn realize_accessibility_identifier_metadata(
+    metadata: Metadata<AccessibilityIdentifier, Held>,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    let mut leaf = ctx.realize(metadata.content);
+    let target = view::retain_base(leaf.view());
+    set_identifier(&target, &NSString::from_str(metadata.value.as_str()));
+    leaf.keep(target);
+    leaf
 }

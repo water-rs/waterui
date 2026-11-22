@@ -187,7 +187,7 @@ fn map_action(action: i32) -> Result<accesskit::Action, JniError> {
 ///
 /// Actions on a node a text input claims do not take the generic
 /// `ActionRequest` path: `TalkBack` editing runs over the session's
-/// [`EditingSession`](crate::runner::editing::EditingSession), the same
+/// `EditingSession`, the same
 /// writer the `InputConnection` mirror uses, so the IME-visible state never
 /// diverges from the semantic tree's value.
 #[cfg(feature = "accessibility")]
@@ -204,6 +204,7 @@ pub fn perform_action(
 
     let action = map_action(action)?;
     let node = NodeId(crate::num_cast::i64_as_u64(virtual_view_id.max(0)));
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     if let Some(handled) =
         text_input_action(session, node, action, arg1, arg2, text.as_ref(), numeric)?
     {
@@ -249,6 +250,7 @@ pub fn perform_action(
         // A focus the action moved lands in the mirror now — the connection
         // rebinds while the screen reader's announcement is still live,
         // not at the next vsync.
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         session.editing_sync();
     }
     Ok(handled)
@@ -258,6 +260,7 @@ pub fn perform_action(
 /// when the action is not an editing action or the target has no text
 /// input, leaving it to the generic `ActionRequest` dispatch.
 #[cfg(feature = "accessibility")]
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 fn text_input_action(
     session: &mut super::host::AndroidSession,
     node: accesskit::NodeId,
@@ -300,6 +303,7 @@ fn text_input_action(
             .runtime
             .renderer
             .focus_text_input_for_accessibility_node(node);
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         session.editing_sync();
     }
     let editor_id = session.ime.session.editor_id();
