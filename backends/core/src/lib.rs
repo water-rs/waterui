@@ -64,6 +64,7 @@ pub mod time;
 pub use child::{Child, ChildView, IntoChild, NativeBackendFamily};
 pub use hooked::{Hooked, HookedFamily};
 pub use native_backend::{NativeBackend, Realize, report_unprovided};
+pub use waterui_meta::mark_reached;
 
 /// Declared accessibility semantics for a backend-provided [`NativeView`](waterui_core::NativeView).
 ///

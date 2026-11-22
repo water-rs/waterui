@@ -13,6 +13,7 @@ use core::{
 };
 
 use alloc::boxed::Box;
+use waterui_meta::mark_reached;
 
 use crate::backend::{Backend, DynBackend, Erased};
 use crate::{Environment, View};
@@ -114,6 +115,7 @@ impl AnyView {
         env: &Environment,
         cx: Box<dyn Any>,
     ) -> Box<dyn Any> {
+        mark_reached!("erased");
         self.0.dispatch_dyn(backend, env, cx)
     }
 

@@ -30,6 +30,7 @@ waterui-accessibility.workspace = true
 waterui-interaction.workspace = true
 waterui-core.workspace = true
 waterui-layout.workspace = true
+waterui-meta.workspace = true
 nami.workspace = true
 num-traits = { version = "0.2", default-features = false }
 tracing.workspace = true

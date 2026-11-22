@@ -18,6 +18,7 @@ nami.workspace = true
 waterui-contract.workspace = true
 waterui-easing.workspace = true
 waterui-macros.workspace = true
+waterui-meta.workspace = true
 
 [dependencies.anyhow]
 version = "1.0"
