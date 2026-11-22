@@ -332,8 +332,12 @@ fn pane_tab(
 fn inbox_stack(mail: Mail) -> impl View {
     NavigationStack::with_path(NavigationPath::<MailRoute>::new(), inbox_root(&mail)).destination(
         move |route| match route {
-            MailRoute::Message(id) => message_detail(&mail, id).map_content(OneOf2::A),
-            MailRoute::Compose => compose_page(&mail).map_content(OneOf2::B),
+            MailRoute::Message(id) => message_detail(&mail, id)
+                .map_content(OneOf2::A)
+                .map_toolbar(OneOf2::A),
+            MailRoute::Compose => compose_page(&mail)
+                .map_content(OneOf2::B)
+                .map_toolbar(OneOf2::B),
         },
     )
 }

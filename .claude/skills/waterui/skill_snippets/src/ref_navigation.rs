@@ -339,7 +339,8 @@ pub fn navigation_bar_chrome_prose() -> NavigationView<impl View> {
 // ---------------------------------------------------------------------------
 // navigation.md writes `mdi::` qualified so the icon set stays visible.
 #[allow(unknown_lints, qualified_waterui_path)]
-pub fn navigation_block_08() -> NavigationView<impl View> {
+pub fn navigation_block_08()
+-> NavigationView<impl View, impl waterui::navigation::NavigationToolbarItems> {
     use waterui::navigation::{
         NavigationToolbar, NavigationToolbarItem, NavigationToolbarPlacement,
     };

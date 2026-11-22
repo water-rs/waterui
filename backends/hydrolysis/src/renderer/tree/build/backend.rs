@@ -8,7 +8,7 @@ use waterui_backend_core::{
 };
 #[cfg(any(feature = "menu", hydrolysis_video_plane))]
 use waterui_core::backend::cast;
-use waterui_core::backend::{ChildSlot, ErasedPayload};
+use waterui_core::backend::{ChildSlot, ErasedPayload, MapSlots};
 use waterui_core::metadata::MetadataKey;
 use waterui_core::{NativeView, View};
 
@@ -1478,7 +1478,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         (): (),
     ) -> RenderNode<E> {
         mark_reached!("navigation_view");
-        let mut native = waterui_core::backend::MapSlots::map_slots(native, C::into_child);
+        let mut native = MapSlots::map_slots(native, C::into_child);
         native.resolve_native_fields(env);
         let renderer = &mut *self.renderer;
         RenderNode::build_navigation_view(native, env, renderer)

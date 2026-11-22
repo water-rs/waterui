@@ -23,7 +23,7 @@ use core::cell::RefCell;
 
 use nami::{Computed, SignalExt as _};
 use suiteki::Str;
-use waterui_controls::label::{Label, TitleLabel};
+use waterui_controls::label::{ErasedLabel, Label, TitleLabel};
 use waterui_controls::{Button, Slider, Stepper, TextField, Toggle};
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::SelfId;
@@ -454,7 +454,7 @@ fn navigation(
 /// A tab a script declares: its root is built by a closure the script's
 /// attributes chose at run time, so every scripted tab shares one builder
 /// type.
-type ScriptTab = Tab<AnyViewBuilder<NavigationView<AnyView>>, waterui_controls::label::ErasedLabel>;
+type ScriptTab = Tab<AnyViewBuilder<NavigationView<AnyView>>, ErasedLabel>;
 
 /// A navigation title, which every destination carries whether or not the
 /// element named one.

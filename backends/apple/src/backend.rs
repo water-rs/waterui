@@ -443,7 +443,7 @@ impl NativeBackend for AppleBackend {
     ) -> NativeLeaf {
         mark_reached!("navigation_view");
         crate::components::navigation::nav_view::realize_navigation_view(
-            waterui_core::backend::MapSlots::map_slots(native, C::into_child),
+            MapSlots::map_slots(native, C::into_child),
             &self.entry(env),
         )
     }

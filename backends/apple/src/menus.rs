@@ -380,6 +380,8 @@ mod imp {
     use waterui::reactive::{Computed, Signal};
     use waterui_backend_core::Environment;
 
+    use crate::contract::Held;
+
     use super::{CloseWindowPlacement, DeclaredMenu, kit_command_fields, menu_tree, resolve};
 
     /// What this application calls itself in its own menu: the display name a
@@ -587,7 +589,7 @@ mod imp {
             application,
             &[],
             CloseWindowPlacement::WindowMenu,
-            ResolvedMenuItem::<crate::contract::Held>::close_window_chord(&[]).as_ref(),
+            ResolvedMenuItem::<Held>::close_window_chord(&[]).as_ref(),
         );
     }
 

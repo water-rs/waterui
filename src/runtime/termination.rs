@@ -33,6 +33,8 @@ use core::pin::Pin;
 use executor_core::AnyLocalExecutorTask;
 #[cfg(feature = "menu")]
 use waterui_controls::menu::{CommandExt as _, ResolvedCommand, Shortcut};
+#[cfg(feature = "menu")]
+use waterui_core::backend::ChildSlot;
 use waterui_core::{Environment, impl_extractor};
 
 use crate::app::QuitReply;
@@ -388,10 +390,7 @@ impl Quit {
     #[doc(hidden)]
     #[must_use]
     #[cfg(feature = "menu")]
-    pub fn command<S: waterui_core::backend::ChildSlot>(
-        &self,
-        env: &Environment,
-    ) -> ResolvedCommand<S> {
+    pub fn command<S: ChildSlot>(&self, env: &Environment) -> ResolvedCommand<S> {
         let quit = self.clone();
         // "Exit" is the Windows menu convention; "Quit" is macOS's and what
         // Linux desktops (GTK/Qt) use.

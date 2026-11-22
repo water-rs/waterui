@@ -209,7 +209,9 @@ use waterui_interaction::gesture::{GestureObserver, TapGesture};
 use waterui_interaction::interaction::{Disabled, InteractionReport, InteractionState};
 use waterui_text::styled::StyledStr;
 
-use crate::label::{ControlLabel, IntoLabel, Label, LabelDisplayMode, LabelKind};
+use crate::label::{
+    ControlLabel, IntoAccessibilityLabel, IntoLabel, Label, LabelDisplayMode, LabelKind,
+};
 use crate::slot::StyleSlot;
 
 // ============================================================================
@@ -1468,7 +1470,7 @@ impl<L, Action, Style> Button<L, Action, Style> {
     /// any icon attached at construction time. The visual label rendered on
     /// screen is unaffected.
     #[must_use]
-    pub fn a11y_label<M>(mut self, label: impl crate::label::IntoAccessibilityLabel<M>) -> Self {
+    pub fn a11y_label<M>(mut self, label: impl IntoAccessibilityLabel<M>) -> Self {
         self.label = self.label.accessibility_text(label);
         self
     }

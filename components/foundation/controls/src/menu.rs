@@ -30,7 +30,10 @@ use waterui_text::{TextConfig, styled::StyledStr};
 
 use crate::{
     button::{Button, ButtonStyle},
-    label::{ControlLabel, IntoLabel, Label, LabelDisplayMode, LabelKind, SemanticLabel},
+    label::{
+        ControlLabel, IntoAccessibilityLabel, IntoLabel, Label, LabelDisplayMode, LabelKind,
+        SemanticLabel,
+    },
     size::ControlSize,
     slot::{IconSlot, NoopSlot},
 };
@@ -476,7 +479,7 @@ impl<L> Menu<L> {
     /// Overrides the spoken accessibility text announced by assistive
     /// technology without changing the visual trigger label.
     #[must_use]
-    pub fn a11y_label<M>(mut self, label: impl crate::label::IntoAccessibilityLabel<M>) -> Self {
+    pub fn a11y_label<M>(mut self, label: impl IntoAccessibilityLabel<M>) -> Self {
         self.label.set_accessibility_text(label);
         self
     }

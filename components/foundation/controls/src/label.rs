@@ -40,9 +40,9 @@
 
 use alloc::rc::Rc;
 use core::fmt;
-use nami::{Binding, Computed, SignalExt};
+use nami::{Binding, Computed, SignalExt, signal::IntoComputed};
 use waterui_core::{
-    AnyView, Environment, IntoSignalF32, View,
+    AnyView, Environment, IntoSignalF32, Str, View,
     backend::{Backend, ChildSlot},
     contract_violation,
     handler::{AnyViewBuilder, ViewBuilder},
@@ -1269,14 +1269,14 @@ impl<K> Label<K> {
 #[derive(Debug, Clone, Copy)]
 pub struct TextAccessibilityLabel;
 
-/// Marker for [`IntoAccessibilityLabel`] implementations backed by a reactive [`Str`] signal.
+/// Marker for [`IntoAccessibilityLabel`] implementations backed by a reactive [`waterui_core::Str`] signal.
 #[doc(hidden)]
 #[derive(Debug, Clone, Copy)]
 pub struct ComputedAccessibilityLabel;
 
 /// Input accepted by control `.a11y_label(...)` modifiers.
 ///
-/// Covers every reactive [`Str`] signal accepted by `ViewExt::a11y_label`
+/// Covers every reactive [`waterui_core::Str`] signal accepted by `ViewExt::a11y_label`
 /// (such as `&'static str`, `String`, `Str`, `Computed<Str>`, `Binding<Str>`,
 /// and mapped signals) as well as [`Text`] and [`StyledStr`].
 pub trait IntoAccessibilityLabel<Marker> {
@@ -1296,9 +1296,7 @@ impl IntoAccessibilityLabel<TextAccessibilityLabel> for StyledStr {
     }
 }
 
-impl<T: nami::signal::IntoComputed<waterui_core::Str>>
-    IntoAccessibilityLabel<ComputedAccessibilityLabel> for T
-{
+impl<T: IntoComputed<Str>> IntoAccessibilityLabel<ComputedAccessibilityLabel> for T {
     fn into_accessibility_text(self) -> Text {
         Text::new(self.into_computed())
     }

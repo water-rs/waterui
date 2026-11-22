@@ -1253,6 +1253,53 @@ impl<Items: NavigationToolbarItems> NavigationToolbarItems for NavigationToolbar
     }
 }
 
+impl<Items: NavigationToolbarItems> NavigationToolbarItems for Option<Items> {
+    fn push_into<S: ChildSlot>(self, out: &mut Vec<ResolvedNavigationToolbarItem<S>>) {
+        if let Some(items) = self {
+            items.push_into(out);
+        }
+    }
+}
+
+macro_rules! impl_one_of_toolbar_items {
+    ($name:ident { $($variant:ident),+ }) => {
+        impl<$($variant: NavigationToolbarItems),+> NavigationToolbarItems
+            for waterui_core::$name<$($variant),+>
+        {
+            fn push_into<S: ChildSlot>(self, out: &mut Vec<ResolvedNavigationToolbarItem<S>>) {
+                match self {
+                    $(Self::$variant(items) => items.push_into(out),)+
+                }
+            }
+        }
+    };
+}
+
+impl_one_of_toolbar_items!(OneOf2 { A, B });
+impl_one_of_toolbar_items!(OneOf3 { A, B, C });
+impl_one_of_toolbar_items!(OneOf4 { A, B, C, D });
+impl_one_of_toolbar_items!(OneOf5 { A, B, C, D, E });
+impl_one_of_toolbar_items!(OneOf6 { A, B, C, D, E, F });
+impl_one_of_toolbar_items!(OneOf7 {
+    A,
+    B,
+    C,
+    D,
+    E,
+    F,
+    G
+});
+impl_one_of_toolbar_items!(OneOf8 {
+    A,
+    B,
+    C,
+    D,
+    E,
+    F,
+    G,
+    H
+});
+
 /// Native toolbar contents attached to one navigation destination.
 #[derive(Debug)]
 #[non_exhaustive]
@@ -2252,6 +2299,25 @@ impl<C, T> NavigationView<C, T> {
     pub fn on_navigation_pop<Args>(mut self, handler: impl Handler<Args>) -> Self {
         self.state.pop = Some(boxed_action(handler));
         self
+    }
+
+    /// Maps the destination's toolbar type, preserving its bar chrome, content,
+    /// and lifecycle state.
+    pub fn map_toolbar<U>(self, f: impl FnOnce(T) -> U) -> NavigationView<C, U> {
+        NavigationView {
+            bar: Bar {
+                title: self.bar.title,
+                subtitle: self.bar.subtitle,
+                toolbar: f(self.bar.toolbar),
+                search: self.bar.search,
+                color: self.bar.color,
+                hidden: self.bar.hidden,
+                display_mode: self.bar.display_mode,
+            },
+            content: self.content,
+            state: self.state,
+            transition: self.transition,
+        }
     }
 }
 

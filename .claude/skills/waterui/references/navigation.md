@@ -113,10 +113,13 @@ fn inbox_stack(mail: Mail) -> impl View {
 The stack's root and every destination are **`NavigationView`s** — give each page a
 `.title(..)` (which performs that conversion) or build it with
 `NavigationView::new(title, content)`; a helper returning plain `impl View` satisfies
-neither the root parameter nor the destination closure. A `NavigationView<V>` keeps its
-content's type, so a helper returns `NavigationView<impl View>`, and destinations whose
+neither the root parameter nor the destination closure. A `NavigationView<V, T = ()>` keeps its
+content and toolbar types, so a helper returns `NavigationView<impl View>` (or
+`NavigationView<impl View, impl NavigationToolbarItems>` when it attaches `.navigation_toolbar(..)`),
+and destinations whose
 pages differ return the variants of one `OneOfN`:
-`message_detail(..).map_content(OneOf2::A)` and `compose_page(..).map_content(OneOf2::B)`.
+`message_detail(..).map_content(OneOf2::A).map_toolbar(OneOf2::A)` and
+`compose_page(..).map_content(OneOf2::B).map_toolbar(OneOf2::B)`.
 The stack builds each pushed page for its backend from the route, so no page is erased.
 
 Two ways to travel:

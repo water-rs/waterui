@@ -295,13 +295,10 @@ macro_rules! native_backend {
                     Err(native) => native,
                 };
                 let native = match cast::<T, waterui::component::StyleSlot>(native) {
-                    Ok(slot) => {
-                        let child = slot
-                            .downcast::<$crate::Child<B::Family>>()
-                            .ok()
-                            .expect("a style slot belongs to the backend family that created it");
-                        return child.realize(self.inner(), env, cx);
-                    }
+                    Ok(slot) => match slot.downcast::<$crate::Child<B::Family>>() {
+                        Ok(child) => return child.realize(self.inner(), env, cx),
+                        Err(slot) => return self.inner().provided(slot, env, cx),
+                    },
                     Err(native) => native,
                 };
                 match self.offer(native, env, cx) {
@@ -315,11 +312,10 @@ macro_rules! native_backend {
                     return slot.into_child().realize(self.inner(), env, cx);
                 }
                 if let Some(slot) = native.take::<waterui::component::StyleSlot>() {
-                    let child = slot
-                        .downcast::<$crate::Child<B::Family>>()
-                        .ok()
-                        .expect("a style slot belongs to the backend family that created it");
-                    return child.realize(self.inner(), env, cx);
+                    return match slot.downcast::<$crate::Child<B::Family>>() {
+                        Ok(child) => child.realize(self.inner(), env, cx),
+                        Err(slot) => self.inner().provided(slot, env, cx),
+                    };
                 }
                 match self.offer_erased(&mut native, env, cx) {
                     Ok(output) => output,
@@ -366,13 +362,10 @@ macro_rules! native_backend {
                 Err(native) => native,
             };
             let native = match cast::<T, waterui::component::StyleSlot>(native) {
-                Ok(slot) => {
-                    let child = slot
-                        .downcast::<$crate::Child<B::Family>>()
-                        .ok()
-                        .expect("a style slot belongs to the backend family that created it");
-                    return child.realize(backend, env, cx);
-                }
+                Ok(slot) => match slot.downcast::<$crate::Child<B::Family>>() {
+                    Ok(child) => return child.realize(backend, env, cx),
+                    Err(slot) => return backend.provided(slot, env, cx),
+                },
                 Err(native) => native,
             };
             $(
@@ -499,11 +492,10 @@ macro_rules! native_backend {
                 return slot.into_child().realize(backend, env, cx);
             }
             if let Some(slot) = native.take::<waterui::component::StyleSlot>() {
-                let child = slot
-                    .downcast::<$crate::Child<B::Family>>()
-                    .ok()
-                    .expect("a style slot belongs to the backend family that created it");
-                return child.realize(backend, env, cx);
+                return match slot.downcast::<$crate::Child<B::Family>>() {
+                    Ok(child) => child.realize(backend, env, cx),
+                    Err(slot) => backend.provided(slot, env, cx),
+                };
             }
             $(
                 $(#[cfg($ncfg)])*
