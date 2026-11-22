@@ -2,6 +2,7 @@
 //! order. Transcription conventions are documented in the crate README.
 
 use waterui::app::{App, AppMenuBar, Windows};
+use waterui::navigation::NavigationToolbarItems;
 use waterui::prelude::*;
 use waterui::reactive::binding;
 use waterui_icons_material_icon as mdi;
@@ -339,7 +340,7 @@ pub fn navigation_bar_chrome_prose() -> NavigationView<impl View> {
 // ---------------------------------------------------------------------------
 // navigation.md writes `mdi::` qualified so the icon set stays visible.
 #[allow(unknown_lints, qualified_waterui_path)]
-pub fn navigation_block_08() -> NavigationView<impl View> {
+pub fn navigation_block_08() -> NavigationView<impl View, impl NavigationToolbarItems> {
     use waterui::navigation::{
         NavigationToolbar, NavigationToolbarItem, NavigationToolbarPlacement,
     };

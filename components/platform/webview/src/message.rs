@@ -125,7 +125,7 @@ pub enum JsReply {
 /// What a handler may return.
 ///
 /// Users depend on this but never implement it, the same way they depend on
-/// `IntoView`. A `Result` rejects the page's promise on `Err`, so a handler can
+/// `View`. A `Result` rejects the page's promise on `Err`, so a handler can
 /// use `?` and the failure reaches JavaScript as a rejection instead of being
 /// encoded into a successful reply.
 pub trait IntoJsReply {

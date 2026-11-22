@@ -9,7 +9,7 @@
 
 use nami::{Computed, Signal};
 use waterui_core::layout::LayoutInvalidationCallback;
-use waterui_core::{AnyView, View, contract_violation};
+use waterui_core::{View, contract_violation};
 use waterui_layout::container::FixedContainer;
 use waterui_layout::{
     Layout, LayoutError, PlacementInput, ProposalSize, Rect, Size, StretchAxis, SubView,
@@ -113,7 +113,7 @@ pub fn fit_video(
             aspect,
             natural_width,
         },
-        (AnyView::new(picture),),
+        (picture,),
     )
 }
 

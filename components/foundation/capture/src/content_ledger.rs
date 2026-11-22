@@ -3,7 +3,7 @@
 //! A view mounts synchronously, but some of what it shows arrives later: a
 //! photo decodes on a background task, a `Suspense` swaps its content in when
 //! a future resolves. A host that rasterizes the view — a preview, a
-//! [`OffscreenRenderer`](crate::OffscreenRenderer) capture, a test snapshot — must not do so while such
+//! [`ViewRenderer`](crate::ViewRenderer) capture, a test snapshot — must not do so while such
 //! content is still in flight, or the capture shows an empty slot.
 //!
 //! The [`ContentLedger`] is how a view tells the capture what it still owes.

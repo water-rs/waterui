@@ -207,10 +207,12 @@ use waterui_core::view::hook::Hook;
 use waterui_core::{AnyView, Environment, Metadata, Native, NativeView, OneOf2, View};
 use waterui_interaction::gesture::{GestureObserver, TapGesture};
 use waterui_interaction::interaction::{Disabled, InteractionReport, InteractionState};
-use waterui_text::IntoText;
 use waterui_text::styled::StyledStr;
 
-use crate::label::{ControlLabel, IntoLabel, Label, LabelDisplayMode, LabelKind};
+use crate::label::{
+    ControlLabel, IntoAccessibilityLabel, IntoLabel, Label, LabelDisplayMode, LabelKind,
+};
+use crate::slot::StyleSlot;
 
 // ============================================================================
 // Macros for reducing boilerplate
@@ -337,17 +339,21 @@ pub enum ButtonRole {
 }
 
 /// The label view passed to a custom [`Button`] style.
-pub struct ButtonLabel(AnyView);
+pub struct ButtonLabel<L = ControlLabel<StyleSlot>>(L);
 
-impl fmt::Debug for ButtonLabel {
+impl<L> fmt::Debug for ButtonLabel<L> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("ButtonLabel")
     }
 }
 
-impl View for ButtonLabel {
+impl<L: View> View for ButtonLabel<L> {
     fn body(self, _env: &Environment) -> impl View {
         self.0
+    }
+
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        self.0.dispatch(backend, env, cx)
     }
 }
 
@@ -899,7 +905,7 @@ impl<S: CustomButtonStyle> SealedButtonStyle for CustomButton<S> {
     ) -> Result<impl View, ButtonStyleTarget> {
         let data = *target.0;
         let a11y_label = data.label.accessibility_label();
-        let label = ButtonLabel(AnyView::new(data.label));
+        let label = ButtonLabel(data.label);
         Ok(compose_custom_button(
             &self.0,
             label,
@@ -963,7 +969,7 @@ impl<S: PrimitiveButtonStyle> SealedButtonStyle for PrimitiveButton<S> {
     ) -> Result<impl View, ButtonStyleTarget> {
         let data = *target.0;
         let a11y_label = data.label.accessibility_label();
-        let label = ButtonLabel(AnyView::new(data.label));
+        let label = ButtonLabel(data.label);
         Ok(compose_primitive_button(
             &self.0,
             label,
@@ -977,7 +983,7 @@ impl<S: PrimitiveButtonStyle> SealedButtonStyle for PrimitiveButton<S> {
 }
 
 struct ButtonStyleTargetData {
-    label: ControlLabel<AnyView>,
+    label: ControlLabel<StyleSlot>,
     action: Rc<RefCell<BoxedAction<()>>>,
     role: Option<ButtonRole>,
     size: ControlSize,
@@ -1156,12 +1162,12 @@ impl<S: 'static> ButtonConfig<S> {
     #[doc(hidden)]
     pub fn into_style_pending(
         self,
-        map_slot: impl Fn(S) -> AnyView + Clone + 'static,
+        map_slot: impl Fn(S) -> StyleSlot + Clone + 'static,
     ) -> (ButtonStyleTarget, ButtonStylePending<S>) {
-        let erased_label = self.label.clone().map_slots(map_slot);
+        let style_label = self.label.clone().map_slots(map_slot);
         let action: Rc<RefCell<BoxedAction<()>>> = Rc::new(RefCell::new(self.action));
         let target = ButtonStyleTarget(Box::new(ButtonStyleTargetData {
-            label: erased_label,
+            label: style_label,
             action: Rc::clone(&action),
             role: self.role,
             size: self.size,
@@ -1404,15 +1410,15 @@ impl<L> Button<L, NoAction, ButtonStyle> {
     ///
     /// ```rust
     /// # use waterui::prelude::*;
-    /// # use waterui_controls::{Button, label::label};
+    /// # use waterui_controls::Button;
     /// # fn demo() {
-    /// let btn = Button::new(label("Click me")).action(|| {});
+    /// let btn = Button::new("Click me").action(|| {});
     /// # }
     /// ```
     #[must_use]
-    pub fn new(label: Label<L>) -> Self {
+    pub fn new<I: IntoLabel<Kind = L>>(label: I) -> Self {
         Self {
-            label,
+            label: label.into_label(),
             action: noop,
             style: ButtonStyle::Automatic,
             explicit_style: false,
@@ -1464,7 +1470,7 @@ impl<L, Action, Style> Button<L, Action, Style> {
     /// any icon attached at construction time. The visual label rendered on
     /// screen is unaffected.
     #[must_use]
-    pub fn accessibility_label(mut self, label: impl IntoText) -> Self {
+    pub fn a11y_label<M>(mut self, label: impl IntoAccessibilityLabel<M>) -> Self {
         self.label = self.label.accessibility_text(label);
         self
     }
@@ -1643,7 +1649,7 @@ where
 /// # }
 /// ```
 pub fn button<L: IntoLabel>(label: L) -> Button<L::Kind, NoAction> {
-    Button::new(label.into_label())
+    Button::new(label)
 }
 
 #[cfg(all(test, feature = "menu"))]
@@ -1680,19 +1686,19 @@ mod tests {
         );
         let icon = command
             .label()
-            .icon_view()
-            .expect("label icon view should be preserved");
+            .icon_slot::<AnyView>()
+            .expect("label icon slot should be preserved");
         assert!(icon.build().downcast_ref::<SearchIcon>().is_some());
     }
 
     #[test]
-    fn accessibility_label_overrides_text_only() {
+    fn a11y_label_overrides_text_only() {
         crate::init_test_executor();
-        // Calling .accessibility_label("X") must rewrite the spoken text
+        // Calling .a11y_label("X") must rewrite the spoken text
         // while preserving the visible text and icon attached at construction time.
         let rendered = Button::from(
             button(crate::label::label("Edit").icon(SearchIcon))
-                .accessibility_label("Edit document")
+                .a11y_label("Edit document")
                 .action(|| {})
                 .config(),
         );
@@ -1721,7 +1727,7 @@ mod tests {
         );
         let icon = command
             .label()
-            .icon_view()
+            .icon_slot::<AnyView>()
             .expect("icon should be preserved when only the spoken text is overridden");
         assert!(icon.build().downcast_ref::<SearchIcon>().is_some());
     }

@@ -679,7 +679,7 @@ impl LocalExecutor for WinitMainThreadExecutor {
 pub fn run<W: Windows, M: AppMenuBar>(
     app: App<W, M>,
     style: impl crate::Style,
-    inspector: Option<waterui::inspector::InspectorRuntime>,
+    #[cfg(hydrolysis_inspector)] inspector: Option<waterui::inspector::InspectorRuntime>,
 ) {
     let AppParts {
         windows,
@@ -742,13 +742,14 @@ pub fn run<W: Windows, M: AppMenuBar>(
 
     // The reactive graph is thread-confined, so its observer is installed here,
     // on the thread that owns the event loop, and lives as long as the loop.
-    #[cfg(feature = "inspector-signals")]
+    #[cfg(all(hydrolysis_inspector, feature = "inspector-signals"))]
     let _signal_scope = inspector
         .as_ref()
         .map(waterui::inspector::InspectorRuntime::observe_signals);
 
-    let mut env = env.extending(waterui_graphics::backend::SceneViewMergeToParent);
+    let mut env = env;
     waterui::install_application_resources(&mut env);
+    #[cfg(hydrolysis_inspector)]
     waterui::inspector::install(&mut env, inspector);
     let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
     let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
@@ -1491,12 +1492,17 @@ impl WinitRunner {
                 },
                 waterui::task::RefreshRate::from_millihertz,
             );
+        #[cfg(hydrolysis_inspector)]
+        let inspector_probe = self
+            .env
+            .get::<waterui::inspector::InspectorRuntime>()
+            .map(|inspector| inspector.task_probe() as Arc<dyn waterui::task::RuntimeProbe>);
+        #[cfg(not(hydrolysis_inspector))]
+        let inspector_probe: Option<Arc<dyn waterui::task::RuntimeProbe>> = None;
         let _ = try_init_local_executor(waterui::task::monitored_local_executor_with_probes(
             local_executor,
             refresh_rate,
-            self.env
-                .get::<waterui::inspector::InspectorRuntime>()
-                .map(|inspector| inspector.task_probe() as Arc<dyn waterui::task::RuntimeProbe>),
+            inspector_probe,
         ));
         // Locale changes reach views through a mailbox, whose pump needs the
         // executor installed just above.

@@ -14,7 +14,7 @@ categories.workspace = true
 [dependencies]
 hydrolysis = { workspace = true, features = ["accessibility", "testing", "all-controls"] }
 waterui-core.workspace = true
-waterui = { workspace = true, features = ["assets", "snackbar", "highlight", "locale-datetime", "locale-list"] }
+waterui = { workspace = true, features = ["assets", "canvas", "dialog", "effects", "snackbar", "highlight", "locale-datetime", "locale-list"] }
 # `TestHost`'s offscreen texture format; the `gpu` feature.
 wgpu = { workspace = true, optional = true }
 kurbo.workspace = true

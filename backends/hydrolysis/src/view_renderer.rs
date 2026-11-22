@@ -5,10 +5,8 @@ use std::rc::Rc;
 
 #[cfg(hydrolysis_cherenkov)]
 use waterui::ContentLedger;
-use waterui::view_renderer::{OffscreenRenderer, RenderError, RenderRequest, RenderResult};
+use waterui::view_renderer::{RenderError, RenderRequest, RenderResult, ViewRenderer};
 use waterui_core::{Environment, View};
-#[cfg(hydrolysis_cherenkov)]
-use waterui_graphics::backend::SceneViewMergeToParent;
 #[cfg(hydrolysis_cherenkov)]
 use waterui_text::FontCollection;
 
@@ -50,7 +48,7 @@ enum OffscreenState {
     Unavailable(&'static str),
 }
 
-/// [`OffscreenRenderer`] implementation backed by Hydrolysis offscreen rendering.
+/// [`ViewRenderer`] implementation backed by Hydrolysis offscreen rendering.
 ///
 /// A capture mounts the typed view under a fresh [`ContentLedger`] and keeps
 /// the tree mounted while it awaits the content the view owes, re-flushing the
@@ -298,7 +296,7 @@ fn rasterize_cpu(
 }
 
 #[cfg(hydrolysis_cherenkov)]
-impl OffscreenRenderer for HydrolysisOffscreenRenderer {
+impl ViewRenderer for HydrolysisOffscreenRenderer {
     #[expect(
         clippy::future_not_send,
         reason = "view rendering runs on the main thread; the future borrows non-Send GPU and Environment state"
@@ -344,9 +342,7 @@ impl OffscreenRenderer for HydrolysisOffscreenRenderer {
                 renderer.begin_rebuild_frame();
 
                 let ledger = ContentLedger::new();
-                let render_env = env
-                    .extending(SceneViewMergeToParent)
-                    .extending(ledger.clone());
+                let render_env = env.extending(ledger.clone());
                 let bounds = kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
                 renderer.capture_window_tree(
                     view,
@@ -395,7 +391,7 @@ impl OffscreenRenderer for HydrolysisOffscreenRenderer {
 }
 
 #[cfg(not(hydrolysis_cherenkov))]
-impl OffscreenRenderer for HydrolysisOffscreenRenderer {
+impl ViewRenderer for HydrolysisOffscreenRenderer {
     fn render_to_rgba<V: View>(
         &self,
         _view: V,

@@ -27,7 +27,7 @@ use waterui::navigation::{
     AnyNavigationTransition, Bar, NavigationDestinationState, NavigationSearch,
     NavigationSplitLayout, NavigationStackLayout, NavigationTitleDisplayMode,
     NavigationToolbarPlacement, NavigationTransitionDirection, NavigationView,
-    RetainedNavigationTransition,
+    ResolvedNavigationView, RetainedNavigationTransition,
 };
 use waterui::theme::color::{Background, Surface};
 use waterui_controls::label::LabelDisplayMode;
@@ -35,7 +35,7 @@ use waterui_controls::text_field::TextField;
 use waterui_core::contract_violation;
 use waterui_core::id::Id;
 use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
-use waterui_core::{Environment, Metadata, Native, View};
+use waterui_core::{Environment, Native};
 use waterui_graphics::color::Color;
 use waterui_interaction::interaction::InteractionState;
 
@@ -241,17 +241,17 @@ pub fn toolbar_item_env(env: &Environment) -> Environment {
     }
 }
 
-/// `content` scoped to [`toolbar_item_env`]: the scope reaches every
-/// environment snapshot inside the content as its [`SnapshotDefaults`], so
-/// build, measure and render all see one scope.
-pub fn toolbar_item_view<V: View>(content: V, env: &Environment) -> Metadata<Environment, V> {
+pub fn scoped_toolbar_item_env(env: &Environment) -> Environment {
     let mut scoped = toolbar_item_env(env);
     scoped.insert(SnapshotDefaults(toolbar_item_env));
-    Metadata::new(content, scoped)
+    scoped
 }
 
 impl<E: crate::text::TextEngine> NavigationViewRenderState<E> {
-    pub(crate) fn from_view(navigation: NavigationView<HeldChild<E>>, env: &Environment) -> Self {
+    pub(crate) fn from_view(
+        navigation: ResolvedNavigationView<HeldChild<E>>,
+        env: &Environment,
+    ) -> Self {
         let NavigationView { bar, content, .. } = navigation;
         let Bar {
             title,
@@ -272,8 +272,8 @@ impl<E: crate::text::TextEngine> NavigationViewRenderState<E> {
         let mut bottom = Vec::new();
         for item in toolbar.take_items() {
             let (placement, content, _, _, item_env) = item.into_parts();
-            let retained =
-                RetainedSubview::new(toolbar_item_view(content, item_env.as_ref().unwrap_or(env)));
+            let scoped = scoped_toolbar_item_env(item_env.as_ref().unwrap_or(env));
+            let retained = RetainedSubview::held_in(content, scoped);
             match placement {
                 NavigationToolbarPlacement::Principal => principal.push(retained),
                 NavigationToolbarPlacement::Cancellation

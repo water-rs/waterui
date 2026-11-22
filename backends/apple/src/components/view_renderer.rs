@@ -1,5 +1,5 @@
 //! Offscreen capture through [`AppleOffscreenRenderer`] — `WuiViewRenderer.swift`'s
-//! `renderViewToRGBA`, ported onto [`OffscreenRenderer`].
+//! `renderViewToRGBA`, ported onto [`ViewRenderer`].
 //!
 //! The rendered leaf mounts under a fresh [`ContentLedger`], joins its
 //! capture window and is laid out under the request's proposal; the
@@ -10,13 +10,13 @@
 
 use waterui_backend_core::{Environment, View};
 use waterui_capture::ContentLedger;
-use waterui_capture::view_renderer::{OffscreenRenderer, RenderError, RenderRequest, RenderResult};
+use waterui_capture::view_renderer::{RenderError, RenderRequest, RenderResult, ViewRenderer};
 use waterui_core::env::With;
 use waterui_core::layout::{ProposalSize, Size};
 
 use crate::contract::NativeLeaf;
 
-/// The Apple backend's [`OffscreenRenderer`]: renders a typed view under a
+/// The Apple backend's [`ViewRenderer`]: renders a typed view under a
 /// fresh [`ContentLedger`] into premultiplied RGBA8 on the main thread.
 #[derive(Debug, Clone)]
 pub struct AppleOffscreenRenderer {
@@ -31,7 +31,7 @@ impl AppleOffscreenRenderer {
     }
 }
 
-impl OffscreenRenderer for AppleOffscreenRenderer {
+impl ViewRenderer for AppleOffscreenRenderer {
     #[expect(
         clippy::future_not_send,
         reason = "view rendering runs on the main thread; the future borrows the non-Send native leaf and `MainThreadMarker` across the capture await"

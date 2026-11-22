@@ -1151,7 +1151,7 @@ pub mod transition {
     pub use crate::transition::clock::ManualTransitionClock;
 }
 
-/// Re-exports the pieces an [`OffscreenRenderer`](waterui_capture::OffscreenRenderer) trial needs.
+/// Re-exports the pieces a [`ViewRenderer`](waterui_capture::ViewRenderer) trial needs.
 ///
 /// The Apple backend/offscreen renderer, the shared-runtime handles a sealed
 /// generation is reached through, and the failure carriers the cause chain

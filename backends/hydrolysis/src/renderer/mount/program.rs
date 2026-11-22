@@ -266,6 +266,7 @@ pub enum ProducerContent {
         runtime: Rc<crate::hosted::HostedRuntime>,
         bounds: kurbo::Rect,
     },
+    #[cfg(hydrolysis_scene_view)]
     Scene(SceneContentSource),
     #[cfg(hydrolysis_gpu)]
     Gpu {
@@ -283,6 +284,7 @@ pub enum ProducerContent {
 
 /// A `SceneView`'s content: it records at commit against the target's
 /// resources (§C).
+#[cfg(hydrolysis_scene_view)]
 pub struct SceneContentSource {
     pub content: Rc<RefCell<Box<dyn waterui_graphics::backend::SceneContent>>>,
     pub invalidator: waterui_graphics::backend::SceneInvalidator,

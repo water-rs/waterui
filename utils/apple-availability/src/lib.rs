@@ -1,7 +1,7 @@
 #![no_std]
 #![doc = include_str!("../README.md")]
 
-extern crate self as waterui_apple_os;
+extern crate self as apple_availability;
 
 include!("../versions.rs");
 
@@ -29,7 +29,7 @@ pub trait Available<Version, Api> {}
 macro_rules! implement {
     ($(($major:literal, $minor:literal, $cfg:literal)),* $(,)?) => {
         $(
-            #[cfg(waterui_apple_os_met = $cfg)]
+            #[cfg(apple_availability_met = $cfg)]
             impl<T, Api> Available<AppleOs<$major, $minor>, Api> for T {}
 
             impl AppleOs<$major, $minor> {
@@ -37,7 +37,7 @@ macro_rules! implement {
                 /// deployment target reaches this version.
                 #[doc(hidden)]
                 #[cfg_attr(
-                    waterui_apple_os_met = $cfg,
+                    apple_availability_met = $cfg,
                     deprecated(
                         note = "always true: this build's deployment target already meets this version; delete the older realization"
                     )

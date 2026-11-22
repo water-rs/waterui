@@ -17,7 +17,8 @@ use waterui::id::SelfId;
 use waterui::{Binding, Str, View};
 use waterui_navigation::{
     NavigationLink, NavigationSplitColumnVisibility, NavigationSplitView, NavigationStack,
-    NavigationToolbar, NavigationToolbarItem, NavigationToolbarPlacement, NavigationView,
+    NavigationToolbar, NavigationToolbarItem, NavigationToolbarItems, NavigationToolbarPlacement,
+    NavigationView,
 };
 use waterui_testing::{Role, RuntimeDriver, SemanticApp, Styled, TestStyle, UiBuilder};
 
@@ -79,7 +80,7 @@ fn navigation_subtitle_emits_on_offscreen_mount(ui: UiBuilder<Styled<TestStyle>>
 
 /// One toolbar action in each group the bar draws: leading, principal (the
 /// title area), trailing, and bottom.
-fn toolbar_view() -> NavigationView<impl View> {
+fn toolbar_view() -> NavigationView<impl View, impl NavigationToolbarItems> {
     NavigationView::new("Inbox", text("mail body")).navigation_toolbar(
         NavigationToolbar::default()
             .item(NavigationToolbarItem::new(

@@ -20,7 +20,7 @@ use alloc::rc::Rc;
 use core::any::Any;
 
 #[cfg(waterui_feature = "capture")]
-use waterui::OffscreenRenderer;
+use waterui::ViewRenderer;
 #[cfg(waterui_feature = "capture")]
 use waterui::view_renderer::CaptureBinder;
 
@@ -71,7 +71,7 @@ macro_rules! native_backend {
 
             /// The backend's offscreen view-to-RGBA renderer.
             #[cfg(waterui_feature = "capture")]
-            type Offscreen: OffscreenRenderer;
+            type Offscreen: ViewRenderer;
 
             /// Runs `f` on this backend as its family names it. Every
             /// implementation is `f(self)`; the signature is what ties the
@@ -110,7 +110,7 @@ macro_rules! native_backend {
                         let render_env = render_env.clone();
                         Box::pin(async move {
                             offscreen
-                                .render_to_rgba(SlotView(slot), &render_env, request)
+                                .render_to_rgba($crate::hooked::SlotView::new(slot), &render_env, request)
                                 .await
                         })
                     },
@@ -166,6 +166,7 @@ macro_rules! native_backend {
             /// [`Backend::scoped`] handed back. A backend realizes it under a
             /// [`Hooked`] decorator holding the scope; a decorator extends its
             /// own.
+            #[doc(hidden)]
             fn scoped_erased(&mut self, hooks: &ErasedHooks, view: AnyView, env: &Environment, cx: Self::Ctx) -> Self::Output {
                 self.with_family(|backend| {
                     let mut hooked = Hooked::with_scope(
@@ -179,6 +180,7 @@ macro_rules! native_backend {
 
             /// Realizes a [`HookableView`] no hook claimed: its own
             /// composition.
+            #[doc(hidden)]
             fn hookable<T: HookableView>(&mut self, view: T, env: &Environment, cx: Self::Ctx) -> Self::Output {
                 let view = view.compose(env);
                 Realize::child(self, view, env, cx)
@@ -186,6 +188,7 @@ macro_rules! native_backend {
 
             /// [`hookable`](Self::hookable) for a payload an [`AnyView`]
             /// handed back erased, which `compose` draws.
+            #[doc(hidden)]
             fn hookable_dyn(&mut self, mut view: ErasedPayload<'_>, compose: ComposeErased, env: &Environment, cx: Self::Ctx) -> Self::Output {
                 let view = compose(&mut view, env);
                 Realize::child(self, view, env, cx)
@@ -294,6 +297,13 @@ macro_rules! native_backend {
                     Ok(slot) => return slot.into_child().realize(self.inner(), env, cx),
                     Err(native) => native,
                 };
+                let native = match cast::<T, waterui::component::StyleSlot>(native) {
+                    Ok(slot) => match slot.downcast::<$crate::Child<B::Family>>() {
+                        Ok(child) => return child.realize(self.inner(), env, cx),
+                        Err(slot) => return self.inner().provided(slot, env, cx),
+                    },
+                    Err(native) => native,
+                };
                 match self.offer(native, env, cx) {
                     Ok(output) => output,
                     Err((native, cx)) => self.inner().provided(native, env, cx),
@@ -303,6 +313,12 @@ macro_rules! native_backend {
             fn provided_dyn(&mut self, mut native: ErasedPayload<'_>, env: &Environment, cx: Self::Ctx) -> Self::Output {
                 if let Some(slot) = native.take::<$crate::hooked::SlotView<B::Family>>() {
                     return slot.into_child().realize(self.inner(), env, cx);
+                }
+                if let Some(slot) = native.take::<waterui::component::StyleSlot>() {
+                    return match slot.downcast::<$crate::Child<B::Family>>() {
+                        Ok(child) => child.realize(self.inner(), env, cx),
+                        Err(slot) => self.inner().provided(slot, env, cx),
+                    };
                 }
                 match self.offer_erased(&mut native, env, cx) {
                     Ok(output) => output,
@@ -348,6 +364,13 @@ macro_rules! native_backend {
                 Ok(slot) => return slot.into_child().realize(backend, env, cx),
                 Err(native) => native,
             };
+            let native = match cast::<T, waterui::component::StyleSlot>(native) {
+                Ok(slot) => match slot.downcast::<$crate::Child<B::Family>>() {
+                    Ok(child) => return child.realize(backend, env, cx),
+                    Err(slot) => return backend.provided(slot, env, cx),
+                },
+                Err(native) => native,
+            };
             $(
                 $(#[cfg($ncfg)])*
                 let native = match cast::<T, $native_ty>(native) {
@@ -382,11 +405,6 @@ macro_rules! native_backend {
                 $(#[cfg($pcfg)])*
                 let (native, cx) = native;
             )*
-            #[cfg(waterui_feature = "capture")]
-            let native = match cast::<T, SlotNative<B::Family>>(native) {
-                Ok(slot) => return slot.0.realize(backend, env, cx),
-                Err(native) => native,
-            };
             backend.provided(native, env, cx)
         }
 
@@ -471,6 +489,12 @@ macro_rules! native_backend {
             if let Some(slot) = native.take::<$crate::hooked::SlotView<B::Family>>() {
                 return slot.into_child().realize(backend, env, cx);
             }
+            if let Some(slot) = native.take::<waterui::component::StyleSlot>() {
+                return match slot.downcast::<$crate::Child<B::Family>>() {
+                    Ok(child) => child.realize(backend, env, cx),
+                    Err(slot) => backend.provided(slot, env, cx),
+                };
+            }
             $(
                 $(#[cfg($ncfg)])*
                 if let Some(native) = native.take::<$native_ty>() {
@@ -492,10 +516,6 @@ macro_rules! native_backend {
                     }
                 }
             )*
-            #[cfg(waterui_feature = "capture")]
-            if let Some(slot) = native.take::<SlotNative<B::Family>>() {
-                return slot.0.realize(backend, env, cx);
-            }
             backend.provided_dyn(native, env, cx)
         }
 
@@ -644,29 +664,6 @@ pub fn report_unprovided(backend: &str, payload: &str) {
     );
 }
 
-/// Native payload carrying a backend's held child slot into
-/// [`NativeBackend::offscreen`].
-#[cfg(waterui_feature = "capture")]
-struct SlotNative<F: NativeBackendFamily>(Child<F>);
-
-#[cfg(waterui_feature = "capture")]
-impl<F: NativeBackendFamily> NativeView for SlotNative<F> {}
-
-/// View adapter realizing a [`Child`] slot through [`OffscreenRenderer::render_to_rgba`].
-#[cfg(waterui_feature = "capture")]
-struct SlotView<F: NativeBackendFamily>(Child<F>);
-
-#[cfg(waterui_feature = "capture")]
-impl<F: NativeBackendFamily> View for SlotView<F> {
-    fn body(self, _env: &Environment) -> impl View {
-        waterui_core::Native::new(SlotNative(self.0))
-    }
-
-    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
-        backend.native(SlotNative(self.0), env, cx)
-    }
-}
-
 /// How many erased views may expand into one another before any payload is
 /// reached. Inherited from the recursion budget of Hydrolysis's former layout
 /// normalization, the pass this check replaces; a finite composition never
@@ -693,28 +690,6 @@ impl<'a, B: NativeBackend> Realize<'a, B> {
     /// Realizes `view` through `backend`.
     pub fn child<V: View>(backend: &mut B, view: V, env: &Environment, cx: B::Ctx) -> B::Output {
         waterui_core::backend::dispatch(view, &mut Realize::new(backend), env, cx)
-    }
-
-    /// Realizes the native payload an [`AnyView`] handed back through a
-    /// [`DynBackend`].
-    pub fn native_dyn(
-        &mut self,
-        native: ErasedPayload<'_>,
-        env: &Environment,
-        cx: B::Ctx,
-    ) -> B::Output {
-        route_native_dyn(self.backend, native, env, cx)
-    }
-
-    /// Realizes the metadata wrapper an [`AnyView`] handed back through a
-    /// [`DynBackend`].
-    pub fn metadata_dyn(
-        &mut self,
-        metadata: ErasedPayload<'_>,
-        env: &Environment,
-        cx: B::Ctx,
-    ) -> B::Output {
-        route_metadata_dyn(self.backend, metadata, env, cx)
     }
 }
 
@@ -872,6 +847,7 @@ native_backend! {
         #[cfg(waterui_feature = "table")]
         /// A table.
         table: waterui::component::table::TableConfig,
+        #[cfg(waterui_feature = "canvas")]
         /// A canvas.
         canvas: waterui::graphics::canvas::CanvasView,
         #[cfg(waterui_feature = "gpu")]
@@ -957,7 +933,7 @@ native_backend! {
         list<C>: waterui::component::list::ListConfig<C>,
         #[cfg(waterui_feature = "navigation")]
         /// A navigation bar around its content.
-        navigation_view<C>: waterui::navigation::NavigationView<C>,
+        navigation_view<C>: waterui::navigation::ResolvedNavigationView<C>,
         #[cfg(waterui_feature = "navigation")]
         /// A split navigation layout.
         navigation_split<C>: waterui::navigation::split::NavigationSplitLayout<C>,
@@ -1088,7 +1064,7 @@ mod tests {
     pub(super) struct RecorderOffscreen(pub(super) Recorder);
 
     #[cfg(waterui_feature = "capture")]
-    impl OffscreenRenderer for RecorderOffscreen {
+    impl ViewRenderer for RecorderOffscreen {
         fn render_to_rgba<V: View>(
             &self,
             view: V,
@@ -1249,7 +1225,7 @@ mod tests {
     }
 
     #[cfg(waterui_feature = "navigation")]
-    impl<C> Parent<C> for waterui::navigation::NavigationView<C> {
+    impl<C> Parent<C> for waterui::navigation::ResolvedNavigationView<C> {
         fn children(self) -> Vec<C> {
             alloc::vec![self.content]
         }

@@ -246,7 +246,9 @@ serde_json = "1.0"
 # the trait bound.
 schemars = { version = "1.2", features = ["derive"] }
 smallvec = "1.16"
-nami = "0.13"
+# `default-features = false` keeps `waterui-core --no-default-features` free of
+# `nami/timer` (`async-io`, `polling`, `rustix`); `derive` is a `no_std` proc-macro.
+nami = { version = "0.13", default-features = false, features = ["derive"] }
 nami-core = "0.5"
 # The 2D engine WaterUI's self-drawn content records and renders through
 # (water-rs/hydrolysis#205, water-rs/waterui#1449): recording, resource
@@ -302,7 +304,7 @@ waterui-meta = { version = "0.5.1", path = "utils/meta" }
 waterui-git-head = { version = "0.5.1", path = "utils/git-head" }
 waterui-contract = { version = "0.5.1", path = "utils/contract" }
 waterui-easing = { version = "0.5.1", path = "utils/easing" }
-waterui-apple-os = { version = "0.5.1", path = "utils/apple-os" }
+apple-availability = { version = "0.5.1", path = "utils/apple-availability" }
 waterkit-location = "0.3"
 waterkit-deeplink = "0.3"
 waterkit-audio = { version = "0.3", default-features = false }
@@ -456,6 +458,7 @@ default = [
     "text-field",
     "toggle",
     "validation",
+    "canvas",
     "gpu",
     "assets",
     "dialog",
@@ -489,7 +492,7 @@ highlight = ["waterui-internal/highlight", "waterui-dylib?/highlight"]
 # other development sessions get it through the linkage the CLI selects, while
 # a release package that never attaches the hub leaves its server stack out.
 inspector = ["waterui-internal/inspector", "waterui-dylib?/inspector"]
-inspector-signals = ["inspector", "waterui-internal/inspector-signals"]
+inspector-signals = ["inspector", "waterui-internal/inspector-signals", "waterui-dylib?/inspector-signals"]
 dialog = ["waterui-internal/dialog", "waterui-dylib?/dialog"]
 snackbar = ["waterui-internal/snackbar", "waterui-dylib?/snackbar"]
 assets = ["waterui-internal/assets", "waterui-dylib?/assets"]
@@ -720,7 +723,7 @@ waterui-watcher-set = { path = "utils/watcher-set" }
 # and the split tabs-bar surface and divider calls (#1982). Drop the git pin
 # once a release has these changes.
 hydrolysis = { path = "backends/hydrolysis" }
-hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", branch = "refactor/4770-slim-core-ui" }
+hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", branch = "refactor/4869-typed-tab-toolbar" }
 # The waterkit family follows waterkit's `dev` so the framework consumes its
 # unreleased changes; the patches apply only while the `[workspace.dependencies]`
 # requirements admit `dev`'s version (0.3). Every waterkit crate the
@@ -794,7 +797,7 @@ wgpu-external-frame = { git = "https://github.com/water-rs/wgpu-external-frame",
 waterui-barcode = { git = "https://github.com/water-rs/barcode", branch = "main" }
 waterui-chart = { git = "https://github.com/water-rs/chart", branch = "main" }
 waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", branch = "main" }
-waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", branch = "main" }
+waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", branch = "refactor/button-a11y-label" }
 waterui-particle = { git = "https://github.com/water-rs/particle", branch = "main" }
 waterui-image = { git = "https://github.com/water-rs/image", branch = "main" }
 waterui-svg = { git = "https://github.com/water-rs/svg", branch = "main" }

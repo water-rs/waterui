@@ -859,7 +859,7 @@ fn install_selection_menu(
     )]
     mtm: cocoa_ui::MainThreadMarker,
     env: &Environment,
-    selection_menu: &Computed<Vec<ResolvedMenuItem>>,
+    selection_menu: &Computed<Vec<ResolvedMenuItem<Held>>>,
     field: &TextField,
     value: &Binding<StyledStr>,
 ) {
@@ -887,7 +887,7 @@ fn appkit_edit_menu(
     field: &TextField,
     driver: FieldSelection,
     env: Environment,
-    items: Computed<Vec<ResolvedMenuItem>>,
+    items: Computed<Vec<ResolvedMenuItem<Held>>>,
 ) {
     field.install_edit_menu_handler(move |_, _, menu| {
         let nodes =
@@ -905,7 +905,7 @@ fn uikit_edit_menu(
     field: &TextField,
     driver: FieldSelection,
     env: Environment,
-    items: Computed<Vec<ResolvedMenuItem>>,
+    items: Computed<Vec<ResolvedMenuItem<Held>>>,
 ) {
     // The scope arming the current menu's shortcut commands, retired with
     // the next presentation — the lifespan `KeyCommands` documents.

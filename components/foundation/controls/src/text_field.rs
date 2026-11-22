@@ -6,7 +6,7 @@ pub use crate::input::{ContentType, KeyboardType};
 use core::num::NonZeroUsize;
 
 use alloc::vec::Vec;
-use nami::{Binding, Computed};
+use nami::{Binding, Computed, SignalExt as _};
 use waterui_core::Str;
 use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::handler::{Handler, SharedAction};
@@ -32,7 +32,7 @@ pub struct TextFieldConfig<S> {
     /// The semantic content type the field declares for autofill.
     content_type: Option<ContentType>,
     /// Optional selected-text menu items resolved for the effective locale.
-    selection_menu: Computed<Vec<ResolvedMenuItem>>,
+    selection_menu: Computed<Vec<ResolvedMenuItem<S>>>,
     /// Maximum number of lines the field renders. `None` removes the limit.
     line_limit: Option<NonZeroUsize>,
     /// The action run when the user submits the field with Return or Enter.
@@ -85,7 +85,7 @@ impl<S> TextFieldConfig<S> {
 
     /// Optional selected-text menu items resolved for the effective locale.
     #[must_use]
-    pub const fn selection_menu(&self) -> &Computed<Vec<ResolvedMenuItem>> {
+    pub const fn selection_menu(&self) -> &Computed<Vec<ResolvedMenuItem<S>>> {
         &self.selection_menu
     }
 
@@ -118,7 +118,7 @@ impl<S> TextFieldConfig<S> {
         TextConfig,
         KeyboardType,
         Option<ContentType>,
-        Computed<Vec<ResolvedMenuItem>>,
+        Computed<Vec<ResolvedMenuItem<S>>>,
         Option<NonZeroUsize>,
         Option<SharedAction>,
     ) {
@@ -145,13 +145,22 @@ impl<S: 'static> MapSlots<S> for TextFieldConfig<S> {
     type With<T: 'static> = TextFieldConfig<T>;
 
     fn map_slots<T: 'static>(self, f: impl Fn(S) -> T + Clone + 'static) -> TextFieldConfig<T> {
+        let menu_f = f.clone();
         TextFieldConfig {
             label: self.label.map_slots(f),
             value: self.value,
             prompt: self.prompt,
             keyboard: self.keyboard,
             content_type: self.content_type,
-            selection_menu: self.selection_menu,
+            selection_menu: self
+                .selection_menu
+                .map(move |items| {
+                    items
+                        .into_iter()
+                        .map(|item| item.map_slots(menu_f.clone()))
+                        .collect()
+                })
+                .computed(),
             line_limit: self.line_limit,
             on_submit: self.on_submit,
         }

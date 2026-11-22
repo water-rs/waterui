@@ -56,6 +56,8 @@ use crate::renderer::HydrolysisTextContextMenuMode;
 use crate::runner::android_executor::{AndroidMainThreadExecutor, UiThreadPoster};
 use crate::runner::android_methods::{HOST_METHODS, HostMethodId};
 use crate::runner::android_metrics::InsetsMetrics;
+#[cfg(hydrolysis_inspector)]
+use crate::runner::init_main_thread_executors;
 #[cfg(any(test, hydrolysis_platform_services))]
 use crate::runner::install_platform_services;
 #[cfg(feature = "menu")]
@@ -67,8 +69,8 @@ use crate::runner::window::{
 #[cfg(hydrolysis_gpu_painter)]
 use crate::runner::window::{WindowFrame, render_window};
 use crate::runner::{
-    RenderDiagnosticsConfig, init_main_thread_executors, install_core_window_openers,
-    install_window_registries, queue_window_opener,
+    RenderDiagnosticsConfig, install_core_window_openers, install_window_registries,
+    queue_window_opener,
 };
 #[cfg(hydrolysis_gpu_painter)]
 use crate::text::ParleyEngine;
@@ -1306,10 +1308,17 @@ impl UiThreadServices {
     /// Runs at `nativeUiThreadServices` — the load hook, once per process on
     /// the UI thread (its main looper must already exist).
     pub(crate) fn init(vm: &'static JavaVM) -> Result<Self, JniError> {
+        #[cfg(hydrolysis_inspector)]
         let inspector = init_main_thread_executors();
+        #[cfg(hydrolysis_inspector)]
         let inspector_probe = inspector
             .as_ref()
             .map(|inspector| inspector.task_probe() as Arc<dyn waterui::task::RuntimeProbe>);
+        #[cfg(not(hydrolysis_inspector))]
+        let inspector_probe: Option<Arc<dyn waterui::task::RuntimeProbe>> = {
+            crate::runner::init_global_executor();
+            None
+        };
         // SAFETY: NONBLOCK + CLOEXEC keep a saturated counter from stalling
         // the looper and the fd out of child processes.
         let fd = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC) };
@@ -1332,7 +1341,11 @@ impl UiThreadServices {
         .map_err(|_| {
             JniError("hydrolysis android: the UI thread's executor is already attached".to_owned())
         })?;
+        #[cfg(hydrolysis_inspector)]
         let mut env = Environment::new();
+        #[cfg(not(hydrolysis_inspector))]
+        let env = Environment::new();
+        #[cfg(hydrolysis_inspector)]
         waterui::inspector::install(&mut env, inspector);
         Ok(Self {
             executor,
@@ -1421,9 +1434,7 @@ fn session_mounts(
         // hooks are never called and the machine is never started.
         termination: _,
     } = parts;
-    let mut env = env
-        .extending(waterui_graphics::backend::SceneViewMergeToParent)
-        .layered_on(&services.env);
+    let mut env = env.layered_on(&services.env);
     let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
     #[cfg(any(test, hydrolysis_platform_services))]
     install_platform_services(&mut env);

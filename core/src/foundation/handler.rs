@@ -201,6 +201,11 @@ pub type BoxedEventAction<E, T = ()> =
 /// The `Args` tuple only counts extractor positions — the event payload is
 /// not part of the tuple — so a closure like `|event: E| { ... }` matches
 /// `EventHandler<E, (), ()>` and reads as "no extractors, returns unit".
+#[diagnostic::on_unimplemented(
+    message = "this event handler's parameters cannot be extracted from the environment",
+    label = "expected a handler taking the event followed by parameters implementing `Extractor`",
+    note = "A WaterUI event handler takes `(event)` or `(event, ...)` whose trailing parameters implement `Extractor`: `#[state]` makes an owned `Clone` type extractable from `.state(&value)` injections, `State<T>` wraps an injected value of a foreign type, `Use<T>` reads an environment value, `Option<E>` tolerates a missing one, and `impl_extractor!` marks a `Clone` type installed as an environment value. Repeated parameters of the same state type bind positionally — the first `.state()` call feeds the first parameter of that type."
+)]
 pub trait EventHandler<E, Args, T = ()>: 'static {
     /// Invokes the handler with the given event payload and the extractor
     /// arguments resolved from `env`.

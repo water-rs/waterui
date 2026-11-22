@@ -16,6 +16,8 @@ use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
 };
 use kurbo::Rect;
+#[cfg(feature = "menu")]
+use nami::Computed;
 use nami::{Signal, SignalExt};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -26,6 +28,8 @@ use waterui_controls::button::{ButtonConfig, ButtonStyle};
 use waterui_controls::label::{ControlLabel, LabelDisplayMode};
 #[cfg(feature = "menu")]
 use waterui_controls::menu::ResolvedMenu;
+#[cfg(feature = "menu")]
+use waterui_controls::menu::ResolvedMenuItem;
 use waterui_core::Environment;
 use waterui_core::handler::ReportExtraction as _;
 use waterui_core::layout::Size as LayoutSize;
@@ -557,7 +561,7 @@ pub struct MenuRenderState<E: crate::text::TextEngine> {
     /// The trigger button's style and size, from the menu.
     style: ButtonStyle,
     size: ControlSize,
-    items: nami::Computed<Vec<waterui_controls::menu::ResolvedMenuItem>>,
+    items: Computed<Vec<ResolvedMenuItem<HeldChild<E>>>>,
     #[cfg(feature = "accessibility")]
     accessibility_label: nami::Computed<StyledStr>,
     chrome: ButtonChromeState,

@@ -760,25 +760,28 @@ impl HeadlessRuntime {
         )
     }
 
-    #[expect(
-        clippy::needless_pass_by_value,
-        reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
-    )]
     fn on_painter(
         painter: OffscreenPainter,
-        env: Environment,
+        mut env: Environment,
         window: RootWindow<crate::text::ParleyEngine>,
         width: u32,
         height: u32,
         style: impl crate::Style,
         family_resolution: FontFamilyResolution,
     ) -> Self {
+        #[cfg(hydrolysis_inspector)]
         let inspector = init_main_thread_executors();
+        #[cfg(hydrolysis_inspector)]
         let inspector_probe = inspector
             .as_ref()
             .map(|inspector| inspector.task_probe() as Arc<dyn waterui::task::RuntimeProbe>);
-        let mut env = env.extending(waterui_graphics::backend::SceneViewMergeToParent);
+        #[cfg(not(hydrolysis_inspector))]
+        let inspector_probe: Option<Arc<dyn waterui::task::RuntimeProbe>> = {
+            super::init_global_executor();
+            None
+        };
         waterui::install_application_resources(&mut env);
+        #[cfg(hydrolysis_inspector)]
         waterui::inspector::install(&mut env, inspector);
         let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
         #[cfg(any(test, hydrolysis_platform_services))]

@@ -5,14 +5,14 @@ pub mod card;
 pub mod condition;
 pub mod error;
 pub mod suspense;
-// pub mod tree;
 
 pub use accordion::{Accordion, accordion};
 #[cfg(feature = "avatar")]
 pub use avatar::{Avatar, avatar};
 pub use card::{Card, CardStyle, CardStyleTokens, CardTheme, card};
-pub use suspense::{Suspense, suspense};
-// pub use tree::{TreeNode, TreeView, tree_view};
+pub use condition::{When, when};
+pub use error::{DefaultErrorView, ErrorView, ErrorViewBuilder, ResultExt, error_view};
+pub use suspense::{SuspendedView, Suspense, suspense};
 
 /// Syntax highlighted code widget. It lives in `waterui-text` so a component
 /// crate can claim a fence with a `CodeConfig` hook without depending on

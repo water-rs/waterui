@@ -16,6 +16,8 @@ pub use label::{
     Built, ControlLabel, CustomLabel, ErasedLabel, IconLabel, IconPosition, IntoLabel, Label,
     LabelDisplayMode, LabelKind, SemanticLabel, TitleLabel, label,
 };
+pub mod slot;
+pub use slot::{IconSlot, NoopSlot, SlotBuilder, StyleSlot};
 #[cfg(feature = "menu")]
 pub mod menu;
 #[cfg(feature = "menu")]

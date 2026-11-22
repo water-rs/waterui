@@ -243,10 +243,6 @@ impl SemanticRuntime {
         })
     }
 
-    #[expect(
-        clippy::needless_pass_by_value,
-        reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
-    )]
     fn on_env(
         env: Environment,
         window: RootWindow<crate::text::ParleyEngine>,
@@ -255,23 +251,23 @@ impl SemanticRuntime {
         family_resolution: FontFamilyResolution,
         build_fonts: fn(&Environment) -> FontCollection,
     ) -> Self {
-        // The inspector endpoint is a TCP server a browser page cannot host —
-        // on wasm32 the executor installs alone, with no probe to report to.
-        #[cfg(not(target_arch = "wasm32"))]
+        // The inspector endpoint is opt-in and unavailable on wasm32 —
+        // without it the executor installs alone, with no probe to report to.
+        #[cfg(hydrolysis_inspector)]
         let inspector = init_main_thread_executors();
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(hydrolysis_inspector)]
         let inspector_probe = inspector
             .as_ref()
             .map(|inspector| inspector.task_probe() as Arc<dyn waterui::task::RuntimeProbe>);
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(not(hydrolysis_inspector))]
         let inspector_probe: Option<Arc<dyn waterui::task::RuntimeProbe>> = {
             init_global_executor();
             None
         };
-        let mut env = env.extending(waterui_graphics::backend::SceneViewMergeToParent);
+        let mut env = env;
         #[cfg(not(target_arch = "wasm32"))]
         waterui::install_application_resources(&mut env);
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(hydrolysis_inspector)]
         waterui::inspector::install(&mut env, inspector);
         let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
         #[cfg(any(test, hydrolysis_platform_services))]

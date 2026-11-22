@@ -1,6 +1,8 @@
 //! The Apple backend's [`NativeBackend`]: each component's realization,
 //! reached through static dispatch.
 
+#[cfg(waterui_feature = "navigation")]
+use waterui::navigation::ResolvedNavigationView;
 use waterui_backend_core::{
     ChildView, Environment, NativeBackend, NativeBackendFamily, mark_reached, report_unprovided,
 };
@@ -437,13 +439,13 @@ impl NativeBackend for AppleBackend {
     #[cfg(waterui_feature = "navigation")]
     fn navigation_view<C: ChildView<Self>>(
         &mut self,
-        native: waterui::navigation::NavigationView<C>,
+        native: ResolvedNavigationView<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
         mark_reached!("navigation_view");
         crate::components::navigation::nav_view::realize_navigation_view(
-            native.map_content(C::into_child),
+            MapSlots::map_slots(native, C::into_child),
             &self.entry(env),
         )
     }
@@ -490,8 +492,7 @@ impl NativeBackend for AppleBackend {
         )
     }
 
-    // Every application can build a canvas, so the method exists whether or
-    // not this build carries the `canvas` realization.
+    #[cfg(waterui_feature = "canvas")]
     fn canvas(
         &mut self,
         native: waterui::graphics::canvas::CanvasView,
@@ -499,17 +500,7 @@ impl NativeBackend for AppleBackend {
         (): (),
     ) -> NativeLeaf {
         mark_reached!("canvas");
-        #[cfg(feature = "canvas")]
-        return crate::components::canvas::realize_canvas_view(native, &self.entry(env));
-        #[cfg(not(feature = "canvas"))]
-        {
-            drop(native);
-            report_unprovided(
-                "waterui-apple without its `canvas` feature",
-                "waterui_graphics::canvas::CanvasView",
-            );
-            self.empty((), env, ())
-        }
+        crate::components::canvas::realize_canvas_view(native, &self.entry(env))
     }
 
     #[cfg(waterui_feature = "effects")]

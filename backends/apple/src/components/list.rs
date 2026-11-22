@@ -129,7 +129,7 @@ fn compute_section_groups(
                 .and_then(ListSection::label)
                 .map(|text| resolve_text(text, env)),
             footer: chrome
-                .and_then(ListSection::get_footer)
+                .and_then(ListSection::footer)
                 .map(|text| resolve_text(text, env)),
             count: 1,
         });

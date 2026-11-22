@@ -16,10 +16,11 @@
 use core::any::TypeId;
 use core::marker::PhantomData;
 
+use waterui::component::StyleSlot;
 use waterui::component::button::{ButtonConfig, ButtonStyleTarget};
 #[cfg(waterui_feature = "toggle")]
 use waterui::component::toggle::{ToggleConfig, ToggleStyleTarget};
-use waterui_core::backend::{ErasedPayload, MapSlots};
+use waterui_core::backend::{Backend, ErasedPayload, MapSlots};
 use waterui_core::view::hook::{ErasedHooks, HookList};
 use waterui_core::{AnyView, Environment, Native, NativeView, View};
 
@@ -339,8 +340,8 @@ impl<B: NativeBackend, H: HookList, E: ErasedScope> Hooked<B, H, E> {
         cx: B::Ctx,
     ) -> B::Output {
         let rehook = self.rehooker::<C>();
-        let (target, pending) = native
-            .into_style_pending(move |slot| AnyView::new(SlotView(rehook(slot).into_child())));
+        let (target, pending) =
+            native.into_style_pending(move |slot| StyleSlot::new(rehook(slot).into_child()));
         match self.offer(target, env, cx) {
             Ok(output) => output,
             Err((_, cx)) => {
@@ -375,8 +376,8 @@ impl<B: NativeBackend, H: HookList, E: ErasedScope> Hooked<B, H, E> {
         cx: B::Ctx,
     ) -> B::Output {
         let rehook = self.rehooker::<C>();
-        let (target, pending) = native
-            .into_style_pending(move |slot| AnyView::new(SlotView(rehook(slot).into_child())));
+        let (target, pending) =
+            native.into_style_pending(move |slot| StyleSlot::new(rehook(slot).into_child()));
         match self.offer(target, env, cx) {
             Ok(output) => output,
             Err((_, cx)) => {
@@ -409,6 +410,11 @@ impl<F: NativeBackendFamily> core::fmt::Debug for SlotView<F> {
 }
 
 impl<F: NativeBackendFamily> SlotView<F> {
+    #[cfg(waterui_feature = "capture")]
+    pub(crate) const fn new(child: Child<F>) -> Self {
+        Self(child)
+    }
+
     pub(crate) fn into_child(self) -> Child<F> {
         self.0
     }
@@ -419,6 +425,10 @@ impl<F: NativeBackendFamily> NativeView for SlotView<F> {}
 impl<F: NativeBackendFamily> View for SlotView<F> {
     fn body(self, _env: &Environment) -> impl View {
         Native::new(self)
+    }
+
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        backend.native(self, env, cx)
     }
 }
 
