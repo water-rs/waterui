@@ -9,6 +9,7 @@ use waterui::navigation::{
 };
 use waterui_core::contract_violation;
 use waterui_core::id::Id;
+use waterui_core::layout::{LayoutDirection, layout_direction};
 
 pub const ROOT_NAVIGATION_IDENTITY: u64 = 0;
 
@@ -428,6 +429,7 @@ pub enum SystemBackGesture {
 pub struct NavigationInteractivePop<E: crate::text::TextEngine> {
     pub(crate) start_x: f64,
     pub width: f64,
+    direction: LayoutDirection,
     pub(crate) progress: f64,
     pub(crate) phase: NavigationInteractivePopPhase,
     pub(crate) from_page: NavigationPage,
@@ -491,6 +493,7 @@ impl<E: crate::text::TextEngine> NavigationInteractivePop<E> {
     pub(crate) fn new(
         start_x: f64,
         width: f64,
+        direction: LayoutDirection,
         from_page: NavigationPage,
         to_page: NavigationPage,
     ) -> Self {
@@ -498,6 +501,7 @@ impl<E: crate::text::TextEngine> NavigationInteractivePop<E> {
         Self {
             start_x,
             width,
+            direction,
             progress: 0.0,
             phase: NavigationInteractivePopPhase::Dragging,
             from_page,
@@ -539,7 +543,12 @@ impl<E: crate::text::TextEngine> NavigationInteractivePop<E> {
         if !matches!(self.phase, NavigationInteractivePopPhase::Dragging) {
             return false;
         }
-        let progress = ((x - self.start_x) / self.width).clamp(0.0, 1.0);
+        let delta = if self.direction.is_right_to_left() {
+            self.start_x - x
+        } else {
+            x - self.start_x
+        };
+        let progress = (delta / self.width).clamp(0.0, 1.0);
         if (progress - self.progress).abs() <= f64::EPSILON {
             return false;
         }
@@ -975,6 +984,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         slot.interactive_pop = Some(NavigationInteractivePop::<E>::new(
             0.0,
             target.width,
+            layout_direction(env).snapshot(),
             target.from_page,
             target.to_page,
         ));
@@ -1366,9 +1376,11 @@ mod tests {
         NavigationInteractivePop, NavigationInteractivePopOutcome, NavigationInteractivePopPhase,
         NavigationPage,
     };
+    use crate::text::ParleyEngine;
     use crate::theme::NavigationMotion;
     use std::time::{Duration, Instant};
     use waterui_core::EasingCurve;
+    use waterui_core::layout::LayoutDirection;
 
     fn material_navigation_motion() -> NavigationMotion {
         NavigationMotion {
@@ -1385,6 +1397,7 @@ mod tests {
         let mut pop = NavigationInteractivePop::<crate::text::ParleyEngine>::new(
             0.0,
             100.0,
+            LayoutDirection::LeftToRight,
             NavigationPage::default(),
             NavigationPage::default(),
         );
@@ -1410,6 +1423,7 @@ mod tests {
         let mut pop = NavigationInteractivePop::<crate::text::ParleyEngine>::new(
             0.0,
             100.0,
+            LayoutDirection::LeftToRight,
             NavigationPage::default(),
             NavigationPage::default(),
         );
@@ -1435,6 +1449,7 @@ mod tests {
         let mut pop = NavigationInteractivePop::<crate::text::ParleyEngine>::new(
             0.0,
             100.0,
+            LayoutDirection::LeftToRight,
             NavigationPage::default(),
             NavigationPage::default(),
         );
@@ -1452,6 +1467,7 @@ mod tests {
         let mut pop = NavigationInteractivePop::<crate::text::ParleyEngine>::new(
             0.0,
             100.0,
+            LayoutDirection::LeftToRight,
             NavigationPage::default(),
             NavigationPage::default(),
         );
@@ -1461,5 +1477,18 @@ mod tests {
             pop.phase,
             NavigationInteractivePopPhase::Cancelling { .. }
         ));
+    }
+
+    #[test]
+    fn rtl_interactive_pop_advances_when_dragging_left_from_right_edge() {
+        let mut pop = NavigationInteractivePop::<ParleyEngine>::new(
+            100.0,
+            100.0,
+            LayoutDirection::RightToLeft,
+            NavigationPage::default(),
+            NavigationPage::default(),
+        );
+        assert!(pop.update(40.0));
+        assert!((pop.progress - 0.6).abs() < 1e-9);
     }
 }

@@ -24,6 +24,8 @@ use crate::theme::WidgetTheme;
 use std::rc::Rc;
 #[cfg(any(feature = "list", feature = "picker"))]
 use waterui_core::contract_violation;
+#[cfg(feature = "navigation")]
+use waterui_core::layout::LayoutDirection;
 #[cfg(any(feature = "list", feature = "navigation"))]
 use waterui_core::layout::layout_direction;
 #[cfg(feature = "picker")]
@@ -400,12 +402,20 @@ pub fn tabs_button_rect(
 #[cfg(feature = "navigation")]
 pub fn navigation_back_button_rect(
     bounds: kurbo::Rect,
-    metrics: crate::theme::NavigationMetrics,
+    metrics: NavigationMetrics,
+    direction: LayoutDirection,
 ) -> kurbo::Rect {
+    let (x0, x1) = if direction.is_right_to_left() {
+        let x1 = bounds.x1 - metrics.back_button_leading_inset;
+        (x1 - metrics.back_button_size, x1)
+    } else {
+        let x0 = bounds.x0 + metrics.back_button_leading_inset;
+        (x0, x0 + metrics.back_button_size)
+    };
     kurbo::Rect::new(
-        bounds.x0 + metrics.back_button_leading_inset,
+        x0,
         bounds.y0 + metrics.back_button_top_inset,
-        bounds.x0 + metrics.back_button_leading_inset + metrics.back_button_size,
+        x1,
         bounds.y0 + metrics.back_button_top_inset + metrics.back_button_size,
     )
 }
