@@ -171,6 +171,13 @@ impl RasterEngineState {
     }
 }
 
+#[cfg(all(hydrolysis_cpu_painter, not(target_arch = "wasm32")))]
+impl Drop for RasterEngineState {
+    fn drop(&mut self) {
+        self.engine.shutdown_and_join();
+    }
+}
+
 #[cfg(hydrolysis_cpu_painter)]
 impl std::fmt::Debug for RasterEngineState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1187,6 +1194,29 @@ mod tests {
         assert_eq!(
             drain_and_sample(&receiver, &mut probe, &mut last, FakeProbe::headroom),
             (2.0, true)
+        );
+    }
+}
+
+#[cfg(all(test, hydrolysis_cpu_painter, not(target_arch = "wasm32")))]
+mod raster_teardown_tests {
+    use std::rc::Rc;
+
+    use cherenkov::RenderError;
+
+    use super::RasterEngineState;
+
+    #[test]
+    fn raster_engine_state_drop_joins_render_thread() {
+        let state = RasterEngineState::new().expect("CPU raster engine starts");
+        let engine = Rc::clone(&state.engine);
+        assert!(engine.memory().is_ok());
+
+        drop(state);
+
+        assert!(
+            matches!(engine.memory(), Err(RenderError::Thread)),
+            "CPU offscreen teardown must join the Cherenkov render thread before returning"
         );
     }
 }

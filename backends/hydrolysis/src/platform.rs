@@ -2445,6 +2445,11 @@ pub fn next_gpu_context_id() -> u64 {
 impl Drop for OffscreenGpuContextInner {
     fn drop(&mut self) {
         let generation = self.gpu.generation();
+        // Join the offscreen engine's render thread before draining the device
+        // so no detached worker outlives `HeadlessRuntime` into process exit
+        // and races graphics-driver teardown (water-rs/waterui#4882).
+        #[cfg(not(target_arch = "wasm32"))]
+        generation.engine().engine.shutdown_and_join();
         crate::platform::drain_device_before_teardown(
             &generation.gpu_context().shared_device.device,
         );
@@ -8017,6 +8022,25 @@ mod recovery_tests {
             exhausted.reason().contains("no adapter"),
             "{}",
             exhausted.reason()
+        );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn offscreen_gpu_context_drop_joins_render_thread() {
+        use std::rc::Rc;
+
+        use cherenkov::RenderError;
+
+        let context = OffscreenGpuContext::for_tests();
+        let engine = Rc::clone(&context.recoverable().generation().engine().engine);
+        assert!(engine.memory().is_ok());
+
+        drop(context);
+
+        assert!(
+            matches!(engine.memory(), Err(RenderError::Thread)),
+            "offscreen teardown must join the Cherenkov render thread before returning"
         );
     }
 }
