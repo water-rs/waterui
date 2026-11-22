@@ -650,9 +650,17 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         // the drawn text context menu gets.
         {
             self.scene_mut().record_picture(transform, |draw| {
-                menu.record_panel(&mut *draw, presentation.menu_frame);
+                crate::renderer::chrome::record_surface_at_rest(
+                    menu.panel(),
+                    &mut *draw,
+                    presentation.menu_frame,
+                );
                 if let Some(accessory_frame) = presentation.accessory_frame {
-                    menu.record_panel(&mut *draw, accessory_frame);
+                    crate::renderer::chrome::record_surface_at_rest(
+                        menu.panel(),
+                        &mut *draw,
+                        accessory_frame,
+                    );
                 }
             });
         }
