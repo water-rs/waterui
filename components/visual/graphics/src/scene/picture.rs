@@ -391,6 +391,7 @@ mod tests {
     use cherenkov::testing::Event;
     use core::cell::Cell;
     use nami::{SignalExt, binding, constant};
+    use waterui_core::backend::peel_native;
     use waterui_core::layout::StretchAxis;
 
     struct OnePixelSource {
@@ -455,9 +456,7 @@ mod tests {
     fn a_picture_dispatches_as_a_native_picture_and_converts_into_a_scene_view() {
         let picture = || Picture::new(Size::new(10.0, 10.0), constant(square(WorkingColor::BLACK)));
         let env = Environment::new();
-        assert!(
-            waterui_core::backend::peel_native::<Picture>(picture().body(&env), &env).is_some()
-        );
+        assert!(peel_native::<Picture>(picture().body(&env), &env).is_some());
         let scene_view = picture().into_scene_view();
         assert_eq!(scene_view.intrinsic_size(), Some(Size::new(10.0, 10.0)));
     }

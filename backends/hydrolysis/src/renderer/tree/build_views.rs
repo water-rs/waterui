@@ -6,6 +6,8 @@
 use super::*;
 #[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
 use crate::renderer::accessibility::accessibility_role_to_accesskit_role;
+#[cfg(feature = "navigation")]
+use waterui::navigation::ResolvedNavigationView;
 #[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
 use waterui_backend_core::ProvidedSemantics;
 // A build with no selected engine reports a WebView as a contract violation.
@@ -175,7 +177,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// bar re-renders. Stretch is `Both` (read from the config).
     #[cfg(feature = "navigation")]
     pub(super) fn build_navigation_view(
-        navigation: waterui::navigation::ResolvedNavigationView<HeldChild<E>>,
+        navigation: ResolvedNavigationView<HeldChild<E>>,
         env: &Environment,
         renderer: &mut SemanticCore<E>,
     ) -> Self {

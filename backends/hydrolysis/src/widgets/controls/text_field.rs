@@ -18,10 +18,16 @@ use crate::widgets::controls::field_look::placeholder_text;
 use crate::widgets::controls::field_look::{FieldChrome, FloatLabel, value_text};
 #[cfg(feature = "text-field")]
 use core::num::NonZeroUsize;
+#[cfg(feature = "text-field")]
+use nami::Computed;
 use nami::{Signal as _, SignalExt as _};
 use std::cell::RefCell;
 use std::rc::Rc;
 use waterui::cursor::CursorStyle;
+#[cfg(feature = "text-field")]
+use waterui_controls::NoopSlot;
+#[cfg(feature = "text-field")]
+use waterui_controls::menu::ResolvedMenuItem;
 #[cfg(feature = "text-field")]
 use waterui_controls::text_field::TextFieldConfig;
 use waterui_core::Environment;
@@ -45,7 +51,7 @@ use waterui_text::styled::StyledStr;
 #[cfg(feature = "text-field")]
 pub struct TextFieldRenderState<E: crate::text::TextEngine> {
     config: TextFieldConfig<HeldChild<E>>,
-    selection_menu: nami::Computed<Vec<waterui_controls::menu::ResolvedMenuItem>>,
+    selection_menu: Computed<Vec<ResolvedMenuItem>>,
     label_view: RetainedSubview<E>,
     /// The look the field was requested for, its container's live chrome and
     /// the operands its label floats on.
@@ -77,7 +83,7 @@ impl<E: crate::text::TextEngine> TextFieldRenderState<E> {
             .map(|items| {
                 items
                     .into_iter()
-                    .map(|item| item.map_slots(|_| waterui_controls::NoopSlot))
+                    .map(|item| item.map_slots(|_| NoopSlot))
                     .collect()
             })
             .computed();

@@ -6,8 +6,11 @@
 //! `Tab` lifts it out at construction.
 
 use waterui::Binding;
+use waterui::Environment;
 use waterui::View;
+use waterui::component::IntoLabel;
 use waterui::component::label::label;
+use waterui::handler::ViewBuilder;
 use waterui::navigation::NavigationView;
 use waterui::navigation::tab::Tab;
 use waterui::text::Text;
@@ -17,12 +20,10 @@ use waterui_icons_lucide as lucide;
 struct MarkerIcon;
 
 impl View for MarkerIcon {
-    fn body(self, _env: &waterui::Environment) -> impl View {}
+    fn body(self, _env: &Environment) -> impl View {}
 }
 
-fn tab<I: waterui::component::IntoLabel>(
-    label: I,
-) -> Tab<impl waterui::handler::ViewBuilder<Output = NavigationView<Text>>, I::Kind>
+fn tab<I: IntoLabel>(label: I) -> Tab<impl ViewBuilder<Output = NavigationView<Text>>, I::Kind>
 where
     I::Kind: Clone,
 {

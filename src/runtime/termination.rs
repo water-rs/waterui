@@ -482,6 +482,8 @@ mod tests {
     #[test]
     #[cfg(feature = "menu")]
     fn the_quit_command_files_a_cancellable_request() {
+        use waterui_controls::NoopSlot;
+
         install_executor();
         let log = Log::default();
         let asked = log.clone();
@@ -493,7 +495,7 @@ mod tests {
         let command = env
             .get::<Quit>()
             .expect("start installs Quit into the runner's environment")
-            .command(&env);
+            .command::<NoopSlot>(&env);
 
         let label = if cfg!(target_os = "windows") {
             "Exit"

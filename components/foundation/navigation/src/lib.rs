@@ -20,7 +20,7 @@ use alloc::{boxed::Box, collections::BTreeMap, rc::Rc, vec, vec::Vec};
 use core::{
     any::{Any, TypeId},
     cell::{Cell, RefCell},
-    fmt::Debug,
+    fmt::{self, Debug},
     marker::PhantomData,
 };
 
@@ -1009,7 +1009,7 @@ pub struct NavigationToolbarItem<C, Kind = CustomToolbarItem> {
 }
 
 impl<C, Kind> Debug for NavigationToolbarItem<C, Kind> {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("NavigationToolbarItem")
             .field("placement", &self.placement)

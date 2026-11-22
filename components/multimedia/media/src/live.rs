@@ -103,7 +103,7 @@ impl LivePhoto {
             source: source.into_computed(),
             activation_duration: Duration::from_millis(250),
             is_playing: Binding::bool(false),
-            resizable: true,
+            resizable: false,
             content_mode: None,
             on_event: None,
         }

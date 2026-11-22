@@ -14,8 +14,9 @@ use waterui::ViewExt as _;
 use waterui::app::{App, TerminationHost};
 use waterui::prelude::{ContextMenu, Shortcut};
 use waterui::widget::condition::when;
+use waterui_controls::NoopSlot;
 use waterui_controls::button::button;
-use waterui_controls::menu::{CommandExt as _, Menu, MenuItem, NamedKey};
+use waterui_controls::menu::{CommandExt as _, Menu, MenuItem, NamedKey, ResolvedMenuItem};
 use waterui_controls::text_field::field;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::{AnyView, Environment};
@@ -607,11 +608,8 @@ fn a_declared_close_window_chord_closes_the_dispatching_window() {
         "the dispatching window's own id is the close request's target"
     );
 
-    let nodes = crate::renderer::popup_menu_nodes(
-        &[waterui_controls::menu::ResolvedMenuItem::<waterui_controls::NoopSlot>::CloseWindow],
-        &env,
-        true,
-    );
+    let nodes =
+        crate::renderer::popup_menu_nodes(&[ResolvedMenuItem::<NoopSlot>::CloseWindow], &env, true);
     let [
         crate::renderer::PopupMenuNode::Command {
             plain_label,
@@ -639,7 +637,7 @@ fn a_nonclosable_owner_renders_a_disabled_close_row() {
     let mut env = test_environment();
     env.insert(crate::renderer::WindowCloser::new(|_| {}));
     let nodes = crate::renderer::popup_menu_nodes(
-        &[waterui_controls::menu::ResolvedMenuItem::<waterui_controls::NoopSlot>::CloseWindow],
+        &[ResolvedMenuItem::<NoopSlot>::CloseWindow],
         &env,
         false,
     );
@@ -730,7 +728,7 @@ fn a_declared_close_window_is_omitted_where_windows_cannot_close() {
     );
     assert!(
         crate::renderer::popup_menu_nodes(
-            &[waterui_controls::menu::ResolvedMenuItem::<waterui_controls::NoopSlot>::CloseWindow],
+            &[ResolvedMenuItem::<NoopSlot>::CloseWindow],
             &env,
             true,
         )

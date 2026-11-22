@@ -1,6 +1,7 @@
 //! Split-view navigation primitives.
 
 use alloc::rc::Rc;
+use core::fmt::{self, Debug};
 use core::marker::PhantomData;
 
 use nami::{Binding, Computed, SignalExt as _};
@@ -410,8 +411,8 @@ pub struct MappedSplitColumn<T, F, V, Tb = ()> {
     view: PhantomData<fn() -> (V, Tb)>,
 }
 
-impl<T, F, V, Tb> core::fmt::Debug for MappedSplitColumn<T, F, V, Tb> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl<T, F, V, Tb> Debug for MappedSplitColumn<T, F, V, Tb> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("MappedSplitColumn")
     }
 }

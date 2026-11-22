@@ -3,12 +3,18 @@
 
 use core::marker::PhantomData;
 
+#[cfg(waterui_feature = "gpu")]
+use waterui::graphics::backend::Picture;
+#[cfg(waterui_feature = "navigation")]
+use waterui::navigation::ResolvedNavigationView;
 use waterui_backend_core::{
     ChildView, NativeBackend, NativeBackendFamily, Realize, mark_reached, report_unprovided,
 };
+#[cfg(waterui_feature = "navigation")]
+use waterui_core::backend::MapSlots;
 #[cfg(any(feature = "menu", hydrolysis_video_plane))]
 use waterui_core::backend::cast;
-use waterui_core::backend::{ChildSlot, ErasedPayload, MapSlots};
+use waterui_core::backend::{ChildSlot, ErasedPayload};
 use waterui_core::metadata::MetadataKey;
 use waterui_core::{NativeView, View};
 
@@ -317,12 +323,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     }
 
     #[cfg(waterui_feature = "gpu")]
-    fn picture(
-        &mut self,
-        native: waterui::graphics::backend::Picture,
-        env: &Environment,
-        (): (),
-    ) -> RenderNode<E> {
+    fn picture(&mut self, native: Picture, env: &Environment, (): ()) -> RenderNode<E> {
         mark_reached!("picture");
         self.scene(native.into_scene_view(), env, ())
     }
@@ -1474,7 +1475,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     #[cfg(waterui_feature = "navigation")]
     fn navigation_view<C: ChildView<Self>>(
         &mut self,
-        native: waterui::navigation::ResolvedNavigationView<C>,
+        native: ResolvedNavigationView<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {

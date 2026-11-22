@@ -23,11 +23,14 @@ use std::rc::{Rc, Weak};
 use nami::{Computed, Signal as _};
 use waterui::app::Quit;
 use waterui::window::WindowState;
+use waterui_controls::NoopSlot;
 use waterui_controls::menu::{
     CloseWindowChord, MenuItem, ResolvedCommand, ResolvedMenuItem, Shortcut, ShortcutKey,
 };
 use waterui_core::Environment;
 use waterui_core::Str;
+
+use crate::renderer::HeldChild;
 use waterui_core::contract_violation;
 use waterui_core::handler::SharedAction;
 
@@ -213,7 +216,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     pub(crate) fn register_menu_shortcuts(
         &mut self,
         menu_state: Weak<RefCell<MenuRenderState<E>>>,
-        items: Computed<Vec<ResolvedMenuItem<crate::renderer::HeldChild<E>>>>,
+        items: Computed<Vec<ResolvedMenuItem<HeldChild<E>>>>,
         env: Environment,
     ) {
         let Some(registry) =
@@ -241,10 +244,7 @@ fn collect_menu_shortcuts<S: 'static>(
         match item {
             ResolvedMenuItem::Command(command) => collect_command_shortcut(command, out),
             ResolvedMenuItem::Quit => {
-                if let Some(command) = env
-                    .get::<Quit>()
-                    .map(|quit| quit.command::<waterui_controls::NoopSlot>(env))
-                {
+                if let Some(command) = env.get::<Quit>().map(|quit| quit.command::<NoopSlot>(env)) {
                     collect_command_shortcut(&command, out);
                 }
             }
@@ -319,7 +319,7 @@ enum MenuShortcutSource<E: crate::text::TextEngine> {
         /// `Weak::ptr_eq` against a live upgrade — and its liveness (unmount
         /// drops the render state, and the source with it).
         menu_state: Weak<RefCell<MenuRenderState<E>>>,
-        items: Computed<Vec<ResolvedMenuItem<crate::renderer::HeldChild<E>>>>,
+        items: Computed<Vec<ResolvedMenuItem<HeldChild<E>>>>,
         env: Environment,
         seq: u64,
     },
@@ -393,7 +393,7 @@ impl<E: crate::text::TextEngine> MenuShortcutRegistry<E> {
         &self,
         window: WindowId,
         menu_state: Weak<RefCell<MenuRenderState<E>>>,
-        items: Computed<Vec<ResolvedMenuItem<crate::renderer::HeldChild<E>>>>,
+        items: Computed<Vec<ResolvedMenuItem<HeldChild<E>>>>,
         env: Environment,
     ) {
         let mut inner = self.0.borrow_mut();

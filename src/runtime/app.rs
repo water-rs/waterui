@@ -737,6 +737,7 @@ mod tests {
     /// and runs the first command of its first menu.
     #[cfg(feature = "menu")]
     fn run_first_menu_bar_command<W: Windows, M: AppMenuBar>(app: App<W, M>) {
+        use crate::component::NoopSlot;
         use crate::component::menu::{ResolvedMenuItem, resolve_menu_bar_items};
 
         let parts = app.into_parts();
@@ -744,8 +745,7 @@ mod tests {
             .menu_bar
             .declared()
             .expect("the test application must declare a menu bar");
-        let bars = resolve_menu_bar_items::<_, crate::component::NoopSlot>(menu_bar, &parts.env)
-            .snapshot();
+        let bars = resolve_menu_bar_items::<_, NoopSlot>(menu_bar, &parts.env).snapshot();
         let [ResolvedMenuItem::Menu(menu)] = bars.as_slice() else {
             panic!("expected one resolved menu, got {bars:?}");
         };

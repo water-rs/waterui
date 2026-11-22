@@ -21,6 +21,7 @@ use waterui_backend_core::Environment;
 use waterui_core::layout::ProposalSize;
 
 use crate::contract::{Held, NativeLeaf, RenderContext};
+use crate::sf_symbol::SfSymbolProbe;
 
 use super::extract_title_text;
 
@@ -225,7 +226,7 @@ fn bar_item(item: ResolvedNavigationToolbarItem<Held>, ctx: &RenderContext<'_>) 
     let leaf = ctx.realize(content);
     let title = title.map(|title| title.resolve(ctx.env()).into_content());
     let icon = icon.map(|slot| {
-        let mut probe = crate::sf_symbol::SfSymbolProbe::default();
+        let mut probe = SfSymbolProbe::default();
         if slot.probe(&mut probe, ctx.env())
             && let Some(symbol) = probe.name
         {

@@ -21,6 +21,7 @@ use waterui_core::layout::{
 
 use super::extract_title_text;
 use crate::contract::RenderContext;
+use crate::sf_symbol::SfSymbolProbe;
 
 /// The `TabsLayout` realization.
 pub fn realize_tabs_layout(value: TabsLayout<Held>, ctx: &RenderContext<'_>) -> NativeLeaf {
@@ -92,7 +93,7 @@ fn mount_tab(id: Id, tab: TabItem<Held>, renderer: &crate::contract::Renderer) -
     let (symbol, icon_leaf) = icon.map_or_else(
         || (None, None),
         |slot| {
-            let mut probe = crate::sf_symbol::SfSymbolProbe::default();
+            let mut probe = SfSymbolProbe::default();
             if slot.probe(&mut probe, renderer.context().env())
                 && let Some(name) = probe.name
             {

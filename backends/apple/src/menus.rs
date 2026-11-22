@@ -22,13 +22,15 @@ use waterui::component::IconSlot;
 #[cfg(target_os = "macos")]
 use waterui::component::menu::{CloseWindowChord, CloseWindowPlacement};
 use waterui::component::menu::{
-    CommandRole, Menu, NamedKey, ResolvedCommand, ResolvedMenuItem, ResolvedNestedMenu, ShortcutKey,
+    CommandRole, Menu, NamedKey, ResolvedCommand, ResolvedMenuItem, ResolvedNestedMenu,
+    ShortcutKey, resolve_menu_bar_items,
 };
 use waterui::reactive::{Computed, Signal};
 use waterui_backend_core::Environment;
 use waterui_core::layout::ProposalSize;
 
-use crate::contract::Held;
+use crate::contract::{Held, RenderContext};
+use crate::sf_symbol::SfSymbolProbe;
 
 #[cfg(target_os = "macos")]
 pub type PlatformMenuImage = cocoa_ui::objc2_app_kit::NSImage;
@@ -47,7 +49,7 @@ pub fn resolve_menu_icon(
     let Some(slot) = icon else {
         return (None, None);
     };
-    let mut probe = crate::sf_symbol::SfSymbolProbe::default();
+    let mut probe = SfSymbolProbe::default();
     if slot.probe(&mut probe, env)
         && let Some(symbol) = probe.name
     {
@@ -57,7 +59,7 @@ pub fn resolve_menu_icon(
         tracing::warn!("menu icon view could not be rasterized off the main thread");
         return (None, None);
     };
-    let leaf = crate::contract::RenderContext::entry(env, mtm).realize(slot.build());
+    let leaf = RenderContext::entry(env, mtm).realize(slot.build());
     let size = leaf
         .layout()
         .measure(ProposalSize {
@@ -82,7 +84,7 @@ fn resolve(
     menu_bar: &Computed<Vec<DeclaredMenu>>,
     env: &Environment,
 ) -> Computed<Vec<ResolvedMenuItem<Held>>> {
-    waterui::component::menu::resolve_menu_bar_items::<_, Held>(menu_bar, env)
+    resolve_menu_bar_items::<_, Held>(menu_bar, env)
 }
 
 /// A resolved command as the kit's shared `Command` payload — label text,
@@ -639,10 +641,12 @@ mod imp {
     use waterui::reactive::{Computed, Signal};
     use waterui_backend_core::Environment;
 
+    use crate::contract::Held;
+
     use super::{DeclaredMenu, kit_command_for_menu, menu_tree, resolve};
 
     fn build_menus(
-        resolved: &Computed<Vec<ResolvedMenuItem<crate::contract::Held>>>,
+        resolved: &Computed<Vec<ResolvedMenuItem<Held>>>,
         env: &Environment,
         builder: &MenuBuilder<'_>,
     ) {
@@ -704,9 +708,15 @@ mod tests {
     use cocoa_ui::appkit::{KeyModifiers, MenuAction};
     use cocoa_ui::menu::MenuTreeNode;
     use cocoa_ui::objc2_app_kit::{NSDeleteFunctionKey, NSF5FunctionKey};
-    use waterui::component::menu::{CloseWindowChord, Menu, MenuItem, ResolvedMenuItem};
+    use waterui::component::label::{LabelKind, label};
+    use waterui::component::menu::{
+        CloseWindowChord, Command, Menu, MenuItem, ResolvedMenuItem, resolve_menu_bar_items,
+    };
     use waterui::reactive::{Computed, Signal};
     use waterui_backend_core::Environment;
+
+    use crate::SfSymbol;
+    use crate::contract::Held;
 
     use super::{NamedKey, ShortcutKey, key_equivalent_for, menu_tree};
 
@@ -745,14 +755,8 @@ mod tests {
     }
 
     /// `menus` resolved as the declared menu bar.
-    fn declared<L: waterui::component::label::LabelKind + Clone>(
-        menus: Vec<Menu<L>>,
-    ) -> Vec<ResolvedMenuItem<crate::contract::Held>> {
-        waterui::component::menu::resolve_menu_bar_items(
-            &Computed::constant(menus),
-            &Environment::new(),
-        )
-        .snapshot()
+    fn declared<L: LabelKind + Clone>(menus: Vec<Menu<L>>) -> Vec<ResolvedMenuItem<Held>> {
+        resolve_menu_bar_items(&Computed::constant(menus), &Environment::new()).snapshot()
     }
 
     /// A bare environment with the application's decided chord installed,
@@ -798,11 +802,9 @@ mod tests {
     #[test]
     fn sf_symbol_command_projects_directly_without_rasterization() {
         let env = chord_env();
-        let command = waterui::component::menu::Command::builder(
-            waterui::component::label::label("Add").icon(crate::SfSymbol::PLUS),
-        )
-        .action(|| {})
-        .resolve::<crate::contract::Held>(&env);
+        let command = Command::builder(label("Add").icon(SfSymbol::PLUS))
+            .action(|| {})
+            .resolve::<Held>(&env);
         let nodes = menu_tree(&[ResolvedMenuItem::Command(command)], &env);
         let [MenuTreeNode::Command(cmd, _)] = nodes.as_slice() else {
             panic!("expected command node: {nodes:?}");

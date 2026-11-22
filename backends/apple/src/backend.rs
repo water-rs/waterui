@@ -1,6 +1,8 @@
 //! The Apple backend's [`NativeBackend`]: each component's realization,
 //! reached through static dispatch.
 
+#[cfg(waterui_feature = "navigation")]
+use waterui::navigation::ResolvedNavigationView;
 use waterui_backend_core::{
     ChildView, Environment, NativeBackend, NativeBackendFamily, mark_reached, report_unprovided,
 };
@@ -437,7 +439,7 @@ impl NativeBackend for AppleBackend {
     #[cfg(waterui_feature = "navigation")]
     fn navigation_view<C: ChildView<Self>>(
         &mut self,
-        native: waterui::navigation::ResolvedNavigationView<C>,
+        native: ResolvedNavigationView<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {

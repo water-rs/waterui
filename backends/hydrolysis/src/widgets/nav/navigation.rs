@@ -27,7 +27,7 @@ use waterui::navigation::{
     AnyNavigationTransition, Bar, NavigationDestinationState, NavigationSearch,
     NavigationSplitLayout, NavigationStackLayout, NavigationTitleDisplayMode,
     NavigationToolbarPlacement, NavigationTransitionDirection, NavigationView,
-    RetainedNavigationTransition,
+    ResolvedNavigationView, RetainedNavigationTransition,
 };
 use waterui::theme::color::{Background, Surface};
 use waterui_controls::label::LabelDisplayMode;
@@ -249,7 +249,7 @@ pub fn scoped_toolbar_item_env(env: &Environment) -> Environment {
 
 impl<E: crate::text::TextEngine> NavigationViewRenderState<E> {
     pub(crate) fn from_view(
-        navigation: waterui::navigation::ResolvedNavigationView<HeldChild<E>>,
+        navigation: ResolvedNavigationView<HeldChild<E>>,
         env: &Environment,
     ) -> Self {
         let NavigationView { bar, content, .. } = navigation;

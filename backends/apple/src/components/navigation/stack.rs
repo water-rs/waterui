@@ -22,6 +22,8 @@ use core::cell::RefCell;
 
 use cocoa_ui::{Retained, view};
 use waterui::Environment;
+#[cfg(target_os = "ios")]
+use waterui::navigation::ResolvedNavigationView;
 use waterui::navigation::{
     AnyNavigationTransition, CustomNavigationController, NativeNavigationTransition,
     NavigationController, NavigationStackLayout, NavigationTransaction,
@@ -69,7 +71,7 @@ fn stack_leaf(stack: NavigationStackLayout<Held>, ctx: &RenderContext<'_>) -> Na
 /// toolbar items — applies instead of drawing in-content.
 #[cfg(target_os = "ios")]
 pub(super) fn column_leaf(
-    root: waterui::navigation::ResolvedNavigationView<Held>,
+    root: ResolvedNavigationView<Held>,
     ctx: &RenderContext<'_>,
 ) -> (
     NativeLeaf,
@@ -215,7 +217,7 @@ mod platform {
     use waterui::navigation::{
         AnyNavigationTransition, NativeNavigationTransition, NavigationController,
         NavigationDestinationState, NavigationSearch, NavigationTitleDisplayMode,
-        NavigationTransaction, NavigationTransactionId, NavigationView,
+        NavigationTransaction, NavigationTransactionId, ResolvedNavigationView,
     };
     use waterui::reactive::Signal;
     use waterui::resolve::Resolvable;
@@ -375,10 +377,7 @@ mod platform {
 
         /// Renders the root page, installs the native controller's handlers
         /// and returns the stack's leaf.
-        pub(super) fn build(
-            self: &Rc<Self>,
-            root: waterui::navigation::ResolvedNavigationView<Held>,
-        ) -> NativeLeaf {
+        pub(super) fn build(self: &Rc<Self>, root: ResolvedNavigationView<Held>) -> NativeLeaf {
             let root = self.make_entry(root, Mount::Root);
             let nav = cocoa_ui::uikit::NavigationController::new(self.mtm, &root.controller);
             nav.set_prefers_large_titles(true);
@@ -436,11 +435,7 @@ mod platform {
         /// `controller.view` — through `LiveChild`, so a page-root
         /// `.transition(...)` is claimed by the stack (§5.5); `Bar`
         /// chrome applies on `navigationItem` as before.
-        fn make_entry(
-            &self,
-            view: waterui::navigation::ResolvedNavigationView<Held>,
-            mount: Mount,
-        ) -> Entry {
+        fn make_entry(&self, view: ResolvedNavigationView<Held>, mount: Mount) -> Entry {
             let renderer = self
                 .renderer
                 .get()
@@ -875,7 +870,7 @@ mod platform {
     use waterui::Str;
     use waterui::navigation::{
         AnyNavigationTransition, NativeNavigationTransition, NavigationController,
-        NavigationDestinationState, NavigationTransaction,
+        NavigationDestinationState, NavigationTransaction, ResolvedNavigationView,
     };
     use waterui::reactive::Signal;
     use waterui_core::layout::ProposalSize;
@@ -1002,10 +997,7 @@ mod platform {
 
         /// Builds the leaf: root entry pushed, layout/window/hidden
         /// handlers wired.
-        pub(super) fn build(
-            self: &Rc<Self>,
-            root: waterui::navigation::ResolvedNavigationView<Held>,
-        ) -> NativeLeaf {
+        pub(super) fn build(self: &Rc<Self>, root: ResolvedNavigationView<Held>) -> NativeLeaf {
             let _ = self.self_weak.set(Rc::downgrade(self));
             // The stack owns its pages' safe-area answer —
             // `WuiSafeAreaManaging` in the baseline — so the window root
@@ -1035,11 +1027,7 @@ mod platform {
         /// view through `LiveChild`, so a page-root `.transition(...)`
         /// is claimed by the stack (§5.5); bar state and the hidden
         /// watcher republish chrome — `refreshChromeIfTop`.
-        fn make_entry(
-            &self,
-            view: waterui::navigation::ResolvedNavigationView<Held>,
-            mount: Mount,
-        ) -> Entry {
+        fn make_entry(&self, view: ResolvedNavigationView<Held>, mount: Mount) -> Entry {
             let renderer = self
                 .renderer
                 .get()

@@ -91,6 +91,7 @@ fn live_photo_long_press_plays_motion_once_and_recovers(ui: UiBuilder<Styled<Tes
         LivePhoto::new(source.clone())
             .on_event(move |event| recorder.borrow_mut().push(event))
             .activation_duration(Duration::from_millis(40))
+            .resizable()
             .size(120.0, 80.0)
     });
 

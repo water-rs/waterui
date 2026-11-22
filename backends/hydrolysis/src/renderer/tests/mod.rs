@@ -4269,14 +4269,13 @@ fn diagnostic_gpu() -> (
 #[cfg(feature = "navigation")]
 #[test]
 fn a_toolbar_item_keeps_icon_only_labels_inside_an_environment_snapshot() {
+    use crate::widgets::nav::navigation::scoped_toolbar_item_env;
+
     let env = test_environment();
     let mut renderer = test_renderer();
     let item = AnyView::new(Metadata::new(text("Share"), Environment::new()));
     let node = RenderNode::build(
-        Metadata::new(
-            item,
-            crate::widgets::nav::navigation::scoped_toolbar_item_env(&env),
-        ),
+        Metadata::new(item, scoped_toolbar_item_env(&env)),
         &env,
         &mut renderer,
     );
