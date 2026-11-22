@@ -192,6 +192,7 @@ impl<E: crate::text::TextEngine> WindowLayoutState<E> {
         }
     }
 
+    #[cfg(any(test, hydrolysis_cherenkov))]
     pub(crate) fn invalidate(&mut self) {
         self.laid_out_proposal = None;
         self.laid_out_area = None;
