@@ -80,6 +80,7 @@ use objc2_metal::{
 use objc2_quartz_core::{CALayer, CAMetalLayer, CATransaction};
 
 use crate::PlatformView;
+use crate::bitmap::render_layer;
 use crate::core_animation::before_commit;
 use crate::geometry::Rect;
 use waterui_contract::contract_violation;
@@ -1887,7 +1888,7 @@ impl NativeRasterFrame {
         CGContext::clear_rect(Some(context), Rect::new(0.0, 0.0, width, height).into());
         CGContext::save_g_state(Some(context));
         CGContext::concat_ctm(Some(context), transform);
-        layer.renderInContext(context);
+        render_layer(layer, context);
         CGContext::restore_g_state(Some(context));
         CGContext::flush(Some(context));
     }

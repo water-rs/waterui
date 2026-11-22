@@ -129,6 +129,10 @@ pub fn trials() -> Vec<Trial> {
             capture_window_draws_controls_with_active_key_appearance
         ),
         case!(
+            "capture",
+            capture_preserves_background_behind_prominent_glass_button
+        ),
+        case!(
             "appkit::text_field",
             a_fields_edit_path_carries_selection_undo_and_change
         ),
@@ -1522,6 +1526,80 @@ fn capture_window_draws_controls_with_active_key_appearance() {
         );
         capture.shutdown();
     }
+}
+
+/// A prominent `NSBezelStyle::Glass` button (`bezelColor != nil`) in an active
+/// capture window mounts a `CASDFLayer` with `compositingFilter = "destIn"`
+/// that outputs zero alpha in `CALayer.renderInContext:` / `cacheDisplayInRect:`.
+/// In-process capture must suppress `CASDFLayer` descendants during the raster
+/// so the ancestor white background remains `(255, 255, 255, 255)` rather than
+/// being zeroed to `(0, 0, 0, 0)`.
+fn capture_preserves_background_behind_prominent_glass_button() {
+    use std::slice::from_raw_parts;
+
+    use cocoa_ui::appkit::Button;
+    use cocoa_ui::bitmap::capture_window;
+    use cocoa_ui::capture::ViewCapture;
+    use cocoa_ui::objc2_app_kit::{
+        NSAppearance, NSAppearanceCustomization as _, NSAppearanceNameAqua, NSBezelStyle, NSColor,
+    };
+    use cocoa_ui::view::{
+        add_subview, bitmap_rep_for_caching_display, cache_display, prepare_for_capture, set_frame,
+    };
+
+    use crate::harness::{await_fence, capture_target, count_pixels, fence_flag, readback};
+
+    let mtm = marker();
+    let window = capture_window(mtm, Size::new(220.0, 80.0));
+    // SAFETY: `NSAppearanceNameAqua` is an AppKit string constant.
+    let aqua = NSAppearance::appearanceNamed(unsafe { NSAppearanceNameAqua })
+        .expect("system Aqua appearance exists");
+    window.setAppearance(Some(&aqua));
+
+    let content = window
+        .contentView()
+        .expect("capture_window has a content view");
+    content.setWantsLayer(true);
+    content
+        .layer()
+        .expect("content view is layer-backed")
+        .setBackgroundColor(Some(&NSColor::whiteColor().CGColor()));
+
+    let button = Button::new(mtm);
+    button.set_bordered(true);
+    button.set_bezel_style(NSBezelStyle::Glass);
+    button.set_bezel_color(Some(&NSColor::systemBlueColor()));
+    button.set_title("Continue");
+    set_frame(&button, Rect::new(50.0, 24.0, 120.0, 32.0));
+    add_subview(&content, &button);
+
+    prepare_for_capture(&content);
+
+    // 1. Verify `ViewCapture` (`CALayer.renderInContext:` path) preserves the white background.
+    let target = capture_target();
+    let capture = Rc::new(ViewCapture::new(mtm, content.clone()));
+    capture.set_on_redraw(|| {});
+    let (flag, complete) = fence_flag();
+    capture.capture(&target, 0, complete);
+    await_fence(&flag, "prominent_glass_button");
+    let texels = readback(&target);
+    let white_bg = count_pixels(&texels, [250, 250, 250, 250], [255, 255, 255, 255]);
+    assert!(
+        white_bg > 100_000,
+        "ViewCapture must preserve the white ancestor background behind a prominent glass button, got {white_bg} white texels"
+    );
+    capture.shutdown();
+
+    // 2. Verify `cache_display` (`cacheDisplayInRect:toBitmapImageRep:` path) also preserves the white background.
+    let rep = bitmap_rep_for_caching_display(&content).expect("a bitmap rep");
+    cache_display(&content, &rep);
+    // SAFETY: `bitmapData` points to at least 4 readable RGBA8 bytes at `(0, 0)`.
+    let top_left = unsafe { from_raw_parts(rep.bitmapData(), 4) };
+    assert_eq!(
+        top_left,
+        [255, 255, 255, 255],
+        "cache_display must preserve the white ancestor background at (0, 0), got {top_left:?}"
+    );
 }
 
 /// A text field in a never-ordered window: `begin_editing` brings up the
