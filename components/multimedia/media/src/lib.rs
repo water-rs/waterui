@@ -99,8 +99,10 @@ pub mod url;
 pub use url::Url;
 
 #[cfg(feature = "video")]
+use waterui_core::OneOf3;
+#[cfg(feature = "video")]
 use waterui_core::reactive::impl_constant;
-use waterui_core::{AnyView, Environment, View};
+use waterui_core::{Environment, View};
 
 #[cfg(feature = "video")]
 use crate::live::LivePhotoSource;
@@ -148,12 +150,15 @@ impl_constant!(LivePhotoSource, Media);
 
 impl View for Media {
     fn body(self, _env: &Environment) -> impl View {
+        #[cfg(feature = "video")]
         match self {
-            Self::Image(url) => AnyView::new(Photo::new(url)),
-            #[cfg(feature = "video")]
-            Self::LivePhoto(live) => AnyView::new(LivePhoto::new(live)),
-            #[cfg(feature = "video")]
-            Self::Video(url) => AnyView::new(waterui_video::video_player(url)),
+            Self::Image(url) => OneOf3::A(Photo::new(url)),
+            Self::LivePhoto(live) => OneOf3::B(LivePhoto::new(live)),
+            Self::Video(url) => OneOf3::C(waterui_video::video_player(url)),
+        }
+        #[cfg(not(feature = "video"))]
+        match self {
+            Self::Image(url) => Photo::new(url),
         }
     }
 }

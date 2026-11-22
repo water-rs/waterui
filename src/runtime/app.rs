@@ -744,7 +744,8 @@ mod tests {
             .menu_bar
             .declared()
             .expect("the test application must declare a menu bar");
-        let bars = resolve_menu_bar_items(menu_bar, &parts.env).snapshot();
+        let bars = resolve_menu_bar_items::<_, crate::component::NoopSlot>(menu_bar, &parts.env)
+            .snapshot();
         let [ResolvedMenuItem::Menu(menu)] = bars.as_slice() else {
             panic!("expected one resolved menu, got {bars:?}");
         };

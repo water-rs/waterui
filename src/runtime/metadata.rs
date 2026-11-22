@@ -236,7 +236,7 @@ pub mod context_menu {
     #[derive(Debug)]
     pub struct ResolvedContextMenu<S> {
         /// The resolved menu items for the current environment.
-        pub items: Computed<Vec<ResolvedMenuItem>>,
+        pub items: Computed<Vec<ResolvedMenuItem<S>>>,
         /// The custom preview shown while the menu is open; `None` uses
         /// the platform's default presentation of the source view.
         pub preview: Option<S>,
@@ -251,21 +251,33 @@ pub mod context_menu {
 
     impl<S: 'static> MetadataKey for ResolvedContextMenu<S> {}
 
-    impl<S> ResolvedContextMenu<S> {
-        /// The same resolved menu with its preview and accessory mapped
+    impl<S: 'static> ResolvedContextMenu<S> {
+        /// The same resolved menu with its items, preview and accessory mapped
         /// through `f`: a backend holds them in its own slot.
         #[must_use]
-        pub fn map_slots<T>(self, mut f: impl FnMut(S) -> T) -> ResolvedContextMenu<T> {
+        pub fn map_slots<T: 'static>(
+            self,
+            f: impl Fn(S) -> T + Clone + 'static,
+        ) -> ResolvedContextMenu<T> {
+            let item_f = f.clone();
             ResolvedContextMenu {
-                items: self.items,
-                preview: self.preview.map(&mut f),
+                items: self
+                    .items
+                    .map(move |items| {
+                        items
+                            .into_iter()
+                            .map(|item| item.map_slots(item_f.clone()))
+                            .collect()
+                    })
+                    .computed(),
+                preview: self.preview.map(f.clone()),
                 accessory: self.accessory.map(f),
                 dismiss_requests: self.dismiss_requests,
             }
         }
     }
 
-    impl<S> MapSlots<S> for ResolvedContextMenu<S> {
+    impl<S: 'static> MapSlots<S> for ResolvedContextMenu<S> {
         type With<T: 'static> = ResolvedContextMenu<T>;
 
         fn map_slots<T: 'static>(

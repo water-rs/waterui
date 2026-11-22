@@ -608,7 +608,7 @@ fn a_declared_close_window_chord_closes_the_dispatching_window() {
     );
 
     let nodes = crate::renderer::popup_menu_nodes(
-        &[waterui_controls::menu::ResolvedMenuItem::CloseWindow],
+        &[waterui_controls::menu::ResolvedMenuItem::<waterui_controls::NoopSlot>::CloseWindow],
         &env,
         true,
     );
@@ -639,7 +639,7 @@ fn a_nonclosable_owner_renders_a_disabled_close_row() {
     let mut env = test_environment();
     env.insert(crate::renderer::WindowCloser::new(|_| {}));
     let nodes = crate::renderer::popup_menu_nodes(
-        &[waterui_controls::menu::ResolvedMenuItem::CloseWindow],
+        &[waterui_controls::menu::ResolvedMenuItem::<waterui_controls::NoopSlot>::CloseWindow],
         &env,
         false,
     );
@@ -730,7 +730,7 @@ fn a_declared_close_window_is_omitted_where_windows_cannot_close() {
     );
     assert!(
         crate::renderer::popup_menu_nodes(
-            &[waterui_controls::menu::ResolvedMenuItem::CloseWindow],
+            &[waterui_controls::menu::ResolvedMenuItem::<waterui_controls::NoopSlot>::CloseWindow],
             &env,
             true,
         )

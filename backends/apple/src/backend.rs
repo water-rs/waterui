@@ -437,13 +437,13 @@ impl NativeBackend for AppleBackend {
     #[cfg(waterui_feature = "navigation")]
     fn navigation_view<C: ChildView<Self>>(
         &mut self,
-        native: waterui::navigation::NavigationView<C>,
+        native: waterui::navigation::ResolvedNavigationView<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
         mark_reached!("navigation_view");
         crate::components::navigation::nav_view::realize_navigation_view(
-            native.map_content(C::into_child),
+            waterui_core::backend::MapSlots::map_slots(native, C::into_child),
             &self.entry(env),
         )
     }

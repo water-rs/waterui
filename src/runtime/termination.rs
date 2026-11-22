@@ -388,7 +388,10 @@ impl Quit {
     #[doc(hidden)]
     #[must_use]
     #[cfg(feature = "menu")]
-    pub fn command(&self, env: &Environment) -> ResolvedCommand {
+    pub fn command<S: waterui_core::backend::ChildSlot>(
+        &self,
+        env: &Environment,
+    ) -> ResolvedCommand<S> {
         let quit = self.clone();
         // "Exit" is the Windows menu convention; "Quit" is macOS's and what
         // Linux desktops (GTK/Qt) use.
@@ -400,7 +403,7 @@ impl Quit {
         label
             .action(move || quit.request())
             .shortcut(Shortcut::new('q').command())
-            .resolve(env)
+            .resolve::<S>(env)
     }
 }
 

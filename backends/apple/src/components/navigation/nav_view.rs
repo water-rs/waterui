@@ -8,13 +8,13 @@
 //! window is titled.
 
 use crate::contract::{Held, NativeLeaf, RenderContext};
-use waterui::navigation::NavigationView;
+use waterui::navigation::ResolvedNavigationView;
 use waterui_core::layout::{LayoutError, ProposalSize, Rect, ResolvedExtent};
 
 /// The `NavigationView` realization, its fields resolved against the
 /// environment it is realized in.
 pub fn realize_navigation_view(
-    mut value: NavigationView<Held>,
+    mut value: ResolvedNavigationView<Held>,
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
     value.resolve_native_fields(ctx.env());
@@ -72,7 +72,10 @@ mod platform {
     /// The standalone page: the content under an in-content `NavBar`; hosted
     /// pages render content only — the stack owns the chrome.
     #[allow(clippy::too_many_lines)]
-    pub(super) fn nav_view_leaf(view: NavigationView<Held>, ctx: &RenderContext) -> NativeLeaf {
+    pub(super) fn nav_view_leaf(
+        view: waterui::navigation::ResolvedNavigationView<Held>,
+        ctx: &RenderContext,
+    ) -> NativeLeaf {
         let (content, mut view) = view.split_content();
         let env = ctx.env();
         let mtm = ctx.mtm();
@@ -348,7 +351,7 @@ mod platform {
     use cocoa_ui::text::WrapWidth;
     use cocoa_ui::{Rect, Retained, view};
     use waterui::Str;
-    use waterui::navigation::{NavigationController, NavigationToolbarPlacement, NavigationView};
+    use waterui::navigation::{NavigationController, NavigationToolbarPlacement};
     use waterui::reactive::Signal;
     use waterui_core::layout::ProposalSize;
 
@@ -365,7 +368,10 @@ mod platform {
     /// The standalone page on macOS: a material header under non-titled
     /// windows; the window toolbar when the window is titled.
     #[allow(clippy::too_many_lines)]
-    pub(super) fn nav_view_leaf(view: NavigationView<Held>, ctx: &RenderContext) -> NativeLeaf {
+    pub(super) fn nav_view_leaf(
+        view: waterui::navigation::ResolvedNavigationView<Held>,
+        ctx: &RenderContext,
+    ) -> NativeLeaf {
         let (content, mut view) = view.split_content();
         let env = ctx.env();
         let mtm = ctx.mtm();

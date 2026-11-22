@@ -39,7 +39,10 @@ pub struct RetainedSubview<E: crate::text::TextEngine> {
 /// node plus the layout bookkeeping its flushes own.
 enum RetainedSubviewState<E: crate::text::TextEngine> {
     /// The source view in the child slot, taken on first build.
-    Unbuilt { source: HeldChild<E> },
+    Unbuilt {
+        source: HeldChild<E>,
+        env: Option<Environment>,
+    },
     /// The built sub-view: the node and the layout bookkeeping its flushes own.
     Built(Box<BuiltSubview<E>>),
 }
@@ -195,7 +198,19 @@ impl<E: crate::text::TextEngine> RetainedSubview<E> {
     /// The sub-view of a child a payload held in its slot.
     pub(crate) const fn held(source: HeldChild<E>) -> Self {
         Self {
-            state: RetainedSubviewState::Unbuilt { source },
+            state: RetainedSubviewState::Unbuilt { source, env: None },
+        }
+    }
+
+    /// The sub-view of a child a payload held in its slot, wrapped in a scoped
+    /// [`RenderNode::Env`] carrying `env` on first build.
+    #[cfg(feature = "navigation")]
+    pub(crate) const fn held_in(source: HeldChild<E>, env: Environment) -> Self {
+        Self {
+            state: RetainedSubviewState::Unbuilt {
+                source,
+                env: Some(env),
+            },
         }
     }
 
@@ -224,11 +239,24 @@ impl<E: crate::text::TextEngine> RetainedSubview<E> {
     /// measure path — which only has `&mut HydroState`, not the renderer — can
     /// measure the already-built node.
     pub(crate) fn ensure_built(&mut self, renderer: &mut SemanticCore<E>, env: &Environment) {
-        let RetainedSubviewState::Unbuilt { source } = &mut self.state else {
+        let RetainedSubviewState::Unbuilt {
+            source,
+            env: scoped_env,
+        } = &mut self.state
+        else {
             return;
         };
         let source = core::mem::replace(source, HeldChild::from_view(()));
-        let node = RenderNode::build_held(source, env, renderer);
+        let node = if let Some(scoped) = scoped_env.take() {
+            let child = RenderNode::build_held(source, &scoped, renderer);
+            RenderNode::Env(Box::new(EnvNode {
+                core: renderer.new_core(),
+                env: scoped,
+                child,
+            }))
+        } else {
+            RenderNode::build_held(source, env, renderer)
+        };
         let layout_dependencies = Some(LayoutDependencies::new(Rc::downgrade(&node.core().cell)));
         self.state = RetainedSubviewState::Built(Box::new(BuiltSubview {
             node,
@@ -1193,7 +1221,7 @@ pub struct DialogEffect<E: crate::text::TextEngine> {
 #[cfg(feature = "menu")]
 pub struct ContextMenuEffect<E: crate::text::TextEngine> {
     /// The resolved menu items the popup is built from.
-    pub(crate) items: nami::Computed<Vec<ResolvedMenuItem>>,
+    pub(crate) items: nami::Computed<Vec<ResolvedMenuItem<HeldChild<E>>>>,
     /// Counter of the accessory's dismiss requests; every change closes the
     /// open menu (water-rs/waterui#1245).
     pub(crate) dismiss_requests: nami::Computed<i32>,

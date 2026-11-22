@@ -20,7 +20,7 @@ use waterui_core::{
     backend::{Backend, ChildSlot, MapSlots},
     contract_violation,
     extract::State,
-    handler::{AnyViewBuilder, Handler, SharedAction, shared_action},
+    handler::{Handler, SharedAction, shared_action},
 };
 use waterui_interaction::interaction::Disabled;
 use waterui_interaction::key::Key;
@@ -30,8 +30,9 @@ use waterui_text::{TextConfig, styled::StyledStr};
 
 use crate::{
     button::{Button, ButtonStyle},
-    label::{ControlLabel, IntoLabel, Label, LabelKind, SemanticLabel},
+    label::{ControlLabel, IntoLabel, Label, LabelDisplayMode, LabelKind, SemanticLabel},
     size::ControlSize,
+    slot::{IconSlot, NoopSlot},
 };
 
 /// Keyboard shortcut modifiers used by commands and system menus.
@@ -457,6 +458,28 @@ impl<L> Menu<L> {
         self.size = size;
         self
     }
+
+    /// Sets the visual presentation mode of the menu's trigger label.
+    #[must_use]
+    pub const fn label_style(mut self, mode: LabelDisplayMode) -> Self {
+        self.label.set_display_mode(mode);
+        self
+    }
+
+    /// Visually hides the menu's trigger label while keeping its semantic text
+    /// for assistive technology.
+    #[must_use]
+    pub const fn hide_label(self) -> Self {
+        self.label_style(LabelDisplayMode::Hidden)
+    }
+
+    /// Overrides the spoken accessibility text announced by assistive
+    /// technology without changing the visual trigger label.
+    #[must_use]
+    pub fn a11y_label<M>(mut self, label: impl crate::label::IntoAccessibilityLabel<M>) -> Self {
+        self.label.set_accessibility_text(label);
+        self
+    }
 }
 
 impl<L: LabelKind> Menu<L> {
@@ -474,16 +497,16 @@ impl<L: LabelKind> Menu<L> {
     }
 
     #[must_use]
-    fn resolve(self, env: &Environment) -> ResolvedNestedMenu {
+    fn resolve<S: ChildSlot>(self, env: &Environment) -> ResolvedNestedMenu<S> {
         let label = self.label.into_semantic();
         let resolved_label = label.semantic_text().resolve(env);
-        let icon = label.icon_view();
+        let icon = label.icon_slot::<S>();
         let semantic_label = label.resolve(env);
         ResolvedNestedMenu {
             label: resolved_label,
             semantic_label,
             icon,
-            items: resolve_menu_items(&self.items, env),
+            items: resolve_menu_items::<S>(&self.items, env),
             identity: self.identity,
         }
     }
@@ -493,7 +516,7 @@ impl<L: LabelKind> Menu<L> {
         let accessibility_label = label.accessibility_label();
         ResolvedMenu {
             label,
-            items: resolve_menu_items(&self.items, env),
+            items: resolve_menu_items::<S>(&self.items, env),
             accessibility_label,
             style: self.style.resolve(env),
             size: self.size,
@@ -564,31 +587,31 @@ impl Command {
 
     /// Whether the command is currently disabled.
     #[must_use]
-    pub const fn get_disabled(&self) -> &Computed<bool> {
+    pub const fn is_disabled(&self) -> &Computed<bool> {
         &self.disabled
     }
 
     /// Whether the command is currently selected or checked.
     #[must_use]
-    pub const fn get_selected(&self) -> &Computed<bool> {
+    pub const fn is_selected(&self) -> &Computed<bool> {
         &self.selected
     }
 
     /// Optional keyboard shortcut metadata.
     #[must_use]
-    pub const fn get_shortcut(&self) -> Option<&Shortcut> {
+    pub const fn command_shortcut(&self) -> Option<&Shortcut> {
         self.shortcut.as_ref()
     }
 
     /// What the command does, which decides its presentation.
     #[must_use]
-    pub const fn get_role(&self) -> CommandRole {
+    pub const fn command_role(&self) -> CommandRole {
         self.role
     }
 
     /// An optional secondary line shown under the label.
     #[must_use]
-    pub const fn get_subtitle(&self) -> Option<&Str> {
+    pub const fn command_subtitle(&self) -> Option<&Str> {
         self.subtitle.as_ref()
     }
 
@@ -617,10 +640,10 @@ impl Command {
     /// a command of its own (the platform's Quit) on the same path.
     #[doc(hidden)]
     #[must_use]
-    pub fn resolve(self, env: &Environment) -> ResolvedCommand {
+    pub fn resolve<S: ChildSlot>(self, env: &Environment) -> ResolvedCommand<S> {
         let label = self.label;
         let resolved_label = label.semantic_text().resolve(env);
-        let icon = label.icon_view();
+        let icon = label.icon_slot::<S>();
         let semantic_label = label.resolve(env);
         let action = self.action;
         let captured_env = self.captured_env;
@@ -804,11 +827,11 @@ impl_constant!(MenuItem);
 
 impl MenuItem {
     #[must_use]
-    fn resolve(self, env: &Environment) -> ResolvedMenuItem {
+    fn resolve<S: ChildSlot>(self, env: &Environment) -> ResolvedMenuItem<S> {
         match self {
-            Self::Command(command) => ResolvedMenuItem::Command(command.resolve(env)),
+            Self::Command(command) => ResolvedMenuItem::Command(command.resolve::<S>(env)),
             Self::Divider => ResolvedMenuItem::Divider,
-            Self::Menu(menu) => ResolvedMenuItem::Menu(menu.resolve(env)),
+            Self::Menu(menu) => ResolvedMenuItem::Menu(menu.resolve::<S>(env)),
             Self::Quit => ResolvedMenuItem::Quit,
             Self::CloseWindow => ResolvedMenuItem::CloseWindow,
         }
@@ -825,11 +848,11 @@ impl MenuItem {
     /// reaches, and how it closes.
     #[doc(hidden)]
     #[must_use]
-    pub fn close_window_command<Args>(
+    pub fn close_window_command<S: ChildSlot, Args>(
         env: &Environment,
         chord: Option<Shortcut>,
         action: impl Handler<Args, ()> + 'static,
-    ) -> ResolvedCommand {
+    ) -> ResolvedCommand<S> {
         // "Close" is the item AppKit's File and Window menus, the Windows
         // window menu and GTK/Qt desktops all carry for ⌘W / Ctrl+W.
         let command = "Close".action(action);
@@ -838,7 +861,7 @@ impl MenuItem {
         } else {
             command
         };
-        command.resolve(env)
+        command.resolve::<S>(env)
     }
 }
 
@@ -1093,30 +1116,36 @@ macro_rules! impl_tuple_menu_bar_view {
 
 menu_tuples!(impl_tuple_menu_bar_view);
 
-fn resolve_menu_items_now(items: Vec<MenuItem>, env: &Environment) -> Vec<ResolvedMenuItem> {
-    items.into_iter().map(|item| item.resolve(env)).collect()
+fn resolve_menu_items_now<S: ChildSlot>(
+    items: Vec<MenuItem>,
+    env: &Environment,
+) -> Vec<ResolvedMenuItem<S>> {
+    items
+        .into_iter()
+        .map(|item| item.resolve::<S>(env))
+        .collect()
 }
 
 #[doc(hidden)]
 #[must_use]
-pub fn resolve_menu_items(
+pub fn resolve_menu_items<S: ChildSlot>(
     items: &Computed<Vec<MenuItem>>,
     env: &Environment,
-) -> Computed<Vec<ResolvedMenuItem>> {
+) -> Computed<Vec<ResolvedMenuItem<S>>> {
     let locale = locale_binding(env);
     let env = env.clone();
     items
         .zip(&locale)
-        .map(move |(items, _locale)| resolve_menu_items_now(items, &env))
+        .map(move |(items, _locale)| resolve_menu_items_now::<S>(items, &env))
         .computed()
 }
 
 #[doc(hidden)]
 #[must_use]
-pub fn resolve_menu_bar_items<L: LabelKind + Clone>(
+pub fn resolve_menu_bar_items<L: LabelKind + Clone, S: ChildSlot>(
     menus: &Computed<Vec<Menu<L>>>,
     env: &Environment,
-) -> Computed<Vec<ResolvedMenuItem>> {
+) -> Computed<Vec<ResolvedMenuItem<S>>> {
     let locale = locale_binding(env);
     let env = env.clone();
     menus
@@ -1124,7 +1153,7 @@ pub fn resolve_menu_bar_items<L: LabelKind + Clone>(
         .map(move |(menus, _locale)| {
             menus
                 .into_iter()
-                .map(|menu| ResolvedMenuItem::Menu(menu.into_semantic().resolve(&env)))
+                .map(|menu| ResolvedMenuItem::Menu(menu.into_semantic().resolve::<S>(&env)))
                 .collect()
         })
         .computed()
@@ -1132,14 +1161,14 @@ pub fn resolve_menu_bar_items<L: LabelKind + Clone>(
 
 /// Raw resolved command payload consumed by native backends.
 #[doc(hidden)]
-#[derive(Debug, Clone)]
-pub struct ResolvedCommand {
+#[derive(Debug)]
+pub struct ResolvedCommand<S = NoopSlot> {
     /// Resolved text config for native menu presentation.
     pub label: TextConfig,
     /// The full semantic label retained for self-drawn menu renderers.
     pub semantic_label: Label<SemanticLabel>,
-    /// Optional icon view lifted out of the label for platform chrome.
-    pub icon: Option<AnyViewBuilder<AnyView>>,
+    /// Optional icon slot lifted out of the label for platform chrome.
+    pub icon: Option<IconSlot<S>>,
     /// Shared action invoked by the native backend.
     pub action: SharedAction<()>,
     /// Whether the command is currently disabled.
@@ -1155,9 +1184,54 @@ pub struct ResolvedCommand {
     identity: Rc<()>,
 }
 
-impl_constant!(ResolvedCommand);
+impl<S> Clone for ResolvedCommand<S> {
+    fn clone(&self) -> Self {
+        Self {
+            label: self.label.clone(),
+            semantic_label: self.semantic_label.clone(),
+            icon: self.icon.clone(),
+            action: self.action.clone(),
+            disabled: self.disabled.clone(),
+            selected: self.selected.clone(),
+            shortcut: self.shortcut.clone(),
+            role: self.role,
+            subtitle: self.subtitle.clone(),
+            identity: Rc::clone(&self.identity),
+        }
+    }
+}
 
-impl ResolvedCommand {
+impl<S: 'static> nami::Signal for ResolvedCommand<S> {
+    type Output = Self;
+    type Guard = ();
+
+    fn snapshot(&self) -> Self::Output {
+        self.clone()
+    }
+
+    fn watch(&self, _watcher: impl Fn(Context<Self::Output>) + 'static) -> Self::Guard {}
+}
+
+impl<S: 'static> ResolvedCommand<S> {
+    /// Maps the optional icon slot through `f`.
+    #[must_use]
+    pub fn map_slots<T: 'static>(self, f: impl Fn(S) -> T + Clone + 'static) -> ResolvedCommand<T> {
+        ResolvedCommand {
+            label: self.label,
+            semantic_label: self.semantic_label,
+            icon: self.icon.map(|icon| icon.map_slot(f)),
+            action: self.action,
+            disabled: self.disabled,
+            selected: self.selected,
+            shortcut: self.shortcut,
+            role: self.role,
+            subtitle: self.subtitle,
+            identity: self.identity,
+        }
+    }
+}
+
+impl<S> ResolvedCommand<S> {
     /// Stable semantic identity used by native collection reconciliation.
     #[doc(hidden)]
     #[must_use]
@@ -1209,22 +1283,69 @@ impl ResolvedCommand {
 
 /// Raw resolved nested menu payload consumed by native backends.
 #[doc(hidden)]
-#[derive(Debug, Clone)]
-pub struct ResolvedNestedMenu {
+#[derive(Debug)]
+pub struct ResolvedNestedMenu<S = NoopSlot> {
     /// Resolved text config for the nested menu title.
     pub label: TextConfig,
     /// The full semantic label retained for self-drawn menu renderers.
     pub semantic_label: Label<SemanticLabel>,
-    /// Optional icon view lifted out of the label for platform chrome.
-    pub icon: Option<AnyViewBuilder<AnyView>>,
+    /// Optional icon slot lifted out of the label for platform chrome.
+    pub icon: Option<IconSlot<S>>,
     /// Resolved nested menu items.
-    pub items: Computed<Vec<ResolvedMenuItem>>,
+    pub items: Computed<Vec<ResolvedMenuItem<S>>>,
     identity: Rc<()>,
 }
 
-impl_constant!(ResolvedNestedMenu);
+impl<S> Clone for ResolvedNestedMenu<S> {
+    fn clone(&self) -> Self {
+        Self {
+            label: self.label.clone(),
+            semantic_label: self.semantic_label.clone(),
+            icon: self.icon.clone(),
+            items: self.items.clone(),
+            identity: Rc::clone(&self.identity),
+        }
+    }
+}
 
-impl ResolvedNestedMenu {
+impl<S: 'static> nami::Signal for ResolvedNestedMenu<S> {
+    type Output = Self;
+    type Guard = ();
+
+    fn snapshot(&self) -> Self::Output {
+        self.clone()
+    }
+
+    fn watch(&self, _watcher: impl Fn(Context<Self::Output>) + 'static) -> Self::Guard {}
+}
+
+impl<S: 'static> ResolvedNestedMenu<S> {
+    /// Maps every icon slot inside this nested menu through `f`.
+    #[must_use]
+    pub fn map_slots<T: 'static>(
+        self,
+        f: impl Fn(S) -> T + Clone + 'static,
+    ) -> ResolvedNestedMenu<T> {
+        let item_f = f.clone();
+        ResolvedNestedMenu {
+            label: self.label,
+            semantic_label: self.semantic_label,
+            icon: self.icon.map(|icon| icon.map_slot(f)),
+            items: self
+                .items
+                .map(move |items| {
+                    items
+                        .into_iter()
+                        .map(|item| item.map_slots(item_f.clone()))
+                        .collect()
+                })
+                .computed(),
+            identity: self.identity,
+        }
+    }
+}
+
+impl<S> ResolvedNestedMenu<S> {
     /// Stable semantic identity used by native collection reconciliation.
     #[doc(hidden)]
     #[must_use]
@@ -1235,18 +1356,18 @@ impl ResolvedNestedMenu {
 
 /// Raw menu item config resolved against the environment locale.
 #[doc(hidden)]
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[expect(
     clippy::exhaustive_enums,
     reason = "backends realize each menu item variant by variant; a new menu item must fail their build instead of falling into a wildcard arm"
 )]
-pub enum ResolvedMenuItem {
+pub enum ResolvedMenuItem<S = NoopSlot> {
     /// A resolved leaf command.
-    Command(ResolvedCommand),
+    Command(ResolvedCommand<S>),
     /// A divider separating sibling items.
     Divider,
     /// A resolved nested menu.
-    Menu(ResolvedNestedMenu),
+    Menu(ResolvedNestedMenu<S>),
     /// The application's declared Quit item — see [`MenuItem::Quit`].
     Quit,
     /// The application's declared Close Window item — see
@@ -1254,7 +1375,36 @@ pub enum ResolvedMenuItem {
     CloseWindow,
 }
 
-impl ResolvedMenuItem {
+impl<S> Clone for ResolvedMenuItem<S> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Command(command) => Self::Command(command.clone()),
+            Self::Divider => Self::Divider,
+            Self::Menu(menu) => Self::Menu(menu.clone()),
+            Self::Quit => Self::Quit,
+            Self::CloseWindow => Self::CloseWindow,
+        }
+    }
+}
+
+impl<S: 'static> ResolvedMenuItem<S> {
+    /// Maps every icon slot inside this resolved menu item through `f`.
+    #[must_use]
+    pub fn map_slots<T: 'static>(
+        self,
+        f: impl Fn(S) -> T + Clone + 'static,
+    ) -> ResolvedMenuItem<T> {
+        match self {
+            Self::Command(command) => ResolvedMenuItem::Command(command.map_slots(f)),
+            Self::Divider => ResolvedMenuItem::Divider,
+            Self::Menu(menu) => ResolvedMenuItem::Menu(menu.map_slots(f)),
+            Self::Quit => ResolvedMenuItem::Quit,
+            Self::CloseWindow => ResolvedMenuItem::CloseWindow,
+        }
+    }
+}
+
+impl<S: 'static> ResolvedMenuItem<S> {
     /// Whether `items` declare [`MenuItem::CloseWindow`] at any depth.
     ///
     /// A backend that supplies a standard Close Window item when the
@@ -1296,7 +1446,7 @@ impl ResolvedMenuItem {
 /// Whether a declared command in `items` — at any depth — binds `chord`,
 /// compared the way [`ResolvedCommand::allowed_in_macos_menu_bar`]
 /// does: equal modifiers, key matched case-insensitively.
-fn binds_chord(items: &[ResolvedMenuItem], chord: &Shortcut) -> bool {
+fn binds_chord<S: 'static>(items: &[ResolvedMenuItem<S>], chord: &Shortcut) -> bool {
     items.iter().any(|item| match item {
         ResolvedMenuItem::Command(command) => command.shortcut.as_ref().is_some_and(|shortcut| {
             chord.modifiers == shortcut.modifiers && shortcut.key.matches(&chord.key.to_key())
@@ -1331,7 +1481,7 @@ impl CloseWindowChord {
     #[must_use]
     pub fn new(menu_bar: &Computed<Vec<Menu<SemanticLabel>>>, env: &Environment) -> Self {
         Self(
-            resolve_menu_bar_items(menu_bar, env)
+            resolve_menu_bar_items::<SemanticLabel, NoopSlot>(menu_bar, env)
                 .map(|items| ResolvedMenuItem::close_window_chord(&items))
                 .computed(),
         )
@@ -1372,7 +1522,7 @@ pub enum CloseWindowPlacement {
 impl CloseWindowPlacement {
     /// The placement the declared menu bar's resolved `items` call for.
     #[must_use]
-    pub fn for_declared(items: &[ResolvedMenuItem]) -> Self {
+    pub fn for_declared<S: 'static>(items: &[ResolvedMenuItem<S>]) -> Self {
         if ResolvedMenuItem::declares_close_window(items) {
             Self::Declared
         } else {
@@ -1381,7 +1531,16 @@ impl CloseWindowPlacement {
     }
 }
 
-impl_constant!(ResolvedMenuItem);
+impl<S: 'static> nami::Signal for ResolvedMenuItem<S> {
+    type Output = Self;
+    type Guard = ();
+
+    fn snapshot(&self) -> Self::Output {
+        self.clone()
+    }
+
+    fn watch(&self, _watcher: impl Fn(Context<Self::Output>) + 'static) -> Self::Guard {}
+}
 
 /// Raw native popup menu config resolved against the environment locale.
 #[doc(hidden)]
@@ -1390,7 +1549,7 @@ pub struct ResolvedMenu<S> {
     /// The label displayed on the menu button.
     pub label: ControlLabel<S>,
     /// The fully resolved menu items.
-    pub items: Computed<Vec<ResolvedMenuItem>>,
+    pub items: Computed<Vec<ResolvedMenuItem<S>>>,
     /// Semantic accessibility label for the menu trigger.
     pub accessibility_label: Computed<StyledStr>,
     /// The style the trigger button is drawn in, `Automatic` already
@@ -1406,9 +1565,18 @@ impl<S: 'static> MapSlots<S> for ResolvedMenu<S> {
     type With<T: 'static> = ResolvedMenu<T>;
 
     fn map_slots<T: 'static>(self, f: impl Fn(S) -> T + Clone + 'static) -> ResolvedMenu<T> {
+        let item_f = f.clone();
         ResolvedMenu {
             label: self.label.map_slots(f),
-            items: self.items,
+            items: self
+                .items
+                .map(move |items| {
+                    items
+                        .into_iter()
+                        .map(|item| item.map_slots(item_f.clone()))
+                        .collect()
+                })
+                .computed(),
             accessibility_label: self.accessibility_label,
             style: self.style,
             size: self.size,
@@ -1511,7 +1679,7 @@ mod tests {
                 .shortcut(Shortcut::new('o').command())
                 .into(),
         ];
-        let resolved = resolve_menu_items_now(items, &env);
+        let resolved = resolve_menu_items_now::<NoopSlot>(items, &env);
         let ResolvedMenuItem::Command(quit) = &resolved[0] else {
             panic!("first resolved item should be a command");
         };
@@ -1597,7 +1765,7 @@ mod tests {
                 .into(),
         ];
 
-        let resolved = resolve_menu_items_now(items, &env);
+        let resolved = resolve_menu_items_now::<NoopSlot>(items, &env);
         let ResolvedMenuItem::Command(reply) = &resolved[0] else {
             panic!("first resolved item should be a command");
         };
@@ -1624,7 +1792,7 @@ mod tests {
             Menu::new("Advanced", (button("Archive").action(|| {}),)).into(),
         ];
 
-        let resolved = resolve_menu_items_now(items, &env);
+        let resolved = resolve_menu_items_now::<NoopSlot>(items, &env);
         assert_eq!(resolved.len(), 3);
 
         let ResolvedMenuItem::Command(refresh) = &resolved[0] else {
@@ -1738,7 +1906,7 @@ mod tests {
         };
 
         assert_eq!(
-            ResolvedMenuItem::close_window_chord(&resolve_menu_items_now(
+            ResolvedMenuItem::close_window_chord(&resolve_menu_items_now::<NoopSlot>(
                 vec![MenuItem::CloseWindow],
                 &env
             )),
@@ -1746,7 +1914,7 @@ mod tests {
             "⌘W is Close Window's while no command binds it"
         );
 
-        let bound = resolve_menu_items_now(
+        let bound = resolve_menu_items_now::<NoopSlot>(
             vec![
                 Menu::new(
                     "File",
@@ -1763,7 +1931,7 @@ mod tests {
             "a declared ⌘W at any depth moves Close Window to ⇧⌘W"
         );
 
-        let both = resolve_menu_items_now(
+        let both = resolve_menu_items_now::<NoopSlot>(
             vec![
                 command("Close Tab", Shortcut::new('w').command()),
                 command("Close All Tabs", Shortcut::new('w').command().shift()),
@@ -1782,11 +1950,11 @@ mod tests {
     fn close_window_resolves_and_is_found_at_any_depth() {
         crate::init_test_executor();
         let env = Environment::default();
-        let top_level = resolve_menu_items_now(vec![MenuItem::CloseWindow], &env);
+        let top_level = resolve_menu_items_now::<NoopSlot>(vec![MenuItem::CloseWindow], &env);
         assert!(matches!(top_level[..], [ResolvedMenuItem::CloseWindow]));
         assert!(ResolvedMenuItem::declares_close_window(&top_level));
 
-        let nested = resolve_menu_items_now(
+        let nested = resolve_menu_items_now::<NoopSlot>(
             vec![
                 Menu::new("File", (button("Open").action(|| {}),)).into(),
                 Menu::new(
@@ -1799,7 +1967,7 @@ mod tests {
         );
         assert!(ResolvedMenuItem::declares_close_window(&nested));
 
-        let without = resolve_menu_items_now(
+        let without = resolve_menu_items_now::<NoopSlot>(
             vec![
                 MenuItem::Quit,
                 Menu::new("File", (button("Open").action(|| {}),)).into(),
@@ -1816,7 +1984,7 @@ mod tests {
         let command = Command::builder("Increment")
             .action(|State(count): State<Rc<Cell<i32>>>| count.set(count.get() + 1))
             .state(&count);
-        let resolved = command.resolve(&Environment::default());
+        let resolved = command.resolve::<NoopSlot>(&Environment::default());
 
         resolved.action.run(&Environment::default());
         resolved.action.run(&Environment::default());

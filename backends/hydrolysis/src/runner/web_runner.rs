@@ -529,7 +529,7 @@ pub fn run<W: Windows, M: AppMenuBar>(app: App<W, M>, style: impl crate::Style) 
             return;
         };
 
-        let mut env = env.extending(waterui_graphics::backend::SceneViewMergeToParent);
+        let mut env = env;
         let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
         #[cfg(any(test, hydrolysis_platform_services))]
         super::install_platform_services(&mut env);

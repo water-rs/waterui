@@ -51,6 +51,8 @@ use waterui_core::{
 use waterui_layout::stack::hstack;
 use waterui_text::{IntoText, Text, font::Font, styled::StyledStr};
 
+use crate::slot::IconSlot;
+
 /// Position of the icon relative to the text.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[expect(
@@ -188,10 +190,8 @@ pub trait LabelKind: sealed::Sealed + Clone + 'static {
     fn has_custom_content(&self) -> bool;
     /// Whether this label carries an icon.
     fn has_icon(&self) -> bool;
-    /// Lifts the icon into an erased builder for chrome that places icons separately.
-    fn icon_view(&self) -> Option<AnyViewBuilder<AnyView>>;
-    /// Builds the icon slot factory for [`ControlLabel`].
-    fn icon_slot_builder<S: ChildSlot>(&self) -> Option<Rc<dyn Fn() -> S>>;
+    /// Builds a typed icon slot for chrome and [`ControlLabel`] without `AnyView` erasure.
+    fn icon_slot<S: ChildSlot>(&self) -> Option<IconSlot<S>>;
     /// Attaches `icon`.
     fn with_icon<I: View + Clone>(self, icon: I) -> Self::WithIcon<I>;
     /// Sets icon placement (`Leading` or `Trailing`), or reports a contract violation on custom content.
@@ -253,11 +253,7 @@ impl LabelKind for TitleLabel {
         false
     }
 
-    fn icon_view(&self) -> Option<AnyViewBuilder<AnyView>> {
-        None
-    }
-
-    fn icon_slot_builder<S: ChildSlot>(&self) -> Option<Rc<dyn Fn() -> S>> {
+    fn icon_slot<S: ChildSlot>(&self) -> Option<IconSlot<S>> {
         None
     }
 
@@ -387,14 +383,8 @@ impl<I: View + Clone> LabelKind for IconLabel<I> {
         true
     }
 
-    fn icon_view(&self) -> Option<AnyViewBuilder<AnyView>> {
-        let icon = self.icon.clone();
-        Some(AnyViewBuilder::new(move || AnyView::new(icon.clone())))
-    }
-
-    fn icon_slot_builder<S: ChildSlot>(&self) -> Option<Rc<dyn Fn() -> S>> {
-        let icon = self.icon.clone();
-        Some(Rc::new(move || S::from_view(icon.clone())))
+    fn icon_slot<S: ChildSlot>(&self) -> Option<IconSlot<S>> {
+        Some(IconSlot::from_view(self.icon.clone()))
     }
 
     fn with_icon<NewI: View + Clone>(self, icon: NewI) -> IconLabel<NewI> {
@@ -424,10 +414,9 @@ impl<I: View + Clone> LabelKind for IconLabel<I> {
     }
 
     fn into_semantic(self) -> SemanticLabel {
-        let icon = self.icon;
         SemanticLabel {
             text: self.text,
-            icon: Some(AnyViewBuilder::new(move || AnyView::new(icon.clone()))),
+            icon: Some(IconSlot::from_view(self.icon)),
             icon_position: self.icon_position,
             spacing: self.spacing,
             font: self.font,
@@ -435,10 +424,9 @@ impl<I: View + Clone> LabelKind for IconLabel<I> {
     }
 
     fn into_erased(self) -> ErasedLabel {
-        let icon = self.icon;
         ErasedLabel::Semantic {
             text: self.text,
-            icon: Some(AnyViewBuilder::new(move || AnyView::new(icon.clone()))),
+            icon: Some(IconSlot::from_view(self.icon)),
             icon_position: self.icon_position,
             spacing: self.spacing,
             font: self.font,
@@ -559,11 +547,7 @@ impl<V: View + Clone> LabelKind for CustomLabel<V> {
         false
     }
 
-    fn icon_view(&self) -> Option<AnyViewBuilder<AnyView>> {
-        None
-    }
-
-    fn icon_slot_builder<S: ChildSlot>(&self) -> Option<Rc<dyn Fn() -> S>> {
+    fn icon_slot<S: ChildSlot>(&self) -> Option<IconSlot<S>> {
         None
     }
 
@@ -646,11 +630,11 @@ impl<V: View + Clone> LabelKind for CustomLabel<V> {
 
 /// Semantic-only label metadata retained by menu commands and submenus (never
 /// dispatches an icon view in its own semantic text slot unless a host chrome
-/// projects [`Self::icon_view`] separately).
+/// projects [`Label::icon_slot`] separately).
 #[derive(Debug, Clone)]
 pub struct SemanticLabel {
     text: Text,
-    icon: Option<AnyViewBuilder<AnyView>>,
+    icon: Option<IconSlot<AnyView>>,
     icon_position: IconPosition,
     spacing: Computed<f32>,
     font: Option<Font>,
@@ -677,15 +661,8 @@ impl LabelKind for SemanticLabel {
         self.icon.is_some()
     }
 
-    fn icon_view(&self) -> Option<AnyViewBuilder<AnyView>> {
-        self.icon.clone()
-    }
-
-    fn icon_slot_builder<S: ChildSlot>(&self) -> Option<Rc<dyn Fn() -> S>> {
-        self.icon.clone().map(|icon| {
-            let build: Rc<dyn Fn() -> S> = Rc::new(move || S::from_view(icon.build()));
-            build
-        })
+    fn icon_slot<S: ChildSlot>(&self) -> Option<IconSlot<S>> {
+        self.icon.clone().map(|icon| icon.map_slot(S::from_view))
     }
 
     fn with_icon<I: View + Clone>(self, icon: I) -> IconLabel<I> {
@@ -786,8 +763,8 @@ pub enum ErasedLabel {
     Semantic {
         /// Title text.
         text: Text,
-        /// Optional erased icon builder.
-        icon: Option<AnyViewBuilder<AnyView>>,
+        /// Optional erased icon slot.
+        icon: Option<IconSlot<AnyView>>,
         /// Icon position.
         icon_position: IconPosition,
         /// Spacing between icon and text.
@@ -831,24 +808,17 @@ impl LabelKind for ErasedLabel {
         matches!(self, Self::Semantic { icon: Some(_), .. })
     }
 
-    fn icon_view(&self) -> Option<AnyViewBuilder<AnyView>> {
+    fn icon_slot<S: ChildSlot>(&self) -> Option<IconSlot<S>> {
         match self {
-            Self::Semantic { icon, .. } => icon.clone(),
+            Self::Semantic { icon, .. } => icon.clone().map(|icon| icon.map_slot(S::from_view)),
             Self::Custom { .. } => None,
         }
-    }
-
-    fn icon_slot_builder<S: ChildSlot>(&self) -> Option<Rc<dyn Fn() -> S>> {
-        self.icon_view().map(|icon| {
-            let build: Rc<dyn Fn() -> S> = Rc::new(move || S::from_view(icon.build()));
-            build
-        })
     }
 
     fn with_icon<I: View + Clone>(mut self, icon: I) -> Self {
         match &mut self {
             Self::Semantic { icon: slot, .. } => {
-                *slot = Some(AnyViewBuilder::new(move || AnyView::new(icon.clone())));
+                *slot = Some(IconSlot::from_view(icon));
             }
             Self::Custom { .. } => {
                 contract_violation!(
@@ -1002,15 +972,15 @@ impl LabelKind for ErasedLabel {
 }
 
 enum ControlLabelIcon<S> {
-    Slot(Rc<dyn Fn() -> S>),
-    Erased(AnyViewBuilder<AnyView>),
+    Slot(IconSlot<S>),
+    Erased(IconSlot<AnyView>),
 }
 
 impl<S> Clone for ControlLabelIcon<S> {
     fn clone(&self) -> Self {
         match self {
-            Self::Slot(build) => Self::Slot(Rc::clone(build)),
-            Self::Erased(builder) => Self::Erased(builder.clone()),
+            Self::Slot(slot) => Self::Slot(slot.clone()),
+            Self::Erased(slot) => Self::Erased(slot.clone()),
         }
     }
 }
@@ -1118,7 +1088,16 @@ impl<S> ControlLabel<S> {
     #[must_use]
     pub fn build_icon(&self) -> Option<S> {
         match &self.icon {
-            Some(ControlLabelIcon::Slot(build)) => Some(build()),
+            Some(ControlLabelIcon::Slot(slot)) => Some(slot.build()),
+            Some(ControlLabelIcon::Erased(_)) | None => None,
+        }
+    }
+
+    /// Borrows the label's typed icon slot when resolved into `S`.
+    #[must_use]
+    pub const fn icon_slot(&self) -> Option<&IconSlot<S>> {
+        match &self.icon {
+            Some(ControlLabelIcon::Slot(slot)) => Some(slot),
             Some(ControlLabelIcon::Erased(_)) | None => None,
         }
     }
@@ -1130,11 +1109,8 @@ impl<S: 'static> ControlLabel<S> {
     pub fn map_slots<T: 'static>(self, f: impl Fn(S) -> T + Clone + 'static) -> ControlLabel<T> {
         let build = self.build;
         let icon = self.icon.map(|icon| match icon {
-            ControlLabelIcon::Slot(build_icon) => {
-                let map_icon = f.clone();
-                ControlLabelIcon::Slot(Rc::new(move || map_icon(build_icon())))
-            }
-            ControlLabelIcon::Erased(builder) => ControlLabelIcon::Erased(builder),
+            ControlLabelIcon::Slot(slot) => ControlLabelIcon::Slot(slot.map_slot(f.clone())),
+            ControlLabelIcon::Erased(slot) => ControlLabelIcon::Erased(slot),
         });
         ControlLabel {
             build: Rc::new(move |font| f(build(font))),
@@ -1180,26 +1156,10 @@ impl<V: View> LabelKind for ControlLabel<V> {
         self.has_icon
     }
 
-    fn icon_view(&self) -> Option<AnyViewBuilder<AnyView>> {
+    fn icon_slot<S: ChildSlot>(&self) -> Option<IconSlot<S>> {
         match self.icon.as_ref()? {
-            ControlLabelIcon::Slot(build) => {
-                let build = Rc::clone(build);
-                Some(AnyViewBuilder::new(move || AnyView::new(build())))
-            }
-            ControlLabelIcon::Erased(builder) => Some(builder.clone()),
-        }
-    }
-
-    fn icon_slot_builder<S: ChildSlot>(&self) -> Option<Rc<dyn Fn() -> S>> {
-        match self.icon.as_ref()? {
-            ControlLabelIcon::Slot(build) => {
-                let build = Rc::clone(build);
-                Some(Rc::new(move || S::from_view(build())))
-            }
-            ControlLabelIcon::Erased(builder) => {
-                let builder = builder.clone();
-                Some(Rc::new(move || S::from_view(builder.build())))
-            }
+            ControlLabelIcon::Slot(slot) => Some(slot.clone().map_slot(S::from_view)),
+            ControlLabelIcon::Erased(slot) => Some(slot.clone().map_slot(S::from_view)),
         }
     }
 
@@ -1225,7 +1185,7 @@ impl<V: View> LabelKind for ControlLabel<V> {
     fn set_default_text_line_limit(&mut self, _limit: core::num::NonZeroUsize) {}
 
     fn into_semantic(self) -> SemanticLabel {
-        let icon = self.icon_view();
+        let icon = LabelKind::icon_slot::<AnyView>(&self);
         SemanticLabel {
             text: self.semantic_text,
             icon,
@@ -1304,6 +1264,48 @@ impl<K> Label<K> {
 /// Reused by every `WaterUI` control crate so the same `.label_style(...)` /
 /// `.hide_label()` surface appears on every control without forcing a trait
 /// into the user's import path.
+/// Marker for [`IntoAccessibilityLabel`] implementations backed by a [`Text`] value.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy)]
+pub struct TextAccessibilityLabel;
+
+/// Marker for [`IntoAccessibilityLabel`] implementations backed by a reactive [`Str`] signal.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy)]
+pub struct ComputedAccessibilityLabel;
+
+/// Input accepted by control `.a11y_label(...)` modifiers.
+///
+/// Covers every reactive [`Str`] signal accepted by `ViewExt::a11y_label`
+/// (such as `&'static str`, `String`, `Str`, `Computed<Str>`, `Binding<Str>`,
+/// and mapped signals) as well as [`Text`] and [`StyledStr`].
+pub trait IntoAccessibilityLabel<Marker> {
+    /// Converts this value into semantic [`Text`] for assistive technology.
+    fn into_accessibility_text(self) -> Text;
+}
+
+impl IntoAccessibilityLabel<TextAccessibilityLabel> for Text {
+    fn into_accessibility_text(self) -> Text {
+        self
+    }
+}
+
+impl IntoAccessibilityLabel<TextAccessibilityLabel> for StyledStr {
+    fn into_accessibility_text(self) -> Text {
+        Text::computed(self)
+    }
+}
+
+impl<T: nami::signal::IntoComputed<waterui_core::Str>>
+    IntoAccessibilityLabel<ComputedAccessibilityLabel> for T
+{
+    fn into_accessibility_text(self) -> Text {
+        Text::new(self.into_computed())
+    }
+}
+
+/// Generates `.label_style(...)`, `.hide_label()`, and `.a11y_label(...)`
+/// methods for controls that own a [`Label`](crate::label::Label).
 #[macro_export]
 macro_rules! impl_label_style_methods {
     ($ty:ident < $($gen:ident),+ >) => {
@@ -1325,6 +1327,17 @@ macro_rules! impl_label_style_methods {
             pub const fn hide_label(self) -> Self {
                 self.label_style($crate::label::LabelDisplayMode::Hidden)
             }
+
+            /// Overrides the spoken accessibility text announced by assistive
+            /// technology without changing the visual label.
+            #[must_use]
+            pub fn a11y_label<M>(
+                mut self,
+                label: impl $crate::label::IntoAccessibilityLabel<M>,
+            ) -> Self {
+                self.label_mut().set_accessibility_text(label);
+                self
+            }
         }
     };
     ($ty:ident) => {
@@ -1345,6 +1358,17 @@ macro_rules! impl_label_style_methods {
             /// [`LabelDisplayMode::Hidden`](crate::label::LabelDisplayMode::Hidden).
             pub const fn hide_label(self) -> Self {
                 self.label_style($crate::label::LabelDisplayMode::Hidden)
+            }
+
+            /// Overrides the spoken accessibility text announced by assistive
+            /// technology without changing the visual label.
+            #[must_use]
+            pub fn a11y_label<M>(
+                mut self,
+                label: impl $crate::label::IntoAccessibilityLabel<M>,
+            ) -> Self {
+                self.label_mut().set_accessibility_text(label);
+                self
             }
         }
     };
@@ -1550,10 +1574,16 @@ impl<K> Label<K> {
     }
 
     /// Overrides the spoken accessibility text without changing the visual text.
-    pub(crate) fn accessibility_text(mut self, text: impl IntoText) -> Self {
-        self.accessibility_text = Some(text.into_text());
-        self.accessibility_label = None;
+    pub(crate) fn accessibility_text<M>(mut self, text: impl IntoAccessibilityLabel<M>) -> Self {
+        self.set_accessibility_text(text);
         self
+    }
+
+    /// Overrides the spoken accessibility text in place without changing the visual text.
+    #[doc(hidden)]
+    pub fn set_accessibility_text<M>(&mut self, text: impl IntoAccessibilityLabel<M>) {
+        self.accessibility_text = Some(text.into_accessibility_text());
+        self.accessibility_label = None;
     }
 }
 
@@ -1606,6 +1636,12 @@ impl<K: LabelKind> Label<K> {
             accessibility_text: self.accessibility_text,
             accessibility_label: self.accessibility_label,
         }
+    }
+
+    /// Whether this label carries an explicit icon.
+    #[must_use]
+    pub fn has_icon(&self) -> bool {
+        self.content.has_icon()
     }
 
     /// Places the icon on the trailing side.
@@ -1717,14 +1753,11 @@ impl<K: LabelKind> Label<K> {
             .unwrap_or_else(|| self.semantic_text().content())
     }
 
-    /// Returns the label's icon as a view builder, whatever kind it is.
-    ///
-    /// Chrome that hosts an icon apart from its title — a menu item, toolbar
-    /// action, or tab bar item — extracts this view and either recognizes a
-    /// backend-provided symbol type directly or rasterizes it for its chrome.
+    /// Lifts the label's icon into child slot `S`, preserving static dispatch
+    /// and backend-provided probing without `AnyView` erasure.
     #[must_use]
-    pub fn icon_view(&self) -> Option<AnyViewBuilder<AnyView>> {
-        self.content.icon_view()
+    pub fn icon_slot<S: ChildSlot>(&self) -> Option<IconSlot<S>> {
+        self.content.icon_slot::<S>()
     }
 
     /// Caps the visible semantic text at `limit` lines unless the author
@@ -1793,7 +1826,7 @@ impl<K: LabelKind> Label<K> {
         let semantic_text = resolved.content.semantic_text().clone();
         let icon = resolved
             .content
-            .icon_slot_builder::<S>()
+            .icon_slot::<S>()
             .map(ControlLabelIcon::Slot);
         let accessibility_text = resolved.accessibility_text.clone();
         let accessibility_label = resolved.accessibility_label();
@@ -1818,7 +1851,10 @@ impl<K: LabelKind> Label<K> {
     pub fn into_unscoped_control_label(self) -> ControlLabel<Self> {
         let mode = self.display_mode;
         let semantic_text = self.content.semantic_text().clone();
-        let icon = self.content.icon_view().map(ControlLabelIcon::Erased);
+        let icon = self
+            .content
+            .icon_slot::<AnyView>()
+            .map(ControlLabelIcon::Erased);
         let accessibility_text = self.accessibility_text.clone();
         let accessibility_label = self.accessibility_label.clone();
         let has_custom_content = self.content.has_custom_content();

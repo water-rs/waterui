@@ -339,8 +339,9 @@ impl<B: NativeBackend, H: HookList, E: ErasedScope> Hooked<B, H, E> {
         cx: B::Ctx,
     ) -> B::Output {
         let rehook = self.rehooker::<C>();
-        let (target, pending) = native
-            .into_style_pending(move |slot| AnyView::new(SlotView(rehook(slot).into_child())));
+        let (target, pending) = native.into_style_pending(move |slot| {
+            waterui::component::StyleSlot::new(rehook(slot).into_child())
+        });
         match self.offer(target, env, cx) {
             Ok(output) => output,
             Err((_, cx)) => {
@@ -375,8 +376,9 @@ impl<B: NativeBackend, H: HookList, E: ErasedScope> Hooked<B, H, E> {
         cx: B::Ctx,
     ) -> B::Output {
         let rehook = self.rehooker::<C>();
-        let (target, pending) = native
-            .into_style_pending(move |slot| AnyView::new(SlotView(rehook(slot).into_child())));
+        let (target, pending) = native.into_style_pending(move |slot| {
+            waterui::component::StyleSlot::new(rehook(slot).into_child())
+        });
         match self.offer(target, env, cx) {
             Ok(output) => output,
             Err((_, cx)) => {

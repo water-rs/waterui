@@ -454,7 +454,7 @@ fn navigation(
 /// A tab a script declares: its root is built by a closure the script's
 /// attributes chose at run time, so every scripted tab shares one builder
 /// type.
-type ScriptTab = Tab<AnyViewBuilder<NavigationView<AnyView>>>;
+type ScriptTab = Tab<AnyViewBuilder<NavigationView<AnyView>>, waterui_controls::label::ErasedLabel>;
 
 /// A navigation title, which every destination carries whether or not the
 /// element named one.

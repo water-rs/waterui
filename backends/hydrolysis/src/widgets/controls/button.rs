@@ -557,7 +557,7 @@ pub struct MenuRenderState<E: crate::text::TextEngine> {
     /// The trigger button's style and size, from the menu.
     style: ButtonStyle,
     size: ControlSize,
-    items: nami::Computed<Vec<waterui_controls::menu::ResolvedMenuItem>>,
+    items: nami::Computed<Vec<waterui_controls::menu::ResolvedMenuItem<HeldChild<E>>>>,
     #[cfg(feature = "accessibility")]
     accessibility_label: nami::Computed<StyledStr>,
     chrome: ButtonChromeState,

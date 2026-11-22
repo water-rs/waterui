@@ -13,7 +13,7 @@
 use core::cell::RefCell;
 
 use waterui::navigation::{
-    NavigationSplitLayout, NavigationView,
+    NavigationSplitLayout,
     split::{NavigationSplitDetailBuilder as DetailBuilder, SlotBuilder},
 };
 use waterui::reactive::{Binding, Signal};
@@ -83,7 +83,7 @@ struct Columns {
 impl Columns {
     /// The middle column's selected content (three columns), or `None`
     /// when nothing is selected or the split has two columns.
-    fn middle_destination(&self) -> Option<NavigationView<Held>> {
+    fn middle_destination(&self) -> Option<waterui::navigation::ResolvedNavigationView<Held>> {
         match (&self.content, self.primary.snapshot()) {
             (Some(content), Some(id)) => Some(content.build(id)),
             _ => None,
@@ -93,7 +93,7 @@ impl Columns {
     /// The detail column's selected content: the primary selection drives
     /// two-column splits; the secondary selection drives three-column
     /// splits. `None` when nothing is selected.
-    fn detail_destination(&self) -> Option<NavigationView<Held>> {
+    fn detail_destination(&self) -> Option<waterui::navigation::ResolvedNavigationView<Held>> {
         self.secondary
             .as_ref()
             .map_or_else(
@@ -105,7 +105,10 @@ impl Columns {
 
     /// Renders a macOS column destination or the placeholder when unselected.
     #[cfg(target_os = "macos")]
-    fn render_column(&self, destination: Option<NavigationView<Held>>) -> NativeLeaf {
+    fn render_column(
+        &self,
+        destination: Option<waterui::navigation::ResolvedNavigationView<Held>>,
+    ) -> NativeLeaf {
         destination.map_or_else(
             || self.renderer.realize(self.placeholder.build()),
             |nav| self.renderer.render(Native::new(nav)),
@@ -115,7 +118,10 @@ impl Columns {
     /// The root of a stack-driven column: the selected destination, or the
     /// empty-selection placeholder under the default, untitled bar.
     #[cfg(target_os = "ios")]
-    fn column_root(&self, destination: Option<NavigationView<Held>>) -> NavigationView<Held> {
+    fn column_root(
+        &self,
+        destination: Option<waterui::navigation::ResolvedNavigationView<Held>>,
+    ) -> waterui::navigation::ResolvedNavigationView<Held> {
         destination.unwrap_or_else(|| NavigationView {
             bar: waterui::navigation::Bar::default(),
             content: self.placeholder.build(),

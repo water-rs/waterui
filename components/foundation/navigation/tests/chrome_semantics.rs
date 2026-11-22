@@ -79,7 +79,7 @@ fn navigation_subtitle_emits_on_offscreen_mount(ui: UiBuilder<Styled<TestStyle>>
 
 /// One toolbar action in each group the bar draws: leading, principal (the
 /// title area), trailing, and bottom.
-fn toolbar_view() -> NavigationView<impl View> {
+fn toolbar_view() -> NavigationView<impl View, impl waterui::navigation::NavigationToolbarItems> {
     NavigationView::new("Inbox", text("mail body")).navigation_toolbar(
         NavigationToolbar::default()
             .item(NavigationToolbarItem::new(

@@ -18,15 +18,17 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use cocoa_ui::Retained;
+use waterui::component::IconSlot;
 #[cfg(target_os = "macos")]
 use waterui::component::menu::{CloseWindowChord, CloseWindowPlacement};
 use waterui::component::menu::{
     CommandRole, Menu, NamedKey, ResolvedCommand, ResolvedMenuItem, ResolvedNestedMenu, ShortcutKey,
 };
 use waterui::reactive::{Computed, Signal};
-use waterui_backend_core::{AnyView, Environment};
-use waterui_core::handler::AnyViewBuilder;
+use waterui_backend_core::Environment;
 use waterui_core::layout::ProposalSize;
+
+use crate::contract::Held;
 
 #[cfg(target_os = "macos")]
 pub type PlatformMenuImage = cocoa_ui::objc2_app_kit::NSImage;
@@ -35,25 +37,27 @@ pub type PlatformMenuImage = cocoa_ui::objc2_ui_kit::UIImage;
 
 type DeclaredMenu = Menu<waterui::component::label::SemanticLabel>;
 
-/// Resolves a label's icon builder for native Apple menus: direct [`crate::SfSymbol`]
-/// travels as a system symbol name, and any other view is rendered and rasterized
-/// into a template platform image.
+/// Resolves a label's icon slot for native Apple menus: direct [`crate::SfSymbol`]
+/// travels as a system symbol name via [`IconSlot::probe`], and any other view is
+/// realized statically and rasterized into a template platform image.
 pub fn resolve_menu_icon(
-    icon: Option<&AnyViewBuilder<AnyView>>,
+    icon: Option<&IconSlot<Held>>,
     env: &Environment,
 ) -> (Option<String>, Option<Retained<PlatformMenuImage>>) {
-    let Some(builder) = icon else {
+    let Some(slot) = icon else {
         return (None, None);
     };
-    let icon_view = builder.build();
-    if let Some(symbol) = icon_view.downcast_ref::<crate::SfSymbol>() {
-        return (Some(String::from(symbol.as_str())), None);
+    let mut probe = crate::sf_symbol::SfSymbolProbe::default();
+    if slot.probe(&mut probe, env)
+        && let Some(symbol) = probe.name
+    {
+        return (Some(String::from(symbol)), None);
     }
     let Some(mtm) = cocoa_ui::MainThreadMarker::new() else {
         tracing::warn!("menu icon view could not be rasterized off the main thread");
         return (None, None);
     };
-    let leaf = crate::contract::RenderContext::entry(env, mtm).render(icon_view);
+    let leaf = crate::contract::RenderContext::entry(env, mtm).realize(slot.build());
     let size = leaf
         .layout()
         .measure(ProposalSize {
@@ -77,13 +81,13 @@ pub fn resolve_menu_icon(
 fn resolve(
     menu_bar: &Computed<Vec<DeclaredMenu>>,
     env: &Environment,
-) -> Computed<Vec<ResolvedMenuItem>> {
-    waterui::component::menu::resolve_menu_bar_items(menu_bar, env)
+) -> Computed<Vec<ResolvedMenuItem<Held>>> {
+    waterui::component::menu::resolve_menu_bar_items::<_, Held>(menu_bar, env)
 }
 
 /// A resolved command as the kit's shared `Command` payload — label text,
 /// subtitle, icon, destructive flag and shortcut.
-fn kit_command(command: &ResolvedCommand, env: &Environment) -> cocoa_ui::menu::Command {
+fn kit_command(command: &ResolvedCommand<Held>, env: &Environment) -> cocoa_ui::menu::Command {
     let (symbol, image) = resolve_menu_icon(command.icon.as_ref(), env);
     kit_command_fields(
         command.label.content().snapshot().to_plain().to_string(),
@@ -97,7 +101,7 @@ fn kit_command(command: &ResolvedCommand, env: &Environment) -> cocoa_ui::menu::
 
 /// A resolved nested menu's header as the kit's shared `Command` payload.
 pub fn kit_command_for_menu(
-    menu: &ResolvedNestedMenu,
+    menu: &ResolvedNestedMenu<Held>,
     env: &Environment,
 ) -> cocoa_ui::menu::Command {
     let (symbol, image) = resolve_menu_icon(menu.icon.as_ref(), env);
@@ -315,7 +319,7 @@ pub fn key_equivalent_for(key: &ShortcutKey) -> String {
 /// On macOS each command is checked against the chords the standard
 /// application menu reserves.
 pub fn menu_tree(
-    items: &[ResolvedMenuItem],
+    items: &[ResolvedMenuItem<Held>],
     env: &Environment,
 ) -> Vec<cocoa_ui::menu::MenuTreeNode> {
     items
@@ -583,7 +587,7 @@ mod imp {
             application,
             &[],
             CloseWindowPlacement::WindowMenu,
-            ResolvedMenuItem::close_window_chord(&[]).as_ref(),
+            ResolvedMenuItem::<crate::contract::Held>::close_window_chord(&[]).as_ref(),
         );
     }
 
@@ -636,7 +640,7 @@ mod imp {
     use super::{DeclaredMenu, kit_command_for_menu, menu_tree, resolve};
 
     fn build_menus(
-        resolved: &Computed<Vec<ResolvedMenuItem>>,
+        resolved: &Computed<Vec<ResolvedMenuItem<crate::contract::Held>>>,
         env: &Environment,
         builder: &MenuBuilder<'_>,
     ) {
@@ -741,7 +745,7 @@ mod tests {
     /// `menus` resolved as the declared menu bar.
     fn declared<L: waterui::component::label::LabelKind + Clone>(
         menus: Vec<Menu<L>>,
-    ) -> Vec<ResolvedMenuItem> {
+    ) -> Vec<ResolvedMenuItem<crate::contract::Held>> {
         waterui::component::menu::resolve_menu_bar_items(
             &Computed::constant(menus),
             &Environment::new(),
@@ -796,7 +800,7 @@ mod tests {
             waterui::component::label::label("Add").icon(crate::SfSymbol::PLUS),
         )
         .action(|| {})
-        .resolve(&env);
+        .resolve::<crate::contract::Held>(&env);
         let nodes = menu_tree(&[ResolvedMenuItem::Command(command)], &env);
         let [MenuTreeNode::Command(cmd, _)] = nodes.as_slice() else {
             panic!("expected command node: {nodes:?}");

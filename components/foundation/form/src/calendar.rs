@@ -627,7 +627,7 @@ fn selectable_day_cell<F: FnMut() + 'static>(
     });
     let button = button(day_cell_label(date, decorated).color(foreground))
         .plain()
-        .accessibility_label(day_cell_accessibility_label(date))
+        .a11y_label(day_cell_accessibility_label(date))
         .action(action);
     let content = day_grid_cell(button, CALENDAR_DAY_SIZE);
 

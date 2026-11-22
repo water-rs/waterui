@@ -49,7 +49,7 @@ impl<E: crate::text::TextEngine> TabRenderState<E> {
         Self {
             tag,
             label: RetainedSubview::held(label.build()),
-            icon: icon.map(|builder| RetainedSubview::new(builder.build())),
+            icon: icon.map(|slot| RetainedSubview::held(slot.build())),
             content: RetainedSubview::new(Native::new(content.build())),
             enabled,
             badge,

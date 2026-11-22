@@ -760,13 +760,9 @@ impl HeadlessRuntime {
         )
     }
 
-    #[expect(
-        clippy::needless_pass_by_value,
-        reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
-    )]
     fn on_painter(
         painter: OffscreenPainter,
-        env: Environment,
+        mut env: Environment,
         window: RootWindow<crate::text::ParleyEngine>,
         width: u32,
         height: u32,
@@ -777,7 +773,6 @@ impl HeadlessRuntime {
         let inspector_probe = inspector
             .as_ref()
             .map(|inspector| inspector.task_probe() as Arc<dyn waterui::task::RuntimeProbe>);
-        let mut env = env.extending(waterui_graphics::backend::SceneViewMergeToParent);
         waterui::install_application_resources(&mut env);
         waterui::inspector::install(&mut env, inspector);
         let pending_window_queue = Rc::new(RefCell::new(Vec::new()));

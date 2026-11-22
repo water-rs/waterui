@@ -171,7 +171,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// bar re-renders. Stretch is `Both` (read from the config).
     #[cfg(feature = "navigation")]
     pub(super) fn build_navigation_view(
-        navigation: NavigationView<HeldChild<E>>,
+        navigation: waterui::navigation::ResolvedNavigationView<HeldChild<E>>,
         env: &Environment,
         renderer: &mut SemanticCore<E>,
     ) -> Self {

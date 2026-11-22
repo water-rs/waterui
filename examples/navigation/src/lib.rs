@@ -31,12 +31,13 @@ use mdi::pencil;
 use mdi::view_gallery;
 use waterui::Identifiable;
 use waterui::app::{App, Windows};
+use waterui::component::label::LabelKind;
 use waterui::component::list::{
     List, ListContent, ListDelete, ListItem, ListMove, Section, SectionScope, TaggedBy, row,
 };
 use waterui::handler::ViewBuilder;
 use waterui::id::{Id, SelfId};
-use waterui::navigation::{NavigationSplitView, NavigationView, Navigator};
+use waterui::navigation::{NavigationSplitView, NavigationToolbarItems, NavigationView, Navigator};
 use waterui::prelude::theme_color::{Accent, Foreground, SurfaceVariant};
 use waterui::prelude::*;
 use waterui::preview;
@@ -299,7 +300,10 @@ pub fn demo() -> impl View {
 fn pane_tab(
     pane: Pane,
     mail: &Mail,
-) -> Tab<impl ViewBuilder<Output = NavigationView<impl View + use<>>> + use<>> {
+) -> Tab<
+    impl ViewBuilder<Output = NavigationView<impl View + use<>>> + use<>,
+    impl LabelKind + Clone + use<>,
+> {
     let (title, icon) = match pane {
         Pane::Inbox => ("Inbox", inbox()),
         Pane::Library => ("Library", image_album()),
@@ -334,7 +338,9 @@ fn inbox_stack(mail: Mail) -> impl View {
     )
 }
 
-fn inbox_root(mail: &Mail) -> NavigationView<impl View + use<>> {
+fn inbox_root(
+    mail: &Mail,
+) -> NavigationView<impl View + use<>, impl NavigationToolbarItems + use<>> {
     let unread = mail.unread_count();
     let edit_title = mail.editing.select(Str::from("Done"), Str::from("Edit"));
 
@@ -489,7 +495,10 @@ fn visible_id(mail: &Mail, index: usize) -> Option<u64> {
     visible.as_slice().get(index).map(|message| message.id)
 }
 
-fn message_detail(mail: &Mail, id: u64) -> NavigationView<impl View + use<>> {
+fn message_detail(
+    mail: &Mail,
+    id: u64,
+) -> NavigationView<impl View + use<>, impl NavigationToolbarItems + use<>> {
     let message = mail.message(id);
     let subject =
         message.map(|message| message.map_or_else(Str::default, |message| message.subject));
@@ -531,7 +540,9 @@ fn message_detail(mail: &Mail, id: u64) -> NavigationView<impl View + use<>> {
 
 /// An editing flow: confirmation and cancellation are semantic placements, and
 /// the platform's own back gesture is refused while the draft is dirty.
-fn compose_page(mail: &Mail) -> NavigationView<impl View + use<>> {
+fn compose_page(
+    mail: &Mail,
+) -> NavigationView<impl View + use<>, impl NavigationToolbarItems + use<>> {
     let is_empty = mail.draft_is_empty();
 
     vstack((

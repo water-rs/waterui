@@ -73,12 +73,23 @@ impl From<SfSymbol> for String {
     }
 }
 
+/// Probe context used by [`waterui::component::IconSlot::probe`] to extract an
+/// [`SfSymbol`] catalog name without mounting a platform view or erasing to `AnyView`.
+#[derive(Debug, Default)]
+pub struct SfSymbolProbe {
+    pub(crate) name: Option<&'static str>,
+}
+
 impl NativeView for SfSymbol {
     fn stretch_axis(&self) -> StretchAxis {
         StretchAxis::None
     }
 
     fn realize_provided(self, context: &mut dyn Any, env: &Environment) -> Result<(), Self> {
+        if let Some(probe) = context.downcast_mut::<SfSymbolProbe>() {
+            probe.name = Some(self.name);
+            return Ok(());
+        }
         if let Some(slot) = context.downcast_mut::<crate::apple_content::AppleProvidedSlot>() {
             slot.leaf = Some(crate::components::image::realize_sf_symbol(
                 self, env, slot.mtm,

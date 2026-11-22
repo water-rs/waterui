@@ -133,7 +133,7 @@ pub struct HydroNavigationEntry<E: crate::text::TextEngine> {
 }
 
 impl<E: crate::text::TextEngine> HydroNavigationEntry<E> {
-    fn new(identity: u64, view: NavigationView<HeldChild<E>>) -> Self {
+    fn new(identity: u64, view: waterui::navigation::ResolvedNavigationView<HeldChild<E>>) -> Self {
         let NavigationView {
             bar,
             content,

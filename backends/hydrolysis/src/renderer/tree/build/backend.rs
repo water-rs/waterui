@@ -316,18 +316,15 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         }
     }
 
-    // `Picture::body` hands Hydrolysis a `SceneView` under the
-    // `SceneViewMergeToParent` its runners install; a bare picture means that
-    // marker is missing.
     #[cfg(waterui_feature = "gpu")]
     fn picture(
         &mut self,
-        _native: waterui::graphics::backend::Picture,
+        native: waterui::graphics::backend::Picture,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
         mark_reached!("picture");
-        self.unrealized("a `Picture` outside `SceneViewMergeToParent`", env)
+        self.scene(native.into_scene_view(), env, ())
     }
 
     // Video is the page's `<video>` element on the web and the GPU player
@@ -1029,17 +1026,13 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
             preview,
             accessory,
             dismiss_requests,
-        } = metadata.value;
+        } = metadata.value.map_slots(S::into_child);
         RenderNode::build_wrapper(
             WrapperEffect::ContextMenu(ContextMenuEffect {
                 items,
                 dismiss_requests,
-                preview: Rc::new(RefCell::new(
-                    preview.map(|child| RetainedSubview::held(child.into_child())),
-                )),
-                accessory: Rc::new(RefCell::new(
-                    accessory.map(|child| RetainedSubview::held(child.into_child())),
-                )),
+                preview: Rc::new(RefCell::new(preview.map(RetainedSubview::held))),
+                accessory: Rc::new(RefCell::new(accessory.map(RetainedSubview::held))),
                 present: HydrolysisRenderer::<E>::show_context_menu,
             }),
             content,
@@ -1480,12 +1473,12 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     #[cfg(waterui_feature = "navigation")]
     fn navigation_view<C: ChildView<Self>>(
         &mut self,
-        native: waterui::navigation::NavigationView<C>,
+        native: waterui::navigation::ResolvedNavigationView<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
         mark_reached!("navigation_view");
-        let mut native = native.map_content(C::into_child);
+        let mut native = waterui_core::backend::MapSlots::map_slots(native, C::into_child);
         native.resolve_native_fields(env);
         let renderer = &mut *self.renderer;
         RenderNode::build_navigation_view(native, env, renderer)

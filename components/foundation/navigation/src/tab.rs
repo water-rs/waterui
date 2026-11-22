@@ -5,21 +5,19 @@ use core::fmt::Debug;
 
 use nami::collection::Collection;
 use nami::{Binding, Computed, SignalExt as _};
-use waterui_controls::{
-    IntoLabel,
-    label::{ErasedLabel, Label},
-};
+pub use waterui_controls::SlotBuilder;
+use waterui_controls::{IconSlot, IntoLabel, LabelKind, TitleLabel, label::Label};
 use waterui_core::backend::MapSlots;
 use waterui_core::{
     AnyView, Environment, IntoSignal, Native, NativeView, Str, View,
     backend::{Backend, ChildSlot},
-    handler::{AnyViewBuilder, ViewBuilder},
+    handler::ViewBuilder,
     id::{Id, Mapping},
     layout::StretchAxis,
     views::{AnyViews, ForEach, Views},
 };
 
-use super::NavigationView;
+use super::{NavigationToolbarItems, NavigationView, ResolvedNavigationView};
 
 /// Native tab presentation selected by a public style.
 #[doc(hidden)]
@@ -139,15 +137,13 @@ pub enum TabBarMinimizeBehavior {
 
 /// One stable native tab. The collection it lives in supplies its identity.
 ///
-/// `C` builds the tab's root page. `Clone` shares the builder and the
-/// signals — a `Vec<Tab<C>>` collection clones on snapshot, which is what
-/// makes `vec![tab, ...]` a valid set of tabs sharing one builder type.
+/// `C` builds the tab's root page and `L` keeps the tab label's concrete
+/// [`LabelKind`] until lowered into a backend's child slot. `Clone` shares the
+/// builder and signals — a `Vec<Tab<C, L>>` collection clones on snapshot.
 #[non_exhaustive]
-pub struct Tab<C> {
+pub struct Tab<C, L = TitleLabel> {
     /// Semantic tab label.
-    label: Label<ErasedLabel>,
-    /// The label's icon, lifted out so native chrome can place or inspect it itself.
-    icon: Option<AnyViewBuilder<AnyView>>,
+    label: Label<L>,
     /// Stable lazily built tab root.
     content: Rc<C>,
     /// Optional reactive badge count.
@@ -158,11 +154,10 @@ pub struct Tab<C> {
     role: TabRole,
 }
 
-impl<C> Clone for Tab<C> {
+impl<C, L: Clone> Clone for Tab<C, L> {
     fn clone(&self) -> Self {
         Self {
             label: self.label.clone(),
-            icon: self.icon.clone(),
             content: Rc::clone(&self.content),
             badge: self.badge.clone(),
             enabled: self.enabled.clone(),
@@ -171,33 +166,29 @@ impl<C> Clone for Tab<C> {
     }
 }
 
-impl<C> Debug for Tab<C> {
+impl<C, L> Debug for Tab<C, L> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Tab")
-            .field("icon", &self.icon)
             .field("role", &self.role)
             .finish_non_exhaustive()
     }
 }
 
-impl<C, V> Tab<C>
+impl<C, L, V, Tb> Tab<C, L>
 where
-    C: ViewBuilder<Output = NavigationView<V>>,
+    C: ViewBuilder<Output = NavigationView<V, Tb>>,
+    L: LabelKind + Clone,
     V: View,
+    Tb: NavigationToolbarItems,
 {
     /// Creates a stable tab with a semantic label and navigation root.
     ///
     /// The tab's identity comes from the collection handed to [`Tabs`]: a
     /// tab in a `Vec` is keyed by its index, one built through `ForEach` by
     /// the item it was built from.
-    pub fn new(label: impl IntoLabel, content: C) -> Self {
-        let label = label.into_label();
-        // Lift the icon out: a tab bar item wants it separately, and once the
-        // label is drawn nothing can tell which part of it was the icon.
-        let icon = label.icon_view();
+    pub fn new<I: IntoLabel<Kind = L>>(label: I, content: C) -> Self {
         Self {
-            label: label.erase(),
-            icon,
+            label: label.into_label(),
             content: Rc::new(content),
             badge: None,
             enabled: Computed::constant(true),
@@ -209,16 +200,16 @@ where
     fn into_item<S: ChildSlot>(self) -> TabItem<S> {
         let Self {
             label,
-            icon,
             content,
             badge,
             enabled,
             role,
         } = self;
+        let icon = label.icon_slot::<S>();
         TabItem {
             label: SlotBuilder::new(move || S::from_view(label.clone())),
             icon,
-            content: SlotBuilder::new(move || content.build().map_content(S::from_view)),
+            content: SlotBuilder::new(move || content.build().into_resolved::<S>()),
             badge,
             enabled,
             role,
@@ -239,7 +230,7 @@ impl<B: ViewBuilder> ViewBuilder for ContainerPage<B> {
     }
 }
 
-impl<B: ViewBuilder> Tab<ContainerPage<B>> {
+impl<B: ViewBuilder, L: LabelKind + Clone> Tab<ContainerPage<B>, L> {
     /// Creates a tab whose root supplies its own navigation chrome.
     ///
     /// Each tab owns one navigation container — a [`NavigationStack`] or a
@@ -250,22 +241,24 @@ impl<B: ViewBuilder> Tab<ContainerPage<B>> {
     ///
     /// [`NavigationStack`]: crate::NavigationStack
     /// [`NavigationSplitView`]: crate::NavigationSplitView
-    pub fn container(label: impl IntoLabel, content: B) -> Self {
+    pub fn container<I: IntoLabel<Kind = L>>(label: I, content: B) -> Self {
         Self::new(label, ContainerPage(content))
     }
 }
 
-impl<C> Tab<C> {
+impl<C, L: LabelKind> Tab<C, L> {
+    /// Whether this tab's label carries an icon.
+    #[must_use]
+    pub fn has_icon(&self) -> bool {
+        self.label.has_icon()
+    }
+}
+
+impl<C, L> Tab<C, L> {
     /// Semantic tab label.
     #[must_use]
-    pub const fn label(&self) -> &Label<ErasedLabel> {
+    pub const fn label(&self) -> &Label<L> {
         &self.label
-    }
-
-    /// The label's icon, lifted out so native chrome can place or inspect it itself.
-    #[must_use]
-    pub const fn icon(&self) -> Option<&AnyViewBuilder<AnyView>> {
-        self.icon.as_ref()
     }
 
     /// Stable lazily built tab root.
@@ -276,19 +269,19 @@ impl<C> Tab<C> {
 
     /// Optional reactive badge count.
     #[must_use]
-    pub const fn get_badge(&self) -> Option<&Computed<i32>> {
+    pub const fn tab_badge(&self) -> Option<&Computed<i32>> {
         self.badge.as_ref()
     }
 
     /// Whether the native tab item is enabled.
     #[must_use]
-    pub const fn get_enabled(&self) -> &Computed<bool> {
+    pub const fn is_enabled(&self) -> &Computed<bool> {
         &self.enabled
     }
 
     /// The part the tab plays in the container's chrome.
     #[must_use]
-    pub const fn get_role(&self) -> TabRole {
+    pub const fn tab_role(&self) -> TabRole {
         self.role
     }
 
@@ -318,58 +311,22 @@ impl<C> Tab<C> {
 
 /// A bare tab shows its label — outside a [`Tabs`] container there is no
 /// chrome to hang the content on.
-impl<C: 'static> View for Tab<C> {
+impl<C: 'static, L: LabelKind> View for Tab<C, L> {
     fn body(self, _env: &Environment) -> impl View {
         self.label
     }
 }
 
-/// Builds one part of a tab — its label or its root page — each time its
-/// backend mounts it.
-pub struct SlotBuilder<T>(Rc<dyn Fn() -> T>);
-
-impl<T> SlotBuilder<T> {
-    pub(crate) fn new(build: impl Fn() -> T + 'static) -> Self {
-        Self(Rc::new(build))
-    }
-
-    /// Builds the part.
-    #[must_use]
-    pub fn build(&self) -> T {
-        (self.0)()
-    }
-}
-
-impl<T: 'static> SlotBuilder<T> {
-    /// Maps this builder's output through `f`.
-    #[must_use]
-    pub(crate) fn map_slot<U>(self, f: impl Fn(T) -> U + 'static) -> SlotBuilder<U> {
-        SlotBuilder::new(move || f(self.build()))
-    }
-}
-
-impl<T> Clone for SlotBuilder<T> {
-    fn clone(&self) -> Self {
-        Self(Rc::clone(&self.0))
-    }
-}
-
-impl<T> Debug for SlotBuilder<T> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str("SlotBuilder")
-    }
-}
-
-/// A tab as its backend receives it: its label and root page built in the
-/// backend's child slot `S`.
+/// A tab as its backend receives it: its label, icon, and root page built in
+/// the backend's child slot `S`.
 #[non_exhaustive]
 pub struct TabItem<S> {
     /// Semantic tab label.
     label: SlotBuilder<S>,
     /// The label's icon, lifted out so native chrome can place or inspect it itself.
-    icon: Option<AnyViewBuilder<AnyView>>,
+    icon: Option<IconSlot<S>>,
     /// Stable lazily built tab root.
-    content: SlotBuilder<NavigationView<S>>,
+    content: SlotBuilder<ResolvedNavigationView<S>>,
     /// Optional reactive badge count.
     badge: Option<Computed<i32>>,
     /// Whether the native tab item is enabled.
@@ -403,7 +360,7 @@ impl<S> Debug for TabItem<S> {
 impl<S: 'static> TabItem<S> {
     /// The same tab with its parts mapped through `f`.
     #[must_use]
-    pub fn map_slot<T>(self, f: impl Fn(S) -> T + Clone + 'static) -> TabItem<T> {
+    pub fn map_slot<T: 'static>(self, f: impl Fn(S) -> T + Clone + 'static) -> TabItem<T> {
         let Self {
             label,
             icon,
@@ -412,11 +369,14 @@ impl<S: 'static> TabItem<S> {
             enabled,
             role,
         } = self;
+        let icon_f = f.clone();
         let content_f = f.clone();
         TabItem {
             label: SlotBuilder::new(move || f(label.build())),
-            icon,
-            content: SlotBuilder::new(move || content.build().map_content(content_f.clone())),
+            icon: icon.map(|icon| icon.map_slot(icon_f)),
+            content: SlotBuilder::new(move || {
+                MapSlots::map_slots(content.build(), content_f.clone())
+            }),
             badge,
             enabled,
             role,
@@ -433,31 +393,31 @@ impl<S> TabItem<S> {
 
     /// The label's icon, lifted out so native chrome can place or inspect it itself.
     #[must_use]
-    pub const fn icon(&self) -> Option<&AnyViewBuilder<AnyView>> {
+    pub const fn icon(&self) -> Option<&IconSlot<S>> {
         self.icon.as_ref()
     }
 
     /// Stable lazily built tab root.
     #[must_use]
-    pub const fn content(&self) -> &SlotBuilder<NavigationView<S>> {
+    pub const fn content(&self) -> &SlotBuilder<ResolvedNavigationView<S>> {
         &self.content
     }
 
     /// Optional reactive badge count.
     #[must_use]
-    pub const fn get_badge(&self) -> Option<&Computed<i32>> {
+    pub const fn badge(&self) -> Option<&Computed<i32>> {
         self.badge.as_ref()
     }
 
     /// Whether the native tab item is enabled.
     #[must_use]
-    pub const fn get_enabled(&self) -> &Computed<bool> {
+    pub const fn enabled(&self) -> &Computed<bool> {
         &self.enabled
     }
 
     /// The part the tab plays in the container's chrome.
     #[must_use]
-    pub const fn get_role(&self) -> TabRole {
+    pub const fn role(&self) -> TabRole {
         self.role
     }
 
@@ -471,8 +431,8 @@ impl<S> TabItem<S> {
         self,
     ) -> (
         SlotBuilder<S>,
-        Option<AnyViewBuilder<AnyView>>,
-        SlotBuilder<NavigationView<S>>,
+        Option<IconSlot<S>>,
+        SlotBuilder<ResolvedNavigationView<S>>,
         Option<Computed<i32>>,
         Computed<bool>,
         TabRole,
@@ -526,19 +486,19 @@ impl<S> TabsLayout<S> {
 
     /// Native adaptive style.
     #[must_use]
-    pub const fn get_style(&self) -> NativeTabStyle {
+    pub const fn style(&self) -> NativeTabStyle {
         self.style
     }
 
     /// How the bar behaves while content scrolls.
     #[must_use]
-    pub const fn get_minimize_behavior(&self) -> TabBarMinimizeBehavior {
+    pub const fn minimize_behavior(&self) -> TabBarMinimizeBehavior {
         self.minimize_behavior
     }
 
     /// A view the platform floats above the tab bar, when it has such a slot.
     #[must_use]
-    pub const fn get_bottom_accessory(&self) -> Option<&S> {
+    pub const fn bottom_accessory(&self) -> Option<&S> {
         self.bottom_accessory.as_ref()
     }
 
@@ -621,21 +581,25 @@ pub trait TabSet: 'static {
 
 /// A homogeneous collection of tabs: erased by identity, each tab mapped
 /// into the slot.
-fn collection_items<T, S, C, V>(tabs: T) -> (AnyViews<TabItem<S>>, Mapping<T::Id>)
+fn collection_items<T, S, C, L, V, Tb>(tabs: T) -> (AnyViews<TabItem<S>>, Mapping<T::Id>)
 where
-    T: Views<View = Tab<C>> + 'static,
+    T: Views<View = Tab<C, L>> + 'static,
     S: ChildSlot,
-    C: ViewBuilder<Output = NavigationView<V>>,
+    C: ViewBuilder<Output = NavigationView<V, Tb>>,
+    L: LabelKind + Clone,
     V: View,
+    Tb: NavigationToolbarItems,
 {
     let (items, ids) = AnyViews::new_with_ids(tabs);
     (items.map_views(Tab::into_item::<S>), ids)
 }
 
-impl<C, V> TabSet for Vec<Tab<C>>
+impl<C, L, V, Tb> TabSet for Vec<Tab<C, L>>
 where
-    C: ViewBuilder<Output = NavigationView<V>>,
+    C: ViewBuilder<Output = NavigationView<V, Tb>>,
+    L: LabelKind + Clone,
     V: View,
+    Tb: NavigationToolbarItems,
 {
     type Id = usize;
 
@@ -644,10 +608,12 @@ where
     }
 }
 
-impl<C, V, const N: usize> TabSet for [Tab<C>; N]
+impl<C, L, V, Tb, const N: usize> TabSet for [Tab<C, L>; N]
 where
-    C: ViewBuilder<Output = NavigationView<V>>,
+    C: ViewBuilder<Output = NavigationView<V, Tb>>,
+    L: LabelKind + Clone,
     V: View,
+    Tb: NavigationToolbarItems,
 {
     type Id = usize;
 
@@ -656,13 +622,15 @@ where
     }
 }
 
-impl<D, F, C, V> TabSet for ForEach<D, F, Tab<C>>
+impl<D, F, C, L, V, Tb> TabSet for ForEach<D, F, Tab<C, L>>
 where
-    Self: Views<View = Tab<C>> + 'static,
+    Self: Views<View = Tab<C, L>> + 'static,
     D: Collection,
-    F: Fn(D::Item) -> Tab<C>,
-    C: ViewBuilder<Output = NavigationView<V>>,
+    F: Fn(D::Item) -> Tab<C, L>,
+    C: ViewBuilder<Output = NavigationView<V, Tb>>,
+    L: LabelKind + Clone,
     V: View,
+    Tb: NavigationToolbarItems,
 {
     type Id = <Self as Views>::Id;
 
@@ -672,10 +640,15 @@ where
 }
 
 macro_rules! tuple_tab_sets {
-    ($(($($tab:ident $view:ident),+))+) => {$(
-        impl<$($tab, $view),+> TabSet for ($(Tab<$tab>,)+)
+    ($(($($tab:ident $label:ident $view:ident $tb:ident),+))+) => {$(
+        impl<$($tab, $label, $view, $tb),+> TabSet for ($(Tab<$tab, $label>,)+)
         where
-            $($tab: ViewBuilder<Output = NavigationView<$view>>, $view: View,)+
+            $(
+                $tab: ViewBuilder<Output = NavigationView<$view, $tb>>,
+                $label: LabelKind + Clone,
+                $view: View,
+                $tb: NavigationToolbarItems,
+            )+
         {
             type Id = usize;
 
@@ -689,18 +662,18 @@ macro_rules! tuple_tab_sets {
 }
 
 tuple_tab_sets! {
-    (A0 V0)
-    (A0 V0, A1 V1)
-    (A0 V0, A1 V1, A2 V2)
-    (A0 V0, A1 V1, A2 V2, A3 V3)
-    (A0 V0, A1 V1, A2 V2, A3 V3, A4 V4)
-    (A0 V0, A1 V1, A2 V2, A3 V3, A4 V4, A5 V5)
-    (A0 V0, A1 V1, A2 V2, A3 V3, A4 V4, A5 V5, A6 V6)
-    (A0 V0, A1 V1, A2 V2, A3 V3, A4 V4, A5 V5, A6 V6, A7 V7)
-    (A0 V0, A1 V1, A2 V2, A3 V3, A4 V4, A5 V5, A6 V6, A7 V7, A8 V8)
-    (A0 V0, A1 V1, A2 V2, A3 V3, A4 V4, A5 V5, A6 V6, A7 V7, A8 V8, A9 V9)
-    (A0 V0, A1 V1, A2 V2, A3 V3, A4 V4, A5 V5, A6 V6, A7 V7, A8 V8, A9 V9, A10 V10)
-    (A0 V0, A1 V1, A2 V2, A3 V3, A4 V4, A5 V5, A6 V6, A7 V7, A8 V8, A9 V9, A10 V10, A11 V11)
+    (A0 L0 V0 T0)
+    (A0 L0 V0 T0, A1 L1 V1 T1)
+    (A0 L0 V0 T0, A1 L1 V1 T1, A2 L2 V2 T2)
+    (A0 L0 V0 T0, A1 L1 V1 T1, A2 L2 V2 T2, A3 L3 V3 T3)
+    (A0 L0 V0 T0, A1 L1 V1 T1, A2 L2 V2 T2, A3 L3 V3 T3, A4 L4 V4 T4)
+    (A0 L0 V0 T0, A1 L1 V1 T1, A2 L2 V2 T2, A3 L3 V3 T3, A4 L4 V4 T4, A5 L5 V5 T5)
+    (A0 L0 V0 T0, A1 L1 V1 T1, A2 L2 V2 T2, A3 L3 V3 T3, A4 L4 V4 T4, A5 L5 V5 T5, A6 L6 V6 T6)
+    (A0 L0 V0 T0, A1 L1 V1 T1, A2 L2 V2 T2, A3 L3 V3 T3, A4 L4 V4 T4, A5 L5 V5 T5, A6 L6 V6 T6, A7 L7 V7 T7)
+    (A0 L0 V0 T0, A1 L1 V1 T1, A2 L2 V2 T2, A3 L3 V3 T3, A4 L4 V4 T4, A5 L5 V5 T5, A6 L6 V6 T6, A7 L7 V7 T7, A8 L8 V8 T8)
+    (A0 L0 V0 T0, A1 L1 V1 T1, A2 L2 V2 T2, A3 L3 V3 T3, A4 L4 V4 T4, A5 L5 V5 T5, A6 L6 V6 T6, A7 L7 V7 T7, A8 L8 V8 T8, A9 L9 V9 T9)
+    (A0 L0 V0 T0, A1 L1 V1 T1, A2 L2 V2 T2, A3 L3 V3 T3, A4 L4 V4 T4, A5 L5 V5 T5, A6 L6 V6 T6, A7 L7 V7 T7, A8 L8 V8 T8, A9 L9 V9 T9, A10 L10 V10 T10)
+    (A0 L0 V0 T0, A1 L1 V1 T1, A2 L2 V2 T2, A3 L3 V3 T3, A4 L4 V4 T4, A5 L5 V5 T5, A6 L6 V6 T6, A7 L7 V7 T7, A8 L8 V8 T8, A9 L9 V9 T9, A10 L10 V10 T10, A11 L11 V11 T11)
 }
 
 /// Adaptive native tab container keyed by the application's own tab type.

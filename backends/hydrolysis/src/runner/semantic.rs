@@ -243,10 +243,6 @@ impl SemanticRuntime {
         })
     }
 
-    #[expect(
-        clippy::needless_pass_by_value,
-        reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
-    )]
     fn on_env(
         env: Environment,
         window: RootWindow<crate::text::ParleyEngine>,
@@ -268,7 +264,7 @@ impl SemanticRuntime {
             init_global_executor();
             None
         };
-        let mut env = env.extending(waterui_graphics::backend::SceneViewMergeToParent);
+        let mut env = env;
         #[cfg(not(target_arch = "wasm32"))]
         waterui::install_application_resources(&mut env);
         #[cfg(not(target_arch = "wasm32"))]
