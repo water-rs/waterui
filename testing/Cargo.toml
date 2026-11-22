@@ -40,9 +40,9 @@ gpu = ["hydrolysis/gpu", "waterui/gpu", "dep:wgpu"]
 # otherwise.
 cpu = ["hydrolysis/cpu", "waterui/cpu"]
 # TypeScript views in a test: `ui()` installs the runtime loaded from the
-# bundle `WATERUI_TS_BUNDLE` names — set by `water test` — into the test
-# environment, so a view that reaches a `tsx!` mount renders. A test that
-# mounts no TypeScript never needs the variable.
+# bundle `WATERUI_TS_BUNDLE` names into the test environment, so a view that
+# reaches a `tsx!` mount renders. A test that mounts no TypeScript never
+# needs the variable.
 ts = ["waterui/ts"]
 # The GPU video player as Hydrolysis's realization of `Video`, as an
 # application selecting `waterui/video-gpu` gets it.

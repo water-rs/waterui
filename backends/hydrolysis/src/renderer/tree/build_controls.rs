@@ -387,7 +387,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// horizontal (read from the config).
     #[cfg(feature = "text-field")]
     pub(super) fn build_text_field(
-        config: ResolvedTextFieldConfig<HeldChild<E>>,
+        config: TextFieldConfig<HeldChild<E>>,
         env: &Environment,
         renderer: &mut SemanticCore<E>,
     ) -> Self {

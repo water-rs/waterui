@@ -4721,6 +4721,7 @@ dependencies = [
  "getrandom 0.4.3",
  "gungraun",
  "hydrolysis",
+ "hydrolysis-style",
  "icu_locale",
  "icu_properties",
  "icu_provider",
@@ -4819,7 +4820,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis-m3"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis-m3?branch=refactor%2F4869-typed-tab-toolbar#11d2ff8fb36241c356d6f950c393563294a878ed"
+source = "git+https://github.com/water-rs/hydrolysis-m3?branch=refactor%2F4869-typed-tab-toolbar#b0f3979fb68892604203f39f27e7d695aecb42b8"
 dependencies = [
  "hydrolysis",
  "material-color-utils",
@@ -4828,6 +4829,23 @@ dependencies = [
  "waterui-controls",
  "waterui-core",
  "waterui-graphics",
+]
+
+[[package]]
+name = "hydrolysis-style"
+version = "0.5.1"
+dependencies = [
+ "approx",
+ "cherenkov-record",
+ "kurbo",
+ "nami",
+ "waterui",
+ "waterui-controls",
+ "waterui-core",
+ "waterui-graphics",
+ "waterui-interaction",
+ "waterui-shape",
+ "waterui-text",
 ]
 
 [[package]]

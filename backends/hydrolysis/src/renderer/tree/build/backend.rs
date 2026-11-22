@@ -1329,7 +1329,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         (): (),
     ) -> RenderNode<E> {
         mark_reached!("multi_date_picker");
-        let (label, calendar) = MultiDatePickerGrid::new(native, env).into_parts(env);
+        let (label, calendar) = MultiDatePickerGrid::new(native).into_parts(env);
         self.build_vertical_pair(&label, calendar, env)
     }
 
@@ -1378,7 +1378,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     #[cfg(waterui_feature = "text-field")]
     fn text_field<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::text_field::ResolvedTextFieldConfig<C>,
+        native: waterui::component::text_field::TextFieldConfig<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {

@@ -334,8 +334,9 @@ fn animated_popup_panel(content: impl View, group: PopupMenuStateGroup) -> impl 
 /// the theme's drawn context-menu surface — container colour, corner shape
 /// and elevation — rather than a view-level fill, so it renders identically
 /// to the drawn `.context_menu` presentation in dark and light
-/// (water-rs/hydrolysis#200). The window leaves `POPUP_MENU_PANEL_MARGIN` of
-/// transparent room on every side for the panel's elevation shadow.
+/// (water-rs/hydrolysis#200). The window leaves the panel's elevation
+/// extent ([`popup_menu_panel_margin`]) of transparent room on every side
+/// for its shadow.
 #[cfg(feature = "menu")]
 pub struct PopupMenuSurface {
     /// The rect of a picker popup's selected row in the panel's own space,
@@ -346,11 +347,36 @@ pub struct PopupMenuSurface {
 #[cfg(feature = "menu")]
 impl MetadataKey for PopupMenuSurface {}
 
-/// Transparent margin a `PopupWindowManager` menu window leaves around its
-/// panel, in logical points — the room the panel's elevation shadow draws
-/// into inside the window's own surface.
+/// The transparent margin a `PopupWindowManager` menu window leaves around
+/// its `width` by `height` panel, in logical points: how far the look's panel
+/// elevation reaches at rest, the room its shadow draws into inside the
+/// window's own surface instead of being cut at the window's edge. Zero for
+/// a panel with no elevation.
 #[cfg(feature = "menu")]
-pub const POPUP_MENU_PANEL_MARGIN: f64 = 14.0;
+pub fn popup_menu_panel_margin(look: &MenuLook, width: f64, height: f64) -> f64 {
+    look.panel_extent(kurbo::Rect::new(0.0, 0.0, width, height))
+}
+
+/// The frame of a menu window whose `width` by `height` panel sits at
+/// `origin`: the panel inflated by `margin` on every side.
+#[cfg(feature = "menu")]
+fn popup_menu_window_frame(
+    origin: LayoutPoint,
+    width: f64,
+    height: f64,
+    margin: f64,
+) -> LayoutRect {
+    LayoutRect::new(
+        LayoutPoint::new(
+            origin.x - crate::num_cast::f64_as_f32(margin),
+            origin.y - crate::num_cast::f64_as_f32(margin),
+        ),
+        LayoutSize::new(
+            crate::num_cast::f64_as_f32(margin.mul_add(2.0, width)),
+            crate::num_cast::f64_as_f32(margin.mul_add(2.0, height)),
+        ),
+    )
+}
 
 /// A divider row's height: the theme's separator line
 /// (`md.comp.menu.divider.height`, 1 dp) inside the menu's vertical padding
@@ -697,12 +723,13 @@ impl<E: crate::text::TextEngine> View for PopupMenuContent<E> {
                                 return;
                             };
                             group.truncate(next_depth);
+                            let look = menu_look(&theme, &env);
                             let (window, child_state) = popup_menu_window::<E>(
                                 items.clone(),
                                 child_origin,
                                 group.clone(),
                                 next_depth,
-                                metrics,
+                                &look,
                                 text,
                                 &theme,
                                 manager.clone(),
@@ -754,17 +781,19 @@ pub fn popup_menu_window<E: crate::text::TextEngine>(
     origin: LayoutPoint,
     group: PopupMenuStateGroup,
     depth: usize,
-    metrics: MenuLayout,
+    look: &MenuLook,
     text: PopupMenuTextMetrics,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
     popup_opener: PopupWindowManager<E>,
 ) -> (Window<impl ViewBuilder>, Binding<WindowState>) {
     let state = Binding::container(WindowState::Normal);
-    let (width, height) = popup_menu_size(&nodes, metrics, &text);
+    let (width, height) = popup_menu_size(&nodes, look.layout(), &text);
+    let margin = popup_menu_panel_margin(look, width, height);
     let group_for_content = group;
     let state_for_content = state.clone();
     let nodes_for_content = nodes;
     let theme = theme.clone();
+    let look = look.clone();
     let popup_content = move || {
         animated_popup_panel(
             Metadata::new(
@@ -772,7 +801,7 @@ pub fn popup_menu_window<E: crate::text::TextEngine>(
                     nodes_for_content.clone(),
                     PopupMenuPlacement {
                         depth,
-                        metrics,
+                        metrics: look.layout(),
                         text,
                         popup_origin: origin,
                         width,
@@ -782,7 +811,7 @@ pub fn popup_menu_window<E: crate::text::TextEngine>(
                 ),
                 PopupMenuSurface { selected_row: None },
             )
-            .padding_with(crate::num_cast::f64_as_f32(POPUP_MENU_PANEL_MARGIN)),
+            .padding_with(crate::num_cast::f64_as_f32(margin)),
             group_for_content.clone(),
         )
     };
@@ -795,20 +824,9 @@ pub fn popup_menu_window<E: crate::text::TextEngine>(
     .resizable(false)
     .background(Color::transparent());
     popup.closable = false;
-    // The window inflates by the panel margin on every side: the menu panel
-    // draws inside the inset, and the transparent ring gives the panel's
-    // elevation shadow room inside the window's own surface instead of
-    // being clipped at the frame.
-    popup.frame.set(LayoutRect::new(
-        LayoutPoint::new(
-            origin.x - crate::num_cast::f64_as_f32(POPUP_MENU_PANEL_MARGIN),
-            origin.y - crate::num_cast::f64_as_f32(POPUP_MENU_PANEL_MARGIN),
-        ),
-        LayoutSize::new(
-            crate::num_cast::f64_as_f32(POPUP_MENU_PANEL_MARGIN.mul_add(2.0, width)),
-            crate::num_cast::f64_as_f32(POPUP_MENU_PANEL_MARGIN.mul_add(2.0, height)),
-        ),
-    ));
+    popup
+        .frame
+        .set(popup_menu_window_frame(origin, width, height, margin));
     (popup, state)
 }
 
@@ -992,6 +1010,7 @@ pub fn picker_menu_window(
     let state = Binding::container(WindowState::Normal);
     let layout = look.layout();
     let height = picker_menu_panel_height(layout, row_height, entries.len());
+    let margin = popup_menu_panel_margin(look, width, height);
     let selected_row = look
         .has_selected_row()
         .then(|| {
@@ -1039,7 +1058,7 @@ pub fn picker_menu_window(
             .with(ListRowChrome)
             .with(MenuRowChrome);
         let panel = Metadata::new(rows, PopupMenuSurface { selected_row })
-            .padding_with(crate::num_cast::f64_as_f32(POPUP_MENU_PANEL_MARGIN));
+            .padding_with(crate::num_cast::f64_as_f32(margin));
         animated_popup_panel(panel, group_for_content.clone())
     };
     let mut popup = Window::new("WaterUI Picker Menu", state_for_content, popup_content)
@@ -1047,19 +1066,9 @@ pub fn picker_menu_window(
         .resizable(false)
         .background(Color::transparent());
     popup.closable = false;
-    // The window inflates by the panel margin on every side, like every menu
-    // window: the panel draws inside the inset and its elevation shadow lands
-    // in the transparent ring.
-    popup.frame.set(LayoutRect::new(
-        LayoutPoint::new(
-            origin.x - crate::num_cast::f64_as_f32(POPUP_MENU_PANEL_MARGIN),
-            origin.y - crate::num_cast::f64_as_f32(POPUP_MENU_PANEL_MARGIN),
-        ),
-        LayoutSize::new(
-            crate::num_cast::f64_as_f32(POPUP_MENU_PANEL_MARGIN.mul_add(2.0, width)),
-            crate::num_cast::f64_as_f32(POPUP_MENU_PANEL_MARGIN.mul_add(2.0, height)),
-        ),
-    ));
+    popup
+        .frame
+        .set(popup_menu_window_frame(origin, width, height, margin));
     (popup, state)
 }
 
@@ -1713,15 +1722,15 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             return false;
         };
         self.dismiss_active_popup_menu();
-        let metrics = menu_look(theme, env).layout();
+        let look = menu_look(theme, env);
         let group = PopupMenuStateGroup::new();
-        let text = self.popup_menu_text_metrics(&nodes, metrics, env, theme);
+        let text = self.popup_menu_text_metrics(&nodes, look.layout(), env, theme);
         let (window, state) = popup_menu_window::<E>(
             nodes,
             popup_origin,
             group.clone(),
             0,
-            metrics,
+            &look,
             text,
             theme,
             manager.clone(),

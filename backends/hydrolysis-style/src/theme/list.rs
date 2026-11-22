@@ -12,17 +12,14 @@
 
 use std::rc::Rc;
 
-#[cfg(hydrolysis_runtime)]
+use cherenkov_record::Recorder;
 use kurbo::Rect;
 use waterui_core::animation::Animation;
 use waterui_core::layout::LayoutDirection;
 
-#[cfg(hydrolysis_runtime)]
 use super::look::record_at_rest;
 use super::look::{Custom, CustomPart, DrivenSet};
 use super::{Chrome, ListMetrics};
-#[cfg(hydrolysis_runtime)]
-use cherenkov_record::Recorder;
 
 /// What Hydrolysis asks a theme's [`list`](super::WidgetTheme::list) look
 /// for: everything structural about one list.
@@ -68,13 +65,6 @@ pub struct ListGestures {
 /// The swipe-to-dismiss background of a list row.
 #[derive(Clone)]
 struct DismissBackground {
-    #[cfg_attr(
-        not(hydrolysis_runtime),
-        expect(
-            dead_code,
-            reason = "only the renderer realizes the dismiss background; a build without a painter compiles the theme contract alone"
-        )
-    )]
     part: Rc<dyn CustomPart<f64>>,
 }
 
@@ -94,21 +84,7 @@ struct DismissBackground {
 pub struct ListLook {
     metrics: ListMetrics,
     gestures: ListGestures,
-    #[cfg_attr(
-        not(hydrolysis_runtime),
-        expect(
-            dead_code,
-            reason = "only the renderer records the list's rows; a build without a painter compiles the theme contract alone"
-        )
-    )]
     row: Rc<dyn CustomPart<()>>,
-    #[cfg_attr(
-        not(hydrolysis_runtime),
-        expect(
-            dead_code,
-            reason = "only the renderer records the list's separators; a build without a painter compiles the theme contract alone"
-        )
-    )]
     separator: Rc<dyn CustomPart<()>>,
     alternate_row: Option<Rc<dyn CustomPart<()>>>,
     lifted_row: Option<Rc<dyn CustomPart<()>>>,
@@ -250,8 +226,8 @@ impl ListLook {
 
     /// Records the row at `index` over `frame`: the alternate part on every
     /// second row when the look has one.
-    #[cfg(hydrolysis_runtime)]
-    pub(crate) fn record_row(&self, recorder: &mut Recorder, frame: Rect, index: usize) {
+    #[doc(hidden)]
+    pub fn record_row(&self, recorder: &mut Recorder, frame: Rect, index: usize) {
         let part = match &self.alternate_row {
             Some(alternate) if index % 2 == 1 => alternate,
             _ => &self.row,
@@ -260,22 +236,23 @@ impl ListLook {
     }
 
     /// Records the lifted treatment over `frame`, when the look has one.
-    #[cfg(hydrolysis_runtime)]
-    pub(crate) fn record_lifted_row(&self, recorder: &mut Recorder, frame: Rect) {
+    #[doc(hidden)]
+    pub fn record_lifted_row(&self, recorder: &mut Recorder, frame: Rect) {
         if let Some(part) = &self.lifted_row {
             record_at_rest(&**part, recorder, frame);
         }
     }
 
     /// Records a separator over `frame`.
-    #[cfg(hydrolysis_runtime)]
-    pub(crate) fn record_separator(&self, recorder: &mut Recorder, frame: Rect) {
+    #[doc(hidden)]
+    pub fn record_separator(&self, recorder: &mut Recorder, frame: Rect) {
         record_at_rest(&*self.separator, recorder, frame);
     }
 
     /// The swipe's dismiss background part, when the look has one.
-    #[cfg(hydrolysis_runtime)]
-    pub(crate) fn dismiss_part(&self) -> Option<&Rc<dyn CustomPart<f64>>> {
+    #[doc(hidden)]
+    #[must_use]
+    pub fn dismiss_part(&self) -> Option<&Rc<dyn CustomPart<f64>>> {
         self.dismiss.as_ref().map(|dismiss| &dismiss.part)
     }
 }

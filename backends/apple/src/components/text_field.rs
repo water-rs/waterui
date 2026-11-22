@@ -1,4 +1,4 @@
-//! The `text_field` leaf: `Native<ResolvedTextFieldConfig>` rendered
+//! The `text_field` leaf: `Native<TextFieldConfig>` rendered
 //! through the kit's editable text field inside a container that also
 //! holds the label child.
 //!
@@ -31,7 +31,7 @@ use waterui::component::input::ContentType;
 #[cfg(target_os = "ios")]
 use waterui::component::input::KeyboardType;
 use waterui::component::menu::ResolvedMenuItem;
-use waterui::component::text_field::ResolvedTextFieldConfig;
+use waterui::component::text_field::TextFieldConfig;
 use waterui::component::text_selection::{CustomTextSelection, TextSelection};
 use waterui::graphics::color::WorkingColor;
 use waterui::reactive::Computed;
@@ -588,11 +588,11 @@ impl SubView for TextFieldSubView {
 }
 
 /// The `text_field` realization:
-/// `Native<ResolvedTextFieldConfig>` maps to a container with the platform
+/// `Native<TextFieldConfig>` maps to a container with the platform
 /// field and the mounted label child; binding, prompt, disabled state and
 /// accessibility stay live through watchers.
-pub fn realize_resolved_text_field_config(
-    config: ResolvedTextFieldConfig<Held>,
+pub fn realize_text_field_config(
+    config: TextFieldConfig<Held>,
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
     let mtm = ctx.mtm();

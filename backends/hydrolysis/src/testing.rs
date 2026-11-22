@@ -82,7 +82,7 @@ pub fn plain_chrome() -> crate::theme::Chrome {
 /// The measures of a test style's navigation chrome: 64 point bars and a
 /// 40 point back button.
 #[must_use]
-#[cfg(feature = "navigation")]
+#[cfg(waterui_feature = "navigation")]
 pub const fn plain_navigation_metrics() -> crate::theme::NavigationMetrics {
     crate::theme::NavigationMetrics {
         automatic_bar_height: 64.0,
@@ -108,7 +108,7 @@ pub const fn plain_navigation_metrics() -> crate::theme::NavigationMetrics {
 /// The page transition of a test style: 450 milliseconds on the standard
 /// easing.
 #[must_use]
-#[cfg(feature = "navigation")]
+#[cfg(waterui_feature = "navigation")]
 pub const fn plain_navigation_motion() -> crate::theme::NavigationMotion {
     crate::theme::NavigationMotion {
         transition_duration: std::time::Duration::from_millis(450),
@@ -122,7 +122,7 @@ pub const fn plain_navigation_motion() -> crate::theme::NavigationMotion {
 /// nothing: what a test style's navigation chrome measures, places and
 /// hit-tests as.
 #[must_use]
-#[cfg(feature = "navigation")]
+#[cfg(waterui_feature = "navigation")]
 pub fn plain_navigation_look() -> crate::theme::NavigationBarLook {
     crate::theme::NavigationBarLook::new(
         plain_navigation_metrics(),
@@ -135,14 +135,14 @@ pub fn plain_navigation_look() -> crate::theme::NavigationBarLook {
 /// The measures of a test style's tab bars: 48 points high, items at least
 /// 48 points wide.
 #[must_use]
-#[cfg(feature = "navigation")]
+#[cfg(waterui_feature = "navigation")]
 pub const fn plain_tabs_metrics() -> crate::theme::TabsMetrics {
     crate::theme::TabsMetrics::new(48.0, 48.0, 16.0, 4.0)
 }
 
 /// The motion of a test style's tab highlights: 15 milliseconds, linear.
 #[must_use]
-#[cfg(feature = "navigation")]
+#[cfg(waterui_feature = "navigation")]
 pub fn plain_tabs_motion() -> crate::theme::Motion {
     crate::theme::Motion::uniform(waterui::animation::Animation::linear(
         std::time::Duration::from_millis(15),
@@ -152,7 +152,7 @@ pub fn plain_tabs_motion() -> crate::theme::Motion {
 /// A tabs look measured by [`plain_tabs_metrics`], drawing nothing: what a
 /// test style's tab containers measure, place and hit-test as.
 #[must_use]
-#[cfg(feature = "navigation")]
+#[cfg(waterui_feature = "navigation")]
 pub fn plain_tabs_look() -> crate::theme::TabsLook {
     use crate::theme::Custom;
     crate::theme::TabsLook::new(
@@ -177,7 +177,7 @@ pub fn plain_stepper_look() -> crate::theme::StepperLook {
 /// The measures of a test style's menus: 56 point rows, 12 points of vertical
 /// padding, 16 of horizontal, at least 112 points wide and at most 320.
 #[must_use]
-#[cfg(feature = "menu")]
+#[cfg(waterui_feature = "menu")]
 pub const fn plain_menu_layout() -> crate::theme::MenuLayout {
     crate::theme::MenuLayout {
         row_height: 56.0,
@@ -186,22 +186,23 @@ pub const fn plain_menu_layout() -> crate::theme::MenuLayout {
         min_width: 112.0,
         max_width: 320.0,
         width_per_char: 8.5,
-        corner_radius: 4.0,
         separator_horizontal_inset: 16.0,
         separator_thickness: 1.0,
     }
 }
 
-/// A menu look measured by [`plain_menu_layout`], drawing nothing: what a
+/// A menu look measured by [`plain_menu_layout`], drawing nothing.
+///
+/// Its panel is clear, with 4-point corners and no elevation. It is what a
 /// test style's picker popups, text context menus and popup windows measure,
 /// place and hit-test as.
 #[must_use]
-#[cfg(feature = "menu")]
+#[cfg(waterui_feature = "menu")]
 pub fn plain_menu_look() -> crate::theme::MenuLook {
-    use crate::theme::Custom;
+    use crate::theme::{CornerShape, Custom, Surface};
     crate::theme::MenuLook::new(
         plain_menu_layout(),
-        Custom::new((), |_recorder, _frame, ()| {}),
+        Surface::clear(CornerShape::radius(4.0)),
         Custom::new((), |_recorder, _frame, ()| {}),
     )
 }
@@ -214,7 +215,7 @@ pub fn plain_menu_look() -> crate::theme::MenuLook {
 /// half a slot, a drag begins after 8 points and rows settle over 15
 /// milliseconds.
 #[must_use]
-#[cfg(feature = "list")]
+#[cfg(waterui_feature = "list")]
 pub fn plain_list_look() -> crate::theme::ListLook {
     use crate::theme::{Custom, ListControls, ListGestures, ListLook, ListMetrics};
     ListLook::new(
@@ -251,7 +252,7 @@ pub fn plain_list_look() -> crate::theme::ListLook {
 /// points, cells inset 16 points vertically, a header 56 points tall and
 /// rows 52 points tall.
 #[must_use]
-#[cfg(feature = "table")]
+#[cfg(waterui_feature = "table")]
 pub fn plain_table_look() -> crate::theme::TableLook {
     use crate::theme::{Custom, TableLook, TableMetrics};
     TableLook::new(
@@ -355,7 +356,7 @@ pub fn plain_radio_group_look() -> crate::theme::RadioGroupLook {
 /// in segments at least 58 points wide, 8 points below the heading, in the
 /// default font and foreground.
 #[must_use]
-#[cfg(feature = "picker")]
+#[cfg(waterui_feature = "picker")]
 pub fn plain_segmented_look() -> crate::theme::SegmentedLook {
     use crate::theme::{Motion, SegmentLabel, SegmentedLayout, SegmentedLook};
     SegmentedLook::new(
@@ -424,38 +425,38 @@ pub const fn plain_input_metrics() -> crate::theme::InputFieldMetrics {
 }
 
 mod test_style {
-    #[cfg(feature = "table")]
+    #[cfg(waterui_feature = "table")]
     use crate::theme::TableLook;
-    #[cfg(feature = "list")]
+    #[cfg(waterui_feature = "list")]
     use crate::theme::{ListLook, ListSpec};
-    #[cfg(feature = "navigation")]
+    #[cfg(waterui_feature = "navigation")]
     use crate::theme::{NavigationBarLook, NavigationSpec};
     use std::time::Duration;
 
-    #[cfg(feature = "picker")]
+    #[cfg(waterui_feature = "picker")]
     use crate::theme::RadioGroupLook;
     use crate::theme::{
         BadgeLook, ButtonLook, ButtonSpec, Chrome, CornerShape, FocusIndicator, HitRegion,
         IndicatorLook, Label, LinearProgressLook, Motion, PressFeedback, ProgressControl,
         ProgressSpec, ScrollIndicatorLook, StateLayer, Surface, WidgetTheme,
     };
-    #[cfg(feature = "toggle")]
+    #[cfg(waterui_feature = "toggle")]
     use crate::theme::{CheckboxLook, SwitchDrag, SwitchLook, ToggleSpec};
-    #[cfg(feature = "slider")]
+    #[cfg(waterui_feature = "slider")]
     use crate::theme::{DragMapping, Knob, SliderLayout, SliderLook, SliderSpec};
-    #[cfg(feature = "menu")]
+    #[cfg(waterui_feature = "menu")]
     use crate::theme::{MenuLook, MenuSpec};
-    #[cfg(any(feature = "picker", feature = "date-picker"))]
+    #[cfg(any(waterui_feature = "picker", waterui_feature = "date-picker"))]
     use crate::theme::{MenuPickerLook, PickerSpec};
-    #[cfg(feature = "stepper")]
+    #[cfg(waterui_feature = "stepper")]
     use crate::theme::{StepperLook, StepperSpec};
-    #[cfg(feature = "navigation")]
+    #[cfg(waterui_feature = "navigation")]
     use crate::theme::{TabsLook, TabsSpec};
     #[cfg(any(
-        feature = "text-field",
-        feature = "secure-field",
-        feature = "date-picker",
-        feature = "color-picker"
+        waterui_feature = "text-field",
+        waterui_feature = "secure-field",
+        waterui_feature = "date-picker",
+        waterui_feature = "color-picker"
     ))]
     use crate::theme::{TextFieldLook, TextFieldSpec};
     use waterui::animation::Animation;
@@ -540,7 +541,7 @@ mod test_style {
                 .minimum_size(kurbo::Size::new(123.0, 45.0))
         }
 
-        #[cfg(feature = "toggle")]
+        #[cfg(waterui_feature = "toggle")]
         fn switch(&self, spec: &ToggleSpec, _env: &Environment) -> SwitchLook {
             SwitchLook::new(
                 super::plain_toggle_control(),
@@ -548,42 +549,42 @@ mod test_style {
             )
         }
 
-        #[cfg(feature = "toggle")]
+        #[cfg(waterui_feature = "toggle")]
         fn checkbox(&self, _spec: &ToggleSpec, _env: &Environment) -> CheckboxLook {
             CheckboxLook::new(super::plain_toggle_control())
         }
 
-        #[cfg(feature = "stepper")]
+        #[cfg(waterui_feature = "stepper")]
         fn stepper(&self, _spec: &StepperSpec, _env: &Environment) -> StepperLook {
             super::plain_stepper_look()
         }
 
         #[cfg(any(
-            feature = "text-field",
-            feature = "secure-field",
-            feature = "date-picker",
-            feature = "color-picker"
+            waterui_feature = "text-field",
+            waterui_feature = "secure-field",
+            waterui_feature = "date-picker",
+            waterui_feature = "color-picker"
         ))]
         fn text_field(&self, _spec: &TextFieldSpec, _env: &Environment) -> TextFieldLook {
             super::plain_text_field_look(super::plain_chrome(), super::plain_input_metrics())
         }
 
-        #[cfg(feature = "menu")]
+        #[cfg(waterui_feature = "menu")]
         fn menu(&self, _spec: &MenuSpec, _env: &Environment) -> MenuLook {
             super::plain_menu_look()
         }
 
-        #[cfg(any(feature = "picker", feature = "date-picker"))]
+        #[cfg(any(waterui_feature = "picker", waterui_feature = "date-picker"))]
         fn menu_picker(&self, _spec: &PickerSpec, _env: &Environment) -> MenuPickerLook {
             super::plain_menu_picker_look()
         }
 
-        #[cfg(feature = "picker")]
+        #[cfg(waterui_feature = "picker")]
         fn radio_group(&self, _spec: &PickerSpec, _env: &Environment) -> RadioGroupLook {
             super::plain_radio_group_look()
         }
 
-        #[cfg(feature = "picker")]
+        #[cfg(waterui_feature = "picker")]
         fn segmented_picker(
             &self,
             _spec: &crate::theme::SegmentedSpec,
@@ -592,7 +593,7 @@ mod test_style {
             super::plain_segmented_look()
         }
 
-        #[cfg(feature = "slider")]
+        #[cfg(waterui_feature = "slider")]
         fn slider(&self, _spec: &SliderSpec, _env: &Environment) -> SliderLook {
             SliderLook::new(
                 SliderLayout {
@@ -643,12 +644,12 @@ mod test_style {
             ))
         }
 
-        #[cfg(feature = "navigation")]
+        #[cfg(waterui_feature = "navigation")]
         fn navigation_bar(&self, _spec: &NavigationSpec, _env: &Environment) -> NavigationBarLook {
             super::plain_navigation_look()
         }
 
-        #[cfg(feature = "navigation")]
+        #[cfg(waterui_feature = "navigation")]
         fn tabs(&self, _spec: &TabsSpec, _env: &Environment) -> TabsLook {
             super::plain_tabs_look()
         }
@@ -661,12 +662,12 @@ mod test_style {
             super::plain_badge_look()
         }
 
-        #[cfg(feature = "list")]
+        #[cfg(waterui_feature = "list")]
         fn list(&self, _spec: &ListSpec, _env: &Environment) -> ListLook {
             super::plain_list_look()
         }
 
-        #[cfg(feature = "table")]
+        #[cfg(waterui_feature = "table")]
         fn table(&self, _env: &Environment) -> TableLook {
             super::plain_table_look()
         }

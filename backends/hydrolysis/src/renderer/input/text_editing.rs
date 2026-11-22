@@ -1358,7 +1358,11 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         let metrics = menu.layout();
         {
             self.scene_mut().record_picture(transform, |draw| {
-                menu.record_panel(&mut *draw, overlay.bounds);
+                crate::renderer::chrome::record_surface_at_rest(
+                    menu.panel(),
+                    &mut *draw,
+                    overlay.bounds,
+                );
             });
         }
         for (index, row) in overlay.rows.iter().enumerate() {
@@ -1471,8 +1475,8 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     ) {
         let env = &overlay.env;
         let theme = Rc::clone(&overlay.theme);
-        let metrics = menu_look(&theme, env).layout();
-        let text = self.popup_menu_text_metrics(&items, metrics, env, &theme);
+        let look = menu_look(&theme, env);
+        let text = self.popup_menu_text_metrics(&items, look.layout(), env, &theme);
         let Some(origin) = popup_window_origin(
             LayoutPoint::new(
                 crate::num_cast::f64_as_f32(row_bounds.x1),
@@ -1492,7 +1496,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             origin,
             group.clone(),
             1,
-            metrics,
+            &look,
             text,
             &theme,
             manager.clone(),
