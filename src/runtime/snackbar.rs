@@ -1453,6 +1453,7 @@ mod tests {
 
     #[test]
     fn typed_icon_host_accepts_plain_and_icon_snackbars() {
+        install_executor();
         let view = SnackbarManager::host(|manager| {
             manager.show(Snackbar::new("Plain"));
             manager.show(Snackbar::new("Icon").icon("★"));

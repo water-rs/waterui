@@ -284,7 +284,8 @@ mod tests {
         });
         assert_eq!(
             built
-                .body(&Environment::new())
+                .builder
+                .build(built.error)
                 .content()
                 .snapshot()
                 .to_plain()
@@ -296,7 +297,8 @@ mod tests {
             ErrorView::new(SampleError("two")).builder(|err| text(format!("replaced: {}", err.0)));
         assert_eq!(
             replaced
-                .body(&Environment::new())
+                .builder
+                .build(replaced.error)
                 .content()
                 .snapshot()
                 .to_plain()
