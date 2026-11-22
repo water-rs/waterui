@@ -43,7 +43,7 @@ pub struct HwuiHost {
     backend: Rc<crate::hwui::HwuiResources>,
     /// The redraw a registered effect's parameter watches fire.
     effect_wake: std::sync::Arc<dyn Fn() + Send + Sync>,
-    materials: MaterialTerms<Infallible>,
+    materials: MaterialTerms<Infallible, Infallible>,
 }
 
 impl HwuiHost {
@@ -71,6 +71,7 @@ impl HwuiHost {
             materials: MaterialTerms {
                 registry,
                 shaders: rustc_hash::FxHashMap::default(),
+                content_shaders: rustc_hash::FxHashMap::default(),
             },
         }
     }
@@ -112,6 +113,7 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for HwuiTarget {
     type Host = HwuiHost;
     type Group = Infallible;
     type Shader = Infallible;
+    type ContentShader = Infallible;
 
     const BACKDROP_SHADER_REFUSAL: Option<&'static str> =
         Some("the HWUI render target has no backdrop shaders");
@@ -243,7 +245,7 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for HwuiTarget {
         );
     }
 
-    fn material_terms(host: &Self::Host) -> &MaterialTerms<Self::Shader> {
+    fn material_terms(host: &Self::Host) -> &MaterialTerms<Self::Shader, Self::ContentShader> {
         &host.materials
     }
 

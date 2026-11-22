@@ -4,6 +4,7 @@
 use cherenkov::lowering::Realization;
 use cherenkov::lowering::hidden::HiddenLayers;
 use std::hash::{Hash, Hasher};
+use std::mem::take;
 use std::num::NonZeroU64;
 use std::ops::Range;
 use std::sync::Arc;
@@ -14,12 +15,12 @@ use waterui_contract::contract_violation;
 use super::MAX_PASS_INSTANCES;
 use super::prepared::{ClipShape, Op, OutlineRef, PaintData, ResolvedPaint, box_shape};
 use cherenkov::kurbo::{self, Affine, BezPath, PathEl, Point, Rect, Vec2};
-use cherenkov::{FillRule, GlyphRun, ShapeData, WorkingColor};
-
-use cherenkov::RenderError;
+use cherenkov::{
+    BlendMode, BlendSpace, ContentShaderEffect, FillRule, GlyphRun, LayerId, LayerNode, ProducerId,
+    RenderError, ShapeData, SurfaceTree, WorkingColor,
+};
 
 use crate::names;
-use cherenkov::{LayerId, ProducerId, SurfaceTree};
 
 use crate::render::GpuImage;
 use crate::render::filter::FilterKey;
@@ -27,12 +28,12 @@ use crate::render::filter::FilterKey;
 use crate::render::glyph::{self, Atlas, FontData, MaskCell, PathEmit, PendingRaster, glyph_key};
 use crate::render::gpu_cov::CoverageLimit;
 use crate::render::instance::{
-    BLEND_CODE_SHIFT, ELLIPSE_TIER16_MIN_AREA, ELLIPSE_TIER32_MIN_AREA, FLAG_BLEND_SRC,
-    FLAG_HAS_CLIP, FLAG_HAS_INNER, FLAG_HAS_MASK, FLAG_MASK_TEXTURE, FLAG_PICTURE_TILE,
-    FLAG_TEX_SRGB, FLAG_UNION, Globals, Instance, KIND_FILL, KIND_GLYPH, KIND_POLYGON, KIND_REGION,
-    KIND_SHADOW, KIND_SPAN, KIND_STROKE_DIST, KIND_STROKE_OFFSET, PAINT_IMAGE, PAINT_LINEAR,
-    PAINT_PROJECTIVE, PAINT_RADIAL, PAINT_SOLID, PAINT_SWEEP, PAINT_TEXTURE, Shape, Stop, affine,
-    blend_code,
+    BLEND_CODE_SHIFT, EFFECT_CONTENT, ELLIPSE_TIER16_MIN_AREA, ELLIPSE_TIER32_MIN_AREA,
+    FLAG_BLEND_SRC, FLAG_HAS_CLIP, FLAG_HAS_INNER, FLAG_HAS_MASK, FLAG_MASK_TEXTURE,
+    FLAG_PICTURE_TILE, FLAG_TEX_SRGB, FLAG_UNION, Globals, Instance, KIND_FILL, KIND_GLYPH,
+    KIND_POLYGON, KIND_REGION, KIND_SHADOW, KIND_SPAN, KIND_STROKE_DIST, KIND_STROKE_OFFSET,
+    PAINT_BACKDROP, PAINT_IMAGE, PAINT_LINEAR, PAINT_PROJECTIVE, PAINT_RADIAL, PAINT_SOLID,
+    PAINT_SWEEP, PAINT_TEXTURE, Shape, Stop, affine, blend_code,
 };
 use crate::render::path;
 use crate::render::projective::{LocalKey, Placement};
@@ -79,6 +80,15 @@ pub enum PipelineKind {
     /// `replace` for a member composite that reads the backdrop copy
     /// and writes its result unblended.
     Effect {
+        /// The shader's raw id.
+        id: u64,
+        /// Write the fragment result unblended.
+        replace: bool,
+    },
+    /// A registered content effect shader's pipeline: its raw id, and
+    /// `replace` for a cross-space composite that reads the backdrop copy
+    /// and writes its result unblended.
+    ContentEffect {
         /// The shader's raw id.
         id: u64,
         /// Write the fragment result unblended.
@@ -3169,7 +3179,7 @@ impl<'a> Lowering<'a> {
         let inst_start = self.frame.instances.len();
         let saved_capture = self.capture_isolation;
         let saved_target = self.semantic_target;
-        let saved_scratches = std::mem::take(&mut self.looked_through_scratches);
+        let saved_scratches = take(&mut self.looked_through_scratches);
         self.capture_isolation = false;
         if semantic {
             self.semantic_target = Target::Scratch(scratch);
@@ -4207,17 +4217,31 @@ impl<'a> Lowering<'a> {
             self.next_part();
         }
         let member_outer = std::mem::replace(&mut self.member_outer_clip, self.clip);
-        let result = self.layer_body(
-            id,
-            node,
-            tree,
-            caches,
-            glyphs,
-            clip,
-            content_space,
-            (opacity, blend, declared_space),
-            isolates,
-        );
+        let result = if let Some(content_effect) = &node.content_effect {
+            self.content_effect_scope(
+                id,
+                node,
+                tree,
+                caches,
+                glyphs,
+                clip,
+                content_space,
+                (opacity, blend, self.resolve_space(declared_space)),
+                content_effect,
+            )
+        } else {
+            self.layer_body(
+                id,
+                node,
+                tree,
+                caches,
+                glyphs,
+                clip,
+                content_space,
+                (opacity, blend, declared_space),
+                isolates,
+            )
+        };
         self.member_outer_clip = member_outer;
         self.transform = saved;
         self.animating = saved_animating;
@@ -4383,6 +4407,252 @@ impl<'a> Lowering<'a> {
                 )
             }
         }
+    }
+
+    /// Isolates a layer carrying a content effect shader, renders its items
+    /// under the layer's analytic clip into a scratch, and composites the
+    /// scratch through `content_effect` without double-refracting any
+    /// backdrop behind it.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the layer walk's fixed context, matching layer_body"
+    )]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "surface extent fits u32"
+    )]
+    fn content_effect_scope(
+        &mut self,
+        id: LayerId,
+        node: &LayerNode,
+        tree: &SurfaceTree,
+        caches: &mut FxHashMap<LayerId, ContentData>,
+        glyphs: &GlyphContext<'_>,
+        clip: Option<&ShapeData>,
+        content_space: Affine,
+        (opacity, blend, space): (f32, BlendMode, BlendSpace),
+        effect: &ContentShaderEffect,
+    ) -> Result<(), RenderError> {
+        if effect.uniforms.len() > 64
+            || !effect.uniforms.iter().all(|v| v.is_finite())
+            || !(effect.reach().is_finite() && effect.reach() >= 0.0)
+        {
+            return Err(RenderError::Render(
+                "content shader effect needs at most 64 finite uniforms and a finite non-negative reach"
+                    .into(),
+            ));
+        }
+        let Some(clip_shape) = clip else {
+            return Err(RenderError::Unsupported(names::CONTENT_EFFECT_SDF_PATH));
+        };
+        if matches!(clip_shape, ShapeData::Path { .. }) {
+            return Err(RenderError::Unsupported(names::CONTENT_EFFECT_SDF_PATH));
+        }
+        let Some(boxed) = box_shape(clip_shape)? else {
+            return Ok(());
+        };
+        let layer_transform = self.transform;
+        let member_clip = DeviceClip {
+            inv: (layer_transform * boxed.extra).inverse(),
+            shape: boxed.shape,
+            aligned_rect: match clip_shape {
+                ShapeData::Rect(r) if axis_aligned(layer_transform) => {
+                    Some(device_rect(layer_transform, *r))
+                }
+                _ => None,
+            },
+            mask: None,
+        };
+        let member_bounds = clip_device_bounds(layer_transform, clip_shape)?;
+        let draw_region = clip_region(Some(member_clip), self.width as u32, self.height as u32);
+        if draw_region[2] == 0 || draw_region[3] == 0 {
+            return Ok(());
+        }
+        let needs_outer = self.clip.is_some() || blend != BlendMode::Normal;
+        if needs_outer {
+            self.isolate(
+                None,
+                None,
+                opacity,
+                blend,
+                space,
+                |s, glyphs| {
+                    if let Some(sample) = &node.backdrop {
+                        s.run_clipped(
+                            member_clip,
+                            |s, _| s.emit_backdrop_sample(sample, id),
+                            glyphs,
+                        )?;
+                    }
+                    s.emit_content_effect_isolated(
+                        id,
+                        node,
+                        tree,
+                        caches,
+                        glyphs,
+                        layer_transform,
+                        content_space,
+                        member_clip,
+                        member_bounds,
+                        draw_region,
+                        1.0,
+                        space,
+                        effect,
+                    )
+                },
+                glyphs,
+            )
+        } else {
+            if let Some(sample) = &node.backdrop {
+                self.run_clipped(
+                    member_clip,
+                    |s, _| s.emit_backdrop_sample(sample, id),
+                    glyphs,
+                )?;
+            }
+            self.emit_content_effect_isolated(
+                id,
+                node,
+                tree,
+                caches,
+                glyphs,
+                layer_transform,
+                content_space,
+                member_clip,
+                member_bounds,
+                draw_region,
+                opacity,
+                space,
+                effect,
+            )
+        }
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the isolated content-effect pass's geometry, style and walk state"
+    )]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        reason = "surface and region coordinates fit u32/f32 and stop counts fit u32"
+    )]
+    fn emit_content_effect_isolated(
+        &mut self,
+        id: LayerId,
+        node: &LayerNode,
+        tree: &SurfaceTree,
+        caches: &mut FxHashMap<LayerId, ContentData>,
+        glyphs: &GlyphContext<'_>,
+        layer_transform: Affine,
+        content_space: Affine,
+        member_clip: DeviceClip,
+        member_bounds: Rect,
+        draw_region: [u32; 4],
+        opacity: f32,
+        space: BlendSpace,
+        effect: &ContentShaderEffect,
+    ) -> Result<(), RenderError> {
+        self.depth += 1;
+        let scratch = self.depth - 1;
+        let (outer_clip, outer_member_clip) = (self.clip, self.member_outer_clip.take());
+        self.set_clip(Some(member_clip));
+        let passes_start = self.frame.passes.len();
+        if self.scratch_space.len() <= scratch {
+            self.scratch_space.resize(scratch + 1, BlendSpace::Linear);
+        }
+        self.scratch_space[scratch] = space;
+        self.begin_pass(Target::Scratch(scratch), Some([0.0; 4]));
+        let saved_capture = self.capture_isolation;
+        let saved_target = self.semantic_target;
+        let saved_scratches = take(&mut self.looked_through_scratches);
+        self.capture_isolation = false;
+        self.semantic_target = Target::Scratch(scratch);
+        self.space_stack.push(space);
+
+        self.transform = content_space;
+        let result = self.layer_items(id, node, tree, caches, glyphs);
+
+        self.space_stack.pop();
+        self.finish_pass();
+        self.depth -= 1;
+        self.set_clip(outer_clip);
+        self.member_outer_clip = outer_member_clip;
+        let inner_capture = self.capture_isolation;
+        self.capture_isolation |= saved_capture;
+        self.semantic_target = saved_target;
+        self.looked_through_scratches = saved_scratches;
+        self.transform = layer_transform;
+        result?;
+
+        let scratch_region = if let Some(filter) = node.filter {
+            self.frame
+                .filters
+                .push((self.frame.passes.len() - 1, FilterKey::Layer(filter.raw())));
+            [0, 0, self.width as u32, self.height as u32]
+        } else if inner_capture {
+            [0, 0, self.width as u32, self.height as u32]
+        } else {
+            draw_region
+        };
+        for pass in &mut self.frame.passes[passes_start..] {
+            if pass.target == Target::Scratch(scratch) {
+                pass.region = scratch_region;
+            }
+        }
+        let outer_target = self.current_target();
+        self.begin_pass(outer_target, None);
+
+        let mut inst = Self::base(KIND_SPAN, affine(layer_transform), Some(member_clip));
+        inst.bounds = [
+            draw_region[0] as f32,
+            draw_region[1] as f32,
+            (draw_region[0] + draw_region[2]) as f32,
+            (draw_region[1] + draw_region[3]) as f32,
+        ];
+        inst.meta[1] = PAINT_BACKDROP;
+        inst.params[1] = opacity;
+        inst.grad = [scratch_region[0] as f32, scratch_region[1] as f32, 1.0, 1.0];
+        inst.grad2 = [
+            scratch_region[2] as f32,
+            scratch_region[3] as f32,
+            f32_f64(member_bounds.width()),
+            f32_f64(member_bounds.height()),
+        ];
+        inst.color[0] = effect.recording_scale().get();
+        let first = self.frame.stops.len() as u32;
+        let mut count = 0u32;
+        for chunk in effect.uniforms.chunks(4) {
+            let mut v = [0.0; 4];
+            v[..chunk.len()].copy_from_slice(chunk);
+            self.frame.stops.push(Stop {
+                color: v,
+                offset: 0.0,
+                pad: [0.0; 3],
+            });
+            count += 1;
+        }
+        inst.meta[2] = first;
+        inst.meta[3] |= EFFECT_CONTENT | (count << 8);
+        if space == BlendSpace::SrgbEncoded {
+            inst.meta[3] |= FLAG_TEX_SRGB << 24;
+        }
+        let explicit = space != self.current_space();
+        let mut pipeline = PipelineKind::ContentEffect {
+            id: effect.shader.raw(),
+            replace: explicit,
+        };
+        if explicit {
+            self.open_member_blend_pass(&mut inst, &mut pipeline);
+        }
+        self.set_source(Some(Source::Scratch(scratch)));
+        self.set_pipeline(pipeline);
+        self.push_instance(&inst);
+        self.set_pipeline(PipelineKind::SrcOver);
+        self.set_source(None);
+        Ok(())
     }
 
     /// A filtered member whose opacity or blend is not a no-op

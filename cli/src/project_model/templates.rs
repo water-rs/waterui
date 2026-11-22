@@ -3400,7 +3400,11 @@ mod tests {
             &["gpu", "cpu", "video", "erased-dispatch"],
             &mut current,
         );
-        declare("hydrolysis", &["gpu", "cpu", "hwui"], &mut current);
+        declare(
+            "hydrolysis",
+            &["gpu", "cpu", "hwui", "inspector", "inspector-signals"],
+            &mut current,
+        );
         let current = features(&current);
         let forwards = |name: &str| {
             let mut entries = current[name]
@@ -3415,6 +3419,11 @@ mod tests {
         assert_eq!(forwards("gpu"), ["hydrolysis/gpu", "waterui/gpu"]);
         assert_eq!(forwards("cpu"), ["hydrolysis/cpu", "waterui/cpu"]);
         assert_eq!(forwards("hwui"), ["hydrolysis/hwui"]);
+        assert_eq!(forwards("inspector"), ["hydrolysis/inspector"]);
+        assert_eq!(
+            forwards("inspector-signals"),
+            ["hydrolysis/inspector-signals"]
+        );
         assert_eq!(forwards("erased-dispatch"), ["waterui/erased-dispatch"]);
 
         // A facade without `gpu` keeps only the `hydrolysis` half.
@@ -6340,10 +6349,8 @@ pub mod hydrolysis {
         Ok(outputs)
     }
 
-    /// The launcher features that select a painter, named after the
-    /// `hydrolysis` features they forward to: the Cherenkov render backends
-    /// (`gpu`, `cpu`) and the Android `RenderNode` painter (`hwui`).
-    const PAINTER_FEATURES: [&str; 3] = ["gpu", "cpu", "hwui"];
+    /// Painter and diagnostic capabilities selected on the generated launcher.
+    const LAUNCHER_FEATURES: [&str; 5] = ["gpu", "cpu", "hwui", "inspector", "inspector-signals"];
 
     /// The `[features]` tables of the `waterui` and `hydrolysis` packages the
     /// manifest [`scaffold`] writes into `base_dir` resolves to — what
@@ -6468,10 +6475,10 @@ pub mod hydrolysis {
         // backends, `gpu` and/or `cpu`. Each forward is kept only where the
         // resolved package declares the feature, so a framework revision
         // that predates a painter resolves without it.
-        for painter in PAINTER_FEATURES {
-            let forwards = super::feature_forwards(painter, painter_tables);
+        for capability in LAUNCHER_FEATURES {
+            let forwards = super::feature_forwards(capability, painter_tables);
             if !forwards.is_empty() {
-                features.insert((*painter).to_string(), forwards);
+                features.insert((*capability).to_string(), forwards);
             }
         }
         if super::declares(painter_tables, "waterui", "erased-dispatch") {
@@ -7927,6 +7934,7 @@ const FORWARDED_FEATURES: &[&str] = &[
     "erased-dispatch",
     "gpu",
     "inspector",
+    "inspector-signals",
     "map",
     "media",
     "video",
@@ -7950,6 +7958,7 @@ const BACKEND_FEATURE_FORWARDS: &[(&str, &str, &str)] = &[
     ("cpu", "hydrolysis", "cpu"),
     ("hwui", "hydrolysis", "hwui"),
     ("inspector", "hydrolysis", "inspector"),
+    ("inspector-signals", "hydrolysis", "inspector-signals"),
     ("inspector", "waterui-apple", "inspector"),
     ("map", "waterui-apple", "map"),
     ("media", "waterui-apple", "media"),

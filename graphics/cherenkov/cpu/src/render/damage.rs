@@ -211,8 +211,21 @@ impl Damage {
                     active += apron;
                     maximum = maximum.max(active);
                 }
+                #[cfg(feature = "shaders")]
+                Item::PushContentEffect { apron, .. } => {
+                    self.filter_aprons.push(*apron);
+                    active += apron;
+                    maximum = maximum.max(active);
+                }
                 Item::PopFilter { .. } => {
                     active -= self.filter_aprons.pop().expect("paired filter scope");
+                }
+                #[cfg(feature = "shaders")]
+                Item::PopContentEffect { .. } => {
+                    active -= self
+                        .filter_aprons
+                        .pop()
+                        .expect("paired content-effect scope");
                 }
                 Item::Capture(capture) => self.captures.push(Dependency::capture(capture, h)),
                 _ => {}

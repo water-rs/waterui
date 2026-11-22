@@ -35,7 +35,7 @@ use crate::size::LayoutSize;
 use crate::style::{BlendMode, BlendSpace, FilterId};
 use crate::target::{BackdropSampling, GpuInstalls, ProjectiveLayers, Queue, Target};
 use crate::tree::RunningTracks;
-use crate::{BackdropSample, Picture, WorkingColor};
+use crate::{BackdropSample, ContentShaderEffect, Picture, WorkingColor};
 
 /// Declares [`PropKind`] and its `ALL` list from one variant list, so
 /// the list a layer removal walks can never miss a kind.
@@ -72,6 +72,7 @@ prop_kinds![
     Opacity,
     ScrollOffset,
     Clip,
+    ContentEffect,
     Backdrop,
     LayoutSize,
 ];
@@ -1937,6 +1938,40 @@ impl<T: Target> LayerEdit<T> {
     /// Clears the layer's filter.
     pub fn clear_filter(&mut self) -> &mut Self {
         self.queue(Op::Layer(LayerOp::Filter(self.layer, None)));
+        self
+    }
+
+    /// Sets the content effect shader applied to this layer's isolated
+    /// subtree.
+    ///
+    /// The effect is a constant or a signal. A bound signal keeps updating
+    /// the layer with no further transactions; a change carrying an
+    /// `Animation` moves the shader's uniforms lane by lane.
+    pub fn content_effect(&mut self, effect: impl Into<Live<ContentShaderEffect>>) -> &mut Self {
+        let target = Shared::bind(
+            &self.shared,
+            self.layer,
+            PropKind::ContentEffect,
+            effect.into(),
+            |layer, effect, animation, metadata| {
+                LayerOp::ContentEffect(layer, Some(Retarget::of(effect, animation, metadata)))
+            },
+        );
+        self.queue(Op::Layer(LayerOp::ContentEffect(
+            self.layer,
+            Some(Retarget {
+                target,
+                animation: self.default_animation,
+                start: self.default_start,
+            }),
+        )));
+        self
+    }
+
+    /// Clears the layer's content effect shader and any bound subscription.
+    pub fn clear_content_effect(&mut self) -> &mut Self {
+        Shared::unbind(&self.shared, self.layer, PropKind::ContentEffect);
+        self.queue(Op::Layer(LayerOp::ContentEffect(self.layer, None)));
         self
     }
 

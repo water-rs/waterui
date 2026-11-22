@@ -9,6 +9,8 @@ use std::{
     },
 };
 
+#[cfg(feature = "shaders")]
+use super::shader::ContentProgram;
 use cherenkov::{
     BackdropId, CompletionWaker, FilterId, FrameId, FrameTime, RenderError, SurfaceId, SurfaceWakes,
 };
@@ -301,6 +303,9 @@ pub struct Registry {
     /// Registered backdrop effect shaders by `BackdropShaderId::raw()`.
     #[cfg(feature = "shaders")]
     backdrop_shaders: FxHashMap<u64, Arc<super::shader::BackdropProgram>>,
+    /// Registered content effect shaders by `ContentShaderId::raw()`.
+    #[cfg(feature = "shaders")]
+    content_shaders: FxHashMap<u64, Arc<ContentProgram>>,
     last_frame: Option<(FrameId, cherenkov::Instant)>,
     delta: Duration,
 }
@@ -313,6 +318,8 @@ impl Default for Registry {
             backdrops: FxHashMap::default(),
             #[cfg(feature = "shaders")]
             backdrop_shaders: FxHashMap::default(),
+            #[cfg(feature = "shaders")]
+            content_shaders: FxHashMap::default(),
             last_frame: None,
             delta: Duration::ZERO,
         }
@@ -465,6 +472,24 @@ impl Registry {
         id: cherenkov::BackdropShaderId,
     ) -> Option<&Arc<super::shader::BackdropProgram>> {
         self.backdrop_shaders.get(&id.raw())
+    }
+
+    /// Registers a compiled content effect shader.
+    #[cfg(feature = "shaders")]
+    pub fn add_content_shader(&mut self, id: cherenkov::ContentShaderId, program: ContentProgram) {
+        self.content_shaders.insert(id.raw(), Arc::new(program));
+    }
+
+    /// Unregisters a content effect shader.
+    #[cfg(feature = "shaders")]
+    pub fn remove_content_shader(&mut self, id: cherenkov::ContentShaderId) {
+        self.content_shaders.remove(&id.raw());
+    }
+
+    /// The registered content effect shader `id`.
+    #[cfg(feature = "shaders")]
+    pub fn content_shader(&self, id: cherenkov::ContentShaderId) -> Option<&Arc<ContentProgram>> {
+        self.content_shaders.get(&id.raw())
     }
 
     pub fn remove(&mut self, id: FilterId) {

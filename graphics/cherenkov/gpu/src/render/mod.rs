@@ -1,6 +1,7 @@
 //! The render thread: sole owner of GPU state.
 
 use cherenkov::FrameRate;
+use cherenkov::wgsl::content_module;
 use waterui_frame_rate::combine_all;
 
 mod bindings;
@@ -78,7 +79,7 @@ use lower::{
     BackdropGroupInfo, ContentData, Frame as LoweredFrame, GlyphContext, Lowered, Lowering,
     PipelineKind, ShaderVariant, Source, Target,
 };
-use shaders::backdrop_effect_text;
+use shaders::{backdrop_effect_text, content_effect_text};
 
 /// Stands in for the dma-buf export pool where dma-buf does not exist: no
 /// value exists, so no surface there has an export pool.
@@ -1265,6 +1266,11 @@ struct BackdropShaderEntry {
     union: [FormatCells<Option<wgpu::RenderPipeline>>; 2],
 }
 
+struct ContentShaderEntry {
+    module: wgpu::ShaderModule,
+    pipelines: [FormatCells<Option<wgpu::RenderPipeline>>; 2],
+}
+
 /// All render-thread state.
 pub struct GpuRenderer {
     #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
@@ -1365,6 +1371,9 @@ pub struct GpuRenderer {
     /// Registered backdrop effect shaders, by raw id — see
     /// [`BackdropShaderEntry`].
     backdrop_shaders: FxHashMap<u64, BackdropShaderEntry>,
+    /// Registered content effect shaders, by raw id — see
+    /// [`ContentShaderEntry`].
+    content_shaders: FxHashMap<u64, ContentShaderEntry>,
     /// The demand-built engine modules by variant index — union, and
     /// image — each created on the first frame that draws a range of that
     /// variant (async preparation cannot run inside the synchronous
@@ -3161,6 +3170,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             shader_delivery,
             shaders: paint::Registry::default(),
             backdrop_shaders: FxHashMap::default(),
+            content_shaders: FxHashMap::default(),
             filters: filter::Registry::default(),
             filter_pipelines: filtrate::PipelineCache::with_driver_cache(
                 pipeline_cache.handle.clone(),
@@ -3531,6 +3541,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         shader_delivery,
         shaders: paint::Registry::default(),
         backdrop_shaders: FxHashMap::default(),
+        content_shaders: FxHashMap::default(),
         lazy_modules: FxHashMap::default(),
         filters: filter::Registry::default(),
         filter_pipelines: filtrate::PipelineCache::with_driver_cache(pipeline_cache.handle.clone()),
@@ -5681,6 +5692,16 @@ impl GpuRenderer {
         shaders::validate_wgsl(&backdrop_effect_text(&source.source, true)).map(drop)
     }
 
+    /// Validates a content effect shader on the caller thread against both
+    /// the standalone content contract (enforcing GPU/CPU parity) and the
+    /// engine module.
+    pub(crate) fn validate_content_shader(
+        source: &cherenkov::ContentShaderSource,
+    ) -> Result<(), ResourceError> {
+        shaders::validate_wgsl(&content_module(&source.source))?;
+        shaders::validate_wgsl(&content_effect_text(&source.source)).map(drop)
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     pub fn add_shader(
         &mut self,
@@ -5853,6 +5874,110 @@ impl GpuRenderer {
     /// samples it fails at encode with a render error.
     pub fn remove_backdrop_shader(&mut self, id: cherenkov::BackdropShaderId) {
         self.backdrop_shaders.remove(&id.raw());
+    }
+
+    /// Compiles `source` into a content effect pipeline per target format.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn add_content_shader(
+        &mut self,
+        id: cherenkov::ContentShaderId,
+        source: &cherenkov::ContentShaderSource,
+    ) -> Result<(), ResourceError> {
+        let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let module = self
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("content effect"),
+                source: wgpu::ShaderSource::Wgsl(content_effect_text(&source.source)),
+            });
+        let make =
+            |module: &wgpu::ShaderModule, format| -> Result<wgpu::RenderPipeline, ResourceError> {
+                create_pipeline(
+                    &self.device,
+                    &self.config,
+                    &self.pipeline_layout,
+                    self.pipeline_cache.handle.as_ref(),
+                    &shaders::wgsl_engine_programs(module),
+                    format,
+                    CoveragePass::Painter(false),
+                )
+                .map_err(|e| ResourceError::Shader(e.to_string()))
+            };
+        let mut built_cells: FormatCells<Option<Result<wgpu::RenderPipeline, ResourceError>>> =
+            Default::default();
+        for format in [WORKING_FORMAT, self.scratch_format] {
+            let slot = format_slot(format);
+            if built_cells[slot].is_none() {
+                built_cells[slot] = Some(make(&module, format));
+            }
+        }
+        let scope_error = pollster::block_on(scope.pop());
+        if let Some(error) = scope_error {
+            return Err(ResourceError::Shader(format!("{error}")));
+        }
+        let mut pipelines = <[FormatCells<Option<wgpu::RenderPipeline>>; 2]>::default();
+        for (cell, built) in pipelines[0].iter_mut().zip(built_cells) {
+            *cell = built.transpose()?;
+        }
+        self.content_shaders
+            .insert(id.raw(), ContentShaderEntry { module, pipelines });
+        Ok(())
+    }
+
+    /// The wasm variant of [`GpuRenderer::add_content_shader`].
+    #[cfg(target_arch = "wasm32")]
+    #[expect(
+        clippy::future_not_send,
+        reason = "the browser engine is single-threaded and its futures run on the page's event loop"
+    )]
+    pub async fn add_content_shader(
+        &mut self,
+        id: cherenkov::ContentShaderId,
+        source: &cherenkov::ContentShaderSource,
+    ) -> Result<(), ResourceError> {
+        let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let module = self
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("content effect"),
+                source: wgpu::ShaderSource::Wgsl(content_effect_text(&source.source)),
+            });
+        let mut built_cells: FormatCells<Option<Result<wgpu::RenderPipeline, ResourceError>>> =
+            Default::default();
+        for format in [WORKING_FORMAT, self.scratch_format] {
+            let slot = format_slot(format);
+            if built_cells[slot].is_none() {
+                built_cells[slot] = Some(
+                    create_pipeline(
+                        &self.device,
+                        &self.config,
+                        &self.pipeline_layout,
+                        self.pipeline_cache.handle.as_ref(),
+                        &shaders::wgsl_engine_programs(&module),
+                        format,
+                        CoveragePass::Painter(false),
+                    )
+                    .await
+                    .map_err(|e| ResourceError::Shader(e.to_string())),
+                );
+            }
+        }
+        let scope_error = scope.pop().await;
+        if let Some(error) = scope_error {
+            return Err(ResourceError::Shader(format!("{error}")));
+        }
+        let mut pipelines = <[FormatCells<Option<wgpu::RenderPipeline>>; 2]>::default();
+        for (cell, built) in pipelines[0].iter_mut().zip(built_cells) {
+            *cell = built.transpose()?;
+        }
+        self.content_shaders
+            .insert(id.raw(), ContentShaderEntry { module, pipelines });
+        Ok(())
+    }
+
+    /// Frees a content effect shader's pipelines.
+    pub fn remove_content_shader(&mut self, id: cherenkov::ContentShaderId) {
+        self.content_shaders.remove(&id.raw());
     }
 
     pub fn remove_shader(&mut self, id: cherenkov::ShaderId) {
@@ -11097,6 +11222,39 @@ impl GpuRenderer {
                                     .as_ref()
                                     .expect("the effect pipeline is built")
                             }
+                            PipelineKind::ContentEffect { id, replace } => {
+                                let entry = self.content_shaders.get_mut(&id).ok_or_else(|| {
+                                    RenderError::Render(format!(
+                                        "content shader {id} is not registered"
+                                    ))
+                                })?;
+                                let replace_i = usize::from(replace);
+                                if entry.pipelines[replace_i][format_i].is_none() {
+                                    #[cfg(not(target_arch = "wasm32"))]
+                                    {
+                                        let built = create_pipeline(
+                                            &self.device,
+                                            &self.config,
+                                            &self.pipeline_layout,
+                                            self.pipeline_cache.handle.as_ref(),
+                                            &shaders::wgsl_engine_programs(&entry.module),
+                                            target_format,
+                                            CoveragePass::Painter(replace),
+                                        )
+                                        .map_err(|e| {
+                                            RenderError::Render(format!("content shader {id}: {e}"))
+                                        })?;
+                                        entry.pipelines[replace_i][format_i] = Some(built);
+                                    }
+                                    #[cfg(target_arch = "wasm32")]
+                                    return Err(RenderError::Render(format!(
+                                        "content shader {id}'s pipeline was not prepared"
+                                    )));
+                                }
+                                entry.pipelines[replace_i][format_i]
+                                    .as_ref()
+                                    .expect("the content effect pipeline is built")
+                            }
                             kind => core_pipeline(
                                 &mut self.pipelines,
                                 &factory,
@@ -12388,6 +12546,7 @@ impl GpuRenderer {
         // frame draws.
         let mut core = FxHashSet::default();
         let mut effects = FxHashSet::default();
+        let mut content_effects = FxHashSet::default();
         // Format slots whose simple-module coverage pair a coverage pass
         // draws with and init did not build.
         let mut coverage = FxHashSet::default();
@@ -12428,6 +12587,8 @@ impl GpuRenderer {
                 let module = variant_index(range.module());
                 if let PipelineKind::Effect { id, replace } = range.pipeline {
                     effects.insert((id, union, replace, format_i));
+                } else if let PipelineKind::ContentEffect { id, replace } = range.pipeline {
+                    content_effects.insert((id, replace, format_i));
                 } else if !EAGER_CORE_VARIANTS.contains(&module)
                     || (!eager
                         && !matches!(range.pipeline, PipelineKind::Projective { .. })
@@ -12444,47 +12605,103 @@ impl GpuRenderer {
             self.prepare_lazy_coverage(format_i, gpu).await?;
         }
         for (id, union, replace, format_i) in effects {
-            let Some(entry) = self.backdrop_shaders.get_mut(&id) else {
-                continue;
-            };
-            let replace_i = usize::from(replace);
-            let missing = if union {
-                entry.union[replace_i][format_i].is_none()
-            } else {
-                entry.plain[replace_i][format_i].is_none()
-            };
-            if !missing {
-                continue;
-            }
-            let module = if union {
-                &*entry.union_module.get_or_insert_with(|| {
-                    self.device
-                        .create_shader_module(wgpu::ShaderModuleDescriptor {
-                            label: Some("backdrop effect (union)"),
-                            source: wgpu::ShaderSource::Wgsl((&*entry.union_source).into()),
-                        })
-                })
-            } else {
-                &entry.plain_module
-            };
-            let built = create_pipeline(
-                &self.device,
-                &self.config,
-                &self.pipeline_layout,
-                self.pipeline_cache.handle.as_ref(),
-                &shaders::wgsl_engine_programs(module),
-                RENDER_FORMATS[format_i],
-                CoveragePass::Painter(replace),
-            )
-            .await
-            .map_err(|e| RenderError::Render(e.to_string()))?;
-            let cells = if union {
-                &mut entry.union
-            } else {
-                &mut entry.plain
-            };
-            cells[replace_i][format_i] = Some(built);
+            self.prepare_lazy_effect(id, union, replace, format_i)
+                .await?;
         }
+        for (id, replace, format_i) in content_effects {
+            self.prepare_lazy_content_effect(id, replace, format_i)
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// wasm: builds one demand-built backdrop-effect pipeline slot if missing.
+    #[cfg(target_arch = "wasm32")]
+    #[expect(
+        clippy::future_not_send,
+        reason = "the browser engine is single-threaded and its futures run on the page's event loop"
+    )]
+    async fn prepare_lazy_effect(
+        &mut self,
+        id: u64,
+        union: bool,
+        replace: bool,
+        format_i: usize,
+    ) -> Result<(), RenderError> {
+        let Some(entry) = self.backdrop_shaders.get_mut(&id) else {
+            return Ok(());
+        };
+        let replace_i = usize::from(replace);
+        let missing = if union {
+            entry.union[replace_i][format_i].is_none()
+        } else {
+            entry.plain[replace_i][format_i].is_none()
+        };
+        if !missing {
+            return Ok(());
+        }
+        let module = if union {
+            &*entry.union_module.get_or_insert_with(|| {
+                self.device
+                    .create_shader_module(wgpu::ShaderModuleDescriptor {
+                        label: Some("backdrop effect (union)"),
+                        source: wgpu::ShaderSource::Wgsl((&*entry.union_source).into()),
+                    })
+            })
+        } else {
+            &entry.plain_module
+        };
+        let built = create_pipeline(
+            &self.device,
+            &self.config,
+            &self.pipeline_layout,
+            self.pipeline_cache.handle.as_ref(),
+            &shaders::wgsl_engine_programs(module),
+            RENDER_FORMATS[format_i],
+            CoveragePass::Painter(replace),
+        )
+        .await
+        .map_err(|e| RenderError::Render(e.to_string()))?;
+        let cells = if union {
+            &mut entry.union
+        } else {
+            &mut entry.plain
+        };
+        cells[replace_i][format_i] = Some(built);
+        Ok(())
+    }
+
+    /// wasm: builds one demand-built content-effect pipeline slot if missing.
+    #[cfg(target_arch = "wasm32")]
+    #[expect(
+        clippy::future_not_send,
+        reason = "the browser engine is single-threaded and its futures run on the page's event loop"
+    )]
+    async fn prepare_lazy_content_effect(
+        &mut self,
+        id: u64,
+        replace: bool,
+        format_i: usize,
+    ) -> Result<(), RenderError> {
+        let Some(entry) = self.content_shaders.get_mut(&id) else {
+            return Ok(());
+        };
+        let replace_i = usize::from(replace);
+        if entry.pipelines[replace_i][format_i].is_some() {
+            return Ok(());
+        }
+        let built = create_pipeline(
+            &self.device,
+            &self.config,
+            &self.pipeline_layout,
+            self.pipeline_cache.handle.as_ref(),
+            &shaders::wgsl_engine_programs(&entry.module),
+            RENDER_FORMATS[format_i],
+            CoveragePass::Painter(replace),
+        )
+        .await
+        .map_err(|e| RenderError::Render(e.to_string()))?;
+        entry.pipelines[replace_i][format_i] = Some(built);
         Ok(())
     }
 

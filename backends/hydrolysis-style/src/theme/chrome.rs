@@ -22,8 +22,8 @@ use core::time::Duration;
 use std::rc::Rc;
 
 use cherenkov_record::{
-    CaptureClass, ContinuousRect, MaterialEffect, MaterialShader, Paint, Shadow, ShapeData,
-    WorkingColor,
+    CaptureClass, ContentShader, ContinuousRect, MaterialEffect, MaterialShader, Paint, Shadow,
+    ShapeData, WorkingColor,
 };
 use kurbo::{Circle, Point, Rect, RoundedRect, RoundedRectRadii, Size, Vec2};
 use waterui_core::animation::Animation;
@@ -394,6 +394,46 @@ impl Backdrop {
     }
 }
 
+/// A content-effect shader shading the widget content painted on a surface.
+///
+/// It names a content shader the theme registered
+/// ([`WidgetTheme::register_backdrop_shaders`](super::WidgetTheme::register_backdrop_shaders))
+/// and its per-member uniform parameters as a [`Driven`] value.
+///
+/// Hydrolysis isolates the widget's content into a child layer clipped to the
+/// surface's live silhouette and runs the shader over that isolated content
+/// before interaction overlays (state layer, ripples, wash, focus indicator)
+/// paint above it. When no content effect is set, no isolation layer is
+/// created.
+#[derive(Debug, Clone)]
+pub struct ContentEffect {
+    shader: ContentShader,
+    effect: Driven<MaterialEffect>,
+}
+
+impl ContentEffect {
+    /// The content `shader` driven with `effect`.
+    #[must_use]
+    pub fn new(shader: ContentShader, effect: impl Into<Driven<MaterialEffect>>) -> Self {
+        Self {
+            shader,
+            effect: effect.into(),
+        }
+    }
+
+    /// The content shader.
+    #[must_use]
+    pub const fn shader(&self) -> ContentShader {
+        self.shader
+    }
+
+    /// The per-member effect uniforms.
+    #[must_use]
+    pub const fn effect(&self) -> &Driven<MaterialEffect> {
+        &self.effect
+    }
+}
+
 impl<V: 'static> From<MaterialEffect> for Driven<MaterialEffect, V> {
     fn from(effect: MaterialEffect) -> Self {
         Self::constant(effect)
@@ -443,13 +483,15 @@ impl From<Backdrop> for Fill {
     }
 }
 
-/// A widget's container: its silhouette, fill, border and elevation.
+/// A widget's container: its silhouette, fill, border, elevation and optional
+/// content effect.
 #[derive(Debug, Clone)]
 pub struct Surface {
     shape: CornerShape,
     fill: Fill,
     border: Option<Driven<Border>>,
     elevation: Driven<Elevation>,
+    content_effect: Option<ContentEffect>,
 }
 
 impl Surface {
@@ -461,6 +503,7 @@ impl Surface {
             fill: fill.into(),
             border: None,
             elevation: Driven::constant(Elevation::NONE),
+            content_effect: None,
         }
     }
 
@@ -482,6 +525,13 @@ impl Surface {
     #[must_use]
     pub fn elevation(mut self, elevation: impl Into<Driven<Elevation>>) -> Self {
         self.elevation = elevation.into();
+        self
+    }
+
+    /// Applies `effect` to the isolated widget content painted on this surface.
+    #[must_use]
+    pub fn content_effect(mut self, effect: ContentEffect) -> Self {
+        self.content_effect = Some(effect);
         self
     }
 
@@ -507,6 +557,13 @@ impl Surface {
     #[must_use]
     pub const fn get_elevation(&self) -> &Driven<Elevation> {
         &self.elevation
+    }
+
+    /// The optional content effect shading the widget's own content; `None`
+    /// paints the content directly without an isolation layer.
+    #[must_use]
+    pub const fn get_content_effect(&self) -> Option<&ContentEffect> {
+        self.content_effect.as_ref()
     }
 }
 

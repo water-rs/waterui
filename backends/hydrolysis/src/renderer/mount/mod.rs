@@ -38,7 +38,8 @@ pub use program::ProducerContent;
 #[cfg(hydrolysis_scene_view)]
 pub use program::SceneContentSource;
 pub use program::{
-    LiveOpacity, LiveTransform, MaterialRequest, ProgramBuilder, ScopeKey, ScopeLive, ScopeProps,
+    LiveClip, LiveContentEffect, LiveOpacity, LiveTransform, MaterialRequest, ProgramBuilder,
+    ScopeKey, ScopeLive, ScopeProps,
 };
 #[cfg(feature = "accessibility")]
 pub use registry::Region;

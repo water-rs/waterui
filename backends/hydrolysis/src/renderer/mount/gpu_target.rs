@@ -5,7 +5,7 @@
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 
-use cherenkov_record::{FilterId, Layer, Transaction};
+use cherenkov_record::{ContentShader, FilterId, Layer, MaterialEffect, Transaction};
 use waterui_core::contract_violation;
 use waterui_graphics::backend::Reactive;
 use waterui_graphics::backend::filtrate::filters::OverscrollStretch;
@@ -20,9 +20,11 @@ use crate::renderer::mount::backdrop::{
 };
 use crate::renderer::recording::SceneResources;
 use crate::text::TextService;
+use crate::theme::live::Operand;
 
 use super::engine_target::{
-    install_engine_text, mount_chrome_group, mount_material_group, settle_chrome_groups,
+    install_engine_text, mount_chrome_group, mount_content_effect, mount_material_group,
+    settle_chrome_groups,
 };
 use super::{FilterHandle, LayerTarget, MaterialTerms};
 
@@ -36,7 +38,7 @@ pub struct CherenkovHost {
     pub surface: Weak<cherenkov::Surface<cherenkov_gpu::Gpu>>,
     /// The theme's material terms resolved on this engine at attach
     /// (water-rs/waterui#1788).
-    pub materials: MaterialTerms<cherenkov::BackdropShader>,
+    pub materials: MaterialTerms<cherenkov::BackdropShader, cherenkov::ContentShader>,
     /// The window's device-creation chain, which external-frame sources
     /// import their planes onto.
     pub shared_device: cherenkov_gpu::interop::SharedDevice,
@@ -52,6 +54,7 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for cherenkov_gpu::Gpu {
     type Host = CherenkovHost;
     type Group = cherenkov::BackdropGroup;
     type Shader = cherenkov::BackdropShader;
+    type ContentShader = cherenkov::ContentShader;
     const BACKDROP_SHADER_REFUSAL: Option<&'static str> = None;
 
     #[cfg(hydrolysis_hosted)]
@@ -187,8 +190,23 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for cherenkov_gpu::Gpu {
         tx[layer].clear_backdrop();
     }
 
-    fn material_terms(host: &CherenkovHost) -> &MaterialTerms<Self::Shader> {
+    fn material_terms(host: &CherenkovHost) -> &MaterialTerms<Self::Shader, Self::ContentShader> {
         &host.materials
+    }
+
+    fn mount_content_effect(
+        host: &CherenkovHost,
+        tx: &mut Transaction<'_, Self>,
+        layer: &Layer,
+        shader: ContentShader,
+        effect: &Operand<MaterialEffect>,
+        display_scale: f64,
+    ) {
+        mount_content_effect(&host.materials, tx, layer, shader, effect, display_scale);
+    }
+
+    fn clear_content_effect(tx: &mut Transaction<'_, Self>, layer: &Layer) {
+        tx[layer].clear_content_effect();
     }
 
     fn mount_chrome(

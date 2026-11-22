@@ -590,8 +590,10 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             .clone();
             handles.attach_live(Rc::clone(parts.chrome()));
             // The surface below the composed control's own content, the
-            // interaction layers above it.
+            // optional content effect around it, and the interaction layers
+            // above it.
             parts.push_below(renderer, ctx);
+            let content_scoped = parts.open_content_effect(renderer, ctx);
             // The claim parents the wrapped content's nodes for the walk, the
             // way a naming container's node parents its children's — without
             // it the content registers beside the claim and the synthesized
@@ -618,6 +620,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 }
             }
 
+            parts.close_content_effect(renderer, content_scoped);
             parts.push_above(renderer, ctx);
 
             if !disabled {

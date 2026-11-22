@@ -2589,9 +2589,19 @@ const OPTIONAL_CAPABILITIES: &[Capability] = &[
     },
 ];
 
-/// Widget capabilities are selected by their defining components, including
+/// Backend capabilities are selected by their defining components, including
 /// direct component imports that do not pass through the facade.
-const WIDGET_CAPABILITIES: &[Capability] = &[
+const BACKEND_CAPABILITIES: &[Capability] = &[
+    Capability {
+        name: "inspector",
+        package: "waterui-internal",
+        feature: Some("inspector"),
+    },
+    Capability {
+        name: "inspector-signals",
+        package: "waterui-internal",
+        feature: Some("inspector-signals"),
+    },
     Capability {
         name: "menu",
         package: "waterui-controls",
@@ -2674,8 +2684,8 @@ const WIDGET_CAPABILITIES: &[Capability] = &[
     },
 ];
 
-fn selected_widget_capabilities(graph: &BTreeMap<String, BTreeSet<String>>) -> Vec<&'static str> {
-    WIDGET_CAPABILITIES
+fn selected_backend_capabilities(graph: &BTreeMap<String, BTreeSet<String>>) -> Vec<&'static str> {
+    BACKEND_CAPABILITIES
         .iter()
         .filter(|capability| {
             graph.get(capability.package).is_some_and(|features| {
@@ -2688,11 +2698,11 @@ fn selected_widget_capabilities(graph: &BTreeMap<String, BTreeSet<String>>) -> V
         .collect()
 }
 
-/// Resolve widget capabilities for this exact target and Cargo feature selection.
+/// Resolve backend capabilities for this exact target and Cargo feature selection.
 ///
 /// # Errors
 /// Returns an error when Cargo cannot resolve the generated manifest.
-pub async fn widget_features(
+pub async fn backend_features(
     project: &Project,
     build_manifest: &Path,
     target: &Triple,
@@ -2703,14 +2713,14 @@ pub async fn widget_features(
     let graph = project
         .generated_manifest_features(build_manifest, target, features)
         .await?;
-    Ok(backend_widget_features(&graph, destinations))
+    Ok(forwarded_backend_features(&graph, destinations))
 }
 
-fn backend_widget_features(
+fn forwarded_backend_features(
     graph: &super::project::ResolvedManifestFeatures,
     destinations: &[&str],
 ) -> Vec<String> {
-    selected_widget_capabilities(&graph.enabled)
+    selected_backend_capabilities(&graph.enabled)
         .into_iter()
         .flat_map(|capability| {
             destinations
@@ -2823,7 +2833,7 @@ mod tests {
             ("unrelated".into(), BTreeSet::from(["slider".into()])),
         ]);
         assert_eq!(
-            selected_widget_capabilities(&graph),
+            selected_backend_capabilities(&graph),
             ["menu", "secure-field", "navigation"]
         );
     }
@@ -2832,23 +2842,41 @@ mod tests {
     fn widget_features_only_forward_capabilities_declared_by_each_backend() {
         let graph = super::super::project::ResolvedManifestFeatures {
             enabled: BTreeMap::from([
-                ("waterui-internal".into(), BTreeSet::from(["list".into()])),
+                (
+                    "waterui-internal".into(),
+                    BTreeSet::from([
+                        "list".into(),
+                        "inspector".into(),
+                        "inspector-signals".into(),
+                    ]),
+                ),
                 ("waterui-controls".into(), BTreeSet::from(["slider".into()])),
             ]),
             declared: BTreeMap::from([
                 (
                     "hydrolysis".into(),
-                    BTreeSet::from(["list".into(), "slider".into()]),
+                    BTreeSet::from([
+                        "list".into(),
+                        "slider".into(),
+                        "inspector".into(),
+                        "inspector-signals".into(),
+                    ]),
                 ),
                 ("hydrolysis-m3".into(), BTreeSet::from(["list".into()])),
             ]),
         };
         assert_eq!(
-            backend_widget_features(&graph, &["hydrolysis", "hydrolysis-m3"]),
-            ["hydrolysis/slider", "hydrolysis/list", "hydrolysis-m3/list"]
+            forwarded_backend_features(&graph, &["hydrolysis", "hydrolysis-m3"]),
+            [
+                "hydrolysis/inspector",
+                "hydrolysis/inspector-signals",
+                "hydrolysis/slider",
+                "hydrolysis/list",
+                "hydrolysis-m3/list"
+            ]
         );
         assert_eq!(
-            backend_widget_features(&graph, &["older-backend"]),
+            forwarded_backend_features(&graph, &["older-backend"]),
             [] as [std::string::String; 0]
         );
     }
@@ -2860,7 +2888,7 @@ mod tests {
             ("waterui-form".into(), BTreeSet::new()),
             ("waterui-controls".into(), BTreeSet::new()),
         ]);
-        assert_eq!(selected_widget_capabilities(&graph), ["list"]);
+        assert_eq!(selected_backend_capabilities(&graph), ["list"]);
     }
 
     /// A `FontFetch` stub for declarations that must never be downloaded.

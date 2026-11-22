@@ -8,14 +8,27 @@
 //! safe `objc2` API on the caller's own objects, all main-thread.
 
 use objc2::rc::Retained;
-#[cfg(target_os = "ios")]
+#[cfg(target_os = "macos")]
+use objc2::runtime::AnyClass;
 use objc2::runtime::NSObjectProtocol;
+#[cfg(target_os = "macos")]
+use objc2::{
+    AllocAnyThread, MainThreadMarker, MainThreadOnly, Message as _, define_class, msg_send,
+};
+#[cfg(target_os = "ios")]
 use objc2::{AllocAnyThread, MainThreadOnly};
+#[cfg(target_os = "macos")]
+use objc2_app_kit::{NSBackingStoreType, NSWindow, NSWindowStyleMask};
+#[cfg(target_os = "macos")]
+use objc2_core_foundation::CGRect;
 use objc2_core_foundation::{CFData, CFRetained};
 use objc2_core_graphics::{
     CGBitmapContextCreateImage, CGColorRenderingIntent, CGColorSpace, CGContext, CGDataProvider,
     CGImage, CGImageAlphaInfo,
 };
+use objc2_quartz_core::CALayer;
+#[cfg(target_os = "macos")]
+use objc2_quartz_core::CATransaction;
 
 use waterui_contract::contract_violation;
 
@@ -113,8 +126,74 @@ pub fn image_from_rgba(pixels: &[u8], width: usize, height: usize) -> Option<CFR
 }
 
 /// Renders `layer`'s committed tree into `context`.
-pub fn render_layer(layer: &objc2_quartz_core::CALayer, context: &CGContext) {
+pub fn render_layer(layer: &CALayer, context: &CGContext) {
+    #[cfg(target_os = "macos")]
+    without_sdf_layers(layer, || {
+        layer.renderInContext(context);
+    });
+    #[cfg(target_os = "ios")]
     layer.renderInContext(context);
+}
+
+/// Temporarily hides visible `CASDFLayer` descendants under `layer` for the
+/// duration of `body`, restoring their `isHidden` state before returning.
+///
+/// On macOS 27, `AppKit`'s `NSBezelStyle::Glass` and tinted `NSGlassEffectView`
+/// mount `CASDFLayer` sublayers that only serialize to the out-of-process
+/// `WindowServer` compositor (`_copyRenderLayer:layerFlags:commitFlags:`) and
+/// produce zero alpha in in-process `CALayer.renderInContext:` or
+/// `cacheDisplayInRect:toBitmapImageRep:`. When a glass control carries a
+/// tint/bezel color inside an active window, `AppKit` pairs its tint
+/// `CASDFLayer` with a sibling `CASDFLayer` whose `compositingFilter` is
+/// `"destIn"` (`kCGBlendModeDestinationIn`) on a `0x0`-bounds parent
+/// `CALayer`; in `renderInContext:`, that empty `destIn` layer multiplies
+/// the entire destination `CGContext` (including any already-drawn ancestor
+/// background) by `0`. Hiding `CASDFLayer` sublayers while the in-process
+/// raster runs prevents the unimplemented `WindowServer` mask from clobbering
+/// the destination buffer.
+#[cfg(target_os = "macos")]
+pub(crate) fn without_sdf_layers<R>(layer: &CALayer, body: impl FnOnce() -> R) -> R {
+    struct Restore(Vec<Retained<CALayer>>);
+
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            for layer in &self.0 {
+                layer.setHidden(false);
+            }
+            CATransaction::commit();
+        }
+    }
+
+    CATransaction::begin();
+    CATransaction::setDisableActions(true);
+    let mut restore = Restore(Vec::new());
+    if let Some(sdf_class) = AnyClass::get(c"CASDFLayer") {
+        collect_and_hide_sdf_layers(layer, sdf_class, &mut restore.0);
+    }
+    body()
+}
+
+#[cfg(target_os = "macos")]
+fn collect_and_hide_sdf_layers(
+    layer: &CALayer,
+    sdf_class: &AnyClass,
+    hidden: &mut Vec<Retained<CALayer>>,
+) {
+    if layer.isHidden() {
+        return;
+    }
+    if layer.isKindOfClass(sdf_class) {
+        layer.setHidden(true);
+        hidden.push(layer.retain());
+        return;
+    }
+    // SAFETY: `layer` is a live `CALayer` on the main thread.
+    let Some(sublayers) = (unsafe { layer.sublayers() }) else {
+        return;
+    };
+    for sublayer in sublayers {
+        collect_and_hide_sdf_layers(&sublayer, sdf_class, hidden);
+    }
 }
 
 /// Draws `image` covering `rect` inside `context`.
@@ -199,30 +278,31 @@ pub fn template_image(image: &CGImage, size: Size) -> Retained<objc2_app_kit::NS
     ns
 }
 
-/// A borderless `NSWindow` that is never ordered in, for capture — it has
-/// no on-screen position to hide, but attaching a view to it drives
-/// `AppKit`'s window-dependent rendering paths.
+/// A borderless `NSWindow` that is never ordered in, for offscreen capture.
+///
+/// It has no on-screen position to hide, while attaching a view to it drives
+/// `AppKit`'s window-dependent rendering paths with key-window appearance so
+/// controls draw their active accent colors rather than inactive gray.
 #[cfg(target_os = "macos")]
 #[must_use]
 /// # Panics
 ///
 /// On a failure to allocate the window.
-pub fn capture_window(
-    mtm: objc2::MainThreadMarker,
-    size: Size,
-) -> Retained<objc2_app_kit::NSWindow> {
-    use objc2_app_kit::{NSBackingStoreType, NSWindow, NSWindowStyleMask};
+pub fn capture_window(mtm: MainThreadMarker, size: Size) -> Retained<NSWindow> {
+    use crate::dynamic_range::{DynamicRange, apply_to_view};
     // SAFETY: `initWithContentRect:styleMask:backing:defer:` is `NSWindow`'s
     // designated initializer; `setReleasedWhenClosed:false` keeps the object
     // owned by the `Retained` the caller drops.
     unsafe {
-        let window: Retained<NSWindow> = NSWindow::initWithContentRect_styleMask_backing_defer(
-            NSWindow::alloc(mtm),
-            Rect::new(0.0, 0.0, size.width, size.height).into(),
-            NSWindowStyleMask::Borderless,
-            NSBackingStoreType::Buffered,
-            false,
-        );
+        let rect: CGRect = Rect::new(0.0, 0.0, size.width, size.height).into();
+        let window: Retained<CaptureWindow> = msg_send![
+            CaptureWindow::alloc(mtm),
+            initWithContentRect: rect,
+            styleMask: NSWindowStyleMask::Borderless,
+            backing: NSBackingStoreType::Buffered,
+            defer: false
+        ];
+        let window: Retained<NSWindow> = Retained::into_super(window);
         window.setReleasedWhenClosed(false);
         // The offscreen render target is an RGBA8 bitmap, so the host
         // declares `DynamicRange::Standard` on its content view: a leaf
@@ -230,14 +310,56 @@ pub fn capture_window(
         // the tag rather than the missing display. `apply_to_view`
         // preserves any local tag content inside the capture carries.
         if let Some(content) = window.contentView() {
-            crate::dynamic_range::apply_to_view(
-                crate::dynamic_range::DynamicRange::Standard,
-                &content,
-            );
+            apply_to_view(DynamicRange::Standard, &content);
         }
         window
     }
 }
+
+#[cfg(target_os = "macos")]
+define_class!(
+    // SAFETY: `NSWindow`'s designated initializer is
+    // `initWithContentRect:styleMask:backing:defer:`, which `capture_window`
+    // calls, and the class holds no ivars and implements no `Drop`.
+    #[unsafe(super(NSWindow))]
+    #[name = "CocoaUiCaptureWindow"]
+    #[thread_kind = MainThreadOnly]
+    /// The never-ordered `NSWindow` a view is rehosted in for offscreen capture.
+    ///
+    /// Because a capture window is never ordered on screen or activated, a plain
+    /// `NSWindow` reports `isKeyWindow == false` and `hasKeyAppearance == false`,
+    /// causing `AppKit` controls (`NSButton`, `NSSwitch`, `NSSlider`,
+    /// `NSProgressIndicator`, `NSSegmentedControl`) and key-window-aware views
+    /// to render in their inactive gray state. Overriding the key/main state
+    /// and appearance queries gives captured views their active appearance
+    /// without ordering a window or changing application activation policy.
+    struct CaptureWindow;
+
+    // SAFETY: `NSObjectProtocol` asks nothing of an `NSWindow` subclass.
+    unsafe impl NSObjectProtocol for CaptureWindow {}
+
+    impl CaptureWindow {
+        #[unsafe(method(isKeyWindow))]
+        fn is_key_window(&self) -> bool {
+            true
+        }
+
+        #[unsafe(method(isMainWindow))]
+        fn is_main_window(&self) -> bool {
+            true
+        }
+
+        #[unsafe(method(hasKeyAppearance))]
+        fn has_key_appearance(&self) -> bool {
+            true
+        }
+
+        #[unsafe(method(hasMainAppearance))]
+        fn has_main_appearance(&self) -> bool {
+            true
+        }
+    }
+);
 
 /// An offscreen `UIWindow` in `scene`, attached so `UIView` captures see a
 /// real window.
@@ -387,7 +509,13 @@ pub fn view_template_image(
     }
     let rep = view.bitmapImageRepForCachingDisplayInRect(bounds)?;
     force_text_fields_display(view);
-    view.cacheDisplayInRect_toBitmapImageRep(bounds, &rep);
+    if let Some(layer) = view.layer() {
+        without_sdf_layers(&layer, || {
+            view.cacheDisplayInRect_toBitmapImageRep(bounds, &rep);
+        });
+    } else {
+        view.cacheDisplayInRect_toBitmapImageRep(bounds, &rep);
+    }
     let image = rep.CGImage()?;
     let shrink = (max_side / f64::max(bounds.size.width, bounds.size.height)).min(1.0);
     Some(template_image(

@@ -22,7 +22,9 @@ use waterui_frame_rate::{DisplayCapabilities, combine};
 use crate::frame::{FrameId, FrameStats, FrameTime, Next};
 use crate::image::ImageUpload;
 use cherenkov_record::ResourceId;
-use cherenkov_record::{BackdropShaderId, ChangeSet, LayerId, SurfaceId, SurfaceTree};
+use cherenkov_record::{
+    BackdropShaderId, ChangeSet, ContentShaderId, LayerId, SurfaceId, SurfaceTree,
+};
 
 use crate::message::{Message, RenderOutcome, RenderedFrame, ResOp, SurfaceNext};
 use crate::paint::ImageId;
@@ -325,6 +327,7 @@ fn draws<R: Renderer>(
 ) -> bool {
     match resource {
         ResourceId::BackdropShader(id) => samples_backdrop_shader(&state.tree, id),
+        ResourceId::ContentShader(id) => samples_content_shader(&state.tree, id),
         resource => renderer.samples(surface, resource),
     }
 }
@@ -337,6 +340,15 @@ fn samples_backdrop_shader(tree: &SurfaceTree, id: BackdropShaderId) -> bool {
             node.backdrop.as_ref().and_then(crate::BackdropSample::effect),
             Some(BackdropEffect::Shader(effect)) if effect.shader == id
         )
+    })
+}
+
+/// Whether a layer of `tree` applies content effect shader `id`.
+fn samples_content_shader(tree: &SurfaceTree, id: ContentShaderId) -> bool {
+    tree.layers().any(|(_, node)| {
+        node.content_effect
+            .as_ref()
+            .is_some_and(|effect| effect.shader == id)
     })
 }
 
