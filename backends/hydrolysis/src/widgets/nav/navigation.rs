@@ -12,7 +12,7 @@ use crate::renderer::{
     navigation_back_button_rect, navigation_base_bar_height, navigation_look,
     split_compact_threshold,
 };
-use crate::theme::{NavigationBarLook, NavigationSpec, WidgetTheme};
+use crate::theme::{NavigationBarLook, NavigationMetrics, NavigationSpec, WidgetTheme};
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
@@ -34,7 +34,9 @@ use waterui_controls::label::LabelDisplayMode;
 use waterui_controls::text_field::TextField;
 use waterui_core::contract_violation;
 use waterui_core::id::Id;
-use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
+use waterui_core::layout::{
+    LayoutDirection, ProposalSize, Size as LayoutSize, ViewDimensions, layout_direction,
+};
 use waterui_core::{Environment, Native};
 use waterui_graphics::color::Color;
 use waterui_interaction::interaction::InteractionState;
@@ -120,40 +122,94 @@ fn push_back_button<E: crate::text::TextEngine>(
     parts.push_above(renderer, ctx);
 }
 
-/// The x the bar's leading toolbar group starts at. A pushed page's back
-/// button owns the bar's leading edge, so the group starts at the button's
-/// trailing edge plus the bar's inter-item gap; on a root page it starts at
+/// Distance from the bar's leading edge to the start of the leading toolbar
+/// group. A pushed page's back button owns the leading edge, so the group
+/// starts past the button plus the inter-item gap; on a root page it starts at
 /// the bar inset (water-rs/waterui#1939 — without the offset a pushed
 /// `Cancellation` item paints under the button).
-fn navigation_leading_items_x0(
-    bar_x0: f64,
-    leading_reserve: f64,
-    metrics: &crate::theme::NavigationMetrics,
-) -> f64 {
+fn navigation_leading_items_inset(leading_reserve: f64, metrics: &NavigationMetrics) -> f64 {
     if leading_reserve > 0.0 {
-        bar_x0 + metrics.back_button_leading_inset + metrics.back_button_size + metrics.item_spacing
+        metrics.back_button_leading_inset + metrics.back_button_size + metrics.item_spacing
     } else {
-        bar_x0 + metrics.horizontal_inset
+        metrics.horizontal_inset
     }
 }
 
-/// The x the bar title starts at for a measured leading-group width and the
-/// pushed page's back-button reserve — the single rule the visual flush and
-/// the accessibility emission share so their title rects agree.
-fn navigation_title_x0(
+/// Horizontal `(x0, x1)` span of the bar's leading toolbar group, mirrored in
+/// RTL so leading items sit beside the right-side back button.
+fn navigation_leading_items_span(
     bar_x0: f64,
+    bar_x1: f64,
     leading_width: f64,
     leading_reserve: f64,
-    metrics: &crate::theme::NavigationMetrics,
-) -> f64 {
-    if leading_width > 0.0 {
-        navigation_leading_items_x0(bar_x0, leading_reserve, metrics)
+    metrics: &NavigationMetrics,
+    direction: LayoutDirection,
+) -> (f64, f64) {
+    let inset = navigation_leading_items_inset(leading_reserve, metrics);
+    if direction.is_right_to_left() {
+        let x1 = (bar_x1 - inset).max(bar_x0);
+        ((x1 - leading_width).max(bar_x0), x1)
+    } else {
+        let x0 = (bar_x0 + inset).min(bar_x1);
+        (x0, (x0 + leading_width).min(bar_x1))
+    }
+}
+
+/// Horizontal `(x0, x1)` span of the bar's trailing toolbar group, mirrored in
+/// RTL so trailing items sit on the left edge.
+fn navigation_trailing_items_span(
+    bar_x0: f64,
+    bar_x1: f64,
+    trailing_width: f64,
+    metrics: &NavigationMetrics,
+    direction: LayoutDirection,
+) -> (f64, f64) {
+    if direction.is_right_to_left() {
+        let x0 = (bar_x0 + metrics.horizontal_inset).min(bar_x1);
+        (x0, (x0 + trailing_width).min(bar_x1))
+    } else {
+        let x1 = (bar_x1 - metrics.horizontal_inset).max(bar_x0);
+        ((x1 - trailing_width).max(bar_x0), x1)
+    }
+}
+
+/// Horizontal `(x0, x1)` span of the bar title for measured leading/trailing
+/// group widths and the pushed page's back-button reserve — the single rule
+/// the visual flush and accessibility emission share so their title rects
+/// agree in both LTR and RTL.
+fn navigation_title_horizontal_span(
+    bar_x0: f64,
+    bar_x1: f64,
+    leading_width: f64,
+    trailing_width: f64,
+    leading_reserve: f64,
+    metrics: &NavigationMetrics,
+    direction: LayoutDirection,
+) -> (f64, f64) {
+    let leading_offset = if leading_width > 0.0 {
+        navigation_leading_items_inset(leading_reserve, metrics)
             + leading_width
             + metrics.item_spacing
     } else if leading_reserve > 0.0 {
-        bar_x0 + metrics.horizontal_inset + leading_reserve + metrics.item_spacing
+        metrics.horizontal_inset + leading_reserve + metrics.item_spacing
     } else {
-        bar_x0 + metrics.title_leading_inset
+        metrics.title_leading_inset
+    };
+    let trailing_offset = if trailing_width > 0.0 {
+        metrics.horizontal_inset + trailing_width + metrics.item_spacing
+    } else {
+        metrics.title_trailing_inset
+    };
+    if direction.is_right_to_left() {
+        (
+            (bar_x0 + trailing_offset).min(bar_x1),
+            (bar_x1 - leading_offset).max(bar_x0),
+        )
+    } else {
+        (
+            (bar_x0 + leading_offset).min(bar_x1),
+            (bar_x1 - trailing_offset).max(bar_x0),
+        )
     }
 }
 
@@ -460,16 +516,30 @@ pub fn navigation_view_accessibility<E: crate::text::TextEngine>(
                         )
                         .width,
                     );
-                    let title_leading = navigation_title_x0(
+                    let trailing_width = f64::from(
+                        measure_retained_toolbar_group(
+                            &state.trailing,
+                            renderer.state_mut(),
+                            env,
+                            theme,
+                            &metrics,
+                        )
+                        .width,
+                    );
+                    let direction = layout_direction(env).snapshot();
+                    let (title_left, title_right) = navigation_title_horizontal_span(
                         bar_rect.x0,
+                        bar_rect.x1,
                         leading_width,
+                        trailing_width,
                         navigation_leading_reserve(env),
                         &metrics,
+                        direction,
                     );
                     let title_rect = kurbo::Rect::new(
-                        title_leading.min(bar_rect.x1),
+                        title_left,
                         title_y0,
-                        bar_rect.x1 - metrics.title_trailing_inset,
+                        title_right,
                         title_y0 + title_height,
                     );
                     let title_bounds = (title_rect.width() > 0.0 && title_rect.height() > 0.0)
@@ -814,17 +884,32 @@ pub fn render_navigation_view_parts<E: crate::text::TextEngine>(
         let leading_width = f64::from(leading_size.width);
         let trailing_width = f64::from(trailing_size.width);
         let leading_reserve = navigation_leading_reserve(env);
-        let leading_x0 = navigation_leading_items_x0(bar_rect.x0, leading_reserve, &metrics);
+        let direction = layout_direction(env).snapshot();
+        let (leading_x0, leading_x1) = navigation_leading_items_span(
+            bar_rect.x0,
+            bar_rect.x1,
+            leading_width,
+            leading_reserve,
+            &metrics,
+            direction,
+        );
         let leading_rect = kurbo::Rect::new(
             leading_x0,
             bar_rect.y0,
-            (leading_x0 + leading_width).min(bar_rect.x1),
+            leading_x1,
             (bar_rect.y0 + base_bar_height).min(bar_rect.y1),
         );
+        let (trailing_x0, trailing_x1) = navigation_trailing_items_span(
+            bar_rect.x0,
+            bar_rect.x1,
+            trailing_width,
+            &metrics,
+            direction,
+        );
         let trailing_rect = kurbo::Rect::new(
-            (bar_rect.x1 - metrics.horizontal_inset - trailing_width).max(bar_rect.x0),
+            trailing_x0,
             bar_rect.y0,
-            bar_rect.x1 - metrics.horizontal_inset,
+            trailing_x1,
             (bar_rect.y0 + base_bar_height).min(bar_rect.y1),
         );
         {
@@ -859,18 +944,16 @@ pub fn render_navigation_view_parts<E: crate::text::TextEngine>(
         } else {
             (base_bar_height - title_height).mul_add(0.5, bar_rect.y0)
         };
-        let title_x0 = navigation_title_x0(bar_rect.x0, leading_width, leading_reserve, &metrics);
-        let title_x1 = if trailing_width > 0.0 {
-            bar_rect.x1 - metrics.horizontal_inset - trailing_width - metrics.item_spacing
-        } else {
-            bar_rect.x1 - metrics.title_trailing_inset
-        };
-        let title_rect = kurbo::Rect::new(
-            title_x0.min(bar_rect.x1),
-            title_y0,
-            title_x1.max(bar_rect.x0),
-            title_y0 + title_height,
+        let (title_x0, title_x1) = navigation_title_horizontal_span(
+            bar_rect.x0,
+            bar_rect.x1,
+            leading_width,
+            trailing_width,
+            leading_reserve,
+            &metrics,
+            direction,
         );
+        let title_rect = kurbo::Rect::new(title_x0, title_y0, title_x1, title_y0 + title_height);
         if title_rect.width() > 0.0 && title_rect.height() > 0.0 {
             let mut state = state.borrow_mut();
             if state.principal.is_empty() {
@@ -1023,30 +1106,60 @@ fn flush_toolbar_group<E: crate::text::TextEngine>(
         crate::num_cast::usize_as_f64(sizes.len().saturating_sub(1)),
         sizes.iter().map(|size| f64::from(size.width)).sum::<f64>(),
     );
-    let mut x = match alignment {
-        ToolbarAlignment::Leading => bounds.x0,
-        ToolbarAlignment::Center => (bounds.width() - total_width).mul_add(0.5, bounds.x0),
-        ToolbarAlignment::Trailing => bounds.x1 - total_width,
-    }
-    .max(bounds.x0);
-    for (item, size) in group.iter_mut().zip(sizes) {
-        let width = f64::from(size.width).min((bounds.x1 - x).max(0.0));
-        let height = f64::from(size.height).min(bounds.height());
-        let y = (bounds.height() - height).mul_add(0.5, bounds.y0);
-        let rect = kurbo::Rect::new(x, y, x + width, y + height);
-        if rect.width() > 0.0 && rect.height() > 0.0 {
-            let render_ctx = ctx.render_context();
-            let item_area = bar.area_for(rect);
-            item.place(
-                ctx.renderer_mut(),
-                render_ctx,
-                env,
-                ProposalSize::UNSPECIFIED,
-                rect,
-                item_area,
-            );
+    let rtl = layout_direction(env).snapshot().is_right_to_left();
+    if rtl {
+        let mut cursor_x1 = match alignment {
+            ToolbarAlignment::Leading => bounds.x1,
+            ToolbarAlignment::Center => (bounds.width() - total_width).mul_add(-0.5, bounds.x1),
+            ToolbarAlignment::Trailing => bounds.x0 + total_width,
         }
-        x += width + item_spacing;
+        .min(bounds.x1);
+        for (item, size) in group.iter_mut().zip(sizes) {
+            let width = f64::from(size.width).min((cursor_x1 - bounds.x0).max(0.0));
+            let height = f64::from(size.height).min(bounds.height());
+            let y = (bounds.height() - height).mul_add(0.5, bounds.y0);
+            let x0 = cursor_x1 - width;
+            let rect = kurbo::Rect::new(x0, y, cursor_x1, y + height);
+            if rect.width() > 0.0 && rect.height() > 0.0 {
+                let render_ctx = ctx.render_context();
+                let item_area = bar.area_for(rect);
+                item.place(
+                    ctx.renderer_mut(),
+                    render_ctx,
+                    env,
+                    ProposalSize::UNSPECIFIED,
+                    rect,
+                    item_area,
+                );
+            }
+            cursor_x1 -= width + item_spacing;
+        }
+    } else {
+        let mut x = match alignment {
+            ToolbarAlignment::Leading => bounds.x0,
+            ToolbarAlignment::Center => (bounds.width() - total_width).mul_add(0.5, bounds.x0),
+            ToolbarAlignment::Trailing => bounds.x1 - total_width,
+        }
+        .max(bounds.x0);
+        for (item, size) in group.iter_mut().zip(sizes) {
+            let width = f64::from(size.width).min((bounds.x1 - x).max(0.0));
+            let height = f64::from(size.height).min(bounds.height());
+            let y = (bounds.height() - height).mul_add(0.5, bounds.y0);
+            let rect = kurbo::Rect::new(x, y, x + width, y + height);
+            if rect.width() > 0.0 && rect.height() > 0.0 {
+                let render_ctx = ctx.render_context();
+                let item_area = bar.area_for(rect);
+                item.place(
+                    ctx.renderer_mut(),
+                    render_ctx,
+                    env,
+                    ProposalSize::UNSPECIFIED,
+                    rect,
+                    item_area,
+                );
+            }
+            x += width + item_spacing;
+        }
     }
 }
 
@@ -1696,7 +1809,7 @@ fn render_compact_split<E: crate::text::TextEngine>(
         &metrics,
     )));
     let (front, back_selection) = compact_split_front(selection);
-    let back_rect = navigation_back_button_rect(bounds, metrics);
+    let back_rect = navigation_back_button_rect(bounds, metrics, layout_direction(env).snapshot());
     #[cfg(feature = "accessibility")]
     if let Some(back_binding) = back_selection.clone() {
         // The back node precedes the front pane's nodes in the tree, the
@@ -2130,7 +2243,7 @@ fn record_page_body<E: crate::text::TextEngine>(
             state,
             identity,
             &look,
-            navigation_back_button_rect(bounds, look.metrics()),
+            navigation_back_button_rect(bounds, look.metrics(), layout_direction(env).snapshot()),
             env,
         );
         push_back_button(renderer, page_ctx, &parts);
@@ -2587,7 +2700,11 @@ pub fn navigation_stack_accessibility<E: crate::text::TextEngine>(
                     return;
                 };
                 let metrics = navigation_look(theme, env).metrics();
-                let back_bounds = navigation_back_button_rect(ctx.bounds(), metrics);
+                let back_bounds = navigation_back_button_rect(
+                    ctx.bounds(),
+                    metrics,
+                    layout_direction(env).snapshot(),
+                );
                 let _ = renderer.register_accessibility_node(
                     back_node,
                     back_bounds,
@@ -2989,12 +3106,22 @@ pub fn render_navigation_stack_parts<E: crate::text::TextEngine>(
         identity: previous_identity,
     };
 
-    let edge_rect = kurbo::Rect::new(
-        ctx.bounds.x0,
-        ctx.bounds.y0,
-        (ctx.bounds.x0 + metrics.back_button_size).min(ctx.bounds.x1),
-        ctx.bounds.y1,
-    );
+    let direction = layout_direction(env).snapshot();
+    let edge_rect = if direction.is_right_to_left() {
+        kurbo::Rect::new(
+            (ctx.bounds.x1 - metrics.back_button_size).max(ctx.bounds.x0),
+            ctx.bounds.y0,
+            ctx.bounds.x1,
+            ctx.bounds.y1,
+        )
+    } else {
+        kurbo::Rect::new(
+            ctx.bounds.x0,
+            ctx.bounds.y0,
+            (ctx.bounds.x0 + metrics.back_button_size).min(ctx.bounds.x1),
+            ctx.bounds.y1,
+        )
+    };
     // The edge-gesture point lands in window space and `edge_rect` is
     // node-local: resolve the inverse through the region's live placement
     // at invoke time — a mid-transition re-record leaves the recorded
@@ -3043,6 +3170,7 @@ pub fn render_navigation_stack_parts<E: crate::text::TextEngine>(
                     crate::renderer::navigation_state::NavigationInteractivePop::new(
                         point.x,
                         navigation_width,
+                        direction,
                         active_page_for_gesture.clone(),
                         previous_page_for_gesture.clone(),
                     ),
@@ -3073,7 +3201,7 @@ pub fn render_navigation_stack_parts<E: crate::text::TextEngine>(
         },
     );
 
-    let back_button_rect = navigation_back_button_rect(ctx.bounds, metrics);
+    let back_button_rect = navigation_back_button_rect(ctx.bounds, metrics, direction);
     // The page's own record built the chrome in its page space; the hit
     // target lies in this node's space.
     let back_parts = state
