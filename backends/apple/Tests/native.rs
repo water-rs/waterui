@@ -1559,8 +1559,13 @@ mod resolve {
         path.push(1_i32);
         path.push(2_i32);
 
+        #[cfg(target_os = "macos")]
+        let stack_path = path.clone();
+        #[cfg(target_os = "ios")]
+        let stack_path = path;
+
         let stack =
-            NavigationStack::with_path(path.clone(), NavigationView::new("Root", text("Root")))
+            NavigationStack::with_path(stack_path, NavigationView::new("Root", text("Root")))
                 .destination(|route: i32| {
                     NavigationView::new(format!("Page {route}"), text(format!("Page {route}")))
                 });
@@ -1608,7 +1613,6 @@ mod resolve {
                 3,
                 "root and two pre-populated pages mount on UINavigationController"
             );
-            let _ = path;
         }
     }
 }
