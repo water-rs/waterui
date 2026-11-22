@@ -8,12 +8,9 @@
 
 use std::rc::Rc;
 
-#[cfg(hydrolysis_runtime)]
 use cherenkov_record::Recorder;
-#[cfg(hydrolysis_runtime)]
 use kurbo::Rect;
 
-#[cfg(hydrolysis_runtime)]
 use super::look::record_at_rest;
 use super::look::{Custom, CustomPart, DrivenSet};
 
@@ -34,13 +31,6 @@ pub struct ScrollIndicatorLook {
     edge_inset: f64,
     min_extent: f64,
     gutter: f64,
-    #[cfg_attr(
-        not(hydrolysis_runtime),
-        expect(
-            dead_code,
-            reason = "only the renderer records the thumb; a build without a painter compiles the theme contract alone"
-        )
-    )]
     thumb: Rc<dyn CustomPart<()>>,
 }
 
@@ -128,8 +118,8 @@ impl ScrollIndicatorLook {
     }
 
     /// Records the thumb over `frame`.
-    #[cfg(hydrolysis_runtime)]
-    pub(crate) fn record_thumb(&self, recorder: &mut Recorder, frame: Rect) {
+    #[doc(hidden)]
+    pub fn record_thumb(&self, recorder: &mut Recorder, frame: Rect) {
         record_at_rest(&*self.thumb, recorder, frame);
     }
 }

@@ -4,21 +4,20 @@
 //! One look serves the picker popup, the text context menu and the popup
 //! window a menu button opens, so they are one surface: the same row
 //! measures, the same panel and the same separators. Hydrolysis measures,
-//! places and hit-tests a menu from [`MenuLayout`] and records the panel and
-//! separators the look's parts draw, so the geometry it measures is the
-//! geometry it draws and the accessibility option rectangles are the drawn
-//! ones.
+//! places and hit-tests a menu from [`MenuLayout`], records the panel as the
+//! [`Surface`] the look states and the separators its parts draw, so the
+//! geometry it measures is the geometry it draws and the accessibility
+//! option rectangles are the drawn ones.
 
 use std::rc::Rc;
 
+use cherenkov_record::Recorder;
 use kurbo::Rect;
 use waterui_core::layout::LayoutDirection;
+use waterui_interaction::interaction::InteractionState;
 
-#[cfg(hydrolysis_runtime)]
-use super::look::record_at_rest;
-use super::look::{Custom, CustomPart, DrivenSet};
-#[cfg(hydrolysis_runtime)]
-use cherenkov_record::Recorder;
+use super::Surface;
+use super::look::{Custom, CustomPart, DrivenSet, Inputs, record_at_rest};
 
 /// What Hydrolysis asks a theme's [`menu`](super::WidgetTheme::menu) look
 /// for: everything structural about one menu.
@@ -58,39 +57,25 @@ pub struct MenuLayout {
     pub max_width: f64,
     /// Estimated width per character, used before text layout is available.
     pub width_per_char: f64,
-    /// The panel's corner radius.
-    pub corner_radius: f64,
     /// Horizontal inset of a separator.
     pub separator_horizontal_inset: f64,
     /// Separator thickness.
     pub separator_thickness: f64,
 }
 
-/// How a menu looks: its [`MenuLayout`] and the parts that draw its panel,
-/// its separators and the selected row of a picker popup.
+/// How a menu looks: its [`MenuLayout`], its panel as a [`Surface`], and the
+/// parts that draw its separators and the selected row of a picker popup.
 ///
-/// Every part draws in the widget's own space and records once per frame
-/// it is listed in, at rest: a menu has no live state of its own, its rows
-/// are buttons with looks of their own.
+/// The panel's shape, fill, border and elevation are the surface's, recorded
+/// at rest over the menu's frame as a control chrome records its surface; a
+/// popup window leaves the elevation's reach around the panel for its
+/// shadow. The parts draw in the widget's own space and record once per
+/// frame they are listed in, at rest: a menu has no live state of its own,
+/// its rows are buttons with looks of their own.
 #[derive(Clone)]
 pub struct MenuLook {
     layout: MenuLayout,
-    #[cfg_attr(
-        not(hydrolysis_runtime),
-        expect(
-            dead_code,
-            reason = "only the renderer records the menu's panel; a build without a painter compiles the theme contract alone"
-        )
-    )]
-    panel: Rc<dyn CustomPart<()>>,
-    #[cfg_attr(
-        not(hydrolysis_runtime),
-        expect(
-            dead_code,
-            reason = "only the renderer records the menu's separators; a build without a painter compiles the theme contract alone"
-        )
-    )]
-    #[cfg(any(feature = "text-field", feature = "secure-field"))]
+    panel: Surface,
     separator: Rc<dyn CustomPart<()>>,
     selected_row: Option<Rc<dyn CustomPart<()>>>,
 }
@@ -99,29 +84,25 @@ impl core::fmt::Debug for MenuLook {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("MenuLook")
             .field("layout", &self.layout)
+            .field("panel", &self.panel)
             .field("selected_row", &self.selected_row.is_some())
             .finish_non_exhaustive()
     }
 }
 
 impl MenuLook {
-    /// A menu measured by `layout`, whose `panel` draws over the menu's
+    /// A menu measured by `layout`, whose panel is `panel` over the menu's
     /// frame and whose `separator` draws over the line a divider row leaves
     /// for it.
     #[must_use]
-    pub fn new<P, S>(layout: MenuLayout, panel: Custom<(), P>, separator: Custom<(), S>) -> Self
+    pub fn new<S>(layout: MenuLayout, panel: Surface, separator: Custom<(), S>) -> Self
     where
-        P: DrivenSet<()> + 'static,
-        P::Live: 'static,
         S: DrivenSet<()> + 'static,
         S::Live: 'static,
     {
-        #[cfg(not(any(feature = "text-field", feature = "secure-field")))]
-        drop(separator);
         Self {
             layout,
-            panel: Rc::new(panel),
-            #[cfg(any(feature = "text-field", feature = "secure-field"))]
+            panel,
             separator: Rc::new(separator),
             selected_row: None,
         }
@@ -152,22 +133,32 @@ impl MenuLook {
         self.selected_row.is_some()
     }
 
-    /// Records the panel over `frame`.
-    #[cfg(hydrolysis_runtime)]
-    pub(crate) fn record_panel(&self, recorder: &mut Recorder, frame: Rect) {
-        record_at_rest(&*self.panel, recorder, frame);
+    /// The panel's surface: its shape, fill, border and elevation.
+    #[must_use]
+    pub const fn panel(&self) -> &Surface {
+        &self.panel
+    }
+
+    /// How far the panel's shadows reach beyond its edge when it spans
+    /// `frame`, at rest. A popup window leaves this room on every side of
+    /// the panel; `0.0` when the panel casts no shadow.
+    #[must_use]
+    pub fn panel_extent(&self, frame: Rect) -> f64 {
+        self.panel
+            .get_elevation()
+            .target(&Inputs::at_rest(frame, InteractionState::empty(), &()))
+            .extent()
     }
 
     /// Records a separator over `frame`.
-    #[cfg(hydrolysis_runtime)]
-    #[cfg(any(feature = "text-field", feature = "secure-field"))]
-    pub(crate) fn record_separator(&self, recorder: &mut Recorder, frame: Rect) {
+    #[doc(hidden)]
+    pub fn record_separator(&self, recorder: &mut Recorder, frame: Rect) {
         record_at_rest(&*self.separator, recorder, frame);
     }
 
     /// Records the selected row's part over `frame`, when the look has one.
-    #[cfg(hydrolysis_runtime)]
-    pub(crate) fn record_selected_row(&self, recorder: &mut Recorder, frame: Rect) {
+    #[doc(hidden)]
+    pub fn record_selected_row(&self, recorder: &mut Recorder, frame: Rect) {
         if let Some(part) = &self.selected_row {
             record_at_rest(&**part, recorder, frame);
         }

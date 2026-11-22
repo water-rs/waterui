@@ -8,15 +8,12 @@
 
 use std::rc::Rc;
 
-#[cfg(hydrolysis_runtime)]
 use cherenkov_record::Recorder;
-#[cfg(hydrolysis_runtime)]
 use kurbo::Rect;
 use waterui_graphics::color::Color;
 use waterui_text::font::Font;
 
 use super::BadgeMetrics;
-#[cfg(hydrolysis_runtime)]
 use super::look::record_at_rest;
 use super::look::{Custom, CustomPart, DrivenSet};
 
@@ -30,21 +27,7 @@ pub struct BadgeLook {
     metrics: BadgeMetrics,
     label_font: Font,
     label_color: Color,
-    #[cfg_attr(
-        not(hydrolysis_runtime),
-        expect(
-            dead_code,
-            reason = "only the renderer records the badge's dot; a build without a painter compiles the theme contract alone"
-        )
-    )]
     small: Rc<dyn CustomPart<()>>,
-    #[cfg_attr(
-        not(hydrolysis_runtime),
-        expect(
-            dead_code,
-            reason = "only the renderer records the badge's pill; a build without a painter compiles the theme contract alone"
-        )
-    )]
     large: Rc<dyn CustomPart<()>>,
 }
 
@@ -104,14 +87,14 @@ impl BadgeLook {
     }
 
     /// Records the small dot over `frame`.
-    #[cfg(hydrolysis_runtime)]
-    pub(crate) fn record_small(&self, recorder: &mut Recorder, frame: Rect) {
+    #[doc(hidden)]
+    pub fn record_small(&self, recorder: &mut Recorder, frame: Rect) {
         record_at_rest(&*self.small, recorder, frame);
     }
 
     /// Records the count pill over `frame`.
-    #[cfg(hydrolysis_runtime)]
-    pub(crate) fn record_large(&self, recorder: &mut Recorder, frame: Rect) {
+    #[doc(hidden)]
+    pub fn record_large(&self, recorder: &mut Recorder, frame: Rect) {
         record_at_rest(&*self.large, recorder, frame);
     }
 }
