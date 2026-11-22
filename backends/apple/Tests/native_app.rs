@@ -1505,13 +1505,12 @@ mod navigation {
     };
     use waterui::prelude::text;
     use waterui::reactive::binding;
-    use waterui::{AnyView, Str, ViewExt as _};
+    use waterui::{Str, ViewExt as _};
     use waterui_apple::SfSymbol;
     use waterui_apple::native_test_support::{
         MAIN_QUEUE_DEADLINE, content_frame, pump_main_until, realize_into_shown_scene, render,
         render_environment,
     };
-    use waterui_core::handler::AnyViewBuilder;
 
     use super::mtm;
 
@@ -1563,25 +1562,26 @@ mod navigation {
             &selection,
             || text("sidebar"),
             move |_id: i32| {
-                let mut item = NavigationToolbarItem::new(
+                let item = NavigationToolbarItem::new(
                     NavigationToolbarPlacement::PrimaryAction,
                     button("").style(ButtonStyle::Plain),
-                );
-                item.set_icon(Some(AnyViewBuilder::new(|| AnyView::new(SfSymbol::PLUS))));
+                )
+                .icon(SfSymbol::PLUS);
                 NavigationView::new("Today", text("detail").background(Material::Regular))
                     .searchable(&query, "Search reminders")
-                    .navigation_toolbar(NavigationToolbar::new(vec![
-                        item,
-                        NavigationToolbarItem::new(
-                            NavigationToolbarPlacement::PrimaryAction,
-                            button(label("").icon(waterui::svg::Svg::from_path(
-                                "M19,13H13V19H11V13H5V11H11V5H13V11H19V13Z",
-                                24.0,
-                                24.0,
-                            )))
-                            .style(ButtonStyle::Borderless),
-                        ),
-                    ]))
+                    .navigation_toolbar(
+                        NavigationToolbar::default()
+                            .item(item)
+                            .item(NavigationToolbarItem::new(
+                                NavigationToolbarPlacement::PrimaryAction,
+                                button(label("").icon(waterui::svg::Svg::from_path(
+                                    "M19,13H13V19H11V13H5V11H11V5H13V11H19V13Z",
+                                    24.0,
+                                    24.0,
+                                )))
+                                .style(ButtonStyle::Borderless),
+                            )),
+                    )
             },
         )
     }
