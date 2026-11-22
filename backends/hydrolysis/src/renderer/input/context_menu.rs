@@ -335,9 +335,9 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         // keyboard focus still resolves them (water-rs/hydrolysis#247).
         register_popup_chords::<E>(&nodes, &group, env);
         let theme = self.theme();
-        let metrics = menu_look(&theme, env).layout();
-        let text = self.popup_menu_text_metrics(&nodes, metrics, env, &theme);
-        let (menu_width, menu_height) = popup_menu_size(&nodes, metrics, &text);
+        let look = menu_look(&theme, env);
+        let text = self.popup_menu_text_metrics(&nodes, look.layout(), env, &theme);
+        let (menu_width, menu_height) = popup_menu_size(&nodes, look.layout(), &text);
 
         let presentation = opened_by_hold
             || target.is_some_and(|target| {
@@ -386,7 +386,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 (menu_width, menu_height),
                 crate::renderer::input::popup_menu::PopupMenuPlacement {
                     depth: 0,
-                    metrics,
+                    metrics: look.layout(),
                     text,
                     popup_origin,
                     width: menu_width,
@@ -404,7 +404,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 popup_origin,
                 group.clone(),
                 0,
-                metrics,
+                &look,
                 text,
                 &theme,
                 manager.clone(),
@@ -650,9 +650,17 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         // the drawn text context menu gets.
         {
             self.scene_mut().record_picture(transform, |draw| {
-                menu.record_panel(&mut *draw, presentation.menu_frame);
+                crate::renderer::chrome::record_surface_at_rest(
+                    menu.panel(),
+                    &mut *draw,
+                    presentation.menu_frame,
+                );
                 if let Some(accessory_frame) = presentation.accessory_frame {
-                    menu.record_panel(&mut *draw, accessory_frame);
+                    crate::renderer::chrome::record_surface_at_rest(
+                        menu.panel(),
+                        &mut *draw,
+                        accessory_frame,
+                    );
                 }
             });
         }
