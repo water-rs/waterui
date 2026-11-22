@@ -1061,4 +1061,39 @@ mod tests {
         );
         let _ = app.capture_snapshot("material3-preview", "gallery", "stepper-selected");
     }
+
+    #[test]
+    fn conformance_gallery_captures_buttons_demo() {
+        use std::env;
+        use std::fs;
+        use std::process;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        use hydrolysis_m3::Material3;
+        use waterui_conformance::{GalleryConfig, GalleryRunner, RenderCase, ShowcaseSuite};
+
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock after UNIX_EPOCH")
+            .as_nanos();
+        let dir = env::temp_dir().join(format!(
+            "waterui-gallery-conformance-{}-{nanos}",
+            process::id()
+        ));
+
+        let suite = ShowcaseSuite::new("gallery-example").with_case(
+            RenderCase::new("catalog", super::demo)
+                .viewport(900, 600)
+                .interaction_stage("00_idle", |app| {
+                    app.query().label("Buttons").assert_exists();
+                }),
+        );
+
+        let output = GalleryRunner::new(GalleryConfig::default().artifact_root(&dir))
+            .run_suite(&suite, Material3::defaults())
+            .expect("gallery conformance run should succeed");
+        output.assert_pass();
+        assert!(dir.join("gallery-example/catalog/00_idle.png").is_file());
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

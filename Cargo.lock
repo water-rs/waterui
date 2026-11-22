@@ -4069,6 +4069,7 @@ version = "0.1.0"
 dependencies = [
  "hydrolysis-m3",
  "waterui",
+ "waterui-conformance",
  "waterui-icons-material-icon",
  "waterui-testing",
 ]
