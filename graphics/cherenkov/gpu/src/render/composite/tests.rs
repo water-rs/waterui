@@ -720,8 +720,8 @@ fn demand_follows_frozen_writes_and_severs_cleared_generations() {
         for index in [3, 5, 6] {
             assert!(demand.pass(index).is_empty(), "unneeded pass {index}");
         }
-        // The gap is rasterized too, so its frozen inputs must be demanded
-        // before traversing the prior writers, including a capture.
+        // Disjoint updates stay disjoint across prior writers and captures so
+        // the clean gap between them is neither demanded nor rasterized.
         demand.update(&frame, &plan, |_, target, _, region| {
             if target == Target::Part(0) {
                 region.add(2, 3, 2, 2);
@@ -729,8 +729,8 @@ fn demand_follows_frozen_writes_and_severs_cleared_generations() {
             }
         });
         for index in [0, 1, 2, 4] {
-            assert_eq!(demand.pass(index).rectangles().len(), 1);
-            assert_eq!(demand.pass(index).pixel_area(), 100, "pass {index}");
+            assert_eq!(demand.pass(index).rectangles().len(), 2);
+            assert_eq!(demand.pass(index).pixel_area(), 8, "pass {index}");
         }
         for index in [3, 5, 6] {
             assert!(demand.pass(index).is_empty(), "unneeded pass {index}");
