@@ -467,6 +467,13 @@ fn base_trials() -> Vec<Trial> {
             Ok(())
         }),
         Trial::test(
+            "resolve::a_prepopulated_navigation_path_mounts_the_root_and_pushed_pages",
+            || {
+                resolve::a_prepopulated_navigation_path_mounts_the_root_and_pushed_pages();
+                Ok(())
+            },
+        ),
+        Trial::test(
             "picture::a_laid_out_picture_rasterizes_at_its_bounds",
             || {
                 picture::a_laid_out_picture_rasterizes_at_its_bounds();
@@ -1538,6 +1545,71 @@ mod resolve {
             (gap - 8.0).abs() < 0.5,
             "icon-to-title gap — expected 8 pt, got {gap}"
         );
+    }
+
+    /// water-rs/waterui#4889: resolving a `NavigationStack::with_path` whose
+    /// `NavigationPath` already holds pushed routes mounts the root page at
+    /// index 0 followed by the pre-populated destinations in order.
+    pub fn a_prepopulated_navigation_path_mounts_the_root_and_pushed_pages() {
+        use cocoa_ui::view;
+        use waterui::navigation::{NavigationPath, NavigationStack, NavigationView};
+        use waterui::prelude::text;
+
+        let path = NavigationPath::<i32>::new();
+        path.push(1_i32);
+        path.push(2_i32);
+
+        let stack =
+            NavigationStack::with_path(path.clone(), NavigationView::new("Root", text("Root")))
+                .destination(|route: i32| {
+                    NavigationView::new(format!("Page {route}"), text(format!("Page {route}")))
+                });
+
+        let leaf = render(stack);
+
+        #[cfg(target_os = "macos")]
+        {
+            let pages = view::subviews(leaf.view());
+            assert_eq!(pages.len(), 3, "root and two pre-populated pages mount");
+            assert!(pages[0].isHidden(), "root is hidden beneath pushed pages");
+            assert!(
+                pages[1].isHidden(),
+                "first pushed page is hidden beneath top"
+            );
+            assert!(!pages[2].isHidden(), "top pushed page is visible");
+
+            let _ = path.pop();
+            let pages = view::subviews(leaf.view());
+            assert_eq!(pages.len(), 2, "popping removes the top page");
+            assert!(pages[0].isHidden(), "root stays hidden beneath Page 1");
+            assert!(!pages[1].isHidden(), "Page 1 becomes the visible top page");
+
+            let _ = path.pop();
+            let pages = view::subviews(leaf.view());
+            assert_eq!(pages.len(), 1, "popping again returns to root");
+            assert!(!pages[0].isHidden(), "root is now the visible top page");
+        }
+
+        #[cfg(target_os = "ios")]
+        {
+            use cocoa_ui::objc2_ui_kit::UINavigationController;
+            use cocoa_ui::uikit::view_controller::owning_controller;
+
+            let nav_view = view::subviews(leaf.view())
+                .into_iter()
+                .next()
+                .expect("the stack host mounts the navigation controller view");
+            let nav: Retained<UINavigationController> = owning_controller(&nav_view)
+                .expect("the navigation view is owned by a view controller")
+                .downcast()
+                .expect("the owning controller is a UINavigationController");
+            assert_eq!(
+                nav.viewControllers().count(),
+                3,
+                "root and two pre-populated pages mount on UINavigationController"
+            );
+            let _ = path;
+        }
     }
 }
 
