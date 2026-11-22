@@ -400,7 +400,7 @@ pub struct WindowTarget {
     #[cfg(target_vendor = "apple")]
     parent: Result<render::planes::apple::Parent, cherenkov::SurfaceError>,
     size: (u32, u32),
-    refresh: cherenkov::RefreshRange,
+    refresh: cherenkov::FrameRate,
     output: render::present::OutputRequest,
     probe: Option<std::sync::mpsc::Sender<interop::DisplayProbe>>,
 }
@@ -426,7 +426,7 @@ impl WindowTarget {
                 );
             }),
             size,
-            refresh: cherenkov::DEFAULT_REFRESH,
+            refresh: cherenkov::FrameRate::FAST,
             output: render::present::OutputRequest {
                 transparent: false,
                 color_space: render::present::ColorSpaceRequest::Content,
@@ -493,16 +493,9 @@ impl WindowTarget {
         receiver
     }
 
-    /// Sets the refresh range for backend animation and presentation retries.
-    ///
-    /// # Panics
-    /// When the range is empty or includes zero.
+    /// Sets the refresh vote for backend animation and presentation retries.
     #[must_use]
-    pub fn rate(mut self, rate: cherenkov::RefreshRange) -> Self {
-        assert!(
-            *rate.start() > 0 && !rate.is_empty(),
-            "refresh range must be positive and ordered"
-        );
+    pub const fn rate(mut self, rate: cherenkov::FrameRate) -> Self {
         self.refresh = rate;
         self
     }
@@ -669,6 +662,14 @@ impl cherenkov::GpuContent for Gpu {
         frame: Self::Frame,
     ) -> Vec<(cherenkov::SurfaceId, cherenkov::LayerId)> {
         r.submit_frame(id, frame)
+    }
+
+    fn set_source_rate(
+        r: &mut Self::Renderer,
+        id: cherenkov::ProducerId,
+        rate: Option<cherenkov::FrameRate>,
+    ) {
+        r.set_producer_source_rate(id, rate);
     }
 
     fn retire_gpu_producer(r: &mut Self::Renderer, id: cherenkov::ProducerId) {

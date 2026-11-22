@@ -5,18 +5,28 @@
 //! accidentally pull in a later write to the same allocation.
 
 use cherenkov::damage::Region;
+use rustc_hash::FxHashMap;
 
-use super::plan::{ExecutionPlan, Read, ReadKind};
+use super::plan::{ExecutionPlan, Read, ReadKind, corresponds};
 use crate::render::{
     damage::add,
     lower::{Frame, Target},
+    resolve,
 };
+
+pub(super) const fn is_persistent(target: Target) -> bool {
+    matches!(
+        target,
+        Target::Part(_) | Target::Plane(_) | Target::Projected(_)
+    )
+}
 
 #[derive(Default)]
 pub struct Demand {
     passes: Vec<Region>,
-    staging: rustc_hash::FxHashMap<usize, Region>,
+    staging: FxHashMap<usize, Region>,
     surface_union: Option<Region>,
+    overwritten: Vec<(Target, Region)>,
 }
 
 impl Demand {
@@ -25,11 +35,17 @@ impl Demand {
             .as_ref()
             .map_or(0, |region| region.heap_bytes().0)
             + (self.passes.capacity() * size_of::<Region>()
-                + self.staging.capacity() * size_of::<(usize, Region)>()) as u64
+                + self.staging.capacity() * size_of::<(usize, Region)>()
+                + self.overwritten.capacity() * size_of::<(Target, Region)>()) as u64
             + self
                 .staging
                 .values()
                 .map(|region| region.heap_bytes().0)
+                .sum::<u64>()
+            + self
+                .overwritten
+                .iter()
+                .map(|(_, region)| region.heap_bytes().0)
                 .sum::<u64>()
             + self
                 .passes
@@ -41,12 +57,9 @@ impl Demand {
     /// Diagnostic union of the raster scissors over persistent base-level
     /// outputs. This bounds touched pixels, not fragment invocations.
     pub fn output_pixels(&self, frame: &Frame) -> u64 {
-        let mut outputs = rustc_hash::FxHashMap::<Target, Region>::default();
+        let mut outputs = FxHashMap::<Target, Region>::default();
         for (index, pass) in frame.passes.iter().enumerate() {
-            if matches!(
-                pass.target,
-                Target::Part(_) | Target::Plane(_) | Target::Projected(_)
-            ) {
+            if is_persistent(pass.target) {
                 let [x, y, w, h] = pass.region;
                 let output = outputs
                     .entry(pass.target)
@@ -99,7 +112,8 @@ impl Demand {
     }
 
     /// Seed the last write of each persistent output, then propagate reads
-    /// backward. The caller supplies the pixels that output must replace.
+    /// backward and persistent-target overwrites forward to a fixed point.
+    /// The caller supplies the pixels that output must replace.
     pub fn update(
         &mut self,
         frame: &Frame,
@@ -108,63 +122,130 @@ impl Demand {
     ) {
         self.reset(frame);
         for (index, pass) in frame.passes.iter().enumerate().rev() {
-            if matches!(
-                pass.target,
-                Target::Part(_) | Target::Plane(_) | Target::Projected(_)
-            ) && !frame.passes[index + 1..]
-                .iter()
-                .any(|later| later.target == pass.target)
+            if is_persistent(pass.target)
+                && !frame.passes[index + 1..]
+                    .iter()
+                    .any(|later| later.target == pass.target)
             {
                 output(index, pass.target, pass.region, &mut self.passes[index]);
             }
         }
-        for index in (0..frame.passes.len()).rev() {
-            if self.passes[index].is_empty() {
-                continue;
-            }
-            // The filter/shadow executors currently produce their whole
-            // bounded image. Demand their entire input until their kernels
-            // accept a restricted output and its sampling apron.
-            if frame.filters.iter().any(|(pass, _)| *pass == index)
-                || frame.shadows.iter().any(|(pass, _)| *pass == index)
-                || frame.reduces.iter().any(|(pass, _)| *pass == index)
-            {
-                let [x, y, w, h] = frame.passes[index].region;
-                add(&mut self.passes[index], [x, y, w, h]);
-            }
-            if let Some(read) = &plan.loads[index] {
-                self.read(index, read, false, frame);
-            }
-            if let Some(read) = &plan.backdrops[index] {
-                self.read(index, read, false, frame);
-            }
-            if let Some(read) = &plan.captures[index] {
-                let scaled = frame.passes[index]
-                    .capture
-                    .is_some_and(|capture| capture.resolve.is_some());
-                self.read(index, read, scaled, frame);
-            }
-            for (read, range) in plan.reads[index].iter().zip(&frame.passes[index].ranges) {
-                if let Some(read) = read {
-                    if matches!(
-                        range.source,
-                        Some(crate::render::lower::Source::Projected(_))
-                    ) {
-                        // Persistent images are valid outside their seeded changes.
-                        // Sampling them does not require rewriting unchanged texels.
-                        continue;
-                    }
-                    let whole = read.kind != ReadKind::CorrespondingPixel
-                        || !super::plan::corresponds(
-                            frame,
-                            range,
-                            plan.images[read.image.0].region,
-                        );
-                    self.read(index, read, whole, frame);
+        self.overwritten
+            .retain(|(target, _)| frame.passes.iter().any(|pass| pass.target == *target));
+        loop {
+            for index in (0..frame.passes.len()).rev() {
+                if self.passes[index].is_empty() {
+                    continue;
                 }
+                // The filter/shadow executors currently produce their whole
+                // bounded image. Demand their entire input until their kernels
+                // accept a restricted output and its sampling apron.
+                if frame.filters.iter().any(|(pass, _)| *pass == index)
+                    || frame.shadows.iter().any(|(pass, _)| *pass == index)
+                    || frame.reduces.iter().any(|(pass, _)| *pass == index)
+                {
+                    let [x, y, w, h] = frame.passes[index].region;
+                    add(&mut self.passes[index], [x, y, w, h]);
+                }
+                if let Some(read) = &plan.loads[index] {
+                    self.read(index, read, false, frame);
+                }
+                if let Some(read) = &plan.backdrops[index] {
+                    self.read(index, read, false, frame);
+                }
+                if let Some(read) = &plan.captures[index] {
+                    let scaled = frame.passes[index]
+                        .capture
+                        .is_some_and(|capture| capture.resolve.is_some());
+                    self.read(index, read, scaled, frame);
+                }
+                for (read, range) in plan.reads[index].iter().zip(&frame.passes[index].ranges) {
+                    if let Some(read) = read {
+                        if matches!(
+                            range.source,
+                            Some(crate::render::lower::Source::Projected(_))
+                        ) {
+                            // Persistent images are valid outside their seeded changes.
+                            // Sampling them does not require rewriting unchanged texels.
+                            continue;
+                        }
+                        let whole = read.kind != ReadKind::CorrespondingPixel
+                            || !corresponds(frame, range, plan.images[read.image.0].region);
+                        self.read(index, read, whole, frame);
+                    }
+                }
+            }
+            if !self.propagate_overwritten(frame) {
+                break;
             }
         }
         self.prepare_staging(frame);
+    }
+
+    fn propagate_overwritten(&mut self, frame: &Frame) -> bool {
+        // Persistent targets preserve prior-frame pixels outside each pass's
+        // scissor. Whenever an earlier pass expands to write a larger region of
+        // a persistent target (for instance after a filter, shadow, reduce, or
+        // scaled capture expands its demand), every later pass writing that
+        // target must cover the overwritten region so intermediate clears or
+        // background draws are not left exposed.
+        for (_, region) in &mut self.overwritten {
+            region.clear();
+        }
+        let mut grew = false;
+        for (index, pass) in frame.passes.iter().enumerate() {
+            if !is_persistent(pass.target) {
+                continue;
+            }
+            let [x, y, w, h] = pass.region;
+            let extent = (x + w, y + h);
+            if let Some((_, written)) = self
+                .overwritten
+                .iter()
+                .find(|(target, _)| *target == pass.target)
+            {
+                let before = self.passes[index].pixel_area();
+                for rect in written.rectangles() {
+                    let x0 = rect.x0().max(x);
+                    let y0 = rect.y0().max(y);
+                    let x1 = rect.x1().min(x + w);
+                    let y1 = rect.y1().min(y + h);
+                    if x0 < x1 && y0 < y1 {
+                        add(&mut self.passes[index], [x0, y0, x1 - x0, y1 - y0]);
+                    }
+                }
+                if self.passes[index].pixel_area() > before {
+                    grew = true;
+                }
+            }
+            if !self.passes[index].is_empty() {
+                let written = if let Some((_, written)) = self
+                    .overwritten
+                    .iter_mut()
+                    .find(|(target, _)| *target == pass.target)
+                {
+                    if written.extent().0 < extent.0 || written.extent().1 < extent.1 {
+                        let next_extent = (
+                            written.extent().0.max(extent.0),
+                            written.extent().1.max(extent.1),
+                        );
+                        let mut expanded = Region::new(next_extent);
+                        for rect in written.rectangles() {
+                            add(&mut expanded, rect.xywh().into());
+                        }
+                        *written = expanded;
+                    }
+                    written
+                } else {
+                    self.overwritten.push((pass.target, Region::new(extent)));
+                    &mut self.overwritten.last_mut().expect("pushed entry").1
+                };
+                for rect in self.passes[index].rectangles() {
+                    add(written, rect.xywh().into());
+                }
+            }
+        }
+        grew
     }
 
     #[expect(
@@ -174,14 +255,13 @@ impl Demand {
     )]
     fn prepare_staging(&mut self, frame: &Frame) {
         self.staging.retain(|index, _| {
-            frame.passes.get(*index).is_some_and(|pass| {
-                crate::render::resolve::of(pass).is_some() && crate::render::resolve::staged(pass)
-            })
+            frame
+                .passes
+                .get(*index)
+                .is_some_and(|pass| resolve::of(pass).is_some() && resolve::staged(pass))
         });
         for (index, pass) in frame.passes.iter().enumerate() {
-            let Some(resolve) =
-                crate::render::resolve::of(pass).filter(|_| crate::render::resolve::staged(pass))
-            else {
+            let Some(resolve) = resolve::of(pass).filter(|_| resolve::staged(pass)) else {
                 continue;
             };
             let extent = resolve.extent.into();

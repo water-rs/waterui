@@ -34,8 +34,6 @@ pub mod dispatch;
 pub mod embedding;
 pub mod entry;
 mod native_layout;
-#[cfg(feature = "inspector")]
-mod native_log;
 #[cfg(preview_entry)]
 pub mod preview;
 pub mod resources;
@@ -58,6 +56,7 @@ pub(crate) mod capture_image;
 pub(crate) mod components;
 pub(crate) mod first_paint;
 pub(crate) mod fonts;
+pub(crate) mod frame_rate;
 #[cfg(feature = "gpu_surface")]
 mod frozen_frame;
 #[cfg(feature = "gpu_surface")]
@@ -66,6 +65,8 @@ mod gpu_completion;
 mod gpu_input;
 #[cfg(feature = "gpu_surface")]
 mod gpu_runtime;
+#[cfg(all(feature = "gpu_surface", target_os = "ios"))]
+mod gpu_text;
 #[cfg(feature = "inspector")]
 mod inspector;
 mod invalidation;

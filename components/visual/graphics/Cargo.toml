@@ -57,6 +57,7 @@ cpu = ["cherenkov", "dep:cherenkov-cpu", "cherenkov-cpu/shaders", "filtrate?/lan
 [dependencies]
 arc-swap = { workspace = true, optional = true }
 waterui-core.workspace = true
+waterui-frame-rate.workspace = true
 nami.workspace = true
 # The render-target-neutral recorder: always on — `draw`, `SceneContent`,
 # `Picture` and the `SceneResources` contract are all spelled in its types.

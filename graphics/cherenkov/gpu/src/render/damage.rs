@@ -541,7 +541,7 @@ fn coalesce_overlapping(boxes: &mut [[u32; 4]; 32], len: &mut usize) {
     }
 }
 
-fn cover(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+pub(super) fn cover(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
     if a[2] == 0 || a[3] == 0 {
         return b;
     }

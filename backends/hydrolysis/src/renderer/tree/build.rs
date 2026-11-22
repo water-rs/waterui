@@ -640,6 +640,7 @@ fn is_background_fill_leaf<E: crate::text::TextEngine>(node: &RenderNode<E>) -> 
                 WrapperEffect::LayoutPriority(_)
                     | WrapperEffect::LifeCycle(_)
                     | WrapperEffect::Focused(_)
+                    | WrapperEffect::FrameRate(_)
                     | WrapperEffect::OnKeyPress(_)
                     | WrapperEffect::MaterialGroup
             ) && is_background_fill_leaf(&node.child)

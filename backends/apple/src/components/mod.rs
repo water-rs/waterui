@@ -39,6 +39,7 @@ pub mod filtered;
 pub mod fixed_container;
 pub mod focused;
 mod font;
+pub mod frame_rate;
 pub mod gesture;
 pub mod glass_background;
 #[cfg(feature = "gpu_surface")]

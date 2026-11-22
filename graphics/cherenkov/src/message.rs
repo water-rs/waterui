@@ -127,6 +127,9 @@ impl std::fmt::Debug for FontData {
 pub struct SurfaceNext {
     /// The surface's own deadline.
     pub next: Next,
+    /// The combined cadence vote for the surface, including non-redrawing
+    /// source rates.
+    pub rate_vote: Option<crate::FrameRate>,
     /// The layer tracks the engine still runs on the surface.
     pub tracks: RunningTracks,
 }

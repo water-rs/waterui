@@ -185,7 +185,7 @@ define_class!(
     }
 );
 
-const fn gesture_phase(state: UIGestureRecognizerState) -> Option<GesturePhase> {
+pub(super) const fn gesture_phase(state: UIGestureRecognizerState) -> Option<GesturePhase> {
     match state {
         UIGestureRecognizerState::Began => Some(GesturePhase::Began),
         UIGestureRecognizerState::Changed => Some(GesturePhase::Changed),

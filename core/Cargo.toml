@@ -17,6 +17,7 @@ smallvec.workspace = true
 nami.workspace = true
 waterui-contract.workspace = true
 waterui-easing.workspace = true
+waterui-frame-rate = { workspace = true, features = ["nami"] }
 waterui-macros.workspace = true
 waterui-meta.workspace = true
 

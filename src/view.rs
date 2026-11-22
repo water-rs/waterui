@@ -9,6 +9,7 @@
 //!
 //! These extensions help create a fluent API for constructing user interfaces.
 
+use crate::animation::{FrameRate, FrameRateVote};
 use crate::fullscreen::FullScreenOverlayHost;
 #[cfg(feature = "snackbar")]
 use crate::snackbar::SnackbarHost;
@@ -182,6 +183,18 @@ pub trait ViewExt: View + Sized {
     /// * `priority` - Higher keeps more space; ties share the shortfall.
     fn layout_priority(self, priority: i32) -> Metadata<LayoutPriority, Self> {
         Metadata::new(self, LayoutPriority::new(priority))
+    }
+
+    /// Joins the window's refresh-rate vote while this view is mounted and visible.
+    ///
+    /// Multiple active votes combine field-wise by maximum (`combine`), so an app
+    /// vote can raise the window's refresh rate without lowering running animations
+    /// below their classified floor, and requests no frames on its own.
+    fn frame_rate(
+        self,
+        rate: impl IntoComputed<Option<FrameRate>>,
+    ) -> Metadata<FrameRateVote, Self> {
+        Metadata::new(self, FrameRateVote::new(rate))
     }
 
     /// Sets the visibility of this view.

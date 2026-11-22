@@ -4,7 +4,9 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::renderer::input::TouchScrollGesture;
 use rustc_hash::FxHashMap;
+use waterui_frame_rate::{FrameRate, combine, combine_all};
 
 type SignalUpdateHandler<T> = Rc<dyn Fn(nami::watcher::Context<T>)>;
 
@@ -538,29 +540,73 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         })
     }
 
-    /// Content demand for the host's animation cadence. Input-release and
-    /// navigation motion keep the fast range regardless of scalar fades.
-    #[cfg(any(test, all(target_os = "android", hydrolysis_gpu_painter)))]
-    pub(crate) fn animation_refresh_range(&self) -> Option<cherenkov_record::RefreshRange> {
+    /// Records a mounted, visible `.frame_rate(...)` vote for the current flush.
+    pub(crate) const fn record_app_frame_rate_vote(&mut self, vote: FrameRate) {
+        self.app_frame_rate_vote = combine(self.app_frame_rate_vote, Some(vote));
+    }
+
+    /// Whether a `.frame_rate(...)` modifier inside `env` is currently active
+    /// (not hidden by zero opacity or accessibility suppression).
+    pub(crate) fn is_frame_rate_vote_visible(&self, env: &Environment) -> bool {
+        if self.zero_opacity_depth > 0 {
+            return false;
+        }
+        #[cfg(feature = "accessibility")]
+        if self.accessibility.suppression_depth > 0 {
+            return false;
+        }
+        #[cfg(feature = "accessibility")]
+        if env
+            .get::<AccessibilityHidden>()
+            .is_some_and(AccessibilityHidden::is_hidden)
+        {
+            return false;
+        }
+        #[cfg(not(feature = "accessibility"))]
+        let _ = env;
+        true
+    }
+
+    /// Combined refresh-rate vote across mounted visible `.frame_rate(...)`
+    /// modifiers, classified widget scalar slots, fast framework motions, active
+    /// pointer/touch down state, and the engine surface's latest vote.
+    #[must_use]
+    pub fn frame_rate_vote(&self) -> Option<FrameRate> {
         let now = self.frame_instant;
-        if self.has_pending_interaction_releases(now)
-            || {
-                #[cfg(feature = "navigation")]
-                {
-                    self.navigation_animating()
-                }
-                #[cfg(not(feature = "navigation"))]
-                {
-                    false
-                }
+        let nav_animating = {
+            #[cfg(feature = "navigation")]
+            {
+                self.navigation_animating()
             }
+            #[cfg(not(feature = "navigation"))]
+            {
+                false
+            }
+        };
+        let pointer_or_touch_down = self.hit_test.active_pointer.is_some()
+            || !matches!(self.hit_test.touch_scroll, TouchScrollGesture::Idle);
+        let fast = (self.has_pending_interaction_releases(now)
+            || nav_animating
             || self.has_gliding_smooth_scrolls()
             || self.has_active_touch_fling()
-        {
-            Some(cherenkov_record::tree::RATE_FAST)
-        } else {
-            self.animation_controller.refresh_range()
-        }
+            || pointer_or_touch_down)
+            .then_some(FrameRate::FAST);
+        let engine = {
+            #[cfg(hydrolysis_cherenkov)]
+            {
+                self.engine_rate_vote
+            }
+            #[cfg(not(hydrolysis_cherenkov))]
+            {
+                None
+            }
+        };
+        combine_all([
+            self.app_frame_rate_vote,
+            self.animation_controller.frame_rate_vote(),
+            fast,
+            engine,
+        ])
     }
 
     pub fn advance_animations(&mut self) -> bool {

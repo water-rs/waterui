@@ -6,9 +6,10 @@ use std::rc::{Rc, Weak};
 use std::sync::Arc;
 
 use cherenkov_record::{FilterId, Layer, Transaction};
+use waterui_core::contract_violation;
 use waterui_graphics::backend::Reactive;
 use waterui_graphics::backend::filtrate::filters::OverscrollStretch;
-use waterui_graphics::gpu::PresentedSize;
+use waterui_graphics::gpu::{FrameReceiver, PresentedSize, RedrawHandle, SourceRateUpdate};
 
 use crate::gpu_view::{ExternalFrameRuntime, GpuContentRuntime};
 use crate::renderer::ProducerWake;
@@ -106,21 +107,29 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for cherenkov_gpu::Gpu {
         wake: ProducerWake,
     ) -> Option<(u32, u32)> {
         let receiver = runtime.receiver.get_or_insert_with(|| {
-            let redraw = waterui_graphics::gpu::RedrawHandle::new(move || wake.request_redraw());
+            let redraw = RedrawHandle::new(move || wake.request_redraw());
             let (producer, sink) = host.engine.frame_producer();
             runtime.producer = Some(producer);
             runtime.sink = Some(sink);
             runtime.view.stream().start(&host.shared_device, redraw)
         });
         receiver.report_presented(presented);
+        if let Some(update) = receiver.take_source_rate()
+            && let Some(sink) = &runtime.sink
+        {
+            match update {
+                SourceRateUpdate::Unchanged => {}
+                SourceRateUpdate::Clear => sink.set_source_rate(None),
+                SourceRateUpdate::Set(rate) => sink.set_source_rate(Some(rate)),
+                _ => contract_violation!(
+                    "hydrolysis gpu target: unexpected SourceRateUpdate variant"
+                ),
+            }
+        }
         // The UI-side pump runs before the drain, so a frame it hands the
         // source this pass is installed this pass.
         runtime.view.frame();
-        if let Some(frame) = runtime
-            .receiver
-            .as_ref()
-            .and_then(waterui_graphics::gpu::FrameReceiver::take)
-        {
+        if let Some(frame) = runtime.receiver.as_ref().and_then(FrameReceiver::take) {
             runtime.frame_pixels = Some(external_frame_plane_size(&frame));
             if let Some(sink) = &runtime.sink {
                 sink.submit(frame);

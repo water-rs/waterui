@@ -121,6 +121,7 @@ waterui = { workspace = true }
 waterui-accessibility = { workspace = true }
 waterui-interaction = { workspace = true }
 waterui-core = { workspace = true }
+waterui-frame-rate = { workspace = true }
 waterui-capture = { workspace = true }
 waterui-resources = { workspace = true }
 waterui-structural-transition.workspace = true
@@ -156,7 +157,8 @@ objc2-metal = { version = "0.3", default-features = false, features = [
 ] }
 # The Cocoa bindings live in-tree at backends/apple/cocoa-ui (imported from
 # water-rs/cocoa-ui@03cc55e1 — see that directory's PROVENANCE).
-cocoa-ui = { path = "cocoa-ui" }
+cocoa-ui = { path = "cocoa-ui", features = ["tracing"] }
+waterui-apple-menu.workspace = true
 # Optional component dependencies — a port's feature gates them so an app
 # that never uses the component links none of it.
 waterui-webview = { workspace = true, optional = true }

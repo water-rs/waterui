@@ -37,6 +37,13 @@ pub mod wgpu {
         pub redraw: super::RedrawHandle,
     }
 
+    #[derive(Clone, Copy, Debug)]
+    pub(crate) enum SourceRateUpdate {
+        Unchanged,
+        Clear,
+        Set(cherenkov::FrameRate),
+    }
+
     /// An engine-allocated output texture for one custom content frame.
     #[derive(Debug)]
     pub struct Frame<'a> {
@@ -63,13 +70,34 @@ pub mod wgpu {
         /// The platform's target presentation time for this frame, when its
         /// frame clock reports one.
         pub presentation_time: Option<Instant>,
-        pub(crate) redraw: bool,
+        pub(crate) redraw_rate: Option<cherenkov::FrameRate>,
+        pub(crate) source_rate_update: SourceRateUpdate,
     }
 
     impl Frame<'_> {
-        /// Keeps the engine refreshing for the next frame.
+        /// Keeps the engine refreshing for the next frame at `FrameRate::FAST`.
         pub const fn request_redraw(&mut self) {
-            self.redraw = true;
+            self.request_redraw_at(cherenkov::FrameRate::FAST);
+        }
+
+        /// Keeps the engine refreshing for the next frame at `rate`,
+        /// combining repeated requests within one pass by field-wise max.
+        pub const fn request_redraw_at(&mut self, rate: cherenkov::FrameRate) {
+            self.redraw_rate = Some(match self.redraw_rate {
+                Some(current) => current.combine_with(rate),
+                None => rate,
+            });
+        }
+
+        /// Declares or clears this producer's non-redrawing source cadence
+        /// (latched across subsequent frames until replaced or cleared with
+        /// `None`). Unlike [`Self::request_redraw_at`], this never requests
+        /// another render pass on its own.
+        pub const fn set_source_rate(&mut self, rate: Option<cherenkov::FrameRate>) {
+            self.source_rate_update = match rate {
+                Some(rate) => SourceRateUpdate::Set(rate),
+                None => SourceRateUpdate::Clear,
+            };
         }
     }
 }
@@ -318,7 +346,7 @@ const fn supports_compute(flags: wgpu::DownlevelFlags, limits: &wgpu::Limits) ->
 #[derive(Debug)]
 pub struct TextureTarget {
     pub(crate) size: (u32, u32),
-    pub(crate) refresh: cherenkov::RefreshRange,
+    pub(crate) refresh: cherenkov::FrameRate,
     pub(crate) textures: std::sync::mpsc::Sender<wgpu::Texture>,
     pub(crate) ranges: Option<std::sync::mpsc::Sender<ColorRange>>,
 }
@@ -334,16 +362,9 @@ impl TextureTarget {
         receiver
     }
 
-    /// Sets the refresh range for animated content.
-    ///
-    /// # Panics
-    /// When the range is empty or includes zero.
+    /// Sets the refresh vote for animated content.
     #[must_use]
-    pub fn rate(mut self, rate: cherenkov::RefreshRange) -> Self {
-        assert!(
-            *rate.start() > 0 && !rate.is_empty(),
-            "refresh range must be positive and ordered"
-        );
+    pub const fn rate(mut self, rate: cherenkov::FrameRate) -> Self {
         self.refresh = rate;
         self
     }
@@ -361,7 +382,7 @@ impl TextureTarget {
                 size,
                 textures,
                 ranges: None,
-                refresh: cherenkov::DEFAULT_REFRESH,
+                refresh: cherenkov::FrameRate::FAST,
             },
             receiver,
         )
@@ -1213,7 +1234,7 @@ pub mod dmabuf {
         pub(crate) size: (u32, u32),
         pub(crate) sink: Sender<DmabufFrame>,
         pub(crate) formats: Vec<DmabufFormat>,
-        pub(crate) refresh: cherenkov::RefreshRange,
+        pub(crate) refresh: cherenkov::FrameRate,
         pub(crate) pool_size: usize,
     }
 
@@ -1228,7 +1249,7 @@ pub mod dmabuf {
                     size,
                     sink,
                     formats: Vec::new(),
-                    refresh: cherenkov::DEFAULT_REFRESH,
+                    refresh: cherenkov::FrameRate::FAST,
                     pool_size: 3,
                 },
                 frames,
@@ -1243,17 +1264,10 @@ pub mod dmabuf {
             self
         }
 
-        /// Sets the refresh range for backend animation and presentation
+        /// Sets the refresh vote for backend animation and presentation
         /// retries.
-        ///
-        /// # Panics
-        /// When the range is empty or includes zero.
         #[must_use]
-        pub fn rate(mut self, rate: cherenkov::RefreshRange) -> Self {
-            assert!(
-                *rate.start() > 0 && !rate.is_empty(),
-                "refresh range must be positive and ordered"
-            );
+        pub const fn rate(mut self, rate: cherenkov::FrameRate) -> Self {
             self.refresh = rate;
             self
         }
@@ -1305,7 +1319,7 @@ pub mod android {
         pub(crate) looper: ndk::looper::ForeignLooper,
         pub(crate) size: (u32, u32),
         pub(crate) transparent: bool,
-        pub(crate) refresh: cherenkov::RefreshRange,
+        pub(crate) refresh: cherenkov::FrameRate,
         pub(crate) band_commits: Option<std::sync::mpsc::Sender<BandCommit>>,
     }
 
@@ -1323,7 +1337,7 @@ pub mod android {
                 looper,
                 size,
                 transparent: false,
-                refresh: cherenkov::DEFAULT_REFRESH,
+                refresh: cherenkov::FrameRate::FAST,
                 band_commits: None,
             }
         }
@@ -1347,17 +1361,10 @@ pub mod android {
             self
         }
 
-        /// Sets the refresh range for backend animation and presentation
+        /// Sets the refresh vote for backend animation and presentation
         /// retries.
-        ///
-        /// # Panics
-        /// When the range is empty or includes zero.
         #[must_use]
-        pub fn rate(mut self, rate: cherenkov::RefreshRange) -> Self {
-            assert!(
-                *rate.start() > 0 && !rate.is_empty(),
-                "refresh range must be positive and ordered"
-            );
+        pub const fn rate(mut self, rate: cherenkov::FrameRate) -> Self {
             self.refresh = rate;
             self
         }

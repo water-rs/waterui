@@ -158,7 +158,7 @@ mod tests {
         let stamp = tree.content_stamp(root);
         tree.sample(start, 1.0);
         let half = tree.sample(start + Duration::from_millis(500), 1.0);
-        assert_eq!(half.rate, Some(crate::tree::RATE_FAST));
+        assert_eq!(half.rate, Some(crate::FrameRate::FAST));
         // Half of a full turn about Y mirrors x.
         let r = *tree.projective_pose(root).unwrap().unwrap().as_rows();
         assert!((r[0][0] + 1.0).abs() < 1e-5, "{}", r[0][0]);

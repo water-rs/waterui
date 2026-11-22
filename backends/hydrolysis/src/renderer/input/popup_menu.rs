@@ -694,8 +694,7 @@ impl<E: crate::text::TextEngine> View for PopupMenuContent<E> {
                 PopupMenuNode::Divider => rows.push(waterui_core::OneOf3::B(
                     Frame::new(Divider)
                         .height(crate::num_cast::f64_as_f32(row_height))
-                        .max_width(f32::INFINITY)
-                        .alignment(waterui_layout::alignment::Leading),
+                        .max_width(f32::INFINITY),
                 )),
                 PopupMenuNode::Menu {
                     semantic_text,

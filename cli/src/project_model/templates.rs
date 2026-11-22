@@ -2576,7 +2576,7 @@ mod tests {
         let manifest = cargo_toml
             .parse::<toml::Table>()
             .expect("hydrolysis Cargo.toml should parse");
-        let native_dependencies = &manifest["target"]["cfg(all(not(target_arch = \"wasm32\"), not(target_os = \"android\")))"]
+        let native_dependencies = &manifest["target"]["cfg(all(not(target_arch = \"wasm32\"), not(target_os = \"android\"), not(target_os = \"ios\")))"]
             ["dependencies"];
         // The generated crate must not carry `waterui-preview` — the
         // preview runtime module no longer uses the support-app crate.
@@ -2715,9 +2715,13 @@ mod tests {
         };
         // Shared native table: `winit` only — the engine pieces moved out.
         assert_eq!(
-            features_of("cfg(all(not(target_arch = \"wasm32\"), not(target_os = \"android\")))"),
+            features_of(
+                "cfg(all(not(target_arch = \"wasm32\"), not(target_os = \"android\"), not(target_os = \"ios\")))"
+            ),
             ["winit"],
         );
+        // iOS runs the cocoa-ui UIKit host: no winit.
+        assert_eq!(features_of("cfg(target_os = \"ios\")"), ["accessibility"]);
         // macOS answers CEF: Hydrolysis selects `webview-cef`, and the helper's
         // crate rides the macOS section with `cef-runtime`.
         assert_eq!(features_of("cfg(target_os = \"macos\")"), ["webview-cef"],);
@@ -3093,7 +3097,8 @@ mod tests {
             .expect("hydrolysis Cargo.toml should parse");
 
         for cfg in [
-            "cfg(all(not(target_arch = \"wasm32\"), not(target_os = \"android\")))",
+            "cfg(all(not(target_arch = \"wasm32\"), not(target_os = \"android\"), not(target_os = \"ios\")))",
+            "cfg(target_os = \"ios\")",
             "cfg(target_os = \"android\")",
             "cfg(target_arch = \"wasm32\")",
         ] {
@@ -3117,7 +3122,7 @@ mod tests {
         }
 
         // In-tree crates still resolve by path into the checkout.
-        let native_dependencies = &manifest["target"]["cfg(all(not(target_arch = \"wasm32\"), not(target_os = \"android\")))"]
+        let native_dependencies = &manifest["target"]["cfg(all(not(target_arch = \"wasm32\"), not(target_os = \"android\"), not(target_os = \"ios\")))"]
             ["dependencies"];
         assert_eq!(
             native_dependencies["waterui-core"]["path"].as_str(),
@@ -6588,9 +6593,15 @@ pub mod hydrolysis {
     ) -> io::Result<BTreeMap<String, GeneratedTargetSection<GeneratedDependencyValue>>> {
         let mut target = BTreeMap::from([
             (
-                "cfg(all(not(target_arch = \"wasm32\"), not(target_os = \"android\")))".to_string(),
+                "cfg(all(not(target_arch = \"wasm32\"), not(target_os = \"android\"), not(target_os = \"ios\")))".to_string(),
                 GeneratedTargetSection {
-                    dependencies: native_target_dependencies(ctx)?,
+                    dependencies: native_target_dependencies(ctx, &["winit"])?,
+                },
+            ),
+            (
+                "cfg(target_os = \"ios\")".to_string(),
+                GeneratedTargetSection {
+                    dependencies: native_target_dependencies(ctx, &["accessibility"])?,
                 },
             ),
             (
@@ -6763,8 +6774,12 @@ pub mod hydrolysis {
         ]))
     }
 
+    /// The dependencies of the native (non-Android, non-web) launcher.
+    /// `hydrolysis_features` is the host the OS runs: winit on the desktop,
+    /// the `cocoa_ui` `UIKit` host on iOS.
     fn native_target_dependencies(
         ctx: &TemplateContext,
+        hydrolysis_features: &[&str],
     ) -> io::Result<BTreeMap<String, GeneratedDependencyValue>> {
         let dependencies: BTreeMap<String, GeneratedDependencyValue> = BTreeMap::from([
             (
@@ -6774,7 +6789,7 @@ pub mod hydrolysis {
                         ctx,
                         NativeBackendDependencySpec::new(
                             "hydrolysis",
-                            &["winit"],
+                            hydrolysis_features,
                             NativeBackendDependencySource::FrameworkMember(HYDROLYSIS),
                         ),
                     )?

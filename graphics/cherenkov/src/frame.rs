@@ -3,8 +3,7 @@
 //!
 //! [`Engine::render`]: crate::Engine::render
 
-use cherenkov_record::RefreshRange;
-use waterui_contract::contract_violation;
+use cherenkov_record::FrameRate;
 
 use crate::Instant;
 
@@ -67,22 +66,18 @@ impl FrameTime {
     }
 }
 
-/// The refresh range a surface requests when its host does not set one: up
-/// to 120 Hz, the performance target on current high-refresh displays.
-pub const DEFAULT_REFRESH: RefreshRange = 60..=120;
-
 /// What the engine needs next, returned by
 /// [`Engine::render`](crate::Engine::render).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Next {
     /// No animation is running; the display link may sleep.
     Idle,
-    /// The next frame is needed at `time`, at a refresh rate in `rate`.
+    /// The next frame is needed at `time`, with refresh vote `rate`.
     At {
         /// When the next frame is due.
         time: Instant,
-        /// The acceptable refresh rates.
-        rate: RefreshRange,
+        /// The requested refresh-rate vote.
+        rate: FrameRate,
     },
 }
 
@@ -273,25 +268,14 @@ pub struct Offscreen {
     pub size: (u32, u32),
     /// The target storage format.
     pub format: OffscreenFormat,
-    /// Refresh range used by animated backend content.
-    pub refresh: RefreshRange,
+    /// Refresh vote used by animated backend content.
+    pub refresh: FrameRate,
 }
 
 impl Offscreen {
-    /// Configure the refresh range of this target.
-    ///
-    /// # Contract
-    /// An empty range or one containing zero hertz is a contract
-    /// violation; the refresh range stays as it was.
+    /// Configure the refresh vote of this target.
     #[must_use]
-    pub fn rate(mut self, rate: RefreshRange) -> Self {
-        if *rate.start() == 0 || rate.is_empty() {
-            contract_violation!(
-                "refresh range must be positive and ordered, not {rate:?}; the range stays {:?}",
-                self.refresh
-            );
-            return self;
-        }
+    pub const fn rate(mut self, rate: FrameRate) -> Self {
         self.refresh = rate;
         self
     }
@@ -302,7 +286,7 @@ impl Offscreen {
         Self {
             size,
             format,
-            refresh: DEFAULT_REFRESH,
+            refresh: FrameRate::FAST,
         }
     }
 }

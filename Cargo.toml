@@ -20,11 +20,13 @@ members = [
     "src",
     "cli",
     "testing",
+    "testing/conformance",
     "macros",
     "examples/*",
     ".claude/skills/waterui/skill_snippets",
     "backends/apple",
     "backends/apple/cocoa-ui",
+    "backends/apple/menu",
     "backends/apple/Examples/liquid_glass",
     "backends/apple/Tests/IOSTestHost",
     "backends/core",
@@ -304,6 +306,7 @@ waterui-meta = { version = "0.5.1", path = "utils/meta" }
 waterui-git-head = { version = "0.5.1", path = "utils/git-head" }
 waterui-contract = { version = "0.5.1", path = "utils/contract" }
 waterui-easing = { version = "0.5.1", path = "utils/easing" }
+waterui-frame-rate = { version = "0.5.1", path = "utils/frame-rate", default-features = false }
 apple-availability = { version = "0.5.1", path = "utils/apple-availability" }
 waterkit-location = "0.3"
 waterkit-deeplink = "0.3"
@@ -337,11 +340,13 @@ waterui-inspector-protocol = { version = "0.5.1", path = "components/devtools/in
 waterui-inspector-runtime = { version = "0.5.1", path = "components/devtools/inspector/runtime" }
 waterui-preview-protocol = { version = "0.5.1", path = "components/devtools/preview/protocol" }
 waterui-mcp-protocol = { version = "0.5.1", path = "components/devtools/mcp/protocol" }
-waterui-testing = { path = "testing" }
+waterui-testing = { version = "0.5.1", path = "testing" }
+waterui-conformance = { version = "0.5.1", path = "testing/conformance" }
 waterui-internal = { version = "0.5.1", path = "src", default-features = false }
 waterui-dylib = { version = "0.5.1", path = "utils/dylib", default-features = false }
 hydrolysis = { version = "0.3.1", path = "backends/hydrolysis", default-features = false }
 hydrolysis-style = { version = "0.5.1", path = "backends/hydrolysis-style", default-features = false }
+waterui-apple-menu = { version = "0.5.1", path = "backends/apple/menu" }
 # default-features lives here, not on members: cargo rejects a member
 # `default-features` override when the workspace entry does not declare
 # one (the MSRV failure in #1551). Members name the features they need.
@@ -723,7 +728,7 @@ waterui-watcher-set = { path = "utils/watcher-set" }
 # and the split tabs-bar surface and divider calls (#1982). Drop the git pin
 # once a release has these changes.
 hydrolysis = { path = "backends/hydrolysis" }
-hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", branch = "refactor/4869-typed-tab-toolbar" }
+hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", branch = "main" }
 # The waterkit family follows waterkit's `dev` so the framework consumes its
 # unreleased changes; the patches apply only while the `[workspace.dependencies]`
 # requirements admit `dev`'s version (0.3). Every waterkit crate the
@@ -797,7 +802,7 @@ wgpu-external-frame = { git = "https://github.com/water-rs/wgpu-external-frame",
 waterui-barcode = { git = "https://github.com/water-rs/barcode", branch = "main" }
 waterui-chart = { git = "https://github.com/water-rs/chart", branch = "main" }
 waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", branch = "main" }
-waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", branch = "refactor/button-a11y-label" }
+waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", branch = "main" }
 waterui-particle = { git = "https://github.com/water-rs/particle", branch = "main" }
 waterui-image = { git = "https://github.com/water-rs/image", branch = "main" }
 waterui-svg = { git = "https://github.com/water-rs/svg", branch = "main" }

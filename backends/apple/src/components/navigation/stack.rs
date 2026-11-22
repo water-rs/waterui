@@ -300,6 +300,9 @@ mod platform {
         /// Removal transitions in flight — the stack owns the ghosts of
         /// claimed pages a pop replaced, held until `on_complete` fires.
         ghosts: Ghosts,
+        /// Transactions emitted while `stack.resolve` attaches the path
+        /// subscription before `build` mounts the root page at index 0.
+        initial: RefCell<Option<Vec<NavigationTransaction<Held>>>>,
         /// The outstanding transaction, when any.
         pending: RefCell<Option<Pending>>,
         /// The main-thread proof.
@@ -331,6 +334,7 @@ mod platform {
                 transition,
                 pages: RefCell::new(Vec::new()),
                 ghosts: Ghosts::default(),
+                initial: RefCell::new(Some(Vec::new())),
                 pending: RefCell::new(None),
                 mtm: MainThreadMarker::new().expect("views resolve on the main thread"),
                 column: false,
@@ -401,6 +405,10 @@ mod platform {
             });
             self.pages.borrow_mut().push(Rc::new(root));
             let _ = self.nav.set(nav);
+            let initial = self.initial.borrow_mut().take().unwrap_or_default();
+            for transaction in initial {
+                self.apply_transaction(transaction, true);
+            }
             // A `UINavigationController` owns the bar and the scroll insets of
             // the content it hosts — `WuiSafeAreaManaging` in the baseline —
             // so the leaf reports it through a kit host and the window root
@@ -729,10 +737,7 @@ mod platform {
                 .last()
                 .is_none_or(|entry| entry.state.borrow_mut().attempt_pop(&env))
         }
-    }
-
-    impl Sink for Stack {
-        fn apply(&self, transaction: NavigationTransaction<Held>) {
+        fn apply_transaction(&self, transaction: NavigationTransaction<Held>, initial_mount: bool) {
             // A superseded transaction is cancelled; its removed states
             // still hear `popped` — they are off the stack either way.
             if let Some(pending) = self.pending.borrow_mut().take() {
@@ -757,7 +762,7 @@ mod platform {
             let inserted_count = transaction.inserted.len();
             let mut inserted = Vec::new();
             for (index, builder) in transaction.inserted.into_iter().enumerate() {
-                let mount = if index + 1 == inserted_count {
+                let mount = if !initial_mount && index + 1 == inserted_count {
                     Mount::Top
                 } else {
                     Mount::Below
@@ -793,7 +798,8 @@ mod platform {
                 view::set_frame(leaf.view(), frame);
                 retire_page(leaf, self.env(), &self.ghosts);
             }
-            let animated = !claimed
+            let animated = !initial_mount
+                && !claimed
                 && inserted
                     .last()
                     .or_else(|| pages.last())
@@ -805,11 +811,29 @@ mod platform {
                 .get()
                 .expect("the stack is built before any callback that reads it")
                 .set_pages(&controllers, animated);
-            *self.pending.borrow_mut() = Some(Pending {
-                id: transaction.id,
-                expected: pages.len(),
-                removed: removed_states,
-            });
+            if initial_mount {
+                let _ = self
+                    .model
+                    .get()
+                    .expect("`prepare` runs before any callback that reads the stack")
+                    .transition_completed(transaction.id);
+            } else {
+                *self.pending.borrow_mut() = Some(Pending {
+                    id: transaction.id,
+                    expected: pages.len(),
+                    removed: removed_states,
+                });
+            }
+        }
+    }
+
+    impl Sink for Stack {
+        fn apply(&self, transaction: NavigationTransaction<Held>) {
+            if let Some(initial) = self.initial.borrow_mut().as_mut() {
+                initial.push(transaction);
+                return;
+            }
+            self.apply_transaction(transaction, false);
         }
     }
 
@@ -931,6 +955,9 @@ mod platform {
         /// Removal transitions in flight — the stack owns the ghosts of
         /// claimed pages a pop replaced, held until `on_complete` fires.
         ghosts: Ghosts,
+        /// Transactions emitted while `stack.resolve` attaches the path
+        /// subscription before `build` mounts the root page at index 0.
+        initial: RefCell<Option<Vec<NavigationTransaction<Held>>>>,
         /// The window's toolbar coordinator, while a titled window hosts us.
         toolbar: RefCell<Option<Retained<WindowToolbar>>>,
         /// The search field published for the current top page.
@@ -968,6 +995,7 @@ mod platform {
                 transition,
                 entries: RefCell::new(Vec::new()),
                 ghosts: Ghosts::default(),
+                initial: RefCell::new(Some(Vec::new())),
                 toolbar: RefCell::new(None),
                 search_field: RefCell::new(None),
                 chrome_active: Cell::new(true),
@@ -978,7 +1006,8 @@ mod platform {
         }
 
         /// Captures the environment and render capability.
-        pub(super) fn prepare(&self, ctx: &RenderContext<'_>, env: Environment) {
+        pub(super) fn prepare(self: &Rc<Self>, ctx: &RenderContext<'_>, env: Environment) {
+            let _ = self.self_weak.set(Rc::downgrade(self));
             let _ = self.renderer.set(ctx.with_env(&env).renderer());
             let _ = self.model.set(
                 env.get::<NavigationController>()
@@ -1019,7 +1048,14 @@ mod platform {
             });
             let entry = self.make_entry(root, Mount::Root);
             self.entries.borrow_mut().push(Rc::new(entry));
-            self.place_entries();
+            let initial = self.initial.borrow_mut().take().unwrap_or_default();
+            if initial.is_empty() {
+                self.place_entries();
+            } else {
+                for transaction in initial {
+                    self.apply_transaction(transaction, true);
+                }
+            }
             NativeLeaf::new(&*self.host, Fill)
         }
 
@@ -1119,7 +1155,8 @@ mod platform {
             // A claimed top entry carries its own insertion — the stack's
             // fade is skipped for it (§5.5).
             let claimed_top = top.as_ref().is_some_and(|entry| is_claimed(&entry.leaf));
-            let fade = !claimed_top
+            let fade = previous_top.is_some()
+                && !claimed_top
                 && top
                     .as_ref()
                     .is_some_and(|entry| entry.transition == NativeNavigationTransition::Fade);
@@ -1378,10 +1415,7 @@ mod platform {
                 jobs
             })
         }
-    }
-
-    impl Sink for Stack {
-        fn apply(&self, transaction: NavigationTransaction<Held>) {
+        fn apply_transaction(&self, transaction: NavigationTransaction<Held>, initial_mount: bool) {
             let prefix = transaction.retained_prefix.saturating_add(1);
             let mut entries = self.entries.borrow_mut();
             let cut = prefix.min(entries.len());
@@ -1407,7 +1441,7 @@ mod platform {
             }
             let inserted_count = transaction.inserted.len();
             for (index, builder) in transaction.inserted.into_iter().enumerate() {
-                let mount = if index + 1 == inserted_count {
+                let mount = if !initial_mount && index + 1 == inserted_count {
                     Mount::Top
                 } else {
                     Mount::Below
@@ -1426,6 +1460,16 @@ mod platform {
         }
     }
 
+    impl Sink for Stack {
+        fn apply(&self, transaction: NavigationTransaction<Held>) {
+            if let Some(initial) = self.initial.borrow_mut().as_mut() {
+                initial.push(transaction);
+                return;
+            }
+            self.apply_transaction(transaction, false);
+        }
+    }
+
     /// A `BarTitle`/`BarItem` leaf measured at the unspecified proposal —
     /// `sizeThatFits(WuiProposalSize())`.
     fn measure(leaf: &NativeLeaf) -> KitSize {
@@ -1437,5 +1481,102 @@ mod platform {
             })
             .size;
         KitSize::new(f64::from(size.width), f64::from(size.height))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::format;
+    use alloc::rc::Rc;
+    use alloc::vec::Vec;
+    use core::cell::RefCell;
+
+    use waterui::Environment;
+    use waterui::navigation::{
+        IntoNavigationStackLayout as _, NavigationController, NavigationPath, NavigationStack,
+        NavigationTransaction, NavigationView,
+    };
+    use waterui::prelude::text;
+
+    use super::{Held, Receiver, Sink};
+
+    struct TestSink {
+        initial: RefCell<Option<Vec<NavigationTransaction<Held>>>>,
+        applied: RefCell<Vec<(bool, usize, usize)>>,
+    }
+
+    impl TestSink {
+        const fn new() -> Self {
+            Self {
+                initial: RefCell::new(Some(Vec::new())),
+                applied: RefCell::new(Vec::new()),
+            }
+        }
+
+        fn finish_root_mount(&self) {
+            let queued = self.initial.borrow_mut().take().unwrap_or_default();
+            for transaction in queued {
+                self.record(&transaction, true);
+            }
+        }
+
+        fn record(&self, transaction: &NavigationTransaction<Held>, initial_mount: bool) {
+            self.applied.borrow_mut().push((
+                initial_mount,
+                transaction.retained_prefix,
+                transaction.inserted.len(),
+            ));
+        }
+    }
+
+    impl Sink for TestSink {
+        fn apply(&self, transaction: NavigationTransaction<Held>) {
+            if let Some(initial) = self.initial.borrow_mut().as_mut() {
+                initial.push(transaction);
+                return;
+            }
+            self.record(&transaction, false);
+        }
+    }
+
+    #[test]
+    fn prepopulated_navigation_path_defers_initial_transaction_until_root_mounts() {
+        let sink = Rc::new(TestSink::new());
+        let erased: Rc<dyn Sink> = sink.clone();
+        let mut env = Environment::new();
+        env.insert(NavigationController::new(Receiver {
+            driver: Rc::downgrade(&erased),
+        }));
+
+        let path = NavigationPath::<i32>::new();
+        path.push(1_i32);
+        path.push(2_i32);
+
+        let stack =
+            NavigationStack::with_path(path.clone(), NavigationView::new("Root", text("Root")))
+                .destination(|route: i32| {
+                    NavigationView::new(format!("Page {route}"), text(format!("Page {route}")))
+                })
+                .into_layout::<Held>();
+
+        let _root = stack.resolve(&env);
+        assert!(
+            sink.applied.borrow().is_empty(),
+            "initial path transaction stays buffered until the root entry mounts"
+        );
+
+        sink.finish_root_mount();
+        assert_eq!(
+            *sink.applied.borrow(),
+            alloc::vec![(true, 0, 2)],
+            "draining after root mount applies the two pre-populated pages as an initial mount"
+        );
+
+        path.push(3_i32);
+        assert_eq!(
+            *sink.applied.borrow(),
+            alloc::vec![(true, 0, 2), (false, 2, 1)],
+            "subsequent path mutations apply immediately against the mounted stack"
+        );
     }
 }

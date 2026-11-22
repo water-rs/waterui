@@ -6,7 +6,7 @@ pub use cherenkov::AndroidCherenkovSurface;
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
 pub use cherenkov::DomCherenkovSurface;
 pub use cherenkov::EngineSurface;
-#[cfg(all(target_os = "macos", hydrolysis_winit))]
+#[cfg(hydrolysis_apple_engine_window)]
 pub use cherenkov::WindowCherenkovSurface;
 #[cfg(hydrolysis_gpu_painter)]
 pub use cherenkov::{GpuEngine, SharedEngineState, TextureCherenkovSurface, format_output_color};

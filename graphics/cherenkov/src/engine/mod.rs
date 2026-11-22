@@ -35,6 +35,8 @@ pub struct SurfaceEntry<B: Backend> {
     pub waker: Arc<SurfaceWaker>,
     /// The cell `Surface::next_frame` reads.
     pub next_frame: Weak<RefCell<Next>>,
+    /// The cell `Surface::rate_vote` reads.
+    pub rate_vote: Weak<Cell<Option<crate::FrameRate>>>,
     /// The cell `Surface::running_tracks` reads.
     pub running_tracks: Weak<Cell<RunningTracks>>,
 }
@@ -103,15 +105,17 @@ fn publish_next<B: Backend>(
     frame_next: &rustc_hash::FxHashMap<SurfaceId, SurfaceNext>,
 ) {
     for entry in surfaces {
-        let (Some(shared), Some(next_frame), Some(running_tracks)) = (
+        let (Some(shared), Some(next_frame), Some(rate_vote), Some(running_tracks)) = (
             entry.shared.upgrade(),
             entry.next_frame.upgrade(),
+            entry.rate_vote.upgrade(),
             entry.running_tracks.upgrade(),
         ) else {
             continue;
         };
         let published = frame_next.get(&shared.borrow().id);
         next_frame.replace(published.map_or(Next::Idle, |published| published.next.clone()));
+        rate_vote.set(published.and_then(|published| published.rate_vote));
         running_tracks
             .set(published.map_or_else(RunningTracks::default, |published| published.tracks));
     }
