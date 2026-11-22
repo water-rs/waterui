@@ -374,7 +374,7 @@ pub(super) fn add(region: &mut Region, bounds: [u32; 4]) {
     region.add(x, y, width, height);
 }
 
-fn cover(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+pub(super) fn cover(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
     if a[2] == 0 || a[3] == 0 {
         return b;
     }

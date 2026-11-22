@@ -5,23 +5,41 @@
 //! accidentally pull in a later write to the same allocation.
 
 use cherenkov::damage::Region;
+use rustc_hash::FxHashMap;
 
-use super::plan::{ExecutionPlan, Read, ReadKind};
+use super::plan::{ExecutionPlan, Read, ReadKind, corresponds};
 use crate::render::{
-    damage::add,
+    damage::{add, cover},
     lower::{Frame, Target},
+    resolve,
 };
+
+pub(super) const fn is_persistent(target: Target) -> bool {
+    matches!(
+        target,
+        Target::Part(_) | Target::Plane(_) | Target::Projected(_)
+    )
+}
+
+fn bbox(region: &Region) -> [u32; 4] {
+    region
+        .rectangles()
+        .iter()
+        .fold([0; 4], |bounds, rect| cover(bounds, rect.xywh().into()))
+}
 
 #[derive(Default)]
 pub struct Demand {
     passes: Vec<Region>,
-    staging: rustc_hash::FxHashMap<usize, Region>,
+    staging: FxHashMap<usize, Region>,
+    overwritten: Vec<(Target, [u32; 4])>,
 }
 
 impl Demand {
     pub fn bytes(&self) -> u64 {
         (self.passes.capacity() * size_of::<Region>()
-            + self.staging.capacity() * size_of::<(usize, Region)>()) as u64
+            + self.staging.capacity() * size_of::<(usize, Region)>()
+            + self.overwritten.capacity() * size_of::<(Target, [u32; 4])>()) as u64
             + self
                 .staging
                 .values()
@@ -37,12 +55,9 @@ impl Demand {
     /// Diagnostic union of the raster scissors over persistent base-level
     /// outputs. This bounds touched pixels, not fragment invocations.
     pub fn output_pixels(&self, frame: &Frame) -> u64 {
-        let mut outputs = rustc_hash::FxHashMap::<Target, Region>::default();
+        let mut outputs = FxHashMap::<Target, Region>::default();
         for (index, pass) in frame.passes.iter().enumerate() {
-            if matches!(
-                pass.target,
-                Target::Part(_) | Target::Plane(_) | Target::Projected(_)
-            ) {
+            if is_persistent(pass.target) {
                 let [x, y, w, h] = pass.region;
                 let output = outputs
                     .entry(pass.target)
@@ -65,7 +80,8 @@ impl Demand {
     }
 
     /// Seed the last write of each persistent output, then propagate reads
-    /// backward. The caller supplies the pixels that output must replace.
+    /// backward and persistent-target overwrites forward to a fixed point.
+    /// The caller supplies the pixels that output must replace.
     pub fn update(
         &mut self,
         frame: &Frame,
@@ -74,55 +90,98 @@ impl Demand {
     ) {
         self.reset(frame);
         for (index, pass) in frame.passes.iter().enumerate().rev() {
-            if matches!(
-                pass.target,
-                Target::Part(_) | Target::Plane(_) | Target::Projected(_)
-            ) && !frame.passes[index + 1..]
-                .iter()
-                .any(|later| later.target == pass.target)
+            if is_persistent(pass.target)
+                && !frame.passes[index + 1..]
+                    .iter()
+                    .any(|later| later.target == pass.target)
             {
                 output(index, pass.target, pass.region, &mut self.passes[index]);
             }
         }
-        for index in (0..frame.passes.len()).rev() {
-            if self.passes[index].is_empty() {
-                continue;
-            }
-            // Enclose before following reads: the pixels between separate
-            // changes will also be rasterized and need valid input images.
-            add(&mut self.passes[index], [0; 4]);
-            // The filter/shadow executors currently produce their whole
-            // bounded image. Demand their entire input until their kernels
-            // accept a restricted output and its sampling apron.
-            if frame.filters.iter().any(|(pass, _)| *pass == index)
-                || frame.shadows.iter().any(|(pass, _)| *pass == index)
-                || frame.reduces.iter().any(|(pass, _)| *pass == index)
-            {
-                let [x, y, w, h] = frame.passes[index].region;
-                add(&mut self.passes[index], [x, y, w, h]);
-            }
-            if let Some(read) = &plan.loads[index] {
-                self.read(index, read, false, frame);
-            }
-            if let Some(read) = &plan.backdrops[index] {
-                self.read(index, read, false, frame);
-            }
-            if let Some(read) = &plan.captures[index] {
-                let scaled = frame.passes[index]
-                    .capture
-                    .is_some_and(|capture| capture.resolve.is_some());
-                self.read(index, read, scaled, frame);
-            }
-            for (read, range) in plan.reads[index].iter().zip(&frame.passes[index].ranges) {
-                if let Some(read) = read {
-                    let whole = read.kind != ReadKind::CorrespondingPixel
-                        || !super::plan::corresponds(
-                            frame,
-                            range,
-                            plan.images[read.image.0].region,
-                        );
-                    self.read(index, read, whole, frame);
+        loop {
+            for index in (0..frame.passes.len()).rev() {
+                if self.passes[index].is_empty() {
+                    continue;
                 }
+                // Enclose before following reads: the pixels between separate
+                // changes will also be rasterized and need valid input images.
+                add(&mut self.passes[index], [0; 4]);
+                // The filter/shadow executors currently produce their whole
+                // bounded image. Demand their entire input until their kernels
+                // accept a restricted output and its sampling apron.
+                if frame.filters.iter().any(|(pass, _)| *pass == index)
+                    || frame.shadows.iter().any(|(pass, _)| *pass == index)
+                    || frame.reduces.iter().any(|(pass, _)| *pass == index)
+                {
+                    let [x, y, w, h] = frame.passes[index].region;
+                    add(&mut self.passes[index], [x, y, w, h]);
+                }
+                if let Some(read) = &plan.loads[index] {
+                    self.read(index, read, false, frame);
+                }
+                if let Some(read) = &plan.backdrops[index] {
+                    self.read(index, read, false, frame);
+                }
+                if let Some(read) = &plan.captures[index] {
+                    let scaled = frame.passes[index]
+                        .capture
+                        .is_some_and(|capture| capture.resolve.is_some());
+                    self.read(index, read, scaled, frame);
+                }
+                for (read, range) in plan.reads[index].iter().zip(&frame.passes[index].ranges) {
+                    if let Some(read) = read {
+                        let whole = read.kind != ReadKind::CorrespondingPixel
+                            || !corresponds(frame, range, plan.images[read.image.0].region);
+                        self.read(index, read, whole, frame);
+                    }
+                }
+            }
+            // Persistent targets preserve prior-frame pixels outside each
+            // pass's scissor. Whenever an earlier pass expands to write a
+            // larger region of a persistent target (for instance after a
+            // filter, shadow, reduce, or scaled capture expands its demand),
+            // every later pass writing that target must cover the overwritten
+            // region so intermediate clears or background draws are not left
+            // exposed.
+            self.overwritten.clear();
+            let mut grew = false;
+            for (index, pass) in frame.passes.iter().enumerate() {
+                if !is_persistent(pass.target) {
+                    continue;
+                }
+                if let Some(&(_, written)) = self
+                    .overwritten
+                    .iter()
+                    .find(|(target, _)| *target == pass.target)
+                {
+                    let [x, y, w, h] = pass.region;
+                    let x0 = written[0].max(x);
+                    let y0 = written[1].max(y);
+                    let x1 = (written[0] + written[2]).min(x + w);
+                    let y1 = (written[1] + written[3]).min(y + h);
+                    if x0 < x1 && y0 < y1 {
+                        let before = self.passes[index].pixel_area();
+                        add(&mut self.passes[index], [x0, y0, x1 - x0, y1 - y0]);
+                        if self.passes[index].pixel_area() > before {
+                            grew = true;
+                        }
+                    }
+                }
+                let current = bbox(&self.passes[index]);
+                if current[2] > 0 && current[3] > 0 {
+                    if let Some((_, written)) = self
+                        .overwritten
+                        .iter_mut()
+                        .find(|(target, _)| *target == pass.target)
+                    {
+                        *written = cover(*written, current);
+                    } else {
+                        self.overwritten.push((pass.target, current));
+                    }
+                }
+            }
+            if !grew {
+                break;
             }
         }
         self.prepare_staging(frame);
@@ -135,14 +194,13 @@ impl Demand {
     )]
     fn prepare_staging(&mut self, frame: &Frame) {
         self.staging.retain(|index, _| {
-            frame.passes.get(*index).is_some_and(|pass| {
-                crate::render::resolve::of(pass).is_some() && crate::render::resolve::staged(pass)
-            })
+            frame
+                .passes
+                .get(*index)
+                .is_some_and(|pass| resolve::of(pass).is_some() && resolve::staged(pass))
         });
         for (index, pass) in frame.passes.iter().enumerate() {
-            let Some(resolve) =
-                crate::render::resolve::of(pass).filter(|_| crate::render::resolve::staged(pass))
-            else {
+            let Some(resolve) = resolve::of(pass).filter(|_| resolve::staged(pass)) else {
                 continue;
             };
             let extent = resolve.extent.into();
