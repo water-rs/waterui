@@ -63,7 +63,8 @@ on-demand-window app sets `App::on_last_window_closed(LastWindowPolicy::StayResi
 `window.show(&windows)` (`Window::show`): a `conditional_window` lives only as long as the
 window hosting it.
 
-**A snackbar shown from a callback does nothing.** `SnackbarManager` reaches handlers as a
+**A snackbar shown from a callback does nothing.** First make sure an ancestor view attaches
+`.snackbar_host()` (or `.snackbar_host_with_icons::<V>()`). `SnackbarManager` reaches handlers as a
 parameter, but a callback that is not a WaterUI handler (a `GpuView::on_input`, a
 closure handed to another component) has none. Read it while building the view with
 `use_env(|manager: SnackbarManager| ..)` and move it into the callback.

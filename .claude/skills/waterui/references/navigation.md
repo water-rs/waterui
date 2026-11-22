@@ -211,7 +211,7 @@ fn message_list_page(mail: Mail) -> NavigationView<impl View> {
 }
 ```
 
-`SnackbarManager` is `#[state]`-marked — the window installs it through `.state()` —
+`SnackbarManager` is `#[state]`-marked — attach `.snackbar_host()` to an ancestor view —
 so the handler takes it bare rather than wrapped in `State<..>`.
 
 The rest of the destination's chrome: `.navigation_title_display_mode(NavigationTitleDisplayMode::Medium)`
@@ -353,8 +353,8 @@ The `Window` builder, precisely:
   reactive window title is free), `state` is a `Binding<WindowState>` **by value**, and
   `content` is any `Fn() -> impl View`, so a bare function item works. An empty title
   (`App::new` uses one) is shown as the application's own name; `.title(..)` sets it later.
-  Each window installs its own overlay manager (and, with `snackbar`, its own
-  `SnackbarManager`) into its content.
+  Windows mount only their own content; attach `.snackbar_host()` or
+  `.full_screen_overlay_host::<V>()` to a root view when the window uses those overlays.
 - `.style(..)` — a `WindowStyle` or a `Binding<WindowStyle>`; exactly three variants:
   `Titled` (default), `Borderless`, `FullSizeContentView` (content extends under the
   title bar). The style is reactive: setting the binding (or

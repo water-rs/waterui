@@ -1360,11 +1360,14 @@ pub fn components_snackbar_prose() {
         .on_dismiss(|reason: SnackbarDismissReason| {
             let _ = reason;
         });
+    let _ = text("host").snackbar_host();
+    let _ = text("host").snackbar_host_with_icons::<mdi::Svg>();
     let _ = SnackbarManager::with_icons::<mdi::Svg>();
     let _ = button("x").action(|m: SnackbarManager<SnackbarIcon<mdi::Svg>>| {
         m.show(Snackbar::new("x").icon(mdi::delete()));
     });
     let _ = button("x").action(|manager: SnackbarManager| manager.dismiss());
+    let _ = text("host").full_screen_overlay_host::<Text>();
     let (_overlay_mgr, _overlay_view) = FullScreenOverlayManager::<Text>::new();
     let _ = button("x").action(|overlay: FullScreenOverlayManager<Text>| {
         overlay.show(text("modal"));

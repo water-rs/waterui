@@ -4,7 +4,9 @@
 //! full-screen overlays such as modal dialogs, loading screens, and
 //! toast notifications.
 
-use crate::View;
+use crate::{View, ViewExt};
+use core::marker::PhantomData;
+use waterui_core::Environment;
 use waterui_core::dynamic::{Dynamic, DynamicHandler};
 use waterui_core::plugin::Plugin;
 use waterui_macros::state;
@@ -12,8 +14,9 @@ use waterui_macros::state;
 /// Manages full-screen overlays for the application.
 ///
 /// This manager uses a `DynamicHandler` to control typed overlay content.
-/// Handlers take it bare (`manager: FullScreenOverlayManager<V>`) once a window
-/// or parent view has installed it through `.state(&manager)`.
+/// Handlers take it bare (`manager: FullScreenOverlayManager<V>`) once an
+/// ancestor view has attached [`ViewExt::full_screen_overlay_host`] or
+/// installed it through `.overlay(overlay_view).state(&manager)`.
 #[state]
 pub struct FullScreenOverlayManager<V: 'static = ()> {
     handler: DynamicHandler<Option<V>>,
@@ -61,5 +64,37 @@ impl<V: View> FullScreenOverlayManager<V> {
 impl<V: 'static> core::fmt::Debug for FullScreenOverlayManager<V> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("FullScreenOverlayManager").finish()
+    }
+}
+
+/// Hosts a [`FullScreenOverlayManager<O>`] and its overlay for a view subtree.
+///
+/// Attach with [`ViewExt::full_screen_overlay_host`]. Each built instance
+/// creates its own manager and overlay view, so multiple windows or scenes stay
+/// isolated.
+#[derive(Debug)]
+pub struct FullScreenOverlayHost<V, O> {
+    content: V,
+    _overlay: PhantomData<fn() -> O>,
+}
+
+impl<V, O> FullScreenOverlayHost<V, O> {
+    /// Wraps `content` in a full-screen overlay host for overlay views of type `O`.
+    #[must_use]
+    pub const fn new(content: V) -> Self {
+        Self {
+            content,
+            _overlay: PhantomData,
+        }
+    }
+}
+
+impl<V: View, O: View> View for FullScreenOverlayHost<V, O> {
+    fn body(self, _env: &Environment) -> impl View {
+        let (manager, overlay) = FullScreenOverlayManager::<O>::new();
+        self.content
+            .overlay(overlay)
+            .with(manager.clone())
+            .state(&manager)
     }
 }

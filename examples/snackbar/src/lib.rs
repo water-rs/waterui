@@ -15,7 +15,6 @@ type IconSnackbarManager = SnackbarManager<SnackbarIcon<mdi::Svg>>;
 /// The snackbar example page, with buttons that show each snackbar variant.
 #[preview]
 pub fn demo() -> impl View {
-    let (snackbar, snackbar_overlay) = SnackbarManager::with_icons::<mdi::Svg>();
     scroll(
         vstack((
             text("Snackbar Demo").title().bold(),
@@ -68,8 +67,7 @@ pub fn demo() -> impl View {
         ))
         .padding(),
     )
-    .overlay(snackbar_overlay)
-    .state(&snackbar)
+    .snackbar_host_with_icons::<mdi::Svg>()
 }
 
 /// Builds the snackbar example app.
