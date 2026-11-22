@@ -293,6 +293,9 @@ fn band_streamed_filtered_groups_match_offscreen_linear_f32() {
         tx[offscreen.root()].content(content(&offscreen));
     });
     engine.render(FrameTime::now()).expect("render");
+    let pixels = u64::from(size.0) * u64::from(size.1);
+    assert_eq!(engine.stats().surface_pixels, 2 * pixels);
+    assert_eq!(engine.stats().damaged_surface_pixels, 2 * pixels);
 
     let mut streamed = Vec::with_capacity(width * height);
     let mut next_y = 0_u32;
@@ -316,6 +319,16 @@ fn band_streamed_filtered_groups_match_offscreen_linear_f32() {
             pixels: streamed,
         },
     );
+    bands.update(|tx| {
+        tx[bands.root()].content(bands.record(|r| {
+            r.fill(Rect::new(1.0, 1.0, 2.0, 2.0), WorkingColor::WHITE);
+        }));
+    });
+    engine
+        .render(FrameTime::now())
+        .expect("stream a changed frame");
+    assert_eq!(engine.stats().surface_pixels, pixels);
+    assert_eq!(engine.stats().damaged_surface_pixels, pixels);
 }
 
 #[test]

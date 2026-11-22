@@ -108,6 +108,8 @@ pub const FLAG_BLEND_SRC: u32 = 0x20;
 /// its `outer` extent. The ownership-weighted field replaces the
 /// member's clip coverage for the composite.
 pub const FLAG_UNION: u32 = 0x40;
+/// A projective draw owns one half-open picture-texel cell.
+pub const FLAG_PICTURE_TILE: u32 = 0x80;
 
 /// Projected-area threshold in device px² above which a solid ellipse's
 /// opaque interior is promoted from the inscribed octagon to a
@@ -182,7 +184,7 @@ pub const fn blend_code(mode: cherenkov::BlendMode) -> u32 {
 /// `exponent` is the Lamé exponent of the corner curve: 2.0 for a circular
 /// or elliptical corner, larger for a continuous corner.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable, PartialEq)]
 pub struct Shape {
     /// Half extents of the box.
     pub half: [f32; 2],
@@ -290,7 +292,7 @@ impl Instance {
 
 /// One gradient stop, mirroring the WGSL `Stop`.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable, PartialEq)]
 pub struct Stop {
     /// Straight-alpha colour in the interpolation space.
     pub color: [f32; 4],

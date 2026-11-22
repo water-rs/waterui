@@ -167,6 +167,17 @@ pub struct Counters {
     pub dispatches: Option<u32>,
     /// Render/dispatch pass count, where the backend exposes it.
     pub passes: Option<u32>,
+    /// Planned raster passes skipped for lack of pixel demand, where exposed.
+    pub passes_culled: Option<u32>,
+    /// Picture tiles requiring preparation; pixel damage may cull their work.
+    pub picture_tiles_invalidated: Option<u32>,
+    /// Cached or newly prepared picture tiles composed this frame.
+    pub picture_tiles_composed: Option<u32>,
+    /// Pixel area of the surfaces prepared in the last frame, where exposed.
+    pub surface_pixels: Option<u64>,
+    /// Root-output raster coverage in the last frame, without overlap or
+    /// intermediate-target double counting, where exposed.
+    pub damaged_surface_pixels: Option<u64>,
     /// `Engine::memory()` GPU bytes at the end of the run, where the adapter
     /// exposes it; `None` for other engines.
     pub memory_gpu_bytes: Option<u64>,
@@ -186,6 +197,21 @@ pub struct Counters {
     /// `Engine::memory()` filter-chain uploaded image bytes at the end of
     /// the run; `None` for other engines.
     pub memory_filter_image_bytes: Option<u64>,
+}
+
+/// Raster damage for one submitted frame, excluding intermediate images.
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct DamageSample {
+    /// Total area of the surfaces prepared for drawing.
+    pub surface_pixels: u64,
+    /// Union of root-output pixels rasterized on those surfaces.
+    pub damaged_surface_pixels: u64,
+    /// Planned raster passes skipped for lack of demand; unavailable on CPU.
+    pub passes_culled: Option<u32>,
+    /// Picture tiles requiring preparation; pixel damage may cull their work.
+    pub picture_tiles_invalidated: Option<u32>,
+    /// Cached or newly prepared picture tiles composed this frame.
+    pub picture_tiles_composed: Option<u32>,
 }
 
 /// Device and thermal metadata captured at measure time.
@@ -747,6 +773,10 @@ pub trait Engine {
     }
     /// Counters describing what [`Engine::encode`] issued.
     fn counters(&self) -> Counters;
+    /// Last frame's raster damage, without querying memory or GPU completion.
+    fn damage(&self) -> Option<DamageSample> {
+        None
+    }
     /// Memory sources the adapter can report at this point in the run.
     fn memory(&self) -> AdapterMemory;
     /// Device/thermal metadata.
@@ -771,6 +801,8 @@ pub fn engine_names() -> Vec<&'static str> {
         skia_ad::SkiaMtl::NAME,
         #[cfg(feature = "cherenkov")]
         cherenkov_ad::Cherenkov::NAME,
+        #[cfg(feature = "cherenkov")]
+        cherenkov_ad::PictureCache::NAME,
         #[cfg(feature = "cherenkov-cpu")]
         cherenkov_cpu_ad::Cherenkov::NAME,
     ]
@@ -802,6 +834,10 @@ pub fn create_engine(name: &str) -> Result<Box<dyn Engine>, BenchError> {
         #[cfg(feature = "cherenkov")]
         cherenkov_ad::Cherenkov::NAME => {
             cherenkov_ad::Cherenkov::new().map(|e| Box::new(e) as Box<dyn Engine>)
+        }
+        #[cfg(feature = "cherenkov")]
+        cherenkov_ad::PictureCache::NAME => {
+            cherenkov_ad::PictureCache::new().map(|e| Box::new(e) as Box<dyn Engine>)
         }
         #[cfg(feature = "cherenkov-cpu")]
         cherenkov_cpu_ad::Cherenkov::NAME => {

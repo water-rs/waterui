@@ -71,10 +71,16 @@ fn compare_retained_outputs(filtered: bool) {
                 }
             });
             engine.render(FrameTime::now()).unwrap();
-            let passes = engine.stats().passes;
+            let stats = engine.stats();
+            let passes = stats.passes;
+            let pixels = u64::from(size.0) * u64::from(size.1);
+            assert_eq!(stats.surface_pixels, pixels);
             if step == 0 {
                 assert_eq!(passes, 64);
+                assert_eq!(stats.damaged_surface_pixels, pixels);
             } else {
+                assert!(stats.damaged_surface_pixels > 0);
+                assert!(stats.damaged_surface_pixels * if filtered { 4 } else { 20 } < pixels);
                 assert!(
                     passes > 0 && passes * if filtered { 4 } else { 20 } < 64,
                     "frame {step}: {passes} bands"
