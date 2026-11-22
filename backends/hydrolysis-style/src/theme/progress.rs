@@ -22,9 +22,7 @@ use waterui::component::progress::ProgressStyle;
 use waterui_core::layout::LayoutDirection;
 use waterui_graphics::color::Color;
 
-use super::look::{Custom, CustomPart, DrivenSet, Motion, SpecTint};
-#[cfg(hydrolysis_runtime)]
-use super::look::{Inputs, RealizedCustom};
+use super::look::{Custom, CustomPart, DrivenSet, Inputs, Motion, RealizedCustom, SpecTint};
 
 /// What Hydrolysis asks a theme's
 /// [`linear_progress`](super::WidgetTheme::linear_progress),
@@ -212,8 +210,9 @@ impl ProgressControl {
     }
 
     /// The parts, bottom first, realized at `inputs`.
-    #[cfg(hydrolysis_runtime)]
-    pub(crate) fn realize(&self, inputs: &Inputs<'_, f64>) -> Vec<RealizedCustom<f64>> {
+    #[doc(hidden)]
+    #[must_use]
+    pub fn realize(&self, inputs: &Inputs<'_, f64>) -> Vec<RealizedCustom<f64>> {
         self.0
             .parts
             .iter()
@@ -222,8 +221,9 @@ impl ProgressControl {
     }
 
     /// Whether `other` is this control.
-    #[cfg(hydrolysis_runtime)]
-    pub(crate) fn same(&self, other: &Self) -> bool {
+    #[doc(hidden)]
+    #[must_use]
+    pub fn same(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.0, &other.0)
     }
 }

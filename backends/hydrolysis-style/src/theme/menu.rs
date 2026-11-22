@@ -11,14 +11,12 @@
 
 use std::rc::Rc;
 
+use cherenkov_record::Recorder;
 use kurbo::Rect;
 use waterui_core::layout::LayoutDirection;
 
-#[cfg(hydrolysis_runtime)]
 use super::look::record_at_rest;
 use super::look::{Custom, CustomPart, DrivenSet};
-#[cfg(hydrolysis_runtime)]
-use cherenkov_record::Recorder;
 
 /// What Hydrolysis asks a theme's [`menu`](super::WidgetTheme::menu) look
 /// for: everything structural about one menu.
@@ -75,22 +73,7 @@ pub struct MenuLayout {
 #[derive(Clone)]
 pub struct MenuLook {
     layout: MenuLayout,
-    #[cfg_attr(
-        not(hydrolysis_runtime),
-        expect(
-            dead_code,
-            reason = "only the renderer records the menu's panel; a build without a painter compiles the theme contract alone"
-        )
-    )]
     panel: Rc<dyn CustomPart<()>>,
-    #[cfg_attr(
-        not(hydrolysis_runtime),
-        expect(
-            dead_code,
-            reason = "only the renderer records the menu's separators; a build without a painter compiles the theme contract alone"
-        )
-    )]
-    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     separator: Rc<dyn CustomPart<()>>,
     selected_row: Option<Rc<dyn CustomPart<()>>>,
 }
@@ -116,12 +99,9 @@ impl MenuLook {
         S: DrivenSet<()> + 'static,
         S::Live: 'static,
     {
-        #[cfg(not(any(feature = "text-field", feature = "secure-field")))]
-        drop(separator);
         Self {
             layout,
             panel: Rc::new(panel),
-            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             separator: Rc::new(separator),
             selected_row: None,
         }
@@ -153,21 +133,20 @@ impl MenuLook {
     }
 
     /// Records the panel over `frame`.
-    #[cfg(hydrolysis_runtime)]
-    pub(crate) fn record_panel(&self, recorder: &mut Recorder, frame: Rect) {
+    #[doc(hidden)]
+    pub fn record_panel(&self, recorder: &mut Recorder, frame: Rect) {
         record_at_rest(&*self.panel, recorder, frame);
     }
 
     /// Records a separator over `frame`.
-    #[cfg(hydrolysis_runtime)]
-    #[cfg(any(feature = "text-field", feature = "secure-field"))]
-    pub(crate) fn record_separator(&self, recorder: &mut Recorder, frame: Rect) {
+    #[doc(hidden)]
+    pub fn record_separator(&self, recorder: &mut Recorder, frame: Rect) {
         record_at_rest(&*self.separator, recorder, frame);
     }
 
     /// Records the selected row's part over `frame`, when the look has one.
-    #[cfg(hydrolysis_runtime)]
-    pub(crate) fn record_selected_row(&self, recorder: &mut Recorder, frame: Rect) {
+    #[doc(hidden)]
+    pub fn record_selected_row(&self, recorder: &mut Recorder, frame: Rect) {
         if let Some(part) = &self.selected_row {
             record_at_rest(&**part, recorder, frame);
         }

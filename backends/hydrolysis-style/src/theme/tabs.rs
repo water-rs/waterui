@@ -147,29 +147,8 @@ pub struct TabsLook {
     vertical: TabsMetrics,
     horizontal: Option<(f64, TabsMetrics)>,
     motion: Motion,
-    #[cfg_attr(
-        not(hydrolysis_runtime),
-        expect(
-            dead_code,
-            reason = "only the renderer records the bar's surface; a build without a painter compiles the theme contract alone"
-        )
-    )]
     bar: Rc<dyn CustomPart<()>>,
-    #[cfg_attr(
-        not(hydrolysis_runtime),
-        expect(
-            dead_code,
-            reason = "only the renderer records the bar's divider; a build without a painter compiles the theme contract alone"
-        )
-    )]
     divider: Rc<dyn CustomPart<()>>,
-    #[cfg_attr(
-        not(hydrolysis_runtime),
-        expect(
-            dead_code,
-            reason = "only the renderer realizes the items' chrome; a build without a painter compiles the theme contract alone"
-        )
-    )]
     item_chrome: Rc<ItemChrome>,
     highlight: Option<Rc<ItemHighlight>>,
 }
@@ -268,26 +247,30 @@ impl TabsLook {
     }
 
     /// The chrome of `item`, given its live selected flag.
-    #[cfg(hydrolysis_runtime)]
-    pub(crate) fn item_chrome(&self, item: &TabItem, selected: Computed<bool>) -> Chrome {
+    #[doc(hidden)]
+    #[must_use]
+    pub fn item_chrome(&self, item: &TabItem, selected: Computed<bool>) -> Chrome {
         (self.item_chrome)(item, selected)
     }
 
     /// The highlight of `item`, when the look has one.
-    #[cfg(hydrolysis_runtime)]
-    pub(crate) fn item_highlight(&self, item: &TabItem) -> Option<Rc<dyn CustomPart<TabItem>>> {
+    #[doc(hidden)]
+    #[must_use]
+    pub fn item_highlight(&self, item: &TabItem) -> Option<Rc<dyn CustomPart<TabItem>>> {
         self.highlight.as_ref().map(|highlight| highlight(item))
     }
 
     /// The bar's surface part.
-    #[cfg(hydrolysis_runtime)]
-    pub(crate) fn bar(&self) -> &Rc<dyn CustomPart<()>> {
+    #[doc(hidden)]
+    #[must_use]
+    pub fn bar(&self) -> &Rc<dyn CustomPart<()>> {
         &self.bar
     }
 
     /// The bar's divider part.
-    #[cfg(hydrolysis_runtime)]
-    pub(crate) fn divider(&self) -> &Rc<dyn CustomPart<()>> {
+    #[doc(hidden)]
+    #[must_use]
+    pub fn divider(&self) -> &Rc<dyn CustomPart<()>> {
         &self.divider
     }
 }

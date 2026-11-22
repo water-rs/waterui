@@ -489,21 +489,24 @@ impl SegmentedLook {
     }
 
     /// The chrome Hydrolysis binds the picker's interaction with.
-    #[cfg(hydrolysis_runtime)]
-    pub(crate) const fn chrome(&self) -> &Chrome {
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn chrome(&self) -> &Chrome {
         &self.chrome
     }
 
     /// The control parts below the labels, in paint order.
-    #[cfg(hydrolysis_runtime)]
-    pub(crate) fn below(&self) -> &[Rc<dyn CustomPart<SegmentedValue>>] {
+    #[doc(hidden)]
+    #[must_use]
+    pub fn below(&self) -> &[Rc<dyn CustomPart<SegmentedValue>>] {
         &self.below
     }
 
     /// Each segment's chrome, leading first, given each one's live selected
     /// flag of `selected`; empty without a segment chrome.
-    #[cfg(hydrolysis_runtime)]
-    pub(crate) fn segment_chromes(&self, selected: &[Computed<bool>]) -> Vec<Chrome> {
+    #[doc(hidden)]
+    #[must_use]
+    pub fn segment_chromes(&self, selected: &[Computed<bool>]) -> Vec<Chrome> {
         let count = selected.len();
         self.segment_chrome
             .as_ref()
@@ -517,14 +520,16 @@ impl SegmentedLook {
     }
 
     /// The parts recorded once per segment, in paint order.
-    #[cfg(hydrolysis_runtime)]
-    pub(crate) fn segments(&self) -> &[Rc<dyn CustomPart<Segment>>] {
+    #[doc(hidden)]
+    #[must_use]
+    pub fn segments(&self) -> &[Rc<dyn CustomPart<Segment>>] {
         &self.segment
     }
 
     /// The control parts over the labels, in paint order.
-    #[cfg(hydrolysis_runtime)]
-    pub(crate) fn above(&self) -> &[Rc<dyn CustomPart<SegmentedValue>>] {
+    #[doc(hidden)]
+    #[must_use]
+    pub fn above(&self) -> &[Rc<dyn CustomPart<SegmentedValue>>] {
         &self.above
     }
 }
