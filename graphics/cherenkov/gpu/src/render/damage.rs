@@ -463,10 +463,82 @@ fn range_state(range: &DrawRange, version: u64) -> u64 {
     hash.finish()
 }
 
-/// Preserve disjoint damage so distant updates do not redraw the clean gap.
-pub(super) fn add(region: &mut Region, bounds: [u32; 4]) {
+pub(in crate::render) const MAX_SCISSORS: usize = 4;
+
+/// Preserve up to `MAX_SCISSORS` disjoint damage rectangles so distant local
+/// updates skip the clean gap between them without replaying a pass's geometry
+/// across an unbounded scissor list on scattered edits.
+pub(in crate::render) fn add(region: &mut Region, bounds: [u32; 4]) {
     let [x, y, width, height] = bounds;
     region.add(x, y, width, height);
+    if region.rectangles().len() <= MAX_SCISSORS {
+        return;
+    }
+    let mut boxes = [[0_u32; 4]; 32];
+    let rects = region.rectangles();
+    let mut len = if rects.len() <= boxes.len() {
+        for (slot, rect) in boxes.iter_mut().zip(rects) {
+            *slot = rect.xywh().into();
+        }
+        rects.len()
+    } else {
+        let mut all = [0_u32; 4];
+        for rect in rects {
+            all = cover(all, rect.xywh().into());
+        }
+        boxes[0] = all;
+        1
+    };
+    coalesce_overlapping(&mut boxes, &mut len);
+    while len > MAX_SCISSORS {
+        let mut best = (0, 1, u64::MAX);
+        for i in 0..len {
+            for j in (i + 1)..len {
+                let joined = cover(boxes[i], boxes[j]);
+                let waste =
+                    box_area(joined).saturating_sub(box_area(boxes[i]) + box_area(boxes[j]));
+                if waste < best.2 {
+                    best = (i, j, waste);
+                }
+            }
+        }
+        boxes[best.0] = cover(boxes[best.0], boxes[best.1]);
+        len -= 1;
+        boxes[best.1] = boxes[len];
+        coalesce_overlapping(&mut boxes, &mut len);
+    }
+    region.clear();
+    for &[bx, by, bw, bh] in &boxes[..len] {
+        region.add(bx, by, bw, bh);
+    }
+}
+
+const fn box_area(bounds: [u32; 4]) -> u64 {
+    bounds[2] as u64 * bounds[3] as u64
+}
+
+const fn boxes_overlap(a: [u32; 4], b: [u32; 4]) -> bool {
+    a[0] < b[0] + b[2] && b[0] < a[0] + a[2] && a[1] < b[1] + b[3] && b[1] < a[1] + a[3]
+}
+
+fn coalesce_overlapping(boxes: &mut [[u32; 4]; 32], len: &mut usize) {
+    loop {
+        let mut merged = false;
+        'pair: for i in 0..*len {
+            for j in (i + 1)..*len {
+                if boxes_overlap(boxes[i], boxes[j]) {
+                    boxes[i] = cover(boxes[i], boxes[j]);
+                    *len -= 1;
+                    boxes[j] = boxes[*len];
+                    merged = true;
+                    break 'pair;
+                }
+            }
+        }
+        if !merged {
+            return;
+        }
+    }
 }
 
 fn cover(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {

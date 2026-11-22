@@ -8839,21 +8839,36 @@ impl GpuRenderer {
         surf.propagated_damage
             .update(&surf.frame, &surf.composition, |index, region| {
                 for rect in surf.command_damage.pass(index).rectangles() {
-                    let (x, y, w, h) = rect.xywh();
-                    region.add(x, y, w, h);
+                    damage::add(region, rect.xywh().into());
                 }
             });
         tracing::trace!(
             command_invalidated_pass_pixels = surf.command_damage.pixels(),
             "command damage before effect propagation"
         );
-        surf.draw_demand
-            .update(&surf.frame, &surf.composition, |index, _, _, required| {
-                for rect in surf.propagated_damage.pass(index).rectangles() {
-                    let (x, y, w, h) = rect.xywh();
-                    required.add(x, y, w, h);
+        surf.draw_demand.update(
+            &surf.frame,
+            &surf.composition,
+            |index, _, pass_region, required| {
+                let changed = surf.propagated_damage.pass(index);
+                if changed.is_empty() {
+                    return;
                 }
-            });
+                let pass = &surf.frame.passes[index];
+                let area = u64::from(pass_region[2]) * u64::from(pass_region[3]);
+                // Partial clear runs a load+store clear pass plus a load+store
+                // content pass (4 attachment transfers over the damaged area),
+                // whereas hardware LoadOp::Clear writes the target once with no
+                // attachment load. Past 1/4 of the target, full clear wins.
+                if pass.clear.is_some() && changed.pixel_area().saturating_mul(4) >= area {
+                    damage::add(required, pass_region);
+                } else {
+                    for rect in changed.rectangles() {
+                        damage::add(required, rect.xywh().into());
+                    }
+                }
+            },
+        );
         stats.surface_pixels += u64::from(surf.size.0) * u64::from(surf.size.1);
         stats.damaged_surface_pixels += surf.draw_demand.surface_pixels(&surf.frame, surf.size);
         surf.repaint_clears

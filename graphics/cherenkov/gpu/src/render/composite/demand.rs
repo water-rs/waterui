@@ -200,7 +200,7 @@ impl Demand {
                 let y0 = (f64::from(rect.y0()) / scale).floor() as u32;
                 let x1 = (f64::from(rect.x1()) / scale).ceil() as u32;
                 let y1 = (f64::from(rect.y1()) / scale).ceil() as u32;
-                region.add(x0, y0, x1 - x0, y1 - y0);
+                add(region, [x0, y0, x1 - x0, y1 - y0]);
             }
         }
     }

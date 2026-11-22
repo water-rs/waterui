@@ -313,3 +313,45 @@ fn scattered_changes_keep_one_bounded_redraw() {
     assert_eq!(history.pixels(), 90 * 12);
     assert!(contains(&history, 0, 10) && contains(&history, 88, 19));
 }
+
+#[test]
+fn non_overlapping_scattered_changes_stay_within_scissor_budget() {
+    let mut history = Commands::default();
+    let mut scene = frame(&[]);
+    let layer = cherenkov::SurfaceTree::new().root();
+    scene.passes[0].region = [0, 0, 1280, 960];
+    for row in 0_u16..16 {
+        for col in 0_u16..16 {
+            let op = usize::from(row * 16 + col);
+            let start = scene.instances.len();
+            scene.command_sources.push(CommandSource {
+                commands: scene.commands.len()..scene.commands.len() + 1,
+                instances: start..start + 1,
+                first_op: op,
+                root: Target::Part(0),
+                layer,
+                mask_epoch: None,
+            });
+            let mut instance = Instance::new(KIND_SPAN);
+            let x = f32::from(col * 72 + 8);
+            let y = f32::from(row * 56 + 8);
+            instance.bounds = [x, y, x + 8.0, y + 8.0];
+            instance.color = [1.0; 4];
+            scene.instances.push(instance);
+            scene.commands.push(Command {
+                instances_end: start + 1,
+                revision: 1,
+            });
+        }
+    }
+    scene.passes[0].ranges[0].instances =
+        0..u32::try_from(scene.instances.len()).expect("grid test scene");
+    history.update(&scene);
+    history.submitted();
+    for command in &mut scene.commands {
+        command.revision += 1;
+    }
+    history.update(&scene);
+    assert!(history.pass(0).rectangles().len() <= MAX_SCISSORS);
+    assert!(contains(&history, 10, 10) && contains(&history, 15 * 72 + 10, 15 * 56 + 10));
+}
