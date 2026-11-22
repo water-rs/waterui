@@ -3525,7 +3525,7 @@ mod gpu_surface {
     use std::cell::Cell;
     use std::rc::Rc;
 
-    use libtest_mimic::Trial;
+    use libtest_mimic::{Failed, Trial};
     use waterui_apple::native_test_support::ErrorLog;
     use waterui_apple::native_test_support::gpu_surface::MountedSceneSurface;
 
@@ -4467,28 +4467,30 @@ mod gpu_surface {
     /// Offscreen `ViewRenderer::render_to_rgba` renders `AppKit` controls with
     /// their active key-window appearance (accent blue) rather than inactive
     /// gray even though the capture window is never ordered on screen.
-    pub fn view_render_draws_controls_with_active_key_appearance()
-    -> Result<(), libtest_mimic::Failed> {
+    pub fn view_render_draws_controls_with_active_key_appearance() -> Result<(), Failed> {
+        use std::time::Duration;
+
+        use cocoa_ui::ColorScheme;
         use waterui::component::button::{ButtonStyle, button};
         use waterui::component::progress::progress;
         use waterui::component::toggle::{ToggleStyle, toggle};
         use waterui::reactive::binding;
         use waterui_apple::native_test_support::view_renderer::{AppleBackend, GpuRuntime};
-        use waterui_apple::native_test_support::{install_gpu, refresh_theme, window_environment};
+        use waterui_apple::native_test_support::{
+            block_on_main, install_gpu, refresh_theme, window_environment,
+        };
         use waterui_backend_core::{AnyView, NativeBackend as _};
         use waterui_capture::view_renderer::{RenderRequest, ViewRenderer as _};
+        use waterui_core::layout::Size;
 
         let runtime = pollster::block_on(GpuRuntime::new())
             .map_err(|error| format!("the GPU runtime: {error}"))?;
-        let (mut env, theme) = window_environment(super::mtm());
+        let (mut env, theme) = window_environment(mtm());
         install_gpu(&mut env, runtime);
-        refresh_theme(&theme, cocoa_ui::ColorScheme::Light);
+        refresh_theme(&theme, ColorScheme::Light);
 
-        let renderer = AppleBackend::new(super::mtm()).offscreen(&env);
-        let request = RenderRequest::new(
-            waterui_core::layout::Size::new(160.0, 48.0),
-            std::time::Duration::from_secs(10),
-        );
+        let renderer = AppleBackend::new(mtm()).offscreen(&env);
+        let request = RenderRequest::new(Size::new(160.0, 48.0), Duration::from_secs(10));
 
         for (name, view) in [
             (
@@ -4501,11 +4503,8 @@ mod gpu_surface {
             ),
             ("linear_progress", AnyView::new(progress(0.65_f64).linear())),
         ] {
-            let result = waterui_apple::native_test_support::block_on_main(
-                30.0,
-                renderer.render_to_rgba(view, &env, request),
-            )
-            .map_err(|error| format!("{name} render_to_rgba failed: {error}"))?;
+            let result = block_on_main(30.0, renderer.render_to_rgba(view, &env, request))
+                .map_err(|error| format!("{name} render_to_rgba failed: {error}"))?;
             let (texels, _) = result.rgba_data().as_chunks::<4>();
             let active_blue = texels
                 .iter()

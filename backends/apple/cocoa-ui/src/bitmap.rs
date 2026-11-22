@@ -9,7 +9,14 @@
 
 use objc2::rc::Retained;
 use objc2::runtime::NSObjectProtocol;
+#[cfg(target_os = "macos")]
+use objc2::{AllocAnyThread, MainThreadMarker, MainThreadOnly, define_class, msg_send};
+#[cfg(target_os = "ios")]
 use objc2::{AllocAnyThread, MainThreadOnly};
+#[cfg(target_os = "macos")]
+use objc2_app_kit::{NSBackingStoreType, NSWindow, NSWindowStyleMask};
+#[cfg(target_os = "macos")]
+use objc2_core_foundation::CGRect;
 use objc2_core_foundation::{CFData, CFRetained};
 use objc2_core_graphics::{
     CGBitmapContextCreateImage, CGColorRenderingIntent, CGColorSpace, CGContext, CGDataProvider,
@@ -208,18 +215,14 @@ pub fn template_image(image: &CGImage, size: Size) -> Retained<objc2_app_kit::NS
 /// # Panics
 ///
 /// On a failure to allocate the window.
-pub fn capture_window(
-    mtm: objc2::MainThreadMarker,
-    size: Size,
-) -> Retained<objc2_app_kit::NSWindow> {
-    use objc2_app_kit::{NSBackingStoreType, NSWindow, NSWindowStyleMask};
+pub fn capture_window(mtm: MainThreadMarker, size: Size) -> Retained<NSWindow> {
+    use crate::dynamic_range::{DynamicRange, apply_to_view};
     // SAFETY: `initWithContentRect:styleMask:backing:defer:` is `NSWindow`'s
     // designated initializer; `setReleasedWhenClosed:false` keeps the object
     // owned by the `Retained` the caller drops.
     unsafe {
-        let rect: objc2_core_foundation::CGRect =
-            Rect::new(0.0, 0.0, size.width, size.height).into();
-        let window: Retained<CaptureWindow> = objc2::msg_send![
+        let rect: CGRect = Rect::new(0.0, 0.0, size.width, size.height).into();
+        let window: Retained<CaptureWindow> = msg_send![
             CaptureWindow::alloc(mtm),
             initWithContentRect: rect,
             styleMask: NSWindowStyleMask::Borderless,
@@ -234,21 +237,18 @@ pub fn capture_window(
         // the tag rather than the missing display. `apply_to_view`
         // preserves any local tag content inside the capture carries.
         if let Some(content) = window.contentView() {
-            crate::dynamic_range::apply_to_view(
-                crate::dynamic_range::DynamicRange::Standard,
-                &content,
-            );
+            apply_to_view(DynamicRange::Standard, &content);
         }
         window
     }
 }
 
 #[cfg(target_os = "macos")]
-objc2::define_class!(
+define_class!(
     // SAFETY: `NSWindow`'s designated initializer is
     // `initWithContentRect:styleMask:backing:defer:`, which `capture_window`
     // calls, and the class holds no ivars and implements no `Drop`.
-    #[unsafe(super(objc2_app_kit::NSWindow))]
+    #[unsafe(super(NSWindow))]
     #[name = "CocoaUiCaptureWindow"]
     #[thread_kind = MainThreadOnly]
     /// The never-ordered `NSWindow` a view is rehosted in for offscreen capture.
