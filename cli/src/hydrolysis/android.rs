@@ -46,7 +46,7 @@ use crate::{
         self, HydrolysisAndroidPreviewTemplateEntry, HydrolysisAndroidTemplateEntry,
         TemplateContext,
     },
-    toolchain::{Host, ToolchainError, git, windows_arm64_llvm::WindowsArm64LlvmToolchain},
+    toolchain::git,
 };
 
 /// The painter the Hydrolysis Android host draws with.
@@ -907,9 +907,9 @@ pub(crate) async fn build_prepared(
         );
     }
     let launcher_manifest = backend_path.join("Cargo.toml");
-    let strategy_feature = (options.uses_erased_dispatch()
-        && templates::generated_manifest_declares(&launcher_manifest, "erased-dispatch")?)
-    .then_some("erased-dispatch");
+    let strategy_feature =
+        super::erased_dispatch(&launcher_manifest, options.uses_erased_dispatch())?;
+    let inspector_feature = super::development_inspector(&launcher_manifest, options.is_release())?;
     let rust_build = RustBuild::for_project(project, &backend_path, triple.clone())
         .with_crate_type_override("cdylib")
         .with_rustc_flag(ANDROID_MAX_PAGE_SIZE_LINK_ARG)
@@ -924,8 +924,8 @@ pub(crate) async fn build_prepared(
         )
         .with_features(options.app_features(project))
         .with_envs(options.cargo_envs().iter().cloned())
-        .with_envs(resolve_windows_arm64_llvm_envs(host).await?);
-    let widget_features = assets::widget_features(
+        .with_envs(super::windows_arm64_llvm_envs(host).await?);
+    let backend_features = assets::backend_features(
         project,
         &launcher_manifest,
         &triple,
@@ -933,8 +933,11 @@ pub(crate) async fn build_prepared(
         &["hydrolysis", "hydrolysis-m3"],
     )
     .await?;
-    let rust_build = rust_build.with_features(widget_features);
+    let rust_build = rust_build.with_features(backend_features);
     assets::seed_managed_crate_lock(project, &launcher_manifest).await?;
+    // `app/src/debug/AndroidManifest.xml` already grants `INTERNET` for debug
+    // builds, so audit the application's own feature graph before adding
+    // `development_inspector`; explicit `inspector` selection still warns.
     let required_permissions =
         assets::scan_required_permissions(project, &launcher_manifest, rust_build.features())
             .await?;
@@ -942,6 +945,7 @@ pub(crate) async fn build_prepared(
         key.android_permission_name().is_some()
     });
     let rust_build = rust_build
+        .with_features(inspector_feature)
         .with_envs(android_cargo_envs(&context, &triple))
         .with_env("PATH", android_path_env(host, &context).await?);
 
@@ -961,22 +965,6 @@ pub(crate) fn launcher_library_name(project: &Project) -> String {
             &project.hydrolysis_backend_crate_name()
         )
     )
-}
-
-async fn resolve_windows_arm64_llvm_envs(
-    host: &Host,
-) -> eyre::Result<Vec<(String, std::ffi::OsString)>> {
-    WindowsArm64LlvmToolchain
-        .cargo_envs(host)
-        .await
-        .map_err(|error| match error {
-            ToolchainError::Fixable(_) => eyre::eyre!(
-                "Windows ARM64 LLVM toolchain is missing. Run `water doctor --fix` to install it automatically."
-            ),
-            ToolchainError::Unfixable(unfixable) => {
-                eyre::eyre!("Windows ARM64 LLVM toolchain check failed: {unfixable}")
-            }
-        })
 }
 
 /// Stage the built cdylib where the generated Gradle project packages it:

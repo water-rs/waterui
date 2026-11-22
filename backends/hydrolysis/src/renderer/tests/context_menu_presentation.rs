@@ -108,7 +108,7 @@ fn runtime<M: IntoContextMenu + 'static>(menu: impl Fn() -> M + 'static) -> Head
     )
 }
 
-/// Same, in a taller window: under `debug_assertions` the inspector joins
+/// Same, in a taller window: debug builds with the inspector feature extend
 /// every context menu with a divider and an "Inspect element" row, so the
 /// menu stands `3 * row_height + padding` tall — a `240`-high window leaves
 /// no room beside any source for the below/above placements to show.
@@ -856,15 +856,15 @@ fn a_divider_row_takes_the_themes_divider_spacing() {
     // the test cannot drift from the tokens it is fed: two rows + a divider
     // (separator_thickness + vertical_padding above and below) + the theme's
     // container vertical padding; the window frame adds the panel margin on
-    // every side. The debug build's "Inspect element" affordance appends its
-    // own divider and row.
+    // every side. Debug builds with the inspector feature append the
+    // "Inspect element" affordance with its own divider and row.
     let menu_metrics = MinimalTestTheme::menu_layout();
     let divider = crate::renderer::input::popup_menu_divider_height(menu_metrics);
     let row = menu_metrics.row_height;
     let rows = row
         + row
         + divider
-        + if cfg!(debug_assertions) {
+        + if cfg!(all(debug_assertions, hydrolysis_inspector)) {
             divider + row
         } else {
             0.0

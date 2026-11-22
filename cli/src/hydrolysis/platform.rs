@@ -25,7 +25,6 @@ use crate::{
     hydrolysis::backend::HydrolysisBackend,
     platform::{PackageOptions, TargetPlatform},
     project::Project,
-    toolchain::{ToolchainError, windows_arm64_llvm::WindowsArm64LlvmToolchain},
     utils::command,
 };
 #[cfg(target_os = "macos")]
@@ -150,20 +149,6 @@ fn render_features(
     Ok(features)
 }
 
-async fn windows_llvm_envs(project: &Project) -> eyre::Result<Vec<(String, OsString)>> {
-    WindowsArm64LlvmToolchain
-        .cargo_envs(project.host())
-        .await
-        .map_err(|error| match error {
-            ToolchainError::Fixable(_) => eyre::eyre!(
-                "Windows ARM64 LLVM toolchain is missing. Run `water doctor --fix` to install it automatically."
-            ),
-            ToolchainError::Unfixable(unfixable) => {
-                eyre::eyre!("Windows ARM64 LLVM toolchain check failed: {unfixable}")
-            }
-        })
-}
-
 /// Build hydrolysis binary for the host platform with extra Cargo environment variables and features.
 ///
 /// `offscreen` says the binary renders without a window (`water preview`,
@@ -224,11 +209,7 @@ pub async fn build_hydrolysis_with_envs_and_features(
         .await?;
     }
 
-    let llvm_envs = windows_llvm_envs(project).await?;
-
-    let strategy_feature = (options.uses_erased_dispatch()
-        && crate::templates::generated_manifest_declares(&cargo_toml, "erased-dispatch")?)
-    .then_some("erased-dispatch");
+    let llvm_envs = super::windows_arm64_llvm_envs(project.host()).await?;
 
     let mut build = RustBuild::for_project(project, &backend_path, platform.triple())
         .with_target_dir(project.water_target_dir(options.linkage()).await?)
@@ -236,7 +217,14 @@ pub async fn build_hydrolysis_with_envs_and_features(
             render_features
                 .into_iter()
                 .chain(extra_features.iter().copied())
-                .chain(strategy_feature),
+                .chain(super::erased_dispatch(
+                    &cargo_toml,
+                    options.uses_erased_dispatch(),
+                )?)
+                .chain(super::development_inspector(
+                    &cargo_toml,
+                    options.is_release(),
+                )?),
         )
         .with_linkage(
             options.linkage(),
@@ -247,7 +235,7 @@ pub async fn build_hydrolysis_with_envs_and_features(
         .with_features(options.app_features(project))
         .with_envs(options.cargo_envs().iter().cloned())
         .with_envs(extra_envs.iter().cloned());
-    let widget_features = assets::widget_features(
+    let backend_features = assets::backend_features(
         project,
         &backend_path.join("Cargo.toml"),
         &platform.triple(),
@@ -255,7 +243,7 @@ pub async fn build_hydrolysis_with_envs_and_features(
         &["hydrolysis", "hydrolysis-m3"],
     )
     .await?;
-    build = build.with_features(widget_features);
+    build = build.with_features(backend_features);
     if let Some(sccache_path) = options.sccache_path() {
         build = build.with_sccache(sccache_path.to_path_buf());
     }

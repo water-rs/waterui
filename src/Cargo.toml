@@ -10,6 +10,9 @@ description = "Internal implementation crate for WaterUI"
 keywords.workspace = true
 categories.workspace = true
 
+[package.metadata.waterui.permissions]
+internet = { reason = "serves the Inspector diagnostic endpoint", required-feature = "inspector" }
+
 [lib]
 path = "lib.rs"
 
