@@ -415,6 +415,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         // Mirror `build_window_scene`: `reset_scene` runs before the frame
         // opens on the rendered build path.
         self.reset_semantic_scene();
+        self.app_frame_rate_vote = None;
         self.begin_rebuild();
         self.begin_semantic_rebuild_frame();
         self.render_depth = 0;
@@ -464,6 +465,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         // clear them up front so a mark raised mid-flush re-arms the next.
         self.clear_all_marks();
         self.begin_outside_read_frame();
+        self.app_frame_rate_vote = None;
         self.begin_semantic_emit_frame();
         let structural_change = self.take_subview_structural_change() | tree.patch(self);
         if structural_change {
@@ -613,6 +615,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         build: impl FnOnce(&mut SemanticCore<E>, &Environment) -> RenderNode<E>,
     ) {
         let _flush_span = tracing::debug_span!("hydrolysis_capture_window_tree").entered();
+        self.app_frame_rate_vote = None;
         let (content_rect, size, safe_area) = window_root_layout(self, env, bounds, transform);
         let proposal = ProposalSize::new(Some(size.width), Some(size.height));
         // The viewport is recorded here rather than by each caller: every host
@@ -740,6 +743,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         // clear them up front so a mark raised mid-flush re-arms the next.
         self.clear_all_marks();
         self.begin_outside_read_frame();
+        self.app_frame_rate_vote = None;
         // Roll over this frame's Retain watcher guards exactly like the build path:
         // every re-encode re-reads and re-subscribes reactive visual inputs.
         // Reset frame-bound input registrations. Scroll, list, and table state are

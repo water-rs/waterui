@@ -295,7 +295,7 @@ The host owns the event loop and the display link. The engine says when the next
 ```rust
 match engine.render(FrameTime::at(target_presentation_time))? {
     Next::Idle => link.pause(),
-    Next::At { time, rate } => link.request(time, rate), // rate: RefreshRange, e.g. 60..=120
+    Next::At { time, rate } => link.request(time, rate), // rate: FrameRate, e.g. 60..=120 Hz
 }
 ```
 

@@ -1,6 +1,7 @@
 mod collection_update;
 // Suites that drive the GPU painter itself — its device, GPU-content views,
 // filters or backdrop shaders — run on builds that have it.
+mod frame_rate_vote;
 #[cfg(hydrolysis_gpu_painter)]
 mod frame_work;
 mod slider_look;

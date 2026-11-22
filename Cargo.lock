@@ -1731,6 +1731,7 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
  "waterui-contract",
+ "waterui-frame-rate",
  "web-time",
 ]
 
@@ -1804,6 +1805,7 @@ dependencies = [
  "skrifa 0.48.0",
  "tracing",
  "waterui-contract",
+ "waterui-frame-rate",
 ]
 
 [[package]]
@@ -1862,6 +1864,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-test",
  "waterui-contract",
+ "waterui-frame-rate",
  "web-sys",
  "wgpu",
 ]
@@ -1908,6 +1911,7 @@ dependencies = [
  "thiserror 2.0.21",
  "waterui-contract",
  "waterui-easing",
+ "waterui-frame-rate",
  "web-time",
 ]
 
@@ -2209,6 +2213,7 @@ dependencies = [
  "tracing-subscriber",
  "waterui-contract",
  "waterui-easing",
+ "waterui-frame-rate",
  "wgpu",
  "wgpu-hal",
 ]
@@ -4790,6 +4795,7 @@ dependencies = [
  "waterui-controls",
  "waterui-core",
  "waterui-form",
+ "waterui-frame-rate",
  "waterui-graphics",
  "waterui-image",
  "waterui-inspector-protocol",
@@ -12876,6 +12882,7 @@ dependencies = [
  "waterui-browser-cef",
  "waterui-capture",
  "waterui-core",
+ "waterui-frame-rate",
  "waterui-graphics",
  "waterui-interaction",
  "waterui-locale",
@@ -13273,6 +13280,7 @@ dependencies = [
  "thiserror 2.0.21",
  "waterui-contract",
  "waterui-easing",
+ "waterui-frame-rate",
  "waterui-macros",
  "waterui-meta",
 ]
@@ -13316,6 +13324,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "waterui-frame-rate"
+version = "0.5.1"
+dependencies = [
+ "nami",
+]
+
+[[package]]
 name = "waterui-git-head"
 version = "0.5.1"
 dependencies = [
@@ -13355,6 +13370,7 @@ dependencies = [
  "waterui",
  "waterui-color",
  "waterui-core",
+ "waterui-frame-rate",
  "waterui-testing",
  "waterui-text",
  "wgpu",

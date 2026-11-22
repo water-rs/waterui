@@ -10,6 +10,7 @@ use std::cell::Cell;
 use std::ptr::NonNull;
 use std::rc::Rc;
 
+use cherenkov::FrameRate;
 use cocoa_ui::PlatformView;
 use cocoa_ui::Retained;
 use wgpu::rwh::{
@@ -30,7 +31,7 @@ use crate::text::ParleyEngine;
 #[derive(Clone)]
 pub(super) struct AppleViewHandle {
     view: Retained<PlatformView>,
-    refresh: cherenkov::RefreshRange,
+    refresh: FrameRate,
 }
 
 #[expect(
@@ -53,9 +54,10 @@ impl AppleViewHandle {
     /// When `max_refresh_hz` is zero.
     pub(super) fn new(view: Retained<PlatformView>, max_refresh_hz: u32) -> Self {
         assert!(max_refresh_hz > 0, "a display refreshes at a positive rate");
+        let max_hz = f32::from(u16::try_from(max_refresh_hz).unwrap_or(u16::MAX));
         Self {
             view,
-            refresh: 1..=max_refresh_hz,
+            refresh: FrameRate::FAST.clamped(max_hz),
         }
     }
 
@@ -82,7 +84,7 @@ impl HasDisplayHandle for AppleViewHandle {
 
 impl EngineWindowHandle for AppleViewHandle {
     fn window_target(&self, size: (u32, u32)) -> cherenkov_gpu::WindowTarget {
-        cherenkov_gpu::WindowTarget::new(self.clone(), size).rate(self.refresh.clone())
+        cherenkov_gpu::WindowTarget::new(self.clone(), size).rate(self.refresh)
     }
 }
 

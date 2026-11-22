@@ -16,6 +16,7 @@ use crate::text::{TextEngine, TextLayout as _};
 use crate::theme::WidgetTheme;
 use waterui::gesture::TapGesture;
 use waterui_backend_core::Child;
+use waterui_core::animation::FrameRateVote;
 use waterui_layout::safe_area::IgnoreSafeArea;
 use waterui_structural_transition::TransitionSpec;
 use waterui_text::styled::TapSpan;
@@ -1105,6 +1106,9 @@ pub(super) enum WrapperEffect<E: crate::text::TextEngine> {
     /// the registered text input's `focus_binding`/focus state is set from the
     /// child's just-flushed targets — reactive descendants reach their own nodes.
     Focused(Focused),
+    /// A `.frame_rate(...)` modifier contributing its active vote while
+    /// mounted and visible.
+    FrameRate(FrameRateVote),
     /// An `.on_appear`/`.on_disappear` lifecycle hook, owned by this node rather
     /// than by a frame-ordered slot, so it cannot drift onto another subtree's
     /// hook. Appear fires after the child's first flush; disappear

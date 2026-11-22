@@ -14,6 +14,7 @@ categories = ["gui", "graphics"]
 [dependencies]
 hydrolysis-style.workspace = true
 waterui-core.workspace = true
+waterui-frame-rate.workspace = true
 waterui-interaction.workspace = true
 waterui-structural-transition.workspace = true
 thiserror.workspace = true
@@ -321,7 +322,11 @@ windows-sys = { version = "0.61", optional = true, features = [
 ] }
 # `waterkit-menu::MenuBar::attach` takes the `windows` crate's `HWND` — a
 # different type from `windows-sys`'s alias.
-windows = { workspace = true, optional = true, features = ["Win32_Foundation"] }
+windows = { workspace = true, optional = true, features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_DirectComposition",
+] }
 
 # The native menu bar's test creates real windows for its bars to attach to.
 [target.'cfg(windows)'.dev-dependencies]

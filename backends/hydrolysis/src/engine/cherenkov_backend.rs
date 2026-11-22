@@ -396,6 +396,12 @@ pub trait EngineSurface {
     fn running_tracks(&self) -> cherenkov_record::RunningTracks {
         self.core().engine_surface().running_tracks()
     }
+
+    /// Combined refresh-rate vote reported by the surface after its latest
+    /// render, including non-redrawing source cadence votes.
+    fn rate_vote(&self) -> Option<waterui_frame_rate::FrameRate> {
+        self.core().engine_surface().rate_vote()
+    }
 }
 
 /// Android presents retained buffers directly through the system compositor.

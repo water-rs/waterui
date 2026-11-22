@@ -530,6 +530,7 @@ impl<B: Backend> Engine<B> {
                 shared: Rc::downgrade(&surface.shared),
                 waker: Arc::clone(&surface.waker),
                 next_frame: Rc::downgrade(&surface.next_frame),
+                rate_vote: Rc::downgrade(&surface.rate_vote),
                 running_tracks: Rc::downgrade(&surface.running_tracks),
             });
         surface

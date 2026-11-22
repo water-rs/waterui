@@ -29,6 +29,7 @@ use waterui::cursor::CursorStyle;
 use waterui::window::{Window, WindowState};
 use waterui_core::Environment;
 use waterui_core::layout::{Size, layout_direction};
+use waterui_frame_rate::FrameRate;
 
 use waterui_layout::padding::EdgeInsets;
 
@@ -242,10 +243,18 @@ impl SceneShared {
             .is_some_and(|until| std::time::Instant::now() < until)
     }
 
+    /// Applies the active refresh-rate vote onto the scene's `CADisplayLink`.
+    pub(super) fn set_frame_rate_vote(&self, vote: Option<FrameRate>) {
+        let resolved = vote.unwrap_or(FrameRate::FAST);
+        self.clock.set_frame_rate(resolved);
+    }
+
     /// Settles the display link and the deadline wake after a transaction.
     pub(super) fn frame_done(&self, outcome: &FrameOutcome) {
+        self.set_frame_rate_vote(outcome.frame_rate_vote);
         if !(outcome.wants_next_frame || self.keyboard_animating()) {
             self.clock.set_paused(true);
+            self.clock.set_frame_rate(FrameRate::FAST);
         }
         self.schedule_deadline(outcome.deadline);
     }
@@ -451,6 +460,10 @@ impl PlatformWindow for UiKitHostWindow {
 
     fn request_redraw(&self) {
         self.shared.request_redraw();
+    }
+
+    fn set_frame_rate_vote(&self, vote: Option<FrameRate>) {
+        self.shared.set_frame_rate_vote(vote);
     }
 
     fn frame_wake(&self) -> Rc<dyn Fn()> {

@@ -19,6 +19,8 @@ use waterui_graphics::gpu::{
 use waterui_graphics::input::SurfaceInputEvent;
 use waterui_graphics::offscreen::OffscreenSize;
 
+use waterui_frame_rate::FrameRate;
+
 use super::{FrameOutcome, HostedError, HostedRenderer, HostedView, RendererCreation};
 use crate::gpu_runtime::{BatchTicket, EngineGeneration, SceneEngine, SceneParticipant};
 
@@ -532,6 +534,10 @@ impl HostedRenderer for SceneRenderer {
             // timestamp.
             FrameOutcome::Unproduced
         }))
+    }
+
+    fn rate_vote(&self) -> Option<FrameRate> {
+        self.part.surface.rate_vote()
     }
 
     fn composite(&mut self, target: &wgpu::Texture, display: Display) {

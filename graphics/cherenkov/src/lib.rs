@@ -85,8 +85,8 @@ pub use crate::engine::PendingFrame;
 pub use crate::engine::{CompletionWaker, FrameScope, SurfaceWakes};
 pub use crate::error::{EngineError, RenderError, ResourceError, SurfaceError, SurfaceRejection};
 pub use crate::frame::{
-    DEFAULT_REFRESH, FrameId, FrameStats, FrameTime, FrameTiming, Next, Offscreen, OffscreenFormat,
-    OutputAlpha, PassTiming, Phases, Readback,
+    FrameId, FrameStats, FrameTime, FrameTiming, Next, Offscreen, OffscreenFormat, OutputAlpha,
+    PassTiming, Phases, Readback,
 };
 pub use crate::glyph::{FontId, Glyph, GlyphRun, GlyphStyle};
 pub use crate::image::{
@@ -122,11 +122,11 @@ pub use cherenkov_record::{
     BackdropOuterError, BackdropSample, BackdropSampling, BackdropShaderEffect, BackdropShaderId,
     BackdropShaderSource, BackdropSpec, BackdropUnion, BackdropUnionError, CaptureLevels,
     CaptureLevelsError, CapturePyramid, CaptureScale, CaptureScaleError, ColorMatrix, ContentOp,
-    GpuInstalls, ImageLimits, ImageStorage, Install, KeyframeProp, Layer, LayerAnimations,
-    LayerContent, LayerEdit, LayerId, LayerKeyframes, LayerNode, LayerOwner, LevelRamp,
-    LevelRampError, Projective, ProjectiveError, ProjectiveLayers, Prop, Queue, Realize,
-    RecordingScale, RecordingScaleError, Refraction, RefreshRange, ResourceId, Retarget, Rim,
-    Shared, SurfaceId, SurfaceTree, Target, TextLayoutId, TrackOrigin, TrackStart, Transaction,
-    TransformComponents, snap_animating,
+    FrameRate, GpuInstalls, ImageLimits, ImageStorage, Install, KeyframeProp, Layer,
+    LayerAnimations, LayerContent, LayerEdit, LayerId, LayerKeyframes, LayerNode, LayerOwner,
+    LevelRamp, LevelRampError, Projective, ProjectiveError, ProjectiveLayers, Prop, Queue, Realize,
+    RecordingScale, RecordingScaleError, Refraction, ResourceId, Retarget, Rim, Shared, SurfaceId,
+    SurfaceTree, Target, TextLayoutId, TrackOrigin, TrackStart, Transaction, TransformComponents,
+    snap_animating,
 };
 pub use kurbo::Stroke;

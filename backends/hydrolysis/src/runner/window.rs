@@ -5,8 +5,11 @@ use super::*;
 #[cfg(not(target_arch = "wasm32"))]
 #[cfg(hydrolysis_cherenkov)]
 use crate::animation::PerpetualAnimation;
+use crate::num_cast::f64_as_f32;
 #[cfg(hydrolysis_cherenkov)]
 use crate::platform::PaintedWindow;
+use crate::renderer::Next;
+use waterui_frame_rate::{DisplayCapabilities, FrameRate, combine, resolve};
 // Concrete `PresentationSurface` method calls — `WinitSurface::device_loss`
 // and `BrowserSurface::device_loss` in the `PaintedFrame` impls below —
 // exist only on these cfgs; everywhere else the trait is reached through
@@ -247,8 +250,10 @@ pub(super) struct RuntimeWindow<P: PlatformWindow, E: crate::text::TextEngine> {
     pub(super) platform: P,
     pub(super) renderer: HydrolysisRenderer<E>,
     pub(super) mode: FrameMode,
-    #[cfg(hydrolysis_frame_transaction)]
-    pub(super) engine_next: crate::renderer::Next,
+    pub(super) engine_next: Next,
+    /// Earliest instant the next self-paced continuous frame should draw when
+    /// an active lower vote caps below the display's peak refresh rate.
+    pub(super) next_paced_due: Option<Instant>,
     /// The pump is parked: the host reports the window cannot be seen
     /// (minimized, occluded, backgrounded or surface-less). While parked no
     /// frame is produced and no wake is posted — armed work stays armed for
@@ -314,8 +319,8 @@ impl<P: PlatformWindow, E: crate::text::TextEngine> RuntimeWindow<P, E> {
             platform,
             renderer,
             mode: FrameMode::Refresh,
-            #[cfg(hydrolysis_frame_transaction)]
-            engine_next: crate::renderer::Next::Idle,
+            engine_next: Next::Idle,
+            next_paced_due: None,
             hidden: false,
             presented_frames: 0,
             pointer_position: None,
@@ -422,6 +427,39 @@ impl<P: PlatformWindow, E: crate::text::TextEngine> RuntimeWindow<P, E> {
             self.platform.request_redraw();
         }
     }
+
+    /// Returns the window's effective refresh-rate vote, or `None` when
+    /// hidden or idle.
+    pub(super) fn effective_frame_rate_vote(&self) -> Option<FrameRate> {
+        if self.hidden {
+            return None;
+        }
+        let engine = match self.engine_next {
+            Next::At { rate, .. } => Some(rate),
+            Next::Idle => None,
+        };
+        combine(self.renderer.frame_rate_vote(), engine)
+    }
+}
+
+/// Returns the self-pacing interval when `vote` resolves meaningfully below
+/// the display's peak refresh rate on hosts that do not enforce lower caps in
+/// their compositor (Windows, Wayland, X11, and Web).
+pub(super) fn self_pace_interval(vote: Option<FrameRate>, peak_hz: f32) -> Option<Duration> {
+    let vote = vote?;
+    let display = DisplayCapabilities::continuous(peak_hz);
+    let resolved = resolve(vote, display);
+    (resolved + 0.5 < display.peak()).then(|| vote.interval(display))
+}
+
+/// Whether the Windows DWM compositor clock should be boosted for `vote` on a
+/// display whose peak rate is `peak_hz`.
+#[cfg(any(target_os = "windows", test))]
+pub(super) fn should_boost_windows_clock(vote: Option<FrameRate>, peak_hz: f32) -> bool {
+    let Some(vote) = vote else {
+        return false;
+    };
+    vote.clamped(peak_hz.max(60.0)).preferred() > 60.5
 }
 
 /// Android's frame transaction and the gate shared with its installed wake.
@@ -663,6 +701,8 @@ pub(super) struct FrameOutcome {
     pub(super) deadline: Option<Instant>,
     /// The window's content asked to close.
     pub(super) should_close: bool,
+    /// Active refresh-rate vote for this window, or `None` when idle or hidden.
+    pub(super) frame_rate_vote: Option<FrameRate>,
 }
 
 /// The one coordinated frame transaction every windowed host shares.
@@ -771,14 +811,17 @@ pub(super) fn run_frame_transaction<H: FrameHost>(
     // armed it clears itself.
     if !hidden
         && !frame_in_flight
-        && let crate::renderer::Next::At { time, .. } = engine_next
+        && let Next::At { time, .. } = engine_next
     {
         deadline = Some(deadline.map_or(time, |other| other.min(time)));
     }
+    let frame_rate_vote = host.parts().0.effective_frame_rate_vote();
+    host.parts().0.platform.set_frame_rate_vote(frame_rate_vote);
     FrameOutcome {
         wants_next_frame,
         deadline,
         should_close,
+        frame_rate_vote,
     }
 }
 
@@ -2600,12 +2643,22 @@ crate::engine::cfg_async_fn! {
     // next frame through `Next::At` (the surface's wake may already have woken
     // the host too — the request is idempotent).
     if let Some(next) = runtime.renderer.take_engine_next() {
-        #[cfg(hydrolysis_frame_transaction)]
-        {
-            runtime.engine_next = next;
-        }
-        #[cfg(not(hydrolysis_frame_transaction))]
-        if matches!(next, crate::renderer::Next::At { .. }) {
+        runtime.engine_next = next;
+    }
+    let vote = runtime.effective_frame_rate_vote();
+    runtime.platform.set_frame_rate_vote(vote);
+    let peak_hz = runtime.refresh_rate_hz.map_or(60.0, f64_as_f32);
+    let self_paced = if cfg!(not(any(target_os = "macos", target_os = "ios", target_os = "android"))) {
+        self_pace_interval(vote, peak_hz)
+    } else {
+        None
+    };
+    if let Some(interval) = self_paced {
+        runtime.next_paced_due = Some(Instant::now() + interval);
+    } else {
+        runtime.next_paced_due = None;
+        #[cfg(not(any(hydrolysis_frame_transaction, target_arch = "wasm32")))]
+        if matches!(runtime.engine_next, Next::At { .. }) {
             runtime.platform.request_redraw();
         }
     }
@@ -3402,14 +3455,47 @@ pub(super) fn advance_runtime<P: PlatformWindow, E: crate::text::TextEngine>(
         tracing::debug!("wake cause: structural mark");
         runtime.request_refresh();
     }
-    let next_deadline = runtime.renderer.next_wake_deadline();
+    let mut next_deadline = runtime.renderer.next_wake_deadline();
     if next_deadline.is_some() {
         tracing::debug!(?next_deadline, "wake armed: engine deadline");
     }
-    if runtime.mode.is_pending() {
-        tracing::debug!("wake cause: frame mode still pending");
+    let vote = runtime.effective_frame_rate_vote();
+    runtime.platform.set_frame_rate_vote(vote);
+    if matches!(runtime.mode, FrameMode::Refresh) {
+        runtime.next_paced_due = None;
+        tracing::debug!("wake cause: frame refresh still pending");
         runtime.request_redraw();
         runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
+    } else if runtime.mode.is_pending() || matches!(runtime.engine_next, Next::At { .. }) {
+        let peak_hz = runtime.refresh_rate_hz.map_or(60.0, f64_as_f32);
+        let self_paced = if cfg!(not(any(
+            target_os = "macos",
+            target_os = "ios",
+            target_os = "android"
+        ))) {
+            self_pace_interval(vote, peak_hz)
+        } else {
+            None
+        };
+        if let (Some(interval), Some(due)) = (self_paced, runtime.next_paced_due) {
+            if now >= due {
+                runtime.next_paced_due = Some(now + interval);
+                tracing::debug!("wake cause: self-paced frame due");
+                runtime.request_redraw();
+                runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
+            } else {
+                next_deadline = Some(next_deadline.map_or(due, |existing| existing.min(due)));
+            }
+        } else {
+            runtime.next_paced_due = None;
+            if runtime.mode.is_pending() {
+                tracing::debug!("wake cause: frame mode still pending");
+                runtime.request_redraw();
+                runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
+            }
+        }
+    } else {
+        runtime.next_paced_due = None;
     }
     next_deadline
 }

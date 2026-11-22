@@ -19,6 +19,7 @@ use core::cell::{Cell, RefCell};
 use core::fmt;
 use core::num::NonZeroU32;
 
+use cocoa_ui::PlatformView;
 use cocoa_ui::Retained;
 use cocoa_ui::metal_presenter::{DrawableFrame, MetalPresenter};
 use objc2::MainThreadMarker;
@@ -27,6 +28,7 @@ use waterui_core::NativeView;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
 };
+use waterui_frame_rate::{FrameRate, combine};
 use waterui_graphics::backend::cherenkov::Next;
 use waterui_graphics::gpu::{
     Display, ExternalFrameRenderer, ExternalFrameStream, ExternalFrameView, FrameTime, GpuContent,
@@ -37,9 +39,10 @@ use waterui_graphics::input::SurfaceInputEvent;
 use waterui_graphics::offscreen::OffscreenSize;
 
 use crate::contract::NativeLeaf;
-use crate::gpu_runtime::EngineGeneration;
+use crate::frame_rate::{VoteListener, WindowFrameRateVotes};
 #[cfg(all(feature = "native-test", target_os = "macos"))]
 use crate::gpu_runtime::SceneEngine;
+use crate::gpu_runtime::{EngineGeneration, display_rate};
 use crate::presentation_time::PresentationTime;
 use crate::publication_park::PublicationPark;
 
@@ -176,6 +179,11 @@ trait HostedRenderer {
     fn submission_evidence(&self) -> Option<Rc<EngineGeneration>> {
         None
     }
+
+    /// The surface's latest combined refresh-rate vote, if available.
+    fn rate_vote(&self) -> Option<FrameRate> {
+        None
+    }
 }
 
 /// What a resolved frame left for the host's target.
@@ -202,6 +210,8 @@ trait LayerRenderer {
     ) -> Result<HostedFrame, HostedLayerError>;
 
     fn composite(&mut self, frame: &RenderedFrame, target: &wgpu::Texture, display: Display);
+
+    fn rate_vote(&self) -> Option<FrameRate>;
 }
 
 impl LayerRenderer for GpuContentRenderer {
@@ -217,6 +227,10 @@ impl LayerRenderer for GpuContentRenderer {
     fn composite(&mut self, frame: &RenderedFrame, target: &wgpu::Texture, display: Display) {
         Self::composite(self, frame, target, display);
     }
+
+    fn rate_vote(&self) -> Option<FrameRate> {
+        Self::rate_vote(self)
+    }
 }
 
 impl LayerRenderer for ExternalFrameRenderer {
@@ -231,6 +245,10 @@ impl LayerRenderer for ExternalFrameRenderer {
 
     fn composite(&mut self, frame: &RenderedFrame, target: &wgpu::Texture, display: Display) {
         Self::composite(self, frame, target, display);
+    }
+
+    fn rate_vote(&self) -> Option<FrameRate> {
+        Self::rate_vote(self)
     }
 }
 
@@ -290,6 +308,10 @@ impl<R: LayerRenderer> HostedRenderer for Layered<R> {
     fn discard_frame(&mut self) {
         self.pending = None;
         self.rendered = None;
+    }
+
+    fn rate_vote(&self) -> Option<FrameRate> {
+        self.layer.rate_vote()
     }
 }
 
@@ -582,6 +604,10 @@ struct SurfaceState {
     /// frozen copy for a transition's retirement hand-off (§2.1). `None`
     /// for an unarmed surface — its drawables stay framebuffer-only.
     armed: Option<crate::frozen_frame::SharedFrozenFrameSlot>,
+    /// Window-scoped `.frame_rate(...)` votes active on the owning window.
+    window_votes: Option<WindowFrameRateVotes>,
+    /// Latest refresh-rate vote reported by this surface's content or engine.
+    content_rate: Cell<Option<FrameRate>>,
 }
 
 /// The presentation lifecycle: the drawable-path epoch and the open
@@ -622,6 +648,8 @@ struct Attached {
     context: Arc<SharedGpuContext>,
     /// What the link's next update must answer this epoch.
     demand: Demand,
+    /// Subscription keeping the presenter aligned with window `.frame_rate(...)` votes.
+    _vote_listener: Option<VoteListener>,
 }
 
 /// The demand bits an attach epoch owns — everything the link's next
@@ -834,6 +862,8 @@ impl SurfaceState {
             armed: env
                 .get::<crate::transition::SnapshotDemand>()
                 .map(|_| Rc::new(crate::frozen_frame::FrozenFrameSlot::new())),
+            window_votes: env.get::<WindowFrameRateVotes>().cloned(),
+            content_rate: Cell::new(None),
         }
     }
 
@@ -911,6 +941,15 @@ impl SurfaceState {
                     // mutable owner flag alone.
                     let (next, scene_generation) = pipeline.composite(texture, display);
                     let needs_redraw = next != Next::Idle || self.dirty.get();
+                    let next_rate = match &next {
+                        Next::At { rate, .. } => Some(*rate),
+                        Next::Idle => None,
+                    };
+                    let vote = combine(
+                        combine(pipeline.rate_vote(), next_rate),
+                        self.dirty.get().then_some(FrameRate::FAST),
+                    );
+                    self.content_rate.set(vote);
                     if needs_redraw && matches!(pipelining, Pipelining::Continuous) {
                         pipeline.submit(&mut cx, request, || self.begin_frame())?;
                     }
@@ -1460,6 +1499,20 @@ fn prepare_presentation(
     true
 }
 
+fn apply_presenter_rate(state: &SurfaceState, view: &PlatformView) {
+    let Some(maximum) = display_rate(view) else {
+        return;
+    };
+    let window_vote = state
+        .window_votes
+        .as_ref()
+        .and_then(WindowFrameRateVotes::combined);
+    let vote = combine(state.content_rate.get(), window_vote).unwrap_or(FrameRate::FAST);
+    if let Some(attached) = state.presentation.borrow().attached() {
+        attached.presenter.set_frame_rate(vote, maximum);
+    }
+}
+
 /// Builds the `CAMetalLayer` presenter on the current context and owes the
 /// first frame — the link's next update answers it.
 fn attach(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>) {
@@ -1496,9 +1549,15 @@ fn attach(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>) {
         state.current_width.get(),
         state.current_height.get(),
     ));
-    if let Some(maximum) = crate::gpu_runtime::display_rate(view.as_platform_view()) {
-        presenter.set_display_rate(maximum);
-    }
+    let vote_listener = state.window_votes.as_ref().map(|votes| {
+        let state = Rc::downgrade(state);
+        let view = objc2::rc::Weak::new(&**view);
+        votes.subscribe(move || {
+            if let (Some(state), Some(view)) = (state.upgrade(), view.load()) {
+                apply_presenter_rate(&state, view.as_platform_view());
+            }
+        })
+    });
     // The first update answers the owed first frame — the window's reveal
     // waits on it. The owed first paint draws through the visibility gate
     // exactly once so an alpha-0 reveal window still gets its frame; only
@@ -1509,7 +1568,9 @@ fn attach(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>) {
         presenter,
         context,
         demand: Demand::new(first_paint),
+        _vote_listener: vote_listener,
     });
+    apply_presenter_rate(state, view.as_platform_view());
     update_presentation_demand(state, view);
 }
 
@@ -1754,6 +1815,7 @@ fn render_drawable(
     if let Some(attached) = state.presentation.borrow_mut().attached_mut() {
         attached.demand.keep_redrawing.set(needs_redraw);
     }
+    apply_presenter_rate(state, view.as_platform_view());
     publish_content_accessibility(state, view);
     update_presentation_demand(state, view);
 

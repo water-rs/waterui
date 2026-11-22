@@ -56,6 +56,7 @@ pub(crate) mod capture_image;
 pub(crate) mod components;
 pub(crate) mod first_paint;
 pub(crate) mod fonts;
+pub(crate) mod frame_rate;
 #[cfg(feature = "gpu_surface")]
 mod frozen_frame;
 #[cfg(feature = "gpu_surface")]

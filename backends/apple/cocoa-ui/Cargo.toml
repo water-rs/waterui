@@ -67,6 +67,8 @@ tracing = ["dep:tracing-subscriber"]
 # The spring and curve definition `core_animation::Timing` plays, the one
 # WaterUI core and the Cherenkov engine evaluate.
 waterui-easing.workspace = true
+# Frame-rate votes and display clamping shared with core and Cherenkov.
+waterui-frame-rate.workspace = true
 # Reports a broken contract: a panic in a debug build, an error log in a
 # release build.
 waterui-contract.workspace = true

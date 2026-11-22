@@ -1,5 +1,8 @@
 //! The render thread: sole owner of GPU state.
 
+use cherenkov::FrameRate;
+use waterui_frame_rate::combine_all;
+
 mod bindings;
 mod bitmap;
 mod capabilities;
@@ -465,7 +468,7 @@ struct SurfaceState {
     /// Texture-target hand-off: each rendered texture goes to the host.
     textures: Option<std::sync::mpsc::Sender<wgpu::Texture>>,
     ranges: Option<std::sync::mpsc::Sender<present::ColorRange>>,
-    refresh: cherenkov::RefreshRange,
+    refresh: cherenkov::FrameRate,
     present_pending: bool,
     #[cfg(target_os = "android")]
     present_generation: u64,
@@ -633,7 +636,7 @@ impl SurfaceState {
         window: Option<present::WindowSurface>,
         textures: Option<std::sync::mpsc::Sender<wgpu::Texture>>,
         ranges: Option<std::sync::mpsc::Sender<present::ColorRange>>,
-        refresh: cherenkov::RefreshRange,
+        refresh: cherenkov::FrameRate,
         output: (wgpu::Texture, wgpu::TextureView),
         waker: cherenkov::CompletionWaker,
         promotes: bool,
@@ -878,12 +881,42 @@ impl SurfaceState {
         &self,
         producers: &FxHashMap<ProducerId, gpu_content::Producer>,
     ) -> bool {
-        !self.bindings.is_empty()
-            && self.frame.content.iter().any(|(id, _)| {
-                producers
-                    .get(id)
-                    .is_some_and(gpu_content::Producer::wants_redraw)
-            })
+        self.content_redraw_rate(producers).is_some()
+    }
+
+    fn content_redraw_rate(
+        &self,
+        producers: &FxHashMap<ProducerId, gpu_content::Producer>,
+    ) -> Option<FrameRate> {
+        if self.bindings.is_empty() {
+            return None;
+        }
+        combine_all(self.frame.content.iter().map(|(id, _)| {
+            producers
+                .get(id)
+                .and_then(gpu_content::Producer::redraw_rate)
+        }))
+    }
+
+    fn content_source_rate(
+        &self,
+        producers: &FxHashMap<ProducerId, gpu_content::Producer>,
+    ) -> Option<FrameRate> {
+        if self.bindings.is_empty() {
+            return None;
+        }
+        combine_all(
+            self.frame
+                .content
+                .iter()
+                .map(|(id, _)| id)
+                .chain(self.frame.external.iter())
+                .map(|id| {
+                    producers
+                        .get(id)
+                        .and_then(gpu_content::Producer::source_rate)
+                }),
+        )
     }
 
     /// Bytes held by this surface's textures.
@@ -3877,15 +3910,15 @@ impl Renderer for GpuRenderer {
             GpuTarget::Texture(texture) => (None, Some(texture.textures), texture.refresh, false),
             #[cfg(target_os = "android")]
             GpuTarget::SurfaceControl(target) => {
-                let refresh = self.surface_control(id, target, waker.clone())?;
+                let refresh = self.surface_control(id, &target, waker.clone())?;
                 (None, None, refresh, true)
             }
             #[cfg(target_os = "linux")]
-            GpuTarget::Dmabuf(target) => (None, None, self.dmabuf_export(id, target)?, true),
+            GpuTarget::Dmabuf(target) => (None, None, self.dmabuf_export(id, &target)?, true),
             #[cfg(target_arch = "wasm32")]
             GpuTarget::Dom(target) => (None, None, self.dom_planes(id, &target)?, true),
             GpuTarget::Window(window) => {
-                let refresh = window.refresh.clone();
+                let refresh = window.refresh;
                 // Only Apple windows complete work after a render: a
                 // promoted plane's attach on the main queue.
                 #[cfg(target_vendor = "apple")]
@@ -5053,9 +5086,9 @@ impl GpuRenderer {
     fn surface_control(
         &mut self,
         id: SurfaceId,
-        target: crate::interop::android::SurfaceControlTarget,
+        target: &crate::interop::android::SurfaceControlTarget,
         waker: cherenkov::CompletionWaker,
-    ) -> Result<cherenkov::RefreshRange, SurfaceError> {
+    ) -> Result<cherenkov::FrameRate, SurfaceError> {
         // The context is built on first need (#170); a surface-control
         // target needs it now — planes import frame buffers natively.
         self.ensure_native();
@@ -5070,7 +5103,7 @@ impl GpuRenderer {
         let system = surface_control::planes::Planes::new(
             native.shared.clone(),
             std::sync::Arc::clone(&self.submit_lock),
-            &target,
+            target,
             waker,
         )?;
         self.planes.insert(id, system);
@@ -5091,7 +5124,7 @@ impl GpuRenderer {
         &mut self,
         id: SurfaceId,
         target: &crate::interop::web::DomTarget,
-    ) -> Result<cherenkov::RefreshRange, SurfaceError> {
+    ) -> Result<cherenkov::FrameRate, SurfaceError> {
         let system =
             planes::web::DomPlanes::new(&self.instance, &self.adapter, &self.device, target)?;
         self.planes.insert(id, system);
@@ -5102,17 +5135,17 @@ impl GpuRenderer {
                 self.pipeline_cache.clone(),
             )
         });
-        Ok(target.refresh.clone())
+        Ok(target.refresh)
     }
 
     /// Realizes surface `id`'s bounded pool of exportable dma-buf images
-    /// and returns its refresh range (#1687).
+    /// and returns its refresh vote (#1687).
     #[cfg(target_os = "linux")]
     fn dmabuf_export(
         &mut self,
         id: SurfaceId,
-        target: crate::interop::dmabuf::DmabufTarget,
-    ) -> Result<cherenkov::RefreshRange, SurfaceError> {
+        target: &crate::interop::dmabuf::DmabufTarget,
+    ) -> Result<cherenkov::FrameRate, SurfaceError> {
         // The native context is built on first need (#170); the pool
         // allocates images and exports their memory through it.
         self.ensure_native();
@@ -5127,7 +5160,7 @@ impl GpuRenderer {
         let pool = dmabuf_export::Pool::new(
             &native.shared,
             std::sync::Arc::clone(&self.submit_lock),
-            &target,
+            target,
         )?;
         self.exports.insert(id, pool);
         self.presenter.get_or_insert_with(|| {
@@ -5985,13 +6018,18 @@ impl GpuRenderer {
                 .filters
                 .iter()
                 .any(|(_, id)| self.filters.wants_redraw(*id))
-                || surface.content_wants_redraw(&self.producers)
                 || surface
                     .shader_textures
                     .keys()
                     .any(|key| self.shaders.animated(key))
             {
-                redraw.request(*id, surface.refresh.clone());
+                redraw.request(*id, surface.refresh);
+            }
+            if let Some(rate) = surface.content_redraw_rate(&self.producers) {
+                redraw.request(*id, rate);
+            }
+            if let Some(rate) = surface.content_source_rate(&self.producers) {
+                redraw.vote(*id, rate);
             }
         }
     }
@@ -6091,6 +6129,13 @@ impl GpuRenderer {
     pub fn retire_gpu_producer(&mut self, id: ProducerId) {
         if self.producers.remove(&id).is_none() {
             self.pending_retire.insert(id);
+        }
+    }
+
+    /// Sets or clears a producer's latched non-redrawing source cadence vote.
+    pub fn set_producer_source_rate(&mut self, id: ProducerId, rate: Option<FrameRate>) {
+        if let Some(producer) = self.producers.get_mut(&id) {
+            producer.set_source_rate(rate);
         }
     }
 
@@ -6862,7 +6907,7 @@ impl GpuRenderer {
                     planes::SystemPlanes::withdraw_animations(system);
                 }
                 if presentation == planes::Presentation::Retry {
-                    redraw.request(sf.id, surface.refresh.clone());
+                    redraw.request(sf.id, surface.refresh);
                 }
             }
             if !surface.present_pending

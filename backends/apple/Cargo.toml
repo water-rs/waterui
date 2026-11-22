@@ -121,6 +121,7 @@ waterui = { workspace = true }
 waterui-accessibility = { workspace = true }
 waterui-interaction = { workspace = true }
 waterui-core = { workspace = true }
+waterui-frame-rate = { workspace = true }
 waterui-capture = { workspace = true }
 waterui-resources = { workspace = true }
 waterui-structural-transition.workspace = true

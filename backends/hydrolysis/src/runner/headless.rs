@@ -1370,6 +1370,26 @@ impl HeadlessRuntime {
         self.runtime.renderer.layout_signature()
     }
 
+    #[cfg(test)]
+    pub(crate) fn effective_frame_rate_vote(&self) -> Option<waterui_frame_rate::FrameRate> {
+        self.runtime.effective_frame_rate_vote()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn renderer_frame_rate_vote(&self) -> Option<waterui_frame_rate::FrameRate> {
+        self.runtime.renderer.frame_rate_vote()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn frame_instant(&self) -> Instant {
+        self.runtime.renderer.frame_instant()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_hidden_for_tests(&mut self, hidden: bool) {
+        self.runtime.set_hidden(hidden);
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
