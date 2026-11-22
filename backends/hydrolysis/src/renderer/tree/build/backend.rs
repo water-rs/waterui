@@ -1040,6 +1040,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
                 accessory: Rc::new(RefCell::new(
                     accessory.map(|child| RetainedSubview::held(child.into_child())),
                 )),
+                present: HydrolysisRenderer::<E>::show_context_menu,
             }),
             content,
             env,

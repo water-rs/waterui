@@ -1,6 +1,6 @@
-#[cfg(feature = "accessibility")]
-use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::chrome::{ChromeContent, LiveChromeParts};
+#[cfg(feature = "accessibility")]
+use crate::renderer::{AccessibilityActionTarget, SemanticCore};
 use crate::renderer::{
     HeldChild, HydroState, HydrolysisRenderer, RenderContext, RetainedSubview, WidgetRenderContext,
 };
@@ -143,14 +143,45 @@ pub fn date_picker_accessibility<E: crate::text::TextEngine, S>(
             ctx,
             node,
             env,
-            (!disabled).then(|| AccessibilityActionTarget::DatePicker {
-                value: date_picker.value().clone(),
-                range: date_picker.range().clone(),
-                ty: date_picker.ty(),
-                origin,
-                // The popup opens in the picker's own environment
-                // (water-rs/hydrolysis#140).
-                env: env.clone(),
+            (!disabled).then(|| {
+                let value = date_picker.value().clone();
+                let range = date_picker.range().clone();
+                let ty = date_picker.ty();
+                let popup_value = value.clone();
+                let popup_range = range.clone();
+                // The popup opens in the picker's own environment layered over
+                // the dispatch's (water-rs/hydrolysis#140).
+                let picker_env = env.clone();
+                AccessibilityActionTarget::DatePicker {
+                    value,
+                    range,
+                    ty,
+                    open_popup: Rc::new(RefCell::new(
+                        move |renderer: &mut SemanticCore<E>, env: &Environment| {
+                            let env = picker_env.layered_on(env);
+                            match origin {
+                                Some(origin) => {
+                                    renderer.show_date_picker(
+                                        popup_value.clone(),
+                                        popup_range.clone(),
+                                        ty,
+                                        origin,
+                                        &env,
+                                    );
+                                }
+                                None => {
+                                    renderer.activate_date_picker(
+                                        popup_value.clone(),
+                                        popup_range.clone(),
+                                        ty,
+                                        &env,
+                                    );
+                                }
+                            }
+                            true
+                        },
+                    )),
+                }
             }),
         ) {
             for key in focus_keys {
