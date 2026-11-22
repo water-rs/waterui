@@ -338,10 +338,10 @@ impl BrowserRunner {
         } else if self.runtime.mode.is_pending()
             || matches!(self.runtime.engine_next, Next::At { .. })
         {
-            match (self_paced, self.next_paced_due) {
-                (Some(_), Some(due)) if Instant::now() + Duration::from_micros(500) < due => false,
-                _ => true,
-            }
+            self_paced.is_none()
+                || self
+                    .next_paced_due
+                    .is_none_or(|due| Instant::now() + Duration::from_micros(500) >= due)
         } else {
             false
         };
