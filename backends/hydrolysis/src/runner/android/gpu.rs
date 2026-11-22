@@ -284,7 +284,7 @@ pub struct AndroidSurface {
     ),
     pending: Option<cherenkov::PendingFrame<cherenkov_gpu::Gpu>>,
     pending_window: Option<crate::platform::PendingAndroidWindow>,
-    executor: crate::runner::android_executor::AndroidMainThreadExecutor,
+    executor: crate::runner::host_executor::AndroidExecutor,
     native_window: Option<WindowLease>,
     /// The Kotlin `SurfaceHolder`'s reported geometry, independent of the
     /// engine surface — valid while between surface generations too.
@@ -343,7 +343,7 @@ impl DisplayRefresh {
 impl AndroidSurface {
     pub fn new(
         gpu: AndroidGpuContext,
-        executor: crate::runner::android_executor::AndroidMainThreadExecutor,
+        executor: crate::runner::host_executor::AndroidExecutor,
     ) -> Self {
         let handles = gpu.inner.gpu.generation();
         Self {

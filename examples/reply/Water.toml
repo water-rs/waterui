@@ -3,6 +3,9 @@ waterui_path = "../.."
 name = "Reply"
 bundle_identifier = "cool.lexo.reply"
 
+[platforms.ios]
+backend = "hydrolysis"
+
 [permissions.internet]
 enable = true
 description = "Avatars and message photos load from the published sample's repository assets"

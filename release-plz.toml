@@ -276,6 +276,10 @@ version_group = "waterui"
 name = "hydrolysis-style"
 version_group = "waterui"
 
+[[package]]
+name = "waterui-apple-menu"
+version_group = "waterui"
+
 # Hydrolysis is in the waterui version group for the reason the CLI is
 # (#2688): it depends on group crates through workspace `^` requirements,
 # so an independent line could ship a patch whose dependency edge crosses a

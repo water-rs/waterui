@@ -115,7 +115,7 @@ pub fn ime_owned_events(events: &[InputEvent], composing: bool) -> Vec<bool> {
     owned
 }
 
-#[cfg(any(target_os = "android", test))]
+#[cfg(any(target_os = "android", hydrolysis_uikit, test))]
 use crate::platform::KeyCode;
 #[cfg(any(target_os = "android", test))]
 use waterui_core::contract_violation;
@@ -141,11 +141,17 @@ pub fn hardware_key(key: &str) -> (KeyCode, keyboard_types::Key) {
             keyboard_types::Key::Named(keyboard_types::NamedKey::Unidentified),
         );
     };
-    let code = match &logical_key {
+    (key_code(&logical_key), logical_key)
+}
+
+/// The legacy [`KeyCode`] a W3C logical key denotes — the identifier the
+/// renderer's key handlers match on.
+#[cfg(any(target_os = "android", hydrolysis_uikit, test))]
+pub fn key_code(logical_key: &keyboard_types::Key) -> KeyCode {
+    match logical_key {
         keyboard_types::Key::Character(character) => KeyCode::Character(character.clone()),
         keyboard_types::Key::Named(named) => KeyCode::Named(named.to_string()),
-    };
-    (code, logical_key)
+    }
 }
 
 #[cfg(test)]

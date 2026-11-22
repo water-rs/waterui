@@ -764,6 +764,7 @@ fn handle_semantic_input_events(window: &mut SemanticWindow, env: &Environment) 
             | InputEvent::ImeDisabled => false,
             InputEvent::Focused(focused) => window.core.handle_window_focused(focused),
             InputEvent::KeyboardCancel => window.core.cancel_keyboard_press(),
+            InputEvent::Paste { text } => window.core.paste_text(&text),
             InputEvent::ModifiersChanged(modifiers) => {
                 // Modifier state is input context, not geometry: keep it so
                 // semantic actions (e.g. a row's Select click) observe the

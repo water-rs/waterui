@@ -15,7 +15,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
-use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -52,10 +52,9 @@ use crate::renderer::FontFamilyResolution;
 use crate::renderer::HydrolysisRenderer;
 #[cfg(any(feature = "text-field", feature = "secure-field"))]
 use crate::renderer::HydrolysisTextContextMenuMode;
-
-use crate::runner::android_executor::{AndroidMainThreadExecutor, UiThreadPoster};
 use crate::runner::android_methods::{HOST_METHODS, HostMethodId};
 use crate::runner::android_metrics::InsetsMetrics;
+use crate::runner::host_executor::{AndroidExecutor, EventFdWake, UiThreadPoster, redraw_wake};
 #[cfg(hydrolysis_inspector)]
 use crate::runner::init_main_thread_executors;
 #[cfg(any(test, hydrolysis_platform_services))]
@@ -63,8 +62,7 @@ use crate::runner::install_platform_services;
 #[cfg(feature = "menu")]
 use crate::runner::menu_bar;
 use crate::runner::window::{
-    FrameDemand, FrameTransaction, RuntimeWindow, advance_runtime, handle_input_events,
-    reports_ui_idle,
+    FrameHost, FrameTransaction, RuntimeWindow, reports_ui_idle, run_frame_transaction,
 };
 #[cfg(hydrolysis_gpu_painter)]
 use crate::runner::window::{WindowFrame, render_window};
@@ -82,7 +80,7 @@ use cherenkov_record::SurfaceId;
 /// A frame reply wakes the host without requesting another render.
 #[cfg(hydrolysis_gpu_painter)]
 struct FrameCompletionWake {
-    poster: UiThreadPoster,
+    poster: UiThreadPoster<EventFdWake>,
     bridge: Arc<HostBridge>,
 }
 
@@ -718,7 +716,7 @@ pub struct AndroidHostWindow {
     /// The cross-thread redraw handle's transport onto the UI thread: a
     /// post rides the executor's shared `eventfd`, coalescing with its
     /// other wakes.
-    ui_poster: UiThreadPoster,
+    ui_poster: UiThreadPoster<EventFdWake>,
     /// A redraw the engine asked for. `on_frame` drains it at the render
     /// boundary — a request raised before the render is demand the render
     /// itself serves — and reads it again at close, where only a request
@@ -1035,47 +1033,28 @@ impl PlatformWindow for AndroidHostWindow {
 }
 
 impl AndroidHostWindow {
-    /// The cross-thread `request_redraw`: a producer's wake (a decoder, an
-    /// external frame, an engine completion) lands on any thread, but
-    /// `FrameScheduler` is UI-thread state. The handle latches the redraw
-    /// the next frame renders and queues one post through the executor's
-    /// shared `eventfd` — the wake the main `ALooper` already watches. On
-    /// the UI thread the post asks for the Choreographer frame through the
-    /// transaction gate: inside a transaction the latch already joins that
-    /// frame, and while occluded the request stays armed for the restore
-    /// frame. Wakes raised before the queued post runs coalesce into it.
+    /// The cross-thread `request_redraw` of the HWUI painter's host redraw
+    /// handle; see [`redraw_wake`], which both painters' handles share.
     #[cfg(hydrolysis_hwui)]
     pub(crate) fn content_redraw_handle(&self) -> crate::renderer::HostRedraw {
         crate::renderer::HostRedraw::new(self.content_redraw_wake())
     }
 
-    /// The wake behind both `HostRedraw` and the GPU surface's
-    /// `RedrawHandle`: one armed flag per request, coalesced until the queued
-    /// post runs.
+    /// The wake behind both painters' `HostRedraw`: on the UI thread it
+    /// posts the Choreographer frame through the transaction gate.
     fn content_redraw_wake(&self) -> impl Fn() + Send + Sync + 'static {
-        let poster = self.ui_poster.clone();
-        let latch = Arc::clone(&self.redraw_pending);
         let bridge = Arc::clone(&self.bridge);
-        let wake = Arc::new(self.frame_transaction.ui_thread_wake(move || {
-            tracing::debug!(
-                target: "waterui::hydrolysis::android",
-                "wake posted: cross-thread redraw requested"
-            );
-            bridge.request_frame();
-        }));
-        let queued = Arc::new(AtomicBool::new(false));
-        move || {
-            latch.store(true, Ordering::Release);
-            if queued.swap(true, Ordering::AcqRel) {
-                return;
-            }
-            let wake = Arc::clone(&wake);
-            let queued = Arc::clone(&queued);
-            poster.post(move || {
-                queued.store(false, Ordering::Release);
-                wake();
-            });
-        }
+        redraw_wake(
+            self.ui_poster.clone(),
+            Arc::clone(&self.redraw_pending),
+            self.frame_transaction.ui_thread_wake(move || {
+                tracing::debug!(
+                    target: "waterui::hydrolysis::android",
+                    "wake posted: cross-thread redraw requested"
+                );
+                bridge.request_frame();
+            }),
+        )
     }
 }
 
@@ -1104,13 +1083,13 @@ impl PaintedWindow for AndroidHostWindow {
 }
 
 /// Owns the `ALooper` registration that drains an
-/// [`AndroidMainThreadExecutor`]'s wake fd. Dropping unregisters the fd, so
+/// [`AndroidExecutor`]'s wake fd. Dropping unregisters the fd, so
 /// the looper can never fire into a dead executor.
 struct ExecutorWake {
     looper: ForeignLooper,
     /// A share of the executor's wake fd, keeping it open for the looper for
     /// exactly as long as the registration lives.
-    fd: Arc<OwnedFd>,
+    fd: Arc<EventFdWake>,
 }
 
 /// The local-reference capacity the wake drain's frame reserves. The
@@ -1123,17 +1102,14 @@ impl ExecutorWake {
     /// looper — must be the UI thread (its main looper exists already). The
     /// executor has no other wake fd, so a wake written while the looper
     /// idles is always observed on the registered fd.
-    fn register(
-        executor: &AndroidMainThreadExecutor,
-        vm: &'static JavaVM,
-    ) -> Result<Self, JniError> {
-        let fd = Arc::clone(executor.wake_fd());
+    fn register(executor: &AndroidExecutor, vm: &'static JavaVM) -> Result<Self, JniError> {
+        let fd = Arc::clone(executor.wake());
         let looper = ThreadLooper::for_thread().ok_or_else(|| {
             JniError("hydrolysis android: no ALooper on the UI thread".to_owned())
         })?;
         let drain = executor.clone();
         looper
-            .add_fd_with_callback(fd.as_fd(), FdEvent::INPUT, move |fd, _events| {
+            .add_fd_with_callback(fd.fd(), FdEvent::INPUT, move |fd, _events| {
                 let mut count: u64 = 0;
                 // SAFETY: fd is the registered eventfd; eventfd_read consumes
                 // every coalesced wake at once.
@@ -1180,7 +1156,162 @@ impl ExecutorWake {
 
 impl Drop for ExecutorWake {
     fn drop(&mut self) {
-        let _ = self.looper.remove_fd(self.fd.as_fd());
+        let _ = self.looper.remove_fd(self.fd.fd());
+    }
+}
+
+impl FrameHost for AndroidSession {
+    type Platform = AndroidHostWindow;
+    type Engine = super::AndroidTextEngine;
+
+    fn parts(
+        &mut self,
+    ) -> (
+        &mut RuntimeWindow<AndroidHostWindow, Self::Engine>,
+        &Environment,
+    ) {
+        (&mut self.runtime, &self.env)
+    }
+
+    fn frame_transaction(&self) -> &FrameTransaction {
+        &self.runtime.platform.frame_transaction
+    }
+
+    fn drain_executor(&self) {
+        self.executor.drain();
+    }
+
+    fn before_input(&mut self) {
+        // The frame reads this frame's focus answer: the pull precedes
+        // `render_window`'s `sync_text_input_state` hold gate.
+        self.platform_view_focus_sync();
+    }
+
+    fn input_ready(&self) -> bool {
+        // The GPU painter's first frame completes asynchronously; the HWUI
+        // painter presents its first frame inside the render.
+        #[cfg(hydrolysis_gpu_painter)]
+        let ready = self.presented_once.get();
+        #[cfg(hydrolysis_hwui)]
+        let ready = true;
+        ready
+    }
+
+    fn poll_submitted_frame(&mut self) {
+        #[cfg(hydrolysis_gpu_painter)]
+        self.poll_gpu_frame();
+    }
+
+    fn frame_in_flight(&self) -> bool {
+        #[cfg(hydrolysis_gpu_painter)]
+        return self.gpu_frame_pending();
+        #[cfg(hydrolysis_hwui)]
+        false
+    }
+
+    fn rendering_ended(&self) -> bool {
+        self.rendering_failed
+    }
+
+    fn should_close(&self) -> bool {
+        Self::should_close(self)
+    }
+
+    fn presentation_attached(&self) -> bool {
+        self.runtime.platform.presentation_attached()
+    }
+
+    #[cfg(hydrolysis_hwui)]
+    fn has_pending_scene_changes(&self) -> bool {
+        // Queued scene changes the Kotlin callback's wake posted nothing
+        // for; no Java frame post runs inside the open transaction.
+        self.hwui.surface.has_pending()
+    }
+
+    fn take_redraw_pending(platform: &AndroidHostWindow) -> bool {
+        platform.take_redraw_pending()
+    }
+
+    fn closing_redraw_pending(&mut self) -> bool {
+        #[cfg(hydrolysis_gpu_painter)]
+        if self.gpu_frame_pending() {
+            return self.runtime.platform.redraw_pending.load(Ordering::Acquire);
+        }
+        self.runtime.platform.take_redraw_pending()
+    }
+
+    fn render(&mut self) -> bool {
+        let executor = self.executor.clone();
+        #[cfg(hydrolysis_gpu_painter)]
+        let presented = {
+            let presented =
+                match render_window(&mut self.runtime, &self.env, &mut || executor.drain()) {
+                    WindowFrame::Failed(error) => {
+                        self.end_rendering(&format!("{:#}", waterui_core::Error::from(error)));
+                        false
+                    }
+                    frame => frame.presented(),
+                };
+            self.runtime.engine_next = crate::renderer::Next::Idle;
+            self.poll_gpu_frame();
+            presented
+        };
+        #[cfg(hydrolysis_hwui)]
+        let presented = match self
+            .hwui
+            .render(&mut self.runtime, &self.env, &mut || executor.drain())
+        {
+            Ok(presented) => presented,
+            Err(error) => {
+                self.end_rendering(&format!(
+                    "hydrolysis HWUI: frame render failed: {}",
+                    error.0
+                ));
+                false
+            }
+        };
+        presented
+    }
+
+    fn after_render(&mut self, presented: bool) {
+        if presented {
+            self.presented_once.set(true);
+        }
+        #[cfg(feature = "navigation")]
+        self.sync_back_navigation_available();
+    }
+
+    fn notify_close(&mut self) {
+        self.runtime.platform.bridge.close_requested();
+    }
+
+    fn publish(&mut self, flushed: bool) {
+        // A lost device is recreated inside the frame
+        // (`PresentationSurface::ensure_live`, water-rs/waterui#2742); a
+        // recreation that exhausts its loss budget, like any other terminal
+        // frame failure, ends the session's rendering there: it is logged
+        // once and no further frame is drawn or asked for.
+        super::accessibility::publish_if_pending(self);
+        super::platform_views::publish_if_pending(self, flushed);
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
+        self.editing_sync();
+
+        // Popup windows mounting mid-frame land on the pending queue: the
+        // host has no second band to put one on, so this is the explicit
+        // unsupported-component error the repository contract wants.
+        let secondary_windows = self.pending_window_queue.borrow().len();
+        if secondary_windows != 0 {
+            // The windows are dropped unmounted so the violation is not
+            // reported again by every later frame.
+            self.pending_window_queue.borrow_mut().clear();
+            contract_violation!(
+                "hydrolysis android: secondary windows are unsupported — the host mounts exactly one window per session; {secondary_windows} popup window(s) dropped"
+            );
+        }
+    }
+
+    fn finished(&mut self, pending: bool) {
+        self.report_idle(pending);
     }
 }
 
@@ -1205,7 +1336,7 @@ pub struct FrameOutcome {
 pub struct AndroidSession {
     pub(super) env: Environment,
     pub(super) runtime: RuntimeWindow<AndroidHostWindow, super::AndroidTextEngine>,
-    executor: AndroidMainThreadExecutor,
+    executor: AndroidExecutor,
     #[cfg(hydrolysis_gpu_painter)]
     completion_waker: std::task::Waker,
     #[cfg(hydrolysis_gpu_painter)]
@@ -1289,7 +1420,7 @@ pub struct AndroidSession {
 pub struct UiThreadServices {
     /// The one executor per UI thread — sessions drain clones of it; the
     /// queue itself is shared.
-    pub(super) executor: AndroidMainThreadExecutor,
+    pub(super) executor: AndroidExecutor,
     /// Keeps the wake fd registered with the main looper for the process's
     /// life; the looper owns no session state.
     #[expect(
@@ -1329,7 +1460,7 @@ impl UiThreadServices {
             )));
         }
         // SAFETY: fd >= 0 checked above.
-        let executor = AndroidMainThreadExecutor::new(unsafe { OwnedFd::from_raw_fd(fd) });
+        let executor = AndroidExecutor::new(EventFdWake::new(unsafe { OwnedFd::from_raw_fd(fd) }));
         let wake = ExecutorWake::register(&executor, vm)?;
         executor_core::try_init_local_executor(
             waterui::task::monitored_local_executor_with_probes(
@@ -1628,7 +1759,7 @@ fn android_host_window(
     metrics: MetricsSnapshot,
     #[cfg(hydrolysis_gpu_painter)] gpu: &AndroidGpuContext,
     bridge: Arc<HostBridge>,
-    executor: &AndroidMainThreadExecutor,
+    executor: &AndroidExecutor,
     platform_view_focus: crate::platform_view::PlatformViewFocus,
 ) -> AndroidHostWindow {
     AndroidHostWindow {
@@ -1935,114 +2066,16 @@ impl AndroidSession {
     }
 
     /// The one coordinated frame transaction — the scheduler's
-    /// Choreographer callback lands here. Executor wakes and input dispatch
-    /// run against the last presented geometry; the pump renders only when
-    /// the engine's `Next` says there is work, and the outcome tells the
-    /// scheduler whether another frame is owed.
+    /// Choreographer callback lands here. The sequence is the shared
+    /// [`run_frame_transaction`]; this host supplies the steps around it.
     ///
     /// `presentation` is when `Choreographer` expects this frame to reach
     /// the display; the engine renders against it. A frame woken by a
     /// deadline timer has none and renders at the instant it starts.
     pub(crate) fn on_frame(&mut self, presentation: Option<Instant>) -> FrameOutcome {
         tracing::debug!(target: "waterui::hydrolysis::android", "frame wake");
-        #[cfg(not(hydrolysis_hwui))]
-        self.runtime.renderer.set_presentation_target(presentation);
-        // Tasks and input callbacks can start animations. Publish this frame's
-        // time before either runs so idle time is not charged to a new track.
-        let now = Instant::now();
-        self.runtime.renderer.set_frame_instant(now);
-        // The transaction is open: a frame request recorded from now on
-        // fires no wake — its scheduling is counted into `wants_next_frame`
-        // below instead of posting into a frame already running.
-        self.runtime.platform.frame_transaction.begin();
-        self.executor.drain();
-        // The frame reads this frame's focus answer: the pull precedes
-        // `render_window`'s `sync_text_input_state` hold gate.
-        self.platform_view_focus_sync();
-        // Startup input must target the first presented tree, not the empty
-        // renderer that exists while its surface and first frame are pending.
-        #[cfg(hydrolysis_gpu_painter)]
-        let input_ready = self.presented_once.get();
-        #[cfg(hydrolysis_hwui)]
-        let input_ready = true;
-        let should_close = (input_ready && handle_input_events(&mut self.runtime, &self.env))
-            || self.should_close();
-        #[cfg(hydrolysis_gpu_painter)]
-        self.poll_gpu_frame();
-        let mut deadline = advance_runtime(&mut self.runtime, &self.env, now);
-        if FrameTransaction::engine_frame_due(&self.runtime.engine_next, now, presentation)
-            && !self.runtime.is_hidden()
-        {
-            self.runtime.platform.request_redraw();
-        }
-        let flushed = self.render_due_frame();
-        // A lost device is recreated inside the frame above
-        // (`PresentationSurface::ensure_live`, water-rs/waterui#2742); a
-        // recreation that exhausts its loss budget, like any other terminal
-        // frame failure, ends the session's rendering there: it is logged
-        // once and no further frame is drawn or asked for.
-        if should_close {
-            self.runtime.platform.bridge.close_requested();
-        }
-        super::accessibility::publish_if_pending(self);
-        super::platform_views::publish_if_pending(self, flushed);
-        #[cfg(any(feature = "text-field", feature = "secure-field"))]
-        self.editing_sync();
-
-        // Popup windows mounting mid-frame land on the pending queue: the
-        // host has no second band to put one on, so this is the explicit
-        // unsupported-component error the repository contract wants.
-        let secondary_windows = self.pending_window_queue.borrow().len();
-        if secondary_windows != 0 {
-            // The windows are dropped unmounted so the violation is not
-            // reported again by every later frame.
-            self.pending_window_queue.borrow_mut().clear();
-            contract_violation!(
-                "hydrolysis android: secondary windows are unsupported — the host mounts exactly one window per session; {secondary_windows} popup window(s) dropped"
-            );
-        }
-
-        // The redraw latch now holds only requests raised after this
-        // frame's render — an animation asking for its next frame; the
-        // requests before it were drained into the render demand above and
-        // served. A hidden session reports no continuation either way: the
-        // armed mode stays armed for the restore frame, but the scheduler
-        // must not keep posting wakes into a parked pump.
-        #[cfg(hydrolysis_gpu_painter)]
-        let frame_pending = self.runtime.platform.surface.frame_pending();
-        #[cfg(hydrolysis_hwui)]
-        let frame_pending = false;
-        let redraw_pending = if frame_pending {
-            self.runtime.platform.redraw_pending.load(Ordering::Acquire)
-        } else {
-            self.runtime.platform.take_redraw_pending()
-        };
-        // The signals' pending count covers a frame request raised inside
-        // this transaction after the pump drained the flags: its wake was
-        // suppressed by the gate, so this is its only path to the frame it
-        // needs. One raised while hidden stays armed for the restore frame.
-        // A session whose rendering failed for good draws nothing again, so
-        // it owes no frame whatever work is armed.
-        let wants_next_frame = self.runtime.platform.frame_transaction.finish(
-            self.runtime.platform.is_occluded(),
-            FrameDemand {
-                mode: self.runtime.mode,
-                redraw_pending,
-                signals_pending: self.runtime.renderer.has_pending_frame_request(),
-            },
-        ) && !self.rendering_failed
-            && !frame_pending;
-        self.report_idle(wants_next_frame || frame_pending);
-        // A deadline already elapsed wakes the frame once: its tick then
-        // runs at or after the deadline, which is when the recognizer that
-        // armed it clears itself.
-        if !self.runtime.is_hidden()
-            && !frame_pending
-            && let crate::renderer::Next::At { time, .. } = self.runtime.engine_next
-        {
-            deadline = Some(deadline.map_or(time, |other| other.min(time)));
-        }
-        let deadline_in_nanos = deadline.map(|at| {
+        let outcome = run_frame_transaction(self, presentation);
+        let deadline_in_nanos = outcome.deadline.map(|at| {
             i64::try_from(
                 at.checked_duration_since(Instant::now())
                     .unwrap_or_default()
@@ -2053,81 +2086,22 @@ impl AndroidSession {
         self.frame_deadline_in_nanos = deadline_in_nanos;
         tracing::debug!(
             target: "waterui::hydrolysis::android",
-            wants_next_frame,
+            wants_next_frame = outcome.wants_next_frame,
             deadline_in_nanos,
-            should_close,
+            should_close = outcome.should_close,
             "frame outcome"
         );
         FrameOutcome {
-            wants_next_frame,
+            wants_next_frame: outcome.wants_next_frame,
             deadline_in_nanos,
-            should_close,
+            should_close: outcome.should_close,
         }
     }
 
-    /// The frame's render leg: a redraw request raised before this frame
-    /// renders is served by that render — it drains into the render demand
-    /// here, so only a request raised from this point on, an animation
-    /// asking for its next frame, still counts toward the transaction's
-    /// continuation. Answers whether the pump flushed content.
-    fn render_due_frame(&mut self) -> bool {
-        if self.rendering_failed {
-            return false;
-        }
-        #[cfg(hydrolysis_gpu_painter)]
-        if self.runtime.platform.surface.frame_pending() {
-            return false;
-        }
-        let surface_attached = self.runtime.platform.presentation_attached();
-        #[cfg(hydrolysis_hwui)]
-        if self.hwui.surface.has_pending() {
-            // Queued scene changes the Kotlin callback's wake posted nothing
-            // for — the transaction counts them into its continuation; no
-            // Java frame post runs inside the open transaction.
-            self.runtime.platform.request_redraw();
-        }
-        if !FrameTransaction::take_render_request(
-            &mut self.runtime,
-            surface_attached,
-            AndroidHostWindow::take_redraw_pending,
-        ) {
-            return false;
-        }
-        let executor = self.executor.clone();
-        #[cfg(hydrolysis_gpu_painter)]
-        let presented = match render_window(&mut self.runtime, &self.env, &mut || executor.drain())
-        {
-            WindowFrame::Failed(error) => {
-                self.end_rendering(&format!("{:#}", waterui_core::Error::from(error)));
-                false
-            }
-            frame => frame.presented(),
-        };
-        #[cfg(hydrolysis_gpu_painter)]
-        {
-            self.runtime.engine_next = crate::renderer::Next::Idle;
-            self.poll_gpu_frame();
-        }
-        #[cfg(hydrolysis_hwui)]
-        let presented = match self
-            .hwui
-            .render(&mut self.runtime, &self.env, &mut || executor.drain())
-        {
-            Ok(presented) => presented,
-            Err(error) => {
-                self.end_rendering(&format!(
-                    "hydrolysis HWUI: frame render failed: {}",
-                    error.0
-                ));
-                false
-            }
-        };
-        if presented {
-            self.presented_once.set(true);
-        }
-        #[cfg(feature = "navigation")]
-        self.sync_back_navigation_available();
-        true
+    /// Whether a submitted GPU frame's completion is still outstanding.
+    #[cfg(hydrolysis_gpu_painter)]
+    const fn gpu_frame_pending(&self) -> bool {
+        self.runtime.platform.surface.frame_pending()
     }
 
     fn report_idle(&self, pending: bool) {

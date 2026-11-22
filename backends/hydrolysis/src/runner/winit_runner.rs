@@ -43,7 +43,7 @@ use winit::window::{Window as NativeWindow, WindowId};
 #[cfg(any(feature = "menu", feature = "color-picker"))]
 use super::window::runtime_window_origin;
 use super::window::{RootWindow, RootWindows};
-use crate::platform::{PlatformWindow, WinitGpuContext, WinitWindow};
+use crate::platform::{EngineGpuContext, PlatformWindow, WinitWindow};
 #[cfg(any(feature = "text-field", feature = "secure-field"))]
 use crate::renderer::HydrolysisTextContextMenuMode;
 #[cfg(any(feature = "menu", feature = "color-picker"))]
@@ -978,7 +978,7 @@ struct WinitRunner {
     /// Transient popup windows (mounted through `PopupWindowManager`): a
     /// pointer press that lands outside every app window dismisses them.
     popup_window_ids: std::collections::HashSet<WindowId>,
-    gpu_context: Option<WinitGpuContext>,
+    gpu_context: Option<EngineGpuContext>,
     accesskit_adapters: HashMap<WindowId, AccessKitAdapter>,
     last_accessibility_updates: HashMap<WindowId, accesskit::TreeUpdate>,
     /// The executor is installed the first time the active event loop is

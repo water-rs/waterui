@@ -96,11 +96,6 @@ icu_locale = { version = "2.3", default-features = false, features = ["compiled_
 # Blocks on the wgpu adapter and device requests of the GPU painter.
 pollster = { workspace = true, optional = true }
 
-# The winit runner and its companion crates: desktop only. Android's
-# Activity belongs to the Kotlin host, and winit's `android-activity` can
-# only build once an application picks an activity backend — nothing in
-# this library may — so the dependency edge does not exist for the Android
-# target at all. The `winit` feature still exists there and means nothing.
 # Hosted content (Apple, Android and the web, the `hydrolysis_hosted` targets)
 # follows the occlusion rects through a watcher set, as does the web
 # platform's surface; no other target compiles either.
@@ -114,12 +109,13 @@ waterui-browser-cef = { workspace = true, optional = true }
 [target.'cfg(any(target_vendor = "apple", target_os = "android", target_arch = "wasm32"))'.dependencies]
 waterui-watcher-set = { workspace = true, optional = true }
 
-[target.'cfg(not(target_os = "android"))'.dependencies]
-# Non-Android builds link `waterui-backend-core` only when a runtime painter
-# (`gpu` or `cpu`) is enabled; Android links it unconditionally so plugin crates
-# using `AndroidContent` / `AndroidView` can depend on `hydrolysis` with
-# `default-features = false`.
-waterui-backend-core = { workspace = true, default-features = false, optional = true }
+# The winit runner and its companion crates: desktop only. Android's
+# Activity belongs to the Kotlin host, and winit's `android-activity` can
+# only build once an application picks an activity backend — nothing in
+# this library may — and on iOS the `cocoa-ui` UIKit host owns the
+# application, so the dependency edge does not exist for either target at
+# all. The `winit` feature still exists there and means nothing.
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 winit = { version = "0.30", optional = true }
 ui-events-winit = { workspace = true, optional = true }
 accesskit_winit = { version = "0.34.1", optional = true }
@@ -127,6 +123,30 @@ accesskit_winit = { version = "0.34.1", optional = true }
 # only the winit runner reads one.
 png = { version = "0.18", optional = true }
 waterui-assets = { workspace = true, optional = true }
+
+# The iOS host, under the GPU painter it presents through: `cocoa-ui` owns
+# `UIApplicationMain`, the scene delegate, the input view, the frame clock
+# and the main queue; Hydrolysis implements the window around them.
+# `cocoa-ui` re-exports the objc2 UIKit stack it was built on, so none of
+# those crates is named here. `accesskit_ios` adapts the accessibility tree
+# onto the input view and is the iOS leg of the `accessibility` feature.
+[target.'cfg(target_os = "ios")'.dependencies]
+cocoa-ui = { path = "../apple/cocoa-ui", version = "0.1.0", default-features = false, features = ["tracing"], optional = true }
+# The WaterUI menu to native menu projection, shared with the Apple backend: the
+# iPadOS main menu and its `UIKeyCommand`s are built through it (the `menu`
+# feature).
+waterui-apple-menu = { workspace = true, optional = true }
+accesskit_ios = { version = "0.2.2", default-features = false, optional = true }
+# Routes a panic's message and location through `tracing`, so it reaches the
+# unified log on a device whose stderr nothing reads.
+tracing-panic = { workspace = true, optional = true }
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+# Non-Android builds link `waterui-backend-core` only when a runtime painter
+# (`gpu` or `cpu`) is enabled; Android links it unconditionally so plugin crates
+# using `AndroidContent` / `AndroidView` can depend on `hydrolysis` with
+# `default-features = false`.
+waterui-backend-core = { workspace = true, default-features = false, optional = true }
 
 # The GPU video player realizing `Video` off the web (the `video-gpu`
 # feature); the web realizes it with the page's `<video>` element.
@@ -473,7 +493,7 @@ harness = false
 required-features = ["webview-system", "winit"]
 
 [features]
-menu = ["hydrolysis-style/menu", "waterui/menu"]
+menu = ["hydrolysis-style/menu", "waterui/menu", "dep:waterui-apple-menu"]
 calendar = ["hydrolysis-style/calendar", "waterui/calendar"]
 color-picker = ["hydrolysis-style/color-picker", "waterui/color-picker", "dep:waterui-form"]
 date-picker = ["calendar", "stepper", "menu", "hydrolysis-style/date-picker", "waterui/date-picker", "dep:waterui-form"]
@@ -491,7 +511,7 @@ table = ["list", "hydrolysis-style/table", "waterui/table"]
 navigation = ["text-field", "hydrolysis-style/navigation", "waterui/navigation"]
 all-controls = ["menu", "calendar", "color-picker", "date-picker", "file-picker", "multi-date-picker", "picker", "secure-field", "slider", "stepper", "text-field", "toggle", "validation", "list", "table", "navigation"]
 default = ["gpu", "all-controls"]
-accessibility = ["dep:accesskit", "dep:serde_json"]
+accessibility = ["dep:accesskit", "dep:accesskit_ios", "dep:serde_json"]
 testing = []
 # Per-frame CPU/GPU stage timing: wgpu timestamp queries around the
 # layer-content and compositor submits plus the CPU stage split the window
@@ -523,6 +543,8 @@ gpu = [
     "waterui-backend-core/overlay",
     "waterui-backend-core/log",
     "dep:waterui-watcher-set",
+    "dep:cocoa-ui",
+    "dep:tracing-panic",
     "waterui/gpu",
     "waterui-graphics/gpu",
     "dep:parley",

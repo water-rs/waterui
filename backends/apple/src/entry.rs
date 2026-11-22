@@ -243,6 +243,8 @@ mod imp {
     struct Launch<F> {
         app: Option<F>,
         env: *mut Environment,
+        #[cfg(waterui_feature = "menu")]
+        declared: waterui_apple_menu::ios::Declared<crate::contract::Held>,
         scenes: crate::scene_registry::Registration<crate::windows::Scenes>,
         _theme: Rc<ThemeSignals>,
         _locale: Box<dyn Any>,
@@ -288,7 +290,13 @@ mod imp {
         if M::HAS_DECLARED
             && let Some(menu_bar) = parts.menu_bar.declared()
         {
-            core::mem::forget(crate::menus::install_declared(mtm, menu_bar, &app_env));
+            core::mem::forget(waterui_apple_menu::ios::install_declared(
+                mtm,
+                menu_bar,
+                &app_env,
+                &launch.declared,
+                Rc::new(crate::menus::resolve_menu_icon),
+            ));
         }
         crate::windows::declare(&launch.scenes.state, initial, &app_env, 0, mtm);
         core::mem::forget(launch);
@@ -309,6 +317,12 @@ mod imp {
         let background = Color::new(Background).resolve(env);
         let locale = crate::locale::install(env, mtm);
 
+        // Filled by `prepared`: `build_menus` can fire before `app(env)`
+        // runs, so the declared menus sit behind this slot.
+        #[cfg(waterui_feature = "menu")]
+        let declared = waterui_apple_menu::ios::declared();
+        #[cfg(waterui_feature = "menu")]
+        let build_menus = waterui_apple_menu::ios::build_handler(Rc::clone(&declared));
         let scenes = env
             .get::<crate::scene_registry::SceneRegistry<crate::windows::Scenes>>()
             .expect("application owns scene routing")
@@ -317,6 +331,8 @@ mod imp {
         let launch = Box::new(Launch {
             app: Some(app),
             env: core::ptr::from_mut(env),
+            #[cfg(waterui_feature = "menu")]
+            declared,
             scenes,
             _theme: Rc::clone(&theme),
             _locale: Box::new(locale),
@@ -332,6 +348,8 @@ mod imp {
         // Releases the scene's host, leaf and keep-alive, as the embedding
         // path's `waterui_apple_scene_disconnect` does.
         .scene_did_disconnect(move |id| disconnected.disconnect(id));
+        #[cfg(waterui_feature = "menu")]
+        let handlers = handlers.build_menus(build_menus);
         let handlers = handlers.did_finish_launching(move |_| {
             #[cfg(feature = "gpu_surface")]
             let env_ptr = launch.env;

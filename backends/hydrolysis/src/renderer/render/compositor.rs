@@ -257,7 +257,7 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
     }
     }
 
-    /// Commits the window's pending node programs through the macOS winit
+    /// Commits the window's pending node programs through the engine
     /// window's mount and renders the engine frame (§A), which the engine
     /// presents through the window's `WindowTarget`. The engine window
     /// lives in `engine_target`'s slot per device-creation chain and
@@ -268,7 +268,7 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
     ///
     /// [`FrameError`] when the engine cannot create the window's surface or
     /// the frame fails to render.
-    #[cfg(all(target_os = "macos", hydrolysis_winit))]
+    #[cfg(hydrolysis_apple_engine_window)]
     pub(crate) fn render_window_frame(
         &mut self,
         target: &FrameRenderTarget<'_>,
@@ -290,7 +290,7 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
             *window_slot = None;
             let surface = crate::engine::WindowCherenkovSurface::new(
                 Rc::clone(&target.engine.engine),
-                Arc::clone(native_window),
+                native_window.window_target((target.width, target.height)),
                 (target.width, target.height),
                 crate::platform::hydrolysis_output_request(transparent),
                 self.host_wake(),
@@ -425,7 +425,7 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
     }
 
     /// The common completion path for engine-presented native windows.
-    #[cfg(all(target_os = "macos", hydrolysis_winit))]
+    #[cfg(hydrolysis_apple_engine_window)]
     fn render_presented_window<S: crate::engine::EngineSurface>(
         &mut self,
         window: &mut CherenkovWindow<S, crate::text::ParleyEngine>,
