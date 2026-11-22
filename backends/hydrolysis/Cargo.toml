@@ -230,7 +230,6 @@ objc2-web-kit = { version = "0.3.2", optional = true, default-features = false, 
     "WKWebViewConfiguration",
     "WKWebsiteDataStore",
 ] }
-serde_json = { workspace = true, optional = true }
 
 # The native app menu-bar surface (`App::menu_bar`): waterkit-menu builds the
 # real NSMenu on NSApp.mainMenu (macOS) and a Win32 HMENU on the window's HWND
@@ -327,11 +326,11 @@ libc = "0.2"
 raw-window-handle = { version = "0.6", optional = true }
 android_logger = { version = "0.15", optional = true }
 waterui-assets-core = { workspace = true, optional = true }
-tracing-log = "0.2"
+tracing-log = { version = "0.2", optional = true }
 # The accessibility tree publish and the platform-view placement set cross JNI
 # as JSON.
 serde = { workspace = true, features = ["derive"] }
-serde_json.workspace = true
+serde_json = { workspace = true, optional = true }
 # The published payload's `contentTypes` map serializes `ContentType`
 # (camelCase names) — the provider maps each onto `HintConstants`.
 waterui-controls = { workspace = true, features = ["serde"] }
@@ -487,7 +486,7 @@ table = ["list", "hydrolysis-style/table", "waterui/table"]
 navigation = ["text-field", "hydrolysis-style/navigation", "waterui/navigation"]
 all-controls = ["menu", "calendar", "color-picker", "date-picker", "file-picker", "multi-date-picker", "picker", "secure-field", "slider", "stepper", "text-field", "toggle", "validation", "list", "table", "navigation"]
 default = ["gpu", "all-controls"]
-accessibility = ["dep:accesskit"]
+accessibility = ["dep:accesskit", "dep:serde_json"]
 testing = []
 # Per-frame CPU/GPU stage timing: wgpu timestamp queries around the
 # layer-content and compositor submits plus the CPU stage split the window
@@ -507,6 +506,8 @@ gpu = [
     "dep:lru",
     "dep:ndk-context",
     "dep:peniko",
+    "dep:serde_json",
+    "dep:tracing-log",
     "dep:tracing-subscriber",
     "dep:unicode-segmentation",
     "dep:wgpu",
@@ -570,6 +571,8 @@ hwui = [
     "dep:ndk-context",
     "dep:peniko",
     "dep:read-fonts",
+    "dep:serde_json",
+    "dep:tracing-log",
     "dep:tracing-subscriber",
     "dep:waterkit-clipboard",
     "dep:waterui-backend-core",
