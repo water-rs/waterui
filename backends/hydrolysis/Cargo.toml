@@ -23,7 +23,6 @@ waterui-shape.workspace = true
 waterui-layout.workspace = true
 waterui-controls.workspace = true
 waterui-form = { workspace = true, optional = true }
-waterui-backend-core = { workspace = true, optional = true, features = ["gestures", "overlay", "log"] }
 waterkit-clipboard = { workspace = true, optional = true }
 waterui-locale.workspace = true
 # `std` for `Url::from_file_path`, the OS file-drop path.
@@ -116,6 +115,11 @@ waterui-browser-cef = { workspace = true, optional = true }
 waterui-watcher-set = { workspace = true, optional = true }
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
+# Non-Android builds link `waterui-backend-core` only when a runtime painter
+# (`gpu` or `cpu`) is enabled; Android links it unconditionally so plugin crates
+# using `AndroidContent` / `AndroidView` can depend on `hydrolysis` with
+# `default-features = false`.
+waterui-backend-core = { workspace = true, default-features = false, optional = true }
 winit = { version = "0.30", optional = true }
 ui-events-winit = { workspace = true, optional = true }
 accesskit_winit = { version = "0.34.1", optional = true }
@@ -311,7 +315,8 @@ windows = { workspace = true, features = [
 # carries the eventfd the main-Looper executor wakes on, and `android_logger`
 # + `tracing-log` route `tracing` into logcat.
 [target.'cfg(target_os = "android")'.dependencies]
-jni = { workspace = true, optional = true }
+waterui-backend-core = { workspace = true, default-features = false }
+jni.workspace = true
 ndk = { version = "0.9.0", features = ["nativewindow", "api-level-33"] }
 # The application `Context` for service crates that resolve it through
 # `ndk_context::android_context` — waterkit-clipboard's Android backend
@@ -502,7 +507,6 @@ gpu = [
     "dep:android_logger",
     "dep:cherenkov",
     "dep:cherenkov-gpu",
-    "dep:jni",
     "dep:lru",
     "dep:ndk-context",
     "dep:peniko",
@@ -515,7 +519,9 @@ gpu = [
     "dep:raw-window-handle",
     "dep:waterkit-clipboard",
     "dep:waterui-assets-core",
-    "dep:waterui-backend-core",
+    "waterui-backend-core/gestures",
+    "waterui-backend-core/overlay",
+    "waterui-backend-core/log",
     "dep:waterui-watcher-set",
     "waterui/gpu",
     "waterui-graphics/gpu",
@@ -537,7 +543,6 @@ gpu = [
 cpu = [
     "dep:cherenkov",
     "dep:cherenkov-cpu",
-    "dep:jni",
     "dep:lru",
     "dep:ndk-context",
     "dep:peniko",
@@ -546,7 +551,9 @@ cpu = [
     "cherenkov-cpu/shaders",
     "dep:waterkit-clipboard",
     "dep:waterui-assets-core",
-    "dep:waterui-backend-core",
+    "waterui-backend-core/gestures",
+    "waterui-backend-core/overlay",
+    "waterui-backend-core/log",
     "waterui-graphics/cpu",
     "dep:parley",
     "dep:skrifa",
@@ -566,7 +573,6 @@ inspector-signals = ["inspector", "waterui/inspector-signals"]
 hwui = [
     "dep:askama",
     "dep:android_logger",
-    "dep:jni",
     "dep:lru",
     "dep:ndk-context",
     "dep:peniko",
@@ -575,7 +581,9 @@ hwui = [
     "dep:tracing-log",
     "dep:tracing-subscriber",
     "dep:waterkit-clipboard",
-    "dep:waterui-backend-core",
+    "waterui-backend-core/gestures",
+    "waterui-backend-core/overlay",
+    "waterui-backend-core/log",
 ]
 # The GPU video player as the realization of `Video` and `VideoPlayer` off the
 # web, with its Android decoder plane

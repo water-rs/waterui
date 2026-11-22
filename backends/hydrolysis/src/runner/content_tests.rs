@@ -11,7 +11,7 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use waterui::ContentLedger;
-use waterui::view_renderer::{OffscreenRenderer as _, RenderError, RenderRequest, RenderResult};
+use waterui::view_renderer::{RenderError, RenderRequest, RenderResult, ViewRenderer as _};
 use waterui_core::{AnyView, Environment, View, layout::Size};
 
 use super::executor::HeadlessMainThreadExecutor;

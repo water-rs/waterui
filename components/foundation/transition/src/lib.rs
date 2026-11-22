@@ -857,21 +857,6 @@ impl TransitionState {
         self.transition.0.captures_content_erased(self.phase)
     }
 
-    /// Builds the effect once, retaining its progress signal until completion.
-    ///
-    /// A backend may pass an empty content view when it already owns the captured
-    /// realization, then give the resulting `FilteredView` that GPU texture.
-    pub fn body<V: View>(&self, content: V, frame: Computed<TransitionFrame>) -> AnyView {
-        self.transition.0.body_erased(
-            AnyView::new(content),
-            TransitionContext {
-                phase: self.phase,
-                progress: self.progress.clone().computed(),
-                frame,
-            },
-        )
-    }
-
     /// Dispatches the effect over `()` into `visitor` when this transition
     /// captures content, without erasing the body through `AnyView`.
     #[must_use]

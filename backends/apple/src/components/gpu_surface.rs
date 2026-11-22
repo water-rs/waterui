@@ -3174,7 +3174,7 @@ pub mod native_test {
     /// A `SceneView` carrying [`FixtureContent`].
     ///
     /// The same GPU child the fixture mounts, as a value a
-    /// `OffscreenRenderer::render_to_rgba` trial passes straight in, so the leaf mounts
+    /// `ViewRenderer::render_to_rgba` trial passes straight in, so the leaf mounts
     /// through the production `Native<SceneView>` path itself.
     #[must_use]
     pub fn fixture_scene_view() -> SceneView {
