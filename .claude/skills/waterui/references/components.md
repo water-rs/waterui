@@ -856,7 +856,7 @@ Attach `.snackbar_host()` to a root view to install a plain `SnackbarManager` (a
 `CodeCopyFeedback` when `flow-markdown` is enabled) into its subtree; it is a `#[state]`-marked
 framework type, so descendant handlers take it bare. For snackbars with icons of view type `V`,
 attach `.snackbar_host_with_icons::<V>()` (or construct `SnackbarManager::with_icons::<V>()`
-manually with `.overlay(overlay).state(&snackbars)`) and extract `m: SnackbarManager<SnackbarIcon<V>>`.
+manually with `.overlay(overlay).state(&snackbars)`) and extract `m: SnackbarManager<V>`.
 
 ```rust
 use core::time::Duration;
@@ -874,7 +874,7 @@ button("Save").action(|m: SnackbarManager| {
 ```
 
 Placements are independent stacks: a top snackbar never evicts a bottom one, and multiple
-at one placement stack and reflow. `.icon(view)` attaches a typed leading icon (`Snackbar<SnackbarIcon<V>>`),
+at one placement stack and reflow. `.icon(view)` attaches a typed leading icon (`Snackbar<V>`),
 `.state(&v)` injects state for the `.action(..)` and
 `.on_dismiss(..)` handlers; `.on_dismiss(|reason: SnackbarDismissReason| ..)` runs once per
 presentation with why it went (`Action`, `Timeout`, `Closed`, `Replaced`, `Programmatic`),

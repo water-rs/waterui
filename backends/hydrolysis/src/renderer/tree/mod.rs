@@ -200,6 +200,7 @@ pub enum RenderNode<E: crate::text::TextEngine> {
     /// A self-drawn scene (`Canvas`/SVG/chart): owns its `SceneContent` directly
     /// rather than through a frame-ordered effect slot, so a `Dynamic` swap to a
     /// different scene renders the new content instead of the previous scene's.
+    #[cfg(hydrolysis_scene_view)]
     SceneView(Box<SceneViewNode<E>>),
     /// An embedded `GpuView` leaf owning its `GpuContentRuntime`
     /// directly (no cursor-bound slot), composited through an `Rc`-carrying layer.
@@ -213,6 +214,7 @@ pub enum RenderNode<E: crate::text::TextEngine> {
     /// A `FilteredView` wrapper owning its `FilteredRuntime` (the engine
     /// `Filter`) and recursing into its child node — the child mounts inside
     /// the filtered group so the filter covers the whole subtree.
+    #[cfg(waterui_feature = "effects")]
     Filtered(Box<FilteredNode<E>>),
     /// A reactive `Dynamic` host: holds the live `Dynamic` and rebuilds only its
     /// own child subtree when the content changes (incremental patch + relayout).
@@ -263,11 +265,13 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Self::Scroll(node) => &node.core,
             Self::Collection(node) => &node.core,
             Self::LazyStack(node) => &node.core,
+            #[cfg(hydrolysis_scene_view)]
             Self::SceneView(node) => &node.core,
             #[cfg(hydrolysis_gpu)]
             Self::GpuContent(node) => &node.core,
             #[cfg(hydrolysis_gpu)]
             Self::ExternalFrame(node) => &node.core,
+            #[cfg(waterui_feature = "effects")]
             Self::Filtered(node) => &node.core,
             Self::Dynamic(node) => &node.core,
             Self::Wrapper(node) => &node.core,
@@ -285,7 +289,9 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     fn for_each_child(&self, f: &mut impl FnMut(&NodeCore<E>, &Self)) {
         let own = self.core();
         match self {
-            Self::Color(_) | Self::Text(_) | Self::Widget(_) | Self::SceneView(_) => {}
+            Self::Color(_) | Self::Text(_) | Self::Widget(_) => {}
+            #[cfg(hydrolysis_scene_view)]
+            Self::SceneView(_) => {}
             #[cfg(hydrolysis_gpu)]
             Self::GpuContent(_) | Self::ExternalFrame(_) => {}
             Self::Container(node) => {
@@ -320,6 +326,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Self::Retain(node) => f(own, &node.child),
             Self::Env(node) => f(own, &node.child),
             Self::Scroll(node) => f(own, &node.child),
+            #[cfg(waterui_feature = "effects")]
             Self::Filtered(node) => f(own, &node.child),
             Self::Dynamic(node) => {
                 let child = node.child.borrow();
@@ -383,6 +390,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Self::Text(node) => Some(node.accessibility_identity.clone()),
             Self::Container(node) => Some(node.accessibility_identity.clone()),
             Self::Scroll(node) => Some(node.accessibility_identity.clone()),
+            #[cfg(hydrolysis_scene_view)]
             Self::SceneView(node) => Some(node.accessibility_identity.clone()),
             #[cfg(hydrolysis_gpu)]
             Self::GpuContent(node) => Some(node.accessibility_identity.clone()),
@@ -396,6 +404,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Self::Scale(node) => node.child.accessibility_identity(),
             Self::Rotation(node) => node.child.accessibility_identity(),
             Self::Offset(node) => node.child.accessibility_identity(),
+            #[cfg(waterui_feature = "effects")]
             Self::Filtered(node) => node.child.accessibility_identity(),
             Self::Dynamic(node) => node.child.borrow().accessibility_identity(),
             Self::Fill(node) => node.child.accessibility_identity(),

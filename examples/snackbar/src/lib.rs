@@ -3,14 +3,13 @@
 use core::time::Duration;
 use mdi::check_circle;
 use mdi::delete;
-use waterui::app::{App, Windows};
 use waterui::log::info;
 use waterui::prelude::*;
 use waterui::preview;
-use waterui::snackbar::{Snackbar, SnackbarIcon, SnackbarManager, SnackbarPosition};
+use waterui::snackbar::{Snackbar, SnackbarManager, SnackbarPosition};
 use waterui_icons_material_icon as mdi;
 
-type IconSnackbarManager = SnackbarManager<SnackbarIcon<mdi::Svg>>;
+type IconSnackbarManager = SnackbarManager<mdi::Svg>;
 
 /// The snackbar example page, with buttons that show each snackbar variant.
 #[preview]

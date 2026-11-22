@@ -46,6 +46,13 @@ impl<V: View> FullScreenOverlayManager<V> {
         (Self { handler }, dynamic)
     }
 
+    /// Builds a view subtree paired with a typed overlay layer, inferring `V`
+    /// from how `build` uses the handed manager and installing it for descendants.
+    pub fn host<R: View>(build: impl FnOnce(Self) -> R) -> impl View {
+        let (manager, overlay) = Self::new();
+        build(manager.clone()).overlay(overlay).state(&manager)
+    }
+
     /// Shows an overlay view.
     ///
     /// The view will be displayed above all other content.
@@ -92,9 +99,20 @@ impl<V, O> FullScreenOverlayHost<V, O> {
 impl<V: View, O: View> View for FullScreenOverlayHost<V, O> {
     fn body(self, _env: &Environment) -> impl View {
         let (manager, overlay) = FullScreenOverlayManager::<O>::new();
-        self.content
-            .overlay(overlay)
-            .with(manager.clone())
-            .state(&manager)
+        self.content.overlay(overlay).state(&manager)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inferred_host_builds_without_turbofish() {
+        let view = FullScreenOverlayManager::host(|overlay| {
+            overlay.show("Modal");
+            "Content"
+        });
+        let _ = view.body(&Environment::new());
     }
 }

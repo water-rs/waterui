@@ -11,7 +11,7 @@
 
 use crate::fullscreen::FullScreenOverlayHost;
 #[cfg(feature = "snackbar")]
-use crate::snackbar::{SnackbarHost, SnackbarIcon};
+use crate::snackbar::SnackbarHost;
 use executor_core::spawn_local;
 use nami::{Binding, Computed, Signal, SignalExt as _, signal::IntoComputed};
 use waterui_core::IntoSignalF32;
@@ -1354,12 +1354,9 @@ pub trait ViewExt: View + Sized {
     /// snackbars with leading icon views of type `I`, alongside plain
     /// icon-less snackbars.
     ///
-    /// Descendant handlers can extract
-    /// `SnackbarManager<SnackbarIcon<I>>` bare.
+    /// Descendant handlers can extract `SnackbarManager<I>` bare.
     #[cfg(feature = "snackbar")]
-    fn snackbar_host_with_icons<I: View + Clone + 'static>(
-        self,
-    ) -> SnackbarHost<Self, SnackbarIcon<I>> {
+    fn snackbar_host_with_icons<I: View + Clone + 'static>(self) -> SnackbarHost<Self, I> {
         SnackbarHost::new(self)
     }
 

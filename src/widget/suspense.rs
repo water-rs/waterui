@@ -172,16 +172,6 @@ impl<V: SuspendedView> Suspense<V, Progress<Text, Text>> {
 }
 
 impl<V, Loading> Suspense<V, Loading> {
-    /// Creates a new `Suspense` component with an explicit typed `loading` view.
-    #[must_use]
-    pub const fn with_loading(content: V, loading: Loading) -> Self
-    where
-        V: SuspendedView,
-        Loading: View,
-    {
-        Self { content, loading }
-    }
-
     /// Sets a custom loading view to display while content is loading.
     ///
     /// # Arguments

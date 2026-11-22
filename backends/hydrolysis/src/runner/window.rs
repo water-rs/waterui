@@ -2167,11 +2167,11 @@ crate::engine::cfg_async_fn! {
     let stages: crate::renderer::FrameStageTimes;
     // What the inspector is told about this frame, captured before the pump:
     // the scheduled mode is cleared while the scene is pumped, and the elapsed
-    // total has to start before any of it runs. A browser page hosts no
-    // inspector endpoint, so neither is measured there.
-    #[cfg(not(target_arch = "wasm32"))]
+    // total has to start before any of it runs. Neither is measured without
+    // the inspector endpoint.
+    #[cfg(hydrolysis_inspector)]
     let frame_mode = runtime.mode;
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(hydrolysis_inspector)]
     let frame_pump_started_at = Instant::now();
     {
         let diagnostics_enabled = runtime.render_diagnostics.enabled();
@@ -2371,7 +2371,7 @@ crate::engine::cfg_async_fn! {
             runtime.platform.request_redraw();
         }
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(hydrolysis_inspector)]
     {
         super::inspector::publish_frame(
             env,

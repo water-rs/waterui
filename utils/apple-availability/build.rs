@@ -1,4 +1,4 @@
-//! Turns the Apple deployment target into one `waterui_apple_os_met` cfg per
+//! Turns the Apple deployment target into one `apple_availability_met` cfg per
 //! gated version the target reaches.
 
 use std::process::Command;
@@ -31,7 +31,7 @@ fn main() {
         .map(|(_, _, cfg)| format!("\"{cfg}\""))
         .collect::<Vec<_>>()
         .join(", ");
-    println!("cargo::rustc-check-cfg=cfg(waterui_apple_os_met, values({cfg_values}))");
+    println!("cargo::rustc-check-cfg=cfg(apple_availability_met, values({cfg_values}))");
     for (major, minor, cfg) in VERSIONS {
         assert_eq!(
             *cfg,
@@ -46,7 +46,7 @@ fn main() {
     let target = (vendor == "apple").then(deployment_target);
     for (major, minor, cfg) in VERSIONS {
         if target.is_none_or(|target| target >= (*major, *minor)) {
-            println!("cargo::rustc-cfg=waterui_apple_os_met=\"{cfg}\"");
+            println!("cargo::rustc-cfg=apple_availability_met=\"{cfg}\"");
         }
     }
 }

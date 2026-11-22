@@ -4241,7 +4241,7 @@ mod gpu_surface {
         );
     }
 
-    /// `OffscreenRenderer::render_to_rgba` over a GPU child on a sealed-failure
+    /// `ViewRenderer::render_to_rgba` over a GPU child on a sealed-failure
     /// generation resolves `Err(RenderError::Gpu(_))` — the Arc'd
     /// `HostedLayerError` stays in `source()` — instead of hanging or
     /// panicking: the central capture's terminal `Failed` arm answers
@@ -4255,7 +4255,7 @@ mod gpu_surface {
             AppleBackend, GpuRuntime, HostedLayerError, scene_engine,
         };
         use waterui_backend_core::NativeBackend as _;
-        use waterui_capture::view_renderer::{OffscreenRenderer as _, RenderError, RenderRequest};
+        use waterui_capture::view_renderer::{RenderError, RenderRequest, ViewRenderer as _};
         use waterui_graphics::backend::cherenkov::SurfaceError;
 
         let (runtime, mut env) = pollster::block_on(async {
@@ -4320,7 +4320,7 @@ mod gpu_surface {
         Ok(())
     }
 
-    /// A windowless `OffscreenRenderer::render_to_rgba` over a healthy `SceneView`
+    /// A windowless `ViewRenderer::render_to_rgba` over a healthy `SceneView`
     /// resolves `Ok` with real pixels: the offscreen capture window
     /// declares `DynamicRange::Standard` for the hosted subtree (the
     /// render target is RGBA8), so the leaf's GPU surface resolves a
@@ -4330,7 +4330,7 @@ mod gpu_surface {
         use waterui_apple::native_test_support::gpu_surface::{fixture_env, fixture_scene_view};
         use waterui_apple::native_test_support::view_renderer::{AppleBackend, GpuRuntime};
         use waterui_backend_core::NativeBackend as _;
-        use waterui_capture::view_renderer::{OffscreenRenderer as _, RenderRequest};
+        use waterui_capture::view_renderer::{RenderRequest, ViewRenderer as _};
 
         let (_runtime, mut env) = pollster::block_on(async {
             let runtime = GpuRuntime::new().await.map_err(|error| error.to_string())?;

@@ -769,11 +769,19 @@ impl HeadlessRuntime {
         style: impl crate::Style,
         family_resolution: FontFamilyResolution,
     ) -> Self {
+        #[cfg(hydrolysis_inspector)]
         let inspector = init_main_thread_executors();
+        #[cfg(hydrolysis_inspector)]
         let inspector_probe = inspector
             .as_ref()
             .map(|inspector| inspector.task_probe() as Arc<dyn waterui::task::RuntimeProbe>);
+        #[cfg(not(hydrolysis_inspector))]
+        let inspector_probe: Option<Arc<dyn waterui::task::RuntimeProbe>> = {
+            super::init_global_executor();
+            None
+        };
         waterui::install_application_resources(&mut env);
+        #[cfg(hydrolysis_inspector)]
         waterui::inspector::install(&mut env, inspector);
         let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
         #[cfg(any(test, hydrolysis_platform_services))]

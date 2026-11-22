@@ -14,6 +14,7 @@
 //! reaching any other presentation backend.
 
 use core::any::Any;
+#[cfg(any(hydrolysis_gpu_painter, hydrolysis_hwui))]
 use core::cell::RefCell;
 use core::fmt;
 use std::rc::Rc;
@@ -32,7 +33,9 @@ use waterui::accessibility::AccessibilityRole;
 use waterui_backend_core::ProvidedSemantics;
 #[cfg(any(hydrolysis_gpu_painter, hydrolysis_hwui))]
 use waterui_core::contract_violation;
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, ViewDimensions,
+};
 use waterui_core::{Computed, Environment, Native, NativeView, View};
 
 #[cfg(any(hydrolysis_gpu_painter, hydrolysis_hwui))]
@@ -223,6 +226,7 @@ pub trait AndroidContent: 'static {
     /// back to logical dp using the view's display density, and expanding
     /// along axes [`stretch_axis`](Self::stretch_axis) stretches when `proposal`
     /// offers more finite space.
+    #[must_use]
     fn measure(
         &self,
         env: &mut Env<'_>,
@@ -230,6 +234,24 @@ pub trait AndroidContent: 'static {
         proposal: ProposalSize,
     ) -> ViewDimensions {
         default_measure(env, view, self.stretch_axis(), proposal)
+    }
+
+    /// Resolves `view`'s response geometry inside `bounds` under the layout
+    /// specification's leaf rule (`docs/layout-spec.md` §6), defaulting to
+    /// [`ResolvedExtent::centred`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`LayoutError`] when `bounds` or the measured answer is not
+    /// valid geometry.
+    fn resolve_extent(
+        &self,
+        env: &mut Env<'_>,
+        view: &JObject<'_>,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(env, view, proposal).size)
     }
 
     /// Which axis (or axes) this content stretches to fill available space.
@@ -253,6 +275,13 @@ pub trait AndroidContent: 'static {
     /// (`SemanticRuntime` / `waterui-testing`).
     #[must_use]
     fn accessibility_label(&self) -> Option<Computed<Str>> {
+        None
+    }
+
+    /// The semantic activation handler this content exposes for semantic test
+    /// runtimes (`SemanticRuntime` / `waterui-testing`).
+    #[must_use]
+    fn accessibility_activate(&self) -> Option<Rc<dyn Fn()>> {
         None
     }
 }
@@ -463,8 +492,9 @@ impl<T: AndroidContent> NativeView for AndroidView<T> {
         }
         let _ = env;
         if let Some(semantics) = context.downcast_mut::<ProvidedSemantics>() {
-            semantics.role = self.content.accessibility_role();
-            semantics.label = self.content.accessibility_label();
+            semantics.set_role(self.content.accessibility_role());
+            semantics.set_label(self.content.accessibility_label());
+            semantics.set_on_activate(self.content.accessibility_activate());
             return Ok(());
         }
         Err(self)
@@ -493,6 +523,12 @@ pub(crate) struct AndroidProvidedSlot {
 #[cfg(any(hydrolysis_gpu_painter, hydrolysis_hwui))]
 pub(crate) trait AndroidLeafBehavior {
     fn measure_leaf(&self, proposal: ProposalSize) -> ViewDimensions;
+
+    fn resolve_leaf(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError>;
 
     fn placement(&self) -> (&PlatformViewSink, u64);
 }
@@ -526,6 +562,17 @@ impl<E: crate::text::TextEngine> WidgetBehavior<E> for AndroidWidgetAdapter {
     ) -> ViewDimensions {
         self.0.measure_leaf(proposal)
     }
+
+    fn resolve_extent(
+        &self,
+        _state: &mut HydroState<E>,
+        _env: &Environment,
+        _theme: &Rc<dyn WidgetTheme>,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<Option<ResolvedExtent>, LayoutError> {
+        self.0.resolve_leaf(bounds, proposal).map(Some)
+    }
 }
 
 #[cfg(any(hydrolysis_gpu_painter, hydrolysis_hwui))]
@@ -557,6 +604,28 @@ impl<T: AndroidContent> AndroidLeafBehavior for AndroidLeafState<T> {
             return ViewDimensions::new(Size::zero());
         }
         measured.unwrap_or_else(|| ViewDimensions::new(Size::zero()))
+    }
+
+    fn resolve_leaf(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        let mut resolved = None;
+        let result = self.bridge.vm().with_top_local_frame(|jni_env| {
+            let content = self.content.borrow();
+            resolved = Some(content.resolve_extent(jni_env, self.view.as_obj(), bounds, proposal));
+            Ok::<_, jni::errors::Error>(())
+        });
+        if let Err(error) = result {
+            tracing::error!(
+                target: "waterui::hydrolysis::android",
+                %error,
+                "AndroidContent::resolve_extent failed to attach JNI env"
+            );
+            return ResolvedExtent::centred(bounds, Size::zero());
+        }
+        resolved.unwrap_or_else(|| ResolvedExtent::centred(bounds, Size::zero()))
     }
 
     fn placement(&self) -> (&PlatformViewSink, u64) {
@@ -814,11 +883,10 @@ mod tests {
 
         let mut semantics = ProvidedSemantics::default();
         assert!(view.realize_provided(&mut semantics, &env).is_ok());
-        assert_eq!(semantics.role, Some(AccessibilityRole::Section));
+        assert_eq!(semantics.role(), Some(&AccessibilityRole::Section));
         assert_eq!(
             semantics
-                .label
-                .as_ref()
+                .label()
                 .map(|computed| nami::Signal::snapshot(computed).as_str().to_owned()),
             Some("Sponsored ad".to_owned())
         );
@@ -831,7 +899,7 @@ mod tests {
         let mut payload = ErasedPayload::new_native(&mut erased_slot);
         let mut erased_semantics = ProvidedSemantics::default();
         assert!(payload.realize_provided(&mut erased_semantics, &env));
-        assert_eq!(erased_semantics.role, Some(AccessibilityRole::Button));
+        assert_eq!(erased_semantics.role(), Some(&AccessibilityRole::Button));
     }
 
     #[test]

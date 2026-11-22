@@ -1187,6 +1187,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     }
 
     // A canvas mounts through the same scene node as any scene content.
+    #[cfg(waterui_feature = "canvas")]
     fn canvas(
         &mut self,
         native: waterui::graphics::canvas::CanvasView,

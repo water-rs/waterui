@@ -5,6 +5,7 @@ use super::layout::resolved_or_collapsed;
 #[cfg(feature = "frame-profile")]
 use super::layout::{SignatureHasher, hash_size};
 use waterui_core::backend::ChildSlot;
+use waterui_core::layout::{LayoutError, ResolvedExtent};
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
@@ -12,6 +13,7 @@ use super::*;
 use crate::renderer::ContextMenuPresenter;
 use crate::renderer::mount::motion::{LayerMotion, Motion};
 use crate::text::{TextEngine, TextLayout as _};
+use crate::theme::WidgetTheme;
 use waterui::gesture::TapGesture;
 use waterui_backend_core::Child;
 use waterui_layout::safe_area::IgnoreSafeArea;
@@ -937,8 +939,22 @@ pub trait WidgetBehavior<E: crate::text::TextEngine> {
         state: &mut HydroState<E>,
         proposal: ProposalSize,
         env: &Environment,
-        theme: &Rc<dyn crate::theme::WidgetTheme>,
+        theme: &Rc<dyn WidgetTheme>,
     ) -> ViewDimensions;
+
+    /// Resolves this leaf's response geometry inside `bounds`, returning
+    /// `Ok(None)` when the leaf uses the default [`ResolvedExtent::centred`]
+    /// answer from [`Self::measure`].
+    fn resolve_extent(
+        &self,
+        _state: &mut HydroState<E>,
+        _env: &Environment,
+        _theme: &Rc<dyn WidgetTheme>,
+        _bounds: Rect,
+        _proposal: ProposalSize,
+    ) -> Result<Option<ResolvedExtent>, LayoutError> {
+        Ok(None)
+    }
 
     /// Consume the layout-dirty marks of the [`RetainedSubview`]s this
     /// leaf owns — labels, bar parts, badge content — and report whether
@@ -1590,6 +1606,7 @@ pub struct EnvNode<E: crate::text::TextEngine> {
     pub(super) child: RenderNode<E>,
 }
 
+#[cfg(hydrolysis_scene_view)]
 pub struct SceneViewNode<E: crate::text::TextEngine> {
     pub(super) accessibility_identity: Rc<()>,
     pub(crate) core: NodeCore<E>,
@@ -1617,6 +1634,7 @@ pub struct SceneViewNode<E: crate::text::TextEngine> {
     pub(super) measured: Cell<Option<(ProposalSize, Size)>>,
 }
 
+#[cfg(hydrolysis_scene_view)]
 impl<E: crate::text::TextEngine> SceneViewNode<E> {
     /// The leaf's natural-size answer under `proposal` — the
     /// `measure_body` arm's own computation.
@@ -1723,6 +1741,7 @@ impl<E: crate::text::TextEngine> ExternalFrameNode<E> {
 /// and patches the child exactly as the child would on its own. Each flush
 /// presents the child's layers inside a keyed filtered mount — the engine
 /// applies the filter across the whole group.
+#[cfg(waterui_feature = "effects")]
 pub struct FilteredNode<E: crate::text::TextEngine> {
     pub(crate) core: NodeCore<E>,
     pub(super) runtime: Rc<RefCell<crate::renderer::effects::FilteredRuntime>>,
@@ -2289,7 +2308,10 @@ impl<E: crate::text::TextEngine> TextNode<E> {
 /// `default_value` is the drawing's spoken content beside its name
 /// ([`SceneContent::accessibility_value`](waterui_graphics::backend::SceneContent::accessibility_value)),
 /// emitted under the same precedence: a scoped `.a11y_value(…)` wins it.
-#[cfg(feature = "accessibility")]
+#[cfg(all(
+    feature = "accessibility",
+    any(hydrolysis_scene_view, hydrolysis_gpu, hydrolysis_cherenkov)
+))]
 pub(super) fn emit_graphics_image_accessibility<E: crate::text::TextEngine>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     ctx: Option<RenderContext>,
@@ -2323,7 +2345,10 @@ pub(super) fn emit_graphics_image_accessibility<E: crate::text::TextEngine>(
     renderer.register_accessibility_leaf(ctx, node, env, None)
 }
 
-#[cfg(not(feature = "accessibility"))]
+#[cfg(all(
+    not(feature = "accessibility"),
+    any(hydrolysis_scene_view, hydrolysis_gpu)
+))]
 pub(super) fn emit_graphics_image_accessibility<E: crate::text::TextEngine>(
     _renderer: &mut crate::renderer::SemanticCore<E>,
     _ctx: Option<RenderContext>,

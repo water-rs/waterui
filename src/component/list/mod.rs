@@ -871,7 +871,7 @@ impl ListSection {
 
     /// Footer text shown below the section.
     #[must_use]
-    pub const fn get_footer(&self) -> Option<&Text> {
+    pub const fn footer(&self) -> Option<&Text> {
         self.footer.as_ref()
     }
 
@@ -913,7 +913,7 @@ impl ListSection {
 
     /// Adds a footer note shown below the section.
     #[must_use]
-    pub fn footer(mut self, footer: impl IntoText) -> Self {
+    pub fn with_footer(mut self, footer: impl IntoText) -> Self {
         self.footer = Some(footer.into_text());
         self
     }

@@ -456,6 +456,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     }
 
     /// Build a self-drawn scene node owning its `SceneContent` (no effect slot).
+    #[cfg(hydrolysis_scene_view)]
     #[expect(
         clippy::needless_pass_by_ref_mut,
         reason = "the mutable borrow is required by the shared signature even though this implementation does not mutate it"
@@ -529,6 +530,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// Build a `FilteredView` node owning its [`FilteredRuntime`] and building
     /// its wrapped content as a persistent child [`RenderNode`], so reactive
     /// descendants inside the filtered subtree stay live.
+    #[cfg(waterui_feature = "effects")]
     fn build_filtered(
         filtered: FilteredView<HeldChild<E>>,
         env: &Environment,

@@ -1,4 +1,4 @@
-# waterui-apple-os
+# apple-availability
 
 Compile-time gates on the Apple OS version a build targets.
 

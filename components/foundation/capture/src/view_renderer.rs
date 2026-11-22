@@ -1,6 +1,6 @@
 //! Offscreen view capture to RGBA pixel data.
 //!
-//! Backends implement [`OffscreenRenderer`] and supply it from
+//! Backends implement [`ViewRenderer`] and supply it from
 //! `NativeBackend::offscreen`. Portable application code attaches a
 //! [`CaptureHandle`] to its view tree (for example with `view.capture(&handle)`)
 //! so views of type `V` render through the active backend's offscreen renderer
@@ -18,14 +18,15 @@ use core::pin::Pin;
 use core::time::Duration;
 
 use waterui_core::backend::{Backend, ChildSlot, MapSlots};
+use waterui_core::extract::{ExtractionState, Extractor, State};
 use waterui_core::layout::Size;
 use waterui_core::metadata::MetadataKey;
 use waterui_core::plugin::Plugin;
-use waterui_core::{AnyView, Environment, Metadata, View};
+use waterui_core::{AnyView, Environment, Error, Metadata, View};
 
 use crate::content_ledger::{ContentError, DisplayList, PendingContent};
 
-/// What an [`OffscreenRenderer`] capture renders: the size it proposes to the
+/// What a [`ViewRenderer`] capture renders: the size it proposes to the
 /// view, and how long it waits for content the view owes after mount.
 ///
 /// The renderer installs a fresh [`ContentLedger`](crate::content_ledger::ContentLedger)
@@ -118,7 +119,7 @@ impl RenderResult {
     }
 }
 
-/// Why an [`OffscreenRenderer`] produced no image.
+/// Why a [`ViewRenderer`] produced no image.
 ///
 /// A failed capture is always an error, never an empty or partial
 /// [`RenderResult`]: callers read a successful result as the view's actual
@@ -189,7 +190,7 @@ impl From<ContentError> for RenderError {
 /// preserves static dispatch all the way to the backend's realization with no
 /// `AnyView` or boxed renderer in the environment; callers holding an erased
 /// view can still call `render_to_rgba::<AnyView>(...)`.
-pub trait OffscreenRenderer: 'static {
+pub trait ViewRenderer: 'static {
     /// Renders `view` under `env` to RGBA pixels.
     ///
     /// Implementations:
@@ -215,8 +216,8 @@ pub trait OffscreenRenderer: 'static {
     ) -> impl Future<Output = Result<RenderResult, RenderError>>;
 }
 
-/// Boxed future returned by [`CaptureHandle::render_to_rgba`] and
-/// [`CaptureHandle::render_to_rgba_in`].
+/// Boxed future used internally by [`SlotRenderFn`].
+#[doc(hidden)]
 pub type RenderFuture = Pin<Box<dyn Future<Output = Result<RenderResult, RenderError>>>>;
 
 /// Error returned when [`CaptureHandle::render_to_rgba`] is called before the
@@ -239,23 +240,36 @@ struct WiredCapture<V> {
 /// and call [`Self::render_to_rgba`] from event handlers or async tasks. The
 /// handle is wired when the view dispatches to a backend (`View::dispatch`), so
 /// `V` stays concrete without erasing to [`AnyView`].
-pub struct CaptureHandle<V: View>(Rc<RefCell<Option<WiredCapture<V>>>>);
+///
+/// Extracts through `State<Self>`, so `.state(&handle)` on a view or app makes
+/// `handle: CaptureHandle<V>` available directly to handlers.
+pub struct CaptureHandle<V: 'static>(Rc<RefCell<Option<WiredCapture<V>>>>);
 
-impl<V: View> Clone for CaptureHandle<V> {
+impl<V: 'static> Clone for CaptureHandle<V> {
     fn clone(&self) -> Self {
         Self(Rc::clone(&self.0))
     }
 }
 
-impl<V: View> Default for CaptureHandle<V> {
+impl<V: 'static> Default for CaptureHandle<V> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<V: View> Plugin for CaptureHandle<V> {}
+impl<V: 'static> Plugin for CaptureHandle<V> {}
 
-impl<V: View> fmt::Debug for CaptureHandle<V> {
+impl<V: 'static> Extractor for CaptureHandle<V> {
+    fn extract(env: &Environment) -> Result<Self, Error> {
+        State::<Self>::extract(env).map(|State(value)| value)
+    }
+
+    fn extract_from_action(env: &Environment, state: &mut ExtractionState) -> Result<Self, Error> {
+        State::<Self>::extract_from_action(env, state).map(|State(value)| value)
+    }
+}
+
+impl<V: 'static> fmt::Debug for CaptureHandle<V> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("CaptureHandle")
             .field("wired", &self.is_wired())
@@ -263,7 +277,7 @@ impl<V: View> fmt::Debug for CaptureHandle<V> {
     }
 }
 
-impl<V: View> CaptureHandle<V> {
+impl<V: 'static> CaptureHandle<V> {
     /// Creates an unwired capture handle.
     #[must_use]
     pub fn new() -> Self {
@@ -276,15 +290,6 @@ impl<V: View> CaptureHandle<V> {
         self.0.borrow().is_some()
     }
 
-    /// Attaches this handle to `content` so dispatching `content` wires the
-    /// active backend's [`OffscreenRenderer`] onto this handle.
-    pub fn attach<Content: View>(&self, content: Content) -> CaptureScope<V, Content> {
-        CaptureScope {
-            handle: self.clone(),
-            content,
-        }
-    }
-
     fn wire(
         &self,
         default_env: Environment,
@@ -295,33 +300,71 @@ impl<V: View> CaptureHandle<V> {
             render: Rc::new(render),
         });
     }
+}
+
+impl<V: View> CaptureHandle<V> {
+    /// Attaches this handle to `content` so dispatching `content` wires the
+    /// active backend's [`ViewRenderer`] onto this handle.
+    pub fn attach<Content: View>(&self, content: Content) -> CaptureScope<V, Content> {
+        CaptureScope {
+            handle: self.clone(),
+            content,
+        }
+    }
 
     /// Renders `view` to RGBA pixels in the environment where this handle was
     /// wired.
-    pub fn render_to_rgba(&self, view: V, request: RenderRequest) -> RenderFuture {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RenderError`] if this handle has not been wired yet or if the
+    /// offscreen capture fails.
+    #[expect(
+        clippy::future_not_send,
+        reason = "offscreen view capture runs on the main UI thread (!Send Rc and Environment)"
+    )]
+    pub fn render_to_rgba(
+        &self,
+        view: V,
+        request: RenderRequest,
+    ) -> impl Future<Output = Result<RenderResult, RenderError>> + 'static {
         let wired = {
             let borrowed = self.0.borrow();
             borrowed
                 .as_ref()
                 .map(|w| (w.default_env.clone(), Rc::clone(&w.render)))
         };
-        match wired {
-            Some((env, render)) => render(view, &env, request),
-            None => Box::pin(async { Err(RenderError::Capture(Box::new(UnwiredCaptureError))) }),
+        async move {
+            match wired {
+                Some((env, render)) => render(view, &env, request).await,
+                None => Err(RenderError::Capture(Box::new(UnwiredCaptureError))),
+            }
         }
     }
 
     /// Renders `view` to RGBA pixels under an explicit `env`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RenderError`] if this handle has not been wired yet or if the
+    /// offscreen capture fails.
+    #[expect(
+        clippy::future_not_send,
+        reason = "offscreen view capture runs on the main UI thread (!Send Rc and Environment)"
+    )]
     pub fn render_to_rgba_in(
         &self,
         view: V,
         env: &Environment,
         request: RenderRequest,
-    ) -> RenderFuture {
+    ) -> impl Future<Output = Result<RenderResult, RenderError>> + 'static {
         let render = self.0.borrow().as_ref().map(|w| Rc::clone(&w.render));
-        match render {
-            Some(render) => render(view, env, request),
-            None => Box::pin(async { Err(RenderError::Capture(Box::new(UnwiredCaptureError))) }),
+        let env = env.clone();
+        async move {
+            match render {
+                Some(render) => render(view, &env, request).await,
+                None => Err(RenderError::Capture(Box::new(UnwiredCaptureError))),
+            }
         }
     }
 }
@@ -458,5 +501,17 @@ mod tests {
             }
             other => panic!("unexpected render error: {other:?}"),
         }
+    }
+
+    #[test]
+    fn capture_handle_extracts_from_env_without_view_bound() {
+        use waterui_core::Environment;
+        use waterui_core::extract::{Extractor as _, State};
+
+        let mut env = Environment::new();
+        env.insert(State(CaptureHandle::<u32>::new()));
+        let extracted = CaptureHandle::<u32>::extract(&env)
+            .expect("CaptureHandle must implement Extractor via State");
+        assert!(!extracted.is_wired());
     }
 }

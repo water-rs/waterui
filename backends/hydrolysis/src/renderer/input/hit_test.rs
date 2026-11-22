@@ -549,6 +549,7 @@ pub struct HitTestState<E: crate::text::TextEngine> {
     pub(crate) trackpad_scroll_contact: bool,
     /// The paste queue of every surface that has one, by receiver identity.
     /// An entry lives while a sink or a pending paste holds its queue.
+    #[cfg(any(hydrolysis_scene_view, hydrolysis_gpu))]
     pub(crate) paste_queues: std::collections::HashMap<*const (), Weak<RefCell<PasteQueue>>>,
     /// The physical keys whose press was the paste shortcut of a focused
     /// surface, so the matching releases are consumed with them.
@@ -6097,6 +6098,7 @@ impl<E: crate::text::TextEngine> Default for HitTestState<E> {
             multi_click: MultiClickTracker::default(),
             clipboard_read: system_clipboard_read(),
             trackpad_scroll_contact: false,
+            #[cfg(any(hydrolysis_scene_view, hydrolysis_gpu))]
             paste_queues: std::collections::HashMap::default(),
             paste_shortcut_keys: Vec::default(),
             touch_scroll: TouchScrollGesture::default(),
