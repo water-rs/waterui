@@ -13,12 +13,12 @@ permissions:
 
 on:
   workflow_dispatch:
+  merge_group:
   push:
     branches: [main]
     paths:
       - Cargo.toml
       - Cargo.lock
-      - facade.rs
       - "src/**"
       - "core/**"
       - "components/**"
@@ -41,7 +41,6 @@ on:
     paths:
       - Cargo.toml
       - Cargo.lock
-      - facade.rs
       - "src/**"
       - "core/**"
       - "components/**"
@@ -61,7 +60,7 @@ on:
 
 concurrency:
   group: reachability-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -88,6 +87,7 @@ jobs:
       - uses: ./.github/actions/setup-linux-deps
         with:
           runtime-fonts: "false"
+          extra-packages: libclang-dev
       - uses: actions/cache@v4
         id: reachability-tool
         with:
@@ -161,9 +161,8 @@ jobs:
           path: .github/tools/reachability/target/release/reachability
           key: reachability-tool-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/tools/reachability/Cargo.lock', '.github/tools/reachability/Cargo.toml', '.github/tools/reachability/src/**', 'utils/meta/Cargo.toml', 'utils/meta/src/**') }}
       - name: Build and test the reachability checker
-        env:
-          CARGO_BUILD_TARGET: ""
         run: |
+          unset CARGO_BUILD_TARGET
           cargo test --locked --manifest-path .github/tools/reachability/Cargo.toml
           if [ "${{ steps.reachability-tool.outputs.cache-hit }}" != "true" ]; then
             cargo build --timings --locked --release --manifest-path .github/tools/reachability/Cargo.toml

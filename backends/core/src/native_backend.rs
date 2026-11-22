@@ -28,6 +28,7 @@ use waterui_core::backend::{Backend, DynBackend, ErasedPayload, MapSlots, cast};
 use waterui_core::metadata::MetadataKey;
 use waterui_core::view::hook::{ComposeErased, ErasedHooks, HookList, HookableView};
 use waterui_core::{AnyView, Environment, Metadata, NativeView, View, contract_violation};
+use waterui_meta::mark_reached;
 
 use crate::child::{Child, ChildView, NativeBackendFamily};
 use crate::hooked::{ErasedScope, Hooked, HookedFamily};
@@ -98,6 +99,7 @@ macro_rules! native_backend {
                 env: &Environment,
                 cx: Self::Ctx,
             ) -> Self::Output {
+                mark_reached!("capture_binder");
                 let Metadata { content, value } = metadata;
                 let offscreen = Rc::new(self.offscreen(env));
                 let value: CaptureBinder<Child<Self::Family>> =
@@ -763,7 +765,7 @@ impl<B: NativeBackend> Backend for Realize<'_, B> {
     }
 
     fn erased(&mut self, view: AnyView, env: &Environment, cx: Self::Ctx) -> Self::Output {
-        waterui_meta::mark_reached!("erased");
+        mark_reached!("erased");
         if self.erased_hops == ERASED_HOP_BUDGET {
             contract_violation!(
                 "{} expanded through {ERASED_HOP_BUDGET} erased views without reaching a payload; its body erases itself, so it realizes as an empty view",
