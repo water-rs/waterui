@@ -4069,6 +4069,7 @@ version = "0.1.0"
 dependencies = [
  "hydrolysis-m3",
  "waterui",
+ "waterui-conformance",
  "waterui-icons-material-icon",
  "waterui-testing",
 ]
@@ -13197,6 +13198,23 @@ dependencies = [
  "nami",
  "pastey 0.2.3",
  "waterui-core",
+]
+
+[[package]]
+name = "waterui-conformance"
+version = "0.5.1"
+dependencies = [
+ "askama",
+ "image",
+ "pollster",
+ "rayon",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "waterui",
+ "waterui-capture",
+ "waterui-core",
+ "waterui-testing",
 ]
 
 [[package]]
