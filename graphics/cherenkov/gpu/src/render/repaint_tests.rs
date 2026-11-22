@@ -1,4 +1,4 @@
-use std::sync::mpsc::Receiver;
+use std::{error::Error, sync::mpsc::Receiver};
 
 use crate::{Gpu, GpuConfig, interop::TextureTarget};
 use cherenkov::{
@@ -315,7 +315,7 @@ fn setup_backdrop_bars_surface(
     background: WorkingColor,
     scale: CaptureScale,
     button_color: WorkingColor,
-) -> Result<BackdropBarsSurface, Box<dyn std::error::Error>> {
+) -> Result<BackdropBarsSurface, Box<dyn Error>> {
     use cherenkov::Group;
     use filtrate::filters::GaussianBlur;
 
@@ -373,7 +373,7 @@ fn setup_backdrop_bars_surface(
 
 #[test]
 fn partial_repaint_preserves_siblings_when_backdrop_filter_expands_earlier_pass()
--> Result<(), Box<dyn std::error::Error>> {
+-> Result<(), Box<dyn Error>> {
     use cherenkov_oracle::{F32Image, metrics::assert_images_match};
 
     use super::super::composition::Sink;
