@@ -27,6 +27,7 @@ waterui-contract.workspace = true
 # The curve and spring evaluator WaterUI's core shares, so both sides sample
 # an animation identically.
 waterui-easing.workspace = true
+waterui-frame-rate.workspace = true
 web-time = "1"
 
 [dev-dependencies]

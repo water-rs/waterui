@@ -313,8 +313,15 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                     crate::renderer::ScopeDelta::RECORD_SPACE,
                     Some(ctx.bounds()),
                 );
+                let invisible = reach <= 0.0;
+                if invisible {
+                    renderer.zero_opacity_depth += 1;
+                }
                 node.child
                     .flush(renderer, ctx, env, kurbo::Affine::IDENTITY);
+                if invisible {
+                    renderer.zero_opacity_depth -= 1;
+                }
                 renderer.pop_placement_scope();
             }
             Self::Scale(node) => {
@@ -621,6 +628,17 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                         HydrolysisRenderer::apply_focused(renderer, value, |r| {
                             node.child.flush(r, ctx, child_env, kurbo::Affine::IDENTITY);
                         });
+                    }
+                    WrapperEffect::FrameRate(value) => {
+                        let vote = renderer.read_signal(value.signal());
+                        if let Some(rate) = vote
+                            && !ctx.bounds().is_zero_area()
+                            && renderer.is_frame_rate_vote_visible(child_env)
+                        {
+                            renderer.record_app_frame_rate_vote(rate);
+                        }
+                        node.child
+                            .flush(renderer, ctx, child_env, kurbo::Affine::IDENTITY);
                     }
                     WrapperEffect::LifeCycle(effect) => {
                         // Flush the child first so reactive animation handles bind
@@ -1048,6 +1066,15 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                         HydrolysisRenderer::apply_focused_semantic(renderer, value, |r| {
                             node.child.emit_accessibility(r, child_env);
                         });
+                    }
+                    WrapperEffect::FrameRate(value) => {
+                        let vote = renderer.read_signal(value.signal());
+                        if let Some(rate) = vote
+                            && renderer.is_frame_rate_vote_visible(child_env)
+                        {
+                            renderer.record_app_frame_rate_vote(rate);
+                        }
+                        node.child.emit_accessibility(renderer, child_env);
                     }
                     WrapperEffect::OnKeyPress(handler) => {
                         renderer.push_key_handler_scope(child_env.clone(), Rc::clone(handler));

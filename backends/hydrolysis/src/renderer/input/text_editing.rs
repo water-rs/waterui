@@ -1888,6 +1888,19 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         delete_model_selection(&model, &mut slot)
     }
 
+    /// Replaces the focused text input's selection with `text`, the text a
+    /// platform paste command carried; whether a text input had focus.
+    pub(crate) fn paste_text_into_focused_target(&mut self, text: &str) -> bool {
+        let Some((_index, model, selection)) = self.focused_text_target_data() else {
+            return false;
+        };
+        if !text.is_empty() {
+            let mut slot = selection.borrow_mut();
+            let _ = replace_model_selection(&model, &mut slot, text);
+        }
+        true
+    }
+
     pub(crate) fn paste_clipboard_into_focused_target(&mut self) -> bool {
         let Some((_index, model, selection)) = self.focused_text_target_data() else {
             return false;

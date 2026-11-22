@@ -29,10 +29,13 @@ use alloc::string::String;
 use core::cell::RefCell;
 use core::fmt;
 use core::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use cherenkov_gpu::interop::{ExternalFrame, SharedDevice};
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
+use waterui_frame_rate::FrameRate;
+
+use super::SourceRateUpdate;
 use waterui_core::{Environment, Native, NativeView, View};
 use wgpu::{Device, Queue};
 
@@ -166,6 +169,30 @@ impl FrameOutput {
         self.mailbox.redraw.request_redraw();
     }
 
+    /// Declares or clears this source's natural cadence (e.g. a video stream's
+    /// frame rate via `Some(FrameRate::fixed(24.0))`, or `None` when paused).
+    /// Unlike [`Self::request_redraw`] and [`Self::present`], this does not
+    /// continuously schedule frame passes on its own; when the rate changes, it
+    /// wakes the host once so the new vote reaches the window's scheduler.
+    pub fn set_source_rate(&self, rate: Option<waterui_frame_rate::FrameRate>) {
+        if self.is_retired() {
+            return;
+        }
+        let changed = {
+            let mut slot = self.mailbox.source_rate();
+            if *slot == rate {
+                false
+            } else {
+                *slot = rate;
+                true
+            }
+        };
+        if changed {
+            self.mailbox.rate_dirty.store(true, Ordering::Release);
+            self.mailbox.redraw.request_redraw();
+        }
+    }
+
     /// The size the host layer presents frames at, as of its latest pass;
     /// `None` until the host has run its first pass.
     #[must_use]
@@ -209,6 +236,10 @@ struct Mailbox {
     frame: Mutex<Option<ExternalFrame>>,
     /// The host's latest presented size, written every pass.
     presented: Mutex<Option<PresentedSize>>,
+    /// Latched source cadence vote and whether the receiver needs to observe
+    /// the latest change.
+    source_rate: Mutex<Option<waterui_frame_rate::FrameRate>>,
+    rate_dirty: AtomicBool,
     retired: AtomicBool,
     redraw: RedrawHandle,
 }
@@ -224,6 +255,12 @@ impl Mailbox {
         self.presented
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn source_rate(&self) -> MutexGuard<'_, Option<FrameRate>> {
+        self.source_rate
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -247,6 +284,26 @@ impl FrameReceiver {
     #[must_use]
     pub fn take(&self) -> Option<ExternalFrame> {
         self.mailbox.slot().take()
+    }
+
+    /// The source's current non-redrawing cadence vote, if set.
+    #[must_use]
+    pub fn source_rate(&self) -> Option<FrameRate> {
+        *self.mailbox.source_rate()
+    }
+
+    /// Consumes a pending source-rate change published by
+    /// [`FrameOutput::set_source_rate`], returning `Some(new_rate)` only when
+    /// it changed since the previous call.
+    #[must_use]
+    pub fn take_source_rate(&self) -> Option<SourceRateUpdate> {
+        self.mailbox
+            .rate_dirty
+            .swap(false, Ordering::AcqRel)
+            .then(|| {
+                let value = *self.mailbox.source_rate();
+                value.map_or(SourceRateUpdate::Clear, SourceRateUpdate::Set)
+            })
     }
 
     /// Records the size the host layer presents frames at this pass, which
@@ -293,6 +350,8 @@ impl ExternalFrameStream {
         let mailbox = Shared::new(Mailbox {
             frame: Mutex::new(None),
             presented: Mutex::new(None),
+            source_rate: Mutex::new(None),
+            rate_dirty: AtomicBool::new(false),
             retired: AtomicBool::new(false),
             redraw,
         });
@@ -494,5 +553,69 @@ impl NativeView for ExternalFrameView {
 impl View for ExternalFrameView {
     fn body(self, _env: &Environment) -> impl View {
         Native::new(self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::sync::Arc;
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+    use crate::gpu::SourceRateUpdate;
+
+    #[test]
+    fn mailbox_source_rate_latches_clears_and_wakes_only_on_change() {
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let redraw = RedrawHandle::new({
+            let wakes = Arc::clone(&wakes);
+            move || {
+                wakes.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+        let mailbox = Shared::new(Mailbox {
+            frame: Mutex::new(None),
+            presented: Mutex::new(None),
+            source_rate: Mutex::new(None),
+            rate_dirty: AtomicBool::new(false),
+            retired: AtomicBool::new(false),
+            redraw,
+        });
+        let receiver = FrameReceiver {
+            mailbox: Shared::clone(&mailbox),
+        };
+        assert_eq!(receiver.source_rate(), None);
+        assert_eq!(receiver.take_source_rate(), None);
+
+        let update = |rate| {
+            let mut slot = mailbox.source_rate();
+            if *slot != rate {
+                *slot = rate;
+                drop(slot);
+                mailbox.rate_dirty.store(true, Ordering::Release);
+                mailbox.redraw.request_redraw();
+            }
+        };
+
+        let cinema = FrameRate::fixed(24.0);
+        update(Some(cinema));
+        assert_eq!(wakes.load(Ordering::Relaxed), 1);
+        assert_eq!(receiver.source_rate(), Some(cinema));
+        assert_eq!(
+            receiver.take_source_rate(),
+            Some(SourceRateUpdate::Set(cinema))
+        );
+        assert_eq!(receiver.take_source_rate(), None);
+
+        // Re-reporting the same cadence wakes nothing.
+        update(Some(cinema));
+        assert_eq!(wakes.load(Ordering::Relaxed), 1);
+        assert_eq!(receiver.take_source_rate(), None);
+
+        // Clearing (e.g. pause) wakes once and yields `Clear`.
+        update(None);
+        assert_eq!(wakes.load(Ordering::Relaxed), 2);
+        assert_eq!(receiver.source_rate(), None);
+        assert_eq!(receiver.take_source_rate(), Some(SourceRateUpdate::Clear));
     }
 }

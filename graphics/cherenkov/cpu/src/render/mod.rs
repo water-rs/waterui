@@ -87,7 +87,7 @@ struct SurfaceState {
     /// Where finished pixels land; only `Offscreen` targets retain a
     /// full-frame buffer, in the format the host asked for.
     output: Output,
-    refresh: cherenkov::RefreshRange,
+    refresh: cherenkov::FrameRate,
     /// Per-layer content caches; the sampled layer state lives in the
     /// front end's [`cherenkov::SurfaceTree`].
     layers: FxHashMap<LayerId, ContentData>,
@@ -404,7 +404,7 @@ impl Renderer for RasterRenderer {
                         cherenkov::OffscreenFormat::LinearF32 => Vec::new(),
                     },
                 };
-                (size, output, false, cherenkov::DEFAULT_REFRESH)
+                (size, output, false, cherenkov::FrameRate::FAST)
             }
         };
         if size.0 > MAX_SURFACE || size.1 > MAX_SURFACE {
@@ -869,7 +869,7 @@ impl RasterRenderer {
                     .iter()
                     .any(|gid| self.filters.wants_redraw_group(*id, BackdropId::new(*gid)))
             {
-                redraw.request(*id, surface.refresh.clone());
+                redraw.request(*id, surface.refresh);
             }
         }
         Ok(redraw)

@@ -82,7 +82,7 @@ pub struct Engine<B: Backend> {
     next_filter: Cell<u64>,
     next_backdrop_shader: Cell<u64>,
     next_producer: Cell<u64>,
-    thread: Option<std::thread::JoinHandle<()>>,
+    thread: Cell<Option<std::thread::JoinHandle<()>>>,
     /// The type-erased sender resource drops use; a render thread that is
     /// gone has nothing left to release.
     post: Rc<dyn Fn(Message<B>)>,
@@ -201,12 +201,26 @@ impl<B: Backend> Engine<B> {
             next_filter: Cell::new(1),
             next_backdrop_shader: Cell::new(1),
             next_producer: Cell::new(1),
-            thread: render_thread,
+            thread: Cell::new(render_thread),
             post: Rc::new(move |message| {
                 let _ = post_tx.send(message);
             }),
             replace_image,
             _not_send: PhantomData,
+        }
+    }
+
+    /// Shuts the render thread down and joins it on the calling thread.
+    ///
+    /// Dropping an [`Engine`] detaches its render thread so windowed UI
+    /// teardown never blocks (#3753). Offscreen and test hosts whose teardown
+    /// runs right before process exit call this so the render thread finishes
+    /// releasing backend resources before `atexit` and graphics-driver
+    /// destructors run. Calling this more than once is a no-op.
+    pub fn shutdown_and_join(&self) {
+        let _ = self.tx.send(Message::Shutdown);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
         }
     }
 
@@ -219,7 +233,7 @@ impl<B: Backend> Engine<B> {
     /// # Panics
     /// When the render thread panicked.
     #[cfg(feature = "testing")]
-    pub fn shutdown_and_join_for_testing(mut self) {
+    pub fn shutdown_and_join_for_testing(self) {
         let _ = self.tx.send(Message::Shutdown);
         if let Some(thread) = self.thread.take() {
             thread.join().expect("the render thread ends cleanly");
@@ -516,6 +530,7 @@ impl<B: Backend> Engine<B> {
                 shared: Rc::downgrade(&surface.shared),
                 waker: Arc::clone(&surface.waker),
                 next_frame: Rc::downgrade(&surface.next_frame),
+                rate_vote: Rc::downgrade(&surface.rate_vote),
                 running_tracks: Rc::downgrade(&surface.running_tracks),
             });
         surface
@@ -1208,7 +1223,7 @@ mod tests {
         replace_transport(&mut engine, tx);
         surface.waker.wake();
         let waker = Arc::clone(&surface.waker);
-        engine.thread = Some(std::thread::spawn(move || {
+        engine.thread.set(Some(std::thread::spawn(move || {
             let Message::Render { commits, reply, .. } = rx.recv().unwrap() else {
                 panic!("expected render");
             };
@@ -1225,7 +1240,7 @@ mod tests {
             });
             assert!(matches!(rx.recv().unwrap(), Message::DestroySurface { .. }));
             assert!(matches!(rx.recv().unwrap(), Message::Shutdown));
-        }));
+        })));
         assert_eq!(engine.render(FrameTime::now()).unwrap(), Next::Idle);
         assert_eq!(wake_count.load(Ordering::Relaxed), 2);
         drop(surface);
@@ -1682,14 +1697,14 @@ mod tests {
             engine.thread.take().unwrap().join().unwrap();
             let (tx, rx) = crossbeam_channel::unbounded();
             replace_transport(&mut engine, tx);
-            engine.thread = Some(std::thread::spawn(move || {
+            engine.thread.set(Some(std::thread::spawn(move || {
                 let Message::Render { reply, .. } = rx.recv().expect("expected render") else {
                     panic!("expected a Render");
                 };
                 let _armed = reply;
                 let _ = gate_rx.recv();
                 panic!("the worker unwound while it owed a reply");
-            }));
+            })));
             drive_gated(engine.submit(FrameTime::now()).unwrap(), &report_tx)
         });
         let observed = report_rx.recv_timeout(std::time::Duration::from_secs(30));
@@ -1785,7 +1800,7 @@ mod tests {
     #[test]
     fn memory_distinguishes_failure_from_zero_usage() {
         let (events, _rx) = std::sync::mpsc::channel();
-        let mut engine = null_engine(events);
+        let engine = null_engine(events);
 
         let usage = engine.memory().unwrap();
         assert_eq!(usage, MemoryUsage::default());
@@ -1794,6 +1809,22 @@ mod tests {
         engine.thread.take().unwrap().join().unwrap();
 
         assert!(matches!(engine.memory(), Err(RenderError::Thread)));
+        assert!(matches!(engine.memory(), Err(RenderError::Thread)));
+    }
+
+    #[test]
+    fn shutdown_and_join_waits_for_render_thread_and_is_idempotent() {
+        use std::sync::mpsc;
+
+        let (events, _rx) = mpsc::channel();
+        let engine = null_engine(events);
+        assert!(engine.memory().is_ok());
+
+        engine.shutdown_and_join();
+        assert!(matches!(engine.memory(), Err(RenderError::Thread)));
+
+        // Calling a second time (and then dropping) is a safe no-op.
+        engine.shutdown_and_join();
         assert!(matches!(engine.memory(), Err(RenderError::Thread)));
     }
 }

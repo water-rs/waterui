@@ -1,6 +1,7 @@
 mod collection_update;
 // Suites that drive the GPU painter itself — its device, GPU-content views,
 // filters or backdrop shaders — run on builds that have it.
+mod frame_rate_vote;
 #[cfg(hydrolysis_gpu_painter)]
 mod frame_work;
 mod slider_look;
@@ -2812,6 +2813,9 @@ pub struct MinimalTestTheme {
     button_group_opacity: Option<crate::theme::Driven<f32>>,
     /// The space the button look's group composites in.
     button_group_blend_space: cherenkov_record::BlendSpace,
+    /// Optional override for the menu look returned by `WidgetTheme::menu`.
+    #[cfg(feature = "menu")]
+    menu_look: Option<MenuLook>,
 }
 
 /// The caret blink the test themes' text field looks carry.
@@ -2947,6 +2951,14 @@ impl MinimalTestTheme {
         space: cherenkov_record::BlendSpace,
     ) -> Self {
         self.button_group_blend_space = space;
+        self
+    }
+
+    /// Hands out `look` for every menu.
+    #[cfg(feature = "menu")]
+    #[must_use]
+    pub fn with_menu_look(mut self, look: MenuLook) -> Self {
+        self.menu_look = Some(look);
         self
     }
 }
@@ -3204,7 +3216,7 @@ impl WidgetTheme for MinimalTestTheme {
 
     #[cfg(feature = "menu")]
     fn menu(&self, _spec: &MenuSpec, _env: &Environment) -> MenuLook {
-        Self::menu_look()
+        self.menu_look.clone().unwrap_or_else(Self::menu_look)
     }
 
     #[cfg(any(feature = "picker", feature = "date-picker"))]

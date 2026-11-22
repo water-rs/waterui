@@ -77,7 +77,7 @@ pub use crate::display_list::{
     Picture, ScopeError, Slot, SlotUpdate, Splice, blends_within, translucent_within,
 };
 pub use crate::error::ResourceError;
-pub use crate::frame::RefreshRange;
+pub use crate::frame::FrameRate;
 pub use crate::glyph::{FontId, Glyph, GlyphRun, GlyphStyle};
 pub use crate::image::{
     Astc4x4, Bc7, Etc2Rgba, Format, ImageColorSpace, ImageData, ImageFormat, ImageUpload, Rgba8,

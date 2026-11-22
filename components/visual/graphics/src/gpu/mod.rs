@@ -188,35 +188,45 @@ impl<'a> Context<'a> {
     }
 }
 
-/// One frame of a [`GpuContent`]: the texture to draw into and the clock.
+/// Pending source-rate change recorded on [`Frame::set_source_rate`].
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceRateUpdate {
+    /// Leave the producer's latched source rate as-is.
+    Unchanged,
+    /// Clear the producer's latched source rate.
+    Clear,
+    /// Latch `FrameRate` as the producer's source cadence.
+    Set(waterui_frame_rate::FrameRate),
+}
+
+/// Per-frame context passed into [`GpuContent::render`].
 #[derive(Debug)]
 pub struct Frame<'a> {
-    /// The device the engine renders with.
+    /// Engine-owned device.
     pub device: &'a Device,
-    /// Its queue.
+    /// Engine-owned queue.
     pub queue: &'a Queue,
-    /// The texture the content draws into.
+    /// Offscreen render target for this frame.
     pub texture: &'a Texture,
-    /// A view of the whole texture.
+    /// Color attachment view of [`Self::texture`].
     pub view: &'a TextureView,
-    /// The texture's format.
+    /// Format of [`Self::texture`].
     pub format: TextureFormat,
-    /// The texture's width in pixels.
+    /// Width of [`Self::texture`] in physical pixels.
     pub width: u32,
-    /// The texture's height in pixels.
+    /// Height of [`Self::texture`] in physical pixels.
     pub height: u32,
-    /// Pixels per logical point.
+    /// Display scale factor.
     pub scale: f32,
-    /// Time since the content was set up.
+    /// Elapsed time since the producer's first rendered frame.
     pub elapsed: Duration,
-    /// Time since the previous frame.
+    /// Time delta since the previous frame.
     pub delta: Duration,
-    /// When the platform will present this frame, where it reports a target
-    /// presentation time: a display link's target timestamp, a frame
-    /// scheduler's expected presentation time. `None` on platforms that
-    /// report none.
+    /// The platform's target presentation time for this frame, when available.
     pub presentation_time: Option<Instant>,
-    redraw: bool,
+    redraw_rate: Option<waterui_frame_rate::FrameRate>,
+    source_rate_update: SourceRateUpdate,
 }
 
 impl<'a> Frame<'a> {
@@ -246,19 +256,52 @@ impl<'a> Frame<'a> {
             elapsed,
             delta,
             presentation_time,
-            redraw: false,
+            redraw_rate: None,
+            source_rate_update: SourceRateUpdate::Unchanged,
         }
     }
 
-    /// Asks for another frame after this one.
+    /// Asks for another frame after this one at [`FrameRate::FAST`](waterui_frame_rate::FrameRate::FAST).
     pub const fn request_redraw(&mut self) {
-        self.redraw = true;
+        self.request_redraw_at(waterui_frame_rate::FrameRate::FAST);
+    }
+
+    /// Asks for another frame after this one at `rate`, combining repeated
+    /// requests within one pass by field-wise max.
+    pub const fn request_redraw_at(&mut self, rate: waterui_frame_rate::FrameRate) {
+        self.redraw_rate = Some(match self.redraw_rate {
+            Some(current) => current.combine_with(rate),
+            None => rate,
+        });
+    }
+
+    /// Declares or clears this producer's non-redrawing source cadence
+    /// (latched across subsequent frames until replaced or cleared with
+    /// `None`). Unlike [`Self::request_redraw_at`], this never requests
+    /// another frame on its own.
+    pub const fn set_source_rate(&mut self, rate: Option<waterui_frame_rate::FrameRate>) {
+        self.source_rate_update = match rate {
+            Some(rate) => SourceRateUpdate::Set(rate),
+            None => SourceRateUpdate::Clear,
+        };
     }
 
     /// Whether the content asked for another frame.
     #[must_use]
     pub const fn redraw_requested(&self) -> bool {
-        self.redraw
+        self.redraw_rate.is_some()
+    }
+
+    /// The refresh-rate vote requested for the next frame, if any.
+    #[must_use]
+    pub const fn redraw_rate(&self) -> Option<waterui_frame_rate::FrameRate> {
+        self.redraw_rate
+    }
+
+    /// The source-cadence update recorded in this frame.
+    #[must_use]
+    pub const fn source_rate_update(&self) -> SourceRateUpdate {
+        self.source_rate_update
     }
 }
 
@@ -772,8 +815,13 @@ impl cherenkov_gpu::interop::GpuContent for GpuContentHandle {
             gpu.presentation_time,
         );
         self.lock().render(&mut frame);
-        if frame.redraw_requested() {
-            gpu.request_redraw();
+        if let Some(rate) = frame.redraw_rate() {
+            gpu.request_redraw_at(rate);
+        }
+        match frame.source_rate_update() {
+            SourceRateUpdate::Unchanged => {}
+            SourceRateUpdate::Clear => gpu.set_source_rate(None),
+            SourceRateUpdate::Set(rate) => gpu.set_source_rate(Some(rate)),
         }
     }
 }

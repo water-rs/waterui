@@ -101,6 +101,9 @@ pub struct Surface<B: Backend> {
     /// The next frame this surface asked for, published by each
     /// [`Engine::render`](crate::Engine::render).
     pub(crate) next_frame: Rc<RefCell<crate::frame::Next>>,
+    /// The surface's combined refresh-rate vote, including non-redrawing
+    /// source rates (`Frame::set_source_rate` / `FrameSink::set_source_rate`).
+    pub(crate) rate_vote: Rc<Cell<Option<crate::FrameRate>>>,
     /// The layer tracks the engine still ran when it last rendered this
     /// surface.
     pub(crate) running_tracks: Rc<Cell<RunningTracks>>,
@@ -139,6 +142,7 @@ impl<B: Backend> Surface<B> {
             max_dimension: info.max_dimension,
             root,
             next_frame: Rc::new(RefCell::new(crate::frame::Next::Idle)),
+            rate_vote: Rc::new(Cell::new(None)),
             running_tracks: Rc::new(Cell::new(RunningTracks::default())),
             waker,
             tx,
@@ -231,6 +235,15 @@ impl<B: Backend> Surface<B> {
     #[must_use]
     pub fn next_frame(&self) -> crate::frame::Next {
         self.next_frame.borrow().clone()
+    }
+
+    /// The surface's combined refresh-rate vote published by the latest
+    /// [`Engine::render`](crate::Engine::render), including non-redrawing
+    /// source cadence votes (`Frame::set_source_rate` /
+    /// `FrameSink::set_source_rate`).
+    #[must_use]
+    pub fn rate_vote(&self) -> Option<crate::FrameRate> {
+        self.rate_vote.get()
     }
 
     /// The animations still running on this surface: the layer tracks the

@@ -681,6 +681,7 @@ mod tests {
             secure: waterui::metadata::secure::Secure,
             standard_dynamic_range: waterui::metadata::secure::StandardDynamicRange,
             high_dynamic_range: waterui::metadata::secure::HighDynamicRange,
+            frame_rate: waterui::animation::FrameRateVote,
             anchored_overlay: waterui::metadata::anchored_overlay::AnchoredOverlay,
             #[cfg(waterui_feature = "dialog")]
             dialog: waterui::dialog::Dialog,

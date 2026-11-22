@@ -467,6 +467,13 @@ fn base_trials() -> Vec<Trial> {
             Ok(())
         }),
         Trial::test(
+            "resolve::a_prepopulated_navigation_path_mounts_the_root_and_pushed_pages",
+            || {
+                resolve::a_prepopulated_navigation_path_mounts_the_root_and_pushed_pages();
+                Ok(())
+            },
+        ),
+        Trial::test(
             "picture::a_laid_out_picture_rasterizes_at_its_bounds",
             || {
                 picture::a_laid_out_picture_rasterizes_at_its_bounds();
@@ -1538,6 +1545,75 @@ mod resolve {
             (gap - 8.0).abs() < 0.5,
             "icon-to-title gap — expected 8 pt, got {gap}"
         );
+    }
+
+    /// water-rs/waterui#4889: resolving a `NavigationStack::with_path` whose
+    /// `NavigationPath` already holds pushed routes mounts the root page at
+    /// index 0 followed by the pre-populated destinations in order.
+    pub fn a_prepopulated_navigation_path_mounts_the_root_and_pushed_pages() {
+        use cocoa_ui::view;
+        use waterui::navigation::{NavigationPath, NavigationStack, NavigationView};
+        use waterui::prelude::text;
+
+        let path = NavigationPath::<i32>::new();
+        path.push(1_i32);
+        path.push(2_i32);
+
+        #[cfg(target_os = "macos")]
+        let stack_path = path.clone();
+        #[cfg(target_os = "ios")]
+        let stack_path = path;
+
+        let stack =
+            NavigationStack::with_path(stack_path, NavigationView::new("Root", text("Root")))
+                .destination(|route: i32| {
+                    NavigationView::new(format!("Page {route}"), text(format!("Page {route}")))
+                });
+
+        let leaf = render(stack);
+
+        #[cfg(target_os = "macos")]
+        {
+            let pages = view::subviews(leaf.view());
+            assert_eq!(pages.len(), 3, "root and two pre-populated pages mount");
+            assert!(pages[0].isHidden(), "root is hidden beneath pushed pages");
+            assert!(
+                pages[1].isHidden(),
+                "first pushed page is hidden beneath top"
+            );
+            assert!(!pages[2].isHidden(), "top pushed page is visible");
+
+            let _ = path.pop();
+            let pages = view::subviews(leaf.view());
+            assert_eq!(pages.len(), 2, "popping removes the top page");
+            assert!(pages[0].isHidden(), "root stays hidden beneath Page 1");
+            assert!(!pages[1].isHidden(), "Page 1 becomes the visible top page");
+
+            let _ = path.pop();
+            let pages = view::subviews(leaf.view());
+            assert_eq!(pages.len(), 1, "popping again returns to root");
+            assert!(!pages[0].isHidden(), "root is now the visible top page");
+        }
+
+        #[cfg(target_os = "ios")]
+        {
+            use cocoa_ui::objc2_ui_kit::UINavigationController;
+            use cocoa_ui::uikit::view_controller::owning_controller;
+
+            let nav_view = view::subviews(leaf.view())
+                .into_iter()
+                .next()
+                .expect("the stack host mounts the navigation controller view");
+            let nav: Retained<UINavigationController> = owning_controller(&nav_view)
+                .expect("the navigation view is owned by a view controller")
+                .downcast()
+                .expect("the owning controller is a UINavigationController");
+            assert_eq!(
+                nav.viewControllers().count(),
+                3,
+                "root and two pre-populated pages mount on UINavigationController"
+            );
+        }
     }
 }
 
@@ -9695,7 +9771,6 @@ mod navigation {
     use cocoa_ui::uikit::view_controller::owning_controller;
     use cocoa_ui::uikit::{NavContentController, NavPage};
     use cocoa_ui::{PlatformView, Retained, view};
-    use waterui::AnyView;
     use waterui::Str;
     use waterui::ViewExt as _;
     use waterui::component::toggle::toggle;
@@ -9711,7 +9786,6 @@ mod navigation {
     use waterui::theme::color::{Accent, Foreground};
     use waterui_apple::SfSymbol;
     use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, pump_main_until};
-    use waterui_core::handler::AnyViewBuilder;
 
     use super::{mtm, resolve};
 
@@ -9942,18 +10016,17 @@ mod navigation {
     fn a_text_toolbar_button_draws_its_title() {
         let title = binding(Str::from("Edit"));
         let leaf = resolve::render(NavigationStack::new(
-            NavigationView::new("Inbox", text("root")).navigation_toolbar(NavigationToolbar::new(
-                vec![
-                    NavigationToolbarItem::new(
+            NavigationView::new("Inbox", text("root")).navigation_toolbar(
+                NavigationToolbar::default()
+                    .item(NavigationToolbarItem::new(
                         NavigationToolbarPlacement::TopBarLeading,
                         button(waterui::text!("{title}")).style(ButtonStyle::Plain),
-                    ),
-                    NavigationToolbarItem::new(
+                    ))
+                    .item(NavigationToolbarItem::new(
                         NavigationToolbarPlacement::TopBarTrailing,
                         text("12 unread"),
-                    ),
-                ],
-            )),
+                    )),
+            ),
         ));
         let nav =
             nav_controller_in(leaf.view()).expect("the stack mounts a UINavigationController");
@@ -10073,15 +10146,13 @@ mod navigation {
     /// tracks the content button's `disabled` state.
     fn a_symbol_toolbar_item_follows_its_button_disabled_state() {
         let disabled = binding(true);
-        let mut item = NavigationToolbarItem::new(
+        let item = NavigationToolbarItem::new(
             NavigationToolbarPlacement::TopBarTrailing,
             button("Save")
                 .style(ButtonStyle::Plain)
                 .disabled(disabled.clone()),
-        );
-        item.set_icon(Some(AnyViewBuilder::new(|| {
-            AnyView::new(SfSymbol::CHECKMARK)
-        })));
+        )
+        .icon(SfSymbol::CHECKMARK);
         let leaf = resolve::render(NavigationStack::new(
             NavigationView::new("Inbox", text("root"))
                 .navigation_toolbar(NavigationToolbar::new(vec![item])),
@@ -10111,15 +10182,13 @@ mod navigation {
     fn a_checkbox_toolbar_item_follows_its_disabled_state() {
         let disabled = binding(true);
         let checked = binding(false);
-        let mut item = NavigationToolbarItem::new(
+        let item = NavigationToolbarItem::new(
             NavigationToolbarPlacement::TopBarTrailing,
             toggle("Done", &checked)
                 .checkbox()
                 .disabled(disabled.clone()),
-        );
-        item.set_icon(Some(AnyViewBuilder::new(|| {
-            AnyView::new(SfSymbol::CHECKMARK)
-        })));
+        )
+        .icon(SfSymbol::CHECKMARK);
         let leaf = resolve::render(NavigationStack::new(
             NavigationView::new("Inbox", text("root"))
                 .navigation_toolbar(NavigationToolbar::new(vec![item])),

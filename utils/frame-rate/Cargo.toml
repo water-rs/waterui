@@ -1,0 +1,21 @@
+[package]
+name = "waterui-frame-rate"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+readme = "../../README.md"
+repository.workspace = true
+description = "Content-classified refresh-rate votes and host resolution shared by WaterUI, Cherenkov, and backends"
+keywords = ["animation", "refresh-rate", "promotion", "vsync", "waterui"]
+categories = ["graphics", "no-std"]
+
+[features]
+nami = ["dep:nami"]
+
+[dependencies]
+nami = { workspace = true, optional = true }
+
+[lints]
+workspace = true

@@ -8,12 +8,13 @@ use waterui::window::Window as WuiWindow;
 #[cfg(hydrolysis_cherenkov)]
 use waterui::window::WindowState;
 use waterui_core::contract_violation;
+use waterui_frame_rate::FrameRate;
 
 /// The output request every Hydrolysis host surface is negotiated by:
 /// the engine selects compact SDR storage and upgrades for HDR content
 /// where the display chain carries it, paced FIFO, with a transparency-capable composite
 /// alpha mode iff the window is transparent (#2445).
-#[cfg(hydrolysis_winit)]
+#[cfg(any(hydrolysis_winit, hydrolysis_uikit))]
 #[cfg(hydrolysis_gpu_painter)]
 pub const fn hydrolysis_output_request(transparent: bool) -> cherenkov_gpu::interop::OutputRequest {
     cherenkov_gpu::interop::OutputRequest {
@@ -1788,6 +1789,14 @@ pub enum InputEvent {
     /// come down without firing an action, so a real release arriving later
     /// finds nothing stale left to activate.
     KeyboardCancel,
+    /// The platform's paste command targeted the focused content, carrying
+    /// the pasteboard's text: what a host whose text system turns the paste
+    /// shortcut into a command (`UIKit`'s `paste:`) delivers in place of the
+    /// shortcut's key press and release.
+    Paste {
+        /// The pasteboard's text.
+        text: String,
+    },
     /// The modifier set changed; carries the new [`Modifiers`].
     ModifiersChanged(Modifiers),
     /// An IME composition is in progress; carries the pre-edit text.
@@ -2068,15 +2077,34 @@ pub trait SurfaceProvider: PresentationSurface {
     }
 }
 
-/// What an engine-presented frame of the macOS winit window renders
-/// through: the window the engine's `cherenkov_gpu::WindowTarget` presents
-/// on, and the window's engine-surface slot, created on the first frame and
-/// replaced when its device chain or transparency no longer matches.
-#[cfg(all(hydrolysis_winit, target_os = "macos"))]
+/// The window object the engine presents an Apple window on: it builds the
+/// `cherenkov_gpu::WindowTarget` over the window's view, which captures the
+/// view's layer on the main thread.
+#[cfg(hydrolysis_apple_engine_window)]
+#[cfg(hydrolysis_gpu_painter)]
+pub trait EngineWindowHandle {
+    /// The engine target presenting on this window at `size` (physical
+    /// pixels), before the host's output request is applied.
+    fn window_target(&self, size: (u32, u32)) -> cherenkov_gpu::WindowTarget;
+}
+
+#[cfg(all(hydrolysis_apple_engine_window, hydrolysis_winit))]
+#[cfg(hydrolysis_gpu_painter)]
+impl EngineWindowHandle for std::sync::Arc<winit::window::Window> {
+    fn window_target(&self, size: (u32, u32)) -> cherenkov_gpu::WindowTarget {
+        cherenkov_gpu::WindowTarget::new(Self::clone(self), size)
+    }
+}
+
+/// What an engine-presented frame of an Apple window renders through: the
+/// window the engine's `cherenkov_gpu::WindowTarget` presents on, and the
+/// window's engine-surface slot, created on the first frame and replaced
+/// when its device chain or transparency no longer matches.
+#[cfg(hydrolysis_apple_engine_window)]
 #[cfg(hydrolysis_gpu_painter)]
 pub struct EngineWindowTarget<'a> {
     /// The window the engine presents on.
-    pub(crate) window: &'a std::sync::Arc<winit::window::Window>,
+    pub(crate) window: &'a dyn EngineWindowHandle,
     /// The window's engine surface and mount, owned by the window's surface.
     pub(crate) window_slot: &'a mut Option<
         crate::renderer::CherenkovWindow<
@@ -2088,6 +2116,25 @@ pub struct EngineWindowTarget<'a> {
     pub(crate) transparent: bool,
     /// Whether the window crossed displays since the previous frame.
     pub(crate) display_moved: bool,
+}
+
+/// A surface the engine presents on an Apple window itself: it hands the
+/// frame its render inputs and the engine window target, and the engine
+/// acquires the drawable and presents inside the render.
+#[cfg(hydrolysis_apple_engine_window)]
+#[cfg(hydrolysis_gpu_painter)]
+pub trait EnginePresented: PresentationSurface {
+    /// The frame's render inputs and the engine target it presents
+    /// through. Taking the target consumes a pending display move, so the
+    /// engine hears of each move exactly once.
+    fn render_targets(
+        &mut self,
+        display_scale: f64,
+        base_color: cherenkov_record::WorkingColor,
+    ) -> (
+        crate::renderer::FrameRenderTarget<'_>,
+        EngineWindowTarget<'_>,
+    );
 }
 
 #[cfg(all(target_os = "android", hydrolysis_gpu_painter))]
@@ -2104,7 +2151,7 @@ pub struct PendingAndroidWindow {
 #[cfg(hydrolysis_gpu_painter)]
 pub struct EngineAndroidTarget<'a> {
     pub(crate) pending: &'a mut Option<PendingAndroidWindow>,
-    pub(crate) executor: &'a crate::runner::android_executor::AndroidMainThreadExecutor,
+    pub(crate) executor: &'a crate::runner::host_executor::AndroidExecutor,
     pub window: &'a ndk::native_window::NativeWindow,
     pub window_slot: &'a mut Option<
         crate::renderer::CherenkovWindow<
@@ -2250,6 +2297,10 @@ pub trait PlatformWindow: 'static {
     fn drain_events(&mut self) -> Vec<InputEvent>;
     /// Requests that the window be repainted.
     fn request_redraw(&self);
+    /// Updates the window's active refresh-rate vote (`None` when idle or hidden).
+    fn set_frame_rate_vote(&self, vote: Option<FrameRate>) {
+        let _ = vote;
+    }
     /// The wake the window's frame signals fire when a frame request lands
     /// on an idle handle — the mechanism that schedules a frame for a
     /// state change made outside one (an executor drain, a platform-view
@@ -2445,6 +2496,11 @@ pub fn next_gpu_context_id() -> u64 {
 impl Drop for OffscreenGpuContextInner {
     fn drop(&mut self) {
         let generation = self.gpu.generation();
+        // Join the offscreen engine's render thread before draining the device
+        // so no detached worker outlives `HeadlessRuntime` into process exit
+        // and races graphics-driver teardown (water-rs/waterui#4882).
+        #[cfg(not(target_arch = "wasm32"))]
+        generation.engine().engine.shutdown_and_join();
         crate::platform::drain_device_before_teardown(
             &generation.gpu_context().shared_device.device,
         );
@@ -4178,8 +4234,142 @@ pub mod linux_appearance;
 #[cfg(feature = "menu")]
 pub mod native_menu_bar;
 
+/// The GPU device chain an engine-presented window renders on, shared by
+/// every window of the process: the winit desktops and every `UIKit` scene.
+#[cfg(any(hydrolysis_winit, hydrolysis_uikit))]
+#[cfg(hydrolysis_gpu_painter)]
+#[derive(Clone, Debug)]
+pub struct EngineGpuContext {
+    /// The live device generation and its loss budget; every surface
+    /// on the context adopts a clone of the generation, and this
+    /// swaps it after a loss (water-rs/waterui#2742). The generation
+    /// owns the engine, so the context lives on the main thread.
+    pub(crate) gpu: std::rc::Rc<RecoverableGpu>,
+    /// The backend tier the context was created on — a lost device's
+    /// recreation re-runs the adapter pick on the live instance.
+    backends: wgpu::Backends,
+    /// The host step every error of this context names.
+    context: &'static str,
+}
+
+#[cfg(any(hydrolysis_winit, hydrolysis_uikit))]
+#[cfg(hydrolysis_gpu_painter)]
+impl EngineGpuContext {
+    /// Opens the GPU device behind `instance`/`adapter` on the engine's
+    /// required limits and features and gives it a context identity —
+    /// the shared tail of every window's construction, whether a
+    /// `wgpu::Surface` was created alongside (host-acquired) or the
+    /// engine presents instead (Apple). `backends` records the tier for
+    /// the recreation a later device loss runs; `context` names the host
+    /// step in every error.
+    ///
+    /// # Errors
+    /// [`GpuUnavailable`] when the adapter refuses the device or the
+    /// engine cannot start on it.
+    async fn open(
+        instance: wgpu::Instance,
+        adapter: wgpu::Adapter,
+        backends: wgpu::Backends,
+        context: &'static str,
+    ) -> Result<Self, GpuUnavailable> {
+        let generation = Self::open_on(&instance, &adapter, context).await?;
+        Ok(Self {
+            gpu: std::rc::Rc::new(RecoverableGpu::new(generation)),
+            backends,
+            context,
+        })
+    }
+
+    /// Requests the production adapter with no compatible surface — the
+    /// engine presents Apple windows itself, so no `wgpu::Surface` exists to
+    /// pick the adapter by — and opens the device on it. `context` names the
+    /// requester in the adapter log and in every error.
+    ///
+    /// # Errors
+    /// [`GpuUnavailable`] when the host has no usable adapter or the
+    /// adapter refuses the device.
+    #[cfg(target_vendor = "apple")]
+    pub(crate) async fn request(context: &'static str) -> Result<Self, GpuUnavailable> {
+        let (instance, adapter, backends) = request_instance_and_adapter(context).await?;
+        Self::open(instance, adapter, backends, context).await
+    }
+
+    /// Opens a device generation on `adapter` over `instance`, with its
+    /// engine — the shared tail of the first request and of a lost
+    /// device's recreation.
+    async fn open_on(
+        instance: &wgpu::Instance,
+        adapter: &wgpu::Adapter,
+        context: &'static str,
+    ) -> Result<GpuGeneration, GpuUnavailable> {
+        let required_limits = required_device_limits(adapter);
+        let required_features = required_media_features(adapter)?
+            | (adapter.features()
+                & (wgpu::Features::PIPELINE_CACHE | wgpu::Features::PASSTHROUGH_SHADERS));
+        let (device, queue) = open_engine_device(
+            adapter,
+            &wgpu::DeviceDescriptor {
+                label: Some("hydrolysis-engine-device"),
+                required_features,
+                required_limits,
+                memory_hints: cherenkov_gpu::interop::memory_hints(adapter.get_info().backend),
+                experimental_features: wgpu::ExperimentalFeatures::default(),
+                trace: wgpu::Trace::default(),
+            },
+        )
+        .await
+        .map_err(|source| GpuUnavailable::Device {
+            context,
+            adapter: adapter.get_info().name,
+            source,
+        })?;
+        let context_id = next_gpu_context_id();
+        GpuGeneration::open(
+            DeviceLoss::observe(
+                cherenkov_gpu::interop::SharedDevice {
+                    instance: instance.clone(),
+                    adapter: adapter.clone(),
+                    device,
+                    queue,
+                },
+                context_id,
+            ),
+            cherenkov_gpu::GpuConfig::default(),
+        )
+    }
+
+    /// Re-runs the context's adapter pick, device open and engine
+    /// creation on `instance` — the lost generation's own — so a
+    /// recreated device keeps the surfaces the chain already holds
+    /// (water-rs/waterui#2742).
+    #[expect(
+        clippy::future_not_send,
+        reason = "the generation's engine is main-thread Rc state; the caller drives this future with pollster::block_on on its own thread"
+    )]
+    pub(crate) async fn recreate(
+        &self,
+        instance: &wgpu::Instance,
+        compatible_surface: Option<&wgpu::Surface<'_>>,
+    ) -> Result<GpuGeneration, String> {
+        let (adapter, inspected) =
+            probe_adapters(instance, compatible_surface, self.context, self.backends).await;
+        let adapter = adapter.ok_or_else(|| {
+            format!(
+                "no surface-compatible adapter on the live instance \
+                 (inspected: {})",
+                inspected.join("; ")
+            )
+        })?;
+        Self::open_on(instance, &adapter, self.context)
+            .await
+            .map_err(|error| format!("{:#}", waterui_core::Error::from(error)))
+    }
+}
+
 #[cfg(hydrolysis_winit)]
 mod winit_impl {
+    use super::EngineGpuContext;
+    use super::FrameRate;
     use std::rc::Rc;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -4202,116 +4392,14 @@ mod winit_impl {
     };
 
     use super::{
-        CursorStyle, DeviceLoss, DeviceLostError, GpuGeneration, GpuUnavailable, InputConventions,
-        InputEvent, KeyCode, KeyState, Modifiers, MultiClickConfig, PaintedWindow, PlatformWindow,
+        CursorStyle, DeviceLostError, GpuGeneration, GpuUnavailable, InputConventions, InputEvent,
+        KeyCode, KeyState, Modifiers, MultiClickConfig, PaintedWindow, PlatformWindow,
         PointerButton, PointerKind, TextInputPurpose, TextInputState, TouchPhase,
         TouchScrollConfig, enabled_window_buttons, validated_window_frame,
     };
     #[cfg(not(target_os = "macos"))]
     use super::{SurfaceError, SurfaceFrame, SurfaceProvider, reclaim_device};
     use waterui_graphics::gpu::RedrawHandle;
-
-    #[derive(Clone, Debug)]
-    pub struct WinitGpuContext {
-        /// The live device generation and its loss budget; every surface
-        /// on the context adopts a clone of the generation, and this
-        /// swaps it after a loss (water-rs/waterui#2742). The generation
-        /// owns the engine, so the context lives on the event-loop thread.
-        gpu: Rc<super::RecoverableGpu>,
-        /// The backend tier the context was created on — a lost device's
-        /// recreation re-runs the adapter pick on the live instance.
-        backends: wgpu::Backends,
-    }
-
-    impl WinitGpuContext {
-        /// Opens the GPU device behind `instance`/`adapter` on the engine's
-        /// required limits and features and gives it a context identity —
-        /// the shared tail of every `WinitSurface` construction, whether a
-        /// `wgpu::Surface` was created alongside (host-acquired) or the
-        /// engine presents instead (macOS). `backends` records the tier
-        /// for the recreation a later device loss runs.
-        async fn open(
-            instance: wgpu::Instance,
-            adapter: wgpu::Adapter,
-            backends: wgpu::Backends,
-        ) -> Result<Self, GpuUnavailable> {
-            let generation = Self::open_on(&instance, &adapter).await?;
-            Ok(Self {
-                gpu: Rc::new(super::RecoverableGpu::new(generation)),
-                backends,
-            })
-        }
-
-        /// Opens a device generation on `adapter` over `instance`, with its
-        /// engine — the shared tail of the first request and of a lost
-        /// device's recreation.
-        async fn open_on(
-            instance: &wgpu::Instance,
-            adapter: &wgpu::Adapter,
-        ) -> Result<GpuGeneration, GpuUnavailable> {
-            let required_limits = super::required_device_limits(adapter);
-            let required_features = super::required_media_features(adapter)?
-                | (adapter.features()
-                    & (wgpu::Features::PIPELINE_CACHE | wgpu::Features::PASSTHROUGH_SHADERS));
-            let (device, queue) = super::open_engine_device(
-                adapter,
-                &wgpu::DeviceDescriptor {
-                    label: Some("hydrolysis-winit-device"),
-                    required_features,
-                    required_limits,
-                    memory_hints: cherenkov_gpu::interop::memory_hints(adapter.get_info().backend),
-                    experimental_features: wgpu::ExperimentalFeatures::default(),
-                    trace: wgpu::Trace::default(),
-                },
-            )
-            .await
-            .map_err(|source| GpuUnavailable::Device {
-                context: CONTEXT,
-                adapter: adapter.get_info().name,
-                source,
-            })?;
-            let context_id = super::next_gpu_context_id();
-            GpuGeneration::open(
-                DeviceLoss::observe(
-                    cherenkov_gpu::interop::SharedDevice {
-                        instance: instance.clone(),
-                        adapter: adapter.clone(),
-                        device,
-                        queue,
-                    },
-                    context_id,
-                ),
-                cherenkov_gpu::GpuConfig::default(),
-            )
-        }
-
-        /// Re-runs the context's adapter pick, device open and engine
-        /// creation on `instance` — the lost generation's own — so a
-        /// recreated device keeps the surfaces the chain already holds
-        /// (water-rs/waterui#2742).
-        #[expect(
-            clippy::future_not_send,
-            reason = "the generation's engine is main-thread Rc state; the caller drives this future with pollster::block_on on its own thread"
-        )]
-        async fn recreate(
-            &self,
-            instance: &wgpu::Instance,
-            compatible_surface: Option<&wgpu::Surface<'_>>,
-        ) -> Result<GpuGeneration, String> {
-            let (adapter, inspected) =
-                super::probe_adapters(instance, compatible_surface, CONTEXT, self.backends).await;
-            let adapter = adapter.ok_or_else(|| {
-                format!(
-                    "no surface-compatible adapter on the live instance \
-                     (inspected: {})",
-                    inspected.join("; ")
-                )
-            })?;
-            Self::open_on(instance, &adapter)
-                .await
-                .map_err(|error| format!("{:#}", waterui_core::Error::from(error)))
-        }
-    }
 
     /// The host step every winit GPU error names.
     const CONTEXT: &str = "hydrolysis winit surface";
@@ -4324,7 +4412,7 @@ mod winit_impl {
         /// `cherenkov_gpu::WindowTarget` presents the frame itself.
         #[cfg(not(target_os = "macos"))]
         surface: wgpu::Surface<'static>,
-        gpu: WinitGpuContext,
+        gpu: EngineGpuContext,
         /// The device generation this surface renders on — a clone of the
         /// context's live generation, adopted in `ensure_live`
         /// (water-rs/waterui#2742).
@@ -4397,34 +4485,6 @@ mod winit_impl {
     }
 
     impl WinitSurface {
-        /// The frame's render inputs and the engine target it presents
-        /// through. Taking the target consumes a pending display move, so
-        /// the engine hears of each move exactly once.
-        #[cfg(target_os = "macos")]
-        pub(crate) fn render_targets(
-            &mut self,
-            display_scale: f64,
-            base_color: cherenkov_record::WorkingColor,
-        ) -> (
-            crate::renderer::FrameRenderTarget<'_>,
-            super::EngineWindowTarget<'_>,
-        ) {
-            (
-                crate::renderer::FrameRenderTarget::new(
-                    &self.handles,
-                    display_scale,
-                    self.size,
-                    base_color,
-                ),
-                super::EngineWindowTarget {
-                    window: &self.window,
-                    window_slot: &mut self.engine_window,
-                    transparent: self.transparent,
-                    display_moved: self.display_moved.replace(false),
-                },
-            )
-        }
-
         /// The X11 presentation defect a transparent window hits on an old
         /// Mesa software rasterizer: the WSI's `x11_present_to_x11_sw` sent
         /// its `xcb_put_image` at a hardcoded depth of 24, which the X
@@ -4513,7 +4573,7 @@ mod winit_impl {
         #[cfg(not(target_os = "macos"))]
         fn from_surface(
             surface: wgpu::Surface<'static>,
-            gpu: WinitGpuContext,
+            gpu: EngineGpuContext,
             width: u32,
             height: u32,
             requires_transparency: bool,
@@ -4577,9 +4637,9 @@ mod winit_impl {
         )]
         pub async fn new(
             window: Arc<NativeWindow>,
-            shared_gpu: Option<&WinitGpuContext>,
+            shared_gpu: Option<&EngineGpuContext>,
             requires_transparency: bool,
-        ) -> Result<(Self, WinitGpuContext), GpuUnavailable> {
+        ) -> Result<(Self, EngineGpuContext), GpuUnavailable> {
             let (gpu, surface) = if let Some(gpu) = shared_gpu {
                 // The instance lives inside the context's live generation —
                 // a surface must be created on the instance that produced
@@ -4604,7 +4664,7 @@ mod winit_impl {
                     .await?;
 
                 (
-                    WinitGpuContext::open(instance, adapter, backends).await?,
+                    EngineGpuContext::open(instance, adapter, backends, CONTEXT).await?,
                     surface,
                 )
             };
@@ -4640,15 +4700,13 @@ mod winit_impl {
         )]
         pub async fn new(
             window: Arc<NativeWindow>,
-            shared_gpu: Option<&WinitGpuContext>,
+            shared_gpu: Option<&EngineGpuContext>,
             requires_transparency: bool,
-        ) -> Result<(Self, WinitGpuContext), GpuUnavailable> {
+        ) -> Result<(Self, EngineGpuContext), GpuUnavailable> {
             let gpu = if let Some(gpu) = shared_gpu {
                 gpu.clone()
             } else {
-                let (instance, adapter, backends) =
-                    super::request_instance_and_adapter(CONTEXT).await?;
-                WinitGpuContext::open(instance, adapter, backends).await?
+                EngineGpuContext::request(CONTEXT).await?
             };
             let size = window.inner_size();
             let display_moved = std::rc::Rc::new(std::cell::Cell::new(false));
@@ -4779,6 +4837,33 @@ mod winit_impl {
         #[cfg(target_os = "macos")]
         const fn set_transparent(&mut self, transparent: bool) {
             self.transparent = transparent;
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    impl super::EnginePresented for WinitSurface {
+        fn render_targets(
+            &mut self,
+            display_scale: f64,
+            base_color: cherenkov_record::WorkingColor,
+        ) -> (
+            crate::renderer::FrameRenderTarget<'_>,
+            super::EngineWindowTarget<'_>,
+        ) {
+            (
+                crate::renderer::FrameRenderTarget::new(
+                    &self.handles,
+                    display_scale,
+                    self.size,
+                    base_color,
+                ),
+                super::EngineWindowTarget {
+                    window: &self.window,
+                    window_slot: &mut self.engine_window,
+                    transparent: self.transparent,
+                    display_moved: self.display_moved.replace(false),
+                },
+            )
         }
     }
 
@@ -5245,7 +5330,7 @@ mod winit_impl {
         }
 
         /// Creates the surface for `window`, reusing `shared_gpu`'s device
-        /// chain when given and returning the `WinitGpuContext` in use so
+        /// chain when given and returning the `EngineGpuContext` in use so
         /// the caller can hand it to the next surface.
         ///
         /// `wake` asks the host's event loop to redraw this window. GPU
@@ -5273,10 +5358,10 @@ mod winit_impl {
         pub async fn new_with_shared_gpu(
             window: Arc<NativeWindow>,
             wake: RedrawHandle,
-            shared_gpu: Option<&WinitGpuContext>,
+            shared_gpu: Option<&EngineGpuContext>,
             requires_transparency: bool,
             application_icon: Option<winit::window::Icon>,
-        ) -> Result<(Self, WinitGpuContext), GpuUnavailable> {
+        ) -> Result<(Self, EngineGpuContext), GpuUnavailable> {
             let (surface, gpu) =
                 WinitSurface::new(window.clone(), shared_gpu, requires_transparency).await?;
             let size = window.inner_size();
@@ -6614,12 +6699,20 @@ mod winit_impl {
         /// Requests that the window be repainted.
         fn request_redraw(&self) {
             self.window.request_redraw();
-            // Hold the ProMotion frame-rate demand while frames are being
-            // requested, so animations run at 120Hz on high-refresh panels.
+        }
+
+        fn set_frame_rate_vote(&self, vote: Option<FrameRate>) {
             #[cfg(target_os = "macos")]
             if let Some(demand) = &self.frame_rate_demand {
-                demand.hold_demand();
+                use super::macos_display_link::screen_peak_fps;
+                use crate::num_cast::f64_as_f32;
+                let peak = screen_peak_fps(&self.window)
+                    .or_else(|| self.refresh_rate_hz().map(f64_as_f32))
+                    .unwrap_or(60.0);
+                demand.set_vote(vote, peak);
             }
+            #[cfg(not(target_os = "macos"))]
+            let _ = vote;
         }
 
         /// The frame-signals wake is the same occlusion-gated
@@ -6908,7 +7001,6 @@ mod winit_impl {
         }
     }
 
-    pub use WinitGpuContext as ExportedWinitGpuContext;
     pub use WinitWindow as ExportedWinitWindow;
 
     #[cfg(test)]
@@ -7848,8 +7940,6 @@ pub use web_impl::report_fatal_error;
 pub use web_impl::yield_wheel;
 
 #[cfg(hydrolysis_winit)]
-pub use winit_impl::ExportedWinitGpuContext as WinitGpuContext;
-#[cfg(hydrolysis_winit)]
 #[cfg(hydrolysis_winit)]
 pub use winit_impl::ExportedWinitWindow as WinitWindow;
 #[cfg(all(hydrolysis_winit, target_os = "macos"))]
@@ -8017,6 +8107,25 @@ mod recovery_tests {
             exhausted.reason().contains("no adapter"),
             "{}",
             exhausted.reason()
+        );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn offscreen_gpu_context_drop_joins_render_thread() {
+        use std::rc::Rc;
+
+        use cherenkov::RenderError;
+
+        let context = OffscreenGpuContext::for_tests();
+        let engine = Rc::clone(&context.recoverable().generation().engine().engine);
+        assert!(engine.memory().is_ok());
+
+        drop(context);
+
+        assert!(
+            matches!(engine.memory(), Err(RenderError::Thread)),
+            "offscreen teardown must join the Cherenkov render thread before returning"
         );
     }
 }

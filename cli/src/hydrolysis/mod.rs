@@ -4,6 +4,7 @@ use crate::toolchain::{Host, ToolchainError, windows_arm64_llvm::WindowsArm64Llv
 
 pub mod android;
 pub mod backend;
+mod ios;
 pub mod platform;
 mod web_launch;
 

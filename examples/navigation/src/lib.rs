@@ -300,10 +300,8 @@ pub fn demo() -> impl View {
 fn pane_tab(
     pane: Pane,
     mail: &Mail,
-) -> Tab<
-    impl ViewBuilder<Output = NavigationView<impl View + use<>>> + use<>,
-    impl LabelKind + Clone + use<>,
-> {
+) -> Tab<impl ViewBuilder<Output = NavigationView<impl View + use<>>> + use<>, impl LabelKind + use<>>
+{
     let (title, icon) = match pane {
         Pane::Inbox => ("Inbox", inbox()),
         Pane::Library => ("Library", image_album()),

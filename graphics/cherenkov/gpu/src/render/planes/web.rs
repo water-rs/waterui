@@ -33,7 +33,6 @@
 use kurbo::{Affine, Size};
 use rustc_hash::FxHashMap;
 use wasm_bindgen::JsCast as _;
-use waterui_contract::contract_violation;
 use web_sys::{Element, HtmlCanvasElement, HtmlElement};
 
 use cherenkov::{FillRule, LayerId, RenderError, ShapeData, SurfaceError};
@@ -71,7 +70,7 @@ pub struct DomTarget {
     pub(crate) size: (u32, u32),
     pub(crate) transparent: bool,
     pub(crate) color_space: ColorSpaceRequest,
-    pub(crate) refresh: cherenkov::RefreshRange,
+    pub(crate) refresh: cherenkov::FrameRate,
 }
 
 impl DomTarget {
@@ -83,7 +82,7 @@ impl DomTarget {
             size,
             transparent: false,
             color_space: ColorSpaceRequest::Content,
-            refresh: cherenkov::DEFAULT_REFRESH,
+            refresh: cherenkov::FrameRate::FAST,
         }
     }
 
@@ -108,21 +107,10 @@ impl DomTarget {
         self
     }
 
-    /// Sets the refresh range for backend animation and presentation
-    /// retries.
-    ///
-    /// # Contract
-    /// An empty range or one that includes zero is a contract violation;
-    /// the request is ignored and the previous refresh range stays.
+    /// Sets the refresh vote for backend animation and presentation retries.
     #[must_use]
-    pub fn rate(mut self, rate: cherenkov::RefreshRange) -> Self {
-        if *rate.start() > 0 && !rate.is_empty() {
-            self.refresh = rate;
-        } else {
-            contract_violation!(
-                "refresh range must be positive and ordered; the request is ignored and the previous range stays"
-            );
-        }
+    pub const fn rate(mut self, rate: cherenkov::FrameRate) -> Self {
+        self.refresh = rate;
         self
     }
 

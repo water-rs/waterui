@@ -3,7 +3,8 @@
 use cherenkov::kurbo::{Affine, Rect};
 use cherenkov::{__engine_test as split_test, __engine_wait as wait};
 use cherenkov::{
-    Draw as _, Engine, FrameTime, Next, Offscreen, OffscreenFormat, Visibility, WorkingColor,
+    Draw as _, Engine, FrameRate, FrameTime, Next, Offscreen, OffscreenFormat, Visibility,
+    WorkingColor,
 };
 use cherenkov_gpu::{
     Gpu, GpuConfig,
@@ -335,8 +336,11 @@ fn producer_samples_engine_time_and_keeps_setup_across_display_changes()
     use std::time::Duration;
 use cherenkov::Instant;
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
-    let surface =
-        wait!(engine.surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16).rate(30..=120), || {}))?;
+    let surface = wait!(engine.surface(
+        Offscreen::new((16, 16), OffscreenFormat::LinearF16)
+            .rate(FrameRate::range(30.0..=120.0, 120.0)),
+        || {},
+    ))?;
     let (adapter, adapters) = mpsc::channel();
     let (samples, times) = mpsc::channel();
     let producer = engine.gpu_producer(GpuContentBox::new(
@@ -353,7 +357,7 @@ use cherenkov::Instant;
     let Next::At { rate, .. } = wait!(engine.render(FrameTime::unpresented_at(start)))? else {
         panic!("producer requests another frame");
     };
-    assert_eq!(rate, 30..=120);
+    assert_eq!(rate, FrameRate::FAST);
     assert_eq!(adapters.try_recv()?, engine.info().name);
     let first = times.try_recv()?;
     assert_eq!(first.elapsed, Duration::ZERO);

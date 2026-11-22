@@ -20,9 +20,9 @@ checksum = "366ffbaa4442f4684d91e2cd7c5ea7c4ed8add41959a31447066e279e432b618"
 
 [[package]]
 name = "accesskit"
-version = "0.25.1"
+version = "0.25.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ad442f58ee04714aaa0ba0a2768c1ea1935b29507bb22ddece8cbbc76db02932"
+checksum = "4e883d1d28c5fd5568c79ed2d2bd48d9f2fd3945c8974ed0f53690ceddb051be"
 dependencies = [
  "enumn",
  "serde",
@@ -45,9 +45,9 @@ dependencies = [
 
 [[package]]
 name = "accesskit_consumer"
-version = "0.39.1"
+version = "0.39.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8a45e2bb300bea6d5f33a82c3e051c3ddc6f41c209750f68a0acbe991a284344"
+checksum = "f3da8f27636015191b2264ee1df681503170a632cafd832fdc1edfdd4e3a2fd3"
 dependencies = [
  "accesskit",
  "hashbrown 0.17.1",
@@ -55,9 +55,9 @@ dependencies = [
 
 [[package]]
 name = "accesskit_ios"
-version = "0.2.1"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "28e539d64b27fd4c14de8f78ada8f7c944c092f52f7e49fb63316507a57f6937"
+checksum = "a5280724673bbfa8b30a838c013500b719392989be3b97c5a9964062c252c232"
 dependencies = [
  "accesskit",
  "accesskit_consumer",
@@ -1731,6 +1731,7 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
  "waterui-contract",
+ "waterui-frame-rate",
  "web-time",
 ]
 
@@ -1804,6 +1805,7 @@ dependencies = [
  "skrifa 0.48.0",
  "tracing",
  "waterui-contract",
+ "waterui-frame-rate",
 ]
 
 [[package]]
@@ -1862,6 +1864,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-test",
  "waterui-contract",
+ "waterui-frame-rate",
  "web-sys",
  "wgpu",
 ]
@@ -1908,6 +1911,7 @@ dependencies = [
  "thiserror 2.0.21",
  "waterui-contract",
  "waterui-easing",
+ "waterui-frame-rate",
  "web-time",
 ]
 
@@ -2206,8 +2210,10 @@ dependencies = [
  "oslog",
  "thiserror 2.0.21",
  "tracing",
+ "tracing-subscriber",
  "waterui-contract",
  "waterui-easing",
+ "waterui-frame-rate",
  "wgpu",
  "wgpu-hal",
 ]
@@ -2220,7 +2226,7 @@ checksum = "af491d569909a7e4dee0ad7db7f5341fef5c614d5b8ec8cf765732aba3cff681"
 dependencies = [
  "serde",
  "termcolor",
- "unicode-width 0.1.14",
+ "unicode-width 0.2.2",
 ]
 
 [[package]]
@@ -4069,6 +4075,7 @@ version = "0.1.0"
 dependencies = [
  "hydrolysis-m3",
  "waterui",
+ "waterui-conformance",
  "waterui-icons-material-icon",
  "waterui-testing",
 ]
@@ -4707,6 +4714,7 @@ name = "hydrolysis"
 version = "0.3.1"
 dependencies = [
  "accesskit",
+ "accesskit_ios",
  "accesskit_winit",
  "android_logger",
  "approx",
@@ -4719,6 +4727,7 @@ dependencies = [
  "cherenkov-cpu",
  "cherenkov-gpu",
  "cherenkov-record",
+ "cocoa-ui",
  "console_error_panic_hook",
  "cookie",
  "ctrlc",
@@ -4768,6 +4777,7 @@ dependencies = [
  "toml 1.1.8+spec-1.1.0",
  "tracing",
  "tracing-log",
+ "tracing-panic",
  "tracing-subscriber",
  "ui-events-winit",
  "unicode-segmentation",
@@ -4776,6 +4786,7 @@ dependencies = [
  "waterkit-clipboard",
  "waterkit-menu",
  "waterui",
+ "waterui-apple-menu",
  "waterui-assets",
  "waterui-assets-core",
  "waterui-backend-core",
@@ -4784,6 +4795,7 @@ dependencies = [
  "waterui-controls",
  "waterui-core",
  "waterui-form",
+ "waterui-frame-rate",
  "waterui-graphics",
  "waterui-image",
  "waterui-inspector-protocol",
@@ -4828,7 +4840,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis-m3"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis-m3?branch=refactor%2F4869-typed-tab-toolbar#b0f3979fb68892604203f39f27e7d695aecb42b8"
+source = "git+https://github.com/water-rs/hydrolysis-m3?branch=main#d17673a23ee22743029e003963cfeffa199b6644"
 dependencies = [
  "hydrolysis",
  "material-color-utils",
@@ -8908,7 +8920,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "proc-macro2 1.0.107",
  "quote 1.0.47",
  "syn 2.0.119",
@@ -12865,10 +12877,12 @@ dependencies = [
  "waterkit-build",
  "waterui",
  "waterui-accessibility",
+ "waterui-apple-menu",
  "waterui-backend-core",
  "waterui-browser-cef",
  "waterui-capture",
  "waterui-core",
+ "waterui-frame-rate",
  "waterui-graphics",
  "waterui-interaction",
  "waterui-locale",
@@ -12881,6 +12895,17 @@ dependencies = [
  "waterui-video",
  "waterui-webview",
  "wgpu-hal",
+]
+
+[[package]]
+name = "waterui-apple-menu"
+version = "0.5.1"
+dependencies = [
+ "cocoa-ui",
+ "nami",
+ "tracing",
+ "waterui-controls",
+ "waterui-core",
 ]
 
 [[package]]
@@ -13200,6 +13225,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "waterui-conformance"
+version = "0.5.1"
+dependencies = [
+ "askama",
+ "image",
+ "pollster",
+ "rayon",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "waterui",
+ "waterui-capture",
+ "waterui-core",
+ "waterui-testing",
+]
+
+[[package]]
 name = "waterui-contract"
 version = "0.5.1"
 dependencies = [
@@ -13238,6 +13280,7 @@ dependencies = [
  "thiserror 2.0.21",
  "waterui-contract",
  "waterui-easing",
+ "waterui-frame-rate",
  "waterui-macros",
  "waterui-meta",
 ]
@@ -13281,6 +13324,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "waterui-frame-rate"
+version = "0.5.1"
+dependencies = [
+ "nami",
+]
+
+[[package]]
 name = "waterui-git-head"
 version = "0.5.1"
 dependencies = [
@@ -13320,6 +13370,7 @@ dependencies = [
  "waterui",
  "waterui-color",
  "waterui-core",
+ "waterui-frame-rate",
  "waterui-testing",
  "waterui-text",
  "wgpu",
@@ -13973,7 +14024,7 @@ dependencies = [
 [[package]]
 name = "waterui-video-gpu"
 version = "0.4.0"
-source = "git+https://github.com/water-rs/video-gpu?branch=refactor%2Fbutton-a11y-label#f3ae7acc705d657b9438a8d4befb3b4b3923ad58"
+source = "git+https://github.com/water-rs/video-gpu?branch=main#65b050ed8dfa70e3ffb26e33991078864f2004c5"
 dependencies = [
  "async-channel",
  "executor-core",

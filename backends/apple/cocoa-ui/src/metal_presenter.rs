@@ -37,6 +37,7 @@ use objc2_quartz_core::{
     CAFrameRateRange, CAMetalDisplayLink, CAMetalDisplayLinkDelegate, CAMetalDisplayLinkUpdate,
     CAMetalDrawable, CAMetalLayer,
 };
+use waterui_frame_rate::FrameRate;
 
 use crate::callback::guarded;
 
@@ -440,14 +441,23 @@ impl MetalPresenter {
         self.link.setPaused(paused);
     }
 
-    /// Arms the link for the display's cadence: `preferredFrameRateRange`
-    /// asks for the screen's real maximum.
-    pub fn set_display_rate(&self, maximum_frames_per_second: f32) {
+    /// Arms the link for the display's cadence using `vote` clamped against
+    /// `display_peak_fps`.
+    pub fn set_frame_rate(&self, vote: FrameRate, display_peak_fps: f32) {
+        let clamped = vote.clamped(display_peak_fps);
         self.link.setPreferredFrameRateRange(CAFrameRateRange::new(
-            maximum_frames_per_second.min(60.0),
-            maximum_frames_per_second,
-            maximum_frames_per_second,
+            clamped.minimum(),
+            clamped.maximum(),
+            clamped.preferred(),
         ));
+    }
+
+    /// Returns the link's currently configured `(minimum, maximum, preferred)`
+    /// preferred frame-rate range.
+    #[must_use]
+    pub fn preferred_frame_rate_range(&self) -> (f32, f32, f32) {
+        let range = self.link.preferredFrameRateRange();
+        (range.minimum, range.maximum, range.preferred)
     }
 
     /// Swaps the device the drawable pool renders for — context

@@ -635,7 +635,7 @@ mod tests {
             let elapsed = Duration::from_secs(frame.into()) / 120;
             let sampling = tree.sample(start + elapsed, 1.0);
             assert!(sampling.stepped);
-            assert_eq!(sampling.rate, Some(super::super::RATE_FAST));
+            assert_eq!(sampling.rate, Some(crate::FrameRate::FAST));
             let angle = spin()
                 .sample(elapsed, crate::Repeat::Forever)
                 .expect("forever runs");

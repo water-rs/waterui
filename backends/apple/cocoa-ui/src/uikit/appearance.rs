@@ -9,8 +9,8 @@ use std::fmt;
 
 use objc2::ClassType;
 use objc2_ui_kit::{
-    UITraitCollection, UITraitEnvironment, UITraitUserInterfaceStyle, UIUserInterfaceStyle,
-    UIViewController,
+    UITraitCollection, UITraitDisplayScale, UITraitEnvironment, UITraitUserInterfaceStyle,
+    UIUserInterfaceStyle, UIViewController,
 };
 
 use super::trait_change::{TraitChangeObservation, register_trait_change};
@@ -46,6 +46,54 @@ impl ViewController {
                 move |controller: &Self| handler(controller.color_scheme()),
             ),
         }
+    }
+}
+
+impl ViewController {
+    /// The scale factor of the screen the controller's views are drawn on —
+    /// points to pixels.
+    #[must_use]
+    pub fn display_scale(&self) -> f64 {
+        // SAFETY: see the module safety note.
+        unsafe { self.traitCollection().displayScale() }
+    }
+
+    /// Calls `handler` with the new display scale every time the screen
+    /// scale the controller is drawn at changes — when its window moves to
+    /// another display — until the returned guard is dropped.
+    ///
+    /// A panic in `handler` aborts the process (see the
+    /// [crate documentation](crate)).
+    ///
+    /// # Panics
+    ///
+    /// If `UIKit` reports a trait change off the main thread.
+    pub fn observe_display_scale(
+        &self,
+        handler: impl Fn(f64) + 'static,
+    ) -> DisplayScaleObservation {
+        DisplayScaleObservation {
+            observation: register_trait_change::<UIViewController, _>(
+                self,
+                UITraitDisplayScale::class().as_ref(),
+                move |controller: &Self| handler(controller.display_scale()),
+            ),
+        }
+    }
+}
+
+/// Keeps a display-scale handler registered; dropping it unregisters the
+/// handler.
+#[must_use = "the handler is unregistered as soon as this guard is dropped"]
+pub struct DisplayScaleObservation {
+    observation: TraitChangeObservation,
+}
+
+impl fmt::Debug for DisplayScaleObservation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DisplayScaleObservation")
+            .field("observation", &self.observation)
+            .finish_non_exhaustive()
     }
 }
 

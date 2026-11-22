@@ -30,6 +30,7 @@ smallvec = { workspace = true, features = ["union"] }
 thiserror = "2"
 tracing = "0.1"
 waterui-contract.workspace = true
+waterui-frame-rate.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 async-channel = { workspace = true, default-features = false, features = ["std"] }

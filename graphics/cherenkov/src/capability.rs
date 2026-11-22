@@ -136,6 +136,13 @@ pub trait GpuContent: Backend + GpuInstalls {
         producer: ProducerId,
         frame: Self::Frame,
     ) -> Vec<(SurfaceId, LayerId)>;
+    /// Updates or clears a producer's non-redrawing source cadence vote
+    /// (`FrameOutput::set_source_rate` / `FrameSink::set_source_rate`).
+    fn set_source_rate(
+        r: &mut Self::Renderer,
+        producer: ProducerId,
+        rate: Option<crate::FrameRate>,
+    );
     /// Retires `producer`, the last `GpuProducer` handle having dropped:
     /// every binding releases it and its device resources — current frame
     /// and frame ring — are freed.
