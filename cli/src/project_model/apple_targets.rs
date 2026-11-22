@@ -74,7 +74,6 @@ impl fmt::Display for AppleVersion {
 /// The `[apple]` section of `Water.toml`.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[non_exhaustive]
 pub struct AppleConfig {
     /// `[apple.deployment-targets]`.
     #[serde(
@@ -82,10 +81,22 @@ pub struct AppleConfig {
         rename = "deployment-targets",
         skip_serializing_if = "AppleDeploymentTargets::is_empty"
     )]
-    pub deployment_targets: AppleDeploymentTargets,
+    deployment_targets: AppleDeploymentTargets,
 }
 
 impl AppleConfig {
+    /// A section declaring `deployment_targets`.
+    #[must_use]
+    pub const fn new(deployment_targets: AppleDeploymentTargets) -> Self {
+        Self { deployment_targets }
+    }
+
+    /// `[apple.deployment-targets]`.
+    #[must_use]
+    pub const fn deployment_targets(&self) -> &AppleDeploymentTargets {
+        &self.deployment_targets
+    }
+
     /// Whether the section declares nothing.
     #[must_use]
     pub const fn is_empty(&self) -> bool {
@@ -97,23 +108,22 @@ impl AppleConfig {
 /// out runs on the framework's floor.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[non_exhaustive]
 pub struct AppleDeploymentTargets {
     /// macOS.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub macos: Option<AppleVersion>,
+    macos: Option<AppleVersion>,
     /// iOS, Mac Catalyst and the iOS simulator.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ios: Option<AppleVersion>,
+    ios: Option<AppleVersion>,
     /// tvOS.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tvos: Option<AppleVersion>,
+    tvos: Option<AppleVersion>,
     /// watchOS.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub watchos: Option<AppleVersion>,
+    watchos: Option<AppleVersion>,
     /// visionOS.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub visionos: Option<AppleVersion>,
+    visionos: Option<AppleVersion>,
 }
 
 impl AppleDeploymentTargets {

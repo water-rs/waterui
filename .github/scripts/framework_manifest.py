@@ -2,7 +2,7 @@
 
 The manifest records the worktree's lockfile hash, the scaffold table the root manifest's `[package.metadata.waterui]` declares, and
 that metadata table verbatim. A scaffold package whose
-`[workspace.dependencies]` requirement is a git pin (`git` + `rev`) is not one
+requirement is a git pin (`git` + `rev`) is not one
 the stable channel distributes, whatever the registry holds for that name, so
 a `stable` manifest withholds its entries from `scaffold` and records the pin
 under `experimental-packages` instead; `nightly` carries it in `scaffold` like any
@@ -19,7 +19,7 @@ the manifest metadata round trip without checking out or publishing a release.
 exist yet — the candidate revision it will publish. The named revision is
 checked out so every recorded fact is read from the released tree.
 
-`nightly` certifies the `dev` revision a green full-matrix run tested, as
+`nightly` certifies the `main` revision a green full-matrix run tested, as
 the immutable `nightly-<date>-<sha12>` tag `nightly.yml` publishes. It
 refuses a revision that is already certified or that does not advance the
 newest certification, so the certified line only moves forward.
@@ -53,7 +53,8 @@ def lockfile_hashes():
 
 def framework_scaffold(framework):
     """The scaffold table the framework manifest itself declares: each
-    `scaffold-packages` entry's `[workspace.dependencies]` requirement —
+    `scaffold-packages` entry's requirement — its `scaffold-pins` entry, else
+    its `[workspace.dependencies]` one —
     `{name}-version`, plus `{name}-git` and `{name}-rev` when the requirement
     pins a repository — and every backend coordinate — `{name}-backend-url`,
     plus the `{name}-backend-version` of a backend pinned by release or the
@@ -66,9 +67,11 @@ def framework_scaffold(framework):
     Identical to `framework_scaffold` in the CLI for the same tree."""
     metadata = framework["package"]["metadata"]["waterui"]
     workspace = framework["workspace"]["dependencies"]
+    pins = metadata.get("scaffold-pins", {})
     scaffold = {}
     for name in metadata["scaffold-packages"]:
-        dependency = workspace[name]
+        # A package no member links is declared only as a pin.
+        dependency = pins[name] if name in pins else workspace[name]
         scaffold[f"{name}-version"] = (
             dependency if isinstance(dependency, str) else dependency["version"]
         )
@@ -81,7 +84,7 @@ def framework_scaffold(framework):
                 r"[0-9a-fA-F]{40}", revision
             ):
                 raise RuntimeError(
-                    f"workspace.dependencies.{name} must pin an immutable Git revision"
+                    f"{name} must pin an immutable Git revision"
                 )
             scaffold[f"{name}-git"] = dependency["git"]
             scaffold[f"{name}-rev"] = revision
@@ -217,7 +220,8 @@ def write_outputs(outputs):
 def prepare_nightly():
     repository = os.environ["GITHUB_REPOSITORY"]
     revision = git("rev-parse", "HEAD")
-    if revision != os.environ["GITHUB_SHA"]:
+    expected = os.environ.get("TARGET_REVISION") or os.environ["GITHUB_SHA"]
+    if revision != expected:
         raise RuntimeError("The checkout is not the revision tested by this run")
     date = git("show", "-s", "--format=%cs", "HEAD").replace("-", "")
     tag = f"nightly-{date}-{revision[:12]}"
@@ -252,7 +256,7 @@ def main():
         "release preflight passes the candidate commit before the tag exists)",
     )
     commands.add_parser(
-        "nightly", help="certify the dev revision a green full-matrix run tested"
+        "nightly", help="certify the main revision a green full-matrix run tested"
     )
     args = parser.parse_args()
     if args.self_check:

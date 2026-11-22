@@ -7,18 +7,26 @@
 //! header on macOS — publishing into the window toolbar instead when the
 //! window is titled.
 
+use crate::contract::{NativeLeaf, RenderContext};
 use waterui::navigation::NavigationView;
+use waterui_core::layout::{LayoutError, ProposalSize, Rect, ResolvedExtent};
 
-use crate::dispatch::Dispatcher;
-
-/// Installs the `NavigationView` handler.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<NavigationView>(platform::nav_view_leaf);
+/// The `NavigationView` realization.
+pub fn realize_navigation_view(value: NavigationView, ctx: &RenderContext<'_>) -> NativeLeaf {
+    platform::nav_view_leaf(value, ctx)
 }
 
 struct Fill;
 
 impl waterui_core::layout::SubView for Fill {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     fn measure(
         &self,
         _proposal: waterui_core::layout::ProposalSize,
@@ -43,13 +51,15 @@ mod platform {
     use cocoa_ui::{Rect, view};
     use waterui::Str;
     use waterui::navigation::{NavigationController, NavigationTitleDisplayMode, NavigationView};
+    use waterui::resolve::Resolvable;
+    use waterui::theme::color::Foreground;
     use waterui_core::reactive::Signal;
 
     use crate::components::navigation::bar::{
         BarItem, BarState, bar_color, bar_item_frame, search_prompt,
     };
-    use crate::components::text::platform_color;
     use crate::contract::{KeepAlive, NativeLeaf, RenderContext};
+    use crate::theme::platform_color;
 
     use super::Fill;
     use alloc::rc::Rc;
@@ -116,10 +126,10 @@ mod platform {
         let search_bar = bar.search.as_ref().map(|search| {
             let field = SearchBar::new(mtm);
             field.set_change_handler({
-                let text = search.text.clone();
+                let text = search.text().clone();
                 move |value| text.set(Str::from(value))
             });
-            keep.bind(&search.text, {
+            keep.bind(search.text(), {
                 let field = field.clone();
                 move |text: Str| field.set_text(text.as_ref())
             });
@@ -132,12 +142,16 @@ mod platform {
         });
 
         bar_view.set_page(&page(&bar, &mut keep, env));
+        keep.bind(&Foreground.resolve(env), {
+            let bar_view = bar_view.clone();
+            move |color| bar_view.set_title_color(&platform_color(&color))
+        });
 
         if let Some(color) = bar_color(&bar) {
             keep.bind(color, {
                 let bar_view = bar_view.clone();
                 move |color| {
-                    bar_view.setBarTintColor(Some(&platform_color(&color)));
+                    bar_view.set_bar_color(&platform_color(&color));
                 }
             });
         }
@@ -263,7 +277,7 @@ mod platform {
         keep: &mut KeepAlive,
         env: &waterui::Environment,
     ) -> cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIBarButtonItem> {
-        let mtm = cocoa_ui::MainThreadMarker::new().expect("main thread");
+        let mtm = cocoa_ui::MainThreadMarker::new().expect("views render on the main thread");
         crate::components::navigation::button_bar_item(item, keep, mtm, |icon, action, keep| {
             view_icon_item(item, icon, action, env, keep, mtm)
         })
@@ -338,8 +352,8 @@ mod platform {
     use crate::components::navigation::bar::{
         BarItem, BarItemIcon, BarState, bar_color, bar_item_frame, search_prompt,
     };
-    use crate::components::text::platform_color;
     use crate::contract::{KeepAlive, NativeLeaf, RenderContext};
+    use crate::theme::platform_color;
 
     use super::Fill;
     use alloc::rc::Rc;
@@ -406,10 +420,10 @@ mod platform {
         let search_field = bar.search.as_ref().map(|search| {
             let field = SearchField::new(mtm);
             field.set_change_handler({
-                let text = search.text.clone();
+                let text = search.text().clone();
                 move |field| text.set(Str::from(field.text()))
             });
-            keep.bind(&search.text, {
+            keep.bind(search.text(), {
                 let field = field.clone();
                 move |text: Str| field.set_text(text.as_ref())
             });
@@ -574,11 +588,13 @@ mod platform {
                 }
                 let owner = Rc::as_ptr(&bar) as usize;
                 if bar.hidden.snapshot() || view::is_hidden_in_hierarchy(host) {
-                    slot.as_ref().expect("attached").clear_content(owner);
+                    slot.as_ref()
+                        .expect("the window toolbar slot is filled just above")
+                        .clear_content(owner);
                     return;
                 }
                 slot.as_ref()
-                    .expect("attached")
+                    .expect("the window toolbar slot is filled just above")
                     .set_content(toolbar_content(&bar, search_field.as_ref(), &icons), owner);
                 view::set_hidden(&header, true);
                 host_weak.set_needs_layout();

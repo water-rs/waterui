@@ -2,6 +2,7 @@
 
 use alloc::{rc::Rc, vec::Vec};
 
+use waterui_core::contract_violation;
 use waterui_url::Url;
 
 use crate::NavigationPath;
@@ -53,20 +54,22 @@ where
     ///
     /// Returns `false` when no registered resolver matches.
     ///
-    /// # Panics
+    /// # Contract violation
     ///
-    /// Panics when more than one resolver claims the same URL.
+    /// More than one resolver claiming the same URL is reported: a debug
+    /// build panics; a release build logs it and uses the first match.
     #[must_use]
     pub fn open(&self, url: &Url) -> bool {
         let mut resolved = self.resolvers.iter().filter_map(|resolver| resolver(url));
         let Some(routes) = resolved.next() else {
             return false;
         };
-        assert!(
-            resolved.next().is_none(),
-            "more than one navigation URL resolver matched `{}`",
-            url.as_str()
-        );
+        if resolved.next().is_some() {
+            contract_violation!(
+                "more than one navigation URL resolver matched `{}`; the first match is used",
+                url.as_str()
+            );
+        }
         self.path.replace(routes);
         true
     }
@@ -86,6 +89,22 @@ mod tests {
 
         assert!(router.open(&Url::new("waterui://app/settings/profile")));
         assert_eq!(path.snapshot(), vec![2, 3]);
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "more than one navigation URL resolver matched")
+    )]
+    fn ambiguous_url_resolution_uses_the_first_match() {
+        let path = NavigationPath::from(vec![1_u32]);
+        let router = NavigationRouter::new(path.clone())
+            .route(|_| Some(vec![2]))
+            .route(|_| Some(vec![3]));
+
+        // Release outcome: the first resolver wins.
+        assert!(router.open(&Url::new("waterui://app/settings")));
+        assert_eq!(path.snapshot(), vec![2]);
     }
 
     #[test]

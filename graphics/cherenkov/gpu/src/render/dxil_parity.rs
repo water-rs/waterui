@@ -78,9 +78,9 @@ impl Harness {
         let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
         descriptor.backends = wgpu::Backends::DX12;
         // SAFETY: caps the compiler at the shader model `build.rs` targets;
-        // the device's own model is at least 6.0 wherever DXC runs.
+        // native half arithmetic requires shader model 6.2.
         descriptor.backend_options.dx12.force_shader_model =
-            unsafe { wgpu::ForceShaderModelToken::with_shader_model(wgpu::DxcShaderModel::V6_0) };
+            unsafe { wgpu::ForceShaderModelToken::with_shader_model(wgpu::DxcShaderModel::V6_2) };
         let instance = wgpu::Instance::new(descriptor);
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             force_fallback_adapter: true,
@@ -236,7 +236,7 @@ fn every_fixed_pipeline_matches_the_embedded_hlsl() {
     let device = &harness.device;
     let wgsl = ShaderDelivery::Wgsl;
     for variant in 0..ENGINE.len() {
-        let programs = wgsl.engine_programs(device, variant);
+        let programs = wgsl.engine_programs(device, variant, wgpu::TextureFormat::Rgba16Float);
         for (program, spec) in programs.iter().zip(programs::ENGINE) {
             let name = format!("engine{variant}");
             harness.render(&name, bindings::ENGINE_GROUPS, program, *spec);

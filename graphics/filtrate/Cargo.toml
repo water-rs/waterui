@@ -57,12 +57,18 @@ gpu = [
     "dep:web-time",
     "dep:wgpu",
 ]
+# `LaneProgram`: a filter's composed stages run on the CPU by
+# `cherenkov-shader`'s lane executor, with no wgpu stack.
+lanes = ["dep:cherenkov-shader", "cherenkov-shader/lanes"]
 # WebGL2 backend support for wasm targets: turns on wgpu's `webgl` backend.
 # Every executor pass is a fragment pass, so WebGL2's lack of compute shaders
 # and storage textures does not matter. Enabling this feature for a non-wasm
 # target is a compile error — native and WebGPU devices run the same code
 # without it.
 webgl = ["gpu", "wgpu/webgl"]
+# `video::GpuEffectProcessor`: an `Effect` as a WaterKit video frame processor
+# over `GpuTextureFrame`, driven by the frame's media timing.
+waterkit-video = ["gpu", "dep:waterkit-video-core", "dep:waterkit-video-processing"]
 
 [dependencies]
 bytemuck = "1"
@@ -77,11 +83,17 @@ futures-util = { version = "0.3.34", default-features = false, features = ["std"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 thiserror = { version = "2.0.21", optional = true }
 tracing = { version = "0.1.44", optional = true }
+# Reports a broken contract: a panic in debug, an error log in release.
+waterui-contract.workspace = true
+# `video`: the frame-processor trait, texture frames and media timing the
+# adapter implements.
+waterkit-video-core = { workspace = true, optional = true }
+waterkit-video-processing = { workspace = true, optional = true, features = ["wgpu"] }
 # Portable SIMD for the CPU kernels.
 fearless_simd = { version = "1.1", default-features = false, features = ["std"] }
 cherenkov-simd = { version = "0.0.0", path = "../cherenkov/simd", default-features = false, features = ["std"] }
 # `naga-ir`: pass modules reach wgpu as composed naga IR, never as text.
-wgpu = { version = "30.0.1", features = ["naga-ir"], optional = true }
+wgpu = { workspace = true, features = ["naga-ir"], optional = true }
 
 # Pipeline compilation waits on the platform shader compiler, so native setup
 # runs it on a blocking-pool thread rather than the GPU host thread.
@@ -112,3 +124,14 @@ harness = false
 name = "gpu_runtime"
 harness = false
 required-features = ["gpu"]
+
+# Each native target renders through its one backend (see the workspace `wgpu`
+# entry).
+[target.'cfg(target_os = "windows")'.dependencies]
+wgpu = { workspace = true, optional = true, features = ["dx12"] }
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
+wgpu = { workspace = true, optional = true, features = ["metal"] }
+
+[target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
+wgpu = { workspace = true, optional = true, features = ["vulkan"] }

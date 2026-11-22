@@ -16,17 +16,21 @@ use alloc::string::String;
 use core::cell::RefCell;
 
 use cocoa_ui::slider::ValueAnimation;
-use cocoa_ui::{PlatformView, Rect, Retained};
-use waterui::animation::Animation;
-use waterui::component::slider::SliderConfig;
+use cocoa_ui::{PlatformView, Rect, Retained, view};
+use waterui::animation::{Animation, ChangeAnimation};
+use waterui::component::slider::{SliderConfig, snap};
 use waterui::reactive::Signal;
 use waterui::reactive::watcher::Metadata;
 use waterui_core::interaction::Disabled;
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size, StretchAxis, SubView,
+    ViewDimensions,
+};
 
+use crate::components::button_chrome;
 use crate::components::control_size::platform_control_size;
 use crate::contract::{Mounted, NativeLeaf};
-use crate::dispatch::Dispatcher;
+use crate::proposal;
 
 #[cfg(target_os = "macos")]
 mod platform {
@@ -38,6 +42,7 @@ mod platform {
     pub(super) use cocoa_ui::uikit::{HostView, Slider};
 }
 
+use crate::contract::RenderContext;
 use platform::{HostView, Slider};
 
 /// The gap between the label row and the slider row.
@@ -149,17 +154,16 @@ fn child_sizes(children: &Children) -> ChildSizes {
     }
 }
 
-/// Lays out the children inside `view`'s bounds: the label at top-leading,
-/// then the slider row — min label, track, max label — below it. Manual
-/// frames replicate `WuiSlider`'s `AutoLayout` constraints, with the whole
-/// arrangement mirrored when the view is right-to-left (leading and
-/// trailing swap edges).
-fn layout_children(view: &PlatformView, state: &SliderState) {
+/// Lays out the children inside the `response` rectangle: the label at
+/// top-leading, then the slider row — min label, track, max label — below
+/// it. Manual frames replicate `WuiSlider`'s `AutoLayout` constraints, with
+/// the whole arrangement mirrored when the view is right-to-left (leading
+/// and trailing swap edges).
+fn layout_children(view: &PlatformView, response: Rect, state: &SliderState) {
     let Some(children) = &state.children else {
         return;
     };
-    let bounds = cocoa_ui::view::bounds(view);
-    let width = bounds.size.width;
+    let width = response.size.width;
     let sizes = child_sizes(children);
     let slider_height = track_height(&state.slider);
     let rtl = cocoa_ui::view::is_right_to_left(view);
@@ -168,7 +172,7 @@ fn layout_children(view: &PlatformView, state: &SliderState) {
     // right-to-left `NSLayoutConstraint` pass would give.
     let place = |child: &PlatformView, x: f64, y: f64, w: f64, h: f64| {
         let x = if rtl { width - x - w } else { x };
-        cocoa_ui::view::set_frame(child, Rect::new(x, y, w, h));
+        view::set_frame(child, Rect::new(x, y, w, h).translated(response.origin));
     };
 
     place(
@@ -224,6 +228,14 @@ impl core::fmt::Debug for SliderSubView {
 }
 
 impl SubView for SliderSubView {
+    fn resolve_extent(
+        &self,
+        bounds: LayoutRect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     // `measure` speaks f32; the geometry math runs in f64 — the narrowing is
     // the layout contract, as in `text`.
     #[expect(
@@ -253,12 +265,16 @@ impl SubView for SliderSubView {
     }
 }
 
-/// The `ValueAnimation` the watcher's metadata calls for: `None` applies the
-/// change directly. `Spring` has no `AppKit` equivalent — `WuiSlider` runs it
-/// as a timed animation of an estimated duration, matching
+/// The `ValueAnimation` the watcher's metadata calls for: `None`, for a
+/// change that names no animation or disables it, applies the change
+/// directly. `Spring` has no `AppKit` equivalent — `WuiSlider` runs it as a
+/// timed animation of the spring's settling duration, matching
 /// `withPlatformAnimation`.
 fn value_animation(metadata: &Metadata) -> Option<ValueAnimation> {
-    match metadata.try_get::<Animation>() {
+    match ChangeAnimation::of(metadata)
+        .animation()
+        .map(Animation::validated)
+    {
         None => None,
         Some(Animation::Default) => Some(ValueAnimation::Duration(0.25)),
         Some(Animation::Bezier {
@@ -271,9 +287,8 @@ fn value_animation(metadata: &Metadata) -> Option<ValueAnimation> {
             duration: duration.as_secs_f64(),
             control_points: [x1, y1, x2, y2],
         }),
-        Some(Animation::Spring { stiffness, damping }) => {
-            let estimated = 2.0 * (1.0 / f64::from(stiffness)).sqrt() * f64::from(damping);
-            Some(ValueAnimation::Duration(estimated.clamp(0.1, 2.0)))
+        Some(spring @ Animation::Spring { .. }) => {
+            Some(ValueAnimation::Duration(spring.duration().as_secs_f64()))
         }
     }
 }
@@ -306,115 +321,145 @@ fn as_view(slider: &Slider) -> &PlatformView {
     slider
 }
 
-/// Installs the `slider` handler on the dispatcher: `Native<SliderConfig>`
+/// The `slider` realization: `Native<SliderConfig>`
 /// maps to a container view with the platform slider and the three label
 /// children mounted in it.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<SliderConfig>(|config, ctx| {
-        let mtm = ctx.mtm();
-        let host = HostView::new(mtm, Rect::ZERO);
-        let slider = Slider::new(mtm);
-        // `Slider`'s documented default size is `ExtraSmall`; the mapping is
-        // relative to it, so a bare slider draws at the platform's regular
-        // track like a bare `NSSlider`/`UISlider` does.
-        slider.set_control_size(platform_control_size(
-            config.size,
-            waterui::component::ControlSize::ExtraSmall,
-        ));
-        slider.set_range(*config.range.start(), *config.range.end());
-        slider.set_value(
-            clamped(
-                config.value.snapshot(),
-                *config.range.start(),
-                *config.range.end(),
-            ),
-            None,
-        );
-        host.add_subview(as_view(&slider));
+pub fn realize_slider_config(config: SliderConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
+    let mtm = ctx.mtm();
+    let host = HostView::new(mtm, Rect::ZERO);
+    let slider = Slider::new(mtm);
+    // `Slider`'s documented default size is `ExtraSmall`; the mapping is
+    // relative to it, so a bare slider draws at the platform's regular
+    // track like a bare `NSSlider`/`UISlider` does.
+    slider.set_control_size(platform_control_size(
+        config.size(),
+        waterui::component::ControlSize::ExtraSmall,
+    ));
+    slider.set_range(*config.range().start(), *config.range().end());
+    // AppKit holds the thumb to tick marks, one per step.
+    #[cfg(target_os = "macos")]
+    slider.set_step(config.step());
+    slider.set_value(
+        clamped(
+            config.value().snapshot(),
+            *config.range().start(),
+            *config.range().end(),
+        ),
+        None,
+    );
+    host.add_subview(as_view(&slider));
 
-        let range = config.range.clone();
-        let action = slider.install_action({
-            let binding = config.value.clone();
-            move |value| binding.set(value)
-        });
+    let range = config.range().clone();
+    let step = config.step();
+    let action = slider.install_action({
+        let binding = config.value().clone();
+        let slider = slider.clone();
+        let range = range.clone();
+        move |value| {
+            // UIKit has no step: the thumb moves freely, so the value is
+            // snapped here and the thumb follows it, whether or not the
+            // binding changes.
+            let snapped = snap(value, &range, step);
+            slider.set_value(snapped, None);
+            binding.set(snapped);
+        }
+    });
 
-        // The label's semantic text is announced on the control itself; the
-        // visual label child is hidden from the accessibility tree below.
-        let accessibility_label = config.label.accessibility_label();
+    // The label's semantic text is announced on the control itself; the
+    // visual label child is hidden from the accessibility tree below.
+    let accessibility_label = config.label().accessibility_label();
 
-        let host_view: &PlatformView = &host;
-        let children = Children {
-            label: ctx
-                .render(waterui_backend_core::AnyView::new(config.label))
-                .mount(host_view),
-            min_label: ctx.render(config.min_value_label).mount(host_view),
-            max_label: ctx.render(config.max_value_label).mount(host_view),
-        };
-        cocoa_ui::view::hide_from_accessibility(children.label.view());
+    let host_view: &PlatformView = &host;
+    let (label, min_value_label, max_value_label, _, value, ..) = config.into_parts();
+    let children = Children {
+        label: ctx
+            .render(waterui_backend_core::AnyView::new(label))
+            .mount(host_view),
+        min_label: ctx.render(min_value_label).mount(host_view),
+        max_label: ctx.render(max_value_label).mount(host_view),
+    };
+    cocoa_ui::view::hide_from_accessibility(children.label.view());
 
-        let state = Rc::new(RefCell::new(SliderState {
-            slider: slider.clone(),
-            children: Some(children),
-            _action: action,
-        }));
+    let state = Rc::new(RefCell::new(SliderState {
+        slider: slider.clone(),
+        children: Some(children),
+        _action: action,
+    }));
 
-        host.set_layout_handler({
-            let state = Rc::clone(&state);
-            move |view| {
-                layout_children(view, &state.borrow());
-            }
-        });
+    host.set_layout_handler({
+        let state = Rc::clone(&state);
+        move |view| {
+            layout_children(view, proposal::response(view), &state.borrow());
+        }
+    });
 
-        let mut leaf = NativeLeaf::new(
-            host_view,
-            SliderSubView {
-                state: Rc::clone(&state),
-            },
-        );
+    let mut leaf = NativeLeaf::new(
+        host_view,
+        SliderSubView {
+            state: Rc::clone(&state),
+        },
+    );
 
-        // Signal → control: push binding changes (clamped into range) with
-        // the animation the watcher metadata carries.
-        leaf.watch(&config.value, {
-            let slider = slider.clone();
-            move |ctx| {
-                let animation = value_animation(ctx.metadata());
-                slider.set_value(
-                    clamped(*ctx.value(), *range.start(), *range.end()),
-                    animation,
-                );
-            }
-        });
+    // Signal → control: push binding changes (clamped into range) with
+    // the animation the watcher metadata carries.
+    leaf.watch(&value, {
+        let slider = slider.clone();
+        move |ctx| {
+            let animation = value_animation(ctx.metadata());
+            slider.set_value(
+                clamped(*ctx.value(), *range.start(), *range.end()),
+                animation,
+            );
+        }
+    });
 
-        // Announce the label's semantic text on the control.
-        leaf.bind(&accessibility_label, {
-            let slider = slider.clone();
-            move |styled| {
-                let text = accessibility_text(&styled);
-                slider.set_accessibility_label(if text.is_empty() {
-                    None
-                } else {
-                    Some(text.as_str())
-                });
-            }
-        });
-
-        // A disabled subtree must not respond to input.
-        if let Some(disabled) = ctx.env().get::<Disabled>() {
-            leaf.bind(disabled.signal(), {
-                move |is_disabled: bool| slider.set_enabled(!is_disabled)
+    // Announce the label's semantic text on the control.
+    leaf.bind(&accessibility_label, {
+        let slider = slider.clone();
+        move |styled| {
+            let text = accessibility_text(&styled);
+            slider.set_accessibility_label(if text.is_empty() {
+                None
+            } else {
+                Some(text.as_str())
             });
         }
-
-        leaf.keep(state);
-        leaf
     });
+
+    // The tint colours the filled part of the track.
+    leaf.bind(&button_chrome::tint_signal(ctx.env()), {
+        let slider = slider.clone();
+        move |color| slider.set_track_tint(&button_chrome::platform_color(&color))
+    });
+
+    // A disabled subtree must not respond to input.
+    if let Some(disabled) = ctx.env().get::<Disabled>() {
+        leaf.bind(disabled.signal(), {
+            move |is_disabled: bool| slider.set_enabled(!is_disabled)
+        });
+    }
+
+    leaf.keep(state);
+    leaf
 }
 
 #[cfg(test)]
 mod tests {
     use core::time::Duration;
 
+    use waterui::animation::NoAnimation;
+
     use super::*;
+
+    #[test]
+    fn a_value_the_platform_leaves_unstepped_snaps_from_the_range_start() {
+        // UIKit reports whatever the thumb is at; the value the binding gets
+        // is the nearest multiple of the step counted from the range's start.
+        let range = 1.0..=10.0;
+        assert_eq!(snap(4.4, &range, Some(2.0)).to_bits(), 5.0_f64.to_bits());
+        assert_eq!(snap(9.9, &range, Some(2.0)).to_bits(), 9.0_f64.to_bits());
+        assert_eq!(snap(4.4, &range, None).to_bits(), 4.4_f64.to_bits());
+    }
 
     #[test]
     fn spacing_collapses_beside_an_empty_label() {
@@ -465,6 +510,10 @@ mod tests {
             Some(ValueAnimation::Duration(0.25))
         );
         assert_eq!(
+            value_animation(&Metadata::new().with(Animation::Default).with(NoAnimation)),
+            None
+        );
+        assert_eq!(
             value_animation(&Metadata::new().with(Animation::Bezier {
                 duration: Duration::from_millis(300),
                 x1: 0.1,
@@ -477,15 +526,19 @@ mod tests {
                 control_points: [0.1, 0.2, 0.3, 0.4],
             })
         );
-        // Spring estimates a clamped duration: 2*sqrt(1/s)*d in [0.1, 2.0].
+        // A spring runs for its own settling duration.
         let spring = value_animation(&Metadata::new().with(Animation::Spring {
             stiffness: 170.0,
             damping: 15.0,
         }));
         match spring {
-            Some(ValueAnimation::Duration(d)) => {
-                assert!((0.1..=2.0).contains(&d));
-            }
+            Some(ValueAnimation::Duration(d)) => assert_eq!(
+                d.to_bits(),
+                Animation::spring(170.0, 15.0)
+                    .duration()
+                    .as_secs_f64()
+                    .to_bits()
+            ),
             other => panic!("expected a timed duration for spring, got {other:?}"),
         }
     }

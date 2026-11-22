@@ -40,6 +40,14 @@ pub enum AppColor {
     Label,
     /// `NSColor.secondaryLabelColor`.
     SecondaryLabel,
+    /// `NSColor.tertiaryLabelColor`.
+    TertiaryLabel,
+    /// `NSColor.disabledControlTextColor`: what a disabled control's text
+    /// draws in.
+    DisabledControlText,
+    /// `NSColor.unemphasizedSelectedContentBackgroundColor`: the selection
+    /// fill of a control that is not the key window's first responder.
+    UnemphasizedSelectedContentBackground,
     /// `NSColor.textColor`: the opaque primary text color — black in the
     /// light and vibrant-light appearances, white in the dark ones.
     Text,
@@ -69,6 +77,11 @@ pub fn dynamic(color: AppColor) -> Retained<NSColor> {
         AppColor::Separator => NSColor::separatorColor(),
         AppColor::Label => NSColor::labelColor(),
         AppColor::SecondaryLabel => NSColor::secondaryLabelColor(),
+        AppColor::TertiaryLabel => NSColor::tertiaryLabelColor(),
+        AppColor::DisabledControlText => NSColor::disabledControlTextColor(),
+        AppColor::UnemphasizedSelectedContentBackground => {
+            NSColor::unemphasizedSelectedContentBackgroundColor()
+        }
         AppColor::Text => NSColor::textColor(),
         AppColor::ControlAccent => NSColor::controlAccentColor(),
         AppColor::AlternateSelectedControlText => NSColor::alternateSelectedControlTextColor(),
@@ -263,8 +276,13 @@ pub fn resolve_native(color: &NSColor, scheme: ColorScheme) -> Option<Rgba> {
             ColorScheme::Dark => NSAppearanceNameDarkAqua,
         }
     };
-    let appearance = NSAppearance::appearanceNamed(name)
-        .expect("AppKit ships appearances under both standard names");
+    let Some(appearance) = NSAppearance::appearanceNamed(name) else {
+        tracing::error!(
+            ?scheme,
+            "AppKit has no appearance for the scheme; the color is not resolved"
+        );
+        return None;
+    };
     let color = objc2::Message::retain(color);
     let rgba = RefCell::new(None);
     {

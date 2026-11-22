@@ -3,16 +3,19 @@ use crate::renderer::{HydrolysisRenderer, tree::RenderNode};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use waterui::{AnyView, Color, Environment, View, ViewExt};
-use waterui_graphics::FilteredView;
-use waterui_graphics::filtrate::{
+#[cfg(hydrolysis_gpu)]
+use waterui_graphics::backend::FilteredView;
+use waterui_graphics::backend::NextFrame;
+#[cfg(hydrolysis_gpu)]
+use waterui_graphics::backend::filtrate::{
     Effect, EffectContext, EffectInput, EffectOutput, EffectRenderResult, EffectSetupResult,
     RetainedMemory,
 };
 use waterui_layout::container::FixedContainer;
 use waterui_layout::stack::vstack;
 use waterui_layout::{
-    Layout, Point, ProposalSize, Rect, Size, Spacer, SubView, SubviewPlacement, scroll,
-    scroll_horizontal, spacer, spacer_min,
+    Layout, LayoutError, PlacementInput, Point, ProposalSize, Rect, Size, Spacer, SubView,
+    SubviewPlacement, UnitPoint, scroll, scroll_horizontal, spacer, spacer_min,
 };
 
 #[derive(Debug)]
@@ -32,6 +35,14 @@ struct ProbeLayout {
 impl Layout for ProbeLayout {
     fn size_that_fits(&self, _proposal: ProposalSize, _children: &[&dyn SubView]) -> Size {
         axis_size(self.vertical, 160.0, 20.0)
+    }
+
+    fn resolve_extent(
+        &self,
+        input: PlacementInput,
+        _children: &[&dyn SubView],
+    ) -> Result<Rect, LayoutError> {
+        Ok(input.bounds.align(input.extent()?, UnitPoint::TOP_LEADING))
     }
 
     fn place(
@@ -231,10 +242,7 @@ fn retained_scene_capture_preserves_proposal_and_viewport_boundaries() {
     }));
     let size = Size::new(160.0, 20.0);
     let rect = SceneRect::new(0.0, 0.0, 160.0, 20.0);
-    let ctx = RenderContext {
-        local: Affine::IDENTITY,
-        bounds: rect,
-    };
+    let ctx = RenderContext::new(Affine::IDENTITY, rect);
     let ideal = ProposalSize::new(None, Some(20.0));
     under_root_record(&mut renderer, |renderer| {
         retained.place(renderer, ctx, &env, ideal, rect, None);
@@ -284,10 +292,7 @@ fn retained_subview_relayouts_when_a_layout_signal_invalidates() {
         .max_width(constraint),
     ));
     let rect = SceneRect::new(0.0, 0.0, 800.0, 600.0);
-    let ctx = RenderContext {
-        local: Affine::IDENTITY,
-        bounds: rect,
-    };
+    let ctx = RenderContext::new(Affine::IDENTITY, rect);
     let proposal = ProposalSize::new(Some(800.0), Some(600.0));
     under_root_record(&mut renderer, |renderer| {
         retained.place(renderer, ctx, &env, proposal, rect, None);
@@ -324,7 +329,7 @@ fn retained_subview_relayouts_when_a_layout_signal_invalidates() {
 ///
 /// Both styles run on every platform: `Automatic` resolves per target, and the
 /// two place the label differently — a checkbox at its fitted width, a switch
-/// across the row up to the control.
+/// at the width it takes when offered the row up to the control.
 #[test]
 fn retained_subview_relayouts_when_a_widget_leaf_label_invalidates() {
     use crate::renderer::{RenderContext, tree::RetainedSubview};
@@ -361,10 +366,7 @@ fn retained_subview_relayouts_when_a_widget_leaf_label_invalidates() {
             .style(style),
         ));
         let rect = SceneRect::new(0.0, 0.0, 800.0, 600.0);
-        let ctx = RenderContext {
-            local: Affine::IDENTITY,
-            bounds: rect,
-        };
+        let ctx = RenderContext::new(Affine::IDENTITY, rect);
         let proposal = ProposalSize::new(Some(800.0), Some(600.0));
         under_root_record(&mut renderer, |renderer| {
             retained.place(renderer, ctx, &env, proposal, rect, None);
@@ -402,15 +404,15 @@ struct Drifting {
     natural: Rc<Cell<f32>>,
 }
 
-impl waterui_graphics::SceneContent for Drifting {
+impl waterui_graphics::backend::SceneContent for Drifting {
     fn build_scene(
         &mut self,
-        _recorder: &mut waterui_graphics::draw::Recorder,
-        _resources: &mut waterui_graphics::RecordingResources<'_>,
+        _recorder: &mut cherenkov_record::Recorder,
+        _resources: &mut waterui_graphics::backend::RecordingResources<'_>,
         _width: f32,
         _height: f32,
-    ) -> bool {
-        false
+    ) -> NextFrame {
+        NextFrame::Idle
     }
 
     fn intrinsic_size(&self) -> Option<Size> {
@@ -429,6 +431,14 @@ struct RecordingRow {
 }
 
 impl Layout for RecordingRow {
+    fn resolve_extent(
+        &self,
+        input: PlacementInput,
+        _children: &[&dyn SubView],
+    ) -> Result<Rect, LayoutError> {
+        Ok(input.bounds.align(input.extent()?, UnitPoint::TOP_LEADING))
+    }
+
     fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
         let sizes = children
             .iter()
@@ -470,7 +480,7 @@ impl Layout for RecordingRow {
 
 /// `[scene | color]` — the row's first frame is the scene's laid-out box.
 struct DriftingRow {
-    scene: waterui_graphics::SceneView,
+    scene: waterui_graphics::backend::SceneView,
     trace: Trace,
 }
 
@@ -493,7 +503,7 @@ impl View for DriftingRow {
 fn retained_subview_relayouts_when_a_scene_leaves_natural_size_moves() {
     use crate::renderer::{RenderContext, tree::RetainedSubview};
     use kurbo::{Affine, Rect as SceneRect};
-    use waterui_graphics::SceneView;
+    use waterui_graphics::backend::SceneView;
 
     let env = test_environment();
     let mut renderer = test_renderer();
@@ -506,10 +516,7 @@ fn retained_subview_relayouts_when_a_scene_leaves_natural_size_moves() {
         trace: Rc::clone(&trace),
     }));
     let rect = SceneRect::new(0.0, 0.0, 800.0, 600.0);
-    let ctx = RenderContext {
-        local: Affine::IDENTITY,
-        bounds: rect,
-    };
+    let ctx = RenderContext::new(Affine::IDENTITY, rect);
     let proposal = ProposalSize::new(Some(800.0), Some(600.0));
     under_root_record(&mut renderer, |renderer| {
         retained.place(renderer, ctx, &env, proposal, rect, None);
@@ -601,6 +608,14 @@ fn transparent_metadata_preserves_the_selected_proposal() {
 struct PriorityProbe(Rc<Cell<Option<i32>>>);
 
 impl Layout for PriorityProbe {
+    fn resolve_extent(
+        &self,
+        input: PlacementInput,
+        _children: &[&dyn SubView],
+    ) -> Result<Rect, LayoutError> {
+        Ok(input.bounds.align(input.extent()?, UnitPoint::TOP_LEADING))
+    }
+
     fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
         children[0].measure(proposal).size
     }
@@ -700,8 +715,10 @@ fn spacer_min_length_is_the_stack_compression_floor() {
     );
 }
 
+#[cfg(hydrolysis_gpu)]
 struct LayoutOnlyEffect;
 
+#[cfg(hydrolysis_gpu)]
 impl Effect for LayoutOnlyEffect {
     fn setup(
         &mut self,
@@ -726,6 +743,7 @@ impl Effect for LayoutOnlyEffect {
     fn trim(&mut self) {}
 }
 
+#[cfg(hydrolysis_gpu)]
 #[test]
 fn view_effect_relayouts_equal_bounds_with_a_new_proposal() {
     let env = test_environment();
@@ -781,4 +799,39 @@ fn nested_collections_preserve_intrinsic_cross_axes() {
             .size;
         assert_eq!(size, Size::new(316.0, 348.0));
     }
+}
+
+/// §4.1: a stack's cross envelope is `max(g) + max(e - g)` over its
+/// children's guides, so a realized child's explicit guide reaches the stack —
+/// a 20-wide child guided at 10 beside a 100-wide one needs 110.
+#[test]
+fn a_child_guide_widens_the_stack_envelope() {
+    use waterui::Computed;
+    use waterui_layout::stack::VStackLayout;
+    use waterui_layout::{HorizontalAlignment, ViewDimensions};
+    let env = test_environment();
+    let mut renderer = test_renderer();
+    let theme = renderer.theme();
+    let node = RenderNode::build(
+        AnyView::new(FixedContainer::new(
+            VStackLayout {
+                alignment: HorizontalAlignment::Leading,
+                spacing: Computed::constant(0.0),
+            },
+            vec![
+                AnyView::new(().size(20.0, 10.0).horizontal_alignment_guide(
+                    HorizontalAlignment::Leading,
+                    |dimensions: &ViewDimensions| dimensions.size.width * 0.5,
+                )),
+                AnyView::new(().size(100.0, 10.0)),
+            ],
+        )),
+        &env,
+        &mut renderer,
+    );
+    assert_eq!(
+        node.measure(&mut renderer.state, &env, &theme, ProposalSize::UNSPECIFIED)
+            .size,
+        Size::new(110.0, 20.0)
+    );
 }

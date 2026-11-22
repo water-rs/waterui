@@ -10,8 +10,9 @@ use alloc::{vec, vec::Vec};
 use waterui_core::View;
 
 use crate::{
-    HorizontalAlignment, Layout, PlacedSubview, ProposalSize, Rect, Size, StretchAxis, SubView,
-    SubviewPlacement, VerticalAlignment, ViewDimensions, container::FixedContainer,
+    HorizontalAlignment, Layout, LayoutError, PlacedSubview, PlacementInput, ProposalSize, Rect,
+    Size, StretchAxis, SubView, SubviewPlacement, VerticalAlignment, ViewDimensions,
+    container::FixedContainer,
 };
 
 #[derive(Clone)]
@@ -56,6 +57,22 @@ where
             bounds,
             ProposalSize::new(Some(bounds.width()), Some(bounds.height())),
         )]
+    }
+
+    /// Transparent: a guide moves where the child lines up, never where its
+    /// own response sits.
+    fn resolve_extent(
+        &self,
+        input: PlacementInput,
+        children: &[&dyn SubView],
+    ) -> Result<Rect, LayoutError> {
+        assert!(
+            children.len() == 1,
+            "HorizontalAlignmentGuideLayout expects exactly one child"
+        );
+        Ok(children[0]
+            .resolve_extent(input.bounds, input.proposal)?
+            .rect)
     }
 
     fn explicit_horizontal(
@@ -144,10 +161,6 @@ where
             (self.content,),
         )
     }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        self.content.stretch_axis()
-    }
 }
 
 #[derive(Clone)]
@@ -192,6 +205,22 @@ where
             bounds,
             ProposalSize::new(Some(bounds.width()), Some(bounds.height())),
         )]
+    }
+
+    /// Transparent: a guide moves where the child lines up, never where its
+    /// own response sits.
+    fn resolve_extent(
+        &self,
+        input: PlacementInput,
+        children: &[&dyn SubView],
+    ) -> Result<Rect, LayoutError> {
+        assert!(
+            children.len() == 1,
+            "VerticalAlignmentGuideLayout expects exactly one child"
+        );
+        Ok(children[0]
+            .resolve_extent(input.bounds, input.proposal)?
+            .rect)
     }
 
     fn explicit_horizontal(
@@ -278,33 +307,27 @@ where
             (self.content,),
         )
     }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        self.content.stretch_axis()
-    }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::{LayoutError, Rect, ResolvedExtent};
     use waterui_core::{AnyView, Environment, View, layout::Point};
 
     use super::*;
-
-    struct StretchingView;
-
-    impl View for StretchingView {
-        fn body(self, _env: &Environment) -> impl View {}
-
-        fn stretch_axis(&self) -> StretchAxis {
-            StretchAxis::Horizontal
-        }
-    }
 
     struct GuidedSubview {
         size: Size,
     }
 
     impl SubView for GuidedSubview {
+        fn resolve_extent(
+            &self,
+            bounds: Rect,
+            proposal: ProposalSize,
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        }
         fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
             ViewDimensions::new(self.size)
         }
@@ -322,7 +345,7 @@ mod tests {
     fn horizontal_alignment_guide_preserves_content_stretch_axis() {
         let env = Environment::default();
         let body = HorizontalAlignmentGuide::new(
-            StretchingView,
+            (),
             HorizontalAlignment::Leading,
             |_dimensions: &ViewDimensions| 12.0,
         )
@@ -333,8 +356,10 @@ mod tests {
         let (layout, children) = container.as_parts();
 
         assert_eq!(children.len(), 1);
-        let child_axes: Vec<StretchAxis> = children.iter().map(View::stretch_axis).collect();
-        assert_eq!(layout.stretch_axis(&child_axes), StretchAxis::Horizontal);
+        assert_eq!(
+            layout.stretch_axis(&[StretchAxis::Horizontal]),
+            StretchAxis::Horizontal
+        );
     }
 
     #[test]
@@ -352,8 +377,7 @@ mod tests {
         let (layout, children) = container.as_parts();
 
         assert_eq!(children.len(), 1);
-        let child_axes: Vec<StretchAxis> = children.iter().map(View::stretch_axis).collect();
-        assert_eq!(layout.stretch_axis(&child_axes), StretchAxis::None);
+        assert_eq!(layout.stretch_axis(&[StretchAxis::None]), StretchAxis::None);
         assert_eq!(
             layout.explicit_horizontal_alignments(),
             vec![HorizontalAlignment::Leading]
@@ -436,8 +460,7 @@ mod tests {
         let (layout, children) = container.as_parts();
 
         assert_eq!(children.len(), 1);
-        let child_axes: Vec<StretchAxis> = children.iter().map(View::stretch_axis).collect();
-        assert_eq!(layout.stretch_axis(&child_axes), StretchAxis::None);
+        assert_eq!(layout.stretch_axis(&[StretchAxis::None]), StretchAxis::None);
         assert_eq!(
             layout.explicit_vertical_alignments(),
             vec![VerticalAlignment::Top]

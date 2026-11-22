@@ -118,7 +118,7 @@ pub fn main() {
                     // Dock at the top of the resolved monitor's visible
                     // frame: full width, 45% of visible height — the
                     // quick-terminal geometry hydroterm computes.
-                    let vf = &monitor.visible_frame;
+                    let vf = &monitor.visible_frame();
                     Rect::new(
                         Point::new(vf.origin().x, vf.origin().y),
                         Size::new(vf.size().width, vf.size().height * 0.45),

@@ -5,11 +5,13 @@ use std::cell::{Cell, RefCell};
 use std::ops::Range;
 use std::rc::Rc;
 
+use cocoa_ui::core_animation::on_commit;
 use cocoa_ui::objc2::rc::Retained;
 use cocoa_ui::objc2::runtime::{AnyObject, Bool, Sel};
 use cocoa_ui::objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, msg_send, sel};
 use cocoa_ui::objc2_core_foundation::{CGPoint, CGRect, CGSize};
-use cocoa_ui::objc2_foundation::{NSRange, NSString};
+use cocoa_ui::objc2_foundation::{NSRange, NSString, ns_string};
+use cocoa_ui::objc2_quartz_core::{CABasicAnimation, CAMediaTiming};
 use cocoa_ui::objc2_ui_kit::{
     UIGestureRecognizerState, UIKeyInput, UIPanGestureRecognizer, UITextInput, UITextRange,
     UITouch, UITouchType, UIView, UIWindow,
@@ -22,10 +24,14 @@ use cocoa_ui::uikit::{HostView, Label};
 use cocoa_ui::{PlatformView, Rect};
 use libtest_mimic::Trial;
 
-use crate::harness::{capture_target, marker};
+use crate::harness::{capture_target, marker, pump_main_turn, pump_main_until};
 
 /// The suite's `UIKit` cases, named after the module and test they moved
-/// from.
+/// from — one per line, so the list is long.
+#[expect(
+    clippy::too_many_lines,
+    reason = "a flat list of one `case!` per native case"
+)]
 pub fn trials() -> Vec<Trial> {
     macro_rules! case {
         ($module:literal, $test:ident) => {
@@ -101,10 +107,26 @@ pub fn trials() -> Vec<Trial> {
             "uikit::input_view",
             layout_and_safe_area_handlers_follow_the_view
         ),
+        case!(
+            "uikit::input_view",
+            a_touch_press_and_release_carry_the_tap_count
+        ),
+        case!(
+            "uikit::input_view",
+            the_paste_command_is_enabled_only_by_text_on_the_pasteboard
+        ),
         case!("display_link", a_paused_frame_clock_stays_armed_but_silent),
         case!(
             "uikit::menu_panel",
             an_unpresented_panel_tracks_its_rows_pages_and_focus
+        ),
+        case!(
+            "core_animation",
+            on_commit_runs_once_despite_an_endless_animation_in_its_transaction
+        ),
+        case!(
+            "core_animation",
+            on_commit_runs_registrations_in_order_including_one_made_from_a_body
         ),
         case!("view", display_immediately_targets_the_layer_not_the_view),
         case!(
@@ -141,6 +163,68 @@ fn extended_linear_display_p3_preserves_space_and_hdr_channels() {
     let channels = unsafe { std::slice::from_raw_parts(CGColor::components(Some(&cg)), 4) };
     assert!((channels[0] - 1.5).abs() < f64::EPSILON);
     assert!((channels[3] - 0.8).abs() < f64::EPSILON);
+}
+
+/// An animation that never finishes on `view`'s layer, added to the open
+/// transaction — the shape of the `CAMatchPropertyAnimation`s a Liquid
+/// Glass tab bar adds while it is built.
+fn add_endless_animation(view: &PlatformView) {
+    let animation = CABasicAnimation::animationWithKeyPath(Some(ns_string!("opacity")));
+    animation.setDuration(f64::INFINITY);
+    view.layer()
+        .addAnimation_forKey(&animation, Some(ns_string!("endless")));
+}
+
+/// `on_commit` means "after this turn's transaction commits", not "after
+/// every animation added to it finishes": the transaction's completion
+/// block waits for the latter, so a body registered before an endless
+/// animation joins the transaction — a tab bar built during scene
+/// connection (#3881) — would never run. It runs once, after the commit.
+fn on_commit_runs_once_despite_an_endless_animation_in_its_transaction() {
+    let mtm = marker();
+    let host = HostView::new(mtm, Rect::new(0.0, 0.0, 100.0, 100.0));
+    let _window = attach(mtm, &host);
+    let runs = Rc::new(Cell::new(0_u32));
+    on_commit(mtm, {
+        let runs = Rc::clone(&runs);
+        move || runs.set(runs.get() + 1)
+    });
+    add_endless_animation(&host);
+    assert!(
+        pump_main_until(2.0, || runs.get() > 0),
+        "the on_commit body never ran after its transaction committed"
+    );
+    pump_main_turn();
+    assert_eq!(runs.get(), 1, "the on_commit body ran more than once");
+}
+
+/// Bodies registered in one turn run in registration order, and a body
+/// registered while another runs — inside the post-commit callout — runs
+/// after the following commit instead of being lost.
+fn on_commit_runs_registrations_in_order_including_one_made_from_a_body() {
+    let mtm = marker();
+    let order = Rc::new(RefCell::new(Vec::new()));
+    for name in ["first", "second"] {
+        on_commit(mtm, {
+            let order = Rc::clone(&order);
+            move || {
+                order.borrow_mut().push(name);
+                if name == "first" {
+                    on_commit(mtm, {
+                        let order = Rc::clone(&order);
+                        move || order.borrow_mut().push("nested")
+                    });
+                }
+            }
+        });
+    }
+    assert!(
+        pump_main_until(2.0, || order.borrow().len() == 3),
+        "on_commit bodies ran: {:?}",
+        order.borrow()
+    );
+    pump_main_turn();
+    assert_eq!(*order.borrow(), ["first", "second", "nested"]);
 }
 
 /// A `UIWindow` with no scene hosting `content`, kept hidden — the smallest
@@ -390,6 +474,8 @@ fn the_text_input_selectors_register_under_uikits_names() {
         sel!(selectionRectsForRange:),
         sel!(setInputDelegate:),
         sel!(safeAreaInsetsDidChange),
+        sel!(paste:),
+        sel!(canPerformAction:withSender:),
     ] {
         // SAFETY: `respondsToSelector:` is a plain `NSObject` query on the
         // live view.
@@ -845,18 +931,21 @@ fn an_input_view_without_a_client_is_an_empty_document() {
 /// The ivars of a [`SeededTouch`].
 #[derive(Debug)]
 struct SeededTouchIvars {
+    /// What `locationInView:` reports.
     location: Cell<CGPoint>,
+    /// What `tapCount` reports.
+    taps: Cell<usize>,
 }
 
 cocoa_ui::objc2::define_class!(
     // SAFETY: `UITouch` permits subclassing for input the process itself
-    // generates; the overrides answer seeded values.
+    // generates; the overrides answer seeded values from ivars.
     #[unsafe(super(UITouch))]
     #[name = "CocoaUiNativeTestSeededTouch"]
     #[thread_kind = cocoa_ui::objc2::MainThreadOnly]
     #[ivars = SeededTouchIvars]
-    /// A direct `UITouch` at a seeded location — a headless process cannot
-    /// make `UIKit` produce one.
+    /// A direct `UITouch` whose location and tap count come from cells — a
+    /// headless process cannot make `UIKit` report a real touch.
     struct SeededTouch;
 
     impl SeededTouch {
@@ -871,13 +960,21 @@ cocoa_ui::objc2::define_class!(
         fn touch_type(&self) -> UITouchType {
             UITouchType::Direct
         }
+
+        // SAFETY: `tapCount`'s signature.
+        #[unsafe(method(tapCount))]
+        fn tap_count(&self) -> usize {
+            self.ivars().taps.get()
+        }
     }
 );
 
 impl SeededTouch {
-    fn new(mtm: MainThreadMarker, location: CGPoint) -> Retained<Self> {
+    /// A direct touch at `location` reporting `taps` taps.
+    fn new(mtm: MainThreadMarker, location: CGPoint, taps: usize) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(SeededTouchIvars {
             location: Cell::new(location),
+            taps: Cell::new(taps),
         });
         // SAFETY: `init` is `NSObject`'s designated initializer.
         unsafe { msg_send![super(this), init] }
@@ -899,7 +996,7 @@ fn a_cancelled_touch_is_reported_as_cancelled_not_released() {
         let events = Rc::clone(&events);
         move |event| events.borrow_mut().push(event)
     });
-    let touch = SeededTouch::new(mtm, CGPoint::new(12.0, 34.0));
+    let touch = SeededTouch::new(mtm, CGPoint::new(12.0, 34.0), 1);
     let touches = NSSet::from_retained_slice(&[touch.into_super()]);
     let no_event = Option::<&UIEvent>::None;
     // SAFETY: the three touch callbacks take a set of `UITouch`es and an
@@ -920,6 +1017,7 @@ fn a_cancelled_touch_is_reported_as_cancelled_not_released() {
                 position,
                 kind,
                 buttons,
+                ..
             } => Some((*id, *phase, *position, *kind, *buttons)),
             _ => None,
         })
@@ -1070,17 +1168,86 @@ impl SeededPan {
     }
 }
 
+/// A touch's press and release carry the tap count `UITouch.tapCount`
+/// reports — the same on the release as on the press.
+fn a_touch_press_and_release_carry_the_tap_count() {
+    use cocoa_ui::input::{SurfaceEvent, TouchPhase};
+    use cocoa_ui::objc2_foundation::NSSet;
+
+    let mtm = marker();
+    let view = InputView::new(mtm);
+    let events = Rc::new(RefCell::new(Vec::new()));
+    view.set_event_handler({
+        let events = Rc::clone(&events);
+        move |event| events.borrow_mut().push(event)
+    });
+    for taps in [1_usize, 2, 3, 6] {
+        let touch = SeededTouch::new(mtm, CGPoint::new(7.0, 9.0), taps);
+        let touches = NSSet::from_retained_slice(&[touch.into_super()]);
+        // SAFETY: `touchesBegan:withEvent:` and `touchesEnded:withEvent:`
+        // take the touch set and a null event.
+        unsafe {
+            let _: () = msg_send![&*view, touchesBegan: &*touches, withEvent: std::ptr::null::<AnyObject>()];
+            let _: () = msg_send![&*view, touchesEnded: &*touches, withEvent: std::ptr::null::<AnyObject>()];
+        }
+        let touches: Vec<_> = events
+            .take()
+            .into_iter()
+            .filter_map(|event| match event {
+                SurfaceEvent::Touch {
+                    phase, tap_count, ..
+                } => Some((phase, tap_count.get())),
+                _ => None,
+            })
+            .collect();
+        let taps = u32::try_from(taps).expect("a small count");
+        assert_eq!(
+            touches,
+            [(TouchPhase::Began, taps), (TouchPhase::Ended, taps)]
+        );
+    }
+}
+
+/// Paste is offered only while the pasteboard has text.
+fn the_paste_command_is_enabled_only_by_text_on_the_pasteboard() {
+    use cocoa_ui::objc2_ui_kit::UIPasteboard;
+
+    let mtm = marker();
+    let view = InputView::new(mtm);
+    let can_paste = || {
+        // SAFETY: `canPerformAction:withSender:` takes the action and a
+        // null sender and answers a BOOL.
+        let can: Bool = unsafe {
+            msg_send![&*view, canPerformAction: sel!(paste:), withSender: std::ptr::null::<AnyObject>()]
+        };
+        can.as_bool()
+    };
+    let pasteboard = UIPasteboard::generalPasteboard();
+    // SAFETY: plain pasteboard accessors on the main thread.
+    let before = unsafe { pasteboard.string() };
+    // SAFETY: as above.
+    unsafe { pasteboard.setString(Some(ns_string!("pasted"))) };
+    assert!(can_paste(), "Paste is disabled with text on the pasteboard");
+    // SAFETY: as above.
+    unsafe { pasteboard.setItems(&cocoa_ui::objc2_foundation::NSArray::new()) };
+    assert!(!can_paste(), "Paste is enabled with an empty pasteboard");
+    // SAFETY: as above.
+    unsafe { pasteboard.setString(before.as_deref()) };
+}
+
 /// GPU-surface scroll input on `UIKit` (#2068): indirect scrolling
 /// reaches a view as `UIPanGestureRecognizer`s — a trackpad glide through
-/// the `Continuous` scroll type, a wheel notch through `Discrete`. A glide
-/// lands as a phased `SurfaceEvent::TrackpadPan` and a notch as a
-/// `SurfaceEvent::Scroll`, each with the pan's incremental translation
-/// negated into the W3C content-motion sign — always a logical-point
-/// displacement, whatever the mask. A finger drag is pointer input, not a
-/// scroll: both recognizers take zero touches.
+/// the `Continuous` scroll type, a wheel notch through `Discrete` — and
+/// each must land as a `SurfaceEvent::Scroll` with the pan's incremental
+/// translation negated into the W3C content-motion sign — always a
+/// logical-point `Pixel` displacement, whatever the mask — and its scroll
+/// phase per gesture kind. A finger drag is
+/// pointer input, not a scroll: both recognizers take zero touches.
 #[allow(clippy::too_many_lines)] // The wiring check plus the five scroll probes it verifies.
 fn indirect_scroll_input_arrives_as_surface_scroll_events() {
-    use cocoa_ui::input::{GesturePhase, ScrollUnit, SurfaceEvent};
+    use std::cell::RefCell;
+
+    use cocoa_ui::input::{GesturePhase, ScrollPhase, ScrollUnit, SurfaceEvent};
     use cocoa_ui::objc2_ui_kit::{UIPanGestureRecognizer, UIScrollTypeMask};
 
     let mtm = marker();
@@ -1131,28 +1298,39 @@ fn indirect_scroll_input_arrives_as_surface_scroll_events() {
         let [event] = events.as_slice() else {
             panic!("expected one scroll event, got {}", events.len());
         };
-        let SurfaceEvent::TrackpadPan {
+        let SurfaceEvent::Scroll {
             position,
             delta_x,
             delta_y,
+            unit,
             phase,
         } = event
         else {
-            panic!("expected a trackpad pan event, got {event:?}");
+            panic!("expected a scroll event, got {event:?}");
         };
         assert_eq!((position.x, position.y), (40.0, 24.0));
         // A pan's translation counts pointer motion — positive right and
         // down; `delta_x`/`delta_y` count content motion — positive left
         // and up.
         assert_eq!((*delta_x, *delta_y), (-12.0, 30.0));
-        assert_eq!(
-            *phase,
-            GesturePhase::Changed,
-            "a mid-gesture callback was not a Changed phase"
-        );
+        assert_eq!(*unit, ScrollUnit::Pixel);
+        assert_eq!(*phase, ScrollPhase::Contact(GesturePhase::Changed));
     }
 
-    // The gesture's terminal callback carries `finished`.
+    // A recognizer's first callback begins the gesture.
+    gesture.ivars().state.set(UIGestureRecognizerState::Began);
+    let before = events.borrow().len();
+    view.scroll_probe_for_test(&gesture, UIScrollTypeMask::Continuous);
+    assert_eq!(events.borrow().len(), before + 1);
+    assert!(matches!(
+        events.borrow().last(),
+        Some(SurfaceEvent::Scroll {
+            phase: ScrollPhase::Contact(GesturePhase::Began),
+            ..
+        })
+    ));
+
+    // The gesture's terminal callback ends it.
     gesture.setTranslation_inView(CGPoint::new(4.0, 0.0), Some(this));
     gesture.ivars().state.set(UIGestureRecognizerState::Ended);
     let before = events.borrow().len();
@@ -1172,14 +1350,21 @@ fn indirect_scroll_input_arrives_as_surface_scroll_events() {
         let [.., event] = events.as_slice() else {
             panic!("expected a second scroll event, got {}", events.len());
         };
-        let SurfaceEvent::TrackpadPan { delta_x, phase, .. } = event else {
-            panic!("expected a trackpad pan event, got {event:?}");
+        let SurfaceEvent::Scroll {
+            delta_x,
+            unit,
+            phase,
+            ..
+        } = event
+        else {
+            panic!("expected a scroll event, got {event:?}");
         };
         assert_eq!(*delta_x, -4.0);
-        assert_eq!(*phase, GesturePhase::Ended);
+        assert_eq!(*unit, ScrollUnit::Pixel);
+        assert_eq!(*phase, ScrollPhase::Contact(GesturePhase::Ended));
     }
 
-    // Cancelled and Failed both end a glide as a cancellation.
+    // Cancelled and Failed both abandon a glide: `Cancelled`.
     for terminal in [
         UIGestureRecognizerState::Cancelled,
         UIGestureRecognizerState::Failed,
@@ -1202,25 +1387,27 @@ fn indirect_scroll_input_arrives_as_surface_scroll_events() {
         let [.., event] = events.as_slice() else {
             panic!("expected another scroll event, got {}", events.len());
         };
-        let SurfaceEvent::TrackpadPan {
+        let SurfaceEvent::Scroll {
             delta_x,
             delta_y,
+            unit,
             phase,
             ..
         } = event
         else {
-            panic!("expected a trackpad pan event, got {event:?}");
+            panic!("expected a scroll event, got {event:?}");
         };
         assert_eq!((*delta_x, *delta_y), (-2.0, 0.0));
+        assert_eq!(*unit, ScrollUnit::Pixel);
         assert_eq!(
             *phase,
-            GesturePhase::Cancelled,
-            "a {terminal:?} callback did not cancel the glide"
+            ScrollPhase::Contact(GesturePhase::Cancelled),
+            "a {terminal:?} callback did not cancel the gesture"
         );
     }
 
-    // A wheel notch is complete on its own: a logical-point
-    // `Pixel` displacement, `finished` on every callback — even
+    // A wheel notch is complete on its own: the same logical-point
+    // `Pixel` displacement, `Discrete` on every callback — even
     // mid-`Changed`.
     gesture.ivars().state.set(UIGestureRecognizerState::Changed);
     gesture.setTranslation_inView(CGPoint::new(0.0, 5.0), Some(this));
@@ -1244,7 +1431,7 @@ fn indirect_scroll_input_arrives_as_surface_scroll_events() {
         let SurfaceEvent::Scroll {
             delta_y,
             unit,
-            finished,
+            phase,
             ..
         } = event
         else {
@@ -1252,7 +1439,11 @@ fn indirect_scroll_input_arrives_as_surface_scroll_events() {
         };
         assert_eq!(*delta_y, -5.0);
         assert_eq!(*unit, ScrollUnit::Pixel);
-        assert!(*finished, "a wheel notch is a complete scroll on its own");
+        assert_eq!(
+            *phase,
+            ScrollPhase::Discrete,
+            "a wheel notch is a complete scroll on its own"
+        );
     }
 }
 

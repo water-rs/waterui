@@ -2,7 +2,7 @@
 //! validates and translates them once at build time instead of wgpu doing it
 //! per pipeline at runtime. Each module produces
 //!
-//! - `<name>.spv` — naga SPIR-V as emitted, on the non-Apple, non-wasm
+//! - `<name>.spv` — naga SPIR-V as emitted, on the Linux and Android
 //!   targets only (issue #241). spirv-opt ran here until #124 measured it
 //!   on the Pixel 9 Pro (Mali-G715): ~0.64 s faster cold pipeline creation
 //!   but the effects scene's GPU time ~78% slower at p50 and ~2.7x at p99;
@@ -282,19 +282,19 @@ fn main() {
     // The working-space ↔ sRGB conversion every colour-converting module
     // shares: filtrate-core's `space::WGSL`, rendered from the same
     // constants as the CPU conversion. It precedes `shared.wgsl` (and so
-    // every module built on it), `present.wgsl`, `space_convert.wgsl` and
-    // the `color.wgsl` producer prelude. Every module spec lands in
-    // `OUT_DIR` below; the `shared` prelude and the `color` prelude, which
-    // the runtime and the tests compose with their own sources, land there
-    // too, so nothing can drift from what this script compiles.
+    // every module built on it), `present.wgsl`, `resolve.wgsl`,
+    // `headroom.wgsl` and `space_convert.wgsl`;
+    // the producer and shader-paint preludes are `cherenkov::wgsl`'s. Every
+    // module spec lands in `OUT_DIR` below; the `shared` prelude, which the
+    // runtime and the tests compose with their own sources, lands there too,
+    // so nothing can drift from what this script compiles.
     let space = filtrate_core::space::WGSL;
     let shared = format!("{space}\n{shared}");
     let present = format!("{space}\n{present}");
+    let resolve = format!("{space}\n{resolve}");
+    let headroom = format!("{space}\n{headroom}");
     let space_convert = format!("{space}\n{space_convert}");
-    let color = format!("{space}\n{}", read("color"));
-    for (name, text) in [("shared", &shared), ("color", &color)] {
-        std::fs::write(out_dir.join(format!("{name}.wgsl")), text).unwrap();
-    }
+    std::fs::write(out_dir.join("shared.wgsl"), &shared).unwrap();
 
     // The union member cap the WGSL fold is compiled against:
     // `union_cap::UNION_MAX_MEMBERS` prepended like `VARIANT`, so the
@@ -489,6 +489,7 @@ struct Modules<'a> {
     mip: &'a str,
     resolve: &'a str,
     reduce: &'a str,
+    /// `headroom.wgsl` behind the space fragment.
     headroom: &'a str,
     shadow: &'a str,
     /// `space_convert.wgsl` behind the space fragment.
@@ -555,10 +556,10 @@ fn module_specs(m: &Modules<'_>) -> Vec<Spec> {
             };
             Spec {
                 name: format!("engine{variant}"),
-                source: format!(
-                    "const VARIANT: u32 = {paint_variant}u;\n{cap}{shared}\n{shader}\n{union}{}\n{entry}",
+                source: half_colour(&format!(
+                    "enable f16;\nconst VARIANT: u32 = {paint_variant}u;\n{cap}{shared}\n{shader}\n{union}{}\n{entry}",
                     m.blend
-                ),
+                )),
                 groups: bindings::ENGINE_GROUPS,
                 programs: programs::ENGINE,
                 metal: true,
@@ -633,7 +634,38 @@ fn module_specs(m: &Modules<'_>) -> Vec<Spec> {
         merge_pair: None,
         attachment: true,
     });
+    let precise = precise_engine_specs(&specs);
+    specs.extend(precise);
     specs
+}
+
+/// `source` with the colour aliases narrowed to half precision.
+fn half_colour(source: &str) -> String {
+    source
+        .replace("alias Color = vec4<f32>;", "alias Color = vec4<f16>;")
+        .replace("alias ColorRgb = vec3<f32>;", "alias ColorRgb = vec3<f16>;")
+        .replace("alias ColorScalar = f32;", "alias ColorScalar = f16;")
+}
+
+/// The full-precision colour twin of each of the twelve engine specs, for
+/// `Rgba32Float` targets.
+fn precise_engine_specs(specs: &[Spec]) -> Vec<Spec> {
+    (0..12)
+        .map(|index| Spec {
+            name: format!("engine{index}_f32"),
+            source: specs[index]
+                .source
+                .replace("enable f16;\n", "")
+                .replace("alias Color = vec4<f16>;", "alias Color = vec4<f32>;")
+                .replace("alias ColorRgb = vec3<f16>;", "alias ColorRgb = vec3<f32>;")
+                .replace("alias ColorScalar = f16;", "alias ColorScalar = f32;"),
+            groups: bindings::ENGINE_GROUPS,
+            programs: programs::ENGINE,
+            metal: true,
+            merge_pair: None,
+            attachment: false,
+        })
+        .collect()
 }
 
 /// The single-program helper modules' specs.
@@ -651,7 +683,7 @@ fn helper_specs(m: &Modules<'_>, specs: &mut Vec<Spec>) {
             "headroom",
             m.headroom,
             bindings::HEADROOM_GROUPS,
-            programs::MAIN,
+            programs::HEADROOM,
         ),
         (
             "shadow",
@@ -775,16 +807,15 @@ fn compile_specs(out_dir: &Path, specs: &[Spec]) {
 /// Whether the `.spv` artifacts are emitted.
 ///
 /// SPIR-V is the passthrough format of wgpu's Vulkan backend only, and
-/// wgpu compiles that backend on exactly the non-Apple, non-wasm targets
-/// (`windows`, `linux`, `android`, `freebsd`, `netbsd` in its
-/// `wgpu-core-deps-windows-linux-android` manifest entry): Apple targets
-/// get `.metallib`s and wgpu has no Vulkan backend for them unless the
-/// non-default `vulkan-portability` feature is on (issue #241). This
-/// crate's `wgpu` dependency is default-features, so `.spv` bytes are
-/// unreachable on Apple and wasm.
+/// GPU rendering is Vulkan-only on exactly the Linux and Android targets
+/// (the `cherenkov_gpu::REQUIRED_BACKEND` table): Apple targets get
+/// `.metallib`s, Windows gets DXIL, and wasm keeps WGSL, so none of them
+/// embeds `.spv` bytes (issue #241).
 fn emits_spirv() -> bool {
-    env::var("CARGO_CFG_TARGET_ARCH").unwrap() != "wasm32"
-        && env::var("CARGO_CFG_TARGET_VENDOR").unwrap() != "apple"
+    matches!(
+        env::var("CARGO_CFG_TARGET_OS").unwrap().as_str(),
+        "linux" | "android"
+    )
 }
 
 /// Parses, validates and compiles one module; with `dxil`, emits its

@@ -11,28 +11,71 @@ use nami::signal::IntoComputed;
 use nami::{Signal, impl_constant};
 #[cfg(feature = "markdown")]
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag};
+use waterui_color::{Color, SurfaceVariantColor};
 use waterui_core::{
     Environment, Str, View,
-    handler::{EventHandler, SharedAction},
+    handler::{EventHandler, ReportExtraction, SharedAction},
 };
-use waterui_graphics::color::{Color, SurfaceVariantColor};
 
 /// A set of text attributes for rich text formatting.
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 pub struct Style {
     /// The font to use.
-    pub font: Font,
+    font: Font,
     /// The foreground (text) color.
-    pub foreground: Option<Color>,
+    foreground: Option<Color>,
     /// The background color.
-    pub background: Option<Color>,
+    background: Option<Color>,
     /// Whether the text is italic.
-    pub italic: bool,
+    italic: bool,
     /// Whether the text has an underline.
-    pub underline: bool,
+    underline: bool,
     /// Whether the text has a strikethrough.
-    pub strikethrough: bool,
+    strikethrough: bool,
+}
+
+impl Style {
+    /// The font to use.
+    #[must_use]
+    pub const fn get_font(&self) -> &Font {
+        &self.font
+    }
+
+    /// The foreground (text) color.
+    #[must_use]
+    pub const fn get_foreground(&self) -> Option<&Color> {
+        self.foreground.as_ref()
+    }
+
+    /// Sets the `foreground`.
+    pub fn set_foreground(&mut self, foreground: Option<Color>) {
+        self.foreground = foreground;
+    }
+
+    /// The background color.
+    #[must_use]
+    pub const fn get_background(&self) -> Option<&Color> {
+        self.background.as_ref()
+    }
+
+    /// Whether the text is italic.
+    #[must_use]
+    pub const fn get_italic(&self) -> bool {
+        self.italic
+    }
+
+    /// Whether the text has an underline.
+    #[must_use]
+    pub const fn get_underline(&self) -> bool {
+        self.underline
+    }
+
+    /// Whether the text has a strikethrough.
+    #[must_use]
+    pub const fn get_strikethrough(&self) -> bool {
+        self.strikethrough
+    }
 }
 
 impl Style {
@@ -42,10 +85,11 @@ impl Style {
         Self::default()
     }
 
-    /// Sets the font.
+    /// Applies a font over this style's font, keeping what the new font does
+    /// not set; see [`Font::inherit`].
     #[must_use]
     pub fn font(mut self, font: impl Into<Font>) -> Self {
-        self.font = font.into();
+        self.font = font.into().inherit(&self.font);
         self
     }
 
@@ -77,8 +121,7 @@ impl Style {
         self
     }
 
-    /// Sets the bold style.
-    /// Equal to calling `self.weight(FontWeight::Bold)`.
+    /// Asks for the platform's bold face of the font; see [`Font::bold`].
     #[must_use]
     pub fn bold(mut self) -> Self {
         self.font = self.font.bold();
@@ -169,7 +212,7 @@ impl TapSpan {
 
     /// Invokes the span's action against the given environment.
     pub fn activate(&self, env: &Environment) {
-        self.action.call(env);
+        self.action.run(env);
     }
 }
 
@@ -418,7 +461,7 @@ impl StyledStr {
         }
         let payload = payload.into_computed();
         let action = SharedAction::new(move |env: Environment| {
-            handler.call(payload.snapshot(), &env);
+            handler.call(payload.snapshot(), &env).report_extraction();
         });
         self.tap_spans = alloc::vec![TapSpan {
             range: 0..end,
@@ -458,11 +501,25 @@ impl StyledStr {
         self.apply_style(|s| *s = take(s).size(size))
     }
 
-    /// Sets the font for all chunks.
+    /// Applies a font over every chunk's font.
+    ///
+    /// A chunk keeps what the font does not set: a slot replaces the chunk's
+    /// slot while the chunk's bold, size and weight stay; see
+    /// [`Font::inherit`].
     #[must_use]
     pub fn font(self, font: impl Into<Font>) -> Self {
         let font = font.into();
-        self.apply_style(|s| s.font = font.clone())
+        self.apply_style(|s| s.font = font.clone().inherit(&s.font))
+    }
+
+    /// Sets every chunk in `base`, the font of the text the string is part
+    /// of: each chunk's font inherits what it does not set from `base`.
+    #[must_use]
+    pub fn inherit_font(self, base: &Font) -> Self {
+        if base.is_inherited() {
+            return self;
+        }
+        self.apply_style(|s| s.font = take(&mut s.font).inherit(base))
     }
 
     /// Sets the foreground color for all chunks.
@@ -487,10 +544,12 @@ impl StyledStr {
         })
     }
 
-    /// Sets the font to bold for all chunks.
+    /// Asks for the platform's bold face for all chunks; see [`Font::bold`].
     #[must_use]
     pub fn bold(self) -> Self {
-        self.weight(FontWeight::Bold)
+        self.apply_style(|s| {
+            *s = take(s).bold();
+        })
     }
 
     /// Asks for the platform's fixed-pitch face for all chunks.
@@ -605,7 +664,7 @@ impl MarkdownInlineBuilder {
         self.enter_with(Style::italic);
     }
 
-    /// Enters a bold styled span.
+    /// Enters a strong span, set in the platform's bold face.
     pub fn enter_strong(&mut self) {
         self.enter_with(Style::bold);
     }
@@ -859,7 +918,7 @@ mod tests {
             .on_tap(3_u8, move |v: u8| {
                 seen.borrow_mut().push(v);
             })
-            .foreground(waterui_graphics::color::Srgb::new(1.0, 0.0, 0.0))
+            .foreground(waterui_color::Srgb::new(1.0, 0.0, 0.0))
             .underline(true)
             .set_style(&Style::new().italic());
         assert_eq!(text.tap_spans()[0].range(), 0..6);
@@ -1007,10 +1066,34 @@ mod tests {
             HeadingLevel::H6,
         ]
         .iter()
-        .map(|&level| heading_style(level).font.resolve(&env).snapshot().size)
+        .map(|&level| heading_style(level).font.resolve(&env).snapshot().size())
         .collect();
 
         assert_eq!(sizes.as_slice(), &[28.0, 17.0, 17.0, 15.0, 13.0, 12.0]);
+    }
+
+    /// `**strong**` asks for the platform's bold face, keeping the slot's
+    /// weight and its declared bold weight, rather than weight 700.
+    #[cfg(feature = "markdown")]
+    #[test]
+    fn strong_markdown_is_platform_bold_not_weight_700() {
+        use crate::font::{Body, ResolvedFont};
+        use nami::{Computed, Signal};
+        use waterui_core::{Environment, env::Store};
+
+        let mut env = Environment::new();
+        env.insert(Store::<Body, _>::new(Computed::constant(
+            ResolvedFont::new(17.0, FontWeight::Normal).with_bold_weight(FontWeight::SemiBold),
+        )));
+
+        let chunks = StyledStr::from_markdown("plain **strong**").into_chunks();
+        assert_eq!(chunks[1].0.as_str(), "strong");
+        let plain = chunks[0].1.font.resolve(&env).snapshot();
+        let strong = chunks[1].1.font.resolve(&env).snapshot();
+        assert!(!plain.bold());
+        assert!(strong.bold());
+        assert_eq!(strong.weight(), FontWeight::Normal);
+        assert_eq!(strong.bold_weight(), Some(FontWeight::SemiBold));
     }
 
     #[cfg(feature = "markdown")]

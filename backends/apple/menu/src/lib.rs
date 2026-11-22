@@ -36,24 +36,24 @@ pub use key::key_equivalent_for;
 pub fn shortcut_parts(shortcut: &Shortcut) -> (String, cocoa_ui::menu::KeyModifiers) {
     use cocoa_ui::menu::KeyModifiers;
     let modifiers = [
-        (shortcut.modifiers.command(), KeyModifiers::COMMAND),
-        (shortcut.modifiers.option(), KeyModifiers::OPTION),
-        (shortcut.modifiers.shift(), KeyModifiers::SHIFT),
-        (shortcut.modifiers.control(), KeyModifiers::CONTROL),
+        (shortcut.modifiers().command(), KeyModifiers::COMMAND),
+        (shortcut.modifiers().option(), KeyModifiers::OPTION),
+        (shortcut.modifiers().shift(), KeyModifiers::SHIFT),
+        (shortcut.modifiers().control(), KeyModifiers::CONTROL),
     ]
     .into_iter()
     .filter(|(held, _)| *held)
     .fold(KeyModifiers::empty(), |flags, (_, native)| flags | native);
-    (key_equivalent_for(&shortcut.key), modifiers)
+    (key_equivalent_for(shortcut.key()), modifiers)
 }
 
 /// A resolved command as the kit's shared `Command` payload — label text,
 /// subtitle, symbol name, destructive flag and shortcut.
 fn kit_command(command: &ResolvedCommand) -> cocoa_ui::menu::Command {
     kit_command_fields(
-        command.label.content.snapshot().to_plain().to_string(),
+        command.label.content().snapshot().to_plain().to_string(),
         command.subtitle.as_ref().map(ToString::to_string),
-        command.icon.as_ref().map(|icon| icon.name.to_string()),
+        command.icon.as_ref().map(|icon| icon.name().to_string()),
         command.role,
         command.shortcut.as_ref(),
     )
@@ -63,9 +63,9 @@ fn kit_command(command: &ResolvedCommand) -> cocoa_ui::menu::Command {
 #[must_use]
 pub fn kit_command_for_menu(menu: &ResolvedNestedMenu) -> cocoa_ui::menu::Command {
     kit_command_fields(
-        menu.label.content.snapshot().to_plain().to_string(),
+        menu.label.content().snapshot().to_plain().to_string(),
         None,
-        menu.icon.as_ref().map(|icon| icon.name.to_string()),
+        menu.icon.as_ref().map(|icon| icon.name().to_string()),
         CommandRole::Standard,
         None,
     )
@@ -113,13 +113,15 @@ pub fn menu_tree(
             ResolvedMenuItem::Divider => Some(cocoa_ui::menu::MenuTreeNode::Divider),
             ResolvedMenuItem::Command(command) => {
                 #[cfg(target_os = "macos")]
-                command.assert_allowed_in_macos_menu_bar();
+                if !command.allowed_in_macos_menu_bar() {
+                    return None;
+                }
                 let action = command.action.clone();
                 let env = env.clone();
                 Some(cocoa_ui::menu::MenuTreeNode::Command(
                     kit_command(command),
                     Rc::new(move || {
-                        action.call(&env);
+                        action.run(&env);
                     }),
                 ))
             }
@@ -183,9 +185,15 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "has no AppKit key equivalent")]
-    fn a_named_key_without_an_appkit_equivalent_panics() {
-        let _ = key_equivalent_for(&ShortcutKey::from(NamedKey::AudioVolumeUp));
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "has no AppKit key equivalent")
+    )]
+    fn a_named_key_without_an_appkit_equivalent_arms_no_shortcut() {
+        assert_eq!(
+            key_equivalent_for(&ShortcutKey::from(NamedKey::AudioVolumeUp)),
+            ""
+        );
     }
 
     /// `menus` resolved as the declared menu bar.

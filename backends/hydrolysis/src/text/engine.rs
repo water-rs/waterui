@@ -13,10 +13,13 @@
 
 use core::num::NonZeroUsize;
 
+use cherenkov_record::Paint;
+use nami::Computed;
+
 use crate::renderer::{FrameWorkCounters, Recording};
 
 use super::input::ResolvedTextLayoutInput;
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 pub use super::types::{Affinity, CARET_WIDTH};
 pub use super::types::{LineMetrics, TextPosition, TextSelection};
 
@@ -76,19 +79,69 @@ pub trait TextEngine: Send + Sync + 'static {
     ) -> Self::Layout;
 
     /// Horizontal ink extent of the measured-frame contract
-    /// (water-rs/hydrolysis#237).
+    /// (water-rs/hydrolysis#237), measured from each line's aligned start:
+    /// `0` is where the line's pen begins, so alignment never widens it.
     fn ink_extent(&self, layout: &Self::Layout, max_lines: Option<usize>) -> Option<(f32, f32)>;
 
     /// Records `layout` at the local origin, shifted right by `x_shift`, into
-    /// the node's recording.
+    /// the node's recording. With `paint`, the runs in the layout's default
+    /// colour draw with that live paint instead, so a colour change reaches
+    /// the engine without a recording; runs the text styled with their own
+    /// colour keep it.
     fn record(
         &self,
         layout: &Self::Layout,
         max_lines: Option<usize>,
         x_shift: f32,
+        paint: Option<&Computed<Paint>>,
         scene: &mut Recording,
         counters: &mut FrameWorkCounters,
     );
+
+    /// `layout` as Cherenkov text, each font its runs draw with registered
+    /// through `font`: how the GPU target draws the text a canvas names.
+    ///
+    /// # Errors
+    ///
+    /// The error `font` returns.
+    ///
+    /// An engine that does not lay text out for the Cherenkov targets is
+    /// used on them against its contract: that is reported and the text
+    /// registers as [`cherenkov::ResourceError::Unsupported`], so the canvas
+    /// draws without it.
+    #[cfg(hydrolysis_cherenkov)]
+    fn cherenkov_text(
+        &self,
+        layout: &Self::Layout,
+        font: &mut dyn FnMut(
+            &parley::FontData,
+        ) -> Result<cherenkov::Font, cherenkov::ResourceError>,
+    ) -> Result<cherenkov::TextLayout, cherenkov::ResourceError> {
+        let _ = (layout, font);
+        waterui_core::contract_violation!(
+            "this text engine does not lay text out for the Cherenkov targets; the text is not registered"
+        );
+        Err(cherenkov::ResourceError::Unsupported(
+            "text layout on the Cherenkov targets",
+        ))
+    }
+
+    /// The lease on the platform layout `layout` is: how the HWUI target
+    /// draws the text a canvas names. `None` for a layout of no text.
+    ///
+    /// An engine that does not lay text out on the platform is used on it
+    /// against its contract: that is reported and the text draws as none.
+    #[cfg(any(test, hydrolysis_hwui))]
+    fn platform_text(
+        &self,
+        layout: &Self::Layout,
+    ) -> Option<std::sync::Arc<crate::hwui::text::TextLayoutResource>> {
+        let _ = layout;
+        waterui_core::contract_violation!(
+            "this text engine does not lay text out on the HWUI platform; the text draws as none"
+        );
+        None
+    }
 
     /// The collection the engine shapes with gained faces: drops every
     /// result the engine keeps that was made against the old set.
@@ -104,15 +157,18 @@ pub trait TextEngine: Send + Sync + 'static {
 /// carry. A test host resolves strictly: the style package a test mounts
 /// names the families its design assumes, so a family that is neither
 /// installed on the host nor provided by a declared font file
-/// ([`crate::DeclaredFonts`]) is a missing declaration — the shape panics
-/// naming the family instead of silently measuring a substitute face.
+/// ([`crate::DeclaredFonts`]) is a missing declaration — the shape reports
+/// it as a contract violation naming the family (a debug build panics, a
+/// release build logs and resolves the entry leniently) instead of silently
+/// measuring a substitute face.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum FontFamilyResolution {
     /// An unresolved named family falls through to the next list entry.
     #[default]
     Lenient,
-    /// An unresolved named family panics, naming the family.
+    /// An unresolved named family is a contract violation, naming the
+    /// family.
     Strict,
 }
 

@@ -23,18 +23,49 @@ pub mod local {
 
     /// Information about a macOS window.
     #[derive(Debug, Clone)]
-    #[non_exhaustive]
     pub struct WindowInfo {
         /// The window ID (used for screencapture -l).
-        pub window_id: u32,
+        window_id: u32,
         /// The window title/name.
-        pub name: String,
+        name: String,
         /// The owning process ID.
-        pub owner_pid: i32,
+        owner_pid: i32,
         /// The owning application name.
-        pub owner_name: String,
+        owner_name: String,
         /// Window layer (0 = normal windows).
-        pub layer: i32,
+        layer: i32,
+    }
+
+    impl WindowInfo {
+        /// The window ID (used for `screencapture -l`).
+        #[must_use]
+        pub const fn window_id(&self) -> u32 {
+            self.window_id
+        }
+
+        /// The window title/name.
+        #[must_use]
+        pub fn name(&self) -> &str {
+            &self.name
+        }
+
+        /// The owning process ID.
+        #[must_use]
+        pub const fn owner_pid(&self) -> i32 {
+            self.owner_pid
+        }
+
+        /// The owning application name.
+        #[must_use]
+        pub fn owner_name(&self) -> &str {
+            &self.owner_name
+        }
+
+        /// Window layer (0 = normal windows).
+        #[must_use]
+        pub const fn layer(&self) -> i32 {
+            self.layer
+        }
     }
 
     fn unsupported() -> eyre::Report {

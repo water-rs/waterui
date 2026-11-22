@@ -24,6 +24,7 @@ use waterui_core::{AnyView, Metadata, Retain, Signal};
 use waterui_webview::{
     BackendEvent, Cookie, CustomWebViewController, ScriptInjectionTime, ScriptMessageHandler, Url,
     WatcherGuard, WatcherSet, WebView, WebViewConfig, WebViewController, WebViewHandle,
+    WebViewOpenError,
 };
 
 const DOCS_URL: &str = "https://waterui.dev/docs";
@@ -55,12 +56,12 @@ impl TestController {
 }
 
 impl CustomWebViewController for TestController {
-    fn open(&self, _config: WebViewConfig) -> impl WebViewHandle {
+    fn open(&self, _config: WebViewConfig) -> Result<impl WebViewHandle, WebViewOpenError> {
         self.opens.set(self.opens.get() + 1);
-        TestHandle {
+        Ok(TestHandle {
             navigations: Rc::clone(&self.navigations),
             watchers: WatcherSet::new(),
-        }
+        })
     }
 
     /// No engine means no interception facility an asset origin could stand on.

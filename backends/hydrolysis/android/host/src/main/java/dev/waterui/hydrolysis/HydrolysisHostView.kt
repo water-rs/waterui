@@ -112,6 +112,8 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
     private var lastMinFlingVelocity = Float.NaN
     private var lastMaxFlingVelocity = Float.NaN
     private var lastScrollFriction = Float.NaN
+    private var lastDoubleTapTimeout = -1
+    private var lastDoubleTapSlop = Float.NaN
     private var lastRootInsets: WindowInsetsCompat? = null
 
     /**
@@ -351,6 +353,8 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
         val minFlingVelocity = viewConfiguration.scaledMinimumFlingVelocity.toFloat()
         val maxFlingVelocity = viewConfiguration.scaledMaximumFlingVelocity.toFloat()
         val scrollFriction = ViewConfiguration.getScrollFriction()
+        val doubleTapTimeout = ViewConfiguration.getDoubleTapTimeout()
+        val doubleTapSlop = viewConfiguration.scaledDoubleTapSlop.toFloat()
         if (width == lastMetricsWidth &&
             height == lastMetricsHeight &&
             metrics.density == lastDensity &&
@@ -361,7 +365,9 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
             touchSlop == lastTouchSlop &&
             minFlingVelocity == lastMinFlingVelocity &&
             maxFlingVelocity == lastMaxFlingVelocity &&
-            scrollFriction == lastScrollFriction
+            scrollFriction == lastScrollFriction &&
+            doubleTapTimeout == lastDoubleTapTimeout &&
+            doubleTapSlop == lastDoubleTapSlop
         ) {
             return false
         }
@@ -376,6 +382,8 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
         lastMinFlingVelocity = minFlingVelocity
         lastMaxFlingVelocity = maxFlingVelocity
         lastScrollFriction = scrollFriction
+        lastDoubleTapTimeout = doubleTapTimeout
+        lastDoubleTapSlop = doubleTapSlop
         session.withNativePtr(NativeBridge::nativeSetMetrics.name) { ptr ->
             NativeBridge.nativeSetMetrics(
                 ptr,
@@ -396,6 +404,8 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
                 minFlingVelocity,
                 maxFlingVelocity,
                 scrollFriction,
+                doubleTapTimeout,
+                doubleTapSlop,
             )
         }
         return true

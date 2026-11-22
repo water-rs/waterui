@@ -3,6 +3,7 @@
 
 mod silhouette;
 
+use cherenkov::lowering::hidden::HiddenLayers;
 use cherenkov::lowering::{Realization, shape_outline};
 use std::sync::Arc;
 
@@ -351,8 +352,17 @@ pub struct CaptureItem {
     /// texel `i` covers the device interval `[i/s, (i+1)/s)`.
     pub scale: cherenkov::CaptureScale,
     /// The pyramid's level count: levels `1..n` reduce the filtered
-    /// level 0 by exact 2×2 boxes.
+    /// level 0 by `pyramid`'s kernel.
     pub levels: u32,
+    /// The kernel a level reduces its parent with: exact 2×2 boxes, or
+    /// the `[1, 5, 10, 10, 5, 1] / 32` binomial kernel centred on the same
+    /// boxes.
+    pub pyramid: cherenkov::CapturePyramid,
+    /// The group's working space (`BackdropSpec::blend_space`): the
+    /// capture's area mean, its chain, its pyramid and every member read
+    /// average premultiplied values in it, and reads return the linear
+    /// working space.
+    pub space: cherenkov::BlendSpace,
     /// The capture rect in capture texels (`union ⊕ apron` on the grid,
     /// clamped to the grid's extent).
     pub region: IRect,
@@ -386,6 +396,32 @@ pub enum SampleEffect {
     Color([f32; 12]),
     /// An effect reading the member clip's signed distance.
     Sdf(SdfEffect),
+    /// A registered backdrop effect shader. Boxed: rare, and `Item` stays
+    /// within its size budget.
+    #[cfg(feature = "shaders")]
+    Shader(Box<ShaderEffect>),
+}
+
+/// A backdrop effect shader bound to one member: the program, its
+/// uniforms, and the member inputs its `BackdropPixel` reads.
+#[cfg(feature = "shaders")]
+#[derive(Clone, Debug)]
+pub struct ShaderEffect {
+    pub program: Arc<super::shader::BackdropProgram>,
+    /// The uniforms packed four per `vec4`, zero-filled.
+    pub params: Arc<[f32; super::shader::PARAM_SLOTS]>,
+    /// The member's own clip, whose distance is `px.own_sdf` (and `px.sdf`
+    /// outside a union).
+    pub clip: Arc<BoxClip>,
+    /// Device → member-local affine in kurbo coefficient order:
+    /// `px.local`.
+    pub local: [f32; 6],
+    /// The member's unclipped device bounds size: `px.size`.
+    pub size: [f32; 2],
+    /// The member's recording scale: `px.scale`.
+    pub scale: f32,
+    /// The registered source's reach in device pixels.
+    pub reach: f32,
 }
 
 /// An SDF-reading member effect and the clip boundary it reads.
@@ -665,10 +701,17 @@ impl BackdropPlan {
             // rows span `[i·B, (i + 2)·B)`. With `i ≥ p / B − 1.5` and
             // `i + 2 ≤ p / B + 1.5`, that is within `1.5·B` capture rows
             // of `p` on either side: the block plus the half-block the
-            // taps sit further out.
+            // taps sit further out. A Gaussian pyramid's level-`k` texel
+            // also reads two more level-`k − 1` texels on each side of its
+            // box, so folding the kept rows down to level 0 adds
+            // `2·Σ 2^(k−1) = 2·(B − 1)` rows.
             let extra = if levels > 1 {
                 let block = 1usize << (levels - 1);
-                block + block.div_ceil(2)
+                let widening = match self.spec.capture_pyramid() {
+                    cherenkov::CapturePyramid::Box => 0,
+                    cherenkov::CapturePyramid::Gaussian => 2 * (block - 1),
+                };
+                block + block.div_ceil(2) + widening
             } else {
                 0
             };
@@ -741,6 +784,10 @@ pub struct Lowering<'a, 'b> {
     /// The storage space of each open isolation level, in emission
     /// order, parallel to [`Lowering::iso_kinds`].
     iso_spaces: Vec<cherenkov::BlendSpace>,
+    /// The storage space of the raster the walk lowers onto: the
+    /// surface's storage space, or the linear space of a projective
+    /// layer's local image.
+    root_space: cherenkov::BlendSpace,
     /// Backdrop groups planned before lowering, by group id.
     backdrops: FxHashMap<u64, BackdropPlan>,
     /// The apron rows each filtered layer's scope needs beyond its own
@@ -765,6 +812,14 @@ pub struct Lowering<'a, 'b> {
     /// The renderer's worker pool: the coverage masks and convolutions
     /// below install their parallel work on it, never the global pool.
     pool: &'a rayon::ThreadPool,
+    /// The registered shader paints a draw's shader leaf renders through;
+    /// `None` renders none (a shader leaf is then an error).
+    #[cfg(feature = "shaders")]
+    pub shader_paints: Option<&'a mut super::shader::ShaderPaints>,
+    /// Whether a draw this lowering realized renders an animated shader
+    /// paint: its surface then renders again every frame.
+    #[cfg(feature = "shaders")]
+    pub animated_shaders: bool,
 }
 
 /// Reusable state for anchor planning and capture emission, owned by the
@@ -782,6 +837,8 @@ pub(super) struct AnchorScratch {
     members: Vec<(u64, Option<LayerId>, usize)>,
     /// `(anchor, group)` capture links, sorted for range lookup.
     links: Vec<(LayerId, u64)>,
+    /// The layers that show nothing, and which of them the walk skips.
+    hidden: HiddenLayers,
 }
 
 impl AnchorScratch {
@@ -790,6 +847,7 @@ impl AnchorScratch {
         self.pos.clear();
         self.members.clear();
         self.links.clear();
+        self.hidden.clear();
     }
 
     pub(super) fn heap_bytes(&self) -> u64 {
@@ -798,20 +856,77 @@ impl AnchorScratch {
                 * size_of::<(LayerId, (Option<LayerId>, usize, Option<LayerId>))>()
             + self.members.capacity() * size_of::<(u64, Option<LayerId>, usize)>()
             + self.links.capacity() * size_of::<(LayerId, u64)>()) as u64
+            + self.hidden.heap_bytes()
     }
+}
+
+/// Binds the registered program of a `Shader` backdrop effect to its
+/// member: `reach` is the effect's sampling reach, `clip` the member
+/// clip's box (a path clip has none, the `backdrop-effect-sdf-path`
+/// error), `transform` the member layer's local-to-device transform and
+/// `bounds` its clip's device bounds.
+#[cfg(feature = "shaders")]
+fn shader_effect(
+    sample: &cherenkov::BackdropSample,
+    shader: &cherenkov::BackdropShaderEffect,
+    reach: f32,
+    clip: Option<BoxClip>,
+    registry: &Registry,
+    transform: Affine,
+    bounds: Rect,
+) -> Result<ShaderEffect, RenderError> {
+    let program = registry.backdrop_shader(shader.shader).ok_or_else(|| {
+        RenderError::Render(format!(
+            "backdrop shader {:?} is not registered",
+            shader.shader
+        ))
+    })?;
+    let mut params = [0.0; super::shader::PARAM_SLOTS];
+    params
+        .get_mut(..shader.uniforms.len())
+        .ok_or_else(|| {
+            RenderError::Render(format!(
+                "a backdrop shader takes at most {} uniforms, got {}",
+                super::shader::PARAM_SLOTS,
+                shader.uniforms.len()
+            ))
+        })?
+        .copy_from_slice(&shader.uniforms);
+    let clip = clip.ok_or(RenderError::Unsupported(names::BACKDROP_EFFECT_SDF_PATH))?;
+    if transform.determinant().abs() < 1e-12 || !transform.is_finite() {
+        return Err(RenderError::Render(
+            "a backdrop shader member's transform is not invertible".into(),
+        ));
+    }
+    #[expect(clippy::cast_possible_truncation, reason = "shader inputs are f32")]
+    let local = transform.inverse().as_coeffs().map(|v| v as f32);
+    #[expect(clippy::cast_possible_truncation, reason = "shader inputs are f32")]
+    let size = [bounds.width() as f32, bounds.height() as f32];
+    Ok(ShaderEffect {
+        program: Arc::clone(program),
+        params: Arc::new(params),
+        clip: Arc::new(clip),
+        local,
+        size,
+        scale: sample.recording_scale().get(),
+        reach,
+    })
 }
 
 /// Resolves a member's engine effect into a [`SampleEffect`], also
 /// returning its sampling reach (the member's bounds grow by it).
 /// `clip` is the member clip's box; a path clip has none and gives SDF
 /// effects no analytic boundary — the same `backdrop-effect-sdf-path`
-/// error as the GPU slice. A `Shader` effect is a GPU-only capability on
-/// this backend.
+/// error as the GPU slice. A `Shader` effect binds the registered program
+/// to the member through [`shader_effect`].
 fn member_effect(
-    effect: Option<&cherenkov::BackdropEffect>,
+    sample: &cherenkov::BackdropSample,
     clip: Option<BoxClip>,
+    registry: &Registry,
+    transform: Affine,
+    bounds: Rect,
 ) -> Result<(SampleEffect, f64), RenderError> {
-    let Some(effect) = effect else {
+    let Some(effect) = sample.effect() else {
         return Ok((SampleEffect::None, 0.0));
     };
     let kind = match effect {
@@ -860,7 +975,23 @@ fn member_effect(
             edge: r.edge(),
             interior: r.interior(),
         },
+        #[cfg(feature = "shaders")]
+        cherenkov::BackdropEffect::Shader(shader) => {
+            let effect = shader_effect(
+                sample,
+                shader,
+                effect.reach(),
+                clip,
+                registry,
+                transform,
+                bounds,
+            )?;
+            let reach = f64::from(effect.reach);
+            return Ok((SampleEffect::Shader(Box::new(effect)), reach));
+        }
+        #[cfg(not(feature = "shaders"))]
         cherenkov::BackdropEffect::Shader(_) => {
+            let _ = (registry, transform, bounds);
             return Err(RenderError::Unsupported(names::BACKDROP_SHADER));
         }
     };
@@ -1331,6 +1462,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
             clip: None,
             iso_kinds: Vec::new(),
             iso_spaces: Vec::new(),
+            root_space: cherenkov::BlendSpace::Linear,
             backdrops: FxHashMap::default(),
             scope_aprons: FxHashMap::default(),
             anchor_scratch,
@@ -1341,6 +1473,10 @@ impl<'a, 'b> Lowering<'a, 'b> {
             projected: FxHashMap::default(),
             level,
             pool,
+            #[cfg(feature = "shaders")]
+            shader_paints: None,
+            #[cfg(feature = "shaders")]
+            animated_shaders: false,
         }
     }
 
@@ -1355,6 +1491,18 @@ impl<'a, 'b> Lowering<'a, 'b> {
     ) {
         self.local = local;
         self.projected = projected;
+    }
+
+    /// Lowers the surface onto a raster storing `space` (the surface's
+    /// storage space); a lowering not given one stores the linear space,
+    /// as a projective layer's local image does.
+    pub const fn storage_space(&mut self, space: cherenkov::BlendSpace) {
+        self.root_space = space;
+    }
+
+    /// The storage space of the level currently being lowered into.
+    fn current_space(&self) -> cherenkov::BlendSpace {
+        self.iso_spaces.last().copied().unwrap_or(self.root_space)
     }
 
     /// The layer the walk starts at.
@@ -1394,6 +1542,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
         tree: &SurfaceTree,
         caches: &mut FxHashMap<LayerId, ContentData>,
         images: &FxHashMap<u64, Arc<super::image::CpuImage>>,
+        text: &cherenkov::TextLayouts,
     ) -> Result<(), RenderError> {
         let mut lowerer = super::prepared::Lowerer {
             images,
@@ -1401,7 +1550,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
             bitmap_fonts: self.bitmap_fonts,
         };
         for content in caches.values_mut() {
-            self.commands_lowered += content.prepare(&mut lowerer)?;
+            self.commands_lowered += content.prepare(&mut lowerer, text)?.commands;
         }
         // The registry borrow must leave `self` for the planning walk.
         let mut filters = self.filters.take();
@@ -1410,6 +1559,8 @@ impl<'a, 'b> Lowering<'a, 'b> {
         });
         self.filters = filters;
         planned?;
+        let scratch = &mut *self.anchor_scratch;
+        scratch.hidden.resolve(&scratch.links);
         self.layer(self.start(tree), tree, caches)
     }
 
@@ -1439,19 +1590,31 @@ impl<'a, 'b> Lowering<'a, 'b> {
         surface: SurfaceId,
         parent: Affine,
         scopes: &mut Vec<LayerId>,
-        canvas: Option<LayerId>,
+        (canvas, space): (Option<LayerId>, cherenkov::BlendSpace),
     ) -> Result<(), RenderError> {
         let node = tree.layer(id);
         if self.projects(id, tree) {
-            // Its members plan in its own local lowering.
+            // Its members plan in its own local lowering; its image composes
+            // here, so the layers around it are walked.
+            self.anchor_scratch.hidden.keep();
             return Ok(());
         }
         self.plan_order += 1;
         let order = self.plan_order;
+        // A tree with no layer that shows nothing has none to plan.
+        let hiding = self.anchor_scratch.hidden.is_active();
+        if hiding {
+            // A local root's opacity and blend apply where its image composes.
+            let local_root = self.local.is_some_and(|(root, _)| root == id);
+            self.anchor_scratch
+                .hidden
+                .enter(id, !local_root && node.shows_nothing());
+        }
         if !self.anchor_scratch.refs.is_empty() && self.anchor_scratch.refs.contains(&id) {
             self.anchor_scratch
                 .pos
                 .insert(id, (canvas, order, scopes.last().copied()));
+            self.anchor_scratch.hidden.anchor(id);
         }
         let (transform, children) = self.placement(id, node, parent);
         if let Some(sample) = &node.backdrop {
@@ -1482,29 +1645,45 @@ impl<'a, 'b> Lowering<'a, 'b> {
                 transform,
                 prepared,
                 scopes.last().copied(),
+                filters,
             )?;
-            if prepared.spec.anchor_layer().is_some() {
+            let anchored = prepared.spec.anchor_layer().is_some();
+            if anchored {
                 self.anchor_scratch.members.push((g, canvas, order));
             }
+            let captures_here = !anchored && self.backdrops[&g].first == id;
+            self.anchor_scratch.hidden.member(g, captures_here);
         }
-        // A semantically isolating layer — filtered or blended — is its
-        // children's compositing canvas; other layers share their
-        // parent's.
-        let canvas = if node.filter.is_some() || node.blend != BlendMode::Normal {
-            Some(id)
-        } else {
-            canvas
-        };
+        // A semantically isolating layer — filtered, blended or in a
+        // space unlike its parent level's — is its children's compositing
+        // canvas; other layers share their parent's.
+        let own_space = node.blend_space.unwrap_or(space);
+        let canvas =
+            if node.filter.is_some() || node.blend != BlendMode::Normal || own_space != space {
+                Some(id)
+            } else {
+                canvas
+            };
         if node.filter.is_some() {
             scopes.push(id);
         }
         for child in &node.children {
             self.plan_layer(
-                *child, tree, groups, filters, surface, children, scopes, canvas,
+                *child,
+                tree,
+                groups,
+                filters,
+                surface,
+                children,
+                scopes,
+                (canvas, own_space),
             )?;
         }
         if node.filter.is_some() {
             scopes.pop();
+        }
+        if hiding {
+            self.anchor_scratch.hidden.leave(id);
         }
         Ok(())
     }
@@ -1520,6 +1699,10 @@ impl<'a, 'b> Lowering<'a, 'b> {
     /// `outer` member needs its clip's box as its field and rejects it.
     /// A path clip has no box: only a member that reads no distance may
     /// use one.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the walk threads the member's layer state and the filter registry"
+    )]
     fn plan_member(
         &mut self,
         id: LayerId,
@@ -1528,6 +1711,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
         transform: Affine,
         prepared: &super::filter::PreparedBackdrop,
         scope: Option<LayerId>,
+        registry: &Registry,
     ) -> Result<(), RenderError> {
         let g = sample.group().raw();
         let outer = sample.outer_extent().get();
@@ -1556,7 +1740,13 @@ impl<'a, 'b> Lowering<'a, 'b> {
                         clip_box.ok_or(RenderError::Unsupported(names::BACKDROP_EFFECT_SDF_PATH))
                     })
                     .transpose()?;
-                let (effect, reach) = member_effect(sample.effect(), clip_box)?;
+                let (effect, reach) = member_effect(
+                    sample,
+                    clip_box,
+                    registry,
+                    transform,
+                    clip_device_bounds(transform, clip),
+                )?;
                 (field, Some(effect), reach)
             }
         };
@@ -1614,10 +1804,14 @@ impl<'a, 'b> Lowering<'a, 'b> {
         filters: &mut Registry,
     ) -> Result<(), RenderError> {
         let mut groups = FxHashMap::default();
-        self.anchor_scratch.clear();
+        debug_assert!(
+            self.anchor_scratch.refs.is_empty(),
+            "`Lowering::new` clears the scratch"
+        );
         self.anchor_scratch
             .refs
             .extend(filters.backdrop_anchors(surface));
+        self.anchor_scratch.hidden.begin(tree.has_hidden_layers());
         self.backdrops.clear();
         self.scope_aprons.clear();
         self.plan_order = 0;
@@ -1630,7 +1824,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
             surface,
             Affine::IDENTITY,
             &mut Vec::new(),
-            None,
+            (None, self.root_space),
         )?;
         if self.backdrops.is_empty() {
             return Ok(());
@@ -2004,23 +2198,13 @@ impl<'a, 'b> Lowering<'a, 'b> {
     ) -> Result<(), RenderError> {
         let saved = std::mem::replace(&mut self.clip, inner_clip);
         // A backdrop capture looks through a level exactly when it is
-        // `Normal`-blended in the linear space: pass-through and
-        // `opacity < 1` levels alike. A non-linear-space isolate changes
+        // `Normal`-blended in the space it composites into: pass-through
+        // and `opacity < 1` levels alike. A cross-space isolate changes
         // pixels even when fully transparent and normally blended: it
-        // stays semantic.
-        let looked_through =
-            blend.0 == BlendMode::Normal && blend.1 == cherenkov::BlendSpace::Linear;
-        // A level that composites in isolation — semantic or translucent —
-        // keeps its declared space for members to composite in; a
-        // pass-through level shares the space it merges back into.
-        let space = if opacity >= 1.0 && looked_through {
-            self.iso_spaces
-                .last()
-                .copied()
-                .unwrap_or(cherenkov::BlendSpace::Linear)
-        } else {
-            blend.1
-        };
+        // stays semantic. Every level stores the space its members
+        // composite in, `blend.1` — the caller's resolved space.
+        let looked_through = blend.0 == BlendMode::Normal && blend.1 == self.current_space();
+        let space = blend.1;
         self.iso_kinds.push(looked_through);
         self.iso_spaces.push(space);
         self.items.push(Item::PushIsolate { space });
@@ -2119,7 +2303,13 @@ impl<'a, 'b> Lowering<'a, 'b> {
         let start = self.items.len();
         let start_row = self.damage_rows.len();
         let parent_damage = self.content_damage.replace(start_row..start_row);
-        let result = self.layer_inner(id, tree, caches);
+        // A layer that shows nothing draws nothing beneath it, and no
+        // capture point a drawn member reads lies beneath it.
+        let result = if self.anchor_scratch.hidden.skips(id) {
+            Ok(())
+        } else {
+            self.layer_inner(id, tree, caches)
+        };
         let changed_rows = std::mem::replace(&mut self.content_damage, parent_damage);
         if self.local.is_none() {
             self.damage_layers.push(super::damage::Layer {
@@ -2150,11 +2340,17 @@ impl<'a, 'b> Lowering<'a, 'b> {
             return self.projected_layer(id, node);
         }
         let local_root = self.local.is_some_and(|(root, _)| root == id);
+        // The space the layer's subtree composites in: its declared one,
+        // else the enclosing level's.
+        let parent_space = self.current_space();
         let (opacity, blend) = if local_root {
             // Outer opacity and blend apply when the image composes.
-            (1.0, BlendMode::Normal)
+            (1.0, (BlendMode::Normal, parent_space))
         } else {
-            (node.opacity, node.blend)
+            (
+                node.opacity,
+                (node.blend, node.blend_space.unwrap_or(parent_space)),
+            )
         };
         let backdrop = node.backdrop.as_ref().map(|sample| sample.group().raw());
         let saved = self.transform;
@@ -2176,15 +2372,15 @@ impl<'a, 'b> Lowering<'a, 'b> {
         }
         let outer = self.clip.clone();
         // A filtered member composites as a whole — its sample and its
-        // filtered content — with the member's opacity and blend. When
-        // neither is a no-op an outer member scope composites at
-        // (opacity, blend) under `composite_clip` below; the sample draws
-        // into it at full strength under the member clip, outside the
-        // filter, beside a nested filter scope at opacity 1, `Normal`
-        // blend over the items.
-        let member_scope = backdrop
-            .zip(node.filter)
-            .filter(|_| opacity < 1.0 || blend != BlendMode::Normal);
+        // filtered content — with the member's opacity, blend and blend
+        // space. When the composite is not a no-op an outer member scope
+        // composites at (opacity, blend) under `composite_clip` below; the
+        // sample draws into it at full strength under the member clip,
+        // outside the filter, beside a nested filter scope at opacity 1,
+        // `Normal` blend over the items in the member's space.
+        let isolates_composite =
+            opacity < 1.0 || blend.0 != BlendMode::Normal || blend.1 != parent_space;
+        let member_scope = backdrop.zip(node.filter).filter(|_| isolates_composite);
         let result = self.with_clip(node.clip.as_ref(), |s| {
             s.transform = content_space;
             // The composite's clip: for destructive operators the
@@ -2193,30 +2389,26 @@ impl<'a, 'b> Lowering<'a, 'b> {
             // transparent source leaves the destination unchanged, so
             // the clip in force before the layer's own clip suffices —
             // the layer clip's coverage is already on the content.
-            let composite_clip = if crate::render::blend::is_destructive(blend) {
+            let composite_clip = if blend.0.is_destructive() {
                 s.clip.clone()
             } else {
                 outer.clone()
             };
             match member_scope {
-                Some((gid, filter)) => s.isolate(
-                    opacity,
-                    (blend, cherenkov::BlendSpace::Linear),
-                    s.clip.clone(),
-                    composite_clip,
-                    |s| {
+                Some((gid, filter)) => {
+                    s.isolate(opacity, blend, s.clip.clone(), composite_clip, |s| {
                         s.emit_backdrop_sample(gid, id, outer.as_ref());
                         let clip = s.clip.clone();
                         s.filter_isolate(
                             filter,
                             1.0,
-                            (BlendMode::Normal, cherenkov::BlendSpace::Linear),
+                            (BlendMode::Normal, blend.1),
                             clip,
                             |s| s.layer_items(id, node, tree, caches),
                             Some(id),
                         )
-                    },
-                ),
+                    })
+                }
                 None => {
                     if let Some(filter) = node.filter {
                         // Opaque `Normal`-blended member (or no member at all):
@@ -2229,13 +2421,12 @@ impl<'a, 'b> Lowering<'a, 'b> {
                         s.filter_isolate(
                             filter,
                             opacity,
-                            (blend, cherenkov::BlendSpace::Linear),
+                            blend,
                             clip,
                             |s| s.layer_items(id, node, tree, caches),
                             Some(id),
                         )
-                    } else if opacity < 1.0
-                        || blend != BlendMode::Normal
+                    } else if isolates_composite
                         // The root already renders into the surface target, and a
                         // local root into its image.
                         || (id != s.start(tree) && node.blends_within())
@@ -2243,18 +2434,12 @@ impl<'a, 'b> Lowering<'a, 'b> {
                         // An unfiltered member's sample is its plane's
                         // bottom-most content: the level's opacity and blend
                         // apply to it exactly as to the member's items, once.
-                        s.isolate(
-                            opacity,
-                            (blend, cherenkov::BlendSpace::Linear),
-                            s.clip.clone(),
-                            composite_clip,
-                            |s| {
-                                if let Some(gid) = backdrop {
-                                    s.emit_backdrop_sample(gid, id, outer.as_ref());
-                                }
-                                s.layer_items(id, node, tree, caches)
-                            },
-                        )
+                        s.isolate(opacity, blend, s.clip.clone(), composite_clip, |s| {
+                            if let Some(gid) = backdrop {
+                                s.emit_backdrop_sample(gid, id, outer.as_ref());
+                            }
+                            s.layer_items(id, node, tree, caches)
+                        })
                     } else {
                         if let Some(gid) = backdrop {
                             // Nothing isolates: the member's content plane is
@@ -2301,6 +2486,10 @@ impl<'a, 'b> Lowering<'a, 'b> {
 
     /// Pushes group `gid`'s capture item at the current position.
     fn push_capture(&mut self, gid: u64) {
+        // A group no drawn member samples is not captured.
+        if !self.anchor_scratch.hidden.captures(gid) {
+            return;
+        }
         if let Some(plan) = self.backdrops.get(&gid)
             && plan.region.x0 < plan.region.x1
             && plan.region.y0 < plan.region.y1
@@ -2317,6 +2506,8 @@ impl<'a, 'b> Lowering<'a, 'b> {
                 group: gid,
                 scale: spec.scale(),
                 levels: spec.levels().get(),
+                pyramid: spec.capture_pyramid(),
+                space: spec.member_blend_space(),
                 region,
                 union: IRect {
                     x0: 0,
@@ -2359,13 +2550,22 @@ impl<'a, 'b> Lowering<'a, 'b> {
         id: LayerId,
         node: &cherenkov::LayerNode,
     ) -> Result<(), RenderError> {
+        // The local image is reconstructed in the linear working space;
+        // a projective layer composites in no other.
+        if node.blend_space == Some(cherenkov::BlendSpace::SrgbEncoded) {
+            return Err(RenderError::Unsupported(names::PROJECTIVE_BLEND_SPACE));
+        }
         let Some(placed) = self.projected.get(&id).cloned() else {
             // No area this frame: behind the viewer, edge-on or off the
             // raster.
             return Ok(());
         };
         let outer = self.clip.clone();
-        if node.blend == BlendMode::Normal {
+        // Over a linear level the image composites straight into it;
+        // over an encoded one it is a linear island, isolated and
+        // composited across the spaces below.
+        if node.blend == BlendMode::Normal && self.current_space() == cherenkov::BlendSpace::Linear
+        {
             self.items.push(Item::Project(Box::new(ProjectItem {
                 placed,
                 opacity: node.opacity,
@@ -2373,7 +2573,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
             })));
             return Ok(());
         }
-        let composite_clip = if crate::render::blend::is_destructive(node.blend) {
+        let composite_clip = if node.blend.is_destructive() {
             let clip = node
                 .clip
                 .as_ref()
@@ -2478,11 +2678,12 @@ impl<'a, 'b> Lowering<'a, 'b> {
                     }
                     emissions[i].valid = true;
                     let clip = self.clip.clone();
+                    let space = space.unwrap_or(self.current_space());
                     if let Some(filter) = filter {
                         self.filter_isolate(
                             *filter,
                             *opacity,
-                            (*blend, *space),
+                            (*blend, space),
                             clip,
                             |s| {
                                 changed |= s.ops(ops, emissions, i + 1, *end as usize)?;
@@ -2491,7 +2692,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
                             None,
                         )?;
                     } else {
-                        self.isolate(*opacity, (*blend, *space), clip.clone(), clip, |s| {
+                        self.isolate(*opacity, (*blend, space), clip.clone(), clip, |s| {
                             changed |= s.ops(ops, emissions, i + 1, *end as usize)?;
                             Ok(())
                         })?;
@@ -2599,9 +2800,23 @@ impl<'a, 'b> Lowering<'a, 'b> {
         compose.height = self.height;
         compose.transform = self.transform;
         compose.clip = self.clip.clone();
+        #[cfg(feature = "shaders")]
+        {
+            compose.shader_paints = self.shader_paints.as_deref_mut();
+        }
         compose.realize(op, carried)?;
         self.glyphs.append(&mut compose.glyphs);
         self.glyphs_rasterized += compose.glyphs_rasterized;
+        // An animated shader paint renders again next frame: its emission
+        // is never reused.
+        #[cfg(feature = "shaders")]
+        let reusable = !compose.animated_shaders;
+        #[cfg(not(feature = "shaders"))]
+        let reusable = true;
+        #[cfg(feature = "shaders")]
+        {
+            self.animated_shaders |= compose.animated_shaders;
+        }
         self.items.extend_from_slice(&items);
         super::damage::record_rows(
             &mut self.damage_rows,
@@ -2610,7 +2825,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
             self.height,
         );
         cache.data = Some(Emission::Draw(self.device_data(items)));
-        cache.valid = true;
+        cache.valid = reusable;
         Ok(true)
     }
 
@@ -2625,6 +2840,10 @@ impl<'a, 'b> Lowering<'a, 'b> {
                 paint,
             } => {
                 self.transform *= *local;
+                #[cfg(feature = "shaders")]
+                let shaded = self.shaded(paint, || shape.bounds())?;
+                #[cfg(feature = "shaders")]
+                let paint = &*shaded;
                 self.fill(shape, paint, carried);
                 Ok(())
             }
@@ -2635,6 +2854,15 @@ impl<'a, 'b> Lowering<'a, 'b> {
                 paint,
             } => {
                 self.transform *= *local;
+                // The GPU backend's stroke bounds: the shape's, grown by
+                // half the stroke width.
+                #[cfg(feature = "shaders")]
+                let shaded = {
+                    let half = stroke.width / 2.0;
+                    self.shaded(paint, || shape.bounds().inflate(half, half))?
+                };
+                #[cfg(feature = "shaders")]
+                let paint = &*shaded;
                 self.stroke(shape, stroke, paint, carried);
                 Ok(())
             }
@@ -2662,6 +2890,56 @@ impl<'a, 'b> Lowering<'a, 'b> {
             }
             _ => unreachable!("scope is composed, never realized as a leaf"),
         }
+    }
+
+    /// `paint` with its shader leaf rendered for a draw over shape-local
+    /// `bounds` under the current transform, through the registered
+    /// shader paints ([`PaintData::render_shaders`]). `bounds` runs only
+    /// for a paint with a shader: a path's bounding box costs a pass over
+    /// its segments, which a plain paint never needs.
+    #[cfg(feature = "shaders")]
+    fn shaded<'p>(
+        &mut self,
+        paint: &'p PaintData,
+        bounds: impl FnOnce() -> Rect,
+    ) -> Result<std::borrow::Cow<'p, PaintData>, RenderError> {
+        if !paint.has_shader() {
+            return Ok(std::borrow::Cow::Borrowed(paint));
+        }
+        let bounds = bounds();
+        let paints = self
+            .shader_paints
+            .as_deref_mut()
+            .ok_or(RenderError::Unsupported(names::SHADER))?;
+        let pool = self.pool;
+        let mut any_animated = false;
+        let rendered = paint.render_shaders(bounds, self.transform, &mut |leaf, size| {
+            let (image, animated) = paints.image(leaf.shader, &leaf.uniforms, size, pool)?;
+            any_animated |= animated;
+            Ok(image)
+        })?;
+        self.animated_shaders |= any_animated;
+        Ok(rendered.map_or(std::borrow::Cow::Borrowed(paint), std::borrow::Cow::Owned))
+    }
+
+    /// `paint` for a glyph run: a shader leaf covers the run's ink boxes,
+    /// as on the GPU backend ([`super::glyph::ink_bounds`]).
+    #[cfg(feature = "shaders")]
+    fn shaded_glyphs<'p>(
+        &mut self,
+        run: &GlyphRun,
+        paint: &'p PaintData,
+    ) -> Result<std::borrow::Cow<'p, PaintData>, RenderError> {
+        if !paint.has_shader() {
+            return Ok(std::borrow::Cow::Borrowed(paint));
+        }
+        let font = self
+            .fonts
+            .get(&run.font.raw())
+            .ok_or_else(|| RenderError::Font(format!("unregistered font {:?}", run.font)))?;
+        // A run without ink draws nothing: any bounds do.
+        let bounds = super::glyph::ink_bounds(&font.data, run, self.transform)?.unwrap_or_default();
+        self.shaded(paint, || bounds)
     }
 
     /// `Fill`: a flattened polygon of edges in the shape's frame, placed in
@@ -2931,6 +3209,10 @@ impl<'a, 'b> Lowering<'a, 'b> {
         if matches!(run.style, GlyphStyle::Stroke(_)) {
             return Err(RenderError::Unsupported(names::GLYPH_STROKE));
         }
+        #[cfg(feature = "shaders")]
+        let shaded = self.shaded_glyphs(run, paint)?;
+        #[cfg(feature = "shaders")]
+        let paint = &*shaded;
         let paint = paint.transformed(self.transform.inverse());
         let [a, b, c, d, ..] = self.transform.as_coeffs();
         let matrix = [a as f32, b as f32, c as f32, d as f32];

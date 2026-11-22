@@ -2,7 +2,7 @@
 
 use waterui_mcp::ServerInfo;
 use waterui_preview_protocol::hydrolysis::{MCP_RUN_CONFIG_ENV, McpRunConfig};
-use waterui_testing::{RuntimeFlavor, ui};
+use waterui_testing::ui;
 
 /// Mounts the app headless and serves it to an agent over MCP stdio.
 pub(crate) fn run() {
@@ -23,9 +23,8 @@ pub(crate) fn run() {
             builder_env.insert(hydrolysis::DeclaredFonts::default());
             ui()
                 .environment(builder_env)
-                .viewport(config.width, config.height)
-                .runtime(RuntimeFlavor::Application)
-                .scale_factor(config.scale_factor)
+                .viewport(config.width(), config.height())
+                .scale_factor(config.scale_factor())
                 .theme(hydrolysis_m3::Material3::defaults())
                 .mount_app(app)
         },

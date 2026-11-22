@@ -15,10 +15,6 @@ use crate::{
 
 /// Toolchain for `CMake`
 #[derive(Debug, Clone, Default)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a unit toolchain marker with no fields to add"
-)]
 pub struct Cmake {}
 
 impl Cmake {
@@ -341,7 +337,7 @@ mod host_tests {
         let install_dir = tool.install_dir(&host).unwrap();
         machine.file(
             install_dir
-                .join(&tool.binary)
+                .join(tool.binary())
                 .strip_prefix(machine.root())
                 .unwrap(),
             "",

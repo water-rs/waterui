@@ -25,6 +25,7 @@ fn mesh(alpha: f32) -> MeshGradient {
             WorkingColor::new([1.0, 1.0, 1.0, alpha]),
         ],
     )
+    .expect("a single patch with its four vertices")
 }
 
 split_test! {

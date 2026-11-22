@@ -18,7 +18,9 @@ axes remain identical to `Photo` and fit-mode `Video`, respectively.
 For operations outside view rendering, pass the context explicitly:
 
 ```rust,ignore
-let resources = waterui::ResourceContext::from_environment(&env);
+// `None` only when the host installed no context.
+let resources = waterui::ResourceContext::from_environment(&env)
+    .expect("the host installs the ResourceContext");
 let data = waterui::asset!("settings.json").load(resources)?;
 let image_url = waterui::asset!("logo.png").url(resources);
 let video = waterui::asset!("movie.mp4").player(resources);

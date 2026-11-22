@@ -16,9 +16,10 @@ use waterui::graphics::color::Srgb;
 use waterui::reactive::binding;
 use waterui::theme::color::{Background, Foreground};
 use waterui::theme::{
-    ColorScheme, Theme, install_color_signal, installed_color_scheme, installed_color_signal,
+    ColorDerivation, ColorScheme, Theme, install_color_derivation, installed_color_scheme,
+    installed_color_signal,
 };
-use waterui::{Computed, Signal, SignalExt as _};
+use waterui::{Computed, Signal};
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::{AnyView, Environment, View};
 
@@ -44,28 +45,26 @@ fn probe_dark_foreground() -> WorkingColor {
     Srgb::from_u32(0xE4_E9_F0).resolve()
 }
 
-/// A minimal style whose `install_tokens` projects the environment's
-/// resolved colour scheme into `Background`/`Foreground` — the same seam a
-/// style package's dynamic-colour installer uses, expressed locally so the
-/// token-ordering contract is tested without a style package.
+/// A minimal style whose `install_tokens` derives `Background`/`Foreground`
+/// from the colour scheme — the same seam a style package's dynamic-colour
+/// installer uses, expressed locally so the token-ordering contract is tested
+/// without a style package.
 fn probe_style() -> TestStyle {
     TestStyle::with_token_installer(|env| {
-        let scheme = installed_color_scheme(env)
-            .expect("the framework default scheme installs ahead of style tokens");
-        let background = scheme
-            .map(|scheme| match scheme {
+        install_color_derivation::<Background>(
+            env,
+            ColorDerivation::new(|scheme| match scheme {
                 ColorScheme::Dark => probe_dark_background(),
                 ColorScheme::Light => probe_light_background(),
-            })
-            .computed();
-        install_color_signal::<Background>(env, background);
-        let foreground = scheme
-            .map(|scheme| match scheme {
+            }),
+        );
+        install_color_derivation::<Foreground>(
+            env,
+            ColorDerivation::new(|scheme| match scheme {
                 ColorScheme::Dark => probe_dark_foreground(),
                 ColorScheme::Light => probe_light_foreground(),
-            })
-            .computed();
-        install_color_signal::<Foreground>(env, foreground);
+            }),
+        );
     })
 }
 
@@ -324,5 +323,71 @@ fn framework_defaults_follow_the_scheme_without_a_rebuild() {
         builds.get(),
         1,
         "a scheme change updates the bound tokens in place, never rebuilding the view"
+    );
+}
+
+/// A colour scheme installed on a subtree re-derives the tokens that subtree
+/// resolves (water-rs/waterui#4243): a Dark scheme under a Light root
+/// resolves the dark defaults, while the root keeps the light ones.
+#[test]
+fn subtree_color_scheme_rederives_the_default_tokens() {
+    let mut root = Environment::new();
+    hydrolysis::theme::install_default_tokens(&mut root);
+    let mut dark = root.clone();
+    dark.install(Theme::new().color_scheme(ColorScheme::Dark));
+
+    let background = |env: &Environment| {
+        installed_color_signal::<Background>(env)
+            .expect("the framework defaults install every colour slot")
+            .snapshot()
+    };
+    assert_resolved_eq(
+        background(&dark),
+        Srgb::from_u32(0x11_18_27).resolve(),
+        "a Dark scheme on a subtree resolves `Background` to the dark default",
+    );
+    assert_resolved_eq(
+        background(&root),
+        Srgb::from_u32(0xFF_FF_FF).resolve(),
+        "the root keeps the light default",
+    );
+}
+
+/// A reactive scheme installed on a subtree drives that subtree's derived
+/// tokens in place, while a colour the application set as a value stays the
+/// same in every scheme.
+#[test]
+fn subtree_color_scheme_binding_rederives_in_place() {
+    use waterui::theme::ColorSettings;
+    use waterui::theme::color::Accent;
+
+    let accent = Srgb::from_u32(0xFF_00_00).resolve();
+    let mut root = Environment::new();
+    root.install(Theme::new().colors(ColorSettings::new().accent(accent)));
+    hydrolysis::theme::install_default_tokens(&mut root);
+    let scheme = binding(ColorScheme::Light);
+    let mut subtree = root.clone();
+    subtree.install(Theme::new().color_scheme(scheme.clone()));
+
+    let background = installed_color_signal::<Background>(&subtree)
+        .expect("the framework defaults install every colour slot");
+    assert_resolved_eq(
+        background.snapshot(),
+        Srgb::from_u32(0xFF_FF_FF).resolve(),
+        "`Background` starts at the light default",
+    );
+
+    scheme.set(ColorScheme::Dark);
+    assert_resolved_eq(
+        background.snapshot(),
+        Srgb::from_u32(0x11_18_27).resolve(),
+        "the subtree's `Background` follows its scheme binding in place",
+    );
+    assert_resolved_eq(
+        installed_color_signal::<Accent>(&subtree)
+            .expect("the application installs `Accent`")
+            .snapshot(),
+        accent,
+        "a colour set as a value is the same in every scheme",
     );
 }

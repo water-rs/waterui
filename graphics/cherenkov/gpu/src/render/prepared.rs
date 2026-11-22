@@ -587,6 +587,32 @@ impl Outline {
 }
 
 impl OutlineRef<'_> {
+    /// Conservative outline bounds without constructing a stroked path.
+    pub fn bounds(self) -> Rect {
+        use kurbo::Shape as _;
+        match self {
+            Self::Fill { elements, .. } => elements.bounding_box(),
+            Self::Stroke { shape, stroke } => {
+                // A square cap's diagonal can extend sqrt(2) half-widths
+                // along either local axis. Miter joins can extend farther.
+                let cap = if stroke.start_cap == kurbo::Cap::Square
+                    || stroke.end_cap == kurbo::Cap::Square
+                {
+                    std::f64::consts::SQRT_2
+                } else {
+                    1.0
+                };
+                let join = if stroke.join == kurbo::Join::Miter {
+                    stroke.miter_limit.max(1.0)
+                } else {
+                    1.0
+                };
+                let margin = stroke.width.abs() * 0.5 * cap.max(join);
+                shape.bounds().inflate(margin, margin)
+            }
+        }
+    }
+
     pub fn gpu_candidate(self, complexity: path::Complexity, raster: Affine) -> bool {
         match self {
             Self::Fill { .. } => complexity.fill_candidate(),
@@ -722,6 +748,12 @@ pub enum Op {
         /// The run size.
         size: f32,
     },
+    /// An immutable picture and its placement in the enclosing recording.
+    BeginPicture {
+        picture: cherenkov::Picture,
+        local: Affine,
+        end: u32,
+    },
     /// Open a clip scope.
     BeginClip {
         /// The ambient transform (the clip's own `extra` is inside
@@ -741,8 +773,9 @@ pub enum Op {
         blend: BlendMode,
         /// The group's declared compositing space: members composite
         /// with each other in it, then the group blends onto the
-        /// backdrop in it.
-        space: BlendSpace,
+        /// backdrop in it. `None` resolves to the enclosing level's
+        /// space when the op lowers.
+        space: Option<BlendSpace>,
         /// Filter over the captured group.
         filter: Option<cherenkov::FilterId>,
         /// Op index of the matching `End` op.
@@ -762,7 +795,8 @@ pub enum Op {
 impl cherenkov::lowering::Operation for Op {
     fn end_mut(&mut self) -> Option<&mut u32> {
         match self {
-            Self::BeginClip { end, .. }
+            Self::BeginPicture { end, .. }
+            | Self::BeginClip { end, .. }
             | Self::BeginIsolate { end, .. }
             | Self::BeginShadow { end, .. } => Some(end),
             _ => None,
@@ -855,19 +889,34 @@ impl cherenkov::lowering::Compiler for Lowerer<'_> {
         group: &cherenkov::Group,
         isolate: bool,
     ) -> Result<Option<Op>, RenderError> {
+        // A declared space isolates: the content compiles before it knows
+        // the space of the level it will composite into, and an isolation
+        // in that same space composites exactly like a pass-through.
         Ok((isolate
             || group.filter.is_some()
             || group.opacity < 1.0
             || group.blend != BlendMode::Normal
-            || group.blend_space != BlendSpace::Linear)
-            .then_some(Op::BeginIsolate {
-                opacity: group.opacity,
-                blend: group.blend,
-                space: group.blend_space,
-                filter: group.filter,
-                end: 0,
-            }))
+            || group.blend_space.is_some())
+        .then_some(Op::BeginIsolate {
+            opacity: group.opacity,
+            blend: group.blend,
+            space: group.blend_space,
+            filter: group.filter,
+            end: 0,
+        }))
     }
+    fn picture(
+        &mut self,
+        picture: &cherenkov::Picture,
+        ambient: Affine,
+    ) -> Result<Option<Op>, RenderError> {
+        Ok(Some(Op::BeginPicture {
+            picture: picture.clone(),
+            local: ambient,
+            end: 0,
+        }))
+    }
+
     fn end(&mut self) -> Op {
         Op::End
     }
@@ -1429,6 +1478,40 @@ mod tests {
     use cherenkov::kurbo::Ellipse;
 
     use super::*;
+
+    #[test]
+    fn stroke_bounds_include_square_caps_and_miter_tips() {
+        use kurbo::Shape as _;
+        let shape = ShapeData::Path {
+            elements: vec![
+                PathEl::MoveTo((0.0, 0.0).into()),
+                PathEl::LineTo((10.0, 10.0).into()),
+                PathEl::LineTo((0.0, 11.0).into()),
+            ]
+            .into(),
+            rule: FillRule::NonZero,
+        };
+        for join in [kurbo::Join::Round, kurbo::Join::Bevel, kurbo::Join::Miter] {
+            for limit in [1.0, 4.0, 20.0] {
+                let stroke = kurbo::Stroke::new(8.0)
+                    .with_join(join)
+                    .with_caps(kurbo::Cap::Square)
+                    .with_miter_limit(limit);
+                let outline = OutlineRef::Stroke {
+                    shape: &shape,
+                    stroke: &stroke,
+                };
+                let bound = outline.bounds();
+                let actual = outline.build(0.001).bounding_box();
+                assert!(
+                    bound.x0 <= actual.x0
+                        && bound.y0 <= actual.y0
+                        && bound.x1 >= actual.x1
+                        && bound.y1 >= actual.y1
+                );
+            }
+        }
+    }
 
     /// `stroke` against empty registries, as `draw` dispatches a
     /// `Command::Stroke`.

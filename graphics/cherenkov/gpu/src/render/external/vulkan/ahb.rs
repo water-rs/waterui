@@ -461,6 +461,7 @@ fn bind_and_finish(
                 aspects: vk::ImageAspectFlags::COLOR,
                 lease: sync::Lease::Ahb(buffer),
                 plane_fences: Vec::new(),
+                hook: None,
             })),
             plane: Some(plane),
             plane_fences: std::sync::Mutex::new(Vec::new()),

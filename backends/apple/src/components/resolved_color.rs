@@ -12,10 +12,11 @@
 
 use cocoa_ui::Retained;
 use waterui::graphics::color::{Color, WorkingColor};
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
+};
 
 use crate::contract::NativeLeaf;
-use crate::dispatch::Dispatcher;
 
 #[cfg(target_os = "macos")]
 mod platform {
@@ -29,6 +30,7 @@ mod platform {
     pub(super) use cocoa_ui::uikit::colors;
 }
 
+use crate::contract::RenderContext;
 use cocoa_ui::PlatformView;
 use platform::ColorView;
 
@@ -71,6 +73,14 @@ fn platform_color(color: &WorkingColor) -> Retained<cocoa_ui::objc2_app_kit::NSC
 struct ColorSubView;
 
 impl SubView for ColorSubView {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         ViewDimensions::new(Size::new(
             proposal.width.unwrap_or(0.0),
@@ -94,18 +104,20 @@ fn color_leaf(mtm: cocoa_ui::MainThreadMarker) -> (Retained<ColorView>, NativeLe
     (view, leaf)
 }
 
-/// Installs the handler on the dispatcher: `Native<Color>` resolves through
+/// The `resolved_color` realization: `Native<Color>` resolves through
 /// the environment into a watched color signal; `Native<WorkingColor>`
 /// applies its already-resolved fill once.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<Color>(|config, ctx| {
-        let (view, mut leaf) = color_leaf(ctx.mtm());
-        let resolved = config.resolve(ctx.env());
-        leaf.bind(&resolved, move |color| {
-            view.set_color(Some(&platform_color(&color)));
-        });
-        leaf
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "NativeBackend hands each payload by value"
+)]
+pub fn realize_color(config: Color, ctx: &RenderContext<'_>) -> NativeLeaf {
+    let (view, mut leaf) = color_leaf(ctx.mtm());
+    let resolved = config.resolve(ctx.env());
+    leaf.bind(&resolved, move |color| {
+        view.set_color(Some(&platform_color(&color)));
     });
+    leaf
 }
 
 #[cfg(test)]

@@ -21,19 +21,18 @@ use waterui::component::text;
 use waterui::graphics::Color;
 use waterui::prelude::ContextMenu;
 use waterui::{AnyView, ViewExt as _};
-use waterui_backend_core::View;
 use waterui_controls::button::button;
 use waterui_controls::menu::CommandExt as _;
 use waterui_core::Native;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::SelfId;
-use waterui_core::transition::PropertyTransition;
 use waterui_layout::frame::Frame;
 use waterui_layout::padding::EdgeInsets;
 use waterui_layout::scroll::scroll;
 use waterui_layout::stack::{VStack, vstack, zstack};
 use waterui_navigation::tab::{Tab, TabsLayout};
 use waterui_navigation::{NavigationLink, NavigationStack, NavigationView};
+use waterui_structural_transition::PropertyTransition;
 
 use super::popup_windows::find_by_label;
 use super::{MinimalTestTheme, test_environment};
@@ -407,7 +406,7 @@ fn the_platform_view_table_holds_each_view_once_after_n_frames() {
         // A snapshot pump renders the frame like a real host's encoded
         // frame; publish runs once per encoded frame, as the host does.
         let pump = runtime.pump_at(true, at);
-        assert!(pump.profile.counters.rendered);
+        assert!(pump.profile().counters().rendered());
         sink.table().borrow_mut().publish();
     }
 
@@ -418,7 +417,10 @@ fn the_platform_view_table_holds_each_view_once_after_n_frames() {
         2,
         "each platform view holds its placement once, got {placements:?}"
     );
-    let mut ids: Vec<u64> = placements.iter().map(|placement| placement.id).collect();
+    let mut ids: Vec<u64> = placements
+        .iter()
+        .map(crate::platform_view::PlatformViewPlacement::id)
+        .collect();
     ids.sort_unstable();
     ids.dedup();
     assert_eq!(ids.len(), 2, "no view may record twice in one frame");
@@ -445,13 +447,13 @@ fn each_runtime_mints_platform_view_ids_from_its_own_sink() {
             MinimalTestTheme::default(),
         );
         let pump = runtime.pump_at(true, Instant::now());
-        assert!(pump.profile.counters.rendered);
+        assert!(pump.profile().counters().rendered());
         sink.table().borrow_mut().publish();
         let placements = sink.table().borrow().placements().to_vec();
         let [placement] = placements.as_slice() else {
             panic!("the probe view is placed exactly once, got {placements:?}");
         };
-        placement.id
+        placement.id()
     };
     let first = first_published_id();
     let second = first_published_id();
@@ -489,10 +491,10 @@ fn only_an_interactive_target_above_a_platform_view_takes_its_press() {
     let [placed] = core.materialized_platform_views.as_slice() else {
         panic!("the probe view is placed exactly once");
     };
-    let view = placed.placement.id;
+    let view = placed.placement.id();
     let decorated = kurbo::Point::new(
-        f64::from(placed.placement.x) + 10.0,
-        f64::from(placed.placement.y) + 10.0,
+        f64::from(placed.placement.x()) + 10.0,
+        f64::from(placed.placement.y()) + 10.0,
     );
     assert!(
         !core.platform_view_occluded(view, decorated),
@@ -504,6 +506,65 @@ fn only_an_interactive_target_above_a_platform_view_takes_its_press() {
             kurbo::Point::new(f64::from(button_x), f64::from(button_y))
         ),
         "the button painted above the view takes the press"
+    );
+}
+
+/// The GPU band's ordered hit test answers a host-pixel touch against the
+/// window-space frames the views are placed at: on a density-3 window a
+/// touch on the first of two stacked views — the second moved below it by
+/// a render offset, a button card painted between them — belongs to the
+/// first view, a touch on the offset view's drawn frame to the second, and
+/// the card's button keeps its own press.
+#[test]
+fn a_host_pixel_touch_reaches_the_platform_view_drawn_under_it() {
+    const SCALE: f64 = 3.0;
+    let mut env = test_environment();
+    env.insert(PlatformViewSink::new());
+    let builder = AnyViewBuilder::<AnyView>::new(|| {
+        AnyView::new(zstack((
+            AnyView::new(Native::new(PlatformView::new("first"))).size(300.0, 200.0),
+            zstack((Color::srgb(200, 40, 40), button("Card")))
+                .size(120.0, 120.0)
+                .offset(0.0, 60.0),
+            AnyView::new(Native::new(PlatformView::new("second")))
+                .size(300.0, 200.0)
+                .offset(0.0, 200.0),
+        )))
+    });
+    let mut runtime = HeadlessRuntime::new_for_tests(
+        env,
+        builder,
+        WINDOW.0,
+        WINDOW.1,
+        MinimalTestTheme::default(),
+    );
+    let (button_x, button_y) = midpoint(bounds_of(&mut runtime, "Card"));
+    let renderer = runtime.renderer();
+    let [first, second] = renderer.materialized_platform_views.as_slice() else {
+        panic!("both probe views are placed exactly once");
+    };
+    let (first, second) = (&first.placement, &second.placement);
+    assert!(
+        (f64::from(second.y()) - f64::from(first.y()) - 200.0).abs() < 1e-3,
+        "the second view is placed where its offset draws it, got {} and {}",
+        first.y(),
+        second.y()
+    );
+    let host = |x: f32, y: f32| kurbo::Point::new(f64::from(x) * SCALE, f64::from(y) * SCALE);
+    assert_eq!(
+        renderer.platform_view_hit_gpu(host(first.x() + 10.0, first.y() + 10.0), SCALE),
+        Some(first.id()),
+        "a touch on the first view outside the card belongs to the first view"
+    );
+    assert_eq!(
+        renderer.platform_view_hit_gpu(host(second.x() + 10.0, second.y() + 10.0), SCALE),
+        Some(second.id()),
+        "a touch on the offset view's drawn frame belongs to the second view"
+    );
+    assert_eq!(
+        renderer.platform_view_hit_gpu(host(button_x, button_y), SCALE),
+        None,
+        "the card's button painted above the first view takes its press"
     );
 }
 

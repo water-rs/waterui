@@ -267,8 +267,8 @@ async fn load_headless_title(page: &ChromiumPage) -> Result<Value, CdpError> {
             .await
             .map_err(|_| CdpError::Detached)?;
         let matches_loader =
-            event.params.get("loaderId").and_then(Value::as_str) == Some(loader_id);
-        let is_load = event.params.get("name").and_then(Value::as_str) == Some("load");
+            event.params().get("loaderId").and_then(Value::as_str) == Some(loader_id);
+        let is_load = event.params().get("name").and_then(Value::as_str) == Some("load");
         if matches_loader && is_load {
             break;
         }

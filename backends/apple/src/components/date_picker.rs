@@ -14,15 +14,18 @@ use alloc::rc::Rc;
 use core::cell::{Cell, RefCell};
 
 use cocoa_ui::date::{DateParts, DateTimeParts, TimeParts};
-use cocoa_ui::{PlatformView, Rect, Retained};
+use cocoa_ui::{PlatformView, Rect, Retained, view};
 use waterui::component::form::picker::date::{DatePickerConfig, DatePickerType, DateTime};
 use waterui::reactive::{Binding, Signal};
 use waterui::resolve::Resolvable;
 use waterui_core::interaction::Disabled;
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size, StretchAxis, SubView,
+    ViewDimensions,
+};
 
 use crate::contract::{Mounted, NativeLeaf, RenderContext};
-use crate::dispatch::Dispatcher;
+use crate::proposal;
 
 #[cfg(target_os = "macos")]
 mod platform {
@@ -103,30 +106,34 @@ fn parts_of(value: DateTime) -> DateTimeParts {
 /// # Panics
 ///
 /// When the parts fall outside `jiff`'s range — impossible for control
-/// output, matching the Swift `fatalError`.
+/// output: the control only reports components of a real Gregorian date.
 fn to_jiff(parts: DateTimeParts) -> DateTime {
     let date = waterui::component::form::picker::date::Date::new(
-        i16::try_from(parts.date.year).expect("year in range"),
-        i8::try_from(parts.date.month).expect("month in range"),
-        i8::try_from(parts.date.day).expect("day in range"),
+        i16::try_from(parts.date.year).expect("the control reports a year that fits i16"),
+        i8::try_from(parts.date.month).expect("the control reports a month that fits i8"),
+        i8::try_from(parts.date.day).expect("the control reports a day that fits i8"),
     )
-    .expect("picker date parts are always valid");
+    .expect("the control reports the parts of a real Gregorian date");
     date.at(
-        i8::try_from(parts.time.hour).expect("hour in range"),
-        i8::try_from(parts.time.minute).expect("minute in range"),
-        i8::try_from(parts.time.second).expect("second in range"),
+        i8::try_from(parts.time.hour).expect("the control reports an hour that fits i8"),
+        i8::try_from(parts.time.minute).expect("the control reports a minute that fits i8"),
+        i8::try_from(parts.time.second).expect("the control reports a second that fits i8"),
         0,
     )
 }
 
-/// The `NSDate` `value` names — `wuiDateTimeToDate`, `fatalError` included.
-///
-/// # Panics
-///
-/// When the Gregorian calendar cannot resolve `value`.
-fn ns_date(value: DateTime) -> Retained<objc2_foundation::NSDate> {
-    cocoa_ui::date::ns_date(&parts_of(value))
-        .expect("WaterUI DatePicker cannot represent the date-time")
+/// The `NSDate` `value` names — `wuiDateTimeToDate`. `None`, logged, when
+/// the Gregorian calendar cannot resolve `value`: the caller skips the step
+/// that needed the date.
+fn ns_date(value: DateTime) -> Option<Retained<objc2_foundation::NSDate>> {
+    let date = cocoa_ui::date::ns_date(&parts_of(value));
+    if date.is_none() {
+        tracing::error!(
+            "the Gregorian calendar cannot resolve the DatePicker date-time {value}; \
+             the date is not applied"
+        );
+    }
+    date
 }
 
 /// Whether `value` is a `jiff` full-range sentinel — `nil` on the platform
@@ -156,18 +163,23 @@ fn is_full_range_bound(value: DateTime) -> bool {
 
 /// A range bound as `NSDate`; `None` for the `jiff` full-range sentinels.
 fn range_bound(value: DateTime) -> Option<Retained<objc2_foundation::NSDate>> {
-    (!is_full_range_bound(value)).then(|| ns_date(value))
+    (!is_full_range_bound(value))
+        .then(|| ns_date(value))
+        .flatten()
 }
 
 /// The parts the control's `NSDate` carries — `NativeDateComponents`'s
-/// fatal-on-incomplete check.
-///
-/// # Panics
-///
-/// When the Gregorian calendar cannot resolve `date`.
-fn read_parts(date: &objc2_foundation::NSDate) -> DateTimeParts {
-    cocoa_ui::date::date_time_parts(date)
-        .expect("Gregorian calendar failed to resolve DatePicker components")
+/// incomplete-components check. `None`, logged, when the Gregorian calendar
+/// cannot resolve `date`: the binding keeps its value.
+fn read_parts(date: &objc2_foundation::NSDate) -> Option<DateTimeParts> {
+    let parts = cocoa_ui::date::date_time_parts(date);
+    if parts.is_none() {
+        tracing::error!(
+            "the Gregorian calendar failed to resolve the DatePicker components; \
+             the binding keeps its value"
+        );
+    }
+    parts
 }
 
 /// The binding value after the user edited the control: the fields `ty`
@@ -273,7 +285,9 @@ fn set_seconds_text(controls: &SecondsControls) {
 /// Mirrors `syncControls(with:)` — push `value` onto the control and, on
 /// `UIKit`, the seconds controls.
 fn sync_controls(state: &DatePickerState, value: DateTime) {
-    state.picker.set_date(&ns_date(value));
+    if let Some(date) = ns_date(value) {
+        state.picker.set_date(&date);
+    }
     #[cfg(target_os = "ios")]
     if let Some(seconds) = &state.seconds {
         seconds.value.set(i32::from(value.second()));
@@ -300,7 +314,9 @@ fn update_binding(state: &Rc<RefCell<DatePickerState>>, binding: &Binding<DateTi
     if borrowed.syncing.get() {
         return;
     }
-    let picker_parts = read_parts(&borrowed.picker.date());
+    let Some(picker_parts) = read_parts(&borrowed.picker.date()) else {
+        return;
+    };
     #[cfg(target_os = "ios")]
     let seconds_override = borrowed
         .seconds
@@ -318,18 +334,18 @@ fn update_binding(state: &Rc<RefCell<DatePickerState>>, binding: &Binding<DateTi
     binding.set(to_jiff(merged));
 }
 
-/// Lays out the row inside `view`'s bounds: label leading and centered,
-/// the seconds column hugging the trailing edge on `UIKit`, and the picker
-/// filling the space between — the constraint layout's middle spring.
-fn layout_children(view: &PlatformView, state: &DatePickerState) {
-    let bounds = cocoa_ui::view::bounds(view);
-    let width = bounds.size.width;
-    let height = bounds.size.height;
+/// Lays out the row inside the `response` rectangle: label leading and
+/// centered, the seconds column hugging the trailing edge on `UIKit`, and
+/// the picker filling the space between — the constraint layout's middle
+/// spring.
+fn layout_children(view: &PlatformView, response: Rect, state: &DatePickerState) {
+    let width = response.size.width;
+    let height = response.size.height;
     let rtl = cocoa_ui::view::is_right_to_left(view);
 
     let place = |child: &PlatformView, x: f64, y: f64, w: f64, h: f64| {
         let x = if rtl { width - x - w } else { x };
-        cocoa_ui::view::set_frame(child, Rect::new(x, y, w, h));
+        view::set_frame(child, Rect::new(x, y, w, h).translated(response.origin));
     };
 
     let label_size = state.label.layout().measure(ProposalSize::UNSPECIFIED).size;
@@ -396,6 +412,14 @@ impl core::fmt::Debug for DatePickerSubView {
 }
 
 impl SubView for DatePickerSubView {
+    fn resolve_extent(
+        &self,
+        bounds: LayoutRect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     #[expect(
         clippy::cast_possible_truncation,
         reason = "the layout contract is f32; measured points always fit"
@@ -437,114 +461,116 @@ impl SubView for DatePickerSubView {
     }
 }
 
-/// Installs the `date_picker` handler on the dispatcher:
+/// The `date_picker` realization:
 /// `Native<DatePickerConfig>` maps to the label/control row.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<DatePickerConfig>(|config, ctx| {
-        let mtm = ctx.mtm();
-        let host = HostView::new(mtm, Rect::ZERO);
-        let host_view: &PlatformView = &host;
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "NativeBackend hands each payload by value"
+)]
+pub fn realize_date_picker_config(config: DatePickerConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
+    let mtm = ctx.mtm();
+    let host = HostView::new(mtm, Rect::ZERO);
+    let host_view: &PlatformView = &host;
 
-        #[cfg(target_os = "macos")]
-        let picker = DatePicker::new(mtm, platform::elements(config.ty));
+    #[cfg(target_os = "macos")]
+    let picker = DatePicker::new(mtm, platform::elements(config.ty()));
+    #[cfg(target_os = "ios")]
+    let picker = DatePicker::new(mtm, platform::mode(config.ty()));
+    picker.set_range(
+        range_bound(*config.range().start()).as_deref(),
+        range_bound(*config.range().end()).as_deref(),
+    );
+    cocoa_ui::view::add_subview(host_view, as_view(&picker));
+
+    let label = ctx
+        .render(waterui_backend_core::AnyView::new(config.label().clone()))
+        .mount(host_view);
+    cocoa_ui::view::hide_from_accessibility(label.view());
+
+    let state = Rc::new(RefCell::new(DatePickerState {
+        picker,
+        syncing: Cell::new(false),
+        ty: config.ty(),
+        label,
         #[cfg(target_os = "ios")]
-        let picker = DatePicker::new(mtm, platform::mode(config.ty));
-        picker.set_range(
-            range_bound(*config.range.start()).as_deref(),
-            range_bound(*config.range.end()).as_deref(),
-        );
-        cocoa_ui::view::add_subview(host_view, as_view(&picker));
+        seconds: None,
+    }));
 
-        let label = ctx
-            .render(waterui_backend_core::AnyView::new(config.label.clone()))
-            .mount(host_view);
-        cocoa_ui::view::hide_from_accessibility(label.view());
+    // `syncControls` runs before the action is wired, like the Swift init.
+    sync_controls(&state.borrow(), config.value().snapshot());
 
-        let state = Rc::new(RefCell::new(DatePickerState {
-            picker,
-            syncing: Cell::new(false),
-            ty: config.ty,
-            label,
-            #[cfg(target_os = "ios")]
-            seconds: None,
-        }));
-
-        // `syncControls` runs before the action is wired, like the Swift init.
-        sync_controls(&state.borrow(), config.value.snapshot());
-
-        #[cfg(target_os = "ios")]
-        if shows_seconds(config.ty) {
-            let seconds_label = platform::Label::new(mtm);
-            seconds_label.set_text_alignment(platform::NSTextAlignment::Right);
-            let stepper = platform::Stepper::new(mtm);
-            stepper.set_range(0.0, 59.0);
-            stepper.set_step(1.0);
-            cocoa_ui::view::add_subview(host_view, &seconds_label);
-            cocoa_ui::view::add_subview(host_view, &stepper);
-            state.borrow_mut().seconds = Some(SecondsControls {
-                label: seconds_label,
-                stepper,
-                font_size: Cell::new(0.0),
-                font_weight: Cell::new(cocoa_ui::font::weight::REGULAR),
-                foreground: RefCell::new(platform::UIColor::labelColor()),
-                value: Cell::new(0),
-            });
-            sync_controls(&state.borrow(), config.value.snapshot());
-        }
-
-        // Control → binding: the action merges the edited fields back.
-        let action_target = state.borrow().picker.install_action({
-            let state = Rc::clone(&state);
-            let binding = config.value.clone();
-            move || update_binding(&state, &binding)
+    #[cfg(target_os = "ios")]
+    if shows_seconds(config.ty()) {
+        let seconds_label = platform::Label::new(mtm);
+        seconds_label.set_text_alignment(platform::NSTextAlignment::Right);
+        let stepper = platform::Stepper::new(mtm);
+        stepper.set_range(0.0, 59.0);
+        stepper.set_step(1.0);
+        cocoa_ui::view::add_subview(host_view, &seconds_label);
+        cocoa_ui::view::add_subview(host_view, &stepper);
+        state.borrow_mut().seconds = Some(SecondsControls {
+            label: seconds_label,
+            stepper,
+            font_size: Cell::new(0.0),
+            font_weight: Cell::new(cocoa_ui::font::weight::REGULAR),
+            foreground: RefCell::new(platform::UIColor::labelColor()),
+            value: Cell::new(0),
         });
+        sync_controls(&state.borrow(), config.value().snapshot());
+    }
 
-        // `secondsChanged`: refresh the readout, then merge.
-        #[cfg(target_os = "ios")]
-        let seconds_target = state.borrow().seconds.as_ref().map(|seconds| {
-            seconds.stepper.install_action({
-                let state = Rc::clone(&state);
-                let binding = config.value.clone();
-                move |value| {
-                    {
-                        let borrowed = state.borrow();
-                        if borrowed.syncing.get() {
-                            return;
-                        }
-                        if let Some(controls) = &borrowed.seconds {
-                            controls.value.set(current_seconds(value));
-                            set_seconds_text(controls);
-                        }
-                    }
-                    update_binding(&state, &binding);
-                }
-            })
-        });
-
-        host.set_layout_handler({
-            let state = Rc::clone(&state);
-            move |view| {
-                layout_children(view, &state.borrow());
-            }
-        });
-
-        let mut leaf = NativeLeaf::new(
-            host_view,
-            DatePickerSubView {
-                state: Rc::clone(&state),
-            },
-        );
-        wire(&mut leaf, &config, &state, ctx, mtm);
-
-        // Binding → control; the syncing flag drops the echo our own write
-        // raises back through the action.
-
-        leaf.keep(action_target);
-        #[cfg(target_os = "ios")]
-        leaf.keep(seconds_target);
-        leaf.keep(state);
-        leaf
+    // Control → binding: the action merges the edited fields back.
+    let action_target = state.borrow().picker.install_action({
+        let state = Rc::clone(&state);
+        let binding = config.value().clone();
+        move || update_binding(&state, &binding)
     });
+
+    // `secondsChanged`: refresh the readout, then merge.
+    #[cfg(target_os = "ios")]
+    let seconds_target = state.borrow().seconds.as_ref().map(|seconds| {
+        seconds.stepper.install_action({
+            let state = Rc::clone(&state);
+            let binding = config.value().clone();
+            move |value| {
+                {
+                    let borrowed = state.borrow();
+                    if borrowed.syncing.get() {
+                        return;
+                    }
+                    if let Some(controls) = &borrowed.seconds {
+                        controls.value.set(current_seconds(value));
+                        set_seconds_text(controls);
+                    }
+                }
+                update_binding(&state, &binding);
+            }
+        })
+    });
+
+    host.set_layout_handler({
+        let state = Rc::clone(&state);
+        move |view| {
+            layout_children(view, proposal::response(view), &state.borrow());
+        }
+    });
+
+    let mut leaf = NativeLeaf::new(
+        host_view,
+        DatePickerSubView {
+            state: Rc::clone(&state),
+        },
+    );
+    wire(&mut leaf, &config, &state, ctx, mtm);
+
+    // Binding → control; the syncing flag drops the echo our own write
+    // raises back through the action.
+
+    leaf.keep(action_target);
+    #[cfg(target_os = "ios")]
+    leaf.keep(seconds_target);
+    leaf.keep(state);
+    leaf
 }
 
 /// Wires the leaf's watches and binds — control ← signal subscriptions
@@ -558,7 +584,7 @@ fn wire(
 ) {
     // Binding → control; the syncing flag drops the echo our own write
     // raises back through the action.
-    leaf.watch(&config.value, {
+    leaf.watch(config.value(), {
         let state = Rc::clone(state);
         move |ctx| {
             let borrowed = state.borrow();
@@ -578,14 +604,18 @@ fn wire(
         let state = Rc::clone(state);
         move |font: waterui::text::font::ResolvedFont| {
             #[cfg(target_os = "macos")]
-            state.borrow().picker.set_font(&platform_font(mtm, &font));
+            state
+                .borrow()
+                .picker
+                .set_font(&super::font::platform_font(mtm, &font, false));
             #[cfg(target_os = "ios")]
             {
-                let _ = mtm;
                 let borrowed = state.borrow();
                 if let Some(seconds) = &borrowed.seconds {
-                    seconds.font_size.set(f64::from(font.size));
-                    seconds.font_weight.set(platform_weight(font.weight));
+                    seconds.font_size.set(f64::from(font.size()));
+                    seconds
+                        .font_weight
+                        .set(super::font::resolved_weight(mtm, &font));
                     set_seconds_text(seconds);
                 }
             }
@@ -610,7 +640,7 @@ fn wire(
 
     // The label's semantic text is spoken on the control (and the
     // stepper on `UIKit`), the `WuiControlAccessibility` treatment.
-    let accessibility_label = config.label.accessibility_label();
+    let accessibility_label = config.label().accessibility_label();
     leaf.bind(&accessibility_label, {
         let state = Rc::clone(state);
         move |styled| {
@@ -640,23 +670,6 @@ fn wire(
     }
 }
 
-/// The platform weight of a `FontWeight` on the `NSFont`/`UIFont` scale.
-const fn platform_weight(weight: waterui::text::font::FontWeight) -> f64 {
-    use cocoa_ui::font::weight;
-    use waterui::text::font::FontWeight;
-    match weight {
-        FontWeight::Thin => weight::THIN,
-        FontWeight::UltraLight => weight::ULTRA_LIGHT,
-        FontWeight::Light => weight::LIGHT,
-        FontWeight::Normal => weight::REGULAR,
-        FontWeight::Medium => weight::MEDIUM,
-        FontWeight::SemiBold => weight::SEMI_BOLD,
-        FontWeight::Bold => weight::BOLD,
-        FontWeight::UltraBold => weight::HEAVY,
-        FontWeight::Black => weight::BLACK,
-    }
-}
-
 /// A `WorkingColor` as the platform's extended linear Display-P3 color object — the
 /// `toUIColor`/`toNSColor` semantics sibling ports use.
 #[cfg(target_os = "ios")]
@@ -669,45 +682,6 @@ fn platform_color(color: &waterui::graphics::color::WorkingColor) -> Retained<pl
             f64::from(blue),
             f64::from(alpha),
         )
-    }
-}
-
-/// The platform face a resolved font names — the `Body` resolved font
-/// applied to the control's text.
-///
-/// # Panics
-///
-/// When the family names no installed font and no generic.
-#[cfg(target_os = "macos")]
-fn platform_font(
-    mtm: cocoa_ui::MainThreadMarker,
-    resolved: &waterui::text::font::ResolvedFont,
-) -> Retained<cocoa_ui::Font> {
-    use waterui::text::font::FontDesign;
-    let size = f64::from(resolved.size);
-    let weight = platform_weight(resolved.weight);
-    match resolved.family.as_deref() {
-        Some(family) if !family.is_empty() => {
-            let mut resolved_font = None;
-            for candidate in family
-                .split(',')
-                .map(str::trim)
-                .filter(|candidate| !candidate.is_empty())
-            {
-                resolved_font = match candidate {
-                    "system" | "sans-serif" => Some(cocoa_ui::font::system(mtm, size, weight)),
-                    _ => cocoa_ui::font::named(candidate, size),
-                };
-                if resolved_font.is_some() {
-                    break;
-                }
-            }
-            resolved_font.unwrap_or_else(|| panic!("WaterUI: font family '{family}' not found"))
-        }
-        _ => match resolved.design {
-            FontDesign::Default => cocoa_ui::font::system(mtm, size, weight),
-            FontDesign::Monospaced => cocoa_ui::font::monospaced(mtm, size, weight),
-        },
     }
 }
 

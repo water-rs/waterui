@@ -60,7 +60,9 @@ pub enum Op {
         filter: Option<cherenkov::FilterId>,
         opacity: f32,
         blend: BlendMode,
-        space: BlendSpace,
+        /// The declared space, resolved against the enclosing level's
+        /// when the op lowers; `None` composites in that level's.
+        space: Option<BlendSpace>,
         end: u32,
     },
     /// Close a scope.
@@ -175,10 +177,13 @@ impl cherenkov::lowering::Compiler for Lowerer<'_> {
         group: &cherenkov::Group,
         isolate: bool,
     ) -> Result<Option<Op>, RenderError> {
+        // A declared space isolates: the content compiles before it knows
+        // the space of the level it will composite into, and an isolation
+        // in that same space composites exactly like a pass-through.
         Ok((isolate
             || group.opacity < 1.0
             || group.blend != BlendMode::Normal
-            || group.blend_space != BlendSpace::Linear
+            || group.blend_space.is_some()
             || group.filter.is_some())
         .then_some(Op::BeginIsolate {
             filter: group.filter,

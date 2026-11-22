@@ -8,17 +8,14 @@ use nami::Signal;
 use nami::watcher::BoxWatcherGuard;
 
 use waterui_core::layout::{ProposalSize, Size, StretchAxis};
-use waterui_core::{AnyView, Environment, Native, NativeView, View};
+use waterui_core::{AnyView, Environment, Native, NativeView, View, contract_violation};
 
+use crate::draw::Instant;
 use crate::input::SurfaceInputEvent;
-use crate::scene::resources::RecordingResources;
+use crate::scene::resources::{RecordingResources, SceneResources};
 
 /// Environment marker: render `SceneView` directly in the backend scene.
 #[derive(Debug, Clone, Copy, Default)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "field-less environment marker inserted by name"
-)]
 pub struct SceneViewMergeToParent;
 
 /// Callback used by scene content to request another frame.
@@ -40,7 +37,82 @@ pub fn invalidate_on_change<S: Signal>(
     Box::new(signal.watch(move |_| invalidator()))
 }
 
+/// The frame a host presents scene content in.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SceneFrame {
+    /// The width of the box the content draws into, in logical points.
+    pub width: f32,
+    /// The height of that box, in logical points.
+    pub height: f32,
+    /// The instant of the presented frame, on the host's frame clock — the
+    /// clock every animation of the host samples, which a test harness
+    /// advances by pumped frames.
+    pub time: Instant,
+}
+
+/// Which frames scene content needs after the one it was just presented in.
+///
+/// The same split the engine makes for the tracks it runs: work that ends on
+/// its own is finite, work that repeats until it is replaced is perpetual. A
+/// host presents the next frame for either; a host that asks whether its
+/// scene has come to rest waits for finite work and not for perpetual work,
+/// which would otherwise never let it rest.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "every scene host handles each answer; a new answer must fail their build instead of falling into a wildcard arm"
+)]
+pub enum NextFrame {
+    /// No frame: the content draws the same until it invalidates itself.
+    Idle,
+    /// Another frame, for work that reaches its end: a canvas clock from
+    /// `time_until` short of its end, a transition with a known duration.
+    Finite,
+    /// Another frame, for work with no end: a canvas reading its unbounded
+    /// `time`, a simulation that runs for as long as it is shown.
+    Perpetual,
+}
+
+impl NextFrame {
+    /// Whether the content asks for another frame at all.
+    #[must_use]
+    pub const fn wants_frame(self) -> bool {
+        !matches!(self, Self::Idle)
+    }
+}
+
+/// What [`SceneContent::update_scene`] did with the content's installed
+/// recording.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "every scene host handles both answers; a new answer must fail their build instead of falling into a wildcard arm"
+)]
+pub enum SceneUpdate {
+    /// The content keeps no recording it can update: the host records it
+    /// with [`SceneContent::build_scene`] and installs the result.
+    Record,
+    /// The installed recording was brought up to date in place, and stays
+    /// installed.
+    Retained {
+        /// The frames the content needs next.
+        next: NextFrame,
+    },
+}
+
 /// Object-safe scene producer for `SceneView`.
+///
+/// # Recording and updating
+///
+/// A host that keeps a content's recording installed between frames calls
+/// [`update_scene`](Self::update_scene) for every frame it presents the
+/// content in — after mounting, after an invalidation, and for each frame
+/// the content asked for — and records the content with
+/// [`build_scene`](Self::build_scene) only when that call answers
+/// [`SceneUpdate::Record`]. Content that records itself once and then edits
+/// its installed recording in place answers
+/// [`SceneUpdate::Retained`]; content that draws from scratch keeps the
+/// default, and is recorded again for every frame.
 pub trait SceneContent: 'static {
     /// Records this content's drawing into `recorder`, registering and naming
     /// through `resources` whatever engine resource the drawing uses.
@@ -72,11 +144,11 @@ pub trait SceneContent: 'static {
     /// it still holds returns the same registration without a new upload.
     /// A new registration is validated on the calling thread and queued on
     /// the target — an image beyond
-    /// [`RecordingResources::image_limits`](crate::resources::RecordingResources::image_limits)
+    /// [`RecordingResources::image_limits`](crate::backend::RecordingResources::image_limits)
     /// fails right there with `ResourceError::TooLarge`, and one that does
     /// not fit the image budget beside the images already registered with
     /// `ResourceError::OverBudget`; see the contract on
-    /// [`SceneResources`](crate::resources::SceneResources#blocking).
+    /// [`SceneResources`](crate::backend::SceneResources#blocking).
     /// The id to record comes from [`RecordingResources::name`], which holds
     /// the registration for this recording. It is the only way to get an id
     /// from a handle, so name the resource in every call that draws it rather
@@ -91,19 +163,20 @@ pub trait SceneContent: 'static {
     ///
     /// A host calls this with the [`RecordingResources`] of the recording
     /// `recorder` records into, and keeps that recording's
-    /// [`HeldResources`](crate::resources::HeldResources) for as long as the
+    /// [`HeldResources`](crate::backend::HeldResources) for as long as the
     /// recording is installed.
     ///
-    /// Returns true when the content requires another frame to be rendered.
+    /// Returns the frames the content needs after this one: see
+    /// [`NextFrame`].
     ///
-    /// [`Registered`]: crate::resources::Registered
+    /// [`Registered`]: crate::backend::Registered
     fn build_scene(
         &mut self,
         recorder: &mut Recorder,
         resources: &mut RecordingResources<'_>,
         width: f32,
         height: f32,
-    ) -> bool;
+    ) -> NextFrame;
 
     /// Reconstructs this content for a newly created engine generation.
     ///
@@ -119,10 +192,31 @@ pub trait SceneContent: 'static {
     /// Content that owns no engine-bound state must implement this explicitly
     /// as an empty reset.
     /// Content that caches a [`Registered`](crate::scene::resources::Registered),
-    /// a [`PictureRecording`](crate::picture::PictureRecording), or another
+    /// a [`PictureRecording`](crate::backend::PictureRecording), or another
     /// generation-bound value must preserve its semantic inputs while
     /// rebuilding that value.
     fn rebuild_for_engine(&mut self);
+
+    /// Brings the recording this content installed up to date for `frame`,
+    /// in place.
+    ///
+    /// The content follows `frame`'s box and clock, and applies what changed
+    /// since the last call to the recording it last made with
+    /// [`build_scene`](Self::build_scene), registering through `resources`
+    /// whatever the change draws. Every registration such an edit names is
+    /// held by the edited part of the recording itself, which releases it
+    /// once the edit that replaced it has reached the target, so the host
+    /// keeps holding only what the installed recording's
+    /// [`build_scene`](Self::build_scene) named.
+    ///
+    /// Answers [`SceneUpdate::Record`] when there is no installed recording
+    /// to update — before the first record, after the host retired it, after
+    /// [`rebuild_for_engine`](Self::rebuild_for_engine) — and the host then
+    /// records the content. The default answers it always.
+    fn update_scene(&mut self, resources: &SceneResources, frame: SceneFrame) -> SceneUpdate {
+        let _ = (resources, frame);
+        SceneUpdate::Record
+    }
 
     /// Installs an invalidation callback that content can trigger from signal watchers.
     ///
@@ -199,7 +293,7 @@ pub trait SceneContent: 'static {
     /// game board — returns `true`, and whichever realization draws it then
     /// routes the events landing on it to [`SceneContent::input`]: a backend
     /// that merges the scene into its own tree registers the content as an
-    /// input target, and the `GpuContentView` realization forwards its surface's
+    /// input target, and the `GpuView` realization forwards its surface's
     /// events. Content that only draws — the common case — leaves this
     /// `false`, claims no focus, and every event keeps going to the widgets
     /// around it.
@@ -238,7 +332,7 @@ pub trait SceneContent: 'static {
 /// Fills in the axes a proposal left open from scene content's intrinsic size.
 ///
 /// This is the one rule every realization of a [`SceneView`] measures by — the
-/// `GpuContentView` one, hydrolysis' retained tree, dew's display list — so a scene
+/// `GpuView` one, hydrolysis' retained tree, dew's display list — so a scene
 /// cannot be sized differently depending on which backend drew it.
 ///
 /// - Content with no intrinsic size is returned unchanged, so a scene that takes
@@ -257,26 +351,28 @@ pub trait SceneContent: 'static {
 /// one back and the scene keeps the `StretchAxis::None` promise of
 /// [`scene_stretch_axis`] instead of swallowing the row's leftover space.
 ///
-/// # Panics
-///
-/// Panics when `intrinsic` is not finite and positive on both axes: a
-/// [`SceneContent`] that claims a degenerate natural size would otherwise push
-/// `NaN` geometry into layout, which surfaces far away from the content that
-/// produced it.
+/// An `intrinsic` that is not finite and positive on both axes is a contract
+/// violation: a [`SceneContent`] that claims a degenerate natural size would
+/// otherwise push `NaN` geometry into layout, which surfaces far away from the
+/// content that produced it. The content is treated as having no natural
+/// size.
 #[must_use]
 pub fn resolve_scene_proposal(intrinsic: Option<Size>, proposal: ProposalSize) -> ProposalSize {
     let Some(natural) = intrinsic else {
         return proposal;
     };
-    assert!(
-        natural.width.is_finite()
-            && natural.height.is_finite()
-            && natural.width > 0.0
-            && natural.height > 0.0,
-        "SceneContent::intrinsic_size must be finite and positive, got {}x{}",
-        natural.width,
-        natural.height
-    );
+    if !(natural.width.is_finite()
+        && natural.height.is_finite()
+        && natural.width > 0.0
+        && natural.height > 0.0)
+    {
+        contract_violation!(
+            "SceneContent::intrinsic_size must be finite and positive, got {}x{}; the content is treated as having no natural size",
+            natural.width,
+            natural.height
+        );
+        return proposal;
+    }
 
     let width = proposal.width.filter(|width| width.is_finite());
     let height = proposal.height.filter(|height| height.is_finite());
@@ -401,10 +497,6 @@ impl View for SceneView {
         // tree. There is no second renderer to fall back on.
         AnyView::new(Native::new(self))
     }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        scene_stretch_axis(self.intrinsic_size())
-    }
 }
 
 #[cfg(test)]
@@ -412,8 +504,8 @@ mod tests {
     use crate::draw::{Draw, kurbo::Shape};
 
     use super::{
-        NativeView, ProposalSize, Recorder, RecordingResources, SceneContent, SceneView, Size,
-        StretchAxis, resolve_scene_proposal, scene_stretch_axis,
+        NativeView, NextFrame, ProposalSize, Recorder, RecordingResources, SceneContent, SceneView,
+        Size, StretchAxis, resolve_scene_proposal, scene_stretch_axis,
     };
 
     /// Content that is naturally 100x200 — twice as tall as it is wide.
@@ -430,13 +522,13 @@ mod tests {
             _resources: &mut RecordingResources<'_>,
             width: f32,
             height: f32,
-        ) -> bool {
+        ) -> NextFrame {
             recorder.fill(
                 crate::draw::kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height))
                     .to_path(0.1),
                 crate::draw::WorkingColor::BLACK,
             );
-            false
+            NextFrame::Idle
         }
 
         fn intrinsic_size(&self) -> Option<Size> {
@@ -453,8 +545,8 @@ mod tests {
             _resources: &mut RecordingResources<'_>,
             _width: f32,
             _height: f32,
-        ) -> bool {
-            false
+        ) -> NextFrame {
+            NextFrame::Idle
         }
 
         fn intrinsic_size(&self) -> Option<Size> {
@@ -474,8 +566,8 @@ mod tests {
             _resources: &mut RecordingResources<'_>,
             _width: f32,
             _height: f32,
-        ) -> bool {
-            false
+        ) -> NextFrame {
+            NextFrame::Idle
         }
 
         fn rebuild_for_engine(&mut self) {}
@@ -491,8 +583,8 @@ mod tests {
             _resources: &mut RecordingResources<'_>,
             _width: f32,
             _height: f32,
-        ) -> bool {
-            false
+        ) -> NextFrame {
+            NextFrame::Idle
         }
 
         fn accessibility_value(&self) -> Option<alloc::string::String> {
@@ -628,9 +720,16 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "must be finite and positive")]
-    fn a_degenerate_natural_size_is_rejected() {
-        let _ = resolve_scene_proposal(Some(Size::new(0.0, 10.0)), ProposalSize::UNSPECIFIED);
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "must be finite and positive")
+    )]
+    fn a_degenerate_natural_size_is_no_natural_size() {
+        let proposal = ProposalSize::new(Some(30.0), Some(40.0));
+        assert_eq!(
+            resolve_scene_proposal(Some(Size::new(0.0, 10.0)), proposal),
+            proposal
+        );
     }
 
     #[test]

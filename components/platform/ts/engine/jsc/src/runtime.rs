@@ -69,12 +69,12 @@ fn undefined(context: &JSContext) -> Retained<JSValue> {
 fn throw(context: &JSContext, error: &JsError) -> Retained<JSValue> {
     // SAFETY: `context` is a live context.
     if let Some(exception) = unsafe {
-        JSValue::valueWithNewErrorFromMessage_inContext(Some(&ns(&error.message)), Some(context))
+        JSValue::valueWithNewErrorFromMessage_inContext(Some(&ns(error.message())), Some(context))
     } {
-        if !error.name.is_empty() && error.name != "Error" {
+        if !error.name().is_empty() && error.name() != "Error" {
             // SAFETY: `exception` is a live `JSValue` in `context`.
             unsafe {
-                exception.setValue_forProperty(Some(as_id(&ns(&error.name))), Some(&ns("name")));
+                exception.setValue_forProperty(Some(as_id(&ns(error.name()))), Some(&ns("name")));
             }
         }
         // SAFETY: `context` is a live context and `exception` its value.

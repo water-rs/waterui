@@ -31,23 +31,29 @@ pub fn declared() -> Declared {
 }
 
 /// The `build_menus` handler: each top-level declared `Menu` becomes a
-/// `UIMenu` identified `dev.waterui.menu.{index}` at the end of the root
-/// bar, replaced in place on rebuild.
+/// `UIMenu` at the end of the root bar.
+///
+/// Each menu is identified `dev.waterui.menu.{index}` and replaced in place
+/// on rebuild. A declared top-level item that is not a `Menu` is a contract
+/// violation and is skipped.
 ///
 /// # Panics
 ///
-/// When a declared top-level item is not a `Menu`.
+/// When `UIKit` calls the handler off the main thread.
 pub fn build_handler(declared: Declared) -> impl Fn(&MenuBuilder<'_>) + 'static {
     move |builder| {
         let Some((resolved, env)) = declared.borrow().clone() else {
             tracing::debug!("main menu built before the application declared its menus");
             return;
         };
-        let mtm = MainThreadMarker::new().expect("build_menus runs on the main thread");
+        let mtm = MainThreadMarker::new().expect("UIKit calls `build_menus` on the main thread");
         let items = resolved.snapshot();
         for (index, item) in items.iter().enumerate() {
             let ResolvedMenuItem::Menu(menu) = item else {
-                panic!("App::menu_bar only accepts top-level Menu values");
+                waterui_core::contract_violation!(
+                    "App::menu_bar only accepts top-level Menu values; the item is skipped"
+                );
+                continue;
             };
             let identifier = format!("dev.waterui.menu.{index}");
             let command = kit_command_for_menu(menu);

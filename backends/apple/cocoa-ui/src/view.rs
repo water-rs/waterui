@@ -101,13 +101,13 @@ pub fn convert_point(view: &PlatformView, point: Point, to: &PlatformView) -> Po
 ///
 /// # Panics
 ///
-/// `view` retains to a non-null object; unreachable for a live view.
+/// Never: retaining a live view answers non-null.
 #[must_use]
 pub fn retain_base<V: AsRef<PlatformView> + ?Sized>(view: &V) -> Retained<PlatformView> {
     // SAFETY: `view.as_ref()` is a live `PlatformView` for the call; the
     // returned `Retained` owns the new +1.
     unsafe { Retained::retain(std::ptr::from_ref(view.as_ref()).cast_mut()) }
-        .expect("a live view cannot retain to null")
+        .expect("retaining a live view answers non-null")
 }
 
 /// The frame in the superview's coordinate space.
@@ -157,6 +157,42 @@ pub fn is_flipped(view: &PlatformView) -> bool {
 #[must_use]
 pub const fn is_flipped(_view: &PlatformView) -> bool {
     true
+}
+
+/// `rect`, given in layout space — origin at the top-left corner of
+/// `view`'s bounds, y running down — in `view`'s own coordinate space.
+#[must_use]
+pub fn from_layout_space(view: &PlatformView, rect: Rect) -> Rect {
+    let bounds = bounds(view);
+    let y = if is_flipped(view) {
+        bounds.origin.y + rect.origin.y
+    } else {
+        bounds.origin.y + bounds.size.height - rect.origin.y - rect.size.height
+    };
+    Rect::new(
+        bounds.origin.x + rect.origin.x,
+        y,
+        rect.size.width,
+        rect.size.height,
+    )
+}
+
+/// `rect`, given in `view`'s own coordinate space, in layout space — the
+/// inverse of [`from_layout_space`].
+#[must_use]
+pub fn to_layout_space(view: &PlatformView, rect: Rect) -> Rect {
+    let bounds = bounds(view);
+    let y = if is_flipped(view) {
+        rect.origin.y - bounds.origin.y
+    } else {
+        bounds.origin.y + bounds.size.height - rect.origin.y - rect.size.height
+    };
+    Rect::new(
+        rect.origin.x - bounds.origin.x,
+        y,
+        rect.size.width,
+        rect.size.height,
+    )
 }
 
 /// Moves and resizes `view` in its superview's coordinate space.
@@ -315,13 +351,15 @@ pub fn invalidate_layout(view: &PlatformView) {
     }
 }
 
+/// Marks `view` alone as needing a layout pass.
 #[cfg(target_os = "macos")]
-fn set_needs_layout(view: &PlatformView) {
+pub(crate) fn set_needs_layout(view: &PlatformView) {
     view.setNeedsLayout(true);
 }
 
+/// Marks `view` alone as needing a layout pass.
 #[cfg(target_os = "ios")]
-fn set_needs_layout(view: &PlatformView) {
+pub(crate) fn set_needs_layout(view: &PlatformView) {
     view.setNeedsLayout();
 }
 
@@ -384,35 +422,20 @@ pub fn is_hidden_in_hierarchy(view: &PlatformView) -> bool {
 /// `hasVisibleAncestry` — this view and every ancestor visible: neither
 /// hidden nor fully transparent.
 ///
-/// A hidden or alpha-0 view ancestor parks the surface. On `UIKit` the
-/// terminal ancestor is the `UIWindow` itself (a `UIView`): a *hidden*
-/// window still rejects, but its alpha is outside content visibility —
-/// an ordered, unrevealed window holds `alpha = 0` until first paint and
-/// must not reject the way a transparent view ancestor does. `AppKit`
-/// windows sit outside the `NSView` chain, so behavior is unchanged.
+/// A hidden or alpha-0 ancestor parks the surface. On `UIKit` the terminal
+/// ancestor is the `UIWindow` itself (a `UIView`), whose hidden state and
+/// alpha count like any other ancestor's. `AppKit` windows sit outside the
+/// `NSView` chain.
 #[must_use]
 pub fn has_visible_ancestry(view: &PlatformView) -> bool {
     let mut node = Some(retain_base(view));
     while let Some(current) = node {
-        if is_hidden(&current) || (!is_window_view(&current) && alpha(&current) <= 0.0) {
+        if is_hidden(&current) || alpha(&current) <= 0.0 {
             return false;
         }
         node = superview(&current);
     }
     true
-}
-
-/// Whether `view` is the window itself. Only `UIKit` keeps the window in
-/// the view-ancestor chain (`UIWindow` is a `UIView`); `AppKit` windows
-/// never appear there.
-#[cfg(target_os = "ios")]
-fn is_window_view(view: &PlatformView) -> bool {
-    use objc2::ClassType;
-    view.isKindOfClass(objc2_ui_kit::UIWindow::class())
-}
-#[cfg(not(target_os = "ios"))]
-const fn is_window_view(_view: &PlatformView) -> bool {
-    false
 }
 
 /// `view`'s opacity (`alphaValue`/`alpha`).
@@ -523,12 +546,19 @@ pub fn ensure_layer_backed(view: &PlatformView) {
 
 /// Prepares `view` for an off-screen layer capture: everything
 /// layer-backed, laid out, and displayed.
+///
+/// The window's display pass is what attaches a layer-backed subview's
+/// layer to its superview's layer; without it a freshly mounted subtree is
+/// absent from the model tree `renderInContext` draws.
 #[cfg(target_os = "macos")]
 pub fn prepare_for_capture(view: &PlatformView) {
     ensure_layer_backed(view);
     layout_immediately(view);
     layout_layer_immediately(view);
     display_immediately(view);
+    if let Some(window) = view.window() {
+        window.displayIfNeeded();
+    }
 }
 
 /// Prepares `view` for an off-screen layer capture: pending layout and
@@ -989,20 +1019,14 @@ pub fn set_accessibility_content(view: &PlatformView, label: Option<&str>, value
 /// controls whether the view is an accessibility element; a value only ever
 /// marks it.
 ///
-/// # Panics
-///
-/// If not called on the main thread.
 #[cfg(target_os = "ios")]
 pub fn set_accessibility_content(view: &PlatformView, label: Option<&str>, value: Option<&str>) {
     use objc2_foundation::NSString;
     use objc2_ui_kit::NSObjectUIAccessibility;
-    let mtm = objc2::MainThreadMarker::new().expect("main thread");
+    let mtm = objc2::MainThreadOnly::mtm(view);
     view.setAccessibilityLabel(label.map(NSString::from_str).as_deref(), mtm);
     let value = value.map(NSString::from_str);
-    view.setAccessibilityValue(
-        value.as_deref(),
-        objc2::MainThreadMarker::new().expect("main thread"),
-    );
+    view.setAccessibilityValue(value.as_deref(), mtm);
     if label.is_some() || value.is_some() {
         view.setIsAccessibilityElement(true, mtm);
     }

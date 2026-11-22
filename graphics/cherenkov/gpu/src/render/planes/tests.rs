@@ -1,92 +1,34 @@
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::cell::Cell;
-
 use kurbo::{Affine, Rect, RoundedRect, Vec2};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use cherenkov::testing::LayerOp;
-use cherenkov::{BlendMode, FilterId, LayerId, Prop, ShapeData, SurfaceTree};
+use cherenkov::testing::allocations::count;
+use cherenkov::{
+    Animatable, BlendMode, BlendSpace, FilterId, LayerId, Prop, Retarget, ShapeData, SurfaceTree,
+};
 
-mod alloc_counter {
-    use std::cell::Cell;
-
-    thread_local! {
-        // Each initializer is already const; the lint misfires on
-        // Android's emulated-TLS expansion (see `render::diag`'s allow).
-        #[allow(
-            clippy::missing_const_for_thread_local,
-            reason = "the initializer is already const; false positive on clippy 1.99"
-        )]
-        pub(super) static TRACKING: Cell<bool> = const { Cell::new(false) };
-        #[allow(
-            clippy::missing_const_for_thread_local,
-            reason = "the initializer is already const; false positive on clippy 1.99"
-        )]
-        pub(super) static ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
-        #[allow(
-            clippy::missing_const_for_thread_local,
-            reason = "the initializer is already const; false positive on clippy 1.99"
-        )]
-        pub(super) static REALLOCATIONS: Cell<usize> = const { Cell::new(0) };
+/// A clip or backdrop change that lands at once.
+const fn snapped<T>(target: T) -> Retarget<T> {
+    Retarget {
+        target,
+        animation: None,
+        start: None,
     }
 }
 
-use alloc_counter::{ALLOCATIONS, REALLOCATIONS, TRACKING};
+/// Clips `layer` to `shape` at once.
+const fn clip(layer: LayerId, shape: ShapeData) -> LayerOp {
+    LayerOp::Clip(layer, Some(snapped(shape)))
+}
 
-struct ThreadAllocator;
+/// Makes `layer` sample `sample` at once.
+const fn backdrop(layer: LayerId, sample: cherenkov::BackdropSample) -> LayerOp {
+    LayerOp::Backdrop(layer, Some(snapped(sample)))
+}
 
 #[global_allocator]
-static ALLOCATOR: ThreadAllocator = ThreadAllocator;
-
-// SAFETY: every method delegates to `System` under identical contracts —
-// `layout`/`pointer` are passed through unchanged — and the tracking only
-// touches thread-local counters.
-unsafe impl GlobalAlloc for ThreadAllocator {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        // SAFETY: `layout` is the caller's allocation request, forwarded.
-        let pointer = unsafe { System.alloc(layout) };
-        if TRACKING.try_with(Cell::get).unwrap_or(false) {
-            let _ = ALLOCATIONS.try_with(|count| count.set(count.get() + 1));
-        }
-        pointer
-    }
-
-    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        // SAFETY: `layout` is the caller's allocation request, forwarded.
-        let pointer = unsafe { System.alloc_zeroed(layout) };
-        if TRACKING.try_with(Cell::get).unwrap_or(false) {
-            let _ = ALLOCATIONS.try_with(|count| count.set(count.get() + 1));
-        }
-        pointer
-    }
-
-    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
-        // SAFETY: `pointer`/`layout` satisfy `System.dealloc` because
-        // they came from `System.alloc` — the allocator contract.
-        unsafe { System.dealloc(pointer, layout) };
-    }
-
-    unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, size: usize) -> *mut u8 {
-        // SAFETY: `pointer`/`layout`/`size` are the caller's request,
-        // forwarded — the allocator contract.
-        let pointer = unsafe { System.realloc(pointer, layout, size) };
-        if TRACKING.try_with(Cell::get).unwrap_or(false) {
-            let _ = REALLOCATIONS.try_with(|count| count.set(count.get() + 1));
-        }
-        pointer
-    }
-}
-
-pub(super) fn start_tracking() {
-    ALLOCATIONS.with(|count| count.set(0));
-    REALLOCATIONS.with(|count| count.set(0));
-    TRACKING.with(|tracking| tracking.set(true));
-}
-
-pub(super) fn stop_tracking() -> (usize, usize) {
-    TRACKING.with(|tracking| tracking.set(false));
-    (ALLOCATIONS.with(Cell::get), REALLOCATIONS.with(Cell::get))
-}
+static ALLOCATOR: cherenkov::testing::allocations::ThreadAllocator =
+    cherenkov::testing::allocations::ThreadAllocator;
 
 use super::{
     Candidate, Compositor, Ineligible, Level, Plan, PlanScratch, Source, frames_only, plan,
@@ -126,7 +68,14 @@ fn pose_plans_reuse_workspace_and_placement_paths() {
     let mut scratch = PlanScratch::default();
     let mut output = Plan::default();
     for _ in 0..3 {
-        super::plan_with::<Test>(&tree, &candidates, &ready, &mut scratch, &mut output);
+        super::plan_with::<Test>(
+            &tree,
+            BlendSpace::Linear,
+            &candidates,
+            &ready,
+            &mut scratch,
+            &mut output,
+        );
     }
     let buffers = (
         std::ptr::from_ref(&scratch.order[0]),
@@ -139,8 +88,18 @@ fn pose_plans_reuse_workspace_and_placement_paths() {
             VIDEO,
             prop(Affine::translate((f64::from(x), 0.))),
         ));
-        super::plan_with::<Test>(&tree, &candidates, &ready, &mut scratch, &mut output);
-        assert_eq!(output, plan::<Test>(&tree, &candidates, &ready));
+        super::plan_with::<Test>(
+            &tree,
+            BlendSpace::Linear,
+            &candidates,
+            &ready,
+            &mut scratch,
+            &mut output,
+        );
+        assert_eq!(
+            output,
+            plan::<Test>(&tree, BlendSpace::Linear, &candidates, &ready)
+        );
         assert_eq!(
             buffers,
             (
@@ -161,22 +120,43 @@ fn steady_pose_plan_allocates_nothing() {
     let mut scratch = PlanScratch::default();
     let mut output = Plan::default();
     for _ in 0..4 {
-        super::plan_with::<Test>(&tree, &candidates, &ready, &mut scratch, &mut output);
+        super::plan_with::<Test>(
+            &tree,
+            BlendSpace::Linear,
+            &candidates,
+            &ready,
+            &mut scratch,
+            &mut output,
+        );
     }
     for x in 0..8 {
         tree.apply(LayerOp::Transform(
             VIDEO,
             prop(Affine::translate((f64::from(x), 0.))),
         ));
-        start_tracking();
-        super::plan_with::<Test>(&tree, &candidates, &ready, &mut scratch, &mut output);
-        let counts = stop_tracking();
-        assert_eq!(counts, (0, 0), "pose {x}");
+        let ((), counts) = count(|| {
+            super::plan_with::<Test>(
+                &tree,
+                BlendSpace::Linear,
+                &candidates,
+                &ready,
+                &mut scratch,
+                &mut output,
+            );
+        });
+        assert_eq!(
+            (counts.allocations, counts.reallocations),
+            (0, 0),
+            "pose {x}"
+        );
     }
-    assert_eq!(output, plan::<Test>(&tree, &candidates, &ready));
+    assert_eq!(
+        output,
+        plan::<Test>(&tree, BlendSpace::Linear, &candidates, &ready)
+    );
 }
 
-const fn prop<T>(target: T) -> Prop<T> {
+const fn prop<T: Animatable>(target: T) -> Prop<T> {
     Prop {
         target,
         animation: None,
@@ -212,8 +192,13 @@ fn all_ready(candidates: &FxHashMap<LayerId, super::Candidate>) -> FxHashSet<Lay
 }
 
 fn verdict(tree: &SurfaceTree) -> Result<Plan, Ineligible> {
+    verdict_on(tree, BlendSpace::Linear)
+}
+
+/// [`verdict`] on a surface storing `storage`.
+fn verdict_on(tree: &SurfaceTree, storage: BlendSpace) -> Result<Plan, Ineligible> {
     let candidates = video();
-    let plan = plan::<Test>(tree, &candidates, &all_ready(&candidates));
+    let plan = plan::<Test>(tree, storage, &candidates, &all_ready(&candidates));
     match plan.rejected.as_slice() {
         [] => Ok(plan),
         [(layer, cause)] => {
@@ -246,11 +231,21 @@ fn an_eligible_external_frame_is_promoted_between_two_parts() {
 /// without one stays in the engine.
 #[test]
 fn only_candidates_are_promoted() {
-    let none = plan::<Test>(&scene(), &FxHashMap::default(), &FxHashSet::default());
+    let none = plan::<Test>(
+        &scene(),
+        BlendSpace::Linear,
+        &FxHashMap::default(),
+        &FxHashSet::default(),
+    );
     assert_eq!(none.planes, []);
     assert_eq!(none.parts(), 1);
     let candidates = video();
-    let video = plan::<Test>(&scene(), &candidates, &all_ready(&candidates));
+    let video = plan::<Test>(
+        &scene(),
+        BlendSpace::Linear,
+        &candidates,
+        &all_ready(&candidates),
+    );
     assert_eq!(
         video.planes.iter().map(|p| p.layer).collect::<Vec<_>>(),
         [VIDEO],
@@ -311,6 +306,44 @@ fn a_non_default_blend_is_not_promoted() {
 }
 
 #[test]
+fn only_a_layer_compositing_linearly_is_promoted() {
+    use BlendSpace::{Linear, SrgbEncoded};
+    // The compositor blends linearly: an encoded layer stays in the engine
+    // on either surface, and an encoded ancestor unlike its parent level
+    // isolates its subtree.
+    for storage in [Linear, SrgbEncoded] {
+        let mut tree = scene();
+        tree.apply(LayerOp::BlendSpace(VIDEO, Some(SrgbEncoded)));
+        assert_eq!(
+            verdict_on(&tree, storage),
+            Err(Ineligible::BlendSpace),
+            "{storage:?}"
+        );
+    }
+    let mut tree = scene();
+    tree.apply(LayerOp::BlendSpace(PARENT, Some(SrgbEncoded)));
+    assert_eq!(verdict(&tree), Err(Ineligible::Isolated(PARENT)));
+    // Declaring the space the parent level already stores isolates
+    // nothing.
+    let mut tree = scene();
+    tree.apply(LayerOp::BlendSpace(VIDEO, Some(Linear)));
+    tree.apply(LayerOp::BlendSpace(PARENT, Some(Linear)));
+    assert!(verdict(&tree).is_ok());
+    // On an encoded surface, undeclared content composites encoded and a
+    // linear island composites linearly, as the plane does.
+    let tree = scene();
+    assert_eq!(verdict_on(&tree, SrgbEncoded), Err(Ineligible::BlendSpace));
+    let mut tree = scene();
+    tree.apply(LayerOp::BlendSpace(VIDEO, Some(Linear)));
+    assert!(verdict_on(&tree, SrgbEncoded).is_ok());
+    // An encoded ancestor on an encoded surface is no isolation.
+    let mut tree = scene();
+    tree.apply(LayerOp::BlendSpace(PARENT, Some(SrgbEncoded)));
+    tree.apply(LayerOp::BlendSpace(VIDEO, Some(Linear)));
+    assert!(verdict_on(&tree, SrgbEncoded).is_ok());
+}
+
+#[test]
 fn a_surface_level_blend_above_keeps_the_layer_in_the_engine() {
     let mut tree = scene();
     tree.apply(LayerOp::Blend(ABOVE, BlendMode::Multiply));
@@ -349,22 +382,25 @@ fn a_translucent_layer_beyond_the_clip_does_not_block_promotion() {
         PARENT,
         prop(Affine::translate((12.0, 8.0))),
     ));
-    tree.apply(LayerOp::Clip(
+    tree.apply(clip(
         PARENT,
-        Some(ShapeData::RoundedRect(RoundedRect::new(
-            0.0, 0.0, 72.0, 48.0, 6.0,
-        ))),
+        ShapeData::RoundedRect(RoundedRect::new(0.0, 0.0, 72.0, 48.0, 6.0)),
     ));
     // Scaled 2×, the 48×32 video's content covers (12, 8)–(108, 72); the
     // holder's clip leaves only (12, 8)–(84, 56) on the plane.
     tree.apply(LayerOp::Transform(VIDEO, prop(Affine::scale(2.0))));
     tree.apply(LayerOp::Opacity(ABOVE, prop(0.5)));
-    tree.apply(LayerOp::Clip(
+    tree.apply(clip(
         ABOVE,
-        Some(ShapeData::Rect(Rect::new(8.0, 58.0, 88.0, 64.0))),
+        ShapeData::Rect(Rect::new(8.0, 58.0, 88.0, 64.0)),
     ));
     let candidates: FxHashMap<_, _> = std::iter::once((VIDEO, (48, 32).into())).collect();
-    let plan = plan::<Test>(&tree, &candidates, &all_ready(&candidates));
+    let plan = plan::<Test>(
+        &tree,
+        BlendSpace::Linear,
+        &candidates,
+        &all_ready(&candidates),
+    );
     assert_eq!(plan.planes.len(), 1, "{:?}", plan.rejected);
 }
 
@@ -392,15 +428,15 @@ fn an_inexpressible_transform_is_not_promoted() {
 #[test]
 fn an_inexpressible_clip_is_not_promoted() {
     let mut tree = scene();
-    tree.apply(LayerOp::Clip(
+    tree.apply(clip(
         PARENT,
-        Some(ShapeData::Circle(kurbo::Circle::new((10.0, 10.0), 5.0))),
+        ShapeData::Circle(kurbo::Circle::new((10.0, 10.0), 5.0)),
     ));
     assert_eq!(verdict(&tree), Err(Ineligible::Clip(PARENT)));
     let mut tree = scene();
-    tree.apply(LayerOp::Clip(
+    tree.apply(clip(
         VIDEO,
-        Some(ShapeData::Rect(Rect::new(0.0, 0.0, 100.0, 50.0))),
+        ShapeData::Rect(Rect::new(0.0, 0.0, 100.0, 50.0)),
     ));
     assert!(verdict(&tree).is_ok());
 }
@@ -413,32 +449,32 @@ fn an_inexpressible_clip_is_not_promoted() {
 fn nested_shaped_clips_are_not_promoted() {
     let rounded = || ShapeData::RoundedRect(RoundedRect::new(0.0, 0.0, 100.0, 50.0, 8.0));
     let mut tree = scene();
-    tree.apply(LayerOp::Clip(ROOT, Some(rounded())));
-    tree.apply(LayerOp::Clip(PARENT, Some(rounded())));
+    tree.apply(clip(ROOT, rounded()));
+    tree.apply(clip(PARENT, rounded()));
     assert_eq!(verdict(&tree), Err(Ineligible::NestedClip(PARENT)));
     // A device-aligned rect under a shaped clip isolates too: only a
     // pair of aligned rects merges in place.
     let mut tree = scene();
-    tree.apply(LayerOp::Clip(ROOT, Some(rounded())));
-    tree.apply(LayerOp::Clip(
+    tree.apply(clip(ROOT, rounded()));
+    tree.apply(clip(
         PARENT,
-        Some(ShapeData::Rect(Rect::new(0.0, 0.0, 100.0, 50.0))),
+        ShapeData::Rect(Rect::new(0.0, 0.0, 100.0, 50.0)),
     ));
     assert_eq!(verdict(&tree), Err(Ineligible::NestedClip(PARENT)));
     let mut tree = scene();
-    tree.apply(LayerOp::Clip(
+    tree.apply(clip(
         ROOT,
-        Some(ShapeData::Rect(Rect::new(0.0, 0.0, 200.0, 100.0))),
+        ShapeData::Rect(Rect::new(0.0, 0.0, 200.0, 100.0)),
     ));
-    tree.apply(LayerOp::Clip(
+    tree.apply(clip(
         PARENT,
-        Some(ShapeData::Rect(Rect::new(0.0, 0.0, 100.0, 50.0))),
+        ShapeData::Rect(Rect::new(0.0, 0.0, 100.0, 50.0)),
     ));
     assert!(verdict(&tree).is_ok());
     // Under a single shaped ancestor the candidate's own clip is excluded.
     let mut tree = scene();
-    tree.apply(LayerOp::Clip(PARENT, Some(rounded())));
-    tree.apply(LayerOp::Clip(VIDEO, Some(rounded())));
+    tree.apply(clip(PARENT, rounded()));
+    tree.apply(clip(VIDEO, rounded()));
     assert!(verdict(&tree).is_ok());
 }
 
@@ -452,7 +488,12 @@ fn the_budget_goes_to_the_first_candidates_in_paint_order() {
     ]
     .into_iter()
     .collect();
-    let plan = plan::<Test>(&tree, &candidates, &all_ready(&candidates));
+    let plan = plan::<Test>(
+        &tree,
+        BlendSpace::Linear,
+        &candidates,
+        &all_ready(&candidates),
+    );
     assert_eq!(
         plan.planes.iter().map(|p| p.layer).collect::<Vec<_>>(),
         [BELOW, VIDEO]
@@ -474,7 +515,12 @@ fn video_receives_the_budget_before_earlier_recorded_layers() {
     ]
     .into_iter()
     .collect();
-    let plan = plan::<Test>(&tree, &candidates, &all_ready(&candidates));
+    let plan = plan::<Test>(
+        &tree,
+        BlendSpace::Linear,
+        &candidates,
+        &all_ready(&candidates),
+    );
     assert_eq!(
         plan.planes.iter().map(|p| p.layer).collect::<Vec<_>>(),
         [VIDEO, ABOVE]
@@ -526,6 +572,7 @@ fn a_plane_only_frame_presents_through_the_planes_alone() {
     assert!(frames_only::<Test>(
         &committed,
         &tree,
+        BlendSpace::Linear,
         &candidates,
         &ready,
         &video_only,
@@ -536,6 +583,7 @@ fn a_plane_only_frame_presents_through_the_planes_alone() {
     assert!(frames_only::<Test>(
         &committed,
         &tree,
+        BlendSpace::Linear,
         &candidates,
         &ready,
         &video_only,
@@ -548,6 +596,7 @@ fn a_plane_only_frame_presents_through_the_planes_alone() {
     assert!(!frames_only::<Test>(
         &committed,
         &tree,
+        BlendSpace::Linear,
         &candidates,
         &ready,
         &in_engine,
@@ -557,6 +606,7 @@ fn a_plane_only_frame_presents_through_the_planes_alone() {
     assert!(!frames_only::<Test>(
         &committed,
         &tree,
+        BlendSpace::Linear,
         &candidates,
         &ready,
         &mixed,
@@ -571,12 +621,18 @@ fn a_plane_only_frame_presents_through_the_planes_alone() {
         prop(Affine::translate((8.0, 0.0))),
     ));
     assert_ne!(
-        plan::<Test>(&moved, &candidates, &all_ready(&candidates)),
+        plan::<Test>(
+            &moved,
+            BlendSpace::Linear,
+            &candidates,
+            &all_ready(&candidates)
+        ),
         committed
     );
     assert!(!frames_only::<Test>(
         &committed,
         &moved,
+        BlendSpace::Linear,
         &candidates,
         &ready,
         &video_only,
@@ -588,6 +644,7 @@ fn a_plane_only_frame_presents_through_the_planes_alone() {
     assert!(!frames_only::<Test>(
         &committed,
         &tree,
+        BlendSpace::Linear,
         &resized,
         &all_ready(&resized),
         &video_only,
@@ -601,6 +658,7 @@ fn a_plane_only_frame_presents_through_the_planes_alone() {
     assert!(!frames_only::<Test>(
         &committed,
         &tree,
+        BlendSpace::Linear,
         &two,
         &all_ready(&two),
         &mixed,
@@ -611,6 +669,7 @@ fn a_plane_only_frame_presents_through_the_planes_alone() {
     assert!(!frames_only::<Test>(
         &committed,
         &tree,
+        BlendSpace::Linear,
         &candidates,
         &ready,
         &FxHashSet::default(),
@@ -624,12 +683,13 @@ fn replacing_a_capture_with_a_frame_rebuilds_the_native_stack() {
     let mut candidates = video();
     candidates.get_mut(&VIDEO).expect("candidate").source = Source::Recorded;
     let ready = all_ready(&candidates);
-    let committed = plan::<Test>(&tree, &candidates, &ready);
+    let committed = plan::<Test>(&tree, BlendSpace::Linear, &candidates, &ready);
     candidates.get_mut(&VIDEO).expect("candidate").source = Source::Frame;
     let updates = std::iter::once(VIDEO).collect();
     assert!(!frames_only::<Test>(
         &committed,
         &tree,
+        BlendSpace::Linear,
         &candidates,
         &ready,
         &updates,
@@ -648,7 +708,7 @@ fn a_pending_candidate_does_not_block_a_plane_only_frame() {
     let mut candidates = video();
     candidates.insert(BELOW, SIZE.into());
     let just_video: FxHashSet<LayerId> = std::iter::once(VIDEO).collect();
-    let committed = plan::<Test>(&tree, &candidates, &just_video);
+    let committed = plan::<Test>(&tree, BlendSpace::Linear, &candidates, &just_video);
     assert_eq!(committed.planes.len(), 1);
     assert_eq!(committed.rejected, []);
 
@@ -657,6 +717,7 @@ fn a_pending_candidate_does_not_block_a_plane_only_frame() {
     assert!(frames_only::<Test>(
         &committed,
         &tree,
+        BlendSpace::Linear,
         &candidates,
         &just_video,
         &video_only,
@@ -669,6 +730,7 @@ fn a_pending_candidate_does_not_block_a_plane_only_frame() {
     assert!(!frames_only::<Test>(
         &committed,
         &tree,
+        BlendSpace::Linear,
         &candidates,
         &both,
         &video_only,
@@ -689,13 +751,13 @@ fn a_backdrop_on_or_above_the_layer_keeps_it_in_the_engine() {
         .expect("offscreen surface");
     let group = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
     let mut tree = scene();
-    tree.apply(LayerOp::Backdrop(VIDEO, Some(group.sample())));
+    tree.apply(backdrop(VIDEO, group.sample()));
     assert_eq!(verdict(&tree), Err(Ineligible::Backdrop));
     let mut tree = scene();
-    tree.apply(LayerOp::Backdrop(ABOVE, Some(group.sample())));
+    tree.apply(backdrop(ABOVE, group.sample()));
     assert_eq!(verdict(&tree), Err(Ineligible::BackdropAbove(ABOVE)));
     let mut tree = scene();
-    tree.apply(LayerOp::Backdrop(BELOW, Some(group.sample())));
+    tree.apply(backdrop(BELOW, group.sample()));
     assert!(verdict(&tree).is_ok());
 }
 
@@ -738,7 +800,7 @@ fn hosted() -> FxHashMap<LayerId, Candidate> {
 /// its cause — never kept in the engine. Hosted content is never pending,
 /// so the ready set is empty.
 fn hosted_verdict<C: Compositor>(tree: &SurfaceTree) -> Result<Plan, Ineligible> {
-    let plan = plan::<C>(tree, &hosted(), &FxHashSet::default());
+    let plan = plan::<C>(tree, BlendSpace::Linear, &hosted(), &FxHashSet::default());
     assert_eq!(
         plan.rejected,
         [],
@@ -900,17 +962,15 @@ fn a_hosted_layer_under_an_inexpressible_transform_is_unplaced() {
 #[test]
 fn a_hosted_layer_under_an_inexpressible_clip_is_unplaced() {
     let mut tree = scene();
-    tree.apply(LayerOp::Clip(
+    tree.apply(clip(
         PARENT,
-        Some(ShapeData::Circle(kurbo::Circle::new((10.0, 10.0), 5.0))),
+        ShapeData::Circle(kurbo::Circle::new((10.0, 10.0), 5.0)),
     ));
     assert_eq!(hosted_verdict::<Test>(&tree), Err(Ineligible::Clip(PARENT)));
     let mut tree = scene();
-    tree.apply(LayerOp::Clip(
+    tree.apply(clip(
         PARENT,
-        Some(ShapeData::RoundedRect(RoundedRect::new(
-            0.0, 0.0, 100.0, 50.0, 8.0,
-        ))),
+        ShapeData::RoundedRect(RoundedRect::new(0.0, 0.0, 100.0, 50.0, 8.0)),
     ));
     assert!(hosted_verdict::<Test>(&tree).is_ok());
     assert_eq!(
@@ -930,8 +990,8 @@ fn translucency_above_and_nested_clips_do_not_unplace_a_hosted_layer() {
     assert!(hosted_verdict::<Test>(&tree).is_ok());
     let rounded = ShapeData::RoundedRect(RoundedRect::new(0.0, 0.0, 100.0, 50.0, 8.0));
     let mut tree = scene();
-    tree.apply(LayerOp::Clip(PARENT, Some(rounded.clone())));
-    tree.apply(LayerOp::Clip(VIDEO, Some(rounded)));
+    tree.apply(clip(PARENT, rounded.clone()));
+    tree.apply(clip(VIDEO, rounded));
     assert!(hosted_verdict::<Test>(&tree).is_ok());
 }
 
@@ -949,7 +1009,7 @@ fn hosted_layers_take_the_budget_first_and_fail_beyond_it() {
     .into_iter()
     .collect();
     let ready = all_ready(&candidates);
-    let first = plan::<Test>(&tree, &candidates, &ready);
+    let first = plan::<Test>(&tree, BlendSpace::Linear, &candidates, &ready);
     assert_eq!(
         first.planes.iter().map(|p| p.layer).collect::<Vec<_>>(),
         [VIDEO, ABOVE]
@@ -964,7 +1024,12 @@ fn hosted_layers_take_the_budget_first_and_fail_beyond_it() {
     ]
     .into_iter()
     .collect();
-    let plan = plan::<Test>(&tree, &candidates, &FxHashSet::default());
+    let plan = plan::<Test>(
+        &tree,
+        BlendSpace::Linear,
+        &candidates,
+        &FxHashSet::default(),
+    );
     assert_eq!(
         plan.planes.iter().map(|p| p.layer).collect::<Vec<_>>(),
         [BELOW, VIDEO]
@@ -985,9 +1050,9 @@ fn moving_a_hosted_layer_keeps_its_plane() {
         prop(Affine::translate((40.0, 30.0))),
     ));
     tree.apply(LayerOp::ScrollOffset(PARENT, prop(Vec2::new(0.0, 10.0))));
-    tree.apply(LayerOp::Clip(
+    tree.apply(clip(
         VIDEO,
-        Some(ShapeData::Rect(Rect::new(0.0, 0.0, 100.0, 50.0))),
+        ShapeData::Rect(Rect::new(0.0, 0.0, 100.0, 50.0)),
     ));
     let moved = hosted_verdict::<Test>(&tree).expect("eligible");
     assert_ne!(moved, committed);
@@ -1014,13 +1079,14 @@ fn an_unplaceable_hosted_layer_never_refreshes_through_the_planes() {
         .into_iter()
         .collect();
     let ready = all_ready(&candidates);
-    let committed = plan::<Test>(&tree, &candidates, &ready);
+    let committed = plan::<Test>(&tree, BlendSpace::Linear, &candidates, &ready);
     assert_eq!(committed.planes.len(), 2);
     let frames: FxHashSet<LayerId> = std::iter::once(BELOW).collect();
     let mut scratch = PlanScratch::default();
     assert!(frames_only::<Test>(
         &committed,
         &tree,
+        BlendSpace::Linear,
         &candidates,
         &ready,
         &frames,
@@ -1031,16 +1097,18 @@ fn an_unplaceable_hosted_layer_never_refreshes_through_the_planes() {
     assert!(!frames_only::<Test>(
         &committed,
         &filtered,
+        BlendSpace::Linear,
         &candidates,
         &ready,
         &frames,
         &mut scratch
     ));
-    let failed = plan::<Test>(&filtered, &candidates, &ready);
+    let failed = plan::<Test>(&filtered, BlendSpace::Linear, &candidates, &ready);
     assert_eq!(failed.unplaced, [(VIDEO, Ineligible::Filter)]);
     assert!(!frames_only::<Test>(
         &failed,
         &filtered,
+        BlendSpace::Linear,
         &candidates,
         &ready,
         &frames,
@@ -1061,16 +1129,16 @@ fn a_backdrop_on_or_above_a_hosted_layer_unplaces_it() {
         .expect("offscreen surface");
     let group = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
     let mut tree = scene();
-    tree.apply(LayerOp::Backdrop(VIDEO, Some(group.sample())));
+    tree.apply(backdrop(VIDEO, group.sample()));
     assert_eq!(hosted_verdict::<Test>(&tree), Err(Ineligible::Backdrop));
     let mut tree = scene();
-    tree.apply(LayerOp::Backdrop(ABOVE, Some(group.sample())));
+    tree.apply(backdrop(ABOVE, group.sample()));
     assert_eq!(
         hosted_verdict::<Test>(&tree),
         Err(Ineligible::BackdropAbove(ABOVE))
     );
     let mut tree = scene();
-    tree.apply(LayerOp::Backdrop(BELOW, Some(group.sample())));
+    tree.apply(backdrop(BELOW, group.sample()));
     assert!(hosted_verdict::<Test>(&tree).is_ok());
 }
 
@@ -1084,4 +1152,312 @@ fn the_first_hosted_layer_in_paint_order_is_found() {
         Some(VIDEO)
     );
     assert_eq!(super::first_in_paint_order(&tree, |_| false), None);
+}
+
+/// A compositor whose regions above a host-window mark present as
+/// engine-composited bands, as Android's does, with a budget of `N`
+/// planes.
+struct Bands<const N: usize = 4>;
+
+impl<const N: usize> Compositor for Bands<N> {
+    const BUDGET: usize = N;
+    const HOSTS_OPACITY: bool = true;
+    const HOST_WINDOW_BANDS: bool = true;
+    fn expresses_transform(transform: Affine) -> bool {
+        axis_aligned(transform)
+    }
+    fn expresses_clip(clip: &ShapeData) -> bool {
+        matches!(clip, ShapeData::Rect(_) | ShapeData::RoundedRect(_))
+    }
+    fn shows(_: &crate::interop::ExternalFrame) -> bool {
+        true
+    }
+}
+
+fn host_window() -> Candidate {
+    Candidate {
+        size: (0, 0),
+        raster: Affine::IDENTITY,
+        source: Source::HostWindow,
+    }
+}
+
+/// With band regions, `BELOW` as a host window's mark puts the video in
+/// the band above it: the frame composites into that band, a hosted
+/// layer there is unplaced, and the mark alone splits the surface.
+/// Painted beneath the mark, the video still promotes.
+#[test]
+fn nothing_above_a_host_window_mark_reaches_a_plane() {
+    let tree = scene();
+    let frame: FxHashMap<LayerId, Candidate> = [(BELOW, host_window()), (VIDEO, SIZE.into())]
+        .into_iter()
+        .collect();
+    let banded = plan::<Bands>(&tree, BlendSpace::Linear, &frame, &all_ready(&frame));
+    assert_eq!(
+        banded.planes.iter().map(|p| p.layer).collect::<Vec<_>>(),
+        [BELOW]
+    );
+    assert_eq!(
+        banded.rejected,
+        [(VIDEO, Ineligible::AboveHostWindow(BELOW))]
+    );
+    assert_eq!(
+        banded.parts(),
+        2,
+        "the base part and the band region above the mark"
+    );
+    // The same tree on a compositor without bands promotes both.
+    let unbanded = plan::<Test>(&tree, BlendSpace::Linear, &frame, &all_ready(&frame));
+    assert_eq!(
+        unbanded.planes.iter().map(|p| p.layer).collect::<Vec<_>>(),
+        [BELOW, VIDEO]
+    );
+
+    let hosted: FxHashMap<LayerId, Candidate> =
+        [(BELOW, host_window()), (VIDEO, hosted_candidate())]
+            .into_iter()
+            .collect();
+    let hosted_plan = plan::<Bands>(&tree, BlendSpace::Linear, &hosted, &FxHashSet::default());
+    assert_eq!(
+        hosted_plan.unplaced,
+        [(VIDEO, Ineligible::AboveHostWindow(BELOW))]
+    );
+
+    let above: FxHashMap<LayerId, Candidate> = [(ABOVE, host_window()), (VIDEO, SIZE.into())]
+        .into_iter()
+        .collect();
+    let beneath = plan::<Bands>(&tree, BlendSpace::Linear, &above, &all_ready(&above));
+    assert_eq!(
+        beneath.planes.iter().map(|p| p.layer).collect::<Vec<_>>(),
+        [VIDEO, ABOVE]
+    );
+    assert!(
+        !beneath.trailing,
+        "nothing is painted above the topmost mark"
+    );
+}
+
+/// A mark under a clip that encloses nothing opens no region, while its
+/// host still orders the window: the region above the next mark is named
+/// by that mark's own window id, never by its position among the planned
+/// marks, so its band is the one the host stacks above that window.
+#[test]
+fn a_band_region_is_named_by_its_marks_window() {
+    const HIDDEN: u64 = 7;
+    const SHOWN: u64 = 9;
+    let mut tree = scene();
+    tree.apply(LayerOp::HostWindow(VIDEO, Some(HIDDEN)));
+    tree.apply(LayerOp::HostWindow(BELOW, Some(SHOWN)));
+    tree.apply(clip(
+        PARENT,
+        ShapeData::Circle(kurbo::Circle::new((10.0, 10.0), 0.0)),
+    ));
+    let marks: FxHashMap<LayerId, Candidate> = [(VIDEO, host_window()), (BELOW, host_window())]
+        .into_iter()
+        .collect();
+    let banded = plan::<Bands>(&tree, BlendSpace::Linear, &marks, &FxHashSet::default());
+    let windows: Vec<_> = banded
+        .planes
+        .iter()
+        .map(|p| tree.layer(p.layer).host_window())
+        .collect();
+    assert_eq!(
+        windows,
+        [Some(SHOWN)],
+        "the clipped-away mark opens no region"
+    );
+    assert_eq!(
+        banded.parts(),
+        2,
+        "the base part and the region above the shown mark"
+    );
+    // Unclipped, both marks open regions, each named by its own window.
+    tree.apply(LayerOp::Clip(PARENT, None));
+    let both = plan::<Bands>(&tree, BlendSpace::Linear, &marks, &FxHashSet::default());
+    let windows: Vec<_> = both
+        .planes
+        .iter()
+        .map(|p| tree.layer(p.layer).host_window())
+        .collect();
+    assert_eq!(windows, [Some(SHOWN), Some(HIDDEN)]);
+}
+
+/// Two platform views stacked with interactive content between and above
+/// them, on a surface with one plane: the marks only split the paint
+/// order, so neither they nor their bands spend the budget, and the video
+/// beneath the first mark still promotes (water-rs/waterui#2225).
+#[test]
+fn host_window_marks_take_no_plane_budget() {
+    const FIRST: LayerId = LayerId::new(5);
+    const CARD: LayerId = LayerId::new(6);
+    const SECOND: LayerId = LayerId::new(7);
+    const OVERLAY: LayerId = LayerId::new(8);
+    let mut tree = SurfaceTree::new();
+    for id in [VIDEO, FIRST, CARD, SECOND, OVERLAY] {
+        tree.apply(LayerOp::Create(id));
+        tree.apply(LayerOp::Push {
+            parent: ROOT,
+            child: id,
+        });
+    }
+    tree.apply(LayerOp::HostWindow(FIRST, Some(1)));
+    tree.apply(LayerOp::HostWindow(SECOND, Some(2)));
+    let candidates: FxHashMap<LayerId, Candidate> = [
+        (VIDEO, SIZE.into()),
+        (FIRST, host_window()),
+        (SECOND, host_window()),
+    ]
+    .into_iter()
+    .collect();
+    let banded = plan::<Bands<1>>(
+        &tree,
+        BlendSpace::Linear,
+        &candidates,
+        &all_ready(&candidates),
+    );
+    assert_eq!(banded.unplaced, []);
+    assert_eq!(banded.rejected, []);
+    assert_eq!(
+        banded.planes.iter().map(|p| p.layer).collect::<Vec<_>>(),
+        [VIDEO, FIRST, SECOND]
+    );
+    assert_eq!(
+        banded.parts(),
+        4,
+        "the parts beneath and above the video, then each mark's band"
+    );
+}
+
+/// A scroll view's inner layer as the Android renderer lowers it while the
+/// overscroll stretch shows — clipped to the viewport, offset by its scroll
+/// position and filtered with `filter` — holding two host-window marks with
+/// content between and above them.
+fn stretched_scroll(filter: FilterId) -> (SurfaceTree, FxHashMap<LayerId, Candidate>) {
+    const INNER: LayerId = LayerId::new(10);
+    const FIRST: LayerId = LayerId::new(11);
+    const CARD: LayerId = LayerId::new(12);
+    const SECOND: LayerId = LayerId::new(13);
+    const TAIL: LayerId = LayerId::new(15);
+    let mut tree = SurfaceTree::new();
+    for id in [INNER, FIRST, CARD, SECOND, TAIL] {
+        tree.apply(LayerOp::Create(id));
+    }
+    for (parent, child) in [
+        (ROOT, INNER),
+        (INNER, FIRST),
+        (INNER, CARD),
+        (INNER, SECOND),
+        (INNER, TAIL),
+    ] {
+        tree.apply(LayerOp::Push { parent, child });
+    }
+    tree.apply(clip(
+        INNER,
+        ShapeData::Rect(Rect::new(0.0, 0.0, 200.0, 300.0)),
+    ));
+    tree.apply(LayerOp::ScrollOffset(INNER, prop(Vec2::new(0.0, 40.0))));
+    tree.apply(LayerOp::Filter(INNER, Some(filter)));
+    tree.apply(LayerOp::HostWindow(FIRST, Some(1)));
+    tree.apply(LayerOp::HostWindow(SECOND, Some(2)));
+    let marks = [(FIRST, host_window()), (SECOND, host_window())]
+        .into_iter()
+        .collect();
+    (tree, marks)
+}
+
+const STRETCH: LayerId = LayerId::new(10);
+
+/// The overscroll stretch is a pure coordinate remap, so a mark inside the
+/// stretched inner layer is placed: the lowering renders the layer once for
+/// the base and once per band, each under the same device-space stretch.
+/// Before, the filter made the layer an isolating ancestor and the mark
+/// failed with `Isolated`.
+#[test]
+fn a_mark_under_a_coordinate_remap_filter_is_placed() {
+    let (tree, marks) = stretched_scroll(FilterId::new(1).with_coordinate_remap(true));
+    let plan = plan::<Bands>(&tree, BlendSpace::Linear, &marks, &FxHashSet::default());
+    assert_eq!(plan.unplaced, []);
+    assert_eq!(plan.rejected, []);
+    assert_eq!(
+        plan.planes.iter().map(|p| p.layer).collect::<Vec<_>>(),
+        [LayerId::new(11), LayerId::new(13)]
+    );
+    // Both marks keep the inner layer's clip and scroll on their path, so
+    // the host places each platform view in the scrolled viewport.
+    for plane in &plan.planes {
+        let inner = &plane.path[1];
+        assert_eq!(inner.layer, STRETCH);
+        assert_eq!(inner.scroll, Vec2::new(0.0, 40.0));
+        assert!(inner.clip.is_some());
+    }
+    assert_eq!(
+        plan.parts(),
+        3,
+        "the base part beneath the first mark and one band per mark"
+    );
+}
+
+/// A filter that is not a coordinate remap changes the pixels around it,
+/// so it still keeps the mark from the surface level.
+#[test]
+fn a_mark_under_a_filter_that_is_not_a_remap_stays_unplaced() {
+    let (tree, marks) = stretched_scroll(FilterId::new(1));
+    let plan = plan::<Bands>(&tree, BlendSpace::Linear, &marks, &FxHashSet::default());
+    assert_eq!(
+        plan.unplaced,
+        [
+            (LayerId::new(11), Ineligible::Isolated(STRETCH)),
+            (LayerId::new(13), Ineligible::Isolated(STRETCH)),
+        ]
+    );
+    assert_eq!(plan.planes, []);
+}
+
+/// Splitting needs the group to composite as the plain filtered whole: a
+/// group opacity, a blend or a projective pose on the filtered layer still
+/// fail, and so does a compositor without bands, whose marks are planes.
+#[test]
+fn a_remap_filter_splits_only_a_plain_group_on_a_band_compositor() {
+    let remap = FilterId::new(1).with_coordinate_remap(true);
+    for style in [
+        LayerOp::Opacity(STRETCH, prop(0.5)),
+        LayerOp::Blend(STRETCH, BlendMode::Multiply),
+    ] {
+        let (mut tree, marks) = stretched_scroll(remap);
+        tree.apply(style);
+        let plan = plan::<Bands>(&tree, BlendSpace::Linear, &marks, &FxHashSet::default());
+        assert_eq!(plan.planes, []);
+        assert_eq!(plan.unplaced.len(), 2);
+        assert!(
+            plan.unplaced
+                .iter()
+                .all(|(_, cause)| *cause == Ineligible::Isolated(STRETCH))
+        );
+    }
+    let (tree, marks) = stretched_scroll(remap);
+    let plan = plan::<Test>(&tree, BlendSpace::Linear, &marks, &FxHashSet::default());
+    assert_eq!(plan.planes, []);
+    assert_eq!(plan.unplaced.len(), 2);
+}
+
+/// A child blending within the stretched group would read only its own
+/// region's content once the group splits, so the group is not split.
+#[test]
+fn a_blended_child_keeps_the_stretched_group_whole() {
+    const GLOW: LayerId = LayerId::new(14);
+    let (mut tree, marks) = stretched_scroll(FilterId::new(1).with_coordinate_remap(true));
+    tree.apply(LayerOp::Create(GLOW));
+    tree.apply(LayerOp::Push {
+        parent: STRETCH,
+        child: GLOW,
+    });
+    tree.apply(LayerOp::Blend(GLOW, BlendMode::Multiply));
+    let plan = plan::<Bands>(&tree, BlendSpace::Linear, &marks, &FxHashSet::default());
+    assert_eq!(plan.planes, []);
+    assert_eq!(plan.unplaced.len(), 2);
+    assert!(
+        plan.unplaced
+            .iter()
+            .all(|(_, cause)| *cause == Ineligible::Isolated(STRETCH))
+    );
 }

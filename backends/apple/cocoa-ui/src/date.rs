@@ -18,8 +18,9 @@ use objc2::AllocAnyThread;
 use objc2::rc::Retained;
 use objc2_foundation::{
     NSCalendar, NSCalendarIdentifierGregorian, NSCalendarUnit, NSDate, NSDateComponents,
-    NSDateFormatter, NSDateFormatterStyle, NSDateInterval,
+    NSDateInterval,
 };
+use waterui_contract::contract_violation;
 
 /// The year, month and day of a calendar date.
 ///
@@ -160,16 +161,164 @@ pub fn interval(start: &NSDate, end: &NSDate) -> Retained<NSDateInterval> {
     // so no main-thread proof is needed.
 }
 
-/// `date` formatted in the user's locale at medium date style with no time —
-/// the format a selection list row shows.
+/// Whether a calendar control selects one day or toggles many.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CalendarSelectionMode {
+    /// Picking a day makes it the one selected day.
+    Single,
+    /// Picking a day toggles it in or out of the selection.
+    Multiple,
+}
+
+/// A calendar month: the year and the month, `1..=12`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct YearMonth {
+    /// The calendar year.
+    pub year: i32,
+    /// The month, `1..=12`.
+    pub month: i32,
+}
+
+impl YearMonth {
+    /// The month `day` falls in.
+    #[must_use]
+    pub const fn of(day: DateParts) -> Self {
+        Self {
+            year: day.year,
+            month: day.month,
+        }
+    }
+
+    /// The month's first day.
+    #[must_use]
+    pub const fn first_day(self) -> DateParts {
+        DateParts {
+            year: self.year,
+            month: self.month,
+            day: 1,
+        }
+    }
+
+    /// The month before this one.
+    #[must_use]
+    pub const fn previous(self) -> Self {
+        if self.month == 1 {
+            Self {
+                year: self.year - 1,
+                month: 12,
+            }
+        } else {
+            Self {
+                year: self.year,
+                month: self.month - 1,
+            }
+        }
+    }
+
+    /// The month after this one.
+    #[must_use]
+    pub const fn next(self) -> Self {
+        if self.month == 12 {
+            Self {
+                year: self.year + 1,
+                month: 1,
+            }
+        } else {
+            Self {
+                year: self.year,
+                month: self.month + 1,
+            }
+        }
+    }
+
+    /// The month number, `1..=12`. A month outside that range breaks the
+    /// contract: it is reported and the nearest valid month is used.
+    fn valid_month(self) -> i32 {
+        if !(1..=12).contains(&self.month) {
+            contract_violation!(
+                "a month is 1 through 12, got {}; the nearest month is used",
+                self.month
+            );
+        }
+        self.month.clamp(1, 12)
+    }
+
+    /// The number of days in the month under the proleptic Gregorian
+    /// calendar.
+    ///
+    /// A month outside `1..=12` breaks the contract: it is reported and the
+    /// nearest valid month is counted.
+    #[must_use]
+    pub fn day_count(self) -> i32 {
+        match self.valid_month() {
+            2 if is_leap_year(self.year) => 29,
+            2 => 28,
+            4 | 6 | 9 | 11 => 30,
+            _ => 31,
+        }
+    }
+
+    /// The weekday the month's first day falls on, `1` (Sunday) through `7`
+    /// (Saturday) — `NSCalendar`'s numbering — under the proleptic
+    /// Gregorian calendar (Sakamoto's method).
+    ///
+    /// A month outside `1..=12` breaks the contract: it is reported and the
+    /// nearest valid month is used.
+    #[must_use]
+    pub fn first_weekday(self) -> i32 {
+        const MONTH_OFFSETS: [i32; 12] = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
+        let month = self.valid_month();
+        let year = if month < 3 { self.year - 1 } else { self.year };
+        #[expect(
+            clippy::cast_sign_loss,
+            reason = "`valid_month` keeps the month in 1..=12"
+        )]
+        let offset = MONTH_OFFSETS[(month - 1) as usize];
+        // The day of the month is 1; Sunday is 0.
+        let weekday =
+            (year + year.div_euclid(4) - year.div_euclid(100) + year.div_euclid(400) + offset + 1)
+                .rem_euclid(7);
+        weekday + 1
+    }
+}
+
+/// Whether `year` is a leap year under the proleptic Gregorian calendar.
+const fn is_leap_year(year: i32) -> bool {
+    year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
+}
+
+/// `day` moved by `days` calendar days, crossing month and year boundaries.
 #[must_use]
-pub fn format_medium(date: &NSDate) -> String {
-    NSDateFormatter::localizedStringFromDate_dateStyle_timeStyle(
-        date,
-        NSDateFormatterStyle::MediumStyle,
-        NSDateFormatterStyle::NoStyle,
-    )
-    .to_string()
+pub fn add_days(day: DateParts, days: i32) -> DateParts {
+    let mut month = YearMonth::of(day);
+    let mut value = day.day + days;
+    while value < 1 {
+        month = month.previous();
+        value += month.day_count();
+    }
+    loop {
+        let count = month.day_count();
+        if value <= count {
+            break;
+        }
+        value -= count;
+        month = month.next();
+    }
+    DateParts {
+        year: month.year,
+        month: month.month,
+        day: value,
+    }
+}
+
+/// The current calendar day in the user's time zone.
+///
+/// # Panics
+///
+/// Never in practice: the current instant always resolves to a date.
+#[must_use]
+pub fn today() -> DateParts {
+    date_parts(&NSDate::now()).expect("the current instant resolves to a calendar date")
 }
 
 #[cfg(test)]
@@ -189,6 +338,81 @@ mod tests {
     #[test]
     fn parts_rejects_unset_components() {
         assert_eq!(super::parts(&NSDateComponents::new()), None);
+    }
+
+    #[test]
+    fn month_lengths_and_weekdays_follow_the_gregorian_calendar() {
+        let february_leap = YearMonth {
+            year: 2024,
+            month: 2,
+        };
+        assert_eq!(february_leap.day_count(), 29);
+        assert_eq!(
+            YearMonth {
+                year: 2100,
+                month: 2
+            }
+            .day_count(),
+            28
+        );
+        assert_eq!(
+            YearMonth {
+                year: 2026,
+                month: 11
+            }
+            .day_count(),
+            30
+        );
+        assert_eq!(
+            YearMonth {
+                year: 2000,
+                month: 2
+            }
+            .day_count(),
+            29
+        );
+        // 1 November 2026 is a Sunday, 1 January 2000 a Saturday, 1 March
+        // 1900 a Thursday, and 1 January of year 0 — 1 BCE, a leap year
+        // before the Monday 1 January 1 — a Saturday.
+        for (year, month, weekday) in [(2026, 11, 1), (2000, 1, 7), (1900, 3, 5), (0, 1, 7)] {
+            assert_eq!(YearMonth { year, month }.first_weekday(), weekday);
+        }
+        assert_eq!(
+            february_leap.previous().previous().next(),
+            YearMonth {
+                year: 2024,
+                month: 1,
+            }
+        );
+        assert_eq!(
+            YearMonth {
+                year: 2026,
+                month: 12
+            }
+            .next(),
+            YearMonth {
+                year: 2027,
+                month: 1,
+            }
+        );
+    }
+
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "a month is 1 through 12"))]
+    fn an_invalid_month_counts_as_the_nearest_valid_month() {
+        let month = |month| YearMonth { year: 2026, month };
+        assert_eq!(month(13).day_count(), month(12).day_count());
+        assert_eq!(month(0).first_weekday(), month(1).first_weekday());
+    }
+
+    #[test]
+    fn add_days_crosses_month_and_year_boundaries() {
+        let day = |year, month, day| DateParts { year, month, day };
+        assert_eq!(add_days(day(2026, 12, 30), 7), day(2027, 1, 6));
+        assert_eq!(add_days(day(2027, 1, 3), -7), day(2026, 12, 27));
+        assert_eq!(add_days(day(2024, 2, 28), 1), day(2024, 2, 29));
+        assert_eq!(add_days(day(2024, 3, 1), -1), day(2024, 2, 29));
+        assert_eq!(add_days(day(2026, 11, 18), 0), day(2026, 11, 18));
     }
 
     #[test]

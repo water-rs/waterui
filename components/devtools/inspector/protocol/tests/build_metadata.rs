@@ -1,6 +1,8 @@
 //! Isolated integration tests for the protocol build script's commit
 //! metadata resolution — each fixture builds a real Cargo package under an
-//! ephemeral Git repository and asserts the embedded identity.
+//! ephemeral Git repository and asserts the embedded identity. Which Git
+//! operations rerun the script, across ref storages and worktrees, is
+//! `waterui-git-head`'s contract and is tested there.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -31,6 +33,29 @@ fn git(path: &Path) -> Command {
     command
 }
 
+/// The directory of the `waterui-git-head` package the build script
+/// depends on, as the workspace metadata places it.
+fn git_head_package() -> PathBuf {
+    let output = successful(
+        Command::new(env!("CARGO"))
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .args(["metadata", "--format-version=1", "--no-deps", "--offline"]),
+    );
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("cargo metadata JSON");
+    let manifest = metadata["packages"]
+        .as_array()
+        .expect("cargo metadata lists packages")
+        .iter()
+        .find(|package| package["name"] == "waterui-git-head")
+        .and_then(|package| package["manifest_path"].as_str())
+        .expect("the workspace contains waterui-git-head");
+    Path::new(manifest)
+        .parent()
+        .expect("a manifest path names a file in its package directory")
+        .to_path_buf()
+}
+
 impl Probe {
     fn new() -> Self {
         let root = tempfile::tempdir().expect("isolated metadata fixture");
@@ -50,6 +75,12 @@ impl Probe {
             .expect("actual protocol build script");
         std::fs::write(package.join(".gitignore"), "/target/\n").expect("fixture target exclusion");
         let probe = Self { root, package };
+        successful(
+            probe
+                .cargo()
+                .args(["add", "--offline", "--build", "--path"])
+                .arg(git_head_package()),
+        );
         successful(probe.cargo().args(["generate-lockfile", "--offline"]));
         probe
     }
@@ -131,45 +162,6 @@ impl Probe {
 fn incremental_head_changes_refresh_protocol_identity() {
     let probe = Probe::new();
     probe.initialize_git();
-    probe.check(&probe.head());
-    probe.advance_head();
-    probe.check(&probe.head());
-}
-
-#[test]
-fn linked_worktree_head_changes_refresh_protocol_identity() {
-    let mut probe = Probe::new();
-    probe.initialize_git();
-    let linked = probe.root.path().join("linked");
-    successful(
-        git(&probe.package)
-            .args(["worktree", "add", "-b", "linked"])
-            .arg(&linked),
-    );
-    probe.package = linked;
-    probe.check(&probe.head());
-    probe.advance_head();
-    probe.check(&probe.head());
-}
-
-#[test]
-fn packed_ref_changes_refresh_protocol_identity() {
-    let probe = Probe::new();
-    probe.initialize_git();
-    successful(git(&probe.package).args(["pack-refs", "--all", "--prune"]));
-    probe.check(&probe.head());
-    probe.advance_head();
-    successful(git(&probe.package).args(["pack-refs", "--all", "--prune"]));
-    probe.check(&probe.head());
-    probe.advance_head();
-    probe.check(&probe.head());
-}
-
-#[test]
-fn detached_head_changes_refresh_protocol_identity() {
-    let probe = Probe::new();
-    probe.initialize_git();
-    successful(git(&probe.package).args(["checkout", "--detach", "HEAD"]));
     probe.check(&probe.head());
     probe.advance_head();
     probe.check(&probe.head());

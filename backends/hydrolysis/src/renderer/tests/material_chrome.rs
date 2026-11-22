@@ -9,11 +9,16 @@
 //! An unregistered key panics at install; a CPU engine panics on attach
 //! with a non-empty registry; a rejected source panics naming the key.
 
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
+use std::time::Duration;
 
 use waterui_core::Binding;
 
-use crate::theme::{ButtonMetrics, InteractionStyle};
+use cherenkov_record::{
+    BackdropEffect, BackdropShaderSource, CaptureClass, CaptureLevels, CaptureScale,
+    ContainerRecipe, GroupMember, Live, MaterialCapture, MaterialEffect, MaterialGrouping,
+    MaterialRegistry, MaterialShader, OuterExtent, ShapeData, UnionSmoothing,
+};
 use kurbo::{Affine, Rect, RoundedRect, Shape as _};
 use nami::SignalExt as _;
 use waterui::FilterViewExt as _;
@@ -23,30 +28,30 @@ use waterui::graphics::Color;
 use waterui::interaction::InteractionState;
 use waterui_core::Environment;
 use waterui_core::handler::AnyViewBuilder;
-use waterui_graphics::draw::{
-    BackdropEffect, BackdropShaderSource, CaptureClass, CaptureLevels, CaptureScale, Live,
-    MaterialCapture, MaterialEffect, MaterialGrouping, MaterialRegistry, MaterialShader,
-    OuterExtent, ShapeData, UnionSmoothing,
-};
 
 use super::mirror::{mirror_engine, no_shader_mount};
 use super::{
-    ChromeDraw, ChromePlan, MinimalTestTheme, pumped_test_environment, test_renderer_with_theme,
+    ChromeDraw, ChromePlan, MinimalTestTheme, pumped_test_environment, swap_host_surface,
+    test_renderer_with_theme,
 };
 use crate::HeadlessRuntime;
 use crate::platform::{InputEvent, PointerButton, PointerKind};
-use crate::renderer::mount::backdrop::BackdropScope;
-use crate::renderer::mount::target::attach_material_shaders;
+use crate::renderer::mount::backdrop::{BackdropScope, Unbound};
+use crate::renderer::mount::target::{attach_material_shaders, recording_scale_of};
+use crate::theme::{
+    Backdrop, Chrome, CornerShape, Corners, Custom, Driven, FocusIndicator, Inputs, PressFeedback,
+    Surface,
+};
 
 /// The window, in points.
-const WIDTH: u32 = 160;
-const HEIGHT: u32 = 120;
+pub(super) const WIDTH: u32 = 160;
+pub(super) const HEIGHT: u32 = 120;
 /// Device pixels per point.
 const DISPLAY_SCALE: f64 = 2.0;
 
-const GLASS_SHADER: MaterialShader = MaterialShader::new(0);
+pub(super) const GLASS_SHADER: MaterialShader = MaterialShader::new(0);
 const OTHER_SHADER: MaterialShader = MaterialShader::new(1);
-const GLASS: CaptureClass = CaptureClass::new(0);
+pub(super) const GLASS: CaptureClass = CaptureClass::new(0);
 const FLAT: CaptureClass = CaptureClass::new(1);
 const UNION_GLASS: CaptureClass = CaptureClass::new(2);
 /// `UNION_GLASS`'s logical smoothing, in points.
@@ -58,18 +63,20 @@ const TINT_WGSL: &str = "fn backdrop_effect(px: BackdropPixel, params: array<vec
 
 /// The chrome test plan: `GLASS` groups `Shared`, `FLAT` is `Solo`, and two
 /// registered shaders.
-fn glass_plan(draws: Vec<ChromeDraw>) -> ChromePlan {
+pub(super) fn glass_plan(draws: Vec<ChromeDraw>) -> ChromePlan {
     ChromePlan {
         shaders: vec![
             (GLASS_SHADER, BackdropShaderSource::wgsl(TINT_WGSL)),
             (OTHER_SHADER, BackdropShaderSource::wgsl(TINT_WGSL)),
         ],
+        containers: Vec::new(),
         captures: vec![
             (
                 GLASS,
                 MaterialCapture {
                     scale: CaptureScale::new(0.5).expect("0.5 is a valid capture scale"),
                     levels: CaptureLevels::new(2).expect("2 is a valid level count"),
+                    pyramid: cherenkov::CapturePyramid::Box,
                     grouping: MaterialGrouping::Shared,
                     blend_space: cherenkov::BlendSpace::Linear,
                 },
@@ -79,6 +86,7 @@ fn glass_plan(draws: Vec<ChromeDraw>) -> ChromePlan {
                 MaterialCapture {
                     scale: CaptureScale::new(0.5).expect("0.5 is a valid capture scale"),
                     levels: CaptureLevels::ONE,
+                    pyramid: cherenkov::CapturePyramid::Box,
                     grouping: MaterialGrouping::Solo,
                     blend_space: cherenkov::BlendSpace::Linear,
                 },
@@ -86,7 +94,6 @@ fn glass_plan(draws: Vec<ChromeDraw>) -> ChromePlan {
         ],
         draws,
         fills: Vec::new(),
-        stateful_draws: None,
     }
 }
 
@@ -99,6 +106,7 @@ fn union_plan(draws: Vec<ChromeDraw>) -> ChromePlan {
         MaterialCapture {
             scale: CaptureScale::new(0.5).expect("0.5 is a valid capture scale"),
             levels: CaptureLevels::ONE,
+            pyramid: cherenkov::CapturePyramid::Box,
             grouping: MaterialGrouping::Union {
                 smoothing: UnionSmoothing::new(UNION_SMOOTHING)
                     .expect("the test smoothing is valid"),
@@ -124,8 +132,8 @@ fn chrome_draw(class: CaptureClass, shader: MaterialShader, uniforms: Vec<f32>) 
     }
 }
 
-/// A tappable colour: the `draw_interaction_state_layer` hook the chrome
-/// plan replays in, so the theme's materials record every frame.
+/// A tappable colour: the plan's chrome realizes on it, so its custom part
+/// records the plan's materials.
 fn tap_color(hex: &str) -> waterui_core::AnyView {
     waterui_core::AnyView::new(Color::srgb_hex(hex).gesture(TapGesture::new(), || {}))
 }
@@ -134,14 +142,16 @@ fn tap_view() -> waterui_core::AnyView {
     tap_color("#3F3F46")
 }
 
-/// An environment with an `InteractionStyle` so the state-layer hook draws.
-fn chrome_env() -> Environment {
+/// A tappable view that paints nothing itself, so the chrome beneath its
+/// content is what a pixel test sees.
+fn clear_tap() -> waterui_core::AnyView {
+    waterui_core::AnyView::new(Color::transparent().gesture(TapGesture::new(), || {}))
+}
+
+/// An environment presenting every tappable view with `plan`'s chrome.
+fn chrome_env(plan: &ChromePlan) -> Environment {
     let mut env = pumped_test_environment();
-    env.install(InteractionStyle::new(
-        ButtonMetrics::new(16.0, 8.0, 0.0, 0.0),
-        Color::srgb(0, 0, 0),
-        8.0_f64,
-    ));
+    env.install(plan.chrome());
     env
 }
 
@@ -152,14 +162,15 @@ fn rendered(
     scale: f64,
 ) -> HeadlessRuntime {
     let builder = AnyViewBuilder::<waterui_core::AnyView>::new(view);
-    let mut runtime = HeadlessRuntime::new_for_tests(chrome_env(), builder, WIDTH, HEIGHT, theme)
-        .with_scale_factor(scale);
+    let env = chrome_env(&theme.chrome);
+    let mut runtime =
+        HeadlessRuntime::new_for_tests(env, builder, WIDTH, HEIGHT, theme).with_scale_factor(scale);
     let _ = runtime.pump_snapshot();
     runtime
 }
 
 /// The chrome member layers the window mounted, in `visit` order.
-fn chrome_layers(runtime: &HeadlessRuntime) -> Vec<cherenkov::LayerId> {
+pub(super) fn chrome_layers(runtime: &HeadlessRuntime) -> Vec<cherenkov::LayerId> {
     use crate::renderer::mount::layers::{LayerVisitor, visit};
     struct Members(Vec<cherenkov::LayerId>);
     impl<E: crate::text::TextEngine> LayerVisitor<E> for Members {
@@ -179,7 +190,7 @@ fn chrome_layers(runtime: &HeadlessRuntime) -> Vec<cherenkov::LayerId> {
 }
 
 /// The same walk over the mirror mount.
-fn mirror_chrome_layers<E: crate::text::TextEngine>(
+pub(super) fn mirror_chrome_layers<E: crate::text::TextEngine>(
     renderer: &crate::renderer::HydrolysisRenderer<E>,
 ) -> Vec<cherenkov::LayerId> {
     use crate::renderer::mount::layers::{LayerVisitor, visit};
@@ -241,7 +252,7 @@ fn chrome_cells<E: crate::text::TextEngine>(
 }
 
 /// The window's chrome group table on the GPU mount.
-fn chrome_mount(
+pub(super) fn chrome_mount(
     runtime: &HeadlessRuntime,
 ) -> &crate::renderer::mount::backdrop::ChromeBackdropGroups<
     cherenkov::BackdropGroup,
@@ -252,24 +263,37 @@ fn chrome_mount(
 }
 
 /// The shared group `member` samples — `None` while it holds no membership.
-fn member_group(runtime: &HeadlessRuntime, member: cherenkov::LayerId) -> cherenkov::BackdropId {
+pub(super) fn member_group(
+    runtime: &HeadlessRuntime,
+    member: cherenkov::LayerId,
+) -> cherenkov::BackdropId {
     chrome_mount(runtime)
         .chrome_group(member)
         .expect("the member holds a group membership")
         .id()
 }
 
-/// One frame through the mirror mount — `view` only matters on the first.
+/// One frame through the mirror mount under `plan`'s chrome — `view` only
+/// matters on the first.
 fn mirror_frame(
     renderer: &mut crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine>,
+    plan: &ChromePlan,
     view: waterui_core::AnyView,
 ) {
-    let env = chrome_env();
+    mirror_frame_in(renderer, &chrome_env(plan), view);
+}
+
+/// One frame through the mirror mount in `env`.
+pub(super) fn mirror_frame_in(
+    renderer: &mut crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine>,
+    env: &Environment,
+    view: waterui_core::AnyView,
+) {
     renderer.reset_scene();
     renderer.begin_rebuild_frame();
     renderer.capture_window_tree(
         view,
-        &env,
+        env,
         Rect::new(0.0, 0.0, f64::from(WIDTH), f64::from(HEIGHT)),
         Affine::IDENTITY,
         Affine::IDENTITY,
@@ -281,10 +305,11 @@ fn mirror_frame(
 /// One frame through the mirror mount at `scale` device pixels per point.
 fn mirror_frame_at(
     renderer: &mut crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine>,
+    plan: &ChromePlan,
     view: waterui_core::AnyView,
     scale: f64,
 ) {
-    let env = chrome_env();
+    let env = chrome_env(plan);
     renderer.reset_scene();
     renderer.begin_rebuild_frame();
     renderer.capture_window_tree(
@@ -303,13 +328,14 @@ fn mirrored(
     view: impl waterui_core::View,
     theme: MinimalTestTheme,
 ) -> crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine> {
+    let plan = theme.chrome.clone();
     let mut renderer = test_renderer_with_theme(theme);
-    mirror_frame(&mut renderer, waterui_core::AnyView::new(view));
+    mirror_frame(&mut renderer, &plan, waterui_core::AnyView::new(view));
     renderer
 }
 
 /// The layer `id`'s committed node in the mirror.
-fn mirrored_node(
+pub(super) fn mirrored_node(
     renderer: &crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine>,
     id: cherenkov::LayerId,
 ) -> std::cell::Ref<'_, cherenkov::LayerNode> {
@@ -470,7 +496,7 @@ fn scope_program_builder(
 #[test]
 fn a_member_in_a_transformed_scope_draws_in_the_scopes_space() {
     use crate::renderer::mount::program::Item;
-    use crate::renderer::mount::{Placement, PlacementClock, ScopeKey, ScopeProps};
+    use crate::renderer::mount::{Placement, PlacementClock, ScopeKey, ScopeLive, ScopeProps};
 
     let clock = PlacementClock::new();
     let mut builder = scope_program_builder(&clock);
@@ -483,6 +509,8 @@ fn a_member_in_a_transformed_scope_draws_in_the_scopes_space() {
             transform: Affine::translate((30.0, 40.0)),
             clip: None,
             alpha: 1.0,
+            blend_space: None,
+            live: ScopeLive::NONE,
         },
         Placement::new(&clock),
     );
@@ -515,7 +543,7 @@ fn a_member_in_a_transformed_scope_draws_in_the_scopes_space() {
 #[test]
 fn a_nested_scope_mounts_with_each_transform_applied_once() {
     use crate::renderer::mount::program::Item;
-    use crate::renderer::mount::{Placement, PlacementClock, ScopeKey, ScopeProps};
+    use crate::renderer::mount::{Placement, PlacementClock, ScopeKey, ScopeLive, ScopeProps};
 
     let outer = Affine::translate((30.0, 40.0));
     let inner = Affine::translate((5.0, 6.0));
@@ -535,6 +563,8 @@ fn a_nested_scope_mounts_with_each_transform_applied_once() {
             transform: outer,
             clip: None,
             alpha: 1.0,
+            blend_space: None,
+            live: ScopeLive::NONE,
         },
         Placement::new(&clock),
     );
@@ -547,6 +577,8 @@ fn a_nested_scope_mounts_with_each_transform_applied_once() {
             transform: inner,
             clip: Some(clip.clone()),
             alpha: 1.0,
+            blend_space: None,
+            live: ScopeLive::NONE,
         },
         Placement::new(&clock),
     );
@@ -608,18 +640,19 @@ fn a_nested_scope_mounts_with_each_transform_applied_once() {
 /// member layer and the same group — no new layer, group or capture.
 #[test]
 fn a_reflush_reuses_the_member_and_its_group() {
+    let plan = glass_plan(vec![chrome_draw(GLASS, GLASS_SHADER, vec![])]);
     let mut renderer = test_renderer_with_theme(MinimalTestTheme {
-        chrome: glass_plan(vec![chrome_draw(GLASS, GLASS_SHADER, vec![])]),
+        chrome: plan.clone(),
         ..Default::default()
     });
-    mirror_frame(&mut renderer, tap_view());
+    mirror_frame(&mut renderer, &plan, tap_view());
     let before = mirror_chrome_layers(&renderer);
     let group_before = mirrored_node(&renderer, before[0])
         .backdrop
         .as_ref()
         .expect("the member binds a sample")
         .group();
-    mirror_frame(&mut renderer, tap_view());
+    mirror_frame(&mut renderer, &plan, tap_view());
     let after = mirror_chrome_layers(&renderer);
     assert_eq!(before, after, "the re-flush reuses the member layer");
     let group_after = mirrored_node(&renderer, after[0])
@@ -707,11 +740,11 @@ fn a_remount_rebinds_the_clip_from_the_shapes_value_now() {
     );
 }
 
-/// A press re-records the chrome and rebinds shape and effect onto the same
-/// member and the same group — no new layer, group or capture.
+/// A press keeps the chrome's member on the same layer and the same group —
+/// no new layer, group or capture.
 #[test]
-fn a_press_rebinds_the_same_member_and_group() {
-    let theme = MinimalTestTheme {
+fn a_press_keeps_the_same_member_and_group() {
+    let runtime_theme = MinimalTestTheme {
         chrome: glass_plan(vec![chrome_draw(
             GLASS,
             GLASS_SHADER,
@@ -719,10 +752,7 @@ fn a_press_rebinds_the_same_member_and_group() {
         )]),
         ..Default::default()
     };
-    let builder = AnyViewBuilder::<waterui_core::AnyView>::new(tap_view);
-    let mut runtime = HeadlessRuntime::new_for_tests(chrome_env(), builder, WIDTH, HEIGHT, theme)
-        .with_scale_factor(DISPLAY_SCALE);
-    let _ = runtime.pump_snapshot();
+    let mut runtime = rendered(tap_view, runtime_theme, DISPLAY_SCALE);
     let before = chrome_layers(&runtime);
     let group_before = member_group(&runtime, before[0]);
     runtime.push_input_event(InputEvent::PointerDown {
@@ -889,6 +919,7 @@ fn a_scopes_chrome_classes_capture_beneath_its_anchor() {
             MaterialCapture {
                 scale: CaptureScale::FULL,
                 levels: CaptureLevels::ONE,
+                pyramid: cherenkov::CapturePyramid::Box,
                 grouping: MaterialGrouping::Shared,
                 blend_space: cherenkov::BlendSpace::Linear,
             },
@@ -898,15 +929,15 @@ fn a_scopes_chrome_classes_capture_beneath_its_anchor() {
             ..Default::default()
         }
     };
-    let scoped = || waterui_core::AnyView::new(tap_view().material_group());
+    let scoped = || waterui_core::AnyView::new(clear_tap().material_group());
     // The later member covers the earlier one's whole shape, so a pixel
     // at the shape's centre is the later member's own output.
     let centre = |runtime: &mut HeadlessRuntime| {
-        let snap = runtime.pump_snapshot().snapshot.expect("a snapshot");
-        let device = snap.width / WIDTH;
+        let snap = runtime.pump_snapshot().into_snapshot().expect("a snapshot");
+        let device = snap.width() / WIDTH;
         let (x, y) = (6 * device, 7 * device);
-        let i = ((y * snap.width + x) * 4) as usize;
-        <[u8; 4]>::try_from(&snap.rgba8[i..i + 4]).expect("one pixel")
+        let i = ((y * snap.width() + x) * 4) as usize;
+        <[u8; 4]>::try_from(&snap.rgba8()[i..i + 4]).expect("one pixel")
     };
 
     let mut tinted = rendered(scoped, theme(0.6), DISPLAY_SCALE);
@@ -943,7 +974,7 @@ fn a_scopes_chrome_classes_capture_beneath_its_anchor() {
 
     // Outside every scope each member captures at itself, so the earlier
     // member's tint does reach the later capture: the probe is live.
-    let unscoped = || tap_view();
+    let unscoped = clear_tap;
     let mut tinted = rendered(unscoped, theme(0.6), DISPLAY_SCALE);
     assert_eq!(
         chrome_mount(&tinted)
@@ -1036,6 +1067,7 @@ fn a_capture_classes_blend_space_reaches_its_group() {
         MaterialCapture {
             scale: CaptureScale::FULL,
             levels: CaptureLevels::ONE,
+            pyramid: cherenkov::CapturePyramid::Box,
             grouping: MaterialGrouping::Solo,
             blend_space: cherenkov::BlendSpace::SrgbEncoded,
         },
@@ -1100,7 +1132,8 @@ fn the_group_releases_when_its_members_leave() {
             waterui::widget::condition::when(shown.clone(), tap_view),
         )))
     });
-    let mut runtime = HeadlessRuntime::new_for_tests(chrome_env(), builder, WIDTH, HEIGHT, theme)
+    let env = chrome_env(&theme.chrome);
+    let mut runtime = HeadlessRuntime::new_for_tests(env, builder, WIDTH, HEIGHT, theme)
         .with_scale_factor(DISPLAY_SCALE);
     let _ = runtime.pump_snapshot();
     assert_eq!(chrome_mount(&runtime).chrome_group_count(), 1);
@@ -1154,24 +1187,32 @@ fn engine_attach_registers_each_shader() {
     );
 }
 
-/// A source the engine rejects panics at attach, naming the key.
+/// A source the engine rejects is reported at attach, naming the key, and
+/// stays out of the attached table.
 #[test]
-#[should_panic(expected = "backdrop shader MaterialShader(9) failed to register")]
-fn a_rejected_source_panics_at_attach_naming_the_key() {
+#[cfg_attr(
+    debug_assertions,
+    should_panic(expected = "backdrop shader MaterialShader(9) failed to register")
+)]
+fn a_rejected_source_is_reported_at_attach_naming_the_key() {
     let mut registry = MaterialRegistry::new();
     registry.register_shader(
         MaterialShader::new(9),
         BackdropShaderSource::wgsl("fn backdrop_effect( { this is not wgsl"),
     );
-    mirror_engine(|engine| attach_material_shaders(engine, &registry));
+    let attached = mirror_engine(|engine| attach_material_shaders(engine, &registry));
+    assert!(!attached.contains_key(&MaterialShader::new(9)));
 }
 
-/// A material naming a capture class the registry lacks panics at install,
-/// naming the key.
+/// A material naming a capture class the registry lacks is reported at
+/// install, naming the key, and draws no chrome.
 #[test]
-#[should_panic(expected = "capture class CaptureClass(7) is not registered")]
-fn an_unregistered_class_panics_at_install() {
-    let _runtime = rendered(
+#[cfg_attr(
+    debug_assertions,
+    should_panic(expected = "capture class CaptureClass(7) is not registered")
+)]
+fn an_unregistered_class_is_reported_at_install() {
+    let runtime = rendered(
         tap_view,
         MinimalTestTheme {
             chrome: ChromePlan {
@@ -1182,32 +1223,39 @@ fn an_unregistered_class_panics_at_install() {
         },
         DISPLAY_SCALE,
     );
+    assert_eq!(chrome_mount(&runtime).chrome_group_count(), 0);
 }
 
-/// A CPU engine — a layer target with no backdrop shaders — panics on
-/// attach when the theme's registry is not empty.
+/// A layer target with no backdrop shaders — the HWUI target's case —
+/// reports on attach when the theme's registry is not empty, and the mount
+/// holds no chrome.
 #[test]
-#[should_panic(expected = "no backdrop shaders")]
-fn a_cpu_engine_panics_on_attach_with_a_nonempty_registry() {
+#[cfg_attr(debug_assertions, should_panic(expected = "no backdrop shaders"))]
+fn a_target_without_backdrop_shaders_reports_on_attach_with_a_nonempty_registry() {
     let mut registry = MaterialRegistry::new();
     for (key, source) in glass_plan(vec![]).shaders {
         registry.register_shader(key, source);
     }
-    let _mount = no_shader_mount(&registry);
+    let mount = no_shader_mount(&registry);
+    assert_eq!(mount.chrome_groups().backdrop_group_count(), 0);
 }
 
 /// …but an empty registry mounts on it fine — a theme with no materials
 /// draws none.
 #[test]
-fn a_cpu_engine_accepts_an_empty_registry() {
+fn a_target_without_backdrop_shaders_accepts_an_empty_registry() {
     let _mount = no_shader_mount(&MaterialRegistry::new());
 }
 
-/// A material naming a shader the registry lacks panics at install.
+/// A material naming a shader the registry lacks is reported at install and
+/// draws no chrome.
 #[test]
-#[should_panic(expected = "backdrop shader MaterialShader(7) is not registered")]
-fn an_unregistered_shader_panics_at_install() {
-    let _runtime = rendered(
+#[cfg_attr(
+    debug_assertions,
+    should_panic(expected = "backdrop shader MaterialShader(7) is not registered")
+)]
+fn an_unregistered_shader_is_reported_at_install() {
+    let runtime = rendered(
         tap_view,
         MinimalTestTheme {
             chrome: ChromePlan {
@@ -1218,6 +1266,7 @@ fn an_unregistered_shader_panics_at_install() {
         },
         DISPLAY_SCALE,
     );
+    assert_eq!(chrome_mount(&runtime).chrome_group_count(), 0);
 }
 
 /// A `Union` class's members share one group under one scope — like
@@ -1229,9 +1278,11 @@ fn union_members_share_one_group_on_one_union_field() {
         chrome: union_plan(vec![chrome_draw(UNION_GLASS, GLASS_SHADER, vec![])]),
         ..Default::default()
     };
+    let plan = theme.chrome.clone();
     let mut renderer = test_renderer_with_theme(theme);
     mirror_frame_at(
         &mut renderer,
+        &plan,
         waterui_core::AnyView::new(
             waterui_layout::stack::zstack((tap_color("#18181B"), tap_color("#27272A")))
                 .material_group(),
@@ -1273,8 +1324,9 @@ fn union_members_outside_every_scope_never_share() {
         chrome: union_plan(vec![chrome_draw(UNION_GLASS, GLASS_SHADER, vec![])]),
         ..Default::default()
     };
+    let plan = theme.chrome.clone();
     let mut renderer = test_renderer_with_theme(theme);
-    mirror_frame_at(&mut renderer, ungrouped_pair()(), DISPLAY_SCALE);
+    mirror_frame_at(&mut renderer, &plan, ungrouped_pair()(), DISPLAY_SCALE);
     let members = mirror_chrome_layers(&renderer);
     assert_eq!(members.len(), 2);
     let groups = renderer.mirror().chrome_groups();
@@ -1305,8 +1357,9 @@ fn a_scale_change_rebuilds_union_smoothing_and_member_outer() {
         }]),
         ..Default::default()
     };
+    let plan = theme.chrome.clone();
     let mut renderer = test_renderer_with_theme(theme);
-    mirror_frame_at(&mut renderer, tap_view(), DISPLAY_SCALE);
+    mirror_frame_at(&mut renderer, &plan, tap_view(), DISPLAY_SCALE);
     let member = mirror_chrome_layers(&renderer)[0];
     let sample = mirrored_node(&renderer, member)
         .backdrop
@@ -1324,7 +1377,7 @@ fn a_scale_change_rebuilds_union_smoothing_and_member_outer() {
     );
     drop(sample);
 
-    mirror_frame_at(&mut renderer, tap_view(), 4.0);
+    mirror_frame_at(&mut renderer, &plan, tap_view(), 4.0);
     assert_eq!(
         mirror_chrome_layers(&renderer)[0],
         member,
@@ -1374,12 +1427,17 @@ fn an_invalid_union_smoothing_is_rejected_by_the_logical_type() {
 }
 
 /// A valid logical union smoothing whose device-pixel conversion fails —
-/// here, overflowing `f32` — panics at group build inside the mounted
+/// here, overflowing `f32` — is reported at group build inside the mounted
 /// commit, naming the class and the scale. The error is surfaced, never
-/// clamped.
+/// clamped: the group is not built, so the member keeps its membership but
+/// binds no sample, and a later frame at a scale the smoothing converts at
+/// builds the group and binds it.
 #[test]
-#[should_panic(expected = "invalid at display scale 4: the union smoothing is not finite")]
-fn a_union_smoothing_that_overflows_device_pixels_panics_at_group_build() {
+#[cfg_attr(
+    debug_assertions,
+    should_panic(expected = "invalid at display scale 4: the union smoothing is not finite")
+)]
+fn a_union_smoothing_that_overflows_device_pixels_leaves_the_member_unbound() {
     let theme = MinimalTestTheme {
         chrome: {
             let mut plan = glass_plan(vec![chrome_draw(UNION_GLASS, GLASS_SHADER, vec![])]);
@@ -1388,6 +1446,7 @@ fn a_union_smoothing_that_overflows_device_pixels_panics_at_group_build() {
                 MaterialCapture {
                     scale: CaptureScale::FULL,
                     levels: CaptureLevels::ONE,
+                    pyramid: cherenkov::CapturePyramid::Box,
                     grouping: MaterialGrouping::Union {
                         smoothing: UnionSmoothing::new(1e38).expect("finite and positive"),
                     },
@@ -1398,8 +1457,43 @@ fn a_union_smoothing_that_overflows_device_pixels_panics_at_group_build() {
         },
         ..Default::default()
     };
+    let plan = theme.chrome.clone();
     let mut renderer = test_renderer_with_theme(theme);
-    mirror_frame_at(&mut renderer, tap_view(), 4.0);
+    mirror_frame_at(&mut renderer, &plan, tap_view(), 4.0);
+    let member = mirror_chrome_layers(&renderer)[0];
+    assert!(
+        mirrored_node(&renderer, member).backdrop.is_none(),
+        "the member binds no sample",
+    );
+    assert_eq!(
+        renderer.mirror().chrome_groups().chrome_group(member),
+        None,
+        "no group object was built",
+    );
+    assert_eq!(
+        renderer
+            .mirror()
+            .chrome_groups()
+            .chrome_display_scale(member),
+        Some(4.0),
+        "the member keeps its membership for the next rebuild",
+    );
+    assert_eq!(
+        renderer.mirror().union_log(),
+        Vec::new(),
+        "the failed build logs no spec",
+    );
+
+    mirror_frame_at(&mut renderer, &plan, tap_view(), 1.0);
+    assert_eq!(
+        renderer.mirror().union_log().as_slice(),
+        &[Some(cherenkov::BackdropUnion::new(1e38).expect("in range"))],
+        "the rebuild at a convertible scale builds the group",
+    );
+    assert!(
+        mirrored_node(&renderer, member).backdrop.is_some(),
+        "the member binds once its group is built",
+    );
 }
 
 /// A non-finite or negative logical outer extent is rejected by
@@ -1422,13 +1516,17 @@ fn an_invalid_outer_extent_is_rejected_by_the_logical_type() {
 }
 
 /// A finite logical outer extent whose device-pixel conversion overflows
-/// `f32` panics at the member's bind inside the mounted commit, naming
-/// the extent and the scale. The error is surfaced, never clamped.
+/// `f32` is reported at the member's bind inside the mounted commit,
+/// naming the extent and the scale. The error is surfaced, never clamped:
+/// the member keeps its group membership but binds no sample.
 #[test]
-#[should_panic(
-    expected = "outer extent 340282350000000000000000000000000000000 is invalid at display scale 2: the outer extent is not finite"
+#[cfg_attr(
+    debug_assertions,
+    should_panic(
+        expected = "outer extent 340282350000000000000000000000000000000 is invalid at display scale 2: the outer extent is not finite"
+    )
 )]
-fn an_outer_extent_that_overflows_device_pixels_panics_at_bind() {
+fn an_outer_extent_that_overflows_device_pixels_leaves_the_member_unbound() {
     let theme = MinimalTestTheme {
         chrome: glass_plan(vec![ChromeDraw {
             effect: Live::from(
@@ -1439,8 +1537,126 @@ fn an_outer_extent_that_overflows_device_pixels_panics_at_bind() {
         }]),
         ..Default::default()
     };
+    let plan = theme.chrome.clone();
     let mut renderer = test_renderer_with_theme(theme);
-    mirror_frame_at(&mut renderer, tap_view(), DISPLAY_SCALE);
+    mirror_frame_at(&mut renderer, &plan, tap_view(), DISPLAY_SCALE);
+    let member = mirror_chrome_layers(&renderer)[0];
+    assert!(
+        mirrored_node(&renderer, member).backdrop.is_none(),
+        "the member binds no sample",
+    );
+    assert!(
+        renderer
+            .mirror()
+            .chrome_groups()
+            .chrome_group(member)
+            .is_some(),
+        "the member keeps its group membership",
+    );
+
+    mirror_frame_at(&mut renderer, &plan, tap_view(), 1.0);
+    assert_eq!(
+        mirrored_node(&renderer, member)
+            .backdrop
+            .as_ref()
+            .map(cherenkov::BackdropSample::outer_extent),
+        Some(cherenkov::BackdropOuter::new(f32::MAX).expect("finite")),
+        "at a scale the extent converts at, the member binds",
+    );
+}
+
+/// A bound member's live effect changing to an outer extent that overflows
+/// device pixels is reported from the binding; the sample cannot unbind
+/// its layer from inside the signal, so the member keeps the last sample
+/// it bound — the change is rejected, never clamped.
+#[test]
+#[cfg_attr(
+    debug_assertions,
+    should_panic(
+        expected = "outer extent 340282350000000000000000000000000000000 is invalid at display scale 2: the outer extent is not finite"
+    )
+)]
+fn a_live_outer_extent_that_overflows_keeps_the_last_bound_sample() {
+    let extent = nami::binding(3.0_f32);
+    let effect = Live::from(extent.clone())
+        .map(|px: f32| MaterialEffect::new(vec![px]).outer(OuterExtent::new(px).expect("finite")))
+        .into_shared();
+    let plan = glass_plan(vec![ChromeDraw {
+        effect,
+        ..chrome_draw(GLASS, GLASS_SHADER, vec![])
+    }]);
+    let mut renderer = test_renderer_with_theme(MinimalTestTheme {
+        chrome: plan.clone(),
+        ..Default::default()
+    });
+    mirror_frame_at(&mut renderer, &plan, tap_view(), DISPLAY_SCALE);
+    let member = mirror_chrome_layers(&renderer)[0];
+    let bound = |renderer: &crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine>| {
+        mirrored_node(renderer, member)
+            .backdrop
+            .clone()
+            .expect("the member binds a sample")
+    };
+    let before = bound(&renderer);
+    assert_eq!(
+        before.outer_extent(),
+        cherenkov::BackdropOuter::new(6.0).expect("in range"),
+    );
+
+    extent.set(f32::MAX);
+    assert_eq!(
+        bound(&renderer),
+        before,
+        "the rejected change leaves the last bound sample in place",
+    );
+}
+
+/// A display scale that is not a recording scale is reported and binds
+/// nothing: the helper hands back [`Unbound`] rather than a clamped scale.
+#[test]
+#[cfg_attr(
+    debug_assertions,
+    should_panic(expected = "display scale 0 is not a recording scale")
+)]
+fn an_invalid_recording_scale_is_reported_and_unbound() {
+    assert_eq!(recording_scale_of(0.0), Err(Unbound));
+}
+
+/// A chrome member whose commit finds the engine surface dropped reports
+/// the contract violation and joins no group — its membership ends and the
+/// emptied group releases rather than outliving its surface; once the
+/// surface is back, the member's next commit joins again.
+#[test]
+#[cfg_attr(
+    debug_assertions,
+    should_panic(expected = "the engine surface was dropped during its commit")
+)]
+fn a_dropped_surface_leaves_the_chrome_member_unbound() {
+    let theme = MinimalTestTheme {
+        chrome: glass_plan(vec![chrome_draw(GLASS, GLASS_SHADER, vec![])]),
+        ..Default::default()
+    };
+    let mut runtime = rendered(tap_view, theme, DISPLAY_SCALE);
+    let member = chrome_layers(&runtime)[0];
+    assert!(chrome_mount(&runtime).chrome_group(member).is_some());
+
+    let surface = swap_host_surface(&mut runtime, Weak::new());
+    runtime.set_scale_factor(4.0);
+    let _ = runtime.pump(false);
+    assert!(
+        chrome_mount(&runtime).chrome_group(member).is_none(),
+        "the member joins no group without the surface",
+    );
+    assert_eq!(chrome_mount(&runtime).chrome_group_count(), 0);
+
+    swap_host_surface(&mut runtime, surface);
+    runtime.set_scale_factor(DISPLAY_SCALE);
+    let _ = runtime.pump(false);
+    assert_eq!(
+        chrome_mount(&runtime).chrome_display_scale(member),
+        Some(DISPLAY_SCALE),
+        "the member joins again with the surface back",
+    );
 }
 
 /// Two members of one shared group carry different uniforms; a display-scale
@@ -1453,14 +1669,15 @@ fn an_outer_extent_that_overflows_device_pixels_panics_at_bind() {
 /// (water-rs/waterui#1788).
 #[test]
 fn a_scale_rebuild_keeps_each_members_own_effect() {
+    let plan = glass_plan(vec![
+        chrome_draw(GLASS, GLASS_SHADER, vec![1.0, 0.0]),
+        chrome_draw(GLASS, GLASS_SHADER, vec![0.0, 1.0]),
+    ]);
     let mut renderer = test_renderer_with_theme(MinimalTestTheme {
-        chrome: glass_plan(vec![
-            chrome_draw(GLASS, GLASS_SHADER, vec![1.0, 0.0]),
-            chrome_draw(GLASS, GLASS_SHADER, vec![0.0, 1.0]),
-        ]),
+        chrome: plan.clone(),
         ..Default::default()
     });
-    mirror_frame_at(&mut renderer, grouped_pair()(), DISPLAY_SCALE);
+    mirror_frame_at(&mut renderer, &plan, grouped_pair()(), DISPLAY_SCALE);
     let members = mirror_chrome_layers(&renderer);
     assert_eq!(members.len(), 4, "the pair mounts both draws per member");
 
@@ -1468,7 +1685,7 @@ fn a_scale_rebuild_keeps_each_members_own_effect() {
     // chrome cell's leaves it COMMIT-marked with no program, so the
     // new-scale commit joins the members without re-lowering any — the
     // rebuild itself is what rebinds each member.
-    let env = chrome_env();
+    let env = chrome_env(&plan);
     renderer.reset_scene();
     renderer.begin_rebuild_frame();
     renderer.capture_window_tree(
@@ -1526,11 +1743,12 @@ fn a_scale_rebuild_keeps_each_members_own_effect() {
 /// joiner's (water-rs/waterui#1788).
 #[test]
 fn a_scale_rebuild_rebinds_members_of_other_cells_with_their_own_effect() {
+    let plan = glass_plan(vec![
+        chrome_draw(GLASS, GLASS_SHADER, vec![1.0, 0.0]),
+        chrome_draw(GLASS, GLASS_SHADER, vec![0.0, 1.0]),
+    ]);
     let mut renderer = test_renderer_with_theme(MinimalTestTheme {
-        chrome: glass_plan(vec![
-            chrome_draw(GLASS, GLASS_SHADER, vec![1.0, 0.0]),
-            chrome_draw(GLASS, GLASS_SHADER, vec![0.0, 1.0]),
-        ]),
+        chrome: plan.clone(),
         ..Default::default()
     });
     let view = || {
@@ -1542,7 +1760,7 @@ fn a_scale_rebuild_rebinds_members_of_other_cells_with_their_own_effect() {
             .material_group(),
         )
     };
-    let env = chrome_env();
+    let env = chrome_env(&plan);
     renderer.reset_scene();
     renderer.begin_rebuild_frame();
     renderer.capture_window_tree(
@@ -1625,14 +1843,15 @@ fn a_rebound_member_tracks_the_signals_value_after_recording() {
     let effect = Live::from(signal.clone())
         .map(|v: f32| MaterialEffect::new(vec![v]))
         .into_shared();
+    let plan = glass_plan(vec![ChromeDraw {
+        effect,
+        ..chrome_draw(GLASS, GLASS_SHADER, vec![])
+    }]);
     let mut renderer = test_renderer_with_theme(MinimalTestTheme {
-        chrome: glass_plan(vec![ChromeDraw {
-            effect,
-            ..chrome_draw(GLASS, GLASS_SHADER, vec![])
-        }]),
+        chrome: plan.clone(),
         ..Default::default()
     });
-    mirror_frame(&mut renderer, tap_view());
+    mirror_frame(&mut renderer, &plan, tap_view());
     let member = mirror_chrome_layers(&renderer)[0];
     let bound = |renderer: &crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine>| {
         let node = mirrored_node(renderer, member);
@@ -1672,34 +1891,65 @@ fn a_rebound_member_tracks_the_signals_value_after_recording() {
     );
 }
 
-/// A theme whose uniforms depend on `WidgetInteractionState`: a press
-/// re-records the chrome with the pressed uniforms, and the member's
-/// rebound sample carries them (water-rs/waterui#1788). The mirror mount
-/// has no runtime window to dispatch an `InputEvent` through, so the test
-/// calls the renderer entry that dispatch calls for
-/// `InputEvent::PointerDown`; `a_press_rebinds_the_same_member_and_group`
-/// covers the dispatched event on a runtime.
+/// Presents the mirror along the chrome's 15 ms press motion a press or a
+/// release just started — at its start, 5 ms in and at its end — and
+/// returns what `read` saw 5 ms in, once its progress (`uniform`, 0 at one
+/// end of the motion and 1 at the other) is seen strictly between: the
+/// member's sample moves with the press motion instead of jumping.
+pub(super) fn along_press<T>(
+    renderer: &crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine>,
+    read: impl Fn(&crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine>) -> T,
+    uniform: impl Fn(&T) -> f32,
+) -> T {
+    let start = crate::time::Instant::now();
+    renderer.mirror().present(start);
+    renderer.mirror().present(start + Duration::from_millis(5));
+    let moving = read(renderer);
+    let value = uniform(&moving);
+    assert!(
+        value > 0.0 && value < 1.0,
+        "the effect moves with the press motion: {value}"
+    );
+    renderer.mirror().present(start + Duration::from_millis(15));
+    moving
+}
+
+/// A custom part whose uniforms are a `Driven` over the interaction state:
+/// a press moves the realized operand, and the member's live sample
+/// carries the pressed uniforms with no re-recording and no frame
+/// (water-rs/waterui#1788, water-rs/waterui#2006). The mirror mount has no
+/// runtime window to dispatch an `InputEvent` through, so the test calls
+/// the renderer entry that dispatch calls for `InputEvent::PointerDown`;
+/// `a_press_keeps_the_same_member_and_group` covers the dispatched event
+/// on a runtime.
 #[test]
-fn a_press_rebinds_the_members_new_effect() {
+fn a_press_moves_the_members_effect_live() {
     let mut renderer = test_renderer_with_theme(MinimalTestTheme {
-        chrome: ChromePlan {
-            stateful_draws: Some(std::rc::Rc::new(|state| {
-                vec![chrome_draw(
-                    GLASS,
-                    GLASS_SHADER,
-                    vec![if state.state.contains(InteractionState::PRESSED) {
-                        1.0
-                    } else {
-                        0.0
-                    }],
-                )]
-            })),
-            ..glass_plan(vec![])
-        },
+        chrome: glass_plan(vec![]),
         ..Default::default()
     });
-    mirror_frame(&mut renderer, tap_view());
+    let effect = Driven::new(|inputs: &Inputs<'_, ()>| {
+        MaterialEffect::new(vec![if inputs.state.contains(InteractionState::PRESSED) {
+            1.0
+        } else {
+            0.0
+        }])
+    });
+    let mut env = pumped_test_environment();
+    env.install(super::invisible_chrome().custom(Custom::new(
+        (effect,),
+        |recorder, _frame, (effect,)| {
+            recorder.backdrop_material(chrome_rect(), GLASS_SHADER, GLASS, effect);
+        },
+    )));
+    mirror_frame_in(&mut renderer, &env, tap_view());
     let member = mirror_chrome_layers(&renderer)[0];
+    let chrome = {
+        let chromes = renderer.hit_test.interaction.live_chromes();
+        let [chrome] = <[_; 1]>::try_from(chromes).expect("the tap binds one live chrome");
+        chrome
+    };
+    let recordings = chrome.recordings();
     let bound = |renderer: &crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine>| {
         let node = mirrored_node(renderer, member);
         let Some(BackdropEffect::Shader(effect)) = node
@@ -1722,17 +1972,501 @@ fn a_press_rebinds_the_members_new_effect() {
         80.0,
         60.0,
         PointerButton::Primary,
-        &chrome_env(),
+        &env,
     );
-    mirror_frame(&mut renderer, tap_view());
+    along_press(&renderer, bound, |uniforms| uniforms[0]);
     assert_eq!(
         bound(&renderer),
         [1.0],
-        "the press re-record rebound the member's new effect",
+        "the press moved the member's effect through its live operand",
+    );
+    mirror_frame_in(&mut renderer, &env, tap_view());
+    assert_eq!(
+        bound(&renderer),
+        [1.0],
+        "the next frame keeps the pressed effect"
     );
     assert_eq!(
         mirror_chrome_layers(&renderer),
         [member],
-        "the press re-record kept the member layer",
+        "the press kept the member layer",
     );
+    assert_eq!(
+        chrome.recordings(),
+        recordings,
+        "the press recorded no chrome"
+    );
+}
+
+/// A button whose look fills its surface with a backdrop material: a press
+/// moves the member's clip to the pressed corners and its effect to the
+/// pressed uniforms through live operands — the same member, no re-recording
+/// (water-rs/waterui#2006).
+#[test]
+fn a_backdrop_button_press_moves_shape_and_effect_live() {
+    let effect = Driven::new(|inputs: &Inputs<'_, ()>| {
+        MaterialEffect::new(vec![if inputs.state.contains(InteractionState::PRESSED) {
+            1.0
+        } else {
+            0.0
+        }])
+    });
+    let base = super::invisible_chrome();
+    let chrome = Chrome::new(
+        Surface::new(
+            CornerShape::full().pressed(Corners::from(4.0)),
+            Backdrop::new(GLASS_SHADER, GLASS, effect),
+        ),
+        base.state_layer().clone(),
+        PressFeedback::new(),
+        FocusIndicator::Tint,
+        base.motion().clone(),
+    );
+    let mut renderer = test_renderer_with_theme(
+        MinimalTestTheme {
+            chrome: glass_plan(vec![]),
+            ..Default::default()
+        }
+        .with_button_chrome(chrome),
+    );
+    let env = pumped_test_environment();
+    let view =
+        || waterui_core::AnyView::new(waterui_controls::button::button("Glass").action(|| {}));
+    mirror_frame_in(&mut renderer, &env, view());
+    let [member] = <[_; 1]>::try_from(mirror_chrome_layers(&renderer))
+        .expect("the button's backdrop fill mounts one member");
+    let live = {
+        let chromes = renderer.hit_test.interaction.live_chromes();
+        let [chrome] = <[_; 1]>::try_from(chromes).expect("the button binds one live chrome");
+        chrome
+    };
+    let recordings = live.recordings();
+    let bound = |renderer: &crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine>| {
+        let node = mirrored_node(renderer, member);
+        let Some(BackdropEffect::Shader(effect)) = node
+            .backdrop
+            .as_ref()
+            .expect("the member binds a sample")
+            .effect()
+        else {
+            panic!("the member's effect is its shader effect")
+        };
+        (node.clip.clone(), effect.uniforms.clone())
+    };
+    let (rest_clip, rest_uniforms) = bound(&renderer);
+    assert_eq!(rest_uniforms, [0.0]);
+
+    let target = renderer
+        .hit_test
+        .pointer_targets
+        .first()
+        .expect("the button registers a pointer target")
+        .bounds
+        .center();
+    renderer.handle_pointer_down_with_source(
+        9,
+        PointerKind::Mouse,
+        crate::num_cast::f64_as_f32(target.x),
+        crate::num_cast::f64_as_f32(target.y),
+        PointerButton::Primary,
+        &env,
+    );
+    let (moving_clip, _) = along_press(&renderer, bound, |(_, uniforms)| uniforms[0]);
+    assert_ne!(moving_clip, rest_clip, "the clip moves with the effect");
+    let (pressed_clip, pressed_uniforms) = bound(&renderer);
+    assert_ne!(
+        pressed_clip, moving_clip,
+        "the clip reaches the pressed corners at the motion's end"
+    );
+    assert_eq!(
+        pressed_uniforms,
+        [1.0],
+        "the press moved the effect through its operand"
+    );
+    assert_ne!(
+        pressed_clip, rest_clip,
+        "the press moved the clip to the pressed corners"
+    );
+    assert_eq!(
+        mirror_chrome_layers(&renderer),
+        [member],
+        "the press kept the member"
+    );
+    assert_eq!(
+        live.recordings(),
+        recordings,
+        "the press recorded no chrome"
+    );
+}
+
+/// A `Shared` class whose capture is coarser than `GLASS`'s, so a group's
+/// spec shows which class it was built from.
+const WIDE: CaptureClass = CaptureClass::new(5);
+
+/// What a container recipe returns for `members`: the capture class of the
+/// largest member, and for each member an effect tagged with the class
+/// the group resolved, the class the member recorded and the member's
+/// position in the slice. Depends on the set of members, never their
+/// order, except for the position tag the tests read as a set.
+#[derive(Debug)]
+struct LargestRecipe;
+
+fn area(shape: &ShapeData) -> f64 {
+    let bounds = shape.bounds();
+    bounds.width() * bounds.height()
+}
+
+impl ContainerRecipe for LargestRecipe {
+    fn capture(&self, members: &[GroupMember<'_>]) -> CaptureClass {
+        members
+            .iter()
+            .max_by(|a, b| area(a.shape).total_cmp(&area(b.shape)))
+            .expect("a group has members")
+            .capture
+    }
+
+    fn effects(&self, members: &[GroupMember<'_>]) -> Vec<MaterialEffect> {
+        let class = self.capture(members);
+        members
+            .iter()
+            .enumerate()
+            .map(|(index, member)| {
+                MaterialEffect::new(vec![
+                    tag(class.raw()),
+                    tag(member.capture.raw()),
+                    tag(u32::try_from(index).expect("a few members")),
+                ])
+            })
+            .collect()
+    }
+}
+
+/// A small integer as an effect uniform, exact in `f32`.
+fn tag(value: u32) -> f32 {
+    f32::from(u16::try_from(value).expect("test tags are small"))
+}
+
+/// `glass_plan` with `WIDE` registered and `LargestRecipe` the container
+/// recipe of `GLASS_SHADER` — `OTHER_SHADER` has none.
+fn container_plan(draws: Vec<ChromeDraw>) -> ChromePlan {
+    let mut plan = glass_plan(draws);
+    plan.captures.push((
+        WIDE,
+        MaterialCapture {
+            scale: CaptureScale::new(0.25).expect("0.25 is a valid capture scale"),
+            levels: CaptureLevels::ONE,
+            pyramid: cherenkov::CapturePyramid::Box,
+            grouping: MaterialGrouping::Shared,
+            blend_space: cherenkov::BlendSpace::Linear,
+        },
+    ));
+    plan.containers.push((GLASS_SHADER, Rc::new(LargestRecipe)));
+    plan
+}
+
+const SMALL: Rect = Rect::new(0.0, 0.0, 8.0, 8.0);
+const LARGE: Rect = Rect::new(0.0, 0.0, 40.0, 40.0);
+
+/// A `class` material of `shader` over `shape`, whose own effect is
+/// `[99]` — never a value the recipe returns.
+fn sized_draw(
+    class: CaptureClass,
+    shader: MaterialShader,
+    shape: impl Into<Live<RoundedRect>>,
+) -> ChromeDraw {
+    ChromeDraw {
+        shape: shape.into().into_shared(),
+        shader,
+        capture: class,
+        effect: Live::from(MaterialEffect::new(vec![99.0])).into_shared(),
+    }
+}
+
+fn rounded(rect: Rect) -> RoundedRect {
+    RoundedRect::from_rect(rect, 2.0)
+}
+
+/// The uniforms the mirror's member `layer` binds.
+fn bound_uniforms(
+    renderer: &crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine>,
+    layer: cherenkov::LayerId,
+) -> Vec<f32> {
+    let node = mirrored_node(renderer, layer);
+    let Some(BackdropEffect::Shader(effect)) = node
+        .backdrop
+        .as_ref()
+        .expect("the member binds a sample")
+        .effect()
+    else {
+        panic!("the member's effect is its shader effect")
+    };
+    effect.uniforms.clone()
+}
+
+/// The member whose clip is `rect`.
+fn member_clipped_to(
+    renderer: &crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine>,
+    rect: Rect,
+) -> cherenkov::LayerId {
+    let [member] = <[_; 1]>::try_from(
+        mirror_chrome_layers(renderer)
+            .into_iter()
+            .filter(|&member| {
+                mirrored_node(renderer, member)
+                    .clip
+                    .as_ref()
+                    .map(ShapeData::bounds)
+                    == Some(rect)
+            })
+            .collect::<Vec<_>>(),
+    )
+    .expect("one member is clipped to the rect");
+    member
+}
+
+/// Members of different classes under one scope whose shader has a
+/// container recipe share one group built from the class the recipe
+/// resolves, and each binds the effect the recipe returned for it
+/// (water-rs/waterui#2834).
+#[test]
+fn a_containers_members_share_one_group_at_the_resolved_class() {
+    let renderer = mirrored(
+        tap_color("#27272A").material_group(),
+        MinimalTestTheme {
+            chrome: container_plan(vec![
+                sized_draw(GLASS, GLASS_SHADER, rounded(SMALL)),
+                sized_draw(WIDE, GLASS_SHADER, rounded(LARGE)),
+            ]),
+            ..Default::default()
+        },
+    );
+    assert_eq!(mirror_chrome_layers(&renderer).len(), 2);
+    assert_eq!(
+        renderer.mirror().chrome_groups().chrome_group_count(),
+        1,
+        "one container group holds both members whatever their classes",
+    );
+    let small = member_clipped_to(&renderer, rounded(SMALL).bounding_box());
+    let large = member_clipped_to(&renderer, rounded(LARGE).bounding_box());
+    let group = |member| {
+        mirrored_node(&renderer, member)
+            .backdrop
+            .as_ref()
+            .expect("the member binds a sample")
+            .group()
+    };
+    assert_eq!(group(small), group(large), "both sample one group");
+    let specs = renderer.mirror().spec_log();
+    assert_eq!(
+        specs.last().map(|spec| spec.scale()),
+        CaptureScale::new(0.25).ok(),
+        "the group stands at the class the recipe resolved, the largest member's",
+    );
+    let (small, large) = (
+        bound_uniforms(&renderer, small),
+        bound_uniforms(&renderer, large),
+    );
+    assert_eq!(
+        (small[..2].to_vec(), large[..2].to_vec()),
+        (
+            vec![tag(WIDE.raw()), tag(GLASS.raw())],
+            vec![tag(WIDE.raw()), tag(WIDE.raw())],
+        ),
+        "each member binds the recipe's effect for it, tagged with the resolved class",
+    );
+    let mut positions = [small[2], large[2]];
+    positions.sort_by(f32::total_cmp);
+    assert_eq!(positions, [0.0, 1.0], "the recipe saw both members at once");
+}
+
+/// A live shape change of one member runs the recipe's `effects` over both
+/// members again with no flush — the recipe now names the other member
+/// largest.
+#[test]
+fn a_live_shape_change_re_resolves_every_members_effect() {
+    let small = nami::binding(rounded(SMALL));
+    let renderer = mirrored(
+        tap_color("#27272A").material_group(),
+        MinimalTestTheme {
+            chrome: container_plan(vec![
+                sized_draw(GLASS, GLASS_SHADER, small.map(|shape| shape)),
+                sized_draw(WIDE, GLASS_SHADER, rounded(LARGE)),
+            ]),
+            ..Default::default()
+        },
+    );
+    let wide_member = member_clipped_to(&renderer, rounded(LARGE).bounding_box());
+    let glass_member = member_clipped_to(&renderer, rounded(SMALL).bounding_box());
+    assert_eq!(bound_uniforms(&renderer, glass_member)[0], tag(WIDE.raw()));
+    let group = mirrored_node(&renderer, wide_member)
+        .backdrop
+        .as_ref()
+        .expect("the member binds a sample")
+        .group();
+
+    small.set(rounded(Rect::new(0.0, 0.0, 80.0, 80.0)));
+
+    for member in [glass_member, wide_member] {
+        assert_eq!(
+            bound_uniforms(&renderer, member)[0],
+            tag(GLASS.raw()),
+            "the recipe re-resolved both members with no flush",
+        );
+    }
+    assert_eq!(
+        mirrored_node(&renderer, wide_member)
+            .backdrop
+            .as_ref()
+            .expect("the member binds a sample")
+            .group(),
+        group,
+        "a shape change keeps the group",
+    );
+}
+
+/// Outside any scope a member is a group of its own and binds its own
+/// effect; a shader with no recipe keeps class keying inside a scope.
+#[test]
+fn members_outside_a_scope_or_without_a_recipe_keep_their_own_terms() {
+    let alone = mirrored(
+        tap_view(),
+        MinimalTestTheme {
+            chrome: container_plan(vec![
+                sized_draw(GLASS, GLASS_SHADER, rounded(SMALL)),
+                sized_draw(WIDE, GLASS_SHADER, rounded(LARGE)),
+            ]),
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        alone.mirror().chrome_groups().chrome_group_count(),
+        2,
+        "members outside every scope are groups of their own",
+    );
+    for member in mirror_chrome_layers(&alone) {
+        assert_eq!(
+            bound_uniforms(&alone, member),
+            [99.0],
+            "a member outside every scope keeps the effect it recorded",
+        );
+    }
+
+    let classes = mirrored(
+        tap_color("#27272A").material_group(),
+        MinimalTestTheme {
+            chrome: container_plan(vec![
+                sized_draw(GLASS, OTHER_SHADER, rounded(SMALL)),
+                sized_draw(WIDE, OTHER_SHADER, rounded(LARGE)),
+            ]),
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        classes.mirror().chrome_groups().chrome_group_count(),
+        2,
+        "a shader without a recipe keys its members by class",
+    );
+    for member in mirror_chrome_layers(&classes) {
+        assert_eq!(
+            bound_uniforms(&classes, member),
+            [99.0],
+            "a member keeps the effect it recorded",
+        );
+    }
+}
+
+/// A recipe that breaks its contract: `capture` names `class`, and
+/// `effects` is one short for a group of two or more when `short`.
+#[derive(Debug)]
+struct BrokenRecipe {
+    class: CaptureClass,
+    short: bool,
+}
+
+impl ContainerRecipe for BrokenRecipe {
+    fn capture(&self, _: &[GroupMember<'_>]) -> CaptureClass {
+        self.class
+    }
+
+    fn effects(&self, members: &[GroupMember<'_>]) -> Vec<MaterialEffect> {
+        let count = if self.short && members.len() > 1 {
+            members.len() - 1
+        } else {
+            members.len()
+        };
+        vec![MaterialEffect::new(vec![7.0]); count]
+    }
+}
+
+/// A container scene of two `GLASS` members under `recipe`.
+fn broken_container(
+    recipe: BrokenRecipe,
+) -> crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine> {
+    let mut plan = glass_plan(vec![
+        sized_draw(GLASS, GLASS_SHADER, rounded(SMALL)),
+        sized_draw(GLASS, GLASS_SHADER, rounded(LARGE)),
+    ]);
+    plan.containers.push((GLASS_SHADER, Rc::new(recipe)));
+    mirrored(
+        tap_color("#27272A").material_group(),
+        MinimalTestTheme {
+            chrome: plan,
+            ..Default::default()
+        },
+    )
+}
+
+/// An `effects` of the wrong length is a contract violation, and every
+/// member keeps the value it last had.
+#[test]
+#[cfg_attr(
+    debug_assertions,
+    should_panic(expected = "returned 1 effects for 2 members")
+)]
+fn a_recipe_returning_the_wrong_number_of_effects_is_reported() {
+    let renderer = broken_container(BrokenRecipe {
+        class: GLASS,
+        short: true,
+    });
+    for member in mirror_chrome_layers(&renderer) {
+        assert_eq!(
+            bound_uniforms(&renderer, member),
+            [7.0],
+            "every member keeps the effect of its one-off resolution",
+        );
+    }
+}
+
+/// A recipe naming a class that is not registered is a contract
+/// violation, and the group is left unbound.
+#[test]
+#[cfg_attr(
+    debug_assertions,
+    should_panic(expected = "capture class CaptureClass(77), which is not registered")
+)]
+fn a_recipe_naming_an_unregistered_class_is_reported() {
+    let renderer = broken_container(BrokenRecipe {
+        class: CaptureClass::new(77),
+        short: false,
+    });
+    for member in mirror_chrome_layers(&renderer) {
+        assert!(mirrored_node(&renderer, member).backdrop.is_none());
+    }
+}
+
+/// A recipe naming a class that groups `Solo` is a contract violation, and
+/// the group is left unbound.
+#[test]
+#[cfg_attr(
+    debug_assertions,
+    should_panic(expected = "capture class CaptureClass(1), which groups Solo")
+)]
+fn a_recipe_naming_a_solo_class_is_reported() {
+    let renderer = broken_container(BrokenRecipe {
+        class: FLAT,
+        short: false,
+    });
+    for member in mirror_chrome_layers(&renderer) {
+        assert!(mirrored_node(&renderer, member).backdrop.is_none());
+    }
 }

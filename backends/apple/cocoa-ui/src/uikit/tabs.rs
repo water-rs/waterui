@@ -149,10 +149,7 @@ impl TabContentController {
     pub fn apply_spec(&self, spec: &TabSpec) {
         let mtm = MainThreadMarker::from(self);
         let title = NSString::from_str(&spec.label);
-        let image = spec
-            .symbol
-            .as_ref()
-            .and_then(|symbol| UIImage::systemImageNamed(&NSString::from_str(symbol)));
+        let image = spec.symbol.as_deref().and_then(tab_symbol_image);
         if spec.is_search {
             let item = objc2_ui_kit::UITabBarItem::initWithTabBarSystemItem_tag(
                 mtm.alloc(),
@@ -174,6 +171,16 @@ impl TabContentController {
             item.setEnabled(spec.enabled);
         }
     }
+}
+
+/// The image a tab bar item draws for the SF Symbol `name`: the symbol's
+/// `.fill` variant where it has one, as the platform's tab bars present
+/// symbols (`SwiftUI`'s tab items default to `symbolVariant(.fill)`), and
+/// the symbol itself where it has none. `UITabBarItem` draws exactly the
+/// image it is given, so the variant is resolved here.
+fn tab_symbol_image(name: &str) -> Option<Retained<UIImage>> {
+    UIImage::systemImageNamed(&NSString::from_str(&format!("{name}.fill")))
+        .or_else(|| UIImage::systemImageNamed(&NSString::from_str(name)))
 }
 
 /// The tab bar controller's selection state.
@@ -274,17 +281,31 @@ impl TabsController {
     /// which `UIViewController` rejects while the view is still another
     /// controller's `view`.
     ///
+    /// An `index` out of range breaks the contract: it is reported and
+    /// `None` is answered.
+    ///
     /// # Panics
-    /// Panics when `index` is out of range.
+    ///
+    /// Never: the tabs are installed when the controller is constructed.
     #[must_use]
-    pub fn tab_item(&self, index: usize) -> Retained<UITabBarItem> {
-        let controllers = self.viewControllers().expect("tabs are installed");
-        controllers
-            .objectAtIndex(index)
-            .downcast::<TabContentController>()
-            .expect("tab controllers are CocoaUiTabContentController")
-            .tabBarItem()
-            .expect("a tab content controller always has a tab bar item")
+    pub fn tab_item(&self, index: usize) -> Option<Retained<UITabBarItem>> {
+        let controllers = self
+            .viewControllers()
+            .expect("tabs are installed at construction");
+        let Some(controller) = controllers.iter().nth(index) else {
+            waterui_contract::contract_violation!(
+                "tab index {index} is out of range for {} tabs; no item is answered",
+                controllers.len()
+            );
+            return None;
+        };
+        Some(
+            controller
+                .downcast::<TabContentController>()
+                .expect("tab controllers are CocoaUiTabContentController")
+                .tabBarItem()
+                .expect("a tab content controller always has a tab bar item"),
+        )
     }
 
     /// The selected tab's index; `None` when nothing is selected.

@@ -15,9 +15,23 @@ use waterui_core::impl_debug;
 #[non_exhaustive]
 pub struct CdpEvent {
     /// Fully qualified protocol method, such as `Page.loadEventFired`.
-    pub method: Cow<'static, str>,
+    method: Cow<'static, str>,
     /// Event parameter object.
-    pub params: Value,
+    params: Value,
+}
+
+impl CdpEvent {
+    /// Fully qualified protocol method, such as `Page.loadEventFired`.
+    #[must_use]
+    pub const fn method(&self) -> &Cow<'static, str> {
+        &self.method
+    }
+
+    /// Event parameter object.
+    #[must_use]
+    pub const fn params(&self) -> &Value {
+        &self.params
+    }
 }
 
 impl CdpEvent {

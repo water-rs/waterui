@@ -55,7 +55,7 @@ impl Gpu {
     /// Creates an instance, adapter and device.
     ///
     /// Every enumerated adapter is queried for a target format that allows
-    /// [`TARGET_USAGES`]; adapters that allow none (e.g. a GLES backend
+    /// `TARGET_USAGES`; adapters that allow none (e.g. a GLES backend
     /// without `STORAGE_BINDING`, or a driver that rejects the
     /// `Rgba8Unorm + COPY_SRC` combination) are skipped, and the failure
     /// reports what was tried instead of panicking inside `wgpu`.
@@ -64,11 +64,18 @@ impl Gpu {
     /// [`BenchError::Gpu`] when no adapter offers a usable target format or
     /// device creation fails.
     pub fn new(profiler_features: wgpu::Features) -> Result<Self, BenchError> {
+        let backends = if cfg!(any(target_os = "linux", target_os = "android")) {
+            wgpu::Backends::VULKAN
+        } else if cfg!(target_os = "windows") {
+            wgpu::Backends::DX12
+        } else {
+            wgpu::Backends::METAL
+        };
         let instance = Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::PRIMARY | wgpu::Backends::GL,
+            backends,
             ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
-        let adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()));
+        let adapters = pollster::block_on(instance.enumerate_adapters(backends));
         let mut attempts = Vec::new();
         // (adapter, format, has-timestamps): prefer a timestamp-capable
         // adapter, then a usable format.
@@ -171,7 +178,7 @@ pub struct Target {
 
 impl Target {
     /// Creates a render target of `format` — a format
-    /// [`Gpu::new`] already validated against [`TARGET_USAGES`].
+    /// [`Gpu::new`] already validated against `TARGET_USAGES`.
     #[must_use]
     pub fn new(device: &Device, width: u32, height: u32, format: TextureFormat) -> Self {
         let texture = device.create_texture(&TextureDescriptor {
@@ -269,7 +276,7 @@ pub fn readback(gpu: &Gpu, target: &Target) -> Result<F32Image, BenchError> {
 }
 
 /// Blocks until `submission` (or, for `None`, everything submitted so far)
-/// has completed, for at most [`WAIT_TIMEOUT`]; `what` names the work for
+/// has completed, for at most `WAIT_TIMEOUT`; `what` names the work for
 /// the error.
 ///
 /// # Errors

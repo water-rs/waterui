@@ -31,8 +31,8 @@ use objc2_foundation::{
 use objc2_ui_kit::{
     UIEvent, UIEventButtonMask, UIGestureRecognizer, UIGestureRecognizerDelegate,
     UIGestureRecognizerState, UIHoverGestureRecognizer, UIKeyInput, UIKeyboardType,
-    UIPanGestureRecognizer, UIPinchGestureRecognizer, UIPress, UIPressesEvent, UIReturnKeyType,
-    UIRotationGestureRecognizer, UIScrollTypeMask, UITextAutocapitalizationType,
+    UIPanGestureRecognizer, UIPasteboard, UIPinchGestureRecognizer, UIPress, UIPressesEvent,
+    UIReturnKeyType, UIRotationGestureRecognizer, UIScrollTypeMask, UITextAutocapitalizationType,
     UITextAutocorrectionType, UITextInput, UITextInputDelegate, UITextInputStringTokenizer,
     UITextInputTokenizer, UITextInputTraits, UITextLayoutDirection, UITextPosition, UITextRange,
     UITextSelectionRect, UITextStorageDirection, UITouch, UITouchType, UIView,
@@ -47,7 +47,8 @@ use super::text_input::{
 use crate::callback::guarded;
 use crate::geometry::{EdgeInsets, Rect};
 use crate::input::{
-    GesturePhase, Key, NamedKey, PointerButtons, ScrollUnit, SurfaceEvent, TouchKind, TouchPhase,
+    GesturePhase, Key, NamedKey, PointerButtons, ScrollPhase, ScrollUnit, SurfaceEvent, TouchKind,
+    TouchPhase, click_count, is_paste_shortcut,
 };
 use crate::keys;
 
@@ -80,6 +81,9 @@ pub struct InputViewIvars {
     /// The empty input view answered while no editor is focused, created on
     /// first use.
     silent_input: RefCell<Option<Retained<UIView>>>,
+    /// The physical key of a Command-V press `UIKit` delivers as `paste:`,
+    /// until its release goes by.
+    paste_shortcut_key: std::cell::Cell<Option<keyboard_types::Code>>,
 }
 
 impl fmt::Debug for InputViewIvars {
@@ -325,7 +329,9 @@ define_class!(
                 if let Some(view) = self.ivars().view.borrow().as_ref().and_then(Weak::load)
                     && let Some(phase) = gesture_phase(gesture.state())
                 {
-                    view.handle_trackpad_pan(gesture, phase);
+                    // `UIKit` reports no momentum phase: the receiver owns
+                    // the glide after the fingers lift.
+                    view.handle_scroll(gesture, ScrollPhase::Contact(phase));
                 }
             });
         }
@@ -336,7 +342,8 @@ define_class!(
         fn scroll_discrete(&self, gesture: &UIPanGestureRecognizer) {
             guarded("CocoaUiInputPointerTarget scrollDiscrete:", || {
                 if let Some(view) = self.ivars().view.borrow().as_ref().and_then(Weak::load) {
-                    view.handle_scroll(gesture);
+                    // A wheel notch is a complete scroll on its own.
+                    view.handle_scroll(gesture, ScrollPhase::Discrete);
                 }
             });
         }
@@ -911,6 +918,34 @@ define_class!(
             resigned
         }
 
+        // SAFETY: `paste:` is the `UIResponder` standard edit action `UIKit`
+        // sends the first responder for the edit menu's Paste and a hardware
+        // keyboard's Command-V; `sender` is unused.
+        #[unsafe(method(paste:))]
+        fn paste(&self, sender: Option<&AnyObject>) {
+            let _ = sender;
+            guarded("InputView paste:", || {
+                if let Some(text) = pasteboard_text() {
+                    self.emit(SurfaceEvent::Paste(text));
+                }
+            });
+        }
+
+        // SAFETY: `canPerformAction:withSender:` is the `UIResponder` query
+        // that enables or disables a standard edit action; every action but
+        // Paste forwards to `UIResponder`'s answer.
+        #[unsafe(method(canPerformAction:withSender:))]
+        fn can_perform_action(&self, action: objc2::runtime::Sel, sender: Option<&AnyObject>) -> bool {
+            if action == sel!(paste:) {
+                // SAFETY: `hasStrings` is a plain pasteboard query on the
+                // main thread; unlike `string` it raises no paste prompt.
+                unsafe { UIPasteboard::generalPasteboard().hasStrings() }
+            } else {
+                // SAFETY: forwards the query to `UIResponder`.
+                unsafe { msg_send![super(self), canPerformAction: action, withSender: sender] }
+            }
+        }
+
         // SAFETY: see the module safety note.
         #[unsafe(method(layoutSubviews))]
         fn layout_subviews_override(&self) {
@@ -1026,6 +1061,13 @@ enum PressPhase {
     Began,
     Ended,
     Cancelled,
+}
+
+/// The text on the general pasteboard, if it holds any.
+fn pasteboard_text() -> Option<String> {
+    // SAFETY: `string` is a plain pasteboard read on the main thread, made
+    // for the paste command the user just issued.
+    unsafe { UIPasteboard::generalPasteboard().string() }.map(|text| text.to_string())
 }
 
 /// A `UITextPosition` subclass's offset, if `position` is one this view
@@ -1483,17 +1525,19 @@ impl InputView {
         }
     }
 
-    /// A wheel notch as a scroll event: the translation since the last
-    /// callback is the delta — `setTranslation` zeroed it — negated into the
-    /// W3C sign `SurfaceEvent` uses (a pan's translation counts the
-    /// pointer's own motion, positive right and down, while
-    /// `delta_x`/`delta_y` count content movement, positive left and up).
-    /// `translationInView:` is always a view-coordinate displacement in
-    /// logical points — `Pixel`. A notch is complete on its own, so every
-    /// callback is `finished`. A trackpad glide is a phased
-    /// [`SurfaceEvent::TrackpadPan`] instead, so the receiver owns its
-    /// momentum.
-    fn handle_scroll(&self, gesture: &UIPanGestureRecognizer) {
+    /// An indirect-scroll recognizer's report as a scroll event: the
+    /// translation since the last callback is the delta — `setTranslation`
+    /// zeroed it — negated into the W3C sign `SurfaceEvent` uses (a pan's
+    /// translation counts the pointer's own motion, positive right and
+    /// down, while `delta_x`/`delta_y` count content movement, positive
+    /// left and up). `translationInView:` is always a view-coordinate
+    /// displacement in logical points — `Pixel` — for both scroll type
+    /// masks; the masks select the gesture's source and completion
+    /// behavior, never a unit. `phase` says which part of a scroll this
+    /// callback is: a wheel notch is complete on its own; a trackpad glide
+    /// follows its recognizer's state, and `UIKit` reports no momentum, so
+    /// the receiver owns the glide after the fingers lift.
+    fn handle_scroll(&self, gesture: &UIPanGestureRecognizer, phase: ScrollPhase) {
         let this: &UIView = self;
         let point = gesture.locationInView(Some(this));
         let translation = gesture.translationInView(Some(this));
@@ -1503,22 +1547,6 @@ impl InputView {
             delta_x: -translation.x,
             delta_y: -translation.y,
             unit: ScrollUnit::Pixel,
-            finished: true,
-        });
-    }
-
-    /// A trackpad glide's report as a phased pan: the translation since the
-    /// last callback, negated into the content-motion sign `SurfaceEvent`
-    /// uses — see [`handle_scroll`](Self::handle_scroll).
-    fn handle_trackpad_pan(&self, gesture: &UIPanGestureRecognizer, phase: GesturePhase) {
-        let this: &UIView = self;
-        let point = gesture.locationInView(Some(this));
-        let translation = gesture.translationInView(Some(this));
-        gesture.setTranslation_inView(objc2_core_foundation::CGPoint::ZERO, Some(this));
-        self.emit(SurfaceEvent::TrackpadPan {
-            position: kurbo::Point::new(point.x, point.y),
-            delta_x: -translation.x,
-            delta_y: -translation.y,
             phase,
         });
     }
@@ -1596,6 +1624,7 @@ impl InputView {
                 position: kurbo::Point::new(point.x, point.y),
                 kind,
                 buttons,
+                tap_count: click_count(touch.tapCount()),
             });
         }
     }
@@ -1626,15 +1655,29 @@ impl InputView {
                 continue;
             }
             delivered = true;
-            if phase == PressPhase::Cancelled {
-                continue;
-            }
             let modifiers = keys::surface_modifiers(key.modifierFlags());
+            let code = keys::surface_code(&key);
+            // The paste shortcut is the paste command: `UIKit` delivers it
+            // as `paste:`, so its press and the release that follows are
+            // consumed here without being key events too.
+            let shortcut = &self.ivars().paste_shortcut_key;
+            match phase {
+                PressPhase::Began if is_paste_shortcut(modifiers, &logical) => {
+                    shortcut.set(Some(code));
+                    continue;
+                }
+                PressPhase::Ended | PressPhase::Cancelled if shortcut.get() == Some(code) => {
+                    shortcut.set(None);
+                    continue;
+                }
+                PressPhase::Cancelled => continue,
+                PressPhase::Began | PressPhase::Ended => {}
+            }
             self.emit(SurfaceEvent::Modifiers(modifiers));
             self.emit(SurfaceEvent::Key {
                 pressed: phase == PressPhase::Began,
                 key: logical,
-                code: keys::surface_code(&key),
+                code,
                 modifiers,
                 repeat: false,
             });

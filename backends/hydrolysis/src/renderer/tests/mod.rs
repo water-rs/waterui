@@ -1,12 +1,18 @@
 mod collection_update;
+// Suites that drive the GPU painter itself — its device, GPU-content views,
+// filters or backdrop shaders — run on builds that have it.
+#[cfg(hydrolysis_gpu_painter)]
 mod frame_work;
-mod slider_size_indicator;
+mod slider_look;
+mod slider_repaint;
 use super::*;
 use crate::text::{Affinity, TextEngine as _, TextLayout as _, TextPosition};
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::future::Future;
 use std::rc::Rc;
+#[cfg(hydrolysis_gpu_painter)]
+use std::rc::Weak;
 use std::sync::mpsc;
 
 use executor_core::LocalExecutor;
@@ -14,28 +20,44 @@ use executor_core::async_task::{self, AsyncTask, Runnable};
 
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod anchored_overlay;
+#[cfg(hydrolysis_gpu_painter)]
 mod animation_slots;
+mod change_animation;
 mod chrome_primitives;
+#[cfg(hydrolysis_gpu_painter)]
 mod chrome_safe_area;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod context_menu_occlusion;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod context_menu_presentation;
+#[cfg(hydrolysis_cpu_painter)]
+mod cpu_refusals;
 mod drag_drop;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod dynamic_remeasure;
-#[cfg(not(target_arch = "wasm32"))]
+// The patch-free capture this pins is an applied filter's, which both
+// Cherenkov painters realize.
+#[cfg(all(hydrolysis_cherenkov, not(target_arch = "wasm32")))]
 mod emoji_atlas;
+// Drives the GPU mirror's `SurfaceTree`, the sampler the GPU painter runs.
+#[cfg(hydrolysis_gpu_painter)]
+mod engine_motion;
 mod gesture_buttons;
 mod gesture_capture;
 mod gesture_env;
 mod gesture_retention;
 mod gesture_surface;
+#[cfg(hydrolysis_gpu_painter)]
+mod glass_background;
+#[cfg(hydrolysis_gpu_painter)]
 mod gpu_surface_direct;
+#[cfg(hydrolysis_gpu_painter)]
 mod gpu_surface_idle;
+#[cfg(hydrolysis_gpu_painter)]
 mod gpu_surface_input;
 mod group_opacity;
 mod image_ingest;
+#[cfg(hydrolysis_gpu_painter)]
 mod ime;
 mod interaction_state;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
@@ -49,46 +71,67 @@ mod list_row_focus;
 mod list_row_hit;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod list_row_metrics;
+mod list_swipe_frames;
 #[cfg(feature = "accessibility")]
 mod list_table_scroll_frames;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod list_visibility;
+#[cfg(hydrolysis_gpu_painter)]
 mod material;
+#[cfg(hydrolysis_gpu_painter)]
 mod material_chrome;
+#[cfg(hydrolysis_gpu_painter)]
 mod material_group;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod menu_shortcuts;
 mod mid_flush_subview;
+#[cfg(hydrolysis_gpu_painter)]
 pub mod mirror;
+#[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
+mod nav_tabs_look;
 mod navigation_back;
+#[cfg(hydrolysis_gpu_painter)]
 mod navigation_layers;
 mod navigation_text_input;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod nested_menu_dispatch;
 mod opacity_binding;
+mod painted;
+#[cfg(hydrolysis_gpu_painter)]
 mod perf_full_rebuild;
 mod perf_scroll;
 #[cfg(not(target_arch = "wasm32"))]
 mod popup_frame;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod popup_windows;
+mod progress_looks;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod registrations;
 mod render_identity;
+#[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
+mod response_geometry;
 mod retained_scene;
 mod scene_offer;
 #[cfg(feature = "accessibility")]
 mod scroll_frames;
 mod scroll_hit_clip;
+mod segmented_look;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod semantic_runtime;
 mod shadow;
+mod stepper_look;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod structural_transitions;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod tab_item_layout;
 mod teardown_order;
+mod text_field_look;
 mod text_ink;
+mod text_measure_direction;
+mod text_wrap_width;
+mod toggle_glass;
+mod toggle_looks;
+#[cfg(hydrolysis_gpu_painter)]
 mod top_edge;
 mod touch_scroll;
 mod tree;
@@ -100,23 +143,22 @@ mod when_payload;
 mod window_background;
 #[cfg(not(target_arch = "wasm32"))]
 mod window_mount;
-use kurbo::{Affine, BezPath, Point, Rect, RoundedRectRadii};
+use kurbo::{Affine, Point, Rect, Size};
 use waterui::gesture::{DragGesture, GestureObserver, MagnificationGesture};
 use waterui::interaction::InteractionState;
 use waterui::prelude::text;
 use waterui::style::FloatingStyle;
 use waterui::{Binding, Color, Computed, Signal, SignalExt as _, ViewExt as _};
-use waterui_canvas::Canvas;
-use waterui_controls::ControlSize;
-use waterui_controls::button::{ButtonStyle, button};
+use waterui_controls::button::button;
 use waterui_controls::label::{LabelDisplayMode, label};
 use waterui_controls::slider::slider;
 #[cfg(feature = "accessibility")]
 use waterui_controls::text_field::field;
-use waterui_controls::toggle::{ToggleStyle, toggle};
+use waterui_controls::toggle::toggle;
 use waterui_form::picker::PickerStyle;
 #[cfg(feature = "accessibility")]
 use waterui_form::picker::{Picker, color::ColorPicker, date::DatePicker};
+use waterui_graphics::canvas::Canvas;
 use waterui_layout::stack::{VStackLayout, hstack, vstack, zstack};
 use waterui_layout::{Divider, scroll};
 #[cfg(feature = "accessibility")]
@@ -126,19 +168,78 @@ use waterui_navigation::tab::{NativeTabStyle, Tab, TabsLayout};
 
 use crate::theme::WidgetTheme;
 use crate::theme::{
-    BadgeMetrics, ButtonMetrics, DividerMetrics, InputFieldMetrics, InteractionFocusBinding,
-    InteractionMotion, ListMetrics, ModalInteraction, NavigationMetrics, NavigationMotion,
-    PickerMetrics, ProgressIndicatorStyle, ProgressMetrics, ProgressMotion, RadioIndicatorState,
-    RadioSelectionMotion, SliderMetrics, SliderValueIndicatorMetrics, StepperEnd, StepperMetrics,
-    TabItemGeometry, TabItemLayout, TableMetrics, TabsMetrics, TextCaretMotion,
-    TextContextMenuMetrics, ToggleMetrics, WidgetInteractionState,
+    BadgeLook, ButtonLook, ButtonSpec, Chrome, CornerShape, Custom, DragMapping, Driven,
+    FocusIndicator, HitRegion, IndicatorLook, InputFieldMetrics, InteractionFocusBinding,
+    InteractionMotion, Knob, Label, LinearProgressLook, ListLook, ListSpec, MenuLayout, MenuLook,
+    MenuPickerLook, MenuSpec, ModalInteraction, Motion, NavigationBarLook, NavigationSpec,
+    PickerSpec, PressFeedback, ProgressControl, ProgressSpec, RadioGroupLook, ScrollIndicatorLook,
+    SliderLayout, SliderLook, SliderSpec, StateLayer, StepperLook, StepperSpec, Surface,
+    TabItemGeometry, TabItemLayout, TableLook, TabsLook, TabsSpec, TextCaretMotion, TextFieldLook,
+    TextFieldSpec, ToggleSpec, ValueIndicator,
 };
-use waterui_core::EasingCurve;
+use crate::theme::{CheckboxLook, SwitchDrag, SwitchLook};
+use cherenkov_record::{
+    BackdropShaderSource, CaptureClass, ContainerRecipe, Draw, GroupMember, MaterialCapture,
+    MaterialEffect, MaterialRegistry, MaterialShader, Paint, Shadow, SharedLive, WorkingColor,
+};
 use waterui_core::handler::SharedAction;
-use waterui_graphics::draw::{
-    BackdropShaderSource, CaptureClass, Draw, MaterialCapture, MaterialEffect, MaterialRegistry,
-    MaterialShader, Paint, Recorder, Shadow, SharedLive, WorkingColor,
-};
+
+/// A view realized into a retained node and measured through it — the path
+/// layout measures every child on.
+pub(super) struct Realized {
+    renderer: HydrolysisRenderer<ParleyEngine>,
+    node: RenderNode<ParleyEngine>,
+    env: Environment,
+}
+
+impl Realized {
+    pub(super) fn new(view: impl View, env: &Environment) -> Self {
+        Self::with_renderer(view, env, test_renderer())
+    }
+
+    pub(super) fn with_theme(
+        view: impl View,
+        env: &Environment,
+        theme: &Rc<dyn WidgetTheme>,
+    ) -> Self {
+        Self::with_renderer(
+            view,
+            env,
+            HydrolysisRenderer::with_engine(
+                Rc::clone(theme),
+                ParleyEngine::system(FontFamilyResolution::Strict),
+            ),
+        )
+    }
+
+    pub(super) fn with_renderer(
+        view: impl View,
+        env: &Environment,
+        mut renderer: HydrolysisRenderer<ParleyEngine>,
+    ) -> Self {
+        let node = RenderNode::build(AnyView::new(view), env, &mut renderer);
+        Self {
+            renderer,
+            node,
+            env: env.clone(),
+        }
+    }
+
+    pub(super) fn measure(&mut self, proposal: ProposalSize) -> ViewDimensions {
+        self.node.prepare_for_measure(&mut self.renderer);
+        let theme = self.renderer.theme();
+        self.node
+            .measure(&mut self.renderer.state, &self.env, &theme, proposal)
+    }
+
+    pub(super) fn intrinsic(&mut self) -> LayoutSize {
+        self.measure(ProposalSize::UNSPECIFIED).size
+    }
+
+    pub(super) fn stretch_axis(&self) -> StretchAxis {
+        self.node.stretch()
+    }
+}
 
 fn test_renderer() -> HydrolysisRenderer<crate::text::ParleyEngine> {
     test_renderer_with_theme(MinimalTestTheme::default())
@@ -297,6 +398,7 @@ pub fn test_environment_with_scheme(
 /// The member layer ids of every backdrop membership the frame's nodes
 /// hold, flush order — including the members inside filtered groups, which
 /// the walk descends into.
+#[cfg(hydrolysis_gpu_painter)]
 pub fn material_layers(runtime: &crate::HeadlessRuntime) -> Vec<cherenkov::LayerId> {
     struct Members(Vec<cherenkov::LayerId>);
     impl<E: crate::text::TextEngine> mount::layers::LayerVisitor<E> for Members {
@@ -316,6 +418,7 @@ pub fn material_layers(runtime: &crate::HeadlessRuntime) -> Vec<cherenkov::Layer
     members.0
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 pub fn mounted_anchor_parent_children(
     runtime: &crate::HeadlessRuntime,
     scope: std::num::NonZeroU64,
@@ -357,6 +460,7 @@ pub fn mounted_anchor_parent_children(
     visitor.children
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 pub fn inner_layers(runtime: &crate::HeadlessRuntime) -> Vec<cherenkov::LayerId> {
     struct Inner(Vec<cherenkov::LayerId>);
     impl<E: crate::text::TextEngine> mount::layers::LayerVisitor<E> for Inner {
@@ -377,6 +481,7 @@ pub fn inner_layers(runtime: &crate::HeadlessRuntime) -> Vec<cherenkov::LayerId>
 }
 
 /// The window's mount — the test renders one window.
+#[cfg(hydrolysis_gpu_painter)]
 pub fn window_mount(
     runtime: &crate::HeadlessRuntime,
 ) -> &mount::Mount<cherenkov_gpu::Gpu, crate::text::ParleyEngine> {
@@ -388,7 +493,29 @@ pub fn window_mount(
         .mount
 }
 
+/// Swaps the window host's engine-surface link for `surface` and returns
+/// the link it held: swapping in `Weak::new()` stands in for a surface
+/// dropped during the window's commit, swapping the returned link back
+/// restores it.
+#[cfg(hydrolysis_gpu_painter)]
+pub fn swap_host_surface(
+    runtime: &mut crate::HeadlessRuntime,
+    surface: Weak<cherenkov::Surface<cherenkov_gpu::Gpu>>,
+) -> Weak<cherenkov::Surface<cherenkov_gpu::Gpu>> {
+    std::mem::replace(
+        &mut runtime
+            .renderer_mut()
+            .cherenkov_window
+            .as_mut()
+            .expect("the frame installed into a window")
+            .host
+            .surface,
+        surface,
+    )
+}
+
 /// The window's backdrop-group table — the test renders one window.
+#[cfg(hydrolysis_gpu_painter)]
 pub fn mounts(
     runtime: &crate::HeadlessRuntime,
 ) -> &mount::backdrop::MaterialBackdropGroups<cherenkov::BackdropGroup, crate::text::ParleyEngine> {
@@ -396,6 +523,7 @@ pub fn mounts(
 }
 
 /// The engine's current backdrop-capture bytes.
+#[cfg(hydrolysis_gpu_painter)]
 pub fn capture_bytes(runtime: &crate::HeadlessRuntime) -> u64 {
     runtime
         .renderer()
@@ -405,6 +533,7 @@ pub fn capture_bytes(runtime: &crate::HeadlessRuntime) -> u64 {
         .host
         .engine
         .memory()
+        .expect("the render thread answers memory queries")
         .backdrop_captures
         .0
 }
@@ -413,15 +542,6 @@ pub fn capture_bytes(runtime: &crate::HeadlessRuntime) -> u64 {
 /// coordinates. Tests read it back via `env.get::<BadgeDrawLog>()`.
 #[derive(Clone, Default)]
 pub struct BadgeDrawLog(pub Rc<RefCell<Vec<Rect>>>);
-
-#[derive(Clone, Copy)]
-struct RecursivelyErasedView;
-
-impl View for RecursivelyErasedView {
-    fn body(self, _env: &Environment) -> impl View {
-        AnyView::new(self)
-    }
-}
 
 #[derive(Clone)]
 struct EmitsDuringSignalSubscription<T> {
@@ -496,33 +616,20 @@ fn subscribed_snapshot_preserves_registration_animation_metadata() {
     clippy::float_cmp,
     reason = "the snapshot is the signal's stored literal read back untouched; any drift means the read went through arithmetic it must not"
 )]
-fn animated_scalar_subscribes_before_reading_its_snapshot() {
+fn wrapper_motion_subscribes_before_reading_its_snapshot() {
     let signal = registration_signal(0.25, nami::watcher::Context::from(0.25));
-    let mut renderer = test_renderer();
-    let owner = Rc::new(());
+    let renderer = test_renderer();
 
-    let resolved = renderer.resolve_owned_scalar(
+    let motion = super::mount::motion::Motion::new(
         &signal,
-        &owner,
-        usize::MAX,
-        cherenkov_record::tree::RATE_FAST,
+        f64::from,
+        renderer.frame_signals(),
+        Rc::clone(renderer.placement_clock()),
+        Box::new(|| {}),
+        false,
     );
 
-    assert_eq!(resolved, 0.25);
-    assert!(signal.subscribed.get());
-}
-
-#[test]
-fn toggle_progress_subscribes_before_reading_its_snapshot() {
-    let signal = registration_signal(false, nami::watcher::Context::from(false));
-    let mut renderer = test_renderer();
-    let owner = Rc::new(());
-
-    let (progress, selected) =
-        renderer.resolve_toggle_progress(&signal, &owner, Animation::linear(Duration::ZERO));
-
-    approx::assert_relative_eq!(progress, 0.0);
-    assert!(!selected);
+    assert_eq!(motion.target(), 0.25);
     assert!(signal.subscribed.get());
 }
 
@@ -614,7 +721,7 @@ fn labeled_toggle_keeps_label_activation_out_of_switch_visual_interaction() {
     assert_eq!(
         switch_interaction
             .sample_waves(renderer.frame_instant())
-            .latest()
+            .last()
             .and_then(|wave| wave.origin),
         Some(switch_point),
         "switch ripple must originate inside the switch control"
@@ -637,91 +744,6 @@ fn bit(source: &Binding<u8>, bit: u8) -> Binding<bool> {
             });
         },
     )
-}
-
-/// Regression for #2232: toggles whose bindings share a `SignalIdentity` must
-/// still own their thumb-progress animation slots. Two switches bound to
-/// mappings minted at one call site — the shape of the inspector's channel
-/// toggles — used to collapse onto one slot, so the off switch drew at the
-/// on switch's progress.
-#[test]
-fn toggles_sharing_a_mapping_call_site_draw_their_own_thumb_progress() {
-    let toggle_draws = Rc::new(RefCell::new(Vec::new()));
-    let theme = MinimalTestTheme {
-        toggle_switch_draws: Rc::clone(&toggle_draws),
-        ..Default::default()
-    };
-    let mut renderer = test_renderer_with_theme(theme);
-    let env = test_environment();
-    let bounds = Rect::new(0.0, 0.0, 160.0, 160.0);
-    let s = Binding::container(0b01_u8);
-
-    // The collision the test exists for: both bindings carry one identity.
-    assert_eq!(
-        bit(&s, 1).identity(),
-        bit(&s, 2).identity(),
-        "same-site mappings must share a SignalIdentity for this test to cover the bug"
-    );
-
-    let draw_progress = |toggle_draws: &Rc<RefCell<Vec<ToggleSwitchDraw>>>| {
-        let mut frame = toggle_draws.borrow_mut().drain(..).collect::<Vec<_>>();
-        frame.sort_by(|a, b| a.0.y0.total_cmp(&b.0.y0));
-        frame
-            .iter()
-            .map(|(_, progress, selected)| (*progress, *selected))
-            .collect::<Vec<_>>()
-    };
-
-    capture_root_window(
-        &mut renderer,
-        vstack((
-            toggle("A", &bit(&s, 1)).switch(),
-            toggle("B", &bit(&s, 2)).switch(),
-        )),
-        &env,
-        bounds,
-    );
-    let first = draw_progress(&toggle_draws);
-    approx::assert_relative_eq!(first[0].0, 1.0);
-    assert!(first[0].1, "A is bound to an on bit");
-    approx::assert_relative_eq!(first[1].0, 0.0);
-    assert!(!first[1].1, "B is bound to an off bit");
-
-    // Toggling B animates only B's slot: mid-animation A still draws 1.0
-    // while B is in flight toward 1.0 (100ms linear in MinimalTestTheme).
-    let started = renderer.frame_instant();
-    bit(&s, 2).set(true);
-    renderer.set_frame_instant(started + Duration::from_millis(50));
-    capture_root_window(
-        &mut renderer,
-        vstack((
-            toggle("A", &bit(&s, 1)).switch(),
-            toggle("B", &bit(&s, 2)).switch(),
-        )),
-        &env,
-        bounds,
-    );
-    let mid = draw_progress(&toggle_draws);
-    approx::assert_relative_eq!(mid[0].0, 1.0);
-    assert!(
-        mid[1].0 > 0.0 && mid[1].0 < 1.0,
-        "B's thumb must be mid-animation, got {}",
-        mid[1].0
-    );
-
-    renderer.set_frame_instant(started + Duration::from_millis(200));
-    capture_root_window(
-        &mut renderer,
-        vstack((
-            toggle("A", &bit(&s, 1)).switch(),
-            toggle("B", &bit(&s, 2)).switch(),
-        )),
-        &env,
-        bounds,
-    );
-    let finished = draw_progress(&toggle_draws);
-    approx::assert_relative_eq!(finished[0].0, 1.0);
-    approx::assert_relative_eq!(finished[1].0, 1.0);
 }
 
 fn empty_selection_menu() -> nami::Computed<Vec<ResolvedMenuItem>> {
@@ -760,6 +782,7 @@ fn text_input_target(
         text_bounds: Rect::ZERO,
         text_clip_bounds: Rect::ZERO,
         content_alpha: 1.0,
+        paints: None,
         layout: ParleyEngine::system(FontFamilyResolution::Strict).empty_layout(),
         display_text: waterui_core::Str::default(),
         display_layout: ParleyEngine::system(FontFamilyResolution::Strict).empty_layout(),
@@ -777,29 +800,19 @@ fn text_input_target(
 }
 
 #[test]
-fn measure_layout_dimensions_collects_alignment_keys_from_wrapper_layouts() {
+fn a_stack_collects_alignment_keys_from_wrapper_layouts() {
+    use waterui_layout::container::FixedContainer;
     let env = test_environment();
-    let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-    let child = normalize_layout_view(
-        AnyView::new(().size(20.0, 10.0).horizontal_alignment_guide(
-            HorizontalAlignment::Leading,
-            |dimensions: &ViewDimensions| dimensions.size.width * 0.5,
-        )),
-        &env,
-    );
+    let child = AnyView::new(().size(20.0, 10.0).horizontal_alignment_guide(
+        HorizontalAlignment::Leading,
+        |dimensions: &ViewDimensions| dimensions.size.width * 0.5,
+    ));
     let layout = VStackLayout {
         alignment: HorizontalAlignment::Leading,
         spacing: Computed::constant(0.0),
     };
-    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
-    let dimensions = measure_layout_dimensions(
-        &layout,
-        [&child],
-        ProposalSize::UNSPECIFIED,
-        &mut state,
-        &env,
-        &theme,
-    );
+    let dimensions = Realized::new(FixedContainer::new(layout, vec![child]), &env)
+        .measure(ProposalSize::UNSPECIFIED);
 
     assert_eq!(
         dimensions.explicit_horizontal(HorizontalAlignment::Leading),
@@ -807,8 +820,8 @@ fn measure_layout_dimensions_collects_alignment_keys_from_wrapper_layouts() {
     );
 }
 
-/// A plain `FixedContainer` — normalization's form, before `body` wraps its
-/// layout in `DirectionalLayout` — must still resolve explicit horizontal
+/// A plain `FixedContainer` — before `body` wraps its layout in
+/// `DirectionalLayout` — must still resolve explicit horizontal
 /// guides against the placements `DirectionalLayout` produces: under RTL the
 /// leading-aligned child sits on the trailing edge, so a guide anchored in
 /// its frame mirrors to `width - offset`.
@@ -819,24 +832,20 @@ fn plain_fixed_container_measurement_mirrors_guides_under_rtl() {
     let mut env = test_environment();
     env.insert(LayoutDirection::RightToLeft);
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-    let view = normalize_layout_view(
-        AnyView::new(FixedContainer::new(
-            VStackLayout {
-                alignment: HorizontalAlignment::Leading,
-                spacing: Computed::constant(0.0),
-            },
-            vec![
-                AnyView::new(().size(20.0, 10.0).horizontal_alignment_guide(
-                    HorizontalAlignment::Leading,
-                    |dimensions: &ViewDimensions| dimensions.size.width * 0.5,
-                )),
-                AnyView::new(().size(100.0, 10.0)),
-            ],
-        )),
-        &env,
-    );
-    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
-    let dimensions = measure_view_dimensions(&view, &mut state, &env, &theme);
+    let view = AnyView::new(FixedContainer::new(
+        VStackLayout {
+            alignment: HorizontalAlignment::Leading,
+            spacing: Computed::constant(0.0),
+        },
+        vec![
+            AnyView::new(().size(20.0, 10.0).horizontal_alignment_guide(
+                HorizontalAlignment::Leading,
+                |dimensions: &ViewDimensions| dimensions.size.width * 0.5,
+            )),
+            AnyView::new(().size(100.0, 10.0)),
+        ],
+    ));
+    let dimensions = Realized::with_theme(view, &env, &theme).measure(ProposalSize::UNSPECIFIED);
 
     // Under RTL the 20-wide leading child mirrors to the trailing edge —
     // placed at `width - 20`, so its mid-child guide resolves at
@@ -849,63 +858,31 @@ fn plain_fixed_container_measurement_mirrors_guides_under_rtl() {
 }
 
 #[test]
-fn layout_normalization_does_not_charge_metadata_depth_to_component_recursion() {
-    let env = test_environment();
-    let mut view = AnyView::new(text("Leaf"));
-    for _ in 0..80 {
-        view = AnyView::new(view.opacity(1.0));
-    }
-
-    let normalized = normalize_layout_view(view, &env);
-
-    assert!(normalized.is::<Metadata<Opacity>>());
-}
-
-#[test]
-#[should_panic(expected = "hydrolysis layout normalization exceeded recursion budget")]
-fn layout_normalization_still_rejects_recursive_component_bodies() {
-    let env = test_environment();
-
-    let _ = normalize_layout_view(AnyView::new(RecursivelyErasedView), &env);
-}
-
-#[test]
 fn scale_metadata_is_layout_transparent() {
     let env = test_environment();
-    let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
     let scale = Binding::f32(1.0);
-    let view = normalize_layout_view(
-        AnyView::new(
-            ().size(80.0, 80.0)
-                .scale(scale.clone(), scale.clone())
-                .min_height(120.0),
-        ),
+    let mut realized = Realized::new(
+        ().size(80.0, 80.0)
+            .scale(scale.clone(), scale.clone())
+            .min_height(120.0),
         &env,
     );
 
-    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
-    let initial = measure_view_dimensions(&view, &mut state, &env, &theme).size;
-
+    let initial = realized.intrinsic();
     scale.set(2.0);
-    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
-    let scaled = measure_view_dimensions(&view, &mut state, &env, &theme).size;
+    let scaled = realized.intrinsic();
 
     assert_eq!(initial, LayoutSize::new(80.0, 120.0));
     assert_eq!(scaled, initial);
 }
 
 #[test]
-fn hydro_subview_preserves_stretch_control_minimum_under_zero_width_proposal() {
+fn a_stretch_control_keeps_its_minimum_under_a_zero_width_proposal() {
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
     let value = Binding::f64(0.5);
-    let view = normalize_layout_view(
-        AnyView::new(slider("Playback position", &value).hide_label()),
-        &env,
-    );
-    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
-    let state = RefCell::new(&mut state);
-    let subview = HydroSubview::from_view(&view, &state, &env, &theme);
+    let view = AnyView::new(slider("Playback position", &value).hide_label());
+    let mut subview = Realized::with_theme(view, &env, &theme);
 
     let measured = subview.measure(ProposalSize::new(Some(0.0), None));
 
@@ -915,24 +892,31 @@ fn hydro_subview_preserves_stretch_control_minimum_under_zero_width_proposal() {
     );
 }
 
+/// A tighter proposal caps a button's minimum-size floor but never its
+/// padded label: every proposal below that footprint answers it.
 #[test]
-fn hydro_subview_preserves_non_stretch_button_intrinsic_under_zero_width_proposal() {
+fn a_compressed_button_keeps_its_padded_label() {
     let env = test_environment();
-    let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-    let view = normalize_layout_view(AnyView::new(button("Medium (0.7)").action(|| {})), &env);
-    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
-    let state = RefCell::new(&mut state);
-    let subview = HydroSubview::from_view(&view, &state, &env, &theme);
+    let mut subview = Realized::new(button("Medium (0.7)").action(|| {}), &env);
 
     let intrinsic = subview.measure(ProposalSize::UNSPECIFIED);
-    let constrained = subview.measure(ProposalSize::new(Some(0.0), None));
+    let zero = subview.measure(ProposalSize::new(Some(0.0), None));
+    let narrow = subview.measure(ProposalSize::new(Some(10.0), None));
 
     assert!(
-        approx::relative_eq!(constrained.size.width, intrinsic.size.width),
-        "Hydrolysis non-stretch controls must not be compressed below their intrinsic text width: left {:?}, right {:?}",
-        constrained.size.width,
-        intrinsic.size.width
+        zero.size.width > 0.0 && zero.size.width <= intrinsic.size.width,
+        "the zero-width answer is the padded label, within the floored intrinsic: {zero:?} vs {intrinsic:?}"
     );
+    assert!(
+        approx::relative_eq!(narrow.size.width, zero.size.width),
+        "Hydrolysis non-stretch controls must not be compressed below their padded label: left {:?}, right {:?}",
+        narrow.size.width,
+        zero.size.width
+    );
+    assert!(approx::relative_eq!(
+        zero.size.height,
+        intrinsic.size.height
+    ));
 }
 
 #[test]
@@ -940,19 +924,14 @@ fn state_wrapped_button_remains_non_stretch_for_layout() {
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
     let expanded = Binding::bool(false);
-    let view = normalize_layout_view(
-        AnyView::new(
-            button("Toggle Bars")
-                .action(|waterui::State(value): waterui::State<Binding<bool>>| {
-                    value.toggle();
-                })
-                .state(&expanded),
-        ),
-        &env,
+    let view = AnyView::new(
+        button("Toggle Bars")
+            .action(|waterui::State(value): waterui::State<Binding<bool>>| {
+                value.toggle();
+            })
+            .state(&expanded),
     );
-    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
-    let state = RefCell::new(&mut state);
-    let subview = HydroSubview::from_view(&view, &state, &env, &theme);
+    let mut subview = Realized::with_theme(view, &env, &theme);
 
     let intrinsic = subview.measure(ProposalSize::UNSPECIFIED);
     let proposed = subview.measure(ProposalSize::new(Some(720.0), None));
@@ -1138,12 +1117,15 @@ fn stacked_icon_buttons_above_gesture_surface_receive_clicks() {
         ),
         "pressed controls must survive a retained redraw before pointer release"
     );
-    assert!(renderer.handle_pointer_up(
+    // The release moves only the button's live chrome operands, so it
+    // reports no visual change of its own; the action's write is what
+    // schedules the refresh asserted below.
+    let _ = renderer.handle_pointer_up(
         crate::num_cast::f64_as_f32(point.x),
         crate::num_cast::f64_as_f32(point.y),
         PointerButton::Primary,
         &env,
-    ));
+    );
 
     approx::assert_relative_eq!(zoom.snapshot(), 0.5);
     assert!(
@@ -1181,25 +1163,29 @@ fn draggable_metadata_delivers_typed_payload_to_drop_destination() {
 }
 
 #[test]
-fn gesture_group_identity_collapses_nested_gesture_observers_on_same_view() {
-    let view = AnyView::new(Metadata::new(
+fn nested_gesture_observers_on_one_view_share_a_group() {
+    let env = test_environment();
+    let mut renderer = test_renderer();
+    let view = Metadata::new(
         Metadata::new(
-            ().size(20.0, 10.0),
+            ().size(20.0, 10.0).opacity(0.5),
             GestureObserver::new(DragGesture::new(8.0), || {}),
         ),
         GestureObserver::new(MagnificationGesture::new(1.0), || {}),
-    ));
-    let outer = view
-        .downcast_ref::<Metadata<GestureObserver>>()
-        .expect("expected outer gesture observer metadata");
-    let inner = outer
-        .content
-        .downcast_ref::<Metadata<GestureObserver>>()
-        .expect("expected inner gesture observer metadata");
+    );
+    let node = RenderNode::build(AnyView::new(view), &env, &mut renderer);
 
-    assert_eq!(
-        gesture_group_identity(&outer.content),
-        gesture_group_identity(&inner.content)
+    let (outer, inner) = node
+        .observed_gesture_group()
+        .expect("the outer gesture observer wraps the tree");
+    let (inner, observed) = inner
+        .observed_gesture_group()
+        .expect("the inner gesture observer wraps the view");
+    assert_eq!(outer, inner);
+    assert_ne!(
+        inner,
+        Rc::as_ptr(&observed.core().cell) as usize,
+        "the opacity wrapper is transparent to the group"
     );
 }
 
@@ -1213,8 +1199,9 @@ fn renderer_magnification_targets_outer_observer_in_stacked_gesture_chain() {
     let drag_hits = Rc::new(Cell::new(0u32));
     let magnify_hits = Rc::new(Cell::new(0u32));
     let view = {
-        let canvas = Canvas::with_signal(offset.zip(&scale), |_ctx, (_offset, _scale)| {})
-            .size(120.0, 120.0);
+        let transform = offset.zip(&scale);
+        let canvas =
+            Canvas::new(move |cx| cx.scope(transform, |_cx, _transform| {})).size(120.0, 120.0);
         let canvas = {
             let drag_hits = Rc::clone(&drag_hits);
             Metadata::new(
@@ -1261,37 +1248,15 @@ fn renderer_magnification_targets_outer_observer_in_stacked_gesture_chain() {
 fn string_views_measure_through_body_recursion() {
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
     let proposal = ProposalSize::UNSPECIFIED;
 
-    let raw = measure_view_dimensions_with_proposal(
-        &AnyView::new(Str::from("Hydrolysis")),
-        proposal,
-        &mut state,
-        &env,
-        &theme,
-    );
-    let borrowed = measure_view_dimensions_with_proposal(
-        &AnyView::new("Hydrolysis"),
-        proposal,
-        &mut state,
-        &env,
-        &theme,
-    );
-    let owned = measure_view_dimensions_with_proposal(
-        &AnyView::new(String::from("Hydrolysis")),
-        proposal,
-        &mut state,
-        &env,
-        &theme,
-    );
-    let cow = measure_view_dimensions_with_proposal(
-        &AnyView::new(Cow::Borrowed("Hydrolysis")),
-        proposal,
-        &mut state,
-        &env,
-        &theme,
-    );
+    let raw =
+        Realized::with_theme(AnyView::new(Str::from("Hydrolysis")), &env, &theme).measure(proposal);
+    let borrowed = Realized::with_theme(AnyView::new("Hydrolysis"), &env, &theme).measure(proposal);
+    let owned = Realized::with_theme(AnyView::new(String::from("Hydrolysis")), &env, &theme)
+        .measure(proposal);
+    let cow = Realized::with_theme(AnyView::new(Cow::Borrowed("Hydrolysis")), &env, &theme)
+        .measure(proposal);
 
     assert_eq!(borrowed.size, raw.size);
     assert_eq!(owned.size, raw.size);
@@ -1496,10 +1461,10 @@ fn container_label_without_role_names_the_container_only() {
 #[cfg(feature = "accessibility")]
 #[test]
 fn a_naming_scope_keeps_the_elements_own_bounds_when_the_parent_stretched_it() {
-    let env = test_environment().extending(waterui_graphics::SceneViewMergeToParent);
+    let env = test_environment().extending(waterui_graphics::backend::SceneViewMergeToParent);
     let mut renderer = test_renderer();
-    let recording = waterui_graphics::Picture::record(|_scene| {});
-    let picture = waterui_graphics::Picture::new(
+    let recording = waterui_graphics::backend::Picture::record(|_scene| {});
+    let picture = waterui_graphics::backend::Picture::new(
         waterui_core::layout::Size::new(24.0, 24.0),
         nami::constant(recording),
     );
@@ -1776,17 +1741,17 @@ fn a_container_with_an_explicit_label_still_consumes_its_text() {
 }
 
 /// A view hook wraps whatever it returns in a snapshot of the environment it was
-/// called with, and layout normalization resolves that body before the naming
-/// scope exists — so the snapshot carries no label, and flattening it replaces
-/// the scoped environment the build installed. Every `Map` in a `map-gpu` build
+/// called with; when that body resolves before the naming scope exists, the
+/// snapshot carries no label, and flattening it replaces the scoped
+/// environment the build installed. Every `Map` in a `map-gpu` build
 /// and every `Video` in a `video-gpu` one sits under such a hook, and
 /// `.a11y_label()` on them named nothing at all: the engine, finding no ambient
 /// label, announced its own generated description instead.
 #[cfg(feature = "accessibility")]
 #[test]
 fn a_label_survives_the_environment_snapshot_a_view_hook_takes() {
+    use waterui::map::{Coordinate, Map, MapConfig, Region};
     use waterui_core::AnyView;
-    use waterui_map::{Coordinate, Map, MapConfig, Region};
 
     let mut env = test_environment();
     // The hooked body stands in for a real map realization — `Native<MapConfig>`
@@ -1795,9 +1760,8 @@ fn a_label_survives_the_environment_snapshot_a_view_hook_takes() {
         AnyView::new(text("map").a11y_role(AccessibilityRole::Image))
     });
     let mut renderer = test_renderer();
-    // The frame matters: a layout container normalizes its children, and it is
-    // normalization that resolves the hooked body — one level above the naming
-    // scope the build installs.
+    // The frame puts the hooked map inside a layout container, one level below
+    // the naming scope the build installs.
     let view = Map::new(Region::new(Coordinate::default(), 1.0, 1.0))
         .a11y_label("City map")
         .size(120.0, 120.0);
@@ -1826,15 +1790,16 @@ fn a_label_survives_the_environment_snapshot_a_view_hook_takes() {
 /// with no page behind it.
 #[cfg(not(hydrolysis_system_webview))]
 #[test]
-#[should_panic(expected = "no web engine is bridged")]
-fn a_webview_with_no_engine_to_draw_it_panics() {
+#[cfg_attr(debug_assertions, should_panic(expected = "no web engine is bridged"))]
+fn a_webview_with_no_engine_to_draw_it_is_reported_and_not_drawn() {
     use std::future::{Future, ready};
 
-    use waterui_core::{Signal, Str};
-    use waterui_webview::{
+    use waterui::webview::{
         BackendEvent, Cookie, CustomWebViewController, ScriptInjectionTime, ScriptMessageHandler,
         WatcherGuard, WatcherSet, WebView, WebViewConfig, WebViewController, WebViewHandle,
+        WebViewOpenError,
     };
+    use waterui_core::{Signal, Str};
 
     /// The smallest controller that can still create a `WebView`: the handle
     /// answers what construction asks and discards the rest, because the
@@ -1843,15 +1808,15 @@ fn a_webview_with_no_engine_to_draw_it_panics() {
     struct TestWebViewController;
 
     impl CustomWebViewController for TestWebViewController {
-        fn open(&self, _config: WebViewConfig) -> impl WebViewHandle {
-            TestWebViewHandle {
+        fn open(&self, _config: WebViewConfig) -> Result<impl WebViewHandle, WebViewOpenError> {
+            Ok(TestWebViewHandle {
                 watchers: WatcherSet::new(),
-            }
+            })
         }
 
         // No interception facility: the double has no engine to route an asset
         // origin through, and the assertion it serves never opens assets.
-        fn asset_origin(&self) -> Option<waterui_webview::Url> {
+        fn asset_origin(&self) -> Option<waterui::webview::Url> {
             None
         }
     }
@@ -1863,7 +1828,7 @@ fn a_webview_with_no_engine_to_draw_it_panics() {
     impl WebViewHandle for TestWebViewHandle {
         fn go_back(&self) {}
         fn go_forward(&self) {}
-        fn go_to(&self, _url: &waterui_webview::Url) {}
+        fn go_to(&self, _url: &waterui::webview::Url) {}
         fn stop(&self) {}
         fn refresh(&self) {}
         fn set_user_agent(&self, _user_agent: &str) {}
@@ -2296,34 +2261,6 @@ fn disabled_picker_family_and_tabs_expose_no_mutating_actions() {
 }
 
 #[test]
-#[allow(
-    clippy::float_cmp,
-    reason = "the local-space mapping must carry the wave's progress and opacity through untouched, so the values stay bit-identical"
-)]
-fn interaction_press_origin_is_converted_to_widget_local_space() {
-    let mut press_waves = crate::theme::PressWaves::EMPTY;
-    press_waves.push(crate::theme::PressWave {
-        origin: Some(Point::new(125.0, 84.0)),
-        progress: 0.5,
-        opacity: 0.12,
-    });
-    let state = WidgetInteractionState {
-        press_waves,
-        ..WidgetInteractionState::NONE
-    };
-
-    let local = crate::renderer::local_interaction_state(state, Affine::translate((100.0, 80.0)));
-
-    let wave = local
-        .press_waves
-        .latest()
-        .expect("wave must survive the local-space mapping");
-    assert_eq!(wave.origin, Some(Point::new(25.0, 4.0)));
-    assert_eq!(wave.progress, 0.5);
-    assert_eq!(wave.opacity, 0.12);
-}
-
-#[test]
 fn interaction_state_does_not_migrate_between_semantic_identities() {
     let mut renderer = test_renderer();
     let env = test_environment();
@@ -2343,17 +2280,35 @@ fn interaction_state_does_not_migrate_between_semantic_identities() {
     renderer.finish_rebuild_frame();
 
     renderer.begin_rebuild_frame();
-    let (state, _, _) =
+    let (state, _, handles) =
         renderer.bind_interaction_target(second_key, Rect::new(100.0, 100.0, 180.0, 180.0), &env);
 
-    assert!(!state.state.contains(InteractionState::PRESSED));
-    assert!(state.press_waves.is_empty());
+    assert!(!state.contains(InteractionState::PRESSED));
+    assert_eq!(handles.sample_waves(renderer.frame_instant()), []);
+}
+
+fn test_interaction_motion() -> InteractionMotion {
+    InteractionMotion {
+        hover_opacity: 0.08,
+        focus_opacity: 0.12,
+        pressed_opacity: 0.12,
+        dragged_opacity: 0.16,
+        hover_enter: Animation::linear(Duration::from_millis(15)),
+        hover_exit: Animation::linear(Duration::from_millis(15)),
+        focus_enter: Animation::linear(Duration::from_millis(15)),
+        focus_exit: Animation::linear(Duration::from_millis(15)),
+        press_fade_in: Animation::linear(Duration::from_millis(105)),
+        press_fade_out: Animation::linear(Duration::from_millis(375)),
+        press_grow: Animation::bezier(Duration::from_millis(450), 0.2, 0.0, 0.0, 1.0),
+        press_shape: Animation::linear(Duration::from_millis(15)),
+        minimum_press_duration: Duration::from_millis(225),
+        touch_delay: Duration::from_millis(150),
+    }
 }
 
 /// Regression guard for the retained-path state-layer loss: a began press must
-/// surface through the re-bound `WidgetInteractionState` as a visible press
-/// layer once the fade-in has run, because widgets draw their themed state
-/// layers from exactly this sampled state on every flush.
+/// surface through the re-bound interaction handles as a visible press
+/// layer once the fade-in has run.
 #[test]
 fn began_press_samples_a_visible_press_layer_after_fade_in() {
     let mut renderer = test_renderer();
@@ -2361,9 +2316,11 @@ fn began_press_samples_a_visible_press_layer_after_fade_in() {
     let bounds = Rect::new(0.0, 0.0, 80.0, 80.0);
     let owner = Rc::new(());
     let key = InteractionKey::for_rc(&owner, 0);
+    let motion = test_interaction_motion();
 
     renderer.begin_rebuild_frame();
-    let (_, slot, _) = renderer.bind_interaction_target(key.clone(), bounds, &env);
+    let (_, slot, _) =
+        renderer.bind_interaction_target_with_motion(key.clone(), bounds, &env, motion.clone());
     let at = renderer.frame_instant();
     renderer
         .hit_test
@@ -2371,8 +2328,8 @@ fn began_press_samples_a_visible_press_layer_after_fade_in() {
         .begin_press(&slot, Point::new(20.0, 20.0), None, at);
     renderer.finish_rebuild_frame();
 
-    // Advance past the press fade-in (105ms in MinimalTestTheme) and re-bind:
-    // the sampled state must carry a visible press layer, its origin, and
+    // Advance past the press fade-in (105ms) and re-bind:
+    // the sampled handles must carry a visible press layer, its origin, and
     // non-zero grow progress.
     let later = renderer
         .frame_instant()
@@ -2380,15 +2337,14 @@ fn began_press_samples_a_visible_press_layer_after_fade_in() {
         .expect("test press deadline overflow");
     renderer.set_frame_instant(later);
     renderer.begin_rebuild_frame();
-    let (state, _, _) = renderer.bind_interaction_target(key, bounds, &env);
+    let (state, _, handles) =
+        renderer.bind_interaction_target_with_motion(key, bounds, &env, motion);
     assert!(
-        state.state.contains(InteractionState::PRESSED),
+        state.contains(InteractionState::PRESSED),
         "held press must stay visually pressed"
     );
-    let wave = state
-        .press_waves
-        .latest()
-        .expect("held press must sample a visible wave");
+    let waves = handles.sample_waves(later);
+    let wave = waves.last().expect("held press must sample a visible wave");
     assert!(
         wave.opacity > 0.0,
         "press layer must be visible after fade-in"
@@ -2411,10 +2367,10 @@ fn interaction_engine_resolves_focus_state() {
         &env,
         true,
         false,
+        test_interaction_motion(),
     );
 
-    assert!(state.state.contains(InteractionState::FOCUSED));
-    approx::assert_relative_eq!(state.focus_progress, 1.0);
+    assert!(state.contains(InteractionState::FOCUSED));
 }
 
 /// `press_progress` is the physical-press morph value: it animates towards
@@ -2428,14 +2384,16 @@ fn press_progress_animates_while_pressed_and_back_on_release() {
     let bounds = Rect::new(0.0, 0.0, 80.0, 80.0);
     let owner = Rc::new(());
     let key = InteractionKey::for_rc(&owner, 0);
+    let motion = test_interaction_motion();
 
     renderer.begin_rebuild_frame();
-    let (resting, slot, _) = renderer.bind_interaction_target(key.clone(), bounds, &env);
+    let (_, slot, handles) =
+        renderer.bind_interaction_target_with_motion(key.clone(), bounds, &env, motion.clone());
     renderer.finish_rebuild_frame();
-    approx::assert_relative_eq!(resting.press_progress, 0.0);
+    approx::assert_relative_eq!(handles.press_progress_at(renderer.frame_instant()), 0.0);
 
     // The press lands between flushes; the next bind resolves it as PRESSED
-    // and the morph (15ms linear in MinimalTestTheme) is in flight.
+    // and the morph (15ms linear) is in flight.
     let pressed_at = renderer.frame_instant();
     renderer
         .hit_test
@@ -2443,51 +2401,59 @@ fn press_progress_animates_while_pressed_and_back_on_release() {
         .begin_press(&slot, Point::new(20.0, 20.0), None, pressed_at);
 
     renderer.begin_rebuild_frame();
-    let (state, _, _) = renderer.bind_interaction_target(key.clone(), bounds, &env);
+    let (state, _, _) =
+        renderer.bind_interaction_target_with_motion(key.clone(), bounds, &env, motion.clone());
     renderer.finish_rebuild_frame();
-    assert!(state.state.contains(InteractionState::PRESSED));
+    assert!(state.contains(InteractionState::PRESSED));
 
-    renderer.set_frame_instant(pressed_at + Duration::from_millis(8));
+    let mid_press = pressed_at + Duration::from_millis(8);
+    renderer.set_frame_instant(mid_press);
     renderer.begin_rebuild_frame();
-    let (state, _, _) = renderer.bind_interaction_target(key.clone(), bounds, &env);
+    let (_, _, handles) =
+        renderer.bind_interaction_target_with_motion(key.clone(), bounds, &env, motion.clone());
     renderer.finish_rebuild_frame();
+    let progress = handles.press_progress_at(mid_press);
     assert!(
-        state.press_progress > 0.0 && state.press_progress < 1.0,
-        "the press morph must be in flight while the press is held: {}",
-        state.press_progress
+        progress > 0.0 && progress < 1.0,
+        "the press morph must be in flight while the press is held: {progress}",
     );
 
     // Once the animation has settled the held press reports 1.
     let held_at = pressed_at + Duration::from_millis(60);
     renderer.set_frame_instant(held_at);
     renderer.begin_rebuild_frame();
-    let (state, _, _) = renderer.bind_interaction_target(key.clone(), bounds, &env);
+    let (_, _, handles) =
+        renderer.bind_interaction_target_with_motion(key.clone(), bounds, &env, motion.clone());
     renderer.finish_rebuild_frame();
-    approx::assert_relative_eq!(state.press_progress, 1.0);
+    approx::assert_relative_eq!(handles.press_progress_at(held_at), 1.0);
 
     // Release: the morph plays `press_shape` backwards from the release
     // instant — it must not snap back to 0 in one frame.
     renderer.hit_test.interaction.clear_all_presses(held_at);
     renderer.begin_rebuild_frame();
-    let (state, _, _) = renderer.bind_interaction_target(key.clone(), bounds, &env);
+    let (state, _, _) =
+        renderer.bind_interaction_target_with_motion(key.clone(), bounds, &env, motion.clone());
     renderer.finish_rebuild_frame();
-    assert!(!state.state.contains(InteractionState::PRESSED));
+    assert!(!state.contains(InteractionState::PRESSED));
 
-    renderer.set_frame_instant(held_at + Duration::from_millis(8));
+    let mid_release = held_at + Duration::from_millis(8);
+    renderer.set_frame_instant(mid_release);
     renderer.begin_rebuild_frame();
-    let (state, _, _) = renderer.bind_interaction_target(key.clone(), bounds, &env);
+    let (_, _, handles) =
+        renderer.bind_interaction_target_with_motion(key.clone(), bounds, &env, motion.clone());
     renderer.finish_rebuild_frame();
+    let progress = handles.press_progress_at(mid_release);
     assert!(
-        state.press_progress > 0.0 && state.press_progress < 1.0,
-        "the morph must animate back on release instead of snapping: {}",
-        state.press_progress
+        progress > 0.0 && progress < 1.0,
+        "the morph must animate back on release instead of snapping: {progress}",
     );
 
-    renderer.set_frame_instant(held_at + Duration::from_millis(60));
+    let settled_at = held_at + Duration::from_millis(60);
+    renderer.set_frame_instant(settled_at);
     renderer.begin_rebuild_frame();
-    let (state, _, _) = renderer.bind_interaction_target(key, bounds, &env);
+    let (_, _, handles) = renderer.bind_interaction_target_with_motion(key, bounds, &env, motion);
     renderer.finish_rebuild_frame();
-    approx::assert_relative_eq!(state.press_progress, 0.0);
+    approx::assert_relative_eq!(handles.press_progress_at(settled_at), 0.0);
 }
 
 #[test]
@@ -2524,7 +2490,8 @@ fn touch_press_delays_ripple_and_move_cancels_click() {
     let action_activations = Rc::clone(&activations);
 
     renderer.begin_rebuild_frame();
-    let (_, press_slot, handles) = renderer.bind_interaction_target(key, bounds, &env);
+    let (_, press_slot, handles) =
+        renderer.bind_interaction_target_with_motion(key, bounds, &env, test_interaction_motion());
     renderer.register_interactive_pointer_target(bounds, press_slot, move |_, _, _| {
         action_activations.set(action_activations.get() + 1);
         true
@@ -2781,12 +2748,51 @@ fn inactive_modal_scope_does_not_trap_keyboard_focus() {
     assert!(renderer.hit_test.modal_interaction.is_none());
 }
 
-/// A recorded `draw_toggle_switch` call: `(bounds, progress, selected)`.
-type ToggleSwitchDraw = (Rect, f32, bool);
-/// A recorded `draw_progress_linear_track` call: `(bounds, active_end)`.
-type ProgressTrackDraw = (Rect, Option<f64>);
-/// A recorded `draw_radio_indicator` call: `(center, state)`.
-type RadioIndicatorDraw = (Point, RadioIndicatorState);
+/// The switch look a test theme hands out for a toggle spec.
+type SwitchLookFor = Rc<dyn Fn(&ToggleSpec, &Environment) -> SwitchLook>;
+
+/// The slider look a test theme hands out for a slider spec.
+type SliderLookFor = Rc<dyn Fn(&SliderSpec, &Environment) -> SliderLook>;
+
+/// The stepper look a test theme hands out for a stepper spec.
+type StepperLookFor = Rc<dyn Fn(&StepperSpec, &Environment) -> StepperLook>;
+/// The text field look a test theme hands out for a field spec.
+type TextFieldLookFor = Rc<dyn Fn(&TextFieldSpec, &Environment) -> TextFieldLook>;
+
+/// The segmented look a test theme hands out for a segmented picker spec.
+type SegmentedLookFor =
+    Rc<dyn Fn(&crate::theme::SegmentedSpec, &Environment) -> crate::theme::SegmentedLook>;
+
+/// The glass look a test theme hands out for a glass background.
+type GlassLookFor =
+    Rc<dyn Fn(&waterui::background::Glass, &Environment) -> Option<crate::theme::GlassLook>>;
+
+/// A linear progress bar the theme realized: `(frame, value)`.
+type ProgressBarRealization = (Rect, f64);
+/// A radio indicator the theme realized: `(frame, selected)`.
+type RadioIndicatorRealization = (Rect, bool);
+
+/// How a test theme's indeterminate progress looks move.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub enum IndeterminateProgress {
+    /// Plain controls with no moving parts.
+    #[default]
+    Still,
+    /// A bar that travels, a tick that turns, a square that swells.
+    Moving,
+    /// As [`Self::Moving`], the tick turning with two nested rotation layers.
+    Nested,
+    /// The linear look is a bar whose colour keyframes are built from the
+    /// colour scheme.
+    Scheme,
+}
+
+impl IndeterminateProgress {
+    /// Whether the looks travel, turn and swell.
+    const fn moves(self) -> bool {
+        matches!(self, Self::Moving | Self::Nested)
+    }
+}
 
 #[derive(Default)]
 pub struct MinimalTestTheme {
@@ -2800,70 +2806,216 @@ pub struct MinimalTestTheme {
     tabs_bar_draws: Rc<RefCell<Vec<Rect>>>,
     /// Every tabs-bar divider bounds the theme was asked to draw.
     tabs_bar_divider_draws: Rc<RefCell<Vec<Rect>>>,
-    /// Forces the tab item layout the theme reports; `None` defaults to
-    /// `Vertical` like [`WidgetTheme::tabs_item_layout`]'s default.
+    /// Forces the tab item layout the theme's look reports; `None` is
+    /// `Vertical`, the look's layout when it names no horizontal width.
     forced_tab_item_layout: Option<TabItemLayout>,
-    /// `(bar_width, item_count)` arguments the theme was asked for its layout.
-    tabs_layout_queries: Rc<RefCell<Vec<(f64, usize)>>>,
-    /// `(bounds, layout)` for every `draw_tabs_highlight` call.
+    /// `(bounds, layout)` for every highlight the selected tab item records.
     tabs_highlight_draws: Rc<RefCell<Vec<(Rect, TabItemLayout)>>>,
-    /// When set, `tabs_item_layout` answers `Horizontal` from this bar extent
-    /// up — a width-class theme like M3's medium-width boundary.
+    /// When set, the tabs look lays its items out horizontally from this bar
+    /// extent up — a width-class theme like M3's medium-width boundary.
     horizontal_from_width: Option<f64>,
-    /// Every value-indicator chrome rect the theme was asked to draw — the
-    /// renderer reaches the hook only while the slider is pressed.
-    slider_value_indicator_draws: Rc<RefCell<Vec<Rect>>>,
-    /// The `ControlSize` each `slider_metrics` call was asked for.
-    slider_metric_sizes: Rc<RefCell<Vec<ControlSize>>>,
-    /// Every slider track rect the theme was asked to draw.
+    /// Every frame the slider's value-indicator bubble records on.
+    slider_indicator_draws: Rc<RefCell<Vec<Rect>>>,
+    /// Every spec the theme was asked for a slider look.
+    slider_specs: Rc<RefCell<Vec<SliderSpec>>>,
+    /// Every frame the slider's track part records on.
     slider_track_draws: Rc<RefCell<Vec<Rect>>>,
-    /// Every `draw_interaction_state_layer` call, as `(state, resolved radii)`.
-    state_layer_draws: Rc<RefCell<Vec<(WidgetInteractionState, RoundedRectRadii)>>>,
-    /// The backdrop-material plan a chrome test installs
-    /// (water-rs/waterui#1788): the registry entries and the materials the
-    /// state-layer draw replays.
+    /// The drag mapping the slider look answers; `Absolute` when unset.
+    slider_drag: Option<DragMapping>,
+    /// Whether the slider look draws no label, so reserves no band for one.
+    slider_without_label: bool,
+    /// The slider look the theme hands out for a spec and environment;
+    /// `None` answers the fixture look the slider tests above read back.
+    slider_look: Option<SliderLookFor>,
+    /// The backdrop-material plan a chrome test registers
+    /// (water-rs/waterui#1788): the registry entries, and the materials the
+    /// plan's [`ChromePlan::chrome`] replays.
     chrome: ChromePlan,
-    /// Every `draw_toggle_switch` call.
-    toggle_switch_draws: Rc<RefCell<Vec<ToggleSwitchDraw>>>,
-    /// Every `draw_progress_linear_track` call.
-    progress_linear_track_draws: Rc<RefCell<Vec<ProgressTrackDraw>>>,
-    /// Every `draw_radio_indicator` call.
-    radio_indicator_draws: Rc<RefCell<Vec<RadioIndicatorDraw>>>,
-    /// The `InputFieldMetrics` this theme reports; `None` answers the fixture
-    /// defaults `input_field_metrics` carries below.
+    /// The switch look the theme hands out for a spec and environment;
+    /// `None` answers a plain control with no parts.
+    switch_look: Option<SwitchLookFor>,
+    /// The stepper look the theme hands out for a spec and environment;
+    /// `None` answers [`crate::testing::plain_stepper_look`].
+    stepper_look: Option<StepperLookFor>,
+    /// The segmented look the theme hands out for a spec and environment;
+    /// `None` answers [`crate::testing::plain_segmented_look`].
+    segmented_look: Option<SegmentedLookFor>,
+    /// The glass look the theme hands out for a glass background; `None`
+    /// answers the trait's default, no glass.
+    glass_look: Option<GlassLookFor>,
+    /// Every spec the theme was asked for a stepper look.
+    stepper_specs: Rc<RefCell<Vec<StepperSpec>>>,
+    /// Every linear progress bar the theme's look realized, with the value
+    /// its part read.
+    progress_bar_realizations: Rc<RefCell<Vec<ProgressBarRealization>>>,
+    /// How many times a linear progress bar's part was recorded.
+    progress_bar_recordings: Rc<std::cell::Cell<u32>>,
+    /// Every spec the theme was asked for a progress look.
+    progress_specs: Rc<RefCell<Vec<ProgressSpec>>>,
+    /// How the indeterminate progress looks move.
+    indeterminate_progress: IndeterminateProgress,
+    /// Every radio indicator the theme realized.
+    radio_indicator_realizations: Rc<RefCell<Vec<RadioIndicatorRealization>>>,
+    /// The text field look the theme hands out for a spec and environment;
+    /// `None` answers [`crate::testing::plain_text_field_look`] over
+    /// `input_metrics`.
+    text_field_look: Option<TextFieldLookFor>,
+    /// Every spec the theme was asked for a text field look.
+    text_field_specs: Rc<RefCell<Vec<TextFieldSpec>>>,
+    /// The `InputFieldMetrics` the plain text field look lays out by; `None`
+    /// answers [`crate::testing::plain_input_metrics`].
     input_metrics: Option<InputFieldMetrics>,
-    /// The engine-provided chrome `button_chrome` hands out.
-    button_chrome: Option<crate::theme::Chrome>,
-    /// How many `draw_button_chrome` and `draw_button_state_layer` calls
-    /// the theme received.
-    button_chrome_draws: Rc<std::cell::Cell<usize>>,
+    /// The chrome the button look carries; `None` answers
+    /// [`invisible_chrome`].
+    button_chrome: Option<Chrome>,
+    /// The label styling the button look carries; `None` keeps the
+    /// label's own.
+    button_label: Option<Label>,
+    /// The button look's group opacity; `None` draws it opaque.
+    button_group_opacity: Option<crate::theme::Driven<f32>>,
+    /// The space the button look's group composites in.
+    button_group_blend_space: cherenkov_record::BlendSpace,
+}
+
+/// The caret blink the test themes' text field looks carry.
+pub fn test_caret_motion() -> TextCaretMotion {
+    crate::testing::plain_text_field_look(invisible_chrome(), crate::testing::plain_input_metrics())
+        .caret()
+        .blink()
+}
+
+/// A chrome that draws nothing at rest and tints nothing on interaction —
+/// the button look a test theme with no chrome of its own hands out. A
+/// touch press waits the theme's `touch_delay` before it shows.
+pub fn invisible_chrome() -> Chrome {
+    Chrome::new(
+        Surface::clear(CornerShape::radius(0.0)),
+        StateLayer::new(waterui::graphics::Color::new(
+            waterui::theme::color::Foreground,
+        )),
+        PressFeedback::new(),
+        FocusIndicator::Tint,
+        Motion::uniform(Animation::linear(Duration::from_millis(15))),
+    )
+    .hit(HitRegion::NONE.press_delay(Duration::from_millis(150)))
 }
 
 impl MinimalTestTheme {
-    /// Reports `metrics` from `input_field_metrics` instead of the fixture
-    /// defaults.
+    /// Hands out the look `look` makes for each text field's spec.
+    #[must_use]
+    pub fn with_text_field(
+        mut self,
+        look: impl Fn(&TextFieldSpec, &Environment) -> TextFieldLook + 'static,
+    ) -> Self {
+        self.text_field_look = Some(Rc::new(look));
+        self
+    }
+
+    /// Lays the plain text field look out by `metrics` instead of the
+    /// fixture defaults.
     #[must_use]
     pub fn with_input_metrics(mut self, metrics: InputFieldMetrics) -> Self {
         self.input_metrics = Some(metrics);
         self
     }
 
-    /// Hands out `chrome` from `button_chrome`, so buttons realize it with
-    /// live operands.
+    /// Puts `chrome` on the button look, so buttons realize it with live
+    /// operands.
     #[must_use]
-    pub fn with_button_chrome(mut self, chrome: crate::theme::Chrome) -> Self {
+    pub fn with_button_chrome(mut self, chrome: Chrome) -> Self {
         self.button_chrome = Some(chrome);
         self
     }
 
-    /// The count of `draw_button_chrome` and `draw_button_state_layer` calls.
-    pub fn button_chrome_draws(&self) -> Rc<std::cell::Cell<usize>> {
-        Rc::clone(&self.button_chrome_draws)
+    /// Hands out `look` for every switch.
+    #[must_use]
+    pub fn with_switch_look(self, look: SwitchLook) -> Self {
+        self.with_switch(move |_, _| look.clone())
+    }
+
+    /// Hands out the look `look` makes for each slider's spec.
+    #[must_use]
+    pub fn with_slider(
+        mut self,
+        look: impl Fn(&SliderSpec, &Environment) -> SliderLook + 'static,
+    ) -> Self {
+        self.slider_look = Some(Rc::new(look));
+        self
+    }
+
+    /// Hands out the look `look` makes for each switch's spec.
+    #[must_use]
+    pub fn with_switch(
+        mut self,
+        look: impl Fn(&ToggleSpec, &Environment) -> SwitchLook + 'static,
+    ) -> Self {
+        self.switch_look = Some(Rc::new(look));
+        self
+    }
+
+    /// Hands out the look `look` makes for each segmented picker's spec.
+    #[must_use]
+    pub fn with_segmented(
+        mut self,
+        look: impl Fn(&crate::theme::SegmentedSpec, &Environment) -> crate::theme::SegmentedLook
+        + 'static,
+    ) -> Self {
+        self.segmented_look = Some(Rc::new(look));
+        self
+    }
+
+    /// Hands out `look` for every stepper.
+    #[must_use]
+    pub fn with_stepper_look(mut self, look: StepperLook) -> Self {
+        self.stepper_look = Some(Rc::new(move |_, _| look.clone()));
+        self
+    }
+
+    /// Hands out the glass look `look` makes for each glass background.
+    #[must_use]
+    #[cfg_attr(
+        not(hydrolysis_gpu_painter),
+        expect(
+            dead_code,
+            reason = "its tests mirror the GPU painter's backdrop layers and build only with it"
+        )
+    )]
+    pub fn with_glass_background(
+        mut self,
+        look: impl Fn(&waterui::background::Glass, &Environment) -> Option<crate::theme::GlassLook>
+        + 'static,
+    ) -> Self {
+        self.glass_look = Some(Rc::new(look));
+        self
+    }
+
+    /// Styles the button look's label with `label`.
+    #[must_use]
+    pub fn with_button_label(mut self, label: Label) -> Self {
+        self.button_label = Some(label);
+        self
+    }
+
+    /// Draws the button look as one group at `opacity`.
+    #[must_use]
+    pub fn with_button_group_opacity(mut self, opacity: crate::theme::Driven<f32>) -> Self {
+        self.button_group_opacity = Some(opacity);
+        self
+    }
+
+    /// Composites the button look's group in `space`.
+    #[must_use]
+    pub const fn with_button_group_blend_space(
+        mut self,
+        space: cherenkov_record::BlendSpace,
+    ) -> Self {
+        self.button_group_blend_space = space;
+        self
     }
 }
 
-/// One `backdrop_material` a chrome test's theme replays per
-/// `draw_interaction_state_layer` call (water-rs/waterui#1788).
+/// One `backdrop_material` a chrome test's plan replays each time its
+/// chrome records (water-rs/waterui#1788).
 #[derive(Clone)]
 pub struct ChromeDraw {
     /// The member's live clip shape — a signal for the signal-rebind test.
@@ -2876,26 +3028,64 @@ pub struct ChromeDraw {
     pub effect: SharedLive<MaterialEffect>,
 }
 
-/// The backdrop-material terms a chrome test's theme declares: the
-/// registry `register_backdrop_shaders` fills and the materials the
-/// state-layer draw replays per call.
+/// A [`ContainerRecipe`] a [`ChromePlan`] shares with the registry it
+/// fills: the plan is `Clone`, the registry takes its recipe by value.
+#[derive(Debug)]
+struct SharedRecipe(Rc<dyn ContainerRecipe>);
+
+impl ContainerRecipe for SharedRecipe {
+    fn capture(&self, members: &[GroupMember<'_>]) -> CaptureClass {
+        self.0.capture(members)
+    }
+
+    fn effects(&self, members: &[GroupMember<'_>]) -> Vec<MaterialEffect> {
+        self.0.effects(members)
+    }
+}
+
+/// The backdrop-material terms a chrome test declares: the registry
+/// `register_backdrop_shaders` fills, and the materials its
+/// [`chrome`](Self::chrome) replays.
 #[derive(Clone, Default)]
 pub struct ChromePlan {
     /// `(key, source)` pairs the registry registers.
     pub shaders: Vec<(MaterialShader, BackdropShaderSource)>,
     /// `(key, capture)` pairs the registry registers.
     pub captures: Vec<(CaptureClass, MaterialCapture)>,
-    /// The materials `draw_interaction_state_layer` records per call.
+    /// `(shader, recipe)` pairs the registry registers as container
+    /// recipes (water-rs/waterui#2834).
+    pub containers: Vec<(MaterialShader, Rc<dyn ContainerRecipe>)>,
+    /// The materials the chrome's custom part records.
     pub draws: Vec<ChromeDraw>,
-    /// Scene fills `draw_interaction_state_layer` records after the
-    /// materials — each lands in the segment above the last member, so a
-    /// test can mount a keyed mount and a scene segment over it in one
-    /// program (water-rs/waterui#2002).
+    /// Scene fills the custom part records after the materials — each
+    /// lands in the segment above the last member, so a test can mount a
+    /// keyed mount and a scene segment over it in one program
+    /// (water-rs/waterui#2002).
     pub fills: Vec<(kurbo::RoundedRect, Paint)>,
-    /// When set, `draw_interaction_state_layer` records the materials
-    /// this resolves from the live `WidgetInteractionState` instead —
-    /// how a theme whose uniforms depend on the press is written.
-    pub stateful_draws: Option<Rc<dyn Fn(WidgetInteractionState) -> Vec<ChromeDraw>>>,
+}
+
+impl ChromePlan {
+    /// [`invisible_chrome`] with a custom part replaying the plan's
+    /// materials, then its fills — installed as a plugin, every tappable
+    /// view under it records them.
+    #[must_use]
+    pub fn chrome(&self) -> Chrome {
+        let draws = self.draws.clone();
+        let fills = self.fills.clone();
+        invisible_chrome().custom(Custom::new((), move |recorder, _frame, ()| {
+            for chrome in &draws {
+                recorder.backdrop_material(
+                    chrome.shape.clone(),
+                    chrome.shader,
+                    chrome.capture,
+                    chrome.effect.clone(),
+                );
+            }
+            for (shape, paint) in &fills {
+                recorder.fill(*shape, paint.clone());
+            }
+        }))
+    }
 }
 
 impl crate::Style for MinimalTestTheme {
@@ -2904,227 +3094,10 @@ impl crate::Style for MinimalTestTheme {
     fn install_tokens(&self, _env: &mut Environment) {}
 }
 
-impl WidgetTheme for MinimalTestTheme {
-    fn interaction_motion(&self) -> InteractionMotion {
-        InteractionMotion {
-            hover_opacity: 0.08,
-            focus_opacity: 0.12,
-            pressed_opacity: 0.12,
-            dragged_opacity: 0.16,
-            hover_enter: Animation::linear(Duration::from_millis(15)),
-            hover_exit: Animation::linear(Duration::from_millis(15)),
-            focus_enter: Animation::linear(Duration::from_millis(15)),
-            focus_exit: Animation::linear(Duration::from_millis(15)),
-            press_fade_in: Animation::linear(Duration::from_millis(105)),
-            press_fade_out: Animation::linear(Duration::from_millis(375)),
-            press_grow: Animation::bezier(Duration::from_millis(450), 0.2, 0.0, 0.0, 1.0),
-            press_shape: Animation::linear(Duration::from_millis(15)),
-            minimum_press_duration: Duration::from_millis(225),
-            touch_delay: Duration::from_millis(150),
-        }
-    }
-
-    fn progress_motion(&self) -> ProgressMotion {
-        ProgressMotion {
-            linear_determinate: Animation::bezier(Duration::from_millis(250), 0.4, 0.0, 0.6, 1.0),
-            circular_determinate: Animation::bezier(Duration::from_millis(500), 0.0, 0.0, 0.2, 1.0),
-            linear_indeterminate_cycle: Duration::from_millis(2_000),
-            loading_cycle: Duration::from_millis(4_666),
-            circular_indeterminate_cycle: Duration::from_millis(5_332),
-        }
-    }
-
-    fn text_caret_motion(&self) -> TextCaretMotion {
-        TextCaretMotion {
-            fade_cycle_duration: Duration::from_millis(1_060),
-            frame_interval: Duration::from_millis(530),
-            min_opacity: 0.2,
-        }
-    }
-
-    fn navigation_motion(&self) -> NavigationMotion {
-        NavigationMotion {
-            transition_duration: Duration::from_millis(450),
-            transition_easing: EasingCurve::bezier(0.2, 0.0, 0.0, 1.0),
-            shared_axis_slide_distance: 30.0,
-            fade_through_threshold: 0.35,
-        }
-    }
-
-    fn button_metrics(&self, _style: ButtonStyle, _size: ControlSize) -> ButtonMetrics {
-        ButtonMetrics {
-            padding_x: 1.0,
-            padding_y: 2.0,
-            min_width: 123.0,
-            min_height: 45.0,
-        }
-    }
-
-    fn icon_button_metrics(&self, _style: ButtonStyle, _size: ControlSize) -> ButtonMetrics {
-        ButtonMetrics::new(0.0, 0.0, 41.0, 43.0)
-    }
-
-    fn button_chrome(&self, _spec: crate::theme::ButtonSpec) -> Option<crate::theme::Chrome> {
-        self.button_chrome.clone()
-    }
-
-    fn draw_button_chrome(
-        &self,
-        _draw: &mut Recorder,
-        _bounds: Rect,
-        _style: ButtonStyle,
-        _icon_only: bool,
-        _state: WidgetInteractionState,
-    ) {
-        self.button_chrome_draws
-            .set(self.button_chrome_draws.get() + 1);
-    }
-
-    fn draw_button_state_layer(
-        &self,
-        _draw: &mut Recorder,
-        _bounds: Rect,
-        _style: ButtonStyle,
-        _icon_only: bool,
-        _state: WidgetInteractionState,
-    ) {
-        self.button_chrome_draws
-            .set(self.button_chrome_draws.get() + 1);
-    }
-
-    /// Fills `registry` with the test's shader sources and capture
-    /// classes — the renderer calls this once at `with_engine`.
-    fn register_backdrop_shaders(&self, registry: &mut MaterialRegistry) {
-        for (key, source) in &self.chrome.shaders {
-            registry.register_shader(*key, source.clone());
-        }
-        for (key, capture) in &self.chrome.captures {
-            registry.register_capture_class(*key, *capture);
-        }
-    }
-
-    fn draw_interaction_state_layer(
-        &self,
-        draw: &mut Recorder,
-        _bounds: Rect,
-        radii: RoundedRectRadii,
-        _color: WorkingColor,
-        state: WidgetInteractionState,
-    ) {
-        self.state_layer_draws.borrow_mut().push((state, radii));
-        let draws = self
-            .chrome
-            .stateful_draws
-            .as_ref()
-            .map_or_else(|| self.chrome.draws.clone(), |resolve| resolve(state));
-        for chrome in &draws {
-            draw.backdrop_material(
-                chrome.shape.clone(),
-                chrome.shader,
-                chrome.capture,
-                chrome.effect.clone(),
-            );
-        }
-        for (shape, paint) in &self.chrome.fills {
-            draw.fill(*shape, paint.clone());
-        }
-    }
-
-    fn toggle_metrics(&self, _style: ToggleStyle) -> ToggleMetrics {
-        ToggleMetrics {
-            width: 10.0,
-            height: 20.0,
-            label_spacing: 3.0,
-        }
-    }
-
-    fn toggle_value_animation(&self) -> Animation {
-        Animation::linear(Duration::from_millis(100))
-    }
-
-    fn draw_toggle_switch(
-        &self,
-        _draw: &mut Recorder,
-        bounds: Rect,
-        progress: f32,
-        selected: bool,
-        _state: WidgetInteractionState,
-    ) {
-        self.toggle_switch_draws
-            .borrow_mut()
-            .push((bounds, progress, selected));
-    }
-
-    fn draw_toggle_checkbox(
-        &self,
-        _draw: &mut Recorder,
-        _bounds: Rect,
-        _progress: f32,
-        _state: WidgetInteractionState,
-    ) {
-    }
-
-    fn stepper_metrics(&self) -> StepperMetrics {
-        StepperMetrics {
-            button_min_size: 12.0,
-            button_max_size: 18.0,
-            button_intrinsic_size: 14.0,
-            button_spacing: 4.0,
-            label_spacing: 8.0,
-        }
-    }
-
-    fn draw_stepper_button(
-        &self,
-        _draw: &mut Recorder,
-        _bounds: Rect,
-        _end: StepperEnd,
-        _state: WidgetInteractionState,
-    ) {
-    }
-    fn draw_stepper_decrement_icon(&self, _draw: &mut Recorder, _bounds: Rect) {}
-    fn draw_stepper_increment_icon(&self, _draw: &mut Recorder, _bounds: Rect) {}
-
-    fn input_field_metrics(&self) -> InputFieldMetrics {
-        self.input_metrics.unwrap_or(InputFieldMetrics {
-            label_height: 14.0,
-            min_width: 100.0,
-            min_height: 32.0,
-            horizontal_inset: 8.0,
-            vertical_inset: 6.0,
-        })
-    }
-
-    fn input_placeholder_color(&self) -> waterui_graphics::color::Color {
-        waterui_graphics::color::Color::srgb(0, 0, 0)
-    }
-
-    fn input_selection_paint(&self) -> Paint {
-        Paint::Solid(
-            waterui::color::Srgb::new(0.20, 0.45, 0.90)
-                .resolve()
-                .with_alpha(0.28),
-        )
-    }
-
-    fn input_caret_paint(&self, opacity: f32) -> Paint {
-        Paint::Solid(
-            waterui::color::Srgb::new(0.12, 0.14, 0.18)
-                .resolve()
-                .with_alpha(opacity),
-        )
-    }
-
-    fn draw_input_field(
-        &self,
-        _draw: &mut Recorder,
-        _bounds: Rect,
-        _state: WidgetInteractionState,
-    ) {
-    }
-
-    fn text_context_menu_metrics(&self) -> TextContextMenuMetrics {
-        TextContextMenuMetrics {
+impl MinimalTestTheme {
+    /// The measures of the theme's menus.
+    pub(crate) const fn menu_layout() -> MenuLayout {
+        MenuLayout {
             row_height: 56.0,
             horizontal_padding: 16.0,
             vertical_padding: 12.0,
@@ -3136,380 +3109,379 @@ impl WidgetTheme for MinimalTestTheme {
             separator_thickness: 1.0,
         }
     }
+}
 
-    fn draw_text_context_menu_panel(&self, draw: &mut Recorder, bounds: Rect) {
-        let radii = kurbo::RoundedRectRadii::from_single_radius(
-            self.text_context_menu_metrics().corner_radius,
-        );
-        // A level-2-like shadow under the panel, deep enough for tests to
-        // distinguish it from the scrim's uniform dim.
-        draw.shadow(
-            kurbo::RoundedRect::from_rect(bounds, radii),
-            Shadow::new(6.0, WorkingColor::new([0.0, 0.0, 0.0, 0.35]))
-                .offset(kurbo::Vec2::new(0.0, 3.0)),
-        );
-        draw.fill(
-            kurbo::RoundedRect::from_rect(bounds, radii),
-            // `WorkingColor` components are linear Display P3; the intended
-            // panel colour is sRGB (0.96, 0.94, 0.97), so it converts rather
-            // than passing raw.
-            Paint::Solid(crate::renderer::working_color(peniko::Color::new([
-                0.96, 0.94, 0.97, 1.0,
-            ]))),
-        );
+/// This theme's tab indicator is a strip: 40 thick and the item's whole
+/// extent, centered, for horizontal items; otherwise 3 thick along the bar
+/// item's top (the sidebar item's trailing edge), as wide (tall) as the
+/// title.
+fn tab_highlight_strip(item: TabItemGeometry) -> Rect {
+    let thickness: f64 = match item.layout {
+        TabItemLayout::Vertical => 3.0,
+        TabItemLayout::Horizontal => 40.0,
+    };
+    let bounds = item.bounds;
+    if matches!(item.layout, TabItemLayout::Horizontal) {
+        let height = thickness.min(bounds.height());
+        let y0 = (bounds.height() - height).mul_add(0.5, bounds.y0);
+        Rect::new(bounds.x0, y0, bounds.x1, y0 + height)
+    } else if matches!(item.placement, NativeTabStyle::Sidebar) {
+        Rect::new(
+            (bounds.x1 - thickness).max(bounds.x0),
+            item.title.y0,
+            bounds.x1,
+            item.title.y1,
+        )
+    } else {
+        Rect::new(
+            item.title.x0,
+            bounds.y0,
+            item.title.x1,
+            (bounds.y0 + thickness).min(bounds.y1),
+        )
     }
+}
 
-    fn draw_text_context_menu_separator(&self, _draw: &mut Recorder, _bounds: Rect) {}
-
-    fn picker_metrics(&self, _style: PickerStyle) -> PickerMetrics {
-        PickerMetrics {
-            min_width: 72.0,
-            min_height: 28.0,
-            horizontal_inset: 8.0,
-            vertical_inset: 6.0,
-            label_spacing: 8.0,
-            indicator_space: 18.0,
-            radio_indicator_size: 16.0,
-            radio_label_spacing: 8.0,
-            radio_row_spacing: 8.0,
-            popup_top_spacing: 4.0,
-            popup_row_height: 48.0,
-            popup_corner_radius: 6.0,
-            segment_min_width: 58.0,
+impl WidgetTheme for MinimalTestTheme {
+    fn button(&self, spec: &ButtonSpec, _env: &Environment) -> ButtonLook {
+        let chrome = self.button_chrome.clone().unwrap_or_else(invisible_chrome);
+        let mut look = ButtonLook::new(chrome, self.button_label.clone().unwrap_or_default())
+            .group_blend_space(self.button_group_blend_space);
+        if let Some(opacity) = &self.button_group_opacity {
+            look = look.group_opacity(opacity.clone());
         }
-    }
-
-    fn radio_selection_motion(&self) -> RadioSelectionMotion {
-        RadioSelectionMotion {
-            inner_grow: Animation::linear(Duration::from_millis(1)),
-            inner_opacity: Animation::linear(Duration::from_millis(1)),
-            outer_color: Animation::linear(Duration::from_millis(1)),
-        }
-    }
-
-    fn draw_picker_indicator(&self, _draw: &mut Recorder, _bounds: Rect) {}
-
-    fn draw_picker_popup(&self, _draw: &mut Recorder, _popup_rect: Rect) {}
-
-    fn draw_picker_popup_row_background(
-        &self,
-        _draw: &mut Recorder,
-        _row_rect: Rect,
-        _selected: bool,
-    ) {
-    }
-
-    fn draw_picker_separator(&self, _draw: &mut Recorder, _separator: Rect) {}
-
-    fn draw_radio_indicator(
-        &self,
-        _draw: &mut Recorder,
-        center: Point,
-        _radius: f64,
-        state: RadioIndicatorState,
-    ) {
-        self.radio_indicator_draws
-            .borrow_mut()
-            .push((center, state));
-    }
-
-    fn slider_metrics(&self, size: ControlSize) -> SliderMetrics {
-        self.slider_metric_sizes.borrow_mut().push(size);
-        SliderMetrics {
-            horizontal_inset: 12.0,
-            horizontal_spacing: 8.0,
-            vertical_spacing: 6.0,
-            min_track_width: 72.0,
-            // A 6pt track for the ExtraSmall default, four points deeper per
-            // size — the per-size tests read this back off the drawn track.
-            track_height: 4.0f64.mul_add(f64::from(size as u8), 6.0),
-            handle_width: 4.0,
-            handle_height: 44.0,
-        }
-    }
-
-    fn draw_slider_track(
-        &self,
-        _draw: &mut Recorder,
-        track_rect: Rect,
-        _fill_rect: Rect,
-        _size: ControlSize,
-        _state: WidgetInteractionState,
-    ) {
-        self.slider_track_draws.borrow_mut().push(track_rect);
-    }
-
-    fn draw_slider_thumb(
-        &self,
-        _draw: &mut Recorder,
-        _center: Point,
-        _radius: f64,
-        _size: ControlSize,
-        _state: WidgetInteractionState,
-    ) {
-    }
-
-    fn slider_value_indicator_metrics(&self) -> SliderValueIndicatorMetrics {
-        SliderValueIndicatorMetrics::new(8.0, 4.0, 4.0, 0.0, 0.0)
-    }
-
-    fn slider_value_indicator_color(&self) -> Color {
-        Color::srgb(255, 255, 255)
-    }
-
-    fn slider_value_indicator_font(&self) -> waterui_text::font::Font {
-        waterui_text::font::Font::default()
-    }
-
-    fn draw_slider_value_indicator(&self, _draw: &mut Recorder, bounds: Rect) {
-        self.slider_value_indicator_draws.borrow_mut().push(bounds);
-    }
-
-    fn progress_metrics(&self, style: ProgressIndicatorStyle) -> ProgressMetrics {
-        match style {
-            ProgressIndicatorStyle::Loading => ProgressMetrics::loading(48.0, 38.0),
-            ProgressIndicatorStyle::Linear => ProgressMetrics {
-                label_height: 18.0,
-                bar_top_offset: 10.0,
-                bar_height: 8.0,
-                bar_horizontal_inset: 8.0,
-                value_label_top_spacing: 6.0,
-                min_track_width: 72.0,
-                circular_diameter: 0.0,
-                circular_stroke_width: 0.0,
-                loading_indicator_size: 0.0,
-            },
-            ProgressIndicatorStyle::Circular => ProgressMetrics {
-                label_height: 0.0,
-                bar_top_offset: 0.0,
-                bar_height: 0.0,
-                bar_horizontal_inset: 0.0,
-                value_label_top_spacing: 0.0,
-                min_track_width: 0.0,
-                circular_diameter: 32.0,
-                circular_stroke_width: 5.0,
-                loading_indicator_size: 0.0,
-            },
-        }
-    }
-
-    fn draw_progress_linear_track(
-        &self,
-        _draw: &mut Recorder,
-        bounds: Rect,
-        active_end: Option<f64>,
-    ) {
-        self.progress_linear_track_draws
-            .borrow_mut()
-            .push((bounds, active_end));
-    }
-    fn draw_progress_linear_fill(&self, _draw: &mut Recorder, _bounds: Rect) {}
-    fn draw_progress_linear_indeterminate(
-        &self,
-        _draw: &mut Recorder,
-        _bounds: Rect,
-        _elapsed: Duration,
-        _four_color: bool,
-    ) {
-    }
-    fn draw_progress_circular_track(
-        &self,
-        _draw: &mut Recorder,
-        _center: Point,
-        _radius: f64,
-        _width: f64,
-        _active_turns: Option<f64>,
-    ) {
-    }
-    fn draw_progress_circular_fill(&self, _draw: &mut Recorder, _path: &BezPath, _width: f64) {}
-    fn draw_progress_loading(
-        &self,
-        _draw: &mut Recorder,
-        _bounds: Rect,
-        _elapsed: Duration,
-        _four_color: bool,
-    ) {
-    }
-
-    fn draw_progress_circular_indeterminate(
-        &self,
-        _draw: &mut Recorder,
-        _center: Point,
-        _radius: f64,
-        _width: f64,
-        _elapsed: Duration,
-        _four_color: bool,
-    ) {
-    }
-
-    fn navigation_metrics(&self) -> NavigationMetrics {
-        NavigationMetrics {
-            automatic_bar_height: 64.0,
-            inline_bar_height: 64.0,
-            medium_bar_height: 112.0,
-            large_bar_height: 152.0,
-            inline_title_height: 28.0,
-            medium_title_height: 36.0,
-            large_title_height: 36.0,
-            title_leading_inset: 16.0,
-            title_trailing_inset: 16.0,
-            large_title_bottom_inset: 28.0,
-            horizontal_inset: 4.0,
-            item_spacing: 0.0,
-            search_height: 56.0,
-            search_vertical_inset: 4.0,
-            back_button_size: 40.0,
-            back_button_leading_inset: 4.0,
-            back_button_top_inset: 12.0,
-        }
-    }
-
-    fn draw_navigation_bar(&self, _draw: &mut Recorder, bounds: Rect, _background: &Paint) {
-        self.navigation_bar_draws.borrow_mut().push(bounds);
-    }
-
-    fn draw_navigation_bar_separator(&self, _draw: &mut Recorder, bounds: Rect) {
-        self.navigation_bar_separator_draws
-            .borrow_mut()
-            .push(bounds);
-    }
-    fn draw_navigation_back_button(&self, _draw: &mut Recorder, _bounds: Rect) {}
-    fn tabs_item_layout(&self, bar_width: f64, item_count: usize) -> TabItemLayout {
-        self.tabs_layout_queries
-            .borrow_mut()
-            .push((bar_width, item_count));
-        if let Some(threshold) = self.horizontal_from_width
-            && bar_width >= threshold
-        {
-            return TabItemLayout::Horizontal;
-        }
-        self.forced_tab_item_layout
-            .unwrap_or(TabItemLayout::Vertical)
-    }
-    fn tabs_metrics(&self, _layout: TabItemLayout) -> TabsMetrics {
-        TabsMetrics {
-            bar_height: 48.0,
-            button_min_width: 48.0,
-            button_horizontal_inset: 16.0,
-            icon_label_spacing: 4.0,
-        }
-    }
-    fn draw_tabs_bar(&self, _draw: &mut Recorder, surface: Rect) {
-        self.tabs_bar_draws.borrow_mut().push(surface);
-    }
-    fn draw_tabs_bar_divider(&self, _draw: &mut Recorder, divider: Rect) {
-        self.tabs_bar_divider_draws.borrow_mut().push(divider);
-    }
-    fn draw_tabs_highlight(&self, _draw: &mut Recorder, item: TabItemGeometry) {
-        // This theme's indicator is a strip: 40 thick and the item's whole
-        // extent, centered, for horizontal items; otherwise 3 thick along the
-        // bar item's top (the sidebar item's trailing edge), as wide (tall) as
-        // the title.
-        let thickness: f64 = match item.layout {
-            TabItemLayout::Vertical => 3.0,
-            TabItemLayout::Horizontal => 40.0,
-        };
-        let bounds = item.bounds;
-        let strip = if matches!(item.layout, TabItemLayout::Horizontal) {
-            let height = thickness.min(bounds.height());
-            let y0 = (bounds.height() - height).mul_add(0.5, bounds.y0);
-            Rect::new(bounds.x0, y0, bounds.x1, y0 + height)
-        } else if matches!(item.placement, NativeTabStyle::Sidebar) {
-            Rect::new(
-                (bounds.x1 - thickness).max(bounds.x0),
-                item.title.y0,
-                bounds.x1,
-                item.title.y1,
-            )
+        if spec.icon_only() {
+            look.minimum_size(Size::new(41.0, 43.0))
         } else {
-            Rect::new(
-                item.title.x0,
-                bounds.y0,
-                item.title.x1,
-                (bounds.y0 + thickness).min(bounds.y1),
-            )
+            look.padding(1.0, 2.0).minimum_size(Size::new(123.0, 45.0))
+        }
+    }
+
+    /// Fills `registry` with the test's shader sources and capture
+    /// classes — the renderer calls this once at `with_engine`.
+    fn register_backdrop_shaders(&self, registry: &mut MaterialRegistry) {
+        for (key, source) in &self.chrome.shaders {
+            registry.register_shader(*key, source.clone());
+        }
+        for (key, capture) in &self.chrome.captures {
+            registry.register_capture_class(*key, *capture);
+        }
+        for (shader, recipe) in &self.chrome.containers {
+            registry.register_container_recipe(*shader, SharedRecipe(Rc::clone(recipe)));
+        }
+    }
+
+    #[cfg(feature = "toggle")]
+    fn switch(&self, spec: &ToggleSpec, env: &Environment) -> SwitchLook {
+        self.switch_look.as_ref().map_or_else(
+            || {
+                SwitchLook::new(
+                    crate::testing::plain_toggle_control(),
+                    SwitchDrag::new(6.0, spec.direction()),
+                )
+            },
+            |look| look(spec, env),
+        )
+    }
+
+    #[cfg(feature = "toggle")]
+    fn checkbox(&self, _spec: &ToggleSpec, _env: &Environment) -> CheckboxLook {
+        CheckboxLook::new(crate::testing::plain_toggle_control())
+    }
+
+    #[cfg(feature = "stepper")]
+    fn stepper(&self, spec: &StepperSpec, env: &Environment) -> StepperLook {
+        self.stepper_specs.borrow_mut().push(spec.clone());
+        self.stepper_look
+            .as_ref()
+            .map_or_else(crate::testing::plain_stepper_look, |look| look(spec, env))
+    }
+
+    #[cfg(feature = "picker")]
+    fn segmented_picker(
+        &self,
+        spec: &crate::theme::SegmentedSpec,
+        env: &Environment,
+    ) -> crate::theme::SegmentedLook {
+        self.segmented_look
+            .as_ref()
+            .map_or_else(crate::testing::plain_segmented_look, |look| look(spec, env))
+    }
+
+    fn glass_background(
+        &self,
+        glass: &waterui::background::Glass,
+        env: &Environment,
+    ) -> Option<crate::theme::GlassLook> {
+        self.glass_look.as_ref().and_then(|look| look(glass, env))
+    }
+
+    #[cfg(any(
+        feature = "text-field",
+        feature = "secure-field",
+        feature = "date-picker",
+        feature = "color-picker"
+    ))]
+    fn text_field(&self, spec: &TextFieldSpec, env: &Environment) -> TextFieldLook {
+        self.text_field_specs.borrow_mut().push(spec.clone());
+        self.text_field_look.as_ref().map_or_else(
+            || {
+                crate::testing::plain_text_field_look(
+                    invisible_chrome(),
+                    self.input_metrics
+                        .unwrap_or_else(crate::testing::plain_input_metrics),
+                )
+            },
+            |look| look(spec, env),
+        )
+    }
+
+    #[cfg(feature = "menu")]
+    fn menu(&self, _spec: &MenuSpec, _env: &Environment) -> MenuLook {
+        let layout = Self::menu_layout();
+        let radii = kurbo::RoundedRectRadii::from_single_radius(layout.corner_radius);
+        MenuLook::new(
+            layout,
+            Custom::new((), move |draw, bounds, ()| {
+                // A level-2-like shadow under the panel, deep enough for
+                // tests to distinguish it from the scrim's uniform dim.
+                draw.shadow(
+                    kurbo::RoundedRect::from_rect(bounds, radii),
+                    Shadow::new(6.0, WorkingColor::new([0.0, 0.0, 0.0, 0.35]))
+                        .offset(kurbo::Vec2::new(0.0, 3.0)),
+                );
+                draw.fill(
+                    kurbo::RoundedRect::from_rect(bounds, radii),
+                    // `WorkingColor` components are linear Display P3; the
+                    // intended panel colour is sRGB (0.96, 0.94, 0.97), so it
+                    // converts rather than passing raw.
+                    Paint::Solid(crate::renderer::working_color(peniko::Color::new([
+                        0.96, 0.94, 0.97, 1.0,
+                    ]))),
+                );
+            }),
+            Custom::new((), |_, _, ()| {}),
+        )
+    }
+
+    #[cfg(any(feature = "picker", feature = "date-picker"))]
+    fn menu_picker(&self, _spec: &PickerSpec, _env: &Environment) -> MenuPickerLook {
+        crate::testing::plain_menu_picker_look()
+    }
+
+    #[cfg(feature = "picker")]
+    fn radio_group(&self, _spec: &PickerSpec, _env: &Environment) -> RadioGroupLook {
+        let realizations = Rc::clone(&self.radio_indicator_realizations);
+        let plain = crate::testing::plain_radio_group_look();
+        RadioGroupLook::new(
+            plain.indicator().clone().part(Custom::new(
+                (Driven::<bool, bool>::new(move |inputs| {
+                    realizations
+                        .borrow_mut()
+                        .push((inputs.frame, *inputs.value));
+                    *inputs.value
+                }),),
+                |_recorder, _frame, (_selected,)| {},
+            )),
+            plain.layout(),
+        )
+    }
+
+    #[cfg(feature = "slider")]
+    fn slider(&self, spec: &SliderSpec, env: &Environment) -> SliderLook {
+        self.slider_specs.borrow_mut().push(spec.clone());
+        if let Some(look) = &self.slider_look {
+            return look(spec, env);
+        }
+        let tracks = Rc::clone(&self.slider_track_draws);
+        let indicators = Rc::clone(&self.slider_indicator_draws);
+        let layout = SliderLayout {
+            // 44pt for the ExtraSmall default, four points deeper per size:
+            // the per-size tests read this back off the measured row.
+            row_height: 4.0f64.mul_add(f64::from(spec.size() as u8), 44.0),
+            track_inset: 12.0,
+            label_inset: 12.0,
+            label_gap: 8.0,
+            minimum_track: 72.0,
+            label_spacing: (!self.slider_without_label).then_some(6.0),
         };
-        self.tabs_highlight_draws
-            .borrow_mut()
-            .push((strip, item.layout));
+        let knob = Knob {
+            size: Size::new(4.0, 44.0),
+            hit: HitRegion::NONE,
+        };
+        SliderLook::new(
+            layout,
+            knob,
+            self.slider_drag.unwrap_or(DragMapping::Absolute),
+            Motion::uniform(Animation::linear(Duration::from_millis(15))),
+        )
+        .part(Custom::<f64, _>::new((), move |_draw, frame, ()| {
+            tracks.borrow_mut().push(frame);
+        }))
+        .value_indicator(
+            ValueIndicator::new(
+                waterui_text::font::Font::default(),
+                Color::srgb(255, 255, 255),
+                Custom::<f64, _>::new((), move |_draw, frame, ()| {
+                    indicators.borrow_mut().push(frame);
+                }),
+            )
+            .padding(8.0, 4.0)
+            .gap(4.0),
+        )
     }
-    fn draw_scroll_indicator(&self, _draw: &mut Recorder, _bounds: Rect) {}
 
-    fn divider_metrics(&self) -> DividerMetrics {
-        DividerMetrics { thickness: 1.0 }
+    fn linear_progress(&self, spec: &ProgressSpec, env: &Environment) -> LinearProgressLook {
+        self.progress_specs.borrow_mut().push(spec.clone());
+        let control = if self.indeterminate_progress.moves() && !spec.determinate() {
+            progress_looks::moving_bar()
+        } else if self.indeterminate_progress == IndeterminateProgress::Scheme
+            && !spec.determinate()
+        {
+            progress_looks::scheme_bar(env)
+        } else {
+            let realizations = Rc::clone(&self.progress_bar_realizations);
+            let recordings = Rc::clone(&self.progress_bar_recordings);
+            ProgressControl::new(
+                Size::new(72.0, 8.0),
+                Motion::uniform(Animation::linear(Duration::from_millis(15))),
+            )
+            .part(Custom::new(
+                (Driven::<f64, f64>::new(move |inputs| {
+                    realizations
+                        .borrow_mut()
+                        .push((inputs.frame, *inputs.value));
+                    *inputs.value
+                }),),
+                move |_recorder, _frame, (_fill,)| recordings.set(recordings.get() + 1),
+            ))
+        };
+        LinearProgressLook::new(control, 8.0)
+            .label_band(18.0, 10.0)
+            .value_label_band(6.0)
     }
 
-    fn draw_divider(&self, _draw: &mut Recorder, _bounds: Rect) {}
+    fn circular_progress(&self, spec: &ProgressSpec, _env: &Environment) -> IndicatorLook {
+        self.progress_specs.borrow_mut().push(spec.clone());
+        IndicatorLook::new(
+            if self.indeterminate_progress.moves() && !spec.determinate() {
+                progress_looks::spinner(
+                    self.indeterminate_progress == IndeterminateProgress::Nested,
+                )
+            } else {
+                ProgressControl::new(
+                    Size::new(32.0, 32.0),
+                    Motion::uniform(Animation::linear(Duration::from_millis(15))),
+                )
+            },
+        )
+    }
 
-    fn badge_metrics(&self) -> BadgeMetrics {
-        BadgeMetrics {
-            small_size: 6.0,
-            large_size: 16.0,
-            large_horizontal_padding: 4.0,
-            small_offset_x: 6.0,
-            small_offset_y: 6.0,
-            large_offset_x: 12.0,
-            large_offset_y: 14.0,
+    fn loading_indicator(&self, spec: &ProgressSpec, _env: &Environment) -> IndicatorLook {
+        self.progress_specs.borrow_mut().push(spec.clone());
+        IndicatorLook::new(if self.indeterminate_progress.moves() {
+            progress_looks::morphing()
+        } else {
+            ProgressControl::new(
+                Size::new(48.0, 48.0),
+                Motion::uniform(Animation::linear(Duration::from_millis(15))),
+            )
+        })
+    }
+
+    #[cfg(feature = "navigation")]
+    fn navigation_bar(&self, _spec: &NavigationSpec, _env: &Environment) -> NavigationBarLook {
+        let bar_draws = Rc::clone(&self.navigation_bar_draws);
+        let separator_draws = Rc::clone(&self.navigation_bar_separator_draws);
+        NavigationBarLook::new(
+            crate::testing::plain_navigation_metrics(),
+            crate::testing::plain_navigation_motion(),
+            invisible_chrome(),
+            Custom::new((), move |_recorder, frame, ()| {
+                bar_draws.borrow_mut().push(frame);
+            }),
+        )
+        .separator(Custom::new((), move |_recorder, frame, ()| {
+            separator_draws.borrow_mut().push(frame);
+        }))
+    }
+
+    #[cfg(feature = "navigation")]
+    fn tabs(&self, _spec: &TabsSpec, _env: &Environment) -> TabsLook {
+        let bar_draws = Rc::clone(&self.tabs_bar_draws);
+        let divider_draws = Rc::clone(&self.tabs_bar_divider_draws);
+        let highlight_draws = Rc::clone(&self.tabs_highlight_draws);
+        let metrics = crate::testing::plain_tabs_metrics();
+        let mut look = TabsLook::new(
+            metrics,
+            Custom::new((), move |_recorder, frame, ()| {
+                bar_draws.borrow_mut().push(frame);
+            }),
+            Custom::new((), move |_recorder, frame, ()| {
+                divider_draws.borrow_mut().push(frame);
+            }),
+            crate::testing::plain_tabs_motion(),
+            |_item, _selected| invisible_chrome(),
+        )
+        .highlight(move |item| {
+            let item = *item;
+            let highlight_draws = Rc::clone(&highlight_draws);
+            Custom::new((), move |_recorder, _frame, ()| {
+                // The selected item's indicator alone is observed: the other
+                // items' highlights are parts at rest.
+                if item.selected {
+                    highlight_draws
+                        .borrow_mut()
+                        .push((tab_highlight_strip(item.geometry), item.geometry.layout));
+                }
+            })
+        });
+        // The layout the theme reports: forced, or by width class.
+        if let Some(threshold) = self.horizontal_from_width {
+            look = look.horizontal(threshold, metrics);
+        } else if self.forced_tab_item_layout == Some(TabItemLayout::Horizontal) {
+            look = look.horizontal(0.0, metrics);
         }
+        look
+    }
+    fn scroll_indicator(&self, _env: &Environment) -> ScrollIndicatorLook {
+        crate::testing::plain_scroll_indicator_look()
     }
 
-    fn badge_label_color(&self) -> Color {
-        Color::srgb(255, 255, 255)
+    /// The plain badge look, its dot and its pill listing the frame each
+    /// drew on.
+    fn badge(&self, _env: &Environment) -> BadgeLook {
+        let plain = crate::testing::plain_badge_look();
+        let drawing = || {
+            let draws = Rc::clone(&self.badge_draws);
+            Custom::new((), move |_recorder, frame, ()| {
+                draws.borrow_mut().push(frame);
+            })
+        };
+        BadgeLook::new(
+            plain.metrics(),
+            plain.label_font().clone(),
+            plain.label_color().clone(),
+            drawing(),
+            drawing(),
+        )
     }
 
-    fn badge_label_font(&self) -> waterui_text::font::Font {
-        waterui_text::font::Font::default()
+    #[cfg(feature = "list")]
+    fn list(&self, _spec: &ListSpec, _env: &Environment) -> ListLook {
+        crate::testing::plain_list_look()
     }
 
-    fn draw_badge_small(&self, _draw: &mut Recorder, bounds: Rect) {
-        self.badge_draws.borrow_mut().push(bounds);
+    #[cfg(feature = "table")]
+    fn table(&self, _env: &Environment) -> TableLook {
+        crate::testing::plain_table_look()
     }
-    fn draw_badge_large(&self, _draw: &mut Recorder, bounds: Rect) {
-        self.badge_draws.borrow_mut().push(bounds);
-    }
-
-    fn list_metrics(&self) -> ListMetrics {
-        ListMetrics {
-            one_line_row_height: 56.0,
-            horizontal_inset: 16.0,
-            vertical_inset: 10.0,
-            divider_leading_inset: 16.0,
-            divider_trailing_inset: 16.0,
-            move_control_width: 20.0,
-            delete_control_width: 26.0,
-            trailing_control_spacing: 6.0,
-            trailing_control_vertical_inset: 6.0,
-            section_header_height: 48.0,
-            section_footer_height: 40.0,
-        }
-    }
-
-    fn draw_list_row_background(&self, _draw: &mut Recorder, _bounds: Rect, _alternate: bool) {}
-    fn draw_list_move_control(&self, _draw: &mut Recorder, _bounds: Rect) {}
-    fn draw_list_delete_control(&self, _draw: &mut Recorder, _bounds: Rect) {}
-    fn draw_list_separator(&self, _draw: &mut Recorder, _bounds: Rect) {}
-
-    fn table_metrics(&self) -> TableMetrics {
-        TableMetrics {
-            min_column_width: 72.0,
-            cell_horizontal_padding: 32.0,
-            cell_vertical_inset: 16.0,
-            header_height: 56.0,
-            row_height: 52.0,
-            outline_width: 1.0,
-        }
-    }
-
-    fn draw_table_background(&self, _draw: &mut Recorder, _bounds: Rect) {}
-    fn draw_table_header_background(&self, _draw: &mut Recorder, _bounds: Rect) {}
-    fn draw_table_cell_border(&self, _draw: &mut Recorder, _bounds: Rect) {}
-    fn draw_table_column_separator(&self, _draw: &mut Recorder, _from: Point, _to: Point) {}
 }
 
 #[test]
 fn ime_preedit_commit_and_disable_update_focused_text_target() {
     let mut renderer = test_renderer();
-    renderer.set_text_caret_motion(MinimalTestTheme::default().text_caret_motion());
+    renderer.set_text_caret_motion(test_caret_motion());
     let selection = Rc::new(RefCell::new(TextSelectionSlot {
         anchor: 0,
         focus: 0,
@@ -3567,7 +3539,7 @@ fn ime_preedit_commit_and_disable_update_focused_text_target() {
 #[test]
 fn text_input_focus_stays_on_its_field_when_a_row_is_inserted_above_it() {
     let mut renderer = test_renderer();
-    renderer.set_text_caret_motion(MinimalTestTheme::default().text_caret_motion());
+    renderer.set_text_caret_motion(test_caret_motion());
     let first = Rc::new(RefCell::new(TextSelectionSlot::default()));
     let focused = Rc::new(RefCell::new(TextSelectionSlot::default()));
     let emit = |renderer: &mut HydrolysisRenderer<crate::text::ParleyEngine>,
@@ -3628,7 +3600,7 @@ fn text_input_focus_stays_on_its_field_when_a_row_is_inserted_above_it() {
 #[test]
 fn text_input_focus_is_dropped_when_its_field_stops_being_emitted() {
     let mut renderer = test_renderer();
-    renderer.set_text_caret_motion(MinimalTestTheme::default().text_caret_motion());
+    renderer.set_text_caret_motion(test_caret_motion());
     let survivor = Rc::new(RefCell::new(TextSelectionSlot::default()));
     let removed = Rc::new(RefCell::new(TextSelectionSlot::default()));
     seed_text_input_targets(
@@ -3765,7 +3737,7 @@ fn caret_point_in_target<E: crate::text::TextEngine>(
 #[test]
 fn double_click_word_selection_survives_pointer_release() {
     let mut renderer = test_renderer();
-    renderer.set_text_caret_motion(MinimalTestTheme::default().text_caret_motion());
+    renderer.set_text_caret_motion(test_caret_motion());
     let env = test_environment();
     let selection = Rc::new(RefCell::new(TextSelectionSlot::default()));
     let target = shaped_text_input_target("hello world", &selection, &env);
@@ -3815,7 +3787,7 @@ fn double_click_word_selection_survives_pointer_release() {
 #[test]
 fn double_click_drag_extends_selection_by_words() {
     let mut renderer = test_renderer();
-    renderer.set_text_caret_motion(MinimalTestTheme::default().text_caret_motion());
+    renderer.set_text_caret_motion(test_caret_motion());
     let env = test_environment();
     let selection = Rc::new(RefCell::new(TextSelectionSlot::default()));
     let target = shaped_text_input_target("hello world", &selection, &env);
@@ -3895,6 +3867,7 @@ fn secure_text_context_menu_excludes_copy_and_cut() {
 }
 
 #[test]
+#[cfg(hydrolysis_gpu_painter)]
 fn bare_text_at_window_root_renders_into_page() {
     let mut renderer = test_renderer();
     let env = test_environment();
@@ -3915,6 +3888,7 @@ fn bare_text_at_window_root_renders_into_page() {
 }
 
 #[test]
+#[cfg(hydrolysis_gpu_painter)]
 fn bare_str_at_window_root_renders_into_page() {
     let mut renderer = test_renderer();
     let env = test_environment();
@@ -3950,44 +3924,7 @@ fn text_shaping_produces_nonzero_intrinsic_in_tests() {
 }
 
 #[test]
-fn resolved_text_fast_path_matches_the_recursive_measure() {
-    use core::cell::RefCell;
-
-    let env = test_environment();
-    let proposal = ProposalSize::UNSPECIFIED;
-
-    // A text leaf resolves once into a layout input and is then shaped through the
-    // text service directly, skipping the general recursion through `HydroState`.
-    // That shortcut is only sound while it reports what the path it bypasses would.
-    // Covers a bare `Str` and a string-like (`String`) bodied into text and recursed.
-    let str_view = AnyView::new(Str::from("probe"));
-    let string_view = AnyView::new(String::from("hello world"));
-
-    for view in [&str_view, &string_view] {
-        let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
-        let state_cell = RefCell::new(&mut state);
-        let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-        let fast_path = HydroSubview::from_view(view, &state_cell, &env, &theme).measure(proposal);
-        let recursive = {
-            let mut state = state_cell.borrow_mut();
-            measure_view_dimensions_with_proposal(view, proposal, &mut state, &env, &theme)
-        };
-
-        assert_eq!(
-            fast_path.size,
-            recursive.size,
-            "the resolved-text fast path for {} must equal the recursive measure",
-            view.name()
-        );
-        assert!(
-            fast_path.size.width > 0.0 && fast_path.size.height > 0.0,
-            "text shaping must produce a non-zero size for {}",
-            view.name()
-        );
-    }
-}
-
-#[test]
+#[cfg(hydrolysis_gpu_painter)]
 fn bare_str_renders_into_page() {
     let mut renderer = test_renderer();
     let env = test_environment();
@@ -4038,8 +3975,6 @@ fn render_path_text_layout_has_lines() {
 /// same invariant; verifying that needs a test in each of those languages.
 #[test]
 fn every_view_answers_the_three_point_probe_consistently() {
-    use core::cell::RefCell;
-
     let env = test_environment();
 
     let cases: Vec<(&str, AnyView)> = vec![
@@ -4073,13 +4008,7 @@ fn every_view_answers_the_three_point_probe_consistently() {
     ];
 
     for (name, view) in cases {
-        // The layout path measures normalized views, so the contract is about
-        // those, not about raw bodies.
-        let view = normalize_layout_view(view, &env);
-        let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
-        let cell = RefCell::new(&mut state);
-        let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-        let subview = HydroSubview::from_view(&view, &cell, &env, &theme);
+        let mut subview = Realized::new(view, &env);
 
         let ideal = subview.measure(ProposalSize::UNSPECIFIED).size;
 
@@ -4252,15 +4181,9 @@ fn tab_badge_draws_only_for_a_nonzero_count() {
 fn a_collapsed_naming_scope_reports_the_containers_resolved_extent() {
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
-    let measured = measure_view_dimensions_with_proposal(
-        &normalize_layout_view(AnyView::new(button("OK").padding_with(8.0)), &env),
-        ProposalSize::new(Some(160.0), Some(160.0)),
-        &mut state,
-        &env,
-        &theme,
-    )
-    .size;
+    let measured = Realized::with_theme(AnyView::new(button("OK").padding_with(8.0)), &env, &theme)
+        .measure(ProposalSize::new(Some(160.0), Some(160.0)))
+        .size;
     let mut renderer = test_renderer();
     let view = button("OK").padding_with(8.0).a11y_label("Named");
     capture_root_window(&mut renderer, view, &env, Rect::new(0.0, 0.0, 160.0, 160.0));
@@ -4302,21 +4225,16 @@ fn a_collapsed_naming_scope_reports_the_containers_resolved_extent() {
 fn a_collapsed_naming_scope_centres_the_resolved_extent_on_the_assigned_frame() {
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
-    let measured = measure_view_dimensions_with_proposal(
-        &normalize_layout_view(
-            AnyView::new(button("OK").padding_with([0.0, 0.0, 20.0, 0.0])),
-            &env,
-        ),
-        ProposalSize::new(Some(160.0), Some(160.0)),
-        &mut state,
+    let measured = Realized::with_theme(
+        AnyView::new(button("OK").padding_with([0.0, 20.0, 0.0, 0.0])),
         &env,
         &theme,
     )
+    .measure(ProposalSize::new(Some(160.0), Some(160.0)))
     .size;
     let mut renderer = test_renderer();
     let view = button("OK")
-        .padding_with([0.0, 0.0, 20.0, 0.0])
+        .padding_with([0.0, 20.0, 0.0, 0.0])
         .a11y_label("Named");
     capture_root_window(&mut renderer, view, &env, Rect::new(0.0, 0.0, 160.0, 160.0));
 
@@ -4355,11 +4273,12 @@ fn a_collapsed_naming_scope_centres_the_resolved_extent_on_the_assigned_frame() 
 }
 
 /// A labelled container with several semantic children stands as a `Group`
-/// and reports the frame it was assigned — the frozen contract makes the
-/// assigned frame the view's frame (water-rs/hydrolysis#51 amendment).
+/// and reports its own response rectangle — the stack's answer centred in the
+/// frame it was assigned — never the descendants' union and never the whole
+/// assigned frame (`docs/layout-spec.md` §7.2).
 #[cfg(feature = "accessibility")]
 #[test]
-fn a_labelled_container_that_stands_reports_its_assigned_frame() {
+fn a_labelled_container_that_stands_reports_its_response_rectangle() {
     let env = test_environment();
     let mut renderer = test_renderer();
     let view = vstack((text("A"), text("B"))).a11y_label("Named");
@@ -4375,34 +4294,56 @@ fn a_labelled_container_that_stands_reports_its_assigned_frame() {
         .expect("the labelled element must exist");
     assert_eq!(node.role(), AccessibilityNodeRole::Group);
     let bounds = node.bounds().expect("the element must carry bounds");
+    let (center_x, center_y) = (
+        f64::midpoint(bounds.x0, bounds.x1),
+        f64::midpoint(bounds.y0, bounds.y1),
+    );
     assert!(
-        (bounds.width() - 160.0).abs() < 0.5 && (bounds.height() - 160.0).abs() < 0.5,
-        "a standing container reports its assigned frame, got {}x{}",
-        bounds.width(),
-        bounds.height(),
+        bounds.width() < 80.0
+            && bounds.height() < 80.0
+            && (center_x - 80.0).abs() < 0.5
+            && (center_y - 80.0).abs() < 0.5,
+        "a standing container reports its answer centred in the assigned frame, got {bounds:?}",
     );
 }
 
+/// A GPU context whose generations' engines report their composition
+/// decisions into the returned sink.
+#[cfg(hydrolysis_gpu_painter)]
 fn diagnostic_gpu() -> (
     crate::platform::OffscreenGpuContext,
     cherenkov_gpu::composition::Sink,
-    Rc<crate::engine::SharedEngineState>,
 ) {
-    let gpu = crate::platform::OffscreenGpuContext::new_for_tests_blocking();
-    let probe = crate::platform::OffscreenSurface::on_context(
-        gpu.clone(),
-        1,
-        1,
-        wgpu::TextureFormat::Rgba8UnormSrgb,
-    );
-    let context = probe.device_loss().gpu_context();
     let diagnostics = cherenkov_gpu::composition::Sink::new();
-    let engine = crate::engine::GpuEngine::new(cherenkov_gpu::GpuConfig {
-        device: Some(context.shared_device.clone()),
-        composition_diag: Some(diagnostics.clone()),
-        ..cherenkov_gpu::GpuConfig::default()
-    })
-    .expect("diagnostic engine");
-    let state = crate::engine::SharedEngineState::register(context.context_id, Rc::new(engine));
-    (gpu, diagnostics, state)
+    let gpu = crate::platform::OffscreenGpuContext::for_tests_with_engine_config(
+        cherenkov_gpu::GpuConfig {
+            composition_diag: Some(diagnostics.clone()),
+            ..cherenkov_gpu::GpuConfig::default()
+        },
+    );
+    (gpu, diagnostics)
+}
+
+/// A bar item's icon-only default reaches through an environment snapshot
+/// wrapping its content, which replaces the environment wholesale — as the
+/// navigation stack's retained environment wraps every bar slot.
+#[cfg(feature = "navigation")]
+#[test]
+fn a_toolbar_item_keeps_icon_only_labels_inside_an_environment_snapshot() {
+    let env = test_environment();
+    let mut renderer = test_renderer();
+    let item = AnyView::new(Metadata::new(text("Share"), Environment::new()));
+    let node = RenderNode::build(
+        crate::widgets::nav::navigation::toolbar_item_view(item, &env),
+        &env,
+        &mut renderer,
+    );
+
+    let scope = node
+        .leading_scope_env()
+        .expect("the item opens with its environment scope");
+    assert!(matches!(
+        scope.get::<LabelDisplayMode>(),
+        Some(LabelDisplayMode::IconOnly)
+    ));
 }

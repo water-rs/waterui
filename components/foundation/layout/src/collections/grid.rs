@@ -4,13 +4,14 @@ use alloc::{vec, vec::Vec};
 use core::num::NonZeroUsize;
 use nami::{Computed, Signal, SignalExt};
 use num_traits::ToPrimitive;
+use waterui_contract::contract_violation;
 use waterui_core::{
     AnyView, Environment, IntoSignalF32, View, layout::LayoutInvalidationCallback, view::TupleViews,
 };
 
 use crate::{
-    Layout, PlacedSubview, Point, ProposalSize, Rect, Size, StretchAxis, SubView, SubviewPlacement,
-    ViewDimensions,
+    Layout, LayoutError, PlacedSubview, PlacementInput, Point, ProposalSize, Rect, Size,
+    StretchAxis, SubView, SubviewPlacement, UnitPoint, ViewDimensions,
     container::FixedContainer,
     stack::{Alignment, HorizontalAlignment, VerticalAlignment},
 };
@@ -145,6 +146,17 @@ impl Layout for GridLayout {
         // answers the proposal width like a populated one.
         let measurement = self.measure_grid(proposal.width, children);
         Size::new(measurement.total_width, measurement.total_height)
+    }
+
+    /// The grid block anchored top-leading, where `place` starts its rows.
+    /// The grid's alignment aligns cells inside their cells; it never moves
+    /// the block.
+    fn resolve_extent(
+        &self,
+        input: PlacementInput,
+        _children: &[&dyn SubView],
+    ) -> Result<Rect, LayoutError> {
+        Ok(input.bounds.align(input.extent()?, UnitPoint::TOP_LEADING))
     }
 
     fn place(
@@ -307,6 +319,9 @@ fn usize_to_f32(value: usize) -> f32 {
 
 /// A data-carrying struct that represents a single row in a `Grid`.
 /// It does not implement `View` itself; it is consumed by the `Grid`.
+///
+/// A row holds at most as many views as the grid has columns; a shorter row
+/// leaves its trailing cells empty.
 #[derive(Debug)]
 pub struct GridRow {
     pub(crate) contents: Vec<AnyView>,
@@ -362,16 +377,18 @@ pub struct Grid {
 impl Grid {
     /// Creates a new Grid.
     ///
-    /// - `columns`: The number of columns in the grid. Must be greater than 0.
+    /// - `columns`: The number of columns in the grid. Must be greater than 0;
+    ///   0 is a contract violation — a debug build panics, a release build
+    ///   logs it and uses 1 column.
     /// - `rows`: A tuple of `GridRow` views.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `columns` is 0.
     pub fn new(columns: usize, rows: impl IntoIterator<Item = GridRow>) -> Self {
+        let columns = NonZeroUsize::new(columns).unwrap_or_else(|| {
+            contract_violation!("Grid columns must be greater than 0; using 1 column");
+            NonZeroUsize::MIN
+        });
         Self {
             layout: GridLayout::new(
-                NonZeroUsize::new(columns).expect("Grid columns must be greater than 0"),
+                columns,
                 Size::new(8.0, 8.0), // Default spacing
                 Alignment::Center,   // Default alignment
             ),
@@ -405,26 +422,31 @@ impl Grid {
 
 impl View for Grid {
     fn body(self, _env: &Environment) -> impl View {
-        // Flatten the children from all GridRows into a single Vec<AnyView>.
-        // This is the list that the GridLayout engine will operate on.
-        let flattened_children = self
-            .rows
-            .into_iter()
-            .flat_map(|row| row.contents)
-            .collect::<Vec<AnyView>>();
+        // `GridLayout` assigns cells to rows by position, so each row's
+        // children are followed by empty cells up to the next row boundary:
+        // a short row leaves its trailing cells empty and the next row still
+        // starts in column 0 (docs/layout-spec.md §5). The last row needs no
+        // padding, since no row follows it.
+        let columns = self.layout.columns.get();
+        let row_count = self.rows.len();
+        let mut cells = Vec::with_capacity(row_count * columns);
+        for (index, row) in self.rows.into_iter().enumerate() {
+            let len = row.contents.len();
+            if len > columns {
+                // The overflow wraps onto further rows of its own, which the
+                // padding below closes, so later rows keep their cells.
+                contract_violation!(
+                    "GridRow {index} has {len} cells but the grid has {columns} columns"
+                );
+            }
+            cells.extend(row.contents);
+            if index + 1 < row_count {
+                let padding = len.next_multiple_of(columns) - len;
+                cells.extend(core::iter::repeat_with(AnyView::default).take(padding));
+            }
+        }
 
-        FixedContainer::new(self.layout, flattened_children)
-    }
-
-    /// Resolves to `FixedContainer` over the same layout and the flattened
-    /// row contents; reports what that container would.
-    fn stretch_axis(&self) -> crate::StretchAxis {
-        let child_axes = self
-            .rows
-            .iter()
-            .flat_map(|row| row.contents.iter().map(View::stretch_axis))
-            .collect::<Vec<_>>();
-        self.layout.stretch_axis(&child_axes)
+        FixedContainer::new(self.layout, cells)
     }
 }
 
@@ -449,7 +471,7 @@ pub fn row(contents: impl TupleViews) -> GridRow {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::StretchAxis;
+    use crate::{LayoutError, ResolvedExtent, StretchAxis};
     use core::num::NonZeroUsize;
 
     struct MockSubView {
@@ -457,6 +479,13 @@ mod tests {
     }
 
     impl SubView for MockSubView {
+        fn resolve_extent(
+            &self,
+            bounds: Rect,
+            proposal: ProposalSize,
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        }
         fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
             ViewDimensions::new(self.size)
         }
@@ -473,6 +502,13 @@ mod tests {
     }
 
     impl SubView for StretchingSubView {
+        fn resolve_extent(
+            &self,
+            bounds: Rect,
+            proposal: ProposalSize,
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        }
         fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
             ViewDimensions::new(self.size)
         }
@@ -482,6 +518,16 @@ mod tests {
         fn priority(&self) -> i32 {
             0
         }
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "Grid columns must be greater than 0")
+    )]
+    fn a_zero_column_grid_uses_one_column() {
+        let grid = Grid::new(0, []);
+        assert_eq!(grid.layout.columns.get(), 1);
     }
 
     #[test]

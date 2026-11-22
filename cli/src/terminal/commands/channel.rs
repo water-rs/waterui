@@ -56,9 +56,9 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     } else {
         Manifest::open(args.path.join("Water.toml")).await?
     };
-    if let Some(framework) = manifest.framework {
+    if let Some(framework) = manifest.framework() {
         line!(shell, "{}", toml::to_string_pretty(&framework)?);
-    } else if let Some(path) = manifest.waterui_path {
+    } else if let Some(path) = manifest.waterui_path() {
         line!(shell, "Local framework: {path}");
     } else {
         bail!("no framework channel is selected; use water channel dev, nightly or stable");

@@ -2,32 +2,44 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::text::{TextLayout as _, TextPosition, TextSelection};
+use crate::theme::MenuLayout;
+use cherenkov_record::Draw as _;
 use unicode_segmentation::UnicodeSegmentation;
-use waterui_graphics::draw::Draw as _;
+use waterui_core::contract_violation;
 
-/// What became of a key press once the framework finished with it.
-///
-/// The distinction that matters is `Consumed` vs `ForwardedToSurface`:
-/// only a consumed press suppresses the paired `TextInput` that follows it
-/// in the event queue (the web platform's `keydown` → `beforeinput` rule —
-/// `preventDefault` on the press cancels the text). A press forwarded to an
-/// embedded surface was *delivered*, not consumed: the surface owns its
-/// key+text pair, exactly as `SurfaceInputEvent` documents, and decides
-/// internally what the press meant.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum KeyPressOutcome {
-    /// No handler, editor, or surface accepted the press.
-    Ignored,
-    /// A handler consumed the press — editing action, focus traversal, or
-    /// an `OnKeyPress` ancestor reporting `KeyHandling::Handled`.
-    Consumed,
-    /// The press was forwarded to an embedded surface; its paired text is
-    /// delivered too, as the surface contract.
-    ForwardedToSurface,
+/// The paints a field's look gives the caret and the selection, evaluated
+/// each frame the overlay draws so a token they follow shows in place.
+#[derive(Clone)]
+pub struct CaretPaints {
+    caret: crate::theme::Driven<cherenkov_record::Paint>,
+    selection: crate::theme::Driven<cherenkov_record::Paint>,
+}
+
+impl CaretPaints {
+    /// The caret and selection paints of `look`.
+    pub fn of(look: &crate::theme::TextFieldLook) -> Self {
+        Self {
+            caret: look.caret().paint().clone(),
+            selection: look.selection().clone(),
+        }
+    }
+
+    /// The paint `paint` gives a focused field over `frame`.
+    fn resolve(
+        paint: &crate::theme::Driven<cherenkov_record::Paint>,
+        frame: kurbo::Rect,
+    ) -> cherenkov_record::Paint {
+        paint.target(&crate::theme::Inputs::at_rest(
+            frame,
+            waterui_core::interaction::InteractionState::FOCUSED,
+            &(),
+        ))
+    }
 }
 
 #[derive(Clone)]
 pub enum TextInputModel {
+    #[cfg(feature = "text-field")]
     TextField {
         value: nami::Binding<StyledStr>,
         line_limit: Option<usize>,
@@ -36,9 +48,8 @@ pub enum TextInputModel {
         /// field without one leaves the key unconsumed so it bubbles.
         on_submit: Option<SharedAction>,
     },
-    SecureField {
-        value: nami::Binding<FormSecure>,
-    },
+    #[cfg(feature = "secure-field")]
+    SecureField { value: nami::Binding<FormSecure> },
 }
 
 /// Text editing state that outlives a frame.
@@ -65,7 +76,6 @@ pub struct TextEditingState<E: crate::text::TextEngine> {
     pub(crate) clearance_surfaces: RefCell<Vec<ClearanceSurface<E>>>,
     pub(crate) text_input_targets: Vec<TextInputTarget<E>>,
     pub(crate) active_text_selection_drag: Option<ActiveTextSelectionDrag>,
-    pub(crate) last_text_selection_click: Option<TextSelectionClickState>,
     pub(crate) active_text_context_menu: Option<ActiveTextContextMenu>,
     focused_text_input: RefCell<Option<InteractionKey>>,
     /// The `.focused()` binding of the field holding text focus, captured
@@ -81,26 +91,9 @@ pub struct TextEditingState<E: crate::text::TextEngine> {
     pub(crate) text_caret_fade_started_at: Option<Instant>,
     pub(crate) text_caret_next_frame_at: Option<Instant>,
     pub(crate) text_caret_motion: Option<TextCaretMotion>,
-    /// How many primary presses have landed on an editable target. A
-    /// platform with a soft keyboard shows it again when this changes, so a
-    /// tap on the field already holding focus brings back a keyboard the
-    /// user dismissed.
-    activations: u64,
 }
 
 impl<E: crate::text::TextEngine> TextEditingState<E> {
-    /// Records a primary press on an editable target.
-    pub(crate) const fn note_activation(&mut self) {
-        self.activations = self
-            .activations
-            .checked_add(1)
-            .expect("text input activation count overflow");
-    }
-
-    /// The press count [`Self::note_activation`] maintains.
-    pub(crate) const fn activations(&self) -> u64 {
-        self.activations
-    }
     /// This frame's position for a stable target identity, if that target is
     /// still emitted.
     pub(crate) fn index_of(&self, key: &InteractionKey) -> Option<usize> {
@@ -166,14 +159,6 @@ pub struct TextSelectionSlot {
     pub initialized: bool,
 }
 
-#[derive(Debug, Clone)]
-pub struct TextSelectionClickState {
-    pub(crate) target: InteractionKey,
-    pub(crate) point: kurbo::Point,
-    pub(crate) at: Instant,
-    pub(crate) count: u8,
-}
-
 /// An in-flight text-selection drag: which field it belongs to, the click
 /// streak granularity that armed it, and the plain-text range that gesture
 /// selected at pointer-down. The range is the drag's anchor side — for a
@@ -207,6 +192,10 @@ pub struct TextInputTarget<E: crate::text::TextEngine> {
     pub(crate) text_bounds: kurbo::Rect,
     pub(crate) text_clip_bounds: kurbo::Rect,
     pub(crate) content_alpha: f32,
+    /// The paints the focused field's caret and selection draw with. A
+    /// target the semantic walk emits has none: it has no theme and draws
+    /// nothing.
+    pub(crate) paints: Option<CaretPaints>,
     pub(crate) layout: E::Layout,
     /// The string the IME-visible layout was typeset from — the committed
     /// text with the live pre-edit spliced in (a text field) or the mask
@@ -244,76 +233,6 @@ pub struct TextInputTarget<E: crate::text::TextEngine> {
     pub(crate) focus_binding: Option<Binding<bool>>,
     #[cfg(feature = "accessibility")]
     pub(crate) accessibility_node_id: Option<AccessibilityNodeId>,
-}
-
-/// One `OnKeyPress` ancestor scope a focused input's unconsumed keys bubble
-/// into. The scope stack is pushed while the retained tree flushes the
-/// `OnKeyPress` wrapper (outermost first), and a target snapshotting it keeps
-/// the whole chain even after the frame that produced it is gone.
-pub struct KeyHandlerScope {
-    /// The environment the `.on_key_press` view was built under — the handler
-    /// resolves `State`/`Use` extractors against it, extended with the press.
-    pub(crate) env: Environment,
-    pub(crate) handler: Rc<RefCell<OnKeyPress>>,
-}
-
-/// One link of the `OnKeyPress` scope chain: the innermost scope at a
-/// registration point plus the rest of its ancestors. Pushing a scope
-/// allocates a single node, and a target's snapshot of the chain is a single
-/// `Rc` clone, so neither the walk nor the snapshot allocates per frame.
-pub struct KeyHandlerNode {
-    pub scope: KeyHandlerScope,
-    pub(crate) parent: Option<Rc<Self>>,
-}
-
-/// The innermost chain node shared by `a` and `b` — the scopes enclosing
-/// every registration the two chains were snapped from.
-pub fn common_key_handler_scope(
-    a: Option<Rc<KeyHandlerNode>>,
-    b: Option<Rc<KeyHandlerNode>>,
-) -> Option<Rc<KeyHandlerNode>> {
-    fn depth(mut node: Option<Rc<KeyHandlerNode>>) -> usize {
-        let mut depth = 0;
-        // The while-let moves `node` into the pattern each pass, so a fresh
-        // clone is the only way to rebind it — `clone_from` needs a live
-        // target binding, which this loop does not have.
-        #[allow(clippy::assigning_clones)]
-        while let Some(link) = node {
-            depth += 1;
-            node = link.parent.clone();
-        }
-        depth
-    }
-    let mut a = a;
-    let mut b = b;
-    let mut a_depth = depth(a.clone());
-    let mut b_depth = depth(b.clone());
-    while a_depth > b_depth {
-        a = a.and_then(|link| link.parent.clone());
-        a_depth -= 1;
-    }
-    while b_depth > a_depth {
-        b = b.and_then(|link| link.parent.clone());
-        b_depth -= 1;
-    }
-    loop {
-        match (a, b) {
-            (Some(x), Some(y)) => {
-                if Rc::ptr_eq(&x, &y) {
-                    return Some(x);
-                }
-                // `a`/`b` are moved into the match pattern, so rebinding
-                // them takes fresh clones — `clone_from` cannot run on a
-                // moved binding.
-                #[allow(clippy::assigning_clones)]
-                {
-                    a = x.parent.clone();
-                    b = y.parent.clone();
-                }
-            }
-            _ => return None,
-        }
-    }
 }
 
 /// The focused text input's authoritative editing state, projected for a
@@ -370,6 +289,8 @@ pub struct TextInputTargetRegistration<E: crate::text::TextEngine> {
     pub(crate) text_bounds: kurbo::Rect,
     pub(crate) text_clip_bounds: kurbo::Rect,
     pub(crate) content_alpha: f32,
+    /// See [`TextInputTarget::paints`].
+    pub(crate) paints: Option<CaretPaints>,
     pub(crate) layout: E::Layout,
     /// See [`TextInputTarget::display_text`].
     #[cfg_attr(
@@ -482,16 +403,29 @@ pub enum ActiveTextContextMenu {
 }
 
 impl TextInputModel {
+    const fn submit_action(&self) -> Option<&SharedAction> {
+        match self {
+            #[cfg(feature = "text-field")]
+            Self::TextField { on_submit, .. } => on_submit.as_ref(),
+            #[cfg(feature = "secure-field")]
+            Self::SecureField { .. } => None,
+        }
+    }
+
     pub(crate) fn plain_text(&self) -> String {
         match self {
+            #[cfg(feature = "text-field")]
             Self::TextField { value, .. } => value.snapshot().to_plain().to_string(),
+            #[cfg(feature = "secure-field")]
             Self::SecureField { value } => value.snapshot().expose().to_owned(),
         }
     }
 
     pub(crate) fn set_plain_text(&self, text: String) {
         match self {
+            #[cfg(feature = "text-field")]
             Self::TextField { value, .. } => value.set(StyledStr::plain(text)),
+            #[cfg(feature = "secure-field")]
             Self::SecureField { value } => {
                 let mut next = FormSecure::default();
                 next.set(text);
@@ -500,30 +434,55 @@ impl TextInputModel {
         }
     }
 
+    #[cfg_attr(
+        not(feature = "text-field"),
+        expect(
+            clippy::unnecessary_wraps,
+            reason = "the shared editing model also supports unlimited text fields"
+        )
+    )]
     pub(crate) const fn line_limit(&self) -> Option<usize> {
         match self {
+            #[cfg(feature = "text-field")]
             Self::TextField { line_limit, .. } => *line_limit,
+            #[cfg(feature = "secure-field")]
             Self::SecureField { .. } => Some(1),
         }
     }
 
     pub(crate) const fn is_secure(&self) -> bool {
-        matches!(self, Self::SecureField { .. })
+        match self {
+            #[cfg(feature = "text-field")]
+            Self::TextField { .. } => false,
+            #[cfg(feature = "secure-field")]
+            Self::SecureField { .. } => true,
+        }
     }
 
+    #[cfg_attr(
+        not(feature = "text-field"),
+        expect(
+            clippy::missing_const_for_fn,
+            reason = "only text fields expose custom selection items through the shared editing model"
+        )
+    )]
     pub(crate) fn custom_selection_menu_items(&self) -> Vec<ResolvedMenuItem> {
         match self {
+            #[cfg(feature = "text-field")]
             Self::TextField { selection_menu, .. } => selection_menu.snapshot(),
+            #[cfg(feature = "secure-field")]
             Self::SecureField { .. } => Vec::new(),
         }
     }
 
     pub(crate) fn layout_index_from_plain_index(&self, plain_index: usize) -> usize {
         match self {
+            #[cfg(feature = "text-field")]
             Self::TextField { .. } => {
                 let text = self.plain_text();
                 clamp_to_char_boundary(text.as_str(), plain_index)
             }
+            #[cfg(feature = "secure-field")]
             Self::SecureField { .. } => {
                 let text = self.plain_text();
                 byte_index_to_char_offset(text.as_str(), plain_index)
@@ -533,10 +492,12 @@ impl TextInputModel {
 
     pub(crate) fn plain_index_from_layout_index(&self, layout_index: usize) -> usize {
         match self {
+            #[cfg(feature = "text-field")]
             Self::TextField { .. } => {
                 let text = self.plain_text();
                 clamp_to_char_boundary(text.as_str(), layout_index)
             }
+            #[cfg(feature = "secure-field")]
             Self::SecureField { .. } => {
                 let text = self.plain_text();
                 char_offset_to_byte_index(text.as_str(), layout_index)
@@ -544,9 +505,18 @@ impl TextInputModel {
         }
     }
 
+    #[cfg_attr(
+        not(feature = "secure-field"),
+        expect(
+            clippy::missing_const_for_fn,
+            reason = "secure inputs count Unicode scalar values through the same model interface"
+        )
+    )]
     pub(crate) fn layout_len_for_plain_text(&self, text: &str) -> usize {
         match self {
+            #[cfg(feature = "text-field")]
             Self::TextField { .. } => text.len(),
+            #[cfg(feature = "secure-field")]
             Self::SecureField { .. } => text.chars().count(),
         }
     }
@@ -620,11 +590,13 @@ pub fn next_grapheme_boundary(text: &str, index: usize) -> usize {
     clamped + grapheme.len()
 }
 
+#[cfg(feature = "secure-field")]
 pub fn byte_index_to_char_offset(text: &str, index: usize) -> usize {
     let clamped = clamp_to_char_boundary(text, index);
     text[..clamped].chars().count()
 }
 
+#[cfg(feature = "secure-field")]
 pub fn char_offset_to_byte_index(text: &str, char_offset: usize) -> usize {
     if char_offset == 0 {
         return 0;
@@ -819,38 +791,6 @@ pub fn set_model_caret_position(
     changed
 }
 
-#[cfg_attr(
-    target_arch = "wasm32",
-    expect(
-        clippy::future_not_send,
-        reason = "wasm32 is single-threaded; the browser Clipboard handle is a JS object and `!Send` by design"
-    )
-)]
-pub async fn read_clipboard_text_async() -> Option<String> {
-    let clipboard = match Clipboard::new() {
-        Ok(value) => value,
-        Err(error) => {
-            tracing::warn!(
-                target: "waterui::hydrolysis::input",
-                error = %error,
-                "failed to initialize clipboard for paste"
-            );
-            return None;
-        }
-    };
-    match clipboard.text().await {
-        Ok(value) => value,
-        Err(error) => {
-            tracing::warn!(
-                target: "waterui::hydrolysis::input",
-                error = %error,
-                "failed to read clipboard text"
-            );
-            None
-        }
-    }
-}
-
 pub fn spawn_clipboard_paste_task(
     model: TextInputModel,
     selection: Rc<RefCell<TextSelectionSlot>>,
@@ -917,10 +857,7 @@ pub fn selection_range_contains_index(
     !range.is_empty() && range.contains(&index)
 }
 
-pub fn text_context_menu_size(
-    nodes: &[PopupMenuNode],
-    metrics: TextContextMenuMetrics,
-) -> (f64, f64) {
+pub fn text_context_menu_size(nodes: &[PopupMenuNode], metrics: MenuLayout) -> (f64, f64) {
     let max_label_chars = crate::num_cast::usize_as_f64(
         nodes
             .iter()
@@ -944,7 +881,7 @@ pub fn text_context_menu_overlay_bounds(
     anchor: kurbo::Point,
     nodes: &[PopupMenuNode],
     window_bounds: kurbo::Rect,
-    metrics: TextContextMenuMetrics,
+    metrics: MenuLayout,
 ) -> kurbo::Rect {
     let (width, height) = text_context_menu_size(nodes, metrics);
     let preferred_x = anchor.x;
@@ -1084,27 +1021,27 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     ) {
         let focused = self.text_editing.focused_index();
         let menu_target = self.active_text_context_menu_target();
-        let theme = self.theme();
         for index in 0..self.text_editing.text_input_targets.len() {
             let target = &self.text_editing.text_input_targets[index];
             if target.content_alpha <= 0.0 || (focused != Some(index) && menu_target != Some(index))
             {
                 continue;
             }
+            // A target the semantic walk emitted has no look and is never
+            // drawn.
+            let Some(paints) = &target.paints else {
+                continue;
+            };
             let selection = refreshed_target_selection(target);
             if selection.is_collapsed() {
                 if focused != Some(index) {
                     continue;
                 }
                 let opacity = self.text_caret_opacity(self.frame_instant());
-                let paint = theme.input_caret_paint(opacity);
-                // Preserve the theme's paint semantics, including paints whose
-                // alpha is not the requested opacity. Zero still hides the caret.
-                let alpha = if opacity > 0.0 {
-                    target.content_alpha
-                } else {
-                    0.0
-                };
+                let paint = CaretPaints::resolve(&paints.caret, target.bounds);
+                // The look's paint blinks as a group: the blink's opacity
+                // over the text's own, so zero hides the caret.
+                let alpha = target.content_alpha * opacity;
                 let rect = target.cursor_area;
                 let clip = target.text_clip_bounds;
                 let caret = self.live_caret.get_or_insert_with(|| {
@@ -1119,12 +1056,12 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 let source: Rc<dyn crate::renderer::chrome::LiveSource> = caret.clone();
                 self.program().push_live(source, transform);
             } else {
-                let selection_paint = theme.input_selection_paint();
+                let selection_paint = CaretPaints::resolve(&paints.selection, target.bounds);
                 let mut scene = Recording::new();
                 scene.record_picture(transform, |draw| {
                     draw.clip(target.text_clip_bounds, |draw| {
                         draw.group(
-                            waterui_graphics::draw::Group::new().opacity(target.content_alpha),
+                            cherenkov_record::Group::new().opacity(target.content_alpha),
                             |draw| {
                                 target.layout.selection_rects(selection, |rect| {
                                     let highlight = kurbo::Rect::new(
@@ -1180,10 +1117,12 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         let started = self.text_editing.text_caret_fade_started_at.unwrap_or(now);
         let elapsed = now.saturating_duration_since(started);
         let cycle_secs = motion.fade_cycle_duration.as_secs_f32();
-        assert!(
-            cycle_secs > 0.0,
-            "hydrolysis text caret fade cycle duration must be > 0"
-        );
+        if cycle_secs <= 0.0 {
+            contract_violation!(
+                "hydrolysis text caret fade cycle duration must be > 0; the caret does not blink"
+            );
+            return 1.0;
+        }
         let phase = (elapsed.as_secs_f32() / cycle_secs).fract();
         let wave = f32::midpoint((core::f32::consts::TAU * phase).cos(), 1.0);
         (1.0 - motion.min_opacity).mul_add(wave, motion.min_opacity)
@@ -1213,109 +1152,6 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// Move focus to the text input with this stable identity, or clear it with
     /// `None`. The target need not be emitted this frame; focus simply resolves
     /// to nothing until it is.
-    /// Wires a `.focused(binding)` modifier to the single focusable target —
-    /// a text field or an input surface — registered inside `scope`'s subtree:
-    /// writes the binding onto that target, then applies the binding's value
-    /// to the focused-input key. The retained equivalent of the flat lists'
-    /// `[start..]` span: entries owned by cells inside `scope`'s subtree,
-    /// hittable or not — a `.focused()` inside an unhittable subtree still saw
-    /// the target on dev (the outer truncation ran after the wiring), and the
-    /// post-flush validation releases whatever focus a dead chain took.
-    /// Shared by the rendered flush and the semantic accessibility walk.
-    pub(crate) fn wire_focused_target(
-        &mut self,
-        value: &waterui::component::focus::Focused,
-        should_focus: bool,
-        scope: &Rc<NodeCell<E>>,
-    ) {
-        // Whether the entry's owning cell is `scope` or a descendant of it.
-        let in_scope = |owner: &std::rc::Weak<NodeCell<E>>| -> bool {
-            let mut cell = owner.upgrade();
-            while let Some(current) = cell {
-                if Rc::ptr_eq(&current, scope) {
-                    return true;
-                }
-                cell = current.parent();
-            }
-            false
-        };
-        // The retained registries own entries per recording cell — the
-        // scan walks every live owner's bucket and keeps the cell it
-        // found, so the write-back lands in the same bucket.
-        let mut text_hit = None;
-        let mut embedded_hit = None;
-        let mut count = 0usize;
-        for cell in self.retained.owners() {
-            let slot = cell.registrations.borrow();
-            let Some(regs) = slot.as_ref() else {
-                continue;
-            };
-            for (index, entry) in regs.text_input_targets.iter().enumerate() {
-                if in_scope(&entry.owner) {
-                    count += 1;
-                    text_hit = Some((Rc::clone(&cell), index));
-                }
-            }
-            for (index, entry) in regs.embedded_input_targets.iter().enumerate() {
-                if in_scope(&entry.owner) {
-                    count += 1;
-                    embedded_hit = Some((Rc::clone(&cell), index));
-                }
-            }
-        }
-        assert!(
-            count == 1,
-            "hydrolysis .focused() requires exactly one TextField or SecureField or input surface in the wrapped subtree, found {count}"
-        );
-        if let Some((cell, index)) = embedded_hit {
-            // The bucket borrow ends before the focus setters run: they
-            // materialize the registries, which borrow the same `RefCell`.
-            let target_key = {
-                let mut slot = cell.registrations.borrow_mut();
-                let target = &mut slot
-                    .as_mut()
-                    .expect("hydrolysis focused metadata missing embedded input bucket")
-                    .embedded_input_targets[index]
-                    .payload;
-                assert!(
-                    target.focus_binding.is_none(),
-                    "hydrolysis does not allow multiple .focused() modifiers to target the same control"
-                );
-                target.focus_binding = Some(value.0.clone());
-                target.interaction_key.clone()
-            };
-
-            if should_focus {
-                self.set_focused_embedded_key(Some(target_key));
-            } else if self.is_focused_embedded(&target_key) {
-                self.set_focused_embedded_key(None);
-            }
-            return;
-        }
-        let (cell, index) =
-            text_hit.expect("hydrolysis focused metadata missing registered text input target");
-        let target_key = {
-            let mut slot = cell.registrations.borrow_mut();
-            let target = &mut slot
-                .as_mut()
-                .expect("hydrolysis focused metadata missing text input bucket")
-                .text_input_targets[index]
-                .payload;
-            assert!(
-                target.focus_binding.is_none(),
-                "hydrolysis does not allow multiple .focused() modifiers to target the same control"
-            );
-            target.focus_binding = Some(value.0.clone());
-            target.interaction_key.clone()
-        };
-
-        if should_focus {
-            self.set_focused_text_input_key(Some(target_key));
-        } else if self.text_editing.is_focused(&target_key) {
-            self.set_focused_text_input_key(None);
-        }
-    }
-
     pub(crate) fn set_focused_text_input_key(&mut self, focused: Option<InteractionKey>) -> bool {
         // Mid-flush callers (`wire_focused_target`) run before this frame's
         // materialization — resolve the key against what is registered so
@@ -1481,11 +1317,11 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             return;
         }
 
-        let theme = self.theme();
-        let metrics = theme.text_context_menu_metrics();
+        let menu = menu_look(&self.theme(), &overlay.env);
+        let metrics = menu.layout();
         {
             self.scene_mut().record_picture(transform, |draw| {
-                theme.draw_text_context_menu_panel(&mut *draw, overlay.bounds);
+                menu.record_panel(&mut *draw, overlay.bounds);
             });
         }
         for (index, row) in overlay.rows.iter().enumerate() {
@@ -1505,7 +1341,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                     row.bounds.y1,
                 );
                 self.scene_mut().record_picture(transform, |draw| {
-                    theme.draw_text_context_menu_separator(&mut *draw, separator);
+                    menu.record_separator(&mut *draw, separator);
                 });
             }
 
@@ -1517,11 +1353,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                         metrics.horizontal_padding,
                         metrics.vertical_padding,
                     );
-                    let ctx = RenderContext {
-                        local: transform,
-                        bounds: overlay.bounds,
-                    }
-                    .child(
+                    let ctx = RenderContext::new(transform, overlay.bounds).child(
                         kurbo::Affine::translate((text_rect.x0, text_rect.y0)),
                         kurbo::Rect::new(0.0, 0.0, text_rect.width(), text_rect.height()),
                     );
@@ -1533,18 +1365,9 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                     );
                 }
                 PopupMenuNode::Divider => {
-                    let separator = kurbo::Rect::new(
-                        row.bounds.x0 + metrics.separator_horizontal_inset,
-                        metrics
-                            .separator_thickness
-                            .mul_add(-0.5, f64::mul_add(row.bounds.height(), 0.5, row.bounds.y0)),
-                        row.bounds.x1 - metrics.separator_horizontal_inset,
-                        metrics
-                            .separator_thickness
-                            .mul_add(0.5, f64::mul_add(row.bounds.height(), 0.5, row.bounds.y0)),
-                    );
+                    let separator = menu.separator_rect(row.bounds);
                     self.scene_mut().record_picture(transform, |draw| {
-                        theme.draw_text_context_menu_separator(&mut *draw, separator);
+                        menu.record_separator(&mut *draw, separator);
                     });
                 }
             }
@@ -1611,23 +1434,26 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     ) {
         let env = &overlay.env;
         let theme = Rc::clone(&overlay.theme);
-        let metrics = theme.text_context_menu_metrics();
+        let metrics = menu_look(&theme, env).layout();
         let text = self.popup_menu_text_metrics(&items, metrics, env, &theme);
-        let origin = popup_window_origin(
+        let Some(origin) = popup_window_origin(
             LayoutPoint::new(
                 crate::num_cast::f64_as_f32(row_bounds.x1),
                 crate::num_cast::f64_as_f32(row_bounds.y0),
             ),
             env,
-        );
+        ) else {
+            return;
+        };
+        let Some(manager) = popup_window_manager(env, "text selection menus") else {
+            return;
+        };
         let group = overlay.menu_group.clone();
         group.truncate(1);
         let (window, state) =
             popup_menu_window(items, origin, group.clone(), 1, metrics, text, &theme);
         group.push(state);
-        env.get::<PopupWindowManager>()
-            .expect("hydrolysis text selection menus require PopupWindowManager in environment")
-            .show(window, env);
+        manager.show(window, env);
         self.popup_menu.active_popup_menu_group = Some(group);
         self.context_mark_layout();
     }
@@ -1674,13 +1500,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             preedit_caret: self.text_editing.ime_preedit_caret,
             password: target.model.is_secure(),
             line_limit: target.model.line_limit(),
-            has_submit: matches!(
-                &target.model,
-                TextInputModel::TextField {
-                    on_submit: Some(_),
-                    ..
-                }
-            ),
+            has_submit: target.model.submit_action().is_some(),
             bounds: target.bounds,
             cursor_area: target.cursor_area,
             text_bounds: target.text_bounds,
@@ -1750,18 +1570,17 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         let submit = self
             .text_editing
             .focused_target()
-            .and_then(|target| match &target.model {
-                TextInputModel::TextField {
-                    line_limit: Some(_),
-                    on_submit: Some(action),
-                    ..
-                } => Some((action.clone(), target.env.clone())),
-                _ => None,
+            .filter(|target| target.model.line_limit().is_some())
+            .and_then(|target| {
+                target
+                    .model
+                    .submit_action()
+                    .map(|action| (action.clone(), target.env.clone()))
             });
         let Some((action, env)) = submit else {
             return false;
         };
-        action.call(&env);
+        action.run(&env);
         true
     }
 
@@ -1776,6 +1595,14 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         )
     )]
     pub(crate) fn perform_focused_context_action(&mut self, action: TextContextMenuAction) -> bool {
+        // A platform paste command aimed at a focused embedded surface is
+        // that surface's paste, the same one its paste shortcut starts.
+        if matches!(action, TextContextMenuAction::Paste)
+            && let Some(sink) = self.hit_test.focused_embedded_sink.clone()
+        {
+            sink.paste(&self.hit_test.clipboard_read);
+            return true;
+        }
         let Some((index, model, selection)) = self.focused_text_target_data() else {
             return false;
         };
@@ -1827,9 +1654,9 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     }
 
     /// Advance the double/triple-click streak for this frame's target at
-    /// `target_index`. The streak is remembered by stable identity, so it
-    /// continues across a reflow and never carries over to a different field
-    /// that happens to land at the same position.
+    /// `target_index`, counted by the shared multi-click tracker and capped
+    /// where selection stops growing: a double click selects a word, a
+    /// triple click a line, and further clicks stay on the line.
     pub(crate) fn next_text_selection_click_count(
         &mut self,
         target_index: usize,
@@ -1841,24 +1668,9 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             .key_at(target_index)
             .expect("hydrolysis text selection click target must be emitted this frame")
             .clone();
-        let count = match self.text_editing.last_text_selection_click.as_ref() {
-            Some(previous)
-                if previous.target == target
-                    && at.saturating_duration_since(previous.at)
-                        <= TEXT_SELECTION_MULTI_CLICK_INTERVAL
-                    && previous.point.distance(point) <= TEXT_SELECTION_MULTI_CLICK_DISTANCE =>
-            {
-                previous.count.saturating_add(1).min(3)
-            }
-            _ => 1,
-        };
-        self.text_editing.last_text_selection_click = Some(TextSelectionClickState {
-            target,
-            point,
-            at,
-            count,
-        });
-        count
+        let count = self.next_click_count(&target, PointerButton::Primary, point, at);
+        u8::try_from(count.get().min(MAX_TEXT_SELECTION_CLICKS))
+            .expect("the capped click count fits a byte")
     }
 
     /// Apply the selection for a click of `click_count` at `point`. Returns the
@@ -2027,6 +1839,19 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         delete_model_selection(&model, &mut slot)
     }
 
+    /// Replaces the focused text input's selection with `text`, the text a
+    /// platform paste command carried; whether a text input had focus.
+    pub(crate) fn paste_text_into_focused_target(&mut self, text: &str) -> bool {
+        let Some((_index, model, selection)) = self.focused_text_target_data() else {
+            return false;
+        };
+        if !text.is_empty() {
+            let mut slot = selection.borrow_mut();
+            let _ = replace_model_selection(&model, &mut slot, text);
+        }
+        true
+    }
+
     pub(crate) fn paste_clipboard_into_focused_target(&mut self) -> bool {
         let Some((_index, model, selection)) = self.focused_text_target_data() else {
             return false;
@@ -2122,11 +1947,13 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
 /// delegates to: the field's model plus its selection slot, so the handle
 /// answers and splices the live selection at fire time
 /// (water-rs/waterui#1260).
+#[cfg(feature = "text-field")]
 struct FieldSelectionDriver {
     model: TextInputModel,
     selection: Rc<RefCell<TextSelectionSlot>>,
 }
 
+#[cfg(feature = "text-field")]
 impl waterui_controls::CustomTextSelection for FieldSelectionDriver {
     fn text(&self) -> Str {
         Str::from(self.model.plain_text())
@@ -2165,7 +1992,9 @@ impl waterui_controls::CustomTextSelection for FieldSelectionDriver {
 
     fn styled_value(&self) -> Option<nami::Binding<StyledStr>> {
         match &self.model {
+            #[cfg(feature = "text-field")]
             TextInputModel::TextField { value, .. } => Some(value.clone()),
+            #[cfg(feature = "secure-field")]
             TextInputModel::SecureField { .. } => None,
         }
     }
@@ -2176,6 +2005,7 @@ impl waterui_controls::CustomTextSelection for FieldSelectionDriver {
 /// action resolves it as any other environment value. Only a `TextField`
 /// declares `selection_menu` items — a secure field's selection never
 /// reaches a command.
+#[cfg(feature = "text-field")]
 fn text_selection_for_env<E: crate::text::TextEngine>(
     target: &TextInputTarget<E>,
 ) -> Option<waterui_controls::TextSelection> {
@@ -2215,6 +2045,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         // The field's live selection rides the menu's environment, so a
         // custom `selection_menu` command extracts it as a `TextSelection`
         // (water-rs/waterui#1260).
+        #[cfg(feature = "text-field")]
         let menu_env = match text_selection_for_env(&target) {
             Some(selection) => menu_env.extending(selection),
             None => menu_env,
@@ -2233,7 +2064,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             .unwrap_or(HydrolysisTextContextMenuMode::NativeWindow);
 
         if mode == HydrolysisTextContextMenuMode::Overlay {
-            let metrics = self.theme().text_context_menu_metrics();
+            let metrics = menu_look(&self.theme(), &menu_env).layout();
             let bounds =
                 text_context_menu_overlay_bounds(point, &nodes, self.window_bounds, metrics);
             let mut rows = Vec::with_capacity(nodes.len());
@@ -2270,7 +2101,6 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         // path a `.context_menu` takes: `show_popup_menu_nodes` sizes the
         // panel, builds the borderless window, and leaves submenu rows
         // wired to open deeper popups (water-rs/hydrolysis#317).
-        let metrics = self.theme().text_context_menu_metrics();
         let theme = self.theme();
         self.show_popup_menu_nodes(
             nodes,
@@ -2278,7 +2108,6 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 crate::num_cast::f64_as_f32(point.x),
                 crate::num_cast::f64_as_f32(point.y),
             ),
-            metrics,
             &menu_env,
             &theme,
         );
@@ -2372,147 +2201,6 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             "ime disabled handled"
         );
         changed
-    }
-
-    pub fn handle_key_with_env(
-        &mut self,
-        key: &KeyCode,
-        modifiers: Modifiers,
-        env: &Environment,
-    ) -> bool {
-        // Callers without platform key data (tests, synthetic input) get a
-        // `KeyPress` rebuilt from the `KeyCode` — the winit/semantic paths
-        // carry real `logical_key`/`physical_code` and call
-        // `handle_key_press` instead.
-        let press = KeyPress::new(
-            key.to_w3c_key(),
-            keyboard_types::Code::Unidentified,
-            modifiers.into(),
-            false,
-        );
-        self.handle_key_press(key, modifiers, env, &press) != KeyPressOutcome::Ignored
-    }
-
-    /// A key press with its full platform identity: the focused target's
-    /// editing first, then the `OnKeyPress` bubble chain, then an enclosing
-    /// embedded surface.
-    ///
-    /// The [`KeyPressOutcome`] distinguishes a press a handler consumed
-    /// (whose paired `KeyText` is then suppressed at dispatch) from one
-    /// forwarded to an embedded surface — delivery is not consumption: the
-    /// surface owns its key+text pair, exactly as `SurfaceInputEvent`
-    /// documents.
-    pub(crate) fn handle_key_press(
-        &mut self,
-        key: &KeyCode,
-        modifiers: Modifiers,
-        env: &Environment,
-        press: &KeyPress,
-    ) -> KeyPressOutcome {
-        if self.handle_keyboard_key_down(key, &press.key, modifiers, env) {
-            return KeyPressOutcome::Consumed;
-        }
-        if self.handle_key(key, modifiers) {
-            return KeyPressOutcome::Consumed;
-        }
-        self.bubble_key_press(press)
-    }
-
-    /// Offers an unconsumed key to the focused node's `OnKeyPress`
-    /// ancestors, nearest first, then to the topmost embedded surface
-    /// enclosing it. [`KeyPressOutcome::Consumed`] once some scope reports
-    /// [`KeyHandling::Handled`]; [`KeyPressOutcome::ForwardedToSurface`] when
-    /// a surface takes the key.
-    ///
-    /// The focused node is whatever `hit_test.keyboard_focus` names — a text
-    /// input, a focusable control's press slot, or an embedded surface; with
-    /// no focus at all the key still bubbles through the scopes enclosing
-    /// every registration of the frame.
-    fn bubble_key_press(&mut self, press: &KeyPress) -> KeyPressOutcome {
-        let focused_key = self.hit_test.keyboard_focus.clone();
-        let mut scopes: Option<Option<Rc<KeyHandlerNode>>> = None;
-        let mut bubble_center: Option<kurbo::Point> = None;
-        if let Some(target) = self.text_editing.focused_target() {
-            scopes = Some(target.key_handlers.clone());
-            bubble_center = Some(target.bounds.center());
-        } else if let Some(key) = focused_key.as_ref() {
-            if let Some(target) = self.hit_test.pointer_targets.iter().find(|target| {
-                target
-                    .press_slot
-                    .as_ref()
-                    .is_some_and(|slot| &slot.key == key)
-            }) {
-                scopes = Some(target.key_handlers.clone());
-                bubble_center = Some(target.bounds.center());
-            } else if let Some(target) = self
-                .hit_test
-                .embedded_input_targets
-                .iter()
-                .find(|target| &target.interaction_key == key)
-            {
-                scopes = Some(target.key_handlers.clone());
-                bubble_center = Some(target.to_window_rect(target.local_bounds).center());
-            } else {
-                // The semantic walk emits no targets for the key to resolve
-                // against — the chain recorded at the focus link stands in.
-                #[cfg(feature = "accessibility")]
-                {
-                    scopes = self.accessibility.focus_key_handlers.get(key).cloned();
-                }
-            }
-        }
-        // `scopes` wraps a chain head: a target with no scopes is
-        // `Some(None)`; no resolved target at all falls back to the
-        // every-registration chain.
-        let mut node = scopes.unwrap_or_else(|| self.hit_test.root_key_handlers.clone());
-        // `node` is moved into the while-let pattern each pass, so a fresh
-        // clone rebinds it — `clone_from` needs a live target binding.
-        #[allow(clippy::assigning_clones)]
-        while let Some(link) = node {
-            let handler = Rc::clone(&link.scope.handler);
-            let env = link.scope.env.extending(press.clone());
-            let result = handler.borrow_mut().handle(&env);
-            if result == KeyHandling::Handled {
-                tracing::trace!(
-                    target: "waterui::hydrolysis::input",
-                    key = ?press.key,
-                    "key consumed by an on_key_press ancestor"
-                );
-                return KeyPressOutcome::Consumed;
-            }
-            node = link.parent.clone();
-        }
-        // Nothing above the focused node consumed it: the embedding surface
-        // under it (e.g. a terminal under a search overlay) gets the key next.
-        if let Some(center) = bubble_center
-            && let Some((index, _)) = self.topmost_embedded_target_at(center)
-        {
-            let embedded = self.hit_test.embedded_input_targets[index].clone();
-            embedded.sink.key(&KeyDelivery {
-                pressed: true,
-                logical: &press.key,
-                code: press.code,
-                repeat: press.repeat,
-                modifiers: Modifiers::from(press.modifiers),
-            });
-            // The release belongs to the sink that saw the press, not to
-            // whichever surface holds focus when it arrives.
-            self.hit_test.bubbled_key_sinks.push(BubbledKeySink {
-                logical: press.key.clone(),
-                code: press.code,
-                modifiers: Modifiers::from(press.modifiers),
-                sink: embedded.sink,
-            });
-            // Forwarded, not consumed: the surface owns the key+text pair
-            // and decides internally what the press meant, so its paired
-            // `TextInput` is still delivered.
-            return KeyPressOutcome::ForwardedToSurface;
-        }
-        KeyPressOutcome::Ignored
-    }
-
-    pub fn handle_key_release_with_env(&mut self, key: &KeyCode, env: &Environment) -> bool {
-        self.handle_keyboard_key_up(key, env)
     }
 
     pub fn handle_key(&mut self, key: &KeyCode, modifiers: Modifiers) -> bool {
@@ -2636,6 +2324,7 @@ impl<E: crate::text::TextEngine> Clone for TextInputTarget<E> {
             text_bounds: self.text_bounds,
             text_clip_bounds: self.text_clip_bounds,
             content_alpha: self.content_alpha,
+            paints: self.paints.clone(),
             layout: self.layout.clone(),
             #[cfg_attr(
                 not(any(target_os = "android", test)),
@@ -2673,7 +2362,6 @@ impl<E: crate::text::TextEngine> Default for TextEditingState<E> {
             clearance_surfaces: RefCell::default(),
             text_input_targets: Vec::default(),
             active_text_selection_drag: Option::default(),
-            last_text_selection_click: Option::default(),
             active_text_context_menu: Option::default(),
             focused_text_input: RefCell::default(),
             focused_binding: Option::default(),
@@ -2682,7 +2370,6 @@ impl<E: crate::text::TextEngine> Default for TextEditingState<E> {
             text_caret_fade_started_at: Option::default(),
             text_caret_next_frame_at: Option::default(),
             text_caret_motion: Option::default(),
-            activations: Default::default(),
         }
     }
 }

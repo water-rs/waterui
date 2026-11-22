@@ -25,6 +25,7 @@ use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{
     AllocAnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send,
 };
+use objc2_core_foundation::CGRect;
 use objc2_core_location::CLLocationCoordinate2D;
 use objc2_foundation::{NSError, NSObject, NSObjectProtocol, NSString};
 use objc2_map_kit::{
@@ -33,6 +34,7 @@ use objc2_map_kit::{
 };
 
 use crate::callback::guarded;
+use crate::response::{ReportsResponse, ResponseGeometry};
 
 #[cfg(target_os = "macos")]
 use objc2_map_kit::MKMapView;
@@ -501,6 +503,8 @@ pub struct MapViewIvars {
     delegate: RefCell<Option<Retained<MapDelegate>>>,
     location_marker: RefCell<Option<Retained<MKPointAnnotation>>>,
     location_overlay: RefCell<Option<Retained<MKCircle>>>,
+    /// How the map was placed as a leaf, and its response rectangle.
+    geometry: ResponseGeometry,
 }
 
 impl fmt::Debug for MapViewIvars {
@@ -512,6 +516,7 @@ impl fmt::Debug for MapViewIvars {
                 "location_overlay",
                 &self.location_overlay.borrow().is_some(),
             )
+            .field("geometry", &self.geometry)
             .finish()
     }
 }
@@ -529,7 +534,51 @@ define_class!(
 
     // SAFETY: `NSObjectProtocol` asks nothing of an `MKMapView` subclass.
     unsafe impl NSObjectProtocol for MapView {}
+
+    impl MapView {
+        // SAFETY: `layout` is the `NSView` layout pass, forwarded to `super`.
+        #[cfg(target_os = "macos")]
+        #[unsafe(method(layout))]
+        fn layout_override(&self) {
+            guarded("MapView layout", || {
+                // SAFETY: see above.
+                let _: () = unsafe { msg_send![super(self), layout] };
+                self.ivars().geometry.commit(self);
+            });
+        }
+
+        // SAFETY: `layoutSubviews` is the `UIView` layout pass, forwarded to
+        // `super`.
+        #[cfg(target_os = "ios")]
+        #[unsafe(method(layoutSubviews))]
+        fn layout_subviews_override(&self) {
+            guarded("MapView layoutSubviews", || {
+                // SAFETY: see above.
+                let _: () = unsafe { msg_send![super(self), layoutSubviews] };
+                self.ivars().geometry.commit(self);
+            });
+        }
+
+        // SAFETY: `accessibilityFrame` answers a screen rectangle; `super`'s
+        // answer stands until the map's placement committed one.
+        #[unsafe(method(accessibilityFrame))]
+        fn accessibility_frame_override(&self) -> CGRect {
+            guarded("MapView accessibilityFrame", || {
+                self.ivars()
+                    .geometry
+                    .accessibility_frame(self)
+                    // SAFETY: see above.
+                    .unwrap_or_else(|| unsafe { msg_send![super(self), accessibilityFrame] })
+            })
+        }
+    }
 );
+
+impl ReportsResponse for MapView {
+    fn response_geometry(&self) -> &ResponseGeometry {
+        &self.ivars().geometry
+    }
+}
 
 impl MapView {
     /// An empty map view.
@@ -539,6 +588,7 @@ impl MapView {
             delegate: RefCell::new(None),
             location_marker: RefCell::new(None),
             location_overlay: RefCell::new(None),
+            geometry: ResponseGeometry::default(),
         });
         // SAFETY: `initWithFrame:` is `MKMapView`'s designated initializer.
         unsafe { self::imp::init(this) }

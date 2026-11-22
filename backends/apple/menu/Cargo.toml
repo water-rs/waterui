@@ -13,7 +13,7 @@ publish = false
 workspace = true
 
 [dependencies]
-waterui-controls.workspace = true
+waterui-controls = { workspace = true, features = ["menu"] }
 waterui-core.workspace = true
 nami.workspace = true
 tracing.workspace = true

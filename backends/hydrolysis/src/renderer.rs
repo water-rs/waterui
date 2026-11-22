@@ -3,7 +3,6 @@
 //! This module owns [`HydrolysisRenderer`] — its construction and field
 //! layout live here; behavior is split into focused submodules:
 //!
-//! - [`dispatch`]: type-erased view dispatch and `HydroNativeView` registration
 //! - [`frame`]: frame lifecycle, layer stack, frame triggers, statistics
 //! - [`FrameSignals`]: the shared frame trigger handle (lives in
 //!   `waterui-backend-core`, shared with other self-drawn backends)
@@ -21,6 +20,11 @@
 //!   [`render`]: interaction, lifecycle, navigation, a11y, and measurement
 //!   subsystems
 
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
+use crate::platform::TextInputPurpose;
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
+use crate::theme::TextCaretMotion;
+
 #[cfg(feature = "accessibility")]
 pub mod accessibility;
 mod bindings;
@@ -28,16 +32,27 @@ pub mod chrome;
 mod effects;
 mod frame;
 mod frame_work;
+mod glass;
 #[cfg(feature = "frame-profile")]
 mod gpu_profile;
 mod identity;
 mod input;
 mod interaction_layers;
 mod lifecycle;
+#[cfg(feature = "navigation")]
+pub mod live_bar;
+pub mod live_progress;
+#[cfg(feature = "picker")]
+pub mod live_segmented;
+#[cfg(feature = "navigation")]
+pub mod live_tabs;
+#[cfg(any(feature = "toggle", feature = "picker"))]
+pub mod live_toggle;
 pub mod material;
 mod metadata;
 pub mod mount;
 mod native_measure;
+#[cfg(feature = "navigation")]
 mod navigation;
 pub mod recording;
 mod render;
@@ -60,17 +75,26 @@ pub use identity::*;
 pub use mount::{Dirty, NodeCell, NodeCore, Placement, PlacementClock, ProducerKey};
 use mount::{HitClasses, HitGate, ScopeDelta};
 pub use native_measure::*;
+pub use recording::Recording;
 #[cfg(test)]
-pub use recording::assert_well_formed_image;
-#[cfg(hydrolysis_gpu_painter)]
+pub use recording::check_well_formed_image;
+#[cfg(any(test, hydrolysis_cherenkov, feature = "menu"))]
+pub use recording::working_color;
+#[cfg(hydrolysis_cherenkov)]
 pub use recording::{Glyph, GlyphRun};
-pub use recording::{Recording, working_color};
-pub use tree::safe_area::{
-    ChromeBar, Edge, EdgeOffsets, SafeAreaLayout, ScrollSurfaceArea, grow_rect,
-};
-pub use tree::transition::{
-    TransitionPaint, flush_transitioned, record_blurred, transition_transform,
-};
+#[cfg(any(feature = "list", feature = "text-field", feature = "secure-field"))]
+pub use tree::safe_area::ScrollSurfaceArea;
+#[cfg(any(feature = "list", feature = "navigation"))]
+pub use tree::safe_area::grow_rect;
+#[cfg(feature = "navigation")]
+pub use tree::safe_area::{ChromeBar, Edge};
+pub use tree::safe_area::{EdgeOffsets, SafeAreaLayout};
+#[cfg(any(feature = "list", feature = "navigation"))]
+pub use tree::transition::TransitionPaint;
+#[cfg(feature = "list")]
+pub use tree::transition::flush_transitioned;
+#[cfg(feature = "navigation")]
+pub use tree::transition::{record_blurred, transition_transform};
 pub use tree::*;
 pub use views::*;
 pub use waterui_backend_core::frame_signals::FrameSignals;
@@ -80,142 +104,170 @@ use accessibility::{
     ACCESSIBILITY_ROOT_NODE_ID, AccessibilityBuilder, AccessibilityNameFromContents,
     ScopedAccessibilityIdentifier,
 };
+#[cfg(feature = "text-field")]
 use core::num::NonZeroUsize;
 use core::time::Duration;
 pub use input::*;
 pub use interaction_layers::*;
 pub use lifecycle::lazy;
 pub use lifecycle::*;
+#[cfg(feature = "navigation")]
 pub use navigation::*;
+#[cfg(hydrolysis_cherenkov)]
+pub use render::FrameError;
 #[cfg(hydrolysis_gpu_painter)]
 pub use render::FrameRenderTarget;
-#[cfg(hydrolysis_gpu_painter)]
-pub use render::HydrolysisRenderTarget;
 pub use render::WidgetRenderContext;
 pub use render::*;
-pub use render::{
-    anchor_point, circle_arc_path, estimate_layout_intrinsic, gesture_group_identity,
-    normalize_layout_view, normalize_view_for_render, path_commands_to_path,
-    resolved_morph_shape_to_path, resolved_shape_to_path, transformed_rect,
-};
-use rustc_hash::FxHashSet;
+pub use render::{anchor_point, path_commands_to_path, resolved_shape_to_path, transformed_rect};
 use signals::LayoutDependencies;
 use std::any::Any;
-use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::{Rc, Weak};
 #[cfg(hydrolysis_gpu_painter)]
 use std::sync::Arc;
 
+#[cfg(feature = "menu")]
+use crate::widgets::inset_rect;
+#[cfg(all(
+    feature = "accessibility",
+    any(
+        feature = "slider",
+        feature = "stepper",
+        feature = "date-picker",
+        feature = "text-field",
+        feature = "secure-field"
+    )
+))]
+use accesskit::ActionData as AccessibilityActionData;
 #[cfg(feature = "accessibility")]
 use accesskit::{
-    Action as AccessibilityAction, ActionData as AccessibilityActionData,
-    ActionRequest as AccessibilityActionRequest, Node as AccessibilityNode,
-    NodeId as AccessibilityNodeId, Rect as AccessibilityRect, Role as AccessibilityNodeRole,
-    TextDirection as AccessibilityTextDirection, Toggled as AccessibilityToggled,
-    TreeId as AccessibilityTreeId, TreeInfo as AccessibilityTree,
+    Action as AccessibilityAction, ActionRequest as AccessibilityActionRequest,
+    Node as AccessibilityNode, NodeId as AccessibilityNodeId, Rect as AccessibilityRect,
+    Role as AccessibilityNodeRole, TextDirection as AccessibilityTextDirection,
+    Toggled as AccessibilityToggled, TreeId as AccessibilityTreeId, TreeInfo as AccessibilityTree,
     TreeUpdate as AccessibilityTreeUpdate,
 };
+use cherenkov_record::{Paint, WorkingColor};
 use executor_core::spawn_local;
 use nami::{Binding, Signal};
 use waterkit_clipboard::Clipboard;
+#[cfg(any(
+    any(feature = "menu", feature = "color-picker"),
+    feature = "navigation",
+    feature = "picker",
+    feature = "text-field",
+    feature = "secure-field"
+))]
 use waterui::ViewExt;
 use waterui::accessibility::{
-    AccessibilityChildren, AccessibilityHidden, AccessibilityIdentifier, AccessibilityLabel,
-    AccessibilityRole, AccessibilityState, AccessibilityStateSignal, AccessibilityValue,
+    AccessibilityChildren, AccessibilityGeometry, AccessibilityHidden, AccessibilityIdentifier,
+    AccessibilityLabel, AccessibilityRole, AccessibilityState, AccessibilityStateSignal,
+    AccessibilityValue,
 };
 use waterui::animation::Animation;
-use waterui::background::{Background, MaterialBackground, MaterialGroup};
+use waterui::background::{GlassBackground, MaterialBackground};
 use waterui::border::Border;
 use waterui::component::badge::BadgeConfig;
 use waterui::component::focus::Focused;
+#[cfg(feature = "list")]
 use waterui::component::list::{ListConfig, ListItem};
-use waterui::component::progress::{ProgressConfig, ProgressStyle};
-use waterui::component::table::{TableColumn, TableConfig};
+use waterui::component::progress::ProgressConfig;
+#[cfg(feature = "table")]
+use waterui::component::table::TableConfig;
 use waterui::cursor::{Cursor, CursorStyle};
 use waterui::drag_drop::{Draggable, DropDestination};
 use waterui::filter::Opacity;
-use waterui::gesture::{Gesture, GestureObserver};
+use waterui::gesture::Gesture;
 use waterui::interaction::Hittable;
 use waterui::metadata::anchored_overlay::AnchoredOverlay;
-use waterui::metadata::context_menu::{ContextMenu, ResolvedContextMenu};
-use waterui::metadata::secure::{HighDynamicRange, Secure, StandardDynamicRange};
+#[cfg(feature = "menu")]
+use waterui::metadata::context_menu::ResolvedContextMenu;
+#[cfg(feature = "navigation")]
 use waterui::navigation::tab::{NativeTabStyle, TabsLayout};
+#[cfg(feature = "navigation")]
 use waterui::navigation::{
     CustomNavigationController, NavigationController, NavigationSplitLayout, NavigationStack,
-    NavigationToolbarPlacement, NavigationTransaction, NavigationTransitionDestination,
-    NavigationTransitionSource, NavigationView,
+    NavigationTransaction, NavigationView,
 };
 use waterui::style::{Offset, Rotation, Scale, Shadow};
 use waterui::widget::Divider;
+#[cfg(any(feature = "menu", feature = "color-picker"))]
 use waterui::window::{Window, WindowState, WindowStyle};
-use waterui_controls::button::{Button, ButtonConfig};
-use waterui_controls::label::Label as SemanticLabel;
-use waterui_controls::menu::{CommandRole, ResolvedCommand, ResolvedMenu, ResolvedMenuItem};
-use waterui_controls::slider::SliderConfig;
-use waterui_controls::stepper::StepperConfig;
+#[cfg(feature = "menu")]
+use waterui_controls::button::Button;
+use waterui_controls::button::ButtonConfig;
 #[cfg(feature = "accessibility")]
-use waterui_controls::text_field::ContentType;
-use waterui_controls::text_field::{ResolvedTextFieldConfig, TextField};
+use waterui_controls::input::ContentType;
+#[cfg(feature = "menu")]
+use waterui_controls::label::Label as SemanticLabel;
+#[cfg(feature = "menu")]
+use waterui_controls::menu::{CommandRole, ResolvedCommand, ResolvedMenu, ResolvedMenuItem};
+#[cfg(feature = "slider")]
+use waterui_controls::slider::SliderConfig;
+#[cfg(feature = "stepper")]
+use waterui_controls::stepper::StepperConfig;
+#[cfg(feature = "text-field")]
+use waterui_controls::text_field::ResolvedTextFieldConfig;
+#[cfg(feature = "toggle")]
 use waterui_controls::toggle::ToggleConfig;
-use waterui_core::dynamic::{Dynamic, DynamicInitialContent};
+use waterui_core::dynamic::DynamicInitialContent;
 use waterui_core::event::{Event, HoverEvent, LifeCycle, LifeCycleHook, OnEvent};
-use waterui_core::handler::{AnyViewBuilder, BoxedAction, SharedAction};
+#[cfg(any(feature = "menu", feature = "color-picker"))]
+use waterui_core::handler::AnyViewBuilder;
+use waterui_core::handler::{BoxedAction, SharedAction};
+#[cfg(any(feature = "menu", feature = "color-picker"))]
+use waterui_core::impl_extractor;
 use waterui_core::key::{KeyHandling, KeyPress, OnKeyPress};
+#[cfg(any(feature = "menu", feature = "color-picker"))]
+use waterui_core::layout::Point as LayoutPoint;
 use waterui_core::layout::{
-    HorizontalAlignment, Layout, PlacedSubview, Point as LayoutPoint, ProposalSize,
-    Rect as LayoutRect, Size as LayoutSize, StretchAxis, SubView, SubviewPlacement,
-    VerticalAlignment, ViewDimensions,
+    HorizontalAlignment, Layout, ProposalSize, Rect as LayoutRect, Size as LayoutSize, StretchAxis,
+    SubView, SubviewPlacement, VerticalAlignment, ViewDimensions,
 };
 #[cfg(feature = "accessibility")]
 use waterui_core::metadata::MetadataKey;
-use waterui_core::view::Hook;
-use waterui_core::views::Views;
-use waterui_core::{
-    AnyView, Environment, IgnorableMetadata, Metadata, Native, Retain, Str, View, impl_extractor,
-};
+use waterui_core::{AnyView, Environment, Metadata, Native, Retain, Str, View};
+#[cfg(feature = "picker")]
 use waterui_form::picker::PickerConfig;
+#[cfg(feature = "color-picker")]
 use waterui_form::picker::color::ColorPickerConfig;
+#[cfg(feature = "date-picker")]
 use waterui_form::picker::date::DatePickerConfig;
+#[cfg(feature = "secure-field")]
 use waterui_form::secure::{Secure as FormSecure, SecureFieldConfig};
+use waterui_graphics::Gradient;
+use waterui_graphics::backend::FilteredView;
+#[cfg(any(feature = "menu", feature = "navigation", feature = "color-picker"))]
 use waterui_graphics::color::Color;
-use waterui_graphics::draw::{Paint, WorkingColor};
 #[cfg(hydrolysis_gpu)]
 use waterui_graphics::gpu::RedrawHandle;
 #[cfg(hydrolysis_gpu)]
-use waterui_graphics::{ExternalFrameView, GpuContentView};
-use waterui_graphics::{FilteredView, Gradient, SceneView};
+use waterui_graphics::{ExternalFrameView, GpuView};
 
+#[cfg(waterui_feature = "webview")]
+use waterui::webview::WebView;
 use waterui_icon::SystemIcon;
-use waterui_layout::container::{FixedContainer, LazyContainer};
-use waterui_layout::safe_area::IgnoreSafeArea;
+use waterui_layout::container::FixedContainer;
 #[cfg(feature = "accessibility")]
 use waterui_layout::scroll::Axis as ScrollAxis;
-use waterui_layout::scroll::ScrollView;
 use waterui_layout::spacer::Spacer;
-use waterui_map::MapConfig;
-use waterui_shape::{ClipShape, PathCommand, ResolvedMorphShape, ResolvedShape, ShapeKind};
+use waterui_shape::{ClipShape, PathCommand, ResolvedShape, ShapeKind};
+#[cfg(any(feature = "menu", all(feature = "list", feature = "accessibility")))]
+use waterui_text::Text;
 use waterui_text::styled::StyledStr;
-use waterui_text::{Text, TextConfig};
-use waterui_webview::WebView;
 
 use crate::animation::{
     AnimatedScalarHandle, AnimationController, AnimationKey, PerpetualAnimation,
 };
 use crate::gesture::GestureEngine;
-use crate::platform::{
-    KeyCode, Modifiers, PointerButton, PointerKind, TextInputPurpose, TextInputState, TouchPhase,
-};
+use crate::platform::{KeyCode, Modifiers, PointerButton, PointerKind, TextInputState, TouchPhase};
 #[cfg(feature = "accessibility")]
 use crate::scroll::ScrollHandle;
 #[cfg(test)]
 use crate::text::ParleyEngine;
-use crate::theme::{
-    RadioIndicatorState, RadioSelectionMotion, TextCaretMotion, TextContextMenuMetrics,
-};
 use crate::time::Instant;
-use crate::widgets::inset_rect;
 
 const OPACITY_ANIMATION_KEY: usize = 0x0100_0001;
 const SCALE_X_ANIMATION_KEY: usize = 0x0100_0002;
@@ -223,13 +275,13 @@ const SCALE_Y_ANIMATION_KEY: usize = 0x0100_0003;
 const ROTATION_ANIMATION_KEY: usize = 0x0100_0004;
 const OFFSET_X_ANIMATION_KEY: usize = 0x0100_0005;
 const OFFSET_Y_ANIMATION_KEY: usize = 0x0100_0006;
-const MORPH_PROGRESS_ANIMATION_KEY: usize = 0x0100_0007;
 
 #[cfg(feature = "accessibility")]
 pub use accessibility::{
     AccessibilityActionTarget, AccessibilityActivation, NodePlacement,
-    ScopedAccessibilitySemantics, accessibility_container_child_environment, slider_step_for_range,
+    ScopedAccessibilitySemantics, accessibility_container_child_environment,
 };
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 pub use input::{
     TextInputModel, TextInputTargetRegistration, TextSelectionSlot, clamp_to_char_boundary,
     text_editing,
@@ -291,24 +343,13 @@ pub struct OutsideWatch {
     pub last_seen: u64,
 }
 
-/// Slot-owner attribution for the animation controller: the cell a slot's
-/// tick marks and the [`Dirty`] it raises.
-pub struct AnimationOwner<E: crate::text::TextEngine> {
-    /// The cell marked while the slot is active.
-    pub(crate) cell: Weak<NodeCell<E>>,
-    /// The dirty bit the slot raises.
-    pub(crate) dirty: Dirty,
-}
-
 /// A wake a host hands the renderer once so producers can request the next
 /// frame. `Arc<dyn Fn>` on purpose: the channel is painter-neutral — the
 /// HWUI host's `content_redraw_handle` and a GPU surface's `RedrawHandle`
 /// install the same shape — so the producer path never names an engine
 /// crate.
 #[derive(Clone)]
-pub struct HostRedraw(
-    #[cfg_attr(hydrolysis_hwui, expect(dead_code))] std::sync::Arc<dyn Fn() + Send + Sync>,
-);
+pub struct HostRedraw(std::sync::Arc<dyn Fn() + Send + Sync>);
 
 impl std::fmt::Debug for HostRedraw {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -323,7 +364,6 @@ impl HostRedraw {
     }
 
     /// Asks the host for another frame.
-    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     pub fn request_redraw(&self) {
         (self.0)();
     }
@@ -348,16 +388,19 @@ pub enum Next {
     #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     At {
         /// When the frame is wanted.
-        #[cfg_attr(not(hydrolysis_frame_transaction), expect(dead_code))]
+        #[cfg_attr(
+            not(any(hydrolysis_frame_transaction, trybuild, test)),
+            expect(dead_code)
+        )]
         time: Instant,
         /// The refresh-rate range the frame requests.
-        #[cfg_attr(not(target_os = "android"), expect(dead_code))]
+        #[cfg_attr(not(any(target_os = "android", trybuild)), expect(dead_code))]
         rate: cherenkov_record::RefreshRange,
     },
 }
 
 /// The GPU painter's scheduling answer is the same shape.
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 impl From<cherenkov::Next> for Next {
     fn from(next: cherenkov::Next) -> Self {
         match next {
@@ -370,7 +413,13 @@ impl From<cherenkov::Next> for Next {
 /// A cross-thread wake handle for a GPU or external-frame producer: posts
 /// its `ProducerKey` through the renderer's wake channel and wakes the
 /// host, so the next frame update marks exactly the owning cell `PRODUCER`.
-#[cfg_attr(hydrolysis_hwui, expect(dead_code))]
+#[cfg_attr(
+    not(hydrolysis_gpu),
+    expect(
+        dead_code,
+        reason = "only GPU and external-frame producers wake the host"
+    )
+)]
 #[derive(Clone)]
 pub struct ProducerWake {
     /// Identity of the owning cell (from the renderer's key counter).
@@ -390,7 +439,13 @@ impl std::fmt::Debug for ProducerWake {
 
 impl ProducerWake {
     /// Posts the producer key and wakes the host for a frame.
-    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
+    #[cfg_attr(
+        not(hydrolysis_gpu),
+        expect(
+            dead_code,
+            reason = "only GPU and external-frame producers wake the host"
+        )
+    )]
     pub(crate) fn request_redraw(&self) {
         // A producer thread can outlive the renderer at window close: a
         // closed channel means the owner is gone, so the post is a no-op.
@@ -412,8 +467,10 @@ impl ProducerWake {
 /// above the window's own.
 pub struct PresentationHosts<E: crate::text::TextEngine> {
     /// The overlay-mode text context menu's host.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) text_overlay: NodeCore<E>,
     /// The `.context_menu` presentation's host.
+    #[cfg(feature = "menu")]
     pub(crate) context_menu: NodeCore<E>,
     /// `.anchored_overlay` presentations' host.
     pub(crate) anchored: NodeCore<E>,
@@ -429,7 +486,9 @@ impl<E: crate::text::TextEngine> PresentationHosts<E> {
     #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     pub(crate) fn unmount(&self) {
         for host in [
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             &self.text_overlay,
+            #[cfg(feature = "menu")]
             &self.context_menu,
             &self.anchored,
             &self.dialog,
@@ -451,16 +510,43 @@ pub struct MaterializedPlatformView<E: crate::text::TextEngine> {
     /// The resolved placement (window-space frame, clip, paint-order
     /// rank, visibility).
     pub(crate) placement: crate::platform_view::PlatformViewPlacement,
+    /// The view's paint chain when wrapper motions move it: the view
+    /// follows their tracks frame by frame.
+    pub(crate) following: Option<FollowedChain>,
     /// The retained node that emitted the view.
     #[cfg(any(test, hydrolysis_hwui))]
     pub(crate) owner: Weak<crate::renderer::mount::NodeCell<E>>,
-    /// The view's bounds in `owner`'s local coordinates.
+    /// The view's bounds in `owner`'s local coordinates — the HWUI
+    /// portal's binding datum; the GPU band split needs only `owner`.
     #[cfg(any(test, hydrolysis_hwui))]
     pub(crate) local: kurbo::Rect,
-    /// `E` reaches the record only through `owner`; where the HWUI portal
-    /// does not compile, the parameter is phantom.
+    /// `E` reaches the record only through `owner`; where neither painter
+    /// binds the node, the parameter is phantom.
     #[cfg(not(any(test, hydrolysis_hwui)))]
     _phantom: std::marker::PhantomData<fn() -> E>,
+}
+
+/// A platform view's paint chain under wrapper motions: where the view
+/// sits and the motions that move it, so a frame places it on their tracks
+/// (water-rs/waterui#2203).
+pub struct FollowedChain {
+    /// The placement the view registered at.
+    pub(crate) placement: Rc<mount::Placement>,
+    /// The view's bounds in that placement's local space.
+    pub(crate) local: kurbo::Rect,
+    /// The transform motions on the chain, nearest the window first.
+    pub(crate) motions: Vec<Rc<mount::motion::LayerMotion>>,
+}
+
+impl FollowedChain {
+    /// Whether a track on the chain still runs at `now`.
+    pub(crate) fn runs(&self, now: Instant) -> bool {
+        self.motions.iter().any(|layer| {
+            layer
+                .motions()
+                .any(|motion| motion.status().is_running(now))
+        })
+    }
 }
 
 /// The GPU-free dispatch core: everything the retained view tree's build,
@@ -485,6 +571,7 @@ pub struct SemanticCore<E: crate::text::TextEngine> {
     /// Input targets, selection slots and pre-edit live here — `pub(crate)`
     /// because the runner's editing session and headless tests read them
     /// from outside the renderer module tree.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) text_editing: TextEditingState<E>,
     popup_menu: PopupMenuState<E>,
     /// The identity the runner gave the window this core renders — menu-chord
@@ -503,7 +590,10 @@ pub struct SemanticCore<E: crate::text::TextEngine> {
     /// layout would have seen. Renderers no runner claimed keep
     /// `Rect::ZERO` — below every compact threshold, the "smallest window"
     /// presentation.
-    #[cfg(feature = "accessibility")]
+    #[cfg(all(
+        feature = "accessibility",
+        any(hydrolysis_cherenkov, feature = "navigation")
+    ))]
     window_frame: kurbo::Rect,
     render_depth: usize,
     /// The retained nodes whose subtrees are currently flushing, innermost
@@ -519,8 +609,18 @@ pub struct SemanticCore<E: crate::text::TextEngine> {
     /// Reserves the address of every owner keying a live renderer-local
     /// slot in `animation_controller`; begins and retires with it.
     animation_owner_pins: AnimationOwnerPins,
+    /// The layer tracks the engine still ran at the last presented frame:
+    /// scheduled work the host-side `animation_controller` cannot see.
+    engine_tracks: cherenkov_record::RunningTracks,
     frame_instant: Instant,
+    /// When the platform reports the frame being rendered will reach the
+    /// display — Android's Choreographer expected presentation time. `None`
+    /// on a platform that reports none: the frame is then rendered at the
+    /// instant it starts.
+    #[cfg(all(target_os = "android", not(hydrolysis_hwui)))]
+    presentation_target: Option<Instant>,
     pub(crate) lazy: LazyState,
+    #[cfg(feature = "navigation")]
     pub(crate) navigation: NavigationState<E>,
     #[cfg(feature = "accessibility")]
     accessibility: AccessibilityBuilder<E>,
@@ -580,10 +680,6 @@ pub struct SemanticCore<E: crate::text::TextEngine> {
     /// The node currently recording or measuring, and the phase — signal
     /// reads inside attribute their watcher guards (and marks) to it.
     reader: Option<Reader<E>>,
-    /// Slot-owner attribution for the animation controller: a bound key
-    /// maps to the cell that re-records when the slot advances, plus the
-    /// [`Dirty`] it raises.
-    animation_owners: rustc_hash::FxHashMap<AnimationKey, AnimationOwner<E>>,
     /// Identity-keyed subscriptions for reads no node owns (window-signal
     /// polls and driver reads outside a record or layout): one guard per
     /// signal identity, marking the root cell, kept only while the flush
@@ -629,6 +725,10 @@ pub struct SemanticCore<E: crate::text::TextEngine> {
     /// Owner cell address to its producer key: an owner re-binds the same
     /// key across re-installs so the map does not grow per frame.
     producer_keys_by_owner: rustc_hash::FxHashMap<usize, ProducerKey>,
+    /// The scene nodes whose content asked for the next frame at the last
+    /// commit, finite and perpetual apart: the animation tick re-marks
+    /// them, and the settle queries count them like the engine's tracks.
+    scene_frames: mount::SceneFrames<E>,
     /// The retained registries every record emits into, owned per node
     /// and resolved through placements; `hit_test`'s flat lists are the
     /// materialized view consumers read.
@@ -694,27 +794,35 @@ pub struct HydrolysisRenderer<E: crate::text::TextEngine> {
     #[cfg(hydrolysis_gpu_painter)]
     cherenkov_window:
         Option<crate::renderer::render::CherenkovWindow<crate::engine::TextureCherenkovSurface, E>>,
+    /// The CPU painter's engine window: the offscreen framebuffer surface on
+    /// the runtime's CPU engine and the stable mount under it.
+    #[cfg(hydrolysis_cpu_painter)]
+    raster_window: Option<crate::renderer::render::RasterWindow<E>>,
     /// The engine work the last commit did, with the live mounted counts.
     last_mount_stats: mount::MountStats,
-    /// The tests' [`MirrorTarget`](tests::mirror::MirrorTarget) mount.
-    #[cfg(test)]
+    /// The tests' [`MirrorTarget`](tests::mirror::MirrorTarget) mount, on
+    /// the GPU engine.
+    #[cfg(all(test, hydrolysis_gpu_painter))]
     mirror: Option<tests::mirror::MirrorWindow>,
     /// The node programs open while recording, innermost last (§C).
     program: Vec<mount::ProgramBuilder<E>>,
     /// The engine's frame scheduling answer from the last presented frame.
     /// The pump follows it: `Next::Idle` means no animation is running and
     /// the display link may sleep.
-    #[cfg(hydrolysis_gpu_painter)]
+    #[cfg(hydrolysis_cherenkov)]
     engine_next: Option<Next>,
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     live_caret: Option<Rc<chrome::LiveCaret>>,
     /// Per-frame applied-filter telemetry the render thread's `EngineEffect`
     /// calls accumulate into; reset before each `Engine::render` and read back
-    /// into the `frame_applied_filter_*` fields after it.
+    /// into the `frame_applied_filter_*` fields after it. The CPU raster
+    /// applies filters inside its bands and reports them through the
+    /// engine's frame stats instead.
     #[cfg(hydrolysis_gpu_painter)]
     applied_filter_metrics: Arc<crate::renderer::effects::AppliedFilterMetrics>,
-    #[cfg(hydrolysis_gpu_painter)]
+    #[cfg(hydrolysis_cherenkov)]
     frame_applied_filter_count: u32,
-    #[cfg(hydrolysis_gpu_painter)]
+    #[cfg(hydrolysis_cherenkov)]
     frame_applied_filter_effect: Duration,
     /// CPU stage times accumulated by `flush_window_tree`, plus the GPU spans
     /// the render pass resolves; drained per pump by `take_frame_stage_times`.
@@ -759,8 +867,11 @@ impl<E: crate::text::TextEngine> core::ops::DerefMut for HydrolysisRenderer<E> {
 
 pub const HIT_TEST_ALPHA_THRESHOLD: f32 = 0.01;
 
-const TEXT_SELECTION_MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(500);
-const TEXT_SELECTION_MULTI_CLICK_DISTANCE: f64 = 6.0;
+/// The click count at which text selection stops growing: a double click
+/// selects a word, a triple click a line.
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
+const MAX_TEXT_SELECTION_CLICKS: u32 = 3;
+#[cfg(feature = "menu")]
 const TEXT_CONTEXT_MENU_WINDOW_TITLE: &str = "";
 
 impl<E: crate::text::TextEngine> SemanticCore<E> {
@@ -779,6 +890,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     }
 
     /// The `closable` the runner's window was declared with.
+    #[cfg(feature = "menu")]
     pub(crate) const fn window_closable(&self) -> bool {
         self.window_closable
     }
@@ -788,7 +900,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// resolve a viewport-dependent decision (a navigation split's
     /// collapsed-column mode) read what a layout would have seen.
     #[cfg(feature = "accessibility")]
-    #[cfg(hydrolysis_gpu_painter)]
+    #[cfg(hydrolysis_cherenkov)]
     pub(crate) const fn set_window_frame(&mut self, frame: kurbo::Rect) {
         self.window_frame = frame;
     }
@@ -796,6 +908,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// The window's declared logical frame — `Rect::ZERO` until a runner's
     /// window declares one.
     #[cfg(feature = "accessibility")]
+    #[cfg(feature = "navigation")]
     pub(crate) const fn window_frame(&self) -> kurbo::Rect {
         self.window_frame
     }
@@ -860,7 +973,9 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             core
         };
         let presentation_hosts = PresentationHosts {
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             text_overlay: host(),
+            #[cfg(feature = "menu")]
             context_menu: host(),
             anchored: host(),
             dialog: host(),
@@ -871,11 +986,15 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             gesture_engine: GestureEngine::default(),
             gesture_group_ids: BTreeMap::new(),
             next_gesture_group_id: 0,
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             text_editing: TextEditingState::default(),
             popup_menu: PopupMenuState::default(),
             window_id: WindowId::Orphan,
             window_closable: true,
-            #[cfg(feature = "accessibility")]
+            #[cfg(all(
+                feature = "accessibility",
+                any(hydrolysis_cherenkov, feature = "navigation")
+            ))]
             window_frame: kurbo::Rect::ZERO,
             render_depth: 0,
             owner_stack: Vec::new(),
@@ -885,8 +1004,12 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             signals,
             animation_controller: AnimationController::default(),
             animation_owner_pins: AnimationOwnerPins::default(),
+            engine_tracks: cherenkov_record::RunningTracks::default(),
             frame_instant,
+            #[cfg(all(target_os = "android", not(hydrolysis_hwui)))]
+            presentation_target: None,
             lazy: LazyState::default(),
+            #[cfg(feature = "navigation")]
             navigation: NavigationState::default(),
             #[cfg(feature = "accessibility")]
             accessibility: AccessibilityBuilder::default(),
@@ -903,7 +1026,6 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             root,
             placement_clock,
             reader: None,
-            animation_owners: rustc_hash::FxHashMap::default(),
             outside_watches: rustc_hash::FxHashMap::default(),
             outside_watch_generation: 1,
             outside_frame_retains: Vec::new(),
@@ -911,6 +1033,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             next_producer_key: Cell::new(1),
             producer_owners: rustc_hash::FxHashMap::default(),
             producer_keys_by_owner: rustc_hash::FxHashMap::default(),
+            scene_frames: mount::SceneFrames::default(),
             retained: mount::RetainedRegistry::new(),
             placement_scope_stack: Vec::new(),
             saved_scope_stacks: Vec::new(),
@@ -962,6 +1085,12 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         let core = NodeCore::new(self.signals.clone(), Placement::new(&self.placement_clock));
         self.cells.borrow_mut().push(Rc::downgrade(&core.cell));
         core
+    }
+
+    /// The window's placement clock: the epoch placement resolutions cache
+    /// against and the instant engine-run motion evaluates at.
+    pub(crate) const fn placement_clock(&self) -> &Rc<PlacementClock> {
+        &self.placement_clock
     }
 
     /// Whether a structural rebuild is capturing right now — the gate a
@@ -1099,6 +1228,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// reader after — the accessibility emit walk's entry; the record and
     /// layout descents take the renderer-level `with_reader`.
     #[cfg(feature = "accessibility")]
+    #[cfg(hydrolysis_cherenkov)]
     pub(crate) fn with_reader<R>(
         &mut self,
         core: &NodeCore<E>,
@@ -1227,6 +1357,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// it descends into (a semantic frame has no placements to stamp
     /// otherwise).
     #[cfg(feature = "accessibility")]
+    #[cfg(hydrolysis_cherenkov)]
     pub(crate) const fn record_seq(&self) -> u64 {
         self.record_seq
     }
@@ -1544,15 +1675,31 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// The current placement's composed hit transform — the replacement for
     /// the deleted `ctx.hit_transform` in code that maps coordinates both
     /// ways (interaction wave origins).
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) fn current_hit_transform(&self) -> kurbo::Affine {
         self.current_placement().resolved_transform(true)
     }
 
-    /// The flat-list view of the retained registries, rebuilt when a
-    /// registry write or a placement write made it stale.
+    /// The flat-list view of the retained registries as an event at the
+    /// frame clock's instant sees them: placement evaluates every
+    /// engine-run wrapper motion at that instant (water-rs/waterui#2203),
+    /// and the lists rebuild when a track was in flight since they last
+    /// resolved, or a registry or placement write made them stale.
     pub(crate) fn registries(&mut self) -> &HitTestState<E> {
+        self.placement_clock.advance(self.frame_instant);
         self.materialize_registries();
         &self.hit_test
+    }
+
+    /// The flat lists at a frame's end: rebuilt when a registry or
+    /// placement write made them stale, or once when a wrapper motion's
+    /// track ended — never because a track moved, so a frame samples the
+    /// motions the engine runs only where a platform view, which the host
+    /// places, is drawn under one (water-rs/waterui#2203).
+    pub(crate) fn frame_registries(&mut self) {
+        self.placement_clock.settle(self.frame_instant);
+        self.materialize_registries();
+        self.follow_platform_views();
     }
 
     /// The focused text-input target's identity and window-space frame
@@ -1563,6 +1710,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// boundary, so the subtree test walks the owner chain and the frame
     /// resolves through the entry's own paint chain (unclipped, as dev's
     /// `frame` was).
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) fn focused_field_frame_in_scope(
         &self,
         scope: &Rc<NodeCell<E>>,
@@ -1711,11 +1859,18 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             .owner_of(key)
             .filter(|owner| live(owner))
             .or_else(|| {
-                self.text_editing
-                    .text_input_targets
-                    .iter()
-                    .find(|target| &target.interaction_key == key)
-                    .map(|target| target.owner.clone())
+                #[cfg(any(feature = "text-field", feature = "secure-field"))]
+                {
+                    self.text_editing
+                        .text_input_targets
+                        .iter()
+                        .find(|target| &target.interaction_key == key)
+                        .map(|target| target.owner.clone())
+                }
+                #[cfg(not(any(feature = "text-field", feature = "secure-field")))]
+                {
+                    None
+                }
             })
             .or_else(|| {
                 self.hit_test
@@ -1840,27 +1995,10 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         }
     }
 
-    /// Attributes the animation slot `key` to `cell` with `dirty`, so its
-    /// ticks mark the owning node. A rebind under the same key replaces the
-    /// entry — one owner per slot.
-    pub(crate) fn bind_animation_owner(
-        &mut self,
-        key: AnimationKey,
-        cell: &Rc<NodeCell<E>>,
-        dirty: Dirty,
-    ) {
-        self.animation_owners.insert(
-            key,
-            AnimationOwner {
-                cell: Rc::downgrade(cell),
-                dirty,
-            },
-        );
-    }
-
     /// The modifier snapshot the window last reported — pointer targets read
     /// it at commit time because pointer events carry no modifier state of
     /// their own (toggle and Shift range selection).
+    #[cfg(feature = "list")]
     pub(crate) const fn modifiers(&self) -> Modifiers {
         self.hit_test.modifiers
     }
@@ -1880,7 +2018,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     }
 }
 
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 impl HydrolysisRenderer<crate::text::ParleyEngine> {
     /// A renderer drawing with `theme`, shaping text against the system font
     /// collection under `family_resolution`.
@@ -1905,6 +2043,12 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
             theme,
             crate::text::ParleyEngine::from_collection(fonts, family_resolution),
         )
+    }
+}
+
+impl<E: crate::text::TextEngine> core::fmt::Debug for HydrolysisRenderer<E> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("HydrolysisRenderer").finish_non_exhaustive()
     }
 }
 
@@ -1933,9 +2077,30 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         self.core.registries()
     }
 
+    /// The frame-end materialization — see [`SemanticCore::frame_registries`].
+    pub(crate) fn frame_registries(&mut self) {
+        self.core.frame_registries();
+    }
+
     /// [`SemanticCore::record_platform_views`].
     pub(crate) fn record_platform_views(&self) {
         self.core.record_platform_views();
+    }
+
+    /// The platform view that owns a touch at host pixel `point`: the
+    /// topmost view placed there, unless an interactive target painted
+    /// above it covers the point — the GPU band's ordered hit test, the
+    /// same rule the HWUI `platform_view_hit` applies (water-rs/waterui#2225).
+    /// `scale` is the density the touch edge divides host pixels by: the
+    /// placed frames and the interactive targets are both in window logical
+    /// coordinates.
+    #[cfg(hydrolysis_cherenkov)]
+    #[cfg_attr(not(any(target_os = "android", test)), expect(dead_code))]
+    pub(crate) fn platform_view_hit_gpu(&self, point: kurbo::Point, scale: f64) -> Option<u64> {
+        let logical = kurbo::Point::new(point.x / scale, point.y / scale);
+        self.core
+            .platform_view_at(logical)
+            .filter(|view| !self.core.platform_view_occluded(*view, logical))
     }
 
     /// [`SemanticCore::current_placement`].
@@ -1966,12 +2131,18 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// The window's fixed host frames in paint order: the content root,
     /// then the context menu, anchored overlay and text overlay hosts, and
     /// finally the `.dialog` modal layer so nothing else stacks above it.
-    pub(crate) fn mount_roots(&self) -> [Rc<NodeCell<E>>; 5] {
+    pub(crate) fn mount_roots(
+        &self,
+    ) -> [Rc<NodeCell<E>>;
+        3 + cfg!(feature = "menu") as usize
+            + cfg!(any(feature = "text-field", feature = "secure-field")) as usize] {
         let hosts = &self.core.presentation_hosts;
         [
             Rc::clone(&self.core.root_core.cell),
+            #[cfg(feature = "menu")]
             Rc::clone(&hosts.context_menu.cell),
             Rc::clone(&hosts.anchored.cell),
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             Rc::clone(&hosts.text_overlay.cell),
             Rc::clone(&hosts.dialog.cell),
         ]
@@ -2008,6 +2179,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     }
 
     /// [`SemanticCore::current_hit_transform`].
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) fn current_hit_transform(&self) -> kurbo::Affine {
         self.core.current_hit_transform()
     }
@@ -2027,18 +2199,21 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
 
             #[cfg(hydrolysis_gpu_painter)]
             cherenkov_window: None,
+            #[cfg(hydrolysis_cpu_painter)]
+            raster_window: None,
             last_mount_stats: mount::MountStats::default(),
-            #[cfg(test)]
+            #[cfg(all(test, hydrolysis_gpu_painter))]
             mirror: None,
             program: Vec::new(),
-            #[cfg(hydrolysis_gpu_painter)]
+            #[cfg(hydrolysis_cherenkov)]
             engine_next: None,
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             live_caret: None,
             #[cfg(hydrolysis_gpu_painter)]
             applied_filter_metrics: Arc::default(),
-            #[cfg(hydrolysis_gpu_painter)]
+            #[cfg(hydrolysis_cherenkov)]
             frame_applied_filter_count: 0,
-            #[cfg(hydrolysis_gpu_painter)]
+            #[cfg(hydrolysis_cherenkov)]
             frame_applied_filter_effect: Duration::ZERO,
             #[cfg(feature = "frame-profile")]
             frame_stage_times: FrameStageTimes::default(),
@@ -2077,14 +2252,11 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
 }
 
 pub use render::HydroState;
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
+pub use render::HydrolysisTextContextMenuMode;
+#[cfg(any(feature = "menu", feature = "color-picker"))]
+pub use render::HydrolysisWindowOrigin;
 pub use render::RenderContext;
-pub use render::{HydrolysisTextContextMenuMode, HydrolysisWindowOrigin};
 
-impl<E: crate::text::TextEngine> Clone for AnimationOwner<E> {
-    fn clone(&self) -> Self {
-        Self {
-            cell: self.cell.clone(),
-            dirty: self.dirty,
-        }
-    }
-}
+#[cfg(all(feature = "accessibility", feature = "slider"))]
+pub use accessibility::slider_step_for_range;

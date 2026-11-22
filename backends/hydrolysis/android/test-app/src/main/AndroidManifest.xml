@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- The GPU video and map acceptance scenes fetch their media and tiles. -->
+    <uses-permission android:name="android.permission.INTERNET" />
     <application
         android:enableOnBackInvokedCallback="true"
         android:icon="@drawable/ic_launcher"

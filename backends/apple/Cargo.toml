@@ -18,144 +18,63 @@ workspace = true
 # Component ports are feature-gated so unused ones leave no code or
 # dependency in the artifact; the default is everything ported so far.
 default = [
-    "anchored_overlay",
     "applied_filter",
-    "accessibility_identifier",
-    "accessibility_metadata",
-    "badge",
-    "button",
-    "clip_shape",
+    "calendar",
+    "canvas",
     "gpu_surface",
     "color_picker",
-    "container",
     "context_menu",
-    "cursor",
     "date_picker",
     "dialog",
-    "draggable",
-    "drop_destination",
-    "dynamic",
-    "dynamic_range",
-    "fixed_container",
-    "focused",
-    "glass_background",
-    "ignore_safe_area",
-    "hittable",
-    "gesture",
-    "image",
-    "layout_priority",
-    "lifecycle_hook",
-    "material_background",
     "menu",
-    "offset",
-    "rotation",
-    "scale",
-    "border",
-    "shadow",
-    "opacity",
     "list",
     "multi_date_picker",
     "navigation",
-    "on_event",
-    "on_key_press",
     "picker",
     "picture",
-    "progress",
-    "resolved_color",
-    "resolved_gradient",
-    "resolved_shape",
-    "retain",
-    "scroll",
-    "secure",
     "secure_field",
     "slider",
-    "spacer",
     "stepper",
     "table",
-    "text",
     "text_field",
     "toggle",
     "view_effect",
-    "view_renderer",
-    "env",
 ]
-anchored_overlay = ["transition_sites"]
-accessibility_identifier = []
-applied_filter = ["gpu_surface", "dep:objc2-core-image"]
-accessibility_metadata = []
-badge = []
-border = []
-button = []
-clip_shape = []
-gpu_surface = ["dep:block2", "objc2-metal/block2"]
-color_picker = []
-container = ["transition_sites"]
-context_menu = []
-cursor = []
-date_picker = []
+applied_filter = ["gpu_surface", "dep:objc2-core-image", "waterui/effects"]
+calendar = ["waterui/calendar"]
+# The Core Animation realization of `Canvas`.
+canvas = ["dep:block2", "dep:skrifa"]
+gpu_surface = ["dep:block2", "objc2-metal/block2", "waterui/gpu"]
+color_picker = ["waterui/color-picker"]
+context_menu = ["waterui/menu"]
+date_picker = ["waterui/date-picker"]
 dialog = ["waterui/dialog", "cocoa-ui/dialog"]
-draggable = []
-drop_destination = []
-dynamic = ["transition_sites"]
-dynamic_range = []
-fixed_container = []
-focused = []
-glass_background = []
-ignore_safe_area = []
-hittable = []
-gesture = []
-layout_priority = []
-image = []
-lifecycle_hook = []
-list = ["transition_sites"]
+list = ["waterui/list"]
 # `cocoa-ui/map` brings `MKMapView`, the `MapKit` framework link and the
 # `CoreLocation` types; an app that never uses the leaf gets none of it.
-map = ["dep:waterui-map", "cocoa-ui/map"]
-material_background = []
-menu = []
-offset = []
-opacity = []
-multi_date_picker = []
-navigation = ["menu", "text", "transition_sites"]
-on_event = []
-on_key_press = []
-picker = []
+map = ["dep:waterui-map", "cocoa-ui/map", "waterui/map"]
+menu = ["waterui/menu"]
+multi_date_picker = ["waterui/multi-date-picker"]
+navigation = ["menu", "waterui/navigation"]
+picker = ["waterui/picker"]
 plain = []
-picture = []
-progress = []
-resolved_color = []
-resolved_gradient = []
-resolved_shape = []
-retain = []
-rotation = []
-scale = []
-scroll = []
-secure = []
-secure_field = []
-shadow = []
-slider = []
-spacer = []
-stepper = []
-table = []
-text = []
-text_field = []
-toggle = []
-# The structural transition machinery (ghosts, the transition host and
-# its clock) the ports that insert and remove children share; each such
-# port enables it.
-transition_sites = []
-view_effect = ["gpu_surface"]
-view_renderer = []
-webview = ["dep:waterui-webview", "dep:cookie", "cocoa-ui/webview"]
+picture = ["waterui/gpu"]
+secure_field = ["waterui/secure-field"]
+slider = ["waterui/slider"]
+stepper = ["waterui/stepper"]
+table = ["list", "waterui/table"]
+text_field = ["waterui/text-field"]
+toggle = ["waterui/toggle"]
+view_effect = ["gpu_surface", "waterui/effects"]
+webview = ["dep:waterui-webview", "dep:cookie", "cocoa-ui/webview", "waterui/webview"]
 # `media` is the name the `water` CLI's capability mechanism (`waterui-video`
 # in the app's resolved graph) forwards to this crate; it turns on both
 # leaves the media semantic needs.
 media = ["video", "video_player"]
 # `cocoa-ui/avkit` brings the `AVFoundation`/`AVKit` framework links; an app
 # without media compiles and links none of it.
-video = ["dep:waterui-video", "dep:waterkit-audio", "cocoa-ui/avkit"]
-video_player = ["dep:waterui-video", "dep:waterkit-audio", "cocoa-ui/avkit"]
-env = []
+video = ["dep:waterui-video", "dep:waterkit-audio", "cocoa-ui/avkit", "waterui/video"]
+video_player = ["dep:waterui-video", "dep:waterkit-audio", "cocoa-ui/avkit", "waterui/video"]
 
 # The `preview::run` entry `water preview` links — the generated preview
 # package enables it; `water run` never does, so every other Apple app
@@ -180,17 +99,23 @@ native-test = [
     "preview",
     "webview",
     "waterui-webview/conformance",
+    "dep:blocking",
 ]
 
 
 [dependencies]
-waterui = { workspace = true, features = ["inspector", "gpu", "assets", "snackbar", "highlight", "locale-datetime", "locale-list"] }
+waterui = { workspace = true, features = ["inspector", "assets", "snackbar", "highlight", "locale-datetime", "locale-list"] }
 waterui-core = { workspace = true }
+waterui-structural-transition.workspace = true
 thiserror.workspace = true
 waterui-backend-core = { workspace = true, default-features = true, features = [
     "overlay",
+    "log",
 ] }
 waterui-locale = { workspace = true }
+# Sets the user's first-weekday preference as a Unicode locale keyword on
+# the system locale.
+icu_locale = { version = "2.4", default-features = false }
 waterui-map = { workspace = true, optional = true }
 waterui-meta = { workspace = true, optional = true }
 # The GPU components the backend owns (`gpu_surface`, `view_effect`,
@@ -230,9 +155,16 @@ waterkit-audio = { workspace = true, default-features = true, features = [
 waterui-video = { workspace = true, optional = true }
 executor-core = { workspace = true }
 async-channel = { workspace = true }
+# `native_test_support`'s readiness gate warms the suite's blocking pool —
+# production code never sees it (native-test only).
+blocking = { workspace = true, optional = true }
 futures = { workspace = true }
 native-executor = { workspace = true }
 kurbo = { workspace = true }
+# Reads a variable font's `fvar` and `avar` so a glyph run's normalized
+# variation coordinates reach Core Text as the user-space values it takes.
+# Already linked through `waterui-graphics`, with the same features.
+skrifa = { workspace = true, optional = true }
 dispatch2 = "0.3"
 libc = "0.2"
 tracing = { workspace = true }
@@ -285,11 +217,6 @@ objc2-core-image = { version = "0.3", default-features = false, features = [
     "objc2-metal",
 ], optional = true }
 
-# cargo-machete: `cfg_aliases` and `waterkit-build` are named only in
-# `build.rs`, which the analysis does not read.
-[package.metadata.cargo-machete]
-ignored = ["cfg_aliases", "waterkit-build"]
-
 [dev-dependencies]
 block2 = { workspace = true }
 divan = "0.1"
@@ -304,6 +231,13 @@ executor-core = { workspace = true, features = ["async-task"] }
 # The webview trials drive the shared conformance cases; the crate's own
 # edge is optional behind the `webview` feature, so this carries it too.
 waterui-webview = { workspace = true, features = ["conformance"] }
+# The capture-colour and capture-order trials measure the composited
+# columns with the oracle's LDR-FLIP — the metric the engine tests judge
+# renders by.
+cherenkov-oracle = { path = "../../graphics/cherenkov/oracle" }
+# The scene-surface trials join a dropped engine's render thread through
+# the engine's test seam.
+cherenkov = { workspace = true, features = ["testing"] }
 
 # `preview`'s protocol types arrive only where the preview entry exists —
 # macOS for the AppKit realization, Mac Catalyst for the UIKit one — and an
@@ -328,10 +262,6 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
     "NSRunningApplication",
     "NSWorkspace",
 ] }
-# The capture-colour trial measures the composited columns with the
-# oracle's LDR-FLIP — the metric the engine tests judge renders by. The
-# case mounts only on macOS, so the edge lives under this target.
-cherenkov-oracle = { path = "../../graphics/cherenkov/oracle" }
 
 # The native tests create real `AppKit`/`UIKit` objects, which are only
 # legal on the process's actual main thread — libtest's worker threads can

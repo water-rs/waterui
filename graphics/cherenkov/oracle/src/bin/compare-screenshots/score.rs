@@ -432,6 +432,14 @@ mod tests {
     }
 
     #[test]
+    fn the_heatmap_is_an_rgb8_image_of_the_overlap() {
+        let image = solid(0.25);
+        let (_, heatmap) = compare(&image, &image, 0, None).unwrap();
+        assert_eq!((heatmap.width, heatmap.height), (32, 32));
+        assert_eq!(heatmap.rgb.len(), 32 * 32 * 3);
+    }
+
+    #[test]
     fn transparent_black_is_not_opaque_black() {
         let reference = solid(0.0);
         let mut actual = reference.clone();

@@ -107,11 +107,11 @@ const fn put_fields(buf: &mut [u8], pos: usize, fields: &[FieldSchema], depth: u
     let mut index = 0;
     while index < fields.len() {
         assert!(
-            !fields[index].name.is_empty(),
+            !fields[index].name().is_empty(),
             "a field name must not be empty"
         );
-        pos = put_str(buf, pos, fields[index].name);
-        pos = put_node(buf, pos, &fields[index].ty, depth);
+        pos = put_str(buf, pos, fields[index].name());
+        pos = put_node(buf, pos, fields[index].ty(), depth);
         index += 1;
     }
     pos
@@ -120,9 +120,9 @@ const fn put_fields(buf: &mut [u8], pos: usize, fields: &[FieldSchema], depth: u
 /// Append an enum body: name, representation, then the variants. `depth` is
 /// the enum node's own depth; variant payload nodes sit one level below it.
 const fn put_enum(buf: &mut [u8], pos: usize, schema: &EnumSchema, depth: usize) -> usize {
-    assert!(!schema.name.is_empty(), "an enum name must not be empty");
-    let mut pos = put_str(buf, pos, schema.name);
-    pos = match schema.representation {
+    assert!(!schema.name().is_empty(), "an enum name must not be empty");
+    let mut pos = put_str(buf, pos, schema.name());
+    pos = match schema.representation() {
         EnumRepresentation::StringUnion => put(buf, pos, representation::STRING_UNION),
         EnumRepresentation::Tagged {
             tag: tag_property,
@@ -141,19 +141,19 @@ const fn put_enum(buf: &mut [u8], pos: usize, schema: &EnumSchema, depth: usize)
             put_str(buf, pos, content_property)
         }
     };
-    pos = put_varint(buf, pos, schema.variants.len());
+    pos = put_varint(buf, pos, schema.variants().len());
     let mut index = 0;
-    while index < schema.variants.len() {
-        let case = &schema.variants[index];
-        assert!(!case.name.is_empty(), "a variant name must not be empty");
-        if matches!(schema.representation, EnumRepresentation::StringUnion) {
+    while index < schema.variants().len() {
+        let case = &schema.variants()[index];
+        assert!(!case.name().is_empty(), "a variant name must not be empty");
+        if matches!(schema.representation(), EnumRepresentation::StringUnion) {
             assert!(
-                matches!(case.payload, VariantPayload::Unit),
+                matches!(case.payload(), VariantPayload::Unit),
                 "a string-union variant cannot carry a payload"
             );
         }
-        pos = put_str(buf, pos, case.name);
-        pos = match case.payload {
+        pos = put_str(buf, pos, case.name());
+        pos = match case.payload() {
             VariantPayload::Unit => put(buf, pos, variant::UNIT),
             VariantPayload::Tuple(nodes) => {
                 let pos = put(buf, pos, variant::TUPLE);
@@ -236,10 +236,10 @@ pub const fn put_node(buf: &mut [u8], pos: usize, node: &TypeSchema, depth: usiz
             put_nodes(buf, pos, arguments, depth + 1)
         }
         TypeSchema::Struct(schema) => {
-            assert!(!schema.name.is_empty(), "a struct name must not be empty");
+            assert!(!schema.name().is_empty(), "a struct name must not be empty");
             let pos = put(buf, pos, tag::STRUCT);
-            let pos = put_str(buf, pos, schema.name);
-            put_fields(buf, pos, schema.fields, depth + 1)
+            let pos = put_str(buf, pos, schema.name());
+            put_fields(buf, pos, schema.fields(), depth + 1)
         }
         TypeSchema::Enum(schema) => {
             let pos = put(buf, pos, tag::ENUM);

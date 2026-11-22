@@ -12,6 +12,8 @@ use alloc::vec::Vec;
 
 use serde::{Deserialize, Serialize};
 
+use crate::authoring::WidgetContent;
+
 /// One node of a widget snapshot.
 ///
 /// The closed set `WidgetKit`'s renderer understands. Every variant name is
@@ -47,16 +49,42 @@ pub enum Node {
 #[non_exhaustive]
 pub struct Text {
     /// The text to display.
-    pub content: String,
+    content: String,
     /// The font to render with; `None` uses the widget default (`.body`).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub font: Option<Font>,
+    font: Option<Font>,
     /// The foreground color; `None` uses the primary label color.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub color: Option<Color>,
+    color: Option<Color>,
     /// A maximum line count, `SwiftUI`'s `lineLimit`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub line_limit: Option<u32>,
+    line_limit: Option<u32>,
+}
+
+impl Text {
+    /// The text to display.
+    #[must_use]
+    pub const fn content(&self) -> &str {
+        self.content.as_str()
+    }
+
+    /// The font to render with; `None` uses the widget default (`.body`).
+    #[must_use]
+    pub const fn get_font(&self) -> Option<&Font> {
+        self.font.as_ref()
+    }
+
+    /// The foreground color; `None` uses the primary label color.
+    #[must_use]
+    pub const fn get_color(&self) -> Option<&Color> {
+        self.color.as_ref()
+    }
+
+    /// A maximum line count, `SwiftUI`'s `lineLimit`.
+    #[must_use]
+    pub const fn get_line_limit(&self) -> Option<u32> {
+        self.line_limit
+    }
 }
 
 /// A font a text leaf renders with.
@@ -183,11 +211,26 @@ pub enum SemanticColor {
 #[non_exhaustive]
 pub struct Image {
     /// Where the image's pixels come from.
-    pub source: ImageSource,
+    source: ImageSource,
     /// The foreground color for template (monochrome) sources such as SF
     /// Symbols; `None` uses the symbol's own rendering.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub color: Option<Color>,
+    color: Option<Color>,
+}
+
+impl Image {
+    /// Where the image's pixels come from.
+    #[must_use]
+    pub const fn source(&self) -> &ImageSource {
+        &self.source
+    }
+
+    /// The foreground color for template (monochrome) sources such as SF
+    /// Symbols; `None` uses the symbol's own rendering.
+    #[must_use]
+    pub const fn get_color(&self) -> Option<&Color> {
+        self.color.as_ref()
+    }
 }
 
 /// Where an image's pixels come from.
@@ -218,15 +261,41 @@ pub enum ImageSource {
 #[non_exhaustive]
 pub struct Stack {
     /// Which axis the children are laid out along.
-    pub axis: Axis,
+    axis: Axis,
     /// The children, in order.
-    pub children: Vec<Node>,
+    children: Vec<Node>,
     /// Spacing between children; `None` uses the platform default.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub spacing: Option<f32>,
+    spacing: Option<f32>,
     /// Cross-axis alignment of the children.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub alignment: Option<Alignment>,
+    alignment: Option<Alignment>,
+}
+
+impl Stack {
+    /// Which axis the children are laid out along.
+    #[must_use]
+    pub const fn axis(&self) -> &Axis {
+        &self.axis
+    }
+
+    /// The children, in order.
+    #[must_use]
+    pub const fn children(&self) -> &[Node] {
+        self.children.as_slice()
+    }
+
+    /// Spacing between children; `None` uses the platform default.
+    #[must_use]
+    pub const fn spacing(&self) -> Option<f32> {
+        self.spacing
+    }
+
+    /// Cross-axis alignment of the children.
+    #[must_use]
+    pub const fn alignment(&self) -> Option<Alignment> {
+        self.alignment
+    }
 }
 
 /// The axis a stack lays out along.
@@ -268,6 +337,30 @@ pub enum VerticalAlignment {
     Bottom,
 }
 
+impl Stack {
+    /// A stack of `children` along `axis` with the platform spacing and the
+    /// default alignment.
+    #[must_use]
+    pub const fn new(axis: Axis, children: Vec<Node>) -> Self {
+        Self {
+            axis,
+            children,
+            spacing: None,
+            alignment: None,
+        }
+    }
+
+    /// Sets the spacing between children; `None` uses the platform default.
+    pub const fn set_spacing(&mut self, spacing: Option<f32>) {
+        self.spacing = spacing;
+    }
+
+    /// Sets the cross-axis alignment of the children.
+    pub const fn set_alignment(&mut self, alignment: Option<Alignment>) {
+        self.alignment = alignment;
+    }
+}
+
 /// The alignment a stack applies: `horizontal` for a vertical stack,
 /// `vertical` for a horizontal stack, both for a depth stack.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -276,10 +369,48 @@ pub enum VerticalAlignment {
 pub struct Alignment {
     /// The horizontal component, when set.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub horizontal: Option<HorizontalAlignment>,
+    horizontal: Option<HorizontalAlignment>,
     /// The vertical component, when set.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub vertical: Option<VerticalAlignment>,
+    vertical: Option<VerticalAlignment>,
+}
+
+impl Alignment {
+    /// The horizontal component, when set.
+    #[must_use]
+    pub const fn horizontal(&self) -> Option<HorizontalAlignment> {
+        self.horizontal
+    }
+
+    /// The vertical component, when set.
+    #[must_use]
+    pub const fn vertical(&self) -> Option<VerticalAlignment> {
+        self.vertical
+    }
+}
+
+impl Alignment {
+    /// An alignment with the given components.
+    #[must_use]
+    pub const fn new(
+        horizontal: Option<HorizontalAlignment>,
+        vertical: Option<VerticalAlignment>,
+    ) -> Self {
+        Self {
+            horizontal,
+            vertical,
+        }
+    }
+
+    /// Sets the horizontal component.
+    pub const fn set_horizontal(&mut self, horizontal: Option<HorizontalAlignment>) {
+        self.horizontal = horizontal;
+    }
+
+    /// Sets the vertical component.
+    pub const fn set_vertical(&mut self, vertical: Option<VerticalAlignment>) {
+        self.vertical = vertical;
+    }
 }
 
 /// A shape filled with a color.
@@ -288,9 +419,23 @@ pub struct Alignment {
 #[non_exhaustive]
 pub struct Shape {
     /// The shape's geometry.
-    pub kind: ShapeKind,
+    kind: ShapeKind,
     /// What fills it.
-    pub fill: Color,
+    fill: Color,
+}
+
+impl Shape {
+    /// The shape's geometry.
+    #[must_use]
+    pub const fn kind(&self) -> &ShapeKind {
+        &self.kind
+    }
+
+    /// What fills it.
+    #[must_use]
+    pub const fn get_fill(&self) -> &Color {
+        &self.fill
+    }
 }
 
 /// The shape vocabulary the widget renderer draws.
@@ -323,9 +468,23 @@ pub enum ShapeKind {
 #[non_exhaustive]
 pub struct Link {
     /// The URL opened on tap — a deep link into the app or a web URL.
-    pub url: String,
+    url: String,
     /// The rendered label.
-    pub content: Box<Node>,
+    content: Box<Node>,
+}
+
+impl Link {
+    /// The URL opened on tap — a deep link into the app or a web URL.
+    #[must_use]
+    pub const fn url(&self) -> &str {
+        self.url.as_str()
+    }
+
+    /// The rendered label.
+    #[must_use]
+    pub fn content(&self) -> &Node {
+        &self.content
+    }
 }
 
 /// A tappable region performing a declared intent.
@@ -397,9 +556,24 @@ pub trait DeclaredWidgetIntent: WidgetIntent {
 pub struct TimelineEntry {
     /// When this entry becomes the widget's rendered content, in seconds
     /// since the Unix epoch.
-    pub date: Date,
+    date: Date,
     /// The snapshot rendered for this entry.
-    pub content: Node,
+    content: Node,
+}
+
+impl TimelineEntry {
+    /// When this entry becomes the widget's rendered content, in seconds
+    /// since the Unix epoch.
+    #[must_use]
+    pub const fn date(&self) -> Date {
+        self.date
+    }
+
+    /// The snapshot rendered for this entry.
+    #[must_use]
+    pub const fn content(&self) -> &Node {
+        &self.content
+    }
 }
 
 /// A `WidgetKit` timeline: the dated entries plus the reload policy the
@@ -409,9 +583,23 @@ pub struct TimelineEntry {
 #[non_exhaustive]
 pub struct Timeline {
     /// The dated entries, in chronological order.
-    pub entries: Vec<TimelineEntry>,
+    entries: Vec<TimelineEntry>,
     /// When `WidgetKit` should ask for a new timeline.
-    pub policy: ReloadPolicy,
+    policy: ReloadPolicy,
+}
+
+impl Timeline {
+    /// The dated entries, in chronological order.
+    #[must_use]
+    pub const fn entries(&self) -> &[TimelineEntry] {
+        self.entries.as_slice()
+    }
+
+    /// When `WidgetKit` should ask for a new timeline.
+    #[must_use]
+    pub const fn get_policy(&self) -> ReloadPolicy {
+        self.policy
+    }
 }
 
 /// When the extension asks for the next timeline.
@@ -465,7 +653,6 @@ pub enum WidgetFamily {
 /// A pixel-size box, in points.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[non_exhaustive]
 pub struct Size {
     /// Width in points.
     pub width: f64,
@@ -481,7 +668,165 @@ pub struct Size {
 #[non_exhaustive]
 pub struct WidgetContext {
     /// The widget family being rendered.
-    pub family: WidgetFamily,
+    family: WidgetFamily,
     /// The size the system proposes for the widget's content.
-    pub display_size: Size,
+    display_size: Size,
+}
+
+impl WidgetContext {
+    /// The widget family being rendered.
+    #[must_use]
+    pub const fn family(&self) -> WidgetFamily {
+        self.family
+    }
+
+    /// The size the system proposes for the widget's content.
+    #[must_use]
+    pub const fn display_size(&self) -> Size {
+        self.display_size
+    }
+}
+
+impl Text {
+    /// Creates a text leaf with default styling.
+    pub fn new(content: impl Into<String>) -> Self {
+        Self {
+            content: content.into(),
+            font: None,
+            color: None,
+            line_limit: None,
+        }
+    }
+
+    /// Sets the font.
+    #[must_use]
+    pub const fn font(mut self, font: Font) -> Self {
+        self.font = Some(font);
+        self
+    }
+
+    /// Sets the foreground color.
+    #[must_use]
+    pub const fn color(mut self, color: Color) -> Self {
+        self.color = Some(color);
+        self
+    }
+
+    /// Caps the text at `limit` laid-out lines.
+    #[must_use]
+    pub const fn line_limit(mut self, limit: u32) -> Self {
+        self.line_limit = Some(limit);
+        self
+    }
+}
+
+impl Image {
+    /// An SF Symbol — an Apple-native primitive, supported on Apple widgets.
+    pub fn system(name: impl Into<String>) -> Self {
+        Self {
+            source: ImageSource::System { name: name.into() },
+            color: None,
+        }
+    }
+
+    /// Inline encoded image bytes (PNG).
+    pub fn data(data: impl Into<Vec<u8>>) -> Self {
+        Self {
+            source: ImageSource::Data { data: data.into() },
+            color: None,
+        }
+    }
+
+    /// Tints a monochrome (template) source.
+    #[must_use]
+    pub const fn color(mut self, color: Color) -> Self {
+        self.color = Some(color);
+        self
+    }
+}
+
+impl Shape {
+    /// `Rectangle`, filled with the primary semantic color.
+    #[must_use]
+    pub const fn rectangle() -> Self {
+        Self::of_kind(ShapeKind::Rectangle)
+    }
+
+    /// `RoundedRectangle` with a corner radius.
+    #[must_use]
+    pub const fn rounded_rectangle(corner_radius: f32) -> Self {
+        Self::of_kind(ShapeKind::RoundedRectangle { corner_radius })
+    }
+
+    /// `Capsule`.
+    #[must_use]
+    pub const fn capsule() -> Self {
+        Self::of_kind(ShapeKind::Capsule)
+    }
+
+    /// `Circle`.
+    #[must_use]
+    pub const fn circle() -> Self {
+        Self::of_kind(ShapeKind::Circle)
+    }
+
+    /// `Ellipse`.
+    #[must_use]
+    pub const fn ellipse() -> Self {
+        Self::of_kind(ShapeKind::Ellipse)
+    }
+
+    const fn of_kind(kind: ShapeKind) -> Self {
+        Self {
+            kind,
+            fill: Color::Semantic {
+                semantic: SemanticColor::Primary,
+            },
+        }
+    }
+
+    /// Sets the fill color.
+    #[must_use]
+    pub const fn fill(mut self, fill: Color) -> Self {
+        self.fill = fill;
+        self
+    }
+}
+
+impl Link {
+    /// A tappable region that opens `url` — a deep link into the app or a
+    /// web URL.
+    pub fn new(url: impl Into<String>, content: impl WidgetContent) -> Self {
+        Self {
+            url: url.into(),
+            content: alloc::boxed::Box::new(content.into_node()),
+        }
+    }
+}
+
+impl Timeline {
+    /// A timeline of `entries`; the default policy reloads [`ReloadPolicy::AtEnd`].
+    pub fn new(entries: impl Into<Vec<TimelineEntry>>) -> Self {
+        Self {
+            entries: entries.into(),
+            policy: ReloadPolicy::AtEnd,
+        }
+    }
+
+    /// Sets when the extension asks for the next timeline.
+    #[must_use]
+    pub const fn policy(mut self, policy: ReloadPolicy) -> Self {
+        self.policy = policy;
+        self
+    }
+}
+
+impl TimelineEntry {
+    /// A snapshot that becomes current at `date`.
+    pub fn new(date: impl Into<Date>, content: impl WidgetContent) -> Self {
+        Self {
+            date: date.into(),
+            content: content.into_node(),
+        }
+    }
 }

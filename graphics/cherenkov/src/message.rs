@@ -9,14 +9,27 @@
 use crate::local::ReplySender as Sender;
 use std::sync::Arc;
 #[cfg(not(target_arch = "wasm32"))]
-use std::sync::mpsc::{Sender, SyncSender};
+use std::sync::mpsc::Sender;
 
 #[cfg(target_arch = "wasm32")]
 pub type FrameReplySender<T> = Sender<T>;
-#[cfg(not(target_arch = "wasm32"))]
-pub type FrameReplySender<T> = SyncSender<T>;
 
-use cherenkov_record::{ChangeSet, LayerId, ResourceId, SurfaceId};
+/// A `Render`/`Memory` reply hold — the wasm loop's existing sender.
+#[cfg(target_arch = "wasm32")]
+pub type RequestGuard<T> = Sender<T>;
+/// The persistent one-reply sender a request carries; the reply itself
+/// never holds it — a buffered reply retaining its channel's sender keeps
+/// the channel open past the render thread's exit.
+#[cfg(not(target_arch = "wasm32"))]
+pub type FrameReplySender<T> = crate::transport::Reply<T>;
+
+/// A `Render`/`Memory` reply hold: the worker's `FrameRequest` guard —
+/// a successful send disarms it for the channel's next request, a dropped
+/// or unwinding request closes the channel and wakes the frontend.
+#[cfg(not(target_arch = "wasm32"))]
+pub type RequestGuard<T> = crate::transport::FrameRequest<T>;
+
+use cherenkov_record::{ChangeSet, LayerId, ResourceId, RunningTracks, SurfaceId};
 
 use crate::backend::{Backend, Display, Renderer, SurfaceInfo};
 use crate::config::{MemoryUsage, Pressure};
@@ -109,12 +122,21 @@ impl std::fmt::Debug for FontData {
     }
 }
 
+/// What a rendered frame publishes for one surface.
+#[derive(Clone, Debug)]
+pub struct SurfaceNext {
+    /// The surface's own deadline.
+    pub next: Next,
+    /// The layer tracks the engine still runs on the surface.
+    pub tracks: RunningTracks,
+}
+
 /// What one rendered frame produces.
 pub struct RenderedFrame<B: Backend> {
     /// The aggregate [`Next`].
     pub next: Next,
-    /// Each rendered surface's own deadline.
-    pub surface_next: rustc_hash::FxHashMap<SurfaceId, Next>,
+    /// Each rendered surface's own deadline and running tracks.
+    pub surface_next: rustc_hash::FxHashMap<SurfaceId, SurfaceNext>,
     /// The frame's stats.
     pub stats: FrameStats,
     /// The work the awaiting caller applies on its own thread before
@@ -145,10 +167,6 @@ pub struct RenderReply<B: Backend> {
     pub result: RenderOutcome<B>,
     /// The drained commits, including their reusable empty op vectors.
     pub commits: Vec<(SurfaceId, ChangeSet<B>)>,
-    /// The persistent reply sender, returned so a disconnected render thread
-    /// releases the receiver.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub sender: FrameReplySender<Self>,
 }
 
 impl<B: Backend> std::fmt::Debug for RenderReply<B> {
@@ -160,15 +178,11 @@ impl<B: Backend> std::fmt::Debug for RenderReply<B> {
     }
 }
 
-/// Memory usage and its persistent reply sender.
+/// Memory usage read back from the renderer.
 #[derive(Debug)]
 pub struct MemoryReply {
     /// The engine's current usage.
     pub usage: MemoryUsage,
-    /// The persistent reply sender, returned so a disconnected render thread
-    /// releases the receiver.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub sender: FrameReplySender<Self>,
 }
 
 /// A message to the render thread.
@@ -182,7 +196,7 @@ pub enum Message<B: Backend> {
         /// The surface's host wake-up, shared with its UI-thread handle.
         waker: Arc<crate::engine::SurfaceWaker>,
         /// Result of the creation.
-        reply: Sender<Result<SurfaceInfo, SurfaceError>>,
+        reply: FrameReplySender<Result<SurfaceInfo, SurfaceError>>,
     },
     /// Resize a surface.
     ResizeSurface {
@@ -216,6 +230,17 @@ pub enum Message<B: Backend> {
     DisplayMoved {
         /// The surface id.
         id: SurfaceId,
+    },
+    /// Set or clear the band presenting one region of the surface: the
+    /// content above an external host window's mark
+    /// (water-rs/waterui#2225). `None` leaves the region unshown.
+    SetBand {
+        /// The surface id.
+        id: SurfaceId,
+        /// The host's id for the window whose mark opens the region.
+        window: u64,
+        /// The band's presentation target, or `None` to clear.
+        target: Option<B::Target>,
     },
     /// An opaque render-thread operation that cannot fail: font, filter
     /// and effect registration and removal, capability hooks.
@@ -280,7 +305,7 @@ pub enum Message<B: Backend> {
         /// The surfaces' queued change sets, one entry per dirty surface.
         commits: Vec<(SurfaceId, ChangeSet<B>)>,
         /// The render result and the buffers returned to the UI thread.
-        reply: FrameReplySender<RenderReply<B>>,
+        reply: RequestGuard<RenderReply<B>>,
     },
     /// Wait for every outstanding frame timing and return it.
     FinishTimings {
@@ -297,7 +322,7 @@ pub enum Message<B: Backend> {
     /// Report memory usage.
     Memory {
         /// The usage.
-        reply: FrameReplySender<MemoryReply>,
+        reply: RequestGuard<MemoryReply>,
     },
     /// System memory pressure.
     Trim(Pressure),

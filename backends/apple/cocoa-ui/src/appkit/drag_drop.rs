@@ -2,7 +2,7 @@
 //! with Rust values behind them.
 //!
 //! A drag carries typed data on the pasteboard through `NSPasteboardItem`s;
-//! a value that must stay inside the process rides on the [`DragSource`]
+//! a value that must stay inside the process rides on the `DragSource`
 //! object instead, which the destination reads back off
 //! `NSDraggingInfo.draggingSource`. Drags from other applications never
 //! carry one.

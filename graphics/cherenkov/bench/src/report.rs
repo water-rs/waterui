@@ -58,6 +58,10 @@ pub struct FrameSample {
     /// GPU seconds from real GPU timestamps where the backend provides
     /// them; `null` otherwise. Never estimated.
     pub gpu_seconds: Option<f64>,
+    /// True when the engine drew nothing for this frame because no surface
+    /// had changed, while the scene's own animation was running. The frame
+    /// carries no GPU time and is left out of the GPU-time statistics.
+    pub unchanged: bool,
     /// Encode-to-completion wall time, only when this run waits for each frame.
     /// This is synchronous latency, not inferred pipelined throughput.
     pub latency_seconds: Option<f64>,
@@ -365,8 +369,13 @@ pub struct MeasureReport {
     pub samples: Vec<FrameSample>,
     /// CPU placement of the run (see [`Placement`]).
     pub placement: Placement,
-    /// p50/p90/p99 over the raw samples, per field.
+    /// p50/p90/p99 over the raw samples, per field. The GPU-time
+    /// percentiles cover the drawn frames only.
     pub percentiles: Percentiles,
+    /// Measured frames the engine skipped as unchanged while the scene's
+    /// own animation ran ([`FrameSample::unchanged`]); they are excluded
+    /// from the GPU-time percentiles.
+    pub unchanged_frames: u32,
     /// Frame pacing (`--rate`); `null` when the run was flat out.
     pub pacing: Option<Pacing>,
     /// Energy measured over the window (`--energy`); `null` when energy

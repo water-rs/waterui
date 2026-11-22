@@ -27,14 +27,14 @@ impl FrameworkTree {
                 })?;
         } else {
             // Upload-pack accepts full object IDs, not abbreviations. The
-            // complete dev history is needed to resolve an abbreviated pin.
+            // complete trunk history is needed to resolve an abbreviated pin.
             git::run(
                 &repo,
                 [
                     "fetch",
                     "-q",
                     "origin",
-                    "refs/heads/dev:refs/remotes/origin/dev",
+                    "refs/heads/main:refs/remotes/origin/main",
                 ],
             )
             .await?;
@@ -68,11 +68,11 @@ impl FrameworkTree {
         if shallow {
             args.push("--depth=1");
         }
-        args.extend(["origin", "refs/heads/dev:refs/remotes/origin/dev"]);
+        args.extend(["origin", "refs/heads/main:refs/remotes/origin/main"]);
         git::run(&repo, args).await?;
         let head = git::run(
             &repo,
-            ["rev-parse", "--verify", "refs/remotes/origin/dev^{commit}"],
+            ["rev-parse", "--verify", "refs/remotes/origin/main^{commit}"],
         )
         .await?;
         let head = head.trim();
@@ -85,7 +85,7 @@ impl FrameworkTree {
             // history can prove rejection; do not treat exit 1 as final yet.
             git::run(
                 &repo,
-                ["fetch", "-q", "--unshallow", "origin", "refs/heads/dev"],
+                ["fetch", "-q", "--unshallow", "origin", "refs/heads/main"],
             )
             .await?;
             if self.is_ancestor(&repo, head).await? {
@@ -93,7 +93,7 @@ impl FrameworkTree {
             }
         }
         bail!(
-            "--rev {} is not an ancestor of the framework's dev head {head}",
+            "--rev {} is not an ancestor of the framework's main head {head}",
             self.revision
         )
     }

@@ -6,7 +6,9 @@
 //! water-rs/waterui#1673: the suite belongs to the crate that owns the
 //! harness.
 
+#[cfg(feature = "gpu")]
 use std::sync::Arc;
+#[cfg(feature = "gpu")]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -18,15 +20,17 @@ use waterui::ViewExt as _;
 use waterui::app::App;
 use waterui::color::WorkingColor;
 use waterui::component::{text, vstack};
+use waterui::graphics::canvas::Canvas;
 use waterui::graphics::color::Srgb;
 use waterui::layout::scroll::ScrollView;
 use waterui::theme;
-use waterui_canvas::Canvas;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::layout::{Point, Rect, Size};
 use waterui_core::{AnyView, Environment};
 
-use crate::{PerfConfig, Role, TestHost, ui};
+#[cfg(feature = "gpu")]
+use crate::TestHost;
+use crate::{PerfConfig, Role, ui};
 /// Installs the custom foreground token the origin tests layered over the
 /// theme package: the harness no longer takes a theme-installer closure, so
 /// the override is a view-scoped plugin — applied after the style's tokens,
@@ -44,14 +48,16 @@ const fn white_foreground() -> ForegroundSlot {
     ForegroundSlot(WorkingColor::new([1.0, 1.0, 1.0, 1.0]))
 }
 
-// Origin: waterui `testing/src/tests.rs`.
+// Origin: waterui `testing/src/tests.rs`. `TestHost` hands tests a wgpu
+// device, so it exists only with the GPU painter.
+#[cfg(feature = "gpu")]
 #[test]
 fn smoke_snapshot_size_matches_target() {
     let host = TestHost::new(Environment::new(), 64, 48, Material3::defaults());
     let snapshot = host.render(());
-    assert_eq!(snapshot.width, 64);
-    assert_eq!(snapshot.height, 48);
-    assert_eq!(snapshot.rgba8.len(), 64 * 48 * 4);
+    assert_eq!(snapshot.width(), 64);
+    assert_eq!(snapshot.height(), 48);
+    assert_eq!(snapshot.rgba8().len(), 64 * 48 * 4);
 }
 
 // Origin: waterui `testing/src/tests.rs`.
@@ -75,9 +81,9 @@ fn smoke_theme_foreground_slot_snapshot_preserves_semantic_labels() {
         "theme slot text should stay queryable under custom theme environment"
     );
     let snapshot = app.snapshot();
-    assert_eq!(snapshot.width, 240);
-    assert_eq!(snapshot.height, 120);
-    assert_eq!(snapshot.rgba8.len(), 240 * 120 * 4);
+    assert_eq!(snapshot.width(), 240);
+    assert_eq!(snapshot.height(), 120);
+    assert_eq!(snapshot.rgba8().len(), 240 * 120 * 4);
 }
 
 /// A view that draws widget chrome mounts under the default theme: the scroll
@@ -98,7 +104,7 @@ fn default_theme_renders_hydrolysis_widgets() {
         });
     assert_eq!(app.query().role(Role::BUTTON).all().len(), 1);
     let snapshot = app.snapshot();
-    assert_eq!(snapshot.rgba8.len(), 240 * 160 * 4);
+    assert_eq!(snapshot.rgba8().len(), 240 * 160 * 4);
 }
 
 /// `mount_app` runs the application path: the app's own environment is
@@ -118,8 +124,8 @@ fn mount_app_hosts_main_window_with_app_environment() {
         .mount_app(app);
     app.query().label("Mounted app").assert_exists();
     let snapshot = app.snapshot();
-    assert_eq!(snapshot.width, 400);
-    assert_eq!(snapshot.height, 200);
+    assert_eq!(snapshot.width(), 400);
+    assert_eq!(snapshot.height(), 200);
 }
 
 /// A `max_width` derived from the mounted window's `frame` must measure the
@@ -170,11 +176,14 @@ fn max_width_derived_from_the_mounted_window_frame_wraps_text() {
 /// from it (water-rs/hydrolysis#128).
 #[test]
 fn mount_app_drives_the_app_window_frame_from_the_viewport() {
+    use waterui::accessibility::AccessibilityGeometry;
     use waterui::window::{Window, WindowState};
 
     let frame = waterui::binding(Rect::new(Point::zero(), Size::new(800.0, 600.0)));
+    // The label names its allocation (`docs/layout-spec.md` §7.2): a text
+    // root otherwise reports its centred response, not the window's width.
     let mut window = Window::new("app", waterui::binding(WindowState::Normal), || {
-        text("app content").body()
+        text("app content").a11y_geometry(AccessibilityGeometry::Allocation)
     });
     window.frame = frame.clone();
     let app = App::new_with_windows([window], Environment::new());
@@ -212,9 +221,9 @@ fn ui_test_environment_builder_preserves_custom_theme() {
         "UiBuilder environment builder should keep mounted text semantics intact"
     );
     let snapshot = app.snapshot();
-    assert_eq!(snapshot.width, 240);
-    assert_eq!(snapshot.height, 120);
-    assert_eq!(snapshot.rgba8.len(), 240 * 120 * 4);
+    assert_eq!(snapshot.width(), 240);
+    assert_eq!(snapshot.height(), 120);
+    assert_eq!(snapshot.rgba8().len(), 240 * 120 * 4);
 }
 
 // Origin: waterui `testing/src/tests.rs`.
@@ -272,9 +281,11 @@ fn ui_test_snapshot_renders_text_after_canvas() {
         .theme(Material3::defaults())
         .mount_offscreen(|| {
             vstack((
-                Canvas::new(|ctx| {
-                    ctx.set_fill_style(Srgb::new(0.0, 0.85, 0.65));
-                    ctx.fill_rect(Rect::new(Point::new(0.0, 0.0), Size::new(240.0, 180.0)));
+                Canvas::new(|cx| {
+                    cx.fill(
+                        Rect::new(Point::new(0.0, 0.0), Size::new(240.0, 180.0)),
+                        Srgb::new(0.0, 0.85, 0.65).resolve(),
+                    );
                 })
                 .size(240.0, 180.0)
                 .a11y_role(waterui::accessibility::AccessibilityRole::Image)
@@ -298,8 +309,8 @@ fn ui_test_snapshot_renders_text_after_canvas() {
         .label("Letter W")
         .assert_exists();
     let snapshot = app.snapshot();
-    assert_eq!(snapshot.width, 320);
-    assert_eq!(snapshot.height, 320);
+    assert_eq!(snapshot.width(), 320);
+    assert_eq!(snapshot.height(), 320);
 }
 
 // Origin: waterui `testing/src/tests.rs`.
@@ -309,9 +320,11 @@ fn smoke_canvas_snapshot_preserves_accessibility_metadata() {
         .viewport(96, 72)
         .theme(Material3::defaults())
         .mount_offscreen(|| {
-            Canvas::new(|ctx| {
-                ctx.set_fill_style(Srgb::new(1.0, 0.0, 0.0));
-                ctx.fill_rect(Rect::new(Point::new(8.0, 8.0), Size::new(40.0, 24.0)));
+            Canvas::new(|cx| {
+                cx.fill(
+                    Rect::new(Point::new(8.0, 8.0), Size::new(40.0, 24.0)),
+                    Srgb::new(1.0, 0.0, 0.0).resolve(),
+                );
             })
             .a11y_role(waterui::accessibility::AccessibilityRole::Image)
             .a11y_label("Canvas smoke")
@@ -321,8 +334,8 @@ fn smoke_canvas_snapshot_preserves_accessibility_metadata() {
         .label("Canvas smoke")
         .assert_exists();
     let snapshot = app.snapshot();
-    assert_eq!(snapshot.width, 96);
-    assert_eq!(snapshot.height, 72);
+    assert_eq!(snapshot.width(), 96);
+    assert_eq!(snapshot.height(), 72);
 }
 
 // Origin: waterui `testing/src/tests.rs`.
@@ -331,11 +344,7 @@ fn themed_builder_exposes_offscreen_perf_closure_api() {
     let report = ui()
         .viewport(96, 72)
         .theme(Material3::defaults())
-        .perf_config(PerfConfig {
-            warmups: 1,
-            samples: 3,
-            repetitions: 1,
-        })
+        .perf_config(PerfConfig::new(1, 3, 1))
         .perf_with(
             || text("Measured").body(),
             |perf| {
@@ -352,9 +361,9 @@ fn themed_builder_exposes_offscreen_perf_closure_api() {
 
     let measurements = report.measurements();
     assert_eq!(measurements.len(), 1);
-    assert_eq!(measurements[0].name, "steady");
+    assert_eq!(measurements[0].name(), "steady");
     let stats = measurements[0].stats();
-    assert_eq!(stats.samples, 3);
+    assert_eq!(stats.samples(), 3);
 }
 
 // Origin: waterui `testing/src/tests.rs`.
@@ -363,21 +372,17 @@ fn themed_builder_default_perf_requests_redraw() {
     let report = ui()
         .viewport(96, 72)
         .theme(Material3::defaults())
-        .perf_config(PerfConfig {
-            warmups: 1,
-            samples: 3,
-            repetitions: 1,
-        })
+        .perf_config(PerfConfig::new(1, 3, 1))
         .perf(|| text("Redraw measured").body());
 
     let measurements = report.measurements();
     assert_eq!(measurements.len(), 1);
-    assert_eq!(measurements[0].name, "steady-redraw");
+    assert_eq!(measurements[0].name(), "steady-redraw");
     let stats = measurements[0].stats();
-    assert_eq!(stats.samples, 3);
-    assert_eq!(stats.rebuilt_frames, 0);
+    assert_eq!(stats.samples(), 3);
+    assert_eq!(stats.rebuilt_frames(), 0);
     assert!(
-        stats.phases.render.p95 > Duration::ZERO,
+        stats.phases().render.p95 > Duration::ZERO,
         "default perf should measure real redraw frames"
     );
 }
@@ -432,14 +437,14 @@ fn ui_test_hover_drag_and_magnify_update_semantic_bounds() {
                     .gesture_observer(GestureObserver::new(
                         DragGesture::new(0.0),
                         |DragOffset(offset): DragOffset, drag: Use<DragEvent>| {
-                            offset.set(drag.translation.x);
+                            offset.set(drag.translation().x);
                         },
                     ))
                     .state(&drag_offset_state)
                     .gesture_observer(GestureObserver::new(
                         MagnificationGesture::new(1.0),
                         |ZoomScale(scale): ZoomScale, magnification: Use<MagnificationEvent>| {
-                            scale.set(magnification.scale);
+                            scale.set(magnification.scale());
                         },
                     ))
                     .state(&zoom_scale_state)
@@ -528,18 +533,23 @@ fn ui_test_drains_local_tasks_through_headless_runtime() {
 // Rendered-runtime behavior the semantic pipeline cannot express
 // ============================================================================
 
+// `GpuView` needs a GPU device, so these run only with the GPU painter.
+#[cfg(feature = "gpu")]
 use waterui::graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
-use waterui::graphics::{GpuContent, GpuContentView};
+#[cfg(feature = "gpu")]
+use waterui::graphics::{GpuContent, GpuView};
 
 /// A `GpuContent` that draws nothing until its `setup` has run — the
 /// readiness flag distinguishes "the engine ran setup" from "a render slipped
 /// in first", the property the async-setup regression exercised.
+#[cfg(feature = "gpu")]
 #[derive(Debug)]
 struct DeferredClearRenderer {
     color: wgpu::Color,
     ready: Arc<AtomicBool>,
 }
 
+#[cfg(feature = "gpu")]
 impl GpuContent for DeferredClearRenderer {
     fn setup(&mut self, _gpu: &GpuContext<'_>) {
         self.ready.store(true, Ordering::Relaxed);
@@ -576,7 +586,7 @@ impl GpuContent for DeferredClearRenderer {
     }
 }
 
-/// A `GpuContentView` must reach the captured frame only after its `setup`
+/// A `GpuView` must reach the captured frame only after its `setup`
 /// ran. Capturing the very first pumped frame photographs the surface before
 /// any GPU content exists — the regression that made every GPU preview in the
 /// book render as a flat background.
@@ -584,12 +594,13 @@ impl GpuContent for DeferredClearRenderer {
 /// Origin: waterui `testing/src/tests.rs`; the style parameter replaced the
 /// origin's `install_theme`/`install_m3` environment writes, which is where
 /// the same install now happens.
+#[cfg(feature = "gpu")]
 #[test]
 fn headless_capture_waits_for_gpu_setup() {
     let ready = Arc::new(AtomicBool::new(false));
     let ready_for_view = Arc::clone(&ready);
     let content = AnyViewBuilder::new(move || {
-        AnyView::new(GpuContentView::new(DeferredClearRenderer {
+        AnyView::new(GpuView::new(DeferredClearRenderer {
             // Black is gamut-neutral: it survives the engine's linear-P3
             // presentation unchanged, where a saturated primary would
             // shift under the P3 → sRGB gamut map.
@@ -610,7 +621,7 @@ fn headless_capture_waits_for_gpu_setup() {
     // Pump until the frame settles, exactly as the preview runtime does.
     let mut settled = false;
     for _ in 0..64 {
-        if !runtime.pump_at(false, std::time::Instant::now()).rebuilt {
+        if !runtime.pump_at(false, std::time::Instant::now()).rebuilt() {
             settled = true;
             break;
         }
@@ -623,15 +634,15 @@ fn headless_capture_waits_for_gpu_setup() {
 
     let snapshot = runtime
         .pump_at(true, std::time::Instant::now())
-        .snapshot
+        .into_snapshot()
         .expect("capture must produce a snapshot");
-    let center = ((snapshot.width as usize / 2)
-        + (snapshot.height as usize / 2) * snapshot.width as usize)
+    let center = ((snapshot.width() as usize / 2)
+        + (snapshot.height() as usize / 2) * snapshot.width() as usize)
         * 4;
     assert_eq!(
-        &snapshot.rgba8[center..center + 3],
+        &snapshot.rgba8()[center..center + 3],
         &[0, 0, 0],
-        "the GpuContentView content must be present in the captured frame"
+        "the GpuView content must be present in the captured frame"
     );
 }
 
@@ -661,38 +672,40 @@ fn capture_reads_the_current_frame() {
     );
     // Settle the mount the way a session's initial advance does.
     for _ in 0..64 {
-        if !runtime.pump_at(false, std::time::Instant::now()).rebuilt {
+        if !runtime.pump_at(false, std::time::Instant::now()).rebuilt() {
             break;
         }
     }
     let before = runtime
         .pump_at(true, std::time::Instant::now())
-        .snapshot
+        .into_snapshot()
         .expect("capture must produce a snapshot");
 
     probe.set(waterui::Str::from("after"));
 
     let captured_outcome = runtime.pump_at(true, std::time::Instant::now());
     assert!(
-        captured_outcome.tree_update.is_some_and(|update| update
+        captured_outcome.tree_update().is_some_and(|update| update
             .nodes
             .iter()
             .any(|(_, node)| node.label() == Some("after"))),
         "the flushed tree must carry the new label"
     );
     let captured = captured_outcome
-        .snapshot
+        .snapshot()
         .expect("capture must produce a snapshot");
     assert_ne!(
-        captured.rgba8, before.rgba8,
+        captured.rgba8(),
+        before.rgba8(),
         "the capture must show the new label, not the previous composite"
     );
     let settled = runtime
         .pump_at(true, std::time::Instant::now())
-        .snapshot
+        .into_snapshot()
         .expect("capture must produce a snapshot");
     assert_eq!(
-        captured.rgba8, settled.rgba8,
+        captured.rgba8(),
+        settled.rgba8(),
         "a settled capture is deterministic: the first capture must equal it"
     );
 }
@@ -732,7 +745,7 @@ fn a_perpetually_animating_app_is_never_settled_yet_stays_current() {
     for _ in 0..64 {
         if runtime
             .pump_at(false, std::time::Instant::now())
-            .tree_update
+            .tree_update()
             .is_some()
         {
             mounted = true;
@@ -761,7 +774,7 @@ fn a_perpetually_animating_app_is_never_settled_yet_stays_current() {
     let mut saw_after = false;
     for _ in 0..64 {
         let outcome = runtime.pump_at(false, std::time::Instant::now());
-        if let Some(update) = outcome.tree_update
+        if let Some(update) = outcome.tree_update()
             && update
                 .nodes
                 .iter()
@@ -775,5 +788,92 @@ fn a_perpetually_animating_app_is_never_settled_yet_stays_current() {
     assert!(
         !runtime.has_pending_semantic_update(),
         "reading the tree must have applied the update, not merely waited for it"
+    );
+}
+
+/// A headless rendered runtime over `view`, pumped on the clock `at` until
+/// its first tree update lands. Every later pump advances `at`, so animations
+/// run on the frame clock rather than the wall clock.
+fn mounted_runtime(
+    view: impl Fn() -> AnyView + 'static,
+    at: &mut std::time::Instant,
+) -> hydrolysis::HeadlessRuntime {
+    let mut runtime = hydrolysis::HeadlessRuntime::new_for_tests(
+        Environment::new(),
+        AnyViewBuilder::new(view),
+        390,
+        844,
+        Material3::defaults(),
+    );
+    for _ in 0..64 {
+        if runtime.pump_at(false, *at).tree_update().is_some() {
+            return runtime;
+        }
+        *at += FRAME;
+    }
+    panic!("initial pumps produced no accessibility tree");
+}
+
+/// One frame at 60 Hz.
+const FRAME: Duration = Duration::from_millis(16);
+
+/// A linear indeterminate bar moves through repeat-forever operand keyframes
+/// inside its recording. They keep the runtime busy while on screen, and are
+/// the perpetual work `is_settled_except_perpetual` ignores.
+#[test]
+fn a_linear_indeterminate_progress_alone_is_perpetual_work() {
+    let mut at = std::time::Instant::now();
+    let mut runtime = mounted_runtime(
+        || AnyView::new(waterui::component::progress::Progress::infinity().linear()),
+        &mut at,
+    );
+    for _ in 0..8 {
+        at += FRAME;
+        let _ = runtime.pump_at(false, at);
+    }
+    assert!(
+        !runtime.is_settled(),
+        "a repeating operand track is scheduled work for as long as the bar is on screen"
+    );
+    assert!(
+        runtime.is_settled_except_perpetual(),
+        "nothing but repeat-forever work remains"
+    );
+}
+
+/// Flipping a toggle runs the knob's spring as operand tracks inside the
+/// recording: the runtime stays unsettled until the spring finishes.
+#[test]
+fn flipping_a_toggle_keeps_the_runtime_unsettled_until_the_knob_spring_finishes() {
+    let on = waterui::reactive::binding(false);
+    let flipped = on.clone();
+    let mut at = std::time::Instant::now();
+    let mut runtime = mounted_runtime(
+        move || AnyView::new(waterui::component::toggle::toggle("Wi-Fi", &on).switch()),
+        &mut at,
+    );
+    for _ in 0..8 {
+        at += FRAME;
+        let _ = runtime.pump_at(false, at);
+    }
+    assert!(runtime.is_settled(), "a switch at rest is settled");
+
+    flipped.set(true);
+    at += FRAME;
+    let _ = runtime.pump_at(false, at);
+    assert!(
+        !runtime.is_settled(),
+        "the knob spring is still running right after the flip"
+    );
+    let mut frames = 1;
+    while !runtime.is_settled() {
+        assert!(frames < 240, "the knob spring never finished");
+        at += FRAME;
+        let _ = runtime.pump_at(false, at);
+        frames += 1;
+    }
+    assert!(
+        frames > 3,
+        "the spring takes several frames, not the one that applied the flip"
     );
 }

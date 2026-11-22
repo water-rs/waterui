@@ -49,9 +49,11 @@ fn an_unclaimed_fence_names_its_language(ui: UiBuilder) {
 fn a_hook_claims_only_the_token_it_recognises(ui: UiBuilder) {
     let mut app = ui.mount(|| {
         use_env(|mut env: Environment| {
-            env.insert_hook::<CodeConfig, AnyView>(|_env, config| match config.info.as_deref() {
-                Some("puzzle") => AnyView::new(text("solved").a11y_label("claimed")),
-                _ => AnyView::new(config.render()),
+            env.insert_hook::<CodeConfig, AnyView>(|_env, config| {
+                match config.info().map(core::ops::Deref::deref) {
+                    Some("puzzle") => AnyView::new(text("solved").a11y_label("claimed")),
+                    _ => AnyView::new(config.render()),
+                }
             });
             Metadata::new(RichText::from_markdown(DOC), env)
         })

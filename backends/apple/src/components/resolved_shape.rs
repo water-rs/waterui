@@ -11,10 +11,11 @@ use cocoa_ui::shape::ShapeLayer;
 use waterui::graphics::color::WorkingColor;
 use waterui::reactive::Signal;
 use waterui::shape::{PathCommand, ResolvedShape, ShapeKind};
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
+};
 
 use crate::contract::NativeLeaf;
-use crate::dispatch::Dispatcher;
 
 #[cfg(target_os = "macos")]
 mod platform {
@@ -26,6 +27,7 @@ mod platform {
     pub(super) use cocoa_ui::uikit::HostView;
 }
 
+use crate::contract::RenderContext;
 use platform::HostView;
 
 /// A `WorkingColor` as a `CGColor` in extended linear Display-P3 — channels carried
@@ -63,7 +65,7 @@ fn shape_path(shape: &ResolvedShape, bounds: cocoa_ui::Rect) -> Option<PathBuild
     }
     let (w, h) = (bounds.size.width, bounds.size.height);
     let mut builder = PathBuilder::new();
-    match shape.kind {
+    match shape.kind() {
         ShapeKind::Rect => builder.rect(bounds),
         ShapeKind::Circle | ShapeKind::Ellipse => builder.ellipse_in_rect(bounds),
         ShapeKind::RoundedRect { corner_radius } => {
@@ -106,7 +108,7 @@ fn shape_path(shape: &ResolvedShape, bounds: cocoa_ui::Rect) -> Option<PathBuild
         }
         ShapeKind::Capsule => builder.rounded_rect(bounds, w.min(h) / 2.0),
         ShapeKind::CustomPath => {
-            for command in &shape.commands {
+            for command in shape.commands() {
                 apply_command(&mut builder, command, w, h, bounds);
             }
         }
@@ -169,6 +171,14 @@ impl core::fmt::Debug for ShapeSubView {
 }
 
 impl SubView for ShapeSubView {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         ViewDimensions::new(Size::new(
             proposal.width.unwrap_or(0.0),
@@ -198,39 +208,41 @@ fn rebuild(view: &HostView, layer: &ShapeLayer, shape: &ResolvedShape) {
     );
 }
 
-/// Installs the `resolved_shape` handler: the fill color is a `Computed`
+/// The `resolved_shape` realization: the fill color is a `Computed`
 /// watched imperatively; every change both repaints and invalidates any
 /// enclosing captured rendering.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<ResolvedShape>(|shape, ctx| {
-        let mtm = ctx.mtm();
-        let view = HostView::new(mtm, cocoa_ui::Rect::ZERO);
-        #[cfg(target_os = "macos")]
-        cocoa_ui::view::ensure_layer_backed(&view);
-        let layer = alloc::rc::Rc::new(ShapeLayer::new());
-        cocoa_ui::view::layer(&view)
-            .expect("host view is layer-backed")
-            .addSublayer(&layer.layer());
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "NativeBackend hands each payload by value"
+)]
+pub fn realize_resolved_shape(shape: ResolvedShape, ctx: &RenderContext<'_>) -> NativeLeaf {
+    let mtm = ctx.mtm();
+    let view = HostView::new(mtm, cocoa_ui::Rect::ZERO);
+    #[cfg(target_os = "macos")]
+    cocoa_ui::view::ensure_layer_backed(&view);
+    let layer = alloc::rc::Rc::new(ShapeLayer::new());
+    cocoa_ui::view::layer(&view)
+        .expect("host view is layer-backed")
+        .addSublayer(&layer.layer());
 
-        rebuild(&view, &layer, &shape);
-        {
-            let layer = layer.clone();
-            let shape = shape.clone();
-            view.set_layout_handler(move |view| rebuild(view, &layer, &shape));
+    rebuild(&view, &layer, &shape);
+    {
+        let layer = layer.clone();
+        let shape = shape.clone();
+        view.set_layout_handler(move |view| rebuild(view, &layer, &shape));
+    }
+
+    let mut leaf = NativeLeaf::new(&*view, ShapeSubView);
+    layer.set_fill_color(Some(&cg_color(&shape.fill().snapshot())));
+    leaf.bind(shape.fill(), {
+        let layer = layer;
+        let view = view;
+        move |color| {
+            layer.set_fill_color(Some(&cg_color(&color)));
+            crate::invalidation::invalidate_rendered_content(&view);
         }
-
-        let mut leaf = NativeLeaf::new(&*view, ShapeSubView);
-        layer.set_fill_color(Some(&cg_color(&shape.fill.snapshot())));
-        leaf.bind(&shape.fill, {
-            let layer = layer;
-            let view = view;
-            move |color| {
-                layer.set_fill_color(Some(&cg_color(&color)));
-                crate::invalidation::invalidate_rendered_content(&view);
-            }
-        });
-        leaf
     });
+    leaf
 }
 
 #[cfg(test)]

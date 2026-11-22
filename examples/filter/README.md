@@ -80,4 +80,4 @@ background_view.blur(blur_amount)
 ## Platform Notes
 
 - **iOS/macOS**: Filters run through WaterUI's Rust `wgpu` filter pipeline
-- **Android**: Uses RenderEffect (API 31+) and ColorMatrix for visual effects
+- **Android**: Uses RenderEffect (API 33+) and ColorMatrix for visual effects

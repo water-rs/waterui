@@ -225,7 +225,7 @@ fn install_face(
         },
         None => None,
     };
-    let keys = locale.map(fallback_keys).unwrap_or_default();
+    let keys = locale.map_or_default(fallback_keys);
     tracing::debug!(
         target: "waterui::hydrolysis::android",
         path = %path.display(),

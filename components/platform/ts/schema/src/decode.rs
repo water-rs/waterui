@@ -342,10 +342,7 @@ impl Reader<'_> {
                     offset: name_offset,
                 });
             }
-            fields.push(owned::Field {
-                name,
-                ty: self.node()?,
-            });
+            fields.push(owned::Field::new(name, self.node()?));
         }
         Ok(fields)
     }
@@ -442,10 +439,7 @@ impl Reader<'_> {
                         offset: name_offset,
                     });
                 }
-                owned::Schema::Struct(owned::Struct {
-                    name,
-                    fields: self.fields()?,
-                })
+                owned::Schema::Struct(owned::Struct::new(name, self.fields()?))
             }
             tag::ENUM => owned::Schema::Enum(self.enumeration()?),
             other => {
@@ -534,15 +528,8 @@ impl Reader<'_> {
                     });
                 }
             };
-            variants.push(owned::Variant {
-                name: variant_name,
-                payload,
-            });
+            variants.push(owned::Variant::new(variant_name, payload));
         }
-        Ok(owned::Enum {
-            name,
-            representation,
-            variants,
-        })
+        Ok(owned::Enum::new(name, representation, variants))
     }
 }

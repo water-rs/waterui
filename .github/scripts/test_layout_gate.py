@@ -145,7 +145,7 @@ def git(repo, *args):
 
 @pytest.fixture
 def repo(tmp_path, monkeypatch):
-    git(tmp_path, "init", "-q", "--initial-branch=dev")
+    git(tmp_path, "init", "-q", "--initial-branch=main")
     git(tmp_path, "config", "user.email", "gate@example.test")
     git(tmp_path, "config", "user.name", "Layout Gate")
     monkeypatch.chdir(tmp_path)

@@ -36,6 +36,11 @@ pub enum UiColor {
     Label,
     /// `UIColor.secondaryLabelColor`.
     SecondaryLabel,
+    /// `UIColor.tertiaryLabelColor`.
+    TertiaryLabel,
+    /// `UIColor.systemGray4Color`: the gray `UIKit` paints behind a selected
+    /// table row.
+    SystemGray4,
     /// The asset catalog's `AccentColor`, or `UIColor.systemBlueColor` when
     /// the app does not define one — the same answer `UIColor.tintColor`
     /// resolves to for a stock app.
@@ -56,6 +61,8 @@ fn native(color: UiColor) -> Retained<UIColor> {
         UiColor::Separator => UIColor::separatorColor(),
         UiColor::Label => UIColor::labelColor(),
         UiColor::SecondaryLabel => UIColor::secondaryLabelColor(),
+        UiColor::TertiaryLabel => UIColor::tertiaryLabelColor(),
+        UiColor::SystemGray4 => UIColor::systemGray4Color(),
         UiColor::Accent => UIColor::colorNamed(&NSString::from_str("AccentColor"))
             .unwrap_or_else(UIColor::systemBlueColor),
         UiColor::White => UIColor::whiteColor(),

@@ -10,10 +10,6 @@ use futures_util::StreamExt as _;
 
 /// Linux system dependencies required by `waterui` desktop/media builds.
 #[derive(Debug, Clone, Copy, Default)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a unit toolchain marker with no fields to add"
-)]
 pub struct LinuxSystemToolchain;
 
 /// Installation plan for missing Linux system packages.
@@ -312,10 +308,6 @@ async fn resolved_dependency_names(
 /// probes must pass; the repair installs the distribution's compiler
 /// bundle, which always provides `cc` and `ld` on the supported managers.
 #[derive(Debug, Clone, Copy, Default)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a unit toolchain marker with no fields to add"
-)]
 pub struct CToolchain;
 
 impl Toolchain for CToolchain {

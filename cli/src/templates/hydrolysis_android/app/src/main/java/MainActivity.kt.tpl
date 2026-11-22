@@ -9,8 +9,15 @@ import dev.waterui.hydrolysis.HydrolysisActivity
 import dev.waterui.hydrolysis.HydrolysisHostView
 import dev.waterui.hydrolysis.HydrolysisSession
 import dev.waterui.hydrolysis.LaunchEnvironmentLoader
+{%- if ctx.hydrolysis_android_is_hwui() %}
+import dev.waterui.hydrolysis.SessionPainter
+import dev.waterui.hydrolysis.hwui.HwuiPainter
+{%- endif %}
 {%- if ctx.hydrolysis_android_has_painter_band() %}
 import {{ ctx.hydrolysis_android_painter_band_import() }}
+{%- endif %}
+{%- if ctx.hydrolysis_android_has_region_band() %}
+import {{ ctx.hydrolysis_android_region_band_import() }}
 {%- endif %}
 
 /**
@@ -26,6 +33,10 @@ import {{ ctx.hydrolysis_android_painter_band_import() }}
 class MainActivity : HydrolysisActivity() {
 
     override val nativeLibraryName: String = "{{ ctx.hydrolysis_android_native_library_name() }}"
+{%- if ctx.hydrolysis_android_is_hwui() %}
+
+    override fun createPainter(): SessionPainter = HwuiPainter()
+{%- endif %}
 
     override fun createContentView(session: HydrolysisSession): View {
         val context: Context = this

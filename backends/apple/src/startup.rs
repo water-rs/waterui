@@ -10,9 +10,7 @@ use alloc::boxed::Box;
 
 use waterui::inspector::InspectorRuntime;
 
-/// The environment variable a launcher sets to name the level the application
-/// logs at — `water run --logs <level>` writes it.
-const LOG_LEVEL_ENV: &str = "WATERUI_LOG";
+use waterui_backend_core::log::{LOG_LEVEL_ENV, env_filter};
 
 /// One-time process startup. Returns the inspector runtime when the
 /// environment asked for one, for [`crate::entry`] to install.
@@ -52,8 +50,15 @@ fn initialize_inner(stderr: bool) -> Option<InspectorRuntime> {
     );
 
     executor_core::init_global_executor(native_executor::NativeExecutor::new());
-    let main_executor = native_executor::NativeMainExecutor::new()
-        .expect("waterui_apple_main runs on the platform main thread");
+    // Without the main executor nothing the app declares can run, so the
+    // app cannot launch: the failure is logged and ends the process.
+    let Some(main_executor) = native_executor::NativeMainExecutor::new() else {
+        tracing::error!(
+            "the main-thread executor is unavailable off the platform main thread; \
+             the app cannot launch"
+        );
+        std::process::exit(1);
+    };
     executor_core::init_local_executor(waterui::task::monitored_local_executor_with_probes(
         main_executor,
         display_refresh_rate(),
@@ -79,7 +84,7 @@ fn ignore_sigpipe() {
         assert_ne!(
             previous,
             libc::SIG_ERR,
-            "libc::signal(SIGPIPE, SIG_IGN) failed"
+            "`signal(SIGPIPE, SIG_IGN)` cannot fail: SIGPIPE is a valid, catchable signal"
         );
     }
 }
@@ -114,7 +119,9 @@ fn max_frames_per_second() -> Option<core::num::NonZeroU32> {
     use cocoa_ui::MainThreadMarker;
     use cocoa_ui::objc2_app_kit::NSScreen;
 
-    let mtm = MainThreadMarker::new().expect("startup runs on the main thread");
+    let mtm = MainThreadMarker::new().expect(
+        "`initialize` runs after the main-thread executor was installed, on the main thread",
+    );
     NSScreen::screens(mtm)
         .iter()
         .map(|screen| screen.maximumFramesPerSecond())
@@ -136,7 +143,9 @@ fn max_frames_per_second() -> Option<core::num::NonZeroU32> {
     use cocoa_ui::MainThreadMarker;
     use cocoa_ui::objc2_ui_kit::UIScreen;
 
-    let mtm = MainThreadMarker::new().expect("startup runs on the main thread");
+    let mtm = MainThreadMarker::new().expect(
+        "`initialize` runs after the main-thread executor was installed, on the main thread",
+    );
     // `screens` is deprecated in favour of scene-session discovery, but at
     // startup no scene session exists yet — this is the only API that can
     // answer inside this window.
@@ -152,22 +161,6 @@ fn max_frames_per_second() -> Option<core::num::NonZeroU32> {
             )
             .expect("a refresh rate of at least 1 Hz")
         })
-}
-
-/// The `tracing` filter this process runs with: `RUST_LOG` wins outright,
-/// otherwise `WATERUI_LOG` names the level and the graphics stack stays at
-/// `error`.
-fn env_filter() -> tracing_subscriber::EnvFilter {
-    use tracing_subscriber::EnvFilter;
-
-    if let Ok(filter) = EnvFilter::try_from_default_env() {
-        return filter;
-    }
-    let level = std::env::var(LOG_LEVEL_ENV).unwrap_or_else(|_| String::from("error"));
-    EnvFilter::try_new(format!(
-        "{level},wgpu_core=error,wgpu_hal=error,naga=error,metal=error"
-    ))
-    .unwrap_or_else(|error| panic!("{LOG_LEVEL_ENV}={level:?} is not a tracing level: {error}"))
 }
 
 /// Sends `tracing` records to `os_log`, plus stderr when `WATERUI_LOG` asked

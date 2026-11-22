@@ -23,10 +23,6 @@ pub enum Format {
 
 /// What one video layer produces.
 #[derive(Clone, Copy, Debug)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "the video spec is a fixed experiment input; the harness owns every field"
-)]
 pub struct Spec {
     /// The buffer format.
     pub format: Format,

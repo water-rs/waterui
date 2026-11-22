@@ -130,21 +130,6 @@ pub const fn f64_as_usize(v: f64) -> usize {
     v as usize
 }
 
-/// Converts a `f32` extent to `i32` with `as` saturating truncation; extents
-/// are within `i32` range.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "the values are pixel extents within i32 range; saturating truncation is the intended conversion"
-)]
-#[cfg(any(test, not(target_arch = "wasm32")))]
-#[cfg_attr(
-    hydrolysis_hwui,
-    expect(dead_code, reason = "a GPU-painter-only cast under pure HWUI")
-)]
-pub const fn f32_as_i32(v: f32) -> i32 {
-    v as i32
-}
-
 /// Converts a `f64` extent to `i32` with `as` saturating truncation; extents
 /// are within `i32` range.
 #[expect(
@@ -153,22 +138,16 @@ pub const fn f32_as_i32(v: f32) -> i32 {
 )]
 #[cfg(any(
     test,
-    feature = "accessibility",
+    hydrolysis_winit,
+    all(not(target_arch = "wasm32"), hydrolysis_cherenkov),
+    all(
+        feature = "accessibility",
+        any(feature = "stepper", target_os = "android")
+    ),
     all(target_os = "android", not(hydrolysis_hwui))
 ))]
 pub const fn f64_as_i32(v: f64) -> i32 {
     v as i32
-}
-
-/// Converts a `f32` extent to `u64` with `as` saturating truncation — see
-/// [`f64_as_u32`].
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "the values are non-negative extents within u64 range; saturating truncation is the intended conversion"
-)]
-pub const fn f32_as_u64(v: f32) -> u64 {
-    v as u64
 }
 
 /// Truncates a `u64` to `usize`; only narrows on 32-bit targets, and the
@@ -178,8 +157,11 @@ pub const fn f32_as_u64(v: f32) -> u64 {
     reason = "the values are byte counts and sizes that fit the target's usize; truncation can only fire on 32-bit targets"
 )]
 #[cfg_attr(
-    hydrolysis_hwui,
-    expect(dead_code, reason = "a GPU-painter-only cast under pure HWUI")
+    not(hydrolysis_gpu_painter),
+    allow(
+        dead_code,
+        reason = "read by the GPU readback and the accessibility popup lookups; a build with neither has no caller"
+    )
 )]
 pub const fn u64_as_usize(v: u64) -> usize {
     v as usize
@@ -198,8 +180,8 @@ pub const fn u64_as_u32(v: u64) -> u32 {
 /// Truncates a `u128` to `u64`; the values fit `u64` (hash/identifier widths).
 #[expect(clippy::cast_possible_truncation, reason = "the values fit u64")]
 #[cfg_attr(
-    hydrolysis_hwui,
-    expect(dead_code, reason = "a GPU-painter-only cast under pure HWUI")
+    not(hydrolysis_gpu_painter),
+    expect(dead_code, reason = "a GPU-painter-only cast")
 )]
 pub const fn u128_as_u64(v: u128) -> u64 {
     v as u64
@@ -232,6 +214,12 @@ pub const fn i32_as_f32(v: i32) -> f32 {
     clippy::cast_sign_loss,
     reason = "the values are non-negative coordinates; the sign-loss branch is unreachable in practice"
 )]
+#[cfg(any(
+    target_os = "android",
+    feature = "list",
+    feature = "picker",
+    feature = "navigation"
+))]
 pub const fn i32_as_u32(v: i32) -> u32 {
     v as u32
 }
@@ -275,13 +263,10 @@ pub const fn u64_as_i64(v: u64) -> i64 {
     clippy::cast_possible_wrap,
     reason = "the offsets wrapped for JNI are far below i64::MAX"
 )]
-#[cfg_attr(
-    not(any(target_os = "android", all(test, not(target_arch = "wasm32")))),
-    allow(
-        dead_code,
-        reason = "read by the Android editing session and its tests"
-    )
-)]
+#[cfg(all(
+    any(target_os = "android", all(test, not(target_arch = "wasm32"))),
+    any(feature = "text-field", feature = "secure-field")
+))]
 pub const fn usize_as_i64(v: usize) -> i64 {
     v as i64
 }
@@ -292,13 +277,14 @@ pub const fn usize_as_i64(v: usize) -> i64 {
     clippy::cast_sign_loss,
     reason = "callers clamp the JNI value with max(0) before converting"
 )]
-#[cfg_attr(
-    not(any(target_os = "android", all(test, not(target_arch = "wasm32")))),
-    allow(
-        dead_code,
-        reason = "read by the Android editing session and its tests"
-    )
-)]
+#[cfg(any(
+    hydrolysis_range_editing,
+    all(
+        all(test, not(target_arch = "wasm32")),
+        any(feature = "text-field", feature = "secure-field")
+    ),
+    all(target_os = "linux", hydrolysis_winit)
+))]
 pub const fn i32_as_usize(v: i32) -> usize {
     v as usize
 }

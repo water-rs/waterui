@@ -24,7 +24,7 @@ use waterui_core::AnyView;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
 use waterui_graphics::input::SurfaceInputEvent;
-use waterui_graphics::{GpuContent, GpuContentView, RedrawHandle};
+use waterui_graphics::{GpuContent, GpuView, RedrawHandle};
 use waterui_layout::frame::Frame;
 use waterui_layout::stack::vstack;
 
@@ -38,11 +38,13 @@ const DRIVER_HEIGHT: f32 = 100.0;
 const PROBE_WIDTH: f32 = 120.0;
 const PROBE_HEIGHT: f32 = 90.0;
 
-/// Where the probe lands in window coordinates: the column anchors at the
-/// window's top, so the probe sits under the full-width 100-high driver plus
-/// the stack's 10-point default spacing, centred across the 320-wide window.
+/// Where the probe lands in window coordinates, centred across the 320-wide
+/// window. The column's block — the full-width 100-high driver, the stack's
+/// 10-point default spacing and the 90-high probe, 200 in all — is centred in
+/// the 320-high window (`docs/layout-spec.md` §4.2), so it starts at
+/// `(320 - 200) / 2 = 60` and the probe sits 110 below that.
 const PROBE_ORIGIN_X: f64 = 100.0;
-const PROBE_ORIGIN_Y: f64 = 110.0;
+const PROBE_ORIGIN_Y: f64 = 170.0;
 
 const POINTER_ID: u64 = 3;
 
@@ -92,7 +94,7 @@ struct CountingView(RenderCounter);
 
 impl GpuContent for CountingView {
     fn setup(&mut self, gpu: &GpuContext<'_>) {
-        *self.0.redraw.lock().expect("redraw slot") = Some(gpu.redraw.clone());
+        *self.0.redraw.lock().expect("redraw slot") = Some(gpu.redraw().clone());
     }
 
     fn render(&mut self, frame: &mut GpuFrame<'_>) {
@@ -112,7 +114,7 @@ fn runtime_with(
 ) -> HeadlessRuntime {
     runtime_with_probe_view(
         driver,
-        GpuContentView::new(CountingView(probe.clone())),
+        GpuView::new(CountingView(probe.clone())),
         probe_width,
     )
 }
@@ -121,7 +123,7 @@ fn runtime_with(
 /// can carry `on_input` / `on_ime_caret` handlers.
 fn runtime_with_probe_view(
     driver: &RenderCounter,
-    probe_view: GpuContentView,
+    probe_view: GpuView,
     probe_width: &Binding<f32>,
 ) -> HeadlessRuntime {
     let views = RefCell::new(Some((driver.clone(), probe_view, probe_width.clone())));
@@ -131,7 +133,7 @@ fn runtime_with_probe_view(
             .take()
             .expect("the probe window is built once");
         AnyView::new(vstack((
-            GpuContentView::new(CountingView(driver))
+            GpuView::new(CountingView(driver))
                 .size(crate::num_cast::u32_as_f32(WINDOW_WIDTH), DRIVER_HEIGHT),
             Frame::new(probe_view)
                 .width(probe_width)
@@ -239,7 +241,7 @@ fn a_pointer_moving_over_an_idle_surface_re_renders_it() {
     let handler_probe = probe.clone();
     let mut runtime = runtime_with_probe_view(
         &driver,
-        GpuContentView::new(CountingView(probe.clone())).on_input(move |event| {
+        GpuView::new(CountingView(probe.clone())).on_input(move |event| {
             if let SurfaceInputEvent::PointerMove { .. } = event {
                 handler_probe.request_redraw();
             }

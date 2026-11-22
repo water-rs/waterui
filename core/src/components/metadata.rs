@@ -1,8 +1,8 @@
 //! Metadata components for attaching arbitrary data to views.
 //!
-//! This module provides two types of metadata components:
-//! - `Metadata<T>`: Strict metadata that must be handled by renderers
-//! - `IgnorableMetadata<T>`: Optional metadata that can be safely ignored
+//! Every metadata key is strict: each backend realizes it or ignores it
+//! explicitly in its own code, so a missing realization is a contract
+//! violation rather than silently absent behaviour.
 //!
 //! Metadata can be used to attach arbitrary data to views that will be processed
 //! by renderers, such as accessibility attributes, transition effects, or custom
@@ -11,22 +11,19 @@
 use alloc::boxed::Box;
 use core::any::Any;
 use core::any::type_name;
+use core::fmt;
 
-use crate::layout::StretchAxis;
+use crate::backend::Backend;
 use crate::{AnyView, Environment, View};
 
 /// Represents a view that carries additional metadata of type `T`.
 ///
-/// This struct allows attaching arbitrary data to a view component. The metadata
-/// is expected to be handled by a renderer, and will panic if not properly caught.
+/// This struct allows attaching arbitrary data to a view component. Every
+/// backend handles every key, so a `Metadata` never expands through `body`.
 ///
 /// Metadata is transparent for layout system, it is not a native view.
 #[derive(Debug)]
 #[must_use]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a metadata view is exactly its content plus its value; renderers destructure it"
-)]
 pub struct Metadata<T: MetadataKey> {
     /// The view content wrapped by this metadata.
     pub content: AnyView,
@@ -50,80 +47,60 @@ impl<T: MetadataKey> Metadata<T> {
             value,
         }
     }
-
-    #[cold]
-    fn panic_not_caught() {
-        panic!(
-            "The metadata `{}` is not caught by your renderer. If the metadata is not essential, use `IgnorableMetadata<T>`.",
-            type_name::<Self>()
-        );
-    }
 }
 
 impl<T: MetadataKey> View for Metadata<T> {
     fn body(self, _env: &Environment) -> impl View {
-        Self::panic_not_caught();
+        never_expands::<T>();
     }
 
-    /// Metadata is transparent for layout: the wrapper never changes how the
-    /// content sizes, so the axis answers for the content's leaf.
-    fn stretch_axis(&self) -> StretchAxis {
-        self.content.stretch_axis()
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        backend.metadata(self, env, cx)
     }
 }
 
-/// A metadata wrapper that can be safely ignored by renderers if not handled explicitly.
-///
-/// Unlike `Metadata<T>`, this type won't panic if not caught by a renderer.
-#[derive(Debug)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a metadata view is exactly its content plus its value; renderers destructure it"
-)]
-pub struct IgnorableMetadata<T: MetadataKey> {
-    /// The view content wrapped by this ignorable metadata.
-    pub content: AnyView,
-    /// The metadata value associated with the content.
-    pub value: T,
-}
-
-impl<T: MetadataKey> IgnorableMetadata<T> {
-    /// Creates a new `IgnorableMetadata` instance with the specified content and value.
-    ///
-    /// # Arguments
-    ///
-    /// * `content` - The view to be wrapped with ignorable metadata.
-    /// * `value` - The metadata value to associate with the content.
-    pub fn new(content: impl View, value: T) -> Self {
-        Self {
-            content: AnyView::new(content),
-            value,
-        }
-    }
-}
-
-impl<T: MetadataKey> View for IgnorableMetadata<T> {
-    fn body(self, _env: &Environment) -> impl View {
-        self.content
-    }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        self.content.stretch_axis()
-    }
+fn never_expands<T>() {
+    unreachable!(
+        "metadata {} reached `body`: every backend handles every metadata key",
+        type_name::<T>()
+    );
 }
 
 /// A metadata key that retains a value for its lifetime.
 ///
 /// This is useful for keeping watcher guards, subscriptions, or other values
 /// alive as long as the view exists. The retained value is dropped when the
-/// view is dropped.
+/// view is dropped. It is the one lifetime primitive: a modifier that needs
+/// something alive exactly as long as its view is a composite over
+/// `Metadata<Retain>`, never a key of its own.
 ///
-/// This type implements `MetadataKey` and is used with `Metadata`,
-/// so renderers must handle it (by extracting content and keeping the value alive).
-#[derive(Debug)]
+/// A value built with [`Retain::resolved`] is constructed from the
+/// environment the retained content resolves in — the environment a handler
+/// attached to that content sees, so an install on either side of the
+/// modifier in the same chain reaches it. Backends call [`Retain::resolve`]
+/// with that environment once the content is built, then keep the `Retain`.
 pub struct Retain {
-    /// The retained value (not read, only kept alive).
-    _value: Box<dyn Any>,
+    value: Retained,
+}
+
+/// Builds a [`Retain::resolved`] value from its content's environment.
+type BuildRetained = Box<dyn FnOnce(&Environment) -> Box<dyn Any>>;
+
+/// What a [`Retain`] holds: its value, or the builder that makes it.
+enum Retained {
+    /// Kept alive, never read.
+    Value {
+        _kept: Box<dyn Any>,
+    },
+    Pending(BuildRetained),
+}
+
+impl fmt::Debug for Retain {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Retain")
+            .field("resolved", &matches!(self.value, Retained::Value { .. }))
+            .finish()
+    }
 }
 
 impl MetadataKey for Retain {}
@@ -132,7 +109,47 @@ impl Retain {
     /// Creates a new `Retain` from a value.
     pub fn new<T: 'static>(value: T) -> Self {
         Self {
-            _value: Box::new(value),
+            value: Retained::Value {
+                _kept: Box::new(value),
+            },
         }
+    }
+
+    /// Creates a `Retain` whose value `build` makes from the environment the
+    /// retained content resolves in.
+    pub fn resolved<T: 'static>(build: impl FnOnce(&Environment) -> T + 'static) -> Self {
+        Self {
+            value: Retained::Pending(Box::new(move |env| Box::new(build(env)))),
+        }
+    }
+
+    /// Builds a [`Retain::resolved`] value from `env`, the environment the
+    /// retained content resolves in. A value that is already built is kept
+    /// as it is.
+    pub fn resolve(&mut self, env: &Environment) {
+        let pending = core::mem::replace(
+            &mut self.value,
+            Retained::Value {
+                _kept: Box::new(()),
+            },
+        );
+        self.value = match pending {
+            Retained::Pending(build) => Retained::Value { _kept: build(env) },
+            value @ Retained::Value { .. } => value,
+        };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Probe;
+    impl MetadataKey for Probe {}
+
+    #[test]
+    #[should_panic(expected = "reached `body`")]
+    fn metadata_never_expands() {
+        let _ = AnyView::new(Metadata::new((), Probe).body(&Environment::new()));
     }
 }

@@ -6,18 +6,15 @@
 
 extern crate alloc;
 
+pub mod backend;
 /// The offscreen capture shared by `view_renderer` and the `preview`
 /// entry — nothing else references it. With `gpu_surface` the captures go
 /// through `capture_image`'s `ViewCapture` instead, so the
 /// bitmap-readback half only exists without it.
-#[cfg(all(
-    not(feature = "gpu_surface"),
-    any(feature = "view_renderer", preview_entry)
-))]
+#[cfg(not(feature = "gpu_surface"))]
 pub(crate) mod capture;
 /// Awaiting the content a captured subtree owes — shared by the same two
 /// captures.
-#[cfg(any(feature = "view_renderer", preview_entry))]
 pub(crate) mod content;
 pub mod contract;
 pub mod dispatch;
@@ -40,13 +37,14 @@ mod frozen_frame;
 mod gpu_completion;
 #[cfg(feature = "gpu_surface")]
 mod gpu_input;
+mod gpu_runtime;
 #[cfg(all(feature = "gpu_surface", target_os = "ios"))]
 mod gpu_text;
-mod gpu_runtime;
 mod inspector;
 mod invalidation;
 pub(crate) mod locale;
 #[cfg(any(
+    feature = "canvas",
     feature = "gpu_surface",
     feature = "applied_filter",
     feature = "view_effect",
@@ -63,7 +61,6 @@ pub(crate) mod primary_content;
 pub(crate) mod proposal;
 #[cfg(feature = "gpu_surface")]
 mod publication_park;
-mod registry;
 #[cfg(any(target_os = "ios", test))]
 mod scene_registry;
 pub(crate) mod startup;
@@ -74,6 +71,7 @@ mod termination;
 pub(crate) mod theme;
 #[cfg(target_os = "macos")]
 mod toolbar;
+mod toolbar_chrome;
 pub(crate) mod transition;
 pub(crate) mod window_background;
 pub(crate) mod windows;
@@ -113,7 +111,8 @@ macro_rules! export_app {
         ) -> *mut core::ffi::c_void {
             // SAFETY: the embedding host supplies the documented runtime, host,
             // paths, and — when `host_fonts` is non-null — a live locale
-            // string and eighteen readable `f64`s.
+            // string and the readable `f64`s `HostEnvironment::from_abi`
+            // documents.
             let host_environment = (!host_fonts.is_null()).then(|| unsafe {
                 $crate::embedding::HostEnvironment::from_abi(dark, rtl, locale, host_fonts)
             });

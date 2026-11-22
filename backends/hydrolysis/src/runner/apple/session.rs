@@ -13,16 +13,18 @@ use std::rc::Rc;
 use cocoa_ui::main_queue::MainQueueWake;
 use nami::Signal as _;
 use waterui::window::WindowState;
-use waterui_core::Environment;
+use waterui_core::{Environment, contract_violation};
 
+#[cfg(feature = "accessibility")]
 use super::accessibility::AccessibilityBridge;
 use super::surface::AppleViewSurface;
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 use super::text_input::ImeShared;
-use crate::platform::GpuSurfaceWindow;
+use crate::platform::PaintedWindow;
 use crate::runner::host_executor::HostMainThreadExecutor;
 use crate::runner::window::{
-    FrameHost, FrameOutcome, FrameTransaction, RuntimeWindow, render_window, reports_ui_idle,
-    run_frame_transaction,
+    FrameHost, FrameOutcome, FrameTransaction, RuntimeWindow, WindowFrame, render_window,
+    reports_ui_idle, run_frame_transaction,
 };
 use crate::text::ParleyEngine;
 
@@ -30,7 +32,7 @@ use crate::text::ParleyEngine;
 pub(super) type AppleExecutor = HostMainThreadExecutor<MainQueueWake>;
 
 /// What a host window supplies the session beyond the platform contract.
-pub(super) trait AppleHostWindow: GpuSurfaceWindow<Presentation = AppleViewSurface> {
+pub(super) trait AppleHostWindow: PaintedWindow<Presentation = AppleViewSurface> {
     /// The window's frame transaction, which gates its frame wake.
     fn frame_transaction(&self) -> &FrameTransaction;
 
@@ -54,15 +56,20 @@ pub(super) struct AppleSession<P: AppleHostWindow> {
     pub(super) env: Environment,
     pub(super) runtime: RuntimeWindow<P, ParleyEngine>,
     executor: AppleExecutor,
+    /// The document the platform's text system edits.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     ime: Rc<ImeShared>,
+    #[cfg(feature = "accessibility")]
     accessibility: AccessibilityBridge,
-    /// Windows the app asked for while mounted; a host that cannot open
-    /// them asserts this queue stays empty.
+    /// Windows the app asked for while mounted — popups among them; a scene
+    /// mounts exactly one window, so they are reported and dropped.
     pending_window_queue: Rc<RefCell<Vec<waterui::window::Window>>>,
     /// A frame reached the surface at least once; with an idle
     /// `wants_next_frame` it arms the one-shot readiness log.
     presented_once: Cell<bool>,
     ready_logged: Cell<bool>,
+    /// The surface failed for good: the window draws no further frame.
+    rendering_failed: bool,
 }
 
 impl<P: AppleHostWindow> AppleSession<P> {
@@ -70,27 +77,31 @@ impl<P: AppleHostWindow> AppleSession<P> {
         env: Environment,
         runtime: RuntimeWindow<P, ParleyEngine>,
         executor: AppleExecutor,
-        ime: Rc<ImeShared>,
-        accessibility: AccessibilityBridge,
+        #[cfg(any(feature = "text-field", feature = "secure-field"))] ime: Rc<ImeShared>,
+        #[cfg(feature = "accessibility")] accessibility: AccessibilityBridge,
         pending_window_queue: Rc<RefCell<Vec<waterui::window::Window>>>,
     ) -> Self {
         Self {
             env,
             runtime,
             executor,
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             ime,
+            #[cfg(feature = "accessibility")]
             accessibility,
             pending_window_queue,
             presented_once: Cell::new(false),
             ready_logged: Cell::new(false),
+            rendering_failed: false,
         }
     }
 
     /// The one coordinated frame transaction — the display link's tick lands
     /// here. The sequence is the shared [`run_frame_transaction`]; this host
-    /// supplies the steps around it.
+    /// supplies the steps around it. The engine renders each frame at the
+    /// instant it starts.
     pub(super) fn on_frame(&mut self) -> FrameOutcome {
-        let outcome = run_frame_transaction(self);
+        let outcome = run_frame_transaction(self, None);
         tracing::debug!(
             target: "waterui::hydrolysis::apple",
             wants_next_frame = outcome.wants_next_frame,
@@ -129,9 +140,15 @@ impl<P: AppleHostWindow> FrameHost for AppleSession<P> {
         self.runtime.sync_occlusion_and_post_restore();
         // Edits the input method made since the last frame reach the focused
         // model before this frame dispatches input and lays out.
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         self.ime.flush(&mut self.runtime.renderer);
+        #[cfg(feature = "accessibility")]
         self.accessibility
             .perform_actions(&mut self.runtime, &self.env);
+    }
+
+    fn rendering_ended(&self) -> bool {
+        self.rendering_failed
     }
 
     fn should_close(&self) -> bool {
@@ -148,7 +165,18 @@ impl<P: AppleHostWindow> FrameHost for AppleSession<P> {
 
     fn render(&mut self) -> bool {
         let executor = self.executor.clone();
-        render_window(&mut self.runtime, &self.env, &mut || executor.drain())
+        match render_window(&mut self.runtime, &self.env, &mut || executor.drain()) {
+            WindowFrame::Failed(error) => {
+                tracing::error!(
+                    target: "waterui::hydrolysis::apple",
+                    "{:#}; the window cannot render and draws no further frame",
+                    waterui_core::Error::from(error)
+                );
+                self.rendering_failed = true;
+                false
+            }
+            frame => frame.presented(),
+        }
     }
 
     fn after_render(&mut self, presented: bool) {
@@ -162,23 +190,31 @@ impl<P: AppleHostWindow> FrameHost for AppleSession<P> {
     }
 
     fn publish(&mut self, _flushed: bool) {
+        #[cfg(feature = "accessibility")]
         self.accessibility.publish(&mut self.runtime);
         // The renderer's authoritative editor state reaches the input
         // method, and the keyboard follows focus through the platform's
         // text-input state, which `render_window` already synced.
-        let snapshot = self.runtime.renderer.focused_editor_snapshot();
-        self.ime.sync_from_renderer(snapshot);
-        assert!(
-            self.pending_window_queue.borrow().is_empty(),
-            "hydrolysis UIKit: secondary windows are unsupported — a scene mounts exactly one window"
-        );
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
+        {
+            let snapshot = self.runtime.renderer.focused_editor_snapshot();
+            self.ime.sync_from_renderer(snapshot);
+        }
+        let secondary_windows = self.pending_window_queue.borrow().len();
+        if secondary_windows != 0 {
+            // The windows are dropped unmounted so the violation is not
+            // reported again by every later frame.
+            self.pending_window_queue.borrow_mut().clear();
+            contract_violation!(
+                "hydrolysis apple: secondary windows are unsupported — a scene mounts exactly one window; {secondary_windows} window(s) dropped"
+            );
+        }
     }
 
-    fn finished(&mut self, wants_next_frame: bool) {
+    fn finished(&mut self, pending: bool) {
         if reports_ui_idle(
             self.presented_once.get(),
-            wants_next_frame
-                || matches!(self.runtime.engine_next, crate::renderer::Next::At { .. }),
+            pending || matches!(self.runtime.engine_next, crate::renderer::Next::At { .. }),
             self.runtime.is_hidden(),
         ) && !self.ready_logged.get()
         {

@@ -114,7 +114,9 @@ where
 
                 #[cfg(not(feature = "std"))]
                 {
-                    panic!("MediaPicker requires the `std` feature to use native picker dialogs");
+                    tracing::error!(
+                        "MediaPicker requires the `std` feature to use native picker dialogs; the selection is left unchanged"
+                    );
                 }
             }
         })

@@ -7,21 +7,27 @@
 //! constructs its own concrete engine ([`ParleyEngine`] today), so there is
 //! no `dyn` dispatch and no runtime choice.
 
+#[cfg(any(test, hydrolysis_runtime))]
+mod canvas;
 mod declared;
 mod engine;
 mod input;
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 mod parley_engine;
 mod service;
 #[cfg(test)]
 mod tests;
 pub mod types;
 
+#[cfg(any(test, hydrolysis_runtime))]
+pub use canvas::{CanvasLayout, shape as shape_canvas_text};
 pub use declared::DeclaredFonts;
 #[cfg(test)]
 pub use engine::Affinity;
 pub use engine::FontFamilyResolution;
-pub use engine::{TailMark, TextEngine, TextLayout, TextPosition, TextSelection};
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
+pub use engine::TextSelection;
+pub use engine::{TailMark, TextEngine, TextLayout, TextPosition};
 pub use input::{ResolvedTextLayoutInput, resolve_text_layout_input};
 pub use service::TextScenes;
 pub use service::TextService;
@@ -31,7 +37,7 @@ mod hwui_engine;
 
 #[cfg(any(test, hydrolysis_hwui))]
 pub use hwui_engine::HwuiTextEngine;
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 pub use parley_engine::ParleyEngine;
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 pub use parley_engine::fonts;

@@ -41,30 +41,103 @@ use crate::{
 /// the most stable across reboots and reconnects, so it is what
 /// [`Self::selector`] returns and what `water run --device` should be given.
 #[derive(Debug, Clone)]
-#[non_exhaustive]
 pub struct ApplePhysicalDevice {
     /// `CoreDevice` identifier (e.g. `898E9834-79A1-5EAD-AA1A-C54E27F04456`).
-    pub identifier: String,
+    identifier: String,
     /// Hardware UDID (e.g. `00008140-00011C210CF3001C`).
-    pub udid: String,
+    udid: String,
     /// User-assigned device name.
-    pub name: String,
+    name: String,
     /// Marketing name from `hardwareProperties` (e.g. `iPhone 16 Pro`).
-    pub marketing_name: Option<String>,
+    marketing_name: Option<String>,
     /// OS version running on the device (e.g. iOS `27.0`).
-    pub os_version: Option<Version>,
+    os_version: Option<Version>,
     /// How the device is currently reachable (`wired` or `localNetwork`).
-    pub transport: Transport,
+    transport: Transport,
     /// `CoreDevice` tunnel state (`connected`, `disconnected`, `unavailable`).
     ///
     /// `disconnected` is not a problem: device commands establish the tunnel
     /// on demand. `unavailable` means the device cannot be reached at all.
-    pub tunnel_state: TunnelState,
+    tunnel_state: TunnelState,
     /// `deviceProperties.developerModeStatus` — must be `enabled` to run
     /// development-signed apps.
-    pub developer_mode_enabled: bool,
+    developer_mode_enabled: bool,
     /// `deviceProperties.bootState` — the device is usable when `booted`.
-    pub boot_state: String,
+    boot_state: String,
+}
+
+impl ApplePhysicalDevice {
+    /// `CoreDevice` identifier.
+    #[must_use]
+    pub fn identifier(&self) -> &str {
+        &self.identifier
+    }
+
+    /// Hardware UDID.
+    #[must_use]
+    pub fn udid(&self) -> &str {
+        &self.udid
+    }
+
+    /// User-assigned device name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Marketing name from `hardwareProperties`.
+    #[must_use]
+    pub fn marketing_name(&self) -> Option<&str> {
+        self.marketing_name.as_deref()
+    }
+
+    /// OS version running on the device.
+    #[must_use]
+    pub const fn os_version(&self) -> Option<&Version> {
+        self.os_version.as_ref()
+    }
+
+    /// How the device is currently reachable.
+    #[must_use]
+    pub const fn transport(&self) -> Transport {
+        self.transport
+    }
+
+    /// `CoreDevice` tunnel reachability state.
+    #[must_use]
+    pub const fn tunnel_state(&self) -> TunnelState {
+        self.tunnel_state
+    }
+
+    /// Whether developer mode is enabled on the device.
+    #[must_use]
+    pub const fn developer_mode_enabled(&self) -> bool {
+        self.developer_mode_enabled
+    }
+
+    /// `deviceProperties.bootState` — the device is usable when `booted`.
+    #[must_use]
+    pub fn boot_state(&self) -> &str {
+        &self.boot_state
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+impl ApplePhysicalDevice {
+    /// A fully populated device for the macOS test runner's fixtures.
+    pub(crate) fn fixture() -> Self {
+        Self {
+            identifier: "CORE-DEVICE-ID".to_string(),
+            udid: "00008140-0000ABCD00112233".to_string(),
+            name: "test-ipad".to_string(),
+            marketing_name: None,
+            os_version: Some(Version::new(18, 0, 0)),
+            transport: Transport::Wired,
+            tunnel_state: TunnelState::Connected,
+            developer_mode_enabled: true,
+            boot_state: "booted".to_string(),
+        }
+    }
 }
 
 /// How a paired device is connected to this Mac.
@@ -989,7 +1062,6 @@ mod tests {
     use super::{
         ApplePhysicalDevice, DeviceUnusable, Transport, TunnelState, physical_device_launch_command,
     };
-    use crate::device::Device as _;
     #[cfg(unix)]
     use crate::workflows::device::test_support::{ProcessGroupGuard, term_ignoring_fixture};
 

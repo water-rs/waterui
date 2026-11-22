@@ -31,13 +31,23 @@ fn install_locale_value(env: &mut Environment, locale: Locale) {
 }
 
 /// The locale the platform's preferred-language list names, or English when
-/// the list is empty.
+/// the list is empty, carrying the user's first-weekday preference as its
+/// `fw` keyword when it differs from that locale's own.
 fn system_locale(languages: &[String]) -> Locale {
+    use icu_locale::extensions::unicode::{Value, key};
+
     let tag = languages.first().map_or("en", String::as_str);
-    Locale::from_str(tag).unwrap_or_else(|error| {
+    let mut locale = Locale::from_str(tag).unwrap_or_else(|error| {
         tracing::warn!("invalid preferred language {tag:?}: {error}; falling back to en");
         Locale::from_str("en").expect("`en` is a valid BCP 47 tag")
-    })
+    });
+    if let Some(weekday) = cocoa_ui::locale::first_weekday_preference(&locale.canonical_tag()) {
+        locale.0.extensions.unicode.keywords.set(
+            key!("fw"),
+            Value::try_from_str(weekday).expect("a CLDR weekday name is a keyword value"),
+        );
+    }
+    locale
 }
 
 /// Publishes a new system locale: the binding views resolve through, and the

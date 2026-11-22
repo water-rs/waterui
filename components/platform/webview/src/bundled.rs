@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use percent_encoding::percent_decode_str;
+use waterui_core::contract_violation;
 
 use crate::Url;
 use crate::assets::{AssetRequest, AssetResponse, AssetServer};
@@ -51,23 +52,31 @@ pub struct DirectoryServer {
 impl DirectoryServer {
     /// A server over `root`.
     ///
-    /// # Panics
+    /// # Contract violation
     ///
     /// When `root` is not a directory — the CLI stages the bundle or the build
-    /// is wrong; both are build errors, not runtime states.
+    /// is wrong. A debug build panics; a release build logs it and the server
+    /// answers every request with `404`.
     pub fn new(root: impl Into<PathBuf>) -> Self {
         let root = root.into();
-        let root = root.canonicalize().unwrap_or_else(|error| {
-            panic!(
-                "asset root '{}' is not a staged directory: {error}",
-                root.display()
-            )
-        });
-        assert!(
-            root.is_dir(),
-            "asset root '{}' is not a staged directory",
-            root.display()
-        );
+        let root = match root.canonicalize() {
+            Ok(canonical) if canonical.is_dir() => canonical,
+            Ok(canonical) => {
+                contract_violation!(
+                    "asset root '{}' is not a staged directory; every request answers 404",
+                    canonical.display()
+                );
+                canonical
+            }
+            Err(error) => {
+                contract_violation!(
+                    "asset root '{}' is not a staged directory: {error}; \
+                     every request answers 404",
+                    root.display()
+                );
+                root
+            }
+        };
         Self {
             root,
             spa: false,
@@ -103,7 +112,7 @@ impl DirectoryServer {
 
     /// Answers one request; `request.path` is still percent-encoded.
     fn serve(&self, request: &AssetRequest) -> AssetResponse {
-        let decoded = percent_decode_str(request.path.as_str()).decode_utf8_lossy();
+        let decoded = percent_decode_str(request.path().as_str()).decode_utf8_lossy();
         let relative = decoded.strip_prefix('/').unwrap_or(&decoded);
 
         let mut candidate = self.root.clone();
@@ -204,10 +213,8 @@ fn content_type_for(extension: &str) -> &'static str {
 /// environment variables, so the launch channel there is a process argument.
 /// The function itself is not gated; callers gate on `debug_assertions`.
 ///
-/// # Panics
-///
-/// When a present value is not a URL — a malformed handoff is a CLI bug, not
-/// a state the app can serve.
+/// A present value that is not a URL is a malformed handoff: it is logged and
+/// ignored, as if the source were absent.
 #[must_use]
 pub fn dev_url() -> Option<Url> {
     dev_url_from(
@@ -220,18 +227,24 @@ pub fn dev_url() -> Option<Url> {
 /// `--waterui-dev-url=` process argument.
 fn dev_url_from(env: Option<&str>, mut args: impl Iterator<Item = String>) -> Option<Url> {
     if let Some(value) = env {
-        return Some(
-            value
-                .parse()
-                .expect("WATERUI_DEV_URL is set but is not a URL"),
-        );
+        match value.parse() {
+            Ok(url) => return Some(url),
+            Err(error) => {
+                tracing::error!("WATERUI_DEV_URL is set but is not a URL: {error}; it is ignored");
+            }
+        }
     }
     args.find_map(|arg| {
-        arg.strip_prefix("--waterui-dev-url=").map(|value| {
-            value
-                .parse()
-                .expect("--waterui-dev-url is present but is not a URL")
-        })
+        let value = arg.strip_prefix("--waterui-dev-url=")?;
+        match value.parse() {
+            Ok(url) => Some(url),
+            Err(error) => {
+                tracing::error!(
+                    "--waterui-dev-url is present but is not a URL: {error}; it is ignored"
+                );
+                None
+            }
+        }
     })
 }
 
@@ -253,19 +266,19 @@ mod tests {
     }
 
     fn get(server: &AssetServer, path: &str) -> AssetResponse {
-        server(&AssetRequest {
-            method: crate::assets::AssetMethod::Get,
-            path: Str::from(path.to_string()),
-            query: None,
-        })
+        server(&AssetRequest::new(
+            crate::assets::AssetMethod::Get,
+            Str::from(path.to_string()),
+            None,
+        ))
     }
 
     #[test]
     fn index_is_served_at_the_root() {
         let (_dir, server) = stage(&[("index.html", b"<html>hi</html>")]);
         let response = get(&server.into_server(), "/");
-        assert_eq!(response.status, 200);
-        assert_eq!(response.body, b"<html>hi</html>");
+        assert_eq!(response.status(), 200);
+        assert_eq!(response.body(), b"<html>hi</html>");
         assert_eq!(header(&response, "content-type"), "text/html");
         assert_eq!(
             header(&response, "content-security-policy"),
@@ -284,7 +297,7 @@ mod tests {
         ]);
         let server = server.into_server();
         let js = get(&server, "/assets/app.js");
-        assert_eq!(js.status, 200);
+        assert_eq!(js.status(), 200);
         assert_eq!(header(&js, "content-type"), "text/javascript");
         let wasm = get(&server, "/assets/app.wasm");
         assert_eq!(header(&wasm, "content-type"), "application/wasm");
@@ -301,8 +314,8 @@ mod tests {
     fn missing_files_answer_404() {
         let (_dir, server) = stage(&[("index.html", b"<html></html>")]);
         let server = server.into_server();
-        assert_eq!(get(&server, "/nope.js").status, 404);
-        assert_eq!(get(&server, "/docs/page").status, 404);
+        assert_eq!(get(&server, "/nope.js").status(), 404);
+        assert_eq!(get(&server, "/docs/page").status(), 404);
     }
 
     #[test]
@@ -310,10 +323,10 @@ mod tests {
         let (_dir, server) = stage(&[("index.html", b"<html>spa</html>")]);
         let server = server.spa(true).into_server();
         let route = get(&server, "/docs/getting-started");
-        assert_eq!(route.status, 200);
-        assert_eq!(route.body, b"<html>spa</html>");
-        assert_eq!(get(&server, "/missing.js").status, 404);
-        assert_eq!(get(&server, "/docs/deep/route").status, 200);
+        assert_eq!(route.status(), 200);
+        assert_eq!(route.body(), b"<html>spa</html>");
+        assert_eq!(get(&server, "/missing.js").status(), 404);
+        assert_eq!(get(&server, "/docs/deep/route").status(), 200);
     }
 
     #[test]
@@ -328,7 +341,7 @@ mod tests {
             "/%2e%2e/index.html",
             "/%00",
         ] {
-            assert_eq!(get(&server, path).status, 404, "{path}");
+            assert_eq!(get(&server, path).status(), 404, "{path}");
         }
     }
 
@@ -343,7 +356,7 @@ mod tests {
             dir.path().join("link.txt"),
         )
         .expect("symlink");
-        assert_eq!(get(&server.into_server(), "/link.txt").status, 404);
+        assert_eq!(get(&server.into_server(), "/link.txt").status(), 404);
     }
 
     #[test]
@@ -373,9 +386,36 @@ mod tests {
         assert_eq!(dev_url_from(None, ["app".to_string()].into_iter()), None);
     }
 
+    /// A malformed handoff is logged and skipped, never fatal.
+    #[test]
+    fn a_malformed_dev_url_is_ignored() {
+        assert_eq!(
+            dev_url_from(
+                Some(""),
+                ["--waterui-dev-url=http://localhost:9999".to_string()].into_iter(),
+            )
+            .as_ref()
+            .map(Url::as_str),
+            Some("http://localhost:9999")
+        );
+        assert_eq!(
+            dev_url_from(None, ["--waterui-dev-url=".to_string()].into_iter()),
+            None
+        );
+    }
+
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "is not a staged directory"))]
+    fn a_missing_asset_root_answers_404() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let server = DirectoryServer::new(dir.path().join("missing")).into_server();
+        assert_eq!(get(&server, "/").status(), 404);
+        assert_eq!(get(&server, "/index.html").status(), 404);
+    }
+
     fn header<'a>(response: &'a AssetResponse, name: &str) -> &'a str {
         response
-            .headers
+            .headers()
             .iter()
             .find(|(key, _)| key.as_str().eq_ignore_ascii_case(name))
             .map_or("", |(_, value)| value.as_str())

@@ -206,27 +206,27 @@ impl PlatformText for JniTextProvider {
         let too_many =
             |what: &str| text_error(format!("HwuiTextProvider.shape: {what} exceed an array"));
         let family_count =
-            i32::try_from(request.families.len()).map_err(|_| too_many("the families"))?;
+            i32::try_from(request.families().len()).map_err(|_| too_many("the families"))?;
         let frame = request
-            .families
+            .families()
             .len()
             .checked_add(8)
             .ok_or_else(|| too_many("the families"))?;
         self.provider
             .call(self.shape, frame, |env, provider, method| {
                 let text = env.new_string(text)?;
-                let spans = env.new_int_array(request.spans.len())?;
-                spans.set_region(env, 0, &request.spans)?;
+                let spans = env.new_int_array(request.spans().len())?;
+                spans.set_region(env, 0, request.spans())?;
                 let families = env.new_object_array(
                     family_count,
                     jni::jni_str!("java/lang/String"),
                     JObject::null(),
                 )?;
-                for (index, family) in (0..).zip(&request.families) {
+                for (index, family) in (0..).zip(request.families()) {
                     let name = env.new_string(family)?;
                     families.set_element(env, index, &name)?;
                 }
-                let locale = env.new_string(&request.locale)?;
+                let locale = env.new_string(request.locale())?;
                 // SAFETY: `SHAPE`.
                 let reply = unsafe {
                     method.invoke(
@@ -236,13 +236,13 @@ impl PlatformText for JniTextProvider {
                         &[
                             JValue::Int(id).as_jni(),
                             JValue::Object(&text).as_jni(),
-                            JValue::Int(request.span_count).as_jni(),
+                            JValue::Int(request.span_count()).as_jni(),
                             JValue::Object(&spans).as_jni(),
                             JValue::Object(&families).as_jni(),
                             JValue::Object(&locale).as_jni(),
-                            JValue::Float(request.max_width).as_jni(),
-                            JValue::Int(request.max_lines).as_jni(),
-                            JValue::Int(request.paragraph).as_jni(),
+                            JValue::Float(request.max_width()).as_jni(),
+                            JValue::Int(request.max_lines()).as_jni(),
+                            JValue::Int(request.paragraph()).as_jni(),
                         ],
                     )
                 }?

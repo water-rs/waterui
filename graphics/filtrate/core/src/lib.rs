@@ -15,8 +15,8 @@
 //! the stages and decide how to run them.
 //!
 //! This crate does not depend on a GPU, a shader compiler or a reactive
-//! system — `libm` alone, and only when the default `std` feature is off
-//! (`no_std` targets), for the transfer function of the CPU colour
+//! system — `libm` alone, behind the `libm` feature that a `no_std` build
+//! (the default `std` feature off) requires, for the transfer function of the CPU colour
 //! conversion. Reactive frontends provide their own [`FilterParam`]
 //! implementations on top of these abstractions.
 //!
@@ -85,6 +85,12 @@
 //! const { assert!(<filtrate_core::Chain<Brightness, Brightness> as ColorFilter>::LINEAR) };
 //! ```
 
+#[cfg(not(any(feature = "std", feature = "libm")))]
+compile_error!(
+    "filtrate-core needs either the `std` feature or the `libm` feature: a `no_std` build takes \
+     `powf` from `libm`"
+);
+
 mod animation;
 mod filter;
 mod image;
@@ -105,6 +111,6 @@ pub use params::ParamArray;
 pub use space::{OperatingSpace, WorkingSpace};
 pub use stage::{
     AuxSource, ColorStage, FilterLink, LinkVisitor, ParamSource, Placed, ShapeInput, SpatialStage,
-    StageCollector,
+    StageCollector, visit_lengths,
 };
 pub use visitor::SignalVisitor;

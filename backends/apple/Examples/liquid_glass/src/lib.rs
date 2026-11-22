@@ -30,6 +30,12 @@ enum Pane {
     Search,
 }
 
+/// The Liquid Glass demo: surfaces, controls, an about page and a search tab.
+///
+/// # Panics
+///
+/// Panics if the tab collection has no tab for one of the four panes. The tabs and
+/// the pane ids are built from the same four panes, so this cannot happen.
 #[preview]
 pub fn main() -> impl View {
     let pane = binding(Pane::Surfaces);
@@ -260,6 +266,7 @@ fn backdrop() -> impl View {
     ))
 }
 
+/// Builds the Liquid Glass example app around [`main`].
 pub fn app(env: Environment) -> App {
     App::new(main, env)
 }

@@ -137,7 +137,8 @@ pub const fn vello_missing_api(f: &Feature) -> Option<&'static str> {
 /// than silently quantizing them.
 ///
 /// [`Feature::BlendSpace`] is claimed for encoded sRGB only: a group maps
-/// to an isolated layer, which vello composites in encoded sRGB.
+/// to an isolated layer, which vello composites in encoded sRGB, and a
+/// scene layer in that space composites in it already.
 ///
 /// Gradient interpolation is honest too: every space `peniko`'s
 /// `ColorSpaceTag` names is claimed; `linear-p3` is not among them and is
@@ -407,8 +408,8 @@ fn unclipped(opaque_clip: bool) -> Option<BezPath> {
 /// with the group's opacity and blend.
 ///
 /// Vello composites in encoded sRGB only, so a group declaring
-/// [`BlendSpace::SrgbEncoded`] maps exactly and a [`BlendSpace::Linear`]
-/// group is unsupported. A filtered group never reaches here:
+/// [`BlendSpace::SrgbEncoded`] maps exactly and any other group, one
+/// declaring [`BlendSpace::Linear`] or no space, is unsupported. A filtered group never reaches here:
 /// [`Feature::Filter`] is absent from [`vello_features`].
 ///
 /// # Errors
@@ -429,10 +430,10 @@ fn lower_group<B>(
     paint_fn: &dyn Fn(&Paint) -> Result<B, BenchError>,
     image_fn: &dyn Fn(ResourceHash, cherenkov_scene::Sampling) -> Result<B, BenchError>,
 ) -> Result<(), BenchError> {
-    if group.blend_space != BlendSpace::SrgbEncoded {
+    if group.blend_space != Some(BlendSpace::SrgbEncoded) {
         return Err(BenchError::Unsupported {
             engine,
-            feature: Feature::BlendSpace(group.blend_space),
+            feature: Feature::BlendSpace(group.blend_space.unwrap_or(BlendSpace::Linear)),
             api: Some(ENCODED_ONLY_API),
         });
     }

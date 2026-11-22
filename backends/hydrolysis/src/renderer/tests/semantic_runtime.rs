@@ -11,6 +11,7 @@
 use accesskit::{
     Action, ActionData, ActionRequest, Node, NodeId, Role, Toggled, TreeId, TreeUpdate,
 };
+use cherenkov_record::Recorder;
 use nami::Binding;
 use nami::Signal as _;
 use waterui::ViewExt as _;
@@ -32,9 +33,11 @@ use waterui_form::picker::date::DatePicker;
 use waterui_form::picker::{PickerStyle, picker};
 use waterui_form::secure::secure;
 use waterui_graphics::Color;
-use waterui_graphics::draw::Recorder;
+use waterui_graphics::backend::{NextFrame, RecordingResources, SceneContent, SceneView};
+#[cfg(hydrolysis_gpu)]
 use waterui_graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
-use waterui_graphics::{GpuContent, GpuContentView, RecordingResources, SceneContent, SceneView};
+#[cfg(hydrolysis_gpu)]
+use waterui_graphics::{GpuContent, GpuView};
 use waterui_layout::spacer::spacer;
 use waterui_layout::stack::{VStackLayout, hstack, vstack};
 use waterui_layout::{Divider, LazyContainer, scroll};
@@ -757,7 +760,7 @@ fn a_clean_pump_publishes_no_tree_update() {
 
     let update = pumped(&mut runtime);
     assert!(
-        runtime.pump().tree_update.is_none(),
+        runtime.pump().tree_update().is_none(),
         "a settled pump with no popup must publish nothing"
     );
 
@@ -773,7 +776,7 @@ fn a_clean_pump_publishes_no_tree_update() {
         "the swatch panel must be merged before the clean-pump check"
     );
     assert!(
-        runtime.pump().tree_update.is_none(),
+        runtime.pump().tree_update().is_none(),
         "a settled pump with an open popup must publish nothing"
     );
 }
@@ -1696,8 +1699,8 @@ impl SceneContent for Chart {
         _resources: &mut RecordingResources<'_>,
         _width: f32,
         _height: f32,
-    ) -> bool {
-        false
+    ) -> NextFrame {
+        NextFrame::Idle
     }
 
     fn accessibility_label(&self) -> Option<String> {
@@ -1721,20 +1724,24 @@ fn scene_view_emits_an_image_leaf_with_its_content_label() {
 
 /// A GPU surface whose view names itself and reports its own semantic content —
 /// the pair of answers its `Image` node has to publish, since a surface reaches
-/// the tree as bare pixels.
+/// the tree as bare pixels. Only a build with the `gpu` feature realizes the
+/// leaf; without it the leaf is refused by name (`cpu_refusals`).
+#[cfg(hydrolysis_gpu)]
 struct GpuChart;
 
+#[cfg(hydrolysis_gpu)]
 impl GpuContent for GpuChart {
     fn setup(&mut self, _gpu: &GpuContext<'_>) {}
 
     fn render(&mut self, _frame: &mut GpuFrame<'_>) {}
 }
 
+#[cfg(hydrolysis_gpu)]
 #[test]
 fn gpu_surface_emits_an_image_leaf_with_its_label_and_value() {
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
         AnyView::new(
-            GpuContentView::new(GpuChart)
+            GpuView::new(GpuChart)
                 .labeled("weekly chart")
                 .described("up 12% week over week"),
         )
@@ -1852,4 +1859,36 @@ fn focused_binding_moves_ui_focus_and_tree_focus() {
     assert_eq!(update.focus, name_node);
     assert_eq!(runtime.focused_ui_node(), Some(name_node));
     assert_eq!(focus.snapshot(), Some(Field::Name));
+}
+
+#[test]
+fn a_tap_region_over_a_composite_derives_its_label_from_the_content() {
+    let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
+        AnyView::new(vstack((
+            hstack((text("Alpha"), text("Beta"))).on_tap(|| {}),
+        )))
+    }));
+    let update = pumped(&mut runtime);
+    assert_rooted(&update);
+    find_by_label(&update, Role::Button, "Alpha Beta")
+        .expect("the tap region's button takes its composite content's label");
+}
+
+#[test]
+fn a_tap_region_names_itself_from_its_content_as_it_is_now() {
+    let name = Binding::container(Str::from("Alpha"));
+    let shown = name.clone();
+    let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
+        AnyView::new(vstack((
+            hstack((text(shown.clone()), text("Beta"))).on_tap(|| {}),
+        )))
+    }));
+    let update = pumped(&mut runtime);
+    find_by_label(&update, Role::Button, "Alpha Beta")
+        .expect("the tap region's button takes its composite content's label");
+
+    name.set(Str::from("Gamma"));
+    let update = pumped(&mut runtime);
+    find_by_label(&update, Role::Button, "Gamma Beta")
+        .expect("the label follows the content's current text");
 }

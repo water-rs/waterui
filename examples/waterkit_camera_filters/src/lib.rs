@@ -1,7 +1,7 @@
-//! WaterUI + Waterkit Camera Filter Lab
+//! `WaterUI` + Waterkit Camera Filter Lab
 //!
 //! This example demonstrates collaboration between:
-//! - WaterUI: camera-style interface + real-time reactive filter pipeline
+//! - `WaterUI`: camera-style interface + real-time reactive filter pipeline
 //! - Waterkit Permission: camera permission check/request
 //! - Waterkit Camera: native camera streaming + device enumeration
 
@@ -12,7 +12,8 @@ use shaderloom::CompiledShader;
 use waterkit_camera::{Camera, FrameConverter};
 use waterkit_permission::{Permission, PermissionStatus, check, request};
 use waterui::app::App;
-use waterui::graphics::{Context, Frame, GpuContent, GpuContentView, bytemuck};
+use waterui::graphics::gpu::bytemuck;
+use waterui::graphics::{Context, Frame, GpuContent, GpuView};
 use waterui::prelude::slider::slider;
 use waterui::prelude::theme_color::Surface;
 use waterui::prelude::*;
@@ -72,7 +73,7 @@ pub fn demo() -> impl View {
         state.reconnect_ticket.clone(),
         state.preview_status.clone(),
     );
-    camera_filter_lab(preview, state)
+    camera_filter_lab(preview, &state)
 }
 
 #[preview]
@@ -80,11 +81,11 @@ fn camera_filter_lab_preview() -> impl View {
     let state = CameraLabState::preview();
     let preview =
         synthetic_camera_surface(state.active_filter.clone(), state.filter_strength.clone());
-    camera_filter_lab(preview, state)
+    camera_filter_lab(preview, &state)
 }
 
-fn camera_filter_lab(preview: impl View, state: CameraLabState) -> impl View {
-    let filter_label = state.active_filter.clone().map(filter_name);
+fn camera_filter_lab<V: View>(preview: V, state: &CameraLabState) -> impl View + use<V> {
+    let filter_label = state.active_filter.map(filter_name);
     let filter_strength = state.filter_strength.clone();
     let preview_status = state.preview_status.clone();
     let waterkit_status = state.waterkit_status.clone();
@@ -93,9 +94,11 @@ fn camera_filter_lab(preview: impl View, state: CameraLabState) -> impl View {
 
     let header = vstack((
         text("WaterUI + Waterkit Camera Filter Lab").title().bold(),
-        text("Live camera preview via waterkit-camera, rendered and filtered with WaterUI GpuContentView.")
-            .body()
-            .muted(),
+        text(
+            "Live camera preview via waterkit-camera, rendered and filtered with WaterUI GpuView.",
+        )
+        .body()
+        .muted(),
         Divider,
     ))
     .spacing(8.0);
@@ -148,7 +151,7 @@ fn camera_filter_lab(preview: impl View, state: CameraLabState) -> impl View {
                 .await;
             })
             .bordered_prominent()
-            .state(&state),
+            .state(state),
     ))
     .spacing(8.0);
 
@@ -219,9 +222,15 @@ impl GpuContent for SyntheticCameraPreviewContent {
             .uniforms
             .lock()
             .expect("synthetic preview uniform mailbox poisoned");
-        let red = (0.32 + brightness + tint * 0.08).clamp(0.0, 1.0);
-        let green = (0.46 + brightness + saturation * 0.04 - vignette * 0.03).clamp(0.0, 1.0);
-        let blue = (0.58 + brightness - tint * 0.08 + contrast * 0.03).clamp(0.0, 1.0);
+        let red = f32::mul_add(tint, 0.08, 0.32 + brightness).clamp(0.0, 1.0);
+        let green = f32::mul_add(
+            vignette,
+            -0.03,
+            f32::mul_add(saturation, 0.04, 0.46 + brightness),
+        )
+        .clamp(0.0, 1.0);
+        let blue = f32::mul_add(contrast, 0.03, f32::mul_add(tint, -0.08, 0.58 + brightness))
+            .clamp(0.0, 1.0);
 
         let mut encoder = frame
             .device
@@ -263,17 +272,17 @@ struct SyntheticCameraPreviewRenderer {
 }
 
 impl SyntheticCameraPreviewRenderer {
-    fn new(active_filter: Binding<usize>, filter_strength: Binding<f64>) -> Self {
+    const fn new(active_filter: Binding<usize>, filter_strength: Binding<f64>) -> Self {
         Self {
             active_filter,
             filter_strength,
         }
     }
 
-    fn into_view(self) -> GpuContentView {
+    fn into_view(self) -> GpuView {
         let uniforms = Arc::new(Mutex::new(FilterUniforms(filter_params(0, 0.75))));
         let bridge = std::cell::RefCell::new(self);
-        GpuContentView::new(SyntheticCameraPreviewContent {
+        GpuView::new(SyntheticCameraPreviewContent {
             uniforms: Arc::clone(&uniforms),
         })
         .on_frame(move || {
@@ -283,7 +292,7 @@ impl SyntheticCameraPreviewRenderer {
                 .expect("synthetic preview uniform mailbox poisoned") =
                 FilterUniforms(filter_params(
                     bridge.active_filter.snapshot(),
-                    bridge.filter_strength.snapshot() as f32,
+                    strength_uniform(bridge.filter_strength.snapshot()),
                 ));
         })
     }
@@ -351,10 +360,10 @@ impl CameraFilterRenderer {
         }
     }
 
-    fn into_view(self) -> GpuContentView {
+    fn into_view(self) -> GpuView {
         let shared = Arc::clone(&self.shared);
         let bridge = std::cell::RefCell::new(self);
-        GpuContentView::new(CameraFilterContent {
+        GpuView::new(CameraFilterContent {
             shared,
             pipeline: None,
             bind_group_layout: None,
@@ -374,7 +383,7 @@ impl CameraFilterRenderer {
             let mut shared = self.shared.lock().expect("camera mailbox poisoned");
             shared.uniforms = FilterUniforms(filter_params(
                 self.active_filter.snapshot(),
-                self.filter_strength.snapshot() as f32,
+                strength_uniform(self.filter_strength.snapshot()),
             ));
             shared.gpu_handles.clone()
         };
@@ -440,15 +449,15 @@ impl CameraFilterRenderer {
 
 impl CameraFilterContent {
     fn ensure_pipeline(&mut self, ctx: &Context) {
-        if self.pipeline.is_some() && self.pipeline_format == Some(ctx.format) {
+        if self.pipeline.is_some() && self.pipeline_format == Some(ctx.format()) {
             return;
         }
 
         let (vertex_shader, fragment_shader) =
-            CAMERA_FILTER_SHADER.create_render_stages(ctx.device, "vs_main", "fs_main");
+            CAMERA_FILTER_SHADER.create_render_stages(ctx.device(), "vs_main", "fs_main");
 
         let bind_group_layout =
-            ctx.device
+            ctx.device()
                 .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                     label: Some("Camera Filter Bind Group Layout"),
                     entries: &[
@@ -481,16 +490,16 @@ impl CameraFilterContent {
                     ],
                 });
 
-        let pipeline_layout = ctx
-            .device
-            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("Camera Filter Pipeline Layout"),
-                bind_group_layouts: &[Some(&bind_group_layout)],
-                immediate_size: 0,
-            });
+        let pipeline_layout =
+            ctx.device()
+                .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("Camera Filter Pipeline Layout"),
+                    bind_group_layouts: &[Some(&bind_group_layout)],
+                    immediate_size: 0,
+                });
 
         let pipeline = ctx
-            .device
+            .device()
             .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("Camera Filter Pipeline"),
                 layout: Some(&pipeline_layout),
@@ -504,7 +513,7 @@ impl CameraFilterContent {
                     module: fragment_shader.module(),
                     entry_point: Some(fragment_shader.entry_point()),
                     targets: &[Some(wgpu::ColorTargetState {
-                        format: ctx.format,
+                        format: ctx.format(),
                         blend: Some(wgpu::BlendState::REPLACE),
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
@@ -520,14 +529,14 @@ impl CameraFilterContent {
                 cache: None,
             });
 
-        let uniform_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+        let uniform_buffer = ctx.device().create_buffer(&wgpu::BufferDescriptor {
             label: Some("Camera Filter Uniform Buffer"),
             size: (core::mem::size_of::<f32>() * 8) as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
-        let sampler = ctx.device.create_sampler(&wgpu::SamplerDescriptor {
+        let sampler = ctx.device().create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Camera Filter Sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
@@ -542,18 +551,18 @@ impl CameraFilterContent {
         self.bind_group_layout = Some(bind_group_layout);
         self.sampler = Some(sampler);
         self.uniform_buffer = Some(uniform_buffer);
-        self.pipeline_format = Some(ctx.format);
+        self.pipeline_format = Some(ctx.format());
     }
 }
 
 impl GpuContent for CameraFilterContent {
     fn setup(&mut self, context: &Context<'_>) {
         self.ensure_pipeline(context);
-        self.converter = Some(FrameConverter::new(context.device));
+        self.converter = Some(FrameConverter::new(context.device()));
         self.shared
             .lock()
             .expect("camera mailbox poisoned")
-            .gpu_handles = Some((context.device.clone(), context.queue.clone()));
+            .gpu_handles = Some((context.device().clone(), context.queue().clone()));
     }
 
     fn render(&mut self, frame: &mut Frame<'_>) {
@@ -659,45 +668,57 @@ impl GpuContent for CameraFilterContent {
     }
 }
 
+/// Narrows the slider's filter strength to the shader's `f32` uniform.
+///
+/// The strength is a slider fraction in `0.0..=1.0`, which `f32` holds to far
+/// more precision than the filter uses.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the filter strength is a 0.0..=1.0 slider fraction, which f32 represents"
+)]
+const fn strength_uniform(strength: f64) -> f32 {
+    strength as f32
+}
+
 fn filter_params(filter_kind: usize, strength: f32) -> [f32; 5] {
     match filter_kind {
         // Cinematic
         1 => [
             -0.05 * strength,
-            1.1 + 0.25 * strength,
-            1.0 + 0.3 * strength,
+            0.25f32.mul_add(strength, 1.1),
+            0.3f32.mul_add(strength, 1.0),
             0.35 * strength,
             0.45 * strength,
         ],
         // Noir
         2 => [
             -0.12 * strength,
-            1.0 - 0.95 * strength,
-            1.15 + 0.4 * strength,
+            0.95f32.mul_add(-strength, 1.0),
+            0.4f32.mul_add(strength, 1.15),
             0.0,
             0.2 * strength,
         ],
         // Vintage
         3 => [
             0.02 * strength,
-            1.0 - 0.3 * strength,
-            1.0 + 0.1 * strength,
+            0.3f32.mul_add(-strength, 1.0),
+            0.1f32.mul_add(strength, 1.0),
             0.65 * strength,
             0.35 * strength,
         ],
         // Neon
         4 => [
             0.08 * strength,
-            1.3 + 0.55 * strength,
-            1.15 + 0.45 * strength,
+            0.55f32.mul_add(strength, 1.3),
+            0.45f32.mul_add(strength, 1.15),
             -0.55 * strength,
             0.15 * strength,
         ],
         // Dream
         5 => [
             0.1 * strength,
-            1.05 + 0.2 * strength,
-            0.92 + 0.08 * strength,
+            0.2f32.mul_add(strength, 1.05),
+            0.08f32.mul_add(strength, 0.92),
             0.2 * strength,
             0.6 * strength,
         ],
@@ -706,6 +727,10 @@ fn filter_params(filter_kind: usize, strength: f32) -> [f32; 5] {
     }
 }
 
+#[expect(
+    clippy::future_not_send,
+    reason = "camera permission and feed task runs on the UI thread"
+)]
 async fn sync_waterkit_camera(
     status: Binding<Str>,
     permission: Binding<Str>,
@@ -793,7 +818,7 @@ async fn sync_waterkit_camera(
     }
 }
 
-fn permission_status_text(status: PermissionStatus) -> &'static str {
+const fn permission_status_text(status: PermissionStatus) -> &'static str {
     match status {
         PermissionStatus::Granted => "granted",
         PermissionStatus::Denied => "denied",
@@ -803,7 +828,7 @@ fn permission_status_text(status: PermissionStatus) -> &'static str {
     }
 }
 
-fn filter_name(index: usize) -> &'static str {
+const fn filter_name(index: usize) -> &'static str {
     match index {
         1 => "Cinematic",
         2 => "Noir",
@@ -817,6 +842,7 @@ fn filter_name(index: usize) -> &'static str {
 const CAMERA_FILTER_SHADER: CompiledShader =
     include!(concat!(env!("OUT_DIR"), "/camera_filter.rs"));
 
+/// Builds the camera filter lab app around [`demo`].
 pub fn app(env: Environment) -> App {
     App::new(demo, env)
 }

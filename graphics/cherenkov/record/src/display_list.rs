@@ -73,6 +73,10 @@ pub enum Command {
         layout: TextLayoutId,
         /// Where it is placed.
         transform: Affine,
+        /// The paint the layout's default-coloured runs draw with in place
+        /// of the colour it was laid out with; `None` draws it as laid out.
+        /// Runs the text styled with their own colour keep it.
+        paint: Option<Paint>,
     },
     /// Clip the scope to a shape.
     BeginClip {
@@ -105,7 +109,8 @@ pub enum Command {
 pub enum OperandKind {
     /// The shape of a fill, stroke, shadow or clip.
     Shape,
-    /// The paint of a fill, stroke or glyph run.
+    /// The paint of a fill, stroke or glyph run, or the default-run paint
+    /// of a painted text layout.
     Paint,
     /// The stroke style of a stroke.
     Stroke,
@@ -222,6 +227,51 @@ impl SlotUpdate {
             command: self.command,
             operand: self.value.kind(),
         }
+    }
+}
+
+/// A structural edit of a live content's list: the `remove` commands
+/// starting at `at` are replaced by the commands of `insert`.
+///
+/// `insert` is a list of its own, so its scope ends count from its first
+/// command; [`DisplayList::splice`] places them. Both the removed range and
+/// `insert` are whole scopes: no scope opens on one side of the edit and
+/// closes on the other.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Splice {
+    /// Index of the first removed command, and of the first inserted one.
+    pub at: u32,
+    /// How many commands are removed.
+    pub remove: u32,
+    /// The commands put in their place.
+    pub insert: DisplayList,
+}
+
+/// What a live content sends when its structure changed in place: the
+/// [`Splice`]s, applied in order — each against the list the previous one
+/// left — then the slot updates, which address the edited list.
+///
+/// Slots outside the spliced ranges keep their values; a target re-lowers
+/// what the splices touched and keeps everything else it holds for the
+/// content.
+#[derive(Clone, Debug, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Edit {
+    /// The structural edits, in order.
+    pub splices: Vec<Splice>,
+    /// New slot values, addressing the list after every splice.
+    pub updates: Vec<SlotUpdate>,
+}
+
+/// The index of a scope opener's matching `End`; `None` for any other
+/// command.
+const fn scope_end_mut(command: &mut Command) -> Option<&mut u32> {
+    match command {
+        Command::BeginClip { end, .. }
+        | Command::BeginTransform { end, .. }
+        | Command::BeginGroup { end, .. } => Some(end),
+        _ => None,
     }
 }
 
@@ -428,7 +478,12 @@ impl DisplayList {
                 resource == ResourceId::Font(run.font) || paint.references(resource)
             }
             Command::Image { image, .. } => resource == ResourceId::Image(*image),
-            Command::Text { layout, .. } => resource == ResourceId::TextLayout(*layout),
+            Command::Text { layout, paint, .. } => {
+                resource == ResourceId::TextLayout(*layout)
+                    || paint
+                        .as_ref()
+                        .is_some_and(|paint| paint.references(resource))
+            }
             Command::Picture { picture, .. } => picture.display_list().references(resource),
             Command::Shadow { .. }
             | Command::BeginClip { .. }
@@ -481,7 +536,10 @@ impl DisplayList {
                 (
                     Command::Fill { paint, .. }
                     | Command::Stroke { paint, .. }
-                    | Command::Glyphs { paint, .. },
+                    | Command::Glyphs { paint, .. }
+                    | Command::Text {
+                        paint: Some(paint), ..
+                    },
                     Operand::Paint(new),
                 ) => {
                     *paint = new;
@@ -548,7 +606,10 @@ impl DisplayList {
             (
                 Command::Fill { paint, .. }
                 | Command::Stroke { paint, .. }
-                | Command::Glyphs { paint, .. },
+                | Command::Glyphs { paint, .. }
+                | Command::Text {
+                    paint: Some(paint), ..
+                },
                 OperandKind::Paint,
             ) => Operand::Paint(paint.clone()),
             (Command::Stroke { stroke, .. }, OperandKind::Stroke) => {
@@ -574,6 +635,79 @@ impl DisplayList {
             .expect("a display list holds at most u32::MAX commands");
         self.commands.push(command);
         index
+    }
+
+    /// Applies a structural edit: the commands `splice` removes give way to
+    /// the ones it inserts, and every scope end moves with the commands
+    /// it closes.
+    ///
+    /// # Panics
+    ///
+    /// When the removed range runs past the list or cuts a scope in two,
+    /// or the result would hold more than `u32::MAX` commands. Splices come
+    /// from the recorder that produced this list, so either is a bug.
+    pub fn splice(&mut self, splice: &Splice) {
+        let at = splice.at as usize;
+        let end = at + splice.remove as usize;
+        let len = self.commands.len();
+        assert!(
+            end <= len,
+            "a splice of {}..{end} runs past a list of {len}",
+            splice.at
+        );
+        let inserted = splice.insert.len();
+        u32::try_from(len - (end - at) + inserted)
+            .expect("a display list holds at most u32::MAX commands");
+        for (index, command) in self.commands.iter_mut().enumerate() {
+            let Some(scope_end) = scope_end_mut(command) else {
+                continue;
+            };
+            let closes = *scope_end as usize;
+            if (at..end).contains(&index) {
+                assert!(
+                    closes < end,
+                    "the scope opened at {index} ends at {closes}, outside the splice {at}..{end}"
+                );
+            } else if closes >= end {
+                // A scope after the edit, or one enclosing it.
+                *scope_end = u32::try_from(closes - (end - at) + inserted)
+                    .expect("bounded by the length check");
+            } else {
+                assert!(
+                    closes < at,
+                    "the scope opened at {index} ends at {closes}, inside the splice {at}..{end}"
+                );
+            }
+        }
+        let offset = splice.at;
+        self.commands.splice(
+            at..end,
+            splice.insert.commands.iter().map(|command| {
+                let mut command = command.clone();
+                if let Some(scope_end) = scope_end_mut(&mut command) {
+                    *scope_end += offset;
+                }
+                command
+            }),
+        );
+    }
+
+    /// The `len` commands at `at` as a list of their own, scope ends
+    /// counted from its start — what a [`Splice`] inserts to move them.
+    pub(crate) fn extract(&self, at: u32, len: u32) -> Self {
+        let range = at as usize..(at + len) as usize;
+        Self {
+            commands: self.commands[range]
+                .iter()
+                .map(|command| {
+                    let mut command = command.clone();
+                    if let Some(scope_end) = scope_end_mut(&mut command) {
+                        *scope_end -= at;
+                    }
+                    command
+                })
+                .collect(),
+        }
     }
 
     /// Closes the scope opened by the `Begin*` command at `begin`.
@@ -701,11 +835,14 @@ impl From<OperandRef<'_>> for Operand {
 /// The operand count a command exposes, in [`Operands`] order.
 const fn operand_count(command: &Command) -> u8 {
     match command {
-        Command::Fill { .. } | Command::Shadow { .. } | Command::Glyphs { .. } => 2,
+        Command::Fill { .. }
+        | Command::Shadow { .. }
+        | Command::Glyphs { .. }
+        | Command::Text { paint: Some(_), .. } => 2,
         Command::Stroke { .. } => 3,
         Command::Image { .. }
         | Command::Picture { .. }
-        | Command::Text { .. }
+        | Command::Text { paint: None, .. }
         | Command::BeginClip { .. }
         | Command::BeginTransform { .. }
         | Command::BeginGroup { .. } => 1,
@@ -737,7 +874,14 @@ impl<'a> Iterator for Operands<'a> {
                 | Command::BeginClip { shape, .. },
                 0,
             ) => (OperandKind::Shape, OperandRef::Shape(shape)),
-            (Command::Fill { paint, .. } | Command::Glyphs { paint, .. }, 1)
+            (
+                Command::Fill { paint, .. }
+                | Command::Glyphs { paint, .. }
+                | Command::Text {
+                    paint: Some(paint), ..
+                },
+                1,
+            )
             | (Command::Stroke { paint, .. }, 2) => (OperandKind::Paint, OperandRef::Paint(paint)),
             (Command::Stroke { stroke, .. }, 1) => {
                 (OperandKind::Stroke, OperandRef::Stroke(stroke))
@@ -825,6 +969,17 @@ impl Picture {
     /// the shared list first if another reference still holds it.
     pub fn apply(&mut self, updates: impl IntoIterator<Item = SlotUpdate>) -> Dirty {
         self.list_mut().apply(updates)
+    }
+
+    /// Applies a structural [`Edit`] — its splices in order, then its slot
+    /// updates — cloning the shared list first if another reference still
+    /// holds it.
+    pub fn edit(&mut self, edit: Edit) {
+        let list = self.list_mut();
+        for splice in &edit.splices {
+            list.splice(splice);
+        }
+        let _ = list.apply(edit.updates);
     }
 }
 

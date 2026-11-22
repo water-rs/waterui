@@ -21,8 +21,8 @@ pub trait RenderTransfer {}
 impl<T: ?Sized> RenderTransfer for T {}
 
 use rustc_hash::FxHashSet;
+use waterui_contract::contract_violation;
 
-use crate::Picture;
 use crate::config::{MemoryUsage, Pressure};
 use crate::error::{EngineError, RenderError, ResourceError, SurfaceError};
 use crate::frame::{FrameId, FrameStats, FrameTime, FrameTiming, Readback};
@@ -30,7 +30,9 @@ use crate::glyph::FontId;
 use crate::image::ImageUpload;
 use crate::message::FontData;
 use crate::paint::ImageId;
-use cherenkov_record::{ContentOp, LayerId, SurfaceId};
+use crate::text::TextLayoutData;
+use crate::{Instant, Picture};
+use cherenkov_record::{ContentOp, LayerId, SurfaceId, TextLayoutId};
 use cherenkov_record::{ResourceId, SurfaceTree};
 
 /// The render-thread contract, a zero-sized marker type (`Gpu`, `Raster`).
@@ -87,17 +89,20 @@ pub trait Renderer: 'static {
     /// presentation, the work that must land on the platform's main
     /// thread for the frame's parts to present (Apple window surfaces:
     /// the `CATransaction` of layer geometry and drawable presents).
-    /// [`Engine::render`](crate::Engine::render) applies it on the
-    /// awaiting thread right after the reply arrives, so a frame's
-    /// present is ordered before the next frame's acquire. `()` where a
-    /// frame commits nothing off the render thread.
+    /// The frame applies it on the thread that resolves it, right after
+    /// the reply arrives, so a frame's present is ordered before the next
+    /// frame's acquire; a frame dropped before it resolves drops its
+    /// commit unapplied on the thread that next claims the frame slot.
+    /// `()` where a frame commits nothing off the render thread.
     type FrameCommit: RenderTransfer + 'static;
 
-    /// Applies the frame's [`Self::FrameCommit`] on the awaiting caller's
-    /// thread. Called by [`Engine::render`](crate::Engine::render) before
-    /// it returns. A backend whose commits are main-thread-bound asserts
-    /// the caller is on that thread here: a render whose surfaces present
-    /// on the platform main thread must be awaited on it.
+    /// Applies the frame's [`Self::FrameCommit`] on the thread that
+    /// resolves the frame: the thread polling the native
+    /// [`PendingFrame`](crate::PendingFrame) [`Engine::submit`](crate::Engine::submit)
+    /// returned, or waiting in [`Engine::render`](crate::Engine::render).
+    /// A backend whose commits are main-thread-bound asserts the caller is
+    /// on that thread here: a frame whose surfaces present on the
+    /// platform main thread must be resolved on it.
     #[cfg(not(target_arch = "wasm32"))]
     fn apply_frame_commit(_commit: Self::FrameCommit) {}
 
@@ -134,6 +139,25 @@ pub trait Renderer: 'static {
     /// that asked for a redraw while it was hidden is drawn then.
     fn set_visibility(&mut self, id: SurfaceId, visibility: Visibility);
 
+    /// Sets or clears the band of host window `window` on surface `id` —
+    /// the content painted above the mark naming that window and beneath
+    /// the next mark (water-rs/waterui#2225). The host stacks the band's
+    /// presentation target right above the window; `None` leaves the
+    /// region with no band, and its content is not shown rather than
+    /// drawn beneath a window it covers.
+    ///
+    /// # Contract
+    /// The default: the renderer has no band realization, so a host that
+    /// splits a surface into bands is using the wrong renderer. That is a
+    /// contract violation; the band is dropped and its content is not
+    /// shown.
+    fn set_band(&mut self, id: SurfaceId, window: u64, target: Option<Self::Target>) {
+        drop(target);
+        contract_violation!(
+            "surface {id:?}: this renderer cannot present host window {window}'s band; the band is dropped and its content is not shown"
+        );
+    }
+
     /// Destroys a surface's render-side state.
     fn destroy_surface(&mut self, id: SurfaceId);
 
@@ -150,6 +174,15 @@ pub trait Renderer: 'static {
 
     /// Unregisters a font no installed content draws any more.
     fn remove_font(&mut self, id: FontId);
+
+    /// Registers a laid-out text. Content that draws it as a
+    /// `Command::Text` is expanded through the renderer's
+    /// [`TextLayouts`](crate::TextLayouts), and the fonts its runs name are
+    /// registered before this runs.
+    fn add_text_layout(&mut self, id: TextLayoutId, layout: TextLayoutData);
+
+    /// Unregisters a text layout no installed content draws any more.
+    fn remove_text_layout(&mut self, id: TextLayoutId);
 
     /// The images this renderer admits: the largest image in each
     /// dimension (the device's texture limit), and the image budget, the
@@ -331,6 +364,28 @@ pub trait Renderer: 'static {
     /// Releases memory under system `pressure`.
     fn trim(&mut self, pressure: Pressure);
 
+    /// When resources the renderer retains across frames only to serve the
+    /// next one (the GPU coverage generation scratch) become due for
+    /// release: the idle interval after the last frame that used them.
+    /// `None` while it retains nothing of the kind, which is every
+    /// renderer's default.
+    ///
+    /// The render thread waits for this deadline in its message wait, so a
+    /// frame that never comes still releases them, and applies
+    /// [`Renderer::release_idle`] when it passes. A later frame that uses
+    /// the resources moves the deadline out; consecutive frames therefore
+    /// keep reusing them while an input-driven `Next::Idle` between frames
+    /// releases nothing.
+    fn idle_release_deadline(&self) -> Option<Instant> {
+        None
+    }
+
+    /// Releases what [`Renderer::idle_release_deadline`] reported due as of
+    /// `now`. Afterwards the deadline is `None` or after `now`.
+    fn release_idle(&mut self, now: Instant) {
+        let _ = now;
+    }
+
     /// Submits the native external-frame releases retirement work has
     /// queued since the last submission. An external frame's release
     /// must be signalled even when no frame is being drawn, so the
@@ -442,6 +497,9 @@ pub struct SurfaceFrame<'a> {
     pub display: Display,
     /// The clear colour.
     pub clear: WorkingColor,
+    /// The space the surface's root canvas stores its pixels in
+    /// ([`Surface::storage_space`](crate::Surface::storage_space)).
+    pub storage_space: crate::BlendSpace,
     /// Whether a property op, a content op or an animation step touched the
     /// surface since the last render.
     pub changed: bool,

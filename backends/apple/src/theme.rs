@@ -3,15 +3,16 @@
 //! The AppKit/UIKit appearance is the source of truth: the scheme the
 //! application currently draws in, resolved per semantic slot into concrete
 //! colors, and the platform's preferred text styles as concrete fonts.
-//! Every slot is a `Binding` behind a `Computed`, so a platform change —
-//! the user toggling dark mode, or an override the app applies — lands as a
-//! precise per-slot update, exactly the way the Swift `ThemeBridge` fed its
-//! signals.
+//! Every font slot is a `Binding` behind a `Computed`, and every color slot
+//! a derivation from the color scheme over one `Binding` per scheme, so a
+//! platform change — the user toggling dark mode, or an accent or contrast
+//! setting — lands as a precise per-slot update, and a scheme the app
+//! installs on a subtree re-derives that subtree's colors.
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
-use cocoa_ui::ColorScheme;
+use cocoa_ui::{ColorScheme, Retained};
 use waterui::graphics::color::{
     WorkingColor, srgb_to_linear,
     working::{self},
@@ -36,7 +37,9 @@ struct FontSlot {
 /// [`refresh`] needs to reach it.
 pub struct ThemeSignals {
     scheme: Binding<waterui::graphics::color::ColorScheme>,
-    colors: Vec<Box<dyn Fn(ColorScheme)>>,
+    /// Each color slot's refresh: re-reads the platform color in both
+    /// schemes into the slot's per-scheme signals.
+    colors: Vec<Box<dyn Fn()>>,
     fonts: Vec<FontSlot>,
 }
 
@@ -63,20 +66,21 @@ impl core::fmt::Debug for ThemeSignals {
 #[cfg(target_os = "macos")]
 #[derive(Debug, Clone, Copy)]
 pub struct SystemLabelSlots {
-    slots: [(SignalIdentity, cocoa_ui::appkit::colors::AppColor); 2],
+    slots: [(SignalIdentity, cocoa_ui::appkit::colors::AppColor); 4],
 }
 
 #[cfg(target_os = "macos")]
 impl SystemLabelSlots {
-    /// Reads the identities of the `Foreground` and `MutedForeground`
-    /// signals installed in `env`: [`install`]'s, or a test harness's.
+    /// Reads the identities of the `Foreground`, `MutedForeground`,
+    /// `TertiaryForeground` and `DisabledForeground` signals installed in
+    /// `env`: [`install`]'s, or a test harness's.
     pub(crate) fn installed(env: &Environment) -> Self {
         use cocoa_ui::appkit::colors::AppColor;
         fn identity<S: 'static>(env: &Environment) -> SignalIdentity {
             theme::installed_color_signal::<S>(env)
                 .expect("the slot is installed before its identity is read")
                 .identity()
-                .expect("a theme slot is a binding, which has an identity")
+                .expect("a theme slot derives from bindings, so it has an identity")
         }
         Self {
             slots: [
@@ -84,6 +88,14 @@ impl SystemLabelSlots {
                 (
                     identity::<color::MutedForeground>(env),
                     AppColor::SecondaryLabel,
+                ),
+                (
+                    identity::<color::TertiaryForeground>(env),
+                    AppColor::TertiaryLabel,
+                ),
+                (
+                    identity::<color::DisabledForeground>(env),
+                    AppColor::DisabledControlText,
                 ),
             ],
         }
@@ -99,14 +111,16 @@ impl SystemLabelSlots {
     /// `SwiftUI` draws `.primary` text inside `glassEffect` at full strength: its
     /// `liquid_glass` reference capture reaches pure black at every glyph
     /// stem. `textColor` is the system's opaque primary text color in every
-    /// appearance. The muted slot keeps `secondaryLabelColor`.
+    /// appearance. The other slots keep their system colors.
     #[must_use]
     pub const fn in_glass(self) -> Self {
-        let [(foreground, _), muted] = self.slots;
+        let [(foreground, _), muted, tertiary, disabled] = self.slots;
         Self {
             slots: [
                 (foreground, cocoa_ui::appkit::colors::AppColor::Text),
                 muted,
+                tertiary,
+                disabled,
             ],
         }
     }
@@ -119,6 +133,62 @@ impl SystemLabelSlots {
             .iter()
             .find_map(|&(slot, color)| (slot == identity).then_some(color))
     }
+}
+
+/// A `WorkingColor` as the platform's extended linear Display-P3 color
+/// object.
+#[cfg(target_os = "ios")]
+#[must_use]
+pub fn platform_color(color: &WorkingColor) -> Retained<cocoa_ui::objc2_ui_kit::UIColor> {
+    let [red, green, blue, alpha] = color.components;
+    cocoa_ui::uikit::colors::extended_linear_display_p3(
+        f64::from(red),
+        f64::from(green),
+        f64::from(blue),
+        f64::from(alpha),
+    )
+}
+
+/// A `WorkingColor` as the platform's extended linear Display-P3 color
+/// object, with HDR headroom applied as a content-headroom multiplier — the
+/// `AppKit` variant.
+#[cfg(target_os = "macos")]
+#[must_use]
+pub fn platform_color(color: &WorkingColor) -> Retained<cocoa_ui::objc2_app_kit::NSColor> {
+    let [red, green, blue, alpha] = color.components;
+    cocoa_ui::appkit::colors::extended_linear_display_p3(
+        f64::from(red),
+        f64::from(green),
+        f64::from(blue),
+        f64::from(alpha),
+    )
+}
+
+/// The `NSColor` a theme color signal draws as: the dynamic system label
+/// color it stands for when it is one of the backend's label slots — which
+/// resolves against the drawing view's own appearance — and its current
+/// value otherwise.
+///
+/// An `env` with no Apple theme installed is a contract violation: a debug
+/// build panics, a release build reports it and draws the signal's current
+/// value.
+#[cfg(target_os = "macos")]
+#[must_use]
+pub fn token_color(
+    env: &Environment,
+    signal: &impl Signal<Output = WorkingColor>,
+) -> Retained<cocoa_ui::objc2_app_kit::NSColor> {
+    let Some(slots) = env.get::<SystemLabelSlots>() else {
+        waterui::contract_violation!(
+            "the environment has no Apple theme installed, so no label slot is known; \
+             the color's current value is drawn"
+        );
+        return platform_color(&signal.snapshot());
+    };
+    slots.system_color(signal).map_or_else(
+        || platform_color(&signal.snapshot()),
+        cocoa_ui::appkit::colors::dynamic,
+    )
 }
 
 /// Installs and observes the theme owned by a mounted `UIKit` controller.
@@ -164,6 +234,9 @@ pub fn install(env: &mut Environment, scheme: ColorScheme) -> ThemeSignals {
             Border => |s| colors::resolve(P::Separator, s),
             Foreground => |s| colors::resolve(P::Label, s),
             MutedForeground => |s| colors::resolve(P::SecondaryLabel, s),
+            TertiaryForeground => |s| colors::resolve(P::TertiaryLabel, s),
+            // What AppKit draws a disabled control's title in.
+            DisabledForeground => |s| colors::resolve(P::DisabledControlText, s),
             Accent => |s| colors::resolve(P::ControlAccent, s),
             // The semantic "text on accent" color: flips to black under accent
             // colors and contrast settings where a constant white would fail.
@@ -177,6 +250,9 @@ pub fn install(env: &mut Environment, scheme: ColorScheme) -> ThemeSignals {
             // paints behind a selected row.
             SelectionContainer => |s| colors::resolve(P::SelectedContentBackground, s),
             SelectionForeground => |s| colors::resolve(P::AlternateSelectedControlText, s),
+            // The fill AppKit paints behind a selected row of a control that
+            // is not the first responder.
+            UnemphasizedSelection => |s| colors::resolve(P::UnemphasizedSelectedContentBackground, s),
             // White on systemRed is what AppKit draws for destructive fills.
             Error => |s| colors::resolve(P::SystemRed, s),
             ErrorForeground => |s| colors::resolve(P::White, s),
@@ -196,6 +272,9 @@ pub fn install(env: &mut Environment, scheme: ColorScheme) -> ThemeSignals {
             Border => |s| Some(colors::resolve(P::Separator, s)),
             Foreground => |s| Some(colors::resolve(P::Label, s)),
             MutedForeground => |s| Some(colors::resolve(P::SecondaryLabel, s)),
+            TertiaryForeground => |s| Some(colors::resolve(P::TertiaryLabel, s)),
+            // UIKit draws disabled text in the tertiary label color too.
+            DisabledForeground => |s| Some(colors::resolve(P::TertiaryLabel, s)),
             Accent => |s| Some(colors::resolve(P::Accent, s)),
             AccentForeground => |s| Some(colors::resolve(P::White, s)),
             AccentContainer => |s| Some(colors::resolve(P::Accent, s).with_alpha(0.16)),
@@ -206,6 +285,9 @@ pub fn install(env: &mut Environment, scheme: ColorScheme) -> ThemeSignals {
             // in the same on-accent color the accent pair uses.
             SelectionContainer => |s| Some(colors::resolve(P::Accent, s)),
             SelectionForeground => |s| Some(colors::resolve(P::White, s)),
+            // UIKit has no focus state; the gray it paints behind a selected
+            // table row is the unemphasized fill.
+            UnemphasizedSelection => |s| Some(colors::resolve(P::SystemGray4, s)),
             // White on systemRed is what UIKit draws for destructive fills.
             Error => |s| Some(colors::resolve(P::SystemRed, s)),
             ErrorForeground => |s| Some(colors::resolve(P::White, s)),
@@ -236,7 +318,8 @@ pub fn install(env: &mut Environment, scheme: ColorScheme) -> ThemeSignals {
     signals
 }
 
-/// Re-reads the platform for `scheme` and pushes every changed slot value.
+/// Re-reads the platform's colors in both schemes and its fonts, and sets
+/// the scheme signal to `scheme`.
 /// Call it from each surface whose platform reports an appearance change.
 pub fn refresh(signals: &ThemeSignals, scheme: ColorScheme) {
     refresh_colors(signals, scheme);
@@ -259,26 +342,38 @@ pub fn refresh_host(
     }
 }
 
-/// The scheme signal and every color slot for `scheme` — shared by the
-/// ambient and host-driven refreshes.
+/// Every color slot in both schemes, then the scheme signal for `scheme` —
+/// shared by the ambient and host-driven refreshes.
 fn refresh_colors(signals: &ThemeSignals, scheme: ColorScheme) {
-    signals.scheme.set(color_scheme(scheme));
-    for set in &signals.colors {
-        set(scheme);
+    // The per-scheme colors land first, so a scheme change notifies the
+    // slots once, with the colors already current.
+    for refresh in &signals.colors {
+        refresh();
     }
+    signals.scheme.set(color_scheme(scheme));
 }
 
 impl ThemeSignals {
-    fn install_color<S: 'static>(
+    /// Installs slot `S` as the platform color `resolver` reads in each
+    /// scheme, so a scheme the app installs on a subtree re-derives the slot
+    /// there.
+    fn install_color<S: theme::ColorSlot>(
         &mut self,
         env: &mut Environment,
         resolver: impl Fn(ColorScheme) -> Option<cocoa_ui::Rgba> + 'static,
     ) {
-        let binding = waterui::reactive::binding(working::from_linear_srgb([0.0, 0.0, 0.0], 1.0));
-        theme::install_color_signal::<S>(env, binding.computed());
-        self.colors.push(Box::new(move |scheme| {
-            if let Some(rgba) = resolver(scheme) {
-                binding.set(into_working(rgba));
+        let unresolved = working::from_linear_srgb([0.0, 0.0, 0.0], 1.0);
+        let light = waterui::reactive::binding(unresolved);
+        let dark = waterui::reactive::binding(unresolved);
+        theme::install_color_derivation::<S>(
+            env,
+            theme::ColorDerivation::per_scheme(light.clone(), dark.clone()),
+        );
+        self.colors.push(Box::new(move || {
+            for (scheme, binding) in [(ColorScheme::Light, &light), (ColorScheme::Dark, &dark)] {
+                if let Some(rgba) = resolver(scheme) {
+                    binding.set(into_working(rgba));
+                }
             }
         }));
     }
@@ -298,6 +393,7 @@ impl ThemeSignals {
                     reason = "platform metrics are f64; ResolvedFont is f32"
                 )]
                 let font = ResolvedFont::new(metrics.size as f32, font_weight(metrics.weight))
+                    .with_bold_weight(font_weight(metrics.bold_weight))
                     .with_typography_metrics(metrics.line_height as f32, 0.0);
                 binding.set(font);
             }),
@@ -408,6 +504,16 @@ mod tests {
     fn font_weight_clamps_outside_the_table() {
         assert_eq!(font_weight(-2.0), FontWeight::UltraLight);
         assert_eq!(font_weight(5.0), FontWeight::Black);
+    }
+
+    /// An environment without the Apple theme draws the signal's value.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "no Apple theme installed"))]
+    fn token_color_without_a_theme_draws_the_current_value() {
+        let color =
+            waterui::reactive::Computed::constant(into_working(Rgba::new(1.0, 0.0, 0.0, 1.0)));
+        let _ = super::token_color(&waterui_backend_core::Environment::new(), &color);
     }
 
     #[test]

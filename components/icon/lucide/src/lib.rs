@@ -15,24 +15,23 @@
 //!
 //! # Usage
 //!
-//! ```ignore
+//! ```
 //! use waterui_icons_lucide as lucide;
 //!
 //! // Get an icon as Svg component (svg feature)
-//! lucide::home()
-//! lucide::settings()
-//! lucide::user()
+//! let _house = lucide::house();
+//! let _settings = lucide::settings();
+//! let _user = lucide::user();
 //!
 //! // Or access the raw SVG path data
-//! lucide::HOME_PATH
-//! lucide::SETTINGS_PATH
+//! let _paths = [lucide::HOUSE_PATH, lucide::SETTINGS_PATH];
 //! ```
 //!
 //! # Icon Naming
 //!
 //! Icon names use `snake_case` in Rust, converted from the original kebab-case names:
 //! - `arrow-left` → `arrow_left()` (SVG) / `ARROW_LEFT_PATH`
-//! - `check-circle` → `check_circle()` (SVG) / `CHECK_CIRCLE_PATH`
+//! - `circle-check` → `circle_check()` (SVG) / `CIRCLE_CHECK_PATH`
 //! - `file-text` → `file_text()` (SVG) / `FILE_TEXT_PATH`
 //!
 //! All icons render at 24x24 points by default (standard Lucide size).

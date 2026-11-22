@@ -2,15 +2,14 @@ use nami::{Computed, Signal};
 use std::cell::RefCell;
 use std::rc::Rc;
 use waterui::component::badge::BadgeConfig;
-use waterui_core::layout::{HorizontalAlignment, ProposalSize, Size as LayoutSize, ViewDimensions};
-use waterui_core::{Environment, Native};
+use waterui_core::Environment;
+use waterui_core::layout::{HorizontalAlignment, ProposalSize, ViewDimensions};
 use waterui_text::styled::StyledStr;
 
 use crate::renderer::{
-    HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, RetainedSubview,
-    WidgetRenderContext, measure_transient_view_intrinsic, measure_view_dimensions_with_proposal,
-    normalize_view_for_render,
+    HydroState, HydrolysisRenderer, RenderContext, RetainedSubview, WidgetRenderContext,
 };
+use crate::theme::BadgeLook;
 #[cfg(feature = "accessibility")]
 use accesskit::{Node as AccessibilityNode, Role as AccessibilityNodeRole};
 
@@ -51,42 +50,10 @@ impl<E: crate::text::TextEngine> BadgeRenderState<E> {
     }
 }
 
-fn badge_content_size<E: crate::text::TextEngine>(
-    state: &mut HydroState<E>,
-    badge: &Native<BadgeConfig>,
-    env: &Environment,
-    theme: &Rc<dyn crate::theme::WidgetTheme>,
-) -> LayoutSize {
-    let content = normalize_view_for_render(badge.as_inner().content.build(), env);
-    measure_transient_view_intrinsic(&content, state, env, theme)
-}
-
-fn badge_large_label(value: i32, theme: &Rc<dyn crate::theme::WidgetTheme>) -> StyledStr {
+fn badge_large_label(value: i32, look: &BadgeLook) -> StyledStr {
     StyledStr::plain(value.to_string())
-        .font(theme.badge_label_font())
-        .foreground(theme.badge_label_color())
-}
-
-impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<BadgeConfig> {
-    fn intrinsic(
-        state: &mut HydroState<E>,
-        badge: &Self,
-        env: &Environment,
-        theme: &Rc<dyn crate::theme::WidgetTheme>,
-    ) -> LayoutSize {
-        badge_content_size(state, badge, env, theme)
-    }
-
-    fn dimensions(
-        state: &mut HydroState<E>,
-        badge: &Self,
-        env: &Environment,
-        theme: &Rc<dyn crate::theme::WidgetTheme>,
-        proposal: ProposalSize,
-    ) -> ViewDimensions {
-        let content = normalize_view_for_render(badge.as_inner().content.build(), env);
-        measure_view_dimensions_with_proposal(&content, proposal, state, env, theme)
-    }
+        .font(look.label_font().clone())
+        .foreground(look.label_color().clone())
 }
 
 /// Measures a retained badge leaf from its [`BadgeRenderState`]: the badge sizes
@@ -148,15 +115,15 @@ pub fn draw_badge_indicator<E: crate::text::TextEngine>(
     value: i32,
     env: &Environment,
 ) {
-    let theme = ctx.theme();
-    let metrics = theme.badge_metrics();
+    let look = ctx.theme().badge(env);
+    let metrics = look.metrics();
 
     // Measure before placing: the badge's leading edge sits `offset_x` inside
     // the content's trailing edge — mirrored to the leading edge in RTL — and
     // its bottom edge overlaps the top edge by `offset_y`, matching
     // `BadgedBox` in Compose.
     let large = (value != 0).then(|| {
-        let label = badge_large_label(value, &theme);
+        let label = badge_large_label(value, &look);
         let text_size = HydrolysisRenderer::measure_text_dimensions(
             ctx.state_mut(),
             label.clone(),
@@ -200,15 +167,13 @@ pub fn draw_badge_indicator<E: crate::text::TextEngine>(
 
     let Some((label, text_size)) = large else {
         ctx.draw_context(|draw| {
-            theme.draw_badge_small(&mut *draw, rect);
+            look.record_small(&mut *draw, rect);
         });
         return;
     };
-    {
-        ctx.draw_context(|draw| {
-            theme.draw_badge_large(&mut *draw, rect);
-        });
-    }
+    ctx.draw_context(|draw| {
+        look.record_large(&mut *draw, rect);
+    });
 
     // The count indicator is vector-drawn, so it must emit its own semantic
     // node — otherwise the badge value is invisible to assistive technology.
@@ -229,10 +194,7 @@ pub fn draw_badge_indicator<E: crate::text::TextEngine>(
         rect.x1,
         rect.y1,
     );
-    let text_ctx = RenderContext {
-        local: ctx.local,
-        bounds: text_rect,
-    };
+    let text_ctx = RenderContext::new(ctx.local, text_rect);
     ctx.renderer_mut()
         .render_styled_text(text_ctx, label, HorizontalAlignment::Center, env);
 }
@@ -242,6 +204,7 @@ pub fn draw_badge_indicator<E: crate::text::TextEngine>(
 /// count indicator's `Label` node — a vector-drawn badge value is otherwise
 /// invisible to assistive technology.
 #[cfg(feature = "accessibility")]
+#[cfg(hydrolysis_cherenkov)]
 pub fn emit_badge_accessibility<E: crate::text::TextEngine>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     state: &Rc<RefCell<BadgeRenderState<E>>>,

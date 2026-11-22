@@ -9,9 +9,12 @@
 
 use nami::{Computed, Signal};
 use waterui_core::layout::LayoutInvalidationCallback;
-use waterui_core::{AnyView, View};
+use waterui_core::{AnyView, View, contract_violation};
 use waterui_layout::container::FixedContainer;
-use waterui_layout::{Layout, ProposalSize, Rect, Size, StretchAxis, SubView, SubviewPlacement};
+use waterui_layout::{
+    Layout, LayoutError, PlacementInput, ProposalSize, Rect, Size, StretchAxis, SubView,
+    SubviewPlacement, UnitPoint,
+};
 
 /// The width-to-height ratio a video answers by before its source reports
 /// its size: 16:9.
@@ -31,11 +34,13 @@ pub struct FitVideoLayout {
 
 impl FitVideoLayout {
     fn size(&self, proposal: ProposalSize) -> Size {
-        let aspect = self.aspect.snapshot();
-        assert!(
-            aspect > 0.0 && aspect.is_finite(),
-            "a video's aspect ratio must be positive and finite, got {aspect}"
-        );
+        let mut aspect = self.aspect.snapshot();
+        if !(aspect > 0.0 && aspect.is_finite()) {
+            contract_violation!(
+                "a video's aspect ratio must be positive and finite, got {aspect}; the default aspect ratio is used"
+            );
+            aspect = DEFAULT_ASPECT;
+        }
         let natural = self.natural_width.snapshot().unwrap_or(FALLBACK_WIDTH);
         match proposal.width {
             // A maximum probe: the leaf stretches horizontally, and its height
@@ -50,6 +55,15 @@ impl FitVideoLayout {
 impl Layout for FitVideoLayout {
     fn size_that_fits(&self, proposal: ProposalSize, _children: &[&dyn SubView]) -> Size {
         self.size(proposal)
+    }
+
+    /// Anchored top-leading: `place` positions the picture at `bounds`' origin.
+    fn resolve_extent(
+        &self,
+        input: PlacementInput,
+        _children: &[&dyn SubView],
+    ) -> Result<Rect, LayoutError> {
+        Ok(input.bounds.align(input.extent()?, UnitPoint::TOP_LEADING))
     }
 
     fn place(
@@ -101,4 +115,29 @@ pub fn fit_video(
         },
         (AnyView::new(picture),),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use nami::Computed;
+    use waterui_layout::ProposalSize;
+
+    use super::{DEFAULT_ASPECT, FitVideoLayout};
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "a video's aspect ratio must be positive and finite")
+    )]
+    fn an_invalid_aspect_ratio_answers_the_default() {
+        let layout = FitVideoLayout {
+            aspect: Computed::constant(0.0),
+            natural_width: Computed::constant(None),
+        };
+
+        let size = layout.size(ProposalSize::new(Some(320.0), None));
+
+        // Release outcome: the default aspect ratio sizes the video.
+        assert!((size.height - 320.0 / DEFAULT_ASPECT).abs() < f32::EPSILON);
+    }
 }

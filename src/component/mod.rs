@@ -9,23 +9,24 @@ pub mod badge;
 pub mod focus;
 pub mod lazy;
 pub mod link;
+#[cfg(feature = "list")]
 pub mod list;
 
 pub mod progress;
 #[doc(inline)]
 pub use progress::{Progress, loading, progress};
 
+#[cfg(feature = "table")]
 pub mod table;
 
 #[doc(inline)]
 pub use waterui_core::{AnyView, Dynamic, anyview, dynamic};
 
+#[doc(inline)]
+pub use link::{Link, link};
 #[cfg(feature = "media")]
 pub use media::*;
 pub use text::{Text, text::text};
-//pub use waterui_canvas as canvas;
-#[doc(inline)]
-pub use link::{Link, link};
 #[doc(inline)]
 pub use waterui_form as form;
 #[doc(inline)]

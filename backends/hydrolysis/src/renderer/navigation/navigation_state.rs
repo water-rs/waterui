@@ -7,6 +7,7 @@ use waterui::navigation::{
     AnyNavigationTransition, NavigationDestinationState, NavigationTransactionId,
     NavigationTransitionDirection,
 };
+use waterui_core::contract_violation;
 use waterui_core::id::Id;
 
 pub const ROOT_NAVIGATION_IDENTITY: u64 = 0;
@@ -60,7 +61,7 @@ pub struct NavigationPageRecord<E: crate::text::TextEngine> {
 /// built, before anything can walk it.
 pub struct StackPage<E: crate::text::TextEngine> {
     content: RetainedSubview<E>,
-    transition: Option<waterui_core::transition::TransitionSpec>,
+    transition: Option<waterui_structural_transition::TransitionSpec>,
 }
 
 impl<E: crate::text::TextEngine> StackPage<E> {
@@ -86,7 +87,9 @@ impl<E: crate::text::TextEngine> StackPage<E> {
 
     /// The transition the page's root declares — its insertion on a push and
     /// its removal on a pop. Read after [`Self::ensure_built`].
-    pub(crate) const fn transition(&self) -> Option<&waterui_core::transition::TransitionSpec> {
+    pub(crate) const fn transition(
+        &self,
+    ) -> Option<&waterui_structural_transition::TransitionSpec> {
         self.transition.as_ref()
     }
 
@@ -110,6 +113,7 @@ impl<E: crate::text::TextEngine> StackPage<E> {
     }
 
     #[cfg(feature = "accessibility")]
+    #[cfg(hydrolysis_cherenkov)]
     pub(crate) fn emit_accessibility(&mut self, renderer: &mut SemanticCore<E>, env: &Environment) {
         self.ensure_built(renderer, env);
         self.content.emit_accessibility(renderer, env);
@@ -243,13 +247,13 @@ pub struct PageTransition<E: crate::text::TextEngine> {
 impl<E: crate::text::TextEngine> PageTransition<E> {
     pub(crate) fn start(
         identity: u64,
-        spec: &waterui_core::transition::TransitionSpec,
+        spec: &waterui_structural_transition::TransitionSpec,
         navigation: NavigationTransitionDirection,
         env: &Environment,
         now: Instant,
     ) -> Self {
         let reduce_motion = env
-            .get::<waterui_core::transition::ReduceMotion>()
+            .get::<waterui_structural_transition::ReduceMotion>()
             .is_some_and(|flag| flag.0);
         let run = match navigation {
             NavigationTransitionDirection::Push => {
@@ -340,7 +344,7 @@ impl<E: crate::text::TextEngine> PageMotion<E> for InteractivePageTransition<E> 
     ) -> crate::renderer::TransitionPaint<'a, E> {
         self.removal.paint(
             self.progress,
-            waterui_core::transition::TransitionGeometry::new(size, self.direction),
+            waterui_structural_transition::TransitionGeometry::new(size, self.direction),
             hit,
             owner,
         )
@@ -507,14 +511,14 @@ impl<E: crate::text::TextEngine> NavigationInteractivePop<E> {
     /// stack style (layout-spec.md §4.5), as it does on a programmatic pop.
     pub(crate) fn page_motion(
         &mut self,
-        spec: &waterui_core::transition::TransitionSpec,
+        spec: &waterui_structural_transition::TransitionSpec,
         env: &Environment,
         now: Instant,
     ) -> Rc<RefCell<InteractivePageTransition<E>>> {
         let identity = self.from_page.identity;
         let page = self.page.get_or_insert_with(|| {
             let reduce_motion = env
-                .get::<waterui_core::transition::ReduceMotion>()
+                .get::<waterui_structural_transition::ReduceMotion>()
                 .is_some_and(|flag| flag.0);
             Rc::new(RefCell::new(InteractivePageTransition {
                 identity,
@@ -549,10 +553,12 @@ impl<E: crate::text::TextEngine> NavigationInteractivePop<E> {
     /// breach. Returns whether the stored progress changed. A pop that has
     /// already left the dragging phase ignores the report.
     pub(crate) fn set_progress(&mut self, progress: f64) -> bool {
-        assert!(
-            progress.is_finite(),
-            "interactive navigation progress must be finite"
-        );
+        if !progress.is_finite() {
+            contract_violation!(
+                "interactive navigation progress must be finite; the report is ignored"
+            );
+            return false;
+        }
         if !matches!(self.phase, NavigationInteractivePopPhase::Dragging) {
             return false;
         }
@@ -659,14 +665,8 @@ impl<E: crate::text::TextEngine> NavigationTransitionState<E> {
     }
 }
 
-#[allow(clippy::cast_possible_truncation)]
 fn eased_progress(progress: f64, motion: NavigationMotion) -> f64 {
-    f64::from(
-        motion
-            .transition_easing
-            .ease(progress as f32)
-            .clamp(0.0, 1.0),
-    )
+    motion.transition_easing.ease(progress).clamp(0.0, 1.0)
 }
 
 impl<E: crate::text::TextEngine> CustomNavigationController for HydroNavigationController<E> {
@@ -996,8 +996,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 .navigation
                 .slots
                 .get(&key)
-                .map(|slot| slot.target.borrow().clone())
-                .unwrap_or_default();
+                .map_or_default(|slot| slot.target.borrow().clone());
             Self::mark_owner(&owner, crate::renderer::mount::Dirty::LAYOUT);
         }
         changed
@@ -1294,10 +1293,11 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             &mut record.page.destinations
         };
         let previous = elements.insert(id, element);
-        assert!(
-            previous.is_none(),
-            "navigation transition id {id:?} was declared more than once in one page"
-        );
+        if previous.is_some() {
+            contract_violation!(
+                "navigation transition id {id:?} was declared more than once in one page; the later declaration is the one matched"
+            );
+        }
     }
 }
 

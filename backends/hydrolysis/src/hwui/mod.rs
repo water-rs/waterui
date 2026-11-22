@@ -1,8 +1,8 @@
 //! The HWUI render target: Hydrolysis's retained layer tree recorded into
 //! Android `RenderNode` display lists (water-rs/waterui#1811).
 //!
-//! [`HwuiTarget`] is a [`cherenkov_record`](waterui_graphics::draw) target.
-//! Its [`Encoder`] mirrors a [`SurfaceTree`](waterui_graphics::draw::SurfaceTree)
+//! [`HwuiTarget`] is a [`cherenkov_record`] target.
+//! Its [`Encoder`] mirrors a [`SurfaceTree`](cherenkov_record::SurfaceTree)
 //! from committed [`ChangeSet`]s and writes each frame into one Rust-owned
 //! command buffer, which the Kotlin `CommandDecoder` (`android/hwui`)
 //! replays onto `RenderNode`s: one per layer, two for a scrolled layer.
@@ -12,34 +12,18 @@
 //! space (see `color`), so blends and alpha composites are encoded-space
 //! operations here.
 
-/// Declares a module of wire codes and, under test, the table the
-/// generated Kotlin mirrors (`hwui::kotlin`).
-macro_rules! codes {
-    (
-        $(#[doc = $doc:literal])*
-        $module:ident: $ty:ty => $object:literal {
-            $( $(#[doc = $code_doc:literal])* $name:ident = $value:expr; )*
-        }
-    ) => {
-        $(#[doc = $doc])*
-        pub mod $module {
-            $( $(#[doc = $code_doc])* pub const $name: $ty = $value; )*
-
-            /// The codes, for the generated Kotlin.
-            #[cfg(test)]
-            pub const CODES: crate::hwui::kotlin::Codes<$ty> = crate::hwui::kotlin::Codes {
-                object: $object,
-                doc: &[$($doc),*],
-                entries: &[$( (stringify!($name), $name, &[$($code_doc),*]) ),*],
-            };
-        }
-    };
+// Runtime builds need the constants; tests also inspect their code tables.
+macro_rules! code_metadata {
+    ($($item:item)*) => { $(#[cfg(test)] $item)* };
 }
+#[macro_use]
+mod codes;
 
 mod buffer;
 mod color;
 #[cfg(test)]
 mod contract;
+pub(crate) mod effects;
 mod encoder;
 mod fonts;
 mod geometry;
@@ -59,7 +43,7 @@ pub mod text;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use waterui_graphics::draw::{ChangeSet, ProjectiveError, ProjectiveLayers, Queue, Target};
+use cherenkov_record::{ChangeSet, ProjectiveError, ProjectiveLayers, Queue, Target};
 
 #[cfg(hydrolysis_hwui)]
 mod jni_painter;
@@ -191,20 +175,6 @@ pub enum HwuiError {
         layer: u64,
         /// What it asks for.
         what: String,
-    },
-    /// The layer needs a newer Android than the device runs.
-    #[error(
-        "HWUI target: layer {layer} draws {what}, which needs API {needs}; the device runs API {device}"
-    )]
-    RequiresApi {
-        /// The layer.
-        layer: u64,
-        /// The feature.
-        what: &'static str,
-        /// The API level it needs.
-        needs: u32,
-        /// The device's API level.
-        device: u32,
     },
     /// The layer names a resource not registered with this target.
     #[error(

@@ -3,7 +3,8 @@
 //! A `List` row's extent must track its content's measured size: a signal that
 //! changes what a row's content measures re-measures exactly that row — other
 //! rows keep their cached extents — and a change to a row above the viewport
-//! must not shift the row the viewport is anchored to.
+//! must not shift the row the viewport is anchored to. A `Table` column's
+//! width tracks its header's realized content the same way.
 
 use core::time::Duration;
 use std::time::Instant;
@@ -12,7 +13,10 @@ use accesskit::{Rect, Role, TreeUpdate};
 use nami::Binding;
 use nami::SignalExt as _;
 use nami::collection::SignalCollection;
+use waterui::ViewExt as _;
+use waterui::accessibility::AccessibilityGeometry;
 use waterui::component::list::{List, ListItem};
+use waterui::component::table::{col, table};
 use waterui::component::text;
 use waterui_core::AnyView;
 use waterui_core::handler::AnyViewBuilder;
@@ -88,7 +92,15 @@ fn size_driven_list(tall: &Binding<bool>, label: &'static str) -> AnyViewBuilder
             .map(move |tall| if tall { TALL_SIZE } else { SHORT_SIZE });
         AnyView::new(List::for_each(
             SignalCollection::new(rows.clone()),
-            move |_| ListItem::new(text(label).size(size.clone())),
+            // The label reports the slot the row allots it, which is what
+            // these tests pin; the text's own wrapped box is not the subject.
+            move |_| {
+                ListItem::new(
+                    text(label)
+                        .size(size.clone())
+                        .a11y_geometry(AccessibilityGeometry::Allocation),
+                )
+            },
         ))
     })
 }
@@ -229,5 +241,186 @@ fn growing_row_above_viewport_keeps_anchor_row_position() {
          (y0 {:.1} -> {:.1})",
         before.y0,
         after.y0
+    );
+}
+
+#[test]
+fn retained_list_measurement_reuses_the_watcher_snapshot() {
+    use core::cell::{Cell, RefCell};
+    use core::ops::RangeBounds;
+    use std::rc::Rc;
+
+    use nami::Computed;
+    use nami::collection::CollectionChange;
+    use nami::watcher::Context;
+    use waterui_core::layout::ProposalSize;
+    use waterui_core::view::ConfigurableView as _;
+    use waterui_core::views::{ForEach, Views};
+
+    use crate::renderer::WidgetBehavior as _;
+    use crate::widgets::layout::list::ListRenderState;
+
+    struct Counted<V> {
+        source: V,
+        captures: Rc<Cell<usize>>,
+    }
+
+    impl<V: Views> Views for Counted<V> {
+        type Id = V::Id;
+        type Guard = V::Guard;
+        type View = V::View;
+        type Snapshot = V::Snapshot;
+
+        fn len(&self) -> Computed<usize> {
+            self.source.len()
+        }
+
+        fn snapshot(&self) -> Self::Snapshot {
+            self.captures.set(self.captures.get() + 1);
+            self.source.snapshot()
+        }
+
+        fn watch(
+            &self,
+            range: impl RangeBounds<usize>,
+            watcher: impl Fn(Context<Self::Snapshot>, &CollectionChange) + 'static,
+        ) -> Self::Guard {
+            self.source.watch(range, watcher)
+        }
+    }
+
+    let rows = Binding::container(vec![SelfId::new(0_u64), SelfId::new(1_u64)]);
+    let captures = Rc::new(Cell::new(0));
+    let list = List::new(Counted {
+        source: ForEach::new(SignalCollection::new(rows.clone()), |_| {
+            ListItem::new(text("row"))
+        }),
+        captures: Rc::clone(&captures),
+    });
+    let env = test_environment();
+    let mut renderer = super::test_renderer();
+    let theme = renderer.theme();
+    let widget = RefCell::new(ListRenderState::from_config(list.config(), &env, &renderer));
+    widget.prepare(&mut renderer, &env);
+    let mounted_captures = captures.get();
+    assert!(mounted_captures > 0);
+    let proposal = ProposalSize::new(Some(400.0), None);
+    let before = widget.measure(&mut renderer.state, proposal, &env, &theme);
+    let repeated = widget.measure(&mut renderer.state, proposal, &env, &theme);
+    assert!((before.size.height - repeated.size.height).abs() < f32::EPSILON);
+    assert_eq!(captures.get(), mounted_captures);
+
+    rows.get_mut().push(SelfId::new(2_u64));
+    let after = widget.measure(&mut renderer.state, proposal, &env, &theme);
+    assert!(after.size.height > before.size.height);
+    assert_eq!(captures.get(), mounted_captures);
+}
+
+#[test]
+fn specified_list_viewport_does_not_materialize_rows() {
+    use core::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    use waterui_core::layout::ProposalSize;
+    use waterui_core::view::ConfigurableView as _;
+
+    use crate::renderer::WidgetBehavior as _;
+    use crate::widgets::layout::list::ListRenderState;
+
+    let materializations = Rc::new(Cell::new(0));
+    let counted = Rc::clone(&materializations);
+    let rows = Binding::container(vec![SelfId::new(0_u64), SelfId::new(1_u64)]);
+    let list = List::for_each(SignalCollection::new(rows), move |_| {
+        counted.set(counted.get() + 1);
+        ListItem::new(text("row"))
+    });
+    let env = test_environment();
+    let mut renderer = super::test_renderer();
+    let theme = renderer.theme();
+    let widget = RefCell::new(ListRenderState::from_config(list.config(), &env, &renderer));
+    let mounted = materializations.get();
+    let bounded = widget.measure(
+        &mut renderer.state,
+        ProposalSize::new(Some(400.0), Some(700.0)),
+        &env,
+        &theme,
+    );
+    assert_eq!(bounded.size, waterui_core::layout::Size::new(400.0, 700.0));
+    assert_eq!(materializations.get(), mounted);
+
+    // The list samples its first row, which the layout-time prepare realizes;
+    // measuring itself materializes nothing.
+    widget.prepare(&mut renderer, &env);
+    let prepared = materializations.get();
+    assert_eq!(prepared, mounted + 1);
+    let ideal = widget.measure(
+        &mut renderer.state,
+        ProposalSize::new(Some(400.0), None),
+        &env,
+        &theme,
+    );
+    assert!(ideal.size.height > 0.0);
+    assert_eq!(materializations.get(), prepared);
+}
+
+/// A row is realized once while it stays visible: later frames neither run
+/// its builder again nor lose what its content says now.
+#[test]
+fn a_visible_row_is_realized_once_and_names_itself_from_its_current_content() {
+    use core::cell::Cell;
+    use std::rc::Rc;
+
+    let name = Binding::container(waterui_core::Str::from("Alpha"));
+    let shown = name.clone();
+    let built = Rc::new(Cell::new(0_usize));
+    let counted = Rc::clone(&built);
+    let rows = Binding::container(vec![SelfId::new(1_u64)]);
+    let mut runtime = runtime(AnyViewBuilder::<AnyView>::new(move || {
+        let shown = shown.clone();
+        let counted = Rc::clone(&counted);
+        AnyView::new(List::for_each(
+            SignalCollection::new(rows.clone()),
+            move |_| {
+                counted.set(counted.get() + 1);
+                ListItem::new(text(shown.clone()))
+            },
+        ))
+    }));
+    let mut at = Instant::now();
+
+    let updates = settle(&mut runtime, &mut at, 4);
+    assert!(node_bounds(&updates, Role::ListItem, "Alpha").is_some());
+    let realized = built.get();
+    assert_eq!(realized, 1, "the row's builder runs once to realize it");
+
+    name.set(waterui_core::Str::from("Gamma"));
+    let updates = settle(&mut runtime, &mut at, 4);
+    assert!(
+        node_bounds(&updates, Role::ListItem, "Gamma").is_some(),
+        "the row's label follows its content's current text"
+    );
+    assert_eq!(built.get(), realized, "later frames reuse the realized row");
+}
+
+#[test]
+fn a_table_header_names_and_widens_its_column_from_its_current_content() {
+    let name = Binding::container(waterui_core::Str::from("Id"));
+    let shown = name.clone();
+    let mut runtime = runtime(AnyViewBuilder::<AnyView>::new(move || {
+        AnyView::new(table([col(text(shown.clone()), vec![text("1")])]))
+    }));
+    let mut at = Instant::now();
+
+    let updates = settle(&mut runtime, &mut at, 4);
+    let narrow = node_bounds(&updates, Role::ColumnHeader, "Id").expect("the header is emitted");
+
+    let wide_name = "Identifier of the record";
+    name.set(waterui_core::Str::from(wide_name));
+    let updates = settle(&mut runtime, &mut at, 4);
+    let wide = node_bounds(&updates, Role::ColumnHeader, wide_name)
+        .expect("the header's label follows its content's current text");
+    assert!(
+        wide.width() > narrow.width(),
+        "the column widens to its header's current content: {narrow:?} -> {wide:?}"
     );
 }

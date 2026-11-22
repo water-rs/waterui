@@ -20,5 +20,5 @@ error[E0277]: `std::option::Option<&str>` cannot be used as a control label
 note: required by a bound in `waterui::component::button`
  --> $WORKSPACE/components/foundation/controls/src/button.rs
   |
-  | pub fn button(label: impl IntoLabel) -> Button<fn(&Environment)> {
+  | pub fn button(label: impl IntoLabel) -> Button<NoAction> {
   |                           ^^^^^^^^^ required by this bound in `button`

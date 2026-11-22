@@ -26,8 +26,8 @@ use git_tree::FrameworkTree;
 #[serde(rename_all = "lowercase")]
 #[non_exhaustive]
 pub enum FrameworkChannel {
-    /// The integration branch, resolved to an exact compilation-checked
-    /// commit; the Apple backend's `dev` HEAD resolves the same way.
+    /// The `main` branch (`dev` channel), resolved to an exact compilation-checked
+    /// commit.
     Dev,
     /// An immutable revision certified by the complete nightly suite,
     /// including the backend pin the suite's certification records.
@@ -188,14 +188,38 @@ impl fmt::Display for ResolvedFramework {
 /// registry release, so the manifest records the pin — git URL, commit and
 /// declared version — by name instead of emitting `scaffold` entries for it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct ExperimentalPackage {
     /// The repository the framework pins the package to.
-    pub git: String,
+    git: String,
     /// The pinned commit.
-    pub rev: String,
+    rev: String,
     /// The declared version requirement.
-    pub version: String,
+    version: String,
+}
+impl ExperimentalPackage {
+    /// A `ExperimentalPackage` carrying each of its fields.
+    #[must_use]
+    pub const fn new(git: String, rev: String, version: String) -> Self {
+        Self { git, rev, version }
+    }
+
+    /// The repository the framework pins the package to.
+    #[must_use]
+    pub fn git(&self) -> &str {
+        &self.git
+    }
+
+    /// The pinned commit.
+    #[must_use]
+    pub fn rev(&self) -> &str {
+        &self.rev
+    }
+
+    /// The declared version requirement.
+    #[must_use]
+    pub fn version(&self) -> &str {
+        &self.version
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -408,7 +432,7 @@ impl ResolvedFramework {
         manifest: &crate::project::Manifest,
         project_root: &Path,
     ) -> Result<Self> {
-        if let Some(framework) = &manifest.framework {
+        if let Some(framework) = manifest.framework() {
             return framework.clone().validated().map_err(|error| {
                 eyre!(
                     "Water.toml records a framework selection waterui-cli {} cannot scaffold: {error:#}",
@@ -416,7 +440,7 @@ impl ResolvedFramework {
                 )
             });
         }
-        let Some(waterui_path) = &manifest.waterui_path else {
+        let Some(waterui_path) = &manifest.waterui_path() else {
             bail!(
                 "the project records no framework selection; run `water channel` \
                  to select one or point `waterui_path` at a checkout"
@@ -560,6 +584,26 @@ impl ResolvedFramework {
     #[must_use]
     pub const fn rust_version(&self) -> Option<&cargo_toml::SemVer> {
         self.rust_version.as_ref()
+    }
+
+    /// Features the selected framework requires for the native demo scaffold.
+    /// Revisions predating feature-gated controls declare no additional features.
+    pub(crate) fn scaffold_features(&self) -> Result<Vec<&str>> {
+        let Some(value) = self.metadata.get("scaffold-features") else {
+            return Ok(Vec::new());
+        };
+        value
+            .as_array()
+            .ok_or_else(|| eyre!("package.metadata.waterui.scaffold-features must be an array"))?
+            .iter()
+            .map(|feature| {
+                feature.as_str().ok_or_else(|| {
+                    eyre!(
+                        "package.metadata.waterui.scaffold-features entries must be feature names"
+                    )
+                })
+            })
+            .collect()
     }
 
     /// The canonical path `member` occupies inside the framework tree —
@@ -877,7 +921,7 @@ impl ResolvedFramework {
 
     /// The framework manifest the selection's metadata was read from, as a
     /// diagnostic names it.
-    fn origin(&self) -> String {
+    pub(crate) fn origin(&self) -> String {
         match &self.source {
             Source::Stable { release, .. } => release.as_ref().map_or_else(
                 || "the stable framework manifest".to_owned(),
@@ -1254,13 +1298,12 @@ impl ResolvedFramework {
             .metadata
             .get(KEY)
             .and_then(toml::Value::as_table)
-            .map(|table| {
+            .map_or_default(|table| {
                 table
                     .iter()
                     .filter_map(|(name, path)| path.as_str().map(|path| (name.as_str(), path)))
                     .collect()
-            })
-            .unwrap_or_default();
+            });
         if reexported.is_empty() {
             return Ok(());
         }
@@ -1417,7 +1460,8 @@ impl ResolvedFramework {
         features: &[String],
     ) -> Result<()> {
         self.validate_cli(project.host())?;
-        self.sync_cargo_config(project.root(), &project.manifest().apple.deployment_targets)
+        let deployment_targets = project.manifest().apple().deployment_targets();
+        self.sync_cargo_config(project.root(), deployment_targets)
             .await?;
         let project_lockfile = project.lockfile_path().await?;
         let project_lock: Lockfile = smol::fs::read_to_string(&project_lockfile).await?.parse()?;
@@ -2785,7 +2829,8 @@ fn framework_metadata(manifest: &toml::Value) -> Result<toml::Table> {
 }
 
 /// The scaffold facts the framework manifest itself declares: each
-/// `scaffold-packages` entry's requirement from `[workspace.dependencies]` —
+/// `scaffold-packages` entry's requirement — its `scaffold-pins` entry, else
+/// its `[workspace.dependencies]` one —
 /// `{name}-version`, plus `{name}-git` and `{name}-rev` when the requirement
 /// pins a repository — and every backend coordinate — `{name}-backend-url`,
 /// plus the `{name}-backend-version` of a backend pinned by release or the
@@ -2804,6 +2849,9 @@ fn framework_scaffold(manifest: &toml::Value) -> Result<BTreeMap<String, String>
         .and_then(|workspace| workspace.get("dependencies"))
         .and_then(toml::Value::as_table)
         .ok_or_else(|| eyre!("framework manifest has no [workspace.dependencies]"))?;
+    let pins = metadata
+        .get("scaffold-pins")
+        .and_then(toml::Value::as_table);
     let packages = metadata
         .get("scaffold-packages")
         .and_then(toml::Value::as_array)
@@ -2815,13 +2863,22 @@ fn framework_scaffold(manifest: &toml::Value) -> Result<BTreeMap<String, String>
         let name = package.as_str().ok_or_else(|| {
             eyre!("package.metadata.waterui.scaffold-packages entries must be crate names")
         })?;
-        let dependency = workspace.get(name).ok_or_else(|| {
-            eyre!("scaffold package {name} has no [workspace.dependencies] requirement")
-        })?;
+        // A package no member links is declared only as a pin.
+        let dependency = pins
+            .and_then(|pins| pins.get(name))
+            .or_else(|| workspace.get(name))
+            .ok_or_else(|| {
+                eyre!(
+                    "scaffold package {name} has no scaffold-pins or [workspace.dependencies] \
+                     requirement"
+                )
+            })?;
         let requirement = dependency
             .as_str()
             .or_else(|| dependency.get("version").and_then(toml::Value::as_str))
-            .ok_or_else(|| eyre!("workspace.dependencies.{name} declares no version"))?;
+            .ok_or_else(|| {
+                eyre!("the requirement of scaffold package {name} declares no version")
+            })?;
         scaffold.insert(format!("{name}-version"), requirement.to_owned());
         // A scaffold package pinned from git keeps that source: a bare
         // `{name}-version` cannot express the commit the framework builds
@@ -2830,11 +2887,8 @@ fn framework_scaffold(manifest: &toml::Value) -> Result<BTreeMap<String, String>
             let revision = dependency
                 .get("rev")
                 .and_then(toml::Value::as_str)
-                .ok_or_else(|| {
-                    eyre!("workspace.dependencies.{name} must pin an immutable Git revision")
-                })?;
-            validate_revision(revision)
-                .wrap_err_with(|| format!("workspace.dependencies.{name}.rev"))?;
+                .ok_or_else(|| eyre!("{name} must pin an immutable Git revision"))?;
+            validate_revision(revision).wrap_err_with(|| format!("{name} rev"))?;
             scaffold.insert(format!("{name}-git"), git.to_owned());
             scaffold.insert(format!("{name}-rev"), revision.to_owned());
         }
@@ -3429,7 +3483,7 @@ pub(crate) mod test_fixtures {
             metadata: toml::toml! {
                 apple-deployment-targets = { macos = "26.0", ios = "26.0", tvos = "26.0", watchos = "26.0", visionos = "2.5" }
                 web-frontend-apple-deployment-targets = { macos = "27.0", ios = "27.0", tvos = "27.0", watchos = "27.0", visionos = "27.0" }
-                android-min-api-level = 31
+                android-min-api-level = 33
                 android-gradle-version = "9.7.1"
                 apple-backend-path = "backends/apple"
                 hydrolysis-path = "backends/hydrolysis"
@@ -3474,7 +3528,7 @@ pub(crate) mod test_fixtures {
             ),
             (
                 "waterui-winui".to_owned(),
-                experimental("0.1.0", "https://github.com/water-rs/waterui-winui", 'e'),
+                experimental("0.1.0", "https://github.com/water-rs/winui-backend", 'e'),
             ),
         ])
     }
@@ -3533,7 +3587,7 @@ pub(crate) mod test_fixtures {
             metadata: toml::toml! {
                 apple-deployment-targets = { macos = "26.0", ios = "26.0", tvos = "26.0", watchos = "26.0", visionos = "2.5" }
                 web-frontend-apple-deployment-targets = { macos = "27.0", ios = "27.0", tvos = "27.0", watchos = "27.0", visionos = "27.0" }
-                android-min-api-level = 31
+                android-min-api-level = 33
                 android-gradle-version = "9.7.1"
                 apple-backend-path = "backends/apple"
                 hydrolysis-path = "backends/hydrolysis"
@@ -3744,14 +3798,14 @@ pub(crate) mod test_fixtures {
 }
 
 async fn resolve_dev(host: &Host, repository: &str, slug: &str) -> Result<String> {
-    gated_dev_head(host, repository, slug, "dev.yml", "framework").await
+    gated_dev_head(host, repository, slug, "ci.yml", "framework").await
 }
 
 /// A `dev` selection pinned to an exact commit: `rev` names a commit of the
-/// integration branch's own history, verified against the branch's head
-/// through the fetched git history. Anything
-/// else — a fork commit, another branch's tip, a commit `dev` never merged —
-/// is not dev history and cannot stand in for the channel.
+/// `main` trunk history, verified against `main`'s head through the fetched git
+/// history. Anything else — a fork commit, another branch's tip, a commit
+/// `main` never merged — is not trunk history and cannot stand in for the
+/// channel.
 async fn resolve_dev_at(
     host: &Host,
     repository: &str,
@@ -3762,7 +3816,7 @@ async fn resolve_dev_at(
     let tree = FrameworkTree::fetch(host, repository, rev).await?;
     tree.ensure_dev_ancestor(host).await?;
     let revision = &tree.revision;
-    if !gate_passed(host, slug, "dev.yml", revision).await? {
+    if !gate_passed(host, slug, "ci.yml", revision).await? {
         bail!("no successful dev gate run exists for --rev {revision}");
     }
     Ok(tree)
@@ -3778,10 +3832,10 @@ fn validate_rev(rev: &str) -> Result<()> {
     Ok(())
 }
 
-/// The `dev` branch head of `repository` — the tip `git ls-remote` reports.
+/// The `main` branch head of `repository` — the tip `git ls-remote` reports.
 async fn remote_dev_head(host: &Host, repository: &str, what: &str) -> Result<String> {
     let output = git::command(host)?
-        .args(["ls-remote", repository, "refs/heads/dev"])
+        .args(["ls-remote", repository, "refs/heads/main"])
         .output()
         .await?;
     if !output.status.success() {
@@ -3793,20 +3847,20 @@ async fn remote_dev_head(host: &Host, repository: &str, what: &str) -> Result<St
     let revision = std::str::from_utf8(&output.stdout)?
         .split_whitespace()
         .next()
-        .ok_or_else(|| eyre!("{what} repository has no dev branch"))?
+        .ok_or_else(|| eyre!("{what} repository has no main branch"))?
         .to_owned();
     validate_revision(&revision)?;
     Ok(revision)
 }
 
-/// Whether `revision` carries a successful `gate` run on `dev` — the query
-/// behind the channel's promise that a resolved commit passed its
+/// Whether `revision` carries a successful `gate` run on `main` — the query
+/// behind the `dev` channel's promise that a resolved commit passed its
 /// compilation gate. `event=push` scopes the run to the branch itself: a
 /// pull-request run on the same commit is not the gate.
 async fn gate_passed(host: &Host, slug: &str, gate: &str, revision: &str) -> Result<bool> {
     let response = fetch(
         host,
-        &format!("https://api.github.com/repos/{slug}/actions/workflows/{gate}/runs?branch=dev&head_sha={revision}&status=success&event=push&per_page=1"),
+        &format!("https://api.github.com/repos/{slug}/actions/workflows/{gate}/runs?branch=main&head_sha={revision}&status=success&event=push&per_page=1"),
     )
     .await?;
     let runs: serde_json::Value = serde_json::from_slice(&response)?;
@@ -3822,9 +3876,8 @@ fn gate_run_succeeded(runs: &serde_json::Value, revision: &str) -> bool {
     })
 }
 
-/// The `dev` HEAD of `repository`, held to the channel's promise that the
-/// resolved commit passed `gate` — the workflow file gating `dev` in that
-/// repository: `dev.yml` for the framework, `ci.yml` for a backend.
+/// The `main` HEAD of `repository`, held to the `dev` channel's promise that
+/// the resolved commit passed `gate` (`ci.yml`).
 async fn gated_dev_head(
     host: &Host,
     repository: &str,
@@ -5407,7 +5460,7 @@ mod tests {
             minimum_cli_version: None,
             rust_version: None,
             metadata: toml::toml! {
-                android-min-api-level = 31
+                android-min-api-level = 33
                 android-gradle-version = "9.7.1"
                 apple-backend-path = "backends/apple"
                 hydrolysis-path = "backends/hydrolysis"
@@ -5593,7 +5646,7 @@ mod tests {
 
     #[test]
     fn android_min_api_level_is_required_framework_metadata() {
-        assert_eq!(stable_framework().android_min_api_level().unwrap(), 31);
+        assert_eq!(stable_framework().android_min_api_level().unwrap(), 33);
 
         let mut missing = stable_framework();
         missing.metadata.remove("android-min-api-level");
@@ -5630,17 +5683,12 @@ mod tests {
     fn a_rejected_recorded_selection_reports_the_inner_error() {
         let mut framework = stable_framework();
         framework.metadata.remove("android-min-api-level");
-        let mut manifest = crate::project::Manifest::new(crate::project::Package {
-            name: "Water Example".to_string(),
-            bundle_identifier: crate::project_types::BundleIdentifier::try_from(
-                "dev.waterui.waterexample",
-            )
-            .expect("bundle identifier"),
-            assets_path: "assets".to_string(),
-            accessory: false,
-            embedded: false,
-        });
-        manifest.framework = Some(framework);
+        let mut manifest = crate::project::Manifest::new(crate::project::Package::new(
+            "Water Example",
+            crate::project_types::BundleIdentifier::try_from("dev.waterui.waterexample")
+                .expect("bundle identifier"),
+        ));
+        manifest.set_framework(Some(framework));
 
         let scratch = tempfile::tempdir().unwrap();
         let facts = Facts::new(
@@ -5983,13 +6031,13 @@ mod tests {
         let repository = framework_repository();
         let revision = "a".repeat(40);
         let lock_sha256 = "f".repeat(64);
-        let metadata = toml::toml! { android-min-api-level = 31 android-gradle-version = "9.7.1" };
+        let metadata = toml::toml! { android-min-api-level = 33 android-gradle-version = "9.7.1" };
         let mut scaffold = BTreeMap::from([
             ("waterui-version".to_owned(), "0.4.1".to_owned()),
             ("waterui-winui-version".to_owned(), "0.1.0".to_owned()),
             (
                 "waterui-winui-git".to_owned(),
-                "https://github.com/water-rs/waterui-winui".to_owned(),
+                "https://github.com/water-rs/winui-backend".to_owned(),
             ),
             ("waterui-winui-rev".to_owned(), "e".repeat(40)),
         ]);
@@ -6775,7 +6823,7 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
             scaffold: BTreeMap::new(),
             experimental_packages: BTreeMap::new(),
             metadata: toml::toml! {
-                android-min-api-level = 31
+                android-min-api-level = 33
                 android-gradle-version = "9.7.1"
                 apple-backend-path = "backends/apple"
                 hydrolysis-path = "backends/hydrolysis"
@@ -6897,7 +6945,7 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
             },
             "metadata": {
                 "minimum-cli-version": "0.1.0",
-                "android-min-api-level": 31,
+                "android-min-api-level": 33,
                 "android-gradle-version": "9.7.1",
                 "apple-backend-path": "backends/apple",
                 "hydrolysis-path": "backends/hydrolysis",
@@ -6938,7 +6986,10 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
         .unwrap();
         let scaffold = framework_scaffold(&root).unwrap();
         let workspace = |name: &str| {
-            let dependency = &root["workspace"]["dependencies"][name];
+            let pins = &root["package"]["metadata"]["waterui"]["scaffold-pins"];
+            let dependency = pins
+                .get(name)
+                .unwrap_or_else(|| &root["workspace"]["dependencies"][name]);
             dependency
                 .as_str()
                 .or_else(|| dependency.get("version").and_then(toml::Value::as_str))
@@ -6967,7 +7018,7 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
                 ),
                 (
                     "waterui-winui-git".to_owned(),
-                    "https://github.com/water-rs/waterui-winui".to_owned()
+                    "https://github.com/water-rs/winui-backend".to_owned()
                 ),
                 (
                     "waterui-winui-rev".to_owned(),
@@ -6992,7 +7043,7 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
             "../../tests/fixtures/framework_checkout_manifest.toml"
         ))
         .unwrap();
-        let gtk = &mut root["workspace"]["dependencies"]["waterui-gtk"];
+        let gtk = &mut root["package"]["metadata"]["waterui"]["scaffold-pins"]["waterui-gtk"];
         gtk.as_table_mut()
             .unwrap()
             .insert("branch".to_owned(), toml::Value::String("dev".to_owned()));
@@ -7446,7 +7497,7 @@ hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "d887
 
     fn gate_url() -> String {
         format!(
-            "https://api.github.com/repos/water-rs/waterui/actions/workflows/dev.yml/runs?branch=dev&head_sha={}&status=success&event=push&per_page=1",
+            "https://api.github.com/repos/water-rs/waterui/actions/workflows/ci.yml/runs?branch=main&head_sha={}&status=success&event=push&per_page=1",
             "a".repeat(40)
         )
     }

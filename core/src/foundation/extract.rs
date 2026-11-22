@@ -49,10 +49,6 @@ pub trait Extractor: 'static + Sized {
 ///
 /// This wrapper enables extracting values by type from an Environment.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "extractor newtype destructured in handler parameters (`Use(value): Use<T>`)"
-)]
 pub struct Use<T: 'static>(pub T);
 
 /// Wrapper for cloneable state values injected into the environment.
@@ -62,10 +58,6 @@ pub struct Use<T: 'static>(pub T);
 /// itself and the wrapper disappears from handler signatures; `State<T>`
 /// remains the extractor for values of foreign types such as `Binding<T>`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "extractor newtype destructured in handler parameters (`State(value): State<T>`)"
-)]
 pub struct State<T: 'static>(pub T);
 
 /// Per-action extraction state used to disambiguate repeated extractor types.

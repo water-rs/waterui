@@ -12,6 +12,8 @@
 
 use std::sync::Arc;
 
+use executor_core::spawn_local;
+
 use waterui_url::Url;
 
 /// What a navigation policy decides for one request.
@@ -24,7 +26,7 @@ pub enum NavigationDecision {
     Cancel,
     /// The engine cancels it and the URL is opened in the system browser.
     ///
-    /// The shared layer performs the open — through `robius-open` — inside
+    /// The shared layer performs the open — through `waterkit-deeplink` — inside
     /// the decision itself, so a backend only ever answers "proceed" or
     /// "cancel" to its engine's hook. A failed open is logged and the
     /// navigation stays cancelled.
@@ -36,16 +38,45 @@ pub enum NavigationDecision {
 #[non_exhaustive]
 pub struct NavigationRequest {
     /// The URL the navigation targets.
-    pub url: Url,
+    url: Url,
     /// The document the navigation leaves, when there is one.
-    pub from: Option<Url>,
+    from: Option<Url>,
     /// Whether the main frame is the target. A targetless action —
     /// `window.open`, a `target="_blank"` — that a backend reroutes into
     /// its own view counts as one.
-    pub is_main_frame: bool,
+    is_main_frame: bool,
     /// Whether a user gesture triggered the navigation: a link activation.
     /// Programmatic jumps (`window.location`) report `false`.
-    pub user_initiated: bool,
+    user_initiated: bool,
+}
+
+impl NavigationRequest {
+    /// The URL the navigation targets.
+    #[must_use]
+    pub const fn url(&self) -> &Url {
+        &self.url
+    }
+
+    /// The document the navigation leaves, when there is one.
+    #[must_use]
+    pub const fn from(&self) -> Option<&Url> {
+        self.from.as_ref()
+    }
+
+    /// Whether the main frame is the target. A targetless action —
+    /// `window.open`, a `target="_blank"` — that a backend reroutes into
+    /// its own view counts as one.
+    #[must_use]
+    pub const fn is_main_frame(&self) -> bool {
+        self.is_main_frame
+    }
+
+    /// Whether a user gesture triggered the navigation: a link activation.
+    /// Programmatic jumps (`window.location`) report `false`.
+    #[must_use]
+    pub const fn user_initiated(&self) -> bool {
+        self.user_initiated
+    }
 }
 
 impl NavigationRequest {
@@ -108,13 +139,17 @@ impl NavigationPolicy {
             NavigationDecision::Allow => true,
             NavigationDecision::Cancel => false,
             NavigationDecision::OpenExternally => {
-                if let Err(error) = robius_open::Uri::new(request.url.as_str()).open() {
-                    tracing::error!(
-                        url = %request.url,
-                        ?error,
-                        "webview: opening a navigation externally failed"
-                    );
-                }
+                let url = request.url.clone();
+                spawn_local(async move {
+                    if let Err(error) = waterkit_deeplink::open_url(url.as_str()).await {
+                        tracing::error!(
+                            url = %url,
+                            ?error,
+                            "webview: opening a navigation externally failed"
+                        );
+                    }
+                })
+                .detach();
                 false
             }
         }

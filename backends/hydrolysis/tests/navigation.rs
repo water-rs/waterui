@@ -128,7 +128,8 @@ fn navigation_split_detail_fits_pane_when_selected_after_mount() {
     // The window itself must never have grown: the surface is the window.
     let snap = app.snapshot();
     assert_eq!(
-        snap.height, WINDOW_HEIGHT,
+        snap.height(),
+        WINDOW_HEIGHT,
         "the window grew to fit an overflowing detail column"
     );
     assert_split_geometry(&mut app, "selection set after mount");

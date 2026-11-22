@@ -42,7 +42,9 @@ use waterkit_audio::{
     PlaybackStatus as SessionStatus, QueueNavigationControls,
 };
 use waterui::reactive::{Binding, Computed, Signal};
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
+};
 #[cfg(feature = "video")]
 use waterui_video::video::NativeVideoConfig;
 #[cfg(feature = "video_player")]
@@ -57,17 +59,25 @@ use waterui_video::{
 };
 
 use crate::contract::{NativeLeaf, RenderContext};
-use crate::dispatch::Dispatcher;
 
 #[cfg(all(target_os = "ios", feature = "video_player"))]
 use cocoa_ui::uikit::HostView;
 
 /// Registers both video leaves; each is still gated by its own feature.
-pub fn install(dispatcher: &mut Dispatcher) {
-    #[cfg(feature = "video")]
-    dispatcher.register_native::<NativeVideoConfig>(render_video);
-    #[cfg(feature = "video_player")]
-    dispatcher.register_native::<NativeVideoPlayerConfig>(render_video_player);
+#[cfg(feature = "video")]
+pub fn realize_native_video_config(
+    value: NativeVideoConfig,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    render_video(value, ctx)
+}
+
+#[cfg(feature = "video_player")]
+pub fn realize_native_video_player_config(
+    value: NativeVideoPlayerConfig,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    render_video_player(value, ctx)
 }
 
 /// Fallback bounds while the item's own size is unknown: 320 wide, and the
@@ -96,25 +106,40 @@ const fn buffering_event(buffering: &mut bool, empty: bool, waiting: bool) -> Op
 const DUCK_SCALE: f32 = 0.2;
 
 /// Maps the content mode onto the layer gravity.
-const fn gravity(mode: ContentMode) -> VideoGravity {
+fn gravity(mode: ContentMode) -> VideoGravity {
     match mode {
         ContentMode::Fit => VideoGravity::ResizeAspect,
         ContentMode::Fill => VideoGravity::ResizeAspectFill,
         ContentMode::Stretch => VideoGravity::Resize,
-        // `ContentMode` is non-exhaustive. A variant this realization does not
-        // map has to fail here; a wildcard that guessed a gravity would ship
-        // the wrong picture. The message stays a literal: this function is const.
-        _ => panic!("apple video: unsupported content mode"),
+        // `ContentMode` is non-exhaustive; the renderers pass only the modes
+        // `supported_mode` admits, so a wildcard that guessed a gravity could
+        // never ship the wrong picture.
+        _ => unreachable!("the renderers admit only fit, fill and stretch content modes"),
+    }
+}
+
+/// The content mode a video is realized with. A variant this realization does
+/// not map is a contract violation of the framework above; the video is
+/// realized as `Fit`.
+fn supported_mode(mode: ContentMode) -> ContentMode {
+    match mode {
+        ContentMode::Fit | ContentMode::Fill | ContentMode::Stretch => mode,
+        other => {
+            waterui::contract_violation!(
+                "apple video: unsupported content mode {other:?}; the video is realized as fit"
+            );
+            ContentMode::Fit
+        }
     }
 }
 
 /// The stretch axis the leaf reports, identical to `NativeView::stretch_axis`
-/// on the payloads (spherical never reaches here — it panics at render).
-const fn leaf_stretch_axis(mode: ContentMode) -> StretchAxis {
+/// on the payloads (spherical never reaches here — it is flattened at render).
+fn leaf_stretch_axis(mode: ContentMode) -> StretchAxis {
     match mode {
         ContentMode::Fit => StretchAxis::Horizontal,
         ContentMode::Fill | ContentMode::Stretch => StretchAxis::Both,
-        _ => panic!("apple video: unsupported content mode"),
+        _ => unreachable!("the renderers admit only fit, fill and stretch content modes"),
     }
 }
 
@@ -143,7 +168,7 @@ fn measure(mode: ContentMode, source: Option<Size>, proposal: ProposalSize) -> V
             proposal.width.unwrap_or(FALLBACK_WIDTH),
             proposal.height.unwrap_or(FALLBACK_HEIGHT),
         )),
-        other => panic!("apple video: unsupported content mode {other:?}"),
+        _ => unreachable!("the renderers admit only fit, fill and stretch content modes"),
     }
 }
 
@@ -162,6 +187,14 @@ impl core::fmt::Debug for VideoSubView {
 }
 
 impl SubView for VideoSubView {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         measure(self.mode, self.source.get(), proposal)
     }
@@ -461,8 +494,8 @@ impl State {
 
     /// Loads `media` into the shared player — the Swift `update(from:)`.
     fn load(&mut self, media: MediaItem) {
-        let url = media.source.to_string();
-        let key = (url.clone(), media.delivery);
+        let url = media.source().to_string();
+        let key = (url.clone(), media.get_delivery());
         if self.source_key.as_ref() == Some(&key) {
             return;
         }
@@ -481,7 +514,7 @@ impl State {
             .push(Deferred::TrackCatalog(TrackCatalog::default()));
         self.push_metadata(&media);
 
-        if media.delivery == Delivery::Dash {
+        if media.get_delivery() == Delivery::Dash {
             self.media = Some(media);
             self.emit_error(
                 "MPEG-DASH is not supported by the Apple AVPlayer realization; \
@@ -515,25 +548,33 @@ impl State {
     /// The playback policy mirrored onto the item, per the Swift
     /// `configurePlaybackPolicy`.
     fn configure_policy(&self, item: &PlayerItem) {
-        match self.playback_policy.power {
+        match self.playback_policy.get_power() {
             PlaybackPowerPolicy::PlatformManaged => {}
+            // A requirement the AVPlayer realization cannot satisfy is a
+            // contract violation of the framework that selected it; the
+            // playback stays platform-managed.
             PlaybackPowerPolicy::RequireAudioOffload => {
-                panic!(
+                waterui::contract_violation!(
                     "RequireAudioOffload cannot be satisfied by the AVPlayer realization; \
-                     select the WaterKit self-drawn video realization"
+                     select the WaterKit self-drawn video realization; \
+                     the playback is platform-managed"
                 );
             }
             PlaybackPowerPolicy::RequireAudioVideoTunneling => {
-                panic!(
+                waterui::contract_violation!(
                     "RequireAudioVideoTunneling cannot be satisfied by the AVPlayer realization; \
-                     select the WaterKit self-drawn video realization"
+                     select the WaterKit self-drawn video realization; \
+                     the playback is platform-managed"
                 );
             }
-            // `PlaybackPowerPolicy` is non-exhaustive. An unknown requirement
-            // must not fall through into the platform-managed path.
-            other => panic!("apple video: unsupported playback power policy {other:?}"),
+            // `PlaybackPowerPolicy` is non-exhaustive: an unknown requirement
+            // is the same violation.
+            other => waterui::contract_violation!(
+                "apple video: unsupported playback power policy {other:?}; \
+                 the playback is platform-managed"
+            ),
         }
-        if self.playback_policy.realtime {
+        if self.playback_policy.realtime() {
             self.player
                 .set_automatically_waits_to_minimize_stalling(false);
             item.set_can_use_network_resources_for_live_streaming_while_paused(true);
@@ -543,7 +584,7 @@ impl State {
                 .set_automatically_waits_to_minimize_stalling(true);
             item.set_can_use_network_resources_for_live_streaming_while_paused(false);
             item.set_preferred_forward_buffer_duration(
-                f64::from(self.playback_policy.vod_start_buffer_ms) / 1000.0,
+                f64::from(self.playback_policy.vod_start_buffer_ms()) / 1000.0,
             );
         }
     }
@@ -1069,11 +1110,11 @@ impl State {
     /// The media-session metadata push, dedup'd — the Swift
     /// `updateNowPlayingInfo`.
     fn push_metadata(&mut self, media: &MediaItem) {
-        let metadata = media.metadata.clone();
+        let metadata = media.get_metadata().clone();
         let title = metadata
             .title()
             .map(str::to_owned)
-            .or_else(|| media_title_fallback(media.source.as_ref()));
+            .or_else(|| media_title_fallback(media.source().as_ref()));
         let mut snapshot = SessionMetadata::new();
         if let Some(title) = title {
             snapshot = snapshot.with_title(title);
@@ -1680,13 +1721,15 @@ fn bind(leaf: &mut NativeLeaf, coordinator: &Coordinator) {
 /// `Native<NativeVideoConfig>` — the raw surface.
 #[cfg(feature = "video")]
 fn render_video(config: NativeVideoConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
-    assert!(
-        !config.projection.is_spherical(),
-        "spherical video projection is not supported by the AVPlayer realization; \
-         select the WaterKit self-drawn video realization"
-    );
+    if config.projection.is_spherical() {
+        waterui::contract_violation!(
+            "spherical video projection is not supported by the AVPlayer realization; \
+             select the WaterKit self-drawn video realization; the video is drawn flat"
+        );
+    }
+    let content_mode = supported_mode(config.content_mode);
     let mtm = ctx.mtm();
-    let surface = PlayerLayerView::new(mtm, gravity(config.content_mode));
+    let surface = PlayerLayerView::new(mtm, gravity(content_mode));
     let (coordinator, player) = coordinator(mtm, config.playback, config.loops);
     surface.set_player(Some(&player));
     update(&coordinator.state, |state| {
@@ -1698,7 +1741,7 @@ fn render_video(config: NativeVideoConfig, ctx: &RenderContext<'_>) -> NativeLea
     let mut leaf = NativeLeaf::new(
         surface.view(),
         VideoSubView {
-            mode: config.content_mode,
+            mode: content_mode,
             source: Rc::clone(&coordinator.state.borrow().source_size),
         },
     );
@@ -1712,13 +1755,15 @@ fn render_video(config: NativeVideoConfig, ctx: &RenderContext<'_>) -> NativeLea
 /// `Native<NativeVideoPlayerConfig>` — the controls surface.
 #[cfg(feature = "video_player")]
 fn render_video_player(config: NativeVideoPlayerConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
-    assert!(
-        !config.projection.is_spherical(),
-        "spherical video projection is not supported by the AVPlayer realization; \
-         select the WaterKit self-drawn video realization"
-    );
+    if config.projection.is_spherical() {
+        waterui::contract_violation!(
+            "spherical video projection is not supported by the AVPlayer realization; \
+             select the WaterKit self-drawn video realization; the video is drawn flat"
+        );
+    }
+    let content_mode = supported_mode(config.content_mode);
     let mtm = ctx.mtm();
-    let view = Rc::new(PlayerView::new(mtm, gravity(config.content_mode)));
+    let view = Rc::new(PlayerView::new(mtm, gravity(content_mode)));
     view.set_shows_controls(config.show_controls);
     view.set_allows_picture_in_picture(true);
     let (coordinator, player) = coordinator(mtm, config.playback, false);
@@ -1741,7 +1786,7 @@ fn render_video_player(config: NativeVideoPlayerConfig, ctx: &RenderContext<'_>)
     });
 
     let source = Rc::clone(&coordinator.state.borrow().source_size);
-    let mut leaf = build_player_leaf(&view, config.content_mode, source, mtm);
+    let mut leaf = build_player_leaf(&view, content_mode, source, mtm);
     install_relayout(&leaf, &coordinator);
     bind(&mut leaf, &coordinator);
     leaf.keep(coordinator);

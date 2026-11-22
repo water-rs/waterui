@@ -2,10 +2,12 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use waterui_core::gesture::{GestureObserver, LongPressGesture};
-use waterui_core::handler::{BoxedEventAction, EventHandler, boxed_event_handler};
+use waterui_core::handler::{
+    BoxedEventAction, EventHandler, ReportExtraction, boxed_event_handler,
+};
 use waterui_core::{
     AnyView, Binding, Computed, Dynamic, Environment, Metadata, SerialDispatch, Signal, SignalExt,
-    View, layout::StretchAxis, reactive::signal::IntoComputed,
+    View, reactive::signal::IntoComputed,
 };
 use waterui_layout::overlay;
 
@@ -20,9 +22,23 @@ use crate::{
 #[non_exhaustive]
 pub struct LivePhotoSource {
     /// The URL for the still image component of the live photo.
-    pub image: Url,
+    image: Url,
     /// The URL for the video component of the live photo.
-    pub video: Url,
+    video: Url,
+}
+
+impl LivePhotoSource {
+    /// The URL for the still image component of the live photo.
+    #[must_use]
+    pub const fn image(&self) -> &Url {
+        &self.image
+    }
+
+    /// The URL for the video component of the live photo.
+    #[must_use]
+    pub const fn video(&self) -> &Url {
+        &self.video
+    }
 }
 
 /// Events emitted by the `LivePhoto` component.
@@ -136,14 +152,6 @@ impl View for LivePhoto {
             }),
         )
     }
-
-    /// Resolves to `overlay(resizable still, motion)`; the overlay is
-    /// transparent to its base, so the axis is the resizable still photo's.
-    /// The `motion` child is a `Dynamic` and never stretches.
-    fn stretch_axis(&self) -> StretchAxis {
-        let still_source = self.source.clone().map(|source| source.image).computed();
-        Photo::new(still_source).resizable().stretch_axis()
-    }
 }
 
 /// Shared handle to the live photo's event handler.
@@ -178,7 +186,7 @@ impl LivePhotoReporter {
     fn emit(&self, event: Event) {
         self.inner.events.deliver(event, |event| {
             if let Some(handler) = self.inner.handler.borrow_mut().as_mut() {
-                handler(event, &self.inner.env);
+                handler(event, &self.inner.env).report_extraction();
             }
         });
     }
@@ -235,6 +243,7 @@ mod tests {
                     reporter.emit(Event::MotionEnded);
                 }
                 inside.set(false);
+                Ok(())
             }
         }));
 

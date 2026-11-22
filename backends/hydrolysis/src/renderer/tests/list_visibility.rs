@@ -16,11 +16,12 @@ use std::time::Instant;
 use accesskit::{NodeId, Role, TreeUpdate};
 use nami::Binding;
 use nami::collection::SignalCollection;
-use waterui::component::list::{List, ListItem, ListSection};
+use waterui::component::list::{List, ListItem, Section};
 use waterui::component::text;
 use waterui::{AnyView, Environment, ViewExt as _};
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::SelfId;
+use waterui_core::views::ForEach;
 
 use super::{MinimalTestTheme, test_environment};
 use crate::HeadlessRuntime;
@@ -104,15 +105,10 @@ fn sectioned_list(
         let shown = shown.clone();
         let selection = selection.clone();
         AnyView::new(
-            List::for_each(SignalCollection::new(rows), move |row| {
-                let index = row.into_inner();
-                let item = ListItem::new(text(format!("Row {index}")));
-                if index == 0 {
-                    item.section(ListSection::new("Section"))
-                } else {
-                    item
-                }
-            })
+            List::content(Section::new("Section").content(ForEach::new(
+                SignalCollection::new(rows),
+                |row: SelfId<u64>| ListItem::new(text(format!("Row {}", row.into_inner()))),
+            )))
             .selection(&selection)
             .visible(shown),
         )

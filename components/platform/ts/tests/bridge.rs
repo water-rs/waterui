@@ -11,12 +11,13 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use nami::{Binding, Computed, Signal};
+use waterui_core::handler::ViewBuilder as _;
 use waterui_core::{AnyView, Environment, Error};
 use waterui_graphics::WorkingColor;
 use waterui_graphics::color::{AccentColor, ColorScheme};
 use waterui_ts::engine::{JsError, JsFunction, JsRuntime, JsValue};
 use waterui_ts::schema::{TsProps, TsType, TypeSchema};
-use waterui_ts::{Bridge, FromJs, HostTable, IntoJs, TsRuntime};
+use waterui_ts::{Bridge, FromJs, HostTable, IntoJs, JsViewBuilder, TsRuntime};
 
 /// The runtime global a real bundle publishes, faked for a Rust test.
 const FIXTURE: &str = include_str!("fixtures/runtime.js");
@@ -476,7 +477,7 @@ fn a_two_way_value_refuses_a_read_only_input() {
         .materialize_binding::<String>(&source)
         .expect_err("a read-only accessor cannot be a binding");
     assert!(
-        error.message.contains("needs a signal"),
+        error.message().contains("needs a signal"),
         "the error names what was missing: {error}"
     );
 }
@@ -896,7 +897,7 @@ fn a_rust_callback_is_called_from_javascript_with_converted_arguments() {
 
     let error = eval_error(&runtime, "globalThis.fixture.held('nope', 'hi')");
     assert!(
-        error.message.contains("argument 0"),
+        error.message().contains("argument 0"),
         "the error names the argument that failed: {error}"
     );
     assert_eq!(
@@ -972,7 +973,7 @@ fn exporting_outside_a_mount_is_refused() {
         .into_js(runtime.bridge())
         .expect_err("nothing would own the cell");
     assert!(
-        error.message.contains("mount scope"),
+        error.message().contains("mount scope"),
         "the error says what is missing: {error}"
     );
 }
@@ -1021,7 +1022,7 @@ fn disposing_a_mount_releases_everything_it_exported() {
             .call(&exported, &[JsValue::Number(1.0)])
             .expect_err("the registration went with the mount");
         assert!(
-            error.message.contains("no Rust callback is registered"),
+            error.message().contains("no Rust callback is registered"),
             "the wrapper outlived what owned it: {error}"
         );
     }
@@ -1043,7 +1044,7 @@ fn a_view_slot_is_taken_exactly_once() {
     let _taken = AnyView::from_js(&slot, bridge).expect("the first take succeeds");
     let error = AnyView::from_js(&slot, bridge).expect_err("the second take fails");
     assert!(
-        error.message.contains("already taken"),
+        error.message().contains("already taken"),
         "the error says the view is gone: {error}"
     );
 }
@@ -1249,7 +1250,7 @@ fn the_tagged_variants_read_back() {
     )
     .expect_err("an unknown variant fails");
     assert!(
-        error.message.contains("Exploded"),
+        error.message().contains("Exploded"),
         "the error names the variant: {error}"
     );
 }
@@ -1282,7 +1283,7 @@ fn a_fixed_length_array_crosses_as_the_tuple_it_declares() {
     let error = <[u32; 4]>::from_js(&value, bridge)
         .expect_err("an array of another length is not this type");
     assert!(
-        error.message.contains("4 items"),
+        error.message().contains("4 items"),
         "the error names the length the type declares: {error}"
     );
 }
@@ -1296,7 +1297,7 @@ fn an_inexact_number_is_refused_where_the_schema_says_bigint() {
     // already lost a bit: it must not read as a `u64`.
     let error = u64::from_js(&JsValue::Number(9_007_199_254_740_993.0), bridge)
         .expect_err("an inexact number is not a u64");
-    assert!(error.message.contains("u64"), "{error}");
+    assert!(error.message().contains("u64"), "{error}");
 
     assert_eq!(
         u64::from_js(&JsValue::Number(42.0), bridge).expect("an exact number reads"),
@@ -1570,7 +1571,7 @@ fn the_host_table_is_installed_and_reached_from_javascript() {
         "globalThis.__waterui_host.modify(globalThis.fixture.held, 'padding', 8)",
     );
     assert!(
-        error.message.contains("already taken"),
+        error.message().contains("already taken"),
         "a handle is consumed by the call that receives it: {error}"
     );
 }
@@ -1670,7 +1671,18 @@ fn an_environment_without_a_colour_scheme_says_so() {
     let _scope = runtime.bridge().open_scope();
     let error = eval_error(&runtime, "globalThis.__waterui_host.environment()");
     assert!(
-        error.message.contains("ColorScheme"),
+        error.message().contains("ColorScheme"),
         "the error names what a backend must install: {error}"
     );
+}
+
+/// `ViewBuilder::build` has no error channel: a render function that throws is
+/// a contract violation, and a release build builds an empty view instead.
+#[test]
+#[cfg_attr(debug_assertions, should_panic(expected = "an empty view is built"))]
+fn a_render_function_that_throws_builds_an_empty_view() {
+    let runtime = runtime();
+    let render = function(&runtime, "(() => { throw new Error('boom'); })");
+    let builder = JsViewBuilder::new(render, runtime.bridge());
+    let _view = builder.build();
 }

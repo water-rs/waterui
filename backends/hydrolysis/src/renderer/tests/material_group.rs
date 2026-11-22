@@ -1,4 +1,4 @@
-//! `.material_group()` (water-rs/waterui#1999): the `IgnorableMetadata`
+//! `.material_group()` (water-rs/waterui#1999): the `Metadata`
 //! wrapper opens a material scope the flush keeps on a stack, and the mount
 //! table's group key `(scope, within-window level, resolved colour scheme,
 //! install canvas)` makes the members under one scope share one
@@ -7,7 +7,7 @@
 //! canvases, or scopes never share.
 
 use std::cell::RefCell;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use std::time::{Duration, Instant};
 
 #[cfg(feature = "accessibility")]
@@ -27,29 +27,25 @@ use waterui::metadata::anchored_overlay::{AnchorEdge, AnchoredOverlay};
 use waterui::prelude::text;
 use waterui::theme::ColorScheme;
 use waterui::widget::condition::when;
-use waterui_backend_core::View;
 use waterui_controls::button::button;
 use waterui_core::AnyView;
 use waterui_core::env::Store;
 use waterui_core::extract::Use;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::SelfId;
-use waterui_core::transition::PropertyTransition;
 use waterui_layout::scroll;
 use waterui_layout::stack::{VStack, hstack, vstack, zstack};
+use waterui_structural_transition::PropertyTransition;
 
 use super::{
-    MinimalTestTheme, capture_bytes, inner_layers, material_layers, mounted_anchor_parent_children,
-    mounts, pumped_test_environment, test_environment, test_renderer, window_mount,
+    MinimalTestTheme, Realized, capture_bytes, inner_layers, material_layers,
+    mounted_anchor_parent_children, mounts, pumped_test_environment, swap_host_surface,
+    test_environment, test_renderer, window_mount,
 };
 use crate::HeadlessRuntime;
 use crate::platform::{InputEvent, PointerButton, PointerKind};
+use crate::renderer::ProposalSize;
 use crate::renderer::mount::backdrop::BackdropScope;
-use crate::renderer::{
-    FontFamilyResolution, HydroState, ProposalSize, measure_view_dimensions_with_proposal,
-    normalize_layout_view, view_renders_nothing,
-};
-use crate::text::ParleyEngine;
 use crate::theme::WidgetTheme;
 
 /// The window, in points.
@@ -535,6 +531,46 @@ fn a_display_scale_change_rebuilds_the_shared_group() {
     );
 }
 
+/// A member whose commit finds the engine surface dropped reports the
+/// contract violation and joins no group — its membership ends and the
+/// emptied group releases rather than outliving its surface; once the
+/// surface is back, the members' next commit joins them again.
+#[test]
+#[cfg_attr(
+    debug_assertions,
+    should_panic(expected = "the engine surface was dropped during its commit")
+)]
+fn a_dropped_surface_leaves_the_members_unbound() {
+    let mut runtime = rendered(two_members(Material::Regular, true));
+    let layers = material_layers(&runtime);
+    assert!(mounts(&runtime).backdrop_group_id(layers[0]).is_some());
+
+    let surface = swap_host_surface(&mut runtime, Weak::new());
+    runtime.set_scale_factor(1.0);
+    pump(&mut runtime);
+    let mounts_now = mounts(&runtime);
+    assert_eq!(
+        layers
+            .iter()
+            .map(|layer| mounts_now.backdrop_group_id(*layer))
+            .collect::<Vec<_>>(),
+        vec![None, None],
+        "no member joins a group without the surface"
+    );
+    assert_eq!(mounts_now.backdrop_group_count(), 0);
+
+    swap_host_surface(&mut runtime, surface);
+    runtime.set_scale_factor(DISPLAY_SCALE);
+    pump(&mut runtime);
+    let mounts = mounts(&runtime);
+    let group = mounts.backdrop_group_id(layers[0]);
+    assert!(
+        group.is_some(),
+        "the member joins again with the surface back"
+    );
+    assert_eq!(group, mounts.backdrop_group_id(layers[1]));
+}
+
 /// An anchored overlay's own flush starts with an empty material-scope
 /// stack: a member inside the overlay never joins the group the window
 /// content around the anchor built.
@@ -601,21 +637,19 @@ fn a_material_in_an_anchored_overlay_does_not_join_the_outer_group() {
 /// instead of panicking on an unsupported view type.
 #[test]
 fn a_grouped_row_in_a_lazy_stack_measures_and_renders() {
-    // The item measurement the lazy stack runs before building its rows:
-    // `measure_view_dimensions_with_proposal` on a grouped row must answer
-    // the `hstack` the group wraps, not the wrapper.
+    // A grouped row must measure as the `hstack` the group wraps, not the
+    // wrapper.
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
     let proposal = ProposalSize::new(Some(crate::num_cast::u32_as_f32(WIDTH)), None);
-    let grouped = normalize_layout_view(AnyView::new(row().material_group()), &env);
-    let plain = normalize_layout_view(AnyView::new(row()), &env);
-    state.measurement.begin_frame();
-    let grouped_size =
-        measure_view_dimensions_with_proposal(&grouped, proposal, &mut state, &env, &theme).size;
-    state.measurement.begin_frame();
-    let plain_size =
-        measure_view_dimensions_with_proposal(&plain, proposal, &mut state, &env, &theme).size;
+    let grouped = AnyView::new(row().material_group());
+    let plain = AnyView::new(row());
+    let grouped_size = Realized::with_theme(grouped, &env, &theme)
+        .measure(proposal)
+        .size;
+    let plain_size = Realized::with_theme(plain, &env, &theme)
+        .measure(proposal)
+        .size;
     assert_eq!(
         grouped_size, plain_size,
         "a grouped row measures exactly like the same row ungrouped"
@@ -629,7 +663,7 @@ fn a_grouped_row_in_a_lazy_stack_measures_and_renders() {
     });
     pump(&mut runtime);
     assert!(
-        runtime.pump_at(true, Instant::now()).snapshot.is_some(),
+        runtime.pump_at(true, Instant::now()).snapshot().is_some(),
         "the lazy stack's grouped rows render a snapshot"
     );
     let layers = material_layers(&runtime);
@@ -710,30 +744,21 @@ fn a_group_wrapping_a_lazy_stack_groups_every_flushed_row() {
     assert_eq!(mounts.backdrop_group_count(), 1);
 }
 
-/// `view_renders_nothing` looks through `.material_group()`: a grouped
-/// empty view claims no stack slot, so the stack measures exactly as if
-/// the member were absent.
+/// A grouped empty view claims no stack slot: the stack measures exactly
+/// as if the member were absent.
 #[test]
 fn a_grouped_empty_view_claims_no_stack_slot() {
-    assert!(
-        view_renders_nothing(&AnyView::new(().material_group())),
-        "a grouped `()` answers renders-nothing like a bare `()`"
-    );
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-    let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
     let proposal = ProposalSize::new(Some(200.0), None);
-    let grouped = normalize_layout_view(
-        AnyView::new(vstack((text("a"), ().material_group(), text("b")))),
-        &env,
-    );
-    let plain = normalize_layout_view(AnyView::new(vstack((text("a"), text("b")))), &env);
-    state.measurement.begin_frame();
-    let grouped_size =
-        measure_view_dimensions_with_proposal(&grouped, proposal, &mut state, &env, &theme).size;
-    state.measurement.begin_frame();
-    let plain_size =
-        measure_view_dimensions_with_proposal(&plain, proposal, &mut state, &env, &theme).size;
+    let grouped = AnyView::new(vstack((text("a"), ().material_group(), text("b"))));
+    let plain = AnyView::new(vstack((text("a"), text("b"))));
+    let grouped_size = Realized::with_theme(grouped, &env, &theme)
+        .measure(proposal)
+        .size;
+    let plain_size = Realized::with_theme(plain, &env, &theme)
+        .measure(proposal)
+        .size;
     assert_eq!(
         grouped_size, plain_size,
         "a grouped `()` claims no stack slot"
@@ -914,16 +939,17 @@ fn snap(view: impl Fn() -> AnyView + 'static) -> crate::HeadlessSnapshot {
     let mut snapshot = None;
     for frame in 0..8 {
         let pumped = runtime.pump_at(true, start + Duration::from_millis(frame * 16));
-        if pumped.snapshot.is_some() {
-            snapshot = pumped.snapshot;
+        let frame = pumped.into_snapshot();
+        if frame.is_some() {
+            snapshot = frame;
         }
     }
     snapshot.expect("a snapshot")
 }
 
 fn px(snap: &crate::HeadlessSnapshot, x: usize, y: usize) -> [u8; 4] {
-    let i = (y * snap.width as usize + x) * 4;
-    snap.rgba8[i..i + 4].try_into().unwrap()
+    let i = (y * snap.width() as usize + x) * 4;
+    snap.rgba8()[i..i + 4].try_into().unwrap()
 }
 
 /// A `.material_group()`'s scope gets a plain layer at the scope's paint
@@ -948,7 +974,7 @@ fn a_scopes_groups_capture_beneath_its_anchor() {
     };
     let (grouped_runtime, grouped) = {
         let mut runtime = rendered(scope_view(true));
-        let snap = runtime.pump_snapshot().snapshot.expect("a snapshot");
+        let snap = runtime.pump_snapshot().into_snapshot().expect("a snapshot");
         (runtime, snap)
     };
     // The solo `Thick` member's own first-member capture holds only the
@@ -1589,7 +1615,7 @@ fn a_scope_inside_a_scroll_view_anchors_under_the_inner_layer() {
         )))
     });
     assert!(
-        runtime.pump_at(true, Instant::now()).snapshot.is_some(),
+        runtime.pump_at(true, Instant::now()).snapshot().is_some(),
         "the scrolled member's frame renders a snapshot"
     );
     let layers = material_layers(&runtime);
@@ -1657,10 +1683,7 @@ fn a_partial_descent_replays_the_enclosing_material_group_scope() {
     inner.cell.set_parent(&group.core().cell);
     let mut retained = RetainedSubview::new(member(Material::Regular));
     let rect = SceneRect::new(0.0, 0.0, 160.0, 60.0);
-    let ctx = RenderContext {
-        local: Affine::IDENTITY,
-        bounds: rect,
-    };
+    let ctx = RenderContext::new(Affine::IDENTITY, rect);
     let proposal = ProposalSize::new(Some(160.0), Some(60.0));
     let root = renderer.core.root_core.clone();
     renderer

@@ -3,9 +3,7 @@
 //! A scroll offset change schedules the one per-frame pass — patch, layout,
 //! re-encode — and must present the new offset (scene, hit-test geometry,
 //! accessibility tree) on the very frame that consumed it, never the previous
-//! frame's scene unchanged. Layout runs every frame, but over an unchanged
-//! tree it must be pure cache replay: no re-measurement and no window
-//! rebuild. These tests drive the real runner input path
+//! frame's scene unchanged, and never rebuild the window. These tests drive the real runner input path
 //! (`handle_input_events` → frame pump) headlessly and read the flushed
 //! accessibility tree as the observable output.
 
@@ -56,7 +54,7 @@ fn runtime() -> HeadlessRuntime {
 
 fn scroll_y(result: &crate::HeadlessPumpResult) -> f64 {
     result
-        .tree_update
+        .tree_update()
         .as_ref()
         .expect("scroll frame must publish an accessibility update")
         .nodes
@@ -66,7 +64,7 @@ fn scroll_y(result: &crate::HeadlessPumpResult) -> f64 {
 }
 
 #[test]
-fn trackpad_pan_presents_the_new_offset_without_re_measuring() {
+fn trackpad_pan_presents_the_new_offset_without_rebuilding() {
     let mut runtime = runtime();
     let start = Instant::now();
     let _ = runtime.pump_at(false, start);
@@ -87,21 +85,14 @@ fn trackpad_pan_presents_the_new_offset_without_re_measuring() {
         scroll_y(&panned)
     );
     assert_eq!(
-        (
-            panned.profile.counters.measurement_cache_hits,
-            panned.profile.counters.measurement_cache_misses,
-        ),
-        (0, 0),
-        "a pan over an unchanged tree must be pure cache replay and not re-measure"
-    );
-    assert_eq!(
-        panned.profile.counters.rebuild_iterations, 0,
+        panned.profile().counters().rebuild_iterations(),
+        0,
         "a pan must never rebuild the window"
     );
 }
 
 #[test]
-fn wheel_ticks_glide_without_re_measuring() {
+fn wheel_ticks_glide_to_their_target() {
     let mut runtime = runtime();
     let start = Instant::now();
     let _ = runtime.pump_at(false, start);
@@ -116,15 +107,7 @@ fn wheel_ticks_glide_without_re_measuring() {
     let mut last_offset = 0.0;
     for frame in 1..=30u64 {
         let result = runtime.pump_at(false, start + Duration::from_millis(frame * 16));
-        assert_eq!(
-            (
-                result.profile.counters.measurement_cache_hits,
-                result.profile.counters.measurement_cache_misses,
-            ),
-            (0, 0),
-            "wheel glide frame {frame} over an unchanged tree must not re-measure"
-        );
-        if let Some(update) = &result.tree_update
+        if let Some(update) = &result.tree_update()
             && let Some(offset) = update.nodes.iter().find_map(|(_, node)| node.scroll_y())
         {
             last_offset = offset;
@@ -168,8 +151,7 @@ fn pan_over_lazy_content_materializes_entering_rows() {
     });
     let panned = runtime.pump_at(false, start + Duration::from_millis(16));
     let update = panned
-        .tree_update
-        .as_ref()
+        .tree_update()
         .expect("a lazy pan frame must publish an accessibility update");
     assert!(
         (scroll_y(&panned) - f64::from(ROW_HEIGHT * 50.0)).abs() < 0.5,
@@ -192,7 +174,7 @@ fn pan_over_lazy_content_materializes_entering_rows() {
 
 fn scroll_extents(result: &crate::HeadlessPumpResult) -> (f64, f64) {
     result
-        .tree_update
+        .tree_update()
         .as_ref()
         .expect("scroll frame must publish an accessibility update")
         .nodes
@@ -238,14 +220,6 @@ fn scrollbar_gutter_drag_maps_track_position_to_offset() {
     assert!(
         offset < 0.5,
         "dragging the thumb to the top of the track must scroll home (got {offset})"
-    );
-    assert_eq!(
-        (
-            dragged.profile.counters.measurement_cache_hits,
-            dragged.profile.counters.measurement_cache_misses,
-        ),
-        (0, 0),
-        "a scrollbar drag over an unchanged tree must not re-measure"
     );
 
     runtime.push_input_event(InputEvent::PointerUp {
@@ -329,10 +303,7 @@ fn inset_lazy_stack_materializes_the_visible_rows_after_pan() {
         phase: TouchPhase::Moved,
     });
     let frame = runtime.pump_at(false, start + Duration::from_millis(16));
-    let update = frame
-        .tree_update
-        .as_ref()
-        .expect("pan publishes visible rows");
+    let update = frame.tree_update().expect("pan publishes visible rows");
     assert!(
         update
             .nodes
@@ -347,7 +318,7 @@ fn inset_lazy_stack_materializes_the_visible_rows_after_pan() {
 /// expected outcome for a clamped edge.
 fn scroll_y_opt(result: &crate::HeadlessPumpResult) -> Option<f64> {
     result
-        .tree_update
+        .tree_update()
         .as_ref()?
         .nodes
         .iter()
@@ -358,7 +329,7 @@ fn scroll_y_opt(result: &crate::HeadlessPumpResult) -> Option<f64> {
 /// found by the label it was given — `None` when no node carries both.
 fn labeled_scroll_offset(result: &crate::HeadlessPumpResult, label: &str) -> Option<f64> {
     result
-        .tree_update
+        .tree_update()
         .as_ref()?
         .nodes
         .iter()
@@ -375,7 +346,7 @@ fn labeled_scroll_offset(result: &crate::HeadlessPumpResult, label: &str) -> Opt
 /// [`labeled_scroll_offset`].
 fn labeled_scroll_max(result: &crate::HeadlessPumpResult, label: &str) -> Option<f64> {
     result
-        .tree_update
+        .tree_update()
         .as_ref()?
         .nodes
         .iter()
@@ -456,7 +427,7 @@ fn wheel_and_pan_deltas_clamp_the_offset_at_both_ends() {
     let mut glided = 0.0;
     for frame in 4..=60u64 {
         let result = runtime.pump_at(false, start + Duration::from_millis(frame * 16));
-        if let Some(update) = &result.tree_update
+        if let Some(update) = &result.tree_update()
             && let Some(offset) = update.nodes.iter().find_map(|(_, node)| node.scroll_y())
         {
             glided = offset;

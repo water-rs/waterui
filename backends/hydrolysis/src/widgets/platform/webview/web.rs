@@ -16,11 +16,11 @@ use std::rc::Rc;
 
 use nami::{Binding, Computed};
 use wasm_bindgen::{JsCast, closure::Closure};
-use waterui_core::Environment;
-use waterui_webview::{
+use waterui::webview::{
     BackendEvent, CustomWebViewController, Url, WatcherGuard, WatcherSet, WebViewConfig,
-    WebViewController, WebViewEvent, WebViewHandle,
+    WebViewController, WebViewEvent, WebViewHandle, WebViewOpenError,
 };
+use waterui_core::Environment;
 use web_sys::{HtmlElement, HtmlIFrameElement};
 
 use crate::{HostedContent, HostedObject, HostedOcclusion};
@@ -28,14 +28,10 @@ use crate::{HostedContent, HostedObject, HostedOcclusion};
 /// The controller behind this backend's web views on the web. The backend
 /// installs it as the default controller.
 #[derive(Debug, Clone, Copy)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "field-less controller used by name"
-)]
 pub struct WebSystemWebViewController;
 
 impl CustomWebViewController for WebSystemWebViewController {
-    fn open(&self, _config: WebViewConfig) -> impl WebViewHandle {
+    fn open(&self, _config: WebViewConfig) -> Result<impl WebViewHandle, WebViewOpenError> {
         WebIframeHandle::new()
     }
 }
@@ -80,17 +76,19 @@ impl std::fmt::Debug for WebIframeHandle {
 }
 
 impl WebIframeHandle {
-    fn new() -> Self {
-        let iframe: HtmlIFrameElement = web_sys::window()
+    fn new() -> Result<Self, WebViewOpenError> {
+        let document = web_sys::window()
             .and_then(|window| window.document())
-            .expect("hydrolysis web view: the page has no document")
+            .ok_or_else(|| WebViewOpenError::Engine("the page has no document".to_owned()))?;
+        let iframe: HtmlIFrameElement = document
             .create_element("iframe")
-            .expect("hydrolysis web view: failed to create an <iframe> element")
+            .map_err(|error| {
+                WebViewOpenError::Engine(format!("creating an <iframe> element failed: {error:?}"))
+            })?
             .unchecked_into();
-        iframe
-            .style()
-            .set_property("border", "none")
-            .expect("hydrolysis web view: failed to style the <iframe>");
+        if let Err(error) = iframe.style().set_property("border", "none") {
+            tracing::error!(?error, "hydrolysis web view: styling the <iframe> failed");
+        }
         let handle = Self {
             inner: Rc::new(Inner {
                 iframe,
@@ -101,7 +99,7 @@ impl WebIframeHandle {
             }),
         };
         handle.listen();
-        handle
+        Ok(handle)
     }
 
     /// The frame's load event, and focus moving into and out of the frame.
@@ -124,10 +122,17 @@ impl WebIframeHandle {
                     handler(&inner);
                 }
             });
-            self.inner
+            if let Err(error) = self
+                .inner
                 .iframe
                 .add_event_listener_with_callback(name, closure.as_ref().unchecked_ref())
-                .unwrap_or_else(|_| panic!("hydrolysis web view: failed to listen for {name}"));
+            {
+                tracing::error!(
+                    ?error,
+                    "hydrolysis web view: listening for {name} failed; the event is not reported"
+                );
+                continue;
+            }
             listeners.push(closure);
         }
     }

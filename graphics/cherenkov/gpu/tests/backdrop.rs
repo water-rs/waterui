@@ -78,7 +78,7 @@ fn unfiltered_member_samples_what_is_behind_it() -> Result<(), Box<dyn std::erro
     assert_pixel(pixel(&readback, 20, 12), [0.5, 0.5, 1.0, 1.0], 1e-3);
     // Outside the member's clip the surface is untouched.
     assert_pixel(pixel(&readback, 4, 4), [1.0, 0.0, 0.0, 1.0], 1e-3);
-    let memory = wait!(engine.memory());
+    let memory = wait!(engine.memory())?;
     assert_eq!(memory.backdrop_captures, Bytes(16 * 16 * 8));
     assert_eq!(memory.backdrop_capture_format, Some("rgba16float"));
     Ok(())
@@ -124,7 +124,7 @@ fn blurred_backdrop_keeps_extended_range() -> Result<(), Box<dyn std::error::Err
         (edge[0] - expected).abs() < 1.0 && (edge[1] - expected).abs() < 1.0,
         "edge pixel {edge:?}, expected about {expected}"
     );
-    let memory = wait!(engine.memory());
+    let memory = wait!(engine.memory())?;
     // footprint = ceil(4 * 3) = 12 → region (8-12..56+12) ∩ 0..64 = 64×64.
     // The filter's input/output intermediates count in `gpu`, not in
     // `backdrop_captures` — only the one capture texture does.
@@ -159,7 +159,7 @@ fn filtered_group_reports_its_chain_targets() -> Result<(), Box<dyn std::error::
             .backdrop(group.sample());
     });
     wait!(engine.render(FrameTime::now()))?;
-    let memory = wait!(engine.memory());
+    let memory = wait!(engine.memory())?;
     // footprint = ceil(4 * 4) = 16 → region (8-16..56+16) ∩ 0..64 = 64×64.
     // The chain holds an input/output pair at the capture's format plus
     // the one intermediate the blur's two passes share — three
@@ -171,7 +171,7 @@ fn filtered_group_reports_its_chain_targets() -> Result<(), Box<dyn std::error::
     });
     drop(group);
     wait!(engine.render(FrameTime::now()))?;
-    assert_eq!(wait!(engine.memory()).filter_targets, Bytes(0));
+    assert_eq!(wait!(engine.memory())?.filter_targets, Bytes(0));
     Ok(())
 }
 }
@@ -203,11 +203,11 @@ fn trim_drops_the_chain_targets() -> Result<(), Box<dyn std::error::Error>> {
     // footprint = ceil(4 * 4) = 16 → region (8-16..56+16) ∩ 0..64 = 64×64.
     // The io pair alone would be two targets; the blur's shared
     // intermediate puts the chain above it.
-    let held = wait!(engine.memory()).filter_targets;
+    let held = wait!(engine.memory())?.filter_targets;
     assert!(held > Bytes(2 * 64 * 64 * 8), "held {held:?}");
     for (pressure, red) in [(Pressure::Critical, 0.5), (Pressure::Moderate, 1.0)] {
         engine.trim(pressure);
-        assert_eq!(wait!(engine.memory()).filter_targets, Bytes(0));
+        assert_eq!(wait!(engine.memory())?.filter_targets, Bytes(0));
         // A frame with nothing to redraw does not run the chain; new
         // backdrop content does, and the chain recreates its targets.
         surface.update(|tx| {
@@ -219,7 +219,7 @@ fn trim_drops_the_chain_targets() -> Result<(), Box<dyn std::error::Error>> {
             }));
         });
         wait!(engine.render(FrameTime::now()))?;
-        assert_eq!(wait!(engine.memory()).filter_targets, held);
+        assert_eq!(wait!(engine.memory())?.filter_targets, held);
     }
     Ok(())
 }
@@ -387,7 +387,7 @@ fn two_members_share_one_capture() -> Result<(), Box<dyn std::error::Error>> {
     // Both members sample the one capture: the green surface behind them.
     assert_pixel(pixel(&readback, 4, 4), [0.0, 1.0, 0.0, 1.0], 1e-3);
     assert_pixel(pixel(&readback, 28, 4), [0.0, 1.0, 0.0, 1.0], 1e-3);
-    let memory = wait!(engine.memory());
+    let memory = wait!(engine.memory())?;
     // One capture for the group, bounded to the members' union (x 2..30,
     // y 2..6) — not one per member nor the whole surface.
     assert_eq!(memory.backdrop_captures, Bytes(28 * 4 * 8));
@@ -746,7 +746,7 @@ fn a_bound_shader_effect_change_rerenders_the_member()
     let readback = wait!(surface.readback())?;
     let lit = pixel(&readback, 10, 32);
     assert!(lit[0] > 1.5, "rim pixel {lit:?} under gain 3");
-    let captures = wait!(engine.memory()).backdrop_captures;
+    let captures = wait!(engine.memory())?.backdrop_captures;
 
     gain.set(0.0);
     wait!(engine.render(FrameTime::now()))?;
@@ -755,7 +755,7 @@ fn a_bound_shader_effect_change_rerenders_the_member()
     assert_pixel(pixel(&readback, 10, 32), [1.0, 0.0, 0.0, 1.0], 1e-3);
     assert_pixel(pixel(&readback, 32, 32), [1.0, 0.0, 0.0, 1.0], 1e-3);
     assert_eq!(
-        wait!(engine.memory()).backdrop_captures,
+        wait!(engine.memory())?.backdrop_captures,
         captures,
         "the group keeps its capture"
     );
@@ -984,7 +984,7 @@ fn effect_members_do_not_duplicate_the_capture() -> Result<(), Box<dyn std::erro
         }
     });
     wait!(engine.render(FrameTime::now()))?;
-    let memory = wait!(engine.memory());
+    let memory = wait!(engine.memory())?;
     // Three members over the same 16x16 union sample one shared capture.
     assert_eq!(memory.backdrop_captures, Bytes(16 * 16 * 8));
     assert_eq!(memory.backdrop_capture_format, Some("rgba16float"));
@@ -1019,7 +1019,7 @@ fn a_shaders_reach_grows_the_capture_region() -> Result<(), Box<dyn std::error::
             .backdrop(group.sample_with(shader.effect(vec![])));
     });
     wait!(engine.render(FrameTime::now()))?;
-    let memory = wait!(engine.memory());
+    let memory = wait!(engine.memory())?;
     // The 32x32 member union grows by the 8 px reach on every side.
     assert_eq!(memory.backdrop_captures, Bytes(48 * 48 * 8));
     assert_eq!(memory.backdrop_capture_format, Some("rgba16float"));
@@ -1075,9 +1075,9 @@ fn far_members_take_two_regions() -> Result<(), Box<dyn std::error::Error>> {
 
     let (engine_a, _surface_a, readback_a, _group_a, _group_ba) = wait!(render_bars(false))?;
     // Two regions: 512x96 + 512x96 texels at 8 bytes.
-    assert_eq!(wait!(engine_a.memory()).backdrop_captures, Bytes(2 * 512 * 96 * 8));
+    assert_eq!(wait!(engine_a.memory())?.backdrop_captures, Bytes(2 * 512 * 96 * 8));
     let (engine_b, _surface_b, readback_b, _group_c, _group_d) = wait!(render_bars(true))?;
-    assert_eq!(wait!(engine_b.memory()).backdrop_captures, Bytes(2 * 512 * 96 * 8));
+    assert_eq!(wait!(engine_b.memory())?.backdrop_captures, Bytes(2 * 512 * 96 * 8));
     // Inside both bars the two-region one-group render looks the same as
     // the two single-member groups.
     for y in [0..96, 416..512] {
@@ -1119,7 +1119,7 @@ fn reach_merges_aproned_rects() -> Result<(), Box<dyn std::error::Error>> {
     // the 8 px reach (8..32 x -4..20), clipped to [8,0,24,20]. They
     // overlap, so the union region is [4,0,28,20] = 560 texels — not the
     // 64+480 of two separate regions.
-    assert_eq!(wait!(engine.memory()).backdrop_captures, Bytes(28 * 20 * 8));
+    assert_eq!(wait!(engine.memory())?.backdrop_captures, Bytes(28 * 20 * 8));
     Ok(())
 }
 }
@@ -1142,12 +1142,12 @@ fn removing_a_member_drops_its_region() -> Result<(), Box<dyn std::error::Error>
             .backdrop(group.sample());
     });
     wait!(engine.render(FrameTime::now()))?;
-    assert_eq!(wait!(engine.memory()).backdrop_captures, Bytes(2 * 512 * 96 * 8));
+    assert_eq!(wait!(engine.memory())?.backdrop_captures, Bytes(2 * 512 * 96 * 8));
     surface.update(|tx| {
         tx[surface.root()].remove(&bottom);
     });
     wait!(engine.render(FrameTime::now()))?;
-    assert_eq!(wait!(engine.memory()).backdrop_captures, Bytes(512 * 96 * 8));
+    assert_eq!(wait!(engine.memory())?.backdrop_captures, Bytes(512 * 96 * 8));
     Ok(())
 }
 }
@@ -1261,7 +1261,7 @@ fn reduced_capture_resolves_and_samples_bilinearly() -> Result<(), Box<dyn std::
     // The member [8, 24)² is texels [2, 6)², and the bilinear taps of its
     // edge pixels reach one texel further: [1, 7)², 36 texels, not 256
     // pixels.
-    let memory = wait!(engine.memory());
+    let memory = wait!(engine.memory())?;
     assert_eq!(memory.backdrop_captures, Bytes(6 * 6 * 8));
     Ok(())
 }
@@ -1352,7 +1352,7 @@ fn reduced_blur_counts_its_footprint_in_capture_texels() -> Result<(), Box<dyn s
     );
     // footprint 6 texels around texels [4, 28) → [0, 32)²: the capture
     // holds a quarter of the 1:1 region's 64 × 64 pixels.
-    let memory = wait!(engine.memory());
+    let memory = wait!(engine.memory())?;
     assert_eq!(memory.backdrop_captures, Bytes(32 * 32 * 8));
     Ok(())
 }
@@ -1556,7 +1556,7 @@ fn staged_resolves_share_the_surface_staging_texture() -> Result<(), Box<dyn std
     // staging: its growth lands there on top of the new captures (the
     // depth-0 scratch has covered the surface since phase 1 — a capture
     // inside an isolation forces it — so nothing else grows).
-    let before = wait!(engine.memory());
+    let before = wait!(engine.memory())?;
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|r| {
             r.fill(
@@ -1590,7 +1590,7 @@ fn staged_resolves_share_the_surface_staging_texture() -> Result<(), Box<dyn std
     assert_pixel(pixel(&readback, 40, 40), [1.0, 0.0, 0.0, 1.0], 1e-3);
     // Only the captures count: 30² + 10² + 32² f16 texels — the empty
     // ancestor's member still captures (clamped to the 32-texel extent).
-    let memory = wait!(engine.memory());
+    let memory = wait!(engine.memory())?;
     assert_eq!(
         memory.backdrop_captures,
         Bytes(30 * 30 * 8 + 10 * 10 * 8 + 32 * 32 * 8)
@@ -1601,12 +1601,13 @@ fn staged_resolves_share_the_surface_staging_texture() -> Result<(), Box<dyn std
         "MemoryUsage::gpu counts the staging's regrowth"
     );
     // The shared texture is kept across frames: a re-committed frame
-    // grows nothing.
+    // grows nothing. The content differs from the last commit — an
+    // identical replacement skips the frame entirely.
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|r| {
             r.fill(
                 Rect::new(0.0, 0.0, 64.0, 64.0),
-                WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+                WorkingColor::new([0.75, 0.0, 0.0, 1.0]),
             );
         }));
     });
@@ -1687,13 +1688,106 @@ fn sample_level_mixes_the_pyramid_trilinearly() -> Result<(), Box<dyn std::error
     assert_pixel(pixel(&readback, 15, 16), expected(15), 0.01);
     assert_pixel(pixel(&readback, 16, 16), expected(16), 0.01);
     assert_pixel(pixel(&readback, 17, 16), expected(17), 0.01);
-    let memory = wait!(engine.memory());
+    let memory = wait!(engine.memory())?;
     // The whole-surface member's 32×32 capture plus its two levels.
     assert_eq!(
         memory.backdrop_captures,
         Bytes((32 * 32 + 16 * 16 + 8 * 8) * 8)
     );
     assert_eq!(memory.backdrop_capture_format, Some("rgba16float"));
+    Ok(())
+}
+}
+
+/// One readback row from a `Linear` group's member and one from an
+/// `SrgbEncoded` group's.
+type EdgeRows = (Vec<[f32; 4]>, Vec<[f32; 4]>);
+
+split_fn! {
+/// A black | white edge at x = 32 under two groups blurred at capture
+/// `scale`, a `Linear` one sampled by rows 2..14 and an `SrgbEncoded` one
+/// by rows 38..62, far enough below that the first member's sample, which
+/// the second group's capture holds, stays outside its blur: columns
+/// 16..48 of row 8 and row 50 of the readback.
+fn blurred_edge_rows(
+    engine: &Engine<Gpu>,
+    scale: f32,
+) -> Result<EdgeRows, Box<dyn std::error::Error>> {
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
+    let blur = || filtrate::filters::GaussianBlur::new(2.0f32);
+    let spec = cherenkov::BackdropSpec::from(cherenkov::CaptureScale::new(scale)?);
+    let linear = surface.backdrop_group(blur(), spec);
+    let encoded = surface.backdrop_group(
+        blur(),
+        spec.blend_space(cherenkov::BlendSpace::SrgbEncoded),
+    );
+    let (a, b) = (surface.layer(), surface.layer());
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                Rect::new(0.0, 0.0, 32.0, 64.0),
+                WorkingColor::new([0.0, 0.0, 0.0, 1.0]),
+            );
+            r.fill(
+                Rect::new(32.0, 0.0, 64.0, 64.0),
+                WorkingColor::new([1.0, 1.0, 1.0, 1.0]),
+            );
+        }));
+        tx[surface.root()].push(&a);
+        tx[surface.root()].push(&b);
+        tx[&a]
+            .clip(Rect::new(8.0, 2.0, 56.0, 14.0))
+            .backdrop(linear.sample());
+        tx[&b]
+            .clip(Rect::new(8.0, 38.0, 56.0, 62.0))
+            .backdrop(encoded.sample());
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    let readback = wait!(surface.readback())?;
+    let row = |y: usize| (16..48).map(|x| pixel(&readback, x, y)).collect();
+    Ok((row(8), row(50)))
+}
+}
+
+split_test! {
+/// An `SrgbEncoded` group averages encoded values: its capture resolve,
+/// blur and bilinear read run on encoded texels, so across a blurred
+/// black | white edge each of its pixels is the decoded mean of the
+/// encoded backdrop with the linear group's weights — `decode(L)` for the
+/// linear group's `L` — at full and at reduced capture scale. The linear
+/// group still averages linear light, so pixels mirrored about the edge
+/// sum to white.
+fn an_encoded_group_blurs_in_the_encoded_space() -> Result<(), Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    for scale in [1.0, 0.5] {
+        let (linear, encoded) = wait!(blurred_edge_rows(&engine, scale))?;
+        // Columns 16..48: the edge lies between indices 15 and 16.
+        for k in 0..16 {
+            let sum = linear[15 - k][0] + linear[16 + k][0];
+            // Two half-float writes, one per pixel of the pair.
+            assert_f16_close(&[sum], &[1.0], 2.0);
+        }
+        let expected: Vec<f32> = linear
+            .iter()
+            .flat_map(|p| {
+                let gray = cherenkov_oracle::color::srgb_decode(f64::from(p[0]));
+                #[expect(clippy::cast_possible_truncation, reason = "a decoded unit value")]
+                let gray = gray as f32;
+                [gray, gray, gray, 1.0]
+            })
+            .collect();
+        let actual: Vec<f32> = encoded.iter().flatten().copied().collect();
+        // The encoded route stores the capture and the blur's
+        // intermediates encoded (2.4 each) and writes the result once; the
+        // linear row it is checked against carries one more write, read
+        // through the decode (2.4).
+        assert_f16_close(&actual, &expected, 4.0f64.mul_add(2.4, 1.0));
+        // Two pixels into the black side the encoded mean is far darker.
+        assert!(
+            encoded[14][0] < linear[14][0] - 0.1,
+            "scale {scale}: {encoded:?}"
+        );
+    }
     Ok(())
 }
 }
@@ -2134,7 +2228,7 @@ fn anchored_groups_capture_beneath_the_anchor() -> Result<(), Box<dyn std::error
     // Each group's capture reads the anchor's canvas straight from the
     // semantic target — there is no shared copy texture: the memory
     // accounting below is exactly the groups' own captures.
-    let memory = wait!(engine.memory());
+    let memory = wait!(engine.memory())?;
     // Each group keeps only its own capture: A's 24×24 member union
     // and B's 16×24 member rect.
     assert_eq!(memory.backdrop_captures, Bytes((24 * 24 + 16 * 24) * 8));
@@ -3811,6 +3905,534 @@ fn a_member_inside_the_anchors_blended_child_is_unsupported() -> Result<(), Box<
         ),
         "unexpected result {result:?}"
     );
+    Ok(())
+}
+}
+
+/// The capture the `backdrop_sample_blur` tests read, a 256×160 grid of
+/// values exact in `f16`: a grid of 4-texel lines on an 8-texel pitch
+/// (x < 64), flat 0.25 (64..128) and 0.75 (128..192) with step edges
+/// between the zones, and past x = 192 a three-texel stripe period over the
+/// top half (y < 80) with a flat 0.5 below it.
+fn blur_capture(x: usize, y: usize) -> f64 {
+    if x < 64 {
+        f64::from(u8::from(x % 8 < 4 || y % 8 < 4))
+    } else if x < 128 {
+        0.25
+    } else if x < 192 {
+        0.75
+    } else if y < STRIPE_ROWS {
+        f64::from(u8::from(!x.is_multiple_of(3)))
+    } else {
+        0.5
+    }
+}
+
+const BLUR_SIZE: (usize, usize) = (256, 160);
+/// The first column of [`blur_capture`]'s stripe zone.
+const STRIPE_COLUMN: usize = 192;
+/// The stripe zone's height.
+const STRIPE_ROWS: usize = 80;
+/// The tolerance of a blurred read over band-limited content (step edges,
+/// flat zones, the grid of period 8): 2% of the capture's unit contrast.
+const BAND_LIMITED: f64 = 0.02;
+/// The tolerance where a pixel's kernel reaches the period-3 stripes: the
+/// reduction kernel leaks 3.1% of that frequency (f = 1/3 cycles per
+/// texel) into level 1, times the read's response there, plus the
+/// reference's own residual on a contrast-1 pattern.
+const STRIPED: f64 = 0.05;
+
+/// A 5-level Gaussian pyramid over [`blur_capture`], read per pixel by
+/// `shader` with `params`: the whole-surface member's readback.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the capture's size is 256×160"
+)]
+fn render_blur_capture(
+    engine: &Engine<Gpu>,
+    shader: &cherenkov::BackdropShader,
+    params: Vec<f32>,
+    pyramid: cherenkov::CapturePyramid,
+) -> Result<cherenkov::Readback, Box<dyn std::error::Error>> {
+    let surface = wait!(engine.surface(
+        Offscreen::new(
+            (BLUR_SIZE.0 as u32, BLUR_SIZE.1 as u32),
+            OffscreenFormat::LinearF16
+        ),
+        || {}
+    ))?;
+    let spec = cherenkov::BackdropSpec::new(
+        cherenkov::CaptureScale::FULL,
+        cherenkov::CaptureLevels::new(5)?,
+    )
+    .pyramid(pyramid);
+    let group = surface.backdrop_group_unfiltered(spec);
+    let member = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            let gray = |v: f32| WorkingColor::new([v, v, v, 1.0]);
+            r.fill(Rect::new(0.0, 0.0, 256.0, 160.0), gray(0.0));
+            r.fill(Rect::new(64.0, 0.0, 128.0, 160.0), gray(0.25));
+            r.fill(Rect::new(128.0, 0.0, 192.0, 160.0), gray(0.75));
+            r.fill(Rect::new(192.0, 80.0, 256.0, 160.0), gray(0.5));
+            for i in 0..8u8 {
+                let x = f64::from(i) * 8.0;
+                r.fill(Rect::new(x, 0.0, x + 4.0, 160.0), gray(1.0));
+            }
+            for j in 0..20u8 {
+                let y = f64::from(j) * 8.0;
+                r.fill(Rect::new(0.0, y, 64.0, y + 4.0), gray(1.0));
+            }
+            for x in (192..256u16).filter(|x| x % 3 != 0) {
+                let x = f64::from(x);
+                r.fill(Rect::new(x, 0.0, x + 1.0, 80.0), gray(1.0));
+            }
+        }));
+        tx[surface.root()].push(&member);
+        tx[&member]
+            .clip(Rect::new(0.0, 0.0, 256.0, 160.0))
+            .backdrop(group.sample_with(shader.effect(params)));
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    Ok(wait!(surface.readback())?)
+}
+
+/// `erf` in `f64`: the Maclaurin series, whose cancellation at |x| < 4
+/// leaves far more than the reference needs; beyond that `erfc < 2e-8`.
+fn erf(x: f64) -> f64 {
+    if x.abs() >= 4.0 {
+        return x.signum();
+    }
+    let (mut term, mut sum) = (x, x);
+    for n in 1..80 {
+        let n = f64::from(n);
+        term *= -x * x / n;
+        sum += term / 2.0f64.mul_add(n, 1.0);
+    }
+    sum * 2.0 / std::f64::consts::PI.sqrt()
+}
+
+/// `H(x) = x·Φ(x / s) + s·ϕ(x / s)`, the second antiderivative of the
+/// Gaussian of deviation `s` (`max(x, 0)` for `s² ≤ 0`), in `f64`.
+fn gaussian_h(x: f64, variance: f64) -> f64 {
+    if variance <= 0.0 {
+        return x.max(0.0);
+    }
+    let s = variance.sqrt();
+    let z = x / s;
+    let cdf = f64::midpoint(1.0, erf(z / std::f64::consts::SQRT_2));
+    let pdf = (-0.5 * z * z).exp() / (2.0 * std::f64::consts::PI).sqrt();
+    s.mul_add(pdf, x * cdf)
+}
+
+/// Per output pixel `p` along one axis of `len` texels, the weight of each
+/// texel `t` in the bilinearly interpolated capture convolved with a
+/// Gaussian of variance `variance` (`sigma² − 1/6`; the bilinear weights
+/// when it is not positive), centred at `p + 0.5 + offset` (texel `t`
+/// spans `[t, t + 1)`, its centre at `t + 0.5`). A texel's weight is the
+/// second difference of `H` at unit spacing, `F(t) − F(t − 1)` with
+/// `F(t) = H(t + 1 − c) − H(t − c)` for `c = p + offset`, the first and
+/// last texels extending to infinity (clamp to edge): `F(0)` and
+/// `1 − F(len − 2)`.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "texel indices are below 256, exact in f64"
+)]
+fn gaussian_weights(len: usize, variance: f64, offset: f64) -> Vec<Vec<f64>> {
+    (0..len)
+        .map(|p| {
+            let c = p as f64 + offset;
+            let f = |t: usize| {
+                gaussian_h(t as f64 + 1.0 - c, variance) - gaussian_h(t as f64 - c, variance)
+            };
+            (0..len)
+                .map(|t| {
+                    if t == 0 {
+                        f(0)
+                    } else if t + 1 == len {
+                        1.0 - f(t - 1)
+                    } else {
+                        f(t) - f(t - 1)
+                    }
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// [`blur_capture`] under `backdrop_sample_blur`'s contract in `f64`: the
+/// capture bilinearly interpolated, convolved with a Gaussian of variance
+/// `max(sigma² − 1/6, 0)` texels² per axis (bilinear interpolation alone
+/// has variance 1/6), at the pixel centres shifted by `offset`.
+fn reference_blur(sigma: f64, offset: (f64, f64)) -> Vec<Vec<f64>> {
+    let (w, h) = BLUR_SIZE;
+    let variance = sigma.mul_add(sigma, -(1.0 / 6.0));
+    let wx = gaussian_weights(w, variance, offset.0);
+    let wy = gaussian_weights(h, variance, offset.1);
+    // Horizontal pass: `rows[t_y][x]`.
+    let rows: Vec<Vec<f64>> = (0..h)
+        .map(|ty| {
+            (0..w)
+                .map(|x| (0..w).map(|tx| blur_capture(tx, ty) * wx[x][tx]).sum())
+                .collect()
+        })
+        .collect();
+    (0..h)
+        .map(|y| {
+            (0..w)
+                .map(|x| (0..h).map(|ty| rows[ty][x] * wy[y][ty]).sum())
+                .collect()
+        })
+        .collect()
+}
+
+/// How far from the sample point (level-0 texels) a `backdrop_sample_blur`
+/// of deviation `sigma` over a pyramid reads: `4.5 · 2^k` for the deepest
+/// level `k` the read takes, the deepest with `V(k) + 4^k / 6 ≤ sigma²`
+/// (level 0 below that), among the five levels the pyramid keeps.
+fn blur_footprint(sigma: f64) -> f64 {
+    let v = sigma * sigma;
+    let k = (0.5 * (12.0f64.mul_add(v, 5.0) / 7.0).log2())
+        .floor()
+        .clamp(0.0, 4.0);
+    4.5 * k.exp2()
+}
+
+/// The pixel margin a comparison skips at the surface edge for `sigma`: the
+/// Gaussian's `3σ` plus the read's footprint, so no compared pixel's
+/// kernel reaches a level's clamped edge texel.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the margin is a small positive pixel count"
+)]
+fn blur_margin(sigma: f64) -> usize {
+    3.0f64.mul_add(sigma, blur_footprint(sigma)).ceil() as usize
+}
+
+/// The most a pixel exceeds its tolerance by: `(excess, error, at)` over
+/// every pixel and channel at least `margin` pixels from the surface edge,
+/// `tolerance(x, y)` the allowed `|readback − expected|` there (`expected`
+/// is the gray value; the capture is opaque). A non-positive excess means
+/// every pixel is within its tolerance.
+fn max_blur_excess(
+    readback: &cherenkov::Readback,
+    expected: &[Vec<f64>],
+    margin: usize,
+    tolerance: impl Fn(usize, usize) -> f64,
+) -> (f64, f64, (usize, usize)) {
+    let mut worst = (f64::NEG_INFINITY, 0.0, (0, 0));
+    for (y, row) in expected.iter().enumerate() {
+        for (x, &e) in row.iter().enumerate() {
+            if x < margin || y < margin || x + margin >= row.len() || y + margin >= expected.len() {
+                continue;
+            }
+            let p = pixel(readback, x, y);
+            let err = (0..3)
+                .map(|c| (f64::from(p[c]) - e).abs())
+                .chain([(f64::from(p[3]) - 1.0).abs()])
+                .fold(0.0, f64::max);
+            let excess = err - tolerance(x, y);
+            if excess > worst.0 {
+                worst = (excess, err, (x, y));
+            }
+        }
+    }
+    worst
+}
+
+split_test! {
+/// `backdrop_sample_blur(q, sigma)` over a Gaussian pyramid against its
+/// contract computed independently in `f64` (`reference_blur`): the
+/// capture, bilinearly interpolated, convolved with a Gaussian of variance
+/// `max(sigma² − 1/6, 0)` with unbounded support. `sigma` 0 — equal to
+/// `backdrop_sample` —, the bilinear range (σ ≤ 1/√6 ≈ 0.41), single-level
+/// reads on levels 0 to 3 (σ = 0.5, 1.0, 1.3 on level 0, 2.0 on level 1,
+/// 4.5 on level 2, 9.0 on level 3), the cross-fades into levels 1 to 3
+/// (σ = 1.4, 1.5, 1.7; 3.0, 3.3; 6.5) and the clamp
+/// `sqrt(V(4) + (23/12)·256)` ≈ 24.43 (past which the read must not
+/// change), at pixel centres, at a fractional offset and at a half-texel
+/// offset. A level `k` read touches texels `4.5·2^k` away, so the
+/// comparison skips the pixels within `3σ` plus that footprint of the
+/// surface edge.
+fn sample_blur_matches_a_true_gaussian() -> Result<(), Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let blur = engine.backdrop_shader(cherenkov::BackdropShaderSource::wgsl(
+        "fn backdrop_effect(px: BackdropPixel, params: array<vec4<f32>, 16>) -> vec4<f32> {
+            return backdrop_sample_blur(px.p + params[0].yz, params[0].x);
+        }",
+    ))?;
+    let plain = engine.backdrop_shader(cherenkov::BackdropShaderSource::wgsl(
+        "fn backdrop_effect(px: BackdropPixel, params: array<vec4<f32>, 16>) -> vec4<f32> {
+            return backdrop_sample(px.p + params[0].yz);
+        }",
+    ))?;
+    let gaussian = cherenkov::CapturePyramid::Gaussian;
+    // The capture the reference is computed over is the one on screen.
+    let capture = render_blur_capture(&engine, &plain, vec![0.0, 0.0, 0.0], gaussian)?;
+    for y in 0..BLUR_SIZE.1 {
+        for x in 0..BLUR_SIZE.0 {
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "the capture's values are exact in f16"
+            )]
+            let v = blur_capture(x, y) as f32;
+            assert_pixel(pixel(&capture, x, y), [v, v, v, 1.0], 1e-3);
+        }
+    }
+    // `sigma = 0` is the bilinear read `backdrop_sample` makes, at pixel
+    // centres and between them.
+    for offset in [[0.0, 0.0], [0.37, -0.21]] {
+        let want = render_blur_capture(&engine, &plain, vec![0.0, offset[0], offset[1]], gaussian)?;
+        let got = render_blur_capture(&engine, &blur, vec![0.0, offset[0], offset[1]], gaussian)?;
+        for y in 0..BLUR_SIZE.1 {
+            for x in 0..BLUR_SIZE.0 {
+                assert_pixel(pixel(&got, x, y), pixel(&want, x, y), 1e-3);
+            }
+        }
+    }
+    // The two tolerances are fixed, neither adjusted to a case.
+    let sigmas = [
+        0.3f32, 0.5, 1.0, 1.3, 1.4, 1.5, 1.7, 2.0, 3.0, 3.3, 4.5, 6.5, 9.0,
+    ];
+    let offsets = [(0.0f32, 0.0f32), (0.37, -0.21), (0.5, 0.5)];
+    let cases = sigmas
+        .into_iter()
+        .flat_map(|sigma| offsets.into_iter().map(move |offset| (sigma, offset)));
+    let mut failures = Vec::new();
+    for (sigma, offset) in cases {
+        let readback = render_blur_capture(
+            &engine,
+            &blur,
+            vec![sigma, offset.0, offset.1],
+            gaussian,
+        )?;
+        let reference = reference_blur(
+            f64::from(sigma),
+            (f64::from(offset.0), f64::from(offset.1)),
+        );
+        let margin = blur_margin(f64::from(sigma));
+        // A pixel whose kernel (`margin` texels) reaches the stripe zone.
+        let tolerance = |x: usize, y: usize| {
+            if x + margin >= STRIPE_COLUMN && y < STRIPE_ROWS + margin {
+                STRIPED
+            } else {
+                BAND_LIMITED
+            }
+        };
+        let (excess, error, at) = max_blur_excess(&readback, &reference, margin, tolerance);
+        if excess > 0.0 {
+            failures.push(format!(
+                "sigma {sigma} offset {offset:?}: error {error} at {at:?} exceeds its tolerance {}",
+                tolerance(at.0, at.1)
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+    // Past the clamp `sqrt(V(4) + (23/12)·256)` ≈ 24.43 the read holds.
+    let reach = render_blur_capture(&engine, &blur, vec![24.5, 0.0, 0.0], gaussian)?;
+    let beyond = render_blur_capture(&engine, &blur, vec![40.0, 0.0, 0.0], gaussian)?;
+    for y in 0..BLUR_SIZE.1 {
+        for x in 0..BLUR_SIZE.0 {
+            assert_pixel(pixel(&beyond, x, y), pixel(&reach, x, y), 1e-3);
+        }
+    }
+    Ok(())
+}
+}
+
+split_test! {
+/// `backdrop_sample_blur` is defined only on a Gaussian pyramid: a shader
+/// reaching it fails the frame when it composites over a Box group, and
+/// the same shader renders over a Gaussian one.
+fn sample_blur_over_a_box_group_fails_the_frame() -> Result<(), Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let shader = engine.backdrop_shader(cherenkov::BackdropShaderSource::wgsl(
+        "fn blurred(q: vec2<f32>) -> vec4<f32> {
+            return backdrop_sample_blur(q, 2.0);
+        }
+        fn backdrop_effect(px: BackdropPixel, params: array<vec4<f32>, 16>) -> vec4<f32> {
+            return blurred(px.p);
+        }",
+    ))?;
+    for (pyramid, ok) in [
+        (cherenkov::CapturePyramid::Box, false),
+        (cherenkov::CapturePyramid::Gaussian, true),
+    ] {
+        let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16), || {}))?;
+        let spec = cherenkov::BackdropSpec::new(
+            cherenkov::CaptureScale::FULL,
+            cherenkov::CaptureLevels::new(3)?,
+        )
+        .pyramid(pyramid);
+        let group = surface.backdrop_group_unfiltered(spec);
+        let member = surface.layer();
+        surface.update(|tx| {
+            tx[surface.root()].content(surface.record(|r| {
+                r.fill(
+                    Rect::new(0.0, 0.0, 32.0, 32.0),
+                    WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+                );
+            }));
+            tx[surface.root()].push(&member);
+            tx[&member]
+                .clip(Rect::new(0.0, 0.0, 32.0, 32.0))
+                .backdrop(group.sample_with(shader.effect(Vec::new())));
+        });
+        let result = wait!(engine.render(FrameTime::now()));
+        if ok {
+            result?;
+        } else {
+            assert!(
+                matches!(
+                    &result,
+                    Err(cherenkov::RenderError::Render(message))
+                        if message.contains("backdrop_sample_blur") && message.contains("Box")
+                ),
+                "unexpected result {result:?}"
+            );
+        }
+    }
+    Ok(())
+}
+}
+
+/// The left half of a 64 × 64 surface red, the right half blue.
+fn red_and_blue(r: &mut cherenkov::Recorder) {
+    r.fill(
+        Rect::new(0.0, 0.0, 32.0, 64.0),
+        WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+    );
+    r.fill(
+        Rect::new(32.0, 0.0, 64.0, 64.0),
+        WorkingColor::new([0.0, 0.0, 1.0, 1.0]),
+    );
+}
+
+/// A layer over [`red_and_blue`] holding a green panel and a member of a
+/// blurring group, with the handles that keep them alive.
+struct FadedGlass {
+    layer: cherenkov::Layer,
+    _glass: cherenkov::Layer,
+    _group: cherenkov::BackdropGroup,
+}
+
+/// [`FadedGlass`] on `surface`, the layer at `fade`'s opacity; with no
+/// `fade` the layer is left out.
+fn faded_glass(surface: &cherenkov::Surface<Gpu>, fade: Option<f32>) -> FadedGlass {
+    let group = surface.backdrop_group(
+        filtrate::filters::GaussianBlur::new(3.0f32),
+        cherenkov::CaptureScale::FULL,
+    );
+    let layer = surface.layer();
+    let glass = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(red_and_blue));
+        if let Some(opacity) = fade {
+            tx[surface.root()].push(&layer);
+            tx[&layer]
+                .opacity(opacity)
+                .push(&glass)
+                .content(surface.record(|r| {
+                    r.fill(
+                        Rect::new(4.0, 4.0, 60.0, 20.0),
+                        WorkingColor::new([0.0, 1.0, 0.0, 1.0]),
+                    );
+                }));
+            tx[&glass]
+                .clip(Rect::new(8.0, 24.0, 56.0, 56.0))
+                .backdrop(group.sample());
+        }
+    });
+    FadedGlass {
+        layer,
+        _glass: glass,
+        _group: group,
+    }
+}
+
+split_fn! {
+/// [`faded_glass`] rendered alone on an engine of its own: its image and
+/// the passes its frame recorded.
+fn faded_glass_reference(fade: Option<f32>) -> Result<(cherenkov::Readback, u32), Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
+    let _scene = faded_glass(&surface, fade);
+    wait!(engine.render(FrameTime::now()))?;
+    let passes = engine.stats().passes;
+    Ok((wait!(surface.readback())?, passes))
+}
+}
+
+split_test! {
+/// A layer at opacity 0 draws nothing beneath it, its member's capture
+/// included, and shows again when its opacity rises.
+fn a_layer_at_opacity_zero_skips_its_content_and_its_captures() -> Result<(), Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
+    let scene = faded_glass(&surface, Some(0.0));
+    for opacity in [0.0_f32, 0.5, 0.0, 1.0] {
+        surface.update(|tx| {
+            tx[&scene.layer].opacity(opacity);
+        });
+        wait!(engine.render(FrameTime::now()))?;
+        let passes = engine.stats().passes;
+        let actual = wait!(surface.readback())?;
+        // At opacity 0 the reference has no faded layer.
+        let (expected, reference_passes) =
+            wait!(faded_glass_reference((opacity > 0.0).then_some(opacity)))?;
+        assert_images_match(&crop(&expected, 0..64, 0..64), &crop(&actual, 0..64, 0..64));
+        if opacity == 0.0 {
+            assert_eq!(passes, reference_passes, "a hidden layer captures nothing");
+        }
+    }
+    Ok(())
+}
+}
+
+split_fn! {
+/// Two members of one blurring group: the first, at the top, under a
+/// layer at opacity 0 when `hidden`, else left out; the second shown.
+fn hidden_capture_point(hidden: bool) -> Result<cherenkov::Readback, Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
+    let group = surface.backdrop_group(
+        filtrate::filters::GaussianBlur::new(3.0f32),
+        cherenkov::CaptureScale::FULL,
+    );
+    let fade = surface.layer();
+    let first = surface.layer();
+    let second = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(red_and_blue));
+        if hidden {
+            tx[surface.root()].push(&fade);
+            tx[&fade].opacity(0.0_f32).push(&first);
+            tx[&first]
+                .clip(Rect::new(4.0, 4.0, 60.0, 20.0))
+                .backdrop(group.sample());
+        }
+        tx[surface.root()].push(&second);
+        tx[&second]
+            .clip(Rect::new(8.0, 32.0, 56.0, 56.0))
+            .backdrop(group.sample());
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    Ok(wait!(surface.readback())?)
+}
+}
+
+split_test! {
+/// A hidden member that is its group's capture point still captures for
+/// a later member that shows.
+fn a_hidden_capture_point_still_captures_for_a_shown_member() -> Result<(), Box<dyn std::error::Error>> {
+    let shown = wait!(hidden_capture_point(false))?;
+    // The shown member samples the blurred backdrop: the red and blue
+    // halves mix across its middle.
+    let mixed = pixel(&shown, 32, 44);
+    assert!(mixed[0] > 0.2 && mixed[2] > 0.2, "pixel {mixed:?}");
+    let hidden = wait!(hidden_capture_point(true))?;
+    assert_images_match(&crop(&shown, 0..64, 0..64), &crop(&hidden, 0..64, 0..64));
     Ok(())
 }
 }

@@ -10,7 +10,6 @@ use image::{ImageBuffer, Rgba, RgbaImage};
 
 /// Bounding box of changed region.
 #[derive(Debug, Clone, Copy)]
-#[non_exhaustive]
 pub struct BoundingBox {
     /// Minimum X coordinate.
     pub min_x: u32,
@@ -38,18 +37,68 @@ impl BoundingBox {
 
 /// Result of comparing two images.
 #[derive(Debug)]
-#[non_exhaustive]
 pub struct DiffResult {
     /// Whether any pixels changed.
-    pub changed: bool,
+    changed: bool,
     /// Bounding box of the changed region, if any.
-    pub bbox: Option<BoundingBox>,
+    bbox: Option<BoundingBox>,
     /// Percentage of pixels that changed (0.0 to 100.0).
-    pub percentage: f32,
+    percentage: f32,
     /// Total number of changed pixels.
-    pub changed_pixels: u32,
+    changed_pixels: u32,
     /// Image dimensions (width, height).
-    pub dimensions: (u32, u32),
+    dimensions: (u32, u32),
+}
+
+impl DiffResult {
+    /// Result of a comparison over `changed_pixels` of `dimensions` pixels,
+    /// `percentage` of them changed inside `bbox`.
+    #[must_use]
+    pub const fn new(
+        changed: bool,
+        bbox: Option<BoundingBox>,
+        percentage: f32,
+        changed_pixels: u32,
+        dimensions: (u32, u32),
+    ) -> Self {
+        Self {
+            changed,
+            bbox,
+            percentage,
+            changed_pixels,
+            dimensions,
+        }
+    }
+
+    /// Whether any pixels changed.
+    #[must_use]
+    pub const fn changed(&self) -> bool {
+        self.changed
+    }
+
+    /// Bounding box of the changed region, if any.
+    #[must_use]
+    pub const fn bbox(&self) -> Option<BoundingBox> {
+        self.bbox
+    }
+
+    /// Percentage of pixels that changed (0.0 to 100.0).
+    #[must_use]
+    pub const fn percentage(&self) -> f32 {
+        self.percentage
+    }
+
+    /// Total number of changed pixels.
+    #[must_use]
+    pub const fn changed_pixels(&self) -> u32 {
+        self.changed_pixels
+    }
+
+    /// Image dimensions (width, height).
+    #[must_use]
+    pub const fn dimensions(&self) -> (u32, u32) {
+        self.dimensions
+    }
 }
 
 impl std::fmt::Display for DiffResult {
@@ -154,13 +203,13 @@ pub fn compare_images(before: &[u8], after: &[u8]) -> eyre::Result<DiffResult> {
         None
     };
 
-    Ok(DiffResult {
+    Ok(DiffResult::new(
         changed,
         bbox,
         percentage,
         changed_pixels,
-        dimensions: (width, height),
-    })
+        (width, height),
+    ))
 }
 
 /// Save a diff image highlighting changed pixels.

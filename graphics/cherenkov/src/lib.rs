@@ -17,7 +17,6 @@
 //!   on the render thread.
 #![expect(
     clippy::exhaustive_enums,
-    clippy::exhaustive_structs,
     reason = "publish = false: no semver surface until #2687 makes the crate publishable"
 )]
 
@@ -41,6 +40,11 @@ mod message;
 mod resource;
 mod surface;
 mod text;
+#[cfg(not(target_arch = "wasm32"))]
+mod transport;
+pub use cherenkov_record::wgsl;
+#[cfg(feature = "workers")]
+pub mod workers;
 
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
@@ -54,8 +58,8 @@ pub use parley;
 pub use web_time::Instant;
 
 pub use crate::animation::{
-    Animatable, Animation, AnimationTrack, Curve, Decay, Lanes, Spring, curve_value, decay_step,
-    settled, spring_step,
+    Animatable, Animation, AnimationTrack, CubicBezier, Curve, Decay, Easing, KeyframeAnimation,
+    Keyframes, Lanes, Repeat, Spring, Timing, curve_value, decay_step, spring_step,
 };
 
 pub use crate::backend::{
@@ -72,15 +76,17 @@ pub use crate::color::{
 };
 pub use crate::config::{Budget, Bytes, MemoryUsage, Pressure};
 pub use crate::display_list::{
-    Command, Dirty, DisplayList, DisplayListView, Operand, OperandKind, OperandRef, Operands,
-    Picture, ScopeError, Slot, SlotUpdate,
+    Command, Dirty, DisplayList, DisplayListView, Edit, Operand, OperandKind, OperandRef, Operands,
+    Picture, ScopeError, Slot, SlotUpdate, Splice,
 };
 pub use crate::engine::Engine;
+#[cfg(not(target_arch = "wasm32"))]
+pub use crate::engine::PendingFrame;
 pub use crate::engine::{CompletionWaker, FrameScope, SurfaceWakes};
 pub use crate::error::{EngineError, RenderError, ResourceError, SurfaceError, SurfaceRejection};
 pub use crate::frame::{
     DEFAULT_REFRESH, FrameId, FrameStats, FrameTime, FrameTiming, Next, Offscreen, OffscreenFormat,
-    PassTiming, Phases, Readback,
+    OutputAlpha, PassTiming, Phases, Readback,
 };
 pub use crate::glyph::{FontId, Glyph, GlyphRun, GlyphStyle};
 pub use crate::image::{
@@ -99,7 +105,7 @@ pub use crate::record::{
 };
 pub use crate::resource::{
     BackdropGroup, BackdropShader, Filter, Font, FontSource, FrameSink, GpuProducer, Hosted, Image,
-    Shader,
+    Shader, TextLayoutHandle,
 };
 pub use crate::shape::{
     ContinuousRect, EvenOdd, FillRule, PATH_TOLERANCE, PathRef, Semantic, Shape, ShapeData,
@@ -107,17 +113,20 @@ pub use crate::shape::{
 pub use crate::size::LayoutSize;
 pub use crate::style::{BlendMode, BlendSpace, FilterId, Group, Shadow};
 pub use crate::surface::{EngineQueue, Surface};
-pub use crate::text::{TextLayout, draw_text};
+pub use crate::text::{TextLayout, TextLayoutData, TextLayouts, draw_text};
+pub use cherenkov_record::Region;
 // The moved layer-tree types: re-exported at the root exactly like the
 // rest of `cherenkov-record`.
 pub use cherenkov_record::{
-    AnimationStart, BackdropEffect, BackdropId, BackdropOuter, BackdropOuterError, BackdropSample,
-    BackdropSampling, BackdropShaderEffect, BackdropShaderId, BackdropShaderSource, BackdropSpec,
-    BackdropUnion, BackdropUnionError, CaptureLevels, CaptureLevelsError, CaptureScale,
-    CaptureScaleError, ColorMatrix, ContentOp, GpuInstalls, ImageLimits, ImageStorage, Install,
-    Layer, LayerAnimations, LayerContent, LayerEdit, LayerId, LayerNode, LayerOwner, LevelRamp,
+    AnimationOrigin, AnimationStart, Axis, BackdropEffect, BackdropId, BackdropOuter,
+    BackdropOuterError, BackdropSample, BackdropSampling, BackdropShaderEffect, BackdropShaderId,
+    BackdropShaderSource, BackdropSpec, BackdropUnion, BackdropUnionError, CaptureLevels,
+    CaptureLevelsError, CapturePyramid, CaptureScale, CaptureScaleError, ColorMatrix, ContentOp,
+    GpuInstalls, ImageLimits, ImageStorage, Install, KeyframeProp, Layer, LayerAnimations,
+    LayerContent, LayerEdit, LayerId, LayerKeyframes, LayerNode, LayerOwner, LevelRamp,
     LevelRampError, Projective, ProjectiveError, ProjectiveLayers, Prop, Queue, Realize,
-    RecordingScale, RecordingScaleError, Refraction, RefreshRange, ResourceId, Rim, Shared,
-    SurfaceId, SurfaceTree, Target, Transaction, snap_animating,
+    RecordingScale, RecordingScaleError, Refraction, RefreshRange, ResourceId, Retarget, Rim,
+    Shared, SurfaceId, SurfaceTree, Target, TextLayoutId, TrackOrigin, TrackStart, Transaction,
+    TransformComponents, snap_animating,
 };
 pub use kurbo::Stroke;

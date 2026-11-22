@@ -475,6 +475,13 @@ impl Drop for Transaction {
     }
 }
 
+// SAFETY: an `ASurfaceTransaction` has no thread affinity — the NDK builds
+// and applies one from any thread — and this wrapper is its sole owner;
+// without `Sync`, one thread at a time reaches it. A band frame's
+// transaction is built on the render thread and applied by the host on
+// its UI thread (water-rs/waterui#2225).
+unsafe impl Send for Transaction {}
+
 /// The statistics of one completed transaction, valid during its callback.
 pub struct Completion<'a> {
     stats: NonNull<ASurfaceTransactionStats>,

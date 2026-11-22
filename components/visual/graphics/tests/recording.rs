@@ -1,8 +1,8 @@
 //! The recording boundary's contract: constant and signal operands, engine
 //! resource handles, and what a rasterizer draws for each.
 //!
-//! These tests draw into `waterui_graphics::draw::Recorder`, mount the result on a real
-//! `cherenkov_cpu` engine through [`waterui_graphics::raster::Rasterizer`]
+//! These tests draw into `waterui_graphics::backend::draw::Recorder`, mount the result on a real
+//! `cherenkov_cpu` engine through [`waterui_graphics::backend::raster::Rasterizer`]
 //! and read pixels back, because the signature is only half the contract —
 //! the other half is that what was recorded is what the engine draws.
 #![cfg(feature = "cpu")]
@@ -12,23 +12,22 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use nami::{Binding, SignalExt};
-use waterui_graphics::draw::kurbo::{Affine, Rect, Shape};
-use waterui_graphics::draw::{
-    Content, ContentChange, Draw, Glyph, GlyphRun, GlyphStyle, ImageId, LayoutSize, Recorder,
-    Sampling, StaticRecorder, WorkingColor,
+use waterui_graphics::backend::draw::kurbo::{Affine, Rect, Shape};
+use waterui_graphics::backend::draw::{
+    Color, Content, ContentChange, Draw, Glyph, GlyphRun, GlyphStyle, ImageId, LayoutSize,
+    Recorder, Sampling, Srgb, StaticRecorder, Stroke, WorkingColor,
 };
-use waterui_graphics::raster::{Rasterizer, RgbaBitmap};
-use waterui_graphics::{FontSource, ImageColorSpace, ImageData, Rgba8};
-use waterui_graphics::{
-    Picture, PictureSource, RecordingResources, Registered, SceneContent, SceneView,
+use waterui_graphics::backend::raster::{Rasterizer, RgbaBitmap};
+use waterui_graphics::backend::{
+    FontSource, ImageColorSpace, ImageData, NextFrame, Picture, PictureSource, RecordingResources,
+    Registered, Rgba8, SceneContent, SceneInvalidator, SceneView, invalidate_on_change,
 };
 
 /// sRGB red as the engine's working colour — `WorkingColor::new` names
 /// Display P3 components directly, which sRGB cannot hold, so pixel
 /// expectations come from converting a named sRGB colour.
 fn srgb(red: f32, green: f32, blue: f32) -> WorkingColor {
-    waterui_graphics::draw::Color::<waterui_graphics::draw::Srgb>::new([red, green, blue, 1.0])
-        .into()
+    Color::<Srgb>::new([red, green, blue, 1.0]).into()
 }
 
 fn filled_square(recorder: &mut Recorder, color: WorkingColor) {
@@ -51,7 +50,7 @@ fn a_fill_is_one_command_in_the_recorded_content() {
         filled_square(recorder, srgb(1.0, 0.0, 0.0));
         recorder.stroke(
             Rect::new(0.0, 0.0, 4.0, 4.0).to_path(0.05),
-            waterui_graphics::draw::Stroke::new(1.0),
+            Stroke::new(1.0),
             srgb(0.0, 0.0, 1.0),
         );
     });
@@ -109,7 +108,7 @@ impl PictureSource for TinyImageSource {
             )
             .expect("image registration failed");
         recorder.image(
-            resources.name(&image),
+            resources.name(&image).expect("registered on this target"),
             Rect::new(0.0, 0.0, 8.0, 8.0),
             Sampling::Nearest,
         );
@@ -128,7 +127,7 @@ impl PictureSource for GlyphSource {
             .expect("font registration failed");
         recorder.glyphs(
             GlyphRun {
-                font: resources.name(&font),
+                font: resources.name(&font).expect("registered on this target"),
                 size: 28.0,
                 coords: Vec::new().into(),
                 glyphs: vec![Glyph {
@@ -242,7 +241,10 @@ fn a_held_source_registers_once_and_a_released_one_registers_fresh() {
             .expect("image registration failed");
         assert_eq!(image_a, image_b);
         let mut names = resources.recording();
-        (names.name(&first), names.name(&image_a))
+        (
+            names.name(&first).expect("registered on this target"),
+            names.name(&image_a).expect("registered on this target"),
+        )
         // Every handle, and the recording that named them, drops here; the
         // table stays.
     };
@@ -258,10 +260,13 @@ fn a_held_source_registers_once_and_a_released_one_registers_fresh() {
     let mut names = resources.recording();
     assert_ne!(
         first_id,
-        names.name(&third),
+        names.name(&third).expect("registered on this target"),
         "a released registration must not come back"
     );
-    assert_ne!(image_id, names.name(&image_c));
+    assert_ne!(
+        image_id,
+        names.name(&image_c).expect("registered on this target")
+    );
 }
 
 /// Content that draws nothing on its first two frames and first draws an
@@ -278,7 +283,7 @@ impl SceneContent for LateImage {
         resources: &mut RecordingResources<'_>,
         _width: f32,
         _height: f32,
-    ) -> bool {
+    ) -> NextFrame {
         self.frame += 1;
         if self.frame >= 3 {
             let image = self.image.get_or_insert_with(|| {
@@ -287,12 +292,12 @@ impl SceneContent for LateImage {
                     .expect("image registration failed")
             });
             recorder.image(
-                resources.name(image),
+                resources.name(image).expect("registered on this target"),
                 Rect::new(0.0, 0.0, 8.0, 8.0),
                 Sampling::Nearest,
             );
         }
-        false
+        NextFrame::Idle
     }
 
     fn rebuild_for_engine(&mut self) {
@@ -359,10 +364,10 @@ fn a_signal_operand_updates_the_content_without_recording_again() {
 fn an_invalidator_fires_when_a_bound_signal_changes() {
     let flag = Rc::new(Cell::new(false));
     let asked = Rc::clone(&flag);
-    let invalidator: waterui_graphics::SceneInvalidator = Rc::new(move || asked.set(true));
+    let invalidator: SceneInvalidator = Rc::new(move || asked.set(true));
 
     let color = Binding::container(srgb(1.0, 0.0, 0.0));
-    let _guard = waterui_graphics::invalidate_on_change(&invalidator, &color.computed());
+    let _guard = invalidate_on_change(&invalidator, &color.computed());
     color.set(srgb(0.0, 0.0, 1.0));
     assert!(
         flag.get(),

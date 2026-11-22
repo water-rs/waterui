@@ -21,8 +21,8 @@ fn ts_the_library_half_reaches_the_artifact_and_decodes_to_the_constant() {
     let bytes = artifact::meta_static("waterui_meta_ts_runtime_library");
     assert_eq!(bytes, LIBRARY_HALF_ENCODED);
     let half = decode_runtime_half(&bytes).expect("the library half decodes");
-    assert_eq!(half.part, RuntimePart::Library);
-    assert_eq!(half.hash, LIBRARY_HASH);
+    assert_eq!(half.part(), RuntimePart::Library);
+    assert_eq!(half.hash(), LIBRARY_HASH);
 }
 
 #[test]
@@ -30,8 +30,8 @@ fn ts_the_catalog_half_reaches_the_artifact_and_decodes_to_the_constant() {
     let bytes = artifact::meta_static("waterui_meta_ts_runtime_catalog");
     assert_eq!(bytes, CATALOG_HALF_ENCODED);
     let half = decode_runtime_half(&bytes).expect("the catalog half decodes");
-    assert_eq!(half.part, RuntimePart::Catalog);
-    assert_eq!(half.hash, CATALOG_HASH);
+    assert_eq!(half.part(), RuntimePart::Catalog);
+    assert_eq!(half.hash(), CATALOG_HASH);
 }
 
 #[test]
@@ -40,7 +40,7 @@ fn ts_the_fingerprint_the_cli_derives_is_the_one_the_binary_computes() {
         .expect("the library half decodes");
     let catalog = decode_runtime_half(&artifact::meta_static("waterui_meta_ts_runtime_catalog"))
         .expect("the catalog half decodes");
-    let derived = RuntimeFingerprint::new(library.hash, catalog.hash);
+    let derived = RuntimeFingerprint::new(library.hash(), catalog.hash());
     assert_eq!(derived, RUNTIME_FINGERPRINT);
     assert_eq!(derived.format(), FORMAT_VERSION);
     // The text form is what the manifest carries, and it parses back.

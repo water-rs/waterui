@@ -6,10 +6,8 @@ use waterui::widgets::*;
 fn steps(context: &WidgetContext) -> Timeline {
     // The FFI probe asserts the context travels intact — echo the family
     // and proposed size into the produced content.
-    let steps = format!(
-        "{:?} {:.0}x{:.0}",
-        context.family, context.display_size.width, context.display_size.height
-    );
+    let size = context.display_size();
+    let steps = format!("{:?} {:.0}x{:.0}", context.family(), size.width, size.height);
     Timeline::new([
         TimelineEntry::new(
             Date::unix_timestamp(1_700_000_000.0),

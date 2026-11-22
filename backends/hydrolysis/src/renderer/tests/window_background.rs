@@ -39,16 +39,16 @@ fn a_translucent_window_frame_keeps_its_background_alpha_under_opaque_content() 
     );
     let snapshot = rt
         .pump_snapshot()
-        .snapshot
+        .into_snapshot()
         .expect("a captured frame must carry pixels");
 
     // The backdrop, read wherever it peeks out from behind the box.
     // Offscreen targets store straight alpha, so the translucent background
     // reads as its srgb colour at half alpha — never the fully-transparent
     // texel a missing alpha channel would leave.
-    let backdrop_is_kept = (0..snapshot.height).any(|y| {
-        (0..snapshot.width).any(|x| {
-            let pixel = pixel_at(&snapshot.rgba8, snapshot.width, x, y);
+    let backdrop_is_kept = (0..snapshot.height()).any(|y| {
+        (0..snapshot.width()).any(|x| {
+            let pixel = pixel_at(snapshot.rgba8(), snapshot.width(), x, y);
             (124..=132).contains(&pixel[3])
                 && pixel[..3].iter().all(|channel| (45..=60).contains(channel))
         })
@@ -60,9 +60,9 @@ fn a_translucent_window_frame_keeps_its_background_alpha_under_opaque_content() 
 
     // The box: wherever it lands, its pixels are fully opaque red.
     let mut drew_opaque_content = false;
-    for y in 0..snapshot.height {
-        for x in 0..snapshot.width {
-            let pixel = pixel_at(&snapshot.rgba8, snapshot.width, x, y);
+    for y in 0..snapshot.height() {
+        for x in 0..snapshot.width() {
+            let pixel = pixel_at(snapshot.rgba8(), snapshot.width(), x, y);
             if pixel[3] == 255 {
                 assert!(
                     pixel[0] >= 200 && pixel[1] <= 60 && pixel[2] <= 60,

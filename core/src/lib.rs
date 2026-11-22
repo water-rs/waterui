@@ -87,6 +87,8 @@
 //! This enables modular functionality like theming, localization, and platform-specific features.
 
 #![cfg_attr(not(feature = "std"), no_std)]
+extern crate self as waterui_core;
+
 extern crate alloc;
 
 #[macro_use]
@@ -106,11 +108,14 @@ pub use easing::{EasingCurve, Interpolatable};
 pub use env::Environment;
 #[cfg(feature = "std")]
 pub use foundation::resources::ResourceContext;
+pub use waterui_contract::contract_violation;
 
 /// Capture standalone resource roots once when creating an application environment.
 ///
-/// # Panics
-/// Panics if the native executable's location cannot be determined.
+/// # Contract
+/// When the native executable's location cannot be determined a debug build
+/// panics, and a release build logs the error and installs a context rooted
+/// at `waterui_assets` and `fonts` in the working directory.
 #[doc(hidden)]
 // On wasm32 or without std the whole body below collapses to a no-op, so
 // the function is const-eligible only under those cfgs.
@@ -121,10 +126,13 @@ pub use foundation::resources::ResourceContext;
 pub fn install_application_resources(env: &mut Environment) {
     #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
     if env.get::<ResourceContext>().is_none() {
-        env.insert(
-            ResourceContext::application()
-                .expect("application resources require an executable path"),
-        );
+        let context = ResourceContext::application().unwrap_or_else(|error| {
+            contract_violation!(
+                "application resources could not be located ({error}); resolving them against the working directory"
+            );
+            ResourceContext::new("waterui_assets", "fonts")
+        });
+        env.insert(context);
     }
     #[cfg(any(not(feature = "std"), target_arch = "wasm32"))]
     let _ = env;
@@ -141,7 +149,7 @@ pub use nami::{Binding, Computed, Signal, SignalExt, binding, constant, impl_con
 pub use state::IntoSignalF32;
 pub use suiteki::Str;
 pub use ui::{
-    accessibility, content_ledger, event, gesture, interaction, key, layout, transition, view,
+    accessibility, backend, content_ledger, event, gesture, interaction, key, layout, view,
     view_renderer, views,
 };
 pub use view::View;

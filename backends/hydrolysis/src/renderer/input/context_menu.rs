@@ -287,6 +287,19 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     }
 }
 
+/// Publishes the chords of the menu `nodes` to the app's shared registry,
+/// when the runner seeded one.
+fn register_popup_chords<E: crate::text::TextEngine>(
+    nodes: &[PopupMenuNode],
+    group: &PopupMenuStateGroup,
+    env: &Environment,
+) {
+    if let Some(registry) = menu_shortcut_registry::<E>(env, "the menu's chords are not registered")
+    {
+        registry.register_popup(nodes, group, env);
+    }
+}
+
 impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// Open a `.context_menu` popup at `origin` (hit space) — the drawn menu a
     /// secondary press or press-and-hold resolves. The drawn presentation
@@ -302,7 +315,6 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         nodes: Vec<PopupMenuNode>,
         target: Option<&ContextMenuTarget<E>>,
         origin: LayoutPoint,
-        metrics: TextContextMenuMetrics,
         env: &Environment,
         opened_by_hold: bool,
     ) -> bool {
@@ -321,10 +333,9 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         // The menu's chords publish to the app's shared registry — live while
         // any menu in the group is open — so a popup window that took
         // keyboard focus still resolves them (water-rs/hydrolysis#247).
-        env.get::<MenuShortcutRegistry<E>>()
-            .expect(MISSING_MENU_SHORTCUT_REGISTRY)
-            .register_popup(&nodes, &group, env);
+        register_popup_chords::<E>(&nodes, &group, env);
         let theme = self.theme();
+        let metrics = menu_look(&theme, env).layout();
         let text = self.popup_menu_text_metrics(&nodes, metrics, env, &theme);
         let (menu_width, menu_height) = popup_menu_size(&nodes, metrics, &text);
 
@@ -362,7 +373,9 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         } else {
             origin
         };
-        let popup_origin = popup_window_origin(menu_origin, env);
+        let Some(popup_origin) = popup_window_origin(menu_origin, env) else {
+            return false;
+        };
 
         if presentation {
             // The drawn menu: no borderless window, so no transparent corner
@@ -414,12 +427,13 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             self.popup_menu.active_popup_menu_group = Some(group);
             self.context_mark_layout();
         } else {
+            let Some(manager) = popup_window_manager(env, "popup menus") else {
+                return false;
+            };
             let (window, state) =
                 popup_menu_window(nodes, popup_origin, group.clone(), 0, metrics, text, &theme);
             group.push(state);
-            env.get::<PopupWindowManager>()
-                .expect("hydrolysis popup menus require PopupWindowManager in environment")
-                .show(window, env);
+            manager.show(window, env);
             self.popup_menu.active_popup_menu_group = Some(group);
         }
         true
@@ -487,12 +501,11 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
 
         let window = self.window_bounds;
         let source = presentation.source_bounds;
-        let theme = self.theme();
-        let metrics = theme.text_context_menu_metrics();
+        let presentation_env = presentation.env.clone();
+        let menu = menu_look(&self.theme(), &presentation_env);
+        let metrics = menu.layout();
         let dim = peniko::Color::new([0.0, 0.0, 0.0, CONTEXT_MENU_DIM_OPACITY]);
         let shadow = peniko::Color::new([0.0, 0.0, 0.0, CONTEXT_MENU_SHADOW_OPACITY]);
-
-        let presentation_env = presentation.env.clone();
 
         // Re-measure every frame: the accessory re-lays out whenever its
         // measured size changes (an expanding picker reflows while open). Its
@@ -590,9 +603,9 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         // the drawn text context menu gets.
         {
             self.scene_mut().record_picture(transform, |draw| {
-                theme.draw_text_context_menu_panel(&mut *draw, presentation.menu_frame);
+                menu.record_panel(&mut *draw, presentation.menu_frame);
                 if let Some(accessory_frame) = presentation.accessory_frame {
-                    theme.draw_text_context_menu_panel(&mut *draw, accessory_frame);
+                    menu.record_panel(&mut *draw, accessory_frame);
                 }
             });
         }
@@ -607,10 +620,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
 
         presentation.menu.place_detached(
             self,
-            RenderContext {
-                local: transform,
-                bounds: window,
-            },
+            RenderContext::new(transform, window),
             &presentation_env,
             bounded_proposal(presentation.menu_frame),
             presentation.menu_frame,
@@ -625,10 +635,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 renderer.with_preview_targets_suppressed(|renderer| {
                     preview.place_detached(
                         renderer,
-                        RenderContext {
-                            local: transform,
-                            bounds: window,
-                        },
+                        RenderContext::new(transform, window),
                         &presentation_env,
                         bounded_proposal(layout.lift),
                         layout.lift,
@@ -643,10 +650,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             let content = inset_rect(frame, metrics.horizontal_padding, metrics.vertical_padding);
             accessory.place_detached(
                 self,
-                RenderContext {
-                    local: transform,
-                    bounds: window,
-                },
+                RenderContext::new(transform, window),
                 &presentation_env,
                 bounded_proposal(content),
                 content,

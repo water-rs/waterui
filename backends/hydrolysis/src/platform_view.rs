@@ -91,6 +91,30 @@ impl NativeView for PlatformView {
     }
 }
 
+/// An ancestor scroll view's overscroll stretch as it warps one embedded
+/// platform view, in the window's logical units.
+///
+/// The engine stretches the self-drawn content of the scroll view's
+/// viewport by HWUI's stretch shader; a platform view inside it is a real
+/// View the engine cannot warp, so the host applies the same shader to it.
+/// `params` are the stretch filter's own parameters
+/// (`filtrate::filters::OverscrollStretch`'s flattened order: the frame
+/// `[a, b, c, d, e, f]` from the viewport's own space to window units, the
+/// viewport's extent, HWUI's stretch direction), carried through the scroll
+/// node's window transform instead of the device transform.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(
+    any(test, target_os = "android", target_arch = "wasm32"),
+    derive(serde::Serialize)
+)]
+pub struct PlacementStretch {
+    /// The stretch parameters, `[a, b, c, d, e, f, width, height, x, y]`.
+    pub params: [f32; 10],
+    /// How much the stretch varies with the distance from the pulled edge
+    /// (`STRETCH_INTERPOLATION_STRENGTH`).
+    pub strength: f32,
+}
+
 /// Where one embedded platform view sits, in the window's logical coordinate
 /// space.
 ///
@@ -106,22 +130,22 @@ impl NativeView for PlatformView {
 #[non_exhaustive]
 pub struct PlatformViewPlacement {
     /// The retained node's stable placement id.
-    pub id: u64,
+    id: u64,
     /// What the host mounts for this leaf — a factory `kind` or a registered
     /// `instance`. Flattened so the JSON reads as before for factories.
     #[cfg_attr(
         any(test, target_os = "android", target_arch = "wasm32"),
         serde(flatten)
     )]
-    pub source: PlatformViewSource,
+    source: PlatformViewSource,
     /// The leaf's laid-out x origin under this frame's transforms.
-    pub x: f32,
+    x: f32,
     /// The leaf's laid-out y origin under this frame's transforms.
-    pub y: f32,
+    y: f32,
     /// The leaf's laid-out width under this frame's transforms.
-    pub width: f32,
+    width: f32,
     /// The leaf's laid-out height under this frame's transforms.
-    pub height: f32,
+    height: f32,
     /// The effective clip the frame's paint layers impose (scroll viewports,
     /// `.clip()`), as `[x, y, width, height]` — present only when it actually
     /// cuts the frame.
@@ -129,12 +153,169 @@ pub struct PlatformViewPlacement {
         any(test, target_os = "android", target_arch = "wasm32"),
         serde(skip_serializing_if = "Option::is_none")
     )]
-    pub clip: Option<[f32; 4]>,
+    clip: Option<[f32; 4]>,
     /// Paint order among this frame's interactive content: a larger `order`
     /// is later — the host stacks embedded children by it.
-    pub order: u32,
+    order: u32,
     /// Whether any of the frame remains visible inside its clip.
-    pub visible: bool,
+    visible: bool,
+    /// The overscroll stretches of the scroll views the leaf sits in,
+    /// outermost first, while any shows: the host warps the view by each,
+    /// innermost first, the way the engine warps the content around it.
+    #[cfg_attr(
+        any(test, target_os = "android", target_arch = "wasm32"),
+        serde(skip_serializing_if = "Vec::is_empty")
+    )]
+    stretches: Vec<PlacementStretch>,
+    /// The window rectangle a stretched view can draw into, as
+    /// `[x, y, width, height]`: the frame joined with every stretching
+    /// viewport, inside the paint chain's clip. The warp moves a view's
+    /// content past its frame, so the host lays the view out in this
+    /// region while a stretch shows. Present exactly when `stretches` is
+    /// not empty.
+    #[cfg_attr(
+        any(test, target_os = "android", target_arch = "wasm32"),
+        serde(skip_serializing_if = "Option::is_none")
+    )]
+    stretch_region: Option<[f32; 4]>,
+}
+
+impl PlatformViewPlacement {
+    /// Creates a placement for `id` mounting `source`, not yet laid out: a
+    /// zero frame, no clip, order `0`, hidden.
+    #[must_use]
+    pub const fn new(id: u64, source: PlatformViewSource) -> Self {
+        Self {
+            id,
+            source,
+            x: 0.0,
+            y: 0.0,
+            width: 0.0,
+            height: 0.0,
+            clip: None,
+            order: 0,
+            visible: false,
+            stretches: Vec::new(),
+            stretch_region: None,
+        }
+    }
+
+    /// The overscroll stretches warping the view, outermost first.
+    #[must_use]
+    pub fn stretches(&self) -> &[PlacementStretch] {
+        &self.stretches
+    }
+
+    /// The window rectangle a stretched view draws into, as
+    /// `[x, y, width, height]`.
+    #[must_use]
+    pub const fn stretch_region(&self) -> Option<[f32; 4]> {
+        self.stretch_region
+    }
+
+    /// Sets the overscroll `stretches` warping the view and the
+    /// `region` they draw into.
+    pub fn set_stretch(&mut self, stretches: Vec<PlacementStretch>, region: Option<[f32; 4]>) {
+        debug_assert_eq!(
+            stretches.is_empty(),
+            region.is_none(),
+            "a stretched placement carries its region, an unstretched one none"
+        );
+        self.stretches = stretches;
+        self.stretch_region = region;
+    }
+
+    /// The retained node's stable placement id.
+    #[must_use]
+    pub const fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// What the host mounts for this leaf — a factory `kind` or a registered
+    /// `instance`.
+    #[must_use]
+    pub const fn source(&self) -> &PlatformViewSource {
+        &self.source
+    }
+
+    /// The effective clip the frame's paint layers impose, as
+    /// `[x, y, width, height]` — present only when it actually cuts the frame.
+    #[must_use]
+    pub const fn clip(&self) -> Option<[f32; 4]> {
+        self.clip
+    }
+
+    /// Sets the `clip`.
+    pub const fn set_clip(&mut self, clip: Option<[f32; 4]>) {
+        self.clip = clip;
+    }
+
+    /// The leaf's laid-out x origin under this frame's transforms.
+    #[must_use]
+    pub const fn x(&self) -> f32 {
+        self.x
+    }
+
+    /// Sets the `x`.
+    pub const fn set_x(&mut self, x: f32) {
+        self.x = x;
+    }
+
+    /// The leaf's laid-out y origin under this frame's transforms.
+    #[must_use]
+    pub const fn y(&self) -> f32 {
+        self.y
+    }
+
+    /// Sets the `y`.
+    pub const fn set_y(&mut self, y: f32) {
+        self.y = y;
+    }
+
+    /// The leaf's laid-out width under this frame's transforms.
+    #[must_use]
+    pub const fn width(&self) -> f32 {
+        self.width
+    }
+
+    /// Sets the `width`.
+    pub const fn set_width(&mut self, width: f32) {
+        self.width = width;
+    }
+
+    /// The leaf's laid-out height under this frame's transforms.
+    #[must_use]
+    pub const fn height(&self) -> f32 {
+        self.height
+    }
+
+    /// Sets the `height`.
+    pub const fn set_height(&mut self, height: f32) {
+        self.height = height;
+    }
+
+    /// Paint order among this frame's interactive content: a larger `order`
+    /// is later — the host stacks embedded children by it.
+    #[must_use]
+    pub const fn order(&self) -> u32 {
+        self.order
+    }
+
+    /// Sets the `order`.
+    pub const fn set_order(&mut self, order: u32) {
+        self.order = order;
+    }
+
+    /// Whether any of the frame remains visible inside its clip.
+    #[must_use]
+    pub const fn visible(&self) -> bool {
+        self.visible
+    }
+
+    /// Sets the `visible`.
+    pub const fn set_visible(&mut self, visible: bool) {
+        self.visible = visible;
+    }
 }
 
 /// The placements one retained tree produced — the single source of truth a
@@ -317,6 +498,8 @@ mod tests {
             clip: None,
             order: 5,
             visible: true,
+            stretches: Vec::new(),
+            stretch_region: None,
         };
         let mut factory = base.clone();
         factory["id"] = serde_json::json!(9);
@@ -334,6 +517,34 @@ mod tests {
         assert_eq!(
             serde_json::to_value(placement(PlatformViewSource::Instance { instance: 7 })).unwrap(),
             instance
+        );
+    }
+
+    /// A stretched placement adds `stretches` and `stretch_region` to the
+    /// wire; the Kotlin registry reads the stretch parameters in
+    /// `OverscrollStretch`'s flattened order.
+    #[test]
+    fn stretched_placement_wire_shape() {
+        let mut placement =
+            PlatformViewPlacement::new(9, PlatformViewSource::Instance { instance: 7 });
+        placement.set_stretch(
+            vec![PlacementStretch {
+                params: [1.0, 0.0, 0.0, 1.0, 10.0, 20.0, 100.0, 200.0, 0.0, -0.5],
+                strength: 0.7,
+            }],
+            Some([0.0, 20.0, 110.0, 200.0]),
+        );
+        let wire = serde_json::to_value(&placement).unwrap();
+        assert_eq!(
+            wire["stretches"],
+            serde_json::json!([{
+                "params": [1.0, 0.0, 0.0, 1.0, 10.0, 20.0, 100.0, 200.0, 0.0, -0.5],
+                "strength": 0.7f32,
+            }])
+        );
+        assert_eq!(
+            wire["stretch_region"],
+            serde_json::json!([0.0, 20.0, 110.0, 200.0])
         );
     }
 }

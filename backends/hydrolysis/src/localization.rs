@@ -1,5 +1,5 @@
 use nami::Signal;
-use waterui_core::Environment;
+use waterui_core::{Environment, contract_violation};
 use waterui_locale::{TranslationCatalog, locale_binding};
 
 const CATALOGS: &[(&str, &str)] = &[
@@ -26,6 +26,9 @@ impl HydrolysisLocalizations {
     fn new() -> Self {
         let mut catalog = TranslationCatalog::new();
         for &(locale, source) in CATALOGS {
+            // The catalogs are `include_str!` data, and the
+            // `every_builtin_catalog_defines_every_builtin_key` test parses
+            // each of them, so a parse failure is a build defect.
             catalog = catalog.add_toml(locale, source).unwrap_or_else(|error| {
                 panic!("Hydrolysis built-in {locale} catalog must be valid TOML: {error}")
             });
@@ -38,16 +41,24 @@ pub fn install(env: &mut Environment) {
     env.insert(HydrolysisLocalizations::new());
 }
 
+/// The built-in string `key` in the environment's locale. A runner that
+/// installed no localizations, or a `key` the catalogs do not define, is a
+/// contract violation: the key itself stands in as the text.
 pub fn text(env: &Environment, key: &str) -> String {
-    let localizations = env
-        .get::<HydrolysisLocalizations>()
-        .expect("Hydrolysis runner must install its built-in localizations");
+    let Some(localizations) = env.get::<HydrolysisLocalizations>() else {
+        contract_violation!(
+            "Hydrolysis runner must install its built-in localizations; the key `{key}` stands in as the text"
+        );
+        return key.to_owned();
+    };
     let locale = locale_binding(env).snapshot();
-    localizations
-        .0
-        .lookup_text(&locale, key)
-        .unwrap_or_else(|| panic!("Hydrolysis built-in localization is missing key `{key}`"))
-        .to_string()
+    let Some(text) = localizations.0.lookup_text(&locale, key) else {
+        contract_violation!(
+            "Hydrolysis built-in localization is missing key `{key}`; the key stands in as the text"
+        );
+        return key.to_owned();
+    };
+    text.to_string()
 }
 
 #[cfg(test)]
@@ -106,6 +117,26 @@ mod tests {
 
         locale.set("he".parse::<Locale>().expect("Hebrew locale must parse"));
         assert_eq!(text(&env, "back"), "חזרה");
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "must install its built-in localizations")
+    )]
+    fn missing_localizations_report_and_return_the_key() {
+        assert_eq!(text(&Environment::new(), "copy"), "copy");
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "built-in localization is missing key `no_such_key`")
+    )]
+    fn an_unknown_key_reports_and_returns_the_key() {
+        let mut env = Environment::new();
+        install(&mut env);
+        assert_eq!(text(&env, "no_such_key"), "no_such_key");
     }
 
     #[test]

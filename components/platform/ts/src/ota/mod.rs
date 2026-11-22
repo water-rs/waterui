@@ -286,7 +286,7 @@ impl Ota {
         })?;
         verify::signature(&signed, &self.key).map_err(FetchError::Rejected)?;
 
-        let version = signed.manifest.version;
+        let version = signed.manifest().version();
         if version <= baseline {
             return Ok(Outcome::NotNewer { version, baseline });
         }
@@ -299,18 +299,19 @@ impl Ota {
         if blocking::unblock(move || store.has(version)).await {
             return Ok(Outcome::AlreadyCached { version });
         }
-        verify::requirement(&signed.manifest, requirement).map_err(FetchError::Rejected)?;
+        verify::requirement(signed.manifest(), requirement).map_err(FetchError::Rejected)?;
 
         let bundle_url = self
             .manifest_url
-            .join(&signed.manifest.bundle.url)
+            .join(signed.manifest().bundle().url())
             .map_err(|source| FetchError::BundleUrl {
-                relative: signed.manifest.bundle.url.clone(),
+                relative: signed.manifest().bundle().url().to_owned(),
                 base: self.manifest_url.to_string(),
                 source,
             })?;
-        let bytes = fetch_bounded(&bundle_url, signed.manifest.bundle.size).await?;
-        verify::bundle(&bytes, &signed.manifest.bundle.sha256).map_err(FetchError::Rejected)?;
+        let bytes = fetch_bounded(&bundle_url, signed.manifest().bundle().size()).await?;
+        verify::bundle(&bytes, signed.manifest().bundle().sha256())
+            .map_err(FetchError::Rejected)?;
 
         let store = self.store.clone();
         let manifest = signed.to_json();
@@ -393,7 +394,8 @@ async fn fetch_bounded(url: &Url, size: u64) -> Result<Vec<u8>, FetchError> {
     let mut received: u64 = 0;
     while let Some(chunk) = body.next().await {
         let chunk = chunk.map_err(|error| network(error.into()))?;
-        received += u64::try_from(chunk.len()).expect("a chunk's length fits in u64");
+        received += u64::try_from(chunk.len())
+            .expect("`usize` is at most 64 bits on every supported target, so a length fits a u64");
         if received > size {
             return Err(exceeded(received));
         }
@@ -431,7 +433,7 @@ impl<H: HostTable + Clone> Loader<H> {
         }
 
         let baseline = self.check_baseline()?;
-        let floor = baseline.manifest.version;
+        let floor = baseline.manifest.version();
         let before = state.bad.len();
         state.bad.retain(|version| *version > floor);
         if state.bad.len() != before {
@@ -519,17 +521,17 @@ impl<H: HostTable + Clone> Loader<H> {
     ) -> Result<(String, Option<waterui_locale::TranslationCatalog>), CachedError> {
         let manifest = ota.store.read_manifest(version)?;
         let signed = SignedManifest::from_json(&manifest)?;
-        if signed.manifest.version != version {
+        if signed.manifest().version() != version {
             return Err(CachedError::Version {
-                declared: signed.manifest.version,
+                declared: signed.manifest().version(),
             });
         }
         verify::signature(&signed, &ota.key)?;
         let bundle = ota
             .store
-            .read_bundle(version, signed.manifest.bundle.size)?;
-        let source = verify::bundle(&bundle, &signed.manifest.bundle.sha256)?;
-        let catalog = verify::requirement(&signed.manifest, self.requirement())?;
+            .read_bundle(version, signed.manifest().bundle().size())?;
+        let source = verify::bundle(&bundle, signed.manifest().bundle().sha256())?;
+        let catalog = verify::requirement(signed.manifest(), self.requirement())?;
         Ok((source.to_owned(), catalog))
     }
 }

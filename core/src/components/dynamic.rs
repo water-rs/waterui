@@ -72,10 +72,6 @@ type Receiver = Rc<dyn Fn(Context<AnyView>)>;
 
 /// Metadata marker for the body-time snapshot installed by [`Dynamic::watch`].
 #[derive(Clone, Copy, Debug)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "field-less metadata marker inserted by name"
-)]
 pub struct DynamicInitialContent;
 
 impl_debug!(Dynamic);
@@ -215,7 +211,13 @@ impl Dynamic {
                     initial
                 }
                 DynamicHandlerState::Connected { .. } => {
-                    unreachable!("Dynamic already connected")
+                    // A clone of a connected `Dynamic` was realized again.
+                    // The first receiver keeps the node; this realization
+                    // stays empty.
+                    crate::contract_violation!(
+                        "a Dynamic was connected twice: the second realization stays empty and the first keeps receiving updates"
+                    );
+                    return;
                 }
             }
         };
@@ -328,10 +330,15 @@ where
             let f = Rc::clone(&f);
             // A write the builder makes right now lands here re-entrantly;
             // keep the latest value and let the dispatch in flight drain it
-            // once the builder and the receiver return.
+            // once the builder and the receiver return. The change's metadata
+            // (`NoAnimation`, an explicit animation) travels with its value to
+            // the receiver, so the structural site can honor it.
             let updates = LatestDispatch::new();
-            move |context| {
-                updates.deliver(context.into_value(), |next| handle.set(f(next)));
+            move |context: Context<T>| {
+                updates.deliver(context, |next| {
+                    let (value, metadata) = next.into_parts();
+                    handle.set_with_metadata(f(value), metadata);
+                });
             }
         });
 
@@ -408,6 +415,28 @@ mod tests {
         assert_eq!(&*delivered.borrow(), &[1, 2]);
     }
 
+    /// Realizing a clone of a connected `Dynamic` leaves the first receiver
+    /// in place and the second realization empty.
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "connected twice"))]
+    fn a_second_connection_keeps_the_first_receiver() {
+        let (handle, dynamic) = Dynamic::new();
+        let first = Rc::new(Cell::new(0));
+        let second = Rc::new(Cell::new(0));
+        dynamic.clone().connect({
+            let first = Rc::clone(&first);
+            move |_| first.set(first.get() + 1)
+        });
+        dynamic.connect({
+            let second = Rc::clone(&second);
+            move |_| second.set(second.get() + 1)
+        });
+
+        handle.set(Metadata::new((), Probe(1)));
+
+        assert_eq!((first.get(), second.get()), (1, 0));
+    }
+
     /// A `Dynamic::watch` builder that writes the watched signal queues that
     /// write as the pending value and runs again once it has returned.
     #[test]
@@ -450,5 +479,45 @@ mod tests {
 
         assert_eq!(&*delivered.borrow(), &[1, 2, 3]);
         assert_eq!(source.snapshot(), 3);
+    }
+
+    /// A change that carries `NoAnimation` must reach the receiver with that
+    /// metadata, so a structural transition can be suppressed.
+    #[test]
+    fn watch_forwards_change_metadata_to_the_receiver() {
+        use crate::animation::NoAnimation;
+        use nami::SignalExt as _;
+
+        let source = Binding::i32(1);
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let view = Dynamic::watch(source.with(NoAnimation), |value| {
+            Metadata::new(
+                (),
+                Probe(usize::try_from(value).expect("watch values are non-negative")),
+            )
+        });
+        let body = AnyView::new(view.body(&Environment::new()));
+        let Metadata {
+            content,
+            value: _retained,
+        } = *body
+            .downcast::<Metadata<Retain>>()
+            .expect("the watched dynamic body carries its retain guard");
+        let dynamic = content
+            .downcast::<Dynamic>()
+            .expect("the watched dynamic body resolves to a Dynamic");
+        dynamic.connect({
+            let seen = Rc::clone(&seen);
+            move |context| {
+                seen.borrow_mut()
+                    .push(context.metadata().try_get::<NoAnimation>().is_some());
+            }
+        });
+
+        source.set(2);
+
+        // The initial snapshot carries only `DynamicInitialContent`; the
+        // change made through `.with(NoAnimation)` carries `NoAnimation`.
+        assert_eq!(&*seen.borrow(), &[false, true]);
     }
 }

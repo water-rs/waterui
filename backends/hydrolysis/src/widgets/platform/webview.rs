@@ -46,9 +46,14 @@ pub use android::AndroidSystemWebViewHandle;
 #[cfg(hydrolysis_macos_system_webview)]
 pub use macos::MacSystemWebViewController;
 
+#[cfg(any(hydrolysis_macos_system_webview, hydrolysis_web_system_webview))]
+use waterui::webview::WebView;
+#[cfg(any(
+    hydrolysis_macos_system_webview,
+    hydrolysis_android_system_webview,
+    hydrolysis_web_system_webview
+))]
 use waterui_core::Environment;
-use waterui_core::layout::Size as LayoutSize;
-use waterui_webview::WebView;
 
 #[cfg(hydrolysis_web_system_webview)]
 mod web;
@@ -56,73 +61,44 @@ mod web;
 #[cfg(hydrolysis_web_system_webview)]
 pub use web::WebSystemWebViewController;
 
-use crate::renderer::{HydroNativeView, HydroState};
-
-#[cfg(not(hydrolysis_android_system_webview))]
-impl<E: crate::text::TextEngine> HydroNativeView<E> for WebView {
-    fn intrinsic(
-        _state: &mut HydroState<E>,
-        _view: &Self,
-        _env: &Environment,
-        _theme: &std::rc::Rc<dyn crate::theme::WidgetTheme>,
-    ) -> LayoutSize {
-        #[cfg(hydrolysis_system_webview)]
-        {
-            LayoutSize::new(0.0, 0.0)
-        }
-        #[cfg(not(hydrolysis_system_webview))]
-        crate::renderer::unsupported_webview()
-    }
-}
-
-/// The Android system bridge measures like `Native<PlatformView>`: the mounted
-/// `WebView` has no intrinsic size and fills the proposal its slot assigns.
-#[cfg(hydrolysis_android_system_webview)]
-impl<E: crate::text::TextEngine> HydroNativeView<E> for WebView {
-    fn intrinsic(
-        _state: &mut HydroState<E>,
-        _view: &Self,
-        _env: &Environment,
-        _theme: &std::rc::Rc<dyn crate::theme::WidgetTheme>,
-    ) -> LayoutSize {
-        LayoutSize::zero()
-    }
-
-    fn dimensions(
-        _state: &mut HydroState<E>,
-        _view: &Self,
-        _env: &Environment,
-        _theme: &std::rc::Rc<dyn crate::theme::WidgetTheme>,
-        proposal: waterui_core::layout::ProposalSize,
-    ) -> waterui_core::layout::ViewDimensions {
-        crate::renderer::graphics_dimensions_from_proposal(proposal)
-    }
-}
-
-/// The hosted leaf showing `view`'s `WKWebView`. A page another engine opened
-/// reaches the backend only when that engine's `Hook<WebView>` is missing.
+/// The hosted leaf showing `view`'s `WKWebView`, or `None` when there is no
+/// page to host: the controller failed to open the view (already reported by
+/// `waterui-webview`), or another engine opened a page that reaches the backend
+/// only when that engine's `Hook<WebView>` is missing — reported here.
 #[cfg(hydrolysis_macos_system_webview)]
-pub fn hosted(view: &WebView) -> crate::HostedView {
-    const FOREIGN: &str = "Hydrolysis hosts only pages the system WKWebView controller opened; \
-                           install the custom engine's WebView hook";
-    let handle = view
-        .handle()
-        .downcast_ref::<macos::MacSystemWebViewHandle>()
-        .expect(FOREIGN);
-    crate::HostedView::new(handle.clone())
+pub fn hosted(view: &WebView) -> Option<crate::HostedView> {
+    let handle = view.handle();
+    if handle.is_unavailable() {
+        return None;
+    }
+    let Some(handle) = handle.downcast_ref::<macos::MacSystemWebViewHandle>() else {
+        waterui_core::contract_violation!(
+            "Hydrolysis hosts only pages the system WKWebView controller opened; \
+             install the custom engine's WebView hook; the web view is not drawn"
+        );
+        return None;
+    };
+    Some(crate::HostedView::new(handle.clone()))
 }
 
-/// The hosted leaf showing `view`'s `<iframe>`. A page another engine opened
-/// reaches the backend only when that engine's `Hook<WebView>` is missing.
+/// The hosted leaf showing `view`'s `<iframe>`, or `None` when there is no
+/// page to host: the controller failed to open the view (already reported by
+/// `waterui-webview`), or another engine opened a page that reaches the backend
+/// only when that engine's `Hook<WebView>` is missing — reported here.
 #[cfg(hydrolysis_web_system_webview)]
-pub fn hosted(view: &WebView) -> crate::HostedView {
-    const FOREIGN: &str = "Hydrolysis hosts only pages the web <iframe> controller opened; \
-                           install the custom engine's WebView hook";
-    let handle = view
-        .handle()
-        .downcast_ref::<web::WebIframeHandle>()
-        .expect(FOREIGN);
-    crate::HostedView::new(handle.clone())
+pub fn hosted(view: &WebView) -> Option<crate::HostedView> {
+    let handle = view.handle();
+    if handle.is_unavailable() {
+        return None;
+    }
+    let Some(handle) = handle.downcast_ref::<web::WebIframeHandle>() else {
+        waterui_core::contract_violation!(
+            "Hydrolysis hosts only pages the web <iframe> controller opened; \
+             install the custom engine's WebView hook; the web view is not drawn"
+        );
+        return None;
+    };
+    Some(crate::HostedView::new(handle.clone()))
 }
 
 #[cfg(hydrolysis_macos_system_webview)]
@@ -150,7 +126,7 @@ pub fn install_controller(
     jni_env: &mut jni::Env<'_>,
     session: std::sync::Arc<jni::objects::Global<jni::objects::JObject<'static>>>,
 ) -> Result<(), crate::runner::android::jni::JniError> {
-    use waterui_webview::WebViewController;
+    use waterui::webview::WebViewController;
 
     // The backend supplies the *default* controller, so an application or
     // test that installed its own keeps it — the same shape `macos::install`

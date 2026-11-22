@@ -14,10 +14,10 @@
 //   .min_width/.min_height         -> .frame(minWidth:, minHeight:)
 //   text(...).title()/.headline()  -> .font(.title)/.font(.headline) ...
 //   text(...).size(n)              -> .font(.system(size: n))
-//   .bold()                        -> .fontWeight(.bold): WaterUI's bold is
-//                                    FontWeight::Bold (700), while SwiftUI's
-//                                    .bold() trait resolves to the semibold
-//                                    face on system fonts
+//   .bold()                        -> .bold(): both are the platform bold trait,
+//                                    resolved per face; .fontWeight(.bold) is
+//                                    the explicit weight 700, WaterUI's
+//                                    .weight(Bold)
 //   Srgb::from_hex("#RRGGBB")      -> Color(.sRGB, red:..., green:..., blue:...)
 //   ResolvedColor{...} / color()   -> linearSrgb(r, g, b) — ResolvedColor
 //                                    stores linear sRGB components; Color(.sRGB)

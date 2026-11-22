@@ -9,8 +9,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use cherenkov::{
-    BackdropId, FilterId, Layer, LayerContent, LayerId, LayerNode, Realize, Shared, SurfaceId,
-    SurfaceTree, Transaction,
+    BackdropId, ContentOp, FilterId, Layer, LayerContent, LayerId, LayerNode, Picture, Realize,
+    Shared, SurfaceId, SurfaceTree, Transaction,
 };
 use cherenkov_record::{ChangeSet, MaterialRegistry};
 use rustc_hash::FxHashMap;
@@ -19,10 +19,12 @@ use crate::engine::GpuEngine;
 use crate::gpu_view::{ExternalFrameRuntime, GpuContentRuntime};
 use crate::renderer::effects::{AppliedFilterMetrics, FilteredRuntime};
 use crate::renderer::mount::backdrop::{MemberBind, MemberJoin};
-use crate::renderer::mount::layers::{LayerVisitor, NodeLayers, visit};
-use crate::renderer::mount::target::{LayerTarget, MaterialTerms, attach_material_shaders};
+use crate::renderer::mount::layers::NodeLayers;
+use crate::renderer::mount::target::{
+    LayerTarget, MaterialTerms, attach_material_shaders, install_engine_text,
+};
 use crate::renderer::mount::{Mount, MountStats};
-use crate::renderer::recording::{Recording, SceneResources};
+use crate::renderer::recording::SceneResources;
 use crate::renderer::{HydrolysisRenderer, ProducerWake};
 
 /// The test target.
@@ -48,6 +50,9 @@ impl cherenkov::BackdropSampling for MirrorTarget {}
 pub struct Mirrored {
     tree: SurfaceTree,
     installs: FxHashMap<LayerId, (u32, u32)>,
+    /// Each layer's recorded content, with every slot update and edit the
+    /// change sets carried applied: what a target would draw.
+    pictures: FxHashMap<LayerId, Picture>,
 }
 
 /// Applies each drained change set to the mirrored tree.
@@ -68,11 +73,33 @@ impl MirrorQueue {
             match mirrored.tree.apply_op(op) {
                 Realize::Remove(layer) => {
                     mirrored.installs.remove(&layer);
+                    mirrored.pictures.remove(&layer);
                 }
                 Realize::Install(layer, install) => {
                     mirrored.installs.insert(layer, install.into_inner());
+                    mirrored.pictures.remove(&layer);
                 }
-                Realize::Content(..) | Realize::Applied => {}
+                Realize::Content(layer, content) => match content {
+                    Some(ContentOp::Replace(picture) | ContentOp::Picture(picture)) => {
+                        mirrored.pictures.insert(layer, picture);
+                    }
+                    Some(ContentOp::Update(updates)) => {
+                        let _ = mirrored
+                            .pictures
+                            .get_mut(&layer)
+                            .expect("an update follows its content's first commit")
+                            .apply(updates);
+                    }
+                    Some(ContentOp::Edit(edit)) => mirrored
+                        .pictures
+                        .get_mut(&layer)
+                        .expect("an edit follows its content's first commit")
+                        .edit(*edit),
+                    None => {
+                        mirrored.pictures.remove(&layer);
+                    }
+                },
+                Realize::Applied => {}
             }
         }
     }
@@ -128,10 +155,14 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for MirrorTarget {
     type Group = BackdropId;
     /// The mirror's engine realizes real backdrop shaders.
     type Shader = cherenkov::BackdropShader;
-    const BACKDROP_SHADERS: bool = true;
+    const BACKDROP_SHADER_REFUSAL: Option<&'static str> = None;
 
     fn resources(host: &MirrorHost) -> &Rc<SceneResources> {
         &host.resources
+    }
+
+    fn install_text(host: &MirrorHost, text: &Arc<crate::text::TextService<E>>) {
+        install_engine_text(&host.resources, &host.engine, text);
     }
 
     fn mount_gpu_content(
@@ -154,6 +185,7 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for MirrorTarget {
         tx: &mut Transaction<'_, Self>,
         layer: &Layer,
         runtime: &mut ExternalFrameRuntime,
+        _presented: waterui_graphics::gpu::PresentedSize,
         _wake: ProducerWake,
     ) -> Option<(u32, u32)> {
         let pixels = runtime.frame_pixels?;
@@ -165,19 +197,27 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for MirrorTarget {
         Some(pixels)
     }
 
-    fn filter(host: &MirrorHost, runtime: &mut FilteredRuntime) -> FilterId {
+    fn filter(host: &MirrorHost, runtime: &mut FilteredRuntime) -> Option<FilterId> {
         runtime.filter(|source| {
-            crate::renderer::mount::target::FilterHandle::new(host.engine.effect(
-                crate::renderer::effects::EngineEffect::new(source, Arc::clone(&host.metrics)),
+            Some(crate::renderer::mount::target::FilterHandle::new(
+                host.engine
+                    .effect(crate::renderer::effects::EngineEffect::new(
+                        source,
+                        Arc::clone(&host.metrics),
+                    )),
             ))
         })
     }
 
     fn stretch_filter(
         host: &MirrorHost,
-        filter: waterui_graphics::filtrate::filters::OverscrollStretch<waterui_graphics::Reactive>,
-    ) -> crate::renderer::mount::target::FilterHandle {
-        crate::renderer::mount::target::FilterHandle::new(host.engine.filter(filter))
+        filter: waterui_graphics::backend::filtrate::filters::OverscrollStretch<
+            waterui_graphics::backend::Reactive,
+        >,
+    ) -> Option<crate::renderer::mount::target::FilterHandle> {
+        Some(crate::renderer::mount::target::FilterHandle::new(
+            host.engine.filter(filter),
+        ))
     }
 
     fn mount_material(
@@ -203,8 +243,8 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for MirrorTarget {
                 resolve: NodeLayers::frame_layer,
             },
             (
-                |_runtime, _scale| key_id(&key),
-                |_tx, _member, _p: &(), _group, _scale| {},
+                |_runtime, _scale| Ok(key_id(&key)),
+                |_tx, _member, _p: &(), _group, _scale| Ok(()),
             ),
             bind,
         );
@@ -224,7 +264,7 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for MirrorTarget {
         >,
         layer: &Layer,
         key: crate::renderer::mount::backdrop::ChromeGroupKey,
-        params: cherenkov_record::MaterialCapture,
+        params: crate::renderer::mount::backdrop::ChromeParams,
         display_scale: f64,
         membership: &crate::renderer::mount::backdrop::MaterialMembership<E>,
         payload: impl FnOnce() -> crate::renderer::mount::backdrop::ChromeMemberPayload<
@@ -247,29 +287,10 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for MirrorTarget {
                 resolve: NodeLayers::member_layer,
             },
             (
-                move |params: &cherenkov_record::MaterialCapture, scale| {
-                    // The same spec the GPU target builds; a test reads
-                    // the device-pixel conversions off the log.
-                    let mut log = host.spec_log.borrow_mut();
-                    log.push(crate::renderer::mount::target::chrome_spec(
-                        params, scale, key,
-                    ));
-                    // Every group built gets an id of its own, as the
-                    // engine's do: a member left on a released group
-                    // carries an id no live group has.
-                    key_id(&(key, log.len()))
+                |params: &crate::renderer::mount::backdrop::ChromeParams, scale| {
+                    mirror_chrome_group(host, &key, params, scale)
                 },
-                |tx: &mut Transaction<'_, Self>,
-                 member: &Layer,
-                 payload: &crate::renderer::mount::backdrop::ChromeMemberPayload<
-                    cherenkov::BackdropShader,
-                >,
-                 id: &BackdropId,
-                 scale: f64| {
-                    tx[member].backdrop(crate::renderer::mount::target::chrome_sample(
-                        payload, *id, scale,
-                    ));
-                },
+                bind_mirror_chrome_sample,
             ),
             bind,
         );
@@ -278,6 +299,66 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for MirrorTarget {
     fn clear_chrome(tx: &mut Transaction<'_, Self>, layer: &Layer) {
         tx[layer].clear_backdrop();
     }
+
+    fn settle_chrome(
+        host: &MirrorHost,
+        tx: &mut Transaction<'_, Self>,
+        groups: &mut crate::renderer::mount::backdrop::ChromeBackdropGroups<
+            BackdropId,
+            cherenkov::BackdropShader,
+            E,
+        >,
+        display_scale: f64,
+    ) {
+        groups.settle(
+            tx,
+            &host.materials.registry,
+            display_scale,
+            (
+                |key: &crate::renderer::mount::backdrop::ChromeGroupKey,
+                 params: &crate::renderer::mount::backdrop::ChromeParams,
+                 scale| mirror_chrome_group(host, key, params, scale),
+                bind_mirror_chrome_sample,
+            ),
+            NodeLayers::member_layer,
+        );
+    }
+}
+
+/// The mirror's chrome group of `key` built from `params` at `scale`.
+fn mirror_chrome_group(
+    host: &MirrorHost,
+    key: &crate::renderer::mount::backdrop::ChromeGroupKey,
+    params: &crate::renderer::mount::backdrop::ChromeParams,
+    scale: f64,
+) -> Result<BackdropId, crate::renderer::mount::backdrop::Unbound> {
+    // The same spec the GPU target builds; a test reads the device-pixel
+    // conversions off the log.
+    let mut log = host.spec_log.borrow_mut();
+    log.push(crate::renderer::mount::target::chrome_spec(
+        params, scale, *key,
+    )?);
+    // Every group built gets an id of its own, as the engine's do: a
+    // member left on a released group carries an id no live group has.
+    Ok(key_id(&(*key, log.len())))
+}
+
+/// Binds `member` to the chrome sample of `payload` on the group `id`.
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "the join hook hands the group object by reference"
+)]
+fn bind_mirror_chrome_sample(
+    tx: &mut Transaction<'_, MirrorTarget>,
+    member: &Layer,
+    payload: &crate::renderer::mount::backdrop::ChromeMemberPayload<cherenkov::BackdropShader>,
+    id: &BackdropId,
+    scale: f64,
+) -> Result<(), crate::renderer::mount::backdrop::Unbound> {
+    tx[member].backdrop(crate::renderer::mount::target::chrome_sample(
+        payload, *id, scale,
+    )?);
+    Ok(())
 }
 
 /// A synthetic group id for a mirror group: stable across the group's
@@ -302,6 +383,8 @@ pub struct MirrorWindow {
     mount: Mount<MirrorTarget, crate::text::ParleyEngine>,
     host: MirrorHost,
     mirrored: Rc<RefCell<Mirrored>>,
+    /// The mount's surface, which [`present`](Self::present) drains.
+    shared: Rc<RefCell<Shared<MirrorTarget>>>,
 }
 
 impl std::fmt::Debug for MirrorWindow {
@@ -315,6 +398,7 @@ impl MirrorWindow {
         let mirrored = Rc::new(RefCell::new(Mirrored {
             tree: SurfaceTree::new(),
             installs: FxHashMap::default(),
+            pictures: FxHashMap::default(),
         }));
         let shared = Rc::new(RefCell::new(Shared::new(
             SurfaceId::new(1),
@@ -334,10 +418,60 @@ impl MirrorWindow {
             spec_log: RefCell::new(Vec::new()),
         };
         Self {
-            mount: Mount::new(shared, registry),
+            mount: Mount::new(Rc::clone(&shared), registry),
             host,
             mirrored,
+            shared,
         }
+    }
+
+    /// Samples the mirrored tree's running tracks for a frame presented at
+    /// `at`, as the engine does before it draws one.
+    pub fn sample(&self, at: crate::time::Instant) -> cherenkov_record::tree::Sampling {
+        self.mirrored.borrow_mut().tree.sample(at, 1.0)
+    }
+
+    /// One frame presented at `at`, as an engine runs it: the surface's
+    /// recorded operands sample their running tracks into the change set
+    /// it drains, which the mirror applies before it samples the tree's.
+    pub fn present(&self, at: crate::time::Instant) {
+        let changes = self.shared.borrow_mut().take_changes(at);
+        if let Some(changes) = changes {
+            let queue = MirrorQueue {
+                mirrored: Rc::clone(&self.mirrored),
+            };
+            queue.apply_changes(changes);
+        }
+        self.sample(at);
+    }
+
+    /// The content layer `id` draws, with every update applied; `None`
+    /// for a layer with no recorded content.
+    pub fn picture(&self, id: LayerId) -> Option<Ref<'_, Picture>> {
+        Ref::filter_map(self.mirrored.borrow(), |mirrored| {
+            mirrored.pictures.get(&id)
+        })
+        .ok()
+    }
+
+    /// Every layer with recorded content.
+    pub fn content_layers(&self) -> Vec<LayerId> {
+        self.mirrored.borrow().pictures.keys().copied().collect()
+    }
+
+    /// Every layer that samples a backdrop.
+    pub fn backdrop_layers(&self) -> Vec<LayerId> {
+        self.mirrored
+            .borrow()
+            .tree
+            .layers()
+            .filter_map(|(id, node)| node.backdrop.is_some().then_some(id))
+            .collect()
+    }
+
+    /// The mirrored layer `id`'s node.
+    pub fn layer(&self, id: LayerId) -> Ref<'_, LayerNode> {
+        Ref::map(self.mirrored.borrow(), |mirrored| mirrored.tree.layer(id))
     }
 
     /// The layer path from the window layer down to `id`, inclusive.
@@ -510,7 +644,8 @@ impl std::fmt::Debug for NoShaderHost {
 }
 
 /// A `Mount<NoShaderTarget>` under construction against `registry` — the
-/// CPU-engine attach rule's panic lives in `Mount::new`.
+/// attach rule for a target without backdrop shaders panics in
+/// `Mount::new`.
 pub fn no_shader_mount(
     registry: &MaterialRegistry,
 ) -> Mount<NoShaderTarget, crate::text::ParleyEngine> {
@@ -520,6 +655,7 @@ pub fn no_shader_mount(
             mirrored: Rc::new(RefCell::new(Mirrored {
                 tree: SurfaceTree::new(),
                 installs: FxHashMap::default(),
+                pictures: FxHashMap::default(),
             })),
         },
     )));
@@ -530,7 +666,8 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for NoShaderTarget {
     type Host = NoShaderHost;
     type Group = ();
     type Shader = ();
-    const BACKDROP_SHADERS: bool = false;
+    const BACKDROP_SHADER_REFUSAL: Option<&'static str> =
+        Some("this engine has no backdrop shaders");
 
     fn resources(host: &NoShaderHost) -> &Rc<SceneResources> {
         &host.resources
@@ -551,24 +688,33 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for NoShaderTarget {
         _tx: &mut Transaction<'_, Self>,
         _layer: &Layer,
         _runtime: &mut ExternalFrameRuntime,
+        _presented: waterui_graphics::gpu::PresentedSize,
         _wake: ProducerWake,
     ) -> Option<(u32, u32)> {
         None
     }
 
-    fn filter(host: &NoShaderHost, runtime: &mut FilteredRuntime) -> FilterId {
+    fn filter(host: &NoShaderHost, runtime: &mut FilteredRuntime) -> Option<FilterId> {
         runtime.filter(|source| {
-            crate::renderer::mount::target::FilterHandle::new(host.engine.effect(
-                crate::renderer::effects::EngineEffect::new(source, Arc::clone(&host.metrics)),
+            Some(crate::renderer::mount::target::FilterHandle::new(
+                host.engine
+                    .effect(crate::renderer::effects::EngineEffect::new(
+                        source,
+                        Arc::clone(&host.metrics),
+                    )),
             ))
         })
     }
 
     fn stretch_filter(
         host: &NoShaderHost,
-        filter: waterui_graphics::filtrate::filters::OverscrollStretch<waterui_graphics::Reactive>,
-    ) -> crate::renderer::mount::target::FilterHandle {
-        crate::renderer::mount::target::FilterHandle::new(host.engine.filter(filter))
+        filter: waterui_graphics::backend::filtrate::filters::OverscrollStretch<
+            waterui_graphics::backend::Reactive,
+        >,
+    ) -> Option<crate::renderer::mount::target::FilterHandle> {
+        Some(crate::renderer::mount::target::FilterHandle::new(
+            host.engine.filter(filter),
+        ))
     }
 
     fn mount_material(
@@ -593,29 +739,12 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for NoShaderTarget {
         _groups: &mut crate::renderer::mount::backdrop::ChromeBackdropGroups<(), (), E>,
         _layer: &Layer,
         _key: crate::renderer::mount::backdrop::ChromeGroupKey,
-        _params: cherenkov_record::MaterialCapture,
+        _params: crate::renderer::mount::backdrop::ChromeParams,
         _display_scale: f64,
         _membership: &crate::renderer::mount::backdrop::MaterialMembership<E>,
         _payload: impl FnOnce() -> crate::renderer::mount::backdrop::ChromeMemberPayload<()>,
         _bind: MemberBind,
     ) {
-    }
-}
-
-/// Flattens every committed run into one window-space recording.
-struct Painted(Recording);
-
-impl<E: crate::text::TextEngine> LayerVisitor<E> for Painted {
-    fn run(&mut self, world: kurbo::Affine, recording: &Recording) {
-        self.0.append(recording, world);
-    }
-
-    fn open_clip(&mut self, world: kurbo::Affine, clip: &cherenkov::ShapeData) {
-        self.0.push_clip_data(world, clip.clone());
-    }
-
-    fn close_clip(&mut self) {
-        self.0.pop_scope();
     }
 }
 
@@ -635,6 +764,7 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
             .mirror
             .get_or_insert_with(|| MirrorWindow::new(&registry));
         let redraw = self.host_redraw_handle.clone();
+        let mut scene_frames = std::mem::take(&mut self.core.scene_frames);
         let core = &mut self.core;
         let window_material = core.window_material;
         let mut wakes = |cell: &Rc<
@@ -645,9 +775,13 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
             kurbo::Affine::IDENTITY,
             scale,
             &roots,
-            &mut wakes,
+            crate::renderer::mount::CommitReports {
+                wakes: &mut wakes,
+                scene_frames: &mut scene_frames,
+            },
             window_material.as_ref(),
         );
+        self.core.scene_frames = scene_frames;
         let stats = window.mount.take_stats();
         self.core.clear_commit_marks();
         crate::renderer::mount::layers::census(&roots, stats)
@@ -670,12 +804,5 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
         self.mirror
             .as_ref()
             .expect("hydrolysis tests: read the mirror after commit_mirror")
-    }
-
-    /// Everything the committed layers paint, in window points.
-    pub fn painted_scene(&self) -> Recording {
-        let mut painted = Painted(Recording::default());
-        visit(&self.mount_roots(), &mut painted);
-        painted.0
     }
 }

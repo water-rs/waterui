@@ -142,24 +142,29 @@ fn p3_cs(engine: &'static str) -> Result<ColorSpace, BenchError> {
     })
 }
 
-/// Whether this level contains only encoded-sRGB groups, possibly nested
-/// in non-isolating transform layers such as native-resolution scaling.
+/// Whether this level contains only encoded-sRGB groups and layers,
+/// possibly nested in non-isolating transform layers such as
+/// native-resolution scaling.
 fn encoded_root(layer: &Layer) -> bool {
     layer.opacity >= 1.0
         && layer.blend == SBlend::Normal
         && !layer.items.is_empty()
         && layer.items.iter().all(|item| match item {
-            Item::Group(group) => group.blend_space == BlendSpace::SrgbEncoded,
-            Item::Layer(child) => child.clip.is_none() && encoded_root(child),
+            Item::Group(group) => group.blend_space == Some(BlendSpace::SrgbEncoded),
+            Item::Layer(child) => {
+                child.blend_space == Some(BlendSpace::SrgbEncoded)
+                    || (child.clip.is_none() && encoded_root(child))
+            }
             Item::Draw(_) => false,
         })
 }
 
-/// The surface stores encoded sRGB when the root's composites all use
-/// that space. Ordinary transform nesting does not change compositing;
-/// mixed content keeps the linear Display P3 working space.
+/// The surface stores encoded sRGB when the scene declares that storage
+/// space or the root's composites all use it. Ordinary transform nesting
+/// does not change compositing; mixed content keeps the linear Display P3
+/// working space.
 fn root_space(scene: &Scene) -> BlendSpace {
-    if encoded_root(&scene.root) {
+    if scene.storage_space == BlendSpace::SrgbEncoded || encoded_root(&scene.root) {
         BlendSpace::SrgbEncoded
     } else {
         BlendSpace::Linear
@@ -248,9 +253,22 @@ fn encode_layer(
     counters: &mut Counters,
 ) -> Result<(), BenchError> {
     counters.layers += 1;
+    // A layer declaring a space maps like a group in it: only where the
+    // enclosing level stores that same space (`encode_group`).
+    if let Some(declared) = layer.blend_space
+        && declared != space
+    {
+        return Err(BenchError::Unsupported {
+            engine,
+            feature: Feature::BlendSpace(declared),
+            api: Some(GROUP_SPACE_API),
+        });
+    }
+    let encoded = layer.blend_space == Some(BlendSpace::SrgbEncoded);
     cmds.push(Cmd::Save);
     cmds.push(Cmd::Concat(sk_matrix(layer.transform)));
-    let grouped = layer.clip.is_some() || layer.blend != SBlend::Normal || layer.opacity < 1.0;
+    let grouped =
+        layer.clip.is_some() || layer.blend != SBlend::Normal || layer.opacity < 1.0 || encoded;
     if grouped {
         if let Some(clip) = &layer.clip {
             cmds.push(Cmd::Clip(sk_path(
@@ -261,7 +279,8 @@ fn encode_layer(
         let mut lp = Paint::default();
         lp.set_blend_mode(blend(layer.blend));
         lp.set_alpha_f(layer.opacity.clamp(0.0, 1.0) as f32);
-        cmds.push(Cmd::SaveLayer(lp, None));
+        let cs = encoded.then(|| space_cs(engine, space)).transpose()?;
+        cmds.push(Cmd::SaveLayer(lp, cs));
     }
     // Content and children draw translated by -scroll_offset inside the
     // clip; `motion` is unsupported (not in `skia_features`).
@@ -320,20 +339,18 @@ fn encode_group(
     engine: &'static str,
     counters: &mut Counters,
 ) -> Result<(), BenchError> {
-    if group.blend_space != BlendSpace::SrgbEncoded || group.blend_space != space {
+    let declared = group.blend_space.unwrap_or(space);
+    if declared != BlendSpace::SrgbEncoded || declared != space {
         return Err(BenchError::Unsupported {
             engine,
-            feature: Feature::BlendSpace(group.blend_space),
+            feature: Feature::BlendSpace(declared),
             api: Some(GROUP_SPACE_API),
         });
     }
     let mut lp = Paint::default();
     lp.set_blend_mode(blend(group.blend));
     lp.set_alpha_f(group.opacity.clamp(0.0, 1.0) as f32);
-    cmds.push(Cmd::SaveLayer(
-        lp,
-        Some(space_cs(engine, group.blend_space)?),
-    ));
+    cmds.push(Cmd::SaveLayer(lp, Some(space_cs(engine, space)?)));
     for item in &group.items {
         match item {
             GroupItem::Draw(d) => {
@@ -341,7 +358,7 @@ fn encode_group(
                 encode_draw(cmds, blobs, d, engine)?;
             }
             GroupItem::Group(g) => {
-                encode_group(cmds, blobs, g, group.blend_space, engine, counters)?;
+                encode_group(cmds, blobs, g, space, engine, counters)?;
             }
         }
     }
@@ -552,6 +569,7 @@ fn mk_paint(engine: &'static str, paint: &SPaint, blobs: &Blobs) -> Result<Paint
                 api: Some("bilinear mesh paint"),
             });
         }
+        SPaint::Shader(_) => return Err(convert::shader_paint_unsupported(engine)),
         SPaint::Image(ip) => {
             let (w, h, rgba) = convert::decode_png(blob(blobs, ip.image)?)?;
             let img = sk_image(w, h, &rgba);
@@ -1028,6 +1046,10 @@ impl Engine for SkiaCpu {
         &self.info
     }
 
+    fn gpu_timing_unavailable(&self) -> Option<&'static str> {
+        Some(crate::CPU_RASTERIZER)
+    }
+
     fn supported(&self) -> BTreeSet<Feature> {
         skia_features().into_iter().collect()
     }
@@ -1063,7 +1085,7 @@ impl Engine for SkiaCpu {
         replay_scrolled(
             prepared.surface.canvas(),
             &prepared.cmds,
-            input.scroll_transform(),
+            input.frame_transform(),
         );
         Ok(())
     }
@@ -1398,7 +1420,7 @@ impl Engine for SkiaVk {
         replay_scrolled(
             prepared.surface.canvas(),
             &prepared.cmds,
-            input.scroll_transform(),
+            input.frame_transform(),
         );
         Ok(())
     }
@@ -2074,7 +2096,7 @@ mod graphite_metal {
             replay_scrolled(
                 prepared.surface.canvas(),
                 &prepared.cmds,
-                input.scroll_transform(),
+                input.frame_transform(),
             );
             self.recording = Some(
                 self.recorder
@@ -2214,6 +2236,7 @@ mod tests {
             scene: &scene,
             blobs: &blobs,
             scroll_offset: None,
+            drift: None,
         };
         engine.prepare(&input).expect("native effects prepare");
         engine.encode(&input).expect("native effects encode");
@@ -2227,6 +2250,7 @@ mod tests {
                 scene: &scene,
                 blobs: &blobs,
                 scroll_offset: None,
+                drift: None,
             }),
             Err(BenchError::Unsupported { .. })
         ));

@@ -6,26 +6,25 @@
 //! mixed with a per-instance discriminator). Slots are
 //! rebound on every structural rebuild and survive across frames so
 //! in-flight animations keep their progress; unbound slots are dropped when
-//! the rebuild finishes. The controller covers three slot kinds: animated
-//! scalars driven by `AnimationTrack<f32>`, the radio-indicator selection
-//! choreography (inner dot scale/opacity plus outer ring color), and
-//! free-running repeating/timeline phases for indeterminate indicators.
+//! the rebuild finishes. The controller samples one slot kind: animated
+//! scalars driven by `AnimationTrack<f32>`. A second
+//! kind, a wrapper's engine-run motion (water-rs/waterui#2203), is bound and
+//! scoped like the first but never sampled: the engine samples it, and the
+//! controller only compares the frame clock with the instant its track ends.
 
-use cherenkov_record::RefreshRange;
-use cherenkov_record::tree::RATE_FAST;
-use core::time::Duration;
+#[cfg(any(test, all(target_os = "android", hydrolysis_gpu_painter)))]
+use cherenkov_record::{RefreshRange, tree::RATE_FAST};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
-use crate::theme::{RadioIndicatorState, RadioSelectionMotion};
-use nami::watcher::Context;
+use crate::renderer::mount::motion::MotionStatus;
 use waterui_core::animation::{Animation, AnimationTrack};
+use waterui_core::contract_violation;
 
 use crate::time::Instant;
 
 const VALUE_EPSILON: f32 = 0.000_01;
-const RENDERER_LOCAL_KEY_MASK: u64 = 1 << 63;
 
 const fn mix_identity(identity: usize, discriminator: usize) -> u64 {
     (identity as u64)
@@ -45,11 +44,10 @@ const fn mix_identity(identity: usize, discriminator: usize) -> u64 {
 #[derive(Debug, Default)]
 pub struct AnimationController {
     slots: BTreeMap<AnimationKey, AnimatedScalarSlot>,
-    radio_indicator_slots: BTreeMap<AnimationKey, AnimatedRadioIndicatorSlot>,
-    repeating_slots: BTreeMap<AnimationKey, RepeatingPhaseSlot>,
+    /// Engine-run motions, by the scalar key of the wrapper slot they fill.
+    motions: BTreeMap<AnimationKey, Rc<MotionStatus>>,
     active_slots: BTreeSet<AnimationKey>,
-    active_radio_indicator_slots: BTreeSet<AnimationKey>,
-    active_repeating_slots: BTreeSet<AnimationKey>,
+    active_motions: BTreeSet<AnimationKey>,
     /// Scopes pushed by the backend while a subtree binds its slots — the
     /// anchored overlay's exit waits on the slots its content owns.
     scope_stack: Vec<u64>,
@@ -61,7 +59,7 @@ pub struct AnimationController {
 /// Built from a renderer-chosen owner identity (such as a view's pinned
 /// allocation), optionally mixed with a per-instance discriminator so
 /// several slots owned by one view get distinct keys. Keys of different
-/// scopes (scalar, radio indicator, repeating) never collide.
+/// scopes never collide.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct AnimationKey {
     scope: AnimationKeyScope,
@@ -71,18 +69,11 @@ pub struct AnimationKey {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 enum AnimationKeyScope {
     RendererLocalScalar,
-    RadioIndicator,
-    Repeating,
 }
 
 #[derive(Debug)]
 struct AnimatedScalarSlot {
     state: Rc<RefCell<AnimatedScalarState>>,
-}
-
-#[derive(Debug)]
-struct AnimatedRadioIndicatorSlot {
-    state: Rc<RefCell<AnimatedRadioIndicatorState>>,
 }
 
 /// Cloneable reference to one animated scalar slot, valid for the bind
@@ -104,16 +95,6 @@ struct AnimatedScalarState {
     track: AnimationTrack<f32>,
     active_target: Option<f32>,
     last_tick: Instant,
-    refresh: RefreshRange,
-}
-
-#[derive(Debug)]
-struct AnimatedRadioIndicatorState {
-    selected: bool,
-    inner_scale: AnimationTrack<f32>,
-    inner_opacity: AnimationTrack<f32>,
-    outer_color: AnimationTrack<f32>,
-    last_tick: Instant,
 }
 
 /// Whether a repeat-forever animation counts as running work in a
@@ -126,26 +107,7 @@ pub enum PerpetualAnimation {
     Ignored,
 }
 
-#[derive(Debug)]
-struct RepeatingPhaseSlot {
-    started_at: Instant,
-    cycle: Duration,
-    repeat: bool,
-}
-
 impl AnimationKey {
-    /// Returns the radio-indicator-slot key for one selectable option,
-    /// mixing the owning view's renderer-chosen identity with the option's
-    /// discriminator. Only valid with
-    /// [`bind_radio_indicator`](AnimationController::bind_radio_indicator).
-    #[must_use]
-    pub const fn radio_indicator(owner: usize, option: usize) -> Self {
-        Self {
-            scope: AnimationKeyScope::RadioIndicator,
-            identity: mix_identity(owner, option),
-        }
-    }
-
     /// Returns a renderer-owned scalar key scoped by a stable semantic owner
     /// and a per-owner discriminator.
     #[must_use]
@@ -159,30 +121,10 @@ impl AnimationKey {
         }
     }
 
-    /// Returns a repeating-phase-slot key for a renderer-owned free-running
-    /// timeline (e.g. an indeterminate progress indicator). Only valid with
-    /// [`bind_repeating_phase`](AnimationController::bind_repeating_phase) /
-    /// [`bind_timeline_phase`](AnimationController::bind_timeline_phase).
-    #[must_use]
-    pub const fn renderer_local_repeating(identity: usize) -> Self {
-        Self {
-            scope: AnimationKeyScope::Repeating,
-            identity: RENDERER_LOCAL_KEY_MASK | identity as u64,
-        }
-    }
-
     #[cfg(test)]
     const fn test_scalar(identity: usize) -> Self {
         Self {
             scope: AnimationKeyScope::RendererLocalScalar,
-            identity: identity as u64,
-        }
-    }
-
-    #[cfg(test)]
-    const fn test_radio_indicator(identity: usize) -> Self {
-        Self {
-            scope: AnimationKeyScope::RadioIndicator,
             identity: identity as u64,
         }
     }
@@ -194,8 +136,7 @@ impl AnimationController {
     /// tracks and their progress) are untouched.
     pub fn begin_rebuild_frame(&mut self) {
         self.active_slots.clear();
-        self.active_radio_indicator_slots.clear();
-        self.active_repeating_slots.clear();
+        self.active_motions.clear();
     }
 
     /// Finishes a structural rebuild by dropping every slot that was not
@@ -212,60 +153,54 @@ impl AnimationController {
             return;
         }
         self.slots.retain(|key, _| self.active_slots.contains(key));
-        self.radio_indicator_slots
-            .retain(|key, _| self.active_radio_indicator_slots.contains(key));
-        self.repeating_slots
-            .retain(|key, _| self.active_repeating_slots.contains(key));
+        self.motions
+            .retain(|key, _| self.active_motions.contains(key));
     }
 
-    /// Binds the scalar slot for `key` during dispatch, reconciling it with
-    /// the value observed from the view tree, and returns a fresh handle.
+    /// Binds the engine-run motion filling `key` during dispatch: until
+    /// the rebuild that no longer binds it, settle queries and `key`'s
+    /// animation scopes see its track.
     ///
-    /// If the observed value disagrees with the slot (and with any in-flight
-    /// target), the track snaps to it without animating — the watcher that
-    /// owns the handle is responsible for animated transitions. Each bind
-    /// advances the slot generation, so handles from earlier frames become
-    /// inert. Panics if `key` is not a scalar-scope key.
-    /// # Panics
-    ///
-    /// Panics if `key` was created with a scope that does not match this animation binding.
-    pub fn bind_scalar(
-        &mut self,
-        key: AnimationKey,
-        observed_value: f32,
-        now: Instant,
-        refresh: RefreshRange,
-    ) -> AnimatedScalarHandle {
-        assert!(
-            key.scope == AnimationKeyScope::RendererLocalScalar,
-            "animation scalar key used with mismatched scope"
-        );
-        self.active_slots.insert(key);
+    /// A `key` that is not a scalar-scope key is a contract violation by the
+    /// caller: it is reported and binds the motion all the same, since
+    /// motions are keyed by the whole key.
+    pub fn bind_motion(&mut self, key: AnimationKey, status: Rc<MotionStatus>) {
+        if key.scope != AnimationKeyScope::RendererLocalScalar {
+            contract_violation!(
+                "animation motion key used with mismatched scope; the motion is bound anyway"
+            );
+        }
+        self.active_motions.insert(key);
         self.note_key(key);
-        let slot = self.slots.entry(key).or_insert_with(|| AnimatedScalarSlot {
-            state: Rc::new(RefCell::new(AnimatedScalarState::new(observed_value, now))),
-        });
+        self.motions.insert(key, status);
+    }
 
-        let state = Rc::clone(&slot.state);
-        let generation = {
-            let mut slot = state.borrow_mut();
-            slot.refresh = refresh;
-            slot.prepare_generation(observed_value)
-        };
-        AnimatedScalarHandle { state, generation }
+    /// Whether an engine-run motion's track still runs at `now`.
+    #[must_use]
+    pub fn motions_active(&self, now: Instant) -> bool {
+        self.motions.values().any(|status| status.is_running(now))
+    }
+
+    /// Fires the settle re-record of every motion whose track ended by
+    /// `now`; `true` when one fired. A comparison with each track's end,
+    /// never an evaluation of the track.
+    pub fn settle_motions(&self, now: Instant) -> bool {
+        self.motions
+            .values()
+            .fold(false, |fired, status| status.settle(now) | fired)
     }
 
     /// Binds the scalar slot for `key` and animates it toward `target` with
     /// `animation`, returning a fresh handle.
     ///
-    /// Unlike [`bind_scalar`](Self::bind_scalar), the target itself is the
-    /// per-frame input: re-binding with the same target does not restart the
+    /// The target itself is the per-frame input: re-binding with the same
+    /// target does not restart the
     /// in-flight animation, while a new target starts one from the current
     /// sampled value (no snapping). A slot created on first bind starts at
-    /// `target` directly. Panics if `key` is not a scalar-scope key.
-    /// # Panics
+    /// `target` directly.
     ///
-    /// Panics if `key` was created with a scope that does not match this animation binding.
+    /// A `key` that is not a scalar-scope key is a contract violation by the
+    /// caller: it is reported and binds the slot all the same.
     pub fn bind_scalar_target(
         &mut self,
         key: AnimationKey,
@@ -273,10 +208,11 @@ impl AnimationController {
         animation: Animation,
         now: Instant,
     ) -> AnimatedScalarHandle {
-        assert!(
-            key.scope == AnimationKeyScope::RendererLocalScalar,
-            "animation scalar target key used with mismatched scope"
-        );
+        if key.scope != AnimationKeyScope::RendererLocalScalar {
+            contract_violation!(
+                "animation scalar target key used with mismatched scope; the slot is bound anyway"
+            );
+        }
         self.active_slots.insert(key);
         self.note_key(key);
         let slot = self.slots.entry(key).or_insert_with(|| AnimatedScalarSlot {
@@ -290,41 +226,6 @@ impl AnimationController {
         handle
     }
 
-    /// Binds the radio-indicator slot for `key` and returns the sampled
-    /// indicator state for this frame.
-    ///
-    /// A selection change starts the choreography described by `motion`:
-    /// selecting grows the inner dot from zero while fading dot opacity and
-    /// outer ring color in; deselecting fades them out without shrinking the
-    /// dot. Panics if `key` is not a radio-indicator-scope key.
-    /// # Panics
-    ///
-    /// Panics if `key` was created with a scope that does not match this animation binding.
-    pub fn bind_radio_indicator(
-        &mut self,
-        key: AnimationKey,
-        selected: bool,
-        motion: &RadioSelectionMotion,
-        now: Instant,
-    ) -> RadioIndicatorState {
-        assert!(
-            key.scope == AnimationKeyScope::RadioIndicator,
-            "animation radio indicator key used with mismatched scope"
-        );
-        self.active_radio_indicator_slots.insert(key);
-        self.note_key(key);
-        let slot =
-            self.radio_indicator_slots
-                .entry(key)
-                .or_insert_with(|| AnimatedRadioIndicatorSlot {
-                    state: Rc::new(RefCell::new(AnimatedRadioIndicatorState::new(
-                        selected, now,
-                    ))),
-                });
-
-        slot.state.borrow_mut().prepare(selected, motion, now)
-    }
-
     /// Advances every slot's track to `now` and returns whether any
     /// animation is still running, in which case the renderer must schedule
     /// another redraw frame. Called once per frame with the frame clock.
@@ -335,133 +236,28 @@ impl AnimationController {
                 has_active = true;
             }
         }
-        for slot in self.radio_indicator_slots.values() {
-            if slot.state.borrow_mut().advance(now) {
-                has_active = true;
-            }
-        }
         has_active
-            || self.repeating_slots.values().any(|slot| {
-                slot.repeat || now.saturating_duration_since(slot.started_at) < slot.cycle
-            })
     }
 
-    /// Returns whether any slot is still animating at `now`, without
-    /// advancing any track (used to decide whether the next frame must be
-    /// scheduled).
+    /// Returns whether any slot is still animating, without advancing any
+    /// track (used to decide whether the next frame must be scheduled). Every
+    /// slot runs to a finish, so none is repeat-forever.
     #[must_use]
-    pub fn has_active(&self, now: Instant) -> bool {
-        self.has_finite_active(now) || self.repeating_slots.values().any(|slot| slot.repeat)
-    }
-
-    /// Like [`has_active`](Self::has_active), but ignoring repeat-forever
-    /// timeline slots: whether any animation is running that will finish on
-    /// its own.
-    #[must_use]
-    pub fn has_finite_active(&self, now: Instant) -> bool {
+    pub fn has_active(&self) -> bool {
         self.slots
             .values()
             .any(|slot| slot.state.borrow().is_active())
-            || self
-                .radio_indicator_slots
-                .values()
-                .any(|slot| slot.state.borrow().is_active())
-            || self.repeating_slots.values().any(|slot| {
-                !slot.repeat && now.saturating_duration_since(slot.started_at) < slot.cycle
-            })
     }
 
     /// The range needed by currently running content, independent of how
-    /// often the host happens to sample it.
+    /// often the host happens to sample it: widget scalars move content at
+    /// the fast rate. Engine-run motions are
+    /// not counted here; the engine reports the rate of every track it
+    /// samples.
     #[cfg(any(test, all(target_os = "android", hydrolysis_gpu_painter)))]
     #[must_use]
-    pub fn refresh_range(&self, now: Instant) -> Option<RefreshRange> {
-        if self
-            .radio_indicator_slots
-            .values()
-            .any(|slot| slot.state.borrow().is_active())
-            || self.repeating_slots.values().any(|slot| {
-                slot.repeat || now.saturating_duration_since(slot.started_at) < slot.cycle
-            })
-        {
-            return Some(RATE_FAST);
-        }
-        self.slots
-            .values()
-            .filter_map(|slot| {
-                let state = slot.state.borrow();
-                state.is_active().then(|| state.refresh.clone())
-            })
-            .reduce(|left, right| {
-                (*left.start()).max(*right.start())..=(*left.end()).max(*right.end())
-            })
-    }
-
-    /// Returns the keys of all scalar slots whose animation is still in
-    /// flight, letting the renderer patch exactly the nodes that depend on
-    /// them.
-    #[must_use]
-    pub fn active_scalar_keys(&self) -> BTreeSet<AnimationKey> {
-        self.slots
-            .iter()
-            .filter_map(|(key, slot)| slot.state.borrow().is_active().then_some(*key))
-            .collect()
-    }
-
-    /// Binds the repeating slot for `key` and returns the phase within the
-    /// current cycle (`elapsed % cycle`), for free-running looping motion
-    /// such as indeterminate progress indicators.
-    pub fn bind_repeating_phase(
-        &mut self,
-        key: AnimationKey,
-        cycle: Duration,
-        now: Instant,
-    ) -> Duration {
-        let elapsed = self.bind_timeline_phase(key, cycle, true, now);
-        Duration::from_secs_f64(elapsed.as_secs_f64() % cycle.as_secs_f64())
-    }
-
-    /// Binds the timeline slot for `key` and returns the elapsed time since
-    /// the slot's start, capped at `cycle` when `repeat` is false.
-    ///
-    /// The slot's start instant persists across rebuilds; changing `cycle` or
-    /// `repeat` restarts the timeline at `now`. Panics if `cycle` is zero or
-    /// `key` is not a repeating-scope key.
-    /// # Panics
-    ///
-    /// Panics if `key` was created with a scope that does not match this animation binding.
-    pub fn bind_timeline_phase(
-        &mut self,
-        key: AnimationKey,
-        cycle: Duration,
-        repeat: bool,
-        now: Instant,
-    ) -> Duration {
-        assert!(
-            !cycle.is_zero(),
-            "animation repeating phase cycle must be non-zero"
-        );
-        assert!(
-            key.scope == AnimationKeyScope::Repeating,
-            "animation repeating key used with mismatched scope"
-        );
-        self.active_repeating_slots.insert(key);
-        self.note_key(key);
-        let slot = self
-            .repeating_slots
-            .entry(key)
-            .or_insert(RepeatingPhaseSlot {
-                started_at: now,
-                cycle,
-                repeat,
-            });
-        if slot.cycle != cycle || slot.repeat != repeat {
-            slot.started_at = now;
-            slot.cycle = cycle;
-            slot.repeat = repeat;
-        }
-        let elapsed = now.saturating_duration_since(slot.started_at);
-        if repeat { elapsed } else { elapsed.min(cycle) }
+    pub fn refresh_range(&self) -> Option<RefreshRange> {
+        self.has_active().then_some(RATE_FAST)
     }
 
     /// Marks the start of a subtree whose animation slots belong to `scope`
@@ -476,13 +272,12 @@ impl AnimationController {
 
     /// Pops the scope opened by [`begin_animation_scope`](Self::begin_animation_scope).
     ///
-    /// # Panics
-    ///
-    /// Panics when no scope is open.
+    /// Ending with no scope open is a contract violation by the caller: it
+    /// is reported and nothing is popped.
     pub fn end_animation_scope(&mut self) {
-        self.scope_stack
-            .pop()
-            .expect("end_animation_scope without a matching begin");
+        if self.scope_stack.pop().is_none() {
+            contract_violation!("end_animation_scope without a matching begin; no scope is popped");
+        }
     }
 
     /// Attributes `key` to every open scope; called by each `bind_*`.
@@ -501,6 +296,19 @@ impl AnimationController {
         keys.iter().any(|key| self.key_is_active(*key, now))
     }
 
+    /// Re-records the owner of every motion attributed to `scope` that runs
+    /// at `now` once its track is done: the record that found `scope`
+    /// active decides again when its motions end, though nothing samples
+    /// them in between.
+    pub fn arm_scope_settle(&self, scope: u64, now: Instant) {
+        let Some(keys) = self.scoped_keys.get(&scope) else {
+            return;
+        };
+        for status in keys.iter().filter_map(|key| self.motions.get(key)) {
+            status.arm_settle(now);
+        }
+    }
+
     /// Drops `scope`'s attributions; call when the owning subtree is gone so
     /// its keys stop accumulating here.
     pub fn drop_animation_scope(&mut self, scope: u64) {
@@ -510,17 +318,15 @@ impl AnimationController {
     /// Whether `key`'s slot is still animating at `now`, across every scope.
     fn key_is_active(&self, key: AnimationKey, now: Instant) -> bool {
         match key.scope {
-            AnimationKeyScope::RendererLocalScalar => self
-                .slots
-                .get(&key)
-                .is_some_and(|slot| slot.state.borrow().is_active()),
-            AnimationKeyScope::RadioIndicator => self
-                .radio_indicator_slots
-                .get(&key)
-                .is_some_and(|slot| slot.state.borrow().is_active()),
-            AnimationKeyScope::Repeating => self.repeating_slots.get(&key).is_some_and(|slot| {
-                slot.repeat || now.saturating_duration_since(slot.started_at) < slot.cycle
-            }),
+            AnimationKeyScope::RendererLocalScalar => {
+                self.slots
+                    .get(&key)
+                    .is_some_and(|slot| slot.state.borrow().is_active())
+                    || self
+                        .motions
+                        .get(&key)
+                        .is_some_and(|status| status.is_running(now))
+            }
         }
     }
 }
@@ -533,14 +339,6 @@ impl AnimatedScalarHandle {
         let mut state = self.state.borrow_mut();
         state.advance(now);
         state.current()
-    }
-
-    /// Applies a signal watcher update: the new value becomes the target and
-    /// the `Animation` carried in the update's metadata (if any) drives the
-    /// transition.
-    pub fn apply_update_from_context(&self, update: Context<f32>, now: Instant) {
-        let metadata = update.metadata().try_get::<Animation>();
-        self.apply_target(update.into_value(), metadata, now);
     }
 
     /// Steers the slot toward `target`, animating with `animation` or
@@ -566,17 +364,7 @@ impl AnimatedScalarState {
             track: AnimationTrack::new(initial),
             active_target: None,
             last_tick: now,
-            refresh: RATE_FAST,
         }
-    }
-
-    fn prepare_generation(&mut self, observed_value: f32) -> u64 {
-        self.generation = self
-            .generation
-            .checked_add(1)
-            .expect("animation controller generation overflow");
-        self.reconcile_observed(observed_value);
-        self.generation
     }
 
     const fn prepare_target_generation(&mut self) -> u64 {
@@ -585,20 +373,6 @@ impl AnimatedScalarState {
             .checked_add(1)
             .expect("animation controller generation overflow");
         self.generation
-    }
-
-    fn reconcile_observed(&mut self, observed_value: f32) {
-        if let Some(target) = self.active_target {
-            if !approx_eq(target, observed_value) {
-                self.track.set_target(observed_value, None);
-                self.active_target = None;
-            }
-            return;
-        }
-
-        if !approx_eq(self.current(), observed_value) {
-            self.track.set_target(observed_value, None);
-        }
     }
 
     fn apply_target(&mut self, target: f32, animation: Option<Animation>, now: Instant) {
@@ -643,79 +417,16 @@ impl AnimatedScalarState {
     }
 }
 
-impl AnimatedRadioIndicatorState {
-    const fn new(selected: bool, now: Instant) -> Self {
-        let selected_progress = if selected { 1.0 } else { 0.0 };
-        Self {
-            selected,
-            inner_scale: AnimationTrack::new(1.0),
-            inner_opacity: AnimationTrack::new(selected_progress),
-            outer_color: AnimationTrack::new(selected_progress),
-            last_tick: now,
-        }
-    }
-
-    fn prepare(
-        &mut self,
-        selected: bool,
-        motion: &RadioSelectionMotion,
-        now: Instant,
-    ) -> RadioIndicatorState {
-        let _ = self.advance(now);
-        if self.selected != selected {
-            if selected {
-                self.inner_scale.set_target(0.0, None);
-                self.inner_scale
-                    .set_target(1.0, Some(motion.inner_grow.clone()));
-            } else {
-                self.inner_scale.set_target(1.0, None);
-            }
-            let selected_progress = if selected { 1.0 } else { 0.0 };
-            self.inner_opacity
-                .set_target(selected_progress, Some(motion.inner_opacity.clone()));
-            self.outer_color
-                .set_target(selected_progress, Some(motion.outer_color.clone()));
-            self.selected = selected;
-        }
-        self.sample()
-    }
-
-    fn advance(&mut self, now: Instant) -> bool {
-        let delta = now.saturating_duration_since(self.last_tick);
-        self.last_tick = now;
-        let scale_active = self.inner_scale.advance(delta);
-        let opacity_active = self.inner_opacity.advance(delta);
-        let color_active = self.outer_color.advance(delta);
-        scale_active || opacity_active || color_active
-    }
-
-    const fn is_active(&self) -> bool {
-        self.inner_scale.is_active()
-            || self.inner_opacity.is_active()
-            || self.outer_color.is_active()
-    }
-
-    fn sample(&self) -> RadioIndicatorState {
-        RadioIndicatorState {
-            selected: self.selected,
-            outer_selected_progress: self.outer_color.value().clamp(0.0, 1.0),
-            inner_scale: self.inner_scale.value().clamp(0.0, 1.0),
-            inner_opacity: self.inner_opacity.value().clamp(0.0, 1.0),
-        }
-    }
-}
-
 const fn approx_eq(a: f32, b: f32) -> bool {
     (a - b).abs() <= VALUE_EPSILON
 }
 
 #[cfg(test)]
 mod tests {
-    use cherenkov_record::tree::{RATE_FAST, RATE_SLOW};
+    use cherenkov_record::tree::RATE_FAST;
     use core::time::Duration;
     use std::time::Instant;
 
-    use crate::theme::RadioSelectionMotion;
     use waterui::animation::Animation;
 
     use super::{AnimationController, AnimationKey};
@@ -724,70 +435,44 @@ mod tests {
         AnimationKey::test_scalar(identity)
     }
 
-    const fn radio_key(identity: usize) -> AnimationKey {
-        AnimationKey::test_radio_indicator(identity)
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "end_animation_scope without a matching begin")
+    )]
+    fn ending_an_unopened_scope_is_reported_and_pops_nothing() {
+        let mut controller = AnimationController::default();
+        controller.end_animation_scope();
+        controller.begin_animation_scope(1);
+        controller.end_animation_scope();
     }
 
     #[test]
-    fn mixed_animation_demand_returns_to_normal_after_motion_finishes() {
+    fn scalar_demand_is_fast_until_the_track_settles() {
         let mut controller = AnimationController::default();
         let start = Instant::now();
-        let fade = controller.bind_scalar(scalar_key(1), 0.0, start, RATE_SLOW);
-        let motion = controller.bind_scalar(scalar_key(2), 0.0, start, RATE_FAST);
-        fade.apply_target(1.0, Some(Animation::linear(Duration::from_secs(1))), start);
-        assert_eq!(controller.refresh_range(start), Some(RATE_SLOW));
-        motion.apply_target(
-            1.0,
-            Some(Animation::linear(Duration::from_millis(100))),
-            start,
-        );
-        assert_eq!(controller.refresh_range(start), Some(RATE_FAST));
-        controller.tick(start + Duration::from_millis(200));
-        assert_eq!(
-            controller.refresh_range(start + Duration::from_millis(200)),
-            Some(RATE_SLOW)
-        );
-        controller.tick(start + Duration::from_secs(2));
-        assert_eq!(
-            controller.refresh_range(start + Duration::from_secs(2)),
-            None
-        );
-        assert_eq!(fade.sample(start + Duration::from_secs(2)), 1.0);
-    }
-
-    #[test]
-    fn scalar_animation_advances_and_stops() {
-        let mut controller = AnimationController::default();
-        let start = Instant::now();
-        controller.begin_rebuild_frame();
-        let handle = controller.bind_scalar(scalar_key(1), 0.0, start, RATE_FAST);
-        controller.finish_rebuild_frame_with_inactive_slot_retention(false);
-
-        handle.apply_target(
-            1.0,
-            Some(Animation::ease_in_out(Duration::from_millis(120))),
-            start,
-        );
-
-        let mid_value = handle.sample(start + Duration::from_millis(60));
-        assert!(mid_value > 0.0 && mid_value < 1.0);
-        assert!(controller.tick(start + Duration::from_millis(60)));
-
-        let final_value = handle.sample(start + Duration::from_millis(200));
-        assert!((final_value - 1.0).abs() < 0.0001);
-        assert!(!controller.tick(start + Duration::from_millis(200)));
+        let animation = Animation::linear(Duration::from_millis(100));
+        let handle = controller.bind_scalar_target(scalar_key(1), 0.0, animation.clone(), start);
+        assert_eq!(controller.refresh_range(), None);
+        handle.apply_target(1.0, Some(animation), start);
+        assert_eq!(controller.refresh_range(), Some(RATE_FAST));
+        let settled = start + Duration::from_millis(200);
+        controller.tick(settled);
+        assert_eq!(controller.refresh_range(), None);
+        assert_eq!(handle.sample(settled), 1.0);
     }
 
     #[test]
     fn stale_generation_update_is_ignored() {
         let mut controller = AnimationController::default();
         let start = Instant::now();
+        let animation = Animation::linear(Duration::from_millis(100));
         controller.begin_rebuild_frame();
-        let stale = controller.bind_scalar(scalar_key(1), 0.0, start, RATE_FAST);
+        let stale = controller.bind_scalar_target(scalar_key(1), 0.0, animation.clone(), start);
         controller.finish_rebuild_frame_with_inactive_slot_retention(false);
 
         controller.begin_rebuild_frame();
-        let current = controller.bind_scalar(scalar_key(1), 0.0, start, RATE_FAST);
+        let current = controller.bind_scalar_target(scalar_key(1), 0.0, animation, start);
         controller.finish_rebuild_frame_with_inactive_slot_retention(false);
 
         stale.apply_target(1.0, None, start);
@@ -866,15 +551,15 @@ mod tests {
         let animation = Animation::ease_in_out(Duration::from_millis(120));
 
         controller.begin_rebuild_frame();
-        let handle = controller.bind_scalar(scalar_key(1), 0.0, start, RATE_FAST);
+        let handle = controller.bind_scalar_target(scalar_key(1), 0.0, animation.clone(), start);
         controller.finish_rebuild_frame_with_inactive_slot_retention(false);
-        handle.apply_target(1.0, Some(animation), start);
+        handle.apply_target(1.0, Some(animation.clone()), start);
 
         controller.begin_rebuild_frame();
         controller.finish_rebuild_frame_with_inactive_slot_retention(true);
 
         controller.begin_rebuild_frame();
-        let rebound = controller.bind_scalar(scalar_key(1), 1.0, start, RATE_FAST);
+        let rebound = controller.bind_scalar_target(scalar_key(1), 1.0, animation, start);
         controller.finish_rebuild_frame_with_inactive_slot_retention(false);
 
         let mid = rebound.sample(start + Duration::from_millis(60));
@@ -922,86 +607,5 @@ mod tests {
             reordered_a_value > 0.0 && reordered_a_value < 1.0,
             "stable A must keep its in-flight animation when render order changes"
         );
-    }
-
-    #[test]
-    fn radio_indicator_selection_grows_dot_and_fades_color() {
-        let mut controller = AnimationController::default();
-        let start = Instant::now();
-        let motion = RadioSelectionMotion {
-            inner_grow: Animation::linear(Duration::from_millis(300)),
-            inner_opacity: Animation::linear(Duration::from_millis(50)),
-            outer_color: Animation::linear(Duration::from_millis(50)),
-        };
-
-        controller.begin_rebuild_frame();
-        let initial = controller.bind_radio_indicator(radio_key(1), false, &motion, start);
-        controller.finish_rebuild_frame_with_inactive_slot_retention(false);
-
-        assert!(!initial.selected);
-        assert_eq!(initial.inner_scale, 1.0);
-        assert_eq!(initial.inner_opacity, 0.0);
-        assert_eq!(initial.outer_selected_progress, 0.0);
-
-        controller.begin_rebuild_frame();
-        let changed = controller.bind_radio_indicator(radio_key(1), true, &motion, start);
-        controller.finish_rebuild_frame_with_inactive_slot_retention(false);
-
-        assert!(changed.selected);
-        assert_eq!(changed.inner_scale, 0.0);
-        assert_eq!(changed.inner_opacity, 0.0);
-        assert_eq!(changed.outer_selected_progress, 0.0);
-
-        let mid = start + Duration::from_millis(25);
-        controller.begin_rebuild_frame();
-        let mid_state = controller.bind_radio_indicator(radio_key(1), true, &motion, mid);
-        controller.finish_rebuild_frame_with_inactive_slot_retention(false);
-
-        assert!(mid_state.inner_scale > 0.0 && mid_state.inner_scale < 1.0);
-        assert!(mid_state.inner_opacity > 0.0 && mid_state.inner_opacity < 1.0);
-        assert!(mid_state.outer_selected_progress > 0.0 && mid_state.outer_selected_progress < 1.0);
-    }
-
-    #[test]
-    fn radio_indicator_deselection_fades_dot_without_shrinking() {
-        let mut controller = AnimationController::default();
-        let start = Instant::now();
-        let motion = RadioSelectionMotion {
-            inner_grow: Animation::linear(Duration::from_millis(300)),
-            inner_opacity: Animation::linear(Duration::from_millis(50)),
-            outer_color: Animation::linear(Duration::from_millis(50)),
-        };
-
-        controller.begin_rebuild_frame();
-        let initial = controller.bind_radio_indicator(radio_key(1), true, &motion, start);
-        controller.finish_rebuild_frame_with_inactive_slot_retention(false);
-
-        assert!(initial.selected);
-        assert_eq!(initial.inner_scale, 1.0);
-        assert_eq!(initial.inner_opacity, 1.0);
-
-        controller.begin_rebuild_frame();
-        let changed = controller.bind_radio_indicator(radio_key(1), false, &motion, start);
-        controller.finish_rebuild_frame_with_inactive_slot_retention(false);
-
-        assert!(!changed.selected);
-        assert_eq!(changed.inner_scale, 1.0);
-        assert_eq!(changed.inner_opacity, 1.0);
-
-        let mid = start + Duration::from_millis(25);
-        controller.begin_rebuild_frame();
-        let mid_state = controller.bind_radio_indicator(radio_key(1), false, &motion, mid);
-        controller.finish_rebuild_frame_with_inactive_slot_retention(false);
-
-        assert_eq!(mid_state.inner_scale, 1.0);
-        assert!(mid_state.inner_opacity > 0.0 && mid_state.inner_opacity < 1.0);
-    }
-
-    #[test]
-    fn radio_indicator_keys_are_scoped_by_owner_and_option() {
-        let key = AnimationKey::radio_indicator(7, 0);
-        assert_ne!(key, AnimationKey::radio_indicator(7, 1));
-        assert_ne!(key, AnimationKey::radio_indicator(8, 0));
-        assert_ne!(key, scalar_key(7));
     }
 }

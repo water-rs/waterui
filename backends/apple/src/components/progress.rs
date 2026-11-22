@@ -23,18 +23,22 @@ use core::cell::RefCell;
 #[cfg(target_os = "ios")]
 use cocoa_ui::Retained;
 use cocoa_ui::{PlatformView, Rect};
-use waterui::animation::Animation;
+use waterui::animation::ChangeAnimation;
 use waterui::component::progress::{ProgressConfig, ProgressStyle};
 use waterui::graphics::color::WorkingColor;
 use waterui::reactive::watcher::Metadata;
 use waterui::reactive::{Signal, SignalExt};
 use waterui::resolve::Resolvable;
-use waterui::theme::color::{Accent, AccentContainer, Border, Tertiary, TertiaryContainer};
+use waterui::theme::color::{AccentContainer, Border, Tertiary, TertiaryContainer};
 use waterui_backend_core::Environment;
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size, StretchAxis, SubView,
+    ViewDimensions,
+};
 
+use crate::components::button_chrome;
 use crate::contract::{Mounted, NativeLeaf};
-use crate::dispatch::Dispatcher;
+use crate::proposal;
 
 #[cfg(target_os = "macos")]
 mod platform {
@@ -54,6 +58,7 @@ mod platform {
     pub(super) type SharedProgress = Progress;
 }
 
+use crate::contract::RenderContext;
 use cocoa_ui::progress::ProgressVariant;
 use platform::{HostView, Progress, SharedProgress};
 
@@ -197,18 +202,18 @@ fn measure_height(sizes: ChildSizes, control: Size) -> f64 {
     height
 }
 
-/// Lays out the children inside `view`'s bounds: label at the top,
-/// indicator centered when round or full-width when linear, value label at
-/// the bottom — `WuiProgress.performLayout` as manual frames.
+/// Lays out the children inside the `response` rectangle: label at the
+/// top, indicator centered when round or full-width when linear, value
+/// label at the bottom — `WuiProgress.performLayout` as manual frames.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "the layout contract is f32; measured points always fit"
 )]
-fn layout_children(view: &PlatformView, state: &ProgressState) {
+fn layout_children(response: Rect, state: &ProgressState) {
     let Some(children) = &state.children else {
         return;
     };
-    let width = cocoa_ui::view::bounds(view).size.width;
+    let width = response.size.width;
     let sizes = child_sizes(children, Some(width as f32), state.value);
     let control = control_size(&state.progress, state.variant);
 
@@ -216,7 +221,7 @@ fn layout_children(view: &PlatformView, state: &ProgressState) {
     let label_width = f64::from(sizes.label.width).min(width);
     cocoa_ui::view::set_frame(
         children.label.view(),
-        Rect::new(0.0, y, label_width, f64::from(sizes.label.height)),
+        Rect::new(0.0, y, label_width, f64::from(sizes.label.height)).translated(response.origin),
     );
     y += f64::from(sizes.label.height);
     if sizes.label.height > 0.0 {
@@ -232,7 +237,8 @@ fn layout_children(view: &PlatformView, state: &ProgressState) {
     };
     cocoa_ui::view::set_frame(
         as_view(&state.progress),
-        Rect::new(control_x, y, control_width, f64::from(control.height)),
+        Rect::new(control_x, y, control_width, f64::from(control.height))
+            .translated(response.origin),
     );
     y += f64::from(control.height);
 
@@ -241,7 +247,8 @@ fn layout_children(view: &PlatformView, state: &ProgressState) {
         let value_width = f64::from(sizes.value_label.width).min(width);
         cocoa_ui::view::set_frame(
             children.value_label.view(),
-            Rect::new(0.0, y, value_width, f64::from(sizes.value_label.height)),
+            Rect::new(0.0, y, value_width, f64::from(sizes.value_label.height))
+                .translated(response.origin),
         );
     } else {
         cocoa_ui::view::set_frame(children.value_label.view(), Rect::ZERO);
@@ -262,6 +269,14 @@ impl core::fmt::Debug for ProgressSubView {
 }
 
 impl SubView for ProgressSubView {
+    fn resolve_extent(
+        &self,
+        bounds: LayoutRect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     // `measure` speaks f32; the geometry math runs in f64 — the narrowing is
     // the layout contract, as in `text`.
     #[expect(
@@ -316,7 +331,7 @@ fn as_view(progress: &Progress) -> &PlatformView {
 /// Whether `metadata` asks for an animated fill — `WuiProgress` passed the
 /// flag through `UIProgressView.setProgress(_:animated:)`.
 fn should_animate(metadata: &Metadata) -> bool {
-    metadata.try_get::<Animation>().is_some()
+    ChangeAnimation::of(metadata).animation().is_some()
 }
 
 /// A `WorkingColor` as the platform's extended linear Display-P3 color object — the
@@ -368,10 +383,19 @@ fn apply_value(
     value: f64,
     animated: bool,
 ) {
-    assert!(
-        is_indeterminate(value) || (value.is_finite() && (0.0..=1.0).contains(&value)),
-        "Progress value must be finite within 0...1 or positive infinity"
-    );
+    let value = if is_indeterminate(value) || (value.is_finite() && (0.0..=1.0).contains(&value)) {
+        value
+    } else {
+        waterui::contract_violation!(
+            "Progress value must be finite within 0...1 or positive infinity, got {value}; \
+             the nearest value in 0...1 applies (NaN reads as 0)"
+        );
+        if value.is_nan() {
+            0.0
+        } else {
+            value.clamp(0.0, 1.0)
+        }
+    };
     let indeterminate = is_indeterminate(value);
     // `animated` reaches the kit only where the control supports it.
     #[cfg(target_os = "macos")]
@@ -482,88 +506,87 @@ fn tint_tick(state: &Weak<RefCell<ProgressState>>, host: &PlatformView) {
     schedule_tint_tick(Rc::downgrade(&state), cocoa_ui::view::retain_base(host));
 }
 
-/// Installs the `progress` handler on the dispatcher: `Native<ProgressConfig>`
+/// The `progress` realization: `Native<ProgressConfig>`
 /// maps to a container view with the platform indicator and the label pair
 /// `WuiProgress` stacks around it.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<ProgressConfig>(|config, ctx| {
-        let mtm = ctx.mtm();
-        let host = HostView::new(mtm, Rect::ZERO);
-        let host_view: &PlatformView = &host;
+pub fn realize_progress_config(config: ProgressConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
+    let mtm = ctx.mtm();
+    let host = HostView::new(mtm, Rect::ZERO);
+    let host_view: &PlatformView = &host;
 
-        let variant = if is_round(config.style) {
-            ProgressVariant::Circular
-        } else {
-            ProgressVariant::Linear
-        };
-        let progress = Progress::new(mtm);
-        progress.set_variant(variant);
-        // `SwiftUI` draws a circular indicator at the small control size on
-        // macOS; the kit leaves the size to the backend.
-        #[cfg(target_os = "macos")]
-        if variant == ProgressVariant::Circular {
-            progress.set_control_size(cocoa_ui::slider::ControlSize::Small);
-        }
-        cocoa_ui::view::add_subview(host_view, as_view(&progress));
+    let variant = if is_round(config.style()) {
+        ProgressVariant::Circular
+    } else {
+        ProgressVariant::Linear
+    };
+    let progress = Progress::new(mtm);
+    progress.set_variant(variant);
+    // `SwiftUI` draws a circular indicator at the small control size on
+    // macOS; the kit leaves the size to the backend.
+    #[cfg(target_os = "macos")]
+    if variant == ProgressVariant::Circular {
+        progress.set_control_size(cocoa_ui::slider::ControlSize::Small);
+    }
+    cocoa_ui::view::add_subview(host_view, as_view(&progress));
 
-        let value = config.value.snapshot();
-        let children = Children {
-            label: ctx
-                .render(waterui_backend_core::AnyView::new(config.label))
-                .mount(host_view),
-            value_label: ctx
-                .render(waterui_backend_core::AnyView::new(config.value_label))
-                .mount(host_view),
-        };
+    let value = config.value().snapshot();
+    let (label, value_label, value_signal, _, four_color) = config.into_parts();
+    let children = Children {
+        label: ctx
+            .render(waterui_backend_core::AnyView::new(label))
+            .mount(host_view),
+        value_label: ctx
+            .render(waterui_backend_core::AnyView::new(value_label))
+            .mount(host_view),
+    };
 
-        let state = Rc::new(RefCell::new(ProgressState {
-            progress,
-            variant,
-            children: Some(children),
-            value,
-            palette: Vec::new(),
-            tint_index: 0,
-            #[cfg(target_os = "ios")]
-            cycling: false,
-            track: None,
-            #[cfg(target_os = "ios")]
-            four_color: config.four_color,
-        }));
+    let state = Rc::new(RefCell::new(ProgressState {
+        progress,
+        variant,
+        children: Some(children),
+        value,
+        palette: Vec::new(),
+        tint_index: 0,
+        #[cfg(target_os = "ios")]
+        cycling: false,
+        track: None,
+        #[cfg(target_os = "ios")]
+        four_color,
+    }));
 
-        host.set_layout_handler({
-            let state = Rc::clone(&state);
-            move |view| layout_children(view, &state.borrow())
-        });
-
-        let mut leaf = NativeLeaf::new(
-            host_view,
-            ProgressSubView {
-                state: Rc::clone(&state),
-            },
-        );
-
-        // Signal → indicator: a value change selects determinate or
-        // indeterminate drawing and refreshes the value label's visibility.
-        leaf.watch(&config.value, {
-            let state = Rc::clone(&state);
-            let host = cocoa_ui::view::retain_base(host_view);
-            move |change| {
-                let animated = should_animate(change.metadata());
-                apply_value(&state, &host, *change.value(), animated);
-            }
-        });
-
-        // Theme → tint: the accent is the indicator's color; the border is
-        // the bar's track. `four_color` widens the palette with the
-        // container and tertiary slots the cycle steps through.
-        install_tint(&mut leaf, &state, ctx.env(), config.four_color);
-
-        // The initial value applies without animation.
-        apply_value(&state, host_view, value, false);
-
-        leaf.keep(state);
-        leaf
+    host.set_layout_handler({
+        let state = Rc::clone(&state);
+        move |view| layout_children(proposal::response(view), &state.borrow())
     });
+
+    let mut leaf = NativeLeaf::new(
+        host_view,
+        ProgressSubView {
+            state: Rc::clone(&state),
+        },
+    );
+
+    // Signal → indicator: a value change selects determinate or
+    // indeterminate drawing and refreshes the value label's visibility.
+    leaf.watch(&value_signal, {
+        let state = Rc::clone(&state);
+        let host = cocoa_ui::view::retain_base(host_view);
+        move |change| {
+            let animated = should_animate(change.metadata());
+            apply_value(&state, &host, *change.value(), animated);
+        }
+    });
+
+    // Theme → tint: the accent is the indicator's color; the border is
+    // the bar's track. `four_color` widens the palette with the
+    // container and tertiary slots the cycle steps through.
+    install_tint(&mut leaf, &state, ctx.env(), four_color);
+
+    // The initial value applies without animation.
+    apply_value(&state, host_view, value, false);
+
+    leaf.keep(state);
+    leaf
 }
 
 /// Subscribes the theme signals the tint and track follow.
@@ -573,12 +596,12 @@ fn install_tint(
     env: &Environment,
     four_color: bool,
 ) {
-    let accent = Accent.resolve(env);
+    let tint = button_chrome::tint_signal(env);
     {
         let mut state_mut = state.borrow_mut();
-        state_mut.palette = Vec::from([accent.snapshot()]);
+        state_mut.palette = Vec::from([tint.snapshot()]);
     }
-    leaf.bind(&accent, {
+    leaf.bind(&tint, {
         let state = Rc::clone(state);
         move |color| {
             let mut state_mut = state.borrow_mut();
@@ -626,6 +649,8 @@ fn install_tint(
 
 #[cfg(test)]
 mod tests {
+    use waterui::animation::{Animation, NoAnimation};
+
     use super::*;
 
     #[test]
@@ -698,5 +723,8 @@ mod tests {
     fn should_animate_only_with_animation_metadata() {
         assert!(!should_animate(&Metadata::new()));
         assert!(should_animate(&Metadata::new().with(Animation::Default)));
+        assert!(!should_animate(
+            &Metadata::new().with(Animation::Default).with(NoAnimation)
+        ));
     }
 }

@@ -3,16 +3,16 @@
 
 use super::*;
 #[cfg(not(target_arch = "wasm32"))]
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 use crate::animation::PerpetualAnimation;
-#[cfg(hydrolysis_gpu_painter)]
-use crate::platform::GpuSurfaceWindow;
+#[cfg(hydrolysis_cherenkov)]
+use crate::platform::PaintedWindow;
 // Concrete `PresentationSurface` method calls — `WinitSurface::device_loss`
-// and `BrowserSurface::device_loss` in the `GpuSurfaceFrame` impls below —
+// and `BrowserSurface::device_loss` in the `PaintedFrame` impls below —
 // exist only on these cfgs; everywhere else the trait is reached through
 // `dyn SurfaceProvider`, which needs no import.
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 use crate::platform::PresentationSurface as _;
 use crate::renderer::material::{BehindWindowLevel, Blending, WithinWindowLevel};
 #[cfg(any(hydrolysis_frame_transaction, test))]
@@ -22,6 +22,7 @@ use std::sync::{
 };
 use waterui::theme::color::Background;
 use waterui::window::ResolvedWindowBackground;
+use waterui_core::contract_violation;
 use waterui_graphics::{Color, color::WorkingColor};
 
 /// The work scheduled for the next pump of a window.
@@ -53,7 +54,7 @@ impl FrameMode {
     /// animation tick, and every animation other than a perpetual one is
     /// counted separately by the renderer's own scheduled-work query, so when
     /// perpetual animation is ignored only `Refresh` remains pending.
-    #[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
+    #[cfg(all(not(target_arch = "wasm32"), hydrolysis_cherenkov))]
     pub(super) const fn is_pending_with(self, perpetual: PerpetualAnimation) -> bool {
         match perpetual {
             PerpetualAnimation::Counts => self.is_pending(),
@@ -64,7 +65,7 @@ impl FrameMode {
     /// Whether the scheduled frame exists to apply an unapplied semantic
     /// change. `Animate` is scheduled continuation work, not staleness.
     #[cfg(not(target_arch = "wasm32"))]
-    #[cfg(hydrolysis_gpu_painter)]
+    #[cfg(hydrolysis_cherenkov)]
     pub(super) const fn is_unapplied_change(self) -> bool {
         matches!(self, Self::Refresh)
     }
@@ -88,6 +89,8 @@ pub(super) struct RuntimeWindow<P: PlatformWindow, E: crate::text::TextEngine> {
     pub(super) presented_frames: u64,
     pub(super) pointer_position: Option<(f32, f32)>,
     pub(super) render_diagnostics: RenderDiagnostics,
+    #[cfg(all(target_os = "android", hydrolysis_gpu_painter))]
+    pub(super) pending_render_diagnostic: Option<(RenderPhaseSample, Instant)>,
     /// Last display refresh rate (Hz) observed from the platform, used to detect changes
     /// and re-derive the diagnostics frame budget. `None` until first observed.
     pub(super) refresh_rate_hz: Option<f64>,
@@ -146,6 +149,8 @@ impl<P: PlatformWindow, E: crate::text::TextEngine> RuntimeWindow<P, E> {
             presented_frames: 0,
             pointer_position: None,
             render_diagnostics: RenderDiagnostics::new(render_diagnostics_config),
+            #[cfg(all(target_os = "android", hydrolysis_gpu_painter))]
+            pending_render_diagnostic: None,
             refresh_rate_hz: None,
             applied_size_limits: None,
             _declaration_watches: declaration_watches,
@@ -153,11 +158,11 @@ impl<P: PlatformWindow, E: crate::text::TextEngine> RuntimeWindow<P, E> {
     }
 }
 
-#[cfg(hydrolysis_gpu_painter)]
-impl<P: GpuSurfaceWindow> RuntimeWindow<P, crate::text::ParleyEngine> {
-    /// The GPU painter's window: the shared construction plus the surface
+#[cfg(hydrolysis_cherenkov)]
+impl<P: PaintedWindow> RuntimeWindow<P, crate::text::ParleyEngine> {
+    /// A Cherenkov painter's window: the shared construction plus the host
     /// redraw handle, installed before the window's first frame.
-    pub(super) fn new_gpu(
+    pub(super) fn new_painted(
         window: Window,
         platform: P,
         renderer: HydrolysisRenderer<crate::text::ParleyEngine>,
@@ -165,8 +170,8 @@ impl<P: GpuSurfaceWindow> RuntimeWindow<P, crate::text::ParleyEngine> {
         env: &Environment,
     ) -> Self {
         let mut runtime = Self::new(window, platform, renderer, config, env);
-        if let Some(handle) = runtime.platform.gpu_surface_redraw_handle() {
-            runtime.renderer.set_host_redraw_handle(handle.into());
+        if let Some(handle) = runtime.platform.host_redraw_handle() {
+            runtime.renderer.set_host_redraw_handle(handle);
         }
         runtime
     }
@@ -262,6 +267,18 @@ pub(super) struct FrameTransaction {
 
 #[cfg(any(hydrolysis_frame_transaction, test))]
 impl FrameTransaction {
+    /// A running engine animation consumes the host's display callback. Its
+    /// requested rate is applied to the surface; comparing ideal frame periods
+    /// with actual vsync timestamps can skip a refresh. Only timer wakes need
+    /// the absolute deadline gate.
+    pub(super) fn engine_frame_due(
+        next: &crate::renderer::Next,
+        now: Instant,
+        presentation: Option<Instant>,
+    ) -> bool {
+        matches!(next, crate::renderer::Next::At { time, .. } if presentation.is_some() || *time <= now)
+    }
+
     /// Wraps the host's frame post in the gate: the returned wake posts only
     /// while no transaction is open and the window is not occluded.
     pub(super) fn frame_wake(&self, post: Rc<dyn Fn()>) -> Rc<dyn Fn()> {
@@ -395,6 +412,31 @@ pub(super) trait FrameHost {
     /// frame reads this frame's answer.
     fn before_input(&mut self) {}
 
+    /// Whether this frame's input may be dispatched. Startup input must
+    /// target the first presented tree, not the empty renderer that exists
+    /// while a painter whose frames complete asynchronously has not yet
+    /// presented one.
+    fn input_ready(&self) -> bool {
+        true
+    }
+
+    /// Collects the completion of a frame the painter submitted earlier, for
+    /// a painter whose frames complete asynchronously.
+    fn poll_submitted_frame(&mut self) {}
+
+    /// Whether a submitted frame's completion is still outstanding: no new
+    /// frame renders and no continuation is owed until it lands, since its
+    /// completion wakes the host itself.
+    fn frame_in_flight(&self) -> bool {
+        false
+    }
+
+    /// Whether the window's rendering ended for good: it draws nothing
+    /// again, so it owes no frame whatever work is armed.
+    fn rendering_ended(&self) -> bool {
+        false
+    }
+
     /// Whether the window's content asked the host to close.
     fn should_close(&self) -> bool;
 
@@ -409,6 +451,13 @@ pub(super) trait FrameHost {
 
     /// Consumes the host's latched redraw request.
     fn take_redraw_pending(platform: &Self::Platform) -> bool;
+
+    /// The redraw request latched when the transaction closes. A frame in
+    /// flight leaves the latch armed for the frame its completion wakes, so
+    /// such a host reads it without consuming it.
+    fn closing_redraw_pending(&mut self) -> bool {
+        Self::take_redraw_pending(&self.parts().0.platform)
+    }
 
     /// Renders the frame through the host's painter, draining local tasks
     /// between its phases, and reports whether it was presented.
@@ -425,8 +474,9 @@ pub(super) trait FrameHost {
     /// transaction rendered.
     fn publish(&mut self, flushed: bool);
 
-    /// Follows the closed transaction with whether another frame is owed.
-    fn finished(&mut self, wants_next_frame: bool);
+    /// Follows the closed transaction with whether work is still pending:
+    /// another frame is owed or a submitted frame is in flight.
+    fn finished(&mut self, pending: bool);
 }
 
 /// What one frame transaction leaves for the host's scheduler.
@@ -448,8 +498,19 @@ pub(super) struct FrameOutcome {
 /// Executor wakes and input dispatch run against the last presented
 /// geometry; the pump renders only when the engine's `Next` says there is
 /// work, and the outcome tells the host whether another frame is owed.
+///
+/// `presentation` is when the platform reports this frame will reach the
+/// display, for a platform that reports one.
 #[cfg(hydrolysis_frame_transaction)]
-pub(super) fn run_frame_transaction<H: FrameHost>(host: &mut H) -> FrameOutcome {
+pub(super) fn run_frame_transaction<H: FrameHost>(
+    host: &mut H,
+    presentation: Option<Instant>,
+) -> FrameOutcome {
+    #[cfg(all(target_os = "android", not(hydrolysis_hwui)))]
+    host.parts()
+        .0
+        .renderer
+        .set_presentation_target(presentation);
     // Tasks and input callbacks can start animations. Publish this frame's
     // time before either runs so idle time is not charged to a new track.
     let now = Instant::now();
@@ -460,14 +521,15 @@ pub(super) fn run_frame_transaction<H: FrameHost>(host: &mut H) -> FrameOutcome 
     host.frame_transaction().begin();
     host.drain_executor();
     host.before_input();
-    let should_close = {
+    let should_close = (host.input_ready() && {
         let (runtime, env) = host.parts();
         handle_input_events(runtime, env)
-    } || host.should_close();
+    }) || host.should_close();
+    host.poll_submitted_frame();
     let mut deadline = {
         let (runtime, env) = host.parts();
         let deadline = advance_runtime(runtime, env, now);
-        if matches!(runtime.engine_next, crate::renderer::Next::At { time, .. } if time <= now)
+        if FrameTransaction::engine_frame_due(&runtime.engine_next, now, presentation)
             && !runtime.is_hidden()
         {
             runtime.platform.request_redraw();
@@ -475,25 +537,27 @@ pub(super) fn run_frame_transaction<H: FrameHost>(host: &mut H) -> FrameOutcome 
         deadline
     };
     let mut flushed = false;
-    let surface_attached = host.presentation_attached();
-    // A redraw request raised before this frame renders is served by
-    // that render — it drains into the render demand here, so only a
-    // request raised from this point on, an animation asking for its
-    // next frame, still counts toward the transaction's continuation.
-    if host.has_pending_scene_changes() {
-        // Queued scene changes the host's callback posted no wake for —
-        // the transaction counts them into its continuation; no frame
-        // post runs inside the open transaction.
-        host.parts().0.platform.request_redraw();
-    }
-    if FrameTransaction::take_render_request(
-        host.parts().0,
-        surface_attached,
-        H::take_redraw_pending,
-    ) {
-        let presented = host.render();
-        flushed = true;
-        host.after_render(presented);
+    if !host.rendering_ended() && !host.frame_in_flight() {
+        let surface_attached = host.presentation_attached();
+        // A redraw request raised before this frame renders is served by
+        // that render — it drains into the render demand here, so only a
+        // request raised from this point on, an animation asking for its
+        // next frame, still counts toward the transaction's continuation.
+        if host.has_pending_scene_changes() {
+            // Queued scene changes the host's callback posted no wake for —
+            // the transaction counts them into its continuation; no frame
+            // post runs inside the open transaction.
+            host.parts().0.platform.request_redraw();
+        }
+        if FrameTransaction::take_render_request(
+            host.parts().0,
+            surface_attached,
+            H::take_redraw_pending,
+        ) {
+            let presented = host.render();
+            flushed = true;
+            host.after_render(presented);
+        }
     }
     if should_close {
         host.notify_close();
@@ -506,7 +570,8 @@ pub(super) fn run_frame_transaction<H: FrameHost>(host: &mut H) -> FrameOutcome 
     // served. A hidden session reports no continuation either way: the
     // armed mode stays armed for the restore frame, but the scheduler
     // must not keep posting wakes into a parked pump.
-    let redraw_pending = H::take_redraw_pending(&host.parts().0.platform);
+    let frame_in_flight = host.frame_in_flight();
+    let redraw_pending = host.closing_redraw_pending();
     // The signals' pending count covers a frame request raised inside
     // this transaction after the pump drained the flags: its wake was
     // suppressed by the gate, so this is its only path to the frame it
@@ -524,12 +589,19 @@ pub(super) fn run_frame_transaction<H: FrameHost>(host: &mut H) -> FrameOutcome 
             runtime.is_hidden(),
         )
     };
-    let wants_next_frame = host.frame_transaction().finish(occluded, demand);
-    host.finished(wants_next_frame);
+    // A window whose rendering ended draws nothing again, and a frame in
+    // flight wakes the host on its completion: neither owes a frame.
+    let wants_next_frame = host.frame_transaction().finish(occluded, demand)
+        && !host.rendering_ended()
+        && !frame_in_flight;
+    host.finished(wants_next_frame || frame_in_flight);
     // A deadline already elapsed wakes the frame once: its tick then
     // runs at or after the deadline, which is when the recognizer that
     // armed it clears itself.
-    if !hidden && let crate::renderer::Next::At { time, .. } = engine_next {
+    if !hidden
+        && !frame_in_flight
+        && let crate::renderer::Next::At { time, .. } = engine_next
+    {
         deadline = Some(deadline.map_or(time, |other| other.min(time)));
     }
     FrameOutcome {
@@ -638,29 +710,39 @@ pub(super) fn axes_whose_limits_changed(
     )
 }
 
-/// Asserts an app-pinned `Window::min_size` is finite on both axes — a NaN
-/// or infinite minimum is a programming error, not a bound to repair.
+/// Checks an app-pinned `Window::min_size` is finite on both axes — a NaN
+/// or infinite minimum is a contract violation by the app, not a bound to
+/// repair: the axis then has no minimum (`0`).
 fn validated_min_size(size: waterui_core::layout::Size) -> waterui_core::layout::Size {
-    for (axis, value) in [("width", size.width), ("height", size.height)] {
-        assert!(
-            value.is_finite(),
-            "hydrolysis runner: Window::min_size.{axis} must be finite, got {value}"
-        );
-    }
-    size
+    let finite = |axis: &str, value: f32| {
+        if value.is_finite() {
+            value
+        } else {
+            contract_violation!(
+                "hydrolysis runner: Window::min_size.{axis} must be finite, got {value}; the axis has no minimum"
+            );
+            0.0
+        }
+    };
+    waterui_core::layout::Size::new(finite("width", size.width), finite("height", size.height))
 }
 
-/// Asserts an app-pinned `Window::max_size` component is finite or `+∞` —
+/// Checks an app-pinned `Window::max_size` component is finite or `+∞` —
 /// the explicit per-axis "unbounded" an app writes to leave one side open.
-/// Any other non-finite value is a programming error.
+/// Any other non-finite value is a contract violation by the app: the axis
+/// is then unbounded.
 fn validated_max_size(size: waterui_core::layout::Size) -> waterui_core::layout::Size {
-    for (axis, value) in [("width", size.width), ("height", size.height)] {
-        assert!(
-            value.is_finite() || value == f32::INFINITY,
-            "hydrolysis runner: Window::max_size.{axis} must be finite or +inf for an unbounded axis, got {value}"
-        );
-    }
-    size
+    let bounded = |axis: &str, value: f32| {
+        if value.is_finite() || value == f32::INFINITY {
+            value
+        } else {
+            contract_violation!(
+                "hydrolysis runner: Window::max_size.{axis} must be finite or +inf for an unbounded axis, got {value}; the axis is unbounded"
+            );
+            f32::INFINITY
+        }
+    };
+    waterui_core::layout::Size::new(bounded("width", size.width), bounded("height", size.height))
 }
 
 /// Clamps a window size into the new limits, axis by axis — but only on
@@ -717,24 +799,66 @@ pub(super) const fn schedule_animation_update<P: PlatformWindow, E: crate::text:
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// A captured headless frame: raw pixels, the alpha convention the
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 /// producing surface reports, plus dimensions.
 #[non_exhaustive]
 pub struct HeadlessSnapshot {
     /// Snapshot width in pixels.
-    pub width: u32,
+    width: u32,
     /// Snapshot height in pixels.
-    pub height: u32,
+    height: u32,
     /// Raw RGBA8 pixel data, `width * height * 4` bytes, top-left origin,
     /// in the alpha convention [`Self::output_alpha`] reports.
-    pub rgba8: Vec<u8>,
+    rgba8: Vec<u8>,
     /// The alpha convention the producing surface presented with — the
     /// convention `rgba8` reads, not a comment's claim about it.
-    pub output_alpha: cherenkov_gpu::interop::OutputAlpha,
+    output_alpha: cherenkov::OutputAlpha,
+}
+
+// The accessors are the public surface `runner` re-exports off wasm32; the
+// browser runner only builds and drops a snapshot.
+#[cfg(all(not(target_arch = "wasm32"), hydrolysis_cherenkov))]
+impl HeadlessSnapshot {
+    /// Snapshot width in pixels.
+    #[must_use]
+    pub const fn width(&self) -> u32 {
+        self.width
+    }
+
+    /// Snapshot height in pixels.
+    #[must_use]
+    pub const fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// Raw RGBA8 pixel data, `width * height * 4` bytes, top-left origin,
+    /// in the alpha convention [`Self::output_alpha`] reports.
+    #[must_use]
+    pub const fn rgba8(&self) -> &[u8] {
+        self.rgba8.as_slice()
+    }
+
+    /// The frame's pixels, for compositing into.
+    pub const fn rgba8_mut(&mut self) -> &mut [u8] {
+        self.rgba8.as_mut_slice()
+    }
+
+    /// The alpha convention the producing surface presented with — the
+    /// convention `rgba8` reads, not a comment's claim about it.
+    #[must_use]
+    pub const fn output_alpha(&self) -> cherenkov::OutputAlpha {
+        self.output_alpha
+    }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(self) -> (u32, u32, Vec<u8>, cherenkov::OutputAlpha) {
+        (self.width, self.height, self.rgba8, self.output_alpha)
+    }
 }
 
 #[derive(Debug)]
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 pub(super) struct RenderWindowResult {
     pub(super) rebuilt: bool,
     pub(super) snapshot: Option<HeadlessSnapshot>,
@@ -742,6 +866,80 @@ pub(super) struct RenderWindowResult {
     /// The frame's CPU/GPU stage split under `frame-profile`.
     #[cfg(feature = "frame-profile")]
     pub(super) stages: crate::renderer::FrameStageTimes,
+    /// The terminal failure that ended the window's rendering: the surface
+    /// cannot render again, and the pump asked for no further frame.
+    pub(super) failed: Option<crate::renderer::FrameError>,
+}
+
+/// What became of one frame a live window's pump ran.
+#[derive(Debug)]
+#[cfg(hydrolysis_cherenkov)]
+pub(super) enum WindowFrame {
+    /// The frame reached the surface.
+    Presented,
+    /// No frame reached the surface: the window is hidden, or a transient
+    /// surface failure skipped it and the pump asked for another.
+    Skipped,
+    /// The surface can never render again: the pump asked for no further
+    /// frame, and the runner ends the window.
+    Failed(crate::renderer::FrameError),
+}
+
+// The runners that track their first presented frame — the browser page and
+// the frame-transaction hosts — and the pump tests read it.
+#[cfg(any(
+    test,
+    hydrolysis_frame_transaction,
+    all(target_arch = "wasm32", feature = "web")
+))]
+#[cfg(hydrolysis_cherenkov)]
+impl WindowFrame {
+    /// Whether the frame reached the surface.
+    #[must_use]
+    pub(super) const fn presented(&self) -> bool {
+        matches!(self, Self::Presented)
+    }
+}
+
+/// Why a window's frame did not reach its surface.
+#[derive(Debug)]
+#[cfg(hydrolysis_cherenkov)]
+pub enum FrameFailure {
+    /// Transient: the frame is skipped and the pump asks for another.
+    Skipped(crate::platform::SurfaceError),
+    /// Terminal: the surface cannot render again, and no further frame is
+    /// asked for.
+    Failed(crate::renderer::FrameError),
+}
+
+#[cfg(hydrolysis_cherenkov)]
+impl From<crate::platform::SurfaceError> for FrameFailure {
+    fn from(error: crate::platform::SurfaceError) -> Self {
+        Self::Skipped(error)
+    }
+}
+
+#[cfg(hydrolysis_gpu_painter)]
+impl From<crate::platform::DeviceLostError> for FrameFailure {
+    fn from(error: crate::platform::DeviceLostError) -> Self {
+        Self::Failed(error.into())
+    }
+}
+
+#[cfg(hydrolysis_cherenkov)]
+impl From<crate::renderer::FrameError> for FrameFailure {
+    /// A terminal frame error ends the surface; a render failure skips the
+    /// frame and reports the surface lost, so the next frame retries — a
+    /// lost device recovers there.
+    fn from(error: crate::renderer::FrameError) -> Self {
+        if error.is_terminal() {
+            return Self::Failed(error);
+        }
+        tracing::error!(
+            "hydrolysis renderer: engine render failed: {error:#}; the frame is skipped and the surface reports lost"
+        );
+        Self::Skipped(crate::platform::SurfaceError::Lost)
+    }
 }
 
 /// Phase timing for one Hydrolysis frame.
@@ -749,27 +947,115 @@ pub(super) struct RenderWindowResult {
 #[non_exhaustive]
 pub struct FramePhases {
     /// Time spent draining local executor work before input dispatch.
-    pub executor_before: Duration,
+    executor_before: Duration,
     /// Time spent dispatching pending input.
-    pub input: Duration,
+    input: Duration,
     /// Time spent advancing animations and invalidation clocks.
-    pub animation: Duration,
+    animation: Duration,
     /// Time spent updating the retained scene, including refresh and re-encode work.
-    pub rebuild: Duration,
+    rebuild: Duration,
     /// Time spent building the root `WaterUI` view value during scene rebuild.
-    pub build_content: Duration,
+    build_content: Duration,
     /// Time spent dispatching `WaterUI` views into Hydrolysis scene/layout state.
-    pub scene_dispatch: Duration,
+    scene_dispatch: Duration,
     /// Time spent finalizing layout, interaction, and accessibility state after dispatch.
-    pub scene_finish: Duration,
+    scene_finish: Duration,
     /// Time spent acquiring the target frame.
-    pub acquire: Duration,
+    acquire: Duration,
     /// Time spent submitting rendering work.
-    pub render: Duration,
+    render: Duration,
     /// Time spent presenting the frame.
-    pub present: Duration,
+    present: Duration,
     /// Time spent draining local executor work after rendering.
-    pub executor_after: Duration,
+    executor_after: Duration,
+}
+
+impl FramePhases {
+    /// Time spent draining local executor work before input dispatch.
+    #[must_use]
+    pub const fn executor_before(&self) -> Duration {
+        self.executor_before
+    }
+
+    /// Sets the `executor_before`.
+    pub const fn set_executor_before(&mut self, executor_before: Duration) {
+        self.executor_before = executor_before;
+    }
+
+    /// Time spent dispatching pending input.
+    #[must_use]
+    pub const fn input(&self) -> Duration {
+        self.input
+    }
+
+    /// Sets the `input`.
+    pub const fn set_input(&mut self, input: Duration) {
+        self.input = input;
+    }
+
+    /// Time spent advancing animations and invalidation clocks.
+    #[must_use]
+    pub const fn animation(&self) -> Duration {
+        self.animation
+    }
+
+    /// Sets the `animation`.
+    pub const fn set_animation(&mut self, animation: Duration) {
+        self.animation = animation;
+    }
+
+    /// Time spent updating the retained scene, including refresh and re-encode work.
+    #[must_use]
+    pub const fn rebuild(&self) -> Duration {
+        self.rebuild
+    }
+
+    /// Time spent building the root `WaterUI` view value during scene rebuild.
+    #[must_use]
+    pub const fn build_content(&self) -> Duration {
+        self.build_content
+    }
+
+    /// Time spent dispatching `WaterUI` views into Hydrolysis scene/layout state.
+    #[must_use]
+    pub const fn scene_dispatch(&self) -> Duration {
+        self.scene_dispatch
+    }
+
+    /// Time spent finalizing layout, interaction, and accessibility state after dispatch.
+    #[must_use]
+    pub const fn scene_finish(&self) -> Duration {
+        self.scene_finish
+    }
+
+    /// Time spent acquiring the target frame.
+    #[must_use]
+    pub const fn acquire(&self) -> Duration {
+        self.acquire
+    }
+
+    /// Time spent submitting rendering work.
+    #[must_use]
+    pub const fn render(&self) -> Duration {
+        self.render
+    }
+
+    /// Time spent presenting the frame.
+    #[must_use]
+    pub const fn present(&self) -> Duration {
+        self.present
+    }
+
+    /// Time spent draining local executor work after rendering.
+    #[must_use]
+    pub const fn executor_after(&self) -> Duration {
+        self.executor_after
+    }
+
+    /// Sets the `executor_after`.
+    pub const fn set_executor_after(&mut self, executor_after: Duration) {
+        self.executor_after = executor_after;
+    }
 }
 
 /// Counter snapshot for one Hydrolysis frame.
@@ -777,40 +1063,142 @@ pub struct FramePhases {
 #[non_exhaustive]
 pub struct FrameCounters {
     /// Number of rebuild loop iterations in this frame.
-    pub rebuild_iterations: u32,
+    rebuild_iterations: u32,
     /// Measurement cache hits in this frame.
-    pub measurement_cache_hits: u32,
+    measurement_cache_hits: u32,
     /// Measurement cache misses in this frame.
-    pub measurement_cache_misses: u32,
+    measurement_cache_misses: u32,
     /// Number of compositor layers submitted for this frame.
-    pub scene_layers: u32,
+    scene_layers: u32,
     /// Number of recorded scene segment layers submitted for this frame.
-    pub scene_segment_layers: u32,
-    /// Number of mounted `GpuContentView` layers submitted for this frame.
-    pub gpu_content_layers: u32,
+    scene_segment_layers: u32,
+    /// Number of mounted `GpuView` layers submitted for this frame.
+    gpu_content_layers: u32,
     /// Number of clip scopes pushed while building this frame.
-    pub clip_layers: u32,
+    clip_layers: u32,
     /// Maximum nested clip depth while building this frame.
-    pub max_clip_depth: u32,
+    max_clip_depth: u32,
     /// Number of `FilteredView` mounts submitted in this frame.
-    pub filtered_layers: u32,
+    filtered_layers: u32,
     /// Filter effects that encoded in this frame.
-    pub applied_filter_count: u32,
+    applied_filter_count: u32,
     /// Filtered-subtree capture time in this frame, in microseconds: `0` —
     /// the engine captures inside the same render pass as the effect encode
     /// and reports no per-phase split.
-    pub applied_filter_capture_us: u64,
+    applied_filter_capture_us: u64,
     /// Filter effect encode time in this frame, in microseconds.
-    pub applied_filter_effect_us: u64,
+    applied_filter_effect_us: u64,
     /// Whether this frame rendered to the target.
-    pub rendered: bool,
+    rendered: bool,
     /// Whether this frame captured a CPU snapshot.
-    pub captured_snapshot: bool,
+    captured_snapshot: bool,
     /// Per-frame work counters for this frame (water-rs/hydrolysis#205):
     /// semantic builds, patches, layout/measure traffic, recorded content and
     /// GPU submissions — the numbers the fine-grained frame model is measured
     /// by.
-    pub frame_work: crate::renderer::FrameWorkCounters,
+    frame_work: crate::renderer::FrameWorkCounters,
+}
+
+impl FrameCounters {
+    /// Number of rebuild loop iterations in this frame.
+    #[must_use]
+    pub const fn rebuild_iterations(&self) -> u32 {
+        self.rebuild_iterations
+    }
+
+    /// Measurement cache hits in this frame.
+    #[must_use]
+    pub const fn measurement_cache_hits(&self) -> u32 {
+        self.measurement_cache_hits
+    }
+
+    /// Measurement cache misses in this frame.
+    #[must_use]
+    pub const fn measurement_cache_misses(&self) -> u32 {
+        self.measurement_cache_misses
+    }
+
+    /// Number of compositor layers submitted for this frame.
+    #[must_use]
+    pub const fn scene_layers(&self) -> u32 {
+        self.scene_layers
+    }
+
+    /// Number of recorded scene segment layers submitted for this frame.
+    #[must_use]
+    pub const fn scene_segment_layers(&self) -> u32 {
+        self.scene_segment_layers
+    }
+
+    /// Number of mounted `GpuView` layers submitted for this frame.
+    #[must_use]
+    pub const fn gpu_content_layers(&self) -> u32 {
+        self.gpu_content_layers
+    }
+
+    /// Number of clip scopes pushed while building this frame.
+    #[must_use]
+    pub const fn clip_layers(&self) -> u32 {
+        self.clip_layers
+    }
+
+    /// Maximum nested clip depth while building this frame.
+    #[must_use]
+    pub const fn max_clip_depth(&self) -> u32 {
+        self.max_clip_depth
+    }
+
+    /// Number of `FilteredView` mounts submitted in this frame.
+    #[must_use]
+    pub const fn filtered_layers(&self) -> u32 {
+        self.filtered_layers
+    }
+
+    /// Filter effects that encoded in this frame.
+    #[must_use]
+    pub const fn applied_filter_count(&self) -> u32 {
+        self.applied_filter_count
+    }
+
+    /// Filtered-subtree capture time in this frame, in microseconds: `0` —
+    /// the engine captures inside the same render pass as the effect encode
+    /// and reports no per-phase split.
+    #[must_use]
+    pub const fn applied_filter_capture_us(&self) -> u64 {
+        self.applied_filter_capture_us
+    }
+
+    /// Filter effect encode time in this frame, in microseconds.
+    #[must_use]
+    pub const fn applied_filter_effect_us(&self) -> u64 {
+        self.applied_filter_effect_us
+    }
+
+    /// Whether this frame rendered to the target.
+    #[must_use]
+    pub const fn rendered(&self) -> bool {
+        self.rendered
+    }
+
+    /// Whether this frame captured a CPU snapshot.
+    #[must_use]
+    pub const fn captured_snapshot(&self) -> bool {
+        self.captured_snapshot
+    }
+
+    /// Per-frame work counters for this frame (water-rs/hydrolysis#205):
+    /// semantic builds, patches, layout/measure traffic, recorded content and
+    /// GPU submissions — the numbers the fine-grained frame model is measured
+    /// by.
+    #[must_use]
+    pub const fn frame_work(&self) -> crate::renderer::FrameWorkCounters {
+        self.frame_work
+    }
+
+    /// The frame-work counters, for accumulating into.
+    pub const fn frame_work_mut(&mut self) -> &mut crate::renderer::FrameWorkCounters {
+        &mut self.frame_work
+    }
 }
 
 /// Detailed profile for one Hydrolysis frame.
@@ -818,15 +1206,60 @@ pub struct FrameCounters {
 #[non_exhaustive]
 pub struct FrameProfile {
     /// Total wall-clock duration for the frame pump.
-    pub total: Duration,
+    total: Duration,
     /// Phase timing breakdown.
-    pub phases: FramePhases,
+    phases: FramePhases,
     /// Counter snapshot.
-    pub counters: FrameCounters,
+    counters: FrameCounters,
 }
 
 impl FrameProfile {
-    #[cfg(hydrolysis_gpu_painter)]
+    /// Creates a `FrameProfile` from its parts.
+    #[must_use]
+    pub const fn new(total: Duration, phases: FramePhases, counters: FrameCounters) -> Self {
+        Self {
+            total,
+            phases,
+            counters,
+        }
+    }
+
+    /// Total wall-clock duration for the frame pump.
+    #[must_use]
+    pub const fn total(&self) -> Duration {
+        self.total
+    }
+
+    /// Phase timing breakdown.
+    #[must_use]
+    pub const fn phases(&self) -> FramePhases {
+        self.phases
+    }
+
+    /// Sets the `phases`.
+    pub const fn set_phases(&mut self, phases: FramePhases) {
+        self.phases = phases;
+    }
+
+    /// Phase timing breakdown, for recording into.
+    pub const fn phases_mut(&mut self) -> &mut FramePhases {
+        &mut self.phases
+    }
+
+    /// Counter snapshot.
+    #[must_use]
+    pub const fn counters(&self) -> FrameCounters {
+        self.counters
+    }
+
+    /// Counter snapshot, for accumulating into.
+    pub const fn counters_mut(&mut self) -> &mut FrameCounters {
+        &mut self.counters
+    }
+}
+
+impl FrameProfile {
+    #[cfg(hydrolysis_cherenkov)]
     pub(super) const fn with_total(mut self, total: Duration) -> Self {
         self.total = total;
         self
@@ -848,11 +1281,18 @@ pub(super) fn schedule_redraw_or_refresh<P: PlatformWindow, E: crate::text::Text
     runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
 }
 
+/// The logical bounds of a `width` x `height` pixel surface. A platform that
+/// reports a scale factor that is not finite and positive violates the host
+/// contract: the report is logged and the surface is taken at scale `1`.
 pub(super) fn create_bounds(width: u32, height: u32, scale_factor: f64) -> kurbo::Rect {
-    assert!(
-        scale_factor.is_finite() && scale_factor > 0.0,
-        "hydrolysis runner: invalid scale factor {scale_factor}"
-    );
+    let scale_factor = if scale_factor.is_finite() && scale_factor > 0.0 {
+        scale_factor
+    } else {
+        contract_violation!(
+            "hydrolysis runner: invalid scale factor {scale_factor}; the surface is taken at scale 1"
+        );
+        1.0
+    };
     kurbo::Rect::new(
         0.0,
         0.0,
@@ -946,8 +1386,8 @@ impl SurfaceBackground {
 /// renderer the within-window material the root mounts over, and returns the
 /// clear colour. This is the one place the background reaches the
 /// presentation path.
-#[cfg(hydrolysis_gpu_painter)]
-pub(super) fn apply_window_background<P: GpuSurfaceWindow, E: crate::text::TextEngine>(
+#[cfg(hydrolysis_cherenkov)]
+pub(super) fn apply_window_background<P: PaintedWindow, E: crate::text::TextEngine>(
     runtime: &mut RuntimeWindow<P, E>,
     env: &Environment,
 ) -> peniko::Color {
@@ -963,26 +1403,27 @@ pub fn window_requires_transparency(window: &Window, env: &Environment) -> bool 
     SurfaceBackground::of(window, env).transparent()
 }
 
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 crate::engine::cfg_async_fn! {
-    /// Runs one frame and reports whether it was presented to the surface — an
-    /// idle frame, or one whose surface had to be reconfigured, is not. The
-    /// frame renders through the window's presentation kind
-    /// ([`GpuSurfaceFrame`]).
+    /// Runs one frame and reports what became of it: presented to the
+    /// surface, skipped — an idle frame, or one whose surface had to be
+    /// reconfigured — or failed for good, when the surface cannot render
+    /// again. The frame renders through the window's presentation kind
+    /// ([`PaintedFrame`]).
     ///
     /// Async on wasm32, where the engine render inside awaits the browser device.
     #[cfg(not(hydrolysis_hwui))]
-    pub(super) fn render_window<P: GpuSurfaceWindow>(
+    pub(super) fn render_window<P: PaintedWindow>(
         runtime: &mut RuntimeWindow<P, crate::text::ParleyEngine>,
         env: &Environment,
         drain_local_tasks: &mut dyn FnMut() -> bool,
-    ) -> bool {
+    ) -> WindowFrame {
 
     // A hidden window produces no frame: nothing is encoded, submitted or
     // presented, and a redraw already in flight when it hid is stale —
     // dropped here rather than rendered.
     if runtime.hidden {
-        return false;
+        return WindowFrame::Skipped;
     }
 
     let result = crate::engine::engine_await!(render_window_pumped(
@@ -991,7 +1432,7 @@ crate::engine::cfg_async_fn! {
         FrameReader::Display,
         drain_local_tasks,
         #[cfg(not(target_arch = "wasm32"))]
-        GpuSurfaceFrame::render_frame,
+        PaintedFrame::render_frame,
         #[cfg(target_arch = "wasm32")]
         async |surface: &mut P::Presentation, renderer, clear_color, display_scale| {
             surface
@@ -1002,12 +1443,15 @@ crate::engine::cfg_async_fn! {
     // The rebuild flag and the snapshot belong to the headless harness; a live
     // window only asks whether the frame reached its surface.
     let _ = (result.rebuilt, result.snapshot);
-    let rendered = result.profile.counters.rendered;
-    if rendered {
-        runtime.presented_frames += 1;
-        tracing::debug!(frames = runtime.presented_frames, "frame presented");
+    if let Some(error) = result.failed {
+        return WindowFrame::Failed(error);
     }
-    rendered
+    if !result.profile.counters.rendered {
+        return WindowFrame::Skipped;
+    }
+    runtime.presented_frames += 1;
+    tracing::debug!(frames = runtime.presented_frames, "frame presented");
+    WindowFrame::Presented
     }
 }
 
@@ -1140,6 +1584,7 @@ pub(super) fn pump_window_scene<P: PlatformWindow, E: crate::text::TextEngine>(
     let mut built = false;
     match runtime.mode {
         FrameMode::Idle => {
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             runtime
                 .renderer
                 .record_text_input_overlay(env, kurbo::Affine::IDENTITY);
@@ -1186,14 +1631,19 @@ pub(super) fn pump_window_scene<P: PlatformWindow, E: crate::text::TextEngine>(
     // per encoded frame, and a frame whose `current` is empty reads as
     // "no views". The record is idempotent, so the build and refresh arms
     // running their own frame-end step cost nothing here.
-    runtime.renderer.registries();
+    runtime.renderer.frame_registries();
     runtime.renderer.record_platform_views();
     if runtime.renderer.has_structure_marks() {
         // A structural mark raised mid-flush — an effect needs another frame.
         runtime.request_refresh();
         runtime.request_redraw();
         runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
-    } else if runtime.renderer.animations_active() && !runtime.mode.is_pending() {
+    } else if (runtime.renderer.animations_active()
+        || runtime
+            .renderer
+            .scene_frames_requested(crate::animation::PerpetualAnimation::Counts))
+        && !runtime.mode.is_pending()
+    {
         schedule_animation_update(runtime, true);
         runtime.request_redraw();
         runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
@@ -1249,10 +1699,13 @@ pub(super) fn pump_window_semantics<P: PlatformWindow, E: crate::text::TextEngin
             runtime
                 .renderer
                 .flush_window_tree(env, bounds, transform, kurbo::Affine::IDENTITY);
-        assert!(
-            flushed,
-            "hydrolysis runner: retained render tree vanished during semantics pump"
-        );
+        if !flushed {
+            contract_violation!(
+                "hydrolysis runner: retained render tree vanished during semantics pump; the pump publishes nothing"
+            );
+            runtime.clear_frame_mode();
+            return false;
+        }
         apply_window_size_limits(runtime, env);
         runtime.clear_frame_mode();
         return true;
@@ -1268,22 +1721,21 @@ pub(super) fn pump_window_semantics<P: PlatformWindow, E: crate::text::TextEngin
     rebuilt
 }
 
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 pub struct SurfaceRenderResult {
+    presented: bool,
     acquire: Duration,
     render: Duration,
     present: Duration,
     snapshot: Option<HeadlessSnapshot>,
 }
 
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 impl SurfaceRenderResult {
-    #[cfg(any(
-        all(hydrolysis_frame_transaction, not(hydrolysis_hwui)),
-        hydrolysis_apple_engine_window
-    ))]
-    pub(crate) const fn engine_presented(render: Duration) -> Self {
+    #[cfg(all(target_os = "android", not(hydrolysis_hwui)))]
+    pub(crate) const fn engine_submitted(render: Duration) -> Self {
         Self {
+            presented: false,
             acquire: Duration::ZERO,
             render,
             present: Duration::ZERO,
@@ -1299,19 +1751,20 @@ impl SurfaceRenderResult {
 /// acquire, copy or present to call.
 ///
 /// [`SurfaceProvider`]: crate::platform::SurfaceProvider
-#[cfg(hydrolysis_gpu_painter)]
-pub trait GpuSurfaceFrame {
+#[cfg(hydrolysis_cherenkov)]
+pub trait PaintedFrame {
     /// Renders and presents one frame into the surface, reporting the
-    /// stage durations.
+    /// stage durations, or why the frame was skipped or the surface can
+    /// never render again.
     #[cfg(all(not(target_arch = "wasm32"), not(hydrolysis_hwui)))]
     fn render_frame(
         &mut self,
         renderer: &mut HydrolysisRenderer<crate::text::ParleyEngine>,
         clear_color: peniko::Color,
         display_scale: f64,
-    ) -> Result<SurfaceRenderResult, crate::platform::SurfaceError>;
+    ) -> Result<SurfaceRenderResult, FrameFailure>;
 
-    /// [`GpuSurfaceFrame::render_frame`], async on wasm32 where the browser
+    /// [`PaintedFrame::render_frame`], async on wasm32 where the browser
     /// device renders inside an await.
     #[cfg(target_arch = "wasm32")]
     fn render_frame(
@@ -1319,20 +1772,20 @@ pub trait GpuSurfaceFrame {
         renderer: &mut HydrolysisRenderer<crate::text::ParleyEngine>,
         clear_color: peniko::Color,
         display_scale: f64,
-    ) -> impl Future<Output = Result<SurfaceRenderResult, crate::platform::SurfaceError>>;
+    ) -> impl Future<Output = Result<SurfaceRenderResult, FrameFailure>>;
 }
 
 /// Every host-acquired surface renders through [`render_host_acquired_frame`];
 /// a live window reads no snapshot.
 #[cfg(hydrolysis_gpu_painter)]
-impl<S: crate::platform::SurfaceProvider> GpuSurfaceFrame for S {
+impl<S: crate::platform::SurfaceProvider> PaintedFrame for S {
     #[cfg(all(not(target_arch = "wasm32"), not(hydrolysis_hwui)))]
     fn render_frame(
         &mut self,
         renderer: &mut HydrolysisRenderer<crate::text::ParleyEngine>,
         clear_color: peniko::Color,
         display_scale: f64,
-    ) -> Result<SurfaceRenderResult, crate::platform::SurfaceError> {
+    ) -> Result<SurfaceRenderResult, FrameFailure> {
         render_host_acquired_frame(renderer, self, clear_color, display_scale, false)
     }
 
@@ -1346,7 +1799,7 @@ impl<S: crate::platform::SurfaceProvider> GpuSurfaceFrame for S {
         renderer: &mut HydrolysisRenderer<crate::text::ParleyEngine>,
         clear_color: peniko::Color,
         display_scale: f64,
-    ) -> Result<SurfaceRenderResult, crate::platform::SurfaceError> {
+    ) -> Result<SurfaceRenderResult, FrameFailure> {
         render_host_acquired_frame(renderer, self, clear_color, display_scale, false).await
     }
 }
@@ -1373,16 +1826,17 @@ crate::engine::cfg_async_fn! {
         clear_color: peniko::Color,
         display_scale: f64,
         capture_snapshot: bool,
-    } -> Result<SurfaceRenderResult, crate::platform::SurfaceError> {
+    } -> Result<SurfaceRenderResult, FrameFailure> {
     // Restore a lost device generation before any handle is read: the
     // recovered device, its fresh context id and the reconfigured
     // swapchain are what the frame below renders on. An unrecoverable
-    // device panics inside, naming the recorded losses.
-    surface.ensure_live();
+    // device is the surface's terminal failure.
+    surface.ensure_live()?;
     let (width, height) = surface.size();
     let format = surface.format();
-    let context = surface.device_loss().gpu_context();
-    let context_id = context.context_id;
+    #[cfg(feature = "frame-profile")]
+    let context_id = surface.device_loss().gpu_context().context_id;
+    let headroom = surface.display_headroom();
     // The engine renders into its own retained output before the swapchain
     // image is acquired: the render awaits the GPU device on wasm32, and a
     // browser expires a canvas texture when the task that acquired it ends,
@@ -1390,24 +1844,15 @@ crate::engine::cfg_async_fn! {
     // in between.
     let render_started_at = Instant::now();
     let engine_frame = crate::engine::engine_await!(renderer.render_texture_frame(
-        crate::renderer::FrameRenderTarget {
-            adapter: surface.adapter(),
-            device: surface.device(),
-            queue: surface.queue(),
-            device_loss: surface.device_loss().clone(),
-            gpu_context_id: context_id,
-            shared_device: context.shared_device.clone(),
+        crate::renderer::FrameRenderTarget::new(
+            surface.generation(),
             display_scale,
-            width,
-            height,
-            base_color: crate::renderer::working_color(clear_color),
-        },
+            (width, height),
+            crate::renderer::working_color(clear_color),
+        ),
         format,
-        surface.display_headroom(),
-    ))
-    .unwrap_or_else(|error| {
-        panic!("hydrolysis renderer: engine render failed: {error:#}")
-    });
+        headroom,
+    ))?;
     surface.set_content_range(engine_frame.content_range);
     let output_alpha = surface.output_alpha();
     let engine_render = render_started_at.elapsed();
@@ -1435,33 +1880,50 @@ crate::engine::cfg_async_fn! {
     let snapshot = {
         #[cfg(feature = "frame-profile")]
         let readback_started_at = Instant::now();
-        let snapshot = capture_snapshot.then(|| {
+        let snapshot = if capture_snapshot {
             renderer.frame_work_counters_mut().gpu_submissions += 1;
-            HeadlessSnapshot {
-                width,
-                height,
-                rgba8: readback_surface_texture_rgba8(&*surface, frame.texture(), width, height)
-                    .unwrap_or_else(|error| {
-                        panic!(
-                            "hydrolysis headless snapshot readback failed: {:#}",
-                            waterui_core::Error::from(error)
-                        )
-                    }),
-                output_alpha,
+            match readback_surface_texture_rgba8(&*surface, frame.texture(), width, height) {
+                Ok(rgba8) => Some(HeadlessSnapshot {
+                    width,
+                    height,
+                    rgba8,
+                    output_alpha,
+                }),
+                // The device died under the frame: its texture holds no
+                // rendered pixels. The frame is skipped, unpresented, like
+                // every frame a lost device ends, so the next one recovers
+                // the device under the recovery budget and captures again.
+                Err(crate::readback::ReadbackError::DeviceLost(error)) => {
+                    tracing::error!(
+                        "hydrolysis headless snapshot readback failed: {:#}; the frame is skipped",
+                        waterui_core::Error::from(error)
+                    );
+                    return Err(FrameFailure::Skipped(crate::platform::SurfaceError::Lost));
+                }
+                Err(error) => {
+                    tracing::error!(
+                        "hydrolysis headless snapshot readback failed: {:#}; the frame carries no snapshot",
+                        waterui_core::Error::from(error)
+                    );
+                    None
+                }
             }
-        });
+        } else {
+            None
+        };
         #[cfg(feature = "frame-profile")]
         {
-            renderer.frame_stage_times.readback += readback_started_at.elapsed();
+            renderer.frame_stage_times.set_readback(renderer.frame_stage_times.readback() + readback_started_at.elapsed());
         }
         snapshot
     };
     #[cfg(target_arch = "wasm32")]
     let snapshot = {
-        assert!(
-            !capture_snapshot,
-            "browser surfaces cannot be synchronously read back for a headless snapshot"
-        );
+        if capture_snapshot {
+            contract_violation!(
+                "browser surfaces cannot be synchronously read back for a headless snapshot; the frame carries no snapshot"
+            );
+        }
         None
     };
     let present_started_at = Instant::now();
@@ -1472,6 +1934,7 @@ crate::engine::cfg_async_fn! {
     // the submission done.
     surface.device_loss().note_frame_presented();
     Ok(SurfaceRenderResult {
+        presented: true,
         acquire,
         render,
         present,
@@ -1496,34 +1959,33 @@ pub(super) fn render_engine_presented_frame<S: crate::platform::EnginePresented>
     renderer: &mut HydrolysisRenderer<crate::text::ParleyEngine>,
     clear_color: peniko::Color,
     display_scale: f64,
-) -> SurfaceRenderResult {
+) -> Result<SurfaceRenderResult, FrameFailure> {
     let render_started_at = Instant::now();
     // Restore a lost device generation before the render target is
     // built: the engine window is rebuilt on the new context id.
-    surface.ensure_live();
+    surface.ensure_live()?;
     let (target, engine_target) =
         surface.render_targets(display_scale, crate::renderer::working_color(clear_color));
-    renderer
-        .render_window_frame(&target, engine_target)
-        .unwrap_or_else(|error| panic!("hydrolysis renderer: engine render failed: {error:#}"));
+    renderer.render_window_frame(&target, engine_target)?;
     surface.device_loss().note_frame_presented();
-    SurfaceRenderResult::engine_presented(render_started_at.elapsed())
+    Ok(SurfaceRenderResult {
+        presented: true,
+        acquire: Duration::ZERO,
+        render: render_started_at.elapsed(),
+        present: Duration::ZERO,
+        snapshot: None,
+    })
 }
 
 #[cfg(all(target_os = "macos", hydrolysis_winit))]
-impl GpuSurfaceFrame for crate::platform::WinitSurface {
+impl PaintedFrame for crate::platform::WinitSurface {
     fn render_frame(
         &mut self,
         renderer: &mut HydrolysisRenderer<crate::text::ParleyEngine>,
         clear_color: peniko::Color,
         display_scale: f64,
-    ) -> Result<SurfaceRenderResult, crate::platform::SurfaceError> {
-        Ok(render_engine_presented_frame(
-            self,
-            renderer,
-            clear_color,
-            display_scale,
-        ))
+    ) -> Result<SurfaceRenderResult, FrameFailure> {
+        render_engine_presented_frame(self, renderer, clear_color, display_scale)
     }
 }
 
@@ -1533,7 +1995,7 @@ impl GpuSurfaceFrame for crate::platform::WinitSurface {
 /// and `present` report zero. No snapshot can be asked of this kind: a
 /// browser surface is never read back.
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
-impl GpuSurfaceFrame for crate::platform::BrowserSurface {
+impl PaintedFrame for crate::platform::BrowserSurface {
     #[allow(
         clippy::future_not_send,
         reason = "wasm32 is single-threaded; the engine's Rc handles never cross a thread"
@@ -1543,22 +2005,23 @@ impl GpuSurfaceFrame for crate::platform::BrowserSurface {
         renderer: &mut HydrolysisRenderer<crate::text::ParleyEngine>,
         clear_color: peniko::Color,
         display_scale: f64,
-    ) -> Result<SurfaceRenderResult, crate::platform::SurfaceError> {
+    ) -> Result<SurfaceRenderResult, FrameFailure> {
         let render_started_at = Instant::now();
         // Restore a lost device generation before the render target is
         // built; a still-dead one reports the surface lost so the pump
-        // reschedules and the next frame retries under the loss budget.
-        if !self.ensure_live().await {
-            return Err(crate::platform::SurfaceError::Lost);
+        // reschedules and the next frame retries under the loss budget,
+        // and an exhausted budget is the surface's terminal failure.
+        if !self.ensure_live().await? {
+            return Err(crate::platform::SurfaceError::Lost.into());
         }
         let (target, root, window_slot) =
             self.render_targets(display_scale, crate::renderer::working_color(clear_color));
         renderer
             .render_dom_frame(&target, root, window_slot)
-            .await
-            .unwrap_or_else(|error| panic!("hydrolysis renderer: engine render failed: {error:#}"));
+            .await?;
         self.device_loss().note_frame_presented();
         Ok(SurfaceRenderResult {
+            presented: true,
             acquire: Duration::ZERO,
             render: render_started_at.elapsed(),
             present: Duration::ZERO,
@@ -1576,7 +2039,7 @@ impl GpuSurfaceFrame for crate::platform::BrowserSurface {
         reason = "the browser has no headless runtime, so only `Display` frames exist there"
     )
 )]
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 pub(super) enum FrameReader {
     /// A live window: the display reads the presented surface.
     #[cfg(not(hydrolysis_hwui))]
@@ -1590,7 +2053,7 @@ pub(super) enum FrameReader {
     Nobody,
 }
 
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 impl FrameReader {
     /// The reader of a headless frame: the snapshot when the pump captures
     /// one, nobody otherwise.
@@ -1608,21 +2071,109 @@ impl FrameReader {
     }
 }
 
-/// Runs one frame of a host-acquired window for `reader`: a
-/// [`FrameReader::Snapshot`] reads the acquired frame back. Bound on
-/// [`SurfaceProvider`](crate::platform::SurfaceProvider), because only an
-/// acquired frame can be read back — an engine-presented window has none,
-/// so a snapshot of one does not compile.
+/// A presentation whose frame can be read back: a host-acquired GPU
+/// surface ([`SurfaceProvider`](crate::platform::SurfaceProvider)), the CPU
+/// painter's framebuffer, or the headless window's selected one of the two.
+/// An engine-presented window has no frame to read, so a snapshot of one
+/// does not compile.
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg(hydrolysis_cherenkov)]
+pub trait CapturedFrame {
+    /// Renders one frame and, with `capture`, reads it back as a snapshot,
+    /// or reports why the frame was skipped or the surface can never render
+    /// again.
+    fn render_captured(
+        &mut self,
+        renderer: &mut HydrolysisRenderer<crate::text::ParleyEngine>,
+        clear_color: peniko::Color,
+        display_scale: f64,
+        capture: bool,
+    ) -> Result<SurfaceRenderResult, FrameFailure>;
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[cfg(hydrolysis_gpu_painter)]
-pub(super) fn render_window_with_capture<P: GpuSurfaceWindow>(
+impl<S: crate::platform::SurfaceProvider> CapturedFrame for S {
+    fn render_captured(
+        &mut self,
+        renderer: &mut HydrolysisRenderer<crate::text::ParleyEngine>,
+        clear_color: peniko::Color,
+        display_scale: f64,
+        capture: bool,
+    ) -> Result<SurfaceRenderResult, FrameFailure> {
+        render_host_acquired_frame(renderer, self, clear_color, display_scale, capture)
+    }
+}
+
+/// The CPU painter's frame: the renderer commits and renders into its
+/// framebuffer surface on the target's engine, and a capture reads the
+/// presentation pass's sRGB bytes in straight alpha, the convention the
+/// GPU offscreen texture presents with. There is no acquire or present:
+/// the framebuffer is the frame.
+#[cfg(hydrolysis_cpu_painter)]
+impl CapturedFrame for crate::platform::RasterOffscreen {
+    fn render_captured(
+        &mut self,
+        renderer: &mut HydrolysisRenderer<crate::text::ParleyEngine>,
+        clear_color: peniko::Color,
+        display_scale: f64,
+        capture: bool,
+    ) -> Result<SurfaceRenderResult, FrameFailure> {
+        let (width, height) = crate::platform::OffscreenTarget::size(self);
+        let render_started_at = Instant::now();
+        // A surface the engine cannot create ends the window; a failed
+        // render or readback skips the frame and the next one retries.
+        let pixels = renderer.render_raster_frame(
+            &self.state,
+            crate::renderer::FrameGeometry {
+                display_scale,
+                width,
+                height,
+                base_color: crate::renderer::working_color(clear_color),
+            },
+            capture.then_some(cherenkov::OutputAlpha::Straight),
+        )?;
+        Ok(SurfaceRenderResult {
+            presented: true,
+            acquire: Duration::ZERO,
+            render: render_started_at.elapsed(),
+            present: Duration::ZERO,
+            snapshot: pixels.map(|rgba8| HeadlessSnapshot {
+                width,
+                height,
+                rgba8,
+                output_alpha: cherenkov::OutputAlpha::Straight,
+            }),
+        })
+    }
+}
+
+/// The CPU framebuffer as a window presentation: nothing reads a live
+/// frame of it, so the frame is rendered without a capture.
+#[cfg(hydrolysis_cpu_painter)]
+impl PaintedFrame for crate::platform::RasterOffscreen {
+    fn render_frame(
+        &mut self,
+        renderer: &mut HydrolysisRenderer<crate::text::ParleyEngine>,
+        clear_color: peniko::Color,
+        display_scale: f64,
+    ) -> Result<SurfaceRenderResult, FrameFailure> {
+        self.render_captured(renderer, clear_color, display_scale, false)
+    }
+}
+
+/// Runs one frame of a window whose frame can be read back for `reader`: a
+/// [`FrameReader::Snapshot`] reads the frame back ([`CapturedFrame`]).
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg(hydrolysis_cherenkov)]
+pub(super) fn render_window_with_capture<P>(
     runtime: &mut RuntimeWindow<P, crate::text::ParleyEngine>,
     env: &Environment,
     reader: FrameReader,
     drain_local_tasks: &mut dyn FnMut() -> bool,
 ) -> RenderWindowResult
 where
-    P::Presentation: crate::platform::SurfaceProvider,
+    P: PaintedWindow<Presentation: CapturedFrame>,
 {
     render_window_pumped(
         runtime,
@@ -1630,18 +2181,12 @@ where
         reader,
         drain_local_tasks,
         |surface: &mut P::Presentation, renderer, clear_color, display_scale| {
-            render_host_acquired_frame(
-                renderer,
-                surface,
-                clear_color,
-                display_scale,
-                reader.captures(),
-            )
+            surface.render_captured(renderer, clear_color, display_scale, reader.captures())
         },
     )
 }
 
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 crate::engine::cfg_async_fn! {
     /// The frame pump [`render_window`] and [`render_window_with_capture`]
     /// share: `render_frame` renders the frame through the window's surface,
@@ -1651,7 +2196,7 @@ crate::engine::cfg_async_fn! {
     /// device.
     // the pump renders, encodes and delivers in one pass; the sequence is the feature
     #[allow(clippy::too_many_lines)]
-    fn render_window_pumped<P: GpuSurfaceWindow> {
+    fn render_window_pumped<P: PaintedWindow> {
         runtime: &mut RuntimeWindow<P, crate::text::ParleyEngine>,
         env: &Environment,
         reader: FrameReader,
@@ -1661,7 +2206,7 @@ crate::engine::cfg_async_fn! {
             &mut HydrolysisRenderer<crate::text::ParleyEngine>,
             peniko::Color,
             f64,
-        ) -> Result<SurfaceRenderResult, crate::platform::SurfaceError>,
+        ) -> Result<SurfaceRenderResult, FrameFailure>,
     } {
         runtime: &mut RuntimeWindow<P, crate::text::ParleyEngine>,
         env: &Environment,
@@ -1672,7 +2217,7 @@ crate::engine::cfg_async_fn! {
             &mut HydrolysisRenderer<crate::text::ParleyEngine>,
             peniko::Color,
             f64,
-        ) -> Result<SurfaceRenderResult, crate::platform::SurfaceError>,
+        ) -> Result<SurfaceRenderResult, FrameFailure>,
     } -> RenderWindowResult {
     let capture_snapshot = reader.captures();
     runtime.platform.apply_properties(&runtime.window);
@@ -1716,23 +2261,33 @@ crate::engine::cfg_async_fn! {
 
         let rendered = match render_result {
             Ok(rendered) => rendered,
-            Err(
-                crate::platform::SurfaceError::Lost
-                | crate::platform::SurfaceError::Outdated
-                | crate::platform::SurfaceError::Timeout
-                | crate::platform::SurfaceError::Occluded,
-            ) => {
-                runtime.request_refresh();
-                runtime.request_redraw();
-                runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
+            Err(failure) => {
+                // A skipped frame asks for another; a terminal failure asks
+                // for nothing — the surface cannot render again, and a
+                // redraw would only fail the same way, forever.
+                let failed = match failure {
+                    FrameFailure::Skipped(error) => {
+                        if error == crate::platform::SurfaceError::Validation {
+                            tracing::error!(
+                                "hydrolysis surface acquisition failed validation; the frame is skipped"
+                            );
+                        }
+                        runtime.request_refresh();
+                        runtime.request_redraw();
+                        runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
+                        None
+                    }
+                    FrameFailure::Failed(error) => Some(error),
+                };
                 let (measurement_cache_hits, measurement_cache_misses) =
-                    runtime.renderer.measurement_cache_stats();
+                    runtime.renderer.take_measurement_cache_stats();
                 let mount_stats = runtime.renderer.mount_stats();
                 let (applied_filter_count, applied_filter_capture_us, applied_filter_effect_us) =
                     runtime.renderer.applied_filter_stats();
                 return RenderWindowResult {
                     rebuilt,
                     snapshot,
+                    failed,
                     #[cfg(feature = "frame-profile")]
                     stages: runtime.renderer.take_frame_stage_times(),
                     profile: FrameProfile {
@@ -1764,9 +2319,6 @@ crate::engine::cfg_async_fn! {
                     },
                 };
             }
-            Err(crate::platform::SurfaceError::Validation) => {
-                panic!("hydrolysis surface acquisition failed validation")
-            }
         };
         if P::SAMPLES_TOP_EDGE {
             let (width, _) = runtime.platform.content_size();
@@ -1785,7 +2337,7 @@ crate::engine::cfg_async_fn! {
             stages = runtime.renderer.take_frame_stage_times();
         }
         let (measurement_cache_hits, measurement_cache_misses) =
-            runtime.renderer.measurement_cache_stats();
+            runtime.renderer.take_measurement_cache_stats();
         let mount_stats = runtime.renderer.mount_stats();
         let (applied_filter_count, applied_filter_capture_us, applied_filter_effect_us) =
             runtime.renderer.applied_filter_stats();
@@ -1813,7 +2365,7 @@ crate::engine::cfg_async_fn! {
                 applied_filter_count,
                 applied_filter_capture_us,
                 applied_filter_effect_us,
-                rendered: true,
+                rendered: rendered.presented,
                 captured_snapshot: capture_snapshot,
                 frame_work: runtime.renderer.take_frame_work_counters(),
             },
@@ -1822,9 +2374,7 @@ crate::engine::cfg_async_fn! {
 
         if diagnostics_enabled {
             let window_title = runtime.window.title.snapshot();
-            runtime.render_diagnostics.record_frame(
-                window_title.as_str(),
-                RenderPhaseSample {
+            let sample = RenderPhaseSample {
                     rebuild: rebuild_phases.rebuild,
                     build_content: rebuild_phases.build_content,
                     scene_dispatch: rebuild_phases.scene_dispatch,
@@ -1836,8 +2386,35 @@ crate::engine::cfg_async_fn! {
                     rebuild_iterations: u32::from(pump_outcome.built),
                     filtered_layers: mount_stats.filtered,
                     rebuilt: pump_outcome.built,
-                },
-            );
+                };
+            #[cfg(all(target_os = "android", hydrolysis_gpu_painter))]
+            if rendered.presented {
+                runtime.render_diagnostics.record_frame(window_title.as_str(), sample);
+            } else {
+                let now = Instant::now();
+                let sample = if let Some((mut preparation, started)) = runtime.pending_render_diagnostic.take() {
+                    // Surface preparation and the following submission are one
+                    // presented frame. Keep the wait between their CPU phases.
+                    let elapsed = now.duration_since(started);
+                    preparation.render += elapsed.saturating_sub(sample.total) + sample.render;
+                    preparation.total += elapsed;
+                    preparation.rebuild += sample.rebuild;
+                    preparation.build_content += sample.build_content;
+                    preparation.scene_dispatch += sample.scene_dispatch;
+                    preparation.scene_finish += sample.scene_finish;
+                    preparation.acquire += sample.acquire;
+                    preparation.present += sample.present;
+                    preparation.rebuild_iterations += sample.rebuild_iterations;
+                    preparation.filtered_layers = sample.filtered_layers;
+                    preparation.rebuilt |= sample.rebuilt;
+                    preparation
+                } else {
+                    sample
+                };
+                runtime.pending_render_diagnostic = Some((sample, now));
+            }
+            #[cfg(not(all(target_os = "android", hydrolysis_gpu_painter)))]
+            runtime.render_diagnostics.record_frame(window_title.as_str(), sample);
         }
     }
 
@@ -1880,15 +2457,23 @@ crate::engine::cfg_async_fn! {
         profile,
         #[cfg(feature = "frame-profile")]
         stages,
+        failed: None,
     }
     }
 }
 
+/// `value` physical pixels in logical points. A platform that reports a scale
+/// factor that is not finite and positive violates the host contract: the
+/// report is logged and the dimension is taken at scale `1`.
 pub(super) fn physical_to_logical_dimension(value: u32, scale_factor: f64) -> f32 {
-    assert!(
-        scale_factor.is_finite() && scale_factor > 0.0,
-        "hydrolysis runner: invalid scale factor {scale_factor}"
-    );
+    let scale_factor = if scale_factor.is_finite() && scale_factor > 0.0 {
+        scale_factor
+    } else {
+        contract_violation!(
+            "hydrolysis runner: invalid scale factor {scale_factor}; the dimension is taken at scale 1"
+        );
+        1.0
+    };
     crate::num_cast::f64_as_f32(f64::from(value) / scale_factor)
 }
 
@@ -1897,10 +2482,19 @@ pub(super) fn handle_input_events<P: PlatformWindow, E: crate::text::TextEngine>
     env: &Environment,
 ) -> bool {
     handle_input_events_with(runtime, env, |runtime, env| {
-        env.extending(runtime_window_origin(runtime))
+        #[cfg(any(feature = "menu", feature = "color-picker"))]
+        {
+            env.extending(runtime_window_origin(runtime))
+        }
+        #[cfg(not(any(feature = "menu", feature = "color-picker")))]
+        {
+            let _ = runtime;
+            env.clone()
+        }
     })
 }
 
+#[cfg(any(feature = "menu", feature = "color-picker"))]
 pub(super) fn runtime_window_origin<P: PlatformWindow, E: crate::text::TextEngine>(
     runtime: &RuntimeWindow<P, E>,
 ) -> HydrolysisWindowOrigin {
@@ -1943,12 +2537,15 @@ fn refresh_pending_input_geometry<P: PlatformWindow, E: crate::text::TextEngine>
     let (width, height) = runtime.platform.content_size();
     let bounds = create_bounds(width, height, scale_factor);
     let transform = kurbo::Affine::scale(scale_factor);
-    assert!(
-        runtime
-            .renderer
-            .flush_window_tree(env, bounds, transform, kurbo::Affine::IDENTITY,),
-        "hydrolysis input geometry refresh lost the retained window tree"
-    );
+    if !runtime
+        .renderer
+        .flush_window_tree(env, bounds, transform, kurbo::Affine::IDENTITY)
+    {
+        contract_violation!(
+            "hydrolysis input geometry refresh lost the retained window tree; the geometry stays as the last frame left it"
+        );
+        return;
+    }
     apply_window_size_limits(runtime, env);
 }
 
@@ -1991,6 +2588,12 @@ where
     runtime
         .renderer
         .set_touch_scroll_config(runtime.platform.touch_scroll_config());
+    // So do the settings the user can change while the app runs: the
+    // double-click interval and distance the presses of this batch are
+    // counted with, and the paste shortcut.
+    runtime
+        .renderer
+        .set_input_conventions(runtime.platform.input_conventions());
     let events = runtime.platform.drain_events();
     // Platform IMEs mark their own keystrokes by what they emit: ownership
     // follows the event order inside the batch (see `ime_owned_events`), so
@@ -2214,21 +2817,29 @@ where
                 schedule_redraw_or_refresh(runtime, changed);
             }
             InputEvent::Magnification { x, y, delta, phase } => {
+                // A pinch or rotation only fires gesture actions, which mark
+                // what they change themselves: nothing here asks for a refresh.
                 runtime.pointer_position = Some((x, y));
-                let changed = runtime
+                let _fired = runtime
                     .renderer
                     .handle_magnification(x, y, delta, phase, env);
-                schedule_redraw_or_refresh(runtime, changed);
             }
             InputEvent::Rotation { x, y, delta, phase } => {
                 runtime.pointer_position = Some((x, y));
-                let changed = runtime.renderer.handle_rotation(x, y, delta, phase, env);
-                schedule_redraw_or_refresh(runtime, changed);
+                let _fired = runtime.renderer.handle_rotation(x, y, delta, phase, env);
             }
             InputEvent::TextInput { text } => {
                 let changed = !ime_owned
-                    && (runtime.renderer.handle_embedded_text_input(text.as_str())
-                        || runtime.renderer.handle_text_input(text.as_str()));
+                    && (runtime.renderer.handle_embedded_text_input(text.as_str()) || {
+                        #[cfg(any(feature = "text-field", feature = "secure-field"))]
+                        {
+                            runtime.renderer.handle_text_input(text.as_str())
+                        }
+                        #[cfg(not(any(feature = "text-field", feature = "secure-field")))]
+                        {
+                            false
+                        }
+                    });
                 tracing::trace!(
                     target: "waterui::hydrolysis::input",
                     event = "text_input",
@@ -2244,8 +2855,16 @@ where
             InputEvent::KeyText { text } => {
                 let changed = !ime_owned
                     && !key_consumed
-                    && (runtime.renderer.handle_embedded_text_input(text.as_str())
-                        || runtime.renderer.handle_text_input(text.as_str()));
+                    && (runtime.renderer.handle_embedded_text_input(text.as_str()) || {
+                        #[cfg(any(feature = "text-field", feature = "secure-field"))]
+                        {
+                            runtime.renderer.handle_text_input(text.as_str())
+                        }
+                        #[cfg(not(any(feature = "text-field", feature = "secure-field")))]
+                        {
+                            false
+                        }
+                    });
                 tracing::trace!(
                     target: "waterui::hydrolysis::input",
                     event = "text_input",
@@ -2273,13 +2892,20 @@ where
                     let key_env = input_env(runtime, env);
                     let press =
                         KeyPress::new(logical_key.clone(), physical_code, modifiers.into(), repeat);
-                    let outcome = if runtime.renderer.handle_embedded_key(&KeyDelivery {
+                    let delivery = KeyDelivery {
                         pressed: true,
                         logical: &logical_key,
                         code: physical_code,
                         repeat,
                         modifiers,
-                    }) {
+                    };
+                    let outcome = if runtime.renderer.handle_embedded_paste_shortcut(&delivery) {
+                        // The shortcut is the paste command, not a key: the
+                        // surface hears `Paste`, and the text the press
+                        // would pair with is suppressed like any consumed
+                        // press's.
+                        KeyPressOutcome::Consumed
+                    } else if runtime.renderer.handle_embedded_key(&delivery) {
                         // Forwarded, not consumed — the surface owns its
                         // key+text pair; the paired text is still delivered.
                         KeyPressOutcome::ForwardedToSurface
@@ -2305,7 +2931,16 @@ where
                 let changed = runtime
                     .renderer
                     .handle_embedded_ime_preedit(text.as_str(), caret)
-                    || runtime.renderer.handle_ime_preedit(text.as_str(), caret);
+                    || {
+                        #[cfg(any(feature = "text-field", feature = "secure-field"))]
+                        {
+                            runtime.renderer.handle_ime_preedit(text.as_str(), caret)
+                        }
+                        #[cfg(not(any(feature = "text-field", feature = "secure-field")))]
+                        {
+                            false
+                        }
+                    };
                 tracing::trace!(
                     target: "waterui::hydrolysis::input",
                     event = "ime_preedit",
@@ -2316,8 +2951,16 @@ where
                 schedule_redraw_or_refresh(runtime, changed);
             }
             InputEvent::ImeCommit { text } => {
-                let changed = runtime.renderer.handle_embedded_ime_commit(text.as_str())
-                    || runtime.renderer.handle_ime_commit(text.as_str());
+                let changed = runtime.renderer.handle_embedded_ime_commit(text.as_str()) || {
+                    #[cfg(any(feature = "text-field", feature = "secure-field"))]
+                    {
+                        runtime.renderer.handle_ime_commit(text.as_str())
+                    }
+                    #[cfg(not(any(feature = "text-field", feature = "secure-field")))]
+                    {
+                        false
+                    }
+                };
                 tracing::trace!(
                     target: "waterui::hydrolysis::input",
                     event = "ime_commit",
@@ -2328,8 +2971,16 @@ where
                 schedule_redraw_or_refresh(runtime, changed);
             }
             InputEvent::ImeDisabled => {
-                let changed = runtime.renderer.handle_embedded_ime_disabled()
-                    || runtime.renderer.handle_ime_disabled();
+                let changed = runtime.renderer.handle_embedded_ime_disabled() || {
+                    #[cfg(any(feature = "text-field", feature = "secure-field"))]
+                    {
+                        runtime.renderer.handle_ime_disabled()
+                    }
+                    #[cfg(not(any(feature = "text-field", feature = "secure-field")))]
+                    {
+                        false
+                    }
+                };
                 tracing::trace!(
                     target: "waterui::hydrolysis::input",
                     event = "ime_disabled",
@@ -2349,20 +3000,28 @@ where
                 let changed =
                     !runtime.renderer.take_ime_swallowed_release(physical_code) && !ime_owned && {
                         let key_env = input_env(runtime, env);
-                        runtime.renderer.handle_bubbled_key_release(&KeyDelivery {
+                        let delivery = KeyDelivery {
                             pressed: false,
                             logical: &logical_key,
                             code: physical_code,
                             repeat,
                             modifiers,
-                        }) || runtime.renderer.handle_embedded_key(&KeyDelivery {
-                            pressed: false,
-                            logical: &logical_key,
-                            code: physical_code,
-                            repeat,
-                            modifiers,
-                        }) || runtime.renderer.handle_key_release_with_env(&key, &key_env)
+                        };
+                        runtime.renderer.handle_embedded_paste_shortcut(&delivery)
+                            || runtime.renderer.handle_bubbled_key_release(&delivery)
+                            || runtime.renderer.handle_embedded_key(&delivery)
+                            || runtime.renderer.handle_key_release_with_env(&key, &key_env)
                     };
+                schedule_redraw_or_refresh(runtime, changed);
+            }
+            InputEvent::Paste { text } => {
+                let changed = runtime.renderer.paste_text(&text);
+                tracing::trace!(
+                    target: "waterui::hydrolysis::input",
+                    event = "paste",
+                    changed,
+                    "runner dispatched input event"
+                );
                 schedule_redraw_or_refresh(runtime, changed);
             }
             InputEvent::KeyboardCancel => {
@@ -2432,6 +3091,9 @@ where
                 let changed = runtime.renderer.handle_file_hover_cancelled(&event_env);
                 schedule_redraw_or_refresh(runtime, changed);
             }
+            #[cfg(not(feature = "navigation"))]
+            InputEvent::BackNavigation(_) => {}
+            #[cfg(feature = "navigation")]
             InputEvent::BackNavigation(navigation) => {
                 let event_env = input_env(runtime, env);
                 let changed = runtime
@@ -2518,9 +3180,12 @@ pub(super) fn advance_runtime<P: PlatformWindow, E: crate::text::TextEngine>(
     // A gesture tick can mount a popup window — an armed context-menu hold
     // fires here — and the popup anchors in absolute coordinates through
     // `HydrolysisWindowOrigin`, the same extension pointer dispatch gets.
-    let gesture_env = env.extending(runtime_window_origin(runtime));
-    if runtime.renderer.handle_gesture_tick(now, &gesture_env) {
-        tracing::debug!("wake cause: gesture tick fired");
+    #[cfg(any(feature = "menu", feature = "color-picker"))]
+    let gesture_env = &env.extending(runtime_window_origin(runtime));
+    #[cfg(not(any(feature = "menu", feature = "color-picker")))]
+    let gesture_env = &env;
+    if runtime.renderer.handle_gesture_tick(now, gesture_env) {
+        tracing::debug!("wake cause: context-menu hold opened");
         runtime.request_refresh();
     }
     // Smoothed wheel scrolling eases offsets toward their targets per frame;
@@ -2553,6 +3218,7 @@ pub(super) fn advance_runtime<P: PlatformWindow, E: crate::text::TextEngine>(
         runtime.request_redraw();
         runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
     }
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     if runtime.renderer.advance_text_caret_animation(now) {
         tracing::debug!("wake cause: text caret animation");
         runtime.renderer.request_redraw();
@@ -2563,7 +3229,7 @@ pub(super) fn advance_runtime<P: PlatformWindow, E: crate::text::TextEngine>(
         tracing::debug!("wake cause: structural mark");
         runtime.request_refresh();
     }
-    let next_deadline = runtime.renderer.next_gesture_deadline();
+    let next_deadline = runtime.renderer.next_wake_deadline();
     if next_deadline.is_some() {
         tracing::debug!(?next_deadline, "wake armed: engine deadline");
     }

@@ -17,6 +17,7 @@ use crate::union_cap;
 use std::borrow::Cow;
 
 use crate::BackdropShaderId;
+use crate::animation::AnimLanes;
 use crate::ops::BackdropId;
 use crate::style::BlendSpace;
 
@@ -425,6 +426,92 @@ impl BackdropSample {
     }
 }
 
+/// A sample animates its outer extent and its effect's parameters lane by
+/// lane: both endpoints must sample the same group at the same recording
+/// scale with the same kind of effect — for a shader, the same shader with
+/// as many uniforms. Any other pair snaps.
+///
+/// A spring may overshoot an endpoint, so a rebuilt sample projects each
+/// lane whose parameter has a domain back onto it: the outer extent and a
+/// strength stay non-negative, a depth or a rim width positive.
+impl AnimLanes for BackdropSample {
+    fn anim_lanes(&self, target: &Self) -> Option<Box<[f64]>> {
+        if self.group != target.group || self.recording_scale != target.recording_scale {
+            return None;
+        }
+        let mut lanes = vec![f64::from(self.outer.0)];
+        match (&self.effect, &target.effect) {
+            (None, None) => {}
+            (Some(BackdropEffect::Color(from)), Some(BackdropEffect::Color(_))) => {
+                lanes.extend(from.0.iter().copied().map(f64::from));
+            }
+            (Some(BackdropEffect::Refraction(from)), Some(BackdropEffect::Refraction(_))) => {
+                lanes.extend([f64::from(from.depth), f64::from(from.strength)]);
+            }
+            (Some(BackdropEffect::Rim(from)), Some(BackdropEffect::Rim(_))) => {
+                lanes.push(f64::from(from.width));
+                lanes.extend(from.color.iter().copied().map(f64::from));
+                lanes.push(f64::from(from.gain));
+            }
+            (Some(BackdropEffect::Level(from)), Some(BackdropEffect::Level(_))) => {
+                lanes.extend([from.depth, from.edge, from.interior].map(f64::from));
+            }
+            (Some(BackdropEffect::Shader(from)), Some(BackdropEffect::Shader(to)))
+                if from.shader == to.shader && from.uniforms.len() == to.uniforms.len() =>
+            {
+                lanes.extend(from.uniforms.iter().copied().map(f64::from));
+            }
+            _ => return None,
+        }
+        Some(lanes.into_boxed_slice())
+    }
+
+    fn with_lanes(&self, lanes: &[f64]) -> Self {
+        let lane = |index: usize| f64_as_f32(lanes[index]);
+        let positive = |index: usize| lane(index).max(f32::MIN_POSITIVE);
+        let effect = self.effect.as_ref().map(|effect| match effect {
+            BackdropEffect::Color(_) => {
+                BackdropEffect::Color(ColorMatrix(std::array::from_fn(|i| lane(1 + i))))
+            }
+            BackdropEffect::Refraction(_) => BackdropEffect::Refraction(Refraction {
+                depth: positive(1),
+                strength: lane(2).max(0.0),
+            }),
+            BackdropEffect::Rim(_) => BackdropEffect::Rim(Rim {
+                width: positive(1),
+                color: std::array::from_fn(|i| lane(2 + i)),
+                gain: lane(6),
+            }),
+            BackdropEffect::Level(_) => BackdropEffect::Level(LevelRamp {
+                depth: positive(1),
+                edge: lane(2),
+                interior: lane(3),
+            }),
+            BackdropEffect::Shader(shader) => BackdropEffect::Shader(BackdropShaderEffect {
+                shader: shader.shader,
+                uniforms: (0..shader.uniforms.len()).map(|i| lane(1 + i)).collect(),
+                reach: shader.reach,
+            }),
+        });
+        Self {
+            group: self.group,
+            effect,
+            outer: BackdropOuter(lane(0).max(0.0)),
+            recording_scale: self.recording_scale,
+        }
+    }
+}
+
+/// `value` narrowed to the `f32` a backdrop parameter stores: a lane
+/// holds a value interpolated between two `f32` endpoints.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "a lane interpolates between two f32 parameters, so it fits an f32"
+)]
+const fn f64_as_f32(value: f64) -> f32 {
+    value as f32
+}
+
 nami_core::impl_constant!(BackdropSample);
 
 /// The resolution a backdrop group captures at, as a fraction `s` of
@@ -611,6 +698,30 @@ impl CaptureLevels {
     }
 }
 
+/// How a backdrop group reduces its capture level `k − 1` into level `k`.
+///
+/// [`CapturePyramid::Box`] is the exact 2×2 mean [`CaptureLevels`]
+/// describes. [`CapturePyramid::Gaussian`] reduces with the separable
+/// binomial kernel `w = [1, 5, 10, 10, 5, 1] / 32` centred on that 2×2 box:
+/// level `k` texel `(i, j)` is
+/// `Σ_{a, b ∈ 0..=5} w[a]·w[b]·L[k−1](2i − 2 + a, 2j − 2 + b)` with source
+/// indices clamped to the source level's extent and values unclamped.
+/// Each reduction adds 5/4 of a source texel² of variance per axis, so
+/// level `k` is the capture under a kernel of variance
+/// `5 · (4^k − 1) / 12` level-0 texels². Level extents, grid alignment and the capture region
+/// are those of the box pyramid. `backdrop_sample_level` and the `Level`
+/// effect read either pyramid alike; `backdrop_sample_blur`
+/// ([`BackdropShaderSource`]) is defined only on a Gaussian pyramid.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum CapturePyramid {
+    /// Exact 2×2 box means.
+    #[default]
+    Box,
+    /// The `[1, 5, 10, 10, 5, 1] / 32` binomial kernel.
+    Gaussian,
+}
+
 /// How a backdrop group captures and combines its members.
 ///
 /// Used by the engine's `Surface::backdrop_group` and
@@ -625,6 +736,7 @@ impl CaptureLevels {
 pub struct BackdropSpec {
     scale: CaptureScale,
     levels: CaptureLevels,
+    pyramid: CapturePyramid,
     anchor: Option<crate::LayerId>,
     union: Option<BackdropUnion>,
     blend_space: BlendSpace,
@@ -640,6 +752,7 @@ impl BackdropSpec {
         Self {
             scale,
             levels,
+            pyramid: CapturePyramid::Box,
             anchor: None,
             union: None,
             blend_space: BlendSpace::Linear,
@@ -673,18 +786,35 @@ impl BackdropSpec {
         }
     }
 
-    /// A group whose members composite their samples onto their canvas
-    /// in `space`: each member's composite — the effect's result at its
-    /// coverage, antialiased edge and outer extent included — blends with
-    /// the canvas in that space, converted there and back. The default
-    /// [`BlendSpace::Linear`] blends in the linear working space; a
-    /// member's own content and descendants composite as before.
+    /// A group working in `space`.
+    ///
+    /// The capture's area mean ([`CaptureScale`]), the group's filters,
+    /// its pyramid reduction ([`CaptureLevels`], box and Gaussian alike)
+    /// and every `backdrop_sample*` read ([`BackdropShaderSource`])
+    /// average premultiplied values in `space`; a read still returns the
+    /// linear working space, so effects see the same `BackdropPixel`
+    /// contract either way. Each member's composite — the effect's result
+    /// at its coverage, antialiased edge and outer extent included — then
+    /// blends with the canvas in `space`, converted there and back.
+    ///
+    /// The default [`BlendSpace::Linear`] does all of this in the linear
+    /// working space; [`BlendSpace::SrgbEncoded`] averages and blends
+    /// sRGB-encoded values, as display glass blurs, so a blurred
+    /// transition spreads less into dark regions. A member's own content
+    /// and descendants composite as before.
     #[must_use]
     pub const fn blend_space(self, space: BlendSpace) -> Self {
         Self {
             blend_space: space,
             ..self
         }
+    }
+
+    /// A group reducing its capture levels as `pyramid` says (the default
+    /// is [`CapturePyramid::Box`]).
+    #[must_use]
+    pub const fn pyramid(self, pyramid: CapturePyramid) -> Self {
+        Self { pyramid, ..self }
     }
 
     /// The capture scale `s`.
@@ -697,6 +827,13 @@ impl BackdropSpec {
     #[must_use]
     pub const fn levels(self) -> CaptureLevels {
         self.levels
+    }
+
+    /// How the group's pyramid is reduced ([`CapturePyramid::Box`] unless
+    /// [`BackdropSpec::pyramid`] set it).
+    #[must_use]
+    pub const fn capture_pyramid(self) -> CapturePyramid {
+        self.pyramid
     }
 
     /// The anchor layer, when the group is anchored; `None` under the
@@ -712,9 +849,9 @@ impl BackdropSpec {
         self.union
     }
 
-    /// The space the group's members composite their samples in
-    /// ([`BlendSpace::Linear`] unless [`BackdropSpec::blend_space`] set
-    /// it).
+    /// The group's working space: the space its capture averages in and
+    /// its members composite their samples in ([`BlendSpace::Linear`]
+    /// unless [`BackdropSpec::blend_space`] set it).
     #[must_use]
     pub const fn member_blend_space(self) -> BlendSpace {
         self.blend_space
@@ -770,6 +907,30 @@ impl From<CaptureScale> for BackdropSpec {
 /// the read is bilinear at `q · s / 2^k` on `k = floor(level)` and
 /// `k = ceil(level)`, mixed by `fract(level)`; `backdrop_sample` is the
 /// level-0 read. The return value is premultiplied and written unclamped.
+/// Every read interpolates in the group's working space
+/// ([`BackdropSpec::blend_space`]) and returns the linear working space.
+///
+/// On a group whose pyramid is [`CapturePyramid::Gaussian`],
+/// `fn backdrop_sample_blur(q: vec2<f32>, sigma: f32) -> vec4<f32>` is the
+/// capture, bilinearly interpolated, convolved with a Gaussian, at device
+/// point `q`: a kernel of mean `q` and variance `sigma²` level-0 capture
+/// texels² per axis. Bilinear interpolation alone has variance 1/6 texel²,
+/// so the Gaussian's variance is `max(sigma² − 1/6, 0)`, and at
+/// `sigma ≤ 1/√6` the read is `backdrop_sample`. With
+/// `V(k) = 5 · (4^k − 1) / 12` the variance of level `k`, the read takes the
+/// deepest level `k` with `V(k) + 4^k / 6 ≤ sigma²` — the deepest whose
+/// bilinear read is not already wider than the kernel — and cross-fades from
+/// level `k − 1` over the first quarter level-`k` texel² of that level's
+/// residual variance above 1/6. `sigma` clamps to
+/// `sqrt(V(top) + (23/12) · 4^top)` for the deepest level `top`.
+///
+/// A read at level `k` touches level-0 texels up to `4.5 · 2^k` from the
+/// sample point, and the capture region is not padded for it: a shader's
+/// declared `reach` must cover its largest blur read's footprint, else the
+/// read clamps at the region's edge. A shader that reaches it composited
+/// over a group whose pyramid
+/// is [`CapturePyramid::Box`] fails the frame, as an unregistered shader
+/// does; the function is never read from another pyramid.
 #[derive(Clone, Debug)]
 pub struct BackdropShaderSource {
     /// The fragment source, without the backend's prelude.
@@ -804,7 +965,7 @@ impl BackdropShaderSource {
 mod tests {
     use super::{
         BackdropSpec, BackdropUnion, BackdropUnionError, CaptureLevels, CaptureLevelsError,
-        CaptureScale, CaptureScaleError, RecordingScale, RecordingScaleError,
+        CapturePyramid, CaptureScale, CaptureScaleError, RecordingScale, RecordingScaleError,
     };
 
     #[test]
@@ -890,5 +1051,14 @@ mod tests {
         assert_eq!(spec.levels().get(), 4);
         assert!(BackdropSpec::FULL.scale().is_full());
         assert_eq!(BackdropSpec::FULL.levels(), CaptureLevels::ONE);
+    }
+
+    #[test]
+    fn backdrop_spec_defaults_to_a_box_pyramid() {
+        assert_eq!(CapturePyramid::default(), CapturePyramid::Box);
+        assert_eq!(BackdropSpec::FULL.capture_pyramid(), CapturePyramid::Box);
+        let gaussian = BackdropSpec::FULL.pyramid(CapturePyramid::Gaussian);
+        assert_eq!(gaussian.capture_pyramid(), CapturePyramid::Gaussian);
+        assert_eq!(gaussian.pyramid(CapturePyramid::Box), BackdropSpec::FULL);
     }
 }

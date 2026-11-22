@@ -119,8 +119,8 @@ pub(super) async fn write_web_shell(project: &Project, site_root: &Path) -> eyre
 
     let app_name = project
         .manifest()
-        .package
-        .name
+        .package()
+        .name()
         .chars()
         .filter(|ch| ch.is_alphanumeric())
         .collect::<String>();
@@ -175,13 +175,10 @@ mod tests {
 
     #[test]
     fn index_inlines_the_launch_screen_and_the_dark_override() {
-        let manifest = crate::project::Manifest::new(crate::project::Package {
-            name: "Demo <App>".to_string(),
-            bundle_identifier: BundleIdentifier::try_from("dev.waterui.demo").unwrap(),
-            assets_path: "assets".to_string(),
-            accessory: false,
-            embedded: false,
-        });
+        let manifest = crate::project::Manifest::new(crate::project::Package::new(
+            "Demo <App>",
+            BundleIdentifier::try_from("dev.waterui.demo").unwrap(),
+        ));
         let ctx = TemplateContext::for_project_manifest(
             &crate::toolchain::Host::current(),
             &manifest,
@@ -214,13 +211,10 @@ mod tests {
 
     #[test]
     fn index_omits_the_dark_block_when_nothing_differs() {
-        let manifest = crate::project::Manifest::new(crate::project::Package {
-            name: "Demo".to_string(),
-            bundle_identifier: BundleIdentifier::try_from("dev.waterui.demo").unwrap(),
-            assets_path: "assets".to_string(),
-            accessory: false,
-            embedded: false,
-        });
+        let manifest = crate::project::Manifest::new(crate::project::Package::new(
+            "Demo",
+            BundleIdentifier::try_from("dev.waterui.demo").unwrap(),
+        ));
         let ctx = TemplateContext::for_project_manifest(
             &crate::toolchain::Host::current(),
             &manifest,

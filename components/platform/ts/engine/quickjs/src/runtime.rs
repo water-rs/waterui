@@ -138,7 +138,13 @@ impl QuickJsRuntime {
         self.context.with(|ctx| {
             self.depth.set(self.depth.get() + 1);
             let _depth = DepthGuard(&self.depth);
-            f(ctx)
+            let result = f(ctx.clone());
+            // The outermost entry owns the job queue: the Promise reactions
+            // the script queued run before control returns to the host, so
+            // an `await` continuation completes as on every other engine.
+            // A failing job's exception is cleared by `execute_pending_job`.
+            while ctx.execute_pending_job() {}
+            result
         })
     }
 
@@ -415,9 +421,9 @@ fn restore<'js>(ctx: &Ctx<'js>, handle: &Handle) -> Result<Value<'js>, JsError> 
 /// Throws a `JsError` into JavaScript as an `Error` carrying its name and
 /// message, and returns the `rquickjs` error that reports it to the caller.
 fn throw(ctx: &Ctx<'_>, error: &JsError) -> rquickjs::Error {
-    match Exception::from_message(ctx.clone(), &error.message) {
+    match Exception::from_message(ctx.clone(), error.message()) {
         Ok(exception) => {
-            let _ = exception.as_object().set("name", error.name.as_str());
+            let _ = exception.as_object().set("name", error.name());
             exception.throw()
         }
         // The context is out of memory or torn down; still report an
@@ -444,7 +450,7 @@ fn map_error(ctx: &Ctx<'_>, error: &rquickjs::Error) -> JsError {
             .message()
             .unwrap_or_else(|| String::from("JavaScript exception"));
         let mut error = JsError::new(name, message);
-        error.stack = exception.stack();
+        error.set_stack(exception.stack());
         return error;
     }
     // A non-`Error` throw (`throw 3`) still surfaces as a `JsError`.
@@ -615,7 +621,7 @@ mod tests {
             // must come back as the error, not stay armed in the slot.
             let error = QuickJsRuntime::is_plain(&ctx, &object)
                 .expect_err("a revoked proxy has no readable prototype");
-            assert_eq!(error.name, "TypeError");
+            assert_eq!(error.name(), "TypeError");
             assert!(
                 !ctx.has_exception(),
                 "the revoked-proxy probe left a pending exception"

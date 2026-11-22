@@ -20,10 +20,6 @@ use serde::{Deserialize, Serialize};
 
 /// What a running application publishes about its inspector endpoint.
 #[derive(Clone, Serialize, Deserialize)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "inspector wire type: the handshake rejects a peer from another protocol build, so every producer and consumer is built together and a new field or variant must fail their build"
-)]
 pub struct Advertisement {
     /// Process id of the application.
     pub pid: u32,

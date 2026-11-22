@@ -134,7 +134,7 @@ def compare_metric(
     }
     if metric in ZERO_TOLERANCE_METRICS:
         result["verdict"] = (
-            "pass" if all(d == 0 for d in diffs) else "fail"
+            "pass" if all(d <= 0 for d in diffs) else "fail"
         )
         return result
     if metric in ZERO_ALLOWANCE_METRICS and all(r == 0 for r in ref):

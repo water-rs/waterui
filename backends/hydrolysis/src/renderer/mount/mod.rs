@@ -10,15 +10,19 @@
 //! [`layers`](self::layers) — the retained layer set and the one
 //! [`Mount`] a window commits through; [`target`](self::target) — the
 //! target seam; [`registry`](self::registry) — the retained registries;
-//! `animated` — animated-scalar and morph-progress sampling; `stretch` —
+//! `animated` — the per-view animation slot lifecycle and the wrapper
+//! motions it binds; [`motion`](self::motion) — the engine-run wrapper
+//! tracks placement evaluates at event time; `stretch` —
 //! the overscroll stretch filter a scroll node's inner layer draws with.
 
 mod animated;
 pub mod backdrop;
 pub mod cell;
+pub mod container;
 #[cfg(any(test, hydrolysis_hwui))]
 pub mod hwui;
 pub mod layers;
+pub mod motion;
 pub mod placement;
 pub mod program;
 pub mod registry;
@@ -27,10 +31,11 @@ mod stretch;
 pub mod target;
 
 pub use cell::{Dirty, NodeCell, NodeCore};
-pub use layers::{Mount, MountStats};
+pub use layers::{CommitReports, Mount, MountStats, SceneFrames};
 pub use placement::{HitClasses, HitGate, Placement, PlacementClock, ScopeDelta};
 pub use program::{
-    MaterialRequest, ProducerContent, ProgramBuilder, SceneContentSource, ScopeKey, ScopeProps,
+    LiveOpacity, LiveTransform, MaterialRequest, ProducerContent, ProgramBuilder,
+    SceneContentSource, ScopeKey, ScopeLive, ScopeProps,
 };
 #[cfg(feature = "accessibility")]
 pub use registry::Region;
@@ -41,7 +46,7 @@ pub use registry::{
 pub use scopes::RetainedScopes;
 #[cfg(hydrolysis_gpu_painter)]
 pub use target::CherenkovHost;
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 pub use target::MaterialTerms;
 
 /// Identity of a producer owner: a counter the renderer hands out through
@@ -59,9 +64,13 @@ impl<E: crate::text::TextEngine> crate::renderer::HydrolysisRenderer<E> {
         host: &T::Host,
         scale: f64,
     ) {
+        T::install_text(host, &self.state.text);
         let roots = self.mount_roots();
         let host_wake = self.host_redraw_handle.clone();
         let window_material = self.core.window_material;
+        // Taken out for the commit, which files into it while the producer
+        // wakes borrow the rest of the core.
+        let mut scene_frames = std::mem::take(&mut self.core.scene_frames);
         let core = &mut self.core;
         let mut wakes =
             |cell: &std::rc::Rc<NodeCell<E>>| core.producer_wake(cell, host_wake.clone());
@@ -70,9 +79,13 @@ impl<E: crate::text::TextEngine> crate::renderer::HydrolysisRenderer<E> {
             self.window_display_transform,
             scale,
             &roots,
-            &mut wakes,
+            CommitReports {
+                wakes: &mut wakes,
+                scene_frames: &mut scene_frames,
+            },
             window_material.as_ref(),
         );
+        self.core.scene_frames = scene_frames;
         self.core.clear_commit_marks();
         let taken = mount.take_stats();
         self.last_mount_stats = layers::census(&roots, taken);

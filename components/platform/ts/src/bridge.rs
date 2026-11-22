@@ -154,7 +154,10 @@ impl MountScope {
     /// Never from outside this crate: a scope's own `Drop` is the only other
     /// thing that empties it, and a value cannot be dropped and closed.
     pub fn close(mut self) -> ScopeOwner {
-        let scope = self.scope.take().expect("a mount scope closes once");
+        let scope = self
+            .scope
+            .take()
+            .expect("a mount scope is `Some` until `close` takes it by value or `Drop` runs");
         Self::detach(&self.bridge, &scope);
         ScopeOwner(scope)
     }

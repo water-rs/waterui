@@ -563,8 +563,9 @@ impl Player {
             let seconds = cm_time_seconds(time);
             let handler = &handler;
             guarded("periodic time observer", || {
-                let mtm =
-                    MainThreadMarker::new().expect("the periodic observer runs on the main queue");
+                let mtm = MainThreadMarker::new().expect(
+                    "AVPlayer calls the periodic observer on the main queue it was registered with",
+                );
                 handler.get(mtm)(seconds);
             });
         });
@@ -1277,7 +1278,9 @@ mod platform {
     use objc2_av_kit::{
         AVPlayerView, AVPlayerViewControlsStyle, AVPlayerViewPictureInPictureDelegate,
     };
-    use objc2_foundation::NSObject;
+    use objc2_foundation::{NSObject, NSRect};
+
+    use crate::response::{ReportsResponse, ResponseGeometry};
 
     type PipHandler = Rc<dyn Fn(PipEvent)>;
 
@@ -1343,10 +1346,75 @@ mod platform {
         }
     );
 
+    /// The state a [`PlayerContentView`] carries.
+    #[derive(Default)]
+    pub struct PlayerContentViewIvars {
+        /// How the view was placed as a leaf, and its response rectangle.
+        geometry: ResponseGeometry,
+    }
+
+    impl fmt::Debug for PlayerContentViewIvars {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.debug_struct("PlayerContentViewIvars")
+                .field("geometry", &self.geometry)
+                .finish()
+        }
+    }
+
+    define_class!(
+        // SAFETY: `AVPlayerView`'s designated initializer is
+        // `initWithFrame:`, which `PlayerView::new` calls, and the class
+        // does not implement `Drop`.
+        #[unsafe(super(AVPlayerView))]
+        #[name = "CocoaUiPlayerContentView"]
+        #[thread_kind = MainThreadOnly]
+        #[ivars = PlayerContentViewIvars]
+        #[derive(Debug)]
+        /// The `AVPlayerView` a [`PlayerView`] mounts. Its frame is the
+        /// allocation its parent assigned; its accessibility frame is its
+        /// response rectangle. An aspect-fit video already draws there: the
+        /// response is the source's aspect at the offered width, centred.
+        pub struct PlayerContentView;
+
+        // SAFETY: `NSObjectProtocol` asks nothing of an `AVPlayerView`
+        // subclass.
+        unsafe impl NSObjectProtocol for PlayerContentView {}
+
+        impl PlayerContentView {
+            // SAFETY: see the module safety note.
+            #[unsafe(method(layout))]
+            fn layout_override(&self) {
+                guarded("PlayerContentView layout", || {
+                    // SAFETY: see the module safety note.
+                    let _: () = unsafe { msg_send![super(self), layout] };
+                    self.ivars().geometry.commit(self);
+                });
+            }
+
+            // SAFETY: see the module safety note.
+            #[unsafe(method(accessibilityFrame))]
+            fn accessibility_frame_override(&self) -> NSRect {
+                guarded("PlayerContentView accessibilityFrame", || {
+                    self.ivars()
+                        .geometry
+                        .accessibility_frame(self)
+                        // SAFETY: see the module safety note.
+                        .unwrap_or_else(|| unsafe { msg_send![super(self), accessibilityFrame] })
+                })
+            }
+        }
+    );
+
+    impl ReportsResponse for PlayerContentView {
+        fn response_geometry(&self) -> &ResponseGeometry {
+            &self.ivars().geometry
+        }
+    }
+
     /// `AVPlayerView`-backed controls surface.
     #[derive(Debug)]
     pub struct PlayerView {
-        view: Retained<AVPlayerView>,
+        view: Retained<PlayerContentView>,
         delegate: RefCell<Option<Retained<PipDelegate>>>,
         mtm: MainThreadMarker,
     }
@@ -1355,10 +1423,11 @@ mod platform {
         /// A controls surface with `gravity` and no player yet.
         #[must_use]
         pub fn new(mtm: MainThreadMarker, gravity: VideoGravity) -> Self {
-            // SAFETY: `initWithFrame:` on a live AVPlayerView class.
-            let view: Retained<AVPlayerView> = unsafe {
-                msg_send![AVPlayerView::alloc(mtm), initWithFrame: objc2_foundation::NSRect::ZERO]
-            };
+            let view = PlayerContentView::alloc(mtm).set_ivars(PlayerContentViewIvars::default());
+            // SAFETY: `initWithFrame:` is `AVPlayerView`'s designated
+            // initializer.
+            let view: Retained<PlayerContentView> =
+                unsafe { msg_send![super(view), initWithFrame: NSRect::ZERO] };
             // SAFETY: property writes on the live view built above.
             unsafe {
                 view.setVideoGravity(video_gravity(gravity));
@@ -1611,10 +1680,8 @@ mod platform {
         /// Installs the controller as a child of the nearest view controller
         /// up the responder chain.
         ///
-        /// # Panics
-        ///
-        /// When the surface is mounted outside a `UIViewController`
-        /// hierarchy — the same contract the previous implementation had.
+        /// A surface mounted outside a `UIViewController` hierarchy breaks the
+        /// contract: it is reported and the controller is not attached.
         pub fn attach_to_parent_controller(&self) {
             // SAFETY: `parent`/`addChildViewController:` are the standard
             // containment messages on `UIViewController`.
@@ -1631,7 +1698,10 @@ mod platform {
             };
             let parent = loop {
                 let Some(current) = responder else {
-                    panic!("video player was attached outside a UIViewController hierarchy");
+                    waterui_contract::contract_violation!(
+                        "video player was attached outside a UIViewController hierarchy; the controller is not attached"
+                    );
+                    return;
                 };
                 // A view controller's own view answers its controller as the
                 // next responder, so the walk reaches `controller` itself
@@ -1673,5 +1743,7 @@ mod platform {
     }
 }
 
+#[cfg(target_os = "macos")]
+pub use platform::PlayerContentView;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 pub use platform::PlayerView;

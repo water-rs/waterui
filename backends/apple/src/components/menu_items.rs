@@ -57,12 +57,12 @@ pub(super) fn collect_item_watchers(
                     })));
                 }
                 let resync = Rc::clone(resync);
-                watchers.push(Box::new(command.label.content.watch(move |wctx| {
+                watchers.push(Box::new(command.label.content().watch(move |wctx| {
                     resync(wctx.metadata());
                 })));
             }
             ResolvedMenuItem::Menu(submenu) => {
-                watchers.push(Box::new(submenu.label.content.watch({
+                watchers.push(Box::new(submenu.label.content().watch({
                     let resync = Rc::clone(resync);
                     move |wctx| {
                         resync(wctx.metadata());
@@ -90,12 +90,12 @@ fn kit_command(command: &ResolvedCommand) -> KitCommand {
         waterui_apple_menu::shortcut_parts,
     );
     KitCommand {
-        label: item_title(&command.label.content.snapshot()),
+        label: item_title(&command.label.content().snapshot()),
         subtitle: command.subtitle.as_ref().map(ToString::to_string),
         symbol: command
             .icon
             .as_ref()
-            .map(|icon| String::from(icon.name.as_str())),
+            .map(|icon| String::from(icon.name().as_str())),
         destructive: matches!(command.role, CommandRole::Destructive),
         enabled: !command.disabled.snapshot(),
         selected: command.selected.snapshot(),
@@ -120,7 +120,7 @@ pub(super) fn tree_nodes(items: &[ResolvedMenuItem], env: &Environment) -> Vec<M
                 nodes.push(MenuTreeNode::Command(
                     kit_command(command),
                     Rc::new(move || {
-                        action.call(&env);
+                        action.run(&env);
                     }),
                 ));
             }
@@ -136,11 +136,11 @@ pub(super) fn tree_nodes(items: &[ResolvedMenuItem], env: &Environment) -> Vec<M
             }
             ResolvedMenuItem::Menu(submenu) => nodes.push(MenuTreeNode::Submenu(
                 KitCommand {
-                    label: item_title(&submenu.label.content.snapshot()),
+                    label: item_title(&submenu.label.content().snapshot()),
                     symbol: submenu
                         .icon
                         .as_ref()
-                        .map(|icon| String::from(icon.name.as_str())),
+                        .map(|icon| String::from(icon.name().as_str())),
                     // A submenu is a container: always activatable, like
                     // the `NSMenuItem`/`UIMenu` the canonical paths build.
                     enabled: true,
@@ -180,7 +180,7 @@ fn command_item(
     let action = command.action.clone();
     let env = env.clone();
     item.with_action(move || {
-        action.call(&env);
+        action.run(&env);
     })
 }
 
@@ -207,12 +207,12 @@ pub(super) fn append_items(
                 ));
             }
             ResolvedMenuItem::Menu(submenu) => {
-                let title = item_title(&submenu.label.content.snapshot());
+                let title = item_title(&submenu.label.content().snapshot());
                 let nested = platform::Menu::new(mtm, &title);
                 append_items(mtm, &nested, &submenu.items.snapshot(), env);
                 let mut item = platform::MenuItem::new(mtm, &title, None, "");
                 if let Some(icon) = &submenu.icon {
-                    item = item.with_icon(icon.name.as_str());
+                    item = item.with_icon(icon.name().as_str());
                 }
                 menu.add_item(item.with_submenu(&nested));
             }
@@ -284,17 +284,17 @@ fn menu_elements(
                 let env = env.clone();
                 Some(platform::MenuElement::Action(
                     platform::MenuAction::command(mtm, key_commands, &kit, move || {
-                        action.call(&env);
+                        action.run(&env);
                     }),
                 ))
             }
             ResolvedMenuItem::Menu(submenu) => {
-                let title = item_title(&submenu.label.content.snapshot());
+                let title = item_title(&submenu.label.content().snapshot());
                 Some(platform::MenuElement::Submenu(build_menu(
                     mtm,
                     key_commands,
                     &title,
-                    submenu.icon.as_ref().map(|icon| icon.name.as_str()),
+                    submenu.icon.as_ref().map(|icon| icon.name().as_str()),
                     &submenu.items.snapshot(),
                     env,
                 )))

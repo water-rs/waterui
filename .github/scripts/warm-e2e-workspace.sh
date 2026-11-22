@@ -60,7 +60,7 @@ main() {
   # dependencies compile once per VM however many checkouts build them.
   export RUSTC_WRAPPER="${RUSTC_WRAPPER:-sccache}"
   export PATH="${HOME}/.cargo/bin:${PATH}"
-  cargo install --path "${waterui_dir}/cli" --locked --force
+  cargo install --timings --path "${waterui_dir}/cli" --locked --force
 
   local -a examples=("$@")
   if (( ${#examples[@]} == 0 )); then
@@ -101,7 +101,7 @@ main() {
   done
 }
 
-# Sync one support checkout. A checkout that already contains origin/dev is a
+# Sync one support checkout. A checkout that already contains origin/main is a
 # head under test — a session's fetched branch or a commit on top of the
 # baseline — and is kept so the warm build exercises exactly that head;
 # anything else (stale, diverged, or a fresh clone's default branch) is reset
@@ -126,8 +126,8 @@ sync_repo() {
     echo "error: ${dir} has uncommitted changes; refusing to touch it" >&2
     return 1
   fi
-  if ! git -C "${dir}" merge-base --is-ancestor origin/dev HEAD; then
-    git -C "${dir}" checkout --detach origin/dev
+  if ! git -C "${dir}" merge-base --is-ancestor origin/main HEAD; then
+    git -C "${dir}" checkout --detach origin/main
   fi
 }
 

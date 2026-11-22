@@ -15,8 +15,17 @@ import framework_manifest
 
 ROOT = Path(__file__).resolve().parents[2]
 FRAMEWORK = tomllib.loads((ROOT / "Cargo.toml").read_text())
-WORKSPACE = FRAMEWORK["workspace"]["dependencies"]
 SCAFFOLD_PACKAGES = FRAMEWORK["package"]["metadata"]["waterui"]["scaffold-packages"]
+
+
+def requirements(framework):
+    """Each scaffold package's requirement: its `scaffold-pins` entry, else
+    its `[workspace.dependencies]` one."""
+    metadata = framework["package"]["metadata"]["waterui"]
+    return {**framework["workspace"]["dependencies"], **metadata.get("scaffold-pins", {})}
+
+
+WORKSPACE = requirements(FRAMEWORK)
 
 
 def git_pinned(name):
@@ -32,7 +41,7 @@ def test_every_git_pinned_scaffold_package_pins_an_immutable_revision():
             revision = WORKSPACE[name]["rev"]
             assert len(revision) == 40 and all(
                 character in "0123456789abcdefABCDEF" for character in revision
-            ), f"workspace.dependencies.{name} must pin a full commit hash"
+            ), f"scaffold requirement {name} must pin a full commit hash"
 
 
 def requirement_version(dependency):
@@ -43,7 +52,7 @@ def with_git_pin(framework, name):
     """`framework` with scaffold package `name` pinned to a git revision — the
     shape a not-yet-published package has between releases."""
     pinned = copy.deepcopy(framework)
-    pinned["workspace"]["dependencies"][name] = {
+    pinned["package"]["metadata"]["waterui"].setdefault("scaffold-pins", {})[name] = {
         "version": requirement_version(WORKSPACE[name]),
         "git": f"https://github.com/water-rs/{name}",
         "rev": "0123456789abcdef0123456789abcdef01234567",
@@ -103,7 +112,7 @@ def test_stable_withholds_git_pinned_packages_from_the_scaffold_table():
     assert not any(key.startswith(f"{name}-") for key in scaffold), (
         f"stable must not scaffold git-pinned {name}"
     )
-    pinned_dependencies = pinned["workspace"]["dependencies"]
+    pinned_dependencies = requirements(pinned)
     assert experimental == {
         package: {
             "version": pinned_dependencies[package]["version"],
@@ -121,7 +130,7 @@ def test_stable_withholds_git_pinned_packages_from_the_scaffold_table():
 def test_nightly_carries_git_pinned_packages_in_the_scaffold_table():
     name = SCAFFOLD_PACKAGES[-1]
     pinned = with_git_pin(FRAMEWORK, name)
-    dependency = pinned["workspace"]["dependencies"][name]
+    dependency = requirements(pinned)[name]
 
     scaffold, experimental = framework_manifest.channel_scaffold(pinned, "nightly")
 
@@ -137,16 +146,16 @@ def test_nami_pinned_backends_are_git_pinned_scaffold_packages():
     published `waterui-gtk`/`waterui-winui` cannot satisfy —
     their releases still require the nami line that kept `Signal::get`
     (nami#26). Until each backend releases a migrated version, its
-    `[workspace.dependencies]` requirement pins the nami-migration head, so
+    `scaffold-pins` requirement pins the nami-migration head, so
     `dev` and `nightly` scaffold that commit and `stable` withholds the
     package under `experimental-packages`. Drop this test with the pins."""
     for name in ("waterui-gtk", "waterui-winui"):
         assert git_pinned(name), (
-            f"[workspace.dependencies].{name} must pin its nami-migration head"
+            f"scaffold-pins.{name} must pin its nami-migration head"
         )
         dependency = WORKSPACE[name]
         rev = dependency.get("rev", "")
         assert len(rev) == 40 and all(c in "0123456789abcdef" for c in rev), (
-            f"[workspace.dependencies].{name} must pin an immutable revision"
+            f"scaffold-pins.{name} must pin an immutable revision"
         )
         assert dependency["git"].startswith("https://github.com/water-rs/")

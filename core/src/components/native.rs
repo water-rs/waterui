@@ -2,21 +2,22 @@
 
 use core::any::type_name;
 
-use crate::{AnyView, Environment, View, layout::StretchAxis};
+use crate::backend::Backend;
+use crate::{Environment, View, layout::StretchAxis};
 
 /// A wrapper for platform-specific native UI components.
 ///
 /// `Native<T>` allows embedding platform-specific UI elements within the view hierarchy.
 /// The generic parameter `T` represents the platform-specific component type.
 ///
-/// # Panics
+/// # Contract
 ///
-/// Attempting to render a `Native<T>` view directly will panic. This type is intended
-/// to be handled by platform-specific rendering backends.
+/// Every backend realizes every native component it can receive: a backend
+/// built on `waterui-backend-core` implements each one. `body` is therefore
+/// unreachable, and reaching it panics.
 #[derive(Debug)]
 pub struct Native<T: NativeView> {
     native: T,
-    fallback: Option<AnyView>,
 }
 
 impl<T: NativeView> Native<T> {
@@ -26,20 +27,7 @@ impl<T: NativeView> Native<T> {
     ///
     /// * `native` - The platform-specific native UI component to wrap.
     pub const fn new(native: T) -> Self {
-        Self {
-            native,
-            fallback: None,
-        }
-    }
-
-    /// Sets a fallback view to be used if the native view cannot be rendered.
-    ///
-    /// # Arguments
-    /// * `fallback` - The fallback view to display.
-    #[must_use]
-    pub fn with_fallback(mut self, fallback: impl View) -> Self {
-        self.fallback = Some(AnyView::new(fallback));
-        self
+        Self { native }
     }
 
     /// Consumes the wrapper and returns the inner native component.
@@ -62,13 +50,21 @@ impl<T: NativeView> Native<T> {
 
 impl<T: 'static + NativeView> View for Native<T> {
     fn body(self, _env: &Environment) -> impl View {
-        self.fallback
-            .unwrap_or_else(|| panic!("Native view ({})", type_name::<T>()))
+        never_expands::<T>();
     }
 
-    fn stretch_axis(&self) -> StretchAxis {
-        NativeView::stretch_axis(&self.native)
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        backend.native(self.native, env, cx)
     }
+}
+
+/// Panics: a native view never expands, because every backend realizes every
+/// native component.
+fn never_expands<T>() {
+    unreachable!(
+        "native view {} reached `body`: every backend realizes every native component",
+        type_name::<T>()
+    );
 }
 
 /// A trait for all views handled by the native backend.
@@ -82,5 +78,21 @@ pub trait NativeView {
     /// Which axis (or axes) this view stretches to fill available space.
     fn stretch_axis(&self) -> StretchAxis {
         StretchAxis::None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::AnyView;
+
+    struct Probe;
+    impl NativeView for Probe {}
+
+    #[test]
+    #[should_panic(expected = "reached `body`")]
+    fn a_native_view_never_expands() {
+        let _ = AnyView::new(Native::new(Probe).body(&Environment::new()));
     }
 }

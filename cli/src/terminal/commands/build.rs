@@ -1,6 +1,6 @@
 //! `water build` command implementation.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{Args as ClapArgs, ValueEnum};
 use eyre::{Result, bail};
@@ -72,6 +72,9 @@ impl TargetArch {
     reason = "every boolean is a documented --flag, not structural state — the shape follows the CLI surface"
 )]
 pub struct Args {
+    #[command(flatten)]
+    features: super::FeatureArgs,
+
     /// Target platform to build for.
     #[arg(short, long, value_enum)]
     platform: TargetPlatform,
@@ -141,15 +144,21 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
         args.release,
     );
 
-    if context.project.manifest().package.embedded {
+    if context.project.manifest().package().embedded() {
         // The embedded build's toolchain check and XCFramework packaging futures cross
         // clippy's `large_futures` threshold (16 KiB) on Windows, so the future
         // is pinned on the heap instead of the caller's stack.
         return Box::pin(run_embedded_build(shell, &args, &context)).await;
     }
 
-    let kotlin_toolchain =
-        check_build_toolchain(shell, args.platform, context.backend, args.arch).await?;
+    let kotlin_toolchain = check_build_toolchain(
+        shell,
+        context.project.root(),
+        args.platform,
+        context.backend,
+        args.arch,
+    )
+    .await?;
     let result = Box::pin(execute_build(
         shell,
         &args,
@@ -208,14 +217,14 @@ async fn run_embedded_build(shell: &Shell, args: &Args, context: &BuildContext) 
 
     match result {
         Ok(artifact) => {
-            let library = &artifact.library;
+            let library = artifact.library();
             success!(
                 shell,
                 "Embedded artifact at {}",
-                artifact.aar_path.display()
+                artifact.aar_path().display()
             );
             success!(shell, "Published to mavenLocal as {}", library.coordinate());
-            for host_coordinate in &library.host_coordinates {
+            for host_coordinate in library.host_coordinates() {
                 line!(shell, "    published {}", host_coordinate);
             }
             line!(shell, "In the host Gradle project, add:");
@@ -228,7 +237,7 @@ async fn run_embedded_build(shell: &Shell, args: &Args, context: &BuildContext) 
             line!(
                 shell,
                 "then mount the WaterUI root with `WaterUi` (in `{}.waterui`):",
-                library.group
+                library.group()
             );
             line!(
                 shell,
@@ -237,8 +246,8 @@ async fn run_embedded_build(shell: &Shell, args: &Args, context: &BuildContext) 
             line!(
                 shell,
                 "The host app needs compileSdk {} and minSdk {} or higher.",
-                library.compile_sdk,
-                library.min_sdk
+                library.compile_sdk(),
+                library.min_sdk()
             );
             line!(
                 shell,
@@ -274,7 +283,7 @@ async fn run_embedded_apple_build(
     success!(
         shell,
         "Embedded Swift package at {}",
-        artifact.package_path.display()
+        artifact.package_path().display()
     );
     line!(
         shell,
@@ -362,7 +371,8 @@ async fn build_options(shell: &Shell, args: &Args, backend: TargetBackend) -> Bu
             || BuildOptions::development(profile),
             |output_dir| BuildOptions::development(profile).with_output_dir(output_dir),
         )
-        .with_progress(shell.build_progress());
+        .with_progress(shell.build_progress())
+        .with_features(args.features.values());
 
     // `--release` is the shipped artifact, not a development unit: the shared
     // `waterui-dylib` runtime exists so `water run`/preview/mcp can reuse one
@@ -404,6 +414,7 @@ fn print_build_header(
 
 async fn check_build_toolchain(
     shell: &Shell,
+    project_root: &Path,
     platform: TargetPlatform,
     backend: TargetBackend,
     arch: Option<TargetArch>,
@@ -411,6 +422,7 @@ async fn check_build_toolchain(
     let spinner = shell.spinner("Checking toolchain...");
     let kotlin_toolchain = check_toolchain_for_backend(
         &waterui_cli::toolchain::Host::current(),
+        project_root,
         platform,
         backend,
         arch,
@@ -539,6 +551,7 @@ fn validate_output_dir_args(
 
 async fn check_toolchain_for_backend(
     host: &waterui_cli::toolchain::Host,
+    project_root: &Path,
     platform: TargetPlatform,
     backend: TargetBackend,
     arch: Option<TargetArch>,
@@ -559,7 +572,7 @@ async fn check_toolchain_for_backend(
             if platform != TargetPlatform::Linux {
                 bail!("Internal error: GTK4 backend is not supported on {platform:?}");
             }
-            toolchain_checks::check_gtk4(host).await?;
+            toolchain_checks::check_gtk4(host, project_root).await?;
         }
         TargetBackend::Hydrolysis => {
             if platform == TargetPlatform::Android {
@@ -582,6 +595,7 @@ async fn check_toolchain_for_backend(
             if let Some(sdk) = sdk {
                 toolchain_checks::check_apple(host, sdk).await?;
             }
+            toolchain_checks::check_hydrolysis(host, project_root).await?;
         }
         TargetBackend::WinUi => {
             if platform != TargetPlatform::Windows {

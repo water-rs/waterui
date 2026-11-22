@@ -4,8 +4,8 @@
 usage:
     run-with-deadline.py deadline --seconds N
     run-with-deadline.py remaining --deadline-at T [--at-least S]
-    run-with-deadline.py run --deadline-at T --receipt PATH --label NAME \
-        [--max-seconds S] -- argv...
+    run-with-deadline.py run [--deadline-at T] [--max-seconds S] \
+        --receipt PATH --label NAME -- argv...    (at least one of T, S)
 
 `deadline` prints an absolute deadline on the system-wide CLOCK_MONOTONIC
 clock — the one epoch every process on the host reads identically, so a
@@ -22,7 +22,9 @@ bounds the command separately inside the shared deadline: the child is
 killed after S seconds even while budget remains — the receipt's `bound`
 field records whether the kill came from the shared `deadline` or the
 command's own `scoped` bound, so a hung command is distinguishable from
-ordinary budget exhaustion.
+ordinary budget exhaustion. Given alone, `--max-seconds` is the whole deadline,
+counted from the supervisor's own start (the receipt's `deadline_at` is that
+effective deadline and a kill reports bound "scoped").
 
 The deadline rides clock_gettime(CLOCK_MONOTONIC), not time.monotonic():
 the Python documentation only guarantees monotonic() is "the same for all
@@ -134,9 +136,18 @@ def _cmd_run(args: argparse.Namespace) -> int:
     if not argv:
         logging.error("run requires a command after --")
         return 2
+    if args.deadline_at is None and args.max_seconds is None:
+        logging.error("run requires --deadline-at, --max-seconds, or both")
+        return 2
     started_at = _iso_now()
     started_mono = _clock()
-    remaining = args.deadline_at - started_mono
+    # Without a shared deadline the command's own bound is the whole budget,
+    # counted from this process's start — so a caller never has to compute a
+    # deadline in an earlier process that the start-up of this one can eat.
+    scoped_only = args.deadline_at is None
+    deadline_at = (
+        started_mono + args.max_seconds if scoped_only else args.deadline_at)
+    remaining = deadline_at - started_mono
     bound_hit = None
 
     def finish(status, pid, returncode, timed_out):
@@ -146,7 +157,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
             Receipt(
                 label=args.label,
                 argv=argv,
-                deadline_at=args.deadline_at,
+                deadline_at=deadline_at,
                 remaining_at_start_s=round(remaining, 6),
                 started_at=started_at,
                 ended_at=_iso_now(),
@@ -198,7 +209,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
                     "label": args.label,
                     "argv": argv,
                     "pid": proc.pid,
-                    "deadline_at": args.deadline_at,
+                    "deadline_at": deadline_at,
                     "remaining_at_start_s": round(remaining, 6),
                     "started_at": started_at,
                 },
@@ -210,8 +221,9 @@ def _cmd_run(args: argparse.Namespace) -> int:
             proc.wait(timeout=wait_seconds)
         except subprocess.TimeoutExpired:
             timed_out = True
-            bound_hit = "deadline" if args.max_seconds is None or \
-                args.max_seconds >= remaining else "scoped"
+            bound_hit = "scoped" if scoped_only else (
+                "deadline" if args.max_seconds is None or
+                args.max_seconds >= remaining else "scoped")
             # Only the owned child is signalled — no process-group kill, so a
             # CoreSimulator service or any sibling the tool spawned is
             # untouched. Popen's signal/wait methods already absorb a child
@@ -265,8 +277,9 @@ def main() -> None:
     run = sub.add_parser(
         "run", help="run argv under the shared deadline, recording a receipt")
     run.add_argument(
-        "--deadline-at", type=float, required=True,
-        help="absolute deadline on the CLOCK_MONOTONIC clock")
+        "--deadline-at", type=float, default=None,
+        help="absolute deadline on the CLOCK_MONOTONIC clock; optional when "
+             "--max-seconds is given")
     run.add_argument(
         "--receipt", required=True, metavar="PATH",
         help="JSONL file each invocation appends its receipt to")
@@ -277,7 +290,9 @@ def main() -> None:
         "--max-seconds", type=float, default=None, metavar="S",
         help="bound this command inside the shared deadline: a child still "
              "running after S seconds is killed as hung — reported "
-             "distinctly from shared-budget exhaustion on the receipt")
+             "distinctly from shared-budget exhaustion on the receipt. "
+             "Without --deadline-at the bound counts from this process's "
+             "start and is the only deadline")
     run.add_argument(
         "--child-stderr-file", metavar="PATH", default=None,
         help="write the child's stderr to PATH instead of inheriting it; "

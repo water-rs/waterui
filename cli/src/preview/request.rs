@@ -6,6 +6,7 @@
 //! overrides — and resolve them through the functions here, so the two can
 //! never drift apart.
 
+use std::path::Path;
 use std::time::Duration;
 
 use clap::ValueEnum;
@@ -150,24 +151,90 @@ impl PreviewTarget {
 /// A fully resolved preview render, ready to hand to the Hydrolysis or
 /// Apple execution path.
 #[derive(Debug, Clone, PartialEq)]
-#[non_exhaustive]
 pub struct PreviewRequest {
     /// Resolved target platform.
-    pub platform: CliPreviewPlatform,
+    platform: CliPreviewPlatform,
     /// Resolved rendering backend and the target it builds for or serves.
-    pub backend: ResolvedPreviewBackend,
+    backend: ResolvedPreviewBackend,
     /// Hydrolysis theme package — `Some` iff `backend` is
     /// [`ResolvedPreviewBackend::Hydrolysis`].
-    pub hydrolysis_theme: Option<HydrolysisPreviewTheme>,
+    hydrolysis_theme: Option<HydrolysisPreviewTheme>,
     /// What to render.
-    pub target: PreviewTarget,
+    target: PreviewTarget,
     /// Frame width in logical units.
-    pub width: f32,
+    width: f32,
     /// Frame height in logical units.
-    pub height: f32,
+    height: f32,
     /// How long a capture waits for the content its views owe — a decoding
     /// image, a `Suspense` future — before the preview fails naming them.
-    pub content_deadline: Duration,
+    content_deadline: Duration,
+}
+impl PreviewRequest {
+    /// A `PreviewRequest` carrying each of its fields.
+    #[must_use]
+    pub const fn new(
+        platform: CliPreviewPlatform,
+        backend: ResolvedPreviewBackend,
+        hydrolysis_theme: Option<HydrolysisPreviewTheme>,
+        target: PreviewTarget,
+        width: f32,
+        height: f32,
+        content_deadline: Duration,
+    ) -> Self {
+        Self {
+            platform,
+            backend,
+            hydrolysis_theme,
+            target,
+            width,
+            height,
+            content_deadline,
+        }
+    }
+
+    /// Resolved target platform.
+    #[must_use]
+    pub const fn platform(&self) -> CliPreviewPlatform {
+        self.platform
+    }
+
+    /// Resolved rendering backend and the target it builds for or serves.
+    #[must_use]
+    pub const fn backend(&self) -> ResolvedPreviewBackend {
+        self.backend
+    }
+
+    /// Hydrolysis theme package — `Some` iff `backend` is
+    /// [`ResolvedPreviewBackend::Hydrolysis`].
+    #[must_use]
+    pub const fn hydrolysis_theme(&self) -> Option<HydrolysisPreviewTheme> {
+        self.hydrolysis_theme
+    }
+
+    /// What to render.
+    #[must_use]
+    pub const fn target(&self) -> &PreviewTarget {
+        &self.target
+    }
+
+    /// Frame width in logical units.
+    #[must_use]
+    pub const fn width(&self) -> f32 {
+        self.width
+    }
+
+    /// Frame height in logical units.
+    #[must_use]
+    pub const fn height(&self) -> f32 {
+        self.height
+    }
+
+    /// How long a capture waits for the content its views owe — a decoding
+    /// image, a `Suspense` future — before the preview fails naming them.
+    #[must_use]
+    pub const fn content_deadline(&self) -> Duration {
+        self.content_deadline
+    }
 }
 
 /// Parse a content timeout given in seconds — how long a capture waits for
@@ -399,17 +466,19 @@ pub fn resolve_hydrolysis_preview_theme(
 /// Returns an error if a required toolchain component is missing.
 pub async fn check_toolchain_for_backend(
     host: &crate::toolchain::Host,
+    project_root: &Path,
     backend: ResolvedPreviewBackend,
 ) -> Result<Option<crate::android::KotlinToolchain>> {
     match backend {
-        ResolvedPreviewBackend::Apple(platform) => {
-            toolchain_checks::check_apple_preview(host, platform).await?;
-        }
+        // Cargo validates the Apple SDK and target while building. Diagnose
+        // missing tools if that build fails, rather than launch SDK probes
+        // before every successful no-op preview.
+        ResolvedPreviewBackend::Apple(_) => {}
         ResolvedPreviewBackend::Hydrolysis(TargetPlatform::Android) => {
             return toolchain_checks::check_android_run(host).await.map(Some);
         }
         ResolvedPreviewBackend::Hydrolysis(_) => {
-            toolchain_checks::check_hydrolysis(host).await?;
+            toolchain_checks::check_hydrolysis(host, project_root).await?;
         }
     }
     Ok(None)
@@ -420,14 +489,12 @@ mod tests {
     #[test]
     fn preview_declarations_conflicts_and_unsupported_defaults() {
         let mut project = project_manifest();
-        project.platforms.clear();
+        project.set_platforms(std::collections::BTreeMap::new());
         assert!(resolve_preview_backend(&project, CliPreviewPlatform::Linux, None).is_err());
-        project.platforms.insert(
+        project.set_platforms(std::collections::BTreeMap::from([(
             crate::project::PlatformName::Macos,
-            crate::project::PlatformConfig {
-                backend: TargetBackend::Hydrolysis,
-            },
-        );
+            crate::project::PlatformConfig::new(TargetBackend::Hydrolysis),
+        )]));
         assert_eq!(
             resolve_preview_backend(&project, CliPreviewPlatform::Macos, None).unwrap(),
             ResolvedPreviewBackend::Hydrolysis(TargetPlatform::MacOS)
@@ -621,7 +688,6 @@ mod tests {
         use crate::android::platform::{AndroidAbi, resolve_android_build_context};
         use crate::toolchain::testing::TestMachine;
         use std::ffi::OsString;
-        use std::path::Path;
 
         // The NDK host tag the build context resolves on the unix hosts the
         // CLI supports (Apple support is ARM64-only).
@@ -681,6 +747,7 @@ mod tests {
             // resolution the launcher's cargo build performs.
             let kotlin = check_toolchain_for_backend(
                 &host,
+                machine.root(),
                 ResolvedPreviewBackend::Hydrolysis(TargetPlatform::Android),
             )
             .await

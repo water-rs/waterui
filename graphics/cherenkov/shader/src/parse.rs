@@ -19,9 +19,23 @@ use crate::{
 #[non_exhaustive]
 pub struct Variant {
     /// The precision of colour values.
-    pub precision: Precision,
+    precision: Precision,
     /// Whether the source uses subgroup operations.
-    pub subgroups: bool,
+    subgroups: bool,
+}
+
+impl Variant {
+    /// The precision of colour values.
+    #[must_use]
+    pub const fn precision(&self) -> Precision {
+        self.precision
+    }
+
+    /// Whether the source uses subgroup operations.
+    #[must_use]
+    pub const fn subgroups(&self) -> bool {
+        self.subgroups
+    }
 }
 
 impl Variant {
@@ -125,12 +139,33 @@ impl<'a> SnippetSource<'a> {
 #[non_exhaustive]
 pub struct LibrarySource<'a> {
     /// The library's identity name.
-    pub name: &'a str,
+    name: &'a str,
     /// The `f32` source.
-    pub f32: &'a str,
+    f32: &'a str,
     /// The `f16` source. A snippet registering the library declares an
     /// `f16` variant only if the library has one.
-    pub f16: Option<&'a str>,
+    f16: Option<&'a str>,
+}
+
+impl<'a> LibrarySource<'a> {
+    /// The library's identity name.
+    #[must_use]
+    pub const fn name(&self) -> &'a str {
+        self.name
+    }
+
+    /// The `f32` source.
+    #[must_use]
+    pub const fn f32(&self) -> &'a str {
+        self.f32
+    }
+
+    /// The `f16` source. A snippet registering the library declares an
+    /// `f16` variant only if the library has one.
+    #[must_use]
+    pub const fn get_f16(&self) -> Option<&'a str> {
+        self.f16
+    }
 }
 
 impl<'a> LibrarySource<'a> {
@@ -812,7 +847,7 @@ fn read_params(module: &Module, inner: &TypeInner) -> Result<Vec<Param>, String>
             let ty = ParamType::from_inner(&module.types[member.ty].inner).ok_or_else(|| {
                 format!("parameter `{name}` must be f32, vec2<f32>, vec3<f32> or vec4<f32>")
             })?;
-            Ok(Param { name, ty })
+            Ok(Param::new(name, ty))
         })
         .collect()
 }

@@ -66,6 +66,18 @@ impl Rect {
             size: Size::new(width, height),
         }
     }
+
+    /// The rectangle moved by `by`: the frame a child laid out against a
+    /// region's own origin takes inside the region's parent space.
+    #[must_use]
+    pub const fn translated(self, by: Point) -> Self {
+        Self::new(
+            self.origin.x + by.x,
+            self.origin.y + by.y,
+            self.size.width,
+            self.size.height,
+        )
+    }
 }
 
 /// A size suggestion handed to a view's measure handler: each axis is either

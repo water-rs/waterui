@@ -2,29 +2,21 @@
 
 use std::path::PathBuf;
 
-use objc2_foundation::{NSBundle, NSString, NSURL};
+use objc2_foundation::{NSBundle, NSString};
+use waterui_contract::contract_violation;
 
 /// The directory holding the application's resources, when the process runs
-/// from a bundle that has one.
-///
-/// # Panics
-///
-/// If the bundle reports its resources at a location that is not a file
-/// path, which no bundle loaded from disk does.
+/// from a bundle that has one and reports its resources at a file path.
 #[must_use]
 pub fn resource_directory() -> Option<PathBuf> {
     NSBundle::mainBundle()
         .resourceURL()
-        .map(|url| file_path(&url))
+        .and_then(|url| url.to_file_path())
 }
 
 /// The path of the resource `name.extension` in the application bundle, or
-/// `None` when the bundle has no such resource.
-///
-/// # Panics
-///
-/// If the bundle reports the resource at a location that is not a file path,
-/// which no bundle loaded from disk does.
+/// `None` when the bundle has no such resource or reports it at a location
+/// that is not a file path.
 #[must_use]
 pub fn resource(name: &str, extension: &str) -> Option<PathBuf> {
     NSBundle::mainBundle()
@@ -32,7 +24,7 @@ pub fn resource(name: &str, extension: &str) -> Option<PathBuf> {
             Some(&NSString::from_str(name)),
             Some(&NSString::from_str(extension)),
         )
-        .map(|url| file_path(&url))
+        .and_then(|url| url.to_file_path())
 }
 
 /// The string the application's `Info.plist` holds under `key`, or `None`
@@ -41,20 +33,18 @@ pub fn resource(name: &str, extension: &str) -> Option<PathBuf> {
 /// Keys are looked up the way the system looks them up, so a localized
 /// `InfoPlist.strings` value takes precedence over the plist itself.
 ///
-/// # Panics
-///
-/// If the value under `key` is not a string: the bundle is then malformed for
-/// every reader that expects one.
+/// A value under `key` that is not a string is a malformed bundle, reported as
+/// a contract violation and answered as absent.
 #[must_use]
 pub fn info_string(key: &str) -> Option<String> {
     let value = NSBundle::mainBundle().objectForInfoDictionaryKey(&NSString::from_str(key))?;
-    let string = value.downcast::<NSString>().unwrap_or_else(|value| {
-        panic!("the Info.plist value under {key} is not a string: {value:?}")
-    });
-    Some(string.to_string())
-}
-
-fn file_path(url: &NSURL) -> PathBuf {
-    url.to_file_path()
-        .unwrap_or_else(|| panic!("the application bundle reported a non-file location: {url:?}"))
+    match value.downcast::<NSString>() {
+        Ok(string) => Some(string.to_string()),
+        Err(value) => {
+            contract_violation!(
+                "the Info.plist value under {key} is not a string: {value:?}; the key is treated as absent"
+            );
+            None
+        }
+    }
 }

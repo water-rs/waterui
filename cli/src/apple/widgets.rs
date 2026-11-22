@@ -48,20 +48,78 @@ use smol::stream::StreamExt as _;
 
 /// One `#[widget]` declaration paired with its export symbol.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct DeclaredWidget {
     /// The attributed function's name.
-    pub function: String,
+    function: String,
     /// The `WidgetConfiguration` kind string.
-    pub kind: String,
+    kind: String,
     /// The widget gallery title.
-    pub display_name: String,
+    display_name: String,
     /// The widget gallery subtitle.
-    pub description: String,
+    description: String,
     /// `WidgetFamily` case names the widget supports.
-    pub families: Vec<String>,
+    families: Vec<String>,
     /// The `waterui_widget_<crate>_<fn>` C symbol the extension calls.
-    pub symbol: String,
+    symbol: String,
+}
+
+impl DeclaredWidget {
+    /// One `#[widget]` declaration paired with the export `symbol` its
+    /// extension calls.
+    #[must_use]
+    pub const fn new(
+        function: String,
+        kind: String,
+        display_name: String,
+        description: String,
+        families: Vec<String>,
+        symbol: String,
+    ) -> Self {
+        Self {
+            function,
+            kind,
+            display_name,
+            description,
+            families,
+            symbol,
+        }
+    }
+
+    /// The attributed function's name.
+    #[must_use]
+    pub fn function(&self) -> &str {
+        &self.function
+    }
+
+    /// The `WidgetConfiguration` kind string.
+    #[must_use]
+    pub fn kind(&self) -> &str {
+        &self.kind
+    }
+
+    /// The widget gallery title.
+    #[must_use]
+    pub fn display_name(&self) -> &str {
+        &self.display_name
+    }
+
+    /// The widget gallery subtitle.
+    #[must_use]
+    pub fn description(&self) -> &str {
+        &self.description
+    }
+
+    /// `WidgetFamily` case names the widget supports.
+    #[must_use]
+    pub fn families(&self) -> &[String] {
+        &self.families
+    }
+
+    /// The `waterui_widget_<crate>_<fn>` C symbol the extension calls.
+    #[must_use]
+    pub fn symbol(&self) -> &str {
+        &self.symbol
+    }
 }
 
 /// One declared `#[widget_intent]` action — the record pairs its
@@ -115,12 +173,13 @@ pub fn declared_widgets(symbols: &ArtifactSymbols) -> eyre::Result<Vec<DeclaredW
         })?;
         let declaration: WidgetDeclaration = serde_json::from_slice(&payload)
             .wrap_err_with(|| format!("`{record}`'s widget declaration does not decode"))?;
+        let (function, kind, display_name, description, families) = declaration.into_parts();
         widgets.push(DeclaredWidget {
-            function: declaration.function,
-            kind: declaration.kind,
-            display_name: declaration.display_name,
-            description: declaration.description,
-            families: declaration.families,
+            function,
+            kind,
+            display_name,
+            description,
+            families,
             symbol: export,
         });
     }
@@ -274,9 +333,9 @@ pub async fn assemble_widget_extensions(
 
         let appex_name = format!("{product_name}Widgets");
         let appex_path =
-            plugins_dir(&layout.app_path, sdk_name).join(format!("{appex_name}.appex"));
+            plugins_dir(layout.app_path(), sdk_name).join(format!("{appex_name}.appex"));
         let appex_layout = AppleAppLayout::for_app(&appex_path, sdk_name);
-        fs::create_dir_all(&appex_layout.executable_dir).await?;
+        fs::create_dir_all(&appex_layout.executable_dir()).await?;
 
         let compiled = compile_extension(
             project,
@@ -565,12 +624,12 @@ async fn write_extension_info_plist(
     sdk_name: &str,
 ) -> eyre::Result<()> {
     let host_plist: plist::Value = plist::from_bytes(
-        &fs::read(&app_layout.info_plist_path)
+        &fs::read(app_layout.info_plist_path())
             .await
             .wrap_err_with(|| {
                 format!(
                     "the host app's Info.plist at {} does not read",
-                    app_layout.info_plist_path.display()
+                    app_layout.info_plist_path().display()
                 )
             })?,
     )
@@ -626,14 +685,14 @@ async fn write_extension_info_plist(
         plist::Value::Dictionary(extension),
     );
 
-    if let Some(parent) = appex_layout.info_plist_path.parent() {
+    if let Some(parent) = appex_layout.info_plist_path().parent() {
         fs::create_dir_all(parent).await?;
     }
     let mut serialized = Vec::new();
     plist::Value::Dictionary(dict)
         .to_writer_xml(&mut serialized)
         .wrap_err("failed to serialize the widget extension Info.plist")?;
-    fs::write(&appex_layout.info_plist_path, serialized).await?;
+    fs::write(appex_layout.info_plist_path(), serialized).await?;
     Ok(())
 }
 
@@ -660,20 +719,20 @@ async fn sign_widget_appex(
             },
             PackageAudience::Distribution => crate::macos_bundle::MacOsSigning::Distribution(
                 crate::macos_bundle::DistributionSigning::from_manifest(
-                    project.manifest().signing.macos.as_ref(),
+                    project.manifest().signing().macos(),
                     None,
                 )?,
             ),
         };
         let widget_id = AppleBundleIdentifier::try_from(widget_bundle_id.to_string())
             .map_err(eyre::Report::msg)?;
-        crate::macos_bundle::sign_macos_app(host, &appex_layout.app_path, &widget_id, &signing)
+        crate::macos_bundle::sign_macos_app(host, appex_layout.app_path(), &widget_id, &signing)
             .await?;
         return Ok(());
     }
 
     if platform.is_simulator() {
-        codesign_path(host, &appex_layout.app_path, "-", None, None).await?;
+        codesign_path(host, appex_layout.app_path(), "-", None, None).await?;
         return Ok(());
     }
 
@@ -686,13 +745,14 @@ async fn sign_widget_appex(
     // extension's `<app>.widgets` bundle identifier, and an empty
     // entitlement set — the extension declares no capabilities.
     let team = development_team_id(host).await?;
-    let request = crate::apple::provisioning::SigningRequest {
-        team: &team,
-        bundle_id: widget_bundle_id,
-        device_udid: options.device_udid(),
-        entitlements: &plist::Dictionary::new(),
+    let widget_entitlements = plist::Dictionary::new();
+    let request = crate::apple::provisioning::SigningRequest::new(
+        &team,
+        widget_bundle_id,
+        options.device_udid(),
+        &widget_entitlements,
         platform,
-    };
+    );
     app_bundle::sign_development_bundle(
         host,
         appex_layout,
@@ -780,7 +840,7 @@ mod tests {
         let staging = tempfile::tempdir().expect("staging dir");
         let host_path = staging.path().join("Host.app");
         let host_layout = AppleAppLayout::for_app(&host_path, "macosx");
-        std::fs::create_dir_all(host_layout.info_plist_path.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(host_layout.info_plist_path().parent().unwrap()).unwrap();
         let mut host = plist::Dictionary::new();
         host.insert(
             "CFBundleShortVersionString".to_string(),
@@ -791,13 +851,13 @@ mod tests {
             plist::Value::String("42".to_string()),
         );
         plist::Value::Dictionary(host)
-            .to_file_xml(&host_layout.info_plist_path)
+            .to_file_xml(host_layout.info_plist_path())
             .unwrap();
         let appex_layout = AppleAppLayout::for_app(
             &host_path.join("Contents/PlugIns/HostWidgets.appex"),
             "macosx",
         );
-        std::fs::create_dir_all(appex_layout.info_plist_path.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(appex_layout.info_plist_path().parent().unwrap()).unwrap();
         let bundle_id = AppleBundleIdentifier::try_from("dev.test.app".to_string())
             .expect("a valid bundle identifier");
         smol::block_on(write_extension_info_plist(
@@ -809,7 +869,7 @@ mod tests {
             "macosx",
         ))
         .expect("the extension plist writes");
-        let appex: plist::Value = plist::from_file(&appex_layout.info_plist_path).unwrap();
+        let appex: plist::Value = plist::from_file(appex_layout.info_plist_path()).unwrap();
         let dict = appex.as_dictionary().unwrap();
         assert_eq!(
             dict["CFBundleShortVersionString"].as_string().unwrap(),
@@ -1055,11 +1115,11 @@ async fn emit_app_intents_metadata(
             .expect("the file-list template always renders"),
     )
     .await?;
-    let resources_dir = appex_layout.resources_dir.clone();
+    let resources_dir = appex_layout.resources_dir().to_path_buf();
     fs::create_dir_all(&resources_dir).await?;
     let args: Vec<std::ffi::OsString> = vec![
         "--output".into(),
-        resources_dir.into_os_string(),
+        resources_dir.as_os_str().to_os_string(),
         "--toolchain-dir".into(),
         toolchain.clone().into_os_string(),
         "--module-name".into(),
@@ -1111,7 +1171,7 @@ async fn validate_app_intents_metadata(
         actions: std::collections::BTreeMap<String, NativeAction>,
     }
     let metadata_path = appex_layout
-        .resources_dir
+        .resources_dir()
         .join("Metadata.appintents")
         .join("extract.actionsdata");
     let catalog: NativeCatalog =
@@ -1234,7 +1294,7 @@ async fn rust_widget_link_arguments(
         // Development: the app companion is the staged shared-runtime
         // dylib; the extension resolves it through the bundle's Frameworks
         // directory at load time.
-        let app_dylib = app_layout.frameworks_dir.join("libwaterui_app.dylib");
+        let app_dylib = app_layout.frameworks_dir().join("libwaterui_app.dylib");
         if !app_dylib.is_file() {
             bail!(
                 "the shared-runtime app library {} was not staged before the widget extension linked",

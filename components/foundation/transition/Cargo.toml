@@ -1,0 +1,17 @@
+[package]
+name = "waterui-structural-transition"
+version = "0.5.1"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme = "../../../README.md"
+repository.workspace = true
+description = "Structural view transitions for WaterUI: insertion and removal effects and the retained removal contract"
+keywords = ["transition", "animation", "ui", "waterui"]
+categories = ["gui"]
+
+[dependencies]
+waterui-core = { workspace = true, default-features = false }
+
+[lints]
+workspace = true

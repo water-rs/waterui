@@ -26,6 +26,7 @@ use objc2_ui_kit::{
     UISplitViewController, UISplitViewControllerColumn, UISplitViewControllerDelegate,
     UISplitViewControllerStyle, UIView, UIViewController,
 };
+use waterui_contract::contract_violation;
 
 /// The per-column preferred width range.
 #[derive(Clone, Copy, Debug, Default)]
@@ -322,9 +323,13 @@ impl SplitController {
             if width <= 0.0 {
                 continue;
             }
-            setter.unwrap_or_else(|| {
-                panic!("UIKit declares no {bound} width property for split column {column:?}")
-            })(self, width);
+            let Some(setter) = setter else {
+                contract_violation!(
+                    "UIKit declares no {bound} width property for split column {column:?}; the width is not set"
+                );
+                continue;
+            };
+            setter(self, width);
         }
     }
 

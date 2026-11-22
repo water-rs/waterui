@@ -145,11 +145,9 @@ impl CargoTarget<'_> {
 /// The outcome of one Cargo invocation: the profile directory everything
 /// landed under and the artifact Cargo reported for the selected target.
 #[derive(Debug)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a build describes every field of the artifact it produced; a new field must fail every producer's build"
-)]
 pub struct BuiltTarget {
+    /// Build-script outputs reported by this Cargo invocation, including fresh units.
+    pub build_scripts: Vec<cargo_metadata::BuildScript>,
     /// Explicit Cargo features used for this invocation. Post-build metadata
     /// scans must resolve the same graph instead of inferring launcher features.
     pub features: Vec<String>,
@@ -655,6 +653,19 @@ impl RustDynamicLibraries {
             .map(|library| library.source.as_path())
     }
 
+    /// Source and destination files whose identities vouch for a prepared runtime.
+    pub(crate) fn staged_files(&self, destination: &Path) -> Vec<PathBuf> {
+        [&self.waterui, &self.standard_library]
+            .into_iter()
+            .flat_map(|library| {
+                [
+                    library.source.clone(),
+                    destination.join(&library.staged_name),
+                ]
+            })
+            .collect()
+    }
+
     /// Copy all required dynamic libraries into a runtime search directory.
     ///
     /// Staging goes through the reflinking copy so a shared runtime that every build
@@ -672,11 +683,17 @@ impl RustDynamicLibraries {
         // so the staged-copy cleanup must leave sources alone and the copy
         // must not rewrite a library over itself.
         let libraries = [&self.waterui, &self.standard_library];
-        let sources: Vec<PathBuf> = libraries
+        let mut retained: Vec<PathBuf> = libraries
             .iter()
             .map(|library| library.source.clone())
             .collect();
-        Self::remove_staged_except(destination, &self.triple, &sources).await?;
+        retained.extend(
+            libraries
+                .iter()
+                .map(|library| destination.join(&library.staged_name)),
+        );
+        retained.push(self.apple_canonical_waterui(destination));
+        Self::remove_staged_except(destination, &self.triple, &retained).await?;
         for library in &libraries {
             let staged = destination.join(&library.staged_name);
             if library.source == staged {
@@ -1207,6 +1224,7 @@ impl BuildProfile {
 /// Options for building Rust libraries.
 #[derive(Debug, Clone)]
 pub struct BuildOptions {
+    features: Vec<String>,
     profile: BuildProfile,
     output_dir: Option<std::path::PathBuf>,
     /// Optional path to sccache for compilation caching.
@@ -1236,6 +1254,7 @@ impl BuildOptions {
     pub fn development(profile: BuildProfile) -> Self {
         Self {
             profile,
+            features: Vec::new(),
             output_dir: None,
             sccache_path: None,
             target_triple: None,
@@ -1304,6 +1323,7 @@ impl BuildOptions {
     pub const fn packaging(profile: BuildProfile) -> Self {
         Self {
             profile,
+            features: Vec::new(),
             output_dir: None,
             sccache_path: None,
             target_triple: None,
@@ -1312,6 +1332,24 @@ impl BuildOptions {
             cargo_envs: Vec::new(),
             progress: None,
         }
+    }
+
+    /// Enable application Cargo features, preserving explicitly qualified dependencies.
+    #[must_use]
+    pub fn with_features(mut self, features: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.features.extend(features.into_iter().map(Into::into));
+        self
+    }
+
+    /// Features as seen from a generated backend crate's application dependency.
+    pub fn app_features(&self, project: &Project) -> impl Iterator<Item = String> {
+        self.features.iter().map(|feature| {
+            if feature.contains('/') {
+                feature.clone()
+            } else {
+                format!("{}/{feature}", project.crate_name())
+            }
+        })
     }
 
     /// Whether the build uses Cargo's `release` profile.
@@ -2076,6 +2114,7 @@ Automatic meson installation failed: {install_err}\n\n{}",
             None => None,
         };
         Ok(BuiltTarget {
+            build_scripts: cargo_messages(&output.stdout, "build-script-executed")?,
             features: self.features.clone(),
             profile_dir,
             artifact,
@@ -2259,7 +2298,7 @@ Automatic meson installation failed: {install_err}\n\n{}",
         let flags = config
             .rustflags(self.triple.to_string().as_str())
             .map_err(rustflags_resolution_error)?;
-        Ok(flags.map(|flags| flags.flags).unwrap_or_default())
+        Ok(flags.map_or_default(|flags| flags.flags))
     }
 
     /// `rustc` resolving to the toolchain the cargo invocation runs under:
@@ -2321,8 +2360,7 @@ Automatic meson installation failed: {install_err}\n\n{}",
         let framework = self.project.as_ref().and_then(|project| {
             project
                 .manifest()
-                .framework
-                .as_ref()
+                .framework()
                 .map(|framework| (project, framework))
         });
         if let Some((project, framework)) = framework {
@@ -2347,7 +2385,7 @@ Automatic meson installation failed: {install_err}\n\n{}",
         if let Some(project) = &self.project
             && let Some((key, value)) = crate::apple::platform::apple_deployment_target_env(
                 project.resolved_framework().await?,
-                &project.manifest().apple.deployment_targets,
+                project.manifest().apple().deployment_targets(),
                 &self.triple,
             )?
         {
@@ -2944,6 +2982,13 @@ fn canonical_manifest_path(crate_dir: &Path) -> Result<PathBuf, RustBuildError> 
 pub(crate) fn compiler_artifacts(
     stdout: &[u8],
 ) -> Result<Vec<cargo_metadata::Artifact>, RustBuildError> {
+    cargo_messages(stdout, "compiler-artifact")
+}
+
+fn cargo_messages<T: serde::de::DeserializeOwned>(
+    stdout: &[u8],
+    expected_reason: &str,
+) -> Result<Vec<T>, RustBuildError> {
     /// The one field that classifies a cargo message line.
     #[derive(serde::Deserialize)]
     struct Reason {
@@ -2963,21 +3008,20 @@ pub(crate) fn compiler_artifacts(
             RustBuildError::FailToBuildRustLibrary(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
-                    "cargo emitted a malformed `compiler-artifact` message on line {}: {error}\n{line}",
+                    "cargo emitted a malformed `{expected_reason}` message on line {}: {error}\n{line}",
                     index + 1
                 ),
             ))
         };
         match serde_json::from_str::<Reason>(line) {
-            Ok(Reason { reason }) if reason == "compiler-artifact" => {
-                let artifact =
-                    serde_json::from_str::<cargo_metadata::Artifact>(line).map_err(malformed)?;
+            Ok(Reason { reason }) if reason == expected_reason => {
+                let artifact = serde_json::from_str::<T>(line).map_err(malformed)?;
                 artifacts.push(artifact);
             }
             // A line that is not readable JSON cannot yield its `reason`
             // field; one that still names itself a `compiler-artifact`
             // carries an unreadable payload — the hard error, never a drop.
-            Err(error) if line.contains("\"reason\":\"compiler-artifact\"") => {
+            Err(error) if line.contains(expected_reason) => {
                 return Err(malformed(error));
             }
             Ok(_) | Err(_) => {}
@@ -3817,6 +3861,38 @@ mod tests {
     };
 
     #[test]
+    fn cargo_build_script_outputs_preserve_generated_sources() {
+        let message = serde_json::json!({
+            "reason": "build-script-executed",
+            "package_id": "path+file:///framework#hydrolysis@0.3.1",
+            "linked_libs": [], "linked_paths": [], "cfgs": [],
+            "env": [["WATERUI_HWUI_KOTLIN_DIR", "/target/build/hydrolysis/out/hwui-kotlin"]],
+            "out_dir": "/target/build/hydrolysis/out"
+        });
+        let bytes = serde_json::to_vec(&message).expect("Cargo message serializes");
+        let outputs =
+            super::cargo_messages::<cargo_metadata::BuildScript>(&bytes, "build-script-executed")
+                .expect("Cargo build-script output parses");
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(
+            outputs[0].env[0].1,
+            "/target/build/hydrolysis/out/hwui-kotlin"
+        );
+        assert_eq!(
+            super::compiler_artifacts(&bytes).expect("other messages are ignored"),
+            [] as [cargo_metadata::Artifact; 0]
+        );
+        let mut malformed = message;
+        malformed["env"] = serde_json::json!(42);
+        let error = super::cargo_messages::<cargo_metadata::BuildScript>(
+            &serde_json::to_vec(&malformed).expect("message serializes"),
+            "build-script-executed",
+        )
+        .expect_err("a malformed build-script report cannot be dropped");
+        assert!(error.to_string().contains("build-script-executed"));
+    }
+
+    #[test]
     fn cargo_timings_follow_the_truthy_environment_switch() {
         let cases = [
             (Some("1"), true),
@@ -3915,6 +3991,7 @@ mod tests {
 
         let profile_dir = temporary.path().join("target/debug");
         let error = BuiltTarget {
+            build_scripts: Vec::new(),
             features: Vec::new(),
             profile_dir: profile_dir.clone(),
             artifact: temporary.path().join("app"),
@@ -5233,6 +5310,32 @@ mod tests {
         }
     }
 
+    #[test]
+    fn staging_preserves_current_libraries_and_removes_superseded_ones() {
+        let temporary = tempdir().unwrap();
+        let source = temporary.path().join("libwaterui_dylib-current.dylib");
+        let standard = temporary.path().join("libstd-current.dylib");
+        std::fs::write(&source, b"runtime").unwrap();
+        std::fs::write(&standard, b"standard").unwrap();
+        let mut libraries = canonical_staging_libraries(source);
+        libraries.standard_library = super::StagedDynamicLibrary::reported(standard).unwrap();
+        let destination = temporary.path().join("dist");
+        smol::block_on(libraries.stage(&destination)).unwrap();
+        let staged = destination.join("libstd-current.dylib");
+        // An old destination mtime makes an unnecessary copy observable even
+        // on filesystems whose copying preserves the source's mtime.
+        let old = filetime::FileTime::from_unix_time(1_700_000_000, 0);
+        filetime::set_file_mtime(&staged, old).unwrap();
+        let stale = destination.join("libstd-stale.dylib");
+        std::fs::write(&stale, b"stale").unwrap();
+        smol::block_on(libraries.stage(&destination)).unwrap();
+        assert!(!stale.exists());
+        assert_eq!(
+            filetime::FileTime::from_last_modification_time(&std::fs::metadata(staged).unwrap()),
+            old
+        );
+    }
+
     fn dylib_bytes() -> Vec<u8> {
         (0_u32..25_000).flat_map(u32::to_le_bytes).collect()
     }
@@ -5769,21 +5872,15 @@ mod tests {
             let project = crate::project::Project::create(
                 &crate::toolchain::testing::real_toolchain_host(temporary.path()),
                 &root,
-                crate::project::CreateOptions {
-                    name: "Release App".to_string(),
-                    bundle_identifier:
-                        crate::project_model::project_types::BundleIdentifier::try_from(
-                            "dev.waterui.releaseapp",
-                        )
-                        .expect("bundle identifier"),
-                    waterui_path: Some(checkout),
-                    channel: None,
-                    framework_manifest: None,
-                    framework: None,
-                    framework_lock: None,
-                    author: String::new(),
-                    web: None,
-                },
+                crate::project::CreateOptions::new(
+                    "Release App".to_string(),
+                    crate::project_model::project_types::BundleIdentifier::try_from(
+                        "dev.waterui.releaseapp",
+                    )
+                    .expect("bundle identifier"),
+                    String::new(),
+                )
+                .with_waterui_path(Some(checkout)),
             )
             .await
             .expect("project creation must succeed");

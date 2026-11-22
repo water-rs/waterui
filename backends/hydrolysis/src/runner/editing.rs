@@ -35,42 +35,10 @@
 
 use std::ops::Range;
 
-use crate::platform::KeyCode;
 #[cfg(any(android_platform, test))]
 use crate::renderer::TextContextMenuAction;
 use crate::renderer::{FocusedEditorSnapshot, InteractionKey, SemanticCore};
 use crate::text::{TextLayout as _, TextPosition};
-
-/// Decodes the W3C `KeyboardEvent.key` value the Kotlin host's `w3cKey`
-/// reports for a `sendKeyEvent` key: the W3C logical key, and the legacy
-/// [`KeyCode`] derived from it. `w3cKey` resolves a character key with the
-/// Ctrl and Meta modifiers masked out of the lookup (Alt only when the
-/// layout maps no Alt character), so a chorded letter reports as the letter
-/// itself — the space bar stays the character `" "`, and a Ctrl+letter
-/// chord still matches on the logical key — while a dead key reports as
-/// `"Dead"`, not as its spacing accent.
-///
-/// # Panics
-///
-/// On a string that is no W3C key value: the host promises one.
-#[cfg(any(android_platform, test))]
-pub fn hardware_key(key: &str) -> (KeyCode, keyboard_types::Key) {
-    let logical_key: keyboard_types::Key = key.parse().unwrap_or_else(|_| {
-        panic!(
-            "the Android host reported the key `{key}`, which is not a W3C KeyboardEvent.key value"
-        )
-    });
-    (key_code(&logical_key), logical_key)
-}
-
-/// The legacy [`KeyCode`] a W3C logical key denotes — the identifier the
-/// renderer's key handlers match on.
-pub fn key_code(logical_key: &keyboard_types::Key) -> KeyCode {
-    match logical_key {
-        keyboard_types::Key::Character(character) => KeyCode::Character(character.clone()),
-        keyboard_types::Key::Named(named) => KeyCode::Named(named.to_string()),
-    }
-}
 
 /// `InputConnection.CURSOR_UPDATE_IMMEDIATE` — send the anchor info once.
 #[cfg(any(android_platform, test))]
@@ -780,8 +748,7 @@ impl EditingSession {
             || self.cursor_update_filter & CURSOR_UPDATE_FILTER_EDITOR_BOUNDS != 0;
         let want_text = self.cursor_update_filter == 0
             || self.cursor_update_filter & CURSOR_UPDATE_FILTER_EDITING_TEXT != 0;
-        let composing_text = (want_text && self.composing.is_some()).then(|| {
-            let comp = self.composing.as_ref().unwrap_or_else(|| unreachable!());
+        let composing_text = self.composing.as_ref().filter(|_| want_text).map(|comp| {
             self.text[utf16_to_byte(&self.text, comp.start)..utf16_to_byte(&self.text, comp.end)]
                 .to_string()
         });
@@ -1502,40 +1469,5 @@ mod tests {
         let filtered = session.anchor_info(&snapshot).expect("subscribed");
         assert_eq!(filtered.char_bounds, []);
         assert!(filtered.editor_bounds.is_none());
-    }
-
-    #[test]
-    fn hardware_keys_decode_to_their_w3c_values() {
-        use keyboard_types::{Key, NamedKey};
-        for (reported, code, logical) in [
-            (
-                " ",
-                KeyCode::Character(" ".into()),
-                Key::Character(" ".into()),
-            ),
-            (
-                "a",
-                KeyCode::Character("a".into()),
-                Key::Character("a".into()),
-            ),
-            (
-                "Enter",
-                KeyCode::Named("Enter".into()),
-                Key::Named(NamedKey::Enter),
-            ),
-            ("F5", KeyCode::Named("F5".into()), Key::Named(NamedKey::F5)),
-        ] {
-            assert_eq!(
-                super::hardware_key(reported),
-                (code, logical),
-                "`{reported}`"
-            );
-        }
-    }
-
-    #[test]
-    #[should_panic(expected = "not a W3C KeyboardEvent.key value")]
-    fn a_hardware_key_outside_the_w3c_vocabulary_panics() {
-        let _ = super::hardware_key("\n");
     }
 }

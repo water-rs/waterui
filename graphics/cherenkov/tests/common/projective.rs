@@ -75,7 +75,7 @@ impl<'e, B: Backend + ProjectiveLayers> Scene<'e, B> {
 
     fn render(&mut self) -> Result<Vec<[f32; 4]>, RenderError> {
         self.frame += 1;
-        self.engine.render(FrameTime::at(
+        self.engine.render(FrameTime::unpresented_at(
             self.start + Duration::from_millis(self.frame * 8),
         ))?;
         Ok(self.surface.readback().expect("readback").pixels)
@@ -308,7 +308,7 @@ pub fn limits_are_explicit_errors<B: Backend + ProjectiveLayers>(config: impl Fn
 
 /// Every byte the engine holds, on the device and on the host.
 fn resident<B: Backend + ProjectiveLayers>(engine: &Engine<B>) -> u64 {
-    let memory = engine.memory();
+    let memory = engine.memory().unwrap();
     memory.gpu.0 + memory.cpu.0
 }
 

@@ -160,7 +160,7 @@ fn unfiltered_member_samples_what_is_behind_it() {
     assert_pixel(pixel(&readback, 20, 12), [0.5, 0.5, 1.0, 1.0], 1e-5);
     // Outside the member's clip the surface is untouched.
     assert_pixel(pixel(&readback, 4, 4), [1.0, 0.0, 0.0, 1.0], 1e-5);
-    let memory = engine.memory();
+    let memory = engine.memory().unwrap();
     assert_eq!(memory.backdrop_capture_format, Some("linear-f32"));
 }
 
@@ -475,6 +475,84 @@ fn blurred_backdrop_matches_full_surface_blur_within_apron() {
     );
 }
 
+/// One readback row from a `Linear` group's member and one from an
+/// `SrgbEncoded` group's.
+type EdgeRows = (Vec<[f32; 4]>, Vec<[f32; 4]>);
+
+/// A black | white edge at x = 32 under two groups blurred at capture
+/// `scale`, a `Linear` one sampled by rows 2..14 and an `SrgbEncoded` one
+/// by rows 38..62, far enough below that the first member's sample, which
+/// the second group's capture holds, stays outside its blur: columns
+/// 16..48 of row 8 and row 50 of the readback.
+fn blurred_edge_rows(scale: f32) -> EdgeRows {
+    let engine = engine();
+    let surface = engine
+        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF32), || {})
+        .expect("surface");
+    let blur = || filtrate::filters::GaussianBlur::new(2.0f32);
+    let spec = cherenkov::BackdropSpec::from(cherenkov::CaptureScale::new(scale).expect("scale"));
+    let linear = surface.backdrop_group(blur(), spec);
+    let encoded =
+        surface.backdrop_group(blur(), spec.blend_space(cherenkov::BlendSpace::SrgbEncoded));
+    let (a, b) = (surface.layer(), surface.layer());
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                Rect::new(0.0, 0.0, 32.0, 64.0),
+                WorkingColor::new([0.0, 0.0, 0.0, 1.0]),
+            );
+            r.fill(
+                Rect::new(32.0, 0.0, 64.0, 64.0),
+                WorkingColor::new([1.0, 1.0, 1.0, 1.0]),
+            );
+        }));
+        tx[surface.root()].push(&a);
+        tx[surface.root()].push(&b);
+        tx[&a]
+            .clip(Rect::new(8.0, 2.0, 56.0, 14.0))
+            .backdrop(linear.sample());
+        tx[&b]
+            .clip(Rect::new(8.0, 38.0, 56.0, 62.0))
+            .backdrop(encoded.sample());
+    });
+    engine.render(FrameTime::now()).expect("render");
+    let readback = surface.readback().expect("readback");
+    let row = |y: usize| (16..48).map(|x| pixel(&readback, x, y)).collect();
+    (row(8), row(50))
+}
+
+/// An `SrgbEncoded` group averages encoded values: across a blurred
+/// black | white edge each of its pixels is the decoded mean of the
+/// encoded backdrop, with the linear group's weights — `decode(L)` for the
+/// linear group's `L` — at full and at reduced capture scale. The linear
+/// group still averages linear light, so pixels mirrored about the edge
+/// sum to white.
+#[test]
+fn an_encoded_group_blurs_in_the_encoded_space() {
+    for scale in [1.0, 0.5] {
+        let (linear, encoded) = blurred_edge_rows(scale);
+        // Columns 16..48: the edge lies between indices 15 and 16.
+        for k in 0..16 {
+            let sum = linear[15 - k][0] + linear[16 + k][0];
+            assert_close(&[sum], &[1.0]);
+        }
+        let expected: Vec<f64> = linear
+            .iter()
+            .flat_map(|p| {
+                let gray = cherenkov_oracle::color::srgb_decode(f64::from(p[0]));
+                [gray, gray, gray, 1.0]
+            })
+            .collect();
+        let actual: Vec<f64> = encoded.iter().flatten().copied().map(f64::from).collect();
+        assert_close(&actual, &expected);
+        // Two pixels into the black side the encoded mean is far darker.
+        assert!(
+            encoded[14][0] < linear[14][0] - 0.1,
+            "scale {scale}: {encoded:?}"
+        );
+    }
+}
+
 #[test]
 fn band_streamed_backdrop_matches_offscreen_byte_for_byte() {
     let engine = engine();
@@ -692,7 +770,7 @@ fn capture_memory_is_bounded_by_bands_not_capture_height() {
                 .backdrop(group.sample());
         });
         engine.render(FrameTime::now()).expect("render");
-        let memory = engine.memory();
+        let memory = engine.memory().unwrap();
         assert_eq!(memory.backdrop_capture_format, Some("linear-f32"));
         memory.backdrop_captures.0
     };
@@ -776,7 +854,7 @@ fn two_members_share_one_capture() {
     // Both members sample the one capture: the green surface behind them.
     assert_pixel(pixel(&readback, 4, 4), [0.0, 1.0, 0.0, 1.0], 1e-5);
     assert_pixel(pixel(&readback, 28, 4), [0.0, 1.0, 0.0, 1.0], 1e-5);
-    let memory = engine.memory();
+    let memory = engine.memory().unwrap();
     assert_eq!(memory.backdrop_capture_format, Some("linear-f32"));
     assert!(memory.backdrop_captures.0 > 0);
 }
@@ -1156,7 +1234,7 @@ fn a_bound_refraction_change_rerenders_the_member() {
     // red/blue boundary at 52, so red mixes in.
     let displaced = pixel(&readback, 54, 32);
     assert!(displaced[0] > 0.25, "displaced pixel {displaced:?}");
-    let captures = engine.memory().backdrop_captures;
+    let captures = engine.memory().unwrap().backdrop_captures;
 
     // Over a depth of 1 the pixel is past the rim: the unshifted blue.
     depth.set(1.0);
@@ -1165,7 +1243,7 @@ fn a_bound_refraction_change_rerenders_the_member() {
     assert_pixel(pixel(&readback, 54, 32), [0.0, 0.0, 1.0, 1.0], 1e-5);
     assert_pixel(pixel(&readback, 32, 32), [1.0, 0.0, 0.0, 1.0], 1e-5);
     assert_eq!(
-        engine.memory().backdrop_captures,
+        engine.memory().unwrap().backdrop_captures,
         captures,
         "the group keeps its capture"
     );
@@ -1405,7 +1483,7 @@ fn two_groups_anchored_at_one_layer_capture_the_same_canvas() {
     // Inside B1 and A2: A2 samples the same blue — not B1's
     // [0.5, 0.5, 1.0] composite — then 50% green over it.
     assert_pixel(pixel(&readback, 24, 24), [0.0, 0.5, 0.5, 1.0], 1e-5);
-    let memory = engine.memory();
+    let memory = engine.memory().unwrap();
     assert_eq!(memory.backdrop_capture_format, Some("linear-f32"));
     assert!(memory.backdrop_captures.0 > 0, "the anchored capture ran");
 }
@@ -2834,4 +2912,147 @@ fn a_member_inside_the_anchors_blended_child_is_unsupported() {
         ),
         "unexpected result {result:?}"
     );
+}
+
+/// The left half of a 64 × 64 surface red, the right half blue.
+fn red_and_blue(r: &mut cherenkov::Recorder) {
+    r.fill(
+        Rect::new(0.0, 0.0, 32.0, 64.0),
+        WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+    );
+    r.fill(
+        Rect::new(32.0, 0.0, 64.0, 64.0),
+        WorkingColor::new([0.0, 0.0, 1.0, 1.0]),
+    );
+}
+
+/// A layer over [`red_and_blue`] holding a green panel and a member of a
+/// blurring group, with the handles that keep them alive.
+struct FadedGlass {
+    layer: cherenkov::Layer,
+    _glass: cherenkov::Layer,
+    _group: cherenkov::BackdropGroup,
+}
+
+/// [`FadedGlass`] on `surface`, the layer at `fade`'s opacity; with no
+/// `fade` the layer is left out.
+fn faded_glass(surface: &cherenkov::Surface<Raster>, fade: Option<f32>) -> FadedGlass {
+    let group = surface.backdrop_group(
+        filtrate::filters::GaussianBlur::new(3.0f32),
+        cherenkov::CaptureScale::FULL,
+    );
+    let layer = surface.layer();
+    let glass = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(red_and_blue));
+        if let Some(opacity) = fade {
+            tx[surface.root()].push(&layer);
+            tx[&layer]
+                .opacity(opacity)
+                .push(&glass)
+                .content(surface.record(|r| {
+                    r.fill(
+                        Rect::new(4.0, 4.0, 60.0, 20.0),
+                        WorkingColor::new([0.0, 1.0, 0.0, 1.0]),
+                    );
+                }));
+            tx[&glass]
+                .clip(Rect::new(8.0, 24.0, 56.0, 56.0))
+                .backdrop(group.sample());
+        }
+    });
+    FadedGlass {
+        layer,
+        _glass: glass,
+        _group: group,
+    }
+}
+
+fn image(readback: cherenkov::Readback) -> F32Image {
+    F32Image {
+        width: readback.width,
+        height: readback.height,
+        pixels: readback.pixels,
+    }
+}
+
+/// A layer at opacity 0 draws nothing beneath it, its member's capture
+/// included, and shows again when its opacity rises — on a surface whose
+/// later frames repaint only what changed.
+#[test]
+fn a_layer_at_opacity_zero_skips_its_content_and_its_captures() {
+    let size = (64, 64);
+    let target = || Offscreen::new(size, OffscreenFormat::LinearF32);
+    let engine = engine();
+    let surface = engine.surface(target(), || {}).expect("surface");
+    let scene = faded_glass(&surface, Some(0.0));
+    for opacity in [0.0, 0.5, 0.0, 1.0] {
+        surface.update(|tx| {
+            tx[&scene.layer].opacity(opacity);
+        });
+        engine.render(FrameTime::now()).expect("render");
+        let draws = engine.stats().draws;
+        let actual = image(surface.readback().expect("readback"));
+        // The reference renders on an engine of its own, so its stats
+        // count its frame alone; at opacity 0 it has no faded layer.
+        let reference_engine = self::engine();
+        let reference = reference_engine.surface(target(), || {}).expect("surface");
+        let _reference = faded_glass(&reference, (opacity > 0.0).then_some(opacity));
+        reference_engine.render(FrameTime::now()).expect("render");
+        let expected = image(reference.readback().expect("readback"));
+        assert_images_match(&expected, &actual);
+        if opacity == 0.0 {
+            assert_eq!(
+                draws,
+                reference_engine.stats().draws,
+                "a hidden layer draws nothing"
+            );
+        }
+    }
+}
+
+/// A hidden member that is its group's capture point still captures for
+/// a later member that shows.
+#[test]
+fn a_hidden_capture_point_still_captures_for_a_shown_member() {
+    let size = (64, 64);
+    let build = |surface: &cherenkov::Surface<Raster>, hidden: bool| {
+        let group = surface.backdrop_group(
+            filtrate::filters::GaussianBlur::new(3.0f32),
+            cherenkov::CaptureScale::FULL,
+        );
+        let fade = surface.layer();
+        let first = surface.layer();
+        let second = surface.layer();
+        surface.update(|tx| {
+            tx[surface.root()].content(surface.record(red_and_blue));
+            if hidden {
+                tx[surface.root()].push(&fade);
+                tx[&fade].opacity(0.0_f32).push(&first);
+                tx[&first]
+                    .clip(Rect::new(4.0, 4.0, 60.0, 20.0))
+                    .backdrop(group.sample());
+            }
+            tx[surface.root()].push(&second);
+            tx[&second]
+                .clip(Rect::new(8.0, 32.0, 56.0, 56.0))
+                .backdrop(group.sample());
+        });
+        (group, [fade, first, second])
+    };
+    let render = |hidden: bool| {
+        let engine = engine();
+        let surface = engine
+            .surface(Offscreen::new(size, OffscreenFormat::LinearF32), || {})
+            .expect("surface");
+        let _scene = build(&surface, hidden);
+        engine.render(FrameTime::now()).expect("render");
+        image(surface.readback().expect("readback"))
+    };
+    let shown = render(false);
+    // The shown member samples the blurred backdrop: the red and blue
+    // halves mix across its middle.
+    let mixed = shown.pixels[44 * 64 + 32];
+    assert!(mixed[0] > 0.2 && mixed[2] > 0.2, "pixel {mixed:?}");
+    assert_images_match(&shown, &render(true));
 }

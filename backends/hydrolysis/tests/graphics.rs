@@ -9,18 +9,24 @@
 
 mod support;
 
+use hydrolysis::draw::{Draw, Paint, WorkingColor};
 use kurbo::{Rect, Shape as _};
 use support::{mount_rendered, node_bounds_with_role, nodes};
 use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityRole;
 use waterui::component::text;
 use waterui::graphics::color::Srgb;
-use waterui::graphics::draw::{Draw, Paint, WorkingColor};
 use waterui::layout::Size;
 use waterui::reactive::constant;
 use waterui::shape::{Circle, ShapeExt as _};
 use waterui_core::Environment;
-use waterui_graphics::{FlowingGradient, Gradient, Picture, ShaderPaintView};
+use waterui_graphics::Gradient;
+use waterui_graphics::backend::Picture;
+// `FlowingGradient` and `ShaderPaintView` render through `GpuView`,
+// user GPU content only the GPU painter realizes; the CPU painter refuses it
+// by name.
+#[cfg(hydrolysis_gpu_painter)]
+use waterui_graphics::{FlowingGradient, ShaderPaintView};
 
 fn linear_gradient_view() -> impl waterui::View {
     Gradient::linear(
@@ -36,6 +42,7 @@ fn linear_gradient_view() -> impl waterui::View {
     .a11y_label("Linear gradient")
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 fn animated_mesh_gradient_view() -> impl waterui::View {
     FlowingGradient::new()
         .size(180.0, 120.0)
@@ -43,6 +50,7 @@ fn animated_mesh_gradient_view() -> impl waterui::View {
         .a11y_label("Animated mesh gradient")
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 fn shader_surface_view() -> impl waterui::View {
     ShaderPaintView::new(include_str!("fixtures/two_tone.wgsl"))
         .size(180.0, 120.0)
@@ -88,6 +96,7 @@ fn linear_gradient_exposes_accessibility_image() {
     );
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 #[test]
 fn animated_mesh_gradient_exposes_accessibility_image() {
     assert_image_node(
@@ -97,6 +106,7 @@ fn animated_mesh_gradient_exposes_accessibility_image() {
     );
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 #[test]
 fn shader_surface_exposes_accessibility_image() {
     assert_image_node(

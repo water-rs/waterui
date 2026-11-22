@@ -3,6 +3,7 @@
 //! unorm-8 step — same algorithm, `f32` against `f64`.
 
 #![cfg(not(target_arch = "wasm32"))]
+use cherenkov::OutputAlpha::{Opaque, Premultiplied, Straight};
 use cherenkov_cpu::{present_linear_p3, present_srgb8};
 use cherenkov_oracle::Image;
 use cherenkov_oracle::metrics::assert_unorm8_close;
@@ -47,10 +48,29 @@ fn present_srgb8_matches_oracle() {
         // Half-alpha premultiplied P3 red.
         [0.5, 0.0, 0.0, 0.5],
     ];
-    let got = present_srgb8(cherenkov_cpu::detect(), 1.0, &pixels);
+    let got = present_srgb8(cherenkov_cpu::detect(), 1.0, Premultiplied, &pixels);
     for (i, p) in pixels.iter().enumerate() {
         assert_unorm8_close(&got[i * 4..i * 4 + 4], &oracle_bytes(*p));
     }
+}
+
+/// The alpha conventions of `present.wgsl`: straight alpha stores the
+/// colour independent of coverage, opaque presents the frame over black
+/// with full alpha.
+#[test]
+fn present_srgb8_follows_the_output_alpha() {
+    let half_red = [[0.5, 0.0, 0.0, 0.5]];
+    let opaque_red = [[1.0, 0.0, 0.0, 1.0]];
+    let level = cherenkov_cpu::detect();
+    let full = present_srgb8(level, 1.0, Premultiplied, &opaque_red);
+    let straight = present_srgb8(level, 1.0, Straight, &half_red);
+    assert_unorm8_close(&straight[..3], &full[..3]);
+    assert_eq!(straight[3], 128);
+    let premultiplied = present_srgb8(level, 1.0, Premultiplied, &half_red);
+    let opaque = present_srgb8(level, 1.0, Opaque, &half_red);
+    assert_unorm8_close(&opaque[..3], &oracle_bytes([0.5, 0.0, 0.0, 1.0])[..3]);
+    assert_eq!(opaque[3], 255);
+    assert!(premultiplied[0] < straight[0]);
 }
 
 /// An sRGB destination's representable ceiling is `1` regardless of the
@@ -65,8 +85,8 @@ fn present_srgb8_is_headroom_invariant() {
     ];
     for headroom in [2.0f32, 4.0, 16.0] {
         assert_unorm8_close(
-            &present_srgb8(cherenkov_cpu::detect(), headroom, &pixels),
-            &present_srgb8(cherenkov_cpu::detect(), 1.0, &pixels),
+            &present_srgb8(cherenkov_cpu::detect(), headroom, Premultiplied, &pixels),
+            &present_srgb8(cherenkov_cpu::detect(), 1.0, Premultiplied, &pixels),
         );
     }
 }

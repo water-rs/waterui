@@ -64,10 +64,6 @@ thread_local! {
 /// under test, which deadlocks when polled in the middle of the call that
 /// spawned it.
 #[derive(Clone, Copy, Debug, Default)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "field-less executor used by name"
-)]
 pub struct TestLocalExecutor;
 
 impl LocalExecutor for TestLocalExecutor {

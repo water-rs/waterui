@@ -14,25 +14,36 @@ use core::{
 
 use alloc::boxed::Box;
 
-use crate::{Environment, View, layout::StretchAxis};
+use crate::backend::{Backend, DynBackend, Erased};
+use crate::{Environment, View};
 
 trait AnyViewImpl: 'static {
     fn body(self: Box<Self>, env: Environment) -> AnyView;
+    fn dispatch_dyn(
+        self: Box<Self>,
+        backend: &mut dyn DynBackend,
+        env: &Environment,
+        cx: Box<dyn Any>,
+    ) -> Box<dyn Any>;
     fn type_id(&self) -> TypeId {
         TypeId::of::<Self>()
     }
     fn name(&self) -> &'static str {
         type_name::<Self>()
     }
-    fn stretch_axis(&self) -> StretchAxis;
 }
 
 impl<T: View> AnyViewImpl for T {
     fn body(self: Box<Self>, env: Environment) -> AnyView {
         AnyView::new(View::body(*self, &env))
     }
-    fn stretch_axis(&self) -> StretchAxis {
-        View::stretch_axis(self)
+    fn dispatch_dyn(
+        self: Box<Self>,
+        backend: &mut dyn DynBackend,
+        env: &Environment,
+        cx: Box<dyn Any>,
+    ) -> Box<dyn Any> {
+        View::dispatch(*self, &mut Erased::new(backend), env, cx)
     }
 }
 
@@ -65,9 +76,11 @@ impl AnyView {
             let any = &mut Some(view) as &mut dyn Any;
             return any
                 .downcast_mut::<Option<Self>>()
-                .expect("downcast to option should succeed")
+                .expect(
+                    "the TypeId check above proved V is AnyView, so the slot is an Option<AnyView>",
+                )
                 .take()
-                .expect("option should contain a value"); // TODO: use downcast_mut_unchecked when it's stable
+                .expect("the slot was just filled with Some(view)"); // TODO: use downcast_mut_unchecked when it's stable
         }
 
         Self(Box::new(view))
@@ -91,13 +104,16 @@ impl AnyView {
         AnyViewImpl::name(&*self.0)
     }
 
-    /// Returns the stretch axis of the contained view.
-    ///
-    /// This delegates to the `View::stretch_axis()` method of the wrapped view,
-    /// which for native views returns their layout stretch behavior.
-    #[must_use]
-    pub fn stretch_axis(&self) -> StretchAxis {
-        AnyViewImpl::stretch_axis(&*self.0)
+    /// Expands the erased view through `backend`: its own subtree
+    /// dispatches statically, and only its native payloads and metadata
+    /// reach `backend`, each as `&mut dyn Any`.
+    pub fn dispatch_dyn(
+        self,
+        backend: &mut dyn DynBackend,
+        env: &Environment,
+        cx: Box<dyn Any>,
+    ) -> Box<dyn Any> {
+        self.0.dispatch_dyn(backend, env, cx)
     }
 
     #[doc(hidden)]
@@ -180,15 +196,8 @@ impl View for AnyView {
         self.0.body(env.clone())
     }
 
-    /// Forwards the erased view's own answer.
-    ///
-    /// Without this, erasing a view silently reset its stretch axis to the
-    /// default: the inherent [`AnyView::stretch_axis`] reported the real value
-    /// while the trait method — the one generic code calls — reported `None`.
-    /// Every container that wanted its content's axis therefore had to copy it
-    /// before erasing, and that copy is what went stale.
-    fn stretch_axis(&self) -> StretchAxis {
-        AnyViewImpl::stretch_axis(&*self.0)
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        backend.erased(self, env, cx)
     }
 }
 

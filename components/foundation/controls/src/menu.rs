@@ -17,7 +17,7 @@ use nami::{
 use waterui_core::Str;
 pub use waterui_core::key::NamedKey;
 use waterui_core::{
-    AnyView, Environment, View,
+    AnyView, Environment, View, contract_violation,
     extract::State,
     handler::{Handler, SharedAction, shared_action},
     interaction::Disabled,
@@ -31,8 +31,9 @@ use waterui_locale::locale_binding;
 use waterui_text::{TextConfig, styled::StyledStr};
 
 use crate::{
-    button::Button,
+    button::{Button, ButtonStyle},
     label::{IntoLabel, Label},
+    size::ControlSize,
 };
 
 /// Keyboard shortcut modifiers used by commands and system menus.
@@ -231,34 +232,40 @@ const fn named_key_for_control(character: char) -> Option<NamedKey> {
 }
 
 impl From<char> for ShortcutKey {
-    /// # Panics
+    /// # Contract violation
     ///
-    /// Panics on a control character: a press reports the key it stands for
-    /// as a named key (`'\t'` is `NamedKey::Tab`), never as that character.
+    /// A control character is reported: a press reports the key it stands
+    /// for as a named key (`'\t'` is `NamedKey::Tab`), never as that
+    /// character. A debug build panics; a release build logs it and the
+    /// shortcut is created but never fires.
     fn from(character: char) -> Self {
-        assert!(
-            !character.is_control(),
-            "{character:?} is a control character, not a shortcut key: {}",
-            named_key_for_control(character).map_or_else(
-                || String::from("no key press reports it, so the shortcut could never fire"),
-                |named| format!("the key press reports it as `NamedKey::{named}`, so use that"),
-            )
-        );
+        if character.is_control() {
+            contract_violation!(
+                "{character:?} is a control character, not a shortcut key: {}; the shortcut is created but never fires",
+                named_key_for_control(character).map_or_else(
+                    || String::from("no key press reports it, so the shortcut could never fire"),
+                    |named| format!("the key press reports it as `NamedKey::{named}`, so use that"),
+                )
+            );
+        }
         Self::Character(character)
     }
 }
 
 impl From<NamedKey> for ShortcutKey {
-    /// # Panics
+    /// # Contract violation
     ///
-    /// Panics on `NamedKey::Unidentified`, `NamedKey::Dead` and the modifier
-    /// and lock keys: a shortcut on them could never fire.
+    /// `NamedKey::Unidentified`, `NamedKey::Dead` and the modifier and lock
+    /// keys are reported: a shortcut on them could never fire. A debug build
+    /// panics; a release build logs it and the shortcut is created but never
+    /// fires.
     fn from(key: NamedKey) -> Self {
-        assert!(
-            named_key_fires(key),
-            "`NamedKey::{key}` is not a valid shortcut key: it is unidentified, dead, a modifier \
-             or a lock key, so the shortcut could never fire"
-        );
+        if !named_key_fires(key) {
+            contract_violation!(
+                "`NamedKey::{key}` is not a valid shortcut key: it is unidentified, dead, a modifier \
+                 or a lock key, so the shortcut could never fire; the shortcut is created but never fires"
+            );
+        }
         Self::Named(key)
     }
 }
@@ -271,7 +278,7 @@ impl core::str::FromStr for ShortcutKey {
         let mut chars = value.chars();
         if let (Some(character), None) = (chars.next(), chars.next()) {
             if character.is_control() {
-                return Err(InvalidShortcutKey(value.to_string()));
+                return Err(InvalidShortcutKey::new(value.to_string()));
             }
             return Ok(Self::Character(character));
         }
@@ -280,7 +287,7 @@ impl core::str::FromStr for ShortcutKey {
             .ok()
             .filter(|key| named_key_fires(*key))
             .map(Self::Named)
-            .ok_or_else(|| InvalidShortcutKey(value.to_string()))
+            .ok_or_else(|| InvalidShortcutKey::new(value.to_string()))
     }
 }
 
@@ -290,14 +297,42 @@ impl core::str::FromStr for ShortcutKey {
 #[non_exhaustive]
 pub struct InvalidShortcutKey(pub String);
 
+impl InvalidShortcutKey {
+    /// Rejects `key`.
+    #[must_use]
+    pub const fn new(key: String) -> Self {
+        Self(key)
+    }
+
+    /// The rejected string.
+    #[must_use]
+    pub fn key(&self) -> &str {
+        &self.0
+    }
+}
+
 /// Keyboard shortcut metadata attached to a command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Shortcut {
     /// The key the shortcut fires on.
-    pub key: ShortcutKey,
+    key: ShortcutKey,
     /// Modifier flags required alongside the key.
-    pub modifiers: ShortcutModifiers,
+    modifiers: ShortcutModifiers,
+}
+
+impl Shortcut {
+    /// The key the shortcut fires on.
+    #[must_use]
+    pub const fn key(&self) -> &ShortcutKey {
+        &self.key
+    }
+
+    /// Modifier flags required alongside the key.
+    #[must_use]
+    pub const fn modifiers(&self) -> ShortcutModifiers {
+        self.modifiers
+    }
 }
 
 impl Shortcut {
@@ -392,17 +427,37 @@ pub struct Menu {
     /// The menu items to display when the menu is opened.
     pub items: Computed<Vec<MenuItem>>,
     identity: Rc<()>,
+    style: ButtonStyle,
+    size: ControlSize,
 }
 
 impl Menu {
-    /// Creates a menu with a semantic label.
+    /// Creates a menu with a semantic label. Its trigger is drawn as an
+    /// [`Automatic`](ButtonStyle::Automatic) button of
+    /// [`ControlSize::Small`], like a [`Button`].
     #[must_use]
     pub fn new(label: impl IntoLabel, items: impl MenuView) -> Self {
         Self {
             label: label.into_label(),
             items: items.into_menu_items(),
             identity: Rc::new(()),
+            style: ButtonStyle::Automatic,
+            size: ControlSize::Small,
         }
+    }
+
+    /// Sets the style the menu's trigger button is drawn in.
+    #[must_use]
+    pub const fn style(mut self, style: ButtonStyle) -> Self {
+        self.style = style;
+        self
+    }
+
+    /// Sets how large the menu's trigger button is drawn.
+    #[must_use]
+    pub const fn size(mut self, size: ControlSize) -> Self {
+        self.size = size;
+        self
     }
 
     #[must_use]
@@ -426,14 +481,12 @@ impl View for Menu {
         let label = self.label.resolve(env);
         let accessibility_label = label.accessibility_label();
         AnyView::new(ResolvedMenu {
-            label: AnyView::new(label),
+            label,
             items: resolve_menu_items(&self.items, env),
             accessibility_label,
+            style: self.style.resolve(env),
+            size: self.size,
         })
-    }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::None
     }
 }
 
@@ -457,22 +510,72 @@ pub enum CommandRole {
 #[non_exhaustive]
 pub struct Command {
     /// The semantic label for the command.
-    pub label: Label,
+    label: Label,
     /// The action to perform when the command is selected.
-    pub action: SharedAction<()>,
+    action: SharedAction<()>,
     /// Whether the command is currently disabled.
-    pub disabled: Computed<bool>,
+    disabled: Computed<bool>,
     /// Whether the command is currently selected or checked.
-    pub selected: Computed<bool>,
+    selected: Computed<bool>,
     /// Optional keyboard shortcut metadata.
-    pub shortcut: Option<Shortcut>,
+    shortcut: Option<Shortcut>,
     /// What the command does, which decides its presentation.
-    pub role: CommandRole,
+    role: CommandRole,
     /// An optional secondary line shown under the label.
-    pub subtitle: Option<Str>,
+    subtitle: Option<Str>,
     /// Local state layered onto the environment when the action runs.
-    pub captured_env: Environment,
+    captured_env: Environment,
     identity: Rc<()>,
+}
+
+impl Command {
+    /// The semantic label for the command.
+    #[must_use]
+    pub const fn label(&self) -> &Label {
+        &self.label
+    }
+
+    /// The action to perform when the command is selected.
+    #[must_use]
+    pub const fn action(&self) -> &SharedAction<()> {
+        &self.action
+    }
+
+    /// Whether the command is currently disabled.
+    #[must_use]
+    pub const fn get_disabled(&self) -> &Computed<bool> {
+        &self.disabled
+    }
+
+    /// Whether the command is currently selected or checked.
+    #[must_use]
+    pub const fn get_selected(&self) -> &Computed<bool> {
+        &self.selected
+    }
+
+    /// Optional keyboard shortcut metadata.
+    #[must_use]
+    pub const fn get_shortcut(&self) -> Option<&Shortcut> {
+        self.shortcut.as_ref()
+    }
+
+    /// What the command does, which decides its presentation.
+    #[must_use]
+    pub const fn get_role(&self) -> CommandRole {
+        self.role
+    }
+
+    /// An optional secondary line shown under the label.
+    #[must_use]
+    pub const fn get_subtitle(&self) -> Option<&Str> {
+        self.subtitle.as_ref()
+    }
+
+    /// Local state layered onto the environment when the action runs.
+    #[must_use]
+    pub const fn captured_env(&self) -> &Environment {
+        &self.captured_env
+    }
 }
 
 impl_constant!(Command);
@@ -503,7 +606,7 @@ impl Command {
             semantic_label,
             icon,
             action: shared_action(move |env: Environment| {
-                action.call(&captured_env.layered_on(&env));
+                action.run(&captured_env.layered_on(&env));
             }),
             disabled: Disabled::resolve(env, self.disabled),
             selected: self.selected,
@@ -794,7 +897,7 @@ impl MenuView for Divider {
 
 impl<Action> MenuView for Button<Action>
 where
-    Action: FnMut(&Environment) + 'static,
+    Action: FnMut(&Environment) -> Result<(), waterui_core::handler::ExtractionError> + 'static,
 {
     fn into_menu_items(self) -> Computed<Vec<MenuItem>> {
         Computed::constant(vec![self.into()])
@@ -1050,7 +1153,8 @@ impl ResolvedCommand {
         Rc::as_ptr(&self.identity) as usize
     }
 
-    /// Rejects a command the macOS menu bar may not carry.
+    /// Whether the macOS menu bar may carry this command, reporting a
+    /// contract violation when it may not.
     ///
     /// ⌘Q, ⌘H and ⌥⌘H belong to the standard application-menu items — Quit,
     /// Hide, Hide Others. A plain command redeclaring one would shadow the
@@ -1059,15 +1163,17 @@ impl ResolvedCommand {
     /// this for each declared command, so the rule holds whichever backend
     /// renders the bar.
     ///
-    /// # Panics
+    /// # Contract violation
     ///
     /// When the command's shortcut is one of the reserved chords; the
     /// message names `MenuItem::Quit` and `App::on_terminate` as the APIs to
-    /// use instead.
+    /// use instead. A debug build panics; a release build logs it, returns
+    /// `false`, and the backend leaves the command out of the bar.
     #[doc(hidden)]
-    pub fn assert_allowed_in_macos_menu_bar(&self) {
+    #[must_use]
+    pub fn allowed_in_macos_menu_bar(&self) -> bool {
         let Some(shortcut) = &self.shortcut else {
-            return;
+            return true;
         };
         let reserved = [
             (Shortcut::new('q').command(), "⌘Q", "Quit"),
@@ -1075,15 +1181,17 @@ impl ResolvedCommand {
             (Shortcut::new('h').command().option(), "⌥⌘H", "Hide Others"),
         ];
         for (chord, chord_text, item) in reserved {
-            assert!(
-                !(chord.modifiers == shortcut.modifiers
-                    && shortcut.key.matches(&chord.key.to_key())),
-                "a menu command in the macOS menu bar may not use the {chord_text} chord — it \
-                 belongs to the standard {item} item; declare `MenuItem::Quit` for Quit \
-                 behavior and `App::on_terminate` for shutdown work instead of redeclaring the \
-                 chord"
-            );
+            if chord.modifiers == shortcut.modifiers && shortcut.key.matches(&chord.key.to_key()) {
+                contract_violation!(
+                    "a menu command in the macOS menu bar may not use the {chord_text} chord — it \
+                     belongs to the standard {item} item; declare `MenuItem::Quit` for Quit \
+                     behavior and `App::on_terminate` for shutdown work instead of redeclaring the \
+                     chord; the command is left out of the menu bar"
+                );
+                return false;
+            }
         }
+        true
     }
 }
 
@@ -1158,7 +1266,7 @@ impl ResolvedMenuItem {
     /// Close Tab); and no chord at all when the application binds both, so
     /// Close Window never shadows a command's own binding.
     ///
-    /// The comparison is [`ResolvedCommand::assert_allowed_in_macos_menu_bar`]'s:
+    /// The comparison is [`ResolvedCommand::allowed_in_macos_menu_bar`]'s:
     /// equal modifier sets, and the key matched case-insensitively.
     #[doc(hidden)]
     #[must_use]
@@ -1174,7 +1282,7 @@ impl ResolvedMenuItem {
 }
 
 /// Whether a declared command in `items` — at any depth — binds `chord`,
-/// compared the way [`ResolvedCommand::assert_allowed_in_macos_menu_bar`]
+/// compared the way [`ResolvedCommand::allowed_in_macos_menu_bar`]
 /// does: equal modifiers, key matched case-insensitively.
 fn binds_chord(items: &[ResolvedMenuItem], chord: &Shortcut) -> bool {
     items.iter().any(|item| match item {
@@ -1260,17 +1368,18 @@ impl_constant!(ResolvedMenuItem);
 /// Raw native popup menu config resolved against the environment locale.
 #[doc(hidden)]
 #[derive(Debug)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "backends destructure the whole resolved menu, so a new field must fail their build instead of being ignored"
-)]
 pub struct ResolvedMenu {
-    /// The label view displayed on the menu button.
-    pub label: AnyView,
+    /// The label displayed on the menu button.
+    pub label: Label,
     /// The fully resolved menu items.
     pub items: Computed<Vec<ResolvedMenuItem>>,
     /// Semantic accessibility label for the menu trigger.
     pub accessibility_label: Computed<StyledStr>,
+    /// The style the trigger button is drawn in, `Automatic` already
+    /// resolved against the ambient [`ButtonStyle`].
+    pub style: ButtonStyle,
+    /// How large the trigger button is drawn.
+    pub size: ControlSize,
 }
 
 raw_view!(ResolvedMenu, StretchAxis::None);
@@ -1293,7 +1402,7 @@ mod tests {
         for rejected in ["", "ab", "Unidentified", "Dead", "\t", "Shift", "CapsLock"] {
             assert_eq!(
                 rejected.parse::<ShortcutKey>(),
-                Err(InvalidShortcutKey(rejected.to_string())),
+                Err(InvalidShortcutKey::new(rejected.to_string())),
                 "`{rejected}` is not a shortcut key"
             );
         }
@@ -1317,21 +1426,61 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "is not a valid shortcut key")]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "is not a valid shortcut key")
+    )]
     fn shortcut_key_refuses_a_named_key_no_press_resolves_to() {
-        let _ = ShortcutKey::from(NamedKey::Unidentified);
+        // Release outcome: the shortcut is created and never fires.
+        let key = ShortcutKey::from(NamedKey::Unidentified);
+        assert_eq!(key, ShortcutKey::Named(NamedKey::Unidentified));
+        assert!(!key.matches(&Key::Named(NamedKey::Delete)));
     }
 
     #[test]
-    #[should_panic(expected = "is not a valid shortcut key")]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "is not a valid shortcut key")
+    )]
     fn shortcut_key_refuses_a_modifier_key() {
-        let _ = ShortcutKey::from(NamedKey::Shift);
+        let key = ShortcutKey::from(NamedKey::Shift);
+        assert_eq!(key, ShortcutKey::Named(NamedKey::Shift));
     }
 
     #[test]
-    #[should_panic(expected = "`NamedKey::Tab`")]
+    #[cfg_attr(debug_assertions, should_panic(expected = "`NamedKey::Tab`"))]
     fn shortcut_key_refuses_a_control_character_naming_its_key() {
-        let _ = ShortcutKey::from('\t');
+        let key = ShortcutKey::from('\t');
+        assert_eq!(key, ShortcutKey::Character('\t'));
+        assert!(!key.matches(&Key::Named(NamedKey::Tab)));
+    }
+
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "may not use the ⌘Q chord"))]
+    fn macos_menu_bar_refuses_the_reserved_quit_chord() {
+        crate::init_test_executor();
+        let env = Environment::default();
+        let items = vec![
+            Command::builder("Quit")
+                .action(|| {})
+                .shortcut(Shortcut::new('q').command())
+                .into(),
+            Command::builder("Open")
+                .action(|| {})
+                .shortcut(Shortcut::new('o').command())
+                .into(),
+        ];
+        let resolved = resolve_menu_items_now(items, &env);
+        let ResolvedMenuItem::Command(quit) = &resolved[0] else {
+            panic!("first resolved item should be a command");
+        };
+        let ResolvedMenuItem::Command(open) = &resolved[1] else {
+            panic!("second resolved item should be a command");
+        };
+        assert!(open.allowed_in_macos_menu_bar());
+        // Release outcome: the command is reported not allowed, so the
+        // backend leaves it out of the bar.
+        assert!(!quit.allowed_in_macos_menu_bar());
     }
 
     /// `Display` is the platform's menu hint: `⇧⌘P` on Apple targets,
@@ -1372,7 +1521,7 @@ mod tests {
                 .label
                 .semantic_text()
                 .resolve(&Environment::default())
-                .content
+                .content()
                 .snapshot()
                 .to_plain()
                 .as_str(),
@@ -1440,25 +1589,25 @@ mod tests {
         let ResolvedMenuItem::Command(refresh) = &resolved[0] else {
             panic!("first resolved item should be a command");
         };
-        assert_eq!(refresh.label.content.snapshot().to_plain(), "Refresh");
+        assert_eq!(refresh.label.content().snapshot().to_plain(), "Refresh");
         assert!(!refresh.selected.snapshot());
 
         let ResolvedMenuItem::Command(pinned) = &resolved[1] else {
             panic!("second resolved item should be a command");
         };
-        assert_eq!(pinned.label.content.snapshot().to_plain(), "Pinned");
+        assert_eq!(pinned.label.content().snapshot().to_plain(), "Pinned");
         assert!(pinned.selected.snapshot());
 
         let ResolvedMenuItem::Menu(advanced) = &resolved[2] else {
             panic!("third resolved item should be a nested menu");
         };
-        assert_eq!(advanced.label.content.snapshot().to_plain(), "Advanced");
+        assert_eq!(advanced.label.content().snapshot().to_plain(), "Advanced");
         assert_eq!(advanced.items.snapshot().len(), 1);
 
         let ResolvedMenuItem::Command(archive) = &advanced.items.snapshot()[0] else {
             panic!("nested menu should resolve its child command");
         };
-        assert_eq!(archive.label.content.snapshot().to_plain(), "Archive");
+        assert_eq!(archive.label.content().snapshot().to_plain(), "Archive");
     }
 
     /// A leaf `Computed<Vec<MenuItem>>` that counts how often it is evaluated.
@@ -1628,8 +1777,8 @@ mod tests {
             .state(&count);
         let resolved = command.resolve(&Environment::default());
 
-        resolved.action.call(&Environment::default());
-        resolved.action.call(&Environment::default());
+        resolved.action.run(&Environment::default());
+        resolved.action.run(&Environment::default());
 
         assert_eq!(count.get(), 2);
     }

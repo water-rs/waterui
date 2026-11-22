@@ -4,9 +4,10 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::theme::live::Operand;
 use kurbo::Shape as _;
 
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 pub fn duration_micros_u64(duration: Duration) -> u64 {
     u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
 }
@@ -32,16 +33,6 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         &mut self.state
     }
 
-    /// Drop cached `Dynamic` measurements whose node has left the retained tree.
-    ///
-    /// Shared by the two frames that can remove nodes: the one-time build and any
-    /// refresh that applied a structural patch.
-    pub(crate) fn prune_dynamic_measurements(&mut self, live: &FxHashSet<usize>) {
-        self.state
-            .measurement
-            .retain_dynamic_identities(|identity| live.contains(&identity));
-    }
-
     /// Drop text-input focus / the selection drag when the target they name is
     /// no longer emitted. Targets are pure-emission (rebuilt in flush order every
     /// frame), so after any flush — rebuild or refresh — a previously focused
@@ -50,14 +41,17 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// field that moved into the old position for the focused one. Shared by both
     /// frame paths.
     pub(crate) fn validate_focused_text_input_after_flush(&mut self) {
-        let modal_active = self.modal_shield_active();
-        let focus_is_live = !self.text_editing.has_focus()
-            || self
-                .text_editing
-                .focused_target()
-                .is_some_and(|target| !modal_active || target.modal);
-        if !focus_is_live {
-            self.set_focused_text_input_key(None);
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
+        {
+            let modal_active = self.modal_shield_active();
+            let focus_is_live = !self.text_editing.has_focus()
+                || self
+                    .text_editing
+                    .focused_target()
+                    .is_some_and(|target| !modal_active || target.modal);
+            if !focus_is_live {
+                self.set_focused_text_input_key(None);
+            }
         }
         // The semantic focus node must still be emitted and hittable: a node
         // that went hidden or disabled — itself or through an ancestor —
@@ -97,13 +91,16 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             self.hit_test.focus_dropped_this_frame = true;
             self.set_keyboard_focus(None, false);
         }
-        let selection_drag_is_live = self
-            .text_editing
-            .active_text_selection_drag
-            .as_ref()
-            .is_none_or(|drag| self.text_editing.index_of(&drag.target).is_some());
-        if !selection_drag_is_live {
-            self.text_editing.active_text_selection_drag = None;
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
+        {
+            let selection_drag_is_live = self
+                .text_editing
+                .active_text_selection_drag
+                .as_ref()
+                .is_none_or(|drag| self.text_editing.index_of(&drag.target).is_some());
+            if !selection_drag_is_live {
+                self.text_editing.active_text_selection_drag = None;
+            }
         }
     }
 
@@ -176,8 +173,9 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
 
     /// Whether the renderer has scheduled work that will still change layout,
     /// semantics, or reactive state on a future frame: pending patches or
-    /// rebuilds, active animations, armed gesture deadlines, gliding smooth
-    /// scrolls, or an OS file drop awaiting its delivering drain.
+    /// rebuilds, active animations, scene content asking for its next frame,
+    /// armed gesture deadlines, gliding smooth scrolls, or an OS file drop
+    /// awaiting its delivering drain.
     ///
     /// Visual-only redraw requests (caret blink, the visible-window present
     /// cadence) are deliberately excluded: they repaint pixels without moving
@@ -189,9 +187,9 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     }
 
     /// [`Self::has_scheduled_semantic_work`] without repeat-forever
-    /// animations: whether any scheduled work remains that will finish on
-    /// its own. A scene whose only activity is a perpetual animation has
-    /// none.
+    /// animations and scene content with no end, such as a canvas following
+    /// its unbounded clock: whether any scheduled work remains that will
+    /// finish on its own. A scene whose only activity is perpetual has none.
     #[must_use]
     pub fn has_finite_semantic_work(&self) -> bool {
         self.scheduled_semantic_work(PerpetualAnimation::Ignored)
@@ -200,15 +198,23 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     fn scheduled_semantic_work(&self, perpetual: PerpetualAnimation) -> bool {
         self.has_pending_semantic_update()
             || self.os_file_drop_pending()
-            || self.animations_active_with(perpetual)
+            || self.animations_active()
+            || self.motions_active()
+            || self.engine_tracks_active(perpetual)
+            || self.scene_frames_requested(perpetual)
             || self.next_gesture_deadline().is_some()
             || self.has_gliding_smooth_scrolls()
             || self.has_active_touch_fling()
     }
 
-    #[cfg(hydrolysis_gpu_painter)]
-    pub(crate) const fn measurement_cache_stats(&self) -> (u32, u32) {
-        self.state.measurement.stats()
+    /// The view-dimension cache's (hits, misses) since the last presented
+    /// frame, rolling the counters: a frame that measured nothing reports
+    /// zero rather than the last measuring frame's counts.
+    #[cfg(hydrolysis_cherenkov)]
+    pub(crate) const fn take_measurement_cache_stats(&mut self) -> (u32, u32) {
+        let stats = self.state.measurement.stats();
+        self.state.measurement.reset_counters();
+        stats
     }
 }
 
@@ -227,6 +233,11 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     ) {
         self.window_bounds = bounds;
         self.window_display_transform = root_transform;
+        #[cfg(feature = "accessibility")]
+        {
+            // Accessibility hosts convert window logical units to screen pixels.
+            self.accessibility.root_bounds = bounds;
+        }
         // The activation-point projection intersects node bounds with the
         // window bounds alongside the node's clip chain — both in the same
         // window hit-test space the hit clip stack uses.
@@ -265,6 +276,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// still collecting that frame's work.
     pub fn reset_scene(&mut self) {
         self.gesture_engine.clear_targets();
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         self.text_editing.text_input_targets.clear();
         self.state.measurement.reset_counters();
         #[cfg(feature = "accessibility")]
@@ -283,6 +295,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         self.next_gesture_group_id = 0;
         self.begin_animation_rebuild();
         self.lazy.begin_rebuild_frame();
+        #[cfg(feature = "navigation")]
         self.navigation.begin_rebuild_frame();
         #[cfg(feature = "accessibility")]
         self.accessibility.begin_rebuild_frame();
@@ -324,24 +337,12 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             self.program.is_empty(),
             "hydrolysis renderer: a node program is still open at the end of a rebuild"
         );
-        // Prune the measure-path `Dynamic` dimension cache down to the identities
-        // still present in the retained render tree. The cache is read by
-        // `measure_dynamic` when a `Dynamic` leaf is measured after its content was
-        // handed to a `DynamicHostNode`; the live `DynamicHostNode`s in `render_tree`
-        // are exactly the alive identities now that the dispatch path is gone.
-        let live_dynamics = self
-            .render_tree
-            .as_ref()
-            .map(RenderNode::collect_dynamic_identities)
-            .unwrap_or_default();
-        self.prune_dynamic_measurements(&live_dynamics);
-
         // The frame's window-level record closes before materialization:
         // the leave retires every subtree the root record left unplaced,
         // so the flat lists rebuild against the post-retire registries.
         self.core.leave_reader(None);
 
-        self.core.registries();
+        self.core.frame_registries();
         // Same frame-end record `flush_window_tree` runs: the first-frame
         // build ends here, not in the flush tail, and the placements it
         // registered publish only through this drain.
@@ -349,11 +350,14 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         self.validate_focused_text_input_after_flush();
 
         self.core.retire_unbound_animation_slots();
-        self.core
-            .hit_test
-            .finish_rebuild_frame(&self.core.text_editing.text_input_targets);
+        self.core.hit_test.finish_rebuild_frame(
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
+            &self.core.text_editing.text_input_targets,
+        );
         self.relocate_dropped_focus();
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         self.clear_focused_fields();
+        #[cfg(feature = "navigation")]
         self.core.navigation.finish_rebuild_frame();
         self.core.finish_outside_read_frame();
         self.core.finish_rebuild();
@@ -401,22 +405,19 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// material becomes a `ChromeMaterial` member layer between the
     /// segments that follow — so the material samples the content behind
     /// it rather than drawing in place of it. The scope the record opens
-    /// under is the flush's material-scope stack's top: the node's
-    /// enclosing `.material_group()`, or `SOLO` outside every group.
+    /// under is [`Self::material_scope`].
+    ///
+    /// The segments are frozen into the node's run: content whose operands
+    /// change after it records lists through
+    /// [`PartRuns`](crate::renderer::chrome::PartRuns) instead.
     pub(crate) fn draw_context(
         &mut self,
         ctx: RenderContext,
-        body: impl FnOnce(&mut waterui_graphics::draw::Recorder),
+        body: impl FnOnce(&mut cherenkov_record::Recorder),
     ) {
-        let scope = self
-            .material_group_scopes
-            .last()
-            .map_or(cherenkov_record::MaterialScope::SOLO, |cell| {
-                cherenkov_record::MaterialScope::new(mount::backdrop::scope_id(cell))
-            });
         let layered = cherenkov_record::Content::record_layered(
             &cherenkov_record::LayoutSize::new(),
-            scope,
+            self.material_scope(),
             body,
         );
         // A member whose ancestry is fully transparent holds no membership:
@@ -424,15 +425,27 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         let visible = self.record_alpha() > 0.0;
         let below = layered.below.into_picture();
         if !below.display_list().is_empty() {
-            self.scene_mut().draw_picture(ctx.local, below);
+            self.scene_mut().draw_picture(ctx.local(), below);
         }
         for run in layered.runs {
-            self.program().push_chrome(run.material, ctx.local, visible);
+            self.program()
+                .push_chrome(run.material, ctx.local(), visible);
             let above = run.above.into_picture();
             if !above.display_list().is_empty() {
-                self.scene_mut().draw_picture(ctx.local, above);
+                self.scene_mut().draw_picture(ctx.local(), above);
             }
         }
+    }
+
+    /// The material scope a backdrop material recorded here belongs to:
+    /// the flush's material-scope stack's top — the node's enclosing
+    /// `.material_group()` — or `SOLO` outside every group.
+    pub(crate) fn material_scope(&self) -> cherenkov_record::MaterialScope {
+        self.material_group_scopes
+            .last()
+            .map_or(cherenkov_record::MaterialScope::SOLO, |cell| {
+                cherenkov_record::MaterialScope::new(mount::backdrop::scope_id(cell))
+            })
     }
 
     /// Lists `source` at this point of the recording node's program as a
@@ -446,7 +459,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         ctx: RenderContext,
         source: &Rc<dyn crate::renderer::chrome::LiveSource>,
     ) {
-        self.program().push_live(Rc::clone(source), ctx.local);
+        self.program().push_live(Rc::clone(source), ctx.local());
     }
 
     /// Records `core`'s node into its own program (§C): the parent's list
@@ -489,10 +502,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 .push(mount::ProgramBuilder::new(Rc::clone(&cell)));
             record(
                 renderer,
-                RenderContext {
-                    local: kurbo::Affine::IDENTITY,
-                    bounds,
-                },
+                RenderContext::new(kurbo::Affine::IDENTITY, bounds),
             );
             let program = renderer
                 .program
@@ -563,6 +573,14 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// inside. `paint` is the transform `clip` is given under, in the
     /// recording node's space; the clip is stored in the scope's own space.
     /// The layer sits at the scope's record-space delta.
+    #[cfg(any(
+        feature = "text-field",
+        feature = "secure-field",
+        feature = "navigation",
+        feature = "slider",
+        feature = "stepper",
+        feature = "toggle"
+    ))]
     pub(crate) fn open_scope(
         &mut self,
         key: mount::ScopeKey,
@@ -593,7 +611,136 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         scope: crate::renderer::ScopeDelta,
         hit: bool,
     ) {
+        self.open_scope_layer(
+            key,
+            ScopeLayerProps {
+                transform: layer,
+                alpha,
+                blend_space: None,
+                operands: ScopeOperands::default(),
+            },
+            clip,
+            clip_space,
+            scope,
+            hit,
+        );
+    }
+
+    /// [`Self::open_scope`] whose layer follows `operands` between renders:
+    /// its opacity is the opacity operand's, and the transform operand —
+    /// given in the `paint` space, like `clip` — moves the layer over its
+    /// at-rest place. Children record at rest. A scope with no `clip`
+    /// leaves its content unclipped.
+    pub(crate) fn open_live_scope(
+        &mut self,
+        key: mount::ScopeKey,
+        operands: ScopeOperands,
+        paint: kurbo::Affine,
+        clip: Option<&ScopeClip>,
+        scope: crate::renderer::ScopeDelta,
+    ) {
+        self.open_scope_layer(
+            key,
+            ScopeLayerProps {
+                transform: scope.transform,
+                alpha: 1.0,
+                blend_space: None,
+                operands,
+            },
+            clip,
+            paint,
+            scope,
+            true,
+        );
+    }
+
+    /// [`Self::open_scope`] for a control's group: its layer fades at
+    /// `opacity` — at rest, or following the live operand — and composites
+    /// in `blend_space`, the space its members composite with each other in
+    /// too, or with none in the space of the level beneath it.
+    pub(crate) fn open_group_scope(
+        &mut self,
+        key: mount::ScopeKey,
+        (opacity, blend_space): (GroupOpacity, Option<cherenkov_record::BlendSpace>),
+        paint: kurbo::Affine,
+        clip: &ScopeClip,
+        scope: crate::renderer::ScopeDelta,
+    ) {
+        let (alpha, operands) = match opacity {
+            GroupOpacity::Fixed(alpha) => (alpha, ScopeOperands::default()),
+            GroupOpacity::Live(opacity) => (
+                1.0,
+                ScopeOperands {
+                    opacity: Some(opacity),
+                    transform: None,
+                },
+            ),
+        };
+        self.open_scope_layer(
+            key,
+            ScopeLayerProps {
+                transform: scope.transform,
+                alpha,
+                blend_space,
+                operands,
+            },
+            Some(clip),
+            paint,
+            scope,
+            true,
+        );
+    }
+
+    /// Runs `f` inside a live scope `key` whose layer opacity follows
+    /// `opacity`, unclipped, in `ctx`'s record space — a look part with an
+    /// opacity of its own; with no `opacity`, runs `f` in place.
+    pub(crate) fn with_part_opacity(
+        &mut self,
+        key: mount::ScopeKey,
+        opacity: Option<&Operand<f32>>,
+        ctx: RenderContext,
+        f: impl FnOnce(&mut Self),
+    ) {
+        let Some(opacity) = opacity else {
+            f(self);
+            return;
+        };
+        self.open_live_scope(
+            key,
+            ScopeOperands {
+                opacity: Some(opacity.clone()),
+                transform: None,
+            },
+            ctx.local(),
+            None,
+            crate::renderer::ScopeDelta::RECORD_SPACE,
+        );
+        f(self);
+        self.close_scope();
+    }
+
+    fn open_scope_layer(
+        &mut self,
+        key: mount::ScopeKey,
+        layer: ScopeLayerProps,
+        clip: Option<&ScopeClip>,
+        clip_space: kurbo::Affine,
+        scope: crate::renderer::ScopeDelta,
+        hit: bool,
+    ) {
+        let ScopeLayerProps {
+            transform: layer,
+            alpha,
+            blend_space,
+            operands,
+        } = layer;
         let space = self.program().origin() * layer;
+        let live = mount::ScopeLive {
+            opacity: operands.opacity.map(mount::LiveOpacity::new),
+            transform: operands.transform.map(|transform| {
+                mount::LiveTransform::new(transform, space.inverse() * clip_space)
+            }),
+        };
         let shape = clip.map(|clip| clip.in_space(space.inverse() * clip_space));
         self.push_placement_scope(scope, clip.map(ScopeClip::hit_bounds));
         if !hit {
@@ -609,6 +756,8 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 transform: layer,
                 clip: shape,
                 alpha,
+                blend_space,
+                live,
             },
             placement,
         );
@@ -627,7 +776,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// The engine's scheduling answer from the last presented frame, drained
     /// once so one pump consumes it: `Next::At` asks the host for the frame
     /// an in-flight animation needs, `Next::Idle` parks the display link.
-    #[cfg(hydrolysis_gpu_painter)]
+    #[cfg(hydrolysis_cherenkov)]
     pub(crate) const fn take_engine_next(&mut self) -> Option<Next> {
         self.engine_next.take()
     }
@@ -637,6 +786,34 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     pub(crate) const fn mount_stats(&self) -> mount::MountStats {
         self.last_mount_stats
     }
+}
+
+/// The live operands a scope's layer follows.
+#[derive(Default)]
+pub struct ScopeOperands {
+    /// The layer's opacity.
+    pub opacity: Option<Operand<f32>>,
+    /// The layer's transform over its at-rest place, in the space the
+    /// scope's paint transform names.
+    pub transform: Option<Operand<kurbo::Affine>>,
+}
+
+/// The opacity a control's group fades at: a fixed alpha, or a live
+/// operand the group's layer follows between renders.
+pub enum GroupOpacity {
+    /// An alpha that changes only with a render.
+    Fixed(f32),
+    /// An operand the layer follows without a render.
+    Live(Operand<f32>),
+}
+
+/// A scope layer's at-rest transform and opacity, the space it composites
+/// in, and its live operands.
+struct ScopeLayerProps {
+    transform: kurbo::Affine,
+    alpha: f32,
+    blend_space: Option<cherenkov_record::BlendSpace>,
+    operands: ScopeOperands,
 }
 
 /// A scope's clip silhouette, given in the recording node's space under the
@@ -652,21 +829,21 @@ pub enum ScopeClip {
 }
 
 impl ScopeClip {
-    pub(crate) fn in_space(&self, transform: kurbo::Affine) -> waterui_graphics::draw::ShapeData {
+    pub(crate) fn in_space(&self, transform: kurbo::Affine) -> cherenkov_record::ShapeData {
         if transform == kurbo::Affine::IDENTITY {
             return match self {
-                Self::Rect(rect) => waterui_graphics::draw::ShapeData::of(rect),
+                Self::Rect(rect) => cherenkov_record::ShapeData::of(rect),
                 Self::Path(path) | Self::RoundedRect { path, .. } => {
-                    waterui_graphics::draw::ShapeData::of(path)
+                    cherenkov_record::ShapeData::of(path)
                 }
             };
         }
         let mut path = match self {
-            Self::Rect(rect) => rect.to_path(waterui_graphics::draw::PATH_TOLERANCE),
+            Self::Rect(rect) => rect.to_path(cherenkov_record::PATH_TOLERANCE),
             Self::Path(path) | Self::RoundedRect { path, .. } => path.clone(),
         };
         path.apply_affine(transform);
-        waterui_graphics::draw::ShapeData::of(&path)
+        cherenkov_record::ShapeData::of(&path)
     }
 
     /// The hit clip in the placement scope's space: the clip's bounds as the

@@ -348,6 +348,9 @@ xcodebuild)
         -version | --version)
             printf 'Xcode %s\nBuild version 16F6\n' "${WATERUI_FAKE_XCODE_VERSION:-16.4}"
             ;;
+        "-showComponent MetalToolchain -json")
+            respond XCODEBUILD_SHOW_METAL_TOOLCHAIN
+            ;;
     esac
     exit 0
     ;;
@@ -376,6 +379,12 @@ xcrun)
     case "$*" in
         *--show-sdk-path)
             respond XCRUN_SDK_PATH
+            ;;
+        "--find metal")
+            respond XCRUN_FIND_METAL
+            ;;
+        "metal --version")
+            respond XCRUN_METAL_VERSION
             ;;
         "simctl list --json" | "simctl list devices --json")
             respond XCRUN_SIMCTL_DEVICES
@@ -697,7 +706,7 @@ git)
     done
     case "$*" in
         *"rev-parse --is-shallow-repository"*) respond GIT_SHALLOW ;;
-        *"rev-parse --verify refs/remotes/origin/dev"*) respond GIT_HEAD ;;
+        *"rev-parse --verify refs/remotes/origin/main"*) respond GIT_HEAD ;;
         *"rev-parse --verify"*) respond GIT_REVISION ;;
         *"--unshallow"*) : > .fake-git-unshallowed ;;
         *"merge-base --is-ancestor"*)

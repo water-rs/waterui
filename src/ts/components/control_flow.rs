@@ -173,10 +173,11 @@ pub fn show(
 
     let (handler, dynamic) = Dynamic::new();
     handler.set(build(presented.snapshot())?);
-    let guard = presented.watch(move |context| {
-        let view = build(context.into_value())
-            .unwrap_or_else(|error| panic!("a <Show> branch could not be rendered: {error}"));
-        handler.set(view);
+    let guard = presented.watch(move |context| match build(context.into_value()) {
+        Ok(view) => handler.set(view),
+        Err(error) => crate::contract_violation!(
+            "a <Show> branch could not be rendered, so it keeps its last view: {error}"
+        ),
     });
     // `presented` is retained beside its guard, and `source` beside it: a
     // watch registration keeps neither alive, and `source` owns the

@@ -42,6 +42,11 @@ class HwuiPainter : OrderedContent, SessionPainter {
             "hydrolysis: HWUI painter is already bound to another host"
         }
         this.host = host
+        // The one platform-view kind this painter realizes itself: the
+        // `TextureView` each GPU content view is hosted in.
+        host.platformViewRegistry.registerFactory(HostedSurfaceView.KIND) { context ->
+            HostedSurfaceView(context)
+        }
         host.setOrderedContent(this)
         highRefresh.attached(host)
         host.invalidate()
@@ -174,7 +179,7 @@ class HwuiPainter : OrderedContent, SessionPainter {
 
 /**
  * The high-refresh override for the bound host: public platform APIs only.
- * API 35+ writes `View.requestedFrameRate`; API 31–34 writes the host
+ * API 35+ writes `View.requestedFrameRate`; API 33–34 writes the host
  * activity window's `preferredRefreshRate`. The demand survives detach but
  * the override does not — an unbound painter restores the previous rate.
  */

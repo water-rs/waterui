@@ -10,19 +10,20 @@ use core::cell::RefCell;
 
 use cocoa_ui::Retained;
 use waterui::Str;
-use waterui::animation::Animation;
+use waterui::animation::{Animation, ChangeAnimation};
 use waterui::graphics::color::WorkingColor;
 use waterui::reactive::Signal;
 use waterui::reactive::watcher::Metadata;
 use waterui::resolve::Resolvable;
-use waterui::text::font::{Body, FontDesign, FontWeight, ResolvedFont};
+use waterui::text::font::{Body, ResolvedFont};
 use waterui::theme::color::Foreground;
 use waterui_core::layout::{
-    ProposalSize, Size, StretchAxis, SubView, VerticalAlignment, ViewDimensions,
+    LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, VerticalAlignment,
+    ViewDimensions,
 };
 
+use super::font::platform_font;
 use crate::contract::NativeLeaf;
-use crate::dispatch::Dispatcher;
 
 #[cfg(target_os = "macos")]
 mod platform {
@@ -42,73 +43,11 @@ fn as_view(label: &Label) -> &cocoa_ui::PlatformView {
 /// The cross-dissolve duration the metadata calls for, in seconds — the
 /// same table `components::text` uses.
 fn cross_dissolve_duration(metadata: &Metadata) -> Option<f64> {
-    match metadata.try_get::<Animation>() {
+    match ChangeAnimation::of(metadata).animation() {
         None => None,
         Some(Animation::Default) => Some(0.25),
         Some(Animation::Bezier { duration, .. }) => Some(duration.as_secs_f64()),
         Some(Animation::Spring { .. }) => Some(0.15),
-    }
-}
-
-/// The platform weight of a `FontWeight` on the `UIFont`/`NSFont` scale.
-const fn platform_weight(weight: FontWeight) -> f64 {
-    use cocoa_ui::font::weight;
-    match weight {
-        FontWeight::Thin => weight::THIN,
-        FontWeight::UltraLight => weight::ULTRA_LIGHT,
-        FontWeight::Light => weight::LIGHT,
-        FontWeight::Normal => weight::REGULAR,
-        FontWeight::Medium => weight::MEDIUM,
-        FontWeight::SemiBold => weight::SEMI_BOLD,
-        FontWeight::Bold => weight::BOLD,
-        FontWeight::UltraBold => weight::HEAVY,
-        FontWeight::Black => weight::BLACK,
-    }
-}
-
-/// The comma-separated candidates of a CSS-style family list, trimmed with
-/// the empties dropped.
-fn family_candidates(family: &str) -> impl Iterator<Item = &str> {
-    family
-        .split(',')
-        .map(str::trim)
-        .filter(|candidate| !candidate.is_empty())
-}
-
-/// The platform face a resolved font names.
-///
-/// # Panics
-///
-/// When the family names no installed font and no generic — the same
-/// `fatalError` the Swift port raises.
-fn platform_font(
-    mtm: cocoa_ui::MainThreadMarker,
-    resolved: &ResolvedFont,
-) -> Retained<cocoa_ui::Font> {
-    let size = f64::from(resolved.size);
-    let weight = platform_weight(resolved.weight);
-    match resolved.family.as_deref() {
-        Some(family) if !family.is_empty() => {
-            let mut resolved_font = None;
-            for candidate in family_candidates(family) {
-                resolved_font = match candidate {
-                    "system" | "sans-serif" => Some(cocoa_ui::font::system(mtm, size, weight)),
-                    _ => cocoa_ui::font::named(candidate, size),
-                };
-                if resolved_font.is_some() {
-                    break;
-                }
-            }
-            resolved_font.unwrap_or_else(|| {
-                panic!(
-                    "WaterUI: font family '{family}' not found. Ensure the font is bundled and registered."
-                )
-            })
-        }
-        _ => match resolved.design {
-            FontDesign::Default => cocoa_ui::font::system(mtm, size, weight),
-            FontDesign::Monospaced => cocoa_ui::font::monospaced(mtm, size, weight),
-        },
     }
 }
 
@@ -165,7 +104,7 @@ impl core::fmt::Debug for PlainState {
 /// `render()`: the one attributed run — body font, theme foreground — onto
 /// the label, then intrinsic-size invalidation (`invalidateCapturedRendering`).
 fn render(state: &PlainState, duration: Option<f64>) {
-    let font = platform_font(state.mtm, &state.font);
+    let font = platform_font(state.mtm, &state.font, false);
     let foreground = platform_color(&state.foreground);
     let run = cocoa_ui::text::TextRun {
         text: state.text.as_str(),
@@ -174,8 +113,8 @@ fn render(state: &PlainState, duration: Option<f64>) {
         background: None,
         underline: false,
         strikethrough: false,
-        letter_spacing: f64::from(state.font.letter_spacing),
-        line_height: state.font.line_height.map_or(0.0, f64::from),
+        letter_spacing: f64::from(state.font.letter_spacing()),
+        line_height: state.font.line_height().map_or(0.0, f64::from),
     };
     let attributed = cocoa_ui::text::build(state.mtm, &[run]);
     let label = state.label.clone();
@@ -205,6 +144,14 @@ impl core::fmt::Debug for PlainSubView {
 }
 
 impl SubView for PlainSubView {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     // `TextMetrics` measures in f64; `ViewDimensions` speaks f32 — the
     // narrowing is the layout contract.
     #[expect(
@@ -240,50 +187,48 @@ impl SubView for PlainSubView {
     }
 }
 
-/// Installs the `plain` handler on the dispatcher: `Native<Str>` maps to a
+/// The `plain` realization: `Native<Str>` maps to a
 /// kit label whose attributed string rebuilds when the body font slot or
 /// foreground slot changes.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<Str>(|text, ctx| {
-        let mtm = ctx.mtm();
-        let label = Label::new(mtm);
-        label.set_line_limit(0);
+pub(crate) fn realize_str(text: Str, ctx: &RenderContext<'_>) -> NativeLeaf {
+    let mtm = ctx.mtm();
+    let label = Label::new(mtm);
+    label.set_line_limit(0);
 
-        let body = Body.resolve(ctx.env());
-        let foreground = Foreground.resolve(ctx.env());
-        let state = Rc::new(RefCell::new(PlainState {
-            mtm,
+    let body = Body.resolve(ctx.env());
+    let foreground = Foreground.resolve(ctx.env());
+    let state = Rc::new(RefCell::new(PlainState {
+        mtm,
+        label: label.clone(),
+        text,
+        font: body.snapshot(),
+        foreground: foreground.snapshot(),
+    }));
+    render(&state.borrow(), None);
+
+    let mut leaf = NativeLeaf::new(
+        as_view(&label),
+        PlainSubView {
             label: label.clone(),
-            text,
-            font: body.snapshot(),
-            foreground: foreground.snapshot(),
-        }));
-        render(&state.borrow(), None);
+        },
+    );
 
-        let mut leaf = NativeLeaf::new(
-            as_view(&label),
-            PlainSubView {
-                label: label.clone(),
-            },
-        );
-
-        leaf.watch(&body, {
-            let state = Rc::clone(&state);
-            move |ctx| {
-                let duration = cross_dissolve_duration(ctx.metadata());
-                state.borrow_mut().font = ctx.into_value();
-                render(&state.borrow(), duration);
-            }
-        });
-        leaf.watch(&foreground, {
-            let state = Rc::clone(&state);
-            move |ctx| {
-                let duration = cross_dissolve_duration(ctx.metadata());
-                state.borrow_mut().foreground = ctx.into_value();
-                render(&state.borrow(), duration);
-            }
-        });
-        leaf.keep(state);
-        leaf
+    leaf.watch(&body, {
+        let state = Rc::clone(&state);
+        move |ctx| {
+            let duration = cross_dissolve_duration(ctx.metadata());
+            state.borrow_mut().font = ctx.into_value();
+            render(&state.borrow(), duration);
+        }
     });
+    leaf.watch(&foreground, {
+        let state = Rc::clone(&state);
+        move |ctx| {
+            let duration = cross_dissolve_duration(ctx.metadata());
+            state.borrow_mut().foreground = ctx.into_value();
+            render(&state.borrow(), duration);
+        }
+    });
+    leaf.keep(state);
+    leaf
 }

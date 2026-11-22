@@ -193,10 +193,9 @@ impl WebPort {
     /// reaches a window.
     pub(super) fn request_focus(&self) {
         if let Some(window) = self.window() {
-            assert!(
-                window.makeFirstResponder(Some(&self.ivars().web)),
-                "WKWebView refused first responder"
-            );
+            if !window.makeFirstResponder(Some(&self.ivars().web)) {
+                tracing::error!("WKWebView refused first responder; the page is not focused");
+            }
         } else {
             self.ivars().focus_requested.set(true);
         }

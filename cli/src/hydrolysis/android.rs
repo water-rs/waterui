@@ -65,7 +65,7 @@ pub enum HydrolysisAndroidPainter {
     #[default]
     Gpu,
     /// The `RenderNode` painter drawing through the host view hierarchy.
-    /// Its own minimum is API 29; the generated app uses the maximum of
+    /// Its own minimum is API 34, `Canvas.drawMesh`; the generated app uses the maximum of
     /// that and the framework floor.
     Hwui,
 }
@@ -93,7 +93,7 @@ impl HydrolysisAndroidPainter {
             // Painter minimums, not the framework floor. `template_entry`
             // takes the maximum of these and `android-min-api-level`.
             Self::Gpu => 26,
-            Self::Hwui => 29,
+            Self::Hwui => 34,
         }
     }
 
@@ -113,6 +113,29 @@ impl HydrolysisAndroidPainter {
     pub fn band_class(self) -> Option<String> {
         match self {
             Self::Gpu => Some("HydrolysisGpuBand".to_string()),
+            Self::Hwui => None,
+        }
+    }
+
+    /// The region band `View` this painter's platform-view registry stacks
+    /// after each embedded platform view — the GPU painter's
+    /// `HydrolysisGpuRegionBand` shows the self-drawn content a frame
+    /// paints above that view (water-rs/waterui#2225). A painter that
+    /// draws in order ships none.
+    #[must_use]
+    pub fn region_band_import(self) -> Option<String> {
+        match self {
+            Self::Gpu => Some("dev.waterui.hydrolysis.gpu.HydrolysisGpuRegionBand".to_string()),
+            Self::Hwui => None,
+        }
+    }
+
+    /// The region band class name [`Self::region_band_import`] supplies,
+    /// when set.
+    #[must_use]
+    pub fn region_band_class(self) -> Option<String> {
+        match self {
+            Self::Gpu => Some("HydrolysisGpuRegionBand".to_string()),
             Self::Hwui => None,
         }
     }
@@ -145,9 +168,8 @@ pub fn resolve_painter(
         .or_else(|| {
             project
                 .manifest()
-                .hydrolysis
-                .as_ref()
-                .and_then(|config| config.painter)
+                .hydrolysis()
+                .and_then(|config| config.painter().copied())
         })
         .unwrap_or_default()
 }
@@ -609,6 +631,8 @@ async fn template_entry(
         min_api_level: framework_min.max(painter.min_api_level()),
         painter_band_import: painter.band_import(),
         painter_band_class: painter.band_class(),
+        painter_region_band_import: painter.region_band_import(),
+        painter_region_band_class: painter.region_band_class(),
     })
 }
 
@@ -706,13 +730,15 @@ pub async fn rendered_android_outputs(
 /// the staging call cheap.
 pub(crate) async fn resolve_declared_fonts(
     project: &Project,
+    features: &[String],
 ) -> eyre::Result<Vec<assets::ResolvedFont>> {
-    let declarations = assets::scan_fonts(
+    let declarations = assets::scan_fonts_with_features(
         project,
         &project
             .backend_path::<HydrolysisBackend>()
             .join("Cargo.toml"),
         &[waterui_assets_planner::FontPlatform::Android],
+        features,
     )
     .await?;
     assets::resolve_fonts(project.host(), declarations).await
@@ -753,7 +779,7 @@ pub async fn build(
     options: BuildOptions,
     kotlin: &KotlinToolchain,
 ) -> eyre::Result<BuiltTarget> {
-    prepare_for_build(project).await?;
+    prepare_for_build(project, &options.app_features(project).collect::<Vec<_>>()).await?;
     Ok(
         build_prepared_into_jni_libs(project, abi, painter, options, kotlin)
             .await?
@@ -800,7 +826,7 @@ pub async fn build_with_features(
     features: &[&str],
     kotlin: &KotlinToolchain,
 ) -> eyre::Result<HydrolysisAndroidBuild> {
-    prepare_for_build(project).await?;
+    prepare_for_build(project, &options.app_features(project).collect::<Vec<_>>()).await?;
     build_prepared(project, abi, painter, options, features, kotlin).await
 }
 
@@ -813,7 +839,7 @@ pub async fn build_with_features(
 ///
 /// Returns an error when the app links an engine this pair cannot host, the
 /// launcher crate has not been generated or the font resolution fails.
-pub(crate) async fn prepare_for_build(project: &Project) -> eyre::Result<()> {
+pub(crate) async fn prepare_for_build(project: &Project, features: &[String]) -> eyre::Result<()> {
     // Validate the engine plan for this pair before any work runs: the same
     // bound the desktop `hydrolysis::backend` enforces on its own path.
     project
@@ -833,7 +859,7 @@ pub(crate) async fn prepare_for_build(project: &Project) -> eyre::Result<()> {
             backend_path.display()
         );
     }
-    resolve_declared_fonts(project).await.map(drop)
+    resolve_declared_fonts(project, features).await.map(drop)
 }
 
 /// [`build_with_features`] for a caller that already ran
@@ -863,23 +889,44 @@ pub(crate) async fn build_prepared(
 
     let platform = AndroidPlatform::new(abi);
     let triple = platform.triple();
-    let min_api_level = project
-        .resolved_framework()
-        .await?
-        .android_min_api_level()?;
+    let framework = project.resolved_framework().await?;
+    let min_api_level = framework.android_min_api_level()?;
     let context = resolve_android_build_context(host, abi, &triple, min_api_level, kotlin).await?;
 
     // The painter's feature is the launcher's own `gpu`/`hwui` selection —
     // the manifest routes it onto `hydrolysis` and `waterui`, so a `hwui`
-    // painter links no GPU stack at all.
+    // painter links no GPU stack at all. The manifest declares it only where
+    // the framework's `hydrolysis` does; a revision that predates the
+    // painter is an error here, never a Cargo feature error.
+    if !templates::generated_manifest_declares(&backend_path.join("Cargo.toml"), painter.name())? {
+        bail!(
+            "the `{painter}` Android painter is unavailable: the `hydrolysis` that {} resolves \
+             declares no `{painter}` feature. Select a painter that framework revision supports \
+             or move to a framework revision that ships it",
+            framework.origin(),
+        );
+    }
     let rust_build = RustBuild::for_project(project, &backend_path, triple.clone())
         .with_crate_type_override("cdylib")
         .with_rustc_flag(ANDROID_MAX_PAGE_SIZE_LINK_ARG)
+        // Standard RELR tags require API 30; the framework minimum is API 33.
+        // Pack other dynamic relocations with Android's API 23 encoding.
+        .with_final_rustc_arg("-Clink-arg=-Wl,--pack-dyn-relocs=android+relr")
         .with_target_dir(project.water_target_dir(options.linkage()).await?)
         .with_features(std::iter::once(painter.name()).chain(features.iter().copied()))
+        .with_features(options.app_features(project))
         .with_envs(options.cargo_envs().iter().cloned())
         .with_envs(resolve_windows_arm64_llvm_envs(host).await?);
     let launcher_manifest = backend_path.join("Cargo.toml");
+    let widget_features = assets::widget_features(
+        project,
+        &launcher_manifest,
+        &triple,
+        rust_build.features(),
+        &["hydrolysis", "hydrolysis-m3"],
+    )
+    .await?;
+    let rust_build = rust_build.with_features(widget_features);
     assets::seed_managed_crate_lock(project, &launcher_manifest).await?;
     let required_permissions =
         assets::scan_required_permissions(project, &launcher_manifest, rust_build.features())
@@ -996,9 +1043,10 @@ async fn copy_assets(
     project: &Project,
     symbols: &crate::artifact_symbols::ArtifactSymbols,
     dev_server: bool,
+    features: &[String],
 ) -> eyre::Result<()> {
     let android_dir = android_dir(&project.backend_path::<HydrolysisBackend>());
-    let fonts = resolve_declared_fonts(project).await?;
+    let fonts = resolve_declared_fonts(project, features).await?;
     assets::stage_project_assets_for_android(project, &android_dir, symbols, dev_server, &fonts)
         .await?;
     Ok(())
@@ -1044,6 +1092,7 @@ pub async fn package_with_abis(
         project,
         &built.app_symbols().await?,
         options.uses_dev_server(),
+        &built.features,
     )
     .await?;
 
@@ -1090,6 +1139,20 @@ pub async fn package_with_abis(
         ("WATERUI_SKIP_RUST_BUILD", "1".to_owned()),
         ("WATERUI_ANDROID_ABIS", abis_str),
     ];
+    if painter == HydrolysisAndroidPainter::Hwui {
+        let directories = built
+            .build_scripts
+            .iter()
+            .flat_map(|script| &script.env)
+            .filter_map(|(key, value)| (key == "WATERUI_HWUI_KOTLIN_DIR").then_some(value))
+            .collect::<std::collections::BTreeSet<_>>();
+        let [directory] = directories.into_iter().collect::<Vec<_>>()[..] else {
+            bail!(
+                "HWUI packaging requires exactly one WATERUI_HWUI_KOTLIN_DIR from Cargo build-script outputs"
+            );
+        };
+        envs.push(("WATERUI_HWUI_KOTLIN_DIR", directory.clone()));
+    }
     if release_signing == Some(crate::android::signing::ReleaseSigning::Suppressed) {
         envs.push((crate::android::signing::UNSIGNED_ENV, "1".to_owned()));
     }
@@ -1487,7 +1550,7 @@ mod tests {
             "[package]\nname = \"Fixture\"\nbundle_identifier = \"dev.waterui.fixture\"\n{extra_manifest}"
         ))
         .expect("Water.toml parses");
-        manifest.framework = Some(stable_checkout_framework_mirror(temporary.path())?);
+        manifest.set_framework(Some(stable_checkout_framework_mirror(temporary.path())?));
         std::fs::write(
             root.join("Water.toml"),
             toml::to_string(&manifest).expect("manifest serializes"),
@@ -1901,7 +1964,7 @@ mod tests {
             crate::assets::assert_settings_plugin_markers(settings);
 
             let gradle = files["app/build.gradle.kts"].as_str();
-            assert!(gradle.contains("minSdk = 31"), "gpu api floor: {gradle}");
+            assert!(gradle.contains("minSdk = 33"), "gpu api floor: {gradle}");
             crate::assets::assert_module_plugin_markers(gradle);
             assert!(
                 gradle.contains("\"dev.waterui.hydrolysis:host\""),
@@ -2017,9 +2080,11 @@ mod tests {
                     .expect("the launcher context carries Android's answers"),
                 Some("webview-system")
             );
-            let outputs =
-                crate::templates::hydrolysis::rendered_outputs(&ctx, "waterui-test-hydrolysis")
-                    .expect("hydrolysis outputs render");
+            let outputs = crate::templates::hydrolysis::rendered_outputs_with_painters(
+                &ctx,
+                "waterui-test-hydrolysis",
+            )
+            .expect("hydrolysis outputs render");
             let cargo_toml = outputs
                 .iter()
                 .find(|(path, _)| path == Path::new("Cargo.toml"))
@@ -2274,10 +2339,10 @@ mod tests {
     }
 
     /// The hwui painter renders its module and dependency coordinates and
-    /// ships no GPU band view. Its own API 29 requirement sits under the
-    /// framework floor, so the generated `minSdk` is the framework's.
+    /// ships no GPU band view. Its own API 34 requirement sits above the
+    /// framework floor, so the generated `minSdk` is the painter's.
     #[test]
-    fn the_hwui_painter_renders_at_the_framework_floor_and_mounts_no_band() -> std::io::Result<()> {
+    fn the_hwui_painter_renders_at_its_own_floor_and_mounts_no_band() -> std::io::Result<()> {
         smol::block_on(async {
             let (_machine, host) = machine_with_staged_host(Path::new("staged"), &["hwui"]);
             let (_temporary, project) = fixture_project(&host, "").await?;
@@ -2305,8 +2370,8 @@ mod tests {
 
             let gradle = files["app/build.gradle.kts"].as_str();
             assert!(
-                gradle.contains("minSdk = 31"),
-                "framework api floor: {gradle}"
+                gradle.contains("minSdk = 34"),
+                "hwui painter api floor: {gradle}"
             );
             assert!(
                 gradle.contains("\"dev.waterui.hydrolysis:hwui\""),

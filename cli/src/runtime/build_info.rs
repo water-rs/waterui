@@ -10,7 +10,6 @@ pub const ANDROID_JDK_VERSION: &str = env!("WATERUI_CLI_ANDROID_JDK_VERSION");
 
 /// Git repository reference embedded into the CLI binary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct BackendReference {
     /// Git remote URL for the backend repository.
     pub repository_url: &'static str,
@@ -24,6 +23,6 @@ pub struct BackendReference {
 /// source literal rather than a build-script value — bump `revision` when the
 /// CLI starts depending on a newer `waterui-tui` API.
 pub const TUI_BACKEND: BackendReference = BackendReference {
-    repository_url: "https://github.com/water-rs/tui",
+    repository_url: "https://github.com/water-rs/tui-backend",
     revision: "4782df8a39626a9f24fd27b909d884924e2bce95",
 };

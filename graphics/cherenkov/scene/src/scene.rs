@@ -48,9 +48,13 @@ pub enum Feature {
     Image,
     /// Image pattern paints.
     ImagePaint,
+    /// User WGSL shader paints.
+    ShaderPaint,
     /// A non-trivial blend mode (the payload is the mode).
     Blend(BlendMode),
-    /// A group compositing in a non-linear space (the payload is the space).
+    /// A surface storing a non-linear space, or a group or layer
+    /// compositing in a space unlike its parent level's (the payload is the
+    /// space).
     BlendSpace(crate::BlendSpace),
     /// Layer clips.
     Clip,
@@ -97,10 +101,15 @@ pub enum Feature {
     BackdropColorMatrix,
     /// A member layer carries a per-member backdrop sampling effect.
     BackdropEffect,
+    /// That effect is a user WGSL backdrop shader.
+    BackdropShader,
     /// A backdrop group captures below device resolution (`scale < 1`).
     BackdropScale,
     /// A backdrop group captures a blur pyramid (`levels > 1`).
     BackdropLevels,
+    /// A backdrop group reduces its pyramid with the Gaussian kernel
+    /// (`BackdropGroup::pyramid`).
+    BackdropGaussianPyramid,
     /// A backdrop group anchors its capture at a named layer
     /// ([`BackdropGroup::anchor`]).
     BackdropAnchor,
@@ -152,6 +161,12 @@ pub struct Scene {
     /// Each measured run traverses zero to this offset after its own warmup.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scroll_extent: Option<kurbo::Vec2>,
+    /// The space the surface's root canvas stores its pixels in, which
+    /// every layer and group declaring no `blend_space` composites in:
+    /// `linear` (the default, left out of `scene.json`) or `srgb-encoded`.
+    /// Output is the linear working space either way.
+    #[serde(default, skip_serializing_if = "crate::backdrop::is_linear")]
+    pub storage_space: crate::BlendSpace,
     /// The features this scene uses.
     pub features: BTreeSet<Feature>,
     /// The backdrop groups member layers sample (`Layer::backdrop`).
@@ -172,6 +187,7 @@ impl Scene {
             clear,
             present_headroom: Self::default_present_headroom(),
             scroll_extent: None,
+            storage_space: crate::BlendSpace::Linear,
             features: BTreeSet::new(),
             backdrop_groups: Vec::new(),
             root: Layer::default(),
@@ -206,12 +222,18 @@ impl Scene {
         if self.clear.is_wide_gamut() {
             f.insert(Feature::WideGamut);
         }
+        if self.storage_space != crate::BlendSpace::Linear {
+            f.insert(Feature::BlendSpace(self.storage_space));
+        }
         for group in &self.backdrop_groups {
             if group.scale < 1.0 {
                 f.insert(Feature::BackdropScale);
             }
             if group.levels > 1 {
                 f.insert(Feature::BackdropLevels);
+            }
+            if group.pyramid != crate::CapturePyramid::Box {
+                f.insert(Feature::BackdropGaussianPyramid);
             }
             if group.anchor.is_some() {
                 f.insert(Feature::BackdropAnchor);
@@ -233,7 +255,7 @@ impl Scene {
                 }
             }
         }
-        collect_layer_features(&self.root, &mut f);
+        collect_layer_features(&self.root, self.storage_space, &mut f);
         self.features = f;
     }
 
@@ -248,7 +270,7 @@ impl Scene {
         // it from the layer tree and reject scenes that lie about what they
         // use (a stale or hand-edited file would otherwise bypass an
         // adapter's capability check).
-        scene.validate_image_encodings()?;
+        scene.validate_paints()?;
         let declared = std::mem::take(&mut scene.features);
         scene.compute_features();
         if scene.features != declared {
@@ -311,7 +333,7 @@ impl Scene {
         fn plain_glyph_group(group: &crate::Group) -> bool {
             group.opacity == 1.0
                 && group.blend == crate::BlendMode::Normal
-                && group.blend_space == crate::BlendSpace::Linear
+                && matches!(group.blend_space, None | Some(crate::BlendSpace::Linear))
                 && group.filter.is_none()
                 && group
                     .items
@@ -539,6 +561,10 @@ impl Scene {
                     ))
                 }
             }
+            E::Shader { reach, .. } if !(reach.is_finite() && *reach >= 0.0) => Err(
+                SceneError::InvalidBackdropEffect("shader reach must be finite and non-negative"),
+            ),
+            E::Shader { params, .. } => shader_params(params),
         }
     }
 
@@ -641,25 +667,30 @@ fn collect_resource_refs(layer: &Layer, out: &mut Vec<ResourceHash>) {
 }
 
 impl Scene {
-    /// Validates every `Draw::Image`/`Paint::Image` encoding declaration.
+    /// Validates every `Draw::Image`/`Paint::Image` encoding declaration
+    /// and every `Paint::Shader`'s parameters.
     ///
     /// # Errors
-    /// [`SceneError::InvalidImageEncoding`] on the first bad declaration.
-    fn validate_image_encodings(&self) -> Result<(), SceneError> {
-        fn paint_encoding(paint: &Paint) -> Option<&ImageEncoding> {
+    /// [`SceneError::InvalidImageEncoding`] or
+    /// [`SceneError::InvalidShaderParams`] on the first bad declaration.
+    fn validate_paints(&self) -> Result<(), SceneError> {
+        // `fill`: the paint is a fill's own paint, the one place a shader
+        // paint's bounds are the scene's to define.
+        fn paint_valid(paint: &Paint, fill: bool) -> Result<(), SceneError> {
             match paint {
-                Paint::Transformed { paint, .. } => paint_encoding(paint),
-                Paint::Image(ip) => Some(&ip.encoding),
-                _ => None,
+                Paint::Transformed { paint, .. } => paint_valid(paint, false),
+                Paint::Image(ip) => ip.encoding.validate(),
+                Paint::Shader(_) if !fill => Err(SceneError::ShaderPaintPlacement),
+                Paint::Shader(shader) => shader_params(&shader.params),
+                _ => Ok(()),
             }
         }
         fn draw_encoding(draw: &Draw) -> Result<(), SceneError> {
             match draw {
                 Draw::Image { encoding, .. } => encoding.validate(),
-                Draw::Fill { paint, .. }
-                | Draw::Stroke { paint, .. }
-                | Draw::Glyphs(crate::GlyphRun { paint, .. }) => {
-                    paint_encoding(paint).map_or(Ok(()), super::draw::ImageEncoding::validate)
+                Draw::Fill { paint, .. } => paint_valid(paint, true),
+                Draw::Stroke { paint, .. } | Draw::Glyphs(crate::GlyphRun { paint, .. }) => {
+                    paint_valid(paint, false)
                 }
                 Draw::Shadow { .. } => Ok(()),
             }
@@ -684,6 +715,15 @@ impl Scene {
             Ok(())
         }
         visit(&self.root)
+    }
+}
+
+/// A shader's `params` fit the prelude's array and are finite.
+fn shader_params(params: &[f64]) -> Result<(), SceneError> {
+    if params.len() <= crate::ShaderPaint::MAX_PARAMS && params.iter().all(|v| v.is_finite()) {
+        Ok(())
+    } else {
+        Err(SceneError::InvalidShaderParams)
     }
 }
 
@@ -738,6 +778,9 @@ fn collect_paint_features(paint: &Paint, f: &mut BTreeSet<Feature>) {
             if ip.extend_x == Extend::None || ip.extend_y == Extend::None {
                 f.insert(Feature::ExtendNone);
             }
+        }
+        Paint::Shader(_) => {
+            f.insert(Feature::ShaderPaint);
         }
     }
 }
@@ -843,28 +886,45 @@ fn collect_draw_features(draw: &Draw, f: &mut BTreeSet<Feature>) {
     }
 }
 
-fn collect_group_features(group: &crate::Group, f: &mut BTreeSet<Feature>) {
+/// Records [`Feature::BlendSpace`] for a level that declares a space unlike
+/// `parent`, the space of the level it composites onto, and returns the
+/// level's resolved space.
+fn collect_space(
+    declared: Option<crate::BlendSpace>,
+    parent: crate::BlendSpace,
+    f: &mut BTreeSet<Feature>,
+) -> crate::BlendSpace {
+    let space = declared.unwrap_or(parent);
+    if space != parent {
+        f.insert(Feature::BlendSpace(space));
+    }
+    space
+}
+
+fn collect_group_features(
+    group: &crate::Group,
+    parent: crate::BlendSpace,
+    f: &mut BTreeSet<Feature>,
+) {
     if group.opacity < 1.0 {
         f.insert(Feature::Opacity);
     }
     if group.blend != BlendMode::Normal {
         f.insert(Feature::Blend(group.blend));
     }
-    if group.blend_space != crate::BlendSpace::Linear {
-        f.insert(Feature::BlendSpace(group.blend_space));
-    }
+    let space = collect_space(group.blend_space, parent, f);
     if group.filter.is_some() {
         f.insert(Feature::Filter);
     }
     for item in &group.items {
         match item {
             crate::GroupItem::Draw(d) => collect_draw_features(d, f),
-            crate::GroupItem::Group(g) => collect_group_features(g, f),
+            crate::GroupItem::Group(g) => collect_group_features(g, space, f),
         }
     }
 }
 
-fn collect_layer_features(layer: &Layer, f: &mut BTreeSet<Feature>) {
+fn collect_layer_features(layer: &Layer, parent: crate::BlendSpace, f: &mut BTreeSet<Feature>) {
     if layer.clip.is_some() {
         f.insert(Feature::Clip);
     }
@@ -877,6 +937,7 @@ fn collect_layer_features(layer: &Layer, f: &mut BTreeSet<Feature>) {
     if layer.blend != BlendMode::Normal {
         f.insert(Feature::Blend(layer.blend));
     }
+    let space = collect_space(layer.blend_space, parent, f);
     if layer.scroll_offset != kurbo::Vec2::ZERO {
         f.insert(Feature::Scroll);
     }
@@ -886,8 +947,11 @@ fn collect_layer_features(layer: &Layer, f: &mut BTreeSet<Feature>) {
     if layer.backdrop.is_some() {
         f.insert(Feature::Backdrop);
     }
-    if layer.backdrop_effect.is_some() {
+    if let Some(effect) = &layer.backdrop_effect {
         f.insert(Feature::BackdropEffect);
+        if matches!(effect, crate::BackdropEffectSpec::Shader { .. }) {
+            f.insert(Feature::BackdropShader);
+        }
     }
     if layer.backdrop_outer != 0.0 {
         f.insert(Feature::BackdropOuter);
@@ -897,9 +961,9 @@ fn collect_layer_features(layer: &Layer, f: &mut BTreeSet<Feature>) {
     }
     for item in &layer.items {
         match item {
-            Item::Layer(l) => collect_layer_features(l, f),
+            Item::Layer(l) => collect_layer_features(l, space, f),
             Item::Draw(d) => collect_draw_features(d, f),
-            Item::Group(g) => collect_group_features(g, f),
+            Item::Group(g) => collect_group_features(g, space, f),
         }
     }
 }

@@ -8,7 +8,7 @@ struct TileInput {
     metal::float2 device_ [[user(loc1), center_perspective]];
     uint instance [[user(loc2), flat]];
     metal::uint4 meta [[user(loc3), flat]];
-    metal::float4 color [[user(loc4), flat]];
+    decltype(VsOut{}.color) color [[user(loc4), flat]];
     metal::float4 params [[user(loc5), flat]];
     metal::float4 shape_a [[user(loc6), flat]];
     metal::float4 shape_radii [[user(loc7), flat]];
@@ -73,12 +73,14 @@ VsOut tile_input(TileInput v, metal::float4 position, constant Globals& globals)
     metal::float2 backdrop_origin = {}, backdrop_size = {}; \
     float backdrop_scale = {}; \
     float backdrop_levels = {}; \
+    uint backdrop_space = {}; \
     uint backdrop_member = {}; \
     metal::float4 source_pixel = metal::float4(src); \
     metal::float4 destination_pixel = metal::float4(dst); \
     return { fs_full(tile_input(v, position, globals), globals, instances, stops, \
         atlas, mask_tex, source, image_tex, TILE_IMAGE_DECODE_ARG backdrop_origin, backdrop_size, \
-        backdrop_scale, backdrop_levels, backdrop_member, source_pixel, destination_pixel) };
+        backdrop_scale, backdrop_levels, backdrop_space, backdrop_member, source_pixel, \
+        destination_pixel) };
 
 #endif
 

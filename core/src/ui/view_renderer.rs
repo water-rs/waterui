@@ -27,9 +27,23 @@ use crate::ui::content_ledger::{ContentError, DisplayList, PendingContent};
 #[non_exhaustive]
 pub struct RenderRequest {
     /// The size proposed to the view, in points.
-    pub size: Size,
+    size: Size,
     /// How long the capture waits for owed content.
-    pub content_deadline: Duration,
+    content_deadline: Duration,
+}
+
+impl RenderRequest {
+    /// The size proposed to the view, in points.
+    #[must_use]
+    pub const fn size(&self) -> Size {
+        self.size
+    }
+
+    /// How long the capture waits for owed content.
+    #[must_use]
+    pub const fn content_deadline(&self) -> Duration {
+        self.content_deadline
+    }
 }
 
 impl RenderRequest {
@@ -49,11 +63,31 @@ impl RenderRequest {
 #[non_exhaustive]
 pub struct RenderResult {
     /// RGBA pixel data (4 bytes per pixel, row-major order).
-    pub rgba_data: Vec<u8>,
+    rgba_data: Vec<u8>,
     /// Actual rendered width in pixels.
-    pub width: u32,
+    width: u32,
     /// Actual rendered height in pixels.
-    pub height: u32,
+    height: u32,
+}
+
+impl RenderResult {
+    /// RGBA pixel data (4 bytes per pixel, row-major order).
+    #[must_use]
+    pub const fn rgba_data(&self) -> &[u8] {
+        self.rgba_data.as_slice()
+    }
+
+    /// Actual rendered width in pixels.
+    #[must_use]
+    pub const fn width(&self) -> u32 {
+        self.width
+    }
+
+    /// Actual rendered height in pixels.
+    #[must_use]
+    pub const fn height(&self) -> u32 {
+        self.height
+    }
 }
 
 impl RenderResult {
@@ -66,6 +100,12 @@ impl RenderResult {
             width,
             height,
         }
+    }
+
+    /// Takes the result apart into its RGBA pixel data, width and height.
+    #[must_use]
+    pub fn into_parts(self) -> (Vec<u8>, u32, u32) {
+        (self.rgba_data, self.width, self.height)
     }
 }
 
@@ -121,11 +161,14 @@ impl From<ContentError> for RenderError {
                 outstanding,
                 deadline,
             },
-            ContentError::Failed(failure) => Self::ContentFailed {
-                view: failure.view,
-                detail: failure.detail,
-                source: failure.source,
-            },
+            ContentError::Failed(failure) => {
+                let (view, detail, source) = failure.into_parts();
+                Self::ContentFailed {
+                    view,
+                    detail,
+                    source,
+                }
+            }
         }
     }
 }

@@ -7,16 +7,16 @@
 //! - [`fonts`]: resource font registration and CJK fallbacks
 //! - [`diagnostics`]: opt-in frame timing reports
 
-#[cfg(all(feature = "accessibility", hydrolysis_gpu_painter))]
+#[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
 use accesskit::{
     ActionRequest as AccessibilityActionRequest, TreeUpdate as AccessibilityTreeUpdate,
 };
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 use executor_core::try_init_local_executor;
 use nami::Signal as _;
 #[cfg(not(target_arch = "wasm32"))]
 use std::cell::Cell;
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 use std::collections::VecDeque;
 use std::time::Duration;
 use std::{cell::RefCell, rc::Rc};
@@ -29,19 +29,20 @@ use waterui::app::App;
     not(target_os = "android")
 ))]
 use waterui::app::AppParts;
+#[cfg(feature = "table")]
 use waterui::component::table::TableConfig;
 use waterui::window::Window;
 use waterui::window::WindowManager;
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 use waterui_core::AnyView;
 use waterui_core::Environment;
-use waterui_core::Native;
 use waterui_core::Retain;
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::key::KeyPress;
-use waterui_core::view::Hook;
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(feature = "table")]
+use waterui_core::{Native, view::Hook};
+#[cfg(hydrolysis_cherenkov)]
 use waterui_text::FontCollection;
 
 // The JNI host exists only where a painter does: a painter-less Android
@@ -83,10 +84,11 @@ mod diagnostics;
 /// composition, selection) — compiled where a host speaks it and on host for
 /// its tests; dead elsewhere.
 #[cfg(any(hydrolysis_range_editing, all(test, not(target_arch = "wasm32"))))]
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 pub mod editing;
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 mod executor;
-#[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
+#[cfg(all(not(target_arch = "wasm32"), hydrolysis_cherenkov))]
 mod headless;
 /// The host UI-thread executor and its wake — compiled where a platform
 /// schedules the frames (Android, UIKit) and, because `eventfd` is
@@ -95,10 +97,11 @@ mod headless;
 pub mod host_executor;
 pub mod ime;
 #[cfg_attr(all(target_arch = "wasm32", not(feature = "web")), allow(dead_code))]
+#[cfg(feature = "menu")]
 pub mod menu_bar;
 #[cfg(hydrolysis_winit)]
 pub mod placement;
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 mod semantic;
 /// The windowed runner's SIGINT/SIGTERM/SIGHUP contract on Unix — compiled
 /// where the winit runner needs it, and in test builds for its child-process
@@ -114,7 +117,7 @@ mod web_runner;
 // Bare wasm compiles the module for its profile types (the semantic runtime
 // uses them everywhere) but has no window pump to call the rest.
 // `pub` within the private `runner` module: the platform surfaces name
-// `GpuSurfaceFrame` from outside `runner`.
+// `PaintedFrame` from outside `runner`.
 #[cfg_attr(all(target_arch = "wasm32", not(feature = "web")), allow(dead_code))]
 pub mod window;
 #[cfg(hydrolysis_winit)]
@@ -123,21 +126,24 @@ mod winit_runner;
 mod x11_state_watch;
 
 use diagnostics::{RenderDiagnostics, RenderDiagnosticsConfig};
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 use diagnostics::{RenderPhaseSample, elapsed_or_zero};
-#[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
+#[cfg(all(not(target_arch = "wasm32"), hydrolysis_cherenkov))]
 use executor::{DrainExecutorOnDrop, HeadlessMainThreadExecutor};
-#[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
+#[cfg(all(not(target_arch = "wasm32"), hydrolysis_cherenkov))]
 pub use headless::{HeadlessPumpResult, HeadlessRuntime};
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 pub use semantic::{SemanticPumpResult, SemanticRuntime};
 // Bare wasm has no window model until `web` compiles the browser runner.
 #[cfg(all(
     any(not(target_arch = "wasm32"), feature = "web"),
-    hydrolysis_gpu_painter
+    hydrolysis_cherenkov
 ))]
 use window::RuntimeWindow;
-#[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
+#[cfg(all(
+    any(not(target_arch = "wasm32"), feature = "web"),
+    hydrolysis_cherenkov
+))]
 use window::{advance_runtime, handle_input_events};
 // One frame's entry is shared by the winit pump, the headless `run`, the
 // `#[cfg(test)]` suite, and the browser runner; the Android host reaches it
@@ -152,9 +158,9 @@ use window::{advance_runtime, handle_input_events};
     ),
     all(target_arch = "wasm32", feature = "web")
 ))]
-use window::render_window;
+use window::{WindowFrame, render_window};
 // Only the native headless/capture paths read frames back; the browser surface presents directly.
-#[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
+#[cfg(all(not(target_arch = "wasm32"), hydrolysis_cherenkov))]
 use window::{FrameReader, render_window_with_capture};
 // `runtime_window_origin` is reached by the winit runner and by headless's
 // accessibility-action path.
@@ -163,9 +169,10 @@ use window::{FrameReader, render_window_with_capture};
     all(
         not(target_arch = "wasm32"),
         feature = "accessibility",
-        hydrolysis_gpu_painter
+        hydrolysis_cherenkov
     )
 ))]
+#[cfg(any(feature = "menu", feature = "color-picker"))]
 use window::runtime_window_origin;
 // The winit runner pumps events and window semantics through these.
 #[cfg(hydrolysis_winit)]
@@ -176,37 +183,54 @@ use window::pump_window_semantics;
 // unconditional import so non-test builds report no unused names.
 #[cfg(all(test, any(not(target_arch = "wasm32"), feature = "web")))]
 use window::{
-    FrameMode, acquire_surface_frame, axes_whose_limits_changed, clamp_window_size,
-    reports_ui_idle, schedule_animation_update, schedule_redraw_or_refresh,
-    surface_error_requires_reconfigure,
+    FrameMode, axes_whose_limits_changed, clamp_window_size, reports_ui_idle,
+    schedule_animation_update, schedule_redraw_or_refresh,
 };
+#[cfg(all(
+    test,
+    hydrolysis_gpu_painter,
+    any(not(target_arch = "wasm32"), feature = "web")
+))]
+use window::{acquire_surface_frame, surface_error_requires_reconfigure};
 // Frame and tree profiles are published to the inspector endpoint, which exists
 // only where `waterui::inspector` does.
 #[cfg(not(target_arch = "wasm32"))]
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 mod inspector;
 
-#[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
+#[cfg(all(not(target_arch = "wasm32"), hydrolysis_cherenkov))]
 pub use window::HeadlessSnapshot;
 #[cfg(hydrolysis_winit)]
 pub use window::window_requires_transparency;
 pub use window::{FrameCounters, FramePhases, FrameProfile};
 
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    not(hydrolysis_winit),
+    not(hydrolysis_uikit),
+    not(target_os = "android")
+))]
+use waterui_core::contract_violation;
+
 use crate::env::{parse_bool_env, parse_optional_positive_u64_env, parse_positive_u64_env};
 use crate::platform::{InputEvent, KeyState, PlatformWindow};
-#[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
-use crate::platform::{OffscreenGpuContext, OffscreenWindow};
+#[cfg(all(not(target_arch = "wasm32"), hydrolysis_cherenkov))]
+use crate::platform::{OffscreenPainter, OffscreenWindow};
 #[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
 use crate::readback::readback_surface_texture_rgba8;
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 use crate::renderer::FontFamilyResolution;
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 use crate::renderer::HydrolysisTextContextMenuMode;
-use crate::renderer::{
-    HydrolysisRenderer, HydrolysisWindowOrigin, KeyDelivery, KeyPressOutcome, SemanticCore,
-};
-use crate::renderer::{MenuShortcutRegistry, PopupWindowManager};
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(any(feature = "menu", feature = "color-picker"))]
+use crate::renderer::HydrolysisWindowOrigin;
+#[cfg(feature = "menu")]
+use crate::renderer::MenuShortcutRegistry;
+#[cfg(any(feature = "menu", feature = "color-picker"))]
+use crate::renderer::PopupWindowManager;
+use crate::renderer::{HydrolysisRenderer, KeyDelivery, KeyPressOutcome, SemanticCore};
+#[cfg(hydrolysis_cherenkov)]
 use crate::text::ParleyEngine;
 use crate::time::Instant;
 
@@ -307,16 +331,25 @@ fn offscreen_scale_factor() -> f64 {
     let Some(raw) = std::env::var_os(VARIABLE) else {
         return DEFAULT;
     };
-    let raw = raw
-        .to_str()
-        .unwrap_or_else(|| panic!("{VARIABLE} must be valid UTF-8"));
-    let parsed: f64 = raw
-        .parse()
-        .unwrap_or_else(|error| panic!("{VARIABLE} must be a number, got {raw:?}: {error}"));
-    assert!(
-        parsed.is_finite() && parsed > 0.0,
-        "{VARIABLE} must be finite and positive, got {parsed}"
-    );
+    let Some(raw) = raw.to_str() else {
+        contract_violation!("{VARIABLE} must be valid UTF-8; the scale stays {DEFAULT}");
+        return DEFAULT;
+    };
+    let parsed = match raw.parse::<f64>() {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            contract_violation!(
+                "{VARIABLE} must be a number, got {raw:?}: {error}; the scale stays {DEFAULT}"
+            );
+            return DEFAULT;
+        }
+    };
+    if !(parsed.is_finite() && parsed > 0.0) {
+        contract_violation!(
+            "{VARIABLE} must be finite and positive, got {parsed}; the scale stays {DEFAULT}"
+        );
+        return DEFAULT;
+    }
     parsed
 }
 
@@ -328,7 +361,9 @@ fn offscreen_scale_factor() -> f64 {
 /// `video-gpu` / `map-gpu` features. What this renderer installs are the
 /// platform's own primitives it bridges: the system web view on macOS and the
 /// `<video>` element on the web.
+#[cfg(any(test, hydrolysis_component_hooks))]
 fn install_native_component_hooks(env: &mut Environment) {
+    #[cfg(any(test, hydrolysis_localization))]
     crate::localization::install(env);
     // The only web engine this backend knows about is the platform's own: a
     // browser engine an application links installs its realization itself.
@@ -337,6 +372,7 @@ fn install_native_component_hooks(env: &mut Environment) {
     // The page's own `<video>` element is the web's native player.
     #[cfg(all(target_arch = "wasm32", feature = "web", feature = "video"))]
     crate::widgets::platform::video::install(env);
+    #[cfg(feature = "table")]
     env.insert(Hook::new(|_env: &Environment, config: TableConfig| {
         Native::new(config)
     }));
@@ -346,15 +382,19 @@ fn install_headless_window_managers<E: crate::text::TextEngine>(
     env: &mut Environment,
     pending_windows: Rc<RefCell<Vec<Window>>>,
 ) {
-    env.insert(WindowManager::new({
-        let pending_windows = Rc::clone(&pending_windows);
-        move |window| {
-            pending_windows.borrow_mut().push(window);
-        }
-    }));
-    env.insert(PopupWindowManager::new(move |window| {
+    #[cfg(any(feature = "menu", feature = "color-picker"))]
+    let popup_windows = Rc::clone(&pending_windows);
+    env.insert(WindowManager::new(move |window| {
         pending_windows.borrow_mut().push(window);
     }));
+    #[cfg(any(feature = "menu", feature = "color-picker"))]
+    env.insert(PopupWindowManager::new(move |window| {
+        popup_windows.borrow_mut().push(window);
+    }));
+    let _ = env.get_or_insert_with::<crate::renderer::WindowIdentities, _>(
+        crate::renderer::WindowIdentities::default,
+    );
+    #[cfg(feature = "menu")]
     let _ = env.get_or_insert_with::<MenuShortcutRegistry<E>, _>(MenuShortcutRegistry::default);
 }
 
@@ -362,7 +402,7 @@ fn install_headless_window_managers<E: crate::text::TextEngine>(
 /// own: the component hooks, window managers, theme tokens and fonts every
 /// window of the host renders under.
 #[cfg(hydrolysis_frame_transaction)]
-pub struct HostEnvironment<E: crate::text::TextEngine> {
+pub struct HostEnvironment {
     pub(crate) env: Environment,
     pub(crate) theme: Rc<dyn crate::theme::WidgetTheme>,
     /// The collection the environment installs; the GPU runtime's engine
@@ -370,7 +410,7 @@ pub struct HostEnvironment<E: crate::text::TextEngine> {
     #[cfg(hydrolysis_gpu_painter)]
     pub(crate) fonts: FontCollection,
     /// Mints each window's registry id.
-    pub(crate) shortcuts: MenuShortcutRegistry<E>,
+    pub(crate) identities: crate::renderer::WindowIdentities,
 }
 
 /// Assembles a [`HostEnvironment`] over `env`, the application's environment
@@ -382,15 +422,18 @@ pub struct HostEnvironment<E: crate::text::TextEngine> {
 #[cfg(hydrolysis_frame_transaction)]
 pub fn assemble_host_environment<E: crate::text::TextEngine>(
     env: &Environment,
-    menu_bar: &nami::Computed<Vec<waterui_controls::menu::Menu>>,
+    #[cfg(feature = "menu")] menu_bar: &nami::Computed<Vec<waterui_controls::menu::Menu>>,
     style: Rc<dyn crate::Style>,
     color_scheme: nami::Binding<waterui::theme::ColorScheme>,
     pending_window_queue: &Rc<RefCell<Vec<Window>>>,
-) -> HostEnvironment<E> {
-    let mut env = env.extending(waterui_graphics::SceneViewMergeToParent);
+) -> HostEnvironment {
+    let mut env = env.extending(waterui_graphics::backend::SceneViewMergeToParent);
+    #[cfg(any(test, hydrolysis_component_hooks))]
     install_native_component_hooks(&mut env);
     install_headless_window_managers::<E>(&mut env, Rc::clone(pending_window_queue));
+    #[cfg(feature = "menu")]
     menu_bar::register_menu_bar::<E>(menu_bar, &env);
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     env.insert(HydrolysisTextContextMenuMode::Overlay);
     // The scheme signal is created from the platform's real appearance and
     // kept current by the host, so the default tokens re-resolve on a theme
@@ -401,16 +444,18 @@ pub fn assemble_host_environment<E: crate::text::TextEngine>(
     let fonts = crate::text::fonts::native_collection(&env);
     #[cfg(hydrolysis_gpu_painter)]
     fonts.clone().install(&mut env);
-    let shortcuts = env
-        .get::<MenuShortcutRegistry<E>>()
-        .expect("install_headless_window_managers seeds MenuShortcutRegistry")
+    // Seeded by `install_headless_window_managers` above.
+    let identities = env
+        .get_or_insert_with::<crate::renderer::WindowIdentities, _>(
+            crate::renderer::WindowIdentities::default,
+        )
         .clone();
     HostEnvironment {
         env,
         theme,
         #[cfg(hydrolysis_gpu_painter)]
         fonts,
-        shortcuts,
+        identities,
     }
 }
 
@@ -426,6 +471,26 @@ pub fn install_view_renderer(env: &mut Environment, theme: &Rc<dyn crate::theme:
         FontFamilyResolution::Lenient,
     );
     env.insert(waterui_core::ViewRenderer::new(renderer));
+}
+
+/// The exit status of an app that cannot start because the host has no GPU
+/// Hydrolysis can render on.
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+const GPU_UNAVAILABLE_EXIT_CODE: i32 = 1;
+
+/// Ends a native app whose host has no GPU Hydrolysis can render on — no
+/// usable device or engine (or, for an offscreen host on the CPU painter, a
+/// CPU engine that cannot start), or a first window whose surface failed for
+/// good before it ever presented: the app cannot show anything, so the error is
+/// logged and the process exits with a failure status instead of running
+/// without a window.
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+fn exit_without_gpu(error: impl core::error::Error + Send + Sync + 'static) -> ! {
+    tracing::error!(
+        "{:#}; the app does not start",
+        waterui_core::Error::from(error)
+    );
+    std::process::exit(GPU_UNAVAILABLE_EXIT_CODE)
 }
 
 // The headless offscreen `run` never exists on Android: `hydrolysis::run`
@@ -446,6 +511,9 @@ pub fn install_view_renderer(env: &mut Environment, theme: &Rc<dyn crate::theme:
 /// `app` is a factory, not a built value: the subscriber and executors are
 /// installed before it runs, so events the application emits while building
 /// its `App` reach the log (water-rs/waterui#2513).
+///
+/// When the host has no GPU Hydrolysis can render on, the error is logged and
+/// the process exits with a failure status.
 ///
 /// # Panics
 /// Panics when the seeded environment lost its `MenuShortcutRegistry`.
@@ -483,16 +551,18 @@ pub fn run(app: impl FnOnce(Environment) -> App, env: Environment, style: impl c
     // started.
     let AppParts {
         windows,
+        #[cfg(feature = "menu")]
         menu_bar,
         env,
         last_window: _,
         termination: _,
     } = app.into_parts();
-    let mut env = env.extending(waterui_graphics::scene_view::SceneViewMergeToParent);
+    let mut env = env.extending(waterui_graphics::backend::SceneViewMergeToParent);
     waterui_core::install_application_resources(&mut env);
     waterui::inspector::install(&mut env, inspector);
     let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
     let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
+    #[cfg(any(test, hydrolysis_component_hooks))]
     install_native_component_hooks(&mut env);
     install_headless_window_managers::<crate::text::ParleyEngine>(
         &mut env,
@@ -500,7 +570,9 @@ pub fn run(app: impl FnOnce(Environment) -> App, env: Environment, style: impl c
     );
     // App-level menu bar: arms its chords on the shared registry. The
     // headless host renders no chrome, so there is no surface to draw.
+    #[cfg(feature = "menu")]
     menu_bar::register_menu_bar::<crate::text::ParleyEngine>(&menu_bar, &env);
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     env.insert(HydrolysisTextContextMenuMode::Overlay);
     // A headless host has no platform appearance: the scheme is Light
     // unless the application installs its own.
@@ -516,34 +588,44 @@ pub fn run(app: impl FnOnce(Environment) -> App, env: Environment, style: impl c
     // assembled environment — the theme tokens, hooks and font collection a
     // window's subtree resolves — so it must be installed last
     // (water-rs/waterui#2703).
+    let painter = OffscreenPainter::select().unwrap_or_else(|error| exit_without_gpu(error));
     env.insert(waterui_core::ViewRenderer::new(
-        crate::view_renderer::HydrolysisViewRenderer::new(
+        crate::view_renderer::HydrolysisViewRenderer::on_painter(
+            &painter,
             Rc::clone(&theme),
             env.clone(),
             FontFamilyResolution::Lenient,
         ),
     ));
-    let shortcuts = env
-        .get::<MenuShortcutRegistry<crate::text::ParleyEngine>>()
-        .expect("install_headless_window_managers seeds MenuShortcutRegistry")
+    let identities = env
+        .get::<crate::renderer::WindowIdentities>()
+        .expect("install_headless_window_managers seeds WindowIdentities")
         .clone();
     let mut pending_windows = VecDeque::from(windows);
     while let Some(window) = pending_windows.pop_front() {
         let frame = crate::platform::validated_window_frame(window.frame.snapshot());
         let width = crate::num_cast::f32_as_u32(frame.width().max(1.0));
         let height = crate::num_cast::f32_as_u32(frame.height().max(1.0));
-        let mut platform = OffscreenWindow::new(width, height, wgpu::TextureFormat::Rgba8Unorm)
-            .with_scale_factor(offscreen_scale_factor());
+        let mut platform = OffscreenWindow::new(headless::HeadlessSurface::on_painter(
+            &painter, width, height,
+        ))
+        .with_scale_factor(offscreen_scale_factor());
         platform.apply_properties(&window);
         let mut renderer = HydrolysisRenderer::with_engine(
             Rc::clone(&theme),
             ParleyEngine::from_collection(&fonts, FontFamilyResolution::Lenient),
         );
-        renderer.set_window_id(shortcuts.mint_window_id());
+        renderer.set_window_id(identities.mint_window_id());
         renderer.set_window_closable(window.closable);
         let mut runtime =
-            RuntimeWindow::new_gpu(window, platform, renderer, render_diagnostics_config, &env);
-        render_window(&mut runtime, &env, &mut || local_executor.drain());
+            RuntimeWindow::new_painted(window, platform, renderer, render_diagnostics_config, &env);
+        // The one offscreen frame is the window's only one: a surface that
+        // failed for good has shown nothing and never can.
+        if let WindowFrame::Failed(error) =
+            render_window(&mut runtime, &env, &mut || local_executor.drain())
+        {
+            exit_without_gpu(error);
+        }
         pending_windows.extend(pending_window_queue.borrow_mut().drain(..));
     }
 }
@@ -609,8 +691,9 @@ pub fn run(
     apple::uikit::run(app, env, style)
 }
 
-/// Installs the process-wide tracing subscriber when `RUST_LOG` is set:
-/// its directives, to stderr.
+/// Installs the process-wide tracing subscriber when `RUST_LOG` or
+/// `WATERUI_LOG` (the level `water run --logs` sets) is set: the shared
+/// [`waterui_backend_core::log::env_filter`], to stderr.
 ///
 /// Entry points that run application code outside [`run`] — preview,
 /// preview-test and MCP runtimes mount the app through `waterui-testing`
@@ -620,11 +703,13 @@ pub fn run(
 /// writer at `nativeInit` instead, so this function does not exist there.
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 pub fn init_tracing() {
-    if std::env::var_os("RUST_LOG").is_none() {
+    use waterui_backend_core::log::{env_filter, log_requested};
+
+    if !log_requested() {
         return;
     }
     let _ = tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_env_filter(env_filter())
         .with_writer(std::io::stderr)
         .try_init();
 }

@@ -94,17 +94,24 @@ impl Clears {
                             | super::lower::Target::Projected(_)
                     )
             });
-            self.instances.push(clear.map(|[r, g, b, a]| {
+            self.instances.push(clear.map(|mut color| {
+                // Hardware LoadOp::Clear writes `pass.clear` verbatim into
+                // `pass.space`, whereas ClearDraw runs through the simple
+                // shader, which converts linear input into `pass.space`.
+                if pass.space == cherenkov::BlendSpace::SrgbEncoded {
+                    filtrate_core::space::from_srgb(std::slice::from_mut(&mut color));
+                }
+                let [red, green, blue, alpha] = color;
                 let instance =
                     u32::try_from(frame.instances.len()).expect("instance count fits u32");
                 let mut quad = super::instance::Instance::new(super::instance::KIND_SPAN);
                 quad.bounds = [x as f32, y as f32, (x + w) as f32, (y + h) as f32];
                 // Pass clears are premultiplied; the simple shader premultiplies
                 // its input exactly once. Transparent clears carry zero RGB.
-                quad.color = if a == 0.0 {
+                quad.color = if alpha == 0.0 {
                     [0.0; 4]
                 } else {
-                    [r / a, g / a, b / a, a]
+                    [red / alpha, green / alpha, blue / alpha, alpha]
                 };
                 frame.instances.push(quad);
                 instance

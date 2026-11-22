@@ -198,7 +198,7 @@ fn resolve_declared_fonts(manifest_dir: &Path) -> Resolved {
         .unwrap_or_else(|error| panic!("{error}"))
         .into_iter()
         .filter(|declaration| declaration.bundled_on(HOST_FONT_PLATFORM))
-        .filter_map(|declaration| match declaration.source {
+        .filter_map(|declaration| match declaration.source() {
             FontSource::Local {
                 crate_root,
                 relative_path,

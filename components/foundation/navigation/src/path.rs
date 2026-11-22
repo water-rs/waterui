@@ -10,6 +10,7 @@ use core::cell::RefCell;
 use core::{any::Any, any::TypeId, fmt, marker::PhantomData};
 
 use nami::{Binding, Signal as _};
+use waterui_core::contract_violation;
 
 /// Internal bound used by heterogeneous destination registration.
 #[doc(hidden)]
@@ -122,12 +123,12 @@ impl serde::Serialize for ErasedNavigationRoute {
         use serde::ser::SerializeTuple as _;
 
         let registry = self.restoration.borrow();
-        let entry = registry.routes_by_id.get(&self.type_id).unwrap_or_else(|| {
-            panic!(
+        let entry = registry.routes_by_id.get(&self.type_id).ok_or_else(|| {
+            serde::ser::Error::custom(format_args!(
                 "navigation route type `{}` has no registered serde destination",
                 self.type_name
-            )
-        });
+            ))
+        })?;
         let mut route = serializer.serialize_tuple(2)?;
         route.serialize_element(self.type_name)?;
         route.serialize_element((entry.serialize)(self))?;
@@ -314,7 +315,14 @@ impl NavigationPath<ErasedNavigationRoute> {
                     "navigation restoration registry is inconsistent for `{type_name}`"
                 );
             }
-            _ => panic!("navigation restoration registry is inconsistent for `{type_name}`"),
+            (Some(_), None) => {
+                contract_violation!(
+                    "navigation restoration type name `{type_name}` identifies two route types; the later type is not registered for restoration"
+                );
+            }
+            (None, Some(_)) => unreachable!(
+                "navigation restoration registry is inconsistent for `{type_name}`: both maps are always inserted together"
+            ),
         }
     }
 
@@ -369,16 +377,18 @@ impl<R: Clone + 'static> NavigationPath<R> {
 
     /// Removes exactly `count` routes from the top.
     ///
-    /// # Panics
+    /// # Contract violation
     ///
-    /// Panics when `count` exceeds the current path length.
+    /// A `count` beyond the current path length is reported: a debug build
+    /// panics; a release build logs it and removes every route.
     pub fn pop_n(&self, count: usize) {
         let length = self.len();
-        assert!(
-            count <= length,
-            "cannot pop {count} routes from a navigation path of length {length}"
-        );
-        self.truncate(length - count);
+        if count > length {
+            contract_violation!(
+                "cannot pop {count} routes from a navigation path of length {length}; every route is removed"
+            );
+        }
+        self.truncate(length.saturating_sub(count));
     }
 
     /// Truncates the path to at most `length` routes.
@@ -612,6 +622,20 @@ mod tests {
     use alloc::{rc::Rc, string::String, vec};
 
     use super::NavigationPath;
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "cannot pop 3 routes from a navigation path of length 2")
+    )]
+    fn pop_n_beyond_the_length_removes_every_route() {
+        let path = NavigationPath::from(vec![1, 2]);
+
+        path.pop_n(3);
+
+        // Release outcome: every route is removed.
+        assert_eq!(path.snapshot(), vec![0; 0]);
+    }
 
     #[test]
     fn clone_shares_state_and_snapshot_is_independent() {

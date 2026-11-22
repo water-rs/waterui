@@ -9,8 +9,8 @@
 //! back to `false`, and the reactive title/message keep streaming into the
 //! live alert.
 //!
-//! One alert per window at a time: an [`AlertQueue`] shared by every leaf the
-//! dispatcher renders keeps each window's presented dialogs in presentation
+//! One alert per window at a time: an [`AlertQueue`] shared by every leaf
+//! rendered under one root environment keeps each window's presented dialogs in presentation
 //! order, and a dialog presented while another is up in its window waits
 //! until that one is gone — on `UIKit`, which would otherwise stack the
 //! second alert on top, and on `AppKit` alike.
@@ -33,12 +33,14 @@ use waterui::reactive::{Binding, Computed, Signal};
 use waterui::text::StyledStr;
 use waterui_backend_core::Environment;
 use waterui_core::Metadata;
-use waterui_core::layout::{ProposalSize, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect, ResolvedExtent, StretchAxis, SubView, ViewDimensions,
+};
 
 use crate::contract::{Mounted, NativeLeaf};
-use crate::dispatch::Dispatcher;
 use crate::proposal;
 
+use crate::contract::RenderContext;
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::{HostView, SheetAlert, window_of};
 #[cfg(target_os = "macos")]
@@ -55,7 +57,7 @@ struct DialogState {
     mtm: cocoa_ui::MainThreadMarker,
     /// The wrapper's own view — the window the alert presents from.
     host: Retained<HostView>,
-    /// The dispatcher's alert queue — one alert per window at a time.
+    /// The backend's alert queue — one alert per window at a time.
     queue: Rc<AlertQueue>,
     /// The mounted content — the dialog presents beside it.
     child: Mounted,
@@ -97,7 +99,7 @@ struct QueuedAlert {
 /// of a window is the alert on screen, every later one waits for the
 /// entries before it to close.
 #[derive(Default)]
-struct AlertQueue {
+pub struct AlertQueue {
     entries: RefCell<Vec<QueuedAlert>>,
 }
 
@@ -209,6 +211,14 @@ impl core::fmt::Debug for DialogSubView {
 }
 
 impl SubView for DialogSubView {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        self.state.child.layout().resolve_extent(bounds, proposal)
+    }
+
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         self.state.child.layout().measure(proposal)
     }
@@ -239,8 +249,13 @@ struct ActionRun {
 /// window's line in the [`AlertQueue`].
 #[cfg(target_os = "macos")]
 fn present(state: &Rc<DialogState>) {
-    let window = window_of(&state.host)
-        .expect("a dialog reaches the front of its window's line only from a host in a window");
+    let Some(window) = window_of(&state.host) else {
+        // The host left its window between joining the line and coming up:
+        // the dialog leaves the line and the next one comes up.
+        tracing::error!("a dialog's host is no longer in a window; the dialog is not presented");
+        state.queue.finished(&Rc::downgrade(state));
+        return;
+    };
     let title = state.title.snapshot().to_semantic().to_string();
     let message = state
         .message
@@ -283,7 +298,7 @@ fn present(state: &Rc<DialogState>) {
             action
                 .title()
                 .resolve(&state.env)
-                .content
+                .content()
                 .snapshot()
                 .to_semantic()
                 .as_ref(),
@@ -341,7 +356,7 @@ fn present(state: &Rc<DialogState>) {
         let title = action
             .title()
             .resolve(&state.env)
-            .content
+            .content()
             .snapshot()
             .to_semantic()
             .to_string();
@@ -367,10 +382,16 @@ fn present(state: &Rc<DialogState>) {
     if let Some(preferred) = preferred {
         controller.set_preferred(&preferred);
     }
-    assert!(
-        controller.present(&state.host),
-        "a dialog reaches the front of its window's line only from a host in a window with a root view controller"
-    );
+    if !controller.present(&state.host) {
+        // The host has no window with a root view controller: the dialog
+        // leaves the line and the next one comes up.
+        tracing::error!(
+            "a dialog's host is not in a window with a root view controller; \
+             the dialog is not presented"
+        );
+        state.queue.finished(&Rc::downgrade(state));
+        return;
+    }
     *state.alert.borrow_mut() = Some(controller);
 }
 
@@ -423,80 +444,96 @@ fn refresh_texts(state: &Rc<DialogState>) {
     alert.set_message(message.as_deref());
 }
 
-/// Installs the `dialog` handler on the dispatcher: `Metadata<Dialog>` maps
+/// The `dialog` realization: `Metadata<Dialog>` maps
 /// to a transparent container that presents the platform alert while the
 /// binding reads `true`.
-pub fn install(dispatcher: &mut Dispatcher) {
-    let queue = Rc::new(AlertQueue::default());
-    dispatcher.register_view::<Metadata<Dialog>>(move |metadata, ctx| {
-        let mtm = ctx.mtm();
-        let host = HostView::new(mtm, KitRect::ZERO);
-        let host_view: &PlatformView = &host;
+/// Gives the root environment the queue its dialogs share.
+pub fn install(env: &mut Environment) {
+    env.insert(Rc::new(AlertQueue::default()));
+}
 
-        let mounted = ctx.render(metadata.content).mount(host_view);
-        view::set_translates_autoresizing(mounted.view(), true);
-        crate::primary_content::forward(&host, mounted.view());
+pub fn realize_dialog_metadata(metadata: Metadata<Dialog>, ctx: &RenderContext<'_>) -> NativeLeaf {
+    let mtm = ctx.mtm();
+    let host = HostView::new(mtm, KitRect::ZERO);
+    let host_view: &PlatformView = &host;
 
-        let dialog = metadata.value;
-        let state = Rc::new(DialogState {
-            mtm,
-            host: host.clone(),
-            queue: Rc::clone(&queue),
-            child: mounted,
-            env: ctx.env().clone(),
-            is_presented: dialog.is_presented().clone(),
-            title: dialog.title().resolve(ctx.env()).content,
-            message: dialog
-                .message_text()
-                .map(|message| message.resolve(ctx.env()).content),
-            dialog,
-            alert: RefCell::new(None),
-        });
+    let mounted = ctx.render(metadata.content).mount(host_view);
+    view::set_translates_autoresizing(mounted.view(), true);
+    crate::primary_content::forward(&host, mounted.view());
 
-        host.set_layout_handler({
-            let state = Rc::clone(&state);
-            move |host| {
-                view::set_frame(state.child.view(), view::bounds(host));
+    let dialog = metadata.value;
+    let state = Rc::new(DialogState {
+        mtm,
+        host: host.clone(),
+        queue: Rc::clone(
+            ctx.env()
+                .get::<Rc<AlertQueue>>()
+                .expect("`dispatch::install` gives the root environment its alert queue"),
+        ),
+        child: mounted,
+        env: ctx.env().clone(),
+        is_presented: dialog.is_presented().clone(),
+        title: dialog.title().resolve(ctx.env()).into_content(),
+        message: dialog
+            .message_text()
+            .map(|message| message.resolve(ctx.env()).into_content()),
+        dialog,
+        alert: RefCell::new(None),
+    });
+
+    host.set_layout_handler({
+        let state = Rc::clone(&state);
+        move |host| {
+            view::set_frame(state.child.view(), view::bounds(host));
+        }
+    });
+    host.set_window_handler({
+        let state = Rc::downgrade(&state);
+        move |_| {
+            if let Some(state) = state.upgrade() {
+                attachment_changed(&state);
             }
-        });
-        host.set_window_handler({
-            let state = Rc::downgrade(&state);
-            move |_| {
-                if let Some(state) = state.upgrade() {
-                    attachment_changed(&state);
-                }
-            }
-        });
-        let sink_guard = proposal::register_sink(host_view, {
-            let state = Rc::clone(&state);
-            move |selected| {
-                proposal::deliver(state.child.view(), selected);
-            }
-        });
+        }
+    });
+    let sink_guard = proposal::register_sink(host_view, {
+        let state = Rc::clone(&state);
+        move |selected| {
+            proposal::deliver(state.child.view(), selected);
+        }
+    });
 
-        let mut leaf = NativeLeaf::new(
-            host_view,
-            DialogSubView {
-                state: Rc::clone(&state),
-            },
-        );
-        leaf.keep(sink_guard);
-        leaf.keep(Rc::clone(&state));
+    let mut leaf = NativeLeaf::new(
+        host_view,
+        DialogSubView {
+            state: Rc::clone(&state),
+        },
+    );
+    leaf.keep(sink_guard);
+    leaf.keep(Rc::clone(&state));
 
-        leaf.watch(&state.is_presented, {
-            let state = Rc::downgrade(&state);
-            move |ctx| {
-                let Some(state) = state.upgrade() else {
-                    return;
-                };
-                if *ctx.value() {
-                    state.queue.request(&state);
-                } else {
-                    state.queue.withdraw(&state);
-                }
+    leaf.watch(&state.is_presented, {
+        let state = Rc::downgrade(&state);
+        move |ctx| {
+            let Some(state) = state.upgrade() else {
+                return;
+            };
+            if *ctx.value() {
+                state.queue.request(&state);
+            } else {
+                state.queue.withdraw(&state);
             }
-        });
-        leaf.watch(&state.title, {
+        }
+    });
+    leaf.watch(&state.title, {
+        let state = Rc::downgrade(&state);
+        move |_ctx| {
+            if let Some(state) = state.upgrade() {
+                refresh_texts(&state);
+            }
+        }
+    });
+    if let Some(message) = &state.message {
+        leaf.watch(message, {
             let state = Rc::downgrade(&state);
             move |_ctx| {
                 if let Some(state) = state.upgrade() {
@@ -504,21 +541,11 @@ pub fn install(dispatcher: &mut Dispatcher) {
                 }
             }
         });
-        if let Some(message) = &state.message {
-            leaf.watch(message, {
-                let state = Rc::downgrade(&state);
-                move |_ctx| {
-                    if let Some(state) = state.upgrade() {
-                        refresh_texts(&state);
-                    }
-                }
-            });
-        }
+    }
 
-        if state.is_presented.snapshot() {
-            state.queue.request(&state);
-        }
+    if state.is_presented.snapshot() {
+        state.queue.request(&state);
+    }
 
-        leaf
-    });
+    leaf
 }

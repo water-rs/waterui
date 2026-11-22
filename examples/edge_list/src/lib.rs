@@ -65,6 +65,7 @@ fn record_row(index: u64) -> ListItem {
     ListItem::new(content.padding_with((8.0, 16.0)))
 }
 
+/// The edge-list example page: a list of records with per-row detail.
 #[preview]
 pub fn demo() -> impl View {
     let records = ReactiveList::from((0..ROW_COUNT).map(|id| Row { id }).collect::<Vec<_>>());
@@ -85,6 +86,7 @@ pub fn demo() -> impl View {
     .leading()
 }
 
+/// Builds the edge-list example app.
 pub fn app(env: Environment) -> App {
     App::new(demo, env)
 }

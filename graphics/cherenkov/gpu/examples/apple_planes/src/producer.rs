@@ -250,7 +250,12 @@ impl Pool {
         // BGRA8 texels; the pool rewrites its surface only after every
         // reader has retired.
         let texture = unsafe {
-            metal::import_texture(&self.device.device, raw, wgpu::TextureFormat::Bgra8Unorm)
+            metal::import_texture(
+                &self.device.device,
+                raw,
+                wgpu::TextureFormat::Bgra8Unorm,
+                wgpu::TextureUsages::TEXTURE_BINDING,
+            )
         };
         ExternalFrame::rgb(texture, RgbAlpha::Opaque, FrameColor::SRGB)
             .map_err(|e| format!("frame contract: {e}"))

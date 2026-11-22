@@ -22,6 +22,15 @@ timing, and `percentiles` gives p50/p90/p99 of each field:
 - `gpu_seconds`, `passes`, `phases` — GPU time from real timestamps, per
   pass, and per render-thread phase; `null` or omitted where the backend
   provides none, with `gpu_timing_unavailable` naming why. Never estimated.
+  When `gpu_timing_unavailable` is `null`, a measured frame without GPU
+  time fails the run, unless the frame is `unchanged`: it submitted no
+  timed GPU work, so the run would report none of the scene's GPU cost.
+- `unchanged`, `unchanged_frames` — a frame the engine drew nothing for
+  because no surface changed (the pixel-snapped content of a settling
+  motion, say) while the scene's own animation was still running. It
+  carries no GPU time and is left out of the GPU-time percentiles;
+  `unchanged_frames` counts them, so a number built from fewer drawn frames
+  is visible. A frame drawn nothing for in any other case fails the run.
 - `latency_seconds` — encode-to-completion wall time, present only under
   `--wait-for-completion`, which finishes each frame before the next
   encode.
@@ -32,6 +41,29 @@ timing, and `percentiles` gives p50/p90/p99 of each field:
   completes inside it. The interval is the measured frame time. Its percentiles are
   `percentiles.completion_interval_seconds`. Both fields are `null` when the
   adapter has no completion signal, and `completion_unavailable` says why.
+
+## What a measured frame contains
+
+Every warmup and measured frame of a scene that does not change on its own
+draws content no earlier frame drew, so each does the work of drawing the
+scene fresh: lowering, path and glyph rasterization, encoding and the GPU
+passes. Engines keep what they can of unchanged content — Cherenkov keeps
+the preparation of an equivalent recording and skips the frame, and its path
+and glyph atlases keep rasters under the same transform — and a static scene
+re-recorded unchanged would time an empty frame.
+
+The bench therefore draws frame `n > 0` of such a scene under a uniform
+scale about the scene's centre of `1 + (n + 1) * 2^-20`, identically for
+every adapter (`content_drift`); frame 0 draws the scene as authored. The scale alters the linear part of every
+element's transform, which keys the retained picture, preparation and
+rasters, and moves no edge by a pixel in thousands of frames. A translation
+would not do: engines serve a moved picture from rasters kept across
+translation. Draw count, coverage, blends and effects stay those of the scene.
+A scene that changes on every frame — a scroll sweep, or a live slot like
+`perf/live-dashboard` — keeps its own behaviour and is not drifted. A motion
+runs once and comes to rest, like the fling in `perf/scroll-list`: its frames
+are not drifted while the engine reports it still animating, and drift once
+it has settled.
 
 By default frames are submitted asynchronously, so one frame's encode can
 overlap an earlier frame's GPU work. The stage fields therefore do not add

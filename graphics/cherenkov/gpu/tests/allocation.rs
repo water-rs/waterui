@@ -128,7 +128,7 @@ fn multi_surface_frame_grows_instances_once() -> Result<(), Box<dyn std::error::
     }
     let _ = sink.take();
     let start = Instant::now();
-    wait!(engine.render(FrameTime::at(start)))?;
+    wait!(engine.render(FrameTime::unpresented_at(start)))?;
     let grown = grows(&sink.take(), "instances");
     assert_eq!(
         grown.len(),
@@ -138,7 +138,7 @@ fn multi_surface_frame_grows_instances_once() -> Result<(), Box<dyn std::error::
     );
     // The same frame re-rendered keeps the grown buffer: no regrow.
     let _ = sink.take();
-    wait!(engine.render(FrameTime::at(start + Duration::from_millis(16))))?;
+    wait!(engine.render(FrameTime::unpresented_at(start + Duration::from_millis(16))))?;
     assert_eq!(
         grows(&sink.take(), "instances").len(),
         0,
@@ -415,11 +415,11 @@ fn stale_bind_groups_retire_at_capture_regen() -> Result<(), Box<dyn std::error:
             .backdrop(group.sample());
     });
     let start = Instant::now();
-    wait!(engine.render(FrameTime::at(start)))?;
+    wait!(engine.render(FrameTime::unpresented_at(start)))?;
     surface.update(|tx| {
         tx[&glass].clip(Rect::new(0.0, 0.0, 64.0, 64.0));
     });
-    wait!(engine.render(FrameTime::at(start + Duration::from_millis(16))))?;
+    wait!(engine.render(FrameTime::unpresented_at(start + Duration::from_millis(16))))?;
     let drops = bind_drops(&sink.take());
     assert!(
         drops
@@ -428,7 +428,7 @@ fn stale_bind_groups_retire_at_capture_regen() -> Result<(), Box<dyn std::error:
         "no bind groups retired at capture regen: {drops:?}"
     );
     assert_eq!(
-        wait!(engine.memory()).backdrop_captures,
+        wait!(engine.memory())?.backdrop_captures,
         Bytes(64 * 64 * 8),
         "the capture retained its largest frame size (grow-only)"
     );
@@ -437,9 +437,9 @@ fn stale_bind_groups_retire_at_capture_regen() -> Result<(), Box<dyn std::error:
     surface.update(|tx| {
         tx[&glass].clip(Rect::new(0.0, 0.0, 16.0, 16.0));
     });
-    wait!(engine.render(FrameTime::at(start + Duration::from_millis(32))))?;
+    wait!(engine.render(FrameTime::unpresented_at(start + Duration::from_millis(32))))?;
     assert_eq!(
-        wait!(engine.memory()).backdrop_captures,
+        wait!(engine.memory())?.backdrop_captures,
         Bytes(64 * 64 * 8),
         "a smaller clip shrank the capture inside the frame path"
     );
@@ -477,7 +477,7 @@ fn small_big_small_with_work_in_flight() -> Result<(), Box<dyn std::error::Error
             }
         });
         was_big = big;
-        engine.render(FrameTime::at(start + Duration::from_millis(16 * frame)))
+        engine.render(FrameTime::unpresented_at(start + Duration::from_millis(16 * frame)))
     };
     // No readback or poll between renders — submissions stay in flight.
     wait!(render(false, 0))?;
@@ -485,9 +485,9 @@ fn small_big_small_with_work_in_flight() -> Result<(), Box<dyn std::error::Error
     wait!(render(false, 2))?;
     wait!(render(true, 3))?;
     wait!(render(false, 4))?;
-    let before_trim = wait!(engine.memory());
+    let before_trim = wait!(engine.memory())?;
     engine.trim(Pressure::Moderate);
-    let after_trim = wait!(engine.memory());
+    let after_trim = wait!(engine.memory())?;
     assert!(
         after_trim.gpu < before_trim.gpu,
         "trim did not release the retired scratch/capture textures: \
@@ -495,7 +495,7 @@ fn small_big_small_with_work_in_flight() -> Result<(), Box<dyn std::error::Error
     );
     // The surface still renders after its scratch was trimmed.
     wait!(render(true, 5))?;
-    assert_eq!(wait!(engine.memory()).backdrop_captures, Bytes(256 * 256 * 8));
+    assert_eq!(wait!(engine.memory())?.backdrop_captures, Bytes(256 * 256 * 8));
     Ok(())
 }
 }
@@ -552,6 +552,98 @@ fn isolation_storage_follows_content_changes_and_releases_old_bindings() -> Resu
         let expected = wait!(reference_surface.readback())?;
         assert_images_match(&crop(&expected, 0..64, 0..64), &crop(&actual, 0..64, 0..64));
     }
+    Ok(())
+}
+}
+
+/// Live bytes of the `label` resources the events created, grew and retired.
+fn live_bytes(events: &[AllocEvent], label: &'static str) -> i128 {
+    events
+        .iter()
+        .map(|event| match event.kind {
+            EventKind::Create {
+                label: l, bytes, ..
+            } if l == label => i128::from(bytes),
+            EventKind::Grow {
+                label: l, old, new, ..
+            } if l == label => i128::from(new) - i128::from(old),
+            EventKind::Retire {
+                label: l, bytes, ..
+            } if l == label => -i128::from(bytes),
+            _ => 0,
+        })
+        .sum()
+}
+
+split_test! {
+/// The picture share bounds the picture images every surface keeps, not
+/// each surface's own: three surfaces whose pictures each fit the share but
+/// not together never hold more than it, whether they are lowered together
+/// or one surface is lowered while the others keep composing theirs.
+fn picture_images_share_one_engine_wide_budget() -> Result<(), Box<dyn std::error::Error>> {
+    use cherenkov::Picture;
+    use cherenkov::kurbo::Affine;
+    const SIDE: u32 = 1024;
+    const RED: WorkingColor = WorkingColor::new([1.0, 0.0, 0.0, 1.0]);
+    let sink = Sink::new();
+    let gpu = Bytes::mib(96);
+    let share = i128::from(gpu.0 / 8);
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig {
+        alloc_diag: Some(sink.clone()),
+        budget: cherenkov::Budget {
+            gpu,
+            ..cherenkov::Budget::default()
+        },
+        ..Default::default()
+    }))?;
+    let mut surfaces = Vec::new();
+    for _ in 0..3 {
+        let surface = wait!(engine.surface(Offscreen::new((SIDE, SIDE), OffscreenFormat::LinearF16), || {}))?;
+        surface.clear_color(WorkingColor::new([0.0, 0.0, 0.0, 1.0]));
+        surfaces.push(surface);
+    }
+    let side = f64::from(SIDE);
+    let record = |inset: f64| {
+        Picture::record(|c| {
+            c.fill(
+                polygon(&[(inset, 1.0), (side - 1.0, inset), (side - inset, side - 1.0), (1.0, side - inset)]),
+                RED,
+            );
+        })
+    };
+    let mut live = 0;
+    let mut pictures = 0;
+    for (step, inset) in [2.0, 3.0, 4.0].into_iter().enumerate() {
+        // The first frame lowers every surface in one batch; later frames
+        // replace one surface's picture while the others keep theirs.
+        let changed: &[usize] = if step == 0 { &[0, 1, 2] } else { &[step] };
+        for (&index, offset) in changed.iter().zip([0.0, 1.0, 2.0]) {
+            let surface = &surfaces[index];
+            let picture = record(inset + offset);
+            surface.update(|tx| {
+                tx[surface.root()].content(surface.record(|c| c.picture(&picture, Affine::IDENTITY)));
+            });
+        }
+        wait!(engine.render(FrameTime::now()))?;
+        let events = sink.take();
+        live += live_bytes(&events, "projective image");
+        pictures = pictures.max(
+            events
+                .iter()
+                .filter(|event| matches!(event.kind, EventKind::Create { label: "projective image", .. }))
+                .count(),
+        );
+        assert!(
+            live <= share,
+            "frame {step}: picture images hold {live} bytes, more than the {share}-byte picture share"
+        );
+        for surface in &surfaces {
+            let pixels = wait!(surface.readback())?;
+            let centre = pixels.pixels[(SIDE / 2 * pixels.width + SIDE / 2) as usize];
+            assert!(centre[0] > 0.99 && centre[1] < 0.01, "frame {step}: every picture draws, retained or not");
+        }
+    }
+    assert!(pictures > 0, "the share retains pictures");
     Ok(())
 }
 }

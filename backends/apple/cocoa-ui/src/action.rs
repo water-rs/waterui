@@ -135,13 +135,9 @@ pub struct ActionTarget {
 impl ActionTarget {
     /// Calls `handler` on the main thread each time `control` performs its
     /// action (`NSControl`'s `sendAction:`).
-    ///
-    /// # Panics
-    ///
-    /// When not called on the main thread.
     #[cfg(target_os = "macos")]
     pub fn new(control: &NSControl, handler: impl Fn(MainThreadMarker) + 'static) -> Self {
-        let mtm = MainThreadMarker::new().expect("ActionTarget::new on a non-main thread");
+        let mtm = control.mtm();
         let target = Target::new(mtm, Box::new(handler));
         // SAFETY: `target`/`action` are the documented weak-reference pair;
         // `ActionTarget` owns the target object the control points at.
@@ -157,17 +153,13 @@ impl ActionTarget {
 
     /// Calls `handler` on the main thread each time `control` fires one of
     /// `events`.
-    ///
-    /// # Panics
-    ///
-    /// When not called on the main thread.
     #[cfg(target_os = "ios")]
     pub fn new(
         control: &UIControl,
         events: ControlEvents,
         handler: impl Fn(MainThreadMarker) + 'static,
     ) -> Self {
-        let mtm = MainThreadMarker::new().expect("ActionTarget::new on a non-main thread");
+        let mtm = control.mtm();
         let target = Target::new(mtm, Box::new(handler));
         // SAFETY: UIKit stores the target unretained; `ActionTarget` owns it
         // and `Drop` removes it while the control may still be alive.

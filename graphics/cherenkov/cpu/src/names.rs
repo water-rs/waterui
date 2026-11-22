@@ -19,6 +19,9 @@ pub const BACKDROP_ANCHOR_AT_ROOT: &str = "backdrop-anchor-at-root";
 /// A backdrop group anchored at a projective layer: the layer is a
 /// flattening boundary, so the anchor's canvas is not the member's.
 pub const BACKDROP_ANCHOR_PROJECTIVE: &str = "backdrop-anchor-projective";
+/// A projective layer with a blend space other than linear: its local
+/// image is reconstructed in the linear working space.
+pub const PROJECTIVE_BLEND_SPACE: &str = "projective-blend-space";
 /// A backdrop group anchored at a `Layer::id` no layer in the scene
 /// carries.
 pub const BACKDROP_UNKNOWN_ANCHOR: &str = "backdrop-unknown-anchor";
@@ -29,7 +32,8 @@ pub const BACKDROP_MEMBER_OUTSIDE_ANCHOR_CANVAS: &str = "backdrop-member-outside
 /// A per-member backdrop effect that reads the clip's signed distance
 /// on a clip without an analytic boundary (`Path`/`Line`).
 pub const BACKDROP_EFFECT_SDF_PATH: &str = "backdrop-effect-sdf-path";
-/// A backdrop effect shader — a GPU-only capability.
+/// A backdrop effect shader in a build without the `shaders` feature.
+#[cfg(not(feature = "shaders"))]
 pub const BACKDROP_SHADER: &str = "backdrop-shader";
 /// A backdrop union group with more members than the per-pixel fold can
 /// evaluate in registers.

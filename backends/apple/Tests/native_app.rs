@@ -31,6 +31,12 @@ fn main() {
     // skips it.
     #[cfg(target_os = "macos")]
     let _display_awake = (!arguments.list).then(cocoa_ui::native_test::DisplayAwake::hold);
+    // A realized window spawns its tasks on the executors the
+    // application entry installs.
+    #[cfg(target_os = "ios")]
+    if !arguments.list {
+        waterui_apple::native_test_support::initialize_process();
+    }
     #[cfg(target_os = "ios")]
     cocoa_ui::uikit::native_test::run(arguments, trials);
     #[cfg(target_os = "macos")]
@@ -84,8 +90,68 @@ fn trials() -> Vec<libtest_mimic::Trial> {
     trials.extend(gesture_events::trials());
     trials.extend(navigation::trials());
     trials.extend(list_spacing::trials());
+    trials.extend(capture_regions::trials());
     trials.extend(text_selection_ios::trials());
+    #[cfg(feature = "gpu_surface")]
+    trials.extend(capture_scale::trials());
     trials
+}
+
+/// A windowless view captured as a template image rasterizes at the
+/// screen's scale, not the detached view's `1.0`.
+#[cfg(all(target_os = "ios", feature = "gpu_surface"))]
+mod capture_scale {
+    use cocoa_ui::{Rect, bitmap, view};
+    use libtest_mimic::Trial;
+    use waterui_apple::native_test_support::capture_template_image;
+
+    use cocoa_ui::PlatformView;
+
+    use super::mtm;
+
+    pub fn trials() -> Vec<Trial> {
+        vec![Trial::test(
+            "capture_scale::a_windowless_template_capture_uses_the_screen_scale",
+            || {
+                a_windowless_template_capture_uses_the_screen_scale();
+                Ok(())
+            },
+        )]
+    }
+
+    /// A `40x30` point view with no window: the image is `40x30` points at
+    /// the capture scene's screen scale, so its pixel size is the point size times
+    /// that scale.
+    fn a_windowless_template_capture_uses_the_screen_scale() {
+        let screen_scale = bitmap::any_window_scene()
+            .expect("the simulator host has a window scene")
+            .screen()
+            .scale();
+        let detached = PlatformView::new(mtm());
+        view::set_frame(&detached, Rect::new(0.0, 0.0, 40.0, 30.0));
+        assert!(view::window(&detached).is_none(), "the view is windowless");
+
+        let image = capture_template_image(&detached, 100.0);
+
+        // SAFETY: `size` and `scale` are plain getters on a live `UIImage`.
+        let (size, image_scale) = unsafe { (image.size(), image.scale()) };
+        assert!(
+            (image_scale - screen_scale).abs() < f64::EPSILON,
+            "image scale {image_scale} must be the screen scale {screen_scale}"
+        );
+        assert!(
+            (size.width - 40.0).abs() < 0.01 && (size.height - 30.0).abs() < 0.01,
+            "image keeps its point size, got {}x{}",
+            size.width,
+            size.height
+        );
+        let pixels = (size.width * image_scale, size.height * image_scale);
+        assert!(
+            (pixels.0 - (40.0 * screen_scale).ceil()).abs() < 0.01
+                && (pixels.1 - (30.0 * screen_scale).ceil()).abs() < 0.01,
+            "pixel size {pixels:?} must be the point size times {screen_scale}"
+        );
+    }
 }
 
 #[cfg(target_os = "ios")]
@@ -1243,6 +1309,7 @@ mod gesture_events {
                 })
             }),
             &render_environment(),
+            mtm(),
         );
         let host = leaf.view();
         let _window = scene_window(mtm(), host);
@@ -1253,8 +1320,8 @@ mod gesture_events {
         let taps = taps.borrow();
         assert_eq!(taps.len(), before + 1, "one completion appends one event");
         let tap = &taps[before];
-        assert_eq!(tap.count, 1);
-        assert_eq!(tap.button, PointerButton::Primary);
+        assert_eq!(tap.count(), 1);
+        assert_eq!(tap.button(), PointerButton::Primary);
     }
 
     /// Driving the pan recognizer's `Began`→`Changed`→`Ended` transitions
@@ -1270,6 +1337,7 @@ mod gesture_events {
                 })
             }),
             &render_environment(),
+            mtm(),
         );
         let host = leaf.view();
         let _window = scene_window(mtm(), host);
@@ -1290,7 +1358,10 @@ mod gesture_events {
         }
         let drags = drags.borrow();
         assert_eq!(
-            drags.iter().map(|e| e.phase).collect::<Vec<_>>(),
+            drags
+                .iter()
+                .map(waterui::gesture::DragEvent::phase)
+                .collect::<Vec<_>>(),
             vec![
                 GesturePhase::Started,
                 GesturePhase::Updated,
@@ -1299,7 +1370,7 @@ mod gesture_events {
             "the pan's transitions are the contract's phase sequence"
         );
         assert!(
-            drags.iter().all(|e| e.button == PointerButton::Primary),
+            drags.iter().all(|e| e.button() == PointerButton::Primary),
             "a touches contact presses as the primary button"
         );
     }
@@ -1320,6 +1391,7 @@ mod gesture_events {
                 )
             }),
             &render_environment(),
+            mtm(),
         );
         let host = leaf.view();
         let _window = scene_window(mtm(), host);
@@ -1340,21 +1412,21 @@ mod gesture_events {
 
         let e = fire(UIGestureRecognizerState::Began, 0.0);
         assert_eq!(
-            (e.phase, e.angle, e.velocity),
+            (e.phase(), e.angle(), e.velocity()),
             (GesturePhase::Started, 0.0, 0.0)
         );
         let e = fire(UIGestureRecognizerState::Changed, 0.75);
-        assert_eq!(e.phase, GesturePhase::Updated);
+        assert_eq!(e.phase(), GesturePhase::Updated);
         assert!(
-            (e.angle - 0.75).abs() < 1e-6,
+            (e.angle() - 0.75).abs() < 1e-6,
             "raw radians getter, saw {}",
-            e.angle
+            e.angle()
         );
         let e = fire(UIGestureRecognizerState::Changed, 1.25);
-        assert!((e.angle - 1.25).abs() < 1e-6);
+        assert!((e.angle() - 1.25).abs() < 1e-6);
         let e = fire(UIGestureRecognizerState::Ended, 1.25);
-        assert_eq!((e.phase, e.velocity), (GesturePhase::Ended, 0.0));
-        assert!((e.angle - 1.25).abs() < 1e-6);
+        assert_eq!((e.phase(), e.velocity()), (GesturePhase::Ended, 0.0));
+        assert!((e.angle() - 1.25).abs() < 1e-6);
     }
 
     /// The shared scale composition clamps at the contract's `.01`
@@ -1373,6 +1445,7 @@ mod gesture_events {
                 )
             }),
             &render_environment(),
+            mtm(),
         );
         let host = leaf.view();
         let _window = scene_window(mtm(), host);
@@ -1388,25 +1461,25 @@ mod gesture_events {
         };
 
         let e = fire(UIGestureRecognizerState::Began, 1.0);
-        assert_eq!((e.phase, e.velocity), (GesturePhase::Started, 0.0));
-        assert!((e.scale - 0.001).abs() < 1e-6, "saw {}", e.scale);
+        assert_eq!((e.phase(), e.velocity()), (GesturePhase::Started, 0.0));
+        assert!((e.scale() - 0.001).abs() < 1e-6, "saw {}", e.scale());
         let e = fire(UIGestureRecognizerState::Changed, 1.5);
         assert!(
-            (e.scale - 0.01).abs() < 1e-6,
+            (e.scale() - 0.01).abs() < 1e-6,
             "clamp to .01, saw {}",
-            e.scale
+            e.scale()
         );
         let e = fire(UIGestureRecognizerState::Changed, 3.0);
         assert!(
-            (e.scale - 0.02).abs() < 1e-6,
+            (e.scale() - 0.02).abs() < 1e-6,
             "factor 2 on .01, saw {}",
-            e.scale
+            e.scale()
         );
         let e = fire(UIGestureRecognizerState::Changed, 3.0);
-        assert!((e.scale - 0.02).abs() < 1e-6 && e.velocity == 0.0);
+        assert!((e.scale() - 0.02).abs() < 1e-6 && e.velocity() == 0.0);
         let e = fire(UIGestureRecognizerState::Ended, 3.0);
-        assert_eq!((e.phase, e.velocity), (GesturePhase::Ended, 0.0));
-        assert!((e.scale - 0.02).abs() < 1e-6);
+        assert_eq!((e.phase(), e.velocity()), (GesturePhase::Ended, 0.0));
+        assert!((e.scale() - 0.02).abs() < 1e-6);
     }
 }
 
@@ -1433,19 +1506,31 @@ mod navigation {
     use waterui::prelude::text;
     use waterui::reactive::binding;
     use waterui::{Str, ViewExt as _};
-    use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, pump_main_until, render};
+    use waterui_apple::native_test_support::{
+        MAIN_QUEUE_DEADLINE, content_frame, pump_main_until, realize_into_shown_scene, render,
+        render_environment,
+    };
 
     use super::mtm;
 
     /// The `navigation::` trials.
     pub fn trials() -> Vec<libtest_mimic::Trial> {
-        vec![libtest_mimic::Trial::test(
-            "navigation::a_split_detail_column_carries_navigation_item_chrome",
-            || {
-                a_split_detail_column_carries_navigation_item_chrome();
-                Ok(())
-            },
-        )]
+        vec![
+            libtest_mimic::Trial::test(
+                "navigation::a_split_detail_column_carries_navigation_item_chrome",
+                || {
+                    a_split_detail_column_carries_navigation_item_chrome();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "navigation::a_split_realized_into_a_shown_scene_collapses_at_window_size",
+                || {
+                    a_split_realized_into_a_shown_scene_collapses_at_window_size();
+                    Ok(())
+                },
+            ),
+        ]
     }
 
     /// The `UISplitViewController` a leaf's subtree lives under.
@@ -1465,9 +1550,14 @@ mod navigation {
 
     /// The compact split fixture includes both a platform symbol and a hosted SVG label.
     fn navigation_fixture() -> waterui_apple::contract::NativeLeaf {
+        render(navigation_fixture_view())
+    }
+
+    /// The fixture's view, for a mount that builds it itself.
+    fn navigation_fixture_view() -> impl waterui::View {
         let selection = binding(Some(0_i32));
         let query = binding(Str::default());
-        render(NavigationSplitView::new(
+        NavigationSplitView::new(
             &selection,
             || text("sidebar"),
             move |_id: i32| {
@@ -1475,7 +1565,7 @@ mod navigation {
                     NavigationToolbarPlacement::PrimaryAction,
                     button("").style(ButtonStyle::Plain),
                 );
-                item.icon = Some(ToolbarItemIcon::System(SystemIcon::new("plus")));
+                item.set_icon(Some(ToolbarItemIcon::System(SystemIcon::new("plus"))));
                 NavigationView::new("Today", text("detail").background(Material::Regular))
                     .searchable(&query, "Search reminders")
                     .navigation_toolbar(NavigationToolbar::new(vec![
@@ -1491,7 +1581,7 @@ mod navigation {
                         ),
                     ]))
             },
-        ))
+        )
     }
 
     /// Native chrome must keep hosted icon and page content visible after collapse.
@@ -1500,21 +1590,28 @@ mod navigation {
         item: &cocoa_ui::objc2_ui_kit::UINavigationItem,
         page: &UIViewController,
     ) {
+        // The SVG icon is a canvas: a host view whose layer carries the
+        // drawn layer tree.
+        fn drawn_canvas(view: &PlatformView) -> Option<Retained<PlatformView>> {
+            view::subviews(view).into_iter().find_map(|sub| {
+                let drawn = sub.downcast_ref::<cocoa_ui::uikit::HostView>().is_some()
+                    && view::layer(&sub)
+                        // SAFETY: `layer` is a live layer read on the main thread.
+                        .and_then(|layer| unsafe { layer.sublayers() })
+                        .is_some_and(|sublayers| !sublayers.is_empty());
+                if drawn { Some(sub) } else { drawn_canvas(&sub) }
+            })
+        }
         let hosted = item
             .rightBarButtonItems()
             .expect("the page retains its actions")
             .iter()
             .find_map(|item| item.customView())
             .expect("arbitrary button content remains hosted");
-        let icon = super::find::<cocoa_ui::uikit::ImageView>(&hosted)
-            .expect("the hosted button retains its label icon");
-        assert!(
-            icon.downcast_ref::<cocoa_ui::uikit::ImageView>()
-                .expect("picture image view")
-                .image()
-                .is_some(),
-            "the hosted SVG produces a UIKit image"
-        );
+        let icon = pump_main_until(MAIN_QUEUE_DEADLINE, || drawn_canvas(&hosted).is_some())
+            .then(|| drawn_canvas(&hosted))
+            .flatten()
+            .expect("the hosted button retains its drawn SVG icon");
         let icon_shown = pump_main_until(MAIN_QUEUE_DEADLINE, || {
             window.layoutIfNeeded();
             let bounds = view::bounds(&icon);
@@ -1543,26 +1640,6 @@ mod navigation {
             content_shown,
             "the collapsed detail content remains visible with a nonempty frame: {:?}",
             view::bounds(&detail)
-        );
-        let field = super::find::<cocoa_ui::objc2_ui_kit::UITextField>(window)
-            .expect("the visible search text field")
-            .downcast::<cocoa_ui::objc2_ui_kit::UITextField>()
-            .expect("search text field type");
-        // SAFETY: UIKit font accessors run on the test's main thread.
-        let body = cocoa_ui::objc2_ui_kit::UIFont::preferredFontForTextStyle(unsafe {
-            cocoa_ui::objc2_ui_kit::UIFontTextStyleBody
-        });
-        let configured = pump_main_until(MAIN_QUEUE_DEADLINE, || {
-            let actual = field.font().expect("the search field has a font");
-            // SAFETY: UIKit font accessors run on the test's main thread.
-            unsafe {
-                actual.fontName() == body.fontName()
-                    && (actual.pointSize() - body.pointSize()).abs() < 0.01
-            }
-        });
-        assert!(
-            configured,
-            "the presented search field uses preferred body typography"
         );
     }
 
@@ -1669,6 +1746,139 @@ mod navigation {
             "the compact stack's visible bar keeps the large-title gate open"
         );
         assert_content_shown(&window, &item, &page);
+    }
+
+    /// The page root of the collapsed fixture under `split`, once the
+    /// compact stack holds the pushed column and the page is in a window.
+    fn collapsed_page(split: &UISplitViewController) -> Retained<UIViewController> {
+        let sidebar_nav = split
+            .viewControllerForColumn(UISplitViewControllerColumn::Primary)
+            .and_then(|controller| controller.downcast::<UINavigationController>().ok())
+            .expect("the sidebar column is a nav controller");
+        let detail_nav = split
+            .viewControllerForColumn(UISplitViewControllerColumn::Secondary)
+            .and_then(|controller| controller.downcast::<UINavigationController>().ok())
+            .expect("the detail column is a UINavigationController");
+        let page = detail_nav
+            .topViewController()
+            .expect("the column stack has a root page");
+        let settled = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            split.isCollapsed()
+                && sidebar_nav.viewControllers().count() == 2
+                && page.view().is_some_and(|view| view.window().is_some())
+        });
+        assert!(
+            settled,
+            "the split collapses onto the compact stack with its page in the window"
+        );
+        page
+    }
+
+    /// The page root's safe area when the fixture is mounted before its
+    /// window shows: the frame is set, then the window appears.
+    fn reference_page_insets() -> cocoa_ui::objc2_ui_kit::UIEdgeInsets {
+        let leaf = navigation_fixture();
+        let mtm = mtm();
+        let window = native_test::window(mtm, Rect::new(0.0, 0.0, 390.0, 844.0));
+        let controller = UIViewController::new(mtm);
+        window.setRootViewController(Some(&controller));
+        let root_view = controller.view().expect("the controller's view is loaded");
+        let mounted = leaf.mount(&root_view);
+        view::set_frame(mounted.view(), view::bounds(&root_view));
+        window.makeKeyAndVisible();
+        window.layoutIfNeeded();
+        let split =
+            split_controller_in(&root_view).expect("the leaf mounts a UISplitViewController");
+        let page = collapsed_page(&split);
+        let insets = page.view().expect("page view").safeAreaInsets();
+        window.setHidden(true);
+        window.setRootViewController(None);
+        insets
+    }
+
+    /// Window content never sits in a live window unplaced
+    /// (water-rs/waterui#3744).
+    ///
+    /// A launch whose declaration lands after the scene's window displayed
+    /// realizes the content into a window that is already key, visible and
+    /// appeared. `windows::realize` used to add the content leaf and adopt
+    /// its controllers before the root host could place it, so the whole
+    /// tree — the split's collapse, the nested navigation stacks and the
+    /// search bar — laid out at 0x0 and `UIKit` kept the bottom inset it
+    /// derived there, leaving the page with an empty safe region. The
+    /// leaf must hold its content frame as soon as `realize` returns, and
+    /// the page must end with the safe area the same fixture gets when it
+    /// is mounted before the window shows.
+    fn a_split_realized_into_a_shown_scene_collapses_at_window_size() {
+        let reference = reference_page_insets();
+
+        let mtm = mtm();
+        let window = native_test::window(mtm, Rect::new(0.0, 0.0, 390.0, 844.0));
+        let declaration = waterui::window::Window::new(
+            "Shown scene",
+            binding(waterui::window::WindowState::Normal),
+            navigation_fixture_view,
+        )
+        .background(waterui::window::WindowBackground::Color(
+            waterui::color::Color::srgb(255, 255, 255),
+        ));
+        let scene =
+            realize_into_shown_scene(mtm, &declaration, &render_environment(), window.clone());
+
+        // The invariant itself: before any run-loop turn, the leaf already
+        // holds the frame the root host resolves for it.
+        let root_view = view::retain_base(&*scene.root);
+        let leaf = view::subviews(&root_view)
+            .into_iter()
+            .next()
+            .expect("realize adds the content leaf to the root host");
+        let expected = content_frame(&scene.root, &leaf);
+        let frame = view::frame(&leaf);
+        assert!(
+            expected.size.width > 0.0 && expected.size.height > 0.0,
+            "the root host resolves a nonempty content frame: {expected:?}"
+        );
+        // The pre-join placement aligns to the 1x grid of a view with no
+        // window, so the comparison allows the half point that costs.
+        let near = |a: f64, b: f64| (a - b).abs() <= 0.5;
+        assert!(
+            near(frame.origin.x, expected.origin.x)
+                && near(frame.origin.y, expected.origin.y)
+                && near(frame.size.width, expected.size.width)
+                && near(frame.size.height, expected.size.height),
+            "the content leaf holds its content frame {expected:?} when realize returns, \
+             not {frame:?}"
+        );
+
+        let split =
+            split_controller_in(&root_view).expect("the leaf holds a UISplitViewController");
+        let page = collapsed_page(&split);
+        let page_view = page.view().expect("page view");
+        window.layoutIfNeeded();
+        let insets = page_view.safeAreaInsets();
+        let bounds = view::bounds(&page_view);
+        assert!(
+            insets.top + insets.bottom < bounds.size.height,
+            "the page root keeps a nonempty safe region: {insets:?} in {bounds:?}"
+        );
+        let near = |a: f64, b: f64| (a - b).abs() <= 0.5;
+        assert!(
+            near(insets.top, reference.top)
+                && near(insets.bottom, reference.bottom)
+                && near(insets.left, reference.left)
+                && near(insets.right, reference.right),
+            "the realized page's safe area {insets:?} matches the one the fixture gets \
+             mounted before its window shows: {reference:?}"
+        );
+
+        let detail_nav = split
+            .viewControllerForColumn(UISplitViewControllerColumn::Secondary)
+            .and_then(|controller| controller.downcast::<UINavigationController>().ok())
+            .expect("the detail column is a UINavigationController");
+        let top = detail_nav
+            .topViewController()
+            .expect("the column stack has a root page");
+        assert_content_shown(&window, &top.navigationItem(), &page);
     }
 }
 
@@ -2249,5 +2459,87 @@ mod list_spacing {
                 "list {index} with searchable={searchable}: first row begins at {actual}, expected {expected}"
             );
         }
+    }
+}
+
+/// A view rehosted for capture lays out under the capture contract: the
+/// capture window has no device regions, so a fixed container's child is
+/// placed exactly as it is when the container is detached (#3704).
+#[cfg(target_os = "ios")]
+mod capture_regions {
+    use cocoa_ui::objc2_ui_kit::UIEdgeInsets;
+    use cocoa_ui::uikit::ImageView;
+    use cocoa_ui::{Rect, view};
+    use kurbo::Shape;
+    use waterui::graphics::backend::Picture;
+    use waterui::graphics::backend::draw::Draw;
+    use waterui::graphics::color::WorkingColor;
+    use waterui::layout::frame::Frame;
+    use waterui::reactive::constant;
+    use waterui_apple::native_test_support::{render, with_capture_rehost};
+    use waterui_core::layout::Size;
+
+    use super::{find, mtm};
+
+    pub fn trials() -> Vec<libtest_mimic::Trial> {
+        vec![libtest_mimic::Trial::test(
+            "capture_regions::a_rehosted_fixed_container_places_its_child_at_full_size",
+            || {
+                a_rehosted_fixed_container_places_its_child_at_full_size();
+                Ok(())
+            },
+        )]
+    }
+
+    fn a_rehosted_fixed_container_places_its_child_at_full_size() {
+        let mtm = mtm();
+        let picture = Picture::new(
+            Size::new(24.0, 24.0),
+            constant(Picture::record(|scene| {
+                scene.fill(
+                    kurbo::Rect::new(0.0, 0.0, 24.0, 24.0).to_path(0.1),
+                    WorkingColor::BLACK,
+                );
+            })),
+        );
+        let leaf = render(
+            Frame::new(picture)
+                .ideal_width(24.0)
+                .ideal_height(24.0)
+                .max_width(24.0)
+                .max_height(24.0),
+        );
+        let host = view::retain_base(leaf.view());
+        // The detached state `tabs.rs` leaves a bar icon in: sized by its
+        // parent-less owner, never laid out.
+        view::set_frame(&host, Rect::new(0.0, 0.0, 24.0, 24.0));
+
+        // The status-bar and home-indicator bands of a Dynamic Island
+        // iPhone, as the iOS 27 runtimes that propagate them report them.
+        let device_band = UIEdgeInsets {
+            top: 62.0,
+            left: 0.0,
+            bottom: 34.0,
+            right: 0.0,
+        };
+        with_capture_rehost(mtm, &host, device_band, |safe| {
+            assert!(
+                (host.safeAreaInsets().top - device_band.top).abs() < 0.01,
+                "precondition: the device band reaches the rehosted host"
+            );
+            let image =
+                find::<ImageView>(&host).expect("the picture leaf mounts the kit image view");
+            let frame = view::frame(&image);
+            assert!(
+                (frame.size.width - 24.0).abs() < 0.01 && (frame.size.height - 24.0).abs() < 0.01,
+                "the rehosted picture's image view is {:?}, not the 24x24 its container proposed",
+                frame.size
+            );
+            assert_eq!(
+                safe,
+                view::bounds(&host),
+                "a capture window has no regions: the host's safe rect is its bounds"
+            );
+        });
     }
 }

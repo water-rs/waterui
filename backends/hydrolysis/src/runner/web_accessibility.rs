@@ -6,6 +6,7 @@ use std::{
 
 use accesskit::{Action, ActionRequest, Node, NodeId, Point, Role, Toggled, TreeId, TreeUpdate};
 use wasm_bindgen::{JsCast, closure::Closure};
+use waterui_core::contract_violation;
 use web_sys::{Event, HtmlElement};
 
 struct DomNode {
@@ -21,20 +22,40 @@ pub(super) struct WebAccessibilityBridge {
     schedule_frame: Rc<dyn Fn()>,
 }
 
+/// The `result` of a DOM call, or `None` after logging that `step` failed:
+/// the mirror skips what the browser refused.
+fn dom<T, E: std::fmt::Debug>(step: &str, result: Result<T, E>) -> Option<T> {
+    result
+        .inspect_err(|error| {
+            tracing::error!(
+                "hydrolysis web accessibility: failed to {step}: {error:?}; the mirror skips it"
+            );
+        })
+        .ok()
+}
+
 impl WebAccessibilityBridge {
+    /// The bridge mounted on the page's body, or `None` after logging when
+    /// the page offers no window, document or body to mount on: the page then
+    /// has no accessibility mirror.
     pub(super) fn new(
         actions: Rc<RefCell<VecDeque<ActionRequest>>>,
         schedule_frame: Rc<dyn Fn()>,
-    ) -> Self {
-        let document = web_sys::window()
-            .expect("web accessibility requires a browser window")
-            .document()
-            .expect("web accessibility requires a document");
-        let root = document
-            .create_element("div")
-            .expect("failed to create web accessibility root")
-            .dyn_into::<HtmlElement>()
-            .expect("web accessibility root is not an HtmlElement");
+    ) -> Option<Self> {
+        let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+            tracing::error!(
+                "hydrolysis web accessibility: the page has no browser window or document; the page has no accessibility mirror"
+            );
+            return None;
+        };
+        let root = dom(
+            "create the accessibility root",
+            document.create_element("div"),
+        )?;
+        let root = dom(
+            "treat the accessibility root as an HtmlElement",
+            root.dyn_into::<HtmlElement>(),
+        )?;
         root.set_id("waterui-accessibility");
         let style = root.style();
         // Absolute, not fixed: Safari treats a viewport-sized fixed element
@@ -48,21 +69,24 @@ impl WebAccessibilityBridge {
             ("color", "transparent"),
             ("background", "transparent"),
         ] {
-            style.set_property(name, value).unwrap_or_else(|error| {
-                panic!("failed to set web accessibility root style {name}: {error:?}")
-            });
+            dom(
+                "set a web accessibility root style",
+                style.set_property(name, value),
+            );
         }
-        document
-            .body()
-            .expect("web accessibility requires a document body")
-            .append_child(&root)
-            .expect("failed to append web accessibility root");
-        Self {
+        let Some(body) = document.body() else {
+            tracing::error!(
+                "hydrolysis web accessibility: the document has no body; the page has no accessibility mirror"
+            );
+            return None;
+        };
+        dom("append the accessibility root", body.append_child(&root))?;
+        Some(Self {
             root,
             nodes: HashMap::new(),
             actions,
             schedule_frame,
-        }
+        })
     }
 
     pub(super) fn update(&mut self, update: TreeUpdate) {
@@ -84,12 +108,10 @@ impl WebAccessibilityBridge {
             .collect();
         for (id, node) in &update.nodes {
             self.ensure_node(*id);
-            let element = self
-                .nodes
-                .get(id)
-                .expect("new DOM accessibility node missing")
-                .element
-                .clone();
+            // A node the browser refused to create stays out of the mirror.
+            let Some(element) = self.nodes.get(id).map(|node| node.element.clone()) else {
+                continue;
+            };
             apply_node(
                 &element,
                 node,
@@ -97,42 +119,41 @@ impl WebAccessibilityBridge {
             );
         }
         for (id, node) in &update.nodes {
-            let parent = self
-                .nodes
-                .get(id)
-                .expect("DOM accessibility parent missing")
-                .element
-                .clone();
+            let Some(parent) = self.nodes.get(id).map(|node| node.element.clone()) else {
+                continue;
+            };
             for child_id in node.children() {
-                let child = self.nodes.get(child_id).unwrap_or_else(|| {
-                    panic!("accessibility child {child_id:?} missing from full tree update")
-                });
-                parent
-                    .append_child(&child.element)
-                    .expect("failed to attach DOM accessibility child");
+                let Some(child) = self.nodes.get(child_id) else {
+                    contract_violation!(
+                        "accessibility child {child_id:?} missing from full tree update; the child stays out of the mirror"
+                    );
+                    continue;
+                };
+                dom(
+                    "attach a DOM accessibility child",
+                    parent.append_child(&child.element),
+                );
             }
         }
-        let tree = update
-            .tree
-            .expect("web accessibility requires a full tree update");
-        assert!(
-            accesskit_nodes.contains_key(&tree.root),
-            "web accessibility root node is missing"
+        let Some(tree) = update.tree else {
+            contract_violation!(
+                "web accessibility requires a full tree update; the mirror's tree is not attached"
+            );
+            return;
+        };
+        let Some(root) = self.nodes.get(&tree.root) else {
+            contract_violation!(
+                "web accessibility root node is missing; the mirror's tree is not attached"
+            );
+            return;
+        };
+        dom(
+            "attach the DOM accessibility tree",
+            self.root.append_child(&root.element),
         );
-        self.root
-            .append_child(
-                &self
-                    .nodes
-                    .get(&tree.root)
-                    .expect("DOM root missing")
-                    .element,
-            )
-            .expect("failed to attach DOM accessibility tree");
-        if let Some(focused) = self.nodes.get(&update.focus) {
-            let document = self
-                .root
-                .owner_document()
-                .expect("accessibility root has no document");
+        if let Some(focused) = self.nodes.get(&update.focus)
+            && let Some(document) = self.root.owner_document()
+        {
             let active = document.active_element();
             let already_focused = active.as_ref() == Some(focused.element.as_ref());
             // DOM focus follows Hydrolysis focus only while it already lives
@@ -144,27 +165,35 @@ impl WebAccessibilityBridge {
                 .as_ref()
                 .is_some_and(|active| self.root.contains(Some(active.as_ref())));
             if focus_in_tree && !already_focused && focused.element.tab_index() >= 0 {
-                focused
-                    .element
-                    .focus()
-                    .expect("failed to focus DOM accessibility node");
+                dom("focus a DOM accessibility node", focused.element.focus());
             }
         }
     }
 
+    /// Creates the DOM node for `id` when it has none; a failing browser
+    /// call logs and leaves the node out of the mirror.
     fn ensure_node(&mut self, id: NodeId) {
         if self.nodes.contains_key(&id) {
             return;
         }
-        let document = self
-            .root
-            .owner_document()
-            .expect("accessibility root has no document");
-        let element = document
-            .create_element("div")
-            .expect("failed to create DOM accessibility node")
-            .dyn_into::<HtmlElement>()
-            .expect("DOM accessibility node is not an HtmlElement");
+        let Some(document) = self.root.owner_document() else {
+            tracing::error!(
+                "hydrolysis web accessibility: the accessibility root has no document; the node stays out of the mirror"
+            );
+            return;
+        };
+        let Some(element) = dom(
+            "create a DOM accessibility node",
+            document.create_element("div"),
+        ) else {
+            return;
+        };
+        let Some(element) = dom(
+            "treat a DOM accessibility node as an HtmlElement",
+            element.dyn_into::<HtmlElement>(),
+        ) else {
+            return;
+        };
         element.style().set_css_text(
             // Hydrolysis draws its own focus ring; the mirror draws none.
             "position:absolute;pointer-events:none;color:transparent;background:transparent;outline:none;",
@@ -182,9 +211,10 @@ impl WebAccessibilityBridge {
             });
             click_schedule();
         }) as Box<dyn FnMut(Event)>);
-        element
-            .add_event_listener_with_callback("click", click.as_ref().unchecked_ref())
-            .expect("failed to install DOM accessibility click listener");
+        dom(
+            "install the DOM accessibility click listener",
+            element.add_event_listener_with_callback("click", click.as_ref().unchecked_ref()),
+        );
 
         let focus_actions = Rc::clone(&self.actions);
         let focus_schedule = Rc::clone(&self.schedule_frame);
@@ -197,9 +227,10 @@ impl WebAccessibilityBridge {
             });
             focus_schedule();
         }) as Box<dyn FnMut(Event)>);
-        element
-            .add_event_listener_with_callback("focus", focus.as_ref().unchecked_ref())
-            .expect("failed to install DOM accessibility focus listener");
+        dom(
+            "install the DOM accessibility focus listener",
+            element.add_event_listener_with_callback("focus", focus.as_ref().unchecked_ref()),
+        );
         self.nodes.insert(
             id,
             DomNode {
@@ -213,13 +244,15 @@ impl WebAccessibilityBridge {
 
 fn set_optional_attribute(element: &HtmlElement, name: &str, value: Option<&str>) {
     if let Some(value) = value {
-        element.set_attribute(name, value).unwrap_or_else(|error| {
-            panic!("failed to set DOM accessibility attribute {name}: {error:?}")
-        });
+        dom(
+            "set a DOM accessibility attribute",
+            element.set_attribute(name, value),
+        );
     } else {
-        element.remove_attribute(name).unwrap_or_else(|error| {
-            panic!("failed to remove DOM accessibility attribute {name}: {error:?}")
-        });
+        dom(
+            "remove a DOM accessibility attribute",
+            element.remove_attribute(name),
+        );
     }
 }
 
@@ -329,9 +362,10 @@ fn apply_node(element: &HtmlElement, node: &Node, origin: Point) {
             ("width", format!("{}px", bounds.width().max(0.0))),
             ("height", format!("{}px", bounds.height().max(0.0))),
         ] {
-            style.set_property(name, &value).unwrap_or_else(|error| {
-                panic!("failed to set DOM accessibility bounds {name}: {error:?}")
-            });
+            dom(
+                "set DOM accessibility bounds",
+                style.set_property(name, &value),
+            );
         }
     }
 }

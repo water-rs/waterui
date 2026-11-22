@@ -6,8 +6,8 @@ use super::{
     HwuiTextLayout, PackedRequest, PlatformText, ShapeRequest, TextAlignment, TextLayoutIds,
     TextRun, Utf16Index, decode_reply, unpack_position, unpack_range,
 };
-use waterui_graphics::draw::TextLayoutId;
-use waterui_graphics::draw::kurbo::Rect;
+use cherenkov_record::TextLayoutId;
+use cherenkov_record::kurbo::Rect;
 
 use crate::hwui::HwuiError;
 use crate::hwui::buffer::CommandBuffer;
@@ -153,7 +153,7 @@ fn shape(provider: &Arc<Mono>, ids: &TextLayoutIds, text: &str) -> HwuiTextLayou
 }
 
 fn packed(request: &ShapeRequest<'_>) -> Result<PackedRequest, HwuiError> {
-    request.pack(&Utf16Index::new(request.text).unwrap())
+    request.pack(&Utf16Index::new(request.text()).unwrap())
 }
 
 fn position(index: usize) -> TextPosition {
@@ -230,33 +230,30 @@ fn a_shape_sends_utf16_runs_and_reads_the_reply() {
     let ids = TextLayoutIds::new();
     let text = "é🌊a";
     let mut styled = run(0..text.len());
-    styled.family = Some("Inter".to_owned());
-    styled.weight = 700;
-    styled.italic = true;
-    styled.foreground = Some(0x1020_3040_5060_7080);
-    styled.letter_spacing = 1.4;
+    styled.set_family(Some("Inter".to_owned()));
+    styled.set_weight(700);
+    styled.set_italic(true);
+    styled.set_foreground(Some(0x1020_3040_5060_7080));
+    styled.set_letter_spacing(1.4);
     let runs = [styled];
-    let layout = HwuiTextLayout::shape(
-        &mono,
-        &ids,
-        &ShapeRequest {
-            locale: "zh-TW",
-            max_width: Some(120.0),
-            max_lines: Some(2),
-            ellipsis: true,
-            alignment: TextAlignment::Center,
-            right_to_left: true,
-            strict_families: true,
-            ..ShapeRequest::new(text, &runs, run(0..0))
-        },
-    )
+    let layout = HwuiTextLayout::shape(&mono, &ids, &{
+        let mut literal = ShapeRequest::new(text, &runs, run(0..0));
+        literal.set_locale("zh-TW");
+        literal.set_max_width(Some(120.0));
+        literal.set_max_lines(Some(2));
+        literal.set_ellipsis(true);
+        literal.set_alignment(TextAlignment::Center);
+        literal.set_right_to_left(true);
+        literal.set_strict_families(true);
+        literal
+    })
     .unwrap();
 
     let request = mono.requests.lock().unwrap()[0].clone();
     let size = i32::from_ne_bytes(14.0_f32.to_bits().to_ne_bytes());
     let spacing = i32::from_ne_bytes((1.4_f32 / 14.0).to_bits().to_ne_bytes());
     assert_eq!(
-        &request.spans[12..],
+        request.spans()[12..],
         [
             0,
             4,
@@ -272,14 +269,18 @@ fn a_shape_sends_utf16_runs_and_reads_the_reply() {
             spacing
         ]
     );
-    assert_eq!(request.families, ["Inter"]);
-    assert_eq!(request.locale, "zh-TW");
+    assert_eq!(request.families(), ["Inter"]);
+    assert_eq!(request.locale(), "zh-TW");
     assert_eq!(
-        (request.span_count, request.max_width, request.max_lines),
+        (
+            request.span_count(),
+            request.max_width(),
+            request.max_lines()
+        ),
         (2, 120.0, 2)
     );
     // Centred, right to left, ellipsized, strict.
-    assert_eq!(request.paragraph, 1 | 4 | 8 | 16);
+    assert_eq!(request.paragraph(), 1 | 4 | 8 | 16);
 
     assert_eq!(layout.platform_id(), Some(0));
     assert_eq!(layout.line_count(), 1);
@@ -433,9 +434,10 @@ fn a_run_off_a_character_boundary_is_refused_before_the_platform() {
     for runs in [
         vec![run(0..1)],
         vec![run(0..3)],
-        vec![TextRun {
-            size: 0.0,
-            ..run(0..2)
+        vec![{
+            let mut literal = run(0..2);
+            literal.set_size(0.0);
+            literal
         }],
     ] {
         let request = ShapeRequest::new("é", &runs, run(0..0));
@@ -528,42 +530,47 @@ fn family_lists_pack_as_their_names() {
         ("'It\\'s', x", "It's|x"),
     ];
     for (css, names) in lists {
-        let runs = [TextRun {
-            family: Some(css.to_owned()),
-            ..run(0..3)
+        let runs = [{
+            let mut literal = run(0..3);
+            literal.set_family(Some(css.to_owned()));
+            literal
         }];
         let request = packed(&ShapeRequest::new(text, &runs, run(0..0))).unwrap();
-        assert_eq!(request.families.len(), 1);
+        assert_eq!(request.families().len(), 1);
         assert_eq!(
-            request.families[0].replace(FAMILY_SEPARATOR, "|"),
+            request.families()[0].replace(FAMILY_SEPARATOR, "|"),
             names,
             "{css}"
         );
     }
-    let shared = TextRun {
-        family: Some("Inter, serif".to_owned()),
-        ..run(0..1)
+    let shared = {
+        let mut literal = run(0..1);
+        literal.set_family(Some("Inter, serif".to_owned()));
+        literal
     };
     let runs = [
         shared.clone(),
-        TextRun {
-            range: 1..2,
-            family: None,
-            ..shared.clone()
+        {
+            let mut literal = shared.clone();
+            literal.set_range(1..2);
+            literal.set_family(None);
+            literal
         },
-        TextRun {
-            range: 2..3,
-            ..shared
+        {
+            let mut literal = shared;
+            literal.set_range(2..3);
+            literal
         },
     ];
     let request = packed(&ShapeRequest::new(text, &runs, run(0..0))).unwrap();
-    assert_eq!(request.families.len(), 1);
-    let families: Vec<i32> = request.spans.chunks(12).map(|span| span[2]).collect();
+    assert_eq!(request.families().len(), 1);
+    let families: Vec<i32> = request.spans().chunks(12).map(|span| span[2]).collect();
     assert_eq!(families, [-1, 0, -1, 0]);
     for malformed in ["", "Inter,", ", serif", "'open", "Inter 'x'", "a\u{7}b"] {
-        let runs = [TextRun {
-            family: Some(malformed.to_owned()),
-            ..run(0..3)
+        let runs = [{
+            let mut literal = run(0..3);
+            literal.set_family(Some(malformed.to_owned()));
+            literal
         }];
         let error = packed(&ShapeRequest::new(text, &runs, run(0..0))).unwrap_err();
         assert!(
@@ -578,20 +585,22 @@ fn line_limits_and_the_ellipsis_pack_or_are_refused() {
     let runs = [run(0..3)];
     let plain = packed(&ShapeRequest::new("abc", &runs, run(0..0))).unwrap();
     assert_eq!(
-        (plain.max_lines, plain.paragraph, plain.locale.as_str()),
+        (plain.max_lines(), plain.paragraph(), plain.locale()),
         (-1, 0, "")
     );
-    let limited = packed(&ShapeRequest {
-        max_lines: Some(3),
-        ..ShapeRequest::new("abc", &runs, run(0..0))
+    let limited = packed(&{
+        let mut literal = ShapeRequest::new("abc", &runs, run(0..0));
+        literal.set_max_lines(Some(3));
+        literal
     })
     .unwrap();
-    assert_eq!((limited.max_lines, limited.paragraph), (3, 0));
+    assert_eq!((limited.max_lines(), limited.paragraph()), (3, 0));
     for (max_lines, ellipsis) in [(Some(0), false), (None, true)] {
-        let request = ShapeRequest {
-            max_lines,
-            ellipsis,
-            ..ShapeRequest::new("abc", &runs, run(0..0))
+        let request = {
+            let mut literal = ShapeRequest::new("abc", &runs, run(0..0));
+            literal.set_max_lines(max_lines);
+            literal.set_ellipsis(ellipsis);
+            literal
         };
         assert!(packed(&request).is_err(), "{max_lines:?} {ellipsis}");
     }
@@ -656,13 +665,18 @@ fn the_service_shapes_editable_through_the_platform_engine() {
     {
         let requests = provider.requests.lock().unwrap();
         assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].span_count, 1, "only the baseline row is packed");
-        assert_eq!(requests[0].spans[0], 0);
-        assert_eq!(requests[0].spans[1], 0);
-        let font = waterui_text::font::Font::default().resolve(&env).snapshot();
-        let size = i32::from_ne_bytes(font.size.to_bits().to_ne_bytes());
         assert_eq!(
-            requests[0].spans[3], size,
+            requests[0].span_count(),
+            1,
+            "only the baseline row is packed"
+        );
+        assert_eq!(requests[0].spans()[0], 0);
+        assert_eq!(requests[0].spans()[1], 0);
+        let font = waterui_text::font::Font::default().resolve(&env).snapshot();
+        let size = i32::from_ne_bytes(font.size().to_bits().to_ne_bytes());
+        assert_eq!(
+            requests[0].spans()[3],
+            size,
             "the baseline carries the resolved default font size"
         );
     }
@@ -700,9 +714,9 @@ fn a_limited_layout_caches_apart_from_the_unlimited_one() {
     {
         let requests = provider.requests.lock().unwrap();
         assert_eq!(requests.len(), 1, "one platform shape for the limit");
-        assert_eq!(requests[0].max_lines, 1);
+        assert_eq!(requests[0].max_lines(), 1);
         assert_ne!(
-            requests[0].paragraph & super::wire::paragraph::ELLIPSIS,
+            requests[0].paragraph() & super::wire::paragraph::ELLIPSIS,
             0,
             "the limit implies the ellipsis flag"
         );
@@ -727,7 +741,7 @@ fn a_limited_layout_caches_apart_from_the_unlimited_one() {
     );
     let requests = provider.requests.lock().unwrap();
     assert_eq!(requests.len(), 2);
-    assert_eq!(requests[1].max_lines, super::wire::NO_LINE_LIMIT);
+    assert_eq!(requests[1].max_lines(), super::wire::NO_LINE_LIMIT);
 }
 
 #[test]
@@ -749,4 +763,76 @@ fn the_shared_renderer_shapes_through_the_platform_engine() {
     );
     // é: bytes 0..2, unit 0; 🌊: bytes 2..6, units 1..3; a: byte 6, unit 3.
     assert_eq!(layout.hit_test(31.0, 5.0), position(6));
+}
+
+/// Canvas text on the HWUI target: the platform lays the text out, the
+/// registration leases that platform layout under its own id, and the box
+/// it reports is the platform's.
+#[test]
+fn canvas_text_registers_the_platform_layout_it_leases() {
+    use std::rc::Rc;
+
+    use waterui_core::layout::Point;
+    use waterui_graphics::canvas::TextPlacement;
+    use waterui_text::styled::StyledStr;
+
+    use cherenkov_record::SurfaceId;
+
+    use crate::hwui::{HwuiResources, HwuiSurface};
+    use crate::renderer::mount::hwui::HwuiHost;
+
+    let provider = Arc::new(Mono::default());
+    let ids = TextLayoutIds::new();
+    let service = Arc::new(crate::text::TextService::new(
+        crate::text::HwuiTextEngine::new(
+            Arc::clone(&provider),
+            ids,
+            crate::text::FontFamilyResolution::Strict,
+        ),
+    ));
+    let surface = HwuiSurface::new(SurfaceId::new(9), || {}).expect("an empty root encodes");
+    let backend = Rc::new(HwuiResources::new(
+        Box::new(crate::hwui::platform::tests::Fake::default()),
+        surface.encoder().registry().clone(),
+        surface.encoder().effects().clone(),
+    ));
+    let host = HwuiHost::new(
+        backend,
+        Rc::new(cherenkov_record::MaterialRegistry::default()),
+        Arc::new(|| {}),
+    );
+    <crate::hwui::HwuiTarget as crate::renderer::mount::target::LayerTarget<_>>::install_text(
+        &host, &service,
+    );
+    let resources = <crate::hwui::HwuiTarget as crate::renderer::mount::target::LayerTarget<
+        crate::text::HwuiTextEngine<Mono>,
+    >>::resources(&host)
+    .waterui();
+    let env = crate::renderer::tests::test_environment();
+
+    let text = |text: &str| StyledStr::plain(text.to_owned());
+    let registered = resources
+        .text(
+            text("hello 你好"),
+            TextPlacement::at(Point::zero()),
+            env.clone(),
+        )
+        .expect("the platform lays the text out")
+        .expect("a text with lines draws");
+    // Mono is 10 px per UTF-16 unit: "hello 你好" is eight units.
+    assert!((registered.size().width - 80.0).abs() < f32::EPSILON);
+    assert!(registered.size().height > 0.0);
+    assert_eq!(
+        provider.texts.lock().unwrap().len(),
+        1,
+        "the platform laid out the one text, and the registration leases that layout"
+    );
+
+    assert!(
+        resources
+            .text(text(""), TextPlacement::at(Point::zero()), env)
+            .expect("empty text registers")
+            .is_none(),
+        "no lines, nothing to draw"
+    );
 }

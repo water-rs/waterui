@@ -1,17 +1,24 @@
 use std::path::Path;
+#[cfg(feature = "gpu")]
 use std::rc::Rc;
 
+#[cfg(feature = "gpu")]
 use hydrolysis::theme::WidgetTheme;
+#[cfg(feature = "gpu")]
 use hydrolysis::{
     FontFamilyResolution, HydrolysisRenderer, OffscreenGpuContext, OffscreenWindow, Style,
     readback_texture_rgba8,
 };
-use waterui::graphics::SceneViewMergeToParent;
+#[cfg(feature = "gpu")]
 use waterui::graphics::WorkingColor;
-use waterui::graphics::draw::kurbo;
+#[cfg(feature = "gpu")]
+use waterui::graphics::backend::SceneViewMergeToParent;
+#[cfg(feature = "gpu")]
 use waterui::text::FontCollection;
+#[cfg(feature = "gpu")]
 use waterui_core::{AnyView, Environment, View};
 
+#[cfg(feature = "gpu")]
 use crate::artifacts::{CapturedSnapshot, TestArtifacts};
 
 /// RGBA8 frame captured from a headless hydrolysis render pass.
@@ -19,11 +26,46 @@ use crate::artifacts::{CapturedSnapshot, TestArtifacts};
 #[non_exhaustive]
 pub struct Snapshot {
     /// Frame width in pixels.
-    pub width: u32,
+    width: u32,
     /// Frame height in pixels.
-    pub height: u32,
+    height: u32,
     /// Pixel data in RGBA8 row-major order.
-    pub rgba8: Vec<u8>,
+    rgba8: Vec<u8>,
+}
+
+impl Snapshot {
+    /// Creates a Snapshot from its parts.
+    #[must_use]
+    pub const fn new(width: u32, height: u32, rgba8: Vec<u8>) -> Self {
+        Self {
+            width,
+            height,
+            rgba8,
+        }
+    }
+
+    /// Frame width in pixels.
+    #[must_use]
+    pub const fn width(&self) -> u32 {
+        self.width
+    }
+
+    /// Frame height in pixels.
+    #[must_use]
+    pub const fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// Pixel data in RGBA8 row-major order.
+    #[must_use]
+    pub const fn rgba8(&self) -> &[u8] {
+        self.rgba8.as_slice()
+    }
+
+    /// Pixel data in RGBA8 row-major order, for editing in place.
+    pub const fn rgba8_mut(&mut self) -> &mut [u8] {
+        self.rgba8.as_mut_slice()
+    }
 }
 
 impl Snapshot {
@@ -47,12 +89,15 @@ impl Snapshot {
     }
 }
 
-/// Headless host that renders `WaterUI` views into an offscreen texture.
+/// Headless host that renders `WaterUI` views into an offscreen GPU texture.
 ///
 /// The host renders with a style — the same `hydrolysis::Style` a rendered
 /// mount takes — because a frame is a product of the view tree *and* the
 /// style package's widget theme; a style-free render exists only on the
-/// semantic pipeline, which produces no pixels.
+/// semantic pipeline, which produces no pixels. It renders on the GPU
+/// painter; an [`OffscreenApp`](crate::OffscreenApp) renders on whichever
+/// painter its runtime selected.
+#[cfg(feature = "gpu")]
 pub struct TestHost {
     env: Environment,
     /// Requested once and shared by every render this host performs. A wgpu
@@ -68,6 +113,7 @@ pub struct TestHost {
     fonts: FontCollection,
 }
 
+#[cfg(feature = "gpu")]
 impl core::fmt::Debug for TestHost {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("TestHost")
@@ -77,9 +123,15 @@ impl core::fmt::Debug for TestHost {
     }
 }
 
+#[cfg(feature = "gpu")]
 impl TestHost {
     /// Creates a test host with a fixed render size, installing the style's
     /// tokens into `env` the way a rendered runtime does.
+    ///
+    /// # Panics
+    ///
+    /// Panics with the cause when the host has no GPU Hydrolysis can render
+    /// on.
     #[must_use]
     pub fn new(env: Environment, width: u32, height: u32, style: impl Style) -> Self {
         let mut env = env;
@@ -93,7 +145,8 @@ impl TestHost {
         fonts.clone().install(&mut env);
         Self {
             env,
-            gpu: OffscreenGpuContext::new_for_tests_blocking(),
+            gpu: OffscreenGpuContext::new_blocking()
+                .unwrap_or_else(|error| snapshot_failed("requesting the GPU", error)),
             width,
             height,
             theme: Rc::new(style),
@@ -139,19 +192,11 @@ impl TestHost {
         );
         renderer.finish_rebuild_frame();
 
-        let frame = surface.acquire();
+        let frame = surface
+            .acquire()
+            .unwrap_or_else(|error| snapshot_failed("acquiring the frame", error));
         renderer
-            .render_scene_to_texture(hydrolysis::HydrolysisRenderTarget {
-                adapter: surface.adapter(),
-                device: surface.device(),
-                queue: surface.queue(),
-                device_loss: surface.device_loss().clone(),
-                texture: frame.texture(),
-                format: surface.format(),
-                width: self.width.max(1),
-                height: self.height.max(1),
-                base_color: WorkingColor::TRANSPARENT,
-            })
+            .render_scene_to_texture(surface, frame.texture(), WorkingColor::TRANSPARENT)
             .unwrap_or_else(|error| snapshot_failed("rendering the frame", error));
         let rgba8 = readback_texture_rgba8(
             &*surface,
@@ -204,6 +249,7 @@ impl TestHost {
 }
 
 /// Fails the snapshot with `error` and its whole source chain.
+#[cfg(feature = "gpu")]
 fn snapshot_failed(stage: &str, error: impl core::error::Error + Send + Sync + 'static) -> ! {
     panic!(
         "waterui-testing snapshot failed {stage}: {:#}",

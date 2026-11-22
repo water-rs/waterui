@@ -21,7 +21,10 @@ sudo sed -i \
   "$list"
 # A stalled mirror connection otherwise holds the step until the job's own
 # timeout; each fetch gives up after 30 s and the whole refresh after 5 min.
-if ! timeout 300 sudo apt-get update \
+# `--error-on=any` fails the refresh when an index cannot be fetched; apt
+# otherwise exits 0 with an empty index, and the job dies later at the
+# install with "Unable to locate package".
+if ! timeout 300 sudo apt-get update --error-on=any \
   -o Acquire::Retries=10 \
   -o Acquire::http::Timeout=30 \
   -o Acquire::https::Timeout=30 \

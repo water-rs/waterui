@@ -372,28 +372,29 @@ fn create_slot(
 fn negotiate(shared: &Shared, target: &DmabufTarget) -> Result<Negotiated, SurfaceError> {
     let mut tried = Vec::new();
     for format in &target.formats {
-        let Some((vk_format, wgpu_format)) = export_format(format.fourcc) else {
+        let Some((vk_format, wgpu_format)) = export_format(format.fourcc()) else {
             tried.push(format!(
                 "fourcc {:#x} has no renderable export format",
-                format.fourcc
+                format.fourcc()
             ));
             continue;
         };
-        for &modifier in &format.modifiers {
+        for &modifier in format.modifiers() {
             match export_supported(shared, vk_format, modifier) {
                 Ok(()) => {
                     return Ok(Negotiated {
-                        fourcc: format.fourcc,
+                        fourcc: format.fourcc(),
                         modifier,
                         format: vk_format,
                         wgpu: wgpu_format,
-                        color: format.color,
-                        alpha: format.alpha,
+                        color: format.color(),
+                        alpha: format.alpha(),
                     });
                 }
                 Err(err) => tried.push(format!(
                     "fourcc {:#x} modifier {:#x}: {err}",
-                    format.fourcc, modifier
+                    format.fourcc(),
+                    modifier
                 )),
             }
         }
@@ -548,7 +549,7 @@ impl Pool {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         presenter: &mut present::Presenter,
-        source: &wgpu::TextureView,
+        source: (&wgpu::TextureView, cherenkov::BlendSpace),
         headroom: f32,
     ) -> Result<planes::Presentation, RenderError> {
         if let Some(error) = &self.broken {
@@ -583,7 +584,7 @@ impl Pool {
             }
             // The present submission signals the frame's acquire fence.
             hal_queue.add_signal_semaphore(acquire_sem, None);
-            presenter.texture(
+            presenter.texture_in(
                 device,
                 queue,
                 source,
@@ -632,7 +633,7 @@ impl Pool {
             .iter()
             .map(|&(offset, stride)| {
                 let fd = self.memory_fd(slot)?;
-                Ok(DmabufPlane { fd, offset, stride })
+                Ok(DmabufPlane::new(fd, offset, stride))
             })
             .collect::<Result<Vec<_>, RenderError>>()?;
         let (color, alpha) = presented_color(self.negotiated.color, self.negotiated.alpha);

@@ -4,7 +4,7 @@
 //! platform image view. It needs no GPU device, which is the point — a static
 //! drawing must not cost a wgpu runtime.
 //!
-//! [`Picture`]: crate::picture::Picture
+//! [`Picture`]: crate::backend::Picture
 
 use alloc::rc::Rc;
 use alloc::vec::Vec;
@@ -13,12 +13,13 @@ use core::fmt;
 use crate::draw::Recorder;
 use crate::draw::kurbo::Affine;
 use cherenkov::{
-    Engine, FrameTime, LayerContent, Offscreen, OffscreenFormat, RenderError, Surface, SurfaceError,
+    Engine, FrameTime, LayerContent, Offscreen, OffscreenFormat, OutputAlpha, RenderError, Surface,
+    SurfaceError,
 };
 use cherenkov_cpu::{Level, Raster, RasterConfig, present_srgb8};
 
 use crate::scene::picture::PictureRecording;
-use crate::scene::resources::{HeldResources, SceneResources};
+use crate::scene::resources::{HeldResources, SceneCaps as _, SceneResources};
 use crate::scene::scene_view::SceneContent;
 
 /// A premultiplied sRGB8 raster, rows top to bottom with no padding.
@@ -106,7 +107,7 @@ impl From<RenderError> for RasterizeError {
 /// The engine behind a `Rasterizer` is real, so pictures that name engine
 /// resources — fonts, images, shader paints — must have recorded those
 /// resources against this one: record them with
-/// [`Picture::record_with`](crate::picture::Picture::record_with) over
+/// [`Picture::record_with`](crate::backend::Picture::record_with) over
 /// [`Rasterizer::resources`], not another engine.
 ///
 /// Every drawing it takes carries the registrations it names — a
@@ -150,7 +151,7 @@ impl Rasterizer {
             || {},
         )?;
         Ok(Self {
-            resources: SceneResources::new(engine.clone()),
+            resources: Raster::resources(engine.clone()),
             engine,
             surface,
             installed: HeldResources::empty(),
@@ -182,7 +183,7 @@ impl Rasterizer {
             )
             .await?;
         Ok(Self {
-            resources: SceneResources::new(engine.clone()),
+            resources: Raster::resources(engine.clone()),
             engine,
             surface,
             installed: HeldResources::empty(),
@@ -340,7 +341,12 @@ impl Rasterizer {
             height: self.height,
             // An image view in a platform surface is an SDR sRGB destination:
             // the presentation pass tone-maps to its ceiling.
-            data: present_srgb8(self.level, 1.0, &readback.pixels),
+            data: present_srgb8(
+                self.level,
+                1.0,
+                OutputAlpha::Premultiplied,
+                &readback.pixels,
+            ),
         })
     }
 
@@ -373,7 +379,12 @@ impl Rasterizer {
             height: self.height,
             // An image view in a platform surface is an SDR sRGB destination:
             // the presentation pass tone-maps to its ceiling.
-            data: present_srgb8(self.level, 1.0, &readback.pixels),
+            data: present_srgb8(
+                self.level,
+                1.0,
+                OutputAlpha::Premultiplied,
+                &readback.pixels,
+            ),
         })
     }
 }
@@ -435,7 +446,7 @@ mod tests {
     use crate::draw::kurbo::{Rect, Shape};
     use crate::draw::{Color, Draw, Srgb, StaticRecorder, WorkingColor};
 
-    use crate::picture::Picture;
+    use crate::backend::Picture;
 
     /// Linear-working red is Display P3's red, which sRGB cannot hold: the
     /// expectations below come from naming an sRGB colour instead of a

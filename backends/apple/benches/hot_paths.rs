@@ -25,7 +25,8 @@ mod hot_paths {
     use waterui::reactive::{Binding, binding};
     use waterui_apple::contract::{Mounted, NativeLeaf};
     use waterui_core::layout::{
-        Layout, Point, ProposalSize, Size, StretchAxis, SubView, ViewDimensions,
+        Layout, LayoutError, Point, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size,
+        StretchAxis, SubView, ViewDimensions,
     };
 
     /// A fixed-size leaf: the smallest `SubView` the negotiation path needs.
@@ -34,6 +35,14 @@ mod hot_paths {
     }
 
     impl SubView for BenchLeaf {
+        fn resolve_extent(
+            &self,
+            bounds: LayoutRect,
+            proposal: ProposalSize,
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        }
+
         fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
             ViewDimensions::new(self.size)
         }

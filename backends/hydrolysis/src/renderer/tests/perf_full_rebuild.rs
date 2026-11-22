@@ -36,8 +36,8 @@ use crate::renderer::Recording;
 use kurbo::Affine;
 use peniko::{Brush, Color, Fill};
 use waterui_core::layout::{
-    HorizontalAlignment, Layout, ProposalSize, Rect as LayoutRect, Size, StretchAxis, SubView,
-    VerticalAlignment, ViewDimensions,
+    HorizontalAlignment, Layout, LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent,
+    Size, StretchAxis, SubView, VerticalAlignment, ViewDimensions,
 };
 use waterui_layout::stack::{HStackLayout, VStackLayout};
 
@@ -161,11 +161,11 @@ fn measure_rebuild(gpu: &OffscreenGpuContext, cards: usize, with_text: bool) -> 
         );
         let result = rt.pump_at(false, Instant::now());
         assert!(
-            result.rebuilt,
+            result.rebuilt(),
             "cards={cards} with_text={with_text}: the initial build must re-dispatch"
         );
-        dispatch.push(result.profile.phases.scene_dispatch);
-        build.push(result.profile.phases.build_content);
+        dispatch.push(result.profile().phases().scene_dispatch());
+        build.push(result.profile().phases().build_content());
     }
     percentiles(dispatch, build)
 }
@@ -207,11 +207,11 @@ fn measure_replay(gpu: &OffscreenGpuContext, cards: usize, with_text: bool) -> (
     let mut rebuilt_frames = 0u32;
     for f in 0..SAMPLE_FRAMES as u64 {
         let result = pump(&mut rt, WARMUP_FRAMES as u64 + f + 1);
-        if result.rebuilt {
+        if result.rebuilt() {
             rebuilt_frames += 1; // a frame that escalated to re-dispatch is not a replay sample
         }
-        dispatch.push(result.profile.phases.scene_dispatch);
-        build.push(result.profile.phases.build_content);
+        dispatch.push(result.profile().phases().scene_dispatch());
+        build.push(result.profile().phases().build_content());
     }
     (percentiles(dispatch, build), rebuilt_frames)
 }
@@ -299,7 +299,7 @@ fn full_rebuild_vs_retained_replay_cost() {
     // per sample asked this probe alone for close to three hundred devices, and
     // on a runner whose only adapter is a software rasterizer that exhausted
     // the machine's memory before the last row size was reached.
-    let gpu = OffscreenGpuContext::new_for_tests_blocking();
+    let gpu = OffscreenGpuContext::for_tests();
 
     eprintln!(
         "\n=== Hydrolysis per-frame cost: full re-dispatch vs retained replay (120Hz budget = {BUDGET_120HZ:?}) ==="
@@ -366,6 +366,13 @@ struct MeasuredSub {
 impl SubView for MeasuredSub {
     fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
         ViewDimensions::new(self.size)
+    }
+    fn resolve_extent(
+        &self,
+        bounds: LayoutRect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
     }
     fn stretch_axis(&self) -> StretchAxis {
         self.stretch

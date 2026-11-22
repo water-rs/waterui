@@ -1,9 +1,27 @@
-use super::{HydrolysisRenderer, TailMark};
+use super::HydrolysisRenderer;
+#[cfg(any(
+    feature = "text-field",
+    feature = "secure-field",
+    feature = "color-picker",
+    feature = "date-picker",
+    feature = "picker",
+    feature = "list"
+))]
+use super::TailMark;
+#[cfg(feature = "navigation")]
+use crate::renderer::grow_rect;
 
 use crate::renderer::HydroState;
 use crate::renderer::SafeAreaLayout;
-use crate::renderer::grow_rect;
 use waterui_core::Environment;
+#[cfg(any(
+    feature = "text-field",
+    feature = "secure-field",
+    feature = "color-picker",
+    feature = "date-picker",
+    feature = "picker",
+    feature = "list"
+))]
 use waterui_core::layout::HorizontalAlignment;
 use waterui_text::styled::StyledStr;
 
@@ -19,18 +37,53 @@ use waterui_text::styled::StyledStr;
 #[non_exhaustive]
 pub struct RenderContext {
     /// The transform placing the widget's local drawing space in the scene.
-    pub local: kurbo::Affine,
+    local: kurbo::Affine,
     /// The widget's bounds in its local space.
-    pub bounds: kurbo::Rect,
+    bounds: kurbo::Rect,
+}
+
+impl RenderContext {
+    /// Creates a `RenderContext` from its parts.
+    #[must_use]
+    pub const fn new(local: kurbo::Affine, bounds: kurbo::Rect) -> Self {
+        Self { local, bounds }
+    }
+
+    /// The transform placing the widget's local drawing space in the scene.
+    #[must_use]
+    pub const fn local(&self) -> kurbo::Affine {
+        self.local
+    }
+
+    /// Sets the `local`.
+    pub const fn set_local(&mut self, local: kurbo::Affine) {
+        self.local = local;
+    }
+
+    /// The widget's bounds in its local space.
+    #[must_use]
+    pub const fn bounds(&self) -> kurbo::Rect {
+        self.bounds
+    }
+
+    /// The bounds' width as the line-break width of text drawn in a rectangle
+    /// the caller allocated itself. A leaf with a layout answer passes that
+    /// answer's exact width instead.
+    #[must_use]
+    pub const fn bounds_width_f32(&self) -> f32 {
+        crate::num_cast::f64_as_f32(self.bounds.x1 - self.bounds.x0)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
+#[cfg(any(feature = "menu", feature = "color-picker"))]
 pub struct HydrolysisWindowOrigin {
     pub x: f32,
     pub y: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 pub enum HydrolysisTextContextMenuMode {
     Overlay,
     NativeWindow,
@@ -110,6 +163,7 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
     /// touches a boundary stay reachable, so a scroll surface inside still
     /// extends and `.ignore_safe_area` inside still releases on the edges the
     /// chrome left on the boundary (§7.1).
+    #[cfg(feature = "navigation")]
     pub(crate) fn content_area_for(&self, rect: kurbo::Rect) -> Option<SafeAreaLayout> {
         self.safe_area
             .as_ref()
@@ -121,12 +175,12 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
     /// fill must both cover so an extended bar surface is never clipped and
     /// never lands on the window background. `self.bounds` itself stays
     /// the layout reference.
+    #[cfg(feature = "navigation")]
     pub(crate) fn chrome_paint_bounds(&self) -> kurbo::Rect {
         grow_rect(
             self.bounds,
             self.content_area_for(self.bounds)
-                .map(|area| area.touched_edge_offsets())
-                .unwrap_or_default(),
+                .map_or_default(|area| area.touched_edge_offsets()),
         )
     }
 
@@ -139,6 +193,7 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
     /// context keeps `bounds`' own edges, the placement every
     /// context-free chrome container gets: the bars come back
     /// [`ChromeBar::contextless`] and `content_area` stays `None`.
+    #[cfg(feature = "navigation")]
     pub(crate) fn chrome_splits<const N: usize>(
         &self,
         bars: [(crate::renderer::Edge, f64); N],
@@ -187,22 +242,9 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
         self.renderer
     }
 
-    pub(crate) fn draw_context(
-        &mut self,
-        body: impl FnOnce(&mut waterui_graphics::draw::Recorder),
-    ) {
+    pub(crate) fn draw_context(&mut self, body: impl FnOnce(&mut cherenkov_record::Recorder)) {
         let ctx = self.render_context();
         self.renderer.draw_context(ctx, body);
-    }
-
-    /// Lists `source` as a live item at this point of the widget's record
-    /// ([`HydrolysisRenderer::push_live`]).
-    pub(crate) fn push_live(
-        &mut self,
-        source: &std::rc::Rc<dyn crate::renderer::chrome::LiveSource>,
-    ) {
-        let ctx = self.render_context();
-        self.renderer.push_live(ctx, source);
     }
 
     pub(crate) fn state_mut(&mut self) -> &mut HydroState<E> {
@@ -211,6 +253,14 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
 
     /// Opens the named scope `key` clipped to `clip` at `alpha`, through
     /// this context's transform.
+    #[cfg(any(
+        feature = "text-field",
+        feature = "secure-field",
+        feature = "navigation",
+        feature = "slider",
+        feature = "stepper",
+        feature = "toggle"
+    ))]
     pub(crate) fn open_scope(
         &mut self,
         key: crate::renderer::mount::ScopeKey,
@@ -231,6 +281,11 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
     }
 
     /// [`Self::open_scope`] around `f`.
+    #[cfg(any(
+        feature = "text-field",
+        feature = "secure-field",
+        feature = "navigation"
+    ))]
     pub(crate) fn with_scope(
         &mut self,
         key: crate::renderer::mount::ScopeKey,
@@ -243,8 +298,72 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
         self.close_scope();
     }
 
+    /// Runs `f` inside the named scope `key`, clipped to `clip`, whose
+    /// layer follows `operands` between renders: a group that fades or a
+    /// content scale that moves without a render. The transform operand is
+    /// given in this context's space.
+    pub(crate) fn with_live_scope(
+        &mut self,
+        key: crate::renderer::mount::ScopeKey,
+        operands: crate::renderer::frame::ScopeOperands,
+        clip: kurbo::Rect,
+        f: impl FnOnce(&mut Self),
+    ) {
+        self.open_live_scope(key, operands, clip);
+        f(self);
+        self.close_scope();
+    }
+
+    /// Opens the named scope `key` clipped to `clip` whose layer follows
+    /// `operands`, through this context's transform; [`Self::close_scope`]
+    /// closes it. For a scope a body too long to wrap in a closure records
+    /// through.
+    pub(crate) fn open_live_scope(
+        &mut self,
+        key: crate::renderer::mount::ScopeKey,
+        operands: crate::renderer::frame::ScopeOperands,
+        clip: kurbo::Rect,
+    ) {
+        self.renderer.open_live_scope(
+            key,
+            operands,
+            self.local,
+            Some(&crate::renderer::frame::ScopeClip::Rect(clip)),
+            crate::renderer::ScopeDelta::RECORD_SPACE,
+        );
+    }
+
+    /// Runs `f` inside a control's group `key`, clipped to `clip`: its
+    /// layer fades at `opacity` and composites in `blend_space`, or with
+    /// none in the space of the level beneath it. A live opacity always
+    /// groups, following the operand between renders; a fixed one groups
+    /// only when it fades.
+    pub(crate) fn with_group_scope(
+        &mut self,
+        key: crate::renderer::mount::ScopeKey,
+        opacity: crate::renderer::GroupOpacity,
+        blend_space: Option<cherenkov_record::BlendSpace>,
+        clip: kurbo::Rect,
+        f: impl FnOnce(&mut Self),
+    ) {
+        if matches!(opacity, crate::renderer::GroupOpacity::Fixed(alpha) if alpha >= 1.0) {
+            f(self);
+            return;
+        }
+        self.renderer.open_group_scope(
+            key,
+            (opacity, blend_space),
+            self.local,
+            &crate::renderer::frame::ScopeClip::Rect(clip),
+            crate::renderer::ScopeDelta::RECORD_SPACE,
+        );
+        f(self);
+        self.close_scope();
+    }
+
     /// [`Self::with_scope`] when the scope only exists conditionally (a
     /// disabled-control alpha group): pairing stays lexical either way.
+    #[cfg(any(feature = "slider", feature = "stepper", feature = "toggle"))]
     pub(crate) fn with_scope_if(
         &mut self,
         enabled: bool,
@@ -262,6 +381,12 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
         }
     }
 
+    #[cfg(any(
+        feature = "picker",
+        feature = "list",
+        feature = "color-picker",
+        feature = "date-picker"
+    ))]
     pub(crate) fn render_styled_text(
         &mut self,
         styled: StyledStr,
@@ -269,9 +394,19 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
         env: &Environment,
         bounds: kurbo::Rect,
     ) {
-        self.render_styled_text_limited(styled, alignment, env, bounds, None);
+        self.render_styled_text_limited(styled, alignment, env, bounds, None, None);
     }
 
+    /// `styled` limited to `max_lines`, its default-coloured runs drawn in
+    /// `paint`, live, when given.
+    #[cfg(any(
+        feature = "text-field",
+        feature = "secure-field",
+        feature = "color-picker",
+        feature = "date-picker",
+        feature = "picker",
+        feature = "list"
+    ))]
     pub(crate) fn render_styled_text_limited(
         &mut self,
         styled: StyledStr,
@@ -279,6 +414,7 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
         env: &Environment,
         bounds: kurbo::Rect,
         max_lines: Option<usize>,
+        paint: Option<&nami::Computed<cherenkov_record::Paint>>,
     ) {
         let child_ctx = self.child(
             kurbo::Affine::translate((bounds.x0, bounds.y0)),
@@ -287,25 +423,40 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
         let renderer = self.renderer_mut();
         renderer.render_styled_text_limited(
             child_ctx,
+            child_ctx.bounds_width_f32(),
             styled,
             alignment,
             env,
             max_lines.map_or(TailMark::None, TailMark::Clip),
+            paint,
         );
     }
 
-    pub(crate) fn render_styled_text_single_line_centered(
+    /// A single line of `styled` centred in `bounds`, growing with
+    /// `scale`'s press scale when given — a label that follows its
+    /// chrome — and its default-coloured runs drawn in `paint`, live,
+    /// when given.
+    pub(crate) fn render_styled_text_single_line_scaled(
         &mut self,
         styled: StyledStr,
         env: &Environment,
         bounds: kurbo::Rect,
+        scale: Option<&std::rc::Rc<crate::renderer::chrome::LiveChrome>>,
+        paint: Option<&nami::Computed<cherenkov_record::Paint>>,
     ) {
+        let widget = self.render_context().local();
         let child_ctx = self.child(
             kurbo::Affine::translate((bounds.x0, bounds.y0)),
             kurbo::Rect::new(0.0, 0.0, bounds.width(), bounds.height()),
         );
         let renderer = self.renderer_mut();
-        renderer.render_styled_text_single_line_centered(child_ctx, styled, env);
+        renderer.render_styled_text_single_line_centered(
+            child_ctx,
+            styled,
+            env,
+            scale.map(|chrome| (chrome, widget)),
+            paint,
+        );
     }
 }
 
@@ -314,6 +465,7 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
 /// never paired with another bar's context — plus the one content rect
 /// and composed content context; a context-free widget's bars come back
 /// [`ChromeBar::contextless`] and `content_area` `None`.
+#[cfg(feature = "navigation")]
 pub struct ChromeGroup<const N: usize> {
     /// Each bar's share of the split, in the order the edges were given.
     pub bars: [crate::renderer::ChromeBar; N],

@@ -160,6 +160,37 @@ pub fn cross_envelope(children: impl IntoIterator<Item = (f32, f32)>) -> (f32, f
 /// is `0`, `extent / 2` and `extent` for the three edge alignments, and the
 /// envelope's own line for a custom guide. A child is placed at
 /// `line - guide`.
+impl LineAnchor {
+    /// The unit position this anchor puts a container's own response at on
+    /// its axis: start for `Leading` and every custom guide (§4.1's start
+    /// convention), the middle for `Center`, the end for `Trailing`.
+    pub const fn response_unit(self) -> f32 {
+        match self {
+            Self::Leading | Self::Custom => 0.0,
+            Self::Center => 0.5,
+            Self::Trailing => 1.0,
+        }
+    }
+}
+
+/// Where a stack's negotiated main-axis block starts: the block is centred in
+/// the bounds, crossing both edges equally when it overflows them.
+pub fn centred_block_start(min: f32, extent: f32, block: f32) -> f32 {
+    min + (extent - block) * 0.5
+}
+
+/// The main-axis extent of a stack's placed members: their reported extents
+/// plus the spacing between them.
+pub fn main_block(main_extents: impl Iterator<Item = f32>, spacing: f32) -> f32 {
+    let mut members = 0usize;
+    let mut total = 0.0;
+    for extent in main_extents {
+        members += 1;
+        total += extent;
+    }
+    total + stack_spacing(spacing, members)
+}
+
 pub fn container_line(extent: f32, anchor: LineAnchor, above: f32, below: f32) -> f32 {
     let slack = extent - (above + below);
     let offset = match anchor {

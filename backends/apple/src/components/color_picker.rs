@@ -13,16 +13,19 @@ use alloc::rc::Rc;
 use alloc::string::String;
 use core::cell::{Cell, RefCell};
 
-use cocoa_ui::{PlatformView, Rect, Retained};
+use cocoa_ui::{PlatformView, Rect, Retained, view};
 use waterui::component::form::picker::color::ColorPickerConfig;
 use waterui::graphics::color::{Color, Working, WorkingColor, srgb_to_linear, working};
 use waterui::reactive::{Computed, Signal};
 use waterui::text::StyledStr;
 use waterui_core::interaction::Disabled;
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size, StretchAxis, SubView,
+    ViewDimensions,
+};
 
 use crate::contract::{Mounted, NativeLeaf};
-use crate::dispatch::Dispatcher;
+use crate::proposal;
 
 #[cfg(target_os = "macos")]
 mod platform {
@@ -37,10 +40,23 @@ mod platform {
     pub(super) use cocoa_ui::uikit::{color_well as well_colors, colors};
 }
 
+use crate::contract::RenderContext;
 use platform::{ColorWell, HostView};
 
 /// The gap between the leading label and the well.
 const LABEL_SPACING: f64 = 8.0;
+
+/// How the row claims space. `AppKit` hugs — the label, the gap and the
+/// well at its intrinsic size, the component's "never stretches" — as
+/// `SwiftUI` hosts `NSColorWell`. `UIKit` keeps the row filling its width
+/// with the well pinned trailing.
+#[cfg(target_os = "macos")]
+const STRETCH: StretchAxis = StretchAxis::None;
+#[cfg(target_os = "ios")]
+const STRETCH: StretchAxis = StretchAxis::Horizontal;
+
+/// Whether the row fills the width it is offered.
+const FILLS_WIDTH: bool = matches!(STRETCH, StretchAxis::Horizontal);
 
 /// A styled string as spoken text: plain text with the bidi control
 /// characters interpolation inserts for layout stripped, as
@@ -122,16 +138,18 @@ fn to_working(rgba: cocoa_ui::Rgba, headroom: f64) -> WorkingColor {
 
 /// The well's current color on `AppKit`.
 #[cfg(target_os = "macos")]
-fn read_well_color(well: &ColorWell, support_hdr: bool) -> WorkingColor {
+fn read_well_color(well: &ColorWell, support_hdr: bool) -> Option<WorkingColor> {
     let color = well.color();
     let (base, headroom) = if support_hdr {
         platform::colors::sdr_base_and_headroom(&color)
     } else {
         (color, 0.0)
     };
-    let rgba = platform::colors::srgb_components(&base)
-        .expect("NSColorWell returned a color with no sRGB form");
-    to_working(rgba, headroom)
+    let rgba = platform::colors::srgb_components(&base);
+    if rgba.is_none() {
+        tracing::error!("NSColorWell returned a color with no sRGB form; the pick is ignored");
+    }
+    rgba.map(|rgba| to_working(rgba, headroom))
 }
 
 /// The `UIKit` variant; `UIColorWell.selectedColor` may be `nil`, which
@@ -144,9 +162,13 @@ fn read_well_color(well: &ColorWell, support_hdr: bool) -> Option<WorkingColor> 
     } else {
         (color, 0.0)
     };
-    let rgba = platform::well_colors::srgb_components(&base)
-        .expect("UIColorWell returned a color that cannot convert to sRGB");
-    Some(to_working(rgba, headroom))
+    let rgba = platform::well_colors::srgb_components(&base);
+    if rgba.is_none() {
+        tracing::error!(
+            "UIColorWell returned a color that cannot convert to sRGB; the pick is ignored"
+        );
+    }
+    rgba.map(|rgba| to_working(rgba, headroom))
 }
 
 /// The leaf's live state, shared between the watchers, the layout face and
@@ -169,34 +191,51 @@ struct ColorPickerState {
     _action: cocoa_ui::ActionTarget,
 }
 
-/// Lays out the children inside `view`'s bounds: the label leading and
-/// vertically centered, then the well spanning the rest of the row,
-/// centered on its intrinsic height — `configureSubviews`' constraints.
-/// RTL mirrors the row.
-fn layout_children(view: &PlatformView, state: &ColorPickerState) {
-    let bounds = cocoa_ui::view::bounds(view);
-    let width = bounds.size.width;
-    let height = bounds.size.height;
+/// The label's measured size, empty when it is hidden or absent.
+fn label_size(state: &ColorPickerState) -> Size {
+    state.label.as_ref().map_or_else(Size::default, |label| {
+        label.layout().measure(ProposalSize::UNSPECIFIED).size
+    })
+}
+
+/// Where the well starts: after the label and the gap, or at the leading
+/// edge when no label shows — measure and layout share the one rule.
+fn well_x(label: Size) -> f64 {
+    if label.width > 0.0 && label.height > 0.0 {
+        f64::from(label.width) + LABEL_SPACING
+    } else {
+        0.0
+    }
+}
+
+/// Lays out the children inside the `response` rectangle: the label
+/// leading and vertically centered, then the well — at its intrinsic width
+/// on `AppKit`, spanning the rest of the row on `UIKit` — centered on its
+/// intrinsic height. RTL mirrors the row.
+fn layout_children(view: &PlatformView, response: Rect, state: &ColorPickerState) {
+    let width = response.size.width;
+    let height = response.size.height;
     let rtl = cocoa_ui::view::is_right_to_left(view);
 
     let place = |child: &PlatformView, x: f64, y: f64, w: f64, h: f64| {
         let x = if rtl { width - x - w } else { x };
-        cocoa_ui::view::set_frame(child, Rect::new(x, y, w, h));
+        view::set_frame(child, Rect::new(x, y, w, h).translated(response.origin));
     };
 
-    let label_size = state.label.as_ref().map_or_else(Size::default, |label| {
-        label.layout().measure(ProposalSize::UNSPECIFIED).size
-    });
+    let label_size = label_size(state);
     let well_size = state.well.intrinsic_size();
-    // `WuiColorPicker` pins the well to `labelView.trailing + spacing`
-    // unconditionally — a hidden label still leaves the 8pt gap.
-    let well_x = f64::from(label_size.width) + LABEL_SPACING;
+    let well_x = well_x(label_size);
+    let well_w = if FILLS_WIDTH {
+        (width - well_x).max(0.0)
+    } else {
+        well_size.width
+    };
 
     place(
         state.well.view(),
         well_x,
         (height - well_size.height) / 2.0,
-        (width - well_x).max(0.0),
+        well_w,
         well_size.height,
     );
     if let Some(label) = &state.label {
@@ -224,6 +263,14 @@ impl core::fmt::Debug for ColorPickerSubView {
 }
 
 impl SubView for ColorPickerSubView {
+    fn resolve_extent(
+        &self,
+        bounds: LayoutRect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     // `measure` speaks f32; the geometry math runs in f64 — the narrowing
     // is the layout contract, as in `text`.
     #[expect(
@@ -232,28 +279,21 @@ impl SubView for ColorPickerSubView {
     )]
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         let state = self.state.borrow();
-        let label_size = state.label.as_ref().map_or_else(Size::default, |label| {
-            label.layout().measure(ProposalSize::UNSPECIFIED).size
-        });
+        let label_size = label_size(&state);
         let well_size = state.well.intrinsic_size();
-        let has_label = label_size.width > 0.0 && label_size.height > 0.0;
-        let intrinsic_width = well_size.width
-            + if has_label {
-                LABEL_SPACING + f64::from(label_size.width)
-            } else {
-                0.0
-            };
+        let intrinsic_width = well_x(label_size) + well_size.width;
         let intrinsic_height = f64::from(label_size.height).max(well_size.height);
-        // The well's trailing edge is pinned, so the row stretches
-        // horizontally to whatever it's offered.
-        let width = proposal
-            .width
-            .map_or(intrinsic_width, |w| f64::from(w).max(intrinsic_width));
+        // A filling row answers whatever width it's offered; a hugging
+        // row answers its content.
+        let width = match proposal.width {
+            Some(offered) if FILLS_WIDTH => f64::from(offered).max(intrinsic_width),
+            _ => intrinsic_width,
+        };
         ViewDimensions::new(Size::new(width as f32, intrinsic_height as f32))
     }
 
     fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::Horizontal
+        STRETCH
     }
 
     fn priority(&self) -> i32 {
@@ -302,103 +342,105 @@ fn bind_value_well(
     });
 }
 
-/// Installs the `color_picker` handler on the dispatcher:
+/// The `color_picker` realization:
 /// `Native<ColorPickerConfig>` maps to a container view with the label
 /// child and the platform color well.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<ColorPickerConfig>(|config, ctx| {
-        let mtm = ctx.mtm();
-        let host = HostView::new(mtm, Rect::ZERO);
-        let well = Rc::new(ColorWell::new(mtm));
-        let host_view: &PlatformView = &host;
-        cocoa_ui::view::add_subview(host_view, well.view());
-        #[cfg(target_os = "macos")]
-        well.set_supports_alpha(config.support_alpha, mtm);
-        #[cfg(target_os = "ios")]
-        well.set_supports_alpha(config.support_alpha);
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "NativeBackend hands each payload by value"
+)]
+pub fn realize_color_picker_config(
+    config: ColorPickerConfig,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    let mtm = ctx.mtm();
+    let host = HostView::new(mtm, Rect::ZERO);
+    let well = Rc::new(ColorWell::new(mtm));
+    let host_view: &PlatformView = &host;
+    cocoa_ui::view::add_subview(host_view, well.view());
+    #[cfg(target_os = "macos")]
+    well.set_supports_alpha(config.support_alpha(), mtm);
+    #[cfg(target_os = "ios")]
+    well.set_supports_alpha(config.support_alpha());
 
-        // The sync flag is shared with the state installed below.
-        let syncing = Rc::new(Cell::new(false));
-        let support_hdr = config.support_hdr;
+    // The sync flag is shared with the state installed below.
+    let syncing = Rc::new(Cell::new(false));
+    let support_hdr = config.support_hdr();
 
-        // Well → binding: a picked color reads back as a WorkingColor with
-        // linear Display-P3 channels and HDR headroom already encoded.
-        let action = well.install_action({
-            let well = Rc::clone(&well);
-            let syncing = Rc::clone(&syncing);
-            let value = config.value.clone();
-            move || {
-                if syncing.get() {
-                    return;
-                }
-                #[cfg(target_os = "macos")]
-                let resolved = read_well_color(&well, support_hdr);
-                #[cfg(target_os = "ios")]
-                let Some(resolved) = read_well_color(&well, support_hdr) else {
-                    return;
-                };
-                value.set(Color::new(Working(resolved)));
+    // Well → binding: a picked color reads back as a WorkingColor with
+    // linear Display-P3 channels and HDR headroom already encoded.
+    let action = well.install_action({
+        let well = Rc::clone(&well);
+        let syncing = Rc::clone(&syncing);
+        let value = config.value().clone();
+        move || {
+            if syncing.get() {
+                return;
             }
-        });
-
-        // The label is always mounted — a hidden one collapses to zero
-        // size, matching `WuiColorPicker`'s always-present `labelView`.
-        let label = ctx
-            .render(waterui_backend_core::AnyView::new(config.label.clone()))
-            .mount(host_view);
-        // The semantic text is announced on the well itself.
-        cocoa_ui::view::hide_from_accessibility(label.view());
-
-        let state = Rc::new(RefCell::new(ColorPickerState {
-            well,
-            label: Some(label),
-            syncing,
-            color_guard: None,
-            _action: action,
-        }));
-
-        host.set_layout_handler({
-            let state = Rc::clone(&state);
-            move |view| {
-                layout_children(view, &state.borrow());
-            }
-        });
-
-        let mut leaf = NativeLeaf::new(
-            host_view,
-            ColorPickerSubView {
-                state: Rc::clone(&state),
-            },
-        );
-
-        // Binding → well: each `Color` the binding produces is resolved in
-        // this environment and observed — `observeColor` re-arming on every
-        // `Color` the binding emits, as `WuiColorPicker` does.
-        bind_value_well(&mut leaf, &config.value, &state, ctx.env(), support_hdr);
-
-        // The label's semantic text is announced on the well.
-        let accessibility_label = config.label.accessibility_label();
-        leaf.bind(&accessibility_label, {
-            let state = Rc::clone(&state);
-            move |styled| {
-                cocoa_ui::view::set_accessibility_label(
-                    state.borrow().well.view(),
-                    &accessibility_text(&styled),
-                );
-            }
-        });
-
-        // A disabled subtree must not respond to input.
-        if let Some(disabled) = ctx.env().get::<Disabled>() {
-            leaf.bind(disabled.signal(), {
-                let state = Rc::clone(&state);
-                move |is_disabled: bool| state.borrow().well.set_enabled(!is_disabled)
-            });
+            let Some(resolved) = read_well_color(&well, support_hdr) else {
+                return;
+            };
+            value.set(Color::new(Working(resolved)));
         }
-
-        leaf.keep(state);
-        leaf
     });
+
+    // The label is always mounted — a hidden one collapses to zero
+    // size, matching `WuiColorPicker`'s always-present `labelView`.
+    let label = ctx
+        .render(waterui_backend_core::AnyView::new(config.label().clone()))
+        .mount(host_view);
+    // The semantic text is announced on the well itself.
+    cocoa_ui::view::hide_from_accessibility(label.view());
+
+    let state = Rc::new(RefCell::new(ColorPickerState {
+        well,
+        label: Some(label),
+        syncing,
+        color_guard: None,
+        _action: action,
+    }));
+
+    host.set_layout_handler({
+        let state = Rc::clone(&state);
+        move |view| {
+            layout_children(view, proposal::response(view), &state.borrow());
+        }
+    });
+
+    let mut leaf = NativeLeaf::new(
+        host_view,
+        ColorPickerSubView {
+            state: Rc::clone(&state),
+        },
+    );
+
+    // Binding → well: each `Color` the binding produces is resolved in
+    // this environment and observed — `observeColor` re-arming on every
+    // `Color` the binding emits, as `WuiColorPicker` does.
+    bind_value_well(&mut leaf, config.value(), &state, ctx.env(), support_hdr);
+
+    // The label's semantic text is announced on the well.
+    let accessibility_label = config.label().accessibility_label();
+    leaf.bind(&accessibility_label, {
+        let state = Rc::clone(&state);
+        move |styled| {
+            cocoa_ui::view::set_accessibility_label(
+                state.borrow().well.view(),
+                &accessibility_text(&styled),
+            );
+        }
+    });
+
+    // A disabled subtree must not respond to input.
+    if let Some(disabled) = ctx.env().get::<Disabled>() {
+        leaf.bind(disabled.signal(), {
+            let state = Rc::clone(&state);
+            move |is_disabled: bool| state.borrow().well.set_enabled(!is_disabled)
+        });
+    }
+
+    leaf.keep(state);
+    leaf
 }
 
 #[cfg(test)]

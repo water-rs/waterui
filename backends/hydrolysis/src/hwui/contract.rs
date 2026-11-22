@@ -11,15 +11,15 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use waterui_graphics::draw::color::WorkingColor;
-use waterui_graphics::draw::kurbo::{
+use cherenkov_record::color::WorkingColor;
+use cherenkov_record::kurbo::{
     Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke, Vec2,
 };
-use waterui_graphics::draw::{
+use cherenkov_record::{
     BlendMode, ChangeSet, ColorStop, ContentOp, Curve, Draw, Extend, FontId, Glyph, GlyphRun,
     GlyphStyle, Group, ImageId, ImagePattern, Instant, Interpolation, LayerId, LayerOp,
     LinearGradient, MeshColorInterpolation, MeshGradient, Op as TreeOp, Paint, Picture, Prop,
-    RadialGradient, Sampling, ShaderId, ShaderPaint, Shadow, ShapeData, StaticRecorder,
+    RadialGradient, Retarget, Sampling, ShaderId, ShaderPaint, Shadow, ShapeData, StaticRecorder,
     SweepGradient,
 };
 
@@ -27,13 +27,13 @@ use super::buffer::{CommandBuffer, Field};
 use super::encoder::{Encoder, HostEntry, PlatformViewBinding};
 use super::fonts::FontInfo;
 use super::lower::{Caches, Lower, Pools, Scratch};
-use super::protocol::{MESH_BAND_PATCHES, NONE, Op};
+use super::protocol::{MESH_BAND_PATCHES, NONE, Op, effect_kind};
 
 use super::resources::{Kind, SharedRegistry};
 use super::{HwuiError, HwuiSurface, HwuiTarget};
-use cherenkov_record::{Shared, SurfaceId};
+use cherenkov_record::TextLayoutId;
+use cherenkov_record::{Animatable, Fixed, Live, Shared, SurfaceId};
 use std::cell::Cell;
-use waterui_graphics::draw::TextLayoutId;
 
 use super::text::{
     ShapeRequest, TextAlignment, TextLayoutIds, TextRun, Utf16Index, describe_paragraph,
@@ -53,12 +53,24 @@ const fn color(r: f32, g: f32, b: f32, a: f32) -> WorkingColor {
     }
 }
 
-const fn prop<T>(target: T) -> Prop<T> {
+const fn prop<T: Animatable>(target: T) -> Prop<T> {
     Prop {
         target,
         animation: None,
         start: None,
     }
+}
+
+/// Clips `id` to `target` at once.
+const fn clip(id: LayerId, target: ShapeData) -> LayerOp {
+    LayerOp::Clip(
+        id,
+        Some(Retarget {
+            target,
+            animation: None,
+            start: None,
+        }),
+    )
 }
 
 fn stops() -> Vec<ColorStop> {
@@ -77,6 +89,7 @@ fn stops() -> Vec<ColorStop> {
 fn changes(ops: Vec<TreeOp<HwuiTarget>>) -> ChangeSet<HwuiTarget> {
     ChangeSet {
         clear: Some(color(1.0, 1.0, 1.0, 1.0)),
+        storage_space: None,
         ops,
         recycled: Vec::new(),
         animating: false,
@@ -115,6 +128,11 @@ fn rich_picture(font: u32, bitmap: u32, runtime: u32, text: u32) -> Picture {
         r.text(
             TextLayoutId::new(u64::from(text)),
             Affine::translate((2.0, 3.0)) * Affine::scale(1.5),
+        );
+        r.painted_text(
+            TextLayoutId::new(u64::from(text)),
+            Affine::translate((2.0, 15.0)),
+            Paint::Solid(color(0.2, 0.4, 0.8, 1.0)),
         );
         r.stroke(
             RoundedRect::new(2.0, 2.0, 38.0, 28.0, 4.0),
@@ -266,6 +284,7 @@ fn mesh(columns: u32, rows: u32) -> MeshGradient {
         }
     }
     MeshGradient::new(columns, rows, points, colors)
+        .expect("the loops push one vertex per grid corner for a non-empty grid")
 }
 
 /// A dashed stroke of a variation instance of [`glyph_run`]'s font: a
@@ -318,7 +337,7 @@ fn plain_picture() -> Picture {
     reason = "a scene fixture reads as one staged sequence; splitting it would scatter the script it exists to spell out"
 )]
 fn tree_scene() -> Result<Scene, HwuiError> {
-    let mut encoder = Encoder::new(34)?;
+    let mut encoder = Encoder::new()?;
     let mut registry = encoder.registry().lock();
     let font = registry.acquire(Kind::Font)?;
     registry.set_font_info(
@@ -362,11 +381,9 @@ fn tree_scene() -> Result<Scene, HwuiError> {
         )),
         layer(LayerOp::Translation(card, prop(Vec2::new(10.5, 20.0)))),
         layer(LayerOp::Opacity(card, prop(0.5))),
-        layer(LayerOp::Clip(
+        layer(clip(
             card,
-            Some(ShapeData::RoundedRect(RoundedRect::new(
-                0.0, 0.0, 40.0, 30.0, 6.0,
-            ))),
+            ShapeData::RoundedRect(RoundedRect::new(0.0, 0.0, 40.0, 30.0, 6.0)),
         )),
         layer(LayerOp::Blend(card, BlendMode::Multiply)),
         layer(LayerOp::Create(scroller)),
@@ -402,7 +419,7 @@ fn tree_scene() -> Result<Scene, HwuiError> {
         Rect::new(0.0, 0.0, 20.0, 10.0),
     )]);
     encoder.set_host_order(&[HostEntry::Layer(root)]);
-    frames.push(encoder.frame(Instant::now(), 1.0)?.words.to_vec());
+    frames.push(encoder.frame(Instant::now(), 1.0)?.words().to_vec());
 
     encoder.set_platform_views(&[]);
     encoder.commit(changes(vec![
@@ -429,7 +446,7 @@ fn tree_scene() -> Result<Scene, HwuiError> {
     drop(registry);
     encoder.text_layouts().release(text_layout);
     encoder.set_host_order(&[HostEntry::Layer(root)]);
-    frames.push(encoder.frame(Instant::now(), 1.0)?.words.to_vec());
+    frames.push(encoder.frame(Instant::now(), 1.0)?.words().to_vec());
 
     Ok(Scene {
         name: "tree",
@@ -438,8 +455,40 @@ fn tree_scene() -> Result<Scene, HwuiError> {
     })
 }
 
-/// The op no tree scene reaches before #1750: a node effect.
+/// The op no tree scene reaches directly: a node's effect definition and
+/// binding.
 fn direct_scene() -> Result<Scene, HwuiError> {
+    // A defined effect a node then draws through: one blur stage and one
+    // colour stage, emitted straight into the record's payload.
+    let stages = vec![
+        Field::U("kind", effect_kind::BLUR),
+        Field::F("v0", 8.0),
+        Field::F("v1", 0.0),
+        Field::F("v2", 0.0),
+        Field::F("v3", 0.0),
+        Field::F("v4", 0.0),
+        Field::F("v5", 0.0),
+        Field::F("v6", 0.0),
+        Field::F("v7", 0.0),
+        Field::F("v8", 0.0),
+        Field::F("v9", 0.0),
+        Field::F("v10", 0.0),
+        Field::F("v11", 0.0),
+        Field::U("kind", effect_kind::LINEAR_COLOR),
+        Field::F("v0", 1.0),
+        Field::F("v1", 0.0),
+        Field::F("v2", 0.0),
+        Field::F("v3", 0.0),
+        Field::F("v4", 0.0),
+        Field::F("v5", 1.0),
+        Field::F("v6", 0.0),
+        Field::F("v7", 0.0),
+        Field::F("v8", 0.0),
+        Field::F("v9", 0.0),
+        Field::F("v10", 1.0),
+        Field::F("v11", 0.0),
+    ];
+    let _ = &stages; // kept: the extend below reads it
     let mut buffer = CommandBuffer::new();
     let mut pools = Pools::new();
     let mut caches = Caches::default();
@@ -454,10 +503,17 @@ fn direct_scene() -> Result<Scene, HwuiError> {
         registry: &registry,
         text_layouts: &text_layouts,
         scratch: &mut scratch,
-        api_level: 34,
         layer: 0,
+        density: 1.0,
     };
+    let mut define = vec![Field::U("effect", 0), Field::U("stages", 2)];
+    define.extend_from_slice(&stages);
+    lower.buffer.op(Op::DefineEffect, &define)?;
     let node = lower.create_node()?;
+    lower.buffer.op(
+        Op::SetEffect,
+        &[Field::U("node", node), Field::U("effect", 0)],
+    )?;
     lower.buffer.op(
         Op::SetEffect,
         &[Field::U("node", node), Field::U("effect", NONE)],
@@ -482,6 +538,718 @@ fn write(dir: &Path, scene: &Scene) {
     log.push('\n');
     std::fs::write(dir.join(format!("{}.log", scene.name)), log)
         .expect("the contract directory is writable");
+}
+
+#[test]
+fn a_filtered_layer_defines_binds_and_updates_without_remount() {
+    use crate::renderer::mount::target::FilterRegistration;
+    use waterui_graphics::backend::AnyEffect;
+    use waterui_graphics::backend::filtrate::filters;
+
+    let mut surface = HwuiSurface::new(SurfaceId::new(9), || {}).expect("an empty root encodes");
+    let shared = surface.shared().clone();
+    let root = Shared::root(&shared);
+    let child = Shared::layer(&shared);
+    let brightness = nami::binding(0.5f32);
+    let mut guards = waterui_graphics::backend::ParamGuards::default();
+    let wakes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let wake_counter = std::sync::Arc::clone(&wakes);
+    let registration = surface
+        .encoder()
+        .effects()
+        .register(
+            AnyEffect::filter(filters::Brightness(guards.bind(brightness.clone()))),
+            std::sync::Arc::new(move || {
+                wake_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }),
+        )
+        .expect("a brightness chain registers on API 34");
+    Shared::run_transaction(&shared, None, None, |tx| {
+        tx[&root].push(&child);
+        tx[&child]
+            .layout_size(kurbo::Size::new(10.0, 10.0))
+            .filter(registration.filter_id())
+            .record(|c| {
+                c.fill(
+                    kurbo::Rect::new(0.0, 0.0, 10.0, 10.0),
+                    color(1.0, 0.0, 0.0, 1.0),
+                );
+            });
+    });
+    let mut time = Instant::now();
+    let _ = surface
+        .frame(time, 1.0)
+        .expect("the filtered frame encodes");
+    let log = surface.take_log();
+    let define = log.iter().position(|l| l.starts_with("DefineEffect"));
+    let set = log.iter().position(|l| l.starts_with("SetEffect"));
+    let record = log.iter().position(|l| l.starts_with("Record"));
+    assert!(define.is_some() && set.is_some(), "{log:?}");
+    assert!(define < set, "the definition precedes the binding: {log:?}");
+    assert!(record.is_some(), "the leaf records its content: {log:?}");
+
+    // An unchanged frame re-emits nothing.
+    time += std::time::Duration::from_millis(16);
+    let _ = surface.frame(time, 1.0).expect("the idle frame encodes");
+    let log = surface.take_log();
+    for op in ["DefineEffect", "SetEffect", "CreateNode", "Record"] {
+        assert!(!log.iter().any(|l| l.starts_with(op)), "{op}: {log:?}");
+    }
+
+    brightness.set(0.75);
+    assert_eq!(wakes.load(std::sync::atomic::Ordering::SeqCst), 1);
+    time += std::time::Duration::from_millis(16);
+    let _ = surface
+        .frame(time, 1.0)
+        .expect("the parameter update encodes");
+    let log = surface.take_log();
+    assert_eq!(
+        log.iter()
+            .filter(|line| line.starts_with("DefineEffect"))
+            .count(),
+        1,
+        "{log:?}"
+    );
+    for op in ["SetEffect", "CreateNode", "Record"] {
+        assert!(
+            !log.iter().any(|line| line.starts_with(op)),
+            "{op}: {log:?}"
+        );
+    }
+
+    // Clearing the filter binds NONE and re-emits the implicit clip.
+    Shared::run_transaction(&shared, None, None, |tx| {
+        tx[&child].clear_filter();
+    });
+    time += std::time::Duration::from_millis(16);
+    let _ = surface.frame(time, 1.0).expect("the cleared frame encodes");
+    let log = surface.take_log();
+    let none = log
+        .iter()
+        .find(|l| l.starts_with("SetEffect") && l.contains("effect=4294967295"));
+    assert!(none.is_some(), "{log:?}");
+    let position = log
+        .iter()
+        .find(|l| l.starts_with("SetPosition") && l.ends_with("clip=1"));
+    assert!(position.is_some(), "the implicit clip returns: {log:?}");
+
+    // Detaching releases the registration's effect after the layer stops
+    // naming it.
+    drop(registration);
+    Shared::run_transaction(&shared, None, None, |tx| {
+        tx[&root].remove(&child);
+    });
+    time += std::time::Duration::from_millis(16);
+    let _ = surface.frame(time, 1.0).expect("the detach frame encodes");
+    let log = surface.take_log();
+    assert!(
+        log.iter().any(|l| l.starts_with("ReleaseEffect")),
+        "{log:?}"
+    );
+}
+
+/// The stretch's frame is given in device pixels; the node it draws is
+/// found through its ancestors' scale and its own extent origin, so the
+/// definition the platform runs carries the frame in the node's space.
+#[test]
+fn a_stretched_layer_defines_its_frame_in_the_nodes_space() {
+    use crate::renderer::mount::target::FilterRegistration;
+    use waterui_graphics::backend::AnyEffect;
+    use waterui_graphics::backend::filtrate::filters::OverscrollStretch;
+
+    let mut surface = HwuiSurface::new(SurfaceId::new(11), || {}).expect("an empty root encodes");
+    let shared = surface.shared().clone();
+    let root = Shared::root(&shared);
+    let parent = Shared::layer(&shared);
+    let child = Shared::layer(&shared);
+    let registration = surface
+        .encoder()
+        .effects()
+        .register(
+            AnyEffect::filter(OverscrollStretch {
+                frame: [2.0f32, 0.0, 0.0, 2.0, 50.0, 70.0],
+                size: [50.0, 60.0],
+                stretch: [0.0, 0.1],
+            }),
+            std::sync::Arc::new(|| {}),
+        )
+        .expect("the stretch registers");
+    Shared::run_transaction(&shared, None, None, |tx| {
+        tx[&root].push(&parent);
+        tx[&parent].transform(kurbo::Affine::translate((5.0, 7.0)) * kurbo::Affine::scale(2.0));
+        tx[&parent].push(&child);
+        tx[&child]
+            .layout_size(kurbo::Size::new(50.0, 60.0))
+            .filter(registration.filter_id())
+            .record(|c| {
+                c.fill(
+                    kurbo::Rect::new(10.0, 20.0, 60.0, 80.0),
+                    color(1.0, 0.0, 0.0, 1.0),
+                );
+            });
+    });
+    let _ = surface
+        .frame(Instant::now(), 2.0)
+        .expect("the stretched frame encodes");
+    let log = surface.take_log();
+    // The child's extent starts at (10, 20), and the node spans the
+    // density's two pixels per unit, so its pixel `p` lands at device
+    // (5, 7) + 2·(10, 20) + p = (25, 47) + p. The frame puts the viewport
+    // position `u` at (50, 70) + 2u, which is the node's pixel
+    // (25, 23) + 2u: the platform filters the node in device pixels, so
+    // the frame keeps the density and nothing else.
+    assert_frame(defined_frame(&log), [2.0, 0.0, 0.0, 2.0, 25.0, 23.0]);
+}
+
+/// The value of float field `name` of the first line starting with `op`.
+fn float_field(log: &[String], op: &str, name: &str) -> f32 {
+    let line = log
+        .iter()
+        .find(|line| line.starts_with(op))
+        .unwrap_or_else(|| panic!("no {op}: {log:?}"));
+    let field = format!(" {name}=");
+    let at = line.find(&field).unwrap_or_else(|| panic!("{line}")) + field.len();
+    f32::from_bits(u32::from_str_radix(&line[at..at + 8], 16).expect("hex bits"))
+}
+
+/// The value of integer field `name` of the first line starting with `op`.
+fn int_field(log: &[String], op: &str, name: &str) -> i32 {
+    let line = log
+        .iter()
+        .find(|line| line.starts_with(op))
+        .unwrap_or_else(|| panic!("no {op}: {log:?}"));
+    let field = format!(" {name}=");
+    let at = line.find(&field).unwrap_or_else(|| panic!("{line}")) + field.len();
+    line[at..]
+        .split_whitespace()
+        .next()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or_else(|| panic!("{line}"))
+}
+
+/// A node that carries an effect is rasterized by the platform into a layer
+/// of the node's own width by height, so under a density-scaled ancestor it
+/// spans the density's pixels per point and scales by the inverse, which
+/// leaves where it lands unchanged; a node without an effect stays in
+/// points under the ancestor's scale.
+#[test]
+fn an_effect_node_spans_device_pixels_under_the_density() {
+    use crate::renderer::mount::target::FilterRegistration;
+    use waterui_graphics::backend::AnyEffect;
+    use waterui_graphics::backend::filtrate::filters;
+
+    const DENSITY: f64 = 2.625;
+    let mut surface = HwuiSurface::new(SurfaceId::new(17), || {}).expect("an empty root");
+    let shared = surface.shared().clone();
+    let root = Shared::root(&shared);
+    let window = Shared::layer(&shared);
+    let filtered = Shared::layer(&shared);
+    let plain = Shared::layer(&shared);
+    let mut guards = waterui_graphics::backend::ParamGuards::default();
+    let registration = surface
+        .encoder()
+        .effects()
+        .register(
+            AnyEffect::filter(filters::Brightness(
+                guards.bind(nami::binding::<f32>(0.5_f32)),
+            )),
+            std::sync::Arc::new(|| {}),
+        )
+        .expect("a brightness chain registers on API 34");
+    Shared::run_transaction(&shared, None, None, |tx| {
+        tx[&root].push(&window);
+        tx[&window].transform(Affine::scale(DENSITY));
+        tx[&window].push(&filtered);
+        tx[&window].push(&plain);
+        for layer in [&filtered, &plain] {
+            tx[layer]
+                .layout_size(kurbo::Size::new(40.0, 24.0))
+                .record(|c| {
+                    c.fill(
+                        kurbo::Rect::new(0.0, 0.0, 40.0, 24.0),
+                        color(1.0, 0.0, 0.0, 1.0),
+                    );
+                });
+        }
+        tx[&filtered].filter(registration.filter_id());
+    });
+    let _ = surface
+        .frame(Instant::now(), DENSITY)
+        .expect("the frame encodes");
+    let log = surface.take_log();
+
+    let node_of = |layer: &cherenkov_record::Layer| {
+        surface.encoder().node(layer.id()).expect("a mounted node")
+    };
+    let (filtered, plain) = (node_of(&filtered), node_of(&plain));
+    let line = |op: &str, node: u32| format!("{op} node={node} ");
+
+    // 40 × 24 points at 2.625 pixels per point.
+    let position = line("SetPosition", filtered);
+    assert_eq!(int_field(&log, &position, "right"), 105, "{log:?}");
+    assert_eq!(int_field(&log, &position, "bottom"), 63, "{log:?}");
+    let record = line("Record", filtered);
+    assert_eq!(int_field(&log, &record, "width"), 105, "{log:?}");
+    assert_eq!(int_field(&log, &record, "height"), 63, "{log:?}");
+    let transform = line("SetTransform", filtered);
+    #[expect(clippy::cast_possible_truncation, reason = "the wire carries f32")]
+    let inverse = (1.0 / DENSITY) as f32;
+    assert_eq!(float_field(&log, &transform, "scale_x"), inverse);
+    assert_eq!(float_field(&log, &transform, "scale_y"), inverse);
+
+    let position = line("SetPosition", plain);
+    assert_eq!(int_field(&log, &position, "right"), 40, "{log:?}");
+    assert_eq!(int_field(&log, &position, "bottom"), 24, "{log:?}");
+    assert_eq!(
+        int_field(&log, &line("Record", plain), "width"),
+        40,
+        "{log:?}"
+    );
+}
+
+/// A stretched scroll-like layer under a transformed ancestor: `parent`
+/// under the root with the transform `edit` writes, and a 50 × 60 `child`
+/// whose extent starts at (10, 20), drawn with a stretch whose frame is
+/// `[2, 0, 0, 2, 50, 70]` in device pixels.
+struct StretchScene {
+    surface: HwuiSurface,
+    parent: cherenkov_record::Layer,
+    child: cherenkov_record::Layer,
+    registration: super::effects::EffectRegistration,
+    time: Instant,
+}
+
+impl StretchScene {
+    fn new(id: u64, edit: impl FnOnce(&mut cherenkov_record::LayerEdit<HwuiTarget>)) -> Self {
+        use crate::renderer::mount::target::FilterRegistration;
+        use waterui_graphics::backend::AnyEffect;
+        use waterui_graphics::backend::filtrate::filters::OverscrollStretch;
+
+        let surface = HwuiSurface::new(SurfaceId::new(id), || {}).expect("an empty root");
+        let shared = surface.shared().clone();
+        let root = Shared::root(&shared);
+        let parent = Shared::layer(&shared);
+        let child = Shared::layer(&shared);
+        let registration = surface
+            .encoder()
+            .effects()
+            .register(
+                AnyEffect::filter(OverscrollStretch {
+                    frame: [2.0f32, 0.0, 0.0, 2.0, 50.0, 70.0],
+                    size: [50.0, 60.0],
+                    stretch: [0.0, 0.1],
+                }),
+                std::sync::Arc::new(|| {}),
+            )
+            .expect("the stretch registers");
+        Shared::run_transaction(&shared, None, None, |tx| {
+            tx[&root].push(&parent);
+            edit(&mut tx[&parent]);
+            tx[&parent].push(&child);
+            tx[&child]
+                .layout_size(kurbo::Size::new(50.0, 60.0))
+                .filter(registration.filter_id())
+                .record(|c| {
+                    c.fill(
+                        kurbo::Rect::new(10.0, 20.0, 60.0, 80.0),
+                        color(1.0, 0.0, 0.0, 1.0),
+                    );
+                });
+        });
+        Self {
+            surface,
+            parent,
+            child,
+            registration,
+            time: Instant::now(),
+        }
+    }
+
+    /// Encodes one more frame, 16 ms on, and returns its log and whether
+    /// it asks for another.
+    fn frame(&mut self) -> Result<(Vec<String>, bool), HwuiError> {
+        self.time += Duration::from_millis(16);
+        let animating = {
+            let frame = self.surface.frame(self.time, 1.0)?;
+            frame.content_animating() || frame.sampling().rate.is_some()
+        };
+        Ok((self.surface.take_log(), animating))
+    }
+
+    fn transaction(
+        &self,
+        edit: impl FnOnce(&mut cherenkov_record::Transaction<'_, HwuiTarget>, &Self),
+    ) {
+        Shared::run_transaction(self.surface.shared(), None, None, |tx| edit(tx, self));
+    }
+}
+
+/// The frame of the last `DefineEffect` in `log`: `v0`–`v5`.
+fn defined_frame(log: &[String]) -> [f32; 6] {
+    let define = log
+        .iter()
+        .rfind(|line| line.starts_with("DefineEffect"))
+        .unwrap_or_else(|| panic!("{log:?}"));
+    std::array::from_fn(|index| {
+        let field = format!(" v{index}=");
+        let at = define.find(&field).unwrap_or_else(|| panic!("{define}")) + field.len();
+        f32::from_bits(u32::from_str_radix(&define[at..at + 8], 16).expect("hex bits"))
+    })
+}
+
+fn assert_frame(actual: [f32; 6], expected: [f32; 6]) {
+    for (actual, expected) in actual.iter().zip(expected) {
+        assert!(
+            (actual - expected).abs() < 1e-3,
+            "{actual:?} against {expected:?}"
+        );
+    }
+}
+
+/// A quarter turn under a doubling: the platform draws the filtered node
+/// through the whole turn and scale, so the frame turns into the node's
+/// pixels and loses the scale. By hand: the node's pixel `(x, y)` lands at
+/// `(-2y - 40, 2x + 20)`, and the viewport position `u` the frame puts at
+/// device `(2u.x + 50, 2u.y + 70)` is the node's pixel
+/// `(u.y + 25, -u.x - 45)`.
+#[test]
+fn a_stretched_layer_under_a_rotated_ancestor_defines_its_frame_in_the_nodes_pixels() {
+    let mut scene = StretchScene::new(12, |parent| {
+        parent.transform(Affine::rotate(std::f64::consts::FRAC_PI_2) * Affine::scale(2.0));
+    });
+    let (log, _) = scene.frame().expect("the rotated stretch encodes");
+    assert_frame(defined_frame(&log), [0.0, -1.0, 1.0, 0.0, 25.0, -45.0]);
+}
+
+/// A skewed ancestor (a `Concat` placement) leaves the node's pixels
+/// sheared against device pixels; the frame is carried back through the
+/// whole shear.
+#[test]
+fn a_stretched_layer_under_a_skewed_ancestor_defines_its_frame_in_the_nodes_pixels() {
+    let skew = Affine::new([1.0, 0.0, 0.5, 1.0, 3.0, 4.0]);
+    let mut scene = StretchScene::new(13, |parent| {
+        parent.transform(skew);
+    });
+    let (log, _) = scene.frame().expect("the skewed stretch encodes");
+    let node = skew * Affine::translate((10.0, 20.0));
+    let expected = node.inverse() * Affine::new([2.0, 0.0, 0.0, 2.0, 50.0, 70.0]);
+    let frame = defined_frame(&log);
+    assert_frame(frame, expected.as_coeffs().map(super::geometry::narrow));
+    // The shear is real: the frame is not an axis-aligned scale.
+    assert!(frame[1].abs() > 1e-3 || frame[2].abs() > 1e-3, "{frame:?}");
+}
+
+/// The log of one frame of a scroll container's inner layer under a window
+/// density and a rotated, non-uniformly scaled ancestor, set up as the
+/// scroll mount sets it up: the layer clips to `viewport`, scrolls its
+/// content, and draws the stretch whose frame carries the viewport's own
+/// space to device pixels.
+fn stretched_scroll_log(viewport: kurbo::Rect) -> Vec<String> {
+    use crate::renderer::mount::target::FilterRegistration;
+    use waterui_graphics::backend::AnyEffect;
+    use waterui_graphics::backend::filtrate::filters::OverscrollStretch;
+
+    let density = Affine::scale(2.625);
+    let placement = Affine::translate((16.0, 412.0))
+        * Affine::rotate(10f64.to_radians())
+        * Affine::scale_non_uniform(0.9, 0.7);
+    let frame = (density * placement * Affine::translate(viewport.origin().to_vec2()))
+        .as_coeffs()
+        .map(super::geometry::narrow);
+
+    let mut surface = HwuiSurface::new(SurfaceId::new(16), || {}).expect("an empty root");
+    let shared = surface.shared().clone();
+    let root = Shared::root(&shared);
+    let window = Shared::layer(&shared);
+    let scroll = Shared::layer(&shared);
+    let inner = Shared::layer(&shared);
+    let registration = surface
+        .encoder()
+        .effects()
+        .register(
+            AnyEffect::filter(OverscrollStretch {
+                frame,
+                size: [viewport.width(), viewport.height()].map(super::geometry::narrow),
+                stretch: [0.0, 0.04],
+            }),
+            std::sync::Arc::new(|| {}),
+        )
+        .expect("the stretch registers");
+    Shared::run_transaction(&shared, None, None, |tx| {
+        tx[&root].push(&window);
+        tx[&window].transform(density);
+        tx[&window].push(&scroll);
+        tx[&scroll].transform(placement);
+        tx[&scroll].push(&inner);
+        tx[&inner]
+            .layout_size(kurbo::Size::new(350.0, 828.0))
+            .clip(viewport)
+            .scroll_offset(Vec2::new(0.0, 30.0))
+            .filter(registration.filter_id())
+            .record(|c| {
+                for row in 0..12u8 {
+                    let top = f64::mul_add(f64::from(row), 64.0, 60.0);
+                    c.fill(
+                        kurbo::Rect::new(0.0, top, 350.0, top + 64.0),
+                        color(f32::from(row) / 12.0, 0.5, 0.0, 1.0),
+                    );
+                }
+            });
+    });
+    let _ = surface
+        .frame(Instant::now(), 2.625)
+        .expect("the stretched scroll encodes");
+    drop(registration);
+    surface.take_log()
+}
+
+/// The scroll layer of [`stretched_scroll_log`] clips to its viewport as a
+/// property of the node that draws the effect, so the platform clips the
+/// filtered result; the frame must then span exactly that clip in the
+/// node's pixels, or the warp's pinned far edge lies past the clip and the
+/// pull drags content from inside the clip across it.
+#[test]
+fn a_stretched_scroll_layer_frames_exactly_its_clip_under_a_scaled_rotated_ancestor() {
+    // A viewport off the layer's origin, over content with a top inset, so
+    // the node's extent starts neither at the layer's origin nor at the
+    // viewport's. A node clip is whole node pixels, so the viewport's edges
+    // relative to the node's origin, (8, 30), are multiples of eight
+    // points: whole pixels at 2.625 pixels per point.
+    let viewport = kurbo::Rect::new(8.0, 14.0, 344.0, 238.0);
+    let log = stretched_scroll_log(viewport);
+
+    let node_of = |op: &str| {
+        log.iter()
+            .rfind(|line| line.starts_with(op))
+            .and_then(|line| {
+                line.split_whitespace()
+                    .find_map(|field| field.strip_prefix("node="))
+            })
+            .unwrap_or_else(|| panic!("no {op}: {log:?}"))
+    };
+    assert_eq!(
+        node_of("SetEffect "),
+        node_of("SetClip "),
+        "the clip and the effect share a node: {log:?}"
+    );
+    let set_clip = log
+        .iter()
+        .rfind(|line| line.starts_with("SetClip "))
+        .expect("checked above");
+    let field = |name: &str| -> f64 {
+        set_clip
+            .split_whitespace()
+            .find_map(|field| field.strip_prefix(&format!("{name}=")))
+            .and_then(|value| value.parse::<i32>().ok())
+            .map_or_else(|| panic!("{name}: {set_clip}"), f64::from)
+    };
+    let clip = kurbo::Rect::new(field("left"), field("top"), field("right"), field("bottom"));
+
+    let defined = defined_frame(&log).map(f64::from);
+    let framed = Affine::new(defined).transform_rect_bbox(kurbo::Rect::from_origin_size(
+        kurbo::Point::ORIGIN,
+        viewport.size(),
+    ));
+    for (edge, (framed, clip)) in [
+        ("left", (framed.x0, clip.x0)),
+        ("top", (framed.y0, clip.y0)),
+        ("right", (framed.x1, clip.x1)),
+        ("bottom", (framed.y1, clip.y1)),
+    ] {
+        assert!(
+            (framed - clip).abs() < 1e-3,
+            "the frame's {edge} edge {framed} is not the clip's {clip}: {defined:?} {set_clip}"
+        );
+    }
+    // The node's pixels are where the platform filters it, device pixels:
+    // the frame keeps the density, not the ancestor's rotation and scale.
+    for (actual, expected) in defined[..4].iter().zip([2.625, 0.0, 0.0, 2.625]) {
+        assert!((actual - expected).abs() < 1e-5, "{defined:?}");
+    }
+}
+
+/// A perspective cannot be carried into the filter's affine frame.
+#[test]
+fn a_stretched_layer_under_a_projective_ancestor_is_unsupported() {
+    let mut scene = StretchScene::new(14, |parent| {
+        parent
+            .projection(
+                cherenkov_record::Projective::perspective(800.0).expect("the distance is valid"),
+            )
+            .tilt(Vec2::new(0.3, 0.0));
+    });
+    let error = scene.frame().expect_err("a projective pose has no frame");
+    assert!(matches!(error, HwuiError::Unsupported { .. }), "{error:?}");
+}
+
+/// A pull follows its ancestor: moving the transform redefines the effect
+/// alone; the effect clears at rest, and a rested layer encodes nothing and
+/// asks for no further frame.
+#[test]
+fn a_stretch_follows_its_ancestor_and_clears_at_rest_without_idle_frames() {
+    let mut scene = StretchScene::new(15, |parent| {
+        parent.transform(Affine::translate((5.0, 7.0)));
+    });
+    scene.frame().expect("the first frame encodes");
+
+    let (log, animating) = scene.frame().expect("the idle frame encodes");
+    for op in ["DefineEffect", "SetEffect", "CreateNode", "Record"] {
+        assert!(!log.iter().any(|line| line.starts_with(op)), "{log:?}");
+    }
+    assert!(!animating, "a held stretch asks for no frame");
+
+    // The ancestor moves by (20, 30): the frame's offset follows it.
+    scene.transaction(|tx, scene| {
+        tx[&scene.parent].transform(Affine::translate((25.0, 37.0)));
+    });
+    let (log, animating) = scene.frame().expect("the moved frame encodes");
+    assert_frame(defined_frame(&log), [2.0, 0.0, 0.0, 2.0, 15.0, 13.0]);
+    for op in ["SetEffect", "CreateNode", "Record"] {
+        assert!(!log.iter().any(|line| line.starts_with(op)), "{log:?}");
+    }
+    assert!(!animating, "following a transform asks for no frame");
+
+    // Rest: the layer binds no effect, and later frames encode nothing.
+    scene.transaction(|tx, scene| {
+        tx[&scene.child].clear_filter();
+    });
+    let (log, _) = scene.frame().expect("the rested frame encodes");
+    assert!(
+        log.iter()
+            .any(|line| line.starts_with("SetEffect") && line.contains("effect=4294967295")),
+        "{log:?}"
+    );
+    let (log, animating) = scene.frame().expect("the idle frame after rest encodes");
+    assert!(
+        !log.iter().any(|line| line.starts_with("DefineEffect")
+            || line.starts_with("SetEffect")
+            || line.starts_with("CreateNode")),
+        "{log:?}"
+    );
+    assert!(!animating, "a rested layer asks for no frame");
+    drop(scene.registration);
+}
+
+#[test]
+fn a_filtered_recording_group_keeps_its_effect_node() {
+    use crate::renderer::mount::target::FilterRegistration;
+    use waterui_graphics::backend::AnyEffect;
+    use waterui_graphics::backend::filtrate::filters;
+
+    let mut surface = HwuiSurface::new(SurfaceId::new(10), || {}).unwrap();
+    let shared = surface.shared().clone();
+    let root = Shared::root(&shared);
+    let child = Shared::layer(&shared);
+    let registration = surface
+        .encoder()
+        .effects()
+        .register(
+            AnyEffect::filter(filters::Blur(2.0f32)),
+            std::sync::Arc::new(|| {}),
+        )
+        .unwrap();
+    Shared::run_transaction(&shared, None, None, |tx| {
+        tx[&root].push(&child);
+        tx[&child]
+            .layout_size(kurbo::Size::new(10.0, 10.0))
+            .record(|context| {
+                context.group(Group::new().filter(registration.filter_id()), |context| {
+                    context.fill(
+                        kurbo::Rect::new(0.0, 0.0, 10.0, 10.0),
+                        color(1.0, 0.0, 0.0, 1.0),
+                    );
+                });
+            });
+    });
+    let time = Instant::now();
+    let _ = surface.frame(time, 1.0).unwrap();
+    let log = surface.take_log();
+    let binding = log
+        .iter()
+        .find(|line| line.starts_with("SetEffect "))
+        .unwrap();
+    let node = binding
+        .split_whitespace()
+        .find_map(|field| field.strip_prefix("node="))
+        .unwrap();
+    assert!(
+        log.iter().any(
+            |line| line.starts_with(&format!("SetPosition node={node} "))
+                && line.ends_with("clip=0")
+        ),
+        "the filtered group has an unclipped effect node: {log:?}"
+    );
+    let _ = surface
+        .frame(time + std::time::Duration::from_millis(16), 1.0)
+        .unwrap();
+    let log = surface.take_log();
+    for op in ["DefineEffect", "SetEffect", "CreateNode", "Record"] {
+        assert!(
+            !log.iter().any(|line| line.starts_with(op)),
+            "{op}: {log:?}"
+        );
+    }
+}
+
+/// A filtered group's node is an effect node like a layer's: it spans the
+/// density's pixels per point, and a density change records it again.
+#[test]
+fn a_filtered_recording_group_spans_device_pixels_and_follows_the_density() {
+    use crate::renderer::mount::target::FilterRegistration;
+    use waterui_graphics::backend::AnyEffect;
+    use waterui_graphics::backend::filtrate::filters;
+
+    let mut surface = HwuiSurface::new(SurfaceId::new(18), || {}).unwrap();
+    let shared = surface.shared().clone();
+    let root = Shared::root(&shared);
+    let child = Shared::layer(&shared);
+    let registration = surface
+        .encoder()
+        .effects()
+        .register(
+            AnyEffect::filter(filters::Blur(2.0f32)),
+            std::sync::Arc::new(|| {}),
+        )
+        .unwrap();
+    Shared::run_transaction(&shared, None, None, |tx| {
+        tx[&root].push(&child);
+        tx[&child]
+            .layout_size(kurbo::Size::new(10.0, 10.0))
+            .record(|context| {
+                context.group(Group::new().filter(registration.filter_id()), |context| {
+                    context.fill(
+                        kurbo::Rect::new(0.0, 0.0, 10.0, 10.0),
+                        color(1.0, 0.0, 0.0, 1.0),
+                    );
+                });
+            });
+    });
+    let time = Instant::now();
+    let _ = surface.frame(time, 2.0).unwrap();
+    let log = surface.take_log();
+    let effect = log
+        .iter()
+        .find(|line| line.starts_with("SetEffect "))
+        .unwrap();
+    let node = effect
+        .split_whitespace()
+        .find_map(|field| field.strip_prefix("node="))
+        .unwrap();
+    let record = format!("Record node={node} ");
+    assert_eq!(int_field(&log, &record, "width"), 20, "{log:?}");
+    assert_eq!(int_field(&log, &record, "height"), 20, "{log:?}");
+    let transform = format!("SetTransform node={node} ");
+    assert_eq!(float_field(&log, &transform, "scale_x"), 0.5, "{log:?}");
+
+    let _ = surface
+        .frame(time + std::time::Duration::from_millis(16), 4.0)
+        .unwrap();
+    let log = surface.take_log();
+    let record = log
+        .iter()
+        .find(|line| line.contains(" width=40 height=40"))
+        .unwrap_or_else(|| panic!("the group records again at the new density: {log:?}"));
+    assert!(record.starts_with("Record "), "{record}");
 }
 
 #[test]
@@ -524,60 +1292,63 @@ fn the_contract_scenes_cover_every_opcode() {
 #[test]
 fn text_runs_decode_to_the_runs_the_engine_packed() {
     let text = "Wave \u{1f30a} \u{e9}";
-    let plain = TextRun {
-        range: 0..5,
-        family: Some("Inter, 'Noto Sans CJK SC', sans-serif".to_owned()),
-        size: 14.0,
-        weight: 400,
-        italic: false,
-        underline: false,
-        strikethrough: false,
-        foreground: None,
-        background: None,
-        line_height: None,
-        letter_spacing: 0.0,
+    let plain = {
+        let mut literal = TextRun::new(0..5, 14.0, 400);
+        literal.set_family(Some("Inter, 'Noto Sans CJK SC', sans-serif".to_owned()));
+        literal.set_italic(false);
+        literal.set_underline(false);
+        literal.set_strikethrough(false);
+        literal.set_foreground(None);
+        literal.set_background(None);
+        literal.set_line_height(None);
+        literal.set_letter_spacing(0.0);
+        literal
     };
     let runs = [
         plain.clone(),
-        TextRun {
-            range: 5..9,
-            family: None,
-            size: 20.0,
-            weight: 700,
-            italic: true,
-            underline: true,
-            foreground: Some(super::color::pack(0.0, 0.5, 1.0, 1.0)),
-            background: Some(super::color::pack(1.0, 1.0, 0.0, 0.5)),
-            line_height: Some(24.0),
-            letter_spacing: 2.0,
-            ..plain.clone()
+        {
+            let mut literal = plain.clone();
+            literal.set_range(5..9);
+            literal.set_family(None);
+            literal.set_size(20.0);
+            literal.set_weight(700);
+            literal.set_italic(true);
+            literal.set_underline(true);
+            literal.set_foreground(Some(super::color::pack(0.0, 0.5, 1.0, 1.0)));
+            literal.set_background(Some(super::color::pack(1.0, 1.0, 0.0, 0.5)));
+            literal.set_line_height(Some(24.0));
+            literal.set_letter_spacing(2.0);
+            literal
         },
-        TextRun {
-            range: 9..12,
-            strikethrough: true,
-            ..plain
+        {
+            let mut literal = plain;
+            literal.set_range(9..12);
+            literal.set_strikethrough(true);
+            literal
         },
     ];
     let index = Utf16Index::new(text).expect("the text indexes");
-    let request = ShapeRequest {
-        locale: "ja-JP",
-        max_width: Some(200.0),
-        max_lines: Some(2),
-        ellipsis: true,
-        alignment: TextAlignment::End,
-        right_to_left: true,
-        strict_families: true,
-        default_style: TextRun {
-            range: 0..0,
-            ..runs[0].clone()
-        },
-        ..ShapeRequest::new(text, &runs, runs[0].clone())
+    let default_style = {
+        let mut style = runs[0].clone();
+        style.set_range(0..0);
+        style
+    };
+    let request = {
+        let mut literal = ShapeRequest::new(text, &runs, default_style);
+        literal.set_locale("ja-JP");
+        literal.set_max_width(Some(200.0));
+        literal.set_max_lines(Some(2));
+        literal.set_ellipsis(true);
+        literal.set_alignment(TextAlignment::End);
+        literal.set_right_to_left(true);
+        literal.set_strict_families(true);
+        literal
     };
     let packed = request.pack(&index).expect("the runs pack");
-    assert_eq!(packed.families.len(), 1);
+    assert_eq!(packed.families().len(), 1);
     let expected: String = std::iter::once(describe_paragraph(&request) + "\n")
         .chain(std::iter::once(
-            describe_run(&request.default_style, &index) + "\n",
+            describe_run(request.default_style(), &index) + "\n",
         ))
         .chain(runs.iter().map(|run| describe_run(run, &index) + "\n"))
         .collect();
@@ -588,16 +1359,16 @@ fn text_runs_decode_to_the_runs_the_engine_packed() {
     if let Ok(dir) = std::env::var("HWUI_CONTRACT_DIR") {
         let dir = Path::new(&dir);
         std::fs::create_dir_all(dir).expect("the contract directory can be created");
-        let spans: Vec<String> = packed.spans.iter().map(ToString::to_string).collect();
+        let spans: Vec<String> = packed.spans().iter().map(ToString::to_string).collect();
         let wire = format!(
             "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
-            packed.locale,
-            packed.max_width,
-            packed.max_lines,
-            packed.paragraph,
-            packed.families.len(),
-            packed.families.join("\n"),
-            packed.span_count,
+            packed.locale(),
+            packed.max_width(),
+            packed.max_lines(),
+            packed.paragraph(),
+            packed.families().len(),
+            packed.families().join("\n"),
+            packed.span_count(),
             spans.join(" ")
         );
         std::fs::write(dir.join("text-runs.wire"), wire)
@@ -609,7 +1380,7 @@ fn text_runs_decode_to_the_runs_the_engine_packed() {
 
 #[test]
 fn a_text_layout_is_released_once_no_content_draws_it() {
-    let mut encoder = Encoder::new(34).expect("API 34 is supported");
+    let mut encoder = Encoder::new().expect("API 34 is supported");
     let layout = encoder.text_layouts().acquire().expect("an id is free");
     encoder
         .text_layouts()
@@ -658,7 +1429,7 @@ fn a_text_layout_is_released_once_no_content_draws_it() {
 
 /// The event log of one layer whose content is `picture`.
 fn single_layer_log(picture: Picture) -> Result<Vec<String>, HwuiError> {
-    let mut encoder = Encoder::new(34)?;
+    let mut encoder = Encoder::new()?;
     let root = encoder.tree().root();
     let layer_id = LayerId::new(201);
     encoder.commit(changes(vec![
@@ -724,7 +1495,7 @@ fn a_folded_mesh_patch_is_refused_naming_it() {
     let picture = Picture::record(|r| {
         r.fill(
             Rect::new(0.0, 0.0, 10.0, 10.0),
-            Paint::Mesh(MeshGradient::new(1, 1, points, colors)),
+            Paint::Mesh(MeshGradient::new(1, 1, points, colors).expect("one patch, four vertices")),
         );
     });
     let error = single_layer_log(picture).expect_err("a bow-tie patch has no bilinear inverse");
@@ -763,11 +1534,11 @@ fn a_mesh_painted_stroke_masks_the_mesh_into_its_coverage() {
 
 #[test]
 fn a_tilt_animation_updates_node_camera_properties_without_re_recording() {
-    let mut encoder = Encoder::new(34).expect("API 34 is supported");
+    let mut encoder = Encoder::new().expect("API 34 is supported");
     let root = encoder.tree().root();
     let card = LayerId::new(201);
     let perspective =
-        waterui_graphics::draw::Projective::perspective(800.0).expect("the distance is valid");
+        cherenkov_record::Projective::perspective(800.0).expect("the distance is valid");
     encoder
         .commit(changes(vec![
             layer(LayerOp::Create(card)),
@@ -821,7 +1592,7 @@ fn a_tilt_animation_updates_node_camera_properties_without_re_recording() {
 
 #[test]
 fn a_frame_writes_only_the_layers_an_op_or_a_running_animation_moved() {
-    let mut encoder = Encoder::new(34).expect("API 34 is supported");
+    let mut encoder = Encoder::new().expect("API 34 is supported");
     let root = encoder.tree().root();
     let moving = LayerId::new(301);
     let still = LayerId::new(302);
@@ -890,7 +1661,7 @@ fn a_frame_writes_only_the_layers_an_op_or_a_running_animation_moved() {
 
 #[test]
 fn a_child_blend_change_isolates_its_parent() {
-    let mut encoder = Encoder::new(34).expect("API 34 is supported");
+    let mut encoder = Encoder::new().expect("API 34 is supported");
     let root = encoder.tree().root();
     let group = LayerId::new(311);
     let child = LayerId::new(312);
@@ -947,7 +1718,7 @@ fn a_child_blend_change_isolates_its_parent() {
 fn surface_preserves_hidden_transaction_order_and_reuses_nodes() {
     let wakes = std::rc::Rc::new(Cell::new(0usize));
     let counter = std::rc::Rc::clone(&wakes);
-    let mut surface = HwuiSurface::new(SurfaceId::new(7), 34, move || {
+    let mut surface = HwuiSurface::new(SurfaceId::new(7), move || {
         counter.set(counter.get() + 1);
     })
     .expect("api 34 encodes");
@@ -1001,9 +1772,9 @@ fn surface_preserves_hidden_transaction_order_and_reuses_nodes() {
 
     time += std::time::Duration::from_millis(1);
     let frame = surface.frame(time, 1.0).expect("the restore frame encodes");
-    assert!(frame.clear.is_some(), "the queued clear rides the frame");
-    assert!(!frame.content_animating);
-    assert!(frame.sampling.rate.is_none());
+    assert!(frame.clear().is_some(), "the queued clear rides the frame");
+    assert!(!frame.content_animating());
+    assert!(frame.sampling().rate.is_none());
     assert!(
         !surface.has_pending(),
         "the restore frame consumed its changes"
@@ -1029,8 +1800,8 @@ fn surface_preserves_hidden_transaction_order_and_reuses_nodes() {
     // A quiet frame encodes no node ops and reports no animation.
     time += std::time::Duration::from_millis(1);
     let frame = surface.frame(time, 1.0).expect("a quiet frame encodes");
-    assert!(!frame.content_animating);
-    assert!(frame.sampling.rate.is_none());
+    assert!(!frame.content_animating());
+    assert!(frame.sampling().rate.is_none());
     let log = surface.take_log();
     assert!(
         !log.iter().any(|op| op.starts_with("CreateNode ")
@@ -1058,19 +1829,218 @@ fn surface_preserves_hidden_transaction_order_and_reuses_nodes() {
 /// a quiet follow-up frame reports none.
 #[test]
 fn content_animation_demand_belongs_to_the_submitted_frame() {
-    let mut encoder = Encoder::new(34).expect("api 34 encodes");
+    let mut encoder = Encoder::new().expect("api 34 encodes");
     let mut animated = changes(Vec::new());
     animated.animating = true;
     let _ = encoder
         .commit(animated)
         .expect("the animated commit encodes");
     let first = encoder.frame(Instant::now(), 1.0).expect("frame one");
-    assert!(first.content_animating);
+    assert!(first.content_animating());
     let second = encoder.frame(Instant::now(), 1.0).expect("frame two");
     assert!(
-        !second.content_animating,
+        !second.content_animating(),
         "an empty drain reports no animation"
     );
+}
+
+/// The `Fill` lines of a frame's event log: what a layer's list painted.
+fn fills(log: &[String]) -> Vec<&String> {
+    log.iter()
+        .filter(|line| line.starts_with("Fill "))
+        .collect()
+}
+
+/// A keyframed operand runs on HWUI as on Cherenkov: each frame re-records
+/// the layer's list with the record-side sample, the commit reports content
+/// animation, and the source records once.
+#[test]
+fn a_keyframed_operand_records_the_sampled_frames() {
+    use cherenkov_record::{KeyframeAnimation, Keyframes, Repeat};
+    use nami::SignalExt as _;
+
+    let solid = |r, g, b| Paint::Solid(color(r, g, b, 1.0));
+    let cycle = Duration::from_millis(400);
+    let keyframes = Keyframes::new(cycle, solid(1.0, 0.0, 0.0))
+        .then(0.5, Curve::linear(cycle), solid(0.0, 1.0, 0.0))
+        .then(1.0, Curve::ease_in_out(cycle), solid(0.0, 0.0, 1.0));
+    // A fresh surface holding one 20×20 fill of `paint`.
+    let surface_with = |id: u64, paint: Live<Paint>, recordings: &Cell<u32>| {
+        let surface = HwuiSurface::new(SurfaceId::new(id), || {}).expect("api 34 encodes");
+        let shared = surface.shared().clone();
+        let root = Shared::root(&shared);
+        let layer = Shared::layer(&shared);
+        Shared::run_transaction(&shared, None, None, |tx| {
+            tx[&root].push(&layer);
+            tx[&layer]
+                .layout_size(kurbo::Size::new(20.0, 20.0))
+                .record(|c| {
+                    recordings.set(recordings.get() + 1);
+                    c.fill(Rect::new(0.0, 0.0, 20.0, 20.0), paint);
+                });
+        });
+        (surface, layer)
+    };
+
+    let paint = nami::binding(solid(0.0, 0.0, 0.0));
+    let recordings = Cell::new(0);
+    let (mut animated, layer) = surface_with(
+        12,
+        paint
+            .with(KeyframeAnimation::new(keyframes.clone(), Repeat::Forever))
+            .into(),
+        &recordings,
+    );
+    let t0 = Instant::now();
+    let _ = animated.frame(t0, 1.0).expect("the first frame encodes");
+    paint.set(solid(1.0, 1.0, 1.0));
+    let start = t0 + Duration::from_millis(8);
+    let _ = animated
+        .frame(start, 1.0)
+        .expect("the track's first frame encodes");
+    let _ = animated.take_log();
+    for frame in [7u32, 20, 31, 55, 101] {
+        let t = start + Duration::from_secs(frame.into()) / 120;
+        let encoded = animated.frame(t, 1.0).expect("a keyframe frame encodes");
+        assert!(
+            encoded.content_animating(),
+            "frame {frame}: a forever track keeps the frame loop awake"
+        );
+        let log = animated.take_log();
+        let expected = keyframes
+            .sample(t - start, Repeat::Forever)
+            .expect("a forever track runs");
+        let (mut reference, _reference_layer) =
+            surface_with(13, Fixed(expected).into(), &Cell::new(0));
+        let _ = reference.frame(t, 1.0).expect("the reference encodes");
+        let reference_log = reference.take_log();
+        assert!(!fills(&log).is_empty(), "frame {frame}: {log:?}");
+        assert_eq!(
+            fills(&log),
+            fills(&reference_log),
+            "frame {frame}: HWUI drew the record-side sample"
+        );
+    }
+    assert_eq!(recordings.get(), 1, "running keyframes record nothing");
+
+    // Detached with its handle alive, the layer's track is not sampled
+    // and asks for no frame.
+    let shared = animated.shared().clone();
+    let root = Shared::root(&shared);
+    Shared::run_transaction(&shared, None, None, |tx| {
+        tx[&root].remove(&layer);
+    });
+    let detached = animated
+        .frame(start + Duration::from_secs(102) / 120, 1.0)
+        .expect("the detaching frame encodes");
+    assert!(
+        !detached.content_animating(),
+        "a detached track keeps no frame loop awake"
+    );
+}
+
+/// Keyframed layer properties run on HWUI as its other animated layer
+/// properties do: the tree samples them each frame and the encoder writes
+/// the sampled transform and alpha, matching a layer set to those values.
+#[test]
+fn keyframed_layer_properties_set_the_sampled_frames() {
+    use cherenkov_record::{KeyframeAnimation, Keyframes, Repeat, Spring};
+    use nami::SignalExt as _;
+
+    let cycle = Duration::from_millis(600);
+    let spin = Keyframes::new(cycle, 0.0_f64)
+        .then(0.5, Curve::ease_in(cycle), std::f64::consts::PI)
+        .then(1.0, Spring::bouncy(), TAU);
+    let fade = Keyframes::new(cycle, 1.0_f32)
+        .then(0.5, Curve::linear(cycle), 0.25)
+        .then(1.0, Curve::ease_out(cycle), 1.0);
+    // A fresh surface holding one layer with `rotation` and `opacity`.
+    let surface_with = |id: u64, rotation: Live<f64>, opacity: Live<f32>| {
+        let surface = HwuiSurface::new(SurfaceId::new(id), || {}).expect("api 34 encodes");
+        let shared = surface.shared().clone();
+        let root = Shared::root(&shared);
+        let layer = Shared::layer(&shared);
+        Shared::run_transaction(&shared, None, None, |tx| {
+            tx[&root].push(&layer);
+            tx[&layer]
+                .layout_size(kurbo::Size::new(20.0, 20.0))
+                .rotation(rotation)
+                .opacity(opacity)
+                .record(|c| {
+                    c.fill(Rect::new(0.0, 0.0, 20.0, 20.0), color(1.0, 1.0, 1.0, 1.0));
+                });
+        });
+        (surface, layer)
+    };
+    // The lines that place and fade `layer`'s node.
+    let properties = |surface: &HwuiSurface, layer: &cherenkov_record::Layer, log: &[String]| {
+        let node = surface
+            .encoder()
+            .node(layer.id())
+            .expect("the layer has a node");
+        let (transform, alpha) = (
+            format!("SetTransform node={node} "),
+            format!("SetAlpha node={node} "),
+        );
+        log.iter()
+            .filter(|line| line.starts_with(&transform) || line.starts_with(&alpha))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+
+    let rotation = nami::binding(0.0_f64);
+    let opacity = nami::binding(1.0_f32);
+    let (mut animated, layer) = surface_with(
+        14,
+        rotation
+            .with(KeyframeAnimation::new(spin.clone(), Repeat::Forever))
+            .into(),
+        opacity
+            .with(KeyframeAnimation::new(fade.clone(), Repeat::Forever))
+            .into(),
+    );
+    let t0 = Instant::now();
+    let _ = animated.frame(t0, 1.0).expect("the first frame encodes");
+    rotation.set(0.0);
+    opacity.set(1.0);
+    let start = t0 + Duration::from_millis(8);
+    let _ = animated
+        .frame(start, 1.0)
+        .expect("the tracks' first frame encodes");
+    let _ = animated.take_log();
+    let node = animated
+        .encoder()
+        .node(layer.id())
+        .expect("the keyframed layer has a node");
+    let rerecorded = format!("Record node={node} ");
+    for frame in [9u32, 30, 47, 66, 101] {
+        let t = start + Duration::from_secs(frame.into()) / 120;
+        let encoded = animated.frame(t, 1.0).expect("a keyframe frame encodes");
+        assert!(
+            encoded.sampling().rate.is_some(),
+            "frame {frame}: forever tracks keep the frame loop awake"
+        );
+        let log = animated.take_log();
+        let angle = spin.sample(t - start, Repeat::Forever).expect("forever");
+        let alpha = fade.sample(t - start, Repeat::Forever).expect("forever");
+        let (mut reference, reference_layer) =
+            surface_with(15, Fixed(angle).into(), Fixed(alpha).into());
+        let _ = reference.frame(t, 1.0).expect("the reference encodes");
+        let reference_log = reference.take_log();
+        let placed = properties(&animated, &layer, &log);
+        assert_eq!(placed.len(), 2, "frame {frame}: {log:?}");
+        assert_eq!(
+            placed,
+            properties(&reference, &reference_layer, &reference_log),
+            "frame {frame}: HWUI placed the tree's sample"
+        );
+        // The parent re-records as its child's ink moves, as for any
+        // animated rotation; the keyframed layer's own list does not.
+        assert!(
+            !log.iter().any(|line| line.starts_with(&rerecorded)),
+            "frame {frame}: a property track re-records nothing: {log:?}"
+        );
+    }
 }
 
 /// The native-view hit query answers the topmost platform view drawn at the
@@ -1080,7 +2050,7 @@ fn content_animation_demand_belongs_to_the_submitted_frame() {
 /// an invisible-opacity layer is not hit at all.
 #[test]
 fn tree_native_hit_follows_order_clip_scroll_and_transform() {
-    let mut encoder = Encoder::new(34).unwrap();
+    let mut encoder = Encoder::new().unwrap();
     let root = encoder.tree().root();
     let native = LayerId::new(201);
     let decoration = LayerId::new(202);
@@ -1088,10 +2058,7 @@ fn tree_native_hit_follows_order_clip_scroll_and_transform() {
     encoder
         .commit(changes(vec![
             layer(LayerOp::Translation(root, prop(Vec2::new(40., 50.)))),
-            layer(LayerOp::Clip(
-                root,
-                Some(ShapeData::Rect(Rect::new(0., 0., 30., 30.))),
-            )),
+            layer(clip(root, ShapeData::Rect(Rect::new(0., 0., 30., 30.)))),
             layer(LayerOp::ScrollOffset(root, prop(Vec2::new(2., 3.)))),
             layer(LayerOp::Create(native)),
             layer(LayerOp::Push {
@@ -1178,14 +2145,18 @@ fn tree_native_hit_follows_order_clip_scroll_and_transform() {
 fn the_hwui_mount_commits_and_reuses_its_nodes() {
     use crate::renderer::mount::{Mount, hwui::HwuiHost};
 
-    let mut surface =
-        HwuiSurface::new(SurfaceId::new(8), 34, || {}).expect("an empty root encodes");
+    let mut surface = HwuiSurface::new(SurfaceId::new(8), || {}).expect("an empty root encodes");
     let registry = std::rc::Rc::new(cherenkov_record::MaterialRegistry::default());
     let backend = std::rc::Rc::new(crate::hwui::HwuiResources::new(
         Box::new(crate::hwui::platform::tests::Fake::default()),
         surface.encoder().registry().clone(),
+        surface.encoder().effects().clone(),
     ));
-    let host = HwuiHost::new(backend, std::rc::Rc::clone(&registry));
+    let host = HwuiHost::new(
+        backend,
+        std::rc::Rc::clone(&registry),
+        std::sync::Arc::new(|| {}),
+    );
     let mut mount = Mount::<HwuiTarget, crate::text::ParleyEngine>::new(
         std::rc::Rc::clone(surface.shared()),
         &registry,
@@ -1206,12 +2177,16 @@ fn the_hwui_mount_commits_and_reuses_its_nodes() {
     let mut wakes = |_cell: &std::rc::Rc<
         crate::renderer::mount::NodeCell<crate::text::ParleyEngine>,
     >| { unreachable!("no mounted root carries a producer") };
+    let mut scene_frames = crate::renderer::mount::SceneFrames::default();
     mount.commit(
         &host,
         kurbo::Affine::IDENTITY,
         1.0,
         std::slice::from_ref(&node.cell),
-        &mut wakes,
+        crate::renderer::mount::CommitReports {
+            wakes: &mut wakes,
+            scene_frames: &mut scene_frames,
+        },
         None,
     );
     let _ = surface
@@ -1239,7 +2214,10 @@ fn the_hwui_mount_commits_and_reuses_its_nodes() {
         kurbo::Affine::IDENTITY,
         1.0,
         std::slice::from_ref(&node.cell),
-        &mut wakes,
+        crate::renderer::mount::CommitReports {
+            wakes: &mut wakes,
+            scene_frames: &mut scene_frames,
+        },
         None,
     );
     let _ = surface
@@ -1276,7 +2254,7 @@ fn platform_view_node_keeps_parent_composition() {
             .expect("a dense node id")
     }
 
-    let mut encoder = Encoder::new(34).unwrap();
+    let mut encoder = Encoder::new().unwrap();
     let root = encoder.tree().root();
     let parent = LayerId::new(201);
     let leaf = LayerId::new(202);
@@ -1295,9 +2273,9 @@ fn platform_view_node_keeps_parent_composition() {
                 child: parent,
             }),
             layer(LayerOp::Opacity(parent, prop(0.5))),
-            layer(LayerOp::Clip(
+            layer(clip(
                 parent,
-                Some(ShapeData::Rect(Rect::new(0.0, 0.0, 80.0, 80.0))),
+                ShapeData::Rect(Rect::new(0.0, 0.0, 80.0, 80.0)),
             )),
             layer(LayerOp::Create(leaf)),
             layer(LayerOp::Push {

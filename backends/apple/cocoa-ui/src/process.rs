@@ -27,13 +27,10 @@ pub fn name() -> String {
 ///
 /// # Errors
 ///
-/// If the kernel refuses to report this process's start, or, on iOS, if the
-/// wall clock has been set back to before the process started.
-///
-/// # Panics
-///
-/// If the kernel reports a start time that cannot be one: later than the
-/// current reading of the monotonic clock, or before 1970.
+/// If the kernel refuses to report this process's start, reports a start time
+/// that cannot be one (later than the current reading of the monotonic
+/// clock, or before 1970), or, on iOS, if the wall clock has been set back to
+/// before the process started.
 pub fn time_since_start() -> io::Result<Duration> {
     platform::time_since_start()
 }
@@ -74,9 +71,9 @@ mod platform {
         }
         // SAFETY: reading the absolute clock has no preconditions.
         let now = unsafe { mach_absolute_time() };
-        let elapsed = now
-            .checked_sub(started)
-            .expect("the monotonic clock must not read earlier than the process start");
+        let elapsed = now.checked_sub(started).ok_or_else(|| {
+            io::Error::other("the monotonic clock reads earlier than the process start")
+        })?;
         Ok(Duration::from_nanos(nanos_from_ticks(
             elapsed,
             timebase.numer,
@@ -91,7 +88,9 @@ mod platform {
     /// leaves 64 bits long before the quotient does.
     pub fn nanos_from_ticks(ticks: u64, numer: u32, denom: u32) -> u64 {
         let nanos = u128::from(ticks) * u128::from(numer) / u128::from(denom);
-        u64::try_from(nanos).expect("the absolute clock reading must fit in 64 bits of nanoseconds")
+        // 2^64 nanoseconds is about 584 years of uptime, so the reading
+        // saturates only far beyond any process's life.
+        u64::try_from(nanos).unwrap_or(u64::MAX)
     }
 }
 
@@ -133,10 +132,11 @@ mod platform {
         if status != 0 {
             return Err(io::Error::last_os_error());
         }
-        assert!(
-            size >= size_of::<libc::timeval>(),
-            "the kernel's process record ({size} bytes) is smaller than its start time"
-        );
+        if size < size_of::<libc::timeval>() {
+            return Err(io::Error::other(format!(
+                "the kernel's process record ({size} bytes) is smaller than its start time"
+            )));
+        }
         // `u64` words keep the buffer aligned for the `timeval` read below.
         let mut record = vec![0_u64; size.div_ceil(size_of::<u64>())];
         // SAFETY: `record` holds at least `size` bytes; see the module safety
@@ -158,9 +158,10 @@ mod platform {
         // and `record` is aligned for it and at least that long.
         let started = unsafe { record.as_ptr().cast::<libc::timeval>().read() };
         let seconds = u64::try_from(started.tv_sec)
-            .expect("the kernel must report a process start after the epoch");
-        let micros = u32::try_from(started.tv_usec)
-            .expect("the kernel must report a sub-second part within one second");
+            .map_err(|_| io::Error::other("the kernel reports a process start before the epoch"))?;
+        let micros = u32::try_from(started.tv_usec).map_err(|_| {
+            io::Error::other("the kernel reports a negative sub-second part of the process start")
+        })?;
         Ok(Duration::from_secs(seconds) + Duration::from_micros(u64::from(micros)))
     }
 }

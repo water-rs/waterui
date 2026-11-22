@@ -11,8 +11,18 @@ use nami::Computed;
 use crate::spacer::Spacer;
 use crate::stack::{HStackLayout, HorizontalAlignment, VStackLayout, VerticalAlignment};
 use crate::{
-    Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView, SubviewPlacement, ViewDimensions,
+    Layout, LayoutError, Point, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView,
+    SubviewPlacement, ViewDimensions, resolve_layout_extent,
 };
+
+/// Answers a leaf's response query: the measured answer centred in `bounds`.
+fn leaf_extent(
+    view: &dyn SubView,
+    bounds: Rect,
+    proposal: ProposalSize,
+) -> Result<ResolvedExtent, LayoutError> {
+    ResolvedExtent::centred(bounds, view.measure(proposal).size)
+}
 
 // ============================================================================
 // Test Infrastructure
@@ -25,6 +35,13 @@ struct FixedSizeView {
 }
 
 impl SubView for FixedSizeView {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        leaf_extent(self, bounds, proposal)
+    }
     fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
         ViewDimensions::new(self.size)
     }
@@ -45,6 +62,13 @@ pub struct CompressibleView {
 }
 
 impl SubView for CompressibleView {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        leaf_extent(self, bounds, proposal)
+    }
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         let width = proposal.width.map_or(self.ideal.width, |proposed| {
             proposed.clamp(self.floor, self.ideal.width)
@@ -67,6 +91,13 @@ pub struct CompressibleHeightView {
 }
 
 impl SubView for CompressibleHeightView {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        leaf_extent(self, bounds, proposal)
+    }
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         let height = proposal.height.map_or(self.ideal.height, |proposed| {
             proposed.clamp(self.floor, self.ideal.height)
@@ -101,6 +132,13 @@ impl FlexibleTextView {
 }
 
 impl SubView for FlexibleTextView {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        leaf_extent(self, bounds, proposal)
+    }
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         ViewDimensions::new(match proposal.width {
             Some(max_width) if max_width < self.intrinsic_size.width => {
@@ -126,6 +164,13 @@ impl SubView for FlexibleTextView {
 struct SpacerView;
 
 impl SubView for SpacerView {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        leaf_extent(self, bounds, proposal)
+    }
     fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
         ViewDimensions::new(Size::zero())
     }
@@ -147,6 +192,13 @@ struct MinLengthSpacerView {
 }
 
 impl SubView for MinLengthSpacerView {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        leaf_extent(self, bounds, proposal)
+    }
     fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
         ViewDimensions::new(match self.axis {
             StretchAxis::Horizontal => Size::new(self.min_length, 0.0),
@@ -172,6 +224,13 @@ struct ContentFillView {
 }
 
 impl SubView for ContentFillView {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        leaf_extent(self, bounds, proposal)
+    }
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         let fill =
             |proposed: Option<f32>| proposed.map_or(self.intrinsic, |p| p.max(self.intrinsic));
@@ -198,6 +257,13 @@ struct HorizontalExpandingView {
 }
 
 impl SubView for HorizontalExpandingView {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        leaf_extent(self, bounds, proposal)
+    }
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         let width = proposal.width.unwrap_or(0.0);
         ViewDimensions::new(Size::new(width, self.height))
@@ -224,6 +290,13 @@ struct BaselineTextView {
 }
 
 impl SubView for BaselineTextView {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        leaf_extent(self, bounds, proposal)
+    }
     fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
         ViewDimensions::new(self.size)
             .with_vertical(VerticalAlignment::FirstBaseline, self.first_baseline)
@@ -245,6 +318,13 @@ struct GuidedBoxView {
 }
 
 impl SubView for GuidedBoxView {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        leaf_extent(self, bounds, proposal)
+    }
     fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
         ViewDimensions::new(self.size).with_horizontal(HorizontalAlignment::Leading, self.guide)
     }
@@ -259,6 +339,13 @@ impl SubView for GuidedBoxView {
 }
 
 impl SubView for VerticalExpandingView {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        leaf_extent(self, bounds, proposal)
+    }
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         let height = proposal.height.unwrap_or(0.0);
         ViewDimensions::new(Size::new(self.width, height))
@@ -447,7 +534,8 @@ fn test_hstack_multiple_children_total_exceeds_bounds_bounded_proposal() {
         );
     }
 
-    // ... the row overflows by the difference ...
+    // ... the row overflows both edges by half the difference (block 170
+    // centred in 100: starts at -35, ends at 135) ...
     let overflow = placements
         .last()
         .expect("three children were placed")
@@ -455,8 +543,8 @@ fn test_hstack_multiple_children_total_exceeds_bounds_bounded_proposal() {
         .max_x()
         - bounds.max_x();
     assert!(
-        (overflow - 70.0).abs() < 0.001,
-        "170pt of rigid content in 100pt must overflow by 70pt, got {overflow}"
+        (overflow - 35.0).abs() < 0.001,
+        "170pt of rigid content in 100pt must overflow the trailing edge by 35pt, got {overflow}"
     );
 
     // ... and overflowing must not pile children on top of each other.
@@ -725,9 +813,10 @@ fn test_vstack_child_width_exceeds_bounds_bounded_proposal() {
     let placements = layout.place(bounds, bounded_proposal(bounds), &children);
 
     assert_eq!(placements.len(), 1);
+    // Block 30 centred in 50 starts at 10; the cross axis centres 200 in 100.
     assert_eq!(
         placements[0].frame,
-        Rect::new(Point::new(-50.0, 0.0), Size::new(200.0, 30.0))
+        Rect::new(Point::new(-50.0, 10.0), Size::new(200.0, 30.0))
     );
 }
 
@@ -1101,8 +1190,8 @@ fn test_bounds_with_offset_bounded_proposal() {
 
     let placements = layout.place(bounds, bounded_proposal(bounds), &children);
 
-    // First child should start at bounds origin
-    assert_eq!(placements[0].frame.x(), 50.0);
+    // Block 30 + 10 + 40 = 80 centred in 200 from x = 50: starts at 50 + 60.
+    assert_eq!(placements[0].frame.x(), 110.0);
 
     // All children should be within bounds
     for (i, placement) in placements.iter().enumerate() {
@@ -1529,6 +1618,13 @@ fn test_vstack_form_with_spacer_bounded_proposal() {
 struct MainAxisSpacerView;
 
 impl SubView for MainAxisSpacerView {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        leaf_extent(self, bounds, proposal)
+    }
     fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
         ViewDimensions::new(Size::zero())
     }
@@ -1547,6 +1643,13 @@ struct CrossAxisDividerView {
 }
 
 impl SubView for CrossAxisDividerView {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        leaf_extent(self, bounds, proposal)
+    }
     fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
         // Returns minimal size - cross axis expansion handled by layout
         ViewDimensions::new(Size::new(self.thickness, self.thickness))
@@ -1701,6 +1804,13 @@ struct HorizontalStretchView {
 }
 
 impl SubView for HorizontalStretchView {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        leaf_extent(self, bounds, proposal)
+    }
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         // When proposed width, use it (but not less than minimum)
         let width = proposal
@@ -1844,6 +1954,13 @@ struct NestedStackView {
 }
 
 impl SubView for NestedStackView {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        leaf_extent(self, bounds, proposal)
+    }
     fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
         ViewDimensions::new(self.size)
     }
@@ -1929,6 +2046,14 @@ struct RealNestedStackView<L: Layout> {
 }
 
 impl<L: Layout> SubView for RealNestedStackView<L> {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        let refs: Vec<&dyn SubView> = self.children.iter().map(|c| c as &dyn SubView).collect();
+        resolve_layout_extent(&self.layout, bounds, proposal, &refs)
+    }
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         let refs: Vec<&dyn SubView> = self.children.iter().map(|c| c as &dyn SubView).collect();
         ViewDimensions::new(self.layout.size_that_fits(proposal, &refs))

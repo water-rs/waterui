@@ -2,8 +2,9 @@
 
 Cherenkov is the 2D engine under Hydrolysis and WaterUI's self-drawn
 components. It has a GPU backend (`gpu/`, on wgpu) and a CPU backend
-(`cpu/`, including the microcontroller design point), selected at build time
-and never as a runtime fallback. The rules below are the engine's standing
+(`cpu/`, including the microcontroller design point). A build selects GPU,
+CPU, or both; with both, the CPU backend renders when the host has no
+usable GPU. The rules below are the engine's standing
 contract.
 
 The engine moved into water-rs/waterui under `graphics/` (#1449): bare `#N`
@@ -57,6 +58,11 @@ belong to water-rs/waterui.
   same harness, on every scene and on the devices of each stage (#1).
 - **Frames** target 120fps: 8.33 ms at p99. 60fps is accepted only where no
   renderer can fit the budget in theory.
+- **Worker pools size to `std::thread::available_parallelism()` on every
+  platform.** No code discriminates between core classes (big.LITTLE,
+  performance/efficiency); the scheduler and work-stealing place work,
+  not the pool. An explicit count is accepted through the public knob
+  (`RasterConfig::threads`, `RAYON_NUM_THREADS`) only.
 - **CPU-side changes are accepted on deterministic Callgrind instruction
   counts:** Ir for `lower` and `encode` at the second steady frame of the
   perf scenes, sampled by frame index (`bench/scripts/ir_gate.py`, which runs

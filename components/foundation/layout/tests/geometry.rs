@@ -15,7 +15,9 @@ use waterui::View;
 use waterui::graphics::color::Srgb;
 use waterui::prelude::*;
 use waterui::snackbar::{Snackbar, SnackbarManager, SnackbarTheme};
-use waterui_testing::{OffscreenApp, Role, Styled, TestStyle, UiBuilder, ui as test_ui};
+use waterui_testing::{
+    NodeBounds, OffscreenApp, Role, Styled, TestStyle, UiBuilder, ui as test_ui,
+};
 
 fn visual_shell<V: View>(content: V) -> impl View {
     content.padding_with(20.0).background(Srgb::BLACK)
@@ -553,5 +555,47 @@ fn a_compressed_limited_text_leaves_its_spacer_nothing(app: &mut OffscreenApp) {
     assert!(
         (badge.x() + badge.width() - trailing).abs() <= 1.0,
         "the badge should end on the row's trailing edge: {badge:?}"
+    );
+}
+
+fn grid_with_short_middle_row_view() -> impl View {
+    let cell = |label| labeled_card(label, 30.0, 20.0, Srgb::BLACK);
+    waterui::layout::grid::grid(
+        3,
+        [
+            waterui::layout::grid::row((cell("a"), cell("b"), cell("c"))),
+            waterui::layout::grid::row((cell("d"),)),
+            waterui::layout::grid::row((cell("e"), cell("f"), cell("g"))),
+        ],
+    )
+}
+
+// docs/layout-spec.md §5: each `GridRow`'s children fill that row's cells, so
+// a short row leaves its trailing cells empty instead of pulling cells up from
+// the next row.
+#[waterui::test(grid_with_short_middle_row_view, theme = TestStyle::new(), offscreen, viewport = (300, 200))]
+fn a_short_grid_row_leaves_its_trailing_cells_empty(app: &mut OffscreenApp) {
+    let bounds = |app: &mut OffscreenApp, label: &str| app.query().label(label).single().bounds();
+    let [a, b, c, d, e, f, g] = ["a", "b", "c", "d", "e", "f", "g"].map(|label| bounds(app, label));
+    // Labels are centred in their cells, so a cell is identified by the
+    // label's centre: rows by the vertical one, columns by the horizontal.
+    let same_row = |x: NodeBounds, y: NodeBounds| {
+        (x.y() + x.height() / 2.0 - y.y() - y.height() / 2.0).abs() <= 0.5
+    };
+    let same_column = |x: NodeBounds, y: NodeBounds| {
+        (x.x() + x.width() / 2.0 - y.x() - y.width() / 2.0).abs() <= 0.5
+    };
+    assert!(
+        same_row(a, b) && same_row(b, c),
+        "row 0 holds a, b, c: {a:?} {b:?} {c:?}"
+    );
+    assert!(d.y() > a.y(), "row 1 starts below row 0: a={a:?} d={d:?}");
+    assert!(
+        e.y() > d.y() && same_row(e, f) && same_row(f, g),
+        "row 2 holds e, f, g below row 1: d={d:?} e={e:?} f={f:?} g={g:?}"
+    );
+    assert!(
+        same_column(d, a) && same_column(e, a) && same_column(f, b) && same_column(g, c),
+        "cells keep their columns: a={a:?} b={b:?} c={c:?} d={d:?} e={e:?} f={f:?} g={g:?}"
     );
 }

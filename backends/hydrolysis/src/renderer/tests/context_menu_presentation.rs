@@ -8,7 +8,6 @@
 
 use std::time::{Duration, Instant};
 
-use crate::theme::WidgetTheme;
 use accesskit::{Action, ActionRequest, Role, TreeId, TreeUpdate};
 use nami::Binding;
 use nami::Signal as _;
@@ -20,6 +19,7 @@ use waterui_core::AnyView;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_graphics::Color;
 use waterui_layout::frame::Frame;
+use waterui_layout::spacer::spacer as layout_spacer;
 use waterui_layout::stack::vstack;
 
 use super::popup_windows::find_by_label;
@@ -77,12 +77,16 @@ fn host_view_with_spacer(
     spacer: f32,
     menu: impl Fn() -> ContextMenu + 'static,
 ) -> AnyViewBuilder<AnyView> {
+    // The trailing spacer fills the window column, so the host sits `spacer`
+    // points below the window's top edge rather than in a centred block
+    // (`docs/layout-spec.md` §4.2).
     AnyViewBuilder::<AnyView>::new(move || {
         AnyView::new(vstack((
             ().size(0.0, spacer),
             Frame::new(button("host").action(|| {}).context_menu(menu()))
                 .width(160.0)
                 .height(80.0),
+            layout_spacer(),
         )))
     })
 }
@@ -125,29 +129,40 @@ fn runtime_sized(
 
 /// Pumps until the runtime settles (with a cap), then returns the merged
 /// tree as of that settle — `None` when no window has ever produced one.
+///
+/// Each pump advances the frame clock one 16 ms frame, so an animation
+/// started inside the loop finishes within it however fast a pump runs:
+/// wall-clock stamps leave the loop's cap racing the animation's real
+/// duration (the race `popup_windows`'s settle loop fixed,
+/// water-rs/waterui#1969).
 fn pump_until_settled(runtime: &mut HeadlessRuntime) -> Option<TreeUpdate> {
-    for _ in 0..64 {
-        let _ = runtime.pump_at(false, Instant::now());
+    let start = Instant::now();
+    for frame in 0..64u32 {
+        let _ = runtime.pump_at(false, start + Duration::from_millis(16) * frame);
         if runtime.is_settled() {
             break;
         }
     }
+    assert!(runtime.is_settled(), "the headless runtime never settled");
     runtime.accessibility_tree()
 }
 
 /// Same, capturing the composited frame on every pump — the pixel assertions
-/// read the last one.
+/// read the last one. The frame clock advances as [`pump_until_settled`]'s
+/// does.
 fn capture_until_settled(runtime: &mut HeadlessRuntime) -> HeadlessSnapshot {
+    let start = Instant::now();
     let mut snapshot = None;
-    for _ in 0..64 {
-        let result = runtime.pump_at(true, Instant::now());
-        if let Some(frame) = result.snapshot {
+    for frame in 0..64u32 {
+        let result = runtime.pump_at(true, start + Duration::from_millis(16) * frame);
+        if let Some(frame) = result.into_snapshot() {
             snapshot = Some(frame);
         }
         if runtime.is_settled() {
             break;
         }
     }
+    assert!(runtime.is_settled(), "the headless runtime never settled");
     snapshot.expect("a settled runtime must capture a frame")
 }
 
@@ -201,8 +216,8 @@ fn primary_click_label(runtime: &mut HeadlessRuntime, label: &str, update: &Tree
 }
 
 fn pixel(snapshot: &HeadlessSnapshot, x: u32, y: u32) -> [u8; 4] {
-    let index = ((y * snapshot.width + x) * 4) as usize;
-    snapshot.rgba8[index..index + 4]
+    let index = ((y * snapshot.width() + x) * 4) as usize;
+    snapshot.rgba8()[index..index + 4]
         .try_into()
         .expect("a pixel is four channels")
 }
@@ -290,7 +305,7 @@ fn the_source_view_lifts_through_a_hole_in_the_dim_backdrop() {
     let bounds = bounds_of(&mut runtime, "host");
     let baseline = runtime
         .pump_at(true, Instant::now())
-        .snapshot
+        .into_snapshot()
         .expect("a captured frame");
 
     let (cx, cy) = (
@@ -385,7 +400,7 @@ fn destructive_draws_in_error_colour_and_subtitle_grows_its_row() {
         .expect("the drawn menu mounts");
     // The test theme is not M3 — derive the expectation from its metrics so
     // the test cannot drift from the tokens it is fed.
-    let menu_metrics = MinimalTestTheme::default().text_context_menu_metrics();
+    let menu_metrics = MinimalTestTheme::menu_layout();
     let three_plain_rows = 3.0 * menu_metrics.row_height;
     assert!(
         menu_frame.height() > three_plain_rows + menu_metrics.vertical_padding,
@@ -451,7 +466,7 @@ fn a_menu_with_no_preview_or_accessory_stays_a_pure_platform_menu() {
     let bounds = bounds_of(&mut runtime, "host");
     let baseline = runtime
         .pump_at(true, Instant::now())
-        .snapshot
+        .into_snapshot()
         .expect("a captured frame");
     let (cx, cy) = (
         crate::num_cast::f64_as_f32(f64::midpoint(bounds.x0, bounds.x1)),
@@ -480,7 +495,7 @@ fn a_preview_without_an_accessory_lifts_too() {
     let bounds = bounds_of(&mut runtime, "host");
     let baseline = runtime
         .pump_at(true, Instant::now())
-        .snapshot
+        .into_snapshot()
         .expect("a captured frame");
 
     let (cx, cy) = (
@@ -523,7 +538,7 @@ fn a_touch_hold_lifts_and_mounts_the_menu_beside_the_source() {
     let bounds = bounds_of(&mut runtime, "host");
     let baseline = runtime
         .pump_at(true, Instant::now())
-        .snapshot
+        .into_snapshot()
         .expect("a captured frame");
     let start = Instant::now();
     let (cx, cy) = (
@@ -541,7 +556,7 @@ fn a_touch_hold_lifts_and_mounts_the_menu_beside_the_source() {
     let _ = runtime.pump_at(false, start);
     let open = runtime.pump_at(true, start + HOLD);
     assert!(
-        open.tree_update
+        open.tree_update()
             .as_ref()
             .and_then(|update| find_by_label(update, Role::Button, "Copy"))
             .is_some(),
@@ -562,9 +577,9 @@ fn a_touch_hold_lifts_and_mounts_the_menu_beside_the_source() {
         menu.y0 >= bounds.y1,
         "the menu sits beside the lifted source, menu {menu:?} source {bounds:?}"
     );
-    let opened = open.snapshot.expect("the hold frame captures");
+    let opened = open.snapshot().expect("the hold frame captures");
     assert!(
-        !near(pixel(&opened, 6, 6), pixel(&baseline, 6, 6), 16),
+        !near(pixel(opened, 6, 6), pixel(&baseline, 6, 6), 16),
         "the backdrop dims for a touch-hold presentation"
     );
 }
@@ -840,7 +855,7 @@ fn a_divider_row_takes_the_themes_divider_spacing() {
     // container vertical padding; the window frame adds the panel margin on
     // every side. The debug build's "Inspect element" affordance appends its
     // own divider and row.
-    let menu_metrics = MinimalTestTheme::default().text_context_menu_metrics();
+    let menu_metrics = MinimalTestTheme::menu_layout();
     let divider = crate::renderer::input::popup_menu_divider_height(menu_metrics);
     let row = menu_metrics.row_height;
     let rows = row
@@ -899,8 +914,8 @@ fn the_plain_popup_draws_the_theme_panel() {
     );
     // Under the panel's bottom edge, inside the margin ring, its shadow
     // darkens: a visible level-2 shadow.
-    let panel_bottom = pop.height - m;
-    let below = pixel(&pop, pop.width / 2, panel_bottom + 2);
+    let panel_bottom = pop.height() - m;
+    let below = pixel(&pop, pop.width() / 2, panel_bottom + 2);
     assert!(
         below[3] > 16 && below[0] < 90,
         "the panel's shadow draws in the window's margin ring, got {below:?}"
@@ -926,11 +941,11 @@ fn a_disabled_command_draws_its_label_dimmed_and_stays_inert() {
 
     // Rows lay out under the panel margin: first the disabled `Copy`, then
     // `Paste` — each `row_height` tall inside `vertical_padding`.
-    let metrics = MinimalTestTheme::default().text_context_menu_metrics();
+    let metrics = MinimalTestTheme::menu_layout();
     let margin = crate::num_cast::f64_as_u32(crate::renderer::POPUP_MENU_PANEL_MARGIN);
     let row_top = margin + crate::num_cast::f64_as_u32(metrics.vertical_padding);
     let row_bottom = row_top + crate::num_cast::f64_as_u32(metrics.row_height);
-    let (x0, x1) = (margin + 2, pop.width - margin - 2);
+    let (x0, x1) = (margin + 2, pop.width() - margin - 2);
     let darkest_ink = |y0: u32, y1: u32| -> u32 {
         let mut darkest = u32::MAX;
         for y in y0..y1 {
@@ -983,8 +998,8 @@ fn destructive_rows_draw_in_error_colour_on_the_plain_popup_path() {
     let pop = runtime.popup_frame(0).expect("the popup mounts");
 
     let mut error_colored = 0_u32;
-    for y in 0..pop.height {
-        for x in 0..pop.width {
+    for y in 0..pop.height() {
+        for x in 0..pop.width() {
             let px = pixel(&pop, x, y);
             if px[0] > 160 && px[1] < 110 && px[2] < 110 && px[3] > 100 {
                 error_colored += 1;

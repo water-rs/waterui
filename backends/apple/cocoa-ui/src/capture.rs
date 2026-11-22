@@ -46,7 +46,7 @@
 //! every [`CapturableSurface`] call is main-thread only; `Compositor`
 //! internals run on its private serial queue.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::fmt;
 use std::rc::{Rc, Weak};
@@ -80,8 +80,10 @@ use objc2_metal::{
 use objc2_quartz_core::{CALayer, CAMetalLayer, CATransaction};
 
 use crate::PlatformView;
-use crate::core_animation::flush_transaction;
+use crate::core_animation::before_commit;
 use crate::geometry::Rect;
+use waterui_contract::contract_violation;
+
 use crate::main_queue::enqueue;
 use crate::metal::{Primaries, ShaderColor, shader_color};
 
@@ -140,30 +142,37 @@ impl CaptureGeometry {
     /// `width` × `height` pixel destination, `y_down` naming whether the
     /// source's y axis already points down the destination.
     ///
-    /// # Panics
-    ///
-    /// When `bounds` is empty.
+    /// Empty `bounds` break the contract: it is reported and a unit scale
+    /// is used on the empty axis.
     #[must_use]
     pub fn new(bounds: Rect, width: usize, height: usize, y_down: bool) -> Self {
-        assert!(
-            bounds.size.width > 0.0 && bounds.size.height > 0.0,
-            "capture content must have non-zero bounds"
-        );
+        if !(bounds.size.width > 0.0 && bounds.size.height > 0.0) {
+            contract_violation!(
+                "capture content must have non-zero bounds, got {bounds:?}; a unit scale is used"
+            );
+        }
         #[expect(
             clippy::cast_precision_loss,
             reason = "a capture texture is at most a few thousand pixels on a side"
         )]
+        let scale = |pixels: usize, points: f64| {
+            if points > 0.0 {
+                pixels as f64 / points
+            } else {
+                1.0
+            }
+        };
         Self {
             source: bounds,
-            scale_x: width as f64 / bounds.size.width,
-            scale_y: height as f64 / bounds.size.height,
+            scale_x: scale(width, bounds.size.width),
+            scale_y: scale(height, bounds.size.height),
             y_down,
         }
     }
 
     /// Where `point`, in the captured view's own layer space, lands in the
     /// destination's top-down pixel space — the mapping the native raster
-    /// draws through ([`raster_transform`] plus the bitmap context's
+    /// draws through (`raster_transform` plus the bitmap context's
     /// bottom-up rows).
     #[must_use]
     pub fn texel(&self, point: crate::geometry::Point) -> [f64; 2] {
@@ -245,6 +254,28 @@ const BLEND_COLOR: ShaderColor = ShaderColor {
 /// colour is composited through, and the resolve's intermediate images.
 const BLEND_FORMAT: MTLPixelFormat = MTLPixelFormat::RGBA16Float;
 
+/// Whether a texture of `format` stores colour past [0, 1]. A target that
+/// does not clamps each premultiplied channel on store, so what is drawn
+/// into it is clipped to its gamut first ([`CompositeConversion::between`]).
+///
+/// A format a capture does not composite into breaks the contract: it is
+/// reported and read as one that clamps.
+fn stores_extended_range(format: MTLPixelFormat) -> bool {
+    match format {
+        MTLPixelFormat::RGBA16Float | MTLPixelFormat::RGBA32Float => true,
+        MTLPixelFormat::BGRA8Unorm
+        | MTLPixelFormat::RGBA8Unorm
+        | MTLPixelFormat::BGRA8Unorm_sRGB
+        | MTLPixelFormat::RGBA8Unorm_sRGB => false,
+        other => {
+            contract_violation!(
+                "{other:?} is not a format a capture composites into; it is read as clamping"
+            );
+            false
+        }
+    }
+}
+
 /// The colour conversion handed to the composite fragment shaders — mirrors
 /// `CaptureCompositeConversion` in `capture_composite.metal`: `float4`
 /// fields are `f32` quadruples, and `align(16)` pads the struct to the
@@ -264,12 +295,16 @@ struct CompositeConversion {
     identity: u32,
     decode_source: u32,
     encode_target: u32,
+    clip_target: u32,
 }
 
 impl CompositeConversion {
     /// The conversion from what a source samples as to what the target's
-    /// store expects.
-    fn between(source: ShaderColor, target: ShaderColor) -> Self {
+    /// store expects. `clip` marks a target that stores only [0, 1]
+    /// ([`stores_extended_range`]): the straight colour is clipped into
+    /// it before premultiplying, so a colour outside the target's gamut
+    /// never leaves a channel above its alpha.
+    fn between(source: ShaderColor, target: ShaderColor, clip: bool) -> Self {
         let matrix = match (source.primaries, target.primaries) {
             (Primaries::DisplayP3, Primaries::Srgb) => P3_TO_SRGB,
             (Primaries::Srgb, Primaries::DisplayP3) => SRGB_TO_P3,
@@ -286,9 +321,10 @@ impl CompositeConversion {
                 SRGB_ENCODED_BREAK,
                 0.0,
             ],
-            identity: u32::from(source == target),
+            identity: u32::from(source == target && !clip),
             decode_source: u32::from(source.encoded),
             encode_target: u32::from(target.encoded),
+            clip_target: u32::from(clip),
         }
     }
 
@@ -323,7 +359,7 @@ struct ResolveParams {
 
 /// A pixel extent as the `f64` Metal viewports and bounds take.
 fn pixel_extent(value: usize) -> f64 {
-    f64::from(u32::try_from(value).expect("a pixel extent fits in u32"))
+    f64::from(u32::try_from(value).expect("a pixel extent is a texture side, far below 2^32"))
 }
 
 /// A pixel position as the `f32` the resolve shader offsets by.
@@ -459,22 +495,17 @@ pub fn surface_spec(
 /// probe standing in for the surface — and then through
 /// [`CaptureGeometry::texel`]. Which of the presentation layer's edges
 /// carries the texture's first row is Core Animation's contents
-/// orientation: the layer's minimum-y edge where its y axis points down
-/// the screen — `UIKit`'s convention, and `AppKit`'s wherever
-/// `contentsAreFlipped` — its maximum-y edge otherwise.
+/// orientation, which `contentsAreFlipped` reports on both kits: the
+/// layer's minimum-y edge where it answers `YES` — every layer `UIKit`
+/// hosts, and `AppKit`'s inside flipped views — its maximum-y edge
+/// otherwise.
 fn surface_quad(
     presentation: &CALayer,
     root: &CALayer,
     geometry: CaptureGeometry,
 ) -> [[f64; 2]; 3] {
     let bounds: Rect = presentation.bounds().into();
-    let flipped = presentation.contentsAreFlipped();
-    let first_row_at_min_y = if cfg!(target_os = "macos") {
-        flipped
-    } else {
-        !flipped
-    };
-    let (top, bottom) = if first_row_at_min_y {
+    let (top, bottom) = if presentation.contentsAreFlipped() {
         (bounds.origin.y, bounds.origin.y + bounds.size.height)
     } else {
         (bounds.origin.y + bounds.size.height, bounds.origin.y)
@@ -567,6 +598,15 @@ pub trait CapturableSurface {
     /// superlayer while the capture measures how the tree composites it.
     /// The layer's own mask is not part of that geometry, so a
     /// presentation layer carries none.
+    ///
+    /// A capture renders the surface only while the native tree draws
+    /// this layer: neither it nor an ancestor below the capture's root is
+    /// hidden or fully transparent. A surface therefore hides the layer,
+    /// or an ancestor of it inside the surface's own view, only while
+    /// something else shows in its place. Hiding it because the surface
+    /// has not presented a frame yet would drop it from every enclosing
+    /// capture, which renders the surface itself and never waits on its
+    /// presentation.
     fn presentation_layer(&self) -> Option<Retained<CALayer>>;
     /// Suspends the surface's own presentation while its content is captured
     /// elsewhere — hides [`presentation_layer`](Self::presentation_layer).
@@ -584,7 +624,15 @@ pub trait CapturableSurface {
     /// presentation path that can never run.
     fn can_present(&self) -> bool;
     /// Redirects the surface's redraw requests to `on_redraw`; while
-    /// external, the surface presents nowhere itself.
+    /// external, the surface presents nowhere itself. A surface whose
+    /// owner tears down while a scope is still open calls `on_redraw`
+    /// once more: a [`Deferred`](CaptureError::Deferred) it answered
+    /// can never be replayed by a later redraw of its own, and its
+    /// departure is itself the content change the capture retries on.
+    /// A surface whose terminal failure settles while a scope is open
+    /// calls `on_redraw` too, for the same reason: no later redraw can
+    /// replay a deferral it answered, and the retry reads the
+    /// [`Failed`](CaptureError::Failed) outcome instead.
     fn begin_external_rendering(&self, on_redraw: Rc<dyn Fn()>);
     /// Ends external rendering; `resume` restarts normal presentation.
     fn end_external_rendering(&self, resume: bool);
@@ -662,18 +710,25 @@ impl fmt::Debug for FenceBatch {
 impl FenceBatch {
     /// A batch of `count` fences.
     ///
-    /// # Panics
-    ///
-    /// `count` must be non-zero.
+    /// A `count` of zero breaks the contract: it is reported and the batch
+    /// completes at once, successfully, having nothing to wait for.
     #[must_use]
     pub fn new(
         count: usize,
         completion: impl FnOnce(Result<(), CaptureError>) + Send + 'static,
     ) -> Self {
-        assert!(
-            count > 0,
-            "a GPU fence batch must contain at least one submission"
-        );
+        if count == 0 {
+            contract_violation!(
+                "a GPU fence batch must contain at least one submission; it completes at once"
+            );
+            completion(Ok(()));
+            return Self {
+                remaining: AtomicUsize::new(0),
+                failed: AtomicBool::new(false),
+                terminal: Mutex::new(None),
+                completion: Mutex::new(None),
+            };
+        }
         Self {
             remaining: AtomicUsize::new(count),
             failed: AtomicBool::new(false),
@@ -689,9 +744,12 @@ impl FenceBatch {
     /// on every outstanding fence — a deferred frame never releases the
     /// submissions still in flight.
     ///
+    /// A fence landing after the batch's last one breaks the contract: it is
+    /// reported and ignored.
+    ///
     /// # Panics
     ///
-    /// When more fences land than the batch was built with.
+    /// Never in practice: the batch's slots are never locked across a panic.
     pub fn complete_one(&self, outcome: Result<(), CaptureError>) {
         match outcome {
             Ok(()) => {}
@@ -700,7 +758,10 @@ impl FenceBatch {
             }
             Err(CaptureError::Failed(error)) => {
                 self.failed.store(true, Ordering::Relaxed);
-                let mut terminal = self.terminal.lock().expect("fence batch error lock");
+                let mut terminal = self
+                    .terminal
+                    .lock()
+                    .expect("the fence batch's error slot is never locked across a panic");
                 if terminal.is_none() {
                     *terminal = Some(error);
                 }
@@ -708,12 +769,29 @@ impl FenceBatch {
         }
         // The store above is ordered before this release decrement, so the
         // fence that observes `remaining == 1` sees every reported failure.
-        let remaining = self.remaining.fetch_sub(1, Ordering::AcqRel);
-        assert!(remaining > 0, "a GPU fence batch completed more than once");
+        let Ok(remaining) =
+            self.remaining
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |left| {
+                    left.checked_sub(1)
+                })
+        else {
+            contract_violation!(
+                "a GPU fence batch completed more than once; the extra fence is ignored"
+            );
+            return;
+        };
         if remaining == 1
-            && let Some(completion) = self.completion.lock().expect("fence batch lock").take()
+            && let Some(completion) = self
+                .completion
+                .lock()
+                .expect("the fence batch's completion slot is never locked across a panic")
+                .take()
         {
-            let terminal = self.terminal.lock().expect("fence batch error lock").take();
+            let terminal = self
+                .terminal
+                .lock()
+                .expect("the fence batch's error slot is never locked across a panic")
+                .take();
             completion(match terminal {
                 Some(error) => Err(CaptureError::Failed(error)),
                 None if self.failed.load(Ordering::Relaxed) => Err(CaptureError::Deferred),
@@ -760,17 +838,14 @@ struct DeviceResources {
 }
 
 impl DeviceResources {
-    /// A fresh bundle bound to `device`.
-    ///
-    /// # Panics
-    ///
-    /// When `device` cannot create a command queue.
-    fn new(device: &ProtocolObject<dyn MTLDevice>) -> Self {
-        Self {
+    /// A fresh bundle bound to `device`; an error when `device` cannot
+    /// create a command queue.
+    fn new(device: &ProtocolObject<dyn MTLDevice>) -> Result<Self, CaptureUnavailable> {
+        Ok(Self {
             device: device.retain(),
-            command_queue: device
-                .newCommandQueue()
-                .expect("failed to create the Metal capture composition command queue"),
+            command_queue: device.newCommandQueue().ok_or_else(|| {
+                CaptureUnavailable::refused("Metal capture composition command queue")
+            })?,
             surface_textures: HashMap::new(),
             blend_texture: None,
             scratch: HashMap::new(),
@@ -778,22 +853,21 @@ impl DeviceResources {
             pipelines: HashMap::new(),
             resolve_pipelines: HashMap::new(),
             sampler: None,
-        }
+        })
     }
 
     /// The private texture for `spec` — reused when id, size and format
-    /// all match.
-    ///
-    /// # Panics
-    ///
-    /// When the device cannot allocate a texture.
-    fn surface_texture(&mut self, spec: SurfaceSpec) -> Retained<ProtocolObject<dyn MTLTexture>> {
+    /// all match; an error when the device cannot allocate one.
+    fn surface_texture(
+        &mut self,
+        spec: SurfaceSpec,
+    ) -> Result<Retained<ProtocolObject<dyn MTLTexture>>, CaptureUnavailable> {
         if let Some(texture) = self.surface_textures.get(&spec.surface_id) {
             let matches = texture.width() == spec.full_size.width
                 && texture.height() == spec.full_size.height
                 && texture.pixelFormat() == spec.pixel_format;
             if matches {
-                return texture.clone();
+                return Ok(texture.clone());
             }
         }
         // SAFETY: a 2D texture descriptor is always valid to construct.
@@ -810,45 +884,38 @@ impl DeviceResources {
         let texture = self
             .device
             .newTextureWithDescriptor(&descriptor)
-            .expect("failed to create a GPU surface capture texture");
+            .ok_or_else(|| CaptureUnavailable::refused("GPU surface capture texture"))?;
         self.surface_textures
             .insert(spec.surface_id, texture.clone());
-        texture
+        Ok(texture)
     }
 
-    /// The [`BLEND_FORMAT`] texture a target that does not store
-    /// [`BLEND_COLOR`] is composited through — reused while the size
-    /// matches.
-    ///
-    /// # Panics
-    ///
-    /// When the device cannot allocate a texture.
+    /// The [`BLEND_FORMAT`] texture every capture target is composited
+    /// through — reused while the size matches; an error when the device
+    /// cannot allocate a texture.
     fn blend_texture(
         &mut self,
         width: usize,
         height: usize,
-    ) -> Retained<ProtocolObject<dyn MTLTexture>> {
+    ) -> Result<Retained<ProtocolObject<dyn MTLTexture>>, CaptureUnavailable> {
         if let Some(texture) = &self.blend_texture
             && texture.width() == width
             && texture.height() == height
         {
-            return texture.clone();
+            return Ok(texture.clone());
         }
-        let texture = self.new_blend_format_texture(width, height);
+        let texture = self.new_blend_format_texture(width, height)?;
         self.blend_texture = Some(texture.clone());
-        texture
+        Ok(texture)
     }
 
-    /// A private, sampled and renderable [`BLEND_FORMAT`] texture.
-    ///
-    /// # Panics
-    ///
-    /// When the device cannot allocate it.
+    /// A private, sampled and renderable [`BLEND_FORMAT`] texture; an error
+    /// when the device cannot allocate it.
     fn new_blend_format_texture(
         &self,
         width: usize,
         height: usize,
-    ) -> Retained<ProtocolObject<dyn MTLTexture>> {
+    ) -> Result<Retained<ProtocolObject<dyn MTLTexture>>, CaptureUnavailable> {
         // SAFETY: a 2D texture descriptor is always valid to construct.
         let descriptor = unsafe {
             MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
@@ -862,31 +929,31 @@ impl DeviceResources {
         descriptor.setStorageMode(MTLStorageMode::Private);
         self.device
             .newTextureWithDescriptor(&descriptor)
-            .expect("failed to create a capture blend-format texture")
+            .ok_or_else(|| CaptureUnavailable::refused("capture blend-format texture"))
     }
 
     /// `count` intermediate images of `width` × `height`, distinct from
     /// every other image this composition was handed. Reused across
     /// compositions: the compositor's command buffers run in order on
     /// one queue, so a later composition's writes follow every earlier
-    /// read.
+    /// read. An error when the device cannot allocate a texture.
     fn scratch_textures(
         &mut self,
         width: usize,
         height: usize,
         count: usize,
-    ) -> Vec<Retained<ProtocolObject<dyn MTLTexture>>> {
+    ) -> Result<Vec<Retained<ProtocolObject<dyn MTLTexture>>>, CaptureUnavailable> {
         let size = (width, height);
         let start = self.scratch_handed.get(&size).copied().unwrap_or(0);
         let needed = start + count;
         let available = self.scratch.get(&size).map_or(0, Vec::len);
-        let fresh: Vec<_> = (available..needed)
+        let fresh = (available..needed)
             .map(|_| self.new_blend_format_texture(width, height))
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
         let pool = self.scratch.entry(size).or_default();
         pool.extend(fresh);
         self.scratch_handed.insert(size, needed);
-        pool[start..needed].to_vec()
+        Ok(pool[start..needed].to_vec())
     }
 
     /// Keeps only the intermediate images the composition just encoded
@@ -900,64 +967,58 @@ impl DeviceResources {
         });
     }
 
-    /// The pipeline for `format`, compiled once per format.
-    ///
-    /// # Panics
-    ///
-    /// When the in-tree shader fails to compile or lacks its entry points.
+    /// The pipeline for `format`, compiled once per format; an error when
+    /// the device cannot build it.
     fn render_pipeline(
         &mut self,
         format: MTLPixelFormat,
-    ) -> Retained<ProtocolObject<dyn MTLRenderPipelineState>> {
+    ) -> Result<Retained<ProtocolObject<dyn MTLRenderPipelineState>>, CaptureUnavailable> {
         if let Some(pipeline) = self.pipelines.get(&format) {
-            return pipeline.clone();
+            return Ok(pipeline.clone());
         }
-        let compiled = self.compile_pipeline(format, "capture_composite_fragment", true);
+        let compiled = self.compile_pipeline(format, "capture_composite_fragment", true)?;
         self.pipelines.insert(format, compiled.clone());
-        compiled
+        Ok(compiled)
     }
 
     /// The ordered-resolve pipeline for `format` — `capture_resolve_fragment`
-    /// with blending off: a resolve computes each pixel's whole value.
-    ///
-    /// # Panics
-    ///
-    /// When the in-tree shader fails to compile or lacks its entry points.
+    /// with blending off: a resolve computes each pixel's whole value; an
+    /// error when the device cannot build it.
     fn resolve_pipeline(
         &mut self,
         format: MTLPixelFormat,
-    ) -> Retained<ProtocolObject<dyn MTLRenderPipelineState>> {
+    ) -> Result<Retained<ProtocolObject<dyn MTLRenderPipelineState>>, CaptureUnavailable> {
         if let Some(pipeline) = self.resolve_pipelines.get(&format) {
-            return pipeline.clone();
+            return Ok(pipeline.clone());
         }
-        let compiled = self.compile_pipeline(format, "capture_resolve_fragment", false);
+        let compiled = self.compile_pipeline(format, "capture_resolve_fragment", false)?;
         self.resolve_pipelines.insert(format, compiled.clone());
-        compiled
+        Ok(compiled)
     }
 
     /// Compiles the composite vertex stage with `fragment` into a `format`
     /// pipeline — premultiplied source-over when `blending`, a plain store
-    /// otherwise.
-    ///
-    /// # Panics
-    ///
-    /// When the in-tree shader fails to compile or lacks its entry points.
+    /// otherwise. The shader library is built into the binary, so a missing
+    /// library or entry point cannot occur; the device refusing the pipeline
+    /// is the error.
     fn compile_pipeline(
         &self,
         format: MTLPixelFormat,
         fragment: &str,
         blending: bool,
-    ) -> Retained<ProtocolObject<dyn MTLRenderPipelineState>> {
+    ) -> Result<Retained<ProtocolObject<dyn MTLRenderPipelineState>>, CaptureUnavailable> {
         let library = self
             .device
             .newLibraryWithData_error(&DispatchData::from_static_bytes(CAPTURE_COMPOSITE_METALLIB))
-            .expect("failed to load the precompiled capture composite Metal library");
+            .expect(
+                "the capture composite metallib is compiled by build.rs into the binary and loads",
+            );
         let vertex = library
             .newFunctionWithName(&NSString::from_str("capture_composite_vertex"))
-            .expect("CaptureComposite is missing capture_composite_vertex");
+            .expect("the capture composite metallib defines capture_composite_vertex");
         let fragment = library
             .newFunctionWithName(&NSString::from_str(fragment))
-            .unwrap_or_else(|| panic!("CaptureComposite is missing {fragment}"));
+            .unwrap_or_else(|| panic!("the capture composite metallib defines {fragment}"));
         let descriptor = MTLRenderPipelineDescriptor::new();
         descriptor.setVertexFunction(Some(&vertex));
         descriptor.setFragmentFunction(Some(&fragment));
@@ -973,17 +1034,21 @@ impl DeviceResources {
         attachment.setDestinationAlphaBlendFactor(MTLBlendFactor::OneMinusSourceAlpha);
         self.device
             .newRenderPipelineStateWithDescriptor_error(&descriptor)
-            .expect("failed to compile the Metal capture composition pipeline")
+            .map_err(|error| {
+                CaptureUnavailable::new(format!(
+                    "the Metal capture composition pipeline failed to compile: {}",
+                    error.localizedDescription()
+                ))
+            })
     }
 
-    /// The linear clamp-to-edge sampler.
-    ///
-    /// # Panics
-    ///
-    /// When the device cannot create one.
-    fn composite_sampler(&mut self) -> Retained<ProtocolObject<dyn MTLSamplerState>> {
+    /// The linear clamp-to-edge sampler; an error when the device cannot
+    /// create one.
+    fn composite_sampler(
+        &mut self,
+    ) -> Result<Retained<ProtocolObject<dyn MTLSamplerState>>, CaptureUnavailable> {
         if let Some(sampler) = &self.sampler {
-            return sampler.clone();
+            return Ok(sampler.clone());
         }
         let descriptor = MTLSamplerDescriptor::new();
         descriptor.setMinFilter(MTLSamplerMinMagFilter::Linear);
@@ -993,9 +1058,9 @@ impl DeviceResources {
         let sampler = self
             .device
             .newSamplerStateWithDescriptor(&descriptor)
-            .expect("failed to create the Metal capture composition sampler");
+            .ok_or_else(|| CaptureUnavailable::refused("Metal capture composition sampler"))?;
         self.sampler = Some(sampler.clone());
-        sampler
+        Ok(sampler)
     }
 }
 
@@ -1015,21 +1080,22 @@ impl CompositorState {
     ///
     /// An identity change drops the previous bundle's own strong refs —
     /// textures already handed to in-flight captures stay alive through
-    /// theirs — and binds a fresh bundle before any cache is read.
-    ///
-    /// # Panics
-    ///
-    /// When `device` cannot create a command queue.
-    fn device_resources(&mut self, device: &ProtocolObject<dyn MTLDevice>) -> &mut DeviceResources {
+    /// theirs — and binds a fresh bundle before any cache is read; an error
+    /// when `device` cannot create a command queue.
+    fn device_resources(
+        &mut self,
+        device: &ProtocolObject<dyn MTLDevice>,
+    ) -> Result<&mut DeviceResources, CaptureUnavailable> {
         let stale = self.resources.as_ref().is_none_or(|resources| {
             Retained::as_ptr(&resources.device) != core::ptr::from_ref(device)
         });
         if stale {
-            self.resources = Some(DeviceResources::new(device));
+            self.resources = Some(DeviceResources::new(device)?);
         }
-        self.resources
+        Ok(self
+            .resources
             .as_mut()
-            .expect("a device bundle is bound above")
+            .expect("a device bundle is bound just above"))
     }
 }
 
@@ -1097,12 +1163,15 @@ impl Compositor {
     ///
     /// # Panics
     ///
-    /// When the compositor's state lock is poisoned.
+    /// Never in practice: a panic on the serial queue aborts the process, so
+    /// the state lock is never poisoned.
     pub fn perform(&self, work: impl FnOnce(&mut CompositorGuard) + Send + 'static) {
         let state = self.state.clone();
         self.queue.exec_async(move || {
             let mut guard = CompositorGuard {
-                state: state.lock().expect("capture compositor lock poisoned"),
+                state: state.lock().expect(
+                    "the compositor state is never locked across a panic: work aborts on one",
+                ),
             };
             work(&mut guard);
         });
@@ -1120,42 +1189,46 @@ impl Compositor {
 
 impl CompositorGuard<'_> {
     /// A command buffer from the queue bound to `device`; the queue —
-    /// like every cache — is recreated when the device changes.
+    /// like every cache — is recreated when the device changes. An error
+    /// when `device` cannot create a command queue or buffer.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// When `device` cannot create a command queue or buffer.
+    /// [`CaptureUnavailable`] when the device refuses the queue or buffer.
     pub fn make_command_buffer(
         &mut self,
         device: &ProtocolObject<dyn MTLDevice>,
-    ) -> Retained<ProtocolObject<dyn MTLCommandBuffer>> {
+    ) -> Result<Retained<ProtocolObject<dyn MTLCommandBuffer>>, CaptureUnavailable> {
         self.state
-            .device_resources(device)
+            .device_resources(device)?
             .command_queue
             .commandBuffer()
-            .expect("failed to create the Metal view composition command buffer")
+            .ok_or_else(|| CaptureUnavailable::refused("Metal view composition command buffer"))
     }
 
     /// The private texture each surface renders into — pruned to `specs`,
-    /// reused across captures while the bound device is unchanged.
+    /// reused across captures while the bound device is unchanged. An error
+    /// when `device` cannot allocate a texture.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// When `device` cannot allocate a texture.
+    /// [`CaptureUnavailable`] when the device refuses a texture.
     pub fn prepare_surface_textures(
         &mut self,
         specs: &[SurfaceSpec],
         device: &ProtocolObject<dyn MTLDevice>,
-    ) -> Vec<RenderedSurface> {
-        let resources = self.state.device_resources(device);
+    ) -> Result<Vec<RenderedSurface>, CaptureUnavailable> {
+        let resources = self.state.device_resources(device)?;
         resources
             .surface_textures
             .retain(|id, _| specs.iter().any(|spec| spec.surface_id == *id));
         specs
             .iter()
-            .map(|&spec| RenderedSurface {
-                spec,
-                texture: resources.surface_texture(spec),
+            .map(|&spec| {
+                Ok(RenderedSurface {
+                    spec,
+                    texture: resources.surface_texture(spec)?,
+                })
             })
             .collect()
     }
@@ -1168,15 +1241,18 @@ impl CompositorGuard<'_> {
     /// The sources blend in [`BLEND_COLOR`], the encoded space Core
     /// Animation composites a window's layers in, whatever `target`
     /// stores: a translucent native layer over a GPU surface must come out
-    /// as it does on screen. A target that stores [`BLEND_COLOR`] is
-    /// composed into directly; any other is composed into a
-    /// [`BLEND_FORMAT`] texture first, then converted into `target`'s
-    /// colour in one more pass — the half-float blend texture keeps
-    /// extended range, so nothing clips on the way.
+    /// as it does on screen. The composition lands in a [`BLEND_FORMAT`]
+    /// texture first, whose extended range keeps wide-gamut and HDR
+    /// content intact through the blend, then converts into `target`'s
+    /// colour in one more pass. That pass clips to the gamut of a target
+    /// that stores only [0, 1] — even one whose colour is [`BLEND_COLOR`]:
+    /// composing into it directly would let its store clamp each
+    /// premultiplied channel on its own, leaving channels above alpha.
     ///
-    /// # Panics
-    ///
-    /// When a pipeline, encoder or texture cannot be created.
+    /// An error when a pipeline, encoder or texture cannot be created. Every
+    /// resource a pass needs is created before the pass opens, so a failure
+    /// never leaves an encoder open on `command_buffer`; the caller drops
+    /// the uncommitted buffer.
     pub(crate) fn encode_composition(
         &mut self,
         surfaces: &[RenderedSurface],
@@ -1185,23 +1261,21 @@ impl CompositorGuard<'_> {
         target: &ProtocolObject<dyn MTLTexture>,
         command_buffer: &ProtocolObject<dyn MTLCommandBuffer>,
         device: &ProtocolObject<dyn MTLDevice>,
-    ) {
-        let resources = self.state.device_resources(device);
-        let finals: Vec<[Placed; 3]> = clusters
+    ) -> Result<(), CaptureUnavailable> {
+        let resources = self.state.device_resources(device)?;
+        let finals = clusters
             .iter()
             .map(|cluster| resources.encode_levels(cluster, base, surfaces, command_buffer))
-            .collect();
+            .collect::<Result<Vec<[Placed; 3]>, _>>()?;
         let target_color = shader_color(target.pixelFormat());
-        if target_color == BLEND_COLOR {
-            resources.encode_main(surfaces, base, clusters, &finals, target, command_buffer);
-        } else {
-            let blend = resources.blend_texture(target.width(), target.height());
-            resources.encode_main(surfaces, base, clusters, &finals, &blend, command_buffer);
-            let pass = begin_pass(command_buffer, target, MTLLoadAction::Clear);
-            resources.draw_overlay(&pass, &blend, BLEND_COLOR, target_color, target);
-            pass.endEncoding();
-        }
+        let blend = resources.blend_texture(target.width(), target.height())?;
+        resources.encode_main(surfaces, base, clusters, &finals, &blend, command_buffer)?;
+        let overlay = resources.overlay(target.pixelFormat())?;
+        let pass = begin_pass(command_buffer, target, MTLLoadAction::Clear)?;
+        DeviceResources::draw_overlay(&pass, &overlay, &blend, BLEND_COLOR, target_color, target);
+        pass.endEncoding();
         resources.settle_scratch();
+        Ok(())
     }
 }
 
@@ -1248,16 +1322,13 @@ pub(crate) struct ClusterMember {
 }
 
 /// Opens a render pass on `texture`'s single colour attachment, cleared
-/// to transparent or with its contents left undefined.
-///
-/// # Panics
-///
-/// When the encoder cannot be created.
+/// to transparent or with its contents left undefined; an error when the
+/// encoder cannot be created.
 fn begin_pass(
     command_buffer: &ProtocolObject<dyn MTLCommandBuffer>,
     texture: &ProtocolObject<dyn MTLTexture>,
     load: MTLLoadAction,
-) -> Retained<ProtocolObject<dyn MTLRenderCommandEncoder>> {
+) -> Result<Retained<ProtocolObject<dyn MTLRenderCommandEncoder>>, CaptureUnavailable> {
     let descriptor = MTLRenderPassDescriptor::new();
     // SAFETY: index 0 is the single color attachment.
     let attachment = unsafe { descriptor.colorAttachments().objectAtIndexedSubscript(0) };
@@ -1272,7 +1343,7 @@ fn begin_pass(
     });
     let encoder = command_buffer
         .renderCommandEncoderWithDescriptor(&descriptor)
-        .expect("failed to create the Metal capture composition encoder");
+        .ok_or_else(|| CaptureUnavailable::refused("Metal capture composition encoder"))?;
     encoder.setViewport(MTLViewport {
         originX: 0.0,
         originY: 0.0,
@@ -1292,42 +1363,75 @@ fn begin_pass(
             0,
         );
     }
-    encoder
+    Ok(encoder)
+}
+
+/// The pipeline and sampler a pass binds, created before the pass opens so
+/// a failure never leaves an encoder open.
+struct PassBinding {
+    pipeline: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
+    sampler: Retained<ProtocolObject<dyn MTLSamplerState>>,
 }
 
 impl DeviceResources {
+    /// The pipeline and sampler an overlay draw into a `format` target
+    /// binds; an error when the device cannot create either.
+    fn overlay(&mut self, format: MTLPixelFormat) -> Result<PassBinding, CaptureUnavailable> {
+        Ok(PassBinding {
+            pipeline: self.render_pipeline(format)?,
+            sampler: self.composite_sampler()?,
+        })
+    }
+
+    /// The pipeline and sampler a resolve level into a `format` image
+    /// binds; an error when the device cannot create either.
+    fn resolve_binding(
+        &mut self,
+        format: MTLPixelFormat,
+    ) -> Result<PassBinding, CaptureUnavailable> {
+        Ok(PassBinding {
+            pipeline: self.resolve_pipeline(format)?,
+            sampler: self.composite_sampler()?,
+        })
+    }
+
     /// Draws `source` — sampling as `source_color` — premultiplied-over
     /// across the whole of `target`, the pass's attachment, converted into
     /// `target_color`.
     fn draw_overlay(
-        &mut self,
         encoder: &ProtocolObject<dyn MTLRenderCommandEncoder>,
+        overlay: &PassBinding,
         source: &ProtocolObject<dyn MTLTexture>,
         source_color: ShaderColor,
         target_color: ShaderColor,
         target: &ProtocolObject<dyn MTLTexture>,
     ) {
-        encoder.setRenderPipelineState(&self.render_pipeline(target.pixelFormat()));
+        encoder.setRenderPipelineState(&overlay.pipeline);
         encoder.setScissorRect(MTLScissorRect {
             x: 0,
             y: 0,
             width: target.width(),
             height: target.height(),
         });
-        CompositeConversion::between(source_color, target_color).bind(encoder, 0);
-        let sampler = self.composite_sampler();
+        CompositeConversion::between(
+            source_color,
+            target_color,
+            !stores_extended_range(target.pixelFormat()),
+        )
+        .bind(encoder, 0);
         // SAFETY: `encoder` is a live render encoder; index 0 is the
         // texture and sampler slot the composite fragment binds.
         unsafe {
             encoder.setFragmentTexture_atIndex(Some(source), 0);
-            encoder.setFragmentSamplerState_atIndex(Some(&sampler), 0);
+            encoder.setFragmentSamplerState_atIndex(Some(&overlay.sampler), 0);
             encoder.drawPrimitives_vertexStart_vertexCount(MTLPrimitiveType::Triangle, 0, 3);
         }
     }
 
     /// Encodes the main pass into `output`, which stores [`BLEND_COLOR`]:
     /// the base raster over the whole capture, then each cluster's last
-    /// resolve level — slot 0 — over its members' rects.
+    /// resolve level — slot 0 — over its members' rects. An error when a
+    /// pipeline, sampler or encoder cannot be created, before the pass opens.
     fn encode_main(
         &mut self,
         surfaces: &[RenderedSurface],
@@ -1336,26 +1440,43 @@ impl DeviceResources {
         finals: &[[Placed; 3]],
         output: &ProtocolObject<dyn MTLTexture>,
         command_buffer: &ProtocolObject<dyn MTLCommandBuffer>,
-    ) {
-        let pass = begin_pass(command_buffer, output, MTLLoadAction::Clear);
-        self.draw_overlay(&pass, &base.texture, base.color, BLEND_COLOR, output);
-        for (cluster, images) in clusters.iter().zip(finals) {
-            self.encode_level(&pass, output, [0, 0], images, cluster, 0, surfaces);
+    ) -> Result<(), CaptureUnavailable> {
+        let overlay = self.overlay(output.pixelFormat())?;
+        let resolve = if clusters.is_empty() {
+            None
+        } else {
+            Some(self.resolve_binding(output.pixelFormat())?)
+        };
+        let pass = begin_pass(command_buffer, output, MTLLoadAction::Clear)?;
+        Self::draw_overlay(
+            &pass,
+            &overlay,
+            &base.texture,
+            base.color,
+            BLEND_COLOR,
+            output,
+        );
+        if let Some(resolve) = &resolve {
+            for (cluster, images) in clusters.iter().zip(finals) {
+                Self::encode_level(&pass, resolve, [0, 0], images, cluster, 0, surfaces);
+            }
         }
         pass.endEncoding();
+        Ok(())
     }
 
     /// Contracts `cluster`'s probe rasters down to the three images its
     /// slot-0 resolve reads — one level per further slot, highest first,
     /// each in passes of its own into intermediate images covering the
-    /// cluster's region.
+    /// cluster's region. An error when an image, pipeline or encoder cannot
+    /// be created, each before the pass that needs it opens.
     fn encode_levels(
         &mut self,
         cluster: &ClusterImages,
         base: &Placed,
         surfaces: &[RenderedSurface],
         command_buffer: &ProtocolObject<dyn MTLCommandBuffer>,
-    ) -> [Placed; 3] {
+    ) -> Result<[Placed; 3], CaptureUnavailable> {
         let region = cluster.region;
         let origin = [region.x, region.y];
         let mut images: Vec<Placed> = std::iter::once(base.clone())
@@ -1372,15 +1493,16 @@ impl DeviceResources {
         );
         for slot in (1..cluster.slots).rev() {
             let stride = images.len() / 3;
-            let outputs = self.scratch_textures(region.width, region.height, stride);
+            let outputs = self.scratch_textures(region.width, region.height, stride)?;
+            let resolve = self.resolve_binding(BLEND_FORMAT)?;
             for (prefix, output) in outputs.iter().enumerate() {
-                let pass = begin_pass(command_buffer, output, MTLLoadAction::DontCare);
+                let pass = begin_pass(command_buffer, output, MTLLoadAction::DontCare)?;
                 let triple = [
                     images[prefix].clone(),
                     images[prefix + stride].clone(),
                     images[prefix + 2 * stride].clone(),
                 ];
-                self.encode_level(&pass, output, origin, &triple, cluster, slot, surfaces);
+                Self::encode_level(&pass, &resolve, origin, &triple, cluster, slot, surfaces);
                 pass.endEncoding();
             }
             images = outputs
@@ -1395,23 +1517,18 @@ impl DeviceResources {
         let [transparent, black, white]: [Placed; 3] = images
             .try_into()
             .expect("the last contraction leaves one image per slot-0 probe state");
-        [transparent, black, white]
+        Ok([transparent, black, white])
     }
 
-    /// Draws one resolve level into `output`, the pass's attachment, whose
+    /// Draws one resolve level into the pass's attachment, whose
     /// pixel (0, 0) is capture-target pixel `output_origin`: over every
     /// member's rect, `images[0]` — the level's transparent-state image —
     /// then over each `slot` member's rect, the member's texture resolved
     /// through the level's three images. The result stores
     /// [`BLEND_COLOR`].
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "one level's whole input: its pass, attachment, placement, images, cluster and slot"
-    )]
     fn encode_level(
-        &mut self,
         encoder: &ProtocolObject<dyn MTLRenderCommandEncoder>,
-        output: &ProtocolObject<dyn MTLTexture>,
+        resolve: &PassBinding,
         output_origin: [usize; 2],
         images: &[Placed; 3],
         cluster: &ClusterImages,
@@ -1427,9 +1544,8 @@ impl DeviceResources {
             black.origin, white.origin,
             "a resolve level's probe images cover one region"
         );
-        encoder.setRenderPipelineState(&self.resolve_pipeline(output.pixelFormat()));
-        let sampler = self.composite_sampler();
-        CompositeConversion::between(transparent.color, BLEND_COLOR).bind(encoder, 0);
+        encoder.setRenderPipelineState(&resolve.pipeline);
+        CompositeConversion::between(transparent.color, BLEND_COLOR, false).bind(encoder, 0);
         // SAFETY: `encoder` is a live render encoder; slots 1–3 are the
         // level images and sampler 0 the surface sampler
         // `capture_resolve_fragment` binds.
@@ -1437,7 +1553,7 @@ impl DeviceResources {
             encoder.setFragmentTexture_atIndex(Some(&transparent.texture), 1);
             encoder.setFragmentTexture_atIndex(Some(&black.texture), 2);
             encoder.setFragmentTexture_atIndex(Some(&white.texture), 3);
-            encoder.setFragmentSamplerState_atIndex(Some(&sampler), 0);
+            encoder.setFragmentSamplerState_atIndex(Some(&resolve.sampler), 0);
         }
         let scissor = |spec: &SurfaceSpec| MTLScissorRect {
             x: spec.clip.x - output_origin[0],
@@ -1473,6 +1589,7 @@ impl DeviceResources {
                 Some(CompositeConversion::between(
                     shader_color(surface.spec.pixel_format),
                     BLEND_COLOR,
+                    false,
                 )),
             );
         }
@@ -1489,7 +1606,7 @@ fn draw_resolve(
     conversion: Option<CompositeConversion>,
 ) {
     let conversion =
-        conversion.unwrap_or_else(|| CompositeConversion::between(BLEND_COLOR, BLEND_COLOR));
+        conversion.unwrap_or_else(|| CompositeConversion::between(BLEND_COLOR, BLEND_COLOR, false));
     conversion.bind(encoder, 2);
     // SAFETY: `encoder` is a live render encoder; buffer 1 and texture 0
     // are the parameter and surface slots the resolve fragment binds, and
@@ -1570,7 +1687,7 @@ fn raster_color(pixel_format: MTLPixelFormat) -> (CFRetained<CGColorSpace>, Shad
         // SAFETY: the colorspace statics are system constants.
         let name = unsafe { kCGColorSpaceExtendedSRGB };
         let space = CGColorSpace::with_name(Some(name))
-            .expect("could not create the extended sRGB raster color space");
+            .expect("CGColorSpaceCreateWithName names its own constant: kCGColorSpaceExtendedSRGB");
         (space, BLEND_COLOR)
     } else {
         (
@@ -1582,9 +1699,10 @@ fn raster_color(pixel_format: MTLPixelFormat) -> (CFRetained<CGColorSpace>, Shad
 
 /// The (bits per component, `CGBitmapInfo`, bytes per pixel) a capture
 /// pixel format maps to — the context and the texture view must agree on
-/// one layout or the sampled pixels are garbage.
-fn raster_layout(pixel_format: MTLPixelFormat) -> (usize, u32, usize) {
-    match pixel_format {
+/// one layout or the sampled pixels are garbage. `None` for a format a capture
+/// does not rasterize into.
+const fn raster_layout(pixel_format: MTLPixelFormat) -> Option<(usize, u32, usize)> {
+    Some(match pixel_format {
         MTLPixelFormat::BGRA8Unorm | MTLPixelFormat::BGRA8Unorm_sRGB => (
             8,
             CGImageAlphaInfo::PremultipliedFirst.0 | CGImageByteOrderInfo::Order32Little.0,
@@ -1604,44 +1722,51 @@ fn raster_layout(pixel_format: MTLPixelFormat) -> (usize, u32, usize) {
                 | CGImageByteOrderInfo::Order16Little.0,
             8,
         ),
-        other => panic!("the native raster destination has no bitmap layout for {other:?}"),
-    }
+        _ => return None,
+    })
 }
 
 impl NativeRasterFrame {
     /// Builds a raster destination on `device` for `width` × `height`
     /// pixels of `pixel_format`.
     ///
-    /// # Panics
-    ///
-    /// When the device cannot allocate the shared buffer or its texture
-    /// view, or CoreGraphics refuses the destination's bitmap layout — a
-    /// capture target of a format `raster_layout` rejects never reaches
-    /// here, and every other failure means the pixel contract could not
-    /// be met, so there is nothing to degrade to.
+    /// A capture target of a format `raster_layout` rejects breaks the
+    /// capture's contract: it is reported and the capture fails. An error
+    /// too when the device cannot allocate the shared buffer or its texture
+    /// view, or CoreGraphics refuses the destination's bitmap layout: the
+    /// pixel contract cannot be met, so there is nothing to degrade to.
     fn new(
         device: &ProtocolObject<dyn MTLDevice>,
         pixel_format: MTLPixelFormat,
         pixel_width: usize,
         pixel_height: usize,
         generation: u64,
-    ) -> Self {
-        let (bits_per_component, bitmap_info, bytes_per_pixel) = raster_layout(pixel_format);
+    ) -> Result<Self, CaptureUnavailable> {
+        let Some((bits_per_component, bitmap_info, bytes_per_pixel)) = raster_layout(pixel_format)
+        else {
+            contract_violation!(
+                "the native raster destination has no bitmap layout for {pixel_format:?}; the capture fails"
+            );
+            return Err(CaptureUnavailable::new(format!(
+                "the native raster destination has no bitmap layout for {pixel_format:?}"
+            )));
+        };
         // The texture view and the context must stride-identically agree
         // with the device: rows are padded to the minimum linear-texture
         // alignment for the format.
         let alignment = device.minimumLinearTextureAlignmentForPixelFormat(pixel_format);
-        assert!(
-            alignment > 0,
-            "the device reported no linear texture alignment for {pixel_format:?}"
-        );
+        if alignment == 0 {
+            return Err(CaptureUnavailable::new(format!(
+                "the device reported no linear texture alignment for {pixel_format:?}"
+            )));
+        }
         let row_bytes = (pixel_width * bytes_per_pixel).div_ceil(alignment) * alignment;
         let buffer = device
             .newBufferWithLength_options(
                 row_bytes * pixel_height,
                 MTLResourceOptions::StorageModeShared,
             )
-            .expect("failed to allocate the native capture raster buffer");
+            .ok_or_else(|| CaptureUnavailable::refused("native capture raster buffer"))?;
         // SAFETY: a 2D texture descriptor is always valid to construct.
         let descriptor = unsafe {
             MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
@@ -1658,7 +1783,7 @@ impl NativeRasterFrame {
         descriptor.setUsage(MTLTextureUsage::ShaderRead);
         let texture = device
             .newTextureWithDescriptor(&descriptor)
-            .expect("failed to create the private native capture texture");
+            .ok_or_else(|| CaptureUnavailable::refused("private native capture texture"))?;
         let (color_space, color) = raster_color(pixel_format);
         // SAFETY: `buffer.contents()` is valid for the buffer's whole
         // length — `row_bytes * pixel_height` — for the context's entire
@@ -1676,8 +1801,8 @@ impl NativeRasterFrame {
                 bitmap_info,
             )
         }
-        .expect("failed to create the native raster CGContext");
-        Self {
+        .ok_or_else(|| CaptureUnavailable::refused("native raster CGContext"))?;
+        Ok(Self {
             _device: device.retain(),
             buffer,
             texture,
@@ -1688,21 +1813,21 @@ impl NativeRasterFrame {
             pixel_format,
             row_bytes,
             color,
-        }
+        })
     }
 
     /// Encodes the shared-buffer → private-texture transfer on the
     /// command buffer the composite pass is encoded on, before the
     /// render encoder — the GPU blit that makes the CPU-drawn pixels
-    /// samplable, per Apple's private-resource copy contract.
-    ///
-    /// # Panics
-    ///
-    /// When the blit encoder cannot be created.
-    fn encode_transfer(&self, command_buffer: &ProtocolObject<dyn MTLCommandBuffer>) {
+    /// samplable, per Apple's private-resource copy contract. An error when
+    /// the blit encoder cannot be created.
+    fn encode_transfer(
+        &self,
+        command_buffer: &ProtocolObject<dyn MTLCommandBuffer>,
+    ) -> Result<(), CaptureUnavailable> {
         let encoder = command_buffer
             .blitCommandEncoder()
-            .expect("failed to create the native capture transfer encoder");
+            .ok_or_else(|| CaptureUnavailable::refused("native capture transfer encoder"))?;
         // SAFETY: the frame owns `buffer` and `texture` past command
         // completion (the raster lease is held by the completed handler);
         // offset 0 with the buffer's actual padded stride covers the
@@ -1725,6 +1850,7 @@ impl NativeRasterFrame {
             );
         }
         encoder.endEncoding();
+        Ok(())
     }
 
     /// Rasterizes `layer`'s tree into the shared buffer through
@@ -1793,11 +1919,14 @@ impl RasterLease {
 
     /// Encodes the blit transfer into the composition command buffer —
     /// see [`NativeRasterFrame::encode_transfer`].
-    fn encode_transfer(&self, command_buffer: &ProtocolObject<dyn MTLCommandBuffer>) {
+    fn encode_transfer(
+        &self,
+        command_buffer: &ProtocolObject<dyn MTLCommandBuffer>,
+    ) -> Result<(), CaptureUnavailable> {
         self.frame
             .as_ref()
             .expect("a lease owns its frame")
-            .encode_transfer(command_buffer);
+            .encode_transfer(command_buffer)
     }
 
     /// Rasterizes `layer`'s tree into the leased destination through
@@ -1883,17 +2012,17 @@ impl NativeRenderer {
     /// Issues a `width` × `height` frame under the bound key and returns
     /// the lease owning it through consumption.
     ///
-    /// # Panics
-    ///
-    /// When no capture bound the pool ([`begin`](Self::begin)), the size
-    /// is not one it declared, or the frame cannot be created (see
-    /// [`NativeRasterFrame::new`]).
+    /// An error when the frame cannot be created (see
+    /// [`NativeRasterFrame::new`]). Calling it before a capture bound the
+    /// pool ([`begin`](Self::begin)), with a size the capture did not
+    /// declare, or on another device is a sequencing bug of the capture
+    /// itself, which this module's only caller prevents.
     fn issue(
         &mut self,
         device: &ProtocolObject<dyn MTLDevice>,
         width: usize,
         height: usize,
-    ) -> RasterLease {
+    ) -> Result<RasterLease, CaptureUnavailable> {
         let key = self
             .key
             .expect("a raster pool issues only inside a capture");
@@ -1906,14 +2035,13 @@ impl NativeRenderer {
             core::ptr::from_ref(device).cast(),
             "a capture issues on the device it bound"
         );
-        let frame = self
-            .available
-            .get_mut(&(width, height))
-            .and_then(Vec::pop)
-            .unwrap_or_else(|| {
-                NativeRasterFrame::new(device, key.pixel_format, width, height, key.generation)
-            });
-        RasterLease { frame: Some(frame) }
+        let frame = match self.available.get_mut(&(width, height)).and_then(Vec::pop) {
+            Some(frame) => frame,
+            None => {
+                NativeRasterFrame::new(device, key.pixel_format, width, height, key.generation)?
+            }
+        };
+        Ok(RasterLease { frame: Some(frame) })
     }
 
     /// Takes a settled frame back — main thread only, called from the
@@ -2079,9 +2207,9 @@ fn region_transform(
 }
 
 /// The probe layers of one capture's rasters, one per snapshot whose
-/// presentation layer is visible and attached: a plain layer with the
-/// presentation layer's geometry and opacity, inserted directly above it
-/// in its superlayer. Model-only mutations inside the capture's disabled
+/// presentation layer is attached — a snapshot's layer is always drawn
+/// ([`drawn_in`]): a plain layer with the presentation layer's geometry and
+/// opacity, inserted directly above it in its superlayer. Model-only mutations inside the capture's disabled
 /// transaction; `Drop` removes every probe, so the render server never
 /// sees one.
 struct ProbeLayers {
@@ -2091,39 +2219,33 @@ struct ProbeLayers {
 }
 
 impl ProbeLayers {
-    /// Inserts a hidden probe beside each snapshot whose `visible` entry
-    /// is set — the presentation layer's visibility before suppression
-    /// hid it; a hidden surface shows nothing on screen, so it gets no
-    /// probe and resolves to the native tree alone. The probe colours are
-    /// made in `space`, the rasters' own colour space, so they reach the
-    /// raster unconverted.
-    fn insert(snapshots: &[CapturedSnapshot], visible: &[bool], space: &CGColorSpace) -> Self {
+    /// Inserts a hidden probe beside each snapshot's presentation layer.
+    /// The probe colours are made in `space`, the rasters' own colour
+    /// space, so they reach the raster unconverted.
+    fn insert(snapshots: &[CapturedSnapshot], space: &CGColorSpace) -> Self {
         let color = |value: f64| {
             let components = [value, value, value, 1.0];
             // SAFETY: `components` holds the space's three channels plus
             // alpha, and lives across the call.
             unsafe { CGColor::new(Some(space), components.as_ptr()) }
-                .expect("could not create a capture probe colour")
+                .expect("CGColorCreate takes the raster space's three channels plus alpha, which `components` holds")
         };
         let layers = snapshots
             .iter()
-            .zip(visible)
-            .map(|(snapshot, &visible)| {
+            .map(|snapshot| {
                 let presentation = &snapshot.layer;
                 let superlayer = presentation.superlayer()?;
-                visible.then(|| {
-                    let probe = CALayer::new();
-                    probe.setBounds(presentation.bounds());
-                    probe.setPosition(presentation.position());
-                    probe.setAnchorPoint(presentation.anchorPoint());
-                    probe.setAnchorPointZ(presentation.anchorPointZ());
-                    probe.setTransform(presentation.transform());
-                    probe.setZPosition(presentation.zPosition());
-                    probe.setOpacity(presentation.opacity());
-                    probe.setHidden(true);
-                    superlayer.insertSublayer_above(&probe, Some(presentation));
-                    probe
-                })
+                let probe = CALayer::new();
+                probe.setBounds(presentation.bounds());
+                probe.setPosition(presentation.position());
+                probe.setAnchorPoint(presentation.anchorPoint());
+                probe.setAnchorPointZ(presentation.anchorPointZ());
+                probe.setTransform(presentation.transform());
+                probe.setZPosition(presentation.zPosition());
+                probe.setOpacity(presentation.opacity());
+                probe.setHidden(true);
+                superlayer.insertSublayer_above(&probe, Some(presentation));
+                Some(probe)
             })
             .collect();
         Self {
@@ -2225,13 +2347,17 @@ struct Preparation {
     surfaces: HashMap<usize, Rc<SurfaceRegistration>>,
 }
 
-/// The one outer capture transaction, closed on every exit: `commit`
-/// runs explicitly as the pass's sole commit; `Drop` closes it when the
-/// pass exits early — suppression is restored (by [`SuppressionGuard`],
-/// declared after it) before that close so no suppressed state can be
-/// published. `CATransaction` has no abort: committing a restored-state
-/// transaction is the only way to end it without leaking an open
-/// transaction onto the thread's stack.
+/// A disabled-actions capture transaction, closed on every exit:
+/// `commit` closes it explicitly once every temporary mutation inside is
+/// restored; `Drop` closes it when the scope exits early — suppression is
+/// restored (by [`SuppressionGuard`], declared after it) before that
+/// close so no suppressed state can be published. `CATransaction` has no
+/// abort: committing a restored-state transaction is the only way to end
+/// it without leaking an open transaction onto the thread's stack.
+///
+/// Closing reaches the render server only when the transaction is the
+/// thread's outermost: a capture prepared inside a [`CapturePass`] nests
+/// in the pass's own guard, whose close is the turn's one publication.
 struct TransactionGuard {
     committed: bool,
 }
@@ -2244,7 +2370,7 @@ impl TransactionGuard {
         Self { committed: false }
     }
 
-    /// Performs the pass's sole commit.
+    /// Closes the transaction after its scope restored everything.
     fn commit(mut self) {
         self.committed = true;
         CATransaction::commit();
@@ -2337,16 +2463,16 @@ impl CapturableSlot {
 
     /// Installs the leaf's capturable surface.
     ///
-    /// # Panics
-    ///
-    /// When the slot is already occupied — a leaf installs its
-    /// capturable exactly once between clears.
+    /// An occupied slot breaks the contract — a leaf installs its capturable
+    /// exactly once between clears: it is reported and `surface` replaces
+    /// the installed one.
     pub fn install(&self, surface: &Rc<dyn CapturableSurface>) {
         let mut slot = self.0.borrow_mut();
-        assert!(
-            slot.is_none(),
-            "a capturable surface is already installed on this view"
-        );
+        if slot.is_some() {
+            contract_violation!(
+                "a capturable surface is already installed on this view; the new one replaces it"
+            );
+        }
         *slot = Some(Rc::downgrade(surface));
     }
 
@@ -2494,7 +2620,8 @@ pub struct FrozenCapturable {
     /// one, answered as a transparent clear.
     frame: Option<FrozenSurface>,
     /// The serial queue the blit/composition submissions run on.
-    queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
+    /// `None` when the device refused the queue: every capture then fails.
+    queue: Option<Retained<ProtocolObject<dyn MTLCommandQueue>>>,
 }
 
 impl fmt::Debug for FrozenCapturable {
@@ -2509,23 +2636,23 @@ impl FrozenCapturable {
     /// The frozen stand-in for a surface view's just-released capturable:
     /// `presentation_layer` is the surface's own `CAMetalLayer`,
     /// `frame` its last presented frame, `device` the context's device —
-    /// the queue a capture submission runs on is created from it.
-    ///
-    /// # Panics
-    ///
-    /// When `device` cannot create a command queue.
+    /// the queue a capture submission runs on is created from it. A device
+    /// that cannot create a command queue is logged, and every capture of
+    /// this surface then fails.
     #[must_use]
     pub fn new(
         presentation_layer: Retained<CAMetalLayer>,
         frame: Option<FrozenSurface>,
         device: &ProtocolObject<dyn MTLDevice>,
     ) -> Rc<Self> {
+        let queue = device.newCommandQueue();
+        if queue.is_none() {
+            tracing::error!("the device refused to create the frozen surface command queue");
+        }
         Rc::new(Self {
             layer: presentation_layer,
             frame,
-            queue: device
-                .newCommandQueue()
-                .expect("failed to create the frozen surface command queue"),
+            queue,
         })
     }
 }
@@ -2576,20 +2703,23 @@ impl CapturableSurface for FrozenCapturable {
         _height: u32,
         completion: SurfaceCaptureCompletion,
     ) {
-        let Some(command_buffer) = self.queue.commandBuffer() else {
-            completion(Err(CaptureError::Failed(Arc::new(CompositionFailed {
-                status: MTLCommandBufferStatus::NotEnqueued,
-                error: Some("the frozen surface could not create a command buffer".into()),
-            }))));
+        let Some(command_buffer) = self.queue.as_ref().and_then(|queue| queue.commandBuffer())
+        else {
+            completion(Err(frozen_surface_failure(
+                "the frozen surface could not create a command buffer",
+            )));
             return;
         };
         if let Some(frame) = &self.frame {
             // A GPU→GPU copy on the surface's own queue — the frozen
             // pixels are the whole frame; a target larger than it keeps
             // the rest of its prepared contents.
-            let encoder = command_buffer
-                .blitCommandEncoder()
-                .expect("failed to create the frozen surface blit encoder");
+            let Some(encoder) = command_buffer.blitCommandEncoder() else {
+                completion(Err(frozen_surface_failure(
+                    "the frozen surface could not create a blit encoder",
+                )));
+                return;
+            };
             // SAFETY: both textures are valid private-storage 2D
             // targets retained past command completion; the copy
             // region is the smaller of the two extents.
@@ -2626,10 +2756,14 @@ impl CapturableSurface for FrozenCapturable {
                 blue: 0.0,
                 alpha: 0.0,
             });
-            command_buffer
-                .renderCommandEncoderWithDescriptor(&descriptor)
-                .expect("failed to create the frozen surface clear encoder")
-                .endEncoding();
+            let Some(encoder) = command_buffer.renderCommandEncoderWithDescriptor(&descriptor)
+            else {
+                completion(Err(frozen_surface_failure(
+                    "the frozen surface could not create a clear encoder",
+                )));
+                return;
+            };
+            encoder.endEncoding();
         }
         let completion = Mutex::new(Some(completion));
         let handler = RcBlock::new(
@@ -2640,7 +2774,10 @@ impl CapturableSurface for FrozenCapturable {
                 let error = buffer
                     .error()
                     .map(|error| error.localizedDescription().to_string());
-                let completion = completion.lock().expect("frozen capture lock").take();
+                let completion = completion
+                    .lock()
+                    .expect("the frozen capture's completion slot is never locked across a panic")
+                    .take();
                 if let Some(completion) = completion {
                     enqueue(move |_mtm| {
                         completion(composition_outcome(status, error));
@@ -2678,6 +2815,15 @@ impl CapturableSurface for FrozenCapturable {
     fn take_frozen_frame(&self) -> (Option<FrozenSurface>, Retained<CAMetalLayer>) {
         (self.frame.clone(), self.layer.clone())
     }
+}
+
+/// The failure a frozen surface answers when the device refuses it a command
+/// buffer or encoder.
+fn frozen_surface_failure(error: &str) -> CaptureError {
+    CaptureError::Failed(Arc::new(CompositionFailed {
+        status: MTLCommandBufferStatus::NotEnqueued,
+        error: Some(error.into()),
+    }))
 }
 
 /// Whether `view`'s subtree holds a `CAMetalLayer` that the capture walk
@@ -2734,6 +2880,26 @@ fn metal_in_layer_tree(layer: &CALayer, pruned: &[Retained<CALayer>]) -> bool {
     })
 }
 
+/// Whether `renderInContext` of `root` draws `layer`: `root` is its
+/// ancestor, and neither it nor an ancestor below `root` is hidden or fully
+/// transparent — the rule [`metal_in_layer_tree`] applies. `root` itself is
+/// not judged: a capture reveals a normally-hidden root before it collects.
+fn drawn_in(layer: &CALayer, root: &CALayer) -> bool {
+    let mut current = layer.retain();
+    loop {
+        if std::ptr::eq(&raw const *current, root) {
+            return true;
+        }
+        if current.isHidden() || current.opacity() <= 0.0 {
+            return false;
+        }
+        match current.superlayer() {
+            Some(parent) => current = parent,
+            None => return false,
+        }
+    }
+}
+
 /// Captures `content`'s subtree into Metal textures. Main-thread only;
 /// created once per effect view and shut down before the view drops.
 pub struct ViewCapture {
@@ -2742,6 +2908,10 @@ pub struct ViewCapture {
     on_redraw: RefCell<Option<Rc<dyn Fn()>>>,
     renderer: RefCell<NativeRenderer>,
     active: RefCell<HashMap<usize, Rc<SurfaceRegistration>>>,
+    /// Set by [`Self::shutdown`]: a [`CapturePass`] request queued before
+    /// it settles `Deferred` instead of re-joining surfaces the shutdown
+    /// already parted.
+    shut_down: Cell<bool>,
 }
 
 impl fmt::Debug for ViewCapture {
@@ -2764,6 +2934,7 @@ impl ViewCapture {
             on_redraw: RefCell::new(None),
             renderer: RefCell::new(NativeRenderer::default()),
             active: RefCell::new(HashMap::new()),
+            shut_down: Cell::new(false),
         }
     }
 
@@ -2774,35 +2945,45 @@ impl ViewCapture {
     /// external-rendering scope, so the hook is fixed once one has joined:
     /// an owner whose redraw answer changes dispatches inside its hook.
     ///
-    /// # Panics
-    ///
-    /// When a surface has already joined this capture — a replacement
-    /// would never reach it, stranding its redraws on the old hook.
+    /// A surface that has already joined this capture breaks the contract: a
+    /// replacement would never reach it, stranding its redraws on the old
+    /// hook. It is reported and the hook is left as it was.
     pub fn set_on_redraw(&self, redraw: impl Fn() + 'static) {
-        assert!(
-            self.active.borrow().is_empty(),
-            "a view capture's redraw hook is fixed once a surface has joined"
-        );
+        if !self.active.borrow().is_empty() {
+            contract_violation!(
+                "a view capture's redraw hook is fixed once a surface has joined; the hook is not replaced"
+            );
+            return;
+        }
         *self.on_redraw.borrow_mut() = Some(Rc::new(redraw));
     }
 
-    /// Captures `content` into `target`; `completion` runs on the main
-    /// thread with whether the frame landed. `generation` is the caller's
+    /// Captures `content` into `target`, reading the subtree as it stands
+    /// now; `completion` runs on the main thread with whether the frame
+    /// landed. A capture a display update drives goes through a
+    /// [`CapturePass`] instead, so every such capture of one run-loop turn
+    /// shares one transaction. `generation` is the caller's
     /// context-generation token: it must come from the exact retained
     /// context `target` was allocated under — a later replacement must
     /// not relabel old storage, and a replacement that wraps the same
     /// physical device still invalidates every pooled frame.
     ///
-    /// # Panics
-    ///
-    /// When called off the main thread.
+    /// Called off the main thread this breaks the contract: it is reported
+    /// and `completion` answers a failure.
     pub fn capture(
         self: &Rc<Self>,
         target: &ProtocolObject<dyn MTLTexture>,
         generation: u64,
         completion: impl Fn(Result<(), CaptureError>) + Send + 'static,
     ) {
-        let mtm = objc2::MainThreadMarker::new().expect("capture runs on the main thread");
+        let Some(mtm) = objc2::MainThreadMarker::new() else {
+            contract_violation!("capture runs on the main thread; the capture fails");
+            completion(Err(CaptureUnavailable::new(
+                "a capture runs on the main thread",
+            )
+            .into()));
+            return;
+        };
         let (preparation, specs) = match self.prepare(target, generation) {
             Ok(prepared) => prepared,
             // A capture that cannot rasterize the subtree reports on the
@@ -2831,8 +3012,9 @@ impl ViewCapture {
             Some(Box::new(completion) as Box<dyn Fn(Result<(), CaptureError>) + Send>);
 
         compositor.perform(move |guard| {
-            let rendered =
-                QueueSend(guard.prepare_surface_textures(&specs, &preparation.get().device));
+            let rendered = guard
+                .prepare_surface_textures(&specs, &preparation.get().device)
+                .map(QueueSend);
             let mut preparation = Some(preparation);
             enqueue(move |mtm| {
                 // Whole-binding move keeps the `QueueSend` wrapper —
@@ -2845,9 +3027,19 @@ impl ViewCapture {
                 else {
                     return;
                 };
+                let rendered = match rendered {
+                    Ok(rendered) => rendered,
+                    // The device refused a surface texture: the capture
+                    // fails, and the preparation drops here, on the main
+                    // thread, with its lease.
+                    Err(error) => {
+                        completion(Err(error.into()));
+                        return;
+                    }
+                };
                 match this.get(mtm).upgrade() {
                     Some(capture) => {
-                        capture.submit_surfaces(&rendered.0, preparation.0, completion);
+                        capture.submit_surfaces(mtm, &rendered.0, preparation.0, completion);
                     }
                     // The owner is gone: teardown mid-capture is a
                     // deferral, never a silent drop.
@@ -2863,6 +3055,7 @@ impl ViewCapture {
     /// Dropping a registration ends its external rendering — a capture
     /// that still owns one keeps it until that capture settles.
     pub fn shutdown(&self) {
+        self.shut_down.set(true);
         self.active.borrow_mut().clear();
         *self.renderer.borrow_mut() = NativeRenderer::default();
         self.compositor.discard_resources();
@@ -2881,27 +3074,37 @@ impl ViewCapture {
 
         // INVARIANT: every temporary mutation of the capture — the
         // reveal of a normally-hidden root, surface suppression, and
-        // their restoration — happens inside ONE outer disabled-actions
-        // `CATransaction`, and the sole commit runs only after every
-        // original state is back. The ordering inside is fixed:
+        // their restoration — happens inside ONE disabled-actions
+        // `CATransaction`, closed only after every original state is
+        // back. The ordering inside is fixed:
         // reveal → synchronous layout/display preparation → geometry
         // and snapshot collection — of the POST-layout tree: a pending
         // layout can resize bounds or mount a capturable child, so
         // nothing may be collected from the pre-layout tree → raster
         // allocation (still before any suppression mutation) →
         // suppression open → base draw → probe insertion → probe draws →
-        // probe removal → suppression restore → re-hide → sole commit. A normally-hidden filter-owned root is un-hidden
-        // in-model, drawn, and re-hidden before that commit: the render
-        // server never sees the revealed source tree. Nothing inside
-        // may open, commit or flush a transaction of its own: a
-        // mid-pass commit would publish the revealed or suppressed
-        // state and flicker — or leak — the on-screen tree. The guards
-        // restore exactly what they opened — synchronously before the
-        // sole commit on success, from Drop on an early exit — and the
-        // transaction closes last, so an early exit commits only the
+        // probe removal → suppression restore → re-hide → close. A
+        // normally-hidden filter-owned root is un-hidden in-model,
+        // drawn, and re-hidden before that close: the render server
+        // never sees the revealed source tree. Nothing inside may
+        // open, commit or flush a transaction of its own: a mid-pass
+        // commit would publish the revealed or suppressed state and
+        // flicker — or leak — the on-screen tree. The guards restore
+        // exactly what they opened — synchronously before the close on
+        // success, from Drop on an early exit — and the transaction
+        // closes last, so an early exit commits only the
         // already-restored model state. The layer tree itself is never
         // transformed or reparented — the destination geometry lives in
         // the context's CTM.
+        //
+        // Nothing has to reach the render server for the capture to
+        // read it: `renderInContext` draws the model tree in-process,
+        // synchronously, so the close publishes nothing the raster
+        // needs and no flush follows it. The close is a commit to the
+        // render server only when this transaction is the thread's
+        // outermost — a standalone capture; under a `CapturePass` it
+        // nests in the pass's transaction, and the one publication is
+        // the pass's close (#4074).
         let (preparation, specs) = {
             // Declared in drop order: `suppression` ends first, then
             // `restore` re-hides, then `transaction` closes — the
@@ -2927,7 +3130,12 @@ impl ViewCapture {
             if has_unresolved_metal_layer(content) {
                 return Err(CaptureError::Failed(Arc::new(UnresolvedMetalLayer)));
             }
-            let layer = crate::view::layer(content).expect("a capture view must be layer-backed");
+            let Some(layer) = crate::view::layer(content) else {
+                contract_violation!("a capture view must be layer-backed; the capture fails");
+                return Err(
+                    CaptureUnavailable::new("the captured view is not layer-backed").into(),
+                );
+            };
             let geometry = CaptureGeometry::new(
                 crate::view::bounds(content),
                 target.width(),
@@ -2935,7 +3143,7 @@ impl ViewCapture {
                 crate::view::is_flipped(content),
             );
             let (snapshots, unpresentable) = self.collect_snapshots(target, &layer, geometry);
-            self.update_external_surfaces(&snapshots, &unpresentable);
+            self.update_external_surfaces(&snapshots, &unpresentable)?;
             // The registrations this capture owns — the immutable
             // snapshot of who must stay external until its frame
             // settles.
@@ -2957,35 +3165,11 @@ impl ViewCapture {
             let specs: Vec<SurfaceSpec> = snapshots.iter().map(|s| s.spec).collect();
             let plans = plan_clusters(&specs);
             // Fallible allocation still precedes suppression: an
-            // allocation panic leaves suppression untouched and the
+            // allocation failure leaves suppression untouched and the
             // guards still restore what they opened.
             let device = target.device();
-            let (raster, clusters) = {
-                let mut renderer = self.renderer.borrow_mut();
-                let full = (target.width(), target.height());
-                let sizes = std::iter::once(full)
-                    .chain(
-                        plans
-                            .iter()
-                            .map(|plan| (plan.region.width, plan.region.height)),
-                    )
-                    .collect();
-                renderer.begin(&device, target.pixelFormat(), generation, sizes);
-                let raster = renderer.issue(&device, full.0, full.1);
-                let clusters: Vec<PreparedCluster> = plans
-                    .into_iter()
-                    .map(|plan| PreparedCluster {
-                        probes: (0..plan.probe_count())
-                            .map(|_| renderer.issue(&device, plan.region.width, plan.region.height))
-                            .collect(),
-                        plan,
-                    })
-                    .collect();
-                (raster, clusters)
-            };
+            let (raster, clusters) = self.issue_rasters(&device, target, generation, plans)?;
             let (probe_space, _) = raster_color(target.pixelFormat());
-            // Read before suppression hides every presentation layer.
-            let visible: Vec<bool> = snapshots.iter().map(|s| !s.layer.isHidden()).collect();
             let height = pixel_extent(target.height());
             {
                 // Declared in drop order: the probes leave the tree
@@ -2993,7 +3177,7 @@ impl ViewCapture {
                 let mut suppression = SuppressionGuard::new(&snapshots);
                 suppression.begin();
                 raster.draw(&layer, raster_transform(geometry, height));
-                let probes = ProbeLayers::insert(&snapshots, &visible, &probe_space);
+                let probes = ProbeLayers::insert(&snapshots, &probe_space);
                 for cluster in &clusters {
                     cluster.draw(
                         &layer,
@@ -3011,20 +3195,54 @@ impl ViewCapture {
                 device,
                 surfaces,
             };
-            // Re-hide before the sole commit — `restore` would do it on
-            // drop, but the restore must be explicit before commit.
+            // Re-hide before the close — `restore` would do it on drop,
+            // but the restore must be explicit before commit.
             drop(restore);
             transaction.commit();
-            flush_transaction();
             (preparation, specs)
         };
         Ok((preparation, specs))
     }
 
+    /// Leases the capture's rasters from the pool: the base raster over the
+    /// whole `target`, and each planned cluster's probe rasters over its
+    /// region. An error when a frame cannot be created.
+    fn issue_rasters(
+        &self,
+        device: &ProtocolObject<dyn MTLDevice>,
+        target: &ProtocolObject<dyn MTLTexture>,
+        generation: u64,
+        plans: Vec<ClusterPlan>,
+    ) -> Result<(RasterLease, Vec<PreparedCluster>), CaptureUnavailable> {
+        let mut renderer = self.renderer.borrow_mut();
+        let full = (target.width(), target.height());
+        let sizes = std::iter::once(full)
+            .chain(
+                plans
+                    .iter()
+                    .map(|plan| (plan.region.width, plan.region.height)),
+            )
+            .collect();
+        renderer.begin(device, target.pixelFormat(), generation, sizes);
+        let raster = renderer.issue(device, full.0, full.1)?;
+        let clusters = plans
+            .into_iter()
+            .map(|plan| {
+                Ok(PreparedCluster {
+                    probes: (0..plan.probe_count())
+                        .map(|_| renderer.issue(device, plan.region.width, plan.region.height))
+                        .collect::<Result<_, CaptureUnavailable>>()?,
+                    plan,
+                })
+            })
+            .collect::<Result<Vec<PreparedCluster>, CaptureUnavailable>>()?;
+        Ok((raster, clusters))
+    }
+
     /// Restores the captured content's hidden state — a plain model
     /// mutation. The caller's transaction decides when it is published;
-    /// in the capture pass that is the sole outer commit, after the
-    //  raster has already read the revealed tree.
+    /// in the capture pass that is the transaction's close, after the
+    /// raster has already read the revealed tree.
     fn set_content_hidden(&self, hidden: bool) {
         if crate::view::is_hidden(&self.content) == hidden {
             return;
@@ -3033,12 +3251,26 @@ impl ViewCapture {
     }
 
     /// The surface collection for one capture: the rendered snapshots
-    /// plus the surfaces the capture must still join for redraw routing —
-    /// resolved capturables whose bounds produced no spec this pass and
-    /// that cannot present on their own. A windowless capture's zero-size
-    /// image surface is the case: its redraws would otherwise die on a
-    /// presentation path that never runs, so it joins the scope like a
-    /// spec'd surface and wakes the capture's drive.
+    /// plus the surfaces the capture must still join for redraw routing.
+    ///
+    /// Only a surface this capture's raster draws renders: one whose
+    /// presentation is hidden or fully transparent below `root` shows
+    /// nothing in the frame and gets no spec — the probes would measure
+    /// it at zero coverage anyway. A live effect's content and its output
+    /// are siblings and exactly one of them is shown, so the content's
+    /// surfaces render either here or through the effect's own capture,
+    /// never both — a surface's frame composites into one target, so two
+    /// renders in one pass would each take it from the other and the pass
+    /// could never land. A surface hides its presentation only while
+    /// something else stands in for it
+    /// ([`CapturableSurface::presentation_layer`]), so a drawn surface
+    /// whose setup is still pending renders here and defers the capture.
+    ///
+    /// A hidden surface still joins, as does a resolved capturable whose
+    /// bounds produced no spec and that cannot present on its own — a
+    /// windowless capture's zero-size image surface: its redraws, and an
+    /// enclosed producer's, must wake this capture rather than a
+    /// presentation path the open scope keeps paused.
     ///
     /// Snapshots are in paint order — the walk visits subviews back to
     /// front — and each carries the presentation layer its spec was
@@ -3054,7 +3286,8 @@ impl ViewCapture {
         let (target_width, target_height) = (target.width(), target.height());
         for_each_capturable(&self.content, &mut |view, surface| {
             let layer = surface.presentation_layer();
-            let spec = layer.as_ref().and_then(|layer| {
+            let hidden = layer.as_ref().is_some_and(|layer| !drawn_in(layer, root));
+            let spec = layer.as_ref().filter(|_| !hidden).and_then(|layer| {
                 surface_spec(
                     view_key(view),
                     surface_quad(layer, root, geometry),
@@ -3069,7 +3302,7 @@ impl ViewCapture {
                     surface: surface.clone(),
                     layer,
                 });
-            } else if !surface.can_present() {
+            } else if hidden || !surface.can_present() {
                 unpresentable.push(CapturedSurface {
                     surface_id: view_key(view),
                     surface: surface.clone(),
@@ -3083,33 +3316,44 @@ impl ViewCapture {
     /// the spec'd `snapshots` that render into the target and the
     /// `unpresentable` surfaces kept only for their redraw routing.
     ///
-    /// # Panics
-    ///
-    /// When [`set_on_redraw`](Self::set_on_redraw) was never called.
+    /// [`set_on_redraw`](Self::set_on_redraw) never having been called
+    /// breaks the contract: it is reported and the capture fails.
     fn update_external_surfaces(
         &self,
         snapshots: &[CapturedSnapshot],
         unpresentable: &[CapturedSurface],
-    ) {
-        let on_redraw = self
-            .on_redraw
-            .borrow()
-            .clone()
-            .expect("a view capture's redraw hook must be installed before capture");
+    ) -> Result<(), CaptureUnavailable> {
+        let Some(on_redraw) = self.on_redraw.borrow().clone() else {
+            contract_violation!(
+                "a view capture's redraw hook must be installed before capture; the capture fails"
+            );
+            return Err(CaptureUnavailable::new(
+                "the view capture has no redraw hook installed",
+            ));
+        };
         let mut active = self.active.borrow_mut();
         // One pass over the collection: the next registration set is built
-        // keyed by surface id — surviving surfaces keep their `Rc` lease,
-        // parted ones drop out (their registration ends when the last
-        // owner, map or outstanding capture, drops on this thread), and
-        // each new surface is begun exactly once. No per-surface scan of
-        // the collection, so nested-GPU-child scenes stay linear.
+        // keyed by surface id — a surviving surface, the same surface under
+        // the same id, keeps its `Rc` lease; parted ones drop out (their
+        // registration ends when the last owner, map or outstanding capture,
+        // drops on this thread), and each new surface is begun exactly once.
+        // An id whose slot now resolves a different surface — a transition's
+        // frozen stand-in in the view of the torn-down live one — is a new
+        // surface: rendering the old registration would drive a surface whose
+        // redraw scope teardown already detached, which defers with no wake.
+        // No per-surface scan of the collection, so nested-GPU-child scenes
+        // stay linear.
         let join = |id, surface: &Rc<dyn CapturableSurface>| {
-            active.get(&id).cloned().unwrap_or_else(|| {
-                surface.begin_external_rendering(on_redraw.clone());
-                Rc::new(SurfaceRegistration {
-                    surface: surface.clone(),
+            active
+                .get(&id)
+                .filter(|registration| Rc::ptr_eq(&registration.surface, surface))
+                .cloned()
+                .unwrap_or_else(|| {
+                    surface.begin_external_rendering(on_redraw.clone());
+                    Rc::new(SurfaceRegistration {
+                        surface: surface.clone(),
+                    })
                 })
-            })
         };
         let next: HashMap<usize, Rc<SurfaceRegistration>> = snapshots
             .iter()
@@ -3121,17 +3365,18 @@ impl ViewCapture {
             )
             .collect();
         *active = next;
+        Ok(())
     }
 
     /// Final GPU half: each surface renders into its private texture, then a
     /// fence batch composites them. Main thread.
     fn submit_surfaces(
         self: &Rc<Self>,
+        mtm: objc2::MainThreadMarker,
         rendered: &[RenderedSurface],
         preparation: Preparation,
         completion: Box<dyn Fn(Result<(), CaptureError>) + Send>,
     ) {
-        let mtm = objc2::MainThreadMarker::new().expect("capture flow runs on the main thread");
         let return_to = MainThreadBound::new(Rc::downgrade(self), mtm);
         if rendered.is_empty() {
             // No external surfaces to fence on: the overlay is already
@@ -3197,8 +3442,10 @@ impl ViewCapture {
             let batch = Arc::clone(&batch);
             registration.surface.render_prepared_external_texture(
                 &item.texture,
-                u32::try_from(item.spec.full_size.width).expect("a surface is smaller than u32"),
-                u32::try_from(item.spec.full_size.height).expect("a surface is smaller than u32"),
+                u32::try_from(item.spec.full_size.width)
+                    .expect("a surface side fits u32: Metal limits a texture side to 16384"),
+                u32::try_from(item.spec.full_size.height)
+                    .expect("a surface side fits u32: Metal limits a texture side to 16384"),
                 Box::new(move |outcome| batch.complete_one(outcome)),
             );
         }
@@ -3216,44 +3463,62 @@ impl ViewCapture {
         return_to: MainThreadBound<Weak<Self>>,
     ) {
         compositor.perform(move |guard| {
-            let prepared = preparation.get();
-            let command_buffer = guard.make_command_buffer(&prepared.device);
-            // The CPU-drawn rasters reach the compositor's private
-            // textures through blits on this same command buffer — each
-            // encoder is ended before the render passes sample them.
-            prepared.raster.encode_transfer(&command_buffer);
-            for cluster in &prepared.clusters {
-                for probe in &cluster.probes {
-                    probe.encode_transfer(&command_buffer);
+            let encoded = (|| -> Result<_, CaptureUnavailable> {
+                let prepared = preparation.get();
+                let command_buffer = guard.make_command_buffer(&prepared.device)?;
+                // The CPU-drawn rasters reach the compositor's private
+                // textures through blits on this same command buffer — each
+                // encoder is ended before the render passes sample them.
+                prepared.raster.encode_transfer(&command_buffer)?;
+                for cluster in &prepared.clusters {
+                    for probe in &cluster.probes {
+                        probe.encode_transfer(&command_buffer)?;
+                    }
                 }
-            }
-            let base = Placed {
-                texture: prepared.raster.texture().clone(),
-                origin: [0, 0],
-                color: prepared.raster.color(),
+                let base = Placed {
+                    texture: prepared.raster.texture().clone(),
+                    origin: [0, 0],
+                    color: prepared.raster.color(),
+                };
+                let clusters: Vec<ClusterImages> = prepared
+                    .clusters
+                    .iter()
+                    .map(|cluster| ClusterImages {
+                        region: cluster.plan.region,
+                        slots: cluster.plan.slots,
+                        probes: cluster
+                            .probes
+                            .iter()
+                            .map(|probe| probe.texture().clone())
+                            .collect(),
+                        members: cluster.plan.members.clone(),
+                    })
+                    .collect();
+                guard.encode_composition(
+                    rendered.get(),
+                    &base,
+                    &clusters,
+                    &prepared.target,
+                    &command_buffer,
+                    &prepared.device,
+                )?;
+                Ok(command_buffer)
+            })();
+            let settle = Settle {
+                preparation,
+                return_to,
+                completion,
             };
-            let clusters: Vec<ClusterImages> = prepared
-                .clusters
-                .iter()
-                .map(|cluster| ClusterImages {
-                    region: cluster.plan.region,
-                    slots: cluster.plan.slots,
-                    probes: cluster
-                        .probes
-                        .iter()
-                        .map(|probe| probe.texture().clone())
-                        .collect(),
-                    members: cluster.plan.members.clone(),
-                })
-                .collect();
-            guard.encode_composition(
-                rendered.get(),
-                &base,
-                &clusters,
-                &prepared.target,
-                &command_buffer,
-                &prepared.device,
-            );
+            let command_buffer = match encoded {
+                Ok(command_buffer) => command_buffer,
+                // The device refused a resource: nothing was committed, and
+                // the capture settles failed on the main thread like any
+                // other outcome.
+                Err(error) => {
+                    settle.settle_on_main(Err(error.into()));
+                    return;
+                }
+            };
             // The lease is held until this command buffer completes:
             // only then has the GPU stopped sampling the private texture
             // the blit filled from the shared buffer.
@@ -3263,11 +3528,7 @@ impl ViewCapture {
             // settles everything on the main thread in order: the frame
             // returns to the pool, then the completion fires. Nothing
             // CG/Metal-owned drops on the completion queue.
-            let settle = Mutex::new(Some(Settle {
-                preparation,
-                return_to,
-                completion,
-            }));
+            let settle = Mutex::new(Some(settle));
             let handler = RcBlock::new(
                 move |buffer: std::ptr::NonNull<ProtocolObject<dyn MTLCommandBuffer>>| {
                     // SAFETY: the buffer is alive for the handler call.
@@ -3285,39 +3546,12 @@ impl ViewCapture {
                     let error = buffer
                         .error()
                         .map(|error| error.localizedDescription().to_string());
-                    let settle = settle.lock().expect("capture lock").take();
+                    let settle = settle
+                        .lock()
+                        .expect("the settle slot is never locked across a panic")
+                        .take();
                     if let Some(settle) = settle {
-                        enqueue(move |mtm| {
-                            let Settle {
-                                preparation,
-                                return_to,
-                                completion,
-                            } = settle;
-                            // The registrations and target bound here
-                            // drop after the completion, as the whole
-                            // preparation did.
-                            let Preparation {
-                                raster,
-                                clusters,
-                                target: _target,
-                                device: _device,
-                                surfaces: _surfaces,
-                            } = preparation.0;
-                            let outcome = composition_outcome(status, error);
-                            if outcome.is_ok()
-                                && let Some(capture) = return_to.get(mtm).upgrade()
-                            {
-                                let mut pool = capture.renderer.borrow_mut();
-                                pool.return_frame(raster.into_frame());
-                                for probe in clusters.into_iter().flat_map(|c| c.probes) {
-                                    pool.return_frame(probe.into_frame());
-                                }
-                            }
-                            // Whatever `preparation` still holds drops
-                            // here on the main thread on every outcome —
-                            // a failed frame's lease releases unreturned.
-                            completion(outcome);
-                        });
+                        settle.settle_on_main(composition_outcome(status, error));
                     }
                 },
             );
@@ -3327,6 +3561,148 @@ impl ViewCapture {
             }
             command_buffer.commit();
         });
+    }
+}
+
+impl Settle {
+    /// Settles the capture on the main queue with `outcome`: a completed
+    /// frame returns to the pool, then the completion fires; whatever the
+    /// preparation still holds drops there, on the main thread, on every
+    /// outcome — a failed frame's lease releases unreturned.
+    fn settle_on_main(self, outcome: Result<(), CaptureError>) {
+        enqueue(move |mtm| {
+            let Self {
+                preparation,
+                return_to,
+                completion,
+            } = self;
+            // The registrations and target bound here drop after the
+            // completion, as the whole preparation did.
+            let Preparation {
+                raster,
+                clusters,
+                target: _target,
+                device: _device,
+                surfaces: _surfaces,
+            } = preparation.0;
+            if outcome.is_ok()
+                && let Some(capture) = return_to.get(mtm).upgrade()
+            {
+                let mut pool = capture.renderer.borrow_mut();
+                pool.return_frame(raster.into_frame());
+                for probe in clusters.into_iter().flat_map(|c| c.probes) {
+                    pool.return_frame(probe.into_frame());
+                }
+            }
+            completion(outcome);
+        });
+    }
+}
+
+/// The display-driven captures of one main run-loop turn, prepared
+/// together.
+///
+/// Each animating effect view's display-link callback asks for its own
+/// capture. Preparing each on the spot closes one outermost
+/// `CATransaction` per view, so a screen of animating filtered views
+/// sends one render-server commit per view per display update, and the
+/// main thread ends up blocked sending them (#4074). A pass queues each
+/// request instead and prepares every request of the turn from one
+/// [`before_commit`] observer, inside one outer transaction: each
+/// capture's own transaction nests in it, and the outer close is the
+/// turn's single publication of the already-restored model.
+///
+/// A queued request reads the tree as it stands at the end of the turn,
+/// which is what a per-frame redraw wants. A one-shot capture that must
+/// read the tree as it is at the call — a transition's outgoing subtree
+/// — calls [`ViewCapture::capture`] directly.
+///
+/// Clones share one queue; the backend installs one per environment.
+#[derive(Clone)]
+pub struct CapturePass(Rc<PassQueue>);
+
+/// The requests a [`CapturePass`] has queued for the coming commit.
+struct PassQueue {
+    mtm: objc2::MainThreadMarker,
+    pending: RefCell<Vec<PassRequest>>,
+    /// Whether this turn's observer is registered and not yet running.
+    scheduled: Cell<bool>,
+}
+
+/// One queued [`ViewCapture::capture`] call. The capture is held weakly:
+/// a view torn down before the pass runs settles its request `Deferred`,
+/// as a capture whose owner drops mid-flight does.
+struct PassRequest {
+    capture: Weak<ViewCapture>,
+    target: Retained<ProtocolObject<dyn MTLTexture>>,
+    generation: u64,
+    completion: Box<dyn Fn(Result<(), CaptureError>) + Send>,
+}
+
+impl fmt::Debug for CapturePass {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CapturePass")
+            .field("pending", &self.0.pending.borrow().len())
+            .field("scheduled", &self.0.scheduled.get())
+            .finish_non_exhaustive()
+    }
+}
+
+impl CapturePass {
+    /// An empty pass on the main thread.
+    #[must_use]
+    pub fn new(mtm: objc2::MainThreadMarker) -> Self {
+        Self(Rc::new(PassQueue {
+            mtm,
+            pending: RefCell::new(Vec::new()),
+            scheduled: Cell::new(false),
+        }))
+    }
+
+    /// Queues `capture` of its content into `target` for this turn's
+    /// pass — [`ViewCapture::capture`]'s contract, run just before the
+    /// turn's commit. A request made while the pass runs — from a
+    /// capture's own layout — joins the next turn's pass.
+    pub fn capture(
+        &self,
+        capture: &Rc<ViewCapture>,
+        target: &ProtocolObject<dyn MTLTexture>,
+        generation: u64,
+        completion: impl Fn(Result<(), CaptureError>) + Send + 'static,
+    ) {
+        self.0.pending.borrow_mut().push(PassRequest {
+            capture: Rc::downgrade(capture),
+            target: target.retain(),
+            generation,
+            completion: Box::new(completion),
+        });
+        if !self.0.scheduled.replace(true) {
+            let queue = Rc::clone(&self.0);
+            before_commit(self.0.mtm, move || queue.run());
+        }
+    }
+}
+
+impl PassQueue {
+    /// Prepares every queued request inside one outer transaction and
+    /// closes it once.
+    fn run(&self) {
+        self.scheduled.set(false);
+        let requests = self.pending.take();
+        let transaction = TransactionGuard::begin();
+        for request in requests {
+            match request
+                .capture
+                .upgrade()
+                .filter(|capture| !capture.shut_down.get())
+            {
+                Some(capture) => {
+                    capture.capture(&request.target, request.generation, request.completion);
+                }
+                None => (request.completion)(Err(CaptureError::Deferred)),
+            }
+        }
+        transaction.commit();
     }
 }
 
@@ -3355,6 +3731,41 @@ impl fmt::Display for CompositionFailed {
 }
 
 impl std::error::Error for CompositionFailed {}
+
+/// A capture could not run: the device refused a resource the composition
+/// needs, or the caller broke the capture's contract. No frame lands on this
+/// context generation.
+#[derive(Debug)]
+pub struct CaptureUnavailable {
+    reason: String,
+}
+
+impl CaptureUnavailable {
+    fn new(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+        }
+    }
+
+    /// The device refused to create `what`.
+    fn refused(what: &str) -> Self {
+        Self::new(format!("the device refused to create the {what}"))
+    }
+}
+
+impl fmt::Display for CaptureUnavailable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "capture unavailable: {}", self.reason)
+    }
+}
+
+impl std::error::Error for CaptureUnavailable {}
+
+impl From<CaptureUnavailable> for CaptureError {
+    fn from(error: CaptureUnavailable) -> Self {
+        Self::Failed(Arc::new(error))
+    }
+}
 
 /// The captured subtree holds a native `CAMetalLayer` that no
 /// [`CapturableSurface`] claimed — `renderInContext` draws it as
@@ -3541,7 +3952,7 @@ mod tests {
         let Some(device) = MTLCreateSystemDefaultDevice() else {
             return; // No Metal on this runner — nothing to check.
         };
-        let mut resources = DeviceResources::new(&device);
+        let mut resources = DeviceResources::new(&device).expect("device resource");
         let queue = device.newCommandQueue().expect("a Metal command queue");
         // SAFETY: a 2D texture descriptor is always valid to construct.
         let descriptor = unsafe {
@@ -3592,8 +4003,10 @@ mod tests {
         let encoder = command_buffer
             .renderCommandEncoderWithDescriptor(&pass)
             .expect("a render encoder");
-        encoder.setRenderPipelineState(&resources.render_pipeline(MTLPixelFormat::RGBA16Float));
-        let sampler = resources.composite_sampler();
+        let format = MTLPixelFormat::RGBA16Float;
+        let pipeline = resources.render_pipeline(format).expect("resource");
+        encoder.setRenderPipelineState(&pipeline);
+        let sampler = resources.composite_sampler().expect("resource");
         encoder.setViewport(MTLViewport {
             originX: 0.0,
             originY: 0.0,
@@ -3607,7 +4020,7 @@ mod tests {
             uv_scale: [1.0, 1.0],
         };
         let half_float = crate::metal::shader_color(MTLPixelFormat::RGBA16Float);
-        CompositeConversion::between(half_float, half_float).bind(&encoder, 0);
+        CompositeConversion::between(half_float, half_float, false).bind(&encoder, 0);
         // SAFETY: `encoder` is a live render encoder; index 0 is the
         // vertex-constant, texture and sampler slots the shader binds, and
         // `setVertexBytes` copies `region`'s bytes into the command.
@@ -3667,10 +4080,10 @@ mod tests {
             |renderer: &NativeRenderer| renderer.available.values().map(Vec::len).sum::<usize>();
         let mut renderer = NativeRenderer::default();
         renderer.begin(&device, format, 0, vec![(64, 48), (16, 8)]);
-        let first = renderer.issue(&device, 64, 48);
+        let first = renderer.issue(&device, 64, 48).expect("device resource");
         // A second capture issued before `first` settles must not share
         // its storage — two overlapping consumers can never alias.
-        let second = renderer.issue(&device, 64, 48);
+        let second = renderer.issue(&device, 64, 48).expect("device resource");
         assert_ne!(
             Retained::as_ptr(first.texture()),
             Retained::as_ptr(second.texture()),
@@ -3678,12 +4091,12 @@ mod tests {
         );
         // Once `first`'s consumer settles it goes back and is reused; a
         // probe raster of the same capture pools beside it.
-        let probe = renderer.issue(&device, 16, 8);
+        let probe = renderer.issue(&device, 16, 8).expect("device resource");
         let first_texture = Retained::as_ptr(first.texture());
         renderer.return_frame(first.into_frame());
         renderer.return_frame(probe.into_frame());
         assert_eq!(pooled(&renderer), 2, "both of the capture's sizes pool");
-        let reissued = renderer.issue(&device, 64, 48);
+        let reissued = renderer.issue(&device, 64, 48).expect("device resource");
         assert_eq!(
             Retained::as_ptr(reissued.texture()),
             first_texture,
@@ -3695,7 +4108,7 @@ mod tests {
         // rather than repopulating it.
         renderer.begin(&device, format, 1, vec![(64, 48)]);
         assert_eq!(pooled(&renderer), 0, "a new generation drains the pool");
-        let _next = renderer.issue(&device, 64, 48);
+        let _next = renderer.issue(&device, 64, 48).expect("device resource");
         renderer.return_frame(second.into_frame());
         assert_eq!(
             pooled(&renderer),
@@ -3705,10 +4118,10 @@ mod tests {
         // A size the latest capture no longer uses drops the same way:
         // frames issued under one geometry never answer another.
         renderer.begin(&device, format, 1, vec![(128, 96)]);
-        let wide_a = renderer.issue(&device, 128, 96);
-        let wide_b = renderer.issue(&device, 128, 96);
+        let wide_a = renderer.issue(&device, 128, 96).expect("device resource");
+        let wide_b = renderer.issue(&device, 128, 96).expect("device resource");
         renderer.begin(&device, format, 1, vec![(64, 48)]);
-        let narrow = renderer.issue(&device, 64, 48);
+        let narrow = renderer.issue(&device, 64, 48).expect("device resource");
         renderer.return_frame(wide_a.into_frame());
         renderer.return_frame(wide_b.into_frame());
         assert_eq!(
@@ -3727,7 +4140,7 @@ mod tests {
             "a frame settling after shutdown is dropped, not re-pooled"
         );
         renderer.begin(&device, format, 0, vec![(64, 48)]);
-        let _rearmed = renderer.issue(&device, 64, 48);
+        let _rearmed = renderer.issue(&device, 64, 48).expect("device resource");
     }
 
     /// Overlap clusters: a chain of overlapping rects shares one cluster
@@ -3969,15 +4382,17 @@ mod tests {
         let mut guard = CompositorGuard {
             state: state.lock().expect("an unpoisoned state"),
         };
-        let command_buffer = guard.make_command_buffer(&device);
-        guard.encode_composition(
-            &surfaces,
-            &base,
-            &clusters,
-            &target,
-            &command_buffer,
-            &device,
-        );
+        let command_buffer = guard.make_command_buffer(&device).expect("device resource");
+        guard
+            .encode_composition(
+                &surfaces,
+                &base,
+                &clusters,
+                &target,
+                &command_buffer,
+                &device,
+            )
+            .expect("device resource");
         drop(guard);
         command_buffer.commit();
         command_buffer.waitUntilCompleted();
@@ -4021,6 +4436,140 @@ mod tests {
                     "pixel ({x}, {y}) resolved to {got:?}, the tree composites {expected:?}"
                 );
             }
+        }
+    }
+
+    /// A translucent surface colour outside the sRGB gamut — Display P3
+    /// red at half alpha — captured into an 8-bit target clips to the
+    /// gamut as a straight colour: every channel stays within its alpha,
+    /// as a premultiplied store requires, instead of the store clamping
+    /// the out-of-range red on its own.
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one end-to-end fixture: the surface, its probe rasters, the composition and the check"
+    )]
+    fn an_out_of_gamut_surface_keeps_every_channel_within_alpha_in_an_8_bit_capture() {
+        /// The target's edge; the surface covers all of it.
+        const EDGE: usize = 2;
+        /// f16 0.5.
+        const HALF: u16 = 0x3800;
+
+        let Some(device) = MTLCreateSystemDefaultDevice() else {
+            return; // No Metal on this runner — nothing to check.
+        };
+        let float_texture = |value: [f32; 4]| {
+            let bytes: Vec<u8> = (0..EDGE * EDGE)
+                .flat_map(|_| value.iter().flat_map(|c| c.to_ne_bytes()))
+                .collect();
+            filled_texture(
+                &device,
+                MTLPixelFormat::RGBA32Float,
+                (EDGE, EDGE),
+                &bytes,
+                EDGE * 16,
+            )
+        };
+        let base = Placed {
+            texture: float_texture([0.0; 4]),
+            origin: [0, 0],
+            color: BLEND_COLOR,
+        };
+        // Premultiplied linear Display P3 red at alpha 0.5, the colour a
+        // half-float surface stores.
+        let red: Vec<u8> = (0..EDGE * EDGE)
+            .flat_map(|_| [HALF, 0, 0, HALF])
+            .flat_map(u16::to_ne_bytes)
+            .collect();
+        let edge = f64::from(u32::try_from(EDGE).expect("a small edge"));
+        let surfaces = [RenderedSurface {
+            spec: surface_spec(
+                0,
+                [[0.0, 0.0], [edge, 0.0], [0.0, edge]],
+                || MTLPixelFormat::RGBA16Float,
+                EDGE,
+                EDGE,
+            )
+            .expect("the surface lands in the target"),
+            texture: filled_texture(
+                &device,
+                MTLPixelFormat::RGBA16Float,
+                (EDGE, EDGE),
+                &red,
+                EDGE * 8,
+            ),
+        }];
+        let plans = plan_clusters(&surfaces.each_ref().map(|s| s.spec));
+        let [plan] = plans.as_slice() else {
+            panic!("one surface forms one cluster: {plans:?}");
+        };
+        // Nothing lies over or under the surface: its black and white
+        // probes show through unchanged.
+        let clusters = [ClusterImages {
+            region: plan.region,
+            slots: plan.slots,
+            probes: vec![float_texture([0.0, 0.0, 0.0, 1.0]), float_texture([1.0; 4])],
+            members: plan.members.clone(),
+        }];
+        let target = filled_texture(
+            &device,
+            MTLPixelFormat::RGBA8Unorm,
+            (EDGE, EDGE),
+            &[0; EDGE * EDGE * 4],
+            EDGE * 4,
+        );
+        let state = Mutex::new(CompositorState { resources: None });
+        let mut guard = CompositorGuard {
+            state: state.lock().expect("an unpoisoned state"),
+        };
+        let command_buffer = guard.make_command_buffer(&device).expect("device resource");
+        guard
+            .encode_composition(
+                &surfaces,
+                &base,
+                &clusters,
+                &target,
+                &command_buffer,
+                &device,
+            )
+            .expect("device resource");
+        drop(guard);
+        command_buffer.commit();
+        command_buffer.waitUntilCompleted();
+        assert_eq!(command_buffer.status(), MTLCommandBufferStatus::Completed);
+
+        let mut stored = [0_u8; EDGE * EDGE * 4];
+        // SAFETY: `stored` holds the whole RGBA8 target, `EDGE * 4` bytes
+        // a row.
+        unsafe {
+            target.getBytes_bytesPerRow_fromRegion_mipmapLevel(
+                std::ptr::NonNull::from(&mut stored).cast::<core::ffi::c_void>(),
+                EDGE * 4,
+                MTLRegion {
+                    origin: MTLOrigin { x: 0, y: 0, z: 0 },
+                    size: MTLSize {
+                        width: EDGE,
+                        height: EDGE,
+                        depth: 1,
+                    },
+                },
+                0,
+            );
+        }
+        for texel in stored.as_chunks::<4>().0 {
+            let [r, g, b, a] = *texel;
+            assert!(
+                (127..=128).contains(&a),
+                "half alpha survives the capture: {texel:?}"
+            );
+            assert!(
+                r <= a && g <= a && b <= a,
+                "a premultiplied channel exceeds its alpha: {texel:?}"
+            );
+            assert!(
+                a - r <= 1 && g == 0 && b == 0,
+                "P3 red clips to sRGB red at the same alpha: {texel:?}"
+            );
         }
     }
 
@@ -4144,16 +4693,23 @@ mod tests {
         let pipeline;
         let sampler;
         {
-            let resources = state.device_resources(&device);
-            texture = resources.surface_texture(spec);
-            pipeline = resources.render_pipeline(spec.pixel_format);
-            sampler = resources.composite_sampler();
+            let resources = state.device_resources(&device).expect("device resource");
+            texture = resources.surface_texture(spec).expect("device resource");
+            pipeline = resources
+                .render_pipeline(spec.pixel_format)
+                .expect("device resource");
+            sampler = resources.composite_sampler().expect("device resource");
         }
-        let queue = Retained::as_ptr(&state.device_resources(&device).command_queue);
+        let queue = Retained::as_ptr(
+            &state
+                .device_resources(&device)
+                .expect("device resource")
+                .command_queue,
+        );
 
         // The same device keeps the whole bundle.
         {
-            let resources = state.device_resources(&device);
+            let resources = state.device_resources(&device).expect("device resource");
             assert_eq!(Retained::as_ptr(&resources.command_queue), queue);
             let cached = resources
                 .surface_textures
@@ -4186,7 +4742,7 @@ mod tests {
             if Retained::as_ptr(&other) == Retained::as_ptr(&device) {
                 continue;
             }
-            let resources = state.device_resources(&other);
+            let resources = state.device_resources(&other).expect("device resource");
             assert_eq!(
                 Retained::as_ptr(&resources.device),
                 Retained::as_ptr(&other)
@@ -4195,7 +4751,7 @@ mod tests {
             assert!(resources.pipelines.is_empty());
             assert!(resources.blend_texture.is_none());
             assert!(resources.sampler.is_none());
-            let rebound = resources.surface_texture(spec);
+            let rebound = resources.surface_texture(spec).expect("device resource");
             assert_eq!(
                 Retained::as_ptr(&rebound.device()),
                 Retained::as_ptr(&other),

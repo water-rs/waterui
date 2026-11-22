@@ -143,11 +143,12 @@ impl WebViewProxy {
     ///
     /// `key` names the script; injecting again under the same key replaces it.
     ///
-    /// # Panics
+    /// # Contract violation
     ///
-    /// Panics when `key` names a script the view was opened with
+    /// When `key` names a script the view was opened with
     /// ([`WebViewOpen::inject`](crate::WebViewOpen::inject)): those are fixed
-    /// for its life, on every backend alike.
+    /// for its life, on every backend alike. A debug build panics, a release
+    /// build logs it and ignores the call.
     pub fn inject_script(&self, key: &str, script: &str, time: ScriptInjectionTime) {
         self.handle.inject_script(key, script, time);
     }

@@ -31,13 +31,13 @@ impl ExponentialDecay {
     /// The velocity `seconds` after a release at `velocity`:
     /// `v0 · rate^t`, `t` in milliseconds.
     pub(crate) fn velocity(self, velocity: f64, seconds: f64) -> f64 {
-        velocity * self.rate_per_ms.powf(seconds * MS_PER_SECOND)
+        velocity * self.rate_per_ms().powf(seconds * MS_PER_SECOND)
     }
 
     /// The distance a release at `velocity` travels in total — WWDC 2018
     /// "Designing Fluid Interfaces"' projection, `v0/1000 · rate/(1 − rate)`.
     pub(crate) fn projection(self, velocity: f64) -> f64 {
-        velocity / MS_PER_SECOND * self.rate_per_ms / (1.0 - self.rate_per_ms)
+        velocity / MS_PER_SECOND * self.rate_per_ms() / (1.0 - self.rate_per_ms())
     }
 
     /// The distance travelled `seconds` after a release at `velocity`: the
@@ -45,14 +45,14 @@ impl ExponentialDecay {
     /// v[n+1]/1000` summed in closed form, `projection · (1 − rate^t)` —
     /// whose limit is [`Self::projection`] exactly.
     pub(crate) fn distance(self, velocity: f64, seconds: f64) -> f64 {
-        self.projection(velocity) * (1.0 - self.rate_per_ms.powf(seconds * MS_PER_SECOND))
+        self.projection(velocity) * (1.0 - self.rate_per_ms().powf(seconds * MS_PER_SECOND))
     }
 
     /// When a release at `velocity` has travelled `distance` — same sign —
     /// or `None` when its projection falls short of it.
     pub(crate) fn time_to_distance(self, velocity: f64, distance: f64) -> Option<f64> {
         let remaining = 1.0 - distance / self.projection(velocity);
-        (remaining > 0.0).then(|| remaining.ln() / (self.rate_per_ms.ln() * MS_PER_SECOND))
+        (remaining > 0.0).then(|| remaining.ln() / (self.rate_per_ms().ln() * MS_PER_SECOND))
     }
 
     /// When a release at `velocity` comes to rest: the moment the distance
@@ -63,7 +63,7 @@ impl ExponentialDecay {
         if projection <= REST_DISTANCE {
             return 0.0;
         }
-        (REST_DISTANCE / projection).ln() / (self.rate_per_ms.ln() * MS_PER_SECOND)
+        (REST_DISTANCE / projection).ln() / (self.rate_per_ms().ln() * MS_PER_SECOND)
     }
 }
 
@@ -72,13 +72,13 @@ impl RubberBand {
     /// `(1 − 1 / (x·c/d + 1)) · d` for the viewport's `dimension` `d` —
     /// slope `c` at the edge, approaching but never reaching `d`.
     pub(crate) fn band(self, overscroll: f64, dimension: f64) -> f64 {
-        (1.0 - 1.0 / (overscroll * self.coefficient / dimension + 1.0)) * dimension
+        (1.0 - 1.0 / (overscroll * self.coefficient() / dimension + 1.0)) * dimension
     }
 
     /// The drag past an edge that shows `banded` — the inverse of
     /// [`Self::band`], `y / (c · (1 − y/d))`, defined for `banded < d`.
     pub(crate) fn unband(self, banded: f64, dimension: f64) -> f64 {
-        banded / (self.coefficient * (1.0 - banded / dimension))
+        banded / (self.coefficient() * (1.0 - banded / dimension))
     }
 
     /// The offset a drag moves `offset` to by `delta` on an axis whose
@@ -136,7 +136,7 @@ impl ReleaseReturn {
     pub(super) fn handover(self, x0: f64, v0: f64) -> Option<Handover> {
         (x0 * v0 < 0.0).then(|| {
             let seconds = -x0 / v0;
-            let omega = core::f64::consts::TAU / self.handover_response;
+            let omega = core::f64::consts::TAU / self.handover_response();
             Handover {
                 seconds,
                 velocity: v0 * (-omega * seconds).exp(),
@@ -149,7 +149,7 @@ impl EdgeReturn for ReleaseReturn {
     /// `(x0 + v0·t) · e^(−ω·t)` and its derivative, `(v0 − ω·(x0 + v0·t))
     /// · e^(−ω·t)` — the closed form [`ReleaseReturn`] documents.
     fn sample(self, x0: f64, v0: f64, t: f64) -> (f64, f64) {
-        let omega = core::f64::consts::TAU / self.response;
+        let omega = core::f64::consts::TAU / self.response();
         let decay = (-omega * t).exp();
         let x = v0.mul_add(t, x0);
         (x * decay, omega.mul_add(-x, v0) * decay)
@@ -160,8 +160,8 @@ impl EdgeReturn for SpringBack {
     /// The closed forms [`SpringBack`] documents, with `ω0 = 2π /
     /// response`.
     fn sample(self, x0: f64, v0: f64, t: f64) -> (f64, f64) {
-        let omega = core::f64::consts::TAU / self.response;
-        let zeta = self.damping_ratio;
+        let omega = core::f64::consts::TAU / self.response();
+        let zeta = self.damping_ratio();
         if (zeta - 1.0).abs() < f64::EPSILON {
             let b = omega.mul_add(x0, v0);
             let decay = (-omega * t).exp();
@@ -288,8 +288,8 @@ impl DecayFling {
                 DecayEnd::Bounce(SpringRun::new(
                     edge,
                     0.0,
-                    bounce.entry_velocity_scale * decay.velocity(velocity, crossing),
-                    bounce.spring,
+                    bounce.entry_velocity_scale() * decay.velocity(velocity, crossing),
+                    bounce.spring(),
                 )),
             ),
         };
@@ -383,10 +383,7 @@ mod tests {
         let mut springs = Vec::new();
         for response in [0.2, 0.4, 0.55, 1.0] {
             for damping_ratio in [1.0, 1.2, 2.0] {
-                springs.push(SpringBack {
-                    response,
-                    damping_ratio,
-                });
+                springs.push(SpringBack::new(response, damping_ratio));
             }
         }
         springs
@@ -401,10 +398,7 @@ mod tests {
     fn bounces() -> Vec<EdgeBounce> {
         non_oscillating_springs()
             .into_iter()
-            .map(|spring| EdgeBounce {
-                spring,
-                entry_velocity_scale: 1.0,
-            })
+            .map(|spring| EdgeBounce::new(spring, 1.0))
             .collect()
     }
 
@@ -508,10 +502,11 @@ mod tests {
 
     #[test]
     fn a_release_past_an_edge_returns_monotonically_and_settles_on_it() {
-        for response in [0.3, ReleaseReturn::UIKIT.response, 1.0] {
-            let release = ReleaseReturn {
-                response,
-                ..ReleaseReturn::UIKIT
+        for response in [0.3, ReleaseReturn::UIKIT.response(), 1.0] {
+            let release = {
+                let mut literal = ReleaseReturn::UIKIT;
+                literal.set_response(response);
+                literal
             };
             // Released 80pt past the top edge, still, moving further out,
             // and moving back in.
@@ -574,8 +569,8 @@ mod tests {
         let run = SpringRun::new(
             0.0,
             0.0,
-            -2470.0 * bounce.entry_velocity_scale,
-            bounce.spring,
+            -2470.0 * bounce.entry_velocity_scale(),
+            bounce.spring(),
         );
         for (ms, measured) in [
             (25, -45.1),

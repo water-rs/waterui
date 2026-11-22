@@ -1,4 +1,4 @@
-//! The `gpu_surface` leaf: `Native<GpuContentView>` and
+//! The `gpu_surface` leaf: `Native<GpuView>` and
 //! `Native<ExternalFrameView>` and `Native<SceneView>` as a kit surface view
 //! presenting through a `CAMetalLayer` driven by a `CAMetalDisplayLink` —
 //! the platform's own presentation primitive.
@@ -24,19 +24,19 @@ use cocoa_ui::metal_presenter::{DrawableFrame, MetalPresenter};
 use objc2::MainThreadMarker;
 use objc2_metal::{MTLPixelFormat, MTLTexture};
 use waterui_core::NativeView;
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
-use waterui_graphics::cherenkov::{Display, FrameTime, Next};
-use waterui_graphics::draw::kurbo;
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
+};
+use waterui_graphics::backend::cherenkov::Next;
 use waterui_graphics::gpu::{
-    ExternalFrameRenderer, ExternalFrameStream, ExternalFrameView, GpuContentRenderer,
-    GpuContentView, GpuRuntime, HostedLayerError, RedrawHandle, SharedGpuContext,
+    Display, ExternalFrameRenderer, ExternalFrameStream, ExternalFrameView, FrameTime,
+    GpuContentRenderer, GpuRuntime, GpuView, HostedFrame, HostedLayerError, RedrawHandle,
+    RenderedFrame, SharedGpuContext, wgpu,
 };
 use waterui_graphics::input::SurfaceInputEvent;
 use waterui_graphics::offscreen::OffscreenSize;
-use waterui_graphics::wgpu;
 
 use crate::contract::NativeLeaf;
-use crate::dispatch::Dispatcher;
 use crate::gpu_runtime::EngineGeneration;
 #[cfg(all(feature = "native-test", target_os = "macos"))]
 use crate::gpu_runtime::SceneEngine;
@@ -57,6 +57,12 @@ use platform::SurfaceView;
 
 #[path = "scene_surface.rs"]
 mod scene;
+
+#[path = "gpu_frame_pipeline.rs"]
+mod pipeline;
+
+use crate::contract::RenderContext;
+use pipeline::{FramePipeline, FrameRequest, RendererCreation, Step};
 
 /// The semantic half of a mounted GPU surface: what is drawn, measured and
 /// fed input, shared by GPU producers, external frames and retained scenes.
@@ -107,16 +113,14 @@ trait HostedView {
     fn measurement_dependency_invalidated(&self) -> Option<bool> {
         None
     }
-    /// Builds the view's engine layer on `context` — the exact generation
-    /// the caller is holding for the frame this renderer presents.
-    /// `failure_sink` is the owner's routed-failure channel: a shared
-    /// engine generation delivers a batch failure to every mounted
-    /// participant through it, and the sink enqueues that owner's
-    /// `settle_failed` on the main queue.
-    ///
-    /// # Errors
-    ///
-    /// [`HostedError`] when the layer or its engine cannot be created.
+    /// Starts building the view's engine layer on `context` — the exact
+    /// generation the caller is holding for the frames this renderer
+    /// presents. The creation resolves on the engine's replies, never
+    /// making the UI thread wait, to [`HostedError`] when the layer or its
+    /// engine cannot be created. `failure_sink` is the owner's
+    /// routed-failure channel: a shared engine generation delivers a batch
+    /// failure to every mounted participant through it, and the sink
+    /// enqueues that owner's `settle_failed` on the main queue.
     fn renderer(
         &mut self,
         runtime: &GpuRuntime,
@@ -124,24 +128,46 @@ trait HostedView {
         redraw: &RedrawHandle,
         size: OffscreenSize,
         failure_sink: &Rc<dyn Fn(Arc<HostedLayerError>)>,
-    ) -> Result<Box<dyn HostedRenderer>, HostedError>;
+    ) -> RendererCreation;
 }
 
 /// The engine half of a mounted GPU surface: one device generation's layer,
-/// rebuilt from the [`HostedView`] after device loss.
+/// rebuilt from the [`HostedView`] after device loss. A frame is submitted
+/// without waiting on the engine's render thread, polled to completion
+/// through the host's completion waker, then composited into the next
+/// target the host holds.
 trait HostedRenderer {
-    /// Renders and composites into the host's texture for the production
-    /// target timestamp `target_time`.
+    /// Submits the frame for the production target timestamp
+    /// `target_time` at `size` for `display`, returning before the render
+    /// thread produces it.
     ///
     /// # Errors
     ///
-    /// [`HostedError`] when preparation or the frame fails.
-    fn present(
+    /// [`HostedError`] when preparation or the submission fails.
+    fn submit(
         &mut self,
-        target: &wgpu::Texture,
+        size: OffscreenSize,
         display: Display,
         target_time: FrameTime,
-    ) -> Result<Next, HostedError>;
+    ) -> Result<(), HostedError>;
+
+    /// Polls the submitted frame; `cx`'s waker is woken when it resolves.
+    ///
+    /// # Errors
+    ///
+    /// [`HostedError`] when the frame fails.
+    fn poll_frame(
+        &mut self,
+        cx: &mut core::task::Context<'_>,
+    ) -> core::task::Poll<Result<FrameOutcome, HostedError>>;
+
+    /// Composites the frame that resolved [`FrameOutcome::Rendered`] into
+    /// the host's texture.
+    fn composite(&mut self, target: &wgpu::Texture, display: Display);
+
+    /// Drops the submitted or resolved frame without waiting for it — the
+    /// renderer and its producer stay.
+    fn discard_frame(&mut self);
 
     /// The retained generation evidence a submission's completion checks:
     /// the scene engine's production generation — whose sealed outcome is
@@ -150,14 +176,120 @@ trait HostedRenderer {
     fn submission_evidence(&self) -> Option<Rc<EngineGeneration>> {
         None
     }
+}
 
-    /// Whether the frame `present` returned for `target_time` wrote the
-    /// target. A scene mounted or invalidated after the produced batch
-    /// answers `Next::At` without compositing — `false` here marks the
-    /// target unwritten, and the external capture defers rather than
-    /// stamping untouched pixels as this surface's frame.
-    fn wrote_target(&self, _target_time: FrameTime) -> bool {
-        true
+/// What a resolved frame left for the host's target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum FrameOutcome {
+    /// The frame carries this surface's content: composite it; the engine
+    /// wants the next frame at `Next`.
+    Rendered(Next),
+    /// A scene mounted or invalidated after the shared batch it joined:
+    /// the frame carries no pixels for this surface, which is owed a later
+    /// frame — the target stays unwritten and the external capture defers
+    /// rather than stamping untouched pixels as this surface's frame.
+    Unproduced,
+}
+
+/// The hosted engine layers whose frames are a [`HostedFrame`] —
+/// [`GpuContentRenderer`] and [`ExternalFrameRenderer`].
+trait LayerRenderer {
+    fn submit(
+        &mut self,
+        size: OffscreenSize,
+        display: Display,
+        target_time: FrameTime,
+    ) -> Result<HostedFrame, HostedLayerError>;
+
+    fn composite(&mut self, frame: &RenderedFrame, target: &wgpu::Texture, display: Display);
+}
+
+impl LayerRenderer for GpuContentRenderer {
+    fn submit(
+        &mut self,
+        size: OffscreenSize,
+        display: Display,
+        target_time: FrameTime,
+    ) -> Result<HostedFrame, HostedLayerError> {
+        Self::submit(self, size, display, target_time)
+    }
+
+    fn composite(&mut self, frame: &RenderedFrame, target: &wgpu::Texture, display: Display) {
+        Self::composite(self, frame, target, display);
+    }
+}
+
+impl LayerRenderer for ExternalFrameRenderer {
+    fn submit(
+        &mut self,
+        size: OffscreenSize,
+        display: Display,
+        target_time: FrameTime,
+    ) -> Result<HostedFrame, HostedLayerError> {
+        Self::submit(self, size, display, target_time)
+    }
+
+    fn composite(&mut self, frame: &RenderedFrame, target: &wgpu::Texture, display: Display) {
+        Self::composite(self, frame, target, display);
+    }
+}
+
+/// A hosted engine layer and the frame it has in flight or produced. The
+/// layer — engine, surface, producer, context — outlives every frame.
+struct Layered<R> {
+    layer: R,
+    pending: Option<HostedFrame>,
+    rendered: Option<RenderedFrame>,
+}
+
+impl<R> Layered<R> {
+    const fn new(layer: R) -> Self {
+        Self {
+            layer,
+            pending: None,
+            rendered: None,
+        }
+    }
+}
+
+impl<R: LayerRenderer> HostedRenderer for Layered<R> {
+    fn submit(
+        &mut self,
+        size: OffscreenSize,
+        display: Display,
+        target_time: FrameTime,
+    ) -> Result<(), HostedError> {
+        self.pending = Some(self.layer.submit(size, display, target_time)?);
+        Ok(())
+    }
+
+    fn poll_frame(
+        &mut self,
+        cx: &mut core::task::Context<'_>,
+    ) -> core::task::Poll<Result<FrameOutcome, HostedError>> {
+        let pending = self
+            .pending
+            .as_mut()
+            .expect("a hosted layer polls only a submitted frame");
+        let rendered = core::task::ready!(core::pin::Pin::new(pending).poll(cx));
+        self.pending = None;
+        let rendered = rendered?;
+        let next = rendered.next().clone();
+        self.rendered = Some(rendered);
+        core::task::Poll::Ready(Ok(FrameOutcome::Rendered(next)))
+    }
+
+    fn composite(&mut self, target: &wgpu::Texture, display: Display) {
+        let rendered = self
+            .rendered
+            .take()
+            .expect("a hosted layer composites only a resolved frame");
+        self.layer.composite(&rendered, target, display);
+    }
+
+    fn discard_frame(&mut self) {
+        self.pending = None;
+        self.rendered = None;
     }
 }
 
@@ -198,7 +330,7 @@ impl From<HostedLayerError> for HostedError {
     }
 }
 
-impl HostedView for GpuContentView {
+impl HostedView for GpuView {
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         Self::measure(self, proposal)
     }
@@ -242,29 +374,17 @@ impl HostedView for GpuContentView {
         redraw: &RedrawHandle,
         size: OffscreenSize,
         _failure_sink: &Rc<dyn Fn(Arc<HostedLayerError>)>,
-    ) -> Result<Box<dyn HostedRenderer>, HostedError> {
+    ) -> RendererCreation {
         // `engine_content` answers the same content object every time, so a
         // renderer rebuilt after device loss re-installs it with its state.
-        let producer =
-            waterui_graphics::cherenkov_gpu::interop::GpuContentBox::new(self.engine_content());
-        Ok(Box::new(GpuContentRenderer::new(
-            runtime,
-            context.clone(),
-            producer,
-            size,
-            redraw.clone(),
-        )?))
-    }
-}
-
-impl HostedRenderer for GpuContentRenderer {
-    fn present(
-        &mut self,
-        target: &wgpu::Texture,
-        display: Display,
-        target_time: FrameTime,
-    ) -> Result<Next, HostedError> {
-        Ok(Self::present(self, target, display, target_time)?)
+        let producer = waterui_graphics::gpu::interop::GpuContentBox::new(self.engine_content());
+        let runtime = runtime.clone();
+        let context = context.clone();
+        let redraw = redraw.clone();
+        Box::pin(async move {
+            let layer = GpuContentRenderer::new(&runtime, context, producer, size, redraw).await?;
+            Ok(Box::new(Layered::new(layer)) as Box<dyn HostedRenderer>)
+        })
     }
 }
 
@@ -286,22 +406,24 @@ impl HostedView for ExternalFrameView {
     }
 
     fn wants_input_events(&self) -> bool {
-        false
+        Self::wants_input_events(self)
     }
 
     fn resolved_hdr_preference(&self) -> Option<bool> {
         Self::resolved_hdr_preference(self)
     }
 
-    fn input(&self, _event: &SurfaceInputEvent) {
-        unreachable!("an ExternalFrameView takes no input; hosts check wants_input_events first");
+    fn input(&self, event: &SurfaceInputEvent) {
+        Self::input(self, event);
     }
 
     fn ime_caret(&self) -> Option<kurbo::Rect> {
-        None
+        Self::ime_caret(self)
     }
 
-    fn before_frame(&self) {}
+    fn before_frame(&self) {
+        self.frame();
+    }
 
     fn renderer(
         &mut self,
@@ -310,26 +432,57 @@ impl HostedView for ExternalFrameView {
         redraw: &RedrawHandle,
         size: OffscreenSize,
         _failure_sink: &Rc<dyn Fn(Arc<HostedLayerError>)>,
-    ) -> Result<Box<dyn HostedRenderer>, HostedError> {
+    ) -> RendererCreation {
         let stream: ExternalFrameStream = self.stream();
-        Ok(Box::new(ExternalFrameRenderer::new(
-            runtime,
-            context.clone(),
-            &stream,
-            size,
-            redraw.clone(),
-        )?))
+        let runtime = runtime.clone();
+        let context = context.clone();
+        let redraw = redraw.clone();
+        Box::pin(async move {
+            let layer =
+                ExternalFrameRenderer::new(&runtime, context, &stream, size, redraw).await?;
+            Ok(Box::new(Layered::new(layer)) as Box<dyn HostedRenderer>)
+        })
     }
 }
 
-impl HostedRenderer for ExternalFrameRenderer {
-    fn present(
-        &mut self,
-        target: &wgpu::Texture,
-        display: Display,
-        target_time: FrameTime,
-    ) -> Result<Next, HostedError> {
-        Ok(Self::present(self, target, display, target_time)?)
+/// The `Resize` an input-receiving surface's content was last told of, so
+/// one is delivered per change of logical size or scale and never per frame.
+#[derive(Debug, Default)]
+struct DeliveredResize(Cell<Option<(kurbo::Size, f32)>>);
+
+impl DeliveredResize {
+    /// Records `size` at `scale` as the content's current geometry; whether
+    /// it differs from what the content was last told.
+    fn record(&self, size: kurbo::Size, scale: f32) -> bool {
+        let next = Some((size, scale));
+        if self.0.get() == next {
+            return false;
+        }
+        self.0.set(next);
+        true
+    }
+}
+
+/// Tells the content of its geometry when it changed since the content last
+/// heard — before the frame that renders at it.
+///
+/// Called where the surface learns its bounds and scale and again ahead of
+/// every frame's render, so a frame never renders at a geometry the content
+/// was not told of, whichever of the on-screen or capture paths it takes.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "a display scale is a small factor that f32 holds exactly"
+)]
+fn deliver_resize(state: &SurfaceState, logical: kurbo::Size, scale: f64) {
+    if !state.wants_input_events {
+        return;
+    }
+    let scale = scale as f32;
+    if state.delivered_resize.record(logical, scale) {
+        state.view.borrow().input(&SurfaceInputEvent::Resize {
+            size: logical,
+            scale,
+        });
     }
 }
 
@@ -355,12 +508,17 @@ struct SurfaceState {
     park: Rc<PublicationPark>,
     /// The hosted semantic view.
     view: RefCell<Box<dyn HostedView>>,
-    /// The view's engine layer bound to the context that built it —
-    /// context-scope, not attach-scope: it survives detach and external
-    /// rendering, and the pair is replaced whole whenever the runtime
-    /// publishes a new context. Owning the context beside the renderer
-    /// is the binding — a stale pair is dropped, never re-derived.
-    bound: RefCell<Option<BoundRenderer>>,
+    /// The view's engine layer bound to the context that built it, with
+    /// its creation or the frame it has in flight — context-scope, not
+    /// attach-scope: the renderer survives detach and external rendering,
+    /// and the pair is replaced whole, its pending frame included,
+    /// whenever the runtime publishes a new context. Owning the context
+    /// beside the renderer is the binding — a stale pair is dropped, never
+    /// re-derived.
+    pipeline: RefCell<FramePipeline>,
+    /// The waker the renderer's creation and frames resolve through: it
+    /// hops to the main queue and takes the pipeline's next step there.
+    frame_waker: std::task::Waker,
     /// Self-reference for the failure sink a bound renderer captures —
     /// the only way a route inside `produce` can reach this owner
     /// without borrowing presentation state mid-render.
@@ -402,6 +560,11 @@ struct SurfaceState {
     presentation_format: Cell<Option<MTLPixelFormat>>,
     /// The scale the current bounds were last resolved at.
     current_scale: Cell<f64>,
+    /// The surface's logical size at `current_scale` — the on-screen
+    /// content rectangle, not the pixel size read back through the scale.
+    current_logical: Cell<kurbo::Size>,
+    /// The `Resize` the content was last told of.
+    delivered_resize: DeliveredResize,
     /// Wakers of tasks waiting on the first presented frame.
     ready_waiters: RefCell<Vec<std::task::Waker>>,
     /// Whether content accessibility republishes after the next frame.
@@ -461,19 +624,6 @@ struct Attached {
     demand: Demand,
 }
 
-/// One device generation's renderer bound to the context that built it
-/// — the pair is the binding: the renderer can never disagree with the
-/// context it names, and a published newer context replaces the pair
-/// whole rather than re-binding by a generation counter.
-struct BoundRenderer {
-    /// The exact context generation `renderer` was created on — its
-    /// device, queue and generation are what the renderer presents
-    /// through.
-    context: Arc<SharedGpuContext>,
-    /// The hosted renderer built on `context`.
-    renderer: Box<dyn HostedRenderer>,
-}
-
 /// The demand bits an attach epoch owns — everything the link's next
 /// update answers, reset by detach because the epoch dies with it.
 struct Demand {
@@ -509,14 +659,47 @@ impl Demand {
     }
 }
 
-/// Capture-owned rendering: `redraw` receives this surface's redraw
+/// Capture-owned rendering: `hook` receives this surface's redraw
 /// requests while a scope is open, and `depth` counts the open scopes —
 /// nesting is legal.
 struct External {
-    /// The enclosing capture's redraw target.
-    redraw: Rc<dyn Fn()>,
+    /// The enclosing capture's redraw target — fired only through
+    /// [`Self::redraw`], which pays the scope's owed redraw.
+    hook: Rc<dyn Fn()>,
     /// Outstanding external-rendering scopes.
     depth: NonZeroU32,
+    /// Whether a pass of this scope deferred on the frame pipeline's
+    /// in-flight step and has not been sent a redraw since.
+    ///
+    /// Every pass of the scope steps the one pipeline, so the pass that
+    /// takes a settled step need not be the pass that deferred on it — a
+    /// windowless drive's pump pass still queued when its terminal
+    /// capture begins, an effect's own frame still in flight when an
+    /// enclosing capture opens its scope. The completion wake then finds
+    /// the step already taken, so whoever observes the step settle pays
+    /// the debt: the wake, or the pass that composites it.
+    owes_redraw: Cell<bool>,
+}
+
+impl External {
+    /// A pass of this scope deferred on the pipeline's in-flight step: the
+    /// step's settle owes the scope a redraw, whichever pass observes it.
+    fn owe_redraw(&self) {
+        self.owes_redraw.set(true);
+    }
+
+    /// Whether a deferred pass is still owed a redraw — cleared, since the
+    /// caller sends it.
+    const fn take_owed_redraw(&self) -> bool {
+        self.owes_redraw.replace(false)
+    }
+
+    /// The hook a redraw request fires: any redraw the scope receives is
+    /// the retry every deferred pass waits on, so it pays the owed one.
+    fn redraw(&self) -> Rc<dyn Fn()> {
+        self.owes_redraw.set(false);
+        self.hook.clone()
+    }
 }
 
 impl Presentation {
@@ -596,6 +779,8 @@ impl SurfaceState {
         // blocking on `exec_sync`.
         let redraw_weak = crate::main_queue_owned::shared(weak.clone(), mtm);
         let redraw_view = crate::main_queue_owned::shared(platform_view.clone(), mtm);
+        let completion_weak = Arc::clone(&redraw_weak);
+        let completion_view = Arc::clone(&redraw_view);
         let redraw_handle = RedrawHandle::new(move || {
             let weak = Arc::clone(&redraw_weak);
             let view = Arc::clone(&redraw_view);
@@ -605,13 +790,27 @@ impl SurfaceState {
                 }
             });
         });
+        // The frame-completion waker: the engine's reply wakes it on the
+        // render thread, and the pipeline's next step runs on the main
+        // queue — the same `MainQueueOwned` hop the redraw handle takes.
+        let frame_waker =
+            std::task::Waker::from(Arc::new(WakeThrough(RedrawHandle::new(move || {
+                let weak = Arc::clone(&completion_weak);
+                let view = Arc::clone(&completion_view);
+                cocoa_ui::main_queue::enqueue(move |mtm| {
+                    if let Some(state) = weak.get(mtm).upgrade() {
+                        handle_frame_completion(&state, view.get(mtm));
+                    }
+                });
+            }))));
         Self {
             runtime,
             presentation_time: PresentationTime::get(env),
             presentation: RefCell::new(Presentation::detached()),
             park: Rc::new(PublicationPark::new()),
             view: RefCell::new(view),
-            bound: RefCell::new(None),
+            pipeline: RefCell::new(FramePipeline::new()),
+            frame_waker,
             weak_self: weak.clone(),
             current_width: Cell::new(0),
             current_height: Cell::new(0),
@@ -625,6 +824,8 @@ impl SurfaceState {
             configured_range: Cell::new(None),
             presentation_format: Cell::new(None),
             current_scale: Cell::new(1.0),
+            current_logical: Cell::new(kurbo::Size::ZERO),
+            delivered_resize: DeliveredResize::default(),
             ready_waiters: RefCell::new(Vec::new()),
             needs_a11y_refresh: Cell::new(true),
             visibility_watch: RefCell::new(None),
@@ -638,25 +839,39 @@ impl SurfaceState {
 
     /// Every target — drawable or external capture — is allocated in the
     /// surface's declared presentation format.
-    fn assert_declared_format(&self, pixel_format: MTLPixelFormat) {
-        assert_eq!(
-            pixel_format,
-            state_format(self),
-            "GpuSurface target must be in the surface's declared presentation format"
-        );
+    ///
+    /// A target in another format is a contract violation of the capture
+    /// pipeline that allocated it; the target is not drawn into.
+    fn declares_format(&self, pixel_format: MTLPixelFormat) -> bool {
+        let declared = state_format(self);
+        if pixel_format != declared {
+            waterui::contract_violation!(
+                "GpuSurface target must be in the surface's declared presentation format \
+                 ({declared:?}), got {pixel_format:?}; the target is not drawn"
+            );
+            return false;
+        }
+        true
     }
 
-    /// Renders through the retained engine and presents its composed texture
-    /// — the ffi `render_into`.
+    /// One frame step through the retained engine for a target the host
+    /// holds now — the ffi `render_into`, without waiting on the render
+    /// thread: a produced frame composites into `texture`; otherwise the
+    /// renderer is created or a frame submitted, and the completion waker
+    /// brings the next step.
     ///
     /// The renderer — engine, surface and the view's layer — is built lazily
     /// on the first frame and rebuilt from the view whenever the runtime's
-    /// context generation moves on.
+    /// context generation moves on: the pair is replaced whole on
+    /// `context`, the generation this frame is rendering under, its
+    /// in-flight frame dropped with it — the bound context is the binding,
+    /// no second counter compares. Under [`Pipelining::Continuous`] a
+    /// frame that wants a successor submits it right after its composite.
     ///
     /// # Errors
     ///
-    /// [`HostedError`] when creating the renderer or presenting the frame
-    /// fails.
+    /// [`HostedError`] when creating the renderer, submitting or producing
+    /// the frame fails.
     fn render_into(
         &self,
         view: &Retained<SurfaceView>,
@@ -664,47 +879,56 @@ impl SurfaceState {
         texture: &wgpu::Texture,
         display: Display,
         target_time: FrameTime,
-    ) -> Result<(bool, bool, Option<Rc<EngineGeneration>>), HostedError> {
+        pipelining: Pipelining,
+    ) -> Result<Produced, HostedError> {
+        let size = OffscreenSize::try_from_pixels(texture.width(), texture.height())
+            .expect("a wgpu texture has a non-zero extent");
+        let mut pipeline = self.pipeline.borrow_mut();
+        pipeline.bind(context, || {
+            self.view.borrow_mut().renderer(
+                &self.runtime,
+                context,
+                &self.redraw_handle,
+                size,
+                &self.failure_sink(view, context.generation()),
+            )
+        });
+        let request = FrameRequest {
+            size,
+            display,
+            time: target_time,
+        };
+        let mut cx = core::task::Context::from_waker(&self.frame_waker);
+        Ok(
+            match pipeline.step(&mut cx, request, || self.begin_frame())? {
+                Step::Awaiting => Produced::Awaiting,
+                Step::Unproduced => Produced::Unwritten,
+                Step::Ready => {
+                    // The composite retains the generation evidence its
+                    // completion checks: on the scene path the production
+                    // generation itself — sealed outcome immutable — so a late
+                    // completion can never be told productive readiness by a
+                    // mutable owner flag alone.
+                    let (next, scene_generation) = pipeline.composite(texture, display);
+                    let needs_redraw = next != Next::Idle || self.dirty.get();
+                    if needs_redraw && matches!(pipelining, Pipelining::Continuous) {
+                        pipeline.submit(&mut cx, request, || self.begin_frame())?;
+                    }
+                    Produced::Wrote {
+                        needs_redraw,
+                        scene_generation,
+                    }
+                }
+            },
+        )
+    }
+
+    /// The UI side of a frame, run just ahead of its submission: the
+    /// content's redraw requests until now are answered, and the view's
+    /// per-frame hook runs.
+    fn begin_frame(&self) {
         self.dirty.set(false);
         self.view.borrow().before_frame();
-        // A renderer bound to a context generation that has since been lost
-        // and rebuilt holds a dead device; the pair is replaced whole on
-        // `context`, the generation this frame is rendering under — the
-        // stored `context` is the binding, no second counter compares.
-        let mut slot = self.bound.borrow_mut();
-        if slot
-            .as_ref()
-            .is_some_and(|bound| !Arc::ptr_eq(&bound.context, context))
-        {
-            *slot = None;
-        }
-        if slot.is_none() {
-            let size = OffscreenSize::try_from_pixels(texture.width(), texture.height())
-                .expect("a wgpu texture has a non-zero extent");
-            *slot = Some(BoundRenderer {
-                context: context.clone(),
-                renderer: self.view.borrow_mut().renderer(
-                    &self.runtime,
-                    context,
-                    &self.redraw_handle,
-                    size,
-                    &self.failure_sink(view, context.generation()),
-                )?,
-            });
-        }
-        let bound = slot.as_mut().expect("the bound slot was filled above");
-        let submitted = bound.renderer.present(texture, display, target_time)?;
-        // The submission retains the generation evidence its completion
-        // checks: on the scene path the production generation itself —
-        // sealed outcome immutable — so a late completion can never be
-        // told productive readiness by a mutable owner flag alone.
-        let scene_generation = bound.renderer.submission_evidence();
-        let wrote_target = bound.renderer.wrote_target(target_time);
-        Ok((
-            submitted != Next::Idle || self.dirty.get(),
-            wrote_target,
-            scene_generation,
-        ))
     }
 
     /// The routed-failure channel a bound renderer captures at creation:
@@ -739,15 +963,23 @@ impl SurfaceState {
 }
 
 /// The wgpu texture format an `MTLTexture` imports at — the ffi
-/// `metal_texture_format`.
+/// `metal_texture_format`. A format the surface never negotiates is a
+/// contract violation of whoever allocated the texture; the answer is
+/// `None` and the frame is not drawn.
 fn metal_texture_format(
     texture: &objc2::runtime::ProtocolObject<dyn MTLTexture>,
-) -> wgpu::TextureFormat {
+) -> Option<wgpu::TextureFormat> {
     match texture.pixelFormat() {
-        MTLPixelFormat::BGRA8Unorm => wgpu::TextureFormat::Bgra8Unorm,
-        MTLPixelFormat::BGRA8Unorm_sRGB => wgpu::TextureFormat::Bgra8UnormSrgb,
-        MTLPixelFormat::RGBA16Float => wgpu::TextureFormat::Rgba16Float,
-        other => panic!("GpuSurface external Metal texture has unsupported format {other:?}"),
+        MTLPixelFormat::BGRA8Unorm => Some(wgpu::TextureFormat::Bgra8Unorm),
+        MTLPixelFormat::BGRA8Unorm_sRGB => Some(wgpu::TextureFormat::Bgra8UnormSrgb),
+        MTLPixelFormat::RGBA16Float => Some(wgpu::TextureFormat::Rgba16Float),
+        other => {
+            waterui::contract_violation!(
+                "GpuSurface external Metal texture has unsupported format {other:?}; \
+                 the frame is not drawn"
+            );
+            None
+        }
     }
 }
 
@@ -784,21 +1016,73 @@ fn display_headroom(format: wgpu::TextureFormat, view: &Retained<SurfaceView>) -
     }
 }
 
+/// The waker a hosted renderer's creation and frames resolve through: the
+/// engine's reply wakes it on the render thread, and the redraw-style hop
+/// it carries takes the pipeline's next step on the main queue.
+struct WakeThrough(RedrawHandle);
+
+impl std::task::Wake for WakeThrough {
+    fn wake(self: Arc<Self>) {
+        self.0.request_redraw();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.0.request_redraw();
+    }
+}
+
+/// When a composited frame that wants a successor submits it.
+#[derive(Debug, Clone, Copy)]
+enum Pipelining {
+    /// The display link's frames: the successor is submitted right after
+    /// the composite, begun at the composited update's target time as that
+    /// frame was at its own, so it renders while this one presents and the
+    /// next update composites it.
+    Continuous,
+    /// An explicit capture: every frame is submitted for the capture's own
+    /// instant, so nothing is submitted ahead of it.
+    PerTarget,
+}
+
+/// What one [`SurfaceState::render_into`] step left in the host's target.
+enum Produced {
+    /// The renderer is being created or its frame is in flight: the
+    /// target stays unwritten, and the completion waker asks for the next
+    /// step.
+    Awaiting,
+    /// The frame came out without this surface's content — a scene
+    /// mounted or invalidated after the shared batch it joined: the target
+    /// stays unwritten and the frame is owed.
+    Unwritten,
+    /// The produced frame composited into the target.
+    Wrote {
+        /// Whether another frame should be scheduled.
+        needs_redraw: bool,
+        /// The production generation's own sealed-outcome evidence — see
+        /// [`FrameRender::Wrote`].
+        scene_generation: Option<Rc<EngineGeneration>>,
+    },
+}
+
 /// What one call to [`render_to_metal_texture`] did with the frame.
 enum FrameRender {
     /// The context's device was already reported lost, so no submission was
     /// made — nothing may touch the dead device, and the caller must not
     /// latch a frame or present a ring slot nothing was rendered into.
     PendingRebuild,
-    /// The frame's work was submitted on the context the caller passed in;
-    /// that exact context owns the completion marker and callback.
-    Submitted {
+    /// Nothing reached the target yet: the renderer is being created or
+    /// its frame is in flight, and the completion waker brings the next
+    /// step — the target drops unwritten and the frame stays owed.
+    Awaiting,
+    /// A frame came out without this surface's content: the target drops
+    /// unwritten and the frame is owed.
+    Unwritten,
+    /// The produced frame composited into the target on the context the
+    /// caller passed in; that exact context owns the completion marker and
+    /// callback.
+    Wrote {
         /// Whether another frame should be scheduled.
         needs_redraw: bool,
-        /// Whether `present` wrote the target — `false` when a scene
-        /// mounted or invalidated after the produced batch answered
-        /// `Next::At` without compositing.
-        wrote_target: bool,
         /// The production generation's own sealed-outcome evidence,
         /// retained until the completion runs: a scene batch's
         /// [`EngineGeneration`] — `is_failed` is immutable once set — or
@@ -812,8 +1096,9 @@ enum FrameRender {
     },
 }
 
-/// Imports an `MTLTexture` as a wgpu texture, renders a frame into it and
-/// submits; reports whether the frame submitted or the context is dead — the
+/// Imports an `MTLTexture` as a wgpu texture and takes one frame step into
+/// it; reports whether a produced frame composited into it, nothing has
+/// reached it yet, or the context is dead — the
 /// `waterui_gpu_content_render_to_metal_texture` half of the ffi entry
 /// point.
 #[expect(
@@ -829,9 +1114,22 @@ fn render_to_metal_texture(
     height: u32,
     scale: f64,
     target_time: FrameTime,
+    pipelining: Pipelining,
 ) -> Result<FrameRender, HostedError> {
-    state.assert_declared_format(metal_texture.pixelFormat());
-    let format = metal_texture_format(&metal_texture);
+    if !state.declares_format(metal_texture.pixelFormat()) {
+        return Ok(FrameRender::Unwritten);
+    }
+    // The surface's own geometry, never one read back from this frame's
+    // pixels: a drawable issued before a resize or a capture's texture must
+    // not tell the content it shrank back.
+    deliver_resize(
+        state,
+        state.current_logical.get(),
+        state.current_scale.get(),
+    );
+    let Some(format) = metal_texture_format(&metal_texture) else {
+        return Ok(FrameRender::Unwritten);
+    };
     if context.device_lost_reason().is_some() {
         return Ok(FrameRender::PendingRebuild);
     }
@@ -863,16 +1161,29 @@ fn render_to_metal_texture(
         scale,
         headroom: display_headroom(format, view),
     };
-    // The completion marker submitted by the caller orders the frame's work
+    // The completion marker submitted by the caller orders the composite
     // ahead of the callback that presents it.
-    let (needs_redraw, wrote_target, scene_generation) =
-        state.render_into(view, context, &wgpu_texture, display, target_time)?;
-    Ok(FrameRender::Submitted {
-        needs_redraw,
-        wrote_target,
-        scene_generation,
-        imported: state.armed.is_some().then_some(wgpu_texture),
-    })
+    Ok(
+        match state.render_into(
+            view,
+            context,
+            &wgpu_texture,
+            display,
+            target_time,
+            pipelining,
+        )? {
+            Produced::Awaiting => FrameRender::Awaiting,
+            Produced::Unwritten => FrameRender::Unwritten,
+            Produced::Wrote {
+                needs_redraw,
+                scene_generation,
+            } => FrameRender::Wrote {
+                needs_redraw,
+                scene_generation,
+                imported: state.armed.is_some().then_some(wgpu_texture),
+            },
+        },
+    )
 }
 
 /// The external arm's answer to a typed render failure: the failure
@@ -909,7 +1220,7 @@ fn owe_and_reschedule(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>) {
     update_presentation_demand(state, view);
 }
 
-/// The external arm's answer to a `present` that returned `Next::At`
+/// The external arm's answer to a frame that came out unproduced
 /// because the scene mounted or invalidated after the produced batch:
 /// the target carries no pixels, so the frame stays owed through the
 /// surface's own demand — the next production re-renders it — and the
@@ -937,8 +1248,8 @@ fn park_unrenderable_frame(
     park_for_publication(state, view, generation);
 }
 
-/// The onscreen arm's answer to a `present` that returned `Next::At`:
-/// the target carries no pixels — the drawable drops without submitting
+/// The onscreen arm's answer to a frame that came out unproduced: the
+/// target carries no pixels — the drawable drops without submitting
 /// or presenting — and the frame stays owed through the surface's own
 /// demand, mirroring the external path's [`defer_unwritten_external_frame`].
 fn defer_unwritten_drawable_frame(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>) {
@@ -1040,23 +1351,22 @@ fn can_render_frame(view: &Retained<SurfaceView>, first_paint_owed: bool) -> boo
     is_effectively_visible(view) || (first_paint_owed && participates_in_first_paint(view))
 }
 
-/// Positions the presentation layer and tells Core Animation the frames are
-/// already at device-pixel size — `updatePresentationFrame`.
+/// Positions the presentation layer over the surface's response — where a
+/// leaf draws its content (`docs/layout-spec.md` §6) — and tells Core
+/// Animation the frames are already at device-pixel size —
+/// `updatePresentationFrame`.
 fn update_presentation_frame(state: &SurfaceState, view: &Retained<SurfaceView>) {
     let layer = view.presentation_layer();
-    let bounds = view.bounds_size();
+    let frame = view.presentation_frame();
     cocoa_ui::core_animation::without_animation(|| {
-        cocoa_ui::core_animation::set_frame(
-            &layer,
-            cocoa_ui::Rect::new(0.0, 0.0, bounds.width, bounds.height),
-        );
+        cocoa_ui::core_animation::set_frame(&layer, frame);
         cocoa_ui::core_animation::set_contents_scale(&layer, state.current_scale.get());
     });
 }
 
 /// Geometry + deferred allocation — `initializeGpuIfNeeded`.
 fn initialize_gpu(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>) {
-    let bounds = view.bounds_size();
+    let bounds = view.content_rect().size;
     if bounds.width <= 0.0 || bounds.height <= 0.0 {
         // A genuinely empty view cannot present at all: the live epoch
         // drops rather than carry a zero size beside a configured
@@ -1104,7 +1414,7 @@ fn prepare_presentation(
     view: &Retained<SurfaceView>,
     scale: f64,
 ) -> bool {
-    let bounds = view.bounds_size();
+    let bounds = view.content_rect().size;
     if bounds.width <= 0.0 || bounds.height <= 0.0 {
         return false;
     }
@@ -1126,6 +1436,11 @@ fn prepare_presentation(
     }
 
     state.current_scale.set(scale);
+    let logical = kurbo::Size::new(bounds.width, bounds.height);
+    state.current_logical.set(logical);
+    // Ahead of any frame at this geometry: the surface's first frame and
+    // every later one at a changed size or scale find the content told.
+    deliver_resize(state, logical, scale);
     // Device pixels round up: a positive sub-pixel bound still covers a
     // real pixel row, never a truncated zero.
     let width = (bounds.width * scale).ceil() as u32;
@@ -1163,10 +1478,17 @@ fn attach(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>) {
     let frame_view = view.clone();
     let on_frame = Rc::new(move |frame| {
         if let Some(state) = weak.upgrade() {
-            render_drawable(&state, &frame_view, frame);
+            // The link has no use for the drawable's outcome: an owed or
+            // awaited frame already re-armed the surface's own demand.
+            let _ = render_drawable(&state, &frame_view, frame);
         }
     });
-    let presenter = MetalPresenter::new(layer, on_frame, state.armed.is_some());
+    let presenter = MetalPresenter::new(
+        objc2::MainThreadOnly::mtm(&**view),
+        layer,
+        on_frame,
+        state.armed.is_some(),
+    );
     let context = state.runtime.context();
     let device = crate::gpu_runtime::raw_metal_device(&context);
     presenter.set_device(&device);
@@ -1195,9 +1517,12 @@ fn attach(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>) {
 /// `Attached` state releases the link and the demand epoch with it —
 /// readiness re-arms and the next attach forces one frame through the
 /// gates again. A stale frame's lease release can never reach the next
-/// presenter's pool.
+/// presenter's pool. The frame in flight drops with the epoch, without
+/// waiting on the render thread; the renderer, its producer and its context
+/// stay, so the reattached surface renders on them.
 fn detach_if_attached(state: &SurfaceState) {
     state.presentation.borrow_mut().detach();
+    state.pipeline.borrow_mut().discard_frame();
 }
 
 // MARK: - Frame scheduling (WuiDisplayLinkDriver + WuiRedrawCallback)
@@ -1220,9 +1545,13 @@ fn update_presentation_demand(state: &Rc<SurfaceState>, view: &Retained<SurfaceV
     // Demand is `keepRedrawing`, an owed frame or a dirty redraw — the link
     // unpauses only while all visibility gates hold and answers the demand
     // at the next drawable delivery, at most one display interval later.
+    // While the renderer is created or its frame is in flight the link
+    // stays paused: the completion waker, not a tick, asks for the next
+    // step.
     let slot = state.presentation.borrow();
     if let Epoch::Attached(attached) = &slot.epoch {
         let demand = state.runtime.context().device_lost_reason().is_none()
+            && !state.pipeline.borrow().awaiting()
             && can_render_frame(view, attached.demand.first_paint_owed.get())
             && attached.demand.any(state.dirty.get());
         attached.presenter.set_paused(!demand);
@@ -1264,16 +1593,31 @@ fn publication_replay(
         if let Some(state) = weak.upgrade() {
             // A capture scope open over the hold is asked for the owed
             // frame through the enclosing capture's redraw contract.
-            let replay = state
-                .presentation
-                .borrow()
-                .external()
-                .map(|external| external.redraw.clone());
+            let replay = state.presentation.borrow().external().map(External::redraw);
             if let Some(redraw) = replay {
                 redraw();
             } else {
                 owe_and_reschedule(&state, &view);
             }
+        }
+    }
+}
+
+/// The publication wait's `Err` outcome — the runtime's rebuild budget is
+/// spent, so no context will ever publish and the surface stays
+/// unavailable: native readiness resolves as failure so `ready` waiters
+/// never hang, and the demand gate keeps the link paused on the `Failed`
+/// hold the park settled.
+fn publication_unavailable(
+    state: &Rc<SurfaceState>,
+    view: &Retained<SurfaceView>,
+) -> impl FnOnce() + 'static {
+    let weak = Rc::downgrade(state);
+    let view = view.clone();
+    move || {
+        if let Some(state) = weak.upgrade() {
+            complete_ready(&state);
+            update_presentation_demand(&state, &view);
         }
     }
 }
@@ -1295,11 +1639,32 @@ fn park_for_publication(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>, 
             }
         },
         publication_replay(state, view),
+        publication_unavailable(state, view),
     );
 }
 
+/// What a delivered drawable carried away from [`render_drawable`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DrawableUse {
+    /// Released unrendered: a stale delivery, a capture-owned surface, a
+    /// gated frame, a parked context or a failure.
+    Released,
+    /// Released unwritten while the renderer is created or its frame is
+    /// in flight; the frame stays owed.
+    Awaiting,
+    /// Released unwritten because the produced frame carried no content
+    /// for this surface; the frame stays owed.
+    Unwritten,
+    /// A produced frame composited into it, submitted for presentation.
+    Submitted,
+}
+
 /// Renders one issued drawable and settles its receipt after GPU completion.
-fn render_drawable(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>, frame: DrawableFrame) {
+fn render_drawable(
+    state: &Rc<SurfaceState>,
+    view: &Retained<SurfaceView>,
+    frame: DrawableFrame,
+) -> DrawableUse {
     let external_redraw = {
         let slot = state.presentation.borrow();
         if let Some(external) = &slot.capture {
@@ -1307,13 +1672,13 @@ fn render_drawable(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>, frame
             // delivered drawable is released unpresented and the redraw
             // goes to the enclosing capture — cloned out so the callback
             // cannot re-enter a live borrow.
-            Some(external.redraw.clone())
+            Some(external.redraw())
         } else {
             // A stale delivery — the link kept a queued update across a
             // detach, a failure settle or a device-loss park: release the
             // drawable's lease silently.
             if state.park.is_held() || matches!(slot.epoch, Epoch::Detached) {
-                return;
+                return DrawableUse::Released;
             }
             None
         }
@@ -1321,7 +1686,7 @@ fn render_drawable(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>, frame
     if let Some(redraw) = external_redraw {
         drop(frame);
         redraw();
-        return;
+        return DrawableUse::Released;
     }
     let first_paint_pending = state
         .presentation
@@ -1330,7 +1695,7 @@ fn render_drawable(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>, frame
         .is_some_and(|attached| attached.demand.first_paint_owed.get());
     if !can_render_frame(view, first_paint_pending) {
         owe_frame(state);
-        return;
+        return DrawableUse::Released;
     }
 
     // One context generation covers the render, the completion marker, and
@@ -1354,29 +1719,37 @@ fn render_drawable(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>, frame
         height,
         state.current_scale.get(),
         target_time,
+        Pipelining::Continuous,
     ) {
         Ok(outcome) => outcome,
         Err(error) => {
             settle_failed(state, view, context.generation(), error);
-            return;
+            return DrawableUse::Released;
         }
     };
-    let FrameRender::Submitted {
-        needs_redraw,
-        wrote_target,
-        scene_generation,
-        imported,
-    } = outcome
-    else {
-        park_unrenderable_frame(state, view, context.generation());
-        return;
+    let (needs_redraw, scene_generation, imported) = match outcome {
+        FrameRender::PendingRebuild => {
+            park_unrenderable_frame(state, view, context.generation());
+            return DrawableUse::Released;
+        }
+        FrameRender::Awaiting => {
+            // Nothing to show yet: the drawable drops unpresented and the
+            // frame stays owed. The link pauses while the frame is in
+            // flight — its completion, not a tick, asks for the next one.
+            owe_and_reschedule(state, view);
+            return DrawableUse::Awaiting;
+        }
+        FrameRender::Unwritten => {
+            // The frame never wrote its target — drop it and owe it.
+            defer_unwritten_drawable_frame(state, view);
+            return DrawableUse::Unwritten;
+        }
+        FrameRender::Wrote {
+            needs_redraw,
+            scene_generation,
+            imported,
+        } => (needs_redraw, scene_generation, imported),
     };
-
-    if !wrote_target {
-        // A `Next::At` frame never wrote its target — drop it and owe it.
-        defer_unwritten_drawable_frame(state, view);
-        return;
-    }
 
     if let Some(attached) = state.presentation.borrow_mut().attached_mut() {
         attached.demand.keep_redrawing.set(needs_redraw);
@@ -1392,6 +1765,7 @@ fn render_drawable(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>, frame
         scene_generation,
         imported.as_ref(),
     );
+    DrawableUse::Submitted
 }
 
 /// Encodes the completion-marker submission — with an armed surface's
@@ -1417,7 +1791,7 @@ fn submit_drawable_frame(
     // slot inside this same submission — GPU→GPU, ordered after the
     // render on the shared queue. The copy rides the work item and the
     // settle promotes it only on a real `PresentedFrame` receipt.
-    let frozen = state.armed.as_ref().map(|armed| {
+    let frozen = state.armed.as_ref().and_then(|armed| {
         armed.encode_copy(
             context,
             imported.expect("an armed surface imports its target"),
@@ -1675,6 +2049,7 @@ fn settle_failed(
             }
         },
         publication_replay(state, view),
+        publication_unavailable(state, view),
     );
     if !settled {
         // The owner already settled this failure — the requesting
@@ -1688,6 +2063,18 @@ fn settle_failed(
     );
     complete_ready(state);
     update_presentation_demand(state, view);
+    // A capture holding a scope may be parked on a `Deferred` this
+    // surface answered an earlier pass — a renderer still being created,
+    // a frame in flight — while the failure settled elsewhere: in another
+    // pass of the same capture, a frame completion or a routed batch
+    // failure. No frame can ever replay that deferral on the failed
+    // generation, so the settle is the redraw the capture retries on, and
+    // the retry reads the terminal `Failed` the hold now answers. It goes
+    // through the surface's own redraw channel, never the hook directly:
+    // the settle can run inside the capture's own submission.
+    if state.presentation.borrow().external().is_some() {
+        state.redraw_handle.request_redraw();
+    }
 }
 
 /// `handleRedrawRequest`: the redraw waker's main-queue body — republishes
@@ -1698,16 +2085,45 @@ fn handle_redraw_request(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>)
     if take_measurement_invalidation(state) {
         crate::invalidation::invalidate_layout_hierarchy(view.as_platform_view());
     }
-    let external_redraw = state
-        .presentation
-        .borrow()
-        .external()
-        .map(|external| external.redraw.clone());
+    let external_redraw = state.presentation.borrow().external().map(External::redraw);
     if let Some(redraw) = external_redraw {
         redraw();
     } else {
         // A redraw request is demand: the next link update answers it.
         update_presentation_demand(state, view);
+    }
+}
+
+/// The frame-completion waker's main-queue body: the renderer's creation or
+/// its frame settled on the render thread's reply. A settled step asks for
+/// the frame that shows it — through the enclosing capture's redraw while a
+/// capture scope owns the surface, otherwise as owed link demand — and a
+/// failure settles on the context generation the renderer was bound to.
+fn handle_frame_completion(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>) {
+    let Some(generation) = state
+        .pipeline
+        .borrow()
+        .context()
+        .map(|context| context.generation())
+    else {
+        return;
+    };
+    let mut cx = core::task::Context::from_waker(&state.frame_waker);
+    let polled = state.pipeline.borrow_mut().poll(&mut cx);
+    match polled {
+        // Nothing settled: still running, or another step took what did —
+        // and a capture pass that took it sent the redraw a deferred pass
+        // was owed (`External::owe_redraw`).
+        core::task::Poll::Pending | core::task::Poll::Ready(Ok(false)) => {}
+        core::task::Poll::Ready(Err(error)) => settle_failed(state, view, generation, error),
+        core::task::Poll::Ready(Ok(true)) => {
+            let external_redraw = state.presentation.borrow().external().map(External::redraw);
+            if let Some(redraw) = external_redraw {
+                redraw();
+            } else {
+                owe_and_reschedule(state, view);
+            }
+        }
     }
 }
 
@@ -1791,11 +2207,11 @@ fn refresh_visibility_watch(state: &Rc<SurfaceState>, view: &Retained<SurfaceVie
 fn install_input(
     view: &Retained<SurfaceView>,
     state: &Rc<SurfaceState>,
+    mtm: cocoa_ui::MainThreadMarker,
 ) -> Option<Retained<cocoa_ui::PlatformView>> {
     if !state.wants_input_events {
         return None;
     }
-    let mtm = cocoa_ui::MainThreadMarker::new().expect("main thread");
     let input = platform_input_view(mtm);
     let weak = Rc::downgrade(state);
     // The input responder is a subview of `view`: the view retains it, its
@@ -1813,11 +2229,7 @@ fn install_input(
         }
         // The event's frame request rides the same coalescing as a redraw
         // request.
-        let external_redraw = state
-            .presentation
-            .borrow()
-            .external()
-            .map(|external| external.redraw.clone());
+        let external_redraw = state.presentation.borrow().external().map(External::redraw);
         if let Some(redraw) = external_redraw {
             redraw();
         } else {
@@ -1926,10 +2338,12 @@ impl cocoa_ui::capture::CapturableSurface for Capturable {
 
     fn end_capture_suppression(&self) {
         let count = self.state.capture_suppression.get();
-        assert!(
-            count > 0,
-            "GpuSurface capture suppression scopes are unbalanced"
-        );
+        if count == 0 {
+            waterui::contract_violation!(
+                "GpuSurface capture suppression scopes are unbalanced; the end is ignored"
+            );
+            return;
+        }
         self.state.capture_suppression.set(count - 1);
         if count == 1 {
             set_presentation_hidden(&self.view, false);
@@ -1954,9 +2368,13 @@ impl cocoa_ui::capture::CapturableSurface for Capturable {
             attached.demand.keep_redrawing.set(false);
             attached.presenter.set_paused(true);
         }
+        // A frame the link submitted ahead was begun at a display update's
+        // time; the capture's frames are begun at its own instant.
+        self.state.pipeline.borrow_mut().discard_frame();
         slot.capture = Some(External {
-            redraw: on_redraw,
+            hook: on_redraw,
             depth: NonZeroU32::MIN,
+            owes_redraw: Cell::new(false),
         });
     }
 
@@ -1976,10 +2394,12 @@ impl cocoa_ui::capture::CapturableSurface for Capturable {
                 // Nothing resumes on a dead surface, and an end beyond the
                 // recorded count is the unbalance the assert names.
                 let orphaned = self.state.orphaned_external_scopes.get();
-                assert!(
-                    orphaned > 0,
-                    "GpuSurface external rendering scopes are unbalanced"
-                );
+                if orphaned == 0 {
+                    waterui::contract_violation!(
+                        "GpuSurface external rendering scopes are unbalanced; the end is ignored"
+                    );
+                    return;
+                }
                 self.state.orphaned_external_scopes.set(orphaned - 1);
                 return;
             }
@@ -1993,8 +2413,7 @@ impl cocoa_ui::capture::CapturableSurface for Capturable {
         &self,
         texture: &objc2::runtime::ProtocolObject<dyn MTLTexture>,
     ) -> bool {
-        self.state.assert_declared_format(texture.pixelFormat());
-        true
+        self.state.declares_format(texture.pixelFormat())
     }
 
     fn has_presented_frame(&self) -> bool {
@@ -2057,7 +2476,7 @@ impl cocoa_ui::capture::CapturableSurface for Capturable {
                 std::ptr::from_ref(texture).cast_mut(),
             )
         }
-        .expect("GpuSurface external render received a null texture");
+        .expect("`retain` of a pointer made from a reference is non-null");
         let context = self.state.runtime.context();
         // An explicit capture renders at the shared anchor's capture time —
         // its own exact instant, never a borrowed or approximated frame
@@ -2072,6 +2491,7 @@ impl cocoa_ui::capture::CapturableSurface for Capturable {
             height,
             self.state.current_scale.get(),
             target_time,
+            Pipelining::PerTarget,
         ) {
             Ok(outcome) => outcome,
             Err(error) => {
@@ -2079,27 +2499,53 @@ impl cocoa_ui::capture::CapturableSurface for Capturable {
                 return;
             }
         };
-        let FrameRender::Submitted {
-            wrote_target,
-            scene_generation,
-            imported,
-            ..
-        } = outcome
-        else {
-            complete_ready(&self.state);
-            // The capture's deferred frame replays through the redraw
-            // contract: publication resolves the parked wait, and the
-            // externally rendered surface's wake turns it into a redraw
-            // notification to the enclosing capture — the parent's owed
-            // frame then re-renders.
-            park_for_publication(&self.state, &self.view, context.generation());
-            completion(Err(cocoa_ui::capture::CaptureError::Deferred));
-            return;
+        let (scene_generation, imported) = match outcome {
+            FrameRender::PendingRebuild => {
+                complete_ready(&self.state);
+                // The capture's deferred frame replays through the redraw
+                // contract: publication resolves the parked wait, and the
+                // externally rendered surface's wake turns it into a
+                // redraw notification to the enclosing capture — the
+                // parent's owed frame then re-renders.
+                park_for_publication(&self.state, &self.view, context.generation());
+                completion(Err(cocoa_ui::capture::CaptureError::Deferred));
+                return;
+            }
+            FrameRender::Awaiting => {
+                // The frame is in flight: the capture defers, and the
+                // step's settle owes the enclosing capture the redraw
+                // that composites it — paid by the completion wake, or by
+                // another pass of the scope that takes the step first.
+                if let Some(external) = self.state.presentation.borrow().external() {
+                    external.owe_redraw();
+                }
+                completion(Err(cocoa_ui::capture::CaptureError::Deferred));
+                return;
+            }
+            FrameRender::Unwritten => {
+                defer_unwritten_external_frame(&self.state);
+                completion(Err(cocoa_ui::capture::CaptureError::Deferred));
+                return;
+            }
+            FrameRender::Wrote {
+                scene_generation,
+                imported,
+                ..
+            } => (scene_generation, imported),
         };
-        if !wrote_target {
-            defer_unwritten_external_frame(&self.state);
-            completion(Err(cocoa_ui::capture::CaptureError::Deferred));
-            return;
+        // This pass took a settled step another pass of the scope may have
+        // deferred on; the completion wake that follows finds nothing left
+        // to settle, so the owed redraw is sent here — through the
+        // surface's own redraw channel, never the hook directly: this runs
+        // inside the capture's submission.
+        if self
+            .state
+            .presentation
+            .borrow()
+            .external()
+            .is_some_and(External::take_owed_redraw)
+        {
+            self.state.redraw_handle.request_redraw();
         }
         let weak = Sendable(Rc::downgrade(&self.state));
         let view = Sendable(self.view.clone());
@@ -2113,7 +2559,7 @@ impl cocoa_ui::capture::CapturableSurface for Capturable {
         // An armed surface copies the external target it just wrote —
         // an externally rendered surface's screen pixels are what its
         // capture composed — inside this same submission.
-        let frozen = self.state.armed.as_ref().map(|armed| {
+        let frozen = self.state.armed.as_ref().and_then(|armed| {
             armed.encode_copy(
                 &context,
                 imported
@@ -2247,11 +2693,17 @@ fn submit_external_marker(
     );
 }
 
-const fn state_format(state: &SurfaceState) -> MTLPixelFormat {
-    state
-        .presentation_format
-        .get()
-        .expect("GpuSurface must have a configured dynamic range before external capture")
+/// The presentation format the surface negotiated. A capture before the
+/// dynamic range is configured is a contract violation of the capture
+/// pipeline; the standard-range format is used.
+fn state_format(state: &SurfaceState) -> MTLPixelFormat {
+    state.presentation_format.get().unwrap_or_else(|| {
+        waterui::contract_violation!(
+            "GpuSurface must have a configured dynamic range before external capture; \
+             the standard-range format is used"
+        );
+        MTLPixelFormat::BGRA8Unorm_sRGB
+    })
 }
 
 /// Shows or hides the presentation layer — `setPresentationHidden`.
@@ -2327,14 +2779,14 @@ impl Drop for MountGuard {
         // queue, after the presentation reset below has cleared the scope.
         // Recording the orphaned depth keeps that late end quiet — and
         // still counted, so an end nobody is owed stays a panic.
-        let orphaned = self
+        let open_scope = self
             .state
             .presentation
             .borrow()
             .capture
             .as_ref()
-            .map_or(0, |external| external.depth.get());
-        if orphaned > 0 {
+            .map(|external| (external.depth.get(), external.redraw()));
+        if let Some((orphaned, _)) = &open_scope {
             self.state
                 .orphaned_external_scopes
                 .set(self.state.orphaned_external_scopes.get() + orphaned);
@@ -2343,7 +2795,7 @@ impl Drop for MountGuard {
         self.state.park.clear();
         self.state.visibility_watch.borrow_mut().take();
         self.state.view.borrow_mut().unmount();
-        drop(self.state.bound.borrow_mut().take());
+        self.state.pipeline.borrow_mut().unbind();
         if let Some(input) = &self.input {
             cocoa_ui::view::remove_from_superview(input);
         }
@@ -2353,6 +2805,12 @@ impl Drop for MountGuard {
         self.view.set_backing_changed_handler(|| {});
         self.view.set_visibility_changed_handler(|| {});
         self.view.capturable_slot().clear();
+        // The capture holding that scope has lost content it may have
+        // deferred on: this surface can never redraw again, so its
+        // departure is the wake the capture's retry waits for.
+        if let Some((_, redraw)) = open_scope {
+            redraw();
+        }
     }
 }
 
@@ -2409,6 +2867,14 @@ struct SurfaceSubView {
 }
 
 impl SubView for SurfaceSubView {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         self.state.last_proposal.set(Some(proposal));
         let measured = self.state.view.borrow().measure(proposal);
@@ -2427,37 +2893,49 @@ impl SubView for SurfaceSubView {
 
 // MARK: - Install
 
-/// Installs the `gpu_surface` handlers — `Native<GpuContentView>` and
+/// The `gpu_surface` realizations — `Native<GpuView>` and
 /// `Native<ExternalFrameView>` and `Native<SceneView>` share presentation.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<GpuContentView>(build_surface);
-    dispatcher.register_native::<ExternalFrameView>(build_surface);
-    dispatcher.register_native::<waterui_graphics::scene_view::SceneView>(|view, ctx| {
-        build_surface(
-            scene::Scene::new(view, crate::gpu_runtime::scene_engine(ctx.env())),
-            ctx,
-        )
-    });
+pub fn realize_gpu_view(view: GpuView, ctx: &RenderContext<'_>) -> NativeLeaf {
+    build_surface(view, "GPU content", ctx)
 }
 
-/// The leaf construction the dispatcher's GPU-surface claims share —
-/// `GpuContentView`, `ExternalFrameView`, and `SceneView`.
+pub fn realize_external_frame_view(view: ExternalFrameView, ctx: &RenderContext<'_>) -> NativeLeaf {
+    build_surface(view, "external frame", ctx)
+}
+
+pub fn realize_scene_view(
+    view: waterui_graphics::backend::SceneView,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    let Some(engines) = crate::gpu_runtime::scene_engine(ctx.env()) else {
+        return crate::gpu_runtime::unavailable_leaf(ctx.mtm(), "scene");
+    };
+    build_surface(scene::Scene::new(view, engines), "scene", ctx)
+}
+
+/// The leaf construction the GPU-surface realizations share —
+/// `GpuView`, `ExternalFrameView`, and `SceneView`. Without a GPU
+/// runtime the view (named `kind` in the report) mounts empty instead.
 fn build_surface<V: HostedView + 'static>(
     view: V,
+    kind: &str,
     ctx: &crate::contract::RenderContext<'_>,
 ) -> NativeLeaf {
-    build_surface_parts(view, ctx).0
+    let Some(runtime) = crate::gpu_runtime::runtime(ctx.env()) else {
+        return crate::gpu_runtime::unavailable_leaf(ctx.mtm(), kind);
+    };
+    build_surface_parts(view, runtime, ctx).0
 }
 
 /// The single production mount path and its typed capture owner.
 fn build_surface_parts<V: HostedView + 'static>(
     view: V,
+    runtime: GpuRuntime,
     ctx: &crate::contract::RenderContext<'_>,
 ) -> (NativeLeaf, Rc<Capturable>) {
     {
         let mtm = ctx.mtm();
         let platform_view = SurfaceView::new(mtm);
-        let runtime = crate::gpu_runtime::runtime(ctx.env());
         let state = Rc::new_cyclic(|weak| {
             SurfaceState::new(
                 weak,
@@ -2480,7 +2958,7 @@ fn build_surface_parts<V: HostedView + 'static>(
         platform_view.capturable_slot().install(&registered);
 
         wire_view_handlers(&platform_view, &state);
-        let input_view = install_input(&platform_view, &state);
+        let input_view = install_input(&platform_view, &state, mtm);
 
         let mount_guard = MountGuard {
             view: platform_view.clone(),
@@ -2598,18 +3076,25 @@ pub mod native_test {
     use std::task::{Wake, Waker};
 
     use waterui_backend_core::Environment;
-    use waterui_graphics::cherenkov::{Display, Draw, Recorder, SurfaceError, WorkingColor};
+    use waterui_graphics::backend::cherenkov::{
+        Display, Draw, Recorder, SurfaceError, WorkingColor,
+    };
+    use waterui_graphics::backend::{NextFrame, RecordingResources, SceneContent, SceneView};
     use waterui_graphics::gpu::runtime::HostedLayerError;
-    use waterui_graphics::resources::RecordingResources;
-    use waterui_graphics::scene_view::{SceneContent, SceneView};
 
     use super::{
-        Capturable, Dispatcher, DrawableFrame, FrameTime, GpuRuntime, HostedError,
-        MainThreadMarker, NativeLeaf, PresentationTime, Rc, RefCell, Retained, SceneEngine,
-        SurfaceState, SurfaceView, build_surface_parts, defer_unwritten_external_frame, fmt, kurbo,
-        park_for_publication, render_drawable, scene, settle_failed, wgpu,
+        Capturable, DrawableFrame, DrawableUse, FrameTime, GpuRuntime, HostedError,
+        MainThreadMarker, NativeLeaf, Pipelining, PresentationTime, Produced, Rc, RefCell,
+        Retained, SceneEngine, SurfaceState, SurfaceView, build_surface_parts,
+        defer_unwritten_external_frame, fmt, park_for_publication, render_drawable, scene,
+        settle_failed, wgpu,
     };
     use crate::contract::RenderContext;
+    use waterui_graphics::input::SurfaceInputEvent;
+
+    /// A delivered drawable found the renderer's creation or frame still in
+    /// flight.
+    struct Awaited;
 
     /// The smallest real `SceneContent`: records one fill — a mounted
     /// scene that runs the true `Scene` → `ScenePart` → engine path.
@@ -2622,20 +3107,52 @@ pub mod native_test {
             _resources: &mut RecordingResources<'_>,
             width: f32,
             height: f32,
-        ) -> bool {
+        ) -> NextFrame {
             recorder.fill(
                 kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height)),
                 WorkingColor::WHITE,
             );
-            false
+            NextFrame::Idle
+        }
+
+        fn rebuild_for_engine(&mut self) {}
+    }
+
+    /// Fixture content that takes input and records every event it is
+    /// handed.
+    struct InputRecordingContent {
+        events: Rc<RefCell<Vec<SurfaceInputEvent>>>,
+    }
+
+    impl SceneContent for InputRecordingContent {
+        fn build_scene(
+            &mut self,
+            recorder: &mut Recorder,
+            _resources: &mut RecordingResources<'_>,
+            width: f32,
+            height: f32,
+        ) -> NextFrame {
+            recorder.fill(
+                kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height)),
+                WorkingColor::WHITE,
+            );
+            NextFrame::Idle
+        }
+
+        fn wants_input_events(&self) -> bool {
+            true
+        }
+
+        fn input(&mut self, event: &SurfaceInputEvent) {
+            self.events.borrow_mut().push(event.clone());
         }
 
         fn rebuild_for_engine(&mut self) {}
     }
 
     /// Self-animating fixture content: `build_scene` always answers
-    /// `true`, exercising the `again` path that schedules the next frame
-    /// without un-producing this one.
+    /// `NextFrame::Perpetual`, exercising the path that schedules the next
+    /// frame without un-producing this one.
     struct AnimatingFixtureContent;
 
     impl SceneContent for AnimatingFixtureContent {
@@ -2645,12 +3162,12 @@ pub mod native_test {
             _resources: &mut RecordingResources<'_>,
             width: f32,
             height: f32,
-        ) -> bool {
+        ) -> NextFrame {
             recorder.fill(
                 kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height)),
                 WorkingColor::WHITE,
             );
-            true
+            NextFrame::Perpetual
         }
 
         fn rebuild_for_engine(&mut self) {}
@@ -2760,6 +3277,32 @@ pub mod native_test {
             Self::mount_in(mtm, &fixture_env(runtime))
         }
 
+        /// Mounts a surface whose content takes input, through the same
+        /// production path as [`Self::mount`]; the second value is every
+        /// input event the content is handed, in order.
+        ///
+        /// # Errors
+        ///
+        /// When the runner has no GPU adapter.
+        #[expect(
+            clippy::future_not_send,
+            reason = "the mount is a main-thread fixture: Rc<SurfaceState>, the MainThreadMarker and the Objective-C views stay on the trial's main thread"
+        )]
+        pub async fn mount_recording_input(
+            mtm: MainThreadMarker,
+        ) -> Result<(Self, Rc<RefCell<Vec<SurfaceInputEvent>>>), String> {
+            let runtime = GpuRuntime::new().await.map_err(|error| error.to_string())?;
+            let events = Rc::new(RefCell::new(Vec::new()));
+            let mounted = Self::mount_in_view(
+                mtm,
+                &fixture_env(runtime),
+                SceneView::new(InputRecordingContent {
+                    events: Rc::clone(&events),
+                }),
+            )?;
+            Ok((mounted, events))
+        }
+
         /// Mounts a surface whose content self-animates — `build_scene`
         /// always answers `true` — through the same production path as
         /// [`Self::mount`].
@@ -2773,11 +3316,11 @@ pub mod native_test {
         )]
         pub async fn mount_animating(mtm: MainThreadMarker) -> Result<Self, String> {
             let runtime = GpuRuntime::new().await.map_err(|error| error.to_string())?;
-            Ok(Self::mount_in_view(
+            Self::mount_in_view(
                 mtm,
                 &fixture_env(runtime),
                 SceneView::new(AnimatingFixtureContent),
-            ))
+            )
         }
 
         /// Mounts the surface under an environment the caller prepared —
@@ -2790,33 +3333,36 @@ pub mod native_test {
         ///
         /// When `env` carries no `GpuRuntime` or `SceneEngine`.
         pub fn mount_in(mtm: MainThreadMarker, env: &Environment) -> Result<Self, String> {
-            Ok(Self::mount_in_view(
-                mtm,
-                env,
-                SceneView::new(FixtureContent),
-            ))
+            Self::mount_in_view(mtm, env, SceneView::new(FixtureContent))
         }
 
         /// Mounts a surface around the caller's `SceneView` under `env` —
         /// the body [`Self::mount_in`] shares with mounts whose content
         /// differs (self-animating fixture content).
         ///
-        /// # Panics
+        /// # Errors
         ///
         /// When `env` carries no `GpuRuntime` or `SceneEngine`.
-        fn mount_in_view(mtm: MainThreadMarker, env: &Environment, view: SceneView) -> Self {
-            let runtime = crate::gpu_runtime::runtime(env);
-            let engines = crate::gpu_runtime::scene_engine(env);
-            let ctx = RenderContext::new(env, Rc::new(Dispatcher::new()), mtm);
-            let (leaf, capturable) = build_surface_parts(scene::Scene::new(view, engines), &ctx);
-            Self {
+        fn mount_in_view(
+            mtm: MainThreadMarker,
+            env: &Environment,
+            view: SceneView,
+        ) -> Result<Self, String> {
+            let runtime =
+                crate::gpu_runtime::runtime(env).ok_or("the environment carries no GpuRuntime")?;
+            let engines = crate::gpu_runtime::scene_engine(env)
+                .ok_or("the environment carries no SceneEngine")?;
+            let ctx = RenderContext::new(env, mtm);
+            let (leaf, capturable) =
+                build_surface_parts(scene::Scene::new(view, engines), runtime.clone(), &ctx);
+            Ok(Self {
                 state: capturable.state.clone(),
                 view: capturable.view.clone(),
                 capturable,
                 leaf,
                 runtime,
                 fixture_window: RefCell::new(None),
-            }
+            })
         }
 
         /// Installs the hosted scene renderer through the real
@@ -2830,14 +3376,14 @@ pub mod native_test {
         ///
         /// When renderer creation or the frame's encode fails.
         pub fn install_scene_renderer(&self) -> Result<(), String> {
-            self.render_scene_frame_at(FrameTime(std::time::Instant::now()))
+            self.render_scene_frame_at(FrameTime::now())
         }
 
         /// Mounts two surfaces into one environment — the same
         /// `SceneEngine` engine owner and `PresentationTime` anchor — so
         /// their renderers share the live [`EngineGeneration`]. The first
         /// member's `produce` then produces the batch the second member's
-        /// `present` answers `Next::At` for — the mount-after-batch case
+        /// frame comes out unproduced from — the mount-after-batch case
         /// an unwritten target comes from.
         ///
         /// # Errors
@@ -2855,12 +3401,16 @@ pub mod native_test {
 
         /// Runs [`SurfaceState::render_into`] for one explicit
         /// `target_time` — the frame `produce` stamps the shared batch
-        /// under — so a sibling surface's later render at the same
-        /// timestamp reads the already-produced batch.
+        /// under — until it composites, so a sibling surface's later
+        /// render at the same timestamp reads the already-produced batch.
+        /// Between steps the main run loop turns until the renderer's
+        /// creation or frame settles: its completion wake is the only
+        /// thing that advances them.
         ///
         /// # Errors
         ///
-        /// When renderer creation or the frame's encode fails.
+        /// When renderer creation or the frame fails, the frame comes out
+        /// unwritten, or a step does not settle within the bound.
         pub fn render_scene_frame_at(&self, target_time: FrameTime) -> Result<(), String> {
             let context = self.runtime.context();
             let texture = context.device().create_texture(&wgpu::TextureDescriptor {
@@ -2878,16 +3428,56 @@ pub mod native_test {
                     | wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             });
-            self.state
-                .render_into(
-                    &self.view,
-                    &context,
-                    &texture,
-                    Display::default(),
-                    target_time,
-                )
-                .map_err(|error| error.to_string())?;
-            Ok(())
+            loop {
+                let produced = self
+                    .state
+                    .render_into(
+                        &self.view,
+                        &context,
+                        &texture,
+                        Display::default(),
+                        target_time,
+                        Pipelining::PerTarget,
+                    )
+                    .map_err(|error| error.to_string())?;
+                match produced {
+                    Produced::Wrote { .. } => return Ok(()),
+                    Produced::Unwritten => {
+                        return Err("the frame carried no content for this surface".into());
+                    }
+                    Produced::Awaiting => self.settle_step()?,
+                }
+            }
+        }
+
+        /// Turns the main run loop until the attached surface has a live
+        /// renderer holding no frame and its link is paused — nothing the
+        /// link or a completion does can then touch the surface before the
+        /// trial's next synchronous step.
+        ///
+        /// # Errors
+        ///
+        /// When the surface does not settle within the bound.
+        pub fn settle_presentation(&self) -> Result<(), String> {
+            if crate::native_test_support::pump_main_until(30.0, || {
+                self.state.pipeline.borrow().idle() && self.link_paused()
+            }) {
+                Ok(())
+            } else {
+                Err("the surface's renderer and link did not settle".into())
+            }
+        }
+
+        /// Turns the main run loop until the renderer's creation or frame
+        /// settles, bounded.
+        fn settle_step(&self) -> Result<(), String> {
+            if crate::native_test_support::pump_main_until(30.0, || {
+                !self.state.pipeline.borrow().awaiting()
+            }) {
+                Ok(())
+            } else {
+                Err("the renderer's creation or frame did not settle".into())
+            }
         }
 
         /// Maps a `CACurrentMediaTime` timestamp onto this surface's
@@ -2907,6 +3497,13 @@ pub mod native_test {
         /// receipt on it and its drop settles nothing on the surface's
         /// presenter. Answers whether a drawable was delivered.
         pub fn deliver_frame(&self, media_time: f64) -> bool {
+            self.deliver(media_time).is_some()
+        }
+
+        /// One drawable through `render_drawable`, as
+        /// [`deliver_frame`](Self::deliver_frame) issues it: what the
+        /// drawable carried away, `None` when no drawable was issued.
+        fn deliver(&self, media_time: f64) -> Option<DrawableUse> {
             use cocoa_ui::objc2_core_foundation::CGSize;
             use cocoa_ui::objc2_quartz_core::CAMetalLayer;
 
@@ -2915,12 +3512,56 @@ pub mod native_test {
             layer.setDevice(Some(&device));
             layer.setPixelFormat(crate::components::gpu_surface::state_format(&self.state));
             layer.setDrawableSize(CGSize::new(64.0, 64.0));
-            let Some(drawable) = layer.nextDrawable() else {
-                return false;
-            };
+            let drawable = layer.nextDrawable()?;
             let frame = DrawableFrame::unowned_for_test(drawable, media_time);
-            render_drawable(&self.state, &self.view, frame);
-            true
+            Some(render_drawable(&self.state, &self.view, frame))
+        }
+
+        /// Delivers drawables at `media_time` through `render_drawable`
+        /// until one carries a produced frame away, turning the main run
+        /// loop while the renderer's creation or frame is in flight —
+        /// the completion wake a real link waits on. Answers whether that
+        /// drawable's target was written: `false` when the produced frame
+        /// carried no content for this surface, the drawable dropped
+        /// unpresented and the frame owed.
+        ///
+        /// # Errors
+        ///
+        /// When no drawable is issued, one is released unrendered, or a
+        /// step does not settle within the bound.
+        pub fn deliver_produced_frame(&self, media_time: f64) -> Result<bool, String> {
+            loop {
+                match self.deliver_written(media_time) {
+                    Err(Awaited) => self.settle_step()?,
+                    Ok(written) => return written,
+                }
+            }
+        }
+
+        /// Delivers one drawable at `media_time` through `render_drawable`
+        /// with no run-loop turn: whether a produced frame wrote its
+        /// target (`false` when the frame carried no content for this
+        /// surface, the drawable dropped unpresented and the frame owed).
+        ///
+        /// # Errors
+        ///
+        /// When no drawable is issued, it is released unrendered, or the
+        /// renderer's creation or frame is still in flight.
+        pub fn deliver_settled_frame(&self, media_time: f64) -> Result<bool, String> {
+            self.deliver_written(media_time)
+                .unwrap_or_else(|Awaited| Err("the renderer's frame is still in flight".into()))
+        }
+
+        /// One drawable's outcome: written or not, a failure, or
+        /// [`Awaited`] while the renderer's creation or frame is in flight.
+        fn deliver_written(&self, media_time: f64) -> Result<Result<bool, String>, Awaited> {
+            Ok(match self.deliver(media_time) {
+                None => Err("the standalone layer issued no drawable".into()),
+                Some(DrawableUse::Released) => Err("the drawable was released unrendered".into()),
+                Some(DrawableUse::Awaiting) => return Err(Awaited),
+                Some(DrawableUse::Unwritten) => Ok(false),
+                Some(DrawableUse::Submitted) => Ok(true),
+            })
         }
 
         /// Whether native presentation is paused after a visibility change.
@@ -2942,19 +3583,6 @@ pub mod native_test {
                 .is_some_and(|attached| attached.demand.frame_owed.get())
         }
 
-        /// What the bound renderer reports for `target_time` — `None`
-        /// while no renderer is bound. An unwritten report is the input
-        /// `render_drawable`'s drop-unpresented guard keys on; the probe
-        /// proves the bound renderer itself produced the report.
-        #[must_use]
-        pub fn wrote_target(&self, target_time: FrameTime) -> Option<bool> {
-            self.state
-                .bound
-                .borrow()
-                .as_ref()
-                .map(|bound| bound.renderer.wrote_target(target_time))
-        }
-
         /// Fires the hosted scene's invalidator — the "invalidated
         /// after the batch" case: `produced_for` clears and a redraw is
         /// requested. Synchronous: nothing the link or a queued redraw
@@ -2965,8 +3593,8 @@ pub mod native_test {
         }
 
         /// Drives the production `defer_unwritten_external_frame` — the
-        /// settle an external render runs when `present` answers
-        /// `Next::At` — so the trial observes the deferred frame's replay
+        /// settle an external render runs when its frame comes out
+        /// unproduced — so the trial observes the deferred frame's replay
         /// through the capture scope's own redraw notification.
         pub fn defer_external_frame(&self) {
             defer_unwritten_external_frame(&self.state);
@@ -3015,42 +3643,37 @@ pub mod native_test {
             WakeProbe(count)
         }
 
-        /// Uses a real `AppKit` window — the attach door's only host
-        /// requirement — without installing the fixture presenter, for
-        /// trials that drive `initialize_gpu` themselves.
+        /// Places the surface in a real `AppKit` window — the attach door's
+        /// only host requirement — that is already presentable, so the
+        /// view's own move-to-window handler attaches it inside this call
+        /// and no run-loop turn follows in which the display link could
+        /// take the owed first frame before the trial samples it.
         ///
         /// # Panics
         ///
         /// When the trial is not running on the main thread, or the
-        /// fixture window never reports visible.
+        /// fixture window never becomes presentable.
         pub fn ensure_fixture_window(&self) {
-            use cocoa_ui::objc2_foundation::{NSDate, NSRunLoop};
             if self.fixture_window.borrow().is_some() {
                 return;
             }
             let mtm = MainThreadMarker::new().expect("the fixture runs on the main thread");
-            let window = cocoa_ui::appkit::Window::new(
+            let window = crate::native_test_support::presentable_fixture_window(
                 mtm,
-                cocoa_ui::Rect::new(0.0, 0.0, 64.0, 64.0),
-                cocoa_ui::appkit::WindowStyle::TITLED,
+                self.view.as_platform_view(),
             );
-            window.set_content_view(self.view.as_platform_view());
-            window.make_key_and_order_front();
             *self.fixture_window.borrow_mut() = Some(window);
-            // The occlusion state lands after the window server composites
-            // — drive the run loop until it reports, bounded by a deadline.
-            let deadline = NSDate::dateWithTimeIntervalSinceNow(5.0);
-            while !self.view.is_visible() && deadline.timeIntervalSinceNow() > 0.0 {
-                NSRunLoop::currentRunLoop()
-                    .runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.02));
-            }
-            assert!(self.view.is_visible(), "the fixture window reports visible");
+            assert!(
+                self.view.is_visible(),
+                "the windowed surface reports visible"
+            );
         }
 
-        /// Attaches through the production door: the fixture window makes
-        /// the surface presentable, then `initialize_gpu` builds the real
-        /// `MetalPresenter` — the same path a layout drives on a live
-        /// mount.
+        /// Attaches through the production door: the presentable fixture
+        /// window, then `initialize_gpu` building the real `MetalPresenter`
+        /// — the same path a layout drives on a live mount. No run-loop
+        /// turn runs after the attach, so the first frame is still owed
+        /// when this returns.
         ///
         /// # Panics
         ///
@@ -3064,14 +3687,15 @@ pub mod native_test {
             );
         }
 
-        /// Sets the view's frame — the logical size `initialize_gpu`
-        /// computes the drawable extent from (bounds follow frame for
-        /// an untransformed view).
+        /// Sets the view's frame and runs the layout pass that follows it,
+        /// which commits the response `initialize_gpu` computes the
+        /// drawable extent from.
         pub fn set_view_frame(&self, width: f64, height: f64) {
             cocoa_ui::view::set_frame(
                 self.view.as_platform_view(),
                 cocoa_ui::Rect::new(0.0, 0.0, width, height),
             );
+            cocoa_ui::view::layout_immediately(self.view.as_platform_view());
         }
 
         /// Drives the production `initialize_gpu` — the geometry and
@@ -3159,9 +3783,15 @@ pub mod native_test {
             condition()
         }
 
-        /// The view's current bounds size — what `initialize_gpu` reads.
+        /// The view's current bounds size.
         pub fn view_bounds(&self) -> cocoa_ui::geometry::Size {
-            self.view.bounds_size()
+            cocoa_ui::view::bounds(self.view.as_platform_view()).size
+        }
+
+        /// Where the surface draws — its committed response — what
+        /// `initialize_gpu` sizes the drawable from.
+        pub fn content_rect(&self) -> cocoa_ui::geometry::Rect {
+            self.view.content_rect()
         }
 
         /// The view's backing scale — the factor `initialize_gpu`
@@ -3173,7 +3803,11 @@ pub mod native_test {
         /// Renders one external-capture frame into a live texture the
         /// context's own device allocates, declared at `width`×`height`
         /// pixels, inside an already-open capture scope, then waits for
-        /// the submission's completion (bounded).
+        /// the submission's completion (bounded). A capture that finds the
+        /// renderer's creation or frame in flight defers and is asked
+        /// again once it settles — the redraw an enclosing capture answers
+        /// — so the main run loop turns until it does and the capture
+        /// renders again.
         ///
         /// Answers the completion's own result — `Ok(())` when the shared
         /// validity contract judges the live submission current.
@@ -3186,9 +3820,28 @@ pub mod native_test {
         ///
         /// # Panics
         ///
-        /// When the surface refuses the render target, or the completion
-        /// never lands.
+        /// When the surface refuses the render target, the completion
+        /// never lands, or the frame in flight never settles.
         pub fn render_capture_frame(
+            &self,
+            width: u32,
+            height: u32,
+        ) -> Result<(), cocoa_ui::capture::CaptureError> {
+            loop {
+                let result = self.render_capture_once(width, height);
+                if !(matches!(result, Err(cocoa_ui::capture::CaptureError::Deferred))
+                    && self.state.pipeline.borrow().awaiting())
+                {
+                    return result;
+                }
+                self.settle_step()
+                    .expect("the capture's frame in flight settles");
+            }
+        }
+
+        /// One external-capture frame — see
+        /// [`render_capture_frame`](Self::render_capture_frame).
+        fn render_capture_once(
             &self,
             width: u32,
             height: u32,
@@ -3329,5 +3982,26 @@ pub mod native_test {
             let size = attached.presenter.layer().drawableSize();
             Some((size.width.max(0.0) as u32, size.height.max(0.0) as u32))
         }
+    }
+}
+
+#[cfg(test)]
+mod delivered_resize_tests {
+    use kurbo::Size;
+
+    use super::DeliveredResize;
+
+    #[test]
+    fn a_geometry_is_delivered_once_and_again_only_when_it_changes() {
+        let delivered = DeliveredResize::default();
+        let size = Size::new(320.0, 200.5);
+        assert!(delivered.record(size, 2.0), "the first geometry is news");
+        assert!(!delivered.record(size, 2.0), "every later frame repeats it");
+        assert!(delivered.record(Size::new(400.0, 200.5), 2.0), "a new size");
+        assert!(
+            delivered.record(Size::new(400.0, 200.5), 3.0),
+            "a new scale"
+        );
+        assert!(!delivered.record(Size::new(400.0, 200.5), 3.0));
     }
 }

@@ -1,6 +1,6 @@
 //! Independent paint coordinates on the gpu backend.
 use cherenkov::{__engine_test as split_test, __engine_wait as wait};
-use cherenkov_oracle::metrics::{assert_close, assert_images_match};
+use cherenkov_oracle::metrics::assert_images_match;
 #[path = "../../tests/support/paint_transform.rs"]
 mod common;
 #[path = "support/visual.rs"]
@@ -20,46 +20,6 @@ fn nested_paint_transforms_compose_and_sample_analytically() {
 split_test! {
 fn singular_and_non_finite_paint_transforms_fail() {
     wait!(common::invalid::<cherenkov_gpu::Gpu>(cherenkov_gpu::GpuConfig::default()));
-}
-}
-
-split_test! {
-fn shader_paint_transform_changes_sampling_without_moving_geometry()
--> Result<(), Box<dyn std::error::Error>> {
-    use cherenkov::kurbo::{Affine, Rect};
-    use cherenkov::{
-        Draw, Engine, FrameTime, Offscreen, OffscreenFormat, Paint, ShaderPaint, ShaderSource,
-    };
-    use cherenkov_gpu::{Gpu, GpuConfig};
-    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
-    let shader = engine.shader(ShaderSource::wgsl(include_str!("shaders/paint.wgsl")))?;
-    let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16), || {}))?;
-    surface.update(|tx| {
-        tx[surface.root()].content(surface.record(|c| {
-            c.fill(
-                Rect::new(8.0, 8.0, 24.0, 24.0),
-                Paint::from(ShaderPaint {
-                    shader: shader.id(),
-                    uniforms: vec![0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0],
-                })
-                .transformed(Affine::translate((4.0, 0.0))),
-            );
-        }));
-    });
-    wait!(engine.render(FrameTime::now()))?;
-    let pixels = wait!(surface.readback())?.pixels;
-    let sample = pixels[18 * 32 + 18];
-    assert!(
-        (sample[1] - 0.40625).abs() < 0.002,
-        "translated shader x: {sample:?}"
-    );
-    assert!(
-        (sample[2] - 0.65625).abs() < 0.002,
-        "shader y unchanged: {sample:?}"
-    );
-    // The paint moved, the coverage did not.
-    assert_close(&[pixels[16 * 32 + 27][3]], &[0.0]);
-    Ok(())
 }
 }
 

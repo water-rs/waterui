@@ -9,12 +9,14 @@ use kurbo::{Affine, Vec2};
 use crate::Instant;
 use crate::Target;
 use crate::WorkingColor;
-use crate::animation::Animation;
+use nami_core::watcher::Metadata;
+
+use crate::animation::{Animatable, Animation, Keyframes, Repeat};
 use crate::backdrop::BackdropSample;
-use crate::display_list::{Picture, SlotUpdate};
+use crate::display_list::{Edit, Picture, SlotUpdate};
 use crate::projective::Projective;
 use crate::shape::ShapeData;
-use crate::style::{BlendMode, FilterId};
+use crate::style::{BlendMode, BlendSpace, FilterId};
 
 /// Identifier of a surface.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -73,18 +75,185 @@ impl BackdropId {
 
 /// A property target plus the animation that reaches it.
 #[derive(Clone, Debug)]
-pub struct Prop<T> {
+pub struct Prop<T: Animatable> {
     /// The value the property moves to.
     pub target: T,
     /// The animation applied, if any; `None` snaps.
     pub animation: Option<Animation>,
-    /// The instant the animation starts at, on the host's clock. `None`
-    /// keeps the engine's own timing: the track starts at the first frame
-    /// that samples it, and a retarget continues from the previous track's
-    /// last sample. `Some(t)` starts the track at `t`, and a retarget
-    /// continues from the previous track's value and velocity evaluated at
-    /// `t`. A `start` without an `animation` is ignored.
+    /// When, on the host's clock, the animation starts, and from where.
+    /// `None` keeps the engine's own timing: the track starts at the first
+    /// frame that samples it, and a retarget continues from the previous
+    /// track's last sample. A `start` without an `animation` is ignored.
+    pub start: Option<TrackStart<T>>,
+}
+
+/// A change to a lane-decomposed layer value plus the animation that
+/// reaches it.
+///
+/// The clip shape and the backdrop sample decompose into a variable
+/// number of lanes. The value animates lane by lane from what the layer
+/// shows when the change lands; a pair of values that shares no lane
+/// layout snaps, as does a change without an animation.
+#[derive(Clone, Debug)]
+pub struct Retarget<T> {
+    /// The value the layer moves to.
+    pub target: T,
+    /// The animation applied, if any; `None` snaps. A `Decay` is a
+    /// contract violation and snaps too.
+    pub animation: Option<Animation>,
+    /// When, on the host's clock, the animation starts. `None` starts the
+    /// track at the first frame that samples it, and a retarget continues
+    /// from the previous track's last sample; `Some` continues from the
+    /// previous track evaluated there. Ignored without an `animation`.
     pub start: Option<Instant>,
+}
+
+impl<T> Retarget<T> {
+    /// The change a bound signal's `Context` carries to `target`: its
+    /// `animation`, and the [`AnimationStart`] its metadata names.
+    pub(crate) fn of(target: T, animation: Option<Animation>, metadata: &Metadata) -> Self {
+        Self {
+            target,
+            animation,
+            start: metadata.try_get::<AnimationStart>().map(|start| start.0),
+        }
+    }
+}
+
+/// The instant an animated change's track starts at on the host's clock,
+/// and the state it starts from.
+#[derive(Clone, Debug)]
+pub struct TrackStart<T: Animatable> {
+    /// The instant the track starts at.
+    pub at: Instant,
+    /// The position and velocity the track starts from at `at`. `None`
+    /// continues the previous track evaluated at `at` — its value and
+    /// velocity there, or the property's value at rest. `Some` starts the
+    /// track from exactly this state whatever ran before: a host that
+    /// binds a property while its own track runs hands the binding that
+    /// whole track. Boxed: a host hands one only when it binds a running
+    /// track, and every layer op would otherwise carry its lanes inline.
+    pub origin: Option<Box<TrackOrigin<T>>>,
+}
+
+impl<T: Animatable> TrackStart<T> {
+    /// A start at `at` that continues whatever ran before.
+    #[must_use]
+    pub const fn at(at: Instant) -> Self {
+        Self { at, origin: None }
+    }
+
+    /// The start a bound change's metadata names: its [`AnimationStart`],
+    /// with the [`AnimationOrigin`] next to it, if any.
+    #[must_use]
+    pub fn of(metadata: &Metadata) -> Option<Self> {
+        let at = metadata.try_get::<AnimationStart>()?.0;
+        Some(Self {
+            at,
+            origin: metadata
+                .try_get::<AnimationOrigin<T>>()
+                .map(|origin| Box::new(origin.0)),
+        })
+    }
+
+    /// The same start in another property's lanes, through `lanes`: the
+    /// start of one axis of a two-axis property.
+    pub(crate) fn map<U: Animatable>(&self, lanes: impl Fn(T::Lanes) -> U::Lanes) -> TrackStart<U> {
+        TrackStart {
+            at: self.at,
+            origin: self.origin.as_ref().map(|origin| {
+                Box::new(TrackOrigin {
+                    from: lanes(origin.from),
+                    velocity: lanes(origin.velocity),
+                })
+            }),
+        }
+    }
+}
+
+/// A track's state at its start: its position and its velocity per second,
+/// lane by lane.
+#[derive(Clone, Copy)]
+pub struct TrackOrigin<T: Animatable> {
+    /// The position lanes the track starts from.
+    pub from: T::Lanes,
+    /// The velocity lanes the track starts with, per second.
+    pub velocity: T::Lanes,
+}
+
+impl<T: Animatable> std::fmt::Debug for TrackOrigin<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TrackOrigin")
+            .field("from", &self.from.as_ref())
+            .field("velocity", &self.velocity.as_ref())
+            .finish()
+    }
+}
+
+/// The state a bound change's track starts from, carried in the change's
+/// `Context` metadata next to its [`AnimationStart`]: the change hands the
+/// binding a track already running on the host's clock.
+#[derive(Clone, Copy, Debug)]
+pub struct AnimationOrigin<T: Animatable>(pub TrackOrigin<T>);
+
+/// One axis of a two-axis layer property — translation or scale — which
+/// animates per axis, so x and y can run different animations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Axis {
+    /// The horizontal axis.
+    X,
+    /// The vertical axis.
+    Y,
+}
+
+impl Axis {
+    /// Both axes, x first: the order a [`Vec2`]'s lanes take.
+    pub const BOTH: [Self; 2] = [Self::X, Self::Y];
+
+    /// The axis's component of `value`.
+    #[must_use]
+    pub const fn of(self, value: Vec2) -> f64 {
+        match self {
+            Self::X => value.x,
+            Self::Y => value.y,
+        }
+    }
+
+    /// `value` with this axis's component replaced by `component`.
+    #[must_use]
+    pub const fn with(self, value: Vec2, component: f64) -> Vec2 {
+        match self {
+            Self::X => Vec2::new(component, value.y),
+            Self::Y => Vec2::new(value.x, component),
+        }
+    }
+}
+
+/// A property's keyframe track: the value the property holds once a finite
+/// repeat ends, and the track it runs until then.
+#[derive(Clone, Debug)]
+pub struct KeyframeProp<T> {
+    /// The value the property holds after the last cycle.
+    pub target: T,
+    /// The track, starting at the first frame that samples it.
+    pub keyframes: Keyframes<T>,
+    /// How many cycles it runs.
+    pub repeat: Repeat,
+}
+
+/// A keyframe track on one of the layer properties that take one.
+#[derive(Clone, Debug)]
+pub enum LayerKeyframes {
+    /// The local transform, interpolated coefficient-wise.
+    Transform(KeyframeProp<Affine>),
+    /// The translation component.
+    Translation(KeyframeProp<Vec2>),
+    /// The unwrapped rotation angle in radians.
+    Rotation(KeyframeProp<f64>),
+    /// The x/y scale factors.
+    Scale(KeyframeProp<Vec2>),
+    /// The opacity.
+    Opacity(KeyframeProp<f32>),
 }
 
 /// The instant a bound change's [`Animation`] starts at.
@@ -104,6 +273,12 @@ pub enum ContentOp {
     Replace(Picture),
     /// New values for a live content's bound slots.
     Update(Vec<SlotUpdate>),
+    /// A live content's regions edited in place, then slot updates: the
+    /// target applies it to the list it holds ([`Picture::edit`]).
+    ///
+    /// Boxed like [`ContentChange::Edit`](crate::ContentChange::Edit), so
+    /// the op keeps the size and layout of the frequent variants.
+    Edit(Box<Edit>),
     /// A shared immutable picture.
     Picture(Picture),
 }
@@ -122,8 +297,14 @@ pub enum LayerOp {
     Translation(LayerId, Prop<Vec2>),
     /// Sets the unwrapped rotation angle in radians; initially zero.
     Rotation(LayerId, Prop<f64>),
+    /// Sets one axis of the translation with a track of its own: the other
+    /// axis keeps whatever it runs. `Translation` sets both axes at once.
+    TranslationAxis(LayerId, Axis, Prop<f64>),
     /// Sets the x/y scale factors; initially (1, 1).
     Scale(LayerId, Prop<Vec2>),
+    /// Sets one axis's scale factor with a track of its own: the other
+    /// axis keeps whatever it runs. `Scale` sets both axes at once.
+    ScaleAxis(LayerId, Axis, Prop<f64>),
     /// Sets x/y skew angles in radians; initially zero.
     Skew(LayerId, Prop<Vec2>),
     /// Sets the local pivot for rotation, skew and scale; initially zero.
@@ -140,15 +321,29 @@ pub enum LayerOp {
     Opacity(LayerId, Prop<f32>),
     /// Set the scroll offset.
     ScrollOffset(LayerId, Prop<Vec2>),
-    /// Set or clear the clip shape.
-    Clip(LayerId, Option<ShapeData>),
+    /// Run a keyframe track on a property, replacing its track.
+    Keyframes(LayerId, LayerKeyframes),
+    /// Set or clear the clip shape; a set animates from the shape the
+    /// layer shows.
+    Clip(LayerId, Option<Retarget<ShapeData>>),
     /// Set the blend mode.
     Blend(LayerId, BlendMode),
+    /// Set or clear the blend space: the layer's subtree composites with
+    /// itself in this space, and the layer composites onto its parent in
+    /// it; cleared, the layer composites in its parent's space.
+    BlendSpace(LayerId, Option<BlendSpace>),
     /// Set or clear the filter.
     Filter(LayerId, Option<FilterId>),
     /// Set or clear the backdrop sample (group and optional per-member
-    /// effect).
-    Backdrop(LayerId, Option<BackdropSample>),
+    /// effect); a set animates from the sample the layer shows.
+    Backdrop(LayerId, Option<Retarget<BackdropSample>>),
+    /// Set or clear the layer's host-window marker: a marked layer shows
+    /// no recorded content — an external host window occupies its frame
+    /// — and every mark splits the surface's paint order into regions,
+    /// each presented in its own band stacked above that window
+    /// (water-rs/waterui#2225). The mark names the window by the host's
+    /// own id for it, which is how the host finds the band to stack.
+    HostWindow(LayerId, Option<u64>),
     /// Set the layer content, or clear it.
     Content(LayerId, Option<ContentOp>),
     /// Append a child.
@@ -185,8 +380,10 @@ impl LayerOp {
             | Self::Remove(id)
             | Self::Transform(id, _)
             | Self::Translation(id, _)
+            | Self::TranslationAxis(id, ..)
             | Self::Rotation(id, _)
             | Self::Scale(id, _)
+            | Self::ScaleAxis(id, ..)
             | Self::Skew(id, _)
             | Self::Pivot(id, _)
             | Self::Projection(id, _)
@@ -195,10 +392,13 @@ impl LayerOp {
             | Self::ClearProjection(id)
             | Self::Opacity(id, _)
             | Self::ScrollOffset(id, _)
+            | Self::Keyframes(id, _)
             | Self::Clip(id, _)
             | Self::Blend(id, _)
+            | Self::BlendSpace(id, _)
             | Self::Filter(id, _)
             | Self::Backdrop(id, _)
+            | Self::HostWindow(id, _)
             | Self::Content(id, _)
             | Self::Push { parent: id, .. }
             | Self::Insert { parent: id, .. }
@@ -208,8 +408,8 @@ impl LayerOp {
 
     /// The animation slot of the op's animatable prop, if it carries
     /// one: [`LayerEdit::animation`] retargets the last queued op
-    /// through it. `None` for the projection matrix and every
-    /// non-animatable op.
+    /// through it. `None` for the projection matrix, a cleared clip or
+    /// backdrop, and every non-animatable op.
     ///
     /// [`LayerEdit::animation`]: crate::LayerEdit::animation
     #[expect(
@@ -220,7 +420,9 @@ impl LayerOp {
         match self {
             Self::Transform(_, prop) => Some(&mut prop.animation),
             Self::Translation(_, prop) => Some(&mut prop.animation),
-            Self::Rotation(_, prop) => Some(&mut prop.animation),
+            Self::Rotation(_, prop)
+            | Self::TranslationAxis(_, _, prop)
+            | Self::ScaleAxis(_, _, prop) => Some(&mut prop.animation),
             Self::Scale(_, prop) => Some(&mut prop.animation),
             Self::Skew(_, prop) => Some(&mut prop.animation),
             Self::Pivot(_, prop) => Some(&mut prop.animation),
@@ -228,6 +430,8 @@ impl LayerOp {
             Self::Depth(_, prop) => Some(&mut prop.animation),
             Self::Opacity(_, prop) => Some(&mut prop.animation),
             Self::ScrollOffset(_, prop) => Some(&mut prop.animation),
+            Self::Clip(_, Some(change)) => Some(&mut change.animation),
+            Self::Backdrop(_, Some(change)) => Some(&mut change.animation),
             _ => None,
         }
     }
@@ -306,6 +510,9 @@ impl<T: Target> Op<T> {
 pub struct ChangeSet<T: Target> {
     /// New clear colour, when set this commit.
     pub clear: Option<WorkingColor>,
+    /// New storage space of the surface's root canvas, when set this
+    /// commit.
+    pub storage_space: Option<BlendSpace>,
     /// The ops, in order.
     pub ops: Vec<Op<T>>,
     /// Replaced pictures, cleared on the consumer's side, whose storage

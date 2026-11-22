@@ -5,7 +5,7 @@ use std::ops::RangeInclusive;
 
 /// A display's refresh-rate range in frames per second.
 ///
-/// The range is as a scheduler reports it. Animation classification
-/// ([`AnimationTrack::is_fast`](crate::animation::AnimationTrack::is_fast))
-/// always uses the top of the range.
+/// The range is as a scheduler reports it. Animation classification into
+/// the rate classes ([`RATE_FAST`](crate::tree::RATE_FAST),
+/// [`RATE_SLOW`](crate::tree::RATE_SLOW)) always uses the top of the range.
 pub type RefreshRange = RangeInclusive<u32>;

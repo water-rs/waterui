@@ -221,6 +221,7 @@ fn translate_paint(paint: &Paint, d: Vec2) -> Paint {
                 m.points().iter().map(|p| *p + d).collect(),
                 m.colors().to_vec(),
             )
+            .expect("a translated mesh keeps the grid of the valid mesh it came from")
             .interpolation(m.interpolation_mode()),
         ),
         Paint::Image(ip) => Paint::Image(cherenkov_scene::ImagePaint {
@@ -231,7 +232,9 @@ fn translate_paint(paint: &Paint, d: Vec2) -> Paint {
             extend_y: ip.extend_y,
             sampling: ip.sampling,
         }),
-        Paint::Solid(_) => paint.clone(),
+        // A fill's shader paint spans the shape's bounds, which move with
+        // it.
+        Paint::Solid(_) | Paint::Shader(_) => paint.clone(),
     }
 }
 
@@ -370,15 +373,16 @@ mod tests {
         let scene = scene_with(vec![fill(0.0)]);
         let out = repeated(&scene, 4);
         let w = f64::from(scene.width);
-        for i in 0..4usize {
+        assert_eq!(out.root.items.len(), 4);
+        for (i, item) in (0u32..).zip(&out.root.items) {
             let Item::Draw(Draw::Fill {
                 shape: Shape::Rect(r),
                 ..
-            }) = &out.root.items[i]
+            }) = item
             else {
                 panic!("expected a rect fill");
             };
-            let d = copy_offset(u32::try_from(i).expect("i < 4"), scene.width, scene.height);
+            let d = copy_offset(i, scene.width, scene.height);
             assert!(d.x >= 0.0 && d.x < w);
             assert!((r.x0 - d.x).abs() < f64::EPSILON);
         }

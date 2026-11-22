@@ -39,14 +39,14 @@
 //! silent miss; a source in a language the target does not draw is a
 //! [`ResourceError::Shader`] naming the language it got.
 //!
-//! [`SceneContent::build_scene`]: crate::scene_view::SceneContent::build_scene
-//! [`SceneResources`]: crate::resources::SceneResources
-//! [`RecordingResources`]: crate::resources::RecordingResources
-//! [`RecordingResources::name`]: crate::resources::RecordingResources::name
-//! [`Registered`]: crate::resources::Registered
-//! [`HeldResources`]: crate::resources::HeldResources
-//! [`ResourceError::Unsupported`]: crate::source::ResourceError::Unsupported
-//! [`ResourceError::Shader`]: crate::source::ResourceError::Shader
+//! [`SceneContent::build_scene`]: crate::backend::SceneContent::build_scene
+//! [`SceneResources`]: crate::backend::SceneResources
+//! [`RecordingResources`]: crate::backend::RecordingResources
+//! [`RecordingResources::name`]: crate::backend::RecordingResources::name
+//! [`Registered`]: crate::backend::Registered
+//! [`HeldResources`]: crate::backend::HeldResources
+//! [`ResourceError::Unsupported`]: crate::backend::ResourceError::Unsupported
+//! [`ResourceError::Shader`]: crate::backend::ResourceError::Shader
 
 use alloc::borrow::Cow;
 use alloc::rc::{Rc, Weak};
@@ -60,7 +60,12 @@ use core::ptr;
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 
-use crate::draw::{FontId, ImageId, ResourceId, ShaderId};
+use waterui_core::layout::Size;
+use waterui_core::{Environment, contract_violation};
+use waterui_text::styled::StyledStr;
+
+use crate::canvas::TextPlacement;
+use crate::draw::{FontId, ImageId, ResourceId, ShaderId, TextLayoutId};
 use crate::scene::source::{
     FontSource, Format, ImageColorSpace, ImageData, ResourceError, Rgba8, Rgba16F, ShaderLanguage,
     ShaderSource,
@@ -213,6 +218,8 @@ enum EntryKey {
     Rgba8(Key<ImageShape>),
     Rgba16F(Key<ImageShape>),
     Shader(Key<ShaderShape>),
+    /// A laid-out text: never shared, so it occupies no listing.
+    Text,
 }
 
 /// The registration a render target always provides: fonts and image
@@ -284,6 +291,82 @@ pub trait ShaderBackend: SceneBackend {
     /// target draws or fails its validation, [`ResourceError::Lost`] when
     /// the renderer is gone.
     fn register_shader(&self, source: ShaderSource) -> Result<Handle<ShaderId>, ResourceError>;
+}
+
+/// The registration only a target that lays text out provides.
+///
+/// The target lays the text out with its own text stack — the one every
+/// other `Text` on the screen goes through — so canvas text matches them.
+/// The canvas never measures: it asks, and the registration reports the
+/// box the target made.
+pub trait TextBackend: 'static {
+    /// Lays `request`'s text out and registers the result; `None` when
+    /// the text has nothing to draw.
+    ///
+    /// # Errors
+    ///
+    /// [`ResourceError::Font`] when a font of the text cannot be used,
+    /// [`ResourceError::Lost`] when the renderer is gone.
+    fn register_text(
+        &self,
+        request: TextRequest,
+    ) -> Result<Option<TextRegistration>, ResourceError>;
+}
+
+/// The text a canvas asks its target to lay out, and how.
+///
+/// The environment is the canvas's own, so the target resolves the text's
+/// theme colours, locale and default font in the same context as the other
+/// text under it.
+#[derive(Debug)]
+pub struct TextRequest {
+    text: StyledStr,
+    placement: TextPlacement,
+    env: Environment,
+}
+
+impl TextRequest {
+    pub(crate) const fn new(text: StyledStr, placement: TextPlacement, env: Environment) -> Self {
+        Self {
+            text,
+            placement,
+            env,
+        }
+    }
+
+    /// The text: its runs carry the font, size, weight, colour and
+    /// decorations.
+    #[must_use]
+    pub const fn text(&self) -> &StyledStr {
+        &self.text
+    }
+
+    /// The alignment lines are laid out in and the width they break at.
+    #[must_use]
+    pub const fn placement(&self) -> &TextPlacement {
+        &self.placement
+    }
+
+    /// The environment the text resolves in.
+    #[must_use]
+    pub const fn environment(&self) -> &Environment {
+        &self.env
+    }
+}
+
+/// What a target made of a [`TextRequest`].
+#[derive(Debug)]
+pub struct TextRegistration {
+    handle: Handle<TextLayoutId>,
+    size: Size,
+}
+
+impl TextRegistration {
+    /// The registered layout, and the size of the box it filled, in points.
+    #[must_use]
+    pub const fn new(handle: Handle<TextLayoutId>, size: Size) -> Self {
+        Self { handle, size }
+    }
 }
 
 /// A target's own handle to a registered resource — what [`Handle::new`]
@@ -364,6 +447,15 @@ impl ResourceHandle for cherenkov::Shader {
 }
 
 #[cfg(any(feature = "cherenkov", test))]
+impl ResourceHandle for cherenkov::TextLayoutHandle {
+    type Id = TextLayoutId;
+
+    fn id(&self) -> TextLayoutId {
+        Self::id(self)
+    }
+}
+
+#[cfg(any(feature = "cherenkov", test))]
 impl<B> SceneBackend for cherenkov::Engine<B>
 where
     B: cherenkov::Backend + cherenkov::Uploads<Rgba8> + cherenkov::Uploads<Rgba16F>,
@@ -404,15 +496,10 @@ where
         + cherenkov::ShaderPaintCapability,
 {
     fn register_shader(&self, source: ShaderSource) -> Result<Handle<ShaderId>, ResourceError> {
-        match source.language {
+        let (source, language, animated) = source.into_parts();
+        match language {
             ShaderLanguage::Wgsl => {
-                let shader = Self::shader(
-                    self,
-                    cherenkov::ShaderSource {
-                        source: source.source,
-                        animated: source.animated,
-                    },
-                )?;
+                let shader = Self::shader(self, cherenkov::ShaderSource { source, animated })?;
                 Ok(Handle::new(shader))
             }
             language @ ShaderLanguage::Agsl => Err(ResourceError::Shader(format!(
@@ -461,7 +548,11 @@ impl SceneCaps for cherenkov_gpu::Gpu {
 }
 
 #[cfg(feature = "cpu")]
-impl SceneCaps for cherenkov_cpu::Raster {}
+impl SceneCaps for cherenkov_cpu::Raster {
+    fn resources(engine: Rc<cherenkov::Engine<Self>>) -> SceneResources {
+        SceneResources::with_shaders(engine.clone(), engine)
+    }
+}
 
 /// One live registration: the target's handle, erased to its kind, plus the
 /// table entry that dedupes it. Dropping it takes the entry out of the
@@ -486,6 +577,7 @@ mod sealed {
     impl Sealed for crate::draw::FontId {}
     impl Sealed for crate::draw::ImageId {}
     impl Sealed for crate::draw::ShaderId {}
+    impl Sealed for crate::draw::TextLayoutId {}
 
     /// The erased target handle a [`Handle`](super::Handle) owns: dropping
     /// the object releases the registration. A marker only — the wrapper
@@ -562,6 +654,19 @@ impl PlainId for ShaderId {
     }
 }
 
+impl PlainId for TextLayoutId {
+    fn into_resource_id(self) -> ResourceId {
+        ResourceId::TextLayout(self)
+    }
+
+    fn from_resource_id(id: ResourceId) -> Self {
+        match id {
+            ResourceId::TextLayout(id) => id,
+            _ => unreachable!("the entry stores a text layout id"),
+        }
+    }
+}
+
 /// A resource registered through [`SceneResources`], shared by everyone who
 /// asked for the same source while it was held.
 ///
@@ -604,6 +709,31 @@ impl<I: PlainId> fmt::Debug for Registered<I> {
         f.debug_tuple("Registered")
             .field(&self.entry.handle.id())
             .finish()
+    }
+}
+
+/// A text laid out and registered through [`SceneResources::text`].
+///
+/// Name [`layout`](Self::layout) in the recording that draws it, with
+/// [`RecordingResources::name`].
+#[derive(Debug, Clone)]
+pub struct RegisteredText {
+    layout: Registered<TextLayoutId>,
+    size: Size,
+}
+
+impl RegisteredText {
+    /// The registered layout.
+    #[must_use]
+    pub const fn layout(&self) -> &Registered<TextLayoutId> {
+        &self.layout
+    }
+
+    /// The box the target laid the text out in, in points: as wide as the
+    /// requested width, or as its longest line when there was none.
+    #[must_use]
+    pub const fn size(&self) -> Size {
+        self.size
     }
 }
 
@@ -663,8 +793,8 @@ impl fmt::Debug for HeldResources {
 /// be held only by a set that nobody installs:
 ///
 /// ```compile_fail
-/// # use waterui_graphics::draw::ImageId;
-/// # use waterui_graphics::{RecordingResources, Registered};
+/// # use waterui_graphics::backend::draw::ImageId;
+/// # use waterui_graphics::backend::{RecordingResources, Registered};
 /// fn stale_id(resources: &RecordingResources<'_>, image: &Registered<ImageId>) {
 ///     // The id would be held by a temporary that drops at the semicolon.
 ///     let _ = resources.recording().name(image);
@@ -675,7 +805,7 @@ impl fmt::Debug for HeldResources {
 /// makes, hands it to every [`SceneContent::build_scene`] that records into
 /// that recording, and takes the set with [`finish`](Self::finish).
 ///
-/// [`SceneContent::build_scene`]: crate::scene_view::SceneContent::build_scene
+/// [`SceneContent::build_scene`]: crate::backend::SceneContent::build_scene
 pub struct RecordingResources<'a> {
     resources: &'a SceneResources,
     held: HashMap<usize, Rc<dyn HeldEntry>>,
@@ -692,39 +822,42 @@ impl RecordingResources<'_> {
     /// Name a resource in every recording that draws it — an id kept from an
     /// earlier recording is not held by this one.
     ///
-    /// # Panics
-    ///
-    /// When `resource` was registered through another target's
+    /// `None` when `resource` was registered through another target's
     /// [`SceneResources`]: its id means nothing, or something else, on this
-    /// one.
-    pub fn name<I: PlainId>(&mut self, resource: &Registered<I>) -> I {
-        assert!(
-            ptr::eq(
-                resource.entry.table.as_ptr(),
-                Rc::as_ptr(&self.resources.table)
-            ),
-            "a resource registered on another target was named in this recording"
-        );
+    /// one, so it is a contract violation — a debug build panics, a release
+    /// build logs it — and the caller skips the draw command that named it.
+    pub fn name<I: PlainId>(&mut self, resource: &Registered<I>) -> Option<I> {
+        if !ptr::eq(
+            resource.entry.table.as_ptr(),
+            Rc::as_ptr(&self.resources.table),
+        ) {
+            contract_violation!(
+                "a resource registered on another target was named in this recording; the draw command is skipped"
+            );
+            return None;
+        }
         let entry: Rc<dyn HeldEntry> = Rc::<Entry>::clone(&resource.entry);
         self.held.entry(entry_address(&entry)).or_insert(entry);
-        I::from_resource_id(resource.entry.handle.id())
+        Some(I::from_resource_id(resource.entry.handle.id()))
     }
 
     /// Holds every registration in `held` for this recording too — for a
     /// recording that draws another one, such as a picture recorded with
-    /// [`Picture::record_with`](crate::picture::Picture::record_with).
+    /// [`Picture::record_with`](crate::backend::Picture::record_with).
     ///
-    /// # Panics
-    ///
-    /// When `held` belongs to another target's [`SceneResources`].
+    /// A `held` that belongs to another target's [`SceneResources`] is a
+    /// contract violation: its ids mean nothing on this target, so the call
+    /// is ignored and this recording holds none of its registrations.
     pub fn hold(&mut self, held: &HeldResources) {
         if held.entries.is_empty() {
             return;
         }
-        assert!(
-            ptr::eq(held.table.as_ptr(), Rc::as_ptr(&self.resources.table)),
-            "a recording naming another target's resources was drawn in this recording"
-        );
+        if !ptr::eq(held.table.as_ptr(), Rc::as_ptr(&self.resources.table)) {
+            contract_violation!(
+                "a recording naming another target's resources was drawn in this recording; its registrations are not held"
+            );
+            return;
+        }
         for entry in held.entries.iter() {
             self.held
                 .entry(entry_address(entry))
@@ -766,6 +899,20 @@ impl RecordingResources<'_> {
     /// As [`SceneResources::shader`].
     pub fn shader(&self, source: ShaderSource) -> Result<Registered<ShaderId>, ResourceError> {
         self.resources.shader(source)
+    }
+
+    /// Lays text out and registers it; see [`SceneResources::text`].
+    ///
+    /// # Errors
+    ///
+    /// As [`SceneResources::text`].
+    pub fn text(
+        &self,
+        text: StyledStr,
+        placement: TextPlacement,
+        env: Environment,
+    ) -> Result<Option<RegisteredText>, ResourceError> {
+        self.resources.text(text, placement, env)
     }
 
     /// The largest image the target admits; see
@@ -851,6 +998,8 @@ impl<S: Copy + Eq + Hash> Listing<S> {
 struct Table {
     backend: Rc<dyn SceneBackend>,
     shaders: Option<Rc<dyn ShaderBackend>>,
+    /// Installed by the host once its text stack exists.
+    text: RefCell<Option<Rc<dyn TextBackend>>>,
     fonts: RefCell<Listing<FontShape>>,
     images_rgba8: RefCell<Listing<ImageShape>>,
     images_rgba16f: RefCell<Listing<ImageShape>>,
@@ -865,6 +1014,7 @@ impl Table {
             EntryKey::Rgba8(key) => self.images_rgba8.borrow_mut().unlist(key),
             EntryKey::Rgba16F(key) => self.images_rgba16f.borrow_mut().unlist(key),
             EntryKey::Shader(key) => self.shaders_cache.borrow_mut().unlist(key),
+            EntryKey::Text => {}
         }
     }
 }
@@ -905,7 +1055,7 @@ impl Table {
 /// [`ResourceError::OverBudget`], before anything is queued, never as a
 /// failed render.
 ///
-/// [`SceneContent::build_scene`]: crate::scene_view::SceneContent::build_scene
+/// [`SceneContent::build_scene`]: crate::backend::SceneContent::build_scene
 pub struct SceneResources {
     table: Rc<Table>,
 }
@@ -917,7 +1067,7 @@ impl SceneResources {
     /// registration. A target that draws them is built with
     /// [`with_shaders`](Self::with_shaders).
     ///
-    /// [`ResourceError::Unsupported`]: crate::source::ResourceError::Unsupported
+    /// [`ResourceError::Unsupported`]: crate::backend::ResourceError::Unsupported
     pub fn new<B: SceneBackend>(backend: Rc<B>) -> Self {
         Self::over(backend, None)
     }
@@ -938,6 +1088,7 @@ impl SceneResources {
             table: Rc::new(Table {
                 backend,
                 shaders,
+                text: RefCell::new(None),
                 fonts: Listing::new(),
                 images_rgba8: Listing::new(),
                 images_rgba16f: Listing::new(),
@@ -1135,20 +1286,66 @@ impl SceneResources {
         let Some(backend) = self.table.shaders.clone() else {
             return Err(ResourceError::Unsupported("shader paint"));
         };
-        let bytes = match &source.source {
+        let bytes = match &source.source() {
             Cow::Borrowed(text) => SourceBytes::Static(text.as_bytes()),
             Cow::Owned(text) => SourceBytes::Shared(Arc::from(text.as_bytes())),
         };
         self.intern(
             |table| &table.shaders_cache,
             ShaderShape {
-                animated: source.animated,
-                language: source.language,
+                animated: source.get_animated(),
+                language: source.language(),
             },
             bytes,
             EntryKey::Shader,
             move |_| backend.register_shader(source),
         )
+    }
+
+    /// Installs the registry laid-out text registers through, replacing
+    /// any earlier one. A host calls it once its text stack exists; until
+    /// then a text request reports [`ResourceError::Unsupported`].
+    pub fn set_text<B: TextBackend>(&self, backend: Rc<B>) {
+        *self.table.text.borrow_mut() = Some(backend);
+    }
+
+    /// Lays `text` out in `placement` and registers the result.
+    ///
+    /// Every call lays out and registers anew: a laid-out text is not
+    /// shared. The registration holds the fonts the layout draws with.
+    /// `None` when the text has nothing to draw.
+    ///
+    /// # Errors
+    ///
+    /// [`ResourceError::Unsupported`] when no text registry is installed,
+    /// otherwise as [`TextBackend::register_text`].
+    pub fn text(
+        &self,
+        text: StyledStr,
+        placement: TextPlacement,
+        env: Environment,
+    ) -> Result<Option<RegisteredText>, ResourceError> {
+        let backend = self
+            .table
+            .text
+            .borrow()
+            .clone()
+            .ok_or(ResourceError::Unsupported("canvas text"))?;
+        let registration = backend.register_text(TextRequest::new(text, placement, env))?;
+        Ok(registration.map(|TextRegistration { handle, size }| {
+            let entry = Rc::new(Entry {
+                handle: Box::new(handle),
+                key: EntryKey::Text,
+                table: Rc::downgrade(&self.table),
+            });
+            RegisteredText {
+                layout: Registered {
+                    entry,
+                    marker: PhantomData,
+                },
+                size,
+            }
+        }))
     }
 
     /// How many registrations the table lists across every kind — dead
@@ -1172,7 +1369,7 @@ impl fmt::Debug for SceneResources {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+pub mod tests {
     use alloc::rc::Rc;
     use alloc::sync::Arc;
     use alloc::vec::Vec;
@@ -1192,7 +1389,7 @@ pub(crate) mod tests {
     use super::{
         Content, HeldResources, RecordingResources, Registered, SceneResources, SourceBytes,
     };
-    use crate::scene_view::SceneContent;
+    use crate::scene_view::{NextFrame, SceneContent, SceneFrame, SceneUpdate};
 
     fn null_engine() -> (Rc<Engine<Null>>, Receiver<Event>) {
         let (events, probe) = channel();
@@ -1259,15 +1456,17 @@ pub(crate) mod tests {
         let (new_resources, _new_events) = null_resources();
         let old_image = old_resources.image(one_pixel()).expect("old image");
         let mut new_recording = new_resources.recording();
+        // A debug build panics on the contract violation; a release build
+        // logs it and answers `None`.
         let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            new_recording.name(&old_image);
+            new_recording.name(&old_image)
         }));
         assert!(
-            rejected.is_err(),
+            rejected.map_or(true, |named| named.is_none()),
             "a recording on a replacement engine must reject an old resource handle"
         );
         let new_image = new_resources.image(one_pixel()).expect("new image");
-        let _new_id = new_recording.name(&new_image);
+        let _new_id = new_recording.name(&new_image).expect("this target's image");
     }
 
     fn added_images(events: &[Event]) -> Vec<ImageId> {
@@ -1321,7 +1520,7 @@ pub(crate) mod tests {
             resources: &mut RecordingResources<'_>,
             width: f32,
             height: f32,
-        ) -> bool {
+        ) -> NextFrame {
             self.frame += 1;
             let bounds = Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
             recorder.fill(bounds, WorkingColor::BLACK);
@@ -1331,11 +1530,15 @@ pub(crate) mod tests {
                         .image(one_pixel())
                         .expect("image registration failed")
                 });
-                recorder.image(resources.name(image), bounds, Sampling::Nearest);
+                recorder.image(
+                    resources.name(image).expect("registered on this target"),
+                    bounds,
+                    Sampling::Nearest,
+                );
             } else {
                 self.image = None;
             }
-            false
+            NextFrame::Idle
         }
 
         fn rebuild_for_engine(&mut self) {
@@ -1367,9 +1570,12 @@ pub(crate) mod tests {
         }
     }
 
-    /// What one frame did: the image ids the installed recording draws, and
-    /// the render-thread events from recording it through rendering it.
+    /// What one frame did: whether the content kept its installed recording,
+    /// the image ids a new recording draws (none when it was kept), and the
+    /// render-thread events from updating or recording it through rendering
+    /// it.
     pub struct FrameReport {
+        pub retained: bool,
         pub drawn: Vec<ImageId>,
         pub events: Vec<Event>,
     }
@@ -1427,18 +1633,41 @@ pub(crate) mod tests {
         /// Renders one frame and returns every render-thread event since the
         /// last render.
         pub fn render(&self) -> Vec<Event> {
-            self.engine.render(FrameTime::now()).expect("render");
+            self.render_at(FrameTime::now())
+        }
+
+        fn render_at(&self, time: FrameTime) -> Vec<Event> {
+            self.engine.render(time).expect("render");
             self.probe.try_iter().collect()
         }
 
-        /// One host frame: record, install the recording, render.
+        /// One host frame, as a host keeping recordings installed presents
+        /// it: the content follows the frame, and is recorded and installed
+        /// only when it keeps no recording it can update; then render.
         pub fn frame(&self, content: &mut dyn SceneContent) -> FrameReport {
+            let time = FrameTime::now();
+            let update = content.update_scene(
+                &self.resources,
+                SceneFrame {
+                    width: 8.0,
+                    height: 8.0,
+                    time: time.instant(),
+                },
+            );
+            if let SceneUpdate::Retained { .. } = update {
+                return FrameReport {
+                    retained: true,
+                    drawn: Vec::new(),
+                    events: self.render_at(time),
+                };
+            }
             let recorded = self.record(content);
             let drawn = recorded.drawn.clone();
             self.install(recorded);
             FrameReport {
+                retained: false,
                 drawn,
-                events: self.render(),
+                events: self.render_at(time),
             }
         }
     }
@@ -1545,7 +1774,11 @@ pub(crate) mod tests {
             .resources
             .image(one_pixel())
             .expect("image registration");
-        let fresh_id = mount.resources.recording().name(&fresh);
+        let fresh_id = mount
+            .resources
+            .recording()
+            .name(&fresh)
+            .expect("registered on this target");
         assert_ne!(fresh_id, id);
         assert_eq!(added_images(&mount.render()), [fresh_id]);
         assert_eq!(mount.resources.listed(), 1);
@@ -1607,6 +1840,7 @@ pub(crate) mod tests {
         let events = mount.render();
         assert_released_then_replaced(
             &FrameReport {
+                retained: false,
                 drawn: Vec::new(),
                 events,
             },
@@ -1615,11 +1849,39 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "registered on another target")]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "another target's resources")
+    )]
+    fn a_recording_from_another_target_is_not_held() {
+        let (theirs, _events) = null_resources();
+        let (ours, _events) = null_resources();
+        let image = theirs.image(one_pixel()).expect("image registration");
+        let mut recording = theirs.recording();
+        let _ = recording.name(&image);
+        let foreign = recording.finish();
+        let mut mine = ours.recording();
+        mine.hold(&foreign);
+        assert!(mine.finish().entries.is_empty());
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "registered on another target")
+    )]
     fn a_resource_from_another_target_cannot_be_named() {
         let (theirs, _events) = null_resources();
         let (ours, _events) = null_resources();
         let image = theirs.image(one_pixel()).expect("image registration");
-        let _ = ours.recording().name(&image);
+        let mut recording = ours.recording();
+        assert!(
+            recording.name(&image).is_none(),
+            "a foreign resource has no id on this target"
+        );
+        assert!(
+            recording.finish().entries.is_empty(),
+            "the foreign registration is not held"
+        );
     }
 }

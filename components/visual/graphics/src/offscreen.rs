@@ -24,6 +24,9 @@ use cherenkov_cpu::{Raster, RasterConfig};
 use cherenkov_gpu::{Gpu, GpuConfig};
 use image::ImageEncoder as _;
 
+use waterui_core::contract_violation;
+
+use crate::canvas::{Drawing, lower_drawing};
 use crate::scene::picture::PictureRecording;
 use crate::scene::resources::{HeldResources, SceneCaps, SceneResources};
 use crate::scene::scene_view::SceneContent;
@@ -78,11 +81,31 @@ pub enum OffscreenError {
 #[non_exhaustive]
 pub struct OffscreenImage {
     /// Width in pixels.
-    pub width: u32,
+    width: u32,
     /// Height in pixels.
-    pub height: u32,
+    height: u32,
     /// `width * height * 4` bytes of straight-alpha sRGB8.
-    pub rgba8: Vec<u8>,
+    rgba8: Vec<u8>,
+}
+
+impl OffscreenImage {
+    /// Width in pixels.
+    #[must_use]
+    pub const fn width(&self) -> u32 {
+        self.width
+    }
+
+    /// Height in pixels.
+    #[must_use]
+    pub const fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// `width * height * 4` bytes of straight-alpha sRGB8.
+    #[must_use]
+    pub const fn rgba8(&self) -> &[u8] {
+        self.rgba8.as_slice()
+    }
 }
 
 impl OffscreenImage {
@@ -136,15 +159,21 @@ impl OffscreenImage {
 
     /// The pixel at `(x, y)`.
     ///
-    /// # Panics
-    /// When `(x, y)` lies outside the image.
+    /// A `(x, y)` outside the image is a contract violation: the pixel is
+    /// transparent black.
     #[must_use]
     pub fn pixel(&self, x: u32, y: u32) -> [u8; 4] {
-        assert!(x < self.width && y < self.height, "pixel outside the image");
+        if x >= self.width || y >= self.height {
+            contract_violation!(
+                "pixel ({x}, {y}) outside the {}x{} image; transparent black is returned",
+                self.width,
+                self.height
+            );
+            return [0; 4];
+        }
         let offset = ((y * self.width + x) * 4) as usize;
-        self.rgba8[offset..offset + 4]
-            .try_into()
-            .expect("a pixel is four bytes")
+        let pixel = &self.rgba8[offset..offset + 4];
+        [pixel[0], pixel[1], pixel[2], pixel[3]]
     }
 
     /// Writes the image as a PNG.
@@ -186,6 +215,19 @@ fn p3_to_srgb(p3: [f32; 3]) -> [f32; 3] {
 )]
 fn pixels_to_points(pixels: u32, scale: f32) -> f32 {
     pixels as f32 / scale
+}
+
+/// The transform that scales `drawing`'s points to fill `size` pixels.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "a texture side is far below f32's exact integer range"
+)]
+fn drawing_transform(drawing: &Drawing, size: OffscreenSize) -> Affine {
+    let natural = drawing.size();
+    Affine::scale_non_uniform(
+        f64::from(size.width() as f32 / natural.width),
+        f64::from(size.height() as f32 / natural.height),
+    )
 }
 
 /// An engine that renders scene content into images through backend `B`.
@@ -369,7 +411,7 @@ impl<B: SceneCaps + Uploads<Rgba8> + Uploads<Rgba16F>> OffscreenRenderer<B> {
     ///
     /// The renderer makes the drawing its own first:
     /// [`rebuild_for_engine`](PictureRecording::rebuild_for_engine) replays
-    /// the recording's semantic [`PictureSource`](crate::picture::PictureSource)
+    /// the recording's semantic [`PictureSource`](crate::backend::PictureSource)
     /// against this engine's [`SceneResources`], so a recording made on
     /// another engine draws here — even after that engine is gone — and a
     /// recording that names no resource keeps its exact recorded snapshot.
@@ -406,7 +448,7 @@ impl<B: SceneCaps + Uploads<Rgba8> + Uploads<Rgba16F>> OffscreenRenderer<B> {
     ///
     /// The renderer makes the drawing its own first:
     /// [`rebuild_for_engine`](PictureRecording::rebuild_for_engine) replays
-    /// the recording's semantic [`PictureSource`](crate::picture::PictureSource)
+    /// the recording's semantic [`PictureSource`](crate::backend::PictureSource)
     /// against this engine's [`SceneResources`], so a recording made on
     /// another engine draws here — even after that engine is gone — and a
     /// recording that names no resource keeps its exact recorded snapshot.
@@ -445,6 +487,80 @@ impl<B: SceneCaps + Uploads<Rgba8> + Uploads<Rgba16F>> OffscreenRenderer<B> {
             recorder.picture(picture.picture(), transform);
         });
         let held = resources.finish();
+        self.show(&surface, recorded, held).await
+    }
+
+    /// Renders `drawing` into `size` pixels and reads it back.
+    ///
+    /// The drawing's whole area, `drawing.size()` points, fills the output:
+    /// the drawing is scaled from its own size to `size`. The drawing
+    /// records against this engine's [`SceneResources`] first, so any
+    /// renderer draws any drawing, and the frame holds the registrations it
+    /// names until the pixels are read.
+    ///
+    /// # Errors
+    /// [`OffscreenError`] when the surface cannot be created, the frame does
+    /// not render, or the target cannot be read back.
+    ///
+    /// # Panics
+    /// When the engine refuses a font of the drawing.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn render_drawing(
+        &self,
+        drawing: &Drawing,
+        size: OffscreenSize,
+    ) -> Result<OffscreenImage, OffscreenError> {
+        let surface = self.engine.surface(
+            Offscreen::new((size.width(), size.height()), OffscreenFormat::LinearF16),
+            || {},
+        )?;
+        let (picture, held) = lower_drawing(drawing, &self.resources);
+        let transform = drawing_transform(drawing, size);
+        let recorded = surface.record(|recorder: &mut Recorder| {
+            recorder.picture(&picture, transform);
+        });
+        self.show(&surface, recorded, held)
+    }
+
+    /// Renders `drawing` into `size` pixels and reads it back.
+    ///
+    /// The drawing's whole area, `drawing.size()` points, fills the output:
+    /// the drawing is scaled from its own size to `size`. The drawing
+    /// records against this engine's [`SceneResources`] first, so any
+    /// renderer draws any drawing, and the frame holds the registrations it
+    /// names until the pixels are read.
+    ///
+    /// # Errors
+    /// [`OffscreenError`] when the surface cannot be created, the frame does
+    /// not render, or the target cannot be read back.
+    ///
+    /// # Panics
+    /// When the engine refuses a font of the drawing.
+    #[cfg(target_arch = "wasm32")]
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            clippy::future_not_send,
+            reason = "holds the engine's Rc-based wasm32 backend handles across an await, so the future is !Send; every future on wasm32 runs on the browser's single-threaded executor"
+        )
+    )]
+    pub async fn render_drawing(
+        &self,
+        drawing: &Drawing,
+        size: OffscreenSize,
+    ) -> Result<OffscreenImage, OffscreenError> {
+        let surface = self
+            .engine
+            .surface(
+                Offscreen::new((size.width(), size.height()), OffscreenFormat::LinearF16),
+                || {},
+            )
+            .await?;
+        let (picture, held) = lower_drawing(drawing, &self.resources);
+        let transform = drawing_transform(drawing, size);
+        let recorded = surface.record(|recorder: &mut Recorder| {
+            recorder.picture(&picture, transform);
+        });
         self.show(&surface, recorded, held).await
     }
 
@@ -518,6 +634,18 @@ mod tests {
         assert_eq!(image.pixel(1, 0), [0, 0, 0, 0]);
     }
 
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "outside the 2x1 image"))]
+    fn a_pixel_outside_the_image_is_transparent_black() {
+        let readback = Readback {
+            width: 2,
+            height: 1,
+            pixels: vec![[1.0, 1.0, 1.0, 1.0]; 2],
+        };
+        let image = OffscreenImage::from_readback(&readback);
+        assert_eq!(image.pixel(2, 0), [0, 0, 0, 0]);
+    }
+
     #[cfg(all(feature = "cpu", not(target_arch = "wasm32")))]
     mod cpu {
         use alloc::sync::Arc;
@@ -527,9 +655,8 @@ mod tests {
         use crate::scene::source::{ImageColorSpace, ImageData, Rgba8};
         use cherenkov_cpu::Raster;
 
+        use crate::backend::{Picture, PictureSource, RecordingResources};
         use crate::offscreen::{OffscreenImage, OffscreenRenderer, OffscreenSize};
-        use crate::picture::{Picture, PictureSource};
-        use crate::resources::RecordingResources;
 
         /// A 2×1 image: left texel red, right texel blue.
         struct TwoPixels {
@@ -551,7 +678,7 @@ mod tests {
                     )
                     .expect("image registration");
                 recorder.image(
-                    resources.name(&image),
+                    resources.name(&image).expect("registered on this target"),
                     Rect::new(0.0, 0.0, 8.0, 8.0),
                     Sampling::Nearest,
                 );

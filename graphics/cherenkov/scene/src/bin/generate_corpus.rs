@@ -12,6 +12,8 @@ mod authored;
 mod compressed;
 #[path = "generate_corpus/gradient_search.rs"]
 mod gradient_search;
+#[path = "generate_corpus/shaders.rs"]
+mod shaders;
 #[path = "generate_corpus/stroke_gpu.rs"]
 mod stroke_gpu;
 #[path = "generate_corpus/text_layout.rs"]
@@ -28,11 +30,12 @@ use cherenkov_scene::kurbo::{
     Vec2,
 };
 use cherenkov_scene::{
-    BackdropEffectSpec, BackdropFilter, BackdropGroup, BlendMode, BlendSpace, Color, ColorSpace,
-    Draw, Extend, FillRule, FilterBlend, Glyph, GlyphRun, GradientStop, Group, GroupItem,
-    ImageColorSpace, ImageEncoding, ImagePaint, LayerBuilder, LayerFilter, LinearGradient, Live,
-    Motion, MotionAnimation, NormalizedCoord, Paint, Projection, RadialGradient, ResourceHash,
-    Sampling, Scene, SceneBuilder, SceneError, Shape, StrokeStyle, SweepGradient,
+    BackdropEffectSpec, BackdropFilter, BackdropGroup, BlendMode, BlendSpace, CapturePyramid,
+    Color, ColorSpace, Draw, Extend, FillRule, FilterBlend, Glyph, GlyphRun, GradientStop, Group,
+    GroupItem, ImageColorSpace, ImageEncoding, ImagePaint, LayerBuilder, LayerFilter,
+    LinearGradient, Live, Motion, MotionAnimation, NormalizedCoord, Paint, Projection,
+    RadialGradient, ResourceHash, Sampling, Scene, SceneBuilder, SceneError, Shape, StrokeStyle,
+    SweepGradient,
 };
 use fontique::FontWeight;
 use parley::{
@@ -1391,6 +1394,26 @@ impl Corpus {
             name: name.into(),
             body: EntryBody::Scene(Box::new(scene)),
             blobs: Vec::new(),
+        });
+    }
+
+    /// Like [`Corpus::scene_setup`] on a surface storing `storage`, with the
+    /// blobs its `resources/` needs.
+    fn scene_stored(
+        &mut self,
+        name: impl Into<String>,
+        (w, h, clear): (u32, u32, Color),
+        storage: BlendSpace,
+        f: impl FnOnce(&mut SceneBuilder),
+        blobs: Vec<Vec<u8>>,
+    ) {
+        let mut builder = Scene::builder(w, h).clear(clear).storage_space(storage);
+        f(&mut builder);
+        let scene = builder.build();
+        self.entries.push(Entry {
+            name: name.into(),
+            body: EntryBody::Scene(Box::new(scene)),
+            blobs,
         });
     }
 
@@ -2793,6 +2816,7 @@ fn run(root: &Path) -> Result<(), SceneError> {
 
     let white = srgb(0.95, 0.95, 0.95);
     let dark = srgb(0.1, 0.1, 0.12);
+    shaders::generate(&mut corpus, white);
 
     // ---- Basic shapes ------------------------------------------------------
 
@@ -4079,6 +4103,25 @@ fn run(root: &Path) -> Result<(), SceneError> {
                 filter_blur_content(group, colors);
             });
         });
+    }
+
+    // A filter with no CPU kernel, which the CPU raster runs from its
+    // stage description: a sharpen that overshoots both ways at edges.
+    for &(suffix, colors) in &filter_color_variants {
+        corpus.scene(
+            format!("filter-convolution3x3{suffix}"),
+            128,
+            128,
+            white,
+            |l| {
+                l.layer(|group| {
+                    group.filter(LayerFilter::Convolution3x3 {
+                        kernel: [0.0, -1.0, 0.0, -1.0, 5.0, -1.0, 0.0, -1.0, 0.0],
+                    });
+                    filter_blur_content(group, colors);
+                });
+            },
+        );
     }
 
     // HWUI's overscroll stretch at Android's largest drawn intensity
@@ -6430,7 +6473,7 @@ fn run(root: &Path) -> Result<(), SceneError> {
                 items,
                 opacity: 0.82,
                 blend: BlendMode::Normal,
-                blend_space: BlendSpace::SrgbEncoded,
+                blend_space: Some(BlendSpace::SrgbEncoded),
                 filter: None,
             });
         });
@@ -7527,6 +7570,67 @@ fn run(root: &Path) -> Result<(), SceneError> {
         });
     });
 
+    // A full-scale capture reduced into five Gaussian levels over
+    // one-pixel stripes on a three-pixel period, the detail a box
+    // pyramid aliases into ripple: the `[1, 5, 10, 10, 5, 1] / 32` reduction
+    // keeps level 1 free of the beat a 2×2 mean shows. The first member
+    // covers the surface — the capture's region is the whole grid, so
+    // every reduction clamps at the surface's own edge — and ramps level
+    // 0 at its edge to level 4 at its core; the second holds a fixed
+    // trilinear read at level 2.5.
+    corpus.scene_setup("backdrop-levels-gaussian", 256, 256, white, |b| {
+        b.backdrop_group(BackdropGroup {
+            pyramid: CapturePyramid::Gaussian,
+            ..BackdropGroup::new(1, Vec::new(), 1.0, 5)
+        });
+        let l = &mut b.root();
+        for i in 0..86 {
+            let x0 = 3.0 * f64::from(i);
+            l.fill(
+                Shape::rect(x0, 0.0, x0 + 1.0, 256.0),
+                solid(srgb(0.04, 0.04, 0.05)),
+            );
+            l.fill(
+                Shape::rect(x0 + 1.0, 0.0, x0 + 3.0, 256.0),
+                solid(srgb(0.96, 0.96, 0.96)),
+            );
+        }
+        l.fill(
+            Shape::circle(64.0, 200.0, 36.0),
+            solid(srgb(0.9, 0.12, 0.12)),
+        );
+        l.fill(
+            Shape::circle(192.0, 56.0, 28.0),
+            solid(srgb(0.12, 0.7, 0.2)),
+        );
+        l.fill(
+            Shape::circle(224.0, 224.0, 24.0),
+            solid(srgb(0.12, 0.3, 0.9)),
+        );
+        l.layer(|m| {
+            m.clip(Shape::RoundedRect(RoundedRect::new(
+                0.0, 0.0, 256.0, 256.0, 24.0,
+            )));
+            m.backdrop(1);
+            m.backdrop_effect(BackdropEffectSpec::Level {
+                depth: 64.0,
+                edge_level: 0.0,
+                interior_level: 4.0,
+            });
+        });
+        l.layer(|m| {
+            m.clip(Shape::RoundedRect(RoundedRect::new(
+                96.0, 96.0, 224.0, 224.0, 20.0,
+            )));
+            m.backdrop(1);
+            m.backdrop_effect(BackdropEffectSpec::Level {
+                depth: 8.0,
+                edge_level: 2.5,
+                interior_level: 2.5,
+            });
+        });
+    });
+
     // The pyramid on a capture region away from the origin with partial
     // boxes at every reduction. 292×258 at scale 0.25 is a 73×65-texel
     // grid. The first member's top-left corner, (112, 112) px, is texel
@@ -7937,7 +8041,7 @@ fn run(root: &Path) -> Result<(), SceneError> {
                     items: cell(x0, y0),
                     opacity: 1.0,
                     blend: BlendMode::Normal,
-                    blend_space,
+                    blend_space: Some(blend_space),
                     filter: Some(Box::new(filter)),
                 });
             }
@@ -7980,7 +8084,7 @@ fn run(root: &Path) -> Result<(), SceneError> {
                 ],
                 opacity: 1.0,
                 blend: BlendMode::Normal,
-                blend_space: BlendSpace::SrgbEncoded,
+                blend_space: Some(BlendSpace::SrgbEncoded),
                 filter: None,
             }
         };
@@ -8002,7 +8106,7 @@ fn run(root: &Path) -> Result<(), SceneError> {
             items: vec![GroupItem::Group(encoded(128.0, 0.0))],
             opacity: 1.0,
             blend: BlendMode::Normal,
-            blend_space: BlendSpace::Linear,
+            blend_space: None,
             filter: None,
         });
         l.layer(|outer| {
@@ -8026,6 +8130,131 @@ fn run(root: &Path) -> Result<(), SceneError> {
             m.group(encoded(128.0, 128.0));
         });
     });
+
+    // An sRGB-encoded surface: every level that declares no space blends
+    // in encoded values. The left column is Material's on-surface colour
+    // (#1D1B20) over its surface (#FEF7FF) at the disabled-container 4%
+    // and the state-layer 8%, 10% and 38% opacities, which land on the
+    // encoded blends the specification gives; the right column paints the
+    // same overlays inside a translucent layer, which inherits the
+    // encoded space. A P3-only bar and an HDR bar check that presentation
+    // returns the encoded store to the working space.
+    corpus.scene_stored(
+        "storage-encoded-overlay",
+        (256, 256, srgb(0.996, 0.969, 1.0)),
+        BlendSpace::SrgbEncoded,
+        |b| {
+            let on_surface = |alpha: f32| solid(srgba(0.114, 0.106, 0.125, alpha));
+            let l = &mut b.root();
+            for (i, alpha) in [0.04, 0.08, 0.1, 0.38].into_iter().enumerate() {
+                let y = 16.0 + 48.0 * f64::from(u8::try_from(i).expect("four rows"));
+                l.fill(
+                    Shape::rounded_rect(16.0, y, 104.0, 40.0, 4.0),
+                    on_surface(alpha),
+                );
+            }
+            l.layer(|m| {
+                m.opacity(0.7);
+                for (i, alpha) in [0.04, 0.08, 0.1, 0.38].into_iter().enumerate() {
+                    let y = 16.0 + 48.0 * f64::from(u8::try_from(i).expect("four rows"));
+                    m.fill(
+                        Shape::rounded_rect(136.0, y, 104.0, 40.0, 4.0),
+                        on_surface(alpha),
+                    );
+                }
+            });
+            l.fill(
+                Shape::rect(16.0, 208.0, 224.0, 12.0),
+                solid(p3(0.0, 0.85, 0.05)),
+            );
+            l.fill(
+                Shape::rect(16.0, 228.0, 224.0, 12.0),
+                solid(hdr(2.5, 2.2, 1.8)),
+            );
+        },
+        Vec::new(),
+    );
+
+    // A linear island on an encoded surface: the same translucent image
+    // and translucent fill are painted directly on the encoded root (top)
+    // and inside a layer declaring the linear space (bottom), which
+    // isolates them, blends them linearly and composites the result
+    // across the spaces, so the two rows' edges and mixes differ.
+    corpus.scene_stored(
+        "storage-encoded-linear-island",
+        (256, 256, srgb(0.2, 0.25, 0.3)),
+        BlendSpace::SrgbEncoded,
+        |b| {
+            let row = |l: &mut LayerBuilder, y: f64| {
+                l.fill(
+                    Shape::rect(16.0, y + 8.0, 224.0, 24.0),
+                    solid(srgb(0.95, 0.9, 0.2)),
+                );
+                l.image(
+                    ResourceHash::of(&grad_img),
+                    Rect::new(24.0, y, 120.0, y + 96.0),
+                    Sampling::Bilinear,
+                );
+                l.fill(
+                    Shape::circle(184.0, y + 48.0, 44.0),
+                    solid(srgba(0.1, 0.3, 0.95, 0.5)),
+                );
+            };
+            let l = &mut b.root();
+            row(l, 16.0);
+            l.layer(|m| {
+                m.blend_space(BlendSpace::Linear);
+                m.opacity(0.9);
+                row(m, 136.0);
+            });
+        },
+        vec![grad_img.clone()],
+    );
+
+    // A glass member over an encoded surface: the capture reads the
+    // encoded store back to the working space before it blurs, so the
+    // member's darkened sample, edge and translucent tint sit over the
+    // stripes and the P3 and HDR bars exactly as on a linear surface,
+    // while the tint itself blends encoded.
+    corpus.scene_stored(
+        "storage-encoded-glass",
+        (256, 256, white),
+        BlendSpace::SrgbEncoded,
+        |b| {
+            b.backdrop_group(BackdropGroup::new(
+                1,
+                vec![BackdropFilter::GaussianBlur { sigma: 6.0 }],
+                1.0,
+                1,
+            ));
+            let l = &mut b.root();
+            backdrop_background(l);
+            l.fill(Shape::circle(128.0, 72.0, 36.0), solid(p3(0.0, 0.85, 0.05)));
+            l.fill(
+                Shape::rect(16.0, 176.0, 224.0, 24.0),
+                solid(hdr(2.5, 2.2, 1.8)),
+            );
+            l.layer(|m| {
+                m.clip(Shape::RoundedRect(RoundedRect::new(
+                    40.0, 40.0, 216.0, 216.0, 24.0,
+                )));
+                m.backdrop(1);
+                m.backdrop_outer(8.0);
+                m.backdrop_effect(BackdropEffectSpec::ColorMatrix {
+                    matrix: [
+                        0.6, 0.0, 0.0, 0.0, //
+                        0.0, 0.6, 0.0, 0.0, //
+                        0.0, 0.0, 0.6, 0.0,
+                    ],
+                });
+                m.fill(
+                    Shape::rect(40.0, 40.0, 176.0, 176.0),
+                    solid(srgba(1.0, 1.0, 1.0, 0.15)),
+                );
+            });
+        },
+        Vec::new(),
+    );
 
     // The #211 dense city map: a 1600×1200 frame whose live coverage
     // exceeds one atlas page. Its output is generated — never committed.

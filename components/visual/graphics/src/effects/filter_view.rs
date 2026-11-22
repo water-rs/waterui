@@ -16,9 +16,9 @@
 //! an arbitrary GPU effect, which has no portable description.
 //!
 //! Reactive parameters are [`Reactive`] slots: a nami signal on the UI side
-//! feeds a `Send` value slot the render side samples, and a change carrying
-//! a public [`Animation`] in its metadata hands an interpolator to every
-//! watcher. The engine consumes its own `crate::draw::Animation`, so the
+//! feeds a `Send` value slot the render side samples, and a change naming
+//! a public [`Animation`](waterui_core::animation::Animation) in its
+//! metadata hands an interpolator to every watcher. The engine consumes its own `crate::draw::Animation`, so the
 //! metadata type is mapped through the public `curve()`/`duration()`
 //! contract at the watcher boundary.
 //!
@@ -40,7 +40,6 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use core::time::Duration;
 
 use crate::animation::engine_animation;
-use crate::draw::{curve_value, settled, spring_step};
 
 /// Values crossing the render-thread boundary, mirroring the engine's
 /// `RenderTransfer` marker so `effects` builds without it.
@@ -54,18 +53,30 @@ impl<T: Send + ?Sized> RenderTransfer for T {}
 pub trait RenderTransfer {}
 #[cfg(target_arch = "wasm32")]
 impl<T: ?Sized> RenderTransfer for T {}
+/// The built-in filters `.filter(F)` takes, by their `filtrate` names.
+pub use filtrate::filters;
 pub use filtrate::filters::{BlendMode, TransitionDirection};
 use filtrate::{
-    AnimatedCallback, AnimatedTarget, AuxData, AuxImage, Chain, ColorStage, Filter, FilterExt as _,
+    AnimatedCallback, AnimatedTarget, AuxData, AuxImage, Chain, ColorStage, FilterExt as _,
     FilterLink, FilterParam, ImageVisitor, Interpolator, LinkVisitor, ParamArray, Placed,
     SignalVisitor, SpatialStage, StageCollector, WatchGuard,
 };
-pub use filtrate::{FilterImage, LutImage};
+/// What writing a custom effect for `.effect(E)` names: the `Effect` trait,
+/// the contexts it runs with and the results it returns, and the
+/// application-supplied shader effect with its parameter bound and error.
+#[cfg(feature = "gpu")]
+pub use filtrate::{
+    Effect, EffectContext, EffectInput, EffectOutput, EffectRenderResult, EffectSetupResult,
+    RetainedMemory, SHADER_EFFECT_MAX_PARAMS, ShaderEffect, ShaderEffectError, TextureViews,
+};
+/// The traits `.filter(F)` requires of a filter: a [`Filter`] whose kind
+/// reports its footprint ([`Reach`]), as every colour and spatial filter's
+/// does.
+pub use filtrate::{Filter, FilterImage, LutImage, Reach};
 #[cfg(feature = "gpu")]
 use nami::SignalExt;
 use nami::{Signal, signal::IntoComputed};
-use waterui_core::animation::Animation;
-use waterui_core::layout::StretchAxis;
+use waterui_core::animation::ChangeAnimation;
 use waterui_core::{AnyView, Environment, IntoSignalF32, View};
 
 #[cfg(feature = "gpu")]
@@ -283,9 +294,8 @@ impl ParamGuards {
         });
         let target = Arc::clone(&slot);
         let guard = signal.watch(move |context| {
-            let animation = context
-                .metadata()
-                .try_get::<Animation>()
+            let animation = ChangeAnimation::of(context.metadata())
+                .animation()
                 .map(|animation| engine_animation(&animation));
             let value = context.into_value();
             target.value.store(value.to_bits(), Ordering::Release);
@@ -312,68 +322,130 @@ impl ParamGuards {
     }
 }
 
-/// A Cherenkov animation driving a scalar filter parameter.
+/// A Cherenkov animation driving a scalar filter parameter from rest,
+/// evaluated through the shared evaluator exactly as core and the engine
+/// evaluate it.
 struct AnimationInterpolator(crate::draw::Animation);
 
-const SPRING_STEP: f64 = 1.0 / 240.0;
-const SPRING_STEP_NANOS: u128 = 1_000_000_000 / 240;
-const SPRING_LIMIT: Duration = Duration::from_secs(10);
-
-#[allow(clippy::cast_possible_truncation)]
 impl AnimationInterpolator {
-    fn spring_at(
-        spring: &crate::draw::Spring,
-        from: f32,
-        to: f32,
-        elapsed: Duration,
-    ) -> (f64, bool) {
-        let (mut pos, mut velocity) = ([f64::from(from)], [0.0]);
-        let target = [f64::from(to)];
-        let steps = (elapsed.min(SPRING_LIMIT).as_nanos() / SPRING_STEP_NANOS) + 1;
-        for _ in 0..steps {
-            (pos, velocity) = spring_step(pos, velocity, target, spring, SPRING_STEP);
-            if settled(pos, velocity, target) {
-                return (target[0], true);
-            }
-        }
-        (pos[0], false)
+    /// The parameter `elapsed` after it left `from` at rest for `to`, and
+    /// whether the animation is done there; a decay lands at once.
+    fn sample(&self, from: f32, to: f32, elapsed: Duration) -> (f64, bool) {
+        let Some(timing) = self.0.timing() else {
+            return (f64::from(to), true);
+        };
+        let (mut position, mut rate) = ([0.0], [0.0]);
+        let done = timing.sample_lanes(
+            &[f64::from(from)],
+            &[0.0],
+            &[f64::from(to)],
+            elapsed.as_secs_f64(),
+            &mut position,
+            &mut rate,
+        );
+        (position[0], done)
     }
 }
 
-#[allow(clippy::cast_possible_truncation)]
 impl Interpolator for AnimationInterpolator {
+    /// A curve's duration; for a spring, the time a unit step from rest
+    /// takes to settle for good, as `Animation::duration` reports it.
     fn duration(&self) -> Duration {
         match &self.0 {
             crate::draw::Animation::Curve(curve) => curve.duration,
-            crate::draw::Animation::Spring(_) => SPRING_LIMIT,
+            crate::draw::Animation::Spring(spring) => spring
+                .unit_settling_duration()
+                .expect("`engine_animation` validates its spring, which settles in finite time"),
             crate::draw::Animation::Decay(_) => Duration::ZERO,
         }
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a filter parameter is an f32; the evaluator works in f64"
+    )]
     fn interpolate(&self, from: f32, to: f32, elapsed: Duration) -> f32 {
-        match &self.0 {
-            crate::draw::Animation::Curve(curve) => {
-                let t = if curve.duration.is_zero() {
-                    1.0
-                } else {
-                    (elapsed.as_secs_f64() / curve.duration.as_secs_f64()).min(1.0)
-                };
-                let k = curve_value(curve, t);
-                (f64::from(to) - f64::from(from)).mul_add(k, f64::from(from)) as f32
-            }
-            crate::draw::Animation::Spring(spring) => {
-                Self::spring_at(spring, from, to, elapsed).0 as f32
-            }
-            crate::draw::Animation::Decay(_) => to,
-        }
+        self.sample(from, to, elapsed).0 as f32
     }
 
     fn is_complete(&self, elapsed: Duration) -> bool {
+        self.sample(0.0, 1.0, elapsed).1
+    }
+
+    /// The span of every value `interpolate` returns: the endpoints, widened
+    /// by the animation's overshoot.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a filter parameter is an f32; the bounds are computed in f64"
+    )]
+    fn bounds(&self, from: f32, to: f32) -> (f32, f32) {
+        let (from, to) = (f64::from(from), f64::from(to));
+        let (lo, hi) = self.unit_range();
+        let (a, b) = (
+            f64::mul_add(to - from, lo, from),
+            f64::mul_add(to - from, hi, from),
+        );
+        // Rounding to f32 is monotonic, so covering the f64 samples covers
+        // their f32 casts.
+        (a.min(b) as f32, a.max(b) as f32)
+    }
+}
+
+/// Relative widening of an analytically computed extremum, so rounding in
+/// the evaluator's own arithmetic cannot put a sample outside the bound.
+const EXTREMUM_MARGIN: f64 = 1e-9;
+
+impl AnimationInterpolator {
+    /// The range `[lo, hi]` of the animation's unit progress from rest, as
+    /// the samples of a unit step from 0 to 1 span it.
+    fn unit_range(&self) -> (f64, f64) {
         match &self.0 {
-            crate::draw::Animation::Spring(spring) => {
-                elapsed >= SPRING_LIMIT || Self::spring_at(spring, 0.0, 1.0, elapsed).1
+            crate::draw::Animation::Spring(spring) if spring.damping < 1.0 => {
+                // An underdamped step response peaks first at
+                // `1 + e^(-πζ/√(1-ζ²))`, which bounds every later sample,
+                // and never drops below its start.
+                let zeta = spring.damping;
+                let peak =
+                    (-core::f64::consts::PI * zeta / f64::mul_add(zeta, -zeta, 1.0).sqrt()).exp();
+                (0.0, peak.mul_add(1.0 + EXTREMUM_MARGIN, 1.0))
             }
-            _ => elapsed >= self.duration(),
+            crate::draw::Animation::Spring(_) => (0.0, 1.0),
+            crate::draw::Animation::Curve(curve) => {
+                // y(s) = a·s³ + b·s² + c·s over s in [0, 1], with y(0) = 0
+                // and y(1) = 1; its extrema are the endpoints and the real
+                // roots of y'(s) = 3a·s² + 2b·s + c inside (0, 1).
+                let (y1, y2) = (curve.p1.y, curve.p2.y);
+                let (a, b, c) = (
+                    3.0f64.mul_add(y1, 3.0f64.mul_add(-y2, 1.0)),
+                    3.0 * 2.0f64.mul_add(-y1, y2),
+                    3.0 * y1,
+                );
+                let y = |s: f64| f64::mul_add(f64::mul_add(a, s, b), s, c) * s;
+                let (mut lo, mut hi) = (0.0_f64, 1.0_f64);
+                let mut visit = |s: f64| {
+                    if s > 0.0 && s < 1.0 {
+                        let value = y(s);
+                        lo = lo.min(f64::mul_add(value.abs(), -EXTREMUM_MARGIN, value));
+                        hi = hi.max(f64::mul_add(value.abs(), EXTREMUM_MARGIN, value));
+                    }
+                };
+                let (qa, qb) = (3.0 * a, 2.0 * b);
+                if qa.abs() < f64::EPSILON {
+                    if qb.abs() >= f64::EPSILON {
+                        visit(-c / qb);
+                    }
+                } else {
+                    let discriminant = f64::mul_add(4.0 * qa, -c, qb * qb);
+                    if discriminant >= 0.0 {
+                        let root = discriminant.sqrt();
+                        visit((-qb + root) / (2.0 * qa));
+                        visit((-qb - root) / (2.0 * qa));
+                    }
+                }
+                (lo, hi)
+            }
+            // A decay lands at once, at `to`.
+            crate::draw::Animation::Decay(_) => (1.0, 1.0),
         }
     }
 }
@@ -394,9 +466,12 @@ trait FilterSource: RenderTransfer {
     /// Lowers the filter into `filtrate`'s executor on the render thread.
     #[cfg(feature = "gpu")]
     fn build(self: Box<Self>, output_size: OutputSizeState) -> Box<dyn ErasedEffect>;
+    /// Plans and compiles the filter for `cherenkov-cpu`'s lane executor.
+    #[cfg(feature = "cpu")]
+    fn cpu(self: Box<Self>) -> Result<cherenkov_cpu::CpuEffect, filtrate::LaneFilterError>;
 }
 
-impl<F: Filter + RenderTransfer> FilterSource for F {
+impl<F: Reach + RenderTransfer> FilterSource for F {
     fn dyn_params(&self) -> Vec<f32> {
         let mut values = alloc::vec![0.0; <F::Params as ParamArray>::LEN];
         self.params().write_to(&mut values);
@@ -422,6 +497,11 @@ impl<F: Filter + RenderTransfer> FilterSource for F {
     #[cfg(feature = "gpu")]
     fn build(self: Box<Self>, output_size: OutputSizeState) -> Box<dyn ErasedEffect> {
         gpu::lower_filter(*self, output_size)
+    }
+
+    #[cfg(feature = "cpu")]
+    fn cpu(self: Box<Self>) -> Result<cherenkov_cpu::CpuEffect, filtrate::LaneFilterError> {
+        cherenkov_cpu::CpuEffect::new(*self)
     }
 }
 
@@ -680,8 +760,30 @@ impl AnyEffect {
     }
 
     /// Erases a filter, keeping its portable description.
-    pub fn filter(filter: impl Filter + RenderTransfer) -> Self {
+    pub fn filter(filter: impl Reach + RenderTransfer) -> Self {
         Self::from_source(EffectSource::Filter(Box::new(filter)))
+    }
+
+    /// The effect as `cherenkov-cpu`'s raster runs it: the filter's
+    /// composed stages on the raster's lane executor, registered with
+    /// `Engine::effect`.
+    ///
+    /// # Errors
+    /// [`CpuEffectError::Gpu`] for an arbitrary GPU effect, which has no
+    /// stages to run; [`CpuEffectError::OutputSize`] when the view declares
+    /// an output size, which the raster's in-place bands do not resize to;
+    /// [`CpuEffectError::Stages`] when the stages do not run on the lane
+    /// executor.
+    #[cfg(feature = "cpu")]
+    pub fn into_cpu(self) -> Result<cherenkov_cpu::CpuEffect, CpuEffectError> {
+        if self.output_size().is_some() {
+            return Err(CpuEffectError::OutputSize);
+        }
+        match self.source {
+            EffectSource::Filter(filter) => filter.cpu().map_err(CpuEffectError::Stages),
+            #[cfg(feature = "gpu")]
+            EffectSource::Gpu(_) => Err(CpuEffectError::Gpu),
+        }
     }
 
     /// The portable description of the filter this effect applies, or `None`
@@ -720,6 +822,22 @@ impl AnyEffect {
     }
 }
 
+/// Why [`AnyEffect::into_cpu`] cannot hand an effect to the CPU raster.
+#[cfg(feature = "cpu")]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum CpuEffectError {
+    /// The effect is an arbitrary GPU effect, with no stages to run.
+    #[error("the effect is an arbitrary GPU effect, which only a GPU can run")]
+    Gpu,
+    /// The view declares an output size for its filter.
+    #[error("the view declares an output size, which the CPU raster does not resize to")]
+    OutputSize,
+    /// The filter's stages do not run on the lane executor.
+    #[error("{0}")]
+    Stages(filtrate::LaneFilterError),
+}
+
 /// A view with a filter applied to its rendered subtree.
 #[derive(Debug)]
 pub struct Filtered<V, F> {
@@ -728,7 +846,7 @@ pub struct Filtered<V, F> {
     guards: ParamGuards,
 }
 
-impl<V: View, F: Filter + RenderTransfer> Filtered<V, F> {
+impl<V: View, F: Reach + RenderTransfer> Filtered<V, F> {
     /// Applies `filter` to `view`.
     pub fn new(view: V, filter: F) -> Self {
         Self::bound(view, filter, ParamGuards::default())
@@ -744,11 +862,11 @@ impl<V: View, F: Filter + RenderTransfer> Filtered<V, F> {
     }
 
     /// Appends `next` to the filter chain.
-    pub fn then<G: Filter + RenderTransfer>(self, next: G) -> Filtered<V, Chain<F, G>> {
+    pub fn then<G: Reach + RenderTransfer>(self, next: G) -> Filtered<V, Chain<F, G>> {
         self.then_bound(next, ParamGuards::default())
     }
 
-    fn then_bound<G: Filter + RenderTransfer>(
+    fn then_bound<G: Reach + RenderTransfer>(
         mut self,
         next: G,
         guards: ParamGuards,
@@ -771,13 +889,9 @@ impl<V: View, F: Filter + RenderTransfer> Filtered<V, F> {
     }
 }
 
-impl<V: View, F: Filter + RenderTransfer> View for Filtered<V, F> {
+impl<V: View, F: Reach + RenderTransfer> View for Filtered<V, F> {
     fn body(self, _env: &Environment) -> impl View {
         self.erase()
-    }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        self.view.stretch_axis()
     }
 }
 
@@ -788,10 +902,6 @@ impl<V: View, F: Filter + RenderTransfer> View for Filtered<V, F> {
 /// registering it with its engine (`Engine::effect`) — and keeps `guards`
 /// alive as long as the realization.
 #[derive(Debug)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "backends destructure the whole filtered view, so a new field must fail their build instead of being ignored"
-)]
 pub struct FilteredView {
     /// The filtered subtree.
     pub content: AnyView,
@@ -810,22 +920,13 @@ impl FilteredView {
     }
 }
 
-// `raw_view!` only takes a constant axis; an effect never changes how its
-// subtree stretches, so both impls report the content's axis, as `Filtered`
-// does.
-impl waterui_core::NativeView for FilteredView {
-    fn stretch_axis(&self) -> StretchAxis {
-        self.content.stretch_axis()
-    }
-}
+/// An effect never changes how its subtree stretches, so backends answer
+/// the axis from the realized content.
+impl waterui_core::NativeView for FilteredView {}
 
 impl View for FilteredView {
     fn body(self, _env: &Environment) -> impl View {
         waterui_core::Native::new(self)
-    }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        self.content.stretch_axis()
     }
 }
 
@@ -918,10 +1019,6 @@ impl<V: View, E: filtrate::Effect + RenderTransfer> View for WithEffect<V, E> {
     fn body(self, _env: &Environment) -> impl View {
         self.erase()
     }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        self.view.stretch_axis()
-    }
 }
 
 /// Generates the inherent method appending a single-parameter filter.
@@ -946,7 +1043,7 @@ macro_rules! inherent_single_param_filter {
     };
 }
 
-impl<V: View, F: Filter + RenderTransfer> Filtered<V, F> {
+impl<V: View, F: Reach + RenderTransfer> Filtered<V, F> {
     inherent_single_param_filter!(blur, Blur);
     inherent_single_param_filter!(brightness, Brightness);
     inherent_single_param_filter!(contrast, Contrast);
@@ -1110,7 +1207,7 @@ pub type ToneCurve = filtrate::filters::ToneCurve<Reactive>;
 /// Filters on any view: `.filter(F)`, `.effect(E)` and the named shortcuts.
 pub trait FilterViewExt: View + Sized {
     /// Apply a `filtrate` filter to this view.
-    fn filter<F: Filter + RenderTransfer>(self, filter: F) -> Filtered<Self, F> {
+    fn filter<F: Reach + RenderTransfer>(self, filter: F) -> Filtered<Self, F> {
         Filtered::new(self, filter)
     }
 
@@ -2029,7 +2126,7 @@ mod tests {
     use super::{
         AnimationInterpolator, Brightness, ColorStage, FilterLink, FilterParam as _, FilterSignal,
         FilterViewExt as _, FilteredView, GaussianBlur, OutputSize, ParamGuards, Placed,
-        SPRING_LIMIT, SpatialStage, StageCollector,
+        SpatialStage, StageCollector,
     };
     use crate::animation::engine_animation;
     use core::time::Duration;
@@ -2043,8 +2140,6 @@ mod tests {
     #[cfg(feature = "gpu")]
     use waterui_core::AnyView;
     use waterui_core::animation::Animation;
-    use waterui_core::layout::StretchAxis;
-    use waterui_core::{Native, NativeView, View};
 
     /// Records each stage's kind, name and parameter offset, and checks that
     /// it carries its shader source.
@@ -2206,20 +2301,6 @@ mod tests {
         drop(guards);
     }
 
-    /// Content that stretches horizontally only.
-    struct HorizontalRule;
-    waterui_core::raw_view!(HorizontalRule, StretchAxis::Horizontal);
-
-    #[cfg(feature = "gpu")]
-    #[test]
-    fn effect_view_reports_its_content_stretch_axis() {
-        let effected = HorizontalRule.effect(NoopEffect);
-        assert_eq!(View::stretch_axis(&effected), StretchAxis::Horizontal);
-        let erased = effected.erase();
-        assert_eq!(View::stretch_axis(&erased), StretchAxis::Horizontal);
-        assert_eq!(NativeView::stretch_axis(&erased), StretchAxis::Horizontal);
-    }
-
     /// A shader effect's reactive parameter reaches the built effect: the
     /// binding's change crosses the lowered view's subscriptions and wakes
     /// the engine's redraw callback, exactly as a filter parameter does.
@@ -2285,20 +2366,6 @@ mod tests {
         animated.set(false);
         assert_eq!(redraws.load(Ordering::Relaxed), 2);
         drop(guards);
-    }
-
-    #[test]
-    fn output_sized_view_reports_its_content_stretch_axis() {
-        let sized = HorizontalRule
-            .brightness(0.25_f32)
-            .erase()
-            .output_size(OutputSize::Scale(2.0));
-        assert_eq!(View::stretch_axis(&sized), StretchAxis::Horizontal);
-        assert_eq!(NativeView::stretch_axis(&sized), StretchAxis::Horizontal);
-        assert_eq!(
-            View::stretch_axis(&Native::new(sized)),
-            StretchAxis::Horizontal
-        );
     }
 
     #[cfg(feature = "gpu")]
@@ -2479,13 +2546,107 @@ mod tests {
 
     #[test]
     fn animation_spring_uses_engine_physics() {
-        let interpolator = AnimationInterpolator(engine_animation(&Animation::spring(200.0, 15.0)));
-        assert_eq!(interpolator.duration(), SPRING_LIMIT);
+        let animation = Animation::spring(200.0, 15.0);
+        let interpolator = AnimationInterpolator(engine_animation(&animation));
+        // The filter runs the spring core defines, for as long as core does.
+        assert_eq!(interpolator.duration(), animation.duration());
         let early = interpolator.interpolate(0.0, 1.0, Duration::from_millis(30));
         assert!(
             early > 0.0 && early < 1.0,
             "spring progresses without snapping, got {early}"
         );
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "the interpolator answers in f32"
+        )]
+        let core = animation.progress(Duration::from_millis(30)) as f32;
+        assert_eq!(early.to_bits(), core.to_bits());
         assert!(!interpolator.is_complete(Duration::from_millis(30)));
+        assert!(interpolator.is_complete(animation.duration()));
+    }
+
+    /// Every sample over a dense grid to the settling duration lies inside
+    /// the reported bounds; returns the sampled extremes.
+    fn assert_samples_within_bounds(
+        interpolator: &AnimationInterpolator,
+        from: f32,
+        to: f32,
+    ) -> (f32, f32, (f32, f32)) {
+        let bounds = interpolator.bounds(from, to);
+        let end = u64::try_from(interpolator.duration().as_micros()).unwrap() + 100_000;
+        let (mut low, mut high) = (f32::MAX, f32::MIN);
+        for micros in (0..=end).step_by(250) {
+            let value = interpolator.interpolate(from, to, Duration::from_micros(micros));
+            assert!(
+                bounds.0 <= value && value <= bounds.1,
+                "{value} at {micros}us is outside {bounds:?}"
+            );
+            low = low.min(value);
+            high = high.max(value);
+        }
+        (low, high, bounds)
+    }
+
+    #[test]
+    fn an_underdamped_spring_bounds_its_overshoot() {
+        let interpolator = AnimationInterpolator(engine_animation(&Animation::spring(100.0, 10.0)));
+        let (_, high) = interpolator.bounds(0.0, 10.0);
+        let peak = (0..=2000)
+            .map(|ms| interpolator.interpolate(0.0, 10.0, Duration::from_millis(ms)))
+            .fold(f32::MIN, f32::max);
+        assert!(
+            peak <= high,
+            "blur radius peaks at {peak}, bounds report {high}"
+        );
+        let (low, sampled_high, bounds) = assert_samples_within_bounds(&interpolator, 0.0, 10.0);
+        assert!(
+            (bounds.1 - sampled_high).abs() < 1e-3,
+            "{bounds:?} vs {sampled_high}"
+        );
+        assert!((bounds.0 - low).abs() < 1e-3, "{bounds:?} vs {low}");
+    }
+
+    #[test]
+    fn damped_springs_stay_within_endpoints() {
+        for damping in [60.0, 20.0] {
+            let interpolator =
+                AnimationInterpolator(engine_animation(&Animation::spring(100.0, damping)));
+            let (_, _, bounds) = assert_samples_within_bounds(&interpolator, 0.0, 10.0);
+            assert_eq!(bounds, (0.0, 10.0));
+        }
+    }
+
+    #[test]
+    fn overshooting_bezier_bounds_are_tight() {
+        let animation = Animation::bezier(Duration::from_millis(350), 0.68, -0.6, 0.32, 1.6);
+        let interpolator = AnimationInterpolator(engine_animation(&animation));
+        let (low, high, bounds) = assert_samples_within_bounds(&interpolator, 0.0, 10.0);
+        assert!(bounds.0 < 0.0 && bounds.1 > 10.0, "{bounds:?}");
+        assert!((bounds.0 - low).abs() < 1e-3, "{bounds:?} vs {low}");
+        assert!((bounds.1 - high).abs() < 1e-3, "{bounds:?} vs {high}");
+    }
+
+    #[test]
+    fn plain_ease_bounds_are_the_endpoints() {
+        let interpolator = AnimationInterpolator(engine_animation(&Animation::Default));
+        let (_, _, bounds) = assert_samples_within_bounds(&interpolator, 0.0, 10.0);
+        assert_eq!(bounds, (0.0, 10.0));
+    }
+
+    #[test]
+    fn reversed_direction_bounds_cover_the_overshoot() {
+        let spring = AnimationInterpolator(engine_animation(&Animation::spring(100.0, 10.0)));
+        let (low, _, bounds) = assert_samples_within_bounds(&spring, 10.0, 0.0);
+        assert!(
+            bounds.0 < 0.0 && (bounds.1 - 10.0).abs() < 1e-6,
+            "{bounds:?}"
+        );
+        assert!((bounds.0 - low).abs() < 1e-3, "{bounds:?} vs {low}");
+
+        let animation = Animation::bezier(Duration::from_millis(350), 0.68, -0.6, 0.32, 1.6);
+        let bezier = AnimationInterpolator(engine_animation(&animation));
+        let (low, high, bounds) = assert_samples_within_bounds(&bezier, 10.0, 0.0);
+        assert!(bounds.0 < 0.0 && bounds.1 > 10.0, "{bounds:?}");
+        assert!((bounds.0 - low).abs() < 1e-3 && (bounds.1 - high).abs() < 1e-3);
     }
 }

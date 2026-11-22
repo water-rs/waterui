@@ -8,8 +8,7 @@
 //! replayer reads floats in bulk.
 //!
 //! The Kotlin constants (`Protocol.kt` under `android/hwui/build/`) are
-//! generated from this file and `text/wire.rs` by the `hwui::kotlin` test,
-//! which Gradle runs with the contract scenes. A fixed-size op's payload length must equal its [`Op::fixed_words`];
+//! generated from this file and `text/constants.rs` by the Cargo build. A fixed-size op's payload length must equal its [`Op::fixed_words`];
 //! a variable op's length must equal what its counts imply. The decoder fails
 //! on any mismatch and on an unknown opcode. Any change here bumps
 //! `JNI_SCHEMA` on both sides.
@@ -64,13 +63,6 @@ pub enum Op {
     /// `node, blend` ([`blend`]), `force_layer`.
     SetComposite = 0x0107,
     /// `node, effect` (or [`NONE`]).
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "no lowering emits it until RenderEffect filters land (water-rs/waterui#1750); the contract test exercises its wire form"
-        )
-    )]
     SetEffect = 0x0108,
     /// `node, width, height` (i32). Opens the node's display list.
     Record = 0x0109,
@@ -119,6 +111,10 @@ pub enum Op {
     Mesh = 0x020C,
     /// `node`. Draws a child node.
     DrawNode = 0x020D,
+    /// `layout`, a [`MATRIX_WORDS`] matrix, `color` as a `ColorLong`: draws
+    /// a platform text layout with its default-coloured runs in `color`;
+    /// runs the text styled with their own colour keep it.
+    PaintedText = 0x020E,
 
     /// `path, fill_type` ([`fill_type`]), `verb_count, point_count`, then
     /// the verbs ([`verb`]) one to a word and `2 × point_count` coordinates.
@@ -144,6 +140,8 @@ pub enum Op {
     /// `axis_count` user-space values: a variation instance of `base`,
     /// released with it.
     DeriveFont = 0x030A,
+    /// `effect, stage_count`, then `stage_count` `kind + 12 values` stages.
+    DefineEffect = 0x030B,
 
     /// `count`, then `count` entries of `kind` ([`host`]), `id_lo, id_hi`:
     /// the session's top-level draw order, bottom first.
@@ -151,9 +149,9 @@ pub enum Op {
 }
 
 impl Op {
+    code_metadata! {
     /// Every opcode, in code order.
-    #[cfg(test)]
-    pub const ALL: [Self; 35] = [
+    pub const ALL: [Self; 37] = [
         Self::CreateNode,
         Self::ReleaseNode,
         Self::SetPosition,
@@ -178,6 +176,7 @@ impl Op {
         Self::Image,
         Self::Mesh,
         Self::DrawNode,
+        Self::PaintedText,
         Self::DefinePath,
         Self::ReleasePath,
         Self::DefineShader,
@@ -188,8 +187,10 @@ impl Op {
         Self::ReleaseEffect,
         Self::ReleaseTextLayout,
         Self::DeriveFont,
+        Self::DefineEffect,
         Self::HostOrder,
     ];
+    }
 
     /// The wire code.
     #[must_use]
@@ -221,6 +222,7 @@ impl Op {
             Self::SetClip => 7,
             Self::Concat => MATRIX_WORDS,
             Self::Text => 1 + MATRIX_WORDS,
+            Self::PaintedText => 3 + MATRIX_WORDS,
             Self::SetTransform => 1 + TRANSFORM_VALUES,
             Self::BindPlatformView => 17,
             Self::Fill => SHAPE_WORDS + PAINT_WORDS,
@@ -231,6 +233,7 @@ impl Op {
             | Self::DefinePath
             | Self::DefineShader
             | Self::DeriveFont
+            | Self::DefineEffect
             | Self::HostOrder => return None,
         })
     }
@@ -260,6 +263,7 @@ impl Op {
             Self::Shadow => "Shadow",
             Self::Glyphs => "Glyphs",
             Self::Text => "Text",
+            Self::PaintedText => "PaintedText",
             Self::Image => "Image",
             Self::Mesh => "Mesh",
             Self::DrawNode => "DrawNode",
@@ -273,6 +277,7 @@ impl Op {
             Self::ReleaseEffect => "ReleaseEffect",
             Self::ReleaseTextLayout => "ReleaseTextLayout",
             Self::DeriveFont => "DeriveFont",
+            Self::DefineEffect => "DefineEffect",
             Self::HostOrder => "HostOrder",
         }
     }
@@ -405,6 +410,23 @@ codes! {
         BITMAP = 3;
         /// `runtime_shader, uniform_count`, then the uniforms.
         RUNTIME = 4;
+    }
+}
+
+codes! {
+    /// `Op::DefineEffect` stage kinds: each stage is `kind` plus 12
+    /// float values.
+    effect_kind: u32 => "EffectKind" {
+        /// `createBlurEffect`; `values[0]` is the radius, the rest zero.
+        BLUR = 0;
+        /// One linear-light matrix: the conjugated product's top three
+        /// rows, row-major.
+        LINEAR_COLOR = 1;
+        /// The overscroll stretch shader: the frame from the stretched
+        /// viewport's space to the drawn node's own pixels `[a, b, c, d,
+        /// e, f]`, the viewport's `width, height`, HWUI's stretch direction
+        /// `x, y` and the interpolation strength, in `values[0..11]`.
+        OVERSCROLL_STRETCH = 2;
     }
 }
 

@@ -64,17 +64,25 @@ Controls, checked for every invocation and recorded with it:
 - before: screen off, physical sensors below their limits, and the requested
   device settings applied with readback evidence;
 - during: physical temperature supervision, GPU clock residency, the GPU
-  engine's measuring-thread placement, and a CPU engine's worker count;
+  engine's measuring-thread placement, GPU work in every one of its measured
+  drawn frames (GPU time, and with `--gpu-counters` shader-core cycles; a
+  frame the engine skipped as unchanged while the scene's own animation ran
+  is marked so in the report and exempt), and a CPU
+  engine's worker count;
 - after: pinned policy ranges and CPU frequency residency over the workload,
   followed by restoration of every original property and sysfs value.
 
 A failed control marks the invocation invalid and stops the collection:
 `analyze` reports a scene with an invalid invocation as `invalid`, never as
-a pass, and the raw report stays on disk.
+a pass, and the raw report stays on disk. `analyze` checks the GPU work of
+every drawn frame itself too, so a collection made before `run` checked
+it reports its untimed invocations as `invalid` rather than judging them.
 
 `analyze` reads a collection and, per scene and per metric of the plan, takes
-each invocation's p50 of the metric over its measured frames, the median of
-those per arm, and their change. The metrics are GPU milliseconds (or
+each invocation's p50 of the metric over its measured frames (the drawn ones,
+for the GPU engine), the median of those per arm, and their change. It prints
+each arm's unchanged-frame count per invocation and notes when the arms
+differ, as they then drew different frame counts. The metrics are GPU milliseconds (or
 shader-core active cycles with `--gpu-counters`) for the GPU engine; for a
 CPU engine the frame (encode and submit together, in milliseconds: an engine
 may rasterize in either, as vello-cpu dispatches strips while it records),
@@ -159,6 +167,32 @@ METRICS = {
 }
 # The CPU backend's phases, in render order; they run inside `submit`.
 CPU_PHASES = ("lower", "glyph", "shade")
+
+
+def drawn(report: dict[str, Any]) -> list[dict[str, Any]]:
+    """The measured frames the engine drew. A frame the report marks
+    `unchanged` was skipped because no surface changed while the scene's own
+    animation ran (the bench already rejects any other); it carries no GPU
+    work and is left out of every GPU metric."""
+    return [s for s in report["samples"] if not s.get("unchanged")]
+
+
+def missing_gpu_work(report: dict[str, Any], counters: bool) -> list[str]:
+    """What the GPU engine's drawn frames lack: GPU time, and with
+    `counters` any shader-core cycles. Such a frame submitted no GPU work,
+    so its invocation measured none of the scene's cost. Frames the report
+    marks `unchanged` are exempt, but a report with none drawn measured
+    nothing."""
+    samples = drawn(report)
+    failures = []
+    if not samples:
+        return ["every measured frame is unchanged, so none was drawn"]
+    if untimed := sum(1 for s in samples if s["gpu_seconds"] is None):
+        failures.append(f"{untimed} of {len(samples)} measured frames carry no GPU time")
+    if counters and (idle := sum(1 for s in samples if not (s.get("gpu_counters") or {})
+                                 .get("shader_core_active_cycles"))):
+        failures.append(f"{idle} of {len(samples)} measured frames carry no shader-core cycles")
+    return failures
 
 
 class CpuEngine(typing.NamedTuple):
@@ -545,6 +579,7 @@ class Session:
         if self.args.gpu_counters and (report.get("gpu_counters") is None or any(
                 s.get("gpu_counters") is None for s in report["samples"])):
             failures.append("report carries no per-frame GPU counters")
+        failures += missing_gpu_work(report, self.args.gpu_counters)
         residency = report["gpu_clock"]
         if residency is None:
             failures.append("report carries no GPU clock residency")
@@ -700,6 +735,7 @@ def analyze(out: Path, limit_percent: float, budget_ms: float) -> dict[str, Any]
             result["scenes"][name] = entry
             continue
         reports: dict[str, list[dict[str, Any]]] = {"base": [], "head": []}
+        untimed: dict[str, list[str]] = {}
         for row in sorted(rows, key=lambda r: r["pair"]):
             path = out / f"{row['run_id']}.json"
             if sha256(path) != row["report_sha256"]:
@@ -707,11 +743,30 @@ def analyze(out: Path, limit_percent: float, budget_ms: float) -> dict[str, Any]
             report = json.loads(path.read_text())
             if len(report["samples"]) != plan["frames"] or report["warmup_frames"] != plan["warmup"]:
                 raise SystemExit(f"{row['run_id']}: frame counts differ from the plan")
+            # A collection made before `run` checked this carries such
+            # invocations as valid.
+            if not cpu_engine and (missing := missing_gpu_work(
+                    report, "shader-core-cycles" in plan["metrics"])):
+                untimed[row["run_id"]] = missing
             reports[row["side"]].append(report)
+        if untimed:
+            entry["verdict"] = "invalid"
+            entry["untimed_runs"] = untimed
+            result["scenes"][name] = entry
+            continue
+        unchanged = {side: [sum(1 for s in report["samples"] if s.get("unchanged"))
+                            for report in side_reports]
+                     for side, side_reports in reports.items()}
+        entry["unchanged_frames"] = unchanged
+        entry["unchanged_frames_differ"] = sum(unchanged["base"]) != sum(unchanged["head"])
         entry["metrics"] = {}
         for metric in plan["metrics"]:
             unit, value = METRICS[metric]
-            frames = {side: [[value(s) for s in report["samples"]] for report in side_reports]
+            # GPU metrics cover the drawn frames; a CPU engine's frame time
+            # stays over every frame.
+            frames = {side: [[value(s) for s in (report["samples"] if cpu_engine
+                                                 else drawn(report))]
+                             for report in side_reports]
                       for side, side_reports in reports.items()}
             per_invocation = {side: {"p50": [quantile(run, 0.5) for run in runs_],
                                      "p99": [quantile(run, 0.99) for run in runs_]}
@@ -808,7 +863,15 @@ def main() -> None:
         for name, entry in result["scenes"].items():
             if "metrics" not in entry:
                 print(f"{name}: {entry['verdict']}")
+                for run_id, missing in entry.get("untimed_runs", {}).items():
+                    print(f"{name} {run_id}: {'; '.join(missing)}")
                 continue
+            unchanged = entry["unchanged_frames"]
+            if any(map(sum, unchanged.values())):
+                note = "; the arms differ, so they drew different frame counts" \
+                    if entry["unchanged_frames_differ"] else ""
+                print(f"{name} unchanged frames per invocation: base {unchanged['base']}, "
+                      f"head {unchanged['head']}{note}")
             for metric, judged in entry["metrics"].items():
                 if cpu_engine:
                     print(f"{name} {metric}: base p50 {judged['p50']['base']:.3f} "

@@ -60,8 +60,9 @@ pub(super) async fn package_hydrolysis_ios(
 
     // Crate-declared entitlements and `Info.plist` keys, collected from the
     // launcher's graph — a conflict fails before any bundle work.
-    let mut declarations = assets::scan_apple_declarations(project, &build_manifest, &[]).await?;
-    declarations.supply_app_values(&project.manifest().app_values)?;
+    let mut declarations =
+        assets::scan_apple_declarations(project, &build_manifest, &built.features).await?;
+    declarations.supply_app_values(project.manifest().app_values())?;
 
     let (_, deployment_target) = apple_deployment_target(project, platform).await?;
 
@@ -73,6 +74,7 @@ pub(super) async fn package_hydrolysis_ios(
         &build_manifest,
         &built.app_symbols().await?,
         options.uses_dev_server(),
+        &built.features,
     )
     .await?;
 
@@ -88,7 +90,7 @@ pub(super) async fn package_hydrolysis_ios(
 
     let mut info_plist = app_bundle::apple_info_plist(
         &PlistApp {
-            display_name: &project.manifest().package.name,
+            display_name: project.manifest().package().name(),
             launch: app_bundle::launch_template_entry(project)?,
             accessory: false,
             multiple_scenes: false,
@@ -108,10 +110,7 @@ pub(super) async fn package_hydrolysis_ios(
         product_name,
         &staging_dir,
         &info_plist,
-        &AppleSdkSpec {
-            sdk_name,
-            deployment_target: &deployment_target,
-        },
+        &AppleSdkSpec::new(sdk_name, &deployment_target),
     )
     .await?;
 
@@ -126,7 +125,7 @@ pub(super) async fn package_hydrolysis_ios(
     };
     synchronize_shared_runtime(
         project.host(),
-        &layout.frameworks_dir,
+        layout.frameworks_dir(),
         shared_libraries.as_ref(),
         &triple,
     )

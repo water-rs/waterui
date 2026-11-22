@@ -15,19 +15,24 @@ use std::num::NonZeroU64;
 use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use cherenkov_record::{FilterId, Layer, LayerId, ShapeData, Shared, Transaction};
+use cherenkov_record::{
+    Axis, BlendSpace, FilterId, Fixed, Layer, LayerId, ShapeData, Shared, Transaction,
+};
 
-use waterui_graphics::HeldResources;
+use waterui_core::contract_violation;
+use waterui_graphics::backend::{HeldResources, NextFrame, SceneUpdate};
 
 use super::backdrop::{
-    BackdropGroupKey, ChromeBackdropGroups, ChromeGroupKey, MaterialBackdropGroups,
+    BackdropGroupKey, ChromeBackdropGroups, ChromeGroupKey, ChromeParams, MaterialBackdropGroups,
     MaterialMembership, MemberBind, ScopeAnchors, scope_id,
 };
 use super::cell::NodeCell;
+use super::container::{ContainerMember, solo_effect};
+use super::motion::{LayerMotion, Motion};
 use super::placement::Placement;
 use super::program::{
-    ChromeMaterial, InnerProgram, Item, LiveItem, MaterialRequest, ProducerContent, Program,
-    RunKey, SceneContentSource, ScopeKey, ScopeProps,
+    ChromeMaterial, InnerProgram, Item, LiveItem, LiveOpacity, MaterialRequest, ProducerContent,
+    Program, RunKey, SceneContentSource, ScopeKey, ScopeLive, ScopeProps,
 };
 use super::stretch::{ShownStretch, StretchFilter};
 use super::target::LayerTarget;
@@ -72,19 +77,141 @@ type Committed<E> = Vec<(LayerId, Weak<LayerToken<E>>)>;
 struct LayerProps {
     transform: kurbo::Affine,
     opacity: f32,
+    /// The space the layer's subtree composites in and the layer fades
+    /// onto its parent in; `None` inherits the parent's space.
+    blend_space: Option<BlendSpace>,
     clip: Option<ShapeData>,
     filter: Option<FilterId>,
     scroll: kurbo::Vec2,
+    /// Live properties, written over `transform` and in place of `opacity`.
+    live: ScopeLive,
+    /// Engine-run motion, written over `transform` and in place of
+    /// `opacity` (water-rs/waterui#2203).
+    motion: FrameMotion,
+}
+
+/// The engine-run motion a node's frame layer follows. Two are the same
+/// when they bind the same motions about the same pivot, whatever value
+/// the motions hold.
+#[derive(Clone)]
+struct FrameMotion {
+    opacity: Option<Motion<f32>>,
+    transform: Option<Rc<LayerMotion>>,
+    /// The pivot `transform` turns about, as last written.
+    pivot: kurbo::Vec2,
+}
+
+impl FrameMotion {
+    const NONE: Self = Self {
+        opacity: None,
+        transform: None,
+        pivot: kurbo::Vec2::ZERO,
+    };
+
+    /// The motion `program` hands its frame layer.
+    fn of<E: crate::text::TextEngine>(program: &Program<E>) -> Self {
+        Self {
+            opacity: program.opacity_motion.clone(),
+            transform: program.motion.clone(),
+            pivot: program
+                .motion
+                .as_ref()
+                .map_or(kurbo::Vec2::ZERO, |motion| motion.pivot()),
+        }
+    }
+
+    fn same_transform(&self, other: &Self) -> bool {
+        match (&self.transform, &other.transform) {
+            (None, None) => true,
+            (Some(a), Some(b)) => Rc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
+
+    fn same_opacity(&self, other: &Self) -> bool {
+        match (&self.opacity, &other.opacity) {
+            (None, None) => true,
+            (Some(a), Some(b)) => a.same(b),
+            _ => false,
+        }
+    }
+}
+
+impl PartialEq for FrameMotion {
+    fn eq(&self, other: &Self) -> bool {
+        self.same_opacity(other) && self.same_transform(other) && self.pivot == other.pivot
+    }
 }
 
 impl LayerProps {
     const DEFAULT: Self = Self {
         transform: kurbo::Affine::IDENTITY,
         opacity: 1.0,
+        blend_space: None,
         clip: None,
         filter: None,
         scroll: kurbo::Vec2::ZERO,
+        live: ScopeLive::NONE,
+        motion: FrameMotion::NONE,
     };
+
+    /// The layer's opacity now: its motion's or live operand's value at
+    /// rest, or its fixed one.
+    fn opacity_now(&self) -> f32 {
+        if let Some(motion) = &self.motion.opacity {
+            return motion.target();
+        }
+        self.live
+            .opacity
+            .as_ref()
+            .map_or(self.opacity, LiveOpacity::now)
+    }
+
+    /// The layer's transform now: its motion at rest and its live operand's
+    /// value over its at-rest transform, or the at-rest one.
+    fn transform_now(&self) -> kurbo::Affine {
+        let rest = self
+            .motion
+            .transform
+            .as_ref()
+            .map_or(self.transform, |motion| motion.matrix(self.transform, None));
+        self.live
+            .transform
+            .as_ref()
+            .map_or(rest, |live| rest * live.now())
+    }
+}
+
+/// Binds `motion`'s transform components on `layer`: the pivot whenever it
+/// moved, and every axis's motion when `rebind`.
+fn write_motion<T: LayerTarget<E>, E: crate::text::TextEngine>(
+    tx: &mut Transaction<'_, T>,
+    layer: &Layer,
+    motion: &LayerMotion,
+    pivot: kurbo::Vec2,
+    rebind: bool,
+) {
+    let edit = &mut tx[layer];
+    edit.pivot(Fixed(pivot));
+    if !rebind {
+        return;
+    }
+    for (axis, translation) in Axis::BOTH.into_iter().zip(motion.translation_axes()) {
+        if let Some(translation) = translation {
+            edit.translation_axis(axis, translation.live());
+        }
+    }
+    if let Some(rotation) = motion.rotation_angle() {
+        edit.rotation(rotation.live());
+    }
+    for (axis, scale) in Axis::BOTH.into_iter().zip(motion.scale_axes()) {
+        if let Some(scale) = scale {
+            edit.scale_axis(axis, scale.live());
+        }
+    }
+    for bound in motion.motions() {
+        bound.rebind();
+    }
 }
 
 fn write_props<T: LayerTarget<E>, E: crate::text::TextEngine>(
@@ -97,11 +224,51 @@ fn write_props<T: LayerTarget<E>, E: crate::text::TextEngine>(
         return;
     }
     let edit = &mut tx[layer];
-    if written.transform != props.transform {
-        edit.transform(props.transform);
+    if written.transform != props.transform || written.live.transform != props.live.transform {
+        match &props.live.transform {
+            Some(live) => {
+                let rest = props.transform;
+                edit.transform(live.live().map(move |transform| rest * transform));
+            }
+            None => {
+                edit.transform(props.transform);
+            }
+        }
     }
-    if written.opacity.to_bits() != props.opacity.to_bits() {
-        edit.opacity(props.opacity);
+    let opacity_changed = if written.motion.opacity.is_some() || props.motion.opacity.is_some() {
+        !written.motion.same_opacity(&props.motion)
+    } else {
+        match (&written.live.opacity, &props.live.opacity) {
+            (None, None) => written.opacity.to_bits() != props.opacity.to_bits(),
+            (written, props) => written != props,
+        }
+    };
+    if opacity_changed {
+        match (&props.motion.opacity, &props.live.opacity) {
+            (Some(motion), _) => {
+                edit.opacity(motion.live());
+                motion.rebind();
+            }
+            (None, Some(live)) => {
+                edit.opacity(live.live());
+            }
+            (None, None) => {
+                edit.opacity(props.opacity);
+            }
+        }
+    }
+    if let Some(motion) = &props.motion.transform {
+        let rebind = !written.motion.same_transform(&props.motion);
+        if rebind || written.motion.pivot != props.motion.pivot {
+            write_motion(tx, layer, motion, props.motion.pivot, rebind);
+        }
+    }
+    let edit = &mut tx[layer];
+    if written.blend_space != props.blend_space {
+        match props.blend_space {
+            Some(space) => edit.blend_space(space),
+            None => edit.clear_blend_space(),
+        };
     }
     if written.clip != props.clip {
         match &props.clip {
@@ -185,9 +352,9 @@ pub struct MemberLayer<E: crate::text::TextEngine> {
     /// clip, its live effect binds the backdrop sample — and a group
     /// rebuild rebinds them from these handles.
     chrome: Option<ChromeMaterial>,
-    /// The class's resolved capture parameters — the terms a no-program
-    /// commit re-keys and re-joins by.
-    params: Option<cherenkov_record::MaterialCapture>,
+    /// The member's own class and its resolved capture parameters — the
+    /// terms a no-program commit re-keys and re-joins by.
+    params: Option<ChromeParams>,
     /// The member's group membership, held so its layers' drop ends it.
     membership: Option<MaterialMembership<E>>,
 }
@@ -204,6 +371,17 @@ pub struct LiveLayer {
     source: Option<Rc<dyn LiveSource>>,
     held: Option<LoweredResources>,
     solid: Box<[SolidRect]>,
+    /// The layers that turn the content layer, innermost first, each the
+    /// parent of the one before: the source's rotation stages beyond its
+    /// first, which the content layer itself runs.
+    outers: Vec<Layer>,
+}
+
+impl LiveLayer {
+    /// The layer the parent lists: the outermost of the nest.
+    fn attached(&self) -> &Layer {
+        self.outers.last().unwrap_or(&self.layer)
+    }
 }
 
 /// A node's retained layers.
@@ -236,6 +414,10 @@ pub struct NodeLayers<E: crate::text::TextEngine> {
     scopes: Vec<ScopeLayer<E>>,
     committed: Committed<E>,
     inner_committed: Committed<E>,
+    /// The frame's external-host-window mark: the placement id of the
+    /// platform view the cell hosts — the compositor opens a presentation
+    /// band above each marked layer (water-rs/waterui#2225).
+    host_window: Option<u64>,
     content_held: Option<HeldResources>,
     /// The frame's material request as last lowered — the terms a
     /// no-program commit re-keys its membership by (the mount's display
@@ -288,7 +470,7 @@ impl<E: crate::text::TextEngine> NodeLayers<E> {
         Some(layers.frame())
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, hydrolysis_gpu_painter))]
     pub(crate) fn committed_anchor_parent_children(
         &self,
         scope: NonZeroU64,
@@ -323,7 +505,7 @@ impl<E: crate::text::TextEngine> NodeLayers<E> {
             })
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, hydrolysis_gpu_painter))]
     pub(crate) fn inner_id(&self) -> Option<LayerId> {
         self.inner.as_ref().map(|(inner, _)| inner.id())
     }
@@ -345,21 +527,21 @@ impl<E: crate::text::TextEngine> NodeLayers<E> {
 
     /// The member's frame layer id when the node holds a backdrop-group
     /// membership — a test-facing answer.
-    #[cfg(test)]
+    #[cfg(all(test, hydrolysis_gpu_painter))]
     pub(crate) fn material_member(&self) -> Option<LayerId> {
         self.material.as_ref().map(|_| self.frame.id())
     }
 
     /// The material request the frame last lowered, whether or not it is
     /// currently visible — a test-facing answer.
-    #[cfg(test)]
+    #[cfg(all(test, hydrolysis_gpu_painter))]
     pub(crate) const fn material_request(&self) -> Option<MaterialRequest> {
         self.material_request
     }
 
     /// The member layer `id` names — a `ChromeMaterial` member anywhere
     /// in this node's lists — the layer a rebuilt chrome group re-points.
-    #[cfg(hydrolysis_gpu_painter)]
+    #[cfg(hydrolysis_cherenkov)]
     pub(crate) fn member_layer(&self, id: LayerId) -> Option<&Layer> {
         self.members
             .iter()
@@ -371,7 +553,7 @@ impl<E: crate::text::TextEngine> NodeLayers<E> {
 
     /// The `ChromeMaterial` member layers the node mounted, across its
     /// own, inner and scope lists — a test-facing answer.
-    #[cfg(test)]
+    #[cfg(all(test, hydrolysis_cherenkov))]
     pub(crate) fn chrome_members(&self) -> Vec<(u32, LayerId)> {
         self.members
             .iter()
@@ -435,6 +617,75 @@ pub struct Mount<T: LayerTarget<E>, E: crate::text::TextEngine> {
     stats: MountStats,
 }
 
+/// The scene nodes whose content asked, at the commit that last presented
+/// it, for the frame after — split the way the engine splits the tracks it
+/// runs, into work that ends on its own and work that does not.
+///
+/// A request is continuation work, not an unapplied change: the next pump
+/// re-marks each owner quietly before its flush, as the animation tick does
+/// for the scalars it samples, and the commit that presents the owner again
+/// files whatever the content asks for then. Settle queries read the two
+/// sets separately, so a canvas following its unbounded clock is perpetual
+/// work and one whose bounded clocks are short of their end is finite work.
+pub struct SceneFrames<E: crate::text::TextEngine> {
+    finite: Vec<Weak<NodeCell<E>>>,
+    perpetual: Vec<Weak<NodeCell<E>>>,
+}
+
+impl<E: crate::text::TextEngine> Default for SceneFrames<E> {
+    fn default() -> Self {
+        Self {
+            finite: Vec::new(),
+            perpetual: Vec::new(),
+        }
+    }
+}
+
+impl<E: crate::text::TextEngine> SceneFrames<E> {
+    /// Files `request`, made by the content `owner` presents.
+    fn file(&mut self, owner: &Rc<NodeCell<E>>, request: NextFrame) {
+        match request {
+            NextFrame::Idle => {}
+            NextFrame::Finite => self.finite.push(Rc::downgrade(owner)),
+            NextFrame::Perpetual => self.perpetual.push(Rc::downgrade(owner)),
+        }
+    }
+
+    /// Whether finite scene work asked for the next frame.
+    pub fn has_finite(&self) -> bool {
+        self.finite.iter().any(|owner| owner.strong_count() > 0)
+    }
+
+    /// Whether perpetual scene work asked for the next frame.
+    pub fn has_perpetual(&self) -> bool {
+        self.perpetual.iter().any(|owner| owner.strong_count() > 0)
+    }
+
+    /// Takes every filed request, marking each live owner `PAINT` without a
+    /// frame request of its own: the frame they asked for is continuation
+    /// work the pump schedules. Returns whether any owner was marked.
+    pub fn mark_owners(&mut self) -> bool {
+        let mut marked = false;
+        for owner in self.finite.drain(..).chain(self.perpetual.drain(..)) {
+            if let Some(owner) = owner.upgrade() {
+                owner.mark_quiet(super::Dirty::PAINT);
+                marked = true;
+            }
+        }
+        marked
+    }
+}
+
+/// Where a commit reports what it learns for the renderer that owns the
+/// tree: a producer's wake for each node that mounts one, and the frames each
+/// scene node's content asks for next.
+pub struct CommitReports<'r, E: crate::text::TextEngine> {
+    /// Hands out the wake a mounted producer posts its frames through.
+    pub wakes: &'r mut dyn FnMut(&Rc<NodeCell<E>>) -> ProducerWake,
+    /// Collects the frames scene content asks for next.
+    pub scene_frames: &'r mut SceneFrames<E>,
+}
+
 /// The state one commit threads through the node walk.
 pub struct CommitCx<'m, 'tx, 's, T: LayerTarget<E>, E: crate::text::TextEngine> {
     pub tx: &'tx mut Transaction<'s, T>,
@@ -452,8 +703,11 @@ pub struct CommitCx<'m, 'tx, 's, T: LayerTarget<E>, E: crate::text::TextEngine> 
     scope_anchors: &'m mut ScopeAnchors<E>,
     graveyard: &'m mut Vec<Box<dyn Any>>,
     stats: &'m mut MountStats,
-    #[cfg_attr(all(hydrolysis_hwui, not(hydrolysis_gpu)), expect(dead_code))]
+    #[cfg_attr(not(hydrolysis_gpu), expect(dead_code))]
     wakes: &'m mut dyn FnMut(&Rc<NodeCell<E>>) -> ProducerWake,
+    /// Where the scene nodes this commit presents file the frames their
+    /// content asks for next.
+    scene_frames: &'m mut SceneFrames<E>,
 }
 
 impl<T: LayerTarget<E>, E: crate::text::TextEngine> CommitCx<'_, '_, '_, T, E> {
@@ -495,6 +749,9 @@ impl<T: LayerTarget<E>, E: crate::text::TextEngine> CommitCx<'_, '_, '_, T, E> {
 
     fn retire_live(&mut self, live: LiveLayer) {
         self.retire_layer(live.layer);
+        for outer in live.outers {
+            self.retire_layer(outer);
+        }
         self.graveyard.push(Box::new((live.source, live.held)));
     }
 
@@ -555,24 +812,29 @@ impl<T: LayerTarget<E>, E: crate::text::TextEngine> CommitCx<'_, '_, '_, T, E> {
 
 impl<T: LayerTarget<E>, E: crate::text::TextEngine> Mount<T, E> {
     /// The mount binds to a target whose engine realizes materials.
-    /// `registry` is the theme's `MaterialRegistry`: a target with no
-    /// backdrop shaders — a CPU engine — panics on this attach when the
-    /// registry is not empty (water-rs/waterui#1788).
+    /// `registry` is the theme's `MaterialRegistry`: a target that refuses
+    /// backdrop shaders ([`LayerTarget::BACKDROP_SHADER_REFUSAL`]) reports
+    /// its reason on this attach when the registry is not empty, and its
+    /// material chrome is not drawn
+    /// (water-rs/waterui#1788).
     pub fn new(
         shared: Rc<RefCell<Shared<T>>>,
         registry: &cherenkov_record::MaterialRegistry,
     ) -> Self {
-        assert!(
-            T::BACKDROP_SHADERS || registry.is_empty(),
-            "hydrolysis materials: this layer target's engine has no backdrop shaders, \
-             but the theme registered {} — the material chrome would have nothing to draw \
-             with; attach the theme to a GPU engine or register no shaders",
-            registry
-                .shaders()
-                .map(|(key, _)| format!("{key:?}"))
-                .collect::<Vec<_>>()
-                .join(", "),
-        );
+        if let Some(refusal) = T::BACKDROP_SHADER_REFUSAL
+            && !registry.is_empty()
+        {
+            contract_violation!(
+                "hydrolysis materials: the theme registered the backdrop shaders {}, but {refusal}; \
+                 the material chrome is not drawn; attach the theme to a GPU engine or register \
+                 no shaders",
+                registry
+                    .shaders()
+                    .map(|(key, _)| format!("{key:?}"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            );
+        }
         let root = Shared::root(&shared);
         let window = Shared::layer(&shared);
         Self {
@@ -595,14 +857,14 @@ impl<T: LayerTarget<E>, E: crate::text::TextEngine> Mount<T, E> {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, hydrolysis_gpu_painter))]
     pub const fn window(&self) -> &Layer {
         &self.window
     }
 
     /// The window layer's child list as `reconcile` last committed it —
     /// the engine's authoritative paint order. A test-facing answer.
-    #[cfg(test)]
+    #[cfg(all(test, hydrolysis_gpu_painter))]
     pub fn window_children(&self) -> Vec<LayerId> {
         self.window_committed.iter().map(|&(id, _)| id).collect()
     }
@@ -610,7 +872,7 @@ impl<T: LayerTarget<E>, E: crate::text::TextEngine> Mount<T, E> {
     /// The window layer's clip as last committed — `Some` over the window
     /// rect while its backdrop request bounds the window's material.
     /// A test-facing answer.
-    #[cfg(test)]
+    #[cfg(all(test, hydrolysis_gpu_painter))]
     pub(crate) const fn window_clip(&self) -> Option<&ShapeData> {
         self.window_props.clip.as_ref()
     }
@@ -620,19 +882,19 @@ impl<T: LayerTarget<E>, E: crate::text::TextEngine> Mount<T, E> {
     }
 
     /// The mount's backdrop-group table.
-    #[cfg(test)]
+    #[cfg(all(test, hydrolysis_gpu_painter))]
     pub(crate) const fn groups(&self) -> &MaterialBackdropGroups<T::Group, E> {
         &self.groups
     }
 
     /// The mount's `.material_group()` scope-anchor registrations.
-    #[cfg(test)]
+    #[cfg(all(test, hydrolysis_gpu_painter))]
     pub(crate) const fn scope_anchors(&self) -> &ScopeAnchors<E> {
         &self.scope_anchors
     }
 
     /// The mount's chrome-group table.
-    #[cfg(test)]
+    #[cfg(all(test, hydrolysis_gpu_painter))]
     pub(crate) const fn chrome_groups(&self) -> &ChromeBackdropGroups<T::Group, T::Shader, E> {
         &self.chrome_groups
     }
@@ -642,16 +904,21 @@ impl<T: LayerTarget<E>, E: crate::text::TextEngine> Mount<T, E> {
     ///
     /// `window_material` is the window background's material request
     /// (#1855): the window layer is the member, joined before the roots
-    /// so the root's content mounts over its backdrop group.
+    /// so the root's content mounts over its backdrop group. What the
+    /// commit learns for the renderer goes to `reports`.
     pub fn commit(
         &mut self,
         host: &T::Host,
         window_transform: kurbo::Affine,
         display_scale: f64,
         roots: &[Rc<NodeCell<E>>],
-        wakes: &mut dyn FnMut(&Rc<NodeCell<E>>) -> ProducerWake,
+        reports: CommitReports<'_, E>,
         window_material: Option<&MaterialRequest>,
     ) {
+        let CommitReports {
+            wakes,
+            scene_frames,
+        } = reports;
         let shared = Rc::clone(&self.shared);
         let mut graveyard: Vec<Box<dyn Any>> = Vec::new();
         let Self {
@@ -719,6 +986,7 @@ impl<T: LayerTarget<E>, E: crate::text::TextEngine> Mount<T, E> {
                 graveyard: &mut graveyard,
                 stats,
                 wakes,
+                scene_frames,
             };
             for cell in roots {
                 commit_cell(&mut cx, cell, None, false);
@@ -730,6 +998,9 @@ impl<T: LayerTarget<E>, E: crate::text::TextEngine> Mount<T, E> {
                 .map(|guard| node_want(guard))
                 .collect::<Vec<_>>();
             reconcile(cx.tx, window, &wants, window_committed, window_token);
+            // Container groups resolve once every member of this commit has
+            // joined, before the sweeps release the emptied ones.
+            T::settle_chrome(cx.host, cx.tx, cx.chrome_groups, cx.display_scale);
             cx.groups.sweep();
             cx.chrome_groups.sweep();
             cx.scope_anchors.sweep();
@@ -847,7 +1118,7 @@ fn node_want<'a, E: crate::text::TextEngine>(
 /// `Affine::scale(scale_factor)`), so the display scale lives in
 /// `transform` and must not be multiplied in again
 /// (water-rs/waterui#2935).
-#[cfg_attr(all(hydrolysis_hwui, not(hydrolysis_gpu)), expect(dead_code))]
+#[cfg_attr(not(hydrolysis_gpu), expect(dead_code))]
 fn gpu_content_pixels(transform: kurbo::Affine, bounds: kurbo::Rect) -> (u32, u32) {
     let [a, b, c, d, _, _] = transform.as_coeffs();
     let x_scale = a.hypot(b);
@@ -864,7 +1135,7 @@ fn gpu_content_pixels(transform: kurbo::Affine, bounds: kurbo::Rect) -> (u32, u3
     size
 }
 
-#[cfg_attr(all(hydrolysis_hwui, not(hydrolysis_gpu)), expect(dead_code))]
+#[cfg_attr(not(hydrolysis_gpu), expect(dead_code))]
 fn install_transform(bounds: kurbo::Rect, pixels: (u32, u32)) -> kurbo::Affine {
     kurbo::Affine::translate((bounds.x0, bounds.y0))
         * kurbo::Affine::scale_non_uniform(
@@ -930,6 +1201,7 @@ pub fn commit_cell<T: LayerTarget<E>, E: crate::text::TextEngine>(
                 scopes: Vec::new(),
                 committed: Vec::new(),
                 inner_committed: Vec::new(),
+                host_window: None,
                 content_held: None,
                 install_gpu: false,
                 material_request: None,
@@ -1018,8 +1290,11 @@ fn lower_program<T: LayerTarget<E>, E: crate::text::TextEngine>(
     program: &Program<E>,
     canvas: Option<LayerId>,
 ) {
+    let motion = FrameMotion::of(program);
     let Program {
         opacity,
+        opacity_motion: _,
+        motion: _,
         clip,
         filter,
         material,
@@ -1029,7 +1304,7 @@ fn lower_program<T: LayerTarget<E>, E: crate::text::TextEngine>(
     } = program;
     let filter = filter
         .as_ref()
-        .map(|runtime| T::filter(cx.host, &mut runtime.borrow_mut()));
+        .and_then(|runtime| T::filter(cx.host, &mut runtime.borrow_mut()));
     let clip = material.as_ref().map_or_else(
         || clip.clone(),
         |request| Some(ShapeData::of(&request.bounds)),
@@ -1044,8 +1319,31 @@ fn lower_program<T: LayerTarget<E>, E: crate::text::TextEngine>(
             clip,
             filter,
             scroll: kurbo::Vec2::ZERO,
+            live: ScopeLive::NONE,
+            motion,
+            ..LayerProps::DEFAULT
         },
     );
+    // A platform-view leaf's frame marks where its external host window
+    // sits in the committed tree, named by the placement id the host
+    // orders and identifies the window by, so the band above it is the
+    // one the host stacks above that window (water-rs/waterui#2225). A
+    // cell holds at most one placement: the leaf is its own layer node
+    // and registers once per record, and each record purges the cell's
+    // previous registrations.
+    let host_window = cell.registrations.borrow().as_ref().and_then(|regs| {
+        let placements = &regs.platform_view_placements;
+        assert!(
+            placements.len() <= 1,
+            "a cell holds one platform-view placement, found {}",
+            placements.len()
+        );
+        placements.first().map(|entry| entry.payload.placement.id())
+    });
+    if layers.host_window != host_window {
+        cx.tx[&layers.frame].host_window(host_window);
+        layers.host_window = host_window;
+    }
     commit_material(cx, layers, material.as_ref(), canvas);
     // The children's install canvas: this frame when it carries a
     // filter — a backdrop group never shares a capture across filtered
@@ -1166,7 +1464,7 @@ fn lower_inner<T: LayerTarget<E>, E: crate::text::TextEngine>(
             match &mut layers.inner_stretch {
                 Some(stretch) => stretch.show(shown, world),
                 None => {
-                    layers.inner_stretch = Some(StretchFilter::new::<T, E>(cx.host, shown, world));
+                    layers.inner_stretch = StretchFilter::new::<T, E>(cx.host, shown, world);
                 }
             }
             layers.inner_stretch.as_ref().map(StretchFilter::id)
@@ -1249,7 +1547,10 @@ fn commit_producer<T: LayerTarget<E>, E: crate::text::TextEngine>(
             mount_hosted(cx, layers, runtime, *bounds);
         }
         Some(ProducerContent::Scene(source)) => {
-            return Some(mount_scene(cx, cell, &layers.frame, source));
+            // Content updated in place keeps the set its installed
+            // recording named.
+            return mount_scene(cx, cell, &layers.frame, source)
+                .or_else(|| layers.content_held.clone());
         }
         #[cfg(hydrolysis_gpu)]
         Some(ProducerContent::Gpu {
@@ -1272,15 +1573,33 @@ fn commit_producer<T: LayerTarget<E>, E: crate::text::TextEngine>(
     None
 }
 
-/// Records a scene view's content into its frame against the target's
-/// resource table, rebuilding it when the table changed since its last
-/// record.
+/// Tells an input-receiving surface its laid-out size and display scale
+/// when either differs from what it was last told, ahead of the frame the
+/// commit is about to start — the surface's first, and the first at every new
+/// size. `deliver` hands the event to the surface's handler.
+fn announce_surface_size(
+    tracker: &mut crate::renderer::ResizeTracker,
+    bounds: kurbo::Rect,
+    display_scale: f64,
+    deliver: impl FnOnce(&waterui_graphics::input::SurfaceInputEvent),
+) {
+    if let Some(event) = tracker.changed(bounds.size(), crate::num_cast::f64_as_f32(display_scale))
+    {
+        deliver(&event);
+    }
+}
+
+/// Brings a scene view's content up to date for the presented frame: in
+/// place when it keeps its installed recording, otherwise recorded into
+/// its frame against the target's resource table, rebuilding it when the
+/// table changed since its last record. Returns the resources a new
+/// recording names; `None` when the installed recording stays.
 fn mount_scene<T: LayerTarget<E>, E: crate::text::TextEngine>(
     cx: &mut CommitCx<'_, '_, '_, T, E>,
     cell: &Rc<NodeCell<E>>,
     frame: &Layer,
     source: &SceneContentSource,
-) -> HeldResources {
+) -> Option<HeldResources> {
     let resources = T::resources(cx.host);
     let stale = source.association.borrow().as_ref().is_some_and(|weak| {
         weak.upgrade()
@@ -1292,28 +1611,58 @@ fn mount_scene<T: LayerTarget<E>, E: crate::text::TextEngine>(
         content.set_invalidator(Some(Rc::clone(&source.invalidator)));
     }
     *source.association.borrow_mut() = Some(Rc::downgrade(resources));
-    let mut names = resources.waterui().recording();
     #[expect(
         clippy::cast_possible_truncation,
         reason = "scene content sizes are logical points well inside f32"
     )]
     let (width, height) = (source.bounds.width() as f32, source.bounds.height() as f32);
-    let content = Rc::clone(&source.content);
-    let owner = Rc::clone(cell);
-    cx.tx[frame].record(|recorder| {
-        if content
-            .borrow_mut()
-            .build_scene(recorder, &mut names, width, height)
-        {
-            owner.mark(super::Dirty::PAINT);
-        }
+    // A recording made against a replaced table is never updated: the
+    // content records anew on this one.
+    let update = (!stale).then(|| {
+        source.content.borrow_mut().update_scene(
+            resources.waterui(),
+            waterui_graphics::backend::SceneFrame {
+                width,
+                height,
+                time: source.time,
+            },
+        )
     });
+    if let Some(SceneUpdate::Retained { next }) = update {
+        cx.scene_frames.file(cell, next);
+        return None;
+    }
+    let mut names = resources.waterui().recording();
+    let content = Rc::clone(&source.content);
+    if content.borrow().wants_input_events() {
+        announce_surface_size(
+            &mut source.resize.borrow_mut(),
+            source.bounds,
+            cx.display_scale,
+            |event| content.borrow_mut().input(event),
+        );
+    }
+    let mut next = NextFrame::Idle;
+    cx.tx[frame].record(|recorder| {
+        next = content
+            .borrow_mut()
+            .build_scene(recorder, &mut names, width, height);
+    });
+    cx.scene_frames.file(cell, next);
     cx.stats.installs += 1;
-    names.finish()
+    Some(names.finish())
 }
 
+/// The space a GPU producer's or external source's install layer
+/// composites in: their frames are linear content, so on a surface storing
+/// another space they composite as a linear island — the way a system
+/// compositor plane shows them — and on a linear surface the declaration
+/// isolates nothing.
+#[cfg(hydrolysis_gpu)]
+const INSTALL_SPACE: Option<BlendSpace> = Some(BlendSpace::Linear);
+
 /// Ensures the node's install layer; returns whether it was just created.
-#[cfg_attr(all(hydrolysis_hwui, not(hydrolysis_gpu)), expect(dead_code))]
+#[cfg_attr(not(hydrolysis_gpu), expect(dead_code))]
 fn ensure_install<T: LayerTarget<E>, E: crate::text::TextEngine>(
     cx: &mut CommitCx<'_, '_, '_, T, E>,
     layers: &mut NodeLayers<E>,
@@ -1372,6 +1721,12 @@ fn mount_gpu<T: LayerTarget<E>, E: crate::text::TextEngine>(
     if fresh {
         runtime.binding = None;
     }
+    if runtime.view.wants_input_events() {
+        let runtime = &mut *runtime;
+        announce_surface_size(&mut runtime.resize, bounds, cx.display_scale, |event| {
+            runtime.view.input(event);
+        });
+    }
     if visible {
         if runtime.producer.is_none() {
             cx.stats.installs += 1;
@@ -1385,6 +1740,7 @@ fn mount_gpu<T: LayerTarget<E>, E: crate::text::TextEngine>(
         props,
         LayerProps {
             transform: install_transform(bounds, pixels),
+            blend_space: INSTALL_SPACE,
             ..LayerProps::DEFAULT
         },
     );
@@ -1406,20 +1762,38 @@ fn mount_external<T: LayerTarget<E>, E: crate::text::TextEngine>(
     if fresh {
         runtime.binding = None;
     }
+    if runtime.view.wants_input_events() {
+        let runtime = &mut *runtime;
+        announce_surface_size(&mut runtime.resize, bounds, cx.display_scale, |event| {
+            runtime.view.input(event);
+        });
+    }
     if !visible {
         return;
     }
     if runtime.receiver.is_none() {
         cx.stats.installs += 1;
     }
+    // The extent the install layer covers on screen: a source without a
+    // natural size renders at exactly this many pixels.
+    let world = cx.window_transform * cell.placement().resolved_transform(false);
+    let (width, height) = gpu_content_pixels(world, bounds);
+    let presented = waterui_graphics::gpu::PresentedSize {
+        pixels: waterui_graphics::OffscreenSize::try_from_pixels(width, height)
+            .expect("a layer's pixel extent is at least one pixel on each axis"),
+        scale: cx.display_scale,
+    };
     let wake = (cx.wakes)(cell);
-    if let Some(pixels) = T::mount_external_frame(cx.host, cx.tx, install, &mut runtime, wake) {
+    if let Some(pixels) =
+        T::mount_external_frame(cx.host, cx.tx, install, &mut runtime, presented, wake)
+    {
         write_props(
             cx.tx,
             install,
             props,
             LayerProps {
                 transform: install_transform(bounds, pixels),
+                blend_space: INSTALL_SPACE,
                 ..LayerProps::DEFAULT
             },
         );
@@ -1654,7 +2028,7 @@ fn commit_list_slots<T: LayerTarget<E>, E: crate::text::TextEngine>(
                 }
             }
             Slot::Live(at) => {
-                let layer = &lives[*at].layer;
+                let layer = lives[*at].attached();
                 Want {
                     id: layer.id(),
                     token: own.clone(),
@@ -1733,22 +2107,36 @@ fn lower_live<T: LayerTarget<E>, E: crate::text::TextEngine>(
     lives_old: &mut Vec<LiveLayer>,
     lives: &mut Vec<LiveLayer>,
 ) -> usize {
+    // A source that turns has one layer per rotation stage, each nested in
+    // the next; a source with a different number of stages gets a nest of
+    // its own, and the old one retires.
+    let stages = item.source.rotations().len();
     let mut live = lives_old
         .iter()
-        .position(|live| live.ordinal == item.ordinal)
+        .position(|live| live.ordinal == item.ordinal && live.outers.len() + 1 == stages.max(1))
         .map_or_else(
-            || LiveLayer {
-                ordinal: item.ordinal,
-                layer: cx.layer(),
-                transform: kurbo::Affine::IDENTITY,
-                source: None,
-                held: None,
-                solid: Box::default(),
+            || {
+                let layer = cx.layer();
+                let mut outers: Vec<Layer> = Vec::new();
+                for _ in 1..stages {
+                    let outer = cx.layer();
+                    cx.tx[&outer].insert(0, outers.last().unwrap_or(&layer));
+                    outers.push(outer);
+                }
+                LiveLayer {
+                    ordinal: item.ordinal,
+                    layer,
+                    transform: kurbo::Affine::IDENTITY,
+                    source: None,
+                    held: None,
+                    solid: Box::default(),
+                    outers,
+                }
             },
             |at| lives_old.remove(at),
         );
     if live.transform != item.transform {
-        cx.tx[&live.layer].transform(item.transform);
+        cx.tx[live.attached()].transform(item.transform);
         live.transform = item.transform;
     }
     let recorded = live
@@ -1760,9 +2148,29 @@ fn lower_live<T: LayerTarget<E>, E: crate::text::TextEngine>(
             Box::default,
             crate::renderer::recording::Recording::solid_rects,
         );
-        let resources = T::resources(cx.host);
         let mut held = None;
-        cx.tx[&live.layer].record(|recorder| held = item.source.record(recorder, resources));
+        if let Some(content) = item.source.content() {
+            cx.tx[&live.layer].content(content);
+        } else {
+            let resources = T::resources(cx.host);
+            cx.tx[&live.layer].record(|recorder| held = item.source.record(recorder, resources));
+        }
+        // A source that turns binds each stage's layer rotation property
+        // to the stage's operand and starts the engine's track along it:
+        // the layers then turn on the engine's clock, with no work here.
+        // A stage layer a source without rotation leaves behind stops.
+        let rotations = item.source.rotations();
+        let pivot = item.source.pivot();
+        for (layer, rotation) in std::iter::once(&live.layer)
+            .chain(&live.outers)
+            .zip(&rotations)
+        {
+            cx.tx[layer].pivot(Fixed(pivot)).rotation(rotation.live());
+            rotation.run();
+        }
+        if rotations.is_empty() {
+            cx.tx[&live.layer].rotation(Fixed(0.0_f64));
+        }
         if let Some(old) = std::mem::replace(&mut live.held, held) {
             cx.graveyard.push(Box::new(old));
         }
@@ -1811,7 +2219,9 @@ fn lower_scope<T: LayerTarget<E>, E: crate::text::TextEngine>(
         LayerProps {
             transform: props.transform,
             opacity: props.alpha,
+            blend_space: props.blend_space,
             clip: props.clip.clone(),
+            live: props.live.clone(),
             ..LayerProps::DEFAULT
         },
     );
@@ -1961,7 +2371,7 @@ pub fn visit<E: crate::text::TextEngine>(
 }
 
 fn props_world(parent: kurbo::Affine, props: &LayerProps) -> kurbo::Affine {
-    parent * props.transform * kurbo::Affine::translate(-props.scroll)
+    parent * props.transform_now() * kurbo::Affine::translate(-props.scroll)
 }
 
 /// Opens `props`' opacity, clip and filter around `content`, which receives
@@ -1973,12 +2383,13 @@ fn with_props<E: crate::text::TextEngine>(
     visitor: &mut dyn LayerVisitor<E>,
     content: impl FnOnce(kurbo::Affine, &mut Vec<f32>, &mut dyn LayerVisitor<E>),
 ) {
-    let faded = props.opacity < 1.0;
+    let opacity = props.opacity_now();
+    let faded = opacity < 1.0;
     if faded {
-        alphas.push(props.opacity);
+        alphas.push(opacity);
     }
     if let Some(clip) = &props.clip {
-        visitor.open_clip(parent * props.transform, clip);
+        visitor.open_clip(parent * props.transform_now(), clip);
     }
     if props.filter.is_some() {
         visitor.open_filter();
@@ -2068,7 +2479,7 @@ fn visit_list<E: crate::text::TextEngine>(
             .find(|run| run.layer.as_ref().is_some_and(|layer| layer.id() == *id))
         {
             visit_run(run, world, alphas, visitor);
-        } else if let Some(live) = lives.iter().find(|live| live.layer.id() == *id) {
+        } else if let Some(live) = lives.iter().find(|live| live.attached().id() == *id) {
             let world = world * live.transform;
             #[cfg(test)]
             if let Some(recording) = live.source.as_ref().and_then(|source| source.recording()) {
@@ -2119,8 +2530,8 @@ fn visit_list<E: crate::text::TextEngine>(
 /// is fully transparent holds no membership: the group belongs to its
 /// visible members.
 ///
-/// An unregistered shader or capture class panics here — at install —
-/// naming the key.
+/// An unregistered shader or capture class is reported here — at install —
+/// naming the key, and the member draws no chrome.
 fn lower_chrome<T: LayerTarget<E>, E: crate::text::TextEngine>(
     cx: &mut CommitCx<'_, '_, '_, T, E>,
     chrome: &ChromeMaterial,
@@ -2152,28 +2563,19 @@ fn lower_chrome<T: LayerTarget<E>, E: crate::text::TextEngine>(
     // recording stored.
     cx.tx[&member.layer].clip(chrome.material.shape().rebound());
     member.chrome = Some(chrome.clone());
-    if chrome.visible {
-        let registry = &T::material_terms(cx.host).registry;
-        let class = chrome.material.capture();
-        let params = *registry.capture_class(class).unwrap_or_else(|| {
-            panic!(
-                "hydrolysis materials: capture class {class:?} is not registered; the theme \
-                 declares its classes through `WidgetTheme::register_backdrop_shaders`"
-            )
-        });
-        let shader = chrome.material.shader();
-        assert!(
-            registry.shader(shader).is_some(),
-            "hydrolysis materials: backdrop shader {shader:?} is not registered; the theme \
-             declares its shaders through `WidgetTheme::register_backdrop_shaders`"
-        );
+    let registered = if chrome.visible {
+        chrome_terms::<T, E>(cx.host, chrome)
+    } else {
+        None
+    };
+    if let Some(params) = registered {
         let key = ChromeGroupKey::new(
             member.layer.id(),
-            chrome.material.scope(),
-            class,
-            params.grouping,
+            &chrome.material,
+            params.capture.grouping,
             canvas,
             cx.scope_anchors,
+            &T::material_terms(cx.host).registry,
         );
         let membership = member
             .membership
@@ -2188,7 +2590,7 @@ fn lower_chrome<T: LayerTarget<E>, E: crate::text::TextEngine>(
             params,
             cx.display_scale,
             membership,
-            || chrome_member_payload::<T, E>(host, chrome),
+            || chrome_member_payload::<T, E>(host, chrome, key),
             MemberBind::Always,
         );
         member.params = Some(params);
@@ -2202,28 +2604,87 @@ fn lower_chrome<T: LayerTarget<E>, E: crate::text::TextEngine>(
     members.len() - 1
 }
 
+/// The capture class and its terms `chrome` records, or `None` after a
+/// reported violation when the theme's registry lacks the class or shader
+/// the material names, or the engine holds no handle for the shader.
+fn chrome_terms<T: LayerTarget<E>, E: crate::text::TextEngine>(
+    host: &T::Host,
+    chrome: &ChromeMaterial,
+) -> Option<ChromeParams> {
+    let terms = T::material_terms(host);
+    let class = chrome.material.capture();
+    let Some(capture) = terms.registry.capture_class(class).copied() else {
+        contract_violation!(
+            "hydrolysis materials: capture class {class:?} is not registered; the theme \
+             declares its classes through `WidgetTheme::register_backdrop_shaders`; the member draws no chrome"
+        );
+        return None;
+    };
+    let shader = chrome.material.shader();
+    if terms.registry.shader(shader).is_none() {
+        contract_violation!(
+            "hydrolysis materials: backdrop shader {shader:?} is not registered; the theme \
+             declares its shaders through `WidgetTheme::register_backdrop_shaders`; the member draws no chrome"
+        );
+        return None;
+    }
+    if !terms.shaders.contains_key(&shader) {
+        contract_violation!(
+            "hydrolysis materials: backdrop shader {shader:?} is registered but has no handle \
+             on this engine; the member draws no chrome"
+        );
+        return None;
+    }
+    Some(ChromeParams { class, capture })
+}
+
 /// The member's own binding payload (water-rs/waterui#1788): the
 /// shader's engine handle and its live effect — the terms the group table
 /// stores on the member's entry so a group rebuild rebinds each member's
-/// own sample.
+/// own sample. A member of the container group `key` (water-rs/waterui#2834)
+/// binds instead a live view of a binding the group's resolution sets,
+/// which starts from the recipe's resolution of the member alone, and
+/// carries its own terms for the group to resolve.
 fn chrome_member_payload<T: LayerTarget<E>, E: crate::text::TextEngine>(
     host: &T::Host,
     chrome: &ChromeMaterial,
+    key: ChromeGroupKey,
 ) -> super::backdrop::ChromeMemberPayload<T::Shader> {
-    let shader = T::material_terms(host)
+    let terms = T::material_terms(host);
+    let shader = terms
         .shaders
         .get(&chrome.material.shader())
-        .unwrap_or_else(|| {
-            panic!(
-                "hydrolysis materials: backdrop shader {:?} is registered but has no handle \
-                 on this engine — a theme's registry is registered at engine attach",
-                chrome.material.shader(),
-            )
-        })
+        .expect("`chrome_terms` checked that the engine holds a handle for the shader")
         .clone();
+    let material = &chrome.material;
+    let Some(recipe) = key
+        .container()
+        .and_then(|container| terms.registry.container_recipe(container))
+    else {
+        return super::backdrop::ChromeMemberPayload {
+            shader,
+            effect: material.effect().clone(),
+            container: None,
+        };
+    };
+    let own = material.effect();
+    let alone = solo_effect(
+        recipe,
+        material.shader(),
+        material.shape().rebound().value(),
+        material.capture(),
+        own.rebound().value(),
+    );
+    let binding = crate::theme::live::Operand::new(alone);
     super::backdrop::ChromeMemberPayload {
         shader,
-        effect: chrome.material.effect().clone(),
+        effect: cherenkov_record::Live::from(binding.clone()).into_shared(),
+        container: Some(ContainerMember {
+            shape: material.shape().clone(),
+            effect: own.clone(),
+            capture: material.capture(),
+            binding,
+        }),
     }
 }
 
@@ -2254,14 +2715,13 @@ fn commit_chrome<T: LayerTarget<E>, E: crate::text::TextEngine>(
         ) else {
             continue;
         };
-        let class = chrome.material.capture();
         let key = ChromeGroupKey::new(
             member.layer.id(),
-            chrome.material.scope(),
-            class,
-            params.grouping,
+            &chrome.material,
+            params.capture.grouping,
             canvas,
             cx.scope_anchors,
+            &T::material_terms(cx.host).registry,
         );
         // A no-program commit binds only a new membership or a rebuilt
         // group — an unchanged member keeps its bind and its stored
@@ -2276,7 +2736,7 @@ fn commit_chrome<T: LayerTarget<E>, E: crate::text::TextEngine>(
             params,
             cx.display_scale,
             membership,
-            || chrome_member_payload::<T, E>(host, chrome),
+            || chrome_member_payload::<T, E>(host, chrome, key),
             MemberBind::OnChange,
         );
     }

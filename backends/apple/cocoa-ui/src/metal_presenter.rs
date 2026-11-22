@@ -120,6 +120,18 @@ impl DrawableFrame {
         self.drawable.texture()
     }
 
+    /// The `CAMetalDrawable` this frame presents — callers that commit
+    /// their own command buffers use it for `presentDrawable:` so the
+    /// frame's presentation rides the same submission as its render work.
+    /// Gate the gate: presenting through the raw drawable bypasses
+    /// [`Self::present`]'s generation and size checks, so the surface is
+    /// exposed only to the native test harness.
+    #[cfg(feature = "native-test")]
+    #[must_use]
+    pub fn drawable(&self) -> Retained<ProtocolObject<dyn CAMetalDrawable>> {
+        self.drawable.clone()
+    }
+
     /// The update's target presentation timestamp, `CACurrentMediaTime`
     /// seconds.
     #[must_use]
@@ -340,16 +352,13 @@ impl MetalPresenter {
     /// transition's frozen-frame hand-off pass `true`; everything else
     /// keeps render-target-only drawables.
     ///
-    /// # Panics
-    ///
-    /// When called off the main thread.
     #[must_use]
     pub fn new(
+        mtm: MainThreadMarker,
         layer: Retained<CAMetalLayer>,
         on_frame: Rc<dyn Fn(DrawableFrame)>,
         readable: bool,
     ) -> Self {
-        let mtm = MainThreadMarker::new().expect("MetalPresenter is created on the main thread");
         let inner = Rc::new_cyclic(|this| PresenterInner {
             layer,
             generation: Cell::new(0),

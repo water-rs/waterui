@@ -25,6 +25,7 @@ use objc2::runtime::Sel;
 use objc2::sel;
 use objc2_foundation::{NSArray, NSObjectProtocol, NSString, NSUUID};
 use objc2_ui_kit::{UICommand, UIKeyCommand};
+use waterui_contract::contract_violation;
 
 /// The callback of every armed key command, by the id its `propertyList`
 /// carries, owned by the menu bar's delegate or a view.
@@ -104,20 +105,23 @@ impl KeyCommandRegistry {
     /// Runs the callback of `command`, a key command a builder armed — or
     /// a copy `UIKit` made of one.
     ///
-    /// # Panics
-    ///
-    /// If `command` does not carry an id this registry armed, or the scope
-    /// that armed it has been dropped.
+    /// A `command` that does not carry an id this registry armed, or whose
+    /// scope has been dropped, breaks the contract: it is reported and the
+    /// action is ignored.
     pub(super) fn fire(&self, command: &UICommand) {
-        let token = Self::token(command).unwrap_or_else(|| {
-            panic!("a menu-command action was sent by a command no menu builder armed: {command:?}")
-        });
-        let handler = self
-            .handlers
-            .borrow()
-            .get(&token)
-            .cloned()
-            .unwrap_or_else(|| panic!("a key command fired after its owner retired it"));
+        let Some(token) = Self::token(command) else {
+            contract_violation!(
+                "a menu-command action was sent by a command no menu builder armed: {command:?}; the action is ignored"
+            );
+            return;
+        };
+        let handler = self.handlers.borrow().get(&token).cloned();
+        let Some(handler) = handler else {
+            contract_violation!(
+                "a key command fired after its owner retired it; the action is ignored"
+            );
+            return;
+        };
         handler();
     }
 

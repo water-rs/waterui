@@ -32,7 +32,8 @@ use kurbo::{Affine, BezPath, Circle, Ellipse, Line, Rect, RoundedRect, Vec2};
 
 use crate::convert::AnchorLayer as _;
 use crate::convert::{
-    self, Blobs, Op, ShapeKind, engine_blend, group_op, op, shape_kind, text_op, working,
+    self, Blobs, Op, ShapeKind, engine_blend, engine_blend_space, group_op, op, shape_kind,
+    text_op, working,
 };
 use crate::memory::{
     AdapterMemory, EngineBytes, Reading, wgpu_allocator, wgpu_metal_allocated_bytes,
@@ -410,6 +411,20 @@ fn record_ops_static(c: &mut cherenkov::Recorder, ops: &[Op], live: &[LiveRun]) 
     }
 }
 
+/// Records [`record_ops_static`]'s content under the frame's drift, when it
+/// has one.
+fn record_ops_drifted(
+    c: &mut cherenkov::Recorder,
+    ops: &[Op],
+    live: &[LiveRun],
+    drift: Option<kurbo::Affine>,
+) {
+    match drift {
+        Some(drift) => c.transform(Fixed(drift), |c| record_ops_static(c, ops, live)),
+        None => record_ops_static(c, ops, live),
+    }
+}
+
 /// Records `ops` with `live` slot bindings and `motions` animated paint
 /// bindings, reached only on scenes that carry motions.
 #[expect(
@@ -472,6 +487,8 @@ struct PrepLayer {
     opacity: f64,
     /// Blend onto the parent.
     blend: cherenkov::BlendMode,
+    /// The space the layer composites in.
+    blend_space: Option<cherenkov::BlendSpace>,
     /// Registered layer filter.
     filter: Option<cherenkov::Filter>,
     /// Scroll offset applied to content and children.
@@ -528,9 +545,10 @@ pub struct Cherenkov {
     surface: Option<Surface<Gpu>>,
     /// Registered fonts per `(blob hash, face index)`.
     fonts: HashMap<(ResourceHash, u32), cherenkov::Font>,
-    /// Registered images per (blob hash, declared encoding).
-    images: HashMap<(ResourceHash, ImageEncoding), cherenkov::ImageId>,
-    /// The `Image` handles keeping `images` registered.
+    /// Registered images per (blob hash, declared encoding), shader paints
+    /// and backdrop shaders.
+    resources: convert::PaintResources,
+    /// The `Image` handles keeping `resources.images` registered.
     image_handles: Vec<ImageHandle>,
     /// Registered filters referenced by prepared layers.
     filter_handles: Vec<cherenkov::Filter>,
@@ -563,7 +581,7 @@ pub struct Cherenkov {
     composition_diag: Option<cherenkov_gpu::composition::Sink>,
     /// The frame the last submit rendered and whether it drew anything,
     /// until [`Engine::completion`] arms its signal.
-    awaiting_completion: Option<(u64, bool)>,
+    awaiting_completion: Option<u64>,
 }
 
 /// `--present` state: the engine runs on a bench-owned shared device so a
@@ -581,6 +599,9 @@ struct Present {
     destination: Option<wgpu::Texture>,
     /// The scene's declared display headroom for `read`'s present pass.
     headroom: f32,
+    /// The space the prepared surface stores, which the present pass
+    /// decodes from.
+    storage: cherenkov::BlendSpace,
 }
 
 /// The destination texture format of a `--present` kind.
@@ -806,10 +827,13 @@ impl Present {
             .as_ref()
             .ok_or_else(|| BenchError::Engine("present before prepare".into()))?;
         let destination = self.destination.as_ref().expect("set at prepare");
-        self.presenter.texture(
+        self.presenter.texture_in(
             &shared.device,
             &shared.queue,
-            &source.create_view(&wgpu::TextureViewDescriptor::default()),
+            (
+                &source.create_view(&wgpu::TextureViewDescriptor::default()),
+                self.storage,
+            ),
             TextureOutput {
                 texture: destination,
                 color: present_color(self.kind),
@@ -860,6 +884,7 @@ fn cherenkov_features() -> Vec<Feature> {
         Feature::MeshGradient,
         Feature::Image,
         Feature::ImagePaint,
+        Feature::ShaderPaint,
         Feature::ExtendNone,
         // Display P3 PNGs upload verbatim; the `Rgba16F` path carries the
         // linear primaries as well.
@@ -874,8 +899,10 @@ fn cherenkov_features() -> Vec<Feature> {
         Feature::BackdropBlur,
         Feature::BackdropColorMatrix,
         Feature::BackdropEffect,
+        Feature::BackdropShader,
         Feature::BackdropScale,
         Feature::BackdropLevels,
+        Feature::BackdropGaussianPyramid,
         Feature::BackdropAnchor,
         Feature::BackdropUnion,
         Feature::BackdropOuter,
@@ -896,22 +923,23 @@ fn cherenkov_features() -> Vec<Feature> {
 
 /// The scene [`Feature`] a render-time unsupported name maps back to.
 ///
-/// `shader-paint` and `mesh-gradient` have no scene feature of their own;
-/// they report the nearest declared one (`Fill`) while the `api` string
-/// names the real construct.
+/// `mesh-gradient` has no render-time feature of its own; it reports the
+/// nearest declared one (`Fill`) while the `api` string names the real
+/// construct.
 fn unsupported_feature(u: &str) -> Feature {
     match u {
         "filter" => Feature::Filter,
+        "shader-paint" => Feature::ShaderPaint,
+        "backdrop-shader" => Feature::BackdropShader,
         "path" | "path-clip-too-large" => Feature::Path,
         "sweep-gradient" => Feature::SweepGradient,
         "stroke-dash" => Feature::StrokeDash,
         "glyph-stroke" | "color-font" => Feature::Glyphs,
         "glyph-transform" => Feature::GlyphTransform,
         "shadow" => Feature::Shadow,
-        "backdrop-unclipped"
-        | "backdrop-footprint"
-        | "backdrop-effect-sdf-path"
-        | "backdrop-shader" => Feature::Backdrop,
+        "backdrop-unclipped" | "backdrop-footprint" | "backdrop-effect-sdf-path" => {
+            Feature::Backdrop
+        }
         "backdrop-member-before-anchor" | "backdrop-member-outside-anchor-canvas" => {
             Feature::BackdropAnchor
         }
@@ -1147,33 +1175,21 @@ fn register_image(
     Ok(())
 }
 
-/// Registers every image referenced by draws or image paints in `layer`.
+/// Registers every image referenced by draws or image paints in `layer`,
+/// every shader paint, and every backdrop shader effect.
 fn register_images(
-    images: &mut HashMap<(ResourceHash, ImageEncoding), cherenkov::ImageId>,
+    resources: &mut convert::PaintResources,
     handles: &mut Vec<ImageHandle>,
     engine: &GpuEngine<Gpu>,
     layer: &SceneLayer,
     blobs: &Blobs,
 ) -> Result<(), BenchError> {
+    convert::register_backdrop_shader(resources, engine, layer)?;
     for item in &layer.items {
         match item {
-            Item::Layer(l) => register_images(images, handles, engine, l, blobs)?,
-            Item::Group(g) => register_group_images(images, handles, engine, g, blobs)?,
-            Item::Draw(SceneDraw::Image {
-                image, encoding, ..
-            }) => {
-                register_image(images, handles, engine, image, *encoding, blobs)?;
-            }
-            Item::Draw(d) => {
-                let paint = match d {
-                    SceneDraw::Fill { paint, .. } | SceneDraw::Stroke { paint, .. } => Some(paint),
-                    SceneDraw::Glyphs(run) => Some(&run.paint),
-                    _ => None,
-                };
-                if let Some(p) = paint.and_then(crate::convert::image_paint) {
-                    register_image(images, handles, engine, &p.image, p.encoding, blobs)?;
-                }
-            }
+            Item::Layer(l) => register_images(resources, handles, engine, l, blobs)?,
+            Item::Group(g) => register_group_images(resources, handles, engine, g, blobs)?,
+            Item::Draw(d) => register_draw(resources, handles, engine, d, blobs)?,
         }
     }
     Ok(())
@@ -1181,7 +1197,7 @@ fn register_images(
 
 /// [`register_images`] over a group's member list.
 fn register_group_images(
-    images: &mut HashMap<(ResourceHash, ImageEncoding), cherenkov::ImageId>,
+    resources: &mut convert::PaintResources,
     handles: &mut Vec<ImageHandle>,
     engine: &GpuEngine<Gpu>,
     group: &cherenkov_scene::Group,
@@ -1189,25 +1205,35 @@ fn register_group_images(
 ) -> Result<(), BenchError> {
     for item in &group.items {
         match item {
-            GroupItem::Group(g) => register_group_images(images, handles, engine, g, blobs)?,
-            GroupItem::Draw(SceneDraw::Image {
-                image, encoding, ..
-            }) => {
-                register_image(images, handles, engine, image, *encoding, blobs)?;
-            }
-            GroupItem::Draw(d) => {
-                let paint = match d {
-                    SceneDraw::Fill { paint, .. } | SceneDraw::Stroke { paint, .. } => Some(paint),
-                    SceneDraw::Glyphs(run) => Some(&run.paint),
-                    _ => None,
-                };
-                if let Some(p) = paint.and_then(crate::convert::image_paint) {
-                    register_image(images, handles, engine, &p.image, p.encoding, blobs)?;
-                }
-            }
+            GroupItem::Group(g) => register_group_images(resources, handles, engine, g, blobs)?,
+            GroupItem::Draw(d) => register_draw(resources, handles, engine, d, blobs)?,
         }
     }
     Ok(())
+}
+
+/// [`register_images`] for one draw: its image, or its paint's image or
+/// shader.
+fn register_draw(
+    resources: &mut convert::PaintResources,
+    handles: &mut Vec<ImageHandle>,
+    engine: &GpuEngine<Gpu>,
+    draw: &SceneDraw,
+    blobs: &Blobs,
+) -> Result<(), BenchError> {
+    let images = &mut resources.images;
+    let paint = match draw {
+        SceneDraw::Image {
+            image, encoding, ..
+        } => return register_image(images, handles, engine, image, *encoding, blobs),
+        SceneDraw::Fill { paint, .. } | SceneDraw::Stroke { paint, .. } => paint,
+        SceneDraw::Glyphs(run) => &run.paint,
+        SceneDraw::Shadow { .. } => return Ok(()),
+    };
+    if let Some(p) = crate::convert::image_paint(paint) {
+        register_image(images, handles, engine, &p.image, p.encoding, blobs)?;
+    }
+    convert::register_shader_paint(resources, engine, paint)
 }
 
 #[expect(
@@ -1231,6 +1257,9 @@ fn register_filter(
             engine.filter(filters::GaussianBlur::new(*sigma as f32))
         }
         LayerFilter::BoxBlur { radius } => engine.filter(filters::Blur(*radius as f32)),
+        LayerFilter::Convolution3x3 { kernel } => {
+            engine.filter(filters::Convolution3x3(kernel.map(|v| v as f32)))
+        }
         LayerFilter::OverscrollStretch {
             frame,
             size,
@@ -1282,7 +1311,7 @@ fn prep_layer(
     layer: &SceneLayer,
     engine: &GpuEngine<Gpu>,
     fonts: &HashMap<(ResourceHash, u32), cherenkov::Font>,
-    images: &HashMap<(ResourceHash, ImageEncoding), cherenkov::ImageId>,
+    resources: &convert::PaintResources,
     blobs: &Blobs,
 ) -> Result<PrepLayer, BenchError> {
     // The engine draws a layer's content before its children, so the draws
@@ -1306,6 +1335,7 @@ fn prep_layer(
             .map(|shape| shape_kind(shape, cherenkov::FillRule::NonZero)),
         opacity: layer.opacity,
         blend: engine_blend(layer.blend),
+        blend_space: layer.blend_space.map(engine_blend_space),
         filter: layer
             .filter
             .as_deref()
@@ -1317,7 +1347,7 @@ fn prep_layer(
         backdrop_effect: layer
             .backdrop_effect
             .as_ref()
-            .map(crate::convert::backdrop_effect)
+            .map(|spec| crate::convert::backdrop_effect(spec, resources))
             .transpose()?,
         id: layer.id.map(std::num::NonZeroU32::get),
         backdrop_outer: match layer.backdrop {
@@ -1343,16 +1373,16 @@ fn prep_layer(
     if let Some(text) = &layer.text {
         prep.own
             .ops
-            .push(text_op(text, fonts, images, blobs, &FRONT)?);
+            .push(text_op(text, fonts, resources, blobs, &FRONT)?);
         return Ok(prep);
     }
     if own {
         for (index, item) in layer.items.iter().enumerate() {
             match item {
                 Item::Layer(l) => prep.items.push(PrepItem::Layer(Box::new(prep_layer(
-                    l, engine, fonts, images, blobs,
+                    l, engine, fonts, resources, blobs,
                 )?))),
-                _ => prep_run_item(&mut prep.own, engine, layer, index, fonts, images, blobs)?,
+                _ => prep_run_item(&mut prep.own, engine, layer, index, fonts, resources, blobs)?,
             }
         }
     } else {
@@ -1367,10 +1397,10 @@ fn prep_layer(
                         )));
                     }
                     prep.items.push(PrepItem::Layer(Box::new(prep_layer(
-                        l, engine, fonts, images, blobs,
+                        l, engine, fonts, resources, blobs,
                     )?)));
                 }
-                _ => prep_run_item(&mut run, engine, layer, index, fonts, images, blobs)?,
+                _ => prep_run_item(&mut run, engine, layer, index, fonts, resources, blobs)?,
             }
         }
         if !run.ops.is_empty() {
@@ -1389,24 +1419,25 @@ fn prep_run_item(
     layer: &SceneLayer,
     index: usize,
     fonts: &HashMap<(ResourceHash, u32), cherenkov::Font>,
-    images: &HashMap<(ResourceHash, ImageEncoding), cherenkov::ImageId>,
+    resources: &convert::PaintResources,
     blobs: &Blobs,
 ) -> Result<(), BenchError> {
     match &layer.items[index] {
         Item::Draw(d) => {
-            run.ops.push(op(d, fonts, images, blobs, &FRONT)?);
+            run.ops.push(op(d, fonts, resources, blobs, &FRONT)?);
             let position = run.ops.len() - 1;
-            if let Some(live) = live_run(layer, index, position, fonts, images, blobs)? {
+            if let Some(live) = live_run(layer, index, position, fonts, resources, blobs)? {
                 run.live.push(live);
             }
-            if let Some(motion) = paint_motion(layer, index, position, &run.ops[position], images)?
+            if let Some(motion) =
+                paint_motion(layer, index, position, &run.ops[position], resources)?
             {
                 run.motions.push(motion);
             }
         }
         Item::Group(g) => {
             let filters = &mut run.filters;
-            let op = group_op(g, fonts, images, blobs, &FRONT, &mut |filter| {
+            let op = group_op(g, fonts, resources, blobs, &FRONT, &mut |filter| {
                 let filter = register_filter(engine, filter, blobs)?;
                 let id = filter.id();
                 filters.push(filter);
@@ -1428,7 +1459,7 @@ fn paint_motion(
     index: usize,
     position: usize,
     op: &Op,
-    images: &HashMap<(ResourceHash, ImageEncoding), cherenkov::ImageId>,
+    resources: &convert::PaintResources,
 ) -> Result<Option<PaintMotion>, BenchError> {
     let Some(Motion::Paint {
         item,
@@ -1453,7 +1484,7 @@ fn paint_motion(
     };
     Ok(Some(PaintMotion {
         index: position,
-        binding: nami::binding(convert::front_paint(from.as_ref(), images, &FRONT)?),
+        binding: nami::binding(convert::front_paint(from.as_ref(), resources, &FRONT)?),
         target,
         animation: motion_animation(*animation),
     }))
@@ -1468,7 +1499,7 @@ fn live_run(
     index: usize,
     position: usize,
     fonts: &HashMap<(ResourceHash, u32), cherenkov::Font>,
-    images: &HashMap<(ResourceHash, ImageEncoding), cherenkov::ImageId>,
+    resources: &convert::PaintResources,
     blobs: &Blobs,
 ) -> Result<Option<LiveRun>, BenchError> {
     let Some(entry) = layer.live.iter().find(|live| live.item == index) else {
@@ -1480,12 +1511,12 @@ fn live_run(
         ));
     }
     let kind = std::mem::discriminant(&match &layer.items[index] {
-        Item::Draw(d) => op(d, fonts, images, blobs, &FRONT)?,
+        Item::Draw(d) => op(d, fonts, resources, blobs, &FRONT)?,
         Item::Layer(_) | Item::Group(_) => unreachable!("checked above"),
     });
     let mut frames = Vec::with_capacity(entry.frames.len());
     for draw in &entry.frames {
-        let op = op(draw, fonts, images, blobs, &FRONT)?;
+        let op = op(draw, fonts, resources, blobs, &FRONT)?;
         if std::mem::discriminant(&op) != kind {
             return Err(BenchError::Engine(
                 "cherenkov: a live frame is not the item's draw variant".into(),
@@ -1529,6 +1560,11 @@ fn build_layer(
         edit.scroll_offset(prep.scroll_offset);
         edit.opacity(prep.opacity as f32);
         edit.blend(prep.blend);
+        if let Some(space) = prep.blend_space {
+            edit.blend_space(space);
+        } else {
+            edit.clear_blend_space();
+        }
         if let Some(filter) = &prep.filter {
             edit.filter(filter.id());
         }
@@ -1767,7 +1803,7 @@ impl Cherenkov {
             surface: None,
             timings: Timings::default(),
             fonts: HashMap::new(),
-            images: HashMap::new(),
+            resources: convert::PaintResources::default(),
             image_handles: Vec::new(),
             filter_handles: Vec::new(),
             content_layers: Vec::new(),
@@ -1791,6 +1827,17 @@ impl Engine for Cherenkov {
         &self.info
     }
 
+    fn gpu_timing_unavailable(&self) -> Option<&'static str> {
+        // `GpuConfig::timestamps` enables the queries exactly when the
+        // adapter supports them.
+        (!self
+            .shared_device
+            .device
+            .features()
+            .contains(wgpu::Features::TIMESTAMP_QUERY))
+        .then_some("the device does not support GPU timestamp queries")
+    }
+
     fn supported(&self) -> BTreeSet<Feature> {
         cherenkov_features().into_iter().collect()
     }
@@ -1810,6 +1857,7 @@ impl Engine for Cherenkov {
             source: None,
             destination: None,
             headroom: 1.0,
+            storage: cherenkov::BlendSpace::Linear,
         }));
         Ok(())
     }
@@ -1853,12 +1901,14 @@ impl Engine for Cherenkov {
             // Announce the scene's declared headroom as a host display
             // would; the present pass reads it every frame (#97).
             present.headroom = input.scene.present_headroom as f32;
+            present.storage = engine_blend_space(input.scene.storage_space);
             let _ = surface.display(cherenkov::Display {
                 headroom: input.scene.present_headroom as f32,
                 ..cherenkov::Display::default()
             });
         }
         surface.clear_color(working(&input.scene.clear));
+        surface.storage_space(engine_blend_space(input.scene.storage_space));
         register_fonts(
             &mut self.fonts,
             &self.engine,
@@ -1866,7 +1916,7 @@ impl Engine for Cherenkov {
             input.blobs,
         )?;
         register_images(
-            &mut self.images,
+            &mut self.resources,
             &mut self.image_handles,
             &self.engine,
             &input.scene.root,
@@ -1876,7 +1926,7 @@ impl Engine for Cherenkov {
             &input.scene.root,
             &self.engine,
             &self.fonts,
-            &self.images,
+            &self.resources,
             input.blobs,
         )?;
         self.content_layers.clear();
@@ -1936,21 +1986,28 @@ impl Engine for Cherenkov {
             }
             self.motion_committed = true;
         }
-        // Motion and live scenes record their content once: later encodes
-        // only set live bindings and advance the clock. Static scenes keep
-        // re-recording each frame so their numbers stay comparable.
-        if first_frame || !(self.has_motion || self.has_live || input.scroll_offset.is_some()) {
+        // Content is recorded on the first frame and again on every frame
+        // the bench drifts — each frame of a static scene, and a motion
+        // scene's frames once its motion has come to rest — so no frame
+        // repeats the last. Otherwise encodes only set live bindings and
+        // advance the clock.
+        if first_frame || input.drift.is_some() {
             surface.update(|tx| {
                 if self.has_motion {
                     for cl in &self.content_layers {
-                        tx[cl.handle(surface)]
-                            .record(|c| record_ops(c, &cl.ops, &cl.live, &cl.motions));
+                        tx[cl.handle(surface)].record(|c| match input.drift {
+                            Some(drift) => c.transform(Fixed(drift), |c| {
+                                record_ops(c, &cl.ops, &cl.live, &cl.motions);
+                            }),
+                            None => record_ops(c, &cl.ops, &cl.live, &cl.motions),
+                        });
                     }
                 } else {
                     for cl in &self.content_layers {
                         // A motionless scene's record keeps the dev shape:
                         // no motions reach it at all.
-                        tx[cl.handle(surface)].record(|c| record_ops_static(c, &cl.ops, &cl.live));
+                        tx[cl.handle(surface)]
+                            .record(|c| record_ops_drifted(c, &cl.ops, &cl.live, input.drift));
                     }
                 }
             });
@@ -1992,7 +2049,7 @@ impl Engine for Cherenkov {
         )?;
         let stats = self.engine.stats();
         let render_seconds = render_at.elapsed().as_secs_f64();
-        self.awaiting_completion = Some((frame, stats.frame.is_some()));
+        self.awaiting_completion = Some(frame);
         let readback_at = std::time::Instant::now();
         let image = if !readback {
             None
@@ -2027,24 +2084,33 @@ impl Engine for Cherenkov {
         })
     }
 
+    fn animating(&self) -> bool {
+        self.surface
+            .as_ref()
+            .is_some_and(|surface| matches!(surface.next_frame(), cherenkov::Next::At { .. }))
+    }
+
+    fn drew_nothing(&self) -> bool {
+        // A surface marked changed whose content leaves the frame empty
+        // (a pixel-snapped scroll offset that did not move the content) is
+        // reported as rendered but records no pass, so it submits no GPU
+        // work and has no timestamps.
+        let stats = self.engine.stats();
+        stats.frame.is_none() || stats.passes == 0
+    }
+
     fn completion_signal(&self) -> crate::CompletionSignal {
         crate::CompletionSignal::Measured(crate::Completion::WGPU_SIGNAL)
     }
 
     fn completion(&mut self) -> Result<Option<crate::Completion>, BenchError> {
-        let (frame, drew) = self.awaiting_completion.take().ok_or_else(|| {
+        self.awaiting_completion.take().ok_or_else(|| {
             BenchError::Engine("cherenkov: completion requested without a submitted frame".into())
         })?;
-        // A render that drew nothing submitted no work of its own, and the
-        // queue's latest submission would belong to an earlier frame.
-        if !drew {
-            return Err(BenchError::Engine(format!(
-                "cherenkov: frame {frame} drew nothing, so it has no GPU completion to time"
-            )));
-        }
-        // Nothing has been submitted on this device since the frame's
-        // submit returned, so the queue's latest submission is the frame's
-        // last (its readback's when it read back, which completes later).
+        // For changed content this waits for the frame's last submission.
+        // An unchanged frame reuses the existing image: it still depends on
+        // any earlier work producing that image, but has no new GPU timing.
+        // The queue callback observes readiness in both cases.
         Ok(Some(crate::Completion::on_submitted_work_done(
             &self.shared_device.queue,
         )))
@@ -2074,15 +2140,16 @@ impl Engine for Cherenkov {
     fn counters(&self) -> Counters {
         let mut counters = self.counters.clone();
         let stats = self.engine.stats();
-        let memory = self.engine.memory();
         counters.dispatches = Some(stats.draws);
         counters.passes = Some(stats.passes);
-        counters.memory_gpu_bytes = Some(memory.gpu.0);
-        counters.memory_cpu_bytes = Some(memory.cpu.0);
-        counters.memory_backdrop_capture_bytes = Some(memory.backdrop_captures.0);
-        counters.memory_backdrop_capture_format = memory.backdrop_capture_format;
-        counters.memory_filter_target_bytes = Some(memory.filter_targets.0);
-        counters.memory_filter_image_bytes = Some(memory.filter_images.0);
+        if let Ok(memory) = self.engine.memory() {
+            counters.memory_gpu_bytes = Some(memory.gpu.0);
+            counters.memory_cpu_bytes = Some(memory.cpu.0);
+            counters.memory_backdrop_capture_bytes = Some(memory.backdrop_captures.0);
+            counters.memory_backdrop_capture_format = memory.backdrop_capture_format;
+            counters.memory_filter_target_bytes = Some(memory.filter_targets.0);
+            counters.memory_filter_image_bytes = Some(memory.filter_images.0);
+        }
         counters
     }
 
@@ -2110,13 +2177,18 @@ impl Engine for Cherenkov {
         let usage = self.engine.memory();
         let adapter_info = self.shared_device.adapter.get_info();
         AdapterMemory {
-            engine: Reading::Measured(EngineBytes {
-                cpu_bytes: usage.cpu.0,
-                gpu_bytes: usage.gpu.0,
-                backdrop_capture_bytes: usage.backdrop_captures.0,
-                filter_target_bytes: usage.filter_targets.0,
-                filter_image_bytes: usage.filter_images.0,
-            }),
+            engine: usage.map_or_else(
+                |error| Reading::unavailable(error.to_string()),
+                |usage| {
+                    Reading::Measured(EngineBytes {
+                        cpu_bytes: usage.cpu.0,
+                        gpu_bytes: usage.gpu.0,
+                        backdrop_capture_bytes: usage.backdrop_captures.0,
+                        filter_target_bytes: usage.filter_targets.0,
+                        filter_image_bytes: usage.filter_images.0,
+                    })
+                },
+            ),
             wgpu_allocator: wgpu_allocator(&self.shared_device.device, adapter_info.backend),
             skia_budgeted: Reading::unavailable("not a Skia adapter"),
             vk_memory_budget: wgpu_vk_memory_budget(

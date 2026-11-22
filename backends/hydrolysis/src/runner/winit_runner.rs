@@ -27,6 +27,8 @@ use waterui::window::{Monitor, MonitorSelector, Window, WindowState};
 use waterui_core::Environment;
 #[cfg(hydrolysis_wayland_platform)]
 use waterui_core::Str;
+#[cfg(target_os = "windows")]
+use waterui_core::contract_violation;
 use waterui_graphics::gpu::RedrawHandle;
 use waterui_text::FontCollection;
 
@@ -37,16 +39,23 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, DeviceEvents, EventLoop};
 use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
 use winit::window::{Window as NativeWindow, WindowId};
 
+#[cfg(any(feature = "menu", feature = "color-picker"))]
+use super::window::runtime_window_origin;
 use crate::platform::{EngineGpuContext, PlatformWindow, WinitWindow};
-use crate::renderer::{
-    FontFamilyResolution, HydrolysisRenderer, HydrolysisTextContextMenuMode,
-    HydrolysisWindowOrigin, MenuShortcutRegistry, PopupWindowManager,
-};
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
+use crate::renderer::HydrolysisTextContextMenuMode;
+#[cfg(any(feature = "menu", feature = "color-picker"))]
+use crate::renderer::HydrolysisWindowOrigin;
+#[cfg(feature = "menu")]
+use crate::renderer::MenuShortcutRegistry;
+#[cfg(any(feature = "menu", feature = "color-picker"))]
+use crate::renderer::PopupWindowManager;
+use crate::renderer::{FontFamilyResolution, HydrolysisRenderer};
 #[cfg(hydrolysis_wayland_platform)]
 use crate::runner::x11_state_watch::{self, X11StateWatch};
 use crate::runner::{
-    RenderDiagnosticsConfig, RuntimeWindow, advance_runtime, handle_input_events_with,
-    pump_window_semantics, render_window, runtime_window_origin,
+    RenderDiagnosticsConfig, RuntimeWindow, WindowFrame, advance_runtime, handle_input_events_with,
+    pump_window_semantics, render_window,
 };
 use crate::text::ParleyEngine;
 
@@ -79,6 +88,7 @@ pub(super) enum RunnerEvent {
     /// runner installs: a declared `MenuItem::CloseWindow` was chosen, or
     /// its chord pressed, for the given window — the payload names it.
     #[cfg(hydrolysis_closable_windows)]
+    #[cfg(feature = "menu")]
     CloseWindow(crate::renderer::WindowId),
     /// The termination machine finished its work — the runner's
     /// [`TerminationHost`] sent it — so teardown happens on the event loop,
@@ -138,17 +148,25 @@ const FORCED_TERMINATION_EXIT_CODE: i32 = 130;
 /// [`TerminationSignals`] owns the contract: the first delivery of a watched
 /// signal is this send — the graceful request the event loop serves — and a
 /// repeated signal ends the process by the signal's own default action. The
-/// returned guard keeps the watcher alive for the duration of the run.
+/// returned guard keeps the watcher alive for the duration of the run. When
+/// the OS refuses the watcher, an error is logged and there is no guard: the
+/// signals keep their default action.
 #[cfg(unix)]
 fn install_termination_handler(
     event_proxy: &winit::event_loop::EventLoopProxy<RunnerEvent>,
-) -> super::termination::TerminationSignals {
+) -> Option<super::termination::TerminationSignals> {
     let signal_proxy = event_proxy.clone();
     super::termination::TerminationSignals::install(move |_signal| {
         // The watcher reads deliveries on its own thread rather than inside a
         // signal handler, so waking the loop from here is an ordinary send.
         let _ = signal_proxy.send_event(RunnerEvent::Terminate);
     })
+    .inspect_err(|error| {
+        tracing::error!(
+            "hydrolysis runner: failed to watch the termination signals: {error}; they keep their default action"
+        );
+    })
+    .ok()
 }
 
 /// Turns the console control events into [`RunnerEvent::Terminate`].
@@ -163,7 +181,7 @@ fn install_termination_handler(
 fn install_termination_handler(event_proxy: &winit::event_loop::EventLoopProxy<RunnerEvent>) {
     let requests = TerminationRequests::default();
     let signal_proxy = event_proxy.clone();
-    ctrlc::set_handler(move || match requests.record() {
+    let installed = ctrlc::set_handler(move || match requests.record() {
         TerminationAction::RequestExit => {
             // `ctrlc` runs this on a thread of its own rather than inside a
             // signal handler, so waking the loop from here is an ordinary send.
@@ -175,8 +193,12 @@ fn install_termination_handler(event_proxy: &winit::event_loop::EventLoopProxy<R
             );
             std::process::exit(FORCED_TERMINATION_EXIT_CODE);
         }
-    })
-    .expect("hydrolysis runner: failed to install the termination handler");
+    });
+    if let Err(error) = installed {
+        tracing::error!(
+            "hydrolysis runner: failed to install the termination handler: {error}; Ctrl+C keeps its default action"
+        );
+    }
     install_console_close_handler(event_proxy);
 }
 
@@ -220,6 +242,7 @@ fn sync_system_color_scheme(
 /// Whether the window may close is the shared close path's check, not this
 /// one's.
 #[cfg(hydrolysis_closable_windows)]
+#[cfg(feature = "menu")]
 fn close_window_target<K, W>(
     source: Option<K>,
     popup_ids: &std::collections::HashSet<K>,
@@ -337,9 +360,9 @@ impl TerminationSubclass {
     /// message, so the wait ends for executor work as well as for the
     /// window and loop messages an `on_terminate` future may be awaiting.
     ///
-    /// # Panics
-    ///
-    /// When `MsgWaitForMultipleObjectsEx` fails, with `GetLastError`.
+    /// When `MsgWaitForMultipleObjectsEx` fails, the failure is logged with
+    /// `GetLastError` and the wait ends: the session end proceeds without
+    /// waiting for `on_terminate`.
     fn run_until_terminated(&self) {
         use windows_sys::Win32::Foundation::WAIT_FAILED;
         use windows_sys::Win32::System::Threading::INFINITE;
@@ -365,11 +388,13 @@ impl TerminationSubclass {
                     MWMO_INPUTAVAILABLE,
                 )
             };
-            assert!(
-                woke != WAIT_FAILED,
-                "hydrolysis runner: waiting for on_terminate at session end failed: {}",
-                std::io::Error::last_os_error()
-            );
+            if woke == WAIT_FAILED {
+                tracing::error!(
+                    "hydrolysis runner: waiting for on_terminate at session end failed: {}; the session end proceeds without it",
+                    std::io::Error::last_os_error()
+                );
+                return;
+            }
             // SAFETY: `MSG` is plain data, and the all-zero value is valid.
             let mut msg: MSG = unsafe { std::mem::zeroed() };
             // SAFETY: `msg` is a writable `MSG`; a null HWND takes every
@@ -475,9 +500,9 @@ fn install_termination_subclass(
         // SAFETY: the subclass was not installed, so nothing else holds the
         // allocation `Box::into_raw` produced above.
         drop(unsafe { Box::from_raw(subclass) });
-        panic!(
+        tracing::error!(
             "hydrolysis runner: SetWindowSubclass failed on an application window, so its \
-             session end would skip on_terminate: {error}"
+             session end skips on_terminate: {error}"
         );
     }
 }
@@ -538,9 +563,9 @@ unsafe extern "system" fn console_close_handler(ctrl_type: u32) -> windows_sys::
     if ctrl_type != CTRL_CLOSE_EVENT {
         return 0;
     }
-    let event_proxy = CONSOLE_CLOSE
-        .get()
-        .expect("the console handler is registered after its event loop is recorded");
+    let event_proxy = CONSOLE_CLOSE.get().expect(
+        "the console handler is registered only after its event loop is recorded in CONSOLE_CLOSE",
+    );
     let (released, release) = mpsc::channel();
     // A loop that already exited drops the event and its sender, which ends
     // the wait at once.
@@ -551,25 +576,27 @@ unsafe extern "system" fn console_close_handler(ctrl_type: u32) -> windows_sys::
 
 /// Registers [`console_close_handler`] ahead of `ctrlc`'s handler.
 ///
-/// # Panics
-///
-/// When it is called a second time in the process, or when
-/// `SetConsoleCtrlHandler` fails.
+/// A second call in the process is a contract violation and installs nothing;
+/// a failing `SetConsoleCtrlHandler` is logged and closing the console takes
+/// its default action.
 #[cfg(target_os = "windows")]
 fn install_console_close_handler(event_proxy: &winit::event_loop::EventLoopProxy<RunnerEvent>) {
     use windows_sys::Win32::System::Console::SetConsoleCtrlHandler;
-    assert!(
-        CONSOLE_CLOSE.set(event_proxy.clone()).is_ok(),
-        "hydrolysis runner: the console close handler is installed once per process"
-    );
+    if CONSOLE_CLOSE.set(event_proxy.clone()).is_err() {
+        contract_violation!(
+            "hydrolysis runner: the console close handler is installed once per process; the second install is ignored"
+        );
+        return;
+    }
     // SAFETY: `console_close_handler` matches `PHANDLER_ROUTINE` and lives
     // for the whole process.
     let installed = unsafe { SetConsoleCtrlHandler(Some(console_close_handler), 1) };
-    assert!(
-        installed != 0,
-        "hydrolysis runner: failed to install the console close handler: {}",
-        std::io::Error::last_os_error()
-    );
+    if installed == 0 {
+        tracing::error!(
+            "hydrolysis runner: failed to install the console close handler: {}; closing the console takes its default action",
+            std::io::Error::last_os_error()
+        );
+    }
 }
 
 struct PendingWindow {
@@ -585,6 +612,7 @@ impl PendingWindow {
         }
     }
 
+    #[cfg(any(feature = "menu", feature = "color-picker"))]
     const fn popup(window: Window) -> Self {
         Self {
             window,
@@ -653,6 +681,7 @@ pub fn run(
 ) {
     let AppParts {
         windows,
+        #[cfg(feature = "menu")]
         menu_bar,
         env,
         last_window,
@@ -686,9 +715,15 @@ pub fn run(
             .with_default_menu(false)
             .with_activate_ignoring_other_apps(activate_at_launch);
     }
-    let event_loop = event_loop_builder
-        .build()
-        .expect("hydrolysis runner: failed to create event loop");
+    let event_loop = match event_loop_builder.build() {
+        Ok(event_loop) => event_loop,
+        Err(error) => {
+            tracing::error!(
+                "hydrolysis runner: failed to create the event loop: {error}; the app does not start"
+            );
+            return;
+        }
+    };
     let event_proxy = event_loop.create_proxy();
     let (local_runnable_tx, local_runnable_rx) = mpsc::channel::<Runnable>();
     let local_runnable_rx = Rc::new(local_runnable_rx);
@@ -704,16 +739,18 @@ pub fn run(
         .as_ref()
         .map(waterui::inspector::InspectorRuntime::observe_signals);
 
-    let mut env = env.extending(waterui_graphics::SceneViewMergeToParent);
+    let mut env = env.extending(waterui_graphics::backend::SceneViewMergeToParent);
     waterui_core::install_application_resources(&mut env);
     waterui::inspector::install(&mut env, inspector);
     let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
     let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
+    #[cfg(any(test, hydrolysis_component_hooks))]
     super::install_native_component_hooks(&mut env);
     #[cfg(unix)]
     let _termination_signals = install_termination_handler(&event_proxy);
     #[cfg(windows)]
     install_termination_handler(&event_proxy);
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     env.insert(HydrolysisTextContextMenuMode::Overlay);
     env.insert(waterui::window::WindowManager::new({
         let pending_window_queue = Rc::clone(&pending_window_queue);
@@ -725,6 +762,7 @@ pub fn run(
             let _ = event_proxy.send_event(RunnerEvent::MountPendingWindows);
         }
     }));
+    #[cfg(any(feature = "menu", feature = "color-picker"))]
     env.insert(PopupWindowManager::new({
         let pending_window_queue = Rc::clone(&pending_window_queue);
         let event_proxy = event_proxy.clone();
@@ -739,6 +777,10 @@ pub fn run(
     // registry: a compositor that hands a popup window keyboard focus routes
     // the menu's chords to that window's dispatch, which must resolve them
     // while the menu is open (water-rs/hydrolysis#247).
+    let _ = env.get_or_insert_with::<crate::renderer::WindowIdentities, _>(
+        crate::renderer::WindowIdentities::default,
+    );
+    #[cfg(feature = "menu")]
     let _ = env.get_or_insert_with::<MenuShortcutRegistry<crate::text::ParleyEngine>, _>(
         MenuShortcutRegistry::default,
     );
@@ -779,8 +821,10 @@ pub fn run(
     // system's fonts for itself.
     let fonts = crate::text::fonts::native_collection(&env);
     fonts.clone().install(&mut env);
+    // `native_collection` above reports an environment without a
+    // `ResourceContext`; with none there is no bundle to stage an icon in.
     let window_icon =
-        load_staged_window_icon(waterui_core::ResourceContext::from_environment(&env));
+        waterui_core::ResourceContext::from_environment(&env).and_then(load_staged_window_icon);
     // The machine installs `Quit` into the composition-root environment and
     // hands its hooks that environment as it stands now; their futures run
     // on the local executor the first `resumed` installs.
@@ -798,12 +842,12 @@ pub fn run(
     // for through the runner, which owns the windows: the primitive only
     // posts the target's identity to the event loop.
     #[cfg(hydrolysis_closable_windows)]
+    #[cfg(feature = "menu")]
     env.insert(crate::renderer::WindowCloser::new({
         let event_proxy = event_proxy.clone();
         move |window| {
-            event_proxy
-                .send_event(RunnerEvent::CloseWindow(window))
-                .expect("the runner's event loop outlives the WindowCloser it installs");
+            // A loop that already exited has no window left to close.
+            let _ = event_proxy.send_event(RunnerEvent::CloseWindow(window));
         }
     }));
     // The app's menu bar resolves after the machine installed `Quit` and
@@ -819,11 +863,13 @@ pub fn run(
     // event loop is the main thread, which is what the install's
     // `MainThreadMarker` contract needs.
     #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg(feature = "menu")]
     let native_menu_bar = crate::platform::native_menu_bar::NativeMenuBar::install(
         &super::menu_bar::register_menu_bar::<crate::text::ParleyEngine>(&menu_bar, &env),
         &env,
     );
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(feature = "menu")]
     super::menu_bar::register_menu_bar::<crate::text::ParleyEngine>(&menu_bar, &env);
     // The capture service mounts its subtree under a snapshot of the
     // assembled environment — the theme tokens, hooks and font collection a
@@ -842,6 +888,7 @@ pub fn run(
         fonts,
         window_icon,
         #[cfg(any(target_os = "macos", target_os = "windows"))]
+        #[cfg(feature = "menu")]
         native_menu_bar,
         pending_windows: windows
             .into_iter()
@@ -881,7 +928,9 @@ pub fn run(
     let run_result = event_loop.run_app(&mut runner);
     waterui_locale::shutdown_current_thread_runtime_locale_state();
     let _ = runner.drain_local_executor_queue();
-    run_result.expect("hydrolysis runner: event loop failed");
+    if let Err(error) = run_result {
+        tracing::error!("hydrolysis runner: event loop failed: {error}; the app exits");
+    }
 }
 
 struct WinitRunner {
@@ -901,6 +950,7 @@ struct WinitRunner {
     /// app's duration and pumped on every event-loop pass. Linux has no
     /// surface — the chords are still armed (see `menu_bar`).
     #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg(feature = "menu")]
     native_menu_bar: crate::platform::native_menu_bar::NativeMenuBar,
     pending_windows: Vec<PendingWindow>,
     /// What the application does once it has no window left.
@@ -1174,6 +1224,7 @@ impl WinitRunner {
         }
     }
 
+    #[cfg(any(feature = "menu", feature = "color-picker"))]
     fn current_window_origin<E: crate::text::TextEngine>(
         runtime: &RuntimeWindow<WinitWindow, E>,
     ) -> HydrolysisWindowOrigin {
@@ -1198,6 +1249,7 @@ impl WinitRunner {
         if let Ok(handle) = native_window.window_handle()
             && let RawWindowHandle::Win32(win) = handle.as_raw()
         {
+            #[cfg(feature = "menu")]
             self.native_menu_bar.attach_hwnd(
                 win.hwnd.get(),
                 crate::renderer::WindowId::Winit(native_window.id()),
@@ -1220,11 +1272,17 @@ impl WinitRunner {
     /// The window's wake — what GPU content and the engine call for another
     /// frame — posts [`RunnerEvent::RedrawWindow`] to this loop. It owns no
     /// part of the winit window, so it may run and drop on any thread.
+    ///
+    /// `None` when the window's surface cannot present on the shared
+    /// context: the error is logged and the window is not mounted. Without
+    /// a context yet — the host has no GPU Hydrolysis can render on — the
+    /// app cannot show anything: the error is logged and the process exits
+    /// with a failure status.
     fn create_platform_window(
         &mut self,
         native_window: Arc<NativeWindow>,
         window: &Window,
-    ) -> WinitWindow {
+    ) -> Option<WinitWindow> {
         let wake = {
             let event_proxy = self.event_proxy.clone();
             let window_id = native_window.id();
@@ -1233,75 +1291,95 @@ impl WinitRunner {
                 let _ = event_proxy.send_event(RunnerEvent::RedrawWindow(window_id));
             })
         };
-        let (platform, gpu_context) = pollster::block_on(WinitWindow::new_with_shared_gpu(
+        let created = pollster::block_on(WinitWindow::new_with_shared_gpu(
             native_window,
             wake,
             self.gpu_context.as_ref(),
             super::window_requires_transparency(window, &self.env),
             self.window_icon.clone(),
         ));
+        let (platform, gpu_context) = match created {
+            Ok(created) => created,
+            Err(error) if self.gpu_context.is_some() => {
+                tracing::error!(
+                    "{:#}; the window is not mounted",
+                    waterui_core::Error::from(error)
+                );
+                return None;
+            }
+            Err(error) => super::exit_without_gpu(error),
+        };
         if self.gpu_context.is_none() {
             self.gpu_context = Some(gpu_context);
         }
-        platform
+        Some(platform)
     }
 
     fn create_runtime_window(
         &mut self,
         event_loop: &ActiveEventLoop,
         pending: PendingWindow,
-    ) -> (
+    ) -> Option<(
         RuntimeWindow<WinitWindow, crate::text::ParleyEngine>,
         AccessKitAdapter,
-    ) {
+    )> {
         let PendingWindow { window, activates } = pending;
         let activation = window.activation;
         // `Window::placement` resolves each time the window is shown — and a
         // winit window is shown exactly once, at mount (a `Closed` window is
         // destroyed, never re-shown) — so the resolved rect is written into
         // `frame` here, before the attributes carry it into the map request.
-        if let Some(placement) = window.placement.as_ref() {
-            let monitor = self.resolve_placement_monitor(event_loop, placement.monitor);
-            window.frame.set((placement.place)(&monitor));
+        if let Some(placement) = window.placement.as_ref()
+            && let Some(monitor) = self.resolve_placement_monitor(event_loop, placement.monitor())
+        {
+            window.frame.set((placement.place())(&monitor));
         }
         let attributes =
             native_window_attributes(&window, &self.env, activates, self.window_icon.clone());
 
-        let native_window = Arc::new(
-            event_loop
-                .create_window(attributes)
-                .expect("hydrolysis runner: failed to create winit window"),
-        );
+        let native_window = match event_loop.create_window(attributes) {
+            Ok(native_window) => Arc::new(native_window),
+            Err(error) => {
+                tracing::error!(
+                    "hydrolysis runner: failed to create the winit window: {error}; the window is not mounted"
+                );
+                return None;
+            }
+        };
         arm_window_focus_requests(&window, &native_window);
         #[cfg(hydrolysis_wayland_platform)]
         if let Some(xid) = x11_state_watch::x11_window_id(&native_window) {
             // The window is on X11, so the app's own server connection is
             // already up — every watch step is expected to succeed, and a
-            // failure means minimize would go undetected. The window's
-            // creation fails rather than silently covering the gap.
+            // failure means minimize goes undetected: it is logged and the
+            // window runs without the watch.
             if self.x11_state_watch.is_none() {
-                self.x11_state_watch = Some(
-                    X11StateWatch::connect(self.event_proxy.clone())
-                        .expect("hydrolysis runner: failed to start the X11 state watch"),
+                match X11StateWatch::connect(self.event_proxy.clone()) {
+                    Ok(watch) => self.x11_state_watch = Some(watch),
+                    Err(error) => tracing::error!(
+                        "hydrolysis runner: failed to start the X11 state watch: {error}; minimize goes undetected"
+                    ),
+                }
+            }
+            if let Some(watch) = self.x11_state_watch.as_ref()
+                && let Err(error) = watch.select(xid)
+            {
+                tracing::error!(
+                    "hydrolysis runner: failed to subscribe to X11 window state events: {error}; minimize goes undetected for this window"
                 );
             }
-            self.x11_state_watch
-                .as_ref()
-                .expect("hydrolysis runner: X11 state watch missing after connect")
-                .select(xid)
-                .expect("hydrolysis runner: failed to subscribe to X11 window state events");
         }
         #[cfg(target_os = "windows")]
         if activates {
             self.attach_windows_chrome(&native_window);
         }
-        let mut platform = self.create_platform_window(native_window, &window);
+        let mut platform = self.create_platform_window(native_window, &window)?;
         platform.apply_properties(&window);
         let text = ParleyEngine::from_collection(&self.fonts, FontFamilyResolution::Lenient);
         let renderer = HydrolysisRenderer::with_engine(Rc::clone(&self.theme), text);
         let closable = window.closable;
         window.arm_close_requests(&self.env);
-        let mut runtime = RuntimeWindow::new_gpu(
+        let mut runtime = RuntimeWindow::new_painted(
             window,
             platform,
             renderer,
@@ -1362,7 +1440,7 @@ impl WinitRunner {
                 runtime.platform.native_window().focus_window();
             }
         }
-        (runtime, adapter)
+        Some((runtime, adapter))
     }
 
     /// Installs the monitored main-thread executor on the first active event
@@ -1409,12 +1487,13 @@ impl WinitRunner {
         // every window creation — means no window's first frame ever
         // resolves the placeholder the binding was created with.
         #[cfg(target_os = "windows")]
-        sync_system_color_scheme(
-            &self.system_color_scheme,
-            event_loop
-                .system_theme()
-                .expect("winit reports the system theme on Windows"),
-        );
+        if let Some(theme) = event_loop.system_theme() {
+            sync_system_color_scheme(&self.system_color_scheme, theme);
+        } else {
+            contract_violation!(
+                "winit reports the system theme on Windows, but reported none; the color scheme keeps its placeholder"
+            );
+        }
         // Linux: hold every mount until the portal's initial `ReadOne`
         // resolved — the first window's first frame must already draw in
         // the real scheme, never a Light placeholder corrected a frame
@@ -1428,7 +1507,9 @@ impl WinitRunner {
         let mut pending = mem::take(&mut self.pending_windows);
         pending.extend(self.pending_window_queue.borrow_mut().drain(..));
         for pending in pending {
-            let (runtime, adapter) = self.create_runtime_window(event_loop, pending);
+            let Some((runtime, adapter)) = self.create_runtime_window(event_loop, pending) else {
+                continue;
+            };
             let id = runtime.platform.id();
             self.windows.insert(id, runtime);
             self.accesskit_adapters.insert(id, adapter);
@@ -1442,7 +1523,7 @@ impl WinitRunner {
         &self,
         event_loop: &ActiveEventLoop,
         selector: MonitorSelector,
-    ) -> Monitor {
+    ) -> Option<Monitor> {
         crate::runner::placement::resolve_placement_monitor(
             &crate::runner::placement::PlacementContext {
                 event_loop,
@@ -1464,7 +1545,15 @@ impl WinitRunner {
         env: &Environment,
     ) -> bool {
         handle_input_events_with(runtime, env, |runtime, env| {
-            env.extending(Self::current_window_origin(runtime))
+            #[cfg(any(feature = "menu", feature = "color-picker"))]
+            {
+                env.extending(Self::current_window_origin(runtime))
+            }
+            #[cfg(not(any(feature = "menu", feature = "color-picker")))]
+            {
+                let _ = runtime;
+                env.clone()
+            }
         })
     }
 
@@ -1481,6 +1570,7 @@ impl WinitRunner {
         if let Ok(handle) = runtime.platform.native_window().window_handle()
             && let RawWindowHandle::Win32(win) = handle.as_raw()
         {
+            #[cfg(feature = "menu")]
             self.native_menu_bar.detach_hwnd(win.hwnd.get());
             remove_termination_subclass(win.hwnd.get() as windows_sys::Win32::Foundation::HWND);
         }
@@ -1514,6 +1604,7 @@ impl WinitRunner {
     /// through the window's ordinary close path, so closing the last one
     /// still follows the `LastWindowPolicy`.
     #[cfg(hydrolysis_closable_windows)]
+    #[cfg(feature = "menu")]
     fn close_window(&mut self, source: crate::renderer::WindowId) {
         let Some(window_id) =
             close_window_target(source.as_winit(), &self.popup_window_ids, &self.windows)
@@ -1531,6 +1622,26 @@ impl WinitRunner {
         if Self::handle_input_events(runtime, &self.env) {
             self.reap_closed_window(window_id);
         }
+    }
+
+    /// Ends a window whose surface failed for good: it can never render
+    /// again, so the error is logged and the window closed. When no window
+    /// on the runner's GPU context ever presented a frame, the app has shown
+    /// nothing and cannot — the same ending as a host without a usable GPU:
+    /// the process exits with a failure status.
+    fn end_failed_window(&mut self, window_id: WindowId, error: crate::renderer::FrameError) {
+        if self
+            .windows
+            .values()
+            .all(|runtime| runtime.presented_frames == 0)
+        {
+            super::exit_without_gpu(error);
+        }
+        tracing::error!(
+            "{:#}; the window cannot render and is closed",
+            waterui_core::Error::from(error)
+        );
+        self.reap_closed_window(window_id);
     }
 
     /// Removes a window whose close ran: its native bar attachment, adapter
@@ -1603,10 +1714,13 @@ impl WinitRunner {
                     target = ?request.target_node,
                     "accesskit action requested"
                 );
-                let action_env = self.env.extending(Self::current_window_origin(runtime));
+                #[cfg(any(feature = "menu", feature = "color-picker"))]
+                let action_env = &self.env.extending(Self::current_window_origin(runtime));
+                #[cfg(not(any(feature = "menu", feature = "color-picker")))]
+                let action_env = &self.env;
                 if runtime
                     .renderer
-                    .handle_accessibility_action(request, &action_env)
+                    .handle_accessibility_action(request, action_env)
                 {
                     runtime.request_refresh();
                     runtime.request_redraw();
@@ -1720,9 +1834,16 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
             let Some(runtime) = self.windows.get_mut(&window_id) else {
                 return;
             };
-            render_window(runtime, &self.env, &mut || {
+            let frame = render_window(runtime, &self.env, &mut || {
                 Self::drain_runnable_queue(&self.local_runnable_rx)
             });
+            if let WindowFrame::Failed(error) = frame {
+                self.end_failed_window(window_id, error);
+                return;
+            }
+            let Some(runtime) = self.windows.get_mut(&window_id) else {
+                return;
+            };
             if let Some(adapter) = self.accesskit_adapters.get_mut(&window_id) {
                 if let Some(update) = runtime.renderer.take_accessibility_tree_update() {
                     self.last_accessibility_updates
@@ -1752,9 +1873,11 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
         // window; on Windows it acts on the bar's own window — Close
         // Window's request names it through the shared `WindowCloser` path.
         #[cfg(target_os = "macos")]
+        #[cfg(feature = "menu")]
         self.native_menu_bar
             .pump_menu_events(self.focused_window.map(crate::renderer::WindowId::Winit));
         #[cfg(target_os = "windows")]
+        #[cfg(feature = "menu")]
         self.native_menu_bar.pump_menu_events();
         self.mount_pending_windows(event_loop);
         let now = Instant::now();
@@ -1833,6 +1956,7 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
                 self.exit_after_runtime_cleanup(event_loop);
             }
             #[cfg(hydrolysis_closable_windows)]
+            #[cfg(feature = "menu")]
             RunnerEvent::CloseWindow(source) => self.close_window(source),
             #[cfg(hydrolysis_wayland_platform)]
             RunnerEvent::X11VisibilitySignal => {

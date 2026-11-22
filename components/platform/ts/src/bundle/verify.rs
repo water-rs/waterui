@@ -109,16 +109,16 @@ pub fn requirement(
     manifest: &BundleManifest,
     requirement: &Requirement,
 ) -> Result<Option<TranslationCatalog>, Rejection> {
-    if manifest.runtime != requirement.fingerprint {
+    if manifest.runtime() != requirement.fingerprint {
         return Err(Rejection::Runtime {
-            declared: manifest.runtime,
+            declared: manifest.runtime(),
             expected: requirement.fingerprint,
         });
     }
     for module in requirement.modules {
         let declared =
             manifest
-                .modules
+                .modules()
                 .get(module.id)
                 .copied()
                 .ok_or_else(|| Rejection::MissingModule {
@@ -142,11 +142,11 @@ pub fn requirement(
 /// `TranslationCatalog` treats an invalid locale as a programming error and
 /// panics, and a downloaded document is an input, not a program.
 fn translations(manifest: &BundleManifest) -> Result<Option<TranslationCatalog>, Rejection> {
-    if manifest.translations.is_empty() {
+    if manifest.translations().is_empty() {
         return Ok(None);
     }
     let mut catalog = TranslationCatalog::new();
-    for (locale, document) in &manifest.translations {
+    for (locale, document) in manifest.translations() {
         locale
             .parse::<Locale>()
             .map_err(|error| Rejection::Locale {
@@ -207,7 +207,7 @@ pub fn signature(
     signed: &waterui_ts_schema::SignedManifest,
     key: &ed25519_dalek::VerifyingKey,
 ) -> Result<(), Rejection> {
-    let signature = ed25519_dalek::Signature::from_bytes(signed.signature.as_bytes());
-    key.verify_strict(&signed.manifest.signed_bytes(), &signature)
+    let signature = ed25519_dalek::Signature::from_bytes(signed.signature().as_bytes());
+    key.verify_strict(&signed.manifest().signed_bytes(), &signature)
         .map_err(|_| Rejection::Signature)
 }

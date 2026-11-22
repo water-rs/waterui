@@ -16,54 +16,45 @@ use crate::{
 };
 
 /// A three-level tree exercising every node kind that carries children.
-const NESTED: TypeSchema = TypeSchema::Struct(StructSchema {
-    name: "Root",
-    fields: &[
-        FieldSchema {
-            name: "state",
-            ty: TypeSchema::Enum(EnumSchema {
-                name: "State",
-                representation: EnumRepresentation::DEFAULT_TAGGED,
-                variants: &[
-                    VariantSchema {
-                        name: "Idle",
-                        payload: VariantPayload::Unit,
-                    },
-                    VariantSchema {
-                        name: "Loading",
-                        payload: VariantPayload::Tuple(&[TypeSchema::Number(NumberKind::U32)]),
-                    },
-                    VariantSchema {
-                        name: "Failed",
-                        payload: VariantPayload::Struct(&[FieldSchema {
-                            name: "message",
-                            ty: TypeSchema::String,
-                        }]),
-                    },
+const NESTED: TypeSchema = TypeSchema::Struct(StructSchema::new(
+    "Root",
+    &[
+        FieldSchema::new(
+            "state",
+            TypeSchema::Enum(EnumSchema::new(
+                "State",
+                EnumRepresentation::DEFAULT_TAGGED,
+                &[
+                    VariantSchema::new("Idle", VariantPayload::Unit),
+                    VariantSchema::new(
+                        "Loading",
+                        VariantPayload::Tuple(&[TypeSchema::Number(NumberKind::U32)]),
+                    ),
+                    VariantSchema::new(
+                        "Failed",
+                        VariantPayload::Struct(&[FieldSchema::new("message", TypeSchema::String)]),
+                    ),
                 ],
-            }),
-        },
-        FieldSchema {
-            name: "tags",
-            ty: TypeSchema::List(&TypeSchema::Option(&TypeSchema::String)),
-        },
-        FieldSchema {
-            name: "counts",
-            ty: TypeSchema::Map {
+            )),
+        ),
+        FieldSchema::new(
+            "tags",
+            TypeSchema::List(&TypeSchema::Option(&TypeSchema::String)),
+        ),
+        FieldSchema::new(
+            "counts",
+            TypeSchema::Map {
                 key: &TypeSchema::String,
                 value: &TypeSchema::Number(NumberKind::U64),
             },
-        },
-        FieldSchema {
-            name: "on_pick",
-            ty: TypeSchema::Callback(&[TypeSchema::Number(NumberKind::I32), TypeSchema::Bool]),
-        },
-        FieldSchema {
-            name: "slot",
-            ty: TypeSchema::View,
-        },
+        ),
+        FieldSchema::new(
+            "on_pick",
+            TypeSchema::Callback(&[TypeSchema::Number(NumberKind::I32), TypeSchema::Bool]),
+        ),
+        FieldSchema::new("slot", TypeSchema::View),
     ],
-});
+));
 
 /// The encoding of [`NESTED`], terminator included.
 const NESTED_ENCODED: [u8; encoded_len(&NESTED) + 1] = encode(&NESTED);
@@ -398,38 +389,35 @@ mod encoder_invariants {
     #[test]
     #[should_panic(expected = "a string-union variant cannot carry a payload")]
     fn encoding_rejects_a_string_union_variant_with_a_payload() {
-        const BAD: TypeSchema = TypeSchema::Enum(EnumSchema {
-            name: "E",
-            representation: EnumRepresentation::StringUnion,
-            variants: &[VariantSchema {
-                name: "V",
-                payload: VariantPayload::Tuple(&[TypeSchema::Bool]),
-            }],
-        });
+        const BAD: TypeSchema = TypeSchema::Enum(EnumSchema::new(
+            "E",
+            EnumRepresentation::StringUnion,
+            &[VariantSchema::new(
+                "V",
+                VariantPayload::Tuple(&[TypeSchema::Bool]),
+            )],
+        ));
         let _ = encoded_len(&BAD);
     }
 
     #[test]
     #[should_panic(expected = "a struct name must not be empty")]
     fn encoding_rejects_an_empty_struct_name() {
-        const BAD: TypeSchema = TypeSchema::Struct(StructSchema {
-            name: "",
-            fields: &[],
-        });
+        const BAD: TypeSchema = TypeSchema::Struct(StructSchema::new("", &[]));
         let _ = encoded_len(&BAD);
     }
 
     #[test]
     #[should_panic(expected = "a tagged enum's `tag` property name must not be empty")]
     fn encoding_rejects_an_empty_tagged_property_name() {
-        const BAD: TypeSchema = TypeSchema::Enum(EnumSchema {
-            name: "E",
-            representation: EnumRepresentation::Tagged {
+        const BAD: TypeSchema = TypeSchema::Enum(EnumSchema::new(
+            "E",
+            EnumRepresentation::Tagged {
                 tag: "",
                 content: "content",
             },
-            variants: &[],
-        });
+            &[],
+        ));
         let _ = encoded_len(&BAD);
     }
 }
@@ -613,7 +601,7 @@ mod raw_identifiers {
         let TypeSchema::Struct(schema) = Kinded::SCHEMA else {
             panic!("`Kinded` is a struct")
         };
-        assert_eq!(schema.fields[0].name, "type");
+        assert_eq!(schema.fields()[0].name(), "type");
     }
 
     #[test]
@@ -621,8 +609,8 @@ mod raw_identifiers {
         let TypeSchema::Enum(schema) = Keywords::SCHEMA else {
             panic!("`Keywords` is an enum")
         };
-        assert_eq!(schema.variants[0].name, "match");
-        assert_eq!(schema.variants[1].name, "type");
+        assert_eq!(schema.variants()[0].name(), "match");
+        assert_eq!(schema.variants()[1].name(), "type");
     }
 
     #[test]
@@ -630,7 +618,7 @@ mod raw_identifiers {
         let TypeSchema::Struct(schema) = r#Type::SCHEMA else {
             panic!("`r#Type` is a struct")
         };
-        assert_eq!(schema.name, "Type");
+        assert_eq!(schema.name(), "Type");
         // The metadata static exists only in debug builds, and its bytes are
         // the directory record: the unrawed name, NUL, the contract, NUL.
         #[cfg(debug_assertions)]
@@ -657,49 +645,40 @@ mod catalog {
     const PADDING: TypeSchema = TypeSchema::Union(&[
         TypeSchema::Bool,
         TypeSchema::Number(NumberKind::F64),
-        TypeSchema::Struct(StructSchema {
-            name: "EdgeInsets",
-            fields: &[FieldSchema {
-                name: "top",
-                ty: TypeSchema::Number(NumberKind::F64),
-            }],
-        }),
+        TypeSchema::Struct(StructSchema::new(
+            "EdgeInsets",
+            &[FieldSchema::new("top", TypeSchema::Number(NumberKind::F64))],
+        )),
     ]);
 
-    const TOGGLE_ATTRIBUTES: TypeSchema = TypeSchema::Struct(StructSchema {
-        name: "ToggleAttributes",
-        fields: &[FieldSchema {
-            name: "value",
-            ty: TypeSchema::Signal(&TypeSchema::Bool),
-        }],
-    });
+    const TOGGLE_ATTRIBUTES: TypeSchema = TypeSchema::Struct(StructSchema::new(
+        "ToggleAttributes",
+        &[FieldSchema::new(
+            "value",
+            TypeSchema::Signal(&TypeSchema::Bool),
+        )],
+    ));
 
-    const SPACER_ATTRIBUTES: TypeSchema = TypeSchema::Struct(StructSchema {
-        name: "SpacerAttributes",
-        fields: &[],
-    });
+    const SPACER_ATTRIBUTES: TypeSchema =
+        TypeSchema::Struct(StructSchema::new("SpacerAttributes", &[]));
 
-    const CATALOG: CatalogSchema = CatalogSchema {
-        components: &[
-            ComponentSchema {
-                name: "Toggle",
-                summary: "A two-state switch.",
-                attributes: attributes_of(&TOGGLE_ATTRIBUTES),
-                children: ChildrenSlot::Label,
-            },
-            ComponentSchema {
-                name: "Spacer",
-                summary: "A flexible gap.",
-                attributes: attributes_of(&SPACER_ATTRIBUTES),
-                children: ChildrenSlot::None,
-            },
+    const CATALOG: CatalogSchema = CatalogSchema::new(
+        &[
+            ComponentSchema::new(
+                "Toggle",
+                "A two-state switch.",
+                attributes_of(&TOGGLE_ATTRIBUTES),
+                ChildrenSlot::Label,
+            ),
+            ComponentSchema::new(
+                "Spacer",
+                "A flexible gap.",
+                attributes_of(&SPACER_ATTRIBUTES),
+                ChildrenSlot::None,
+            ),
         ],
-        modifiers: &[ModifierSchema {
-            name: "padding",
-            summary: "Insets the view.",
-            value: &PADDING,
-        }],
-    };
+        &[ModifierSchema::new("padding", "Insets the view.", &PADDING)],
+    );
 
     const ENCODED: [u8; catalog_encoded_len(&CATALOG) + 1] = encode_catalog(&CATALOG);
 
@@ -707,11 +686,11 @@ mod catalog {
     fn a_catalog_decodes_to_the_constant_the_compiler_encoded() {
         let decoded = decode_catalog(payload(&ENCODED)).expect("the catalog payload decodes");
         assert_eq!(decoded, Catalog::from(&CATALOG));
-        assert_eq!(decoded.components[0].attributes[0].name, "value");
-        assert_eq!(decoded.components[1].attributes, []);
+        assert_eq!(decoded.components()[0].attributes()[0].name(), "value");
+        assert_eq!(decoded.components()[1].attributes(), []);
         assert_eq!(
-            decoded.modifiers[0].value,
-            crate::owned::Schema::from(&PADDING)
+            decoded.modifiers()[0].value(),
+            &crate::owned::Schema::from(&PADDING)
         );
     }
 
@@ -839,13 +818,10 @@ mod mount {
     };
 
     /// A props contract whose name the mount point records.
-    const PROMO: TypeSchema = TypeSchema::Struct(StructSchema {
-        name: "PromoProps",
-        fields: &[FieldSchema {
-            name: "headline",
-            ty: TypeSchema::String,
-        }],
-    });
+    const PROMO: TypeSchema = TypeSchema::Struct(StructSchema::new(
+        "PromoProps",
+        &[FieldSchema::new("headline", TypeSchema::String)],
+    ));
 
     /// A hash with bits set above `u32`, so a decoder reading it at the wrong
     /// width loses something a test can see.
@@ -860,11 +836,7 @@ mod mount {
     fn a_mount_point_decodes_to_the_constant_the_compiler_encoded() {
         assert_eq!(
             decode_mount(payload(&ENCODED)).expect("the mount payload decodes"),
-            MountPoint {
-                module: MODULE.to_owned(),
-                props: "PromoProps".to_owned(),
-                contract_hash: HASH,
-            }
+            MountPoint::new(MODULE.to_owned(), "PromoProps".to_owned(), HASH)
         );
     }
 
@@ -934,17 +906,11 @@ mod runtime {
     fn each_half_decodes_to_the_constant_the_compiler_encoded() {
         assert_eq!(
             decode_runtime_half(payload(&LIBRARY_HALF)).expect("the library half decodes"),
-            RuntimeHalf {
-                part: RuntimePart::Library,
-                hash: LIBRARY,
-            }
+            RuntimeHalf::new(RuntimePart::Library, LIBRARY)
         );
         assert_eq!(
             decode_runtime_half(payload(&CATALOG_HALF)).expect("the catalog half decodes"),
-            RuntimeHalf {
-                part: RuntimePart::Catalog,
-                hash: CATALOG,
-            }
+            RuntimeHalf::new(RuntimePart::Catalog, CATALOG)
         );
     }
 
@@ -958,7 +924,7 @@ mod runtime {
     fn the_halves_combine_into_the_fingerprint_text_the_manifest_carries() {
         let library = decode_runtime_half(payload(&LIBRARY_HALF)).expect("decodes");
         let catalog = decode_runtime_half(payload(&CATALOG_HALF)).expect("decodes");
-        let fingerprint = RuntimeFingerprint::new(library.hash, catalog.hash);
+        let fingerprint = RuntimeFingerprint::new(library.hash(), catalog.hash());
         let text = fingerprint.to_string();
         assert_eq!(
             text,
@@ -1071,23 +1037,22 @@ mod manifest {
     };
 
     fn manifest() -> BundleManifest {
-        BundleManifest {
-            version: 3,
-            runtime: RuntimeFingerprint::new(0xfedc_ba98_7654_3210, 0x0123_4567_89ab_cdef),
-            bundle: BundleFile {
-                url: String::from("bundle-3.js"),
-                size: 48213,
-                sha256: Sha256Digest::new([0xab; 32]),
-            },
-            modules: BTreeMap::from([
+        BundleManifest::new(
+            3,
+            RuntimeFingerprint::new(0xfedc_ba98_7654_3210, 0x0123_4567_89ab_cdef),
+            BundleFile::new(
+                String::from("bundle-3.js"),
+                48213,
+                Sha256Digest::new([0xab; 32]),
+            ),
+            BTreeMap::from([
                 (String::from("src/views/promo.tsx"), ContractHash(0x1)),
                 (
                     String::from("src/about.tsx"),
                     ContractHash(0xffff_ffff_ffff_ffff),
                 ),
             ]),
-            translations: BTreeMap::new(),
-        }
+        )
     }
 
     #[test]
@@ -1103,12 +1068,13 @@ mod manifest {
     #[test]
     fn translations_appear_only_when_present_and_sorted_by_locale() {
         let mut with = manifest();
-        with.translations.insert(
-            String::from("zh-Hans"),
-            String::from("greeting = \"你好\"\n"),
-        );
-        with.translations
-            .insert(String::from("en"), String::from("greeting = \"Hello\"\n"));
+        with.set_translations(BTreeMap::from([
+            (
+                String::from("zh-Hans"),
+                String::from("greeting = \"你好\"\n"),
+            ),
+            (String::from("en"), String::from("greeting = \"Hello\"\n")),
+        ]));
         let bytes = String::from_utf8(with.signed_bytes()).expect("utf-8");
         assert!(bytes.ends_with(
             ",\"translations\":{\"en\":\"greeting = \\\"Hello\\\"\\n\",\"zh-Hans\":\"greeting = \\\"你好\\\"\\n\"}}"
@@ -1139,10 +1105,7 @@ mod manifest {
 
     #[test]
     fn a_signed_manifest_round_trips_through_json() {
-        let signed = SignedManifest {
-            manifest: manifest(),
-            signature: HexBytes::new([0x5a; 64]),
-        };
+        let signed = SignedManifest::new(manifest(), HexBytes::new([0x5a; 64]));
         let text = signed.to_json();
         assert_eq!(SignedManifest::from_json(&text).expect("parses"), signed);
         assert!(text.contains(&"5a".repeat(64)));

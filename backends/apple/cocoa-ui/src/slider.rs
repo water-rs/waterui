@@ -1,13 +1,13 @@
 //! Shared types for the slider control twins.
 //!
-//! The platform sliders live in [`crate::appkit::Slider`] and
-//! [`crate::uikit::Slider`]; this module carries the values their
+//! The platform sliders live in `crate::appkit::Slider` and
+//! `crate::uikit::Slider`; this module carries the values their
 //! signatures share.
 
 /// How large the slider is drawn.
 ///
 /// `AppKit` honours every value through `NSControl.ControlSize`; `UIKit`
-/// has no slider size classes, so [`crate::uikit::Slider::set_control_size`]
+/// has no slider size classes, so `crate::uikit::Slider::set_control_size`
 /// accepts the value and ignores it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ControlSize {

@@ -25,10 +25,15 @@
 //! A platform implements [`SystemPlanes`] and realizes the ordered stack of
 //! engine parts and promoted planes a [`Composition`] describes.
 
+#[cfg(not(any(target_vendor = "apple", target_os = "android", target_arch = "wasm32")))]
+use core::convert::Infallible;
+
 use kurbo::{Affine, Rect, Vec2};
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use cherenkov::{BlendMode, Display, LayerId, RenderError, ShapeData, SurfaceError, SurfaceTree};
+use cherenkov::{
+    BlendMode, BlendSpace, Display, LayerId, RenderError, ShapeData, SurfaceError, SurfaceTree,
+};
 
 use crate::interop::ExternalFrame;
 use crate::render::lower::axis_aligned;
@@ -59,6 +64,10 @@ pub enum Source {
     /// A system layer the host supplies (`cherenkov::HostedLayers`): the
     /// engine has no pixels of it, so it is shown on a plane or not at all.
     Hosted,
+    /// An external host window's frame (`LayerOp::HostWindow`): no buffer
+    /// exists, the mark only splits the surface's presentation bands at
+    /// the window's paint-order position (water-rs/waterui#2225).
+    HostWindow,
     /// An external frame the system layer shows itself.
     Frame,
     /// An immutable capture of a recorded layer.
@@ -67,15 +76,17 @@ pub enum Source {
 
 impl Source {
     /// The budget order: mandatory content, then frames, then captures.
-    const BUDGET_ORDER: [Self; 3] = [Self::Hosted, Self::Frame, Self::Recorded];
+    const BUDGET_ORDER: [Self; 4] = [Self::Hosted, Self::HostWindow, Self::Frame, Self::Recorded];
 
     /// Whether the content can only be shown on a plane: it is judged by
     /// the mandatory-plane rule, is never pending a realization, and a
     /// failed verdict is an error ([`Plan::unplaced`]) rather than
-    /// composition in the engine.
+    /// composition in the engine. A host-window mark must promote: an
+    /// unplaced one would leave the band split unmade and paint the
+    /// above-window content under the window (water-rs/waterui#2225).
     #[must_use]
     pub const fn mandatory(self) -> bool {
-        matches!(self, Self::Hosted)
+        matches!(self, Self::Hosted | Self::HostWindow)
     }
 }
 
@@ -119,6 +130,17 @@ pub trait Compositor {
     /// observes static layers nor offers them as candidates.
     const CAPTURES: bool = true;
 
+    /// Whether each region above a host-window mark presents as one
+    /// engine-composited band buffer the host stacks above that window
+    /// (water-rs/waterui#2225): no system layer can sit between the
+    /// host's windows, so nothing painted above the first mark promotes
+    /// — frames and captures composite into their region's band, and
+    /// hosted content there is unplaceable
+    /// ([`Ineligible::AboveHostWindow`]). A mark is then a split point
+    /// rather than a plane: it never counts against [`Self::BUDGET`],
+    /// which bounds only the planes beneath the first mark.
+    const HOST_WINDOW_BANDS: bool = false;
+
     /// Whether a system layer shows `frame` itself, with the colour the
     /// frame declares: its planes are a buffer the system compositor can
     /// scan out. Only such frames are candidates.
@@ -133,7 +155,8 @@ pub trait Compositor {
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum Ineligible {
     /// An ancestor composites its subtree through an offscreen (opacity
-    /// below one, a filter, or a blend), so the layer never reaches the
+    /// below one, a filter, a blend or a non-linear blend space), so the
+    /// layer never reaches the
     /// surface level a plane sits at.
     #[error("ancestor layer {0:?} isolates its subtree into an offscreen")]
     Isolated(LayerId),
@@ -144,6 +167,11 @@ pub enum Ineligible {
     /// onto its content.
     #[error("it uses a non-default blend mode")]
     Blend,
+    /// The layer composites in a non-linear blend space, which its subtree
+    /// composites in too: a plane composites in the system compositor's
+    /// space, and its image would hold the subtree composited in linear.
+    #[error("it composites in a non-linear blend space")]
+    BlendSpace,
     /// A layer painted above it blends with a non-default mode onto the
     /// surface, which would need the layer's pixels.
     #[error("layer {0:?} painted above it blends with a non-default mode")]
@@ -186,6 +214,11 @@ pub enum Ineligible {
     /// The surface's plane budget is spent.
     #[error("the plane budget of {0} per surface is spent")]
     Budget(usize),
+    /// A host window's mark is painted beneath it: its region presents
+    /// as one engine-composited band buffer above that window, which no
+    /// system layer can join ([`Compositor::HOST_WINDOW_BANDS`]).
+    #[error("host window {0:?} is painted beneath it, and its band shows engine pixels only")]
+    AboveHostWindow(LayerId),
 }
 
 /// One level of the path from the root to a promoted layer: the sampled
@@ -289,14 +322,39 @@ impl Plan {
 /// Whether a layer composites its subtree through an offscreen: the rule the
 /// lowering applies (`Lowering::layer`). A projective layer's subtree renders
 /// into its local image — the same offscreen isolation — and the root renders
-/// into the surface target and never isolates for blended children.
-fn isolates(tree: &SurfaceTree, id: LayerId) -> bool {
+/// into the surface target and never isolates for blended children. A
+/// layer whose space differs from its parent level's isolates too.
+fn isolates(tree: &SurfaceTree, visit: &Visit) -> bool {
+    let id = visit.id;
     let node = tree.layer(id);
     node.filter.is_some()
         || node.opacity < 1.0
         || node.blend != BlendMode::Normal
+        || visit.space.island()
         || tree.projective_pose(id).is_some()
         || (id != tree.root() && node.blends_within())
+}
+
+/// Whether the lowering splits the layer's isolation at a host-window
+/// mark: the layer filters its subtree by a pure coordinate remap
+/// ([`cherenkov::FilterId::is_coordinate_remap`]) and composites it at
+/// full opacity with the `Normal` blend in its parent level's space,
+/// unprojected, and no descendant
+/// blends within it (a blended child would read only its own region's
+/// content). Each region of the subtree then renders into its own
+/// offscreen under the same device-space filter and composes in paint
+/// order, which is the filtered whole up to the sampler's edge filtering
+/// (water-rs/waterui#2225).
+fn splits(tree: &SurfaceTree, visit: &Visit) -> bool {
+    let id = visit.id;
+    let node = tree.layer(id);
+    node.filter
+        .is_some_and(cherenkov::FilterId::is_coordinate_remap)
+        && node.opacity >= 1.0
+        && node.blend == BlendMode::Normal
+        && !visit.space.island()
+        && tree.projective_pose(id).is_none()
+        && (id == tree.root() || !node.blends_within())
 }
 
 /// One layer in paint order.
@@ -304,6 +362,25 @@ struct Visit {
     id: LayerId,
     /// The index in `order` of each ancestor, root first.
     ancestors: Vec<usize>,
+    /// The spaces the layer and its parent level composite in.
+    space: Spaces,
+}
+
+/// A layer's resolved blend space and its parent level's: a layer that
+/// declares no space composites in its parent's, and the root's parent
+/// is the surface's storage space.
+#[derive(Clone, Copy)]
+struct Spaces {
+    parent: BlendSpace,
+    own: BlendSpace,
+}
+
+impl Spaces {
+    /// Whether the layer composites in a space unlike its parent's, which
+    /// the lowering isolates.
+    fn island(self) -> bool {
+        self.own != self.parent
+    }
 }
 
 /// A visit's device-space footprint: the content-space transform
@@ -335,9 +412,10 @@ pub struct PlanScratch {
 
 /// Every layer in paint order: a layer's content, then its children —
 /// into `order`, whose per-visit `ancestors` buffers are recycled through
-/// `pool` from the last call.
+/// `pool` from the last call. `storage` is the surface's storage space,
+/// the root's parent level.
 fn paint_order<'a>(
-    tree: &SurfaceTree,
+    (tree, storage): (&SurfaceTree, BlendSpace),
     order: &'a mut Vec<Visit>,
     pool: &mut Vec<Vec<usize>>,
     stack: &mut Vec<(LayerId, usize)>,
@@ -351,11 +429,22 @@ fn paint_order<'a>(
         let index = order.len();
         let mut ancestors = pool.pop().unwrap_or_default();
         ancestors.clear();
-        if parent != usize::MAX {
+        let parent_space = if parent == usize::MAX {
+            storage
+        } else {
             ancestors.extend_from_slice(&order[parent].ancestors);
             ancestors.push(parent);
-        }
-        order.push(Visit { id, ancestors });
+            order[parent].space.own
+        };
+        let space = Spaces {
+            parent: parent_space,
+            own: tree.layer(id).blend_space.unwrap_or(parent_space),
+        };
+        order.push(Visit {
+            id,
+            ancestors,
+            space,
+        });
         for &child in tree.layer(id).children.iter().rev() {
             stack.push((child, index));
         }
@@ -438,10 +527,7 @@ fn suffixes(
         } else {
             backdrop_above[i + 1]
         };
-        let at_surface = visit
-            .ancestors
-            .iter()
-            .all(|&a| !isolates(tree, order[a].id));
+        let at_surface = visit.ancestors.iter().all(|&a| !isolates(tree, &order[a]));
         blend_above[i] = if at_surface && node.blend != BlendMode::Normal {
             Some(visit.id)
         } else {
@@ -451,7 +537,8 @@ fn suffixes(
 }
 
 /// Each offered candidate's verdict in paint order as its `order`
-/// index — `Err(Budget)` once `C::BUDGET` promotions are taken. The
+/// index — `Err(Budget)` once `C::BUDGET` promotions are taken, marks
+/// excluded on a band compositor ([`Compositor::HOST_WINDOW_BANDS`]). The
 /// offered set is `candidates` intersected with `ready`, plus every
 /// mandatory candidate: a candidate whose realization is still pending is
 /// absent from the verdicts entirely, not rejected, and mandatory content
@@ -493,8 +580,27 @@ fn verdicts<'a, C: Compositor>(
         );
         Some((i, verdict))
     }));
+    if C::HOST_WINDOW_BANDS {
+        // Everything after the first offered mark lies in a band region:
+        // only further marks split it, nothing else reaches a plane.
+        let mut mark = None;
+        for (i, verdict) in decisions.iter_mut() {
+            let id = order[*i].id;
+            if candidates[&id].source == Source::HostWindow {
+                mark.get_or_insert(id);
+            } else if let Some(mark) = mark {
+                *verdict = Err(Ineligible::AboveHostWindow(mark));
+            }
+        }
+    }
     let mut promoted = 0;
     for source in Source::BUDGET_ORDER {
+        // A band compositor shows no plane for a mark: the mark only cuts
+        // the paint order, and its region presents in the host's band
+        // swapchain, so it takes nothing from the surface's budget.
+        if C::HOST_WINDOW_BANDS && source == Source::HostWindow {
+            continue;
+        }
         for (i, verdict) in decisions.iter_mut() {
             if candidates[&order[*i].id].source == source && verdict.is_ok() {
                 if promoted < C::BUDGET {
@@ -510,7 +616,7 @@ fn verdicts<'a, C: Compositor>(
 
 /// Decides which of `candidates` (layer to content size) the platform
 /// reports `ready` are promoted this frame on a surface realized by
-/// compositor `C`.
+/// compositor `C`, whose storage space is `storage`.
 ///
 /// Eligible mandatory candidates receive the budget first, then external
 /// frames, then recorded captures; ties within each class use paint order.
@@ -518,12 +624,14 @@ fn verdicts<'a, C: Compositor>(
 #[must_use]
 pub fn plan<C: Compositor>(
     tree: &SurfaceTree,
+    storage: BlendSpace,
     candidates: &FxHashMap<LayerId, Candidate>,
     ready: &FxHashSet<LayerId>,
 ) -> Plan {
     let mut result = Plan::default();
     plan_with::<C>(
         tree,
+        storage,
         candidates,
         ready,
         &mut PlanScratch::default(),
@@ -535,6 +643,7 @@ pub fn plan<C: Compositor>(
 /// Rebuild a plan while retaining its workspace and placement-path buffers.
 pub fn plan_with<C: Compositor>(
     tree: &SurfaceTree,
+    storage: BlendSpace,
     candidates: &FxHashMap<LayerId, Candidate>,
     ready: &FxHashSet<LayerId>,
     scratch: &mut PlanScratch,
@@ -556,7 +665,7 @@ pub fn plan_with<C: Compositor>(
         device,
         decisions,
     } = scratch;
-    let order = paint_order(tree, order, pool, stack);
+    let order = paint_order((tree, storage), order, pool, stack);
     suffixes(tree, order, backdrop_above, blend_above);
     devices(tree, order, device);
     let mut promoted = 0;
@@ -632,6 +741,7 @@ fn placement_eq(
 fn same_plan<C: Compositor>(
     committed: &Plan,
     tree: &SurfaceTree,
+    storage: BlendSpace,
     candidates: &FxHashMap<LayerId, Candidate>,
     ready: &FxHashSet<LayerId>,
     scratch: &mut PlanScratch,
@@ -651,7 +761,7 @@ fn same_plan<C: Compositor>(
         device,
         decisions,
     } = scratch;
-    let order = paint_order(tree, order, pool, stack);
+    let order = paint_order((tree, storage), order, pool, stack);
     suffixes(tree, order, backdrop_above, blend_above);
     devices(tree, order, device);
     let mut planes = committed.planes.iter();
@@ -725,11 +835,14 @@ fn mandatory_plane<C: Compositor>(
 ) -> Result<(), Ineligible> {
     let visit = &order[i];
     let node = tree.layer(visit.id);
-    if let Some(&a) = visit
-        .ancestors
-        .iter()
-        .find(|&&a| isolates(tree, order[a].id))
-    {
+    // A host-window mark on a band compositor is a cut in the paint order,
+    // so an ancestor whose isolation the lowering splits at it
+    // ([`splits`]) does not keep it from the surface level.
+    let cuts = C::HOST_WINDOW_BANDS && source == Source::HostWindow;
+    if let Some(&a) = visit.ancestors.iter().find(|&&a| {
+        let ancestor = &order[a];
+        isolates(tree, ancestor) && !(cuts && splits(tree, ancestor))
+    }) {
         return Err(Ineligible::Isolated(order[a].id));
     }
     if node.filter.is_some() {
@@ -737,6 +850,12 @@ fn mandatory_plane<C: Compositor>(
     }
     if node.blend != BlendMode::Normal || node.blends_within() {
         return Err(Ineligible::Blend);
+    }
+    // The system compositor blends linearly: a layer compositing in
+    // another space cannot be shown on a plane. A linear island over an
+    // encoded level composites linearly, as a plane does.
+    if visit.space.own != BlendSpace::Linear {
+        return Err(Ineligible::BlendSpace);
     }
     if node.backdrop.is_some() {
         return Err(Ineligible::Backdrop);
@@ -913,6 +1032,7 @@ fn placement(
 pub fn frames_only<C: Compositor>(
     plan: &Plan,
     tree: &SurfaceTree,
+    storage: BlendSpace,
     candidates: &FxHashMap<LayerId, Candidate>,
     ready: &FxHashSet<LayerId>,
     layers: &FxHashSet<LayerId>,
@@ -922,7 +1042,7 @@ pub fn frames_only<C: Compositor>(
         && layers
             .iter()
             .all(|layer| plan.planes.iter().any(|plane| plane.layer == *layer))
-        && same_plan::<C>(plan, tree, candidates, ready, scratch)
+        && same_plan::<C>(plan, tree, storage, candidates, ready, scratch)
 }
 
 /// The content a plane shows.
@@ -961,6 +1081,21 @@ pub enum PlaneContent<'a> {
         /// Its extent in the layer's content coordinates.
         extent: kurbo::Size,
     },
+    /// An external host window's frame: nothing is shown — the mark only
+    /// splits the presentation stack at the window's paint-order position
+    /// so the realization can route what follows elsewhere
+    /// (water-rs/waterui#2225).
+    HostWindow {
+        /// The host's id for the window — its band's key.
+        #[cfg_attr(
+            not(target_os = "android"),
+            expect(
+                dead_code,
+                reason = "only Android's realization presents host-window bands"
+            )
+        )]
+        window: u64,
+    },
 }
 
 /// The platform object a hosted plane shows
@@ -987,7 +1122,7 @@ pub type Hosted = NoHosted;
 /// no value exists, so no layer there hosts one.
 #[cfg(not(any(target_vendor = "apple", target_os = "android", target_arch = "wasm32")))]
 #[derive(Debug)]
-pub enum NoHosted {}
+pub struct NoHosted(Infallible);
 
 /// A layer's hosted content: the platform object and its extent.
 #[derive(Debug)]
@@ -1084,6 +1219,9 @@ pub struct Composition<'a> {
     pub display: Display,
     /// The engine parts, bottom first.
     pub parts: &'a [Part<'a>],
+    /// The space every engine part stores its pixels in, the surface's
+    /// storage space: a blit of a part decodes from it.
+    pub storage_space: cherenkov::BlendSpace,
     /// The promoted planes, bottom first.
     pub planes: &'a [Plane<'a>],
 }
@@ -1248,7 +1386,7 @@ pub type Platform = NoPlanes;
 /// no value exists, so a surface there never has planes.
 #[cfg(not(any(target_vendor = "apple", target_os = "android", target_arch = "wasm32")))]
 #[derive(Debug)]
-pub enum NoPlanes {}
+pub struct NoPlanes(Infallible);
 
 #[cfg(not(any(target_vendor = "apple", target_os = "android", target_arch = "wasm32")))]
 impl Compositor for NoPlanes {

@@ -29,10 +29,6 @@ const CH: usize = (HEIGHT / 2) as usize;
 
 /// One mapped plane region, as `AHardwareBuffer_lockPlanes` reports it.
 #[derive(Debug)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "the struct is the gralloc plane report verbatim; the harness owns every field"
-)]
 pub struct Plane {
     /// The plane's first byte.
     pub data: *mut u8,

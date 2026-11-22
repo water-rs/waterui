@@ -57,7 +57,7 @@ async fn serve(cdp: CdpSession, server: AssetServer) {
         return;
     }
     while let Ok(event) = paused.recv().await {
-        answer(&cdp, &server, &event.params).await;
+        answer(&cdp, &server, event.params()).await;
     }
 }
 
@@ -87,7 +87,7 @@ async fn answer(cdp: &CdpSession, server: &AssetServer, params: &Value) {
     };
     let response = assets::dispatch(server, method, path, query);
     let headers: Vec<Value> = response
-        .headers
+        .headers()
         .iter()
         .map(|(name, value)| json!({"name": name.as_str(), "value": value.as_str()}))
         .collect();
@@ -96,9 +96,9 @@ async fn answer(cdp: &CdpSession, server: &AssetServer, params: &Value) {
             "Fetch.fulfillRequest",
             json!({
                 "requestId": request_id,
-                "responseCode": response.status,
+                "responseCode": response.status(),
                 "responseHeaders": headers,
-                "body": base64::engine::general_purpose::STANDARD.encode(&response.body),
+                "body": base64::engine::general_purpose::STANDARD.encode(response.body()),
             }),
         )
         .await;

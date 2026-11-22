@@ -18,13 +18,16 @@ mod locale;
 mod state;
 mod view_builder;
 
+/// `::waterui`, or the name the crate renamed it to. Both `waterui` packages
+/// (the facade and `waterui-internal`) declare `extern crate self as waterui`,
+/// so inside them the same path resolves, as it does in their doctests.
 fn waterui_crate_path() -> syn::Result<TokenStream2> {
     if std::env::var("CARGO_PKG_NAME").as_deref() == Ok("waterui-internal") {
-        return Ok(quote!(crate));
+        return Ok(quote!(::waterui));
     }
 
     match crate_name("waterui") {
-        Ok(FoundCrate::Itself) => Ok(quote!(crate)),
+        Ok(FoundCrate::Itself) => Ok(quote!(::waterui)),
         Ok(FoundCrate::Name(name)) => {
             let ident = syn::Ident::new(&name, Span::call_site());
             Ok(quote!(::#ident))
@@ -37,6 +40,24 @@ fn waterui_crate_path() -> syn::Result<TokenStream2> {
             ),
         )),
     }
+}
+
+/// The crate a macro expansion names its framework items through: `waterui-core`
+/// when the crate depends on it, else the `waterui` facade. Both expose the
+/// items such expansions use at the same paths; core is tried first because a
+/// component crate may list the facade only as a dev-dependency, which
+/// `proc_macro_crate` also reports but the library build cannot link.
+fn core_or_facade_path(macro_name: &str) -> syn::Result<TokenStream2> {
+    view_builder::dependency_path("waterui-core")
+        .or_else(|| view_builder::dependency_path("waterui"))
+        .ok_or_else(|| {
+            syn::Error::new(
+                Span::call_site(),
+                format!(
+                    "{macro_name} requires the `waterui` or `waterui-core` crate as a dependency"
+                ),
+            )
+        })
 }
 
 /// Selects between two realizations of a component by Apple OS version.
@@ -718,12 +739,7 @@ fn derive_project_struct(
     {
         quote! { #[non_exhaustive] }
     } else {
-        quote! {
-            #[allow(
-                clippy::exhaustive_structs,
-                reason = "a projection has exactly its source struct's fields"
-            )]
-        }
+        quote! {}
     };
 
     let expanded = quote! {
@@ -1590,15 +1606,22 @@ pub fn widget_intent(args: TokenStream, input: TokenStream) -> TokenStream {
             #hash_lit,
             #record_lit,
             [__wui_intent_ptr, __wui_intent_len] => {
-                let __wui_action: #type_ident = #waterui::widgets::serde_json::from_slice(
+                let __wui_action: #type_ident = match #waterui::widgets::serde_json::from_slice(
                     unsafe {
                         ::core::slice::from_raw_parts(
                             __wui_intent_ptr,
                             __wui_intent_len,
                         )
                     },
-                )
-                .expect("a widget intent's payload always decodes");
+                ) {
+                    ::core::result::Result::Ok(action) => action,
+                    ::core::result::Result::Err(error) => {
+                        #waterui::log::error!(
+                            "a widget intent's payload failed to decode: {error}; the intent is not performed"
+                        );
+                        return;
+                    }
+                };
                 <#type_ident as #waterui::widgets::WidgetIntent>::perform(__wui_action);
             }
         );
@@ -2284,10 +2307,15 @@ pub fn bench(args: TokenStream, input: TokenStream) -> TokenStream {
 
     let run_closure = bench_args.view.as_ref().map_or_else(
         || {
+            // The manual form's declared return type is the report's type, so
+            // the import the author's signature names is the one in use.
+            let syn::ReturnType::Type(_, report_type) = &input_fn.sig.output else {
+                unreachable!("validate_bench_fn rejects a manual bench that returns nothing");
+            };
             quote! {
                 |__waterui_bench_config| {
                     let #arg_pattern: #arg_type = #builder;
-                    let __waterui_bench_report: #testing_path::PerfReport = #fn_body;
+                    let __waterui_bench_report: #report_type = #fn_body;
                     __waterui_bench_report
                 }
             }

@@ -50,6 +50,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
+use objc2::MainThreadOnly;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 
@@ -392,11 +393,6 @@ impl VisibilityWatch {
     /// subscribe the window watch at all), and vice versa. The whole
     /// sequence is synchronous on the main thread, so no wake can be
     /// lost between the detach and the re-subscribe.
-    ///
-    /// # Panics
-    ///
-    /// Off the main thread — the scroll and lifecycle registrations,
-    /// like every `UIKit`/`AppKit` call here, are main-thread only.
     pub fn refresh(&self, view: &PlatformView) {
         self.wakes.borrow_mut().take();
         *self.wakes.borrow_mut() = Some(subscribe_visibility_wakes(view, &self.handler));
@@ -443,8 +439,7 @@ impl VisibilityWatch {
         };
         if !window_unchanged {
             *window_slot = owner.map(|owner| {
-                let mtm = crate::MainThreadMarker::new()
-                    .expect("visibility refresh runs on the main thread");
+                let mtm = view.mtm();
                 WindowBinding {
                     _observers: imp::window_lifecycle_names()
                         .iter()
@@ -534,10 +529,9 @@ mod imp {
     }
 
     /// `UIKit`: windowed on a foreground-active scene, the ancestor chain
-    /// clear of hidden or transparent links ([`crate::view::has_visible_ancestry`]:
-    /// the window's own alpha is a reveal state, not hidden content), and
-    /// the window-space bounds inside the window and every clipping
-    /// ancestor's window-space bounds.
+    /// clear of hidden or transparent links, the window included
+    /// ([`crate::view::has_visible_ancestry`]), and the window-space bounds
+    /// inside the window and every clipping ancestor's window-space bounds.
     pub fn presentable(view: &UIView) -> bool {
         let Some(window) = view.window() else {
             return false;

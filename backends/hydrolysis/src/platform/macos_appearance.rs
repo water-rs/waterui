@@ -26,6 +26,7 @@ use objc2_foundation::{
     NSObjectNSKeyValueObserverRegistration, NSObjectProtocol, NSString, ns_string,
 };
 use waterui::theme::ColorScheme;
+use waterui_core::contract_violation;
 
 /// The `NSApplication` property the observation follows.
 fn key_path() -> &'static NSString {
@@ -61,7 +62,12 @@ define_class!(
             _change: Option<&NSDictionary<NSString, AnyObject>>,
             _context: *mut c_void,
         ) {
-            let application = object.expect("appearance KVO names the observed application");
+            let Some(application) = object else {
+                contract_violation!(
+                    "appearance KVO named no observed application; the scheme keeps its value"
+                );
+                return;
+            };
             // SAFETY: the only registration is `effectiveAppearance` on
             // `NSApplication`, which answers it with an `NSAppearance`.
             let appearance: Retained<NSAppearance> =
@@ -102,12 +108,12 @@ impl core::fmt::Debug for SystemAppearance {
 impl SystemAppearance {
     /// Reads the application's current appearance and observes its changes.
     ///
-    /// # Panics
-    ///
-    /// Panics off the main thread: `NSApplication` is main-thread only.
+    /// Runs on the thread that owns the winit event loop, which on macOS is
+    /// the main thread — `NSApplication` is main-thread only.
     pub fn observe() -> Self {
-        let mtm = MainThreadMarker::new()
-            .expect("hydrolysis observes the application appearance on the main thread");
+        let mtm = MainThreadMarker::new().expect(
+            "the winit event loop exists only on the main thread, and the runner observes the appearance after building it",
+        );
         let application = NSApplication::sharedApplication(mtm);
         let scheme = nami::binding(color_scheme_of(&application.effectiveAppearance()));
         let observer = AppearanceObserver::new(mtm, scheme.clone());

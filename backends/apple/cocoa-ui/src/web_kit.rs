@@ -44,12 +44,16 @@ use objc2_foundation::{
 };
 use objc2_security::SecTrust;
 pub use objc2_web_kit::WKNavigation;
+
+use crate::callback::guarded;
+use crate::response::{ReportsResponse, ResponseGeometry};
 use objc2_web_kit::{
     WKContentWorld, WKFrameInfo, WKNavigationAction, WKNavigationActionPolicy,
     WKNavigationDelegate, WKNavigationResponse, WKNavigationResponsePolicy, WKScriptMessage,
     WKScriptMessageHandlerWithReply, WKUIDelegate, WKURLSchemeHandler, WKURLSchemeTask,
     WKUserScript, WKUserScriptInjectionTime, WKWebViewConfiguration, WKWindowFeatures,
 };
+use waterui_contract::contract_violation;
 
 #[cfg(target_os = "macos")]
 use objc2_app_kit::{NSResponder, NSView};
@@ -89,6 +93,65 @@ extern_class!(
     /// The shared `WebKit` web view class.
     pub struct WebView;
 );
+
+define_class!(
+    // SAFETY: `WKWebView`'s designated initializer is
+    // `initWithFrame:configuration:`, which `WebViewController::new` calls,
+    // and the class does not implement `Drop`.
+    #[unsafe(super(WebView))]
+    #[name = "CocoaUiWebView"]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = ResponseGeometry]
+    #[derive(Debug)]
+    /// The `WKWebView` a [`WebViewController`] owns. Its frame is the
+    /// allocation its parent assigned; its accessibility frame is its
+    /// response rectangle, or the region `.a11y_geometry` names.
+    pub struct LeafWebView;
+
+    // SAFETY: `NSObjectProtocol` asks nothing of a `WKWebView` subclass.
+    unsafe impl NSObjectProtocol for LeafWebView {}
+
+    impl LeafWebView {
+        // SAFETY: see the module safety note.
+        #[cfg(target_os = "macos")]
+        #[unsafe(method(layout))]
+        fn layout_override(&self) {
+            guarded("LeafWebView layout", || {
+                self.ivars().commit(self);
+                // SAFETY: see the module safety note.
+                let _: () = unsafe { msg_send![super(self), layout] };
+            });
+        }
+
+        // SAFETY: see the module safety note.
+        #[cfg(target_os = "ios")]
+        #[unsafe(method(layoutSubviews))]
+        fn layout_subviews_override(&self) {
+            guarded("LeafWebView layoutSubviews", || {
+                self.ivars().commit(self);
+                // SAFETY: see the module safety note.
+                let _: () = unsafe { msg_send![super(self), layoutSubviews] };
+            });
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(accessibilityFrame))]
+        fn accessibility_frame_override(&self) -> NSRect {
+            guarded("LeafWebView accessibilityFrame", || {
+                self.ivars()
+                    .accessibility_frame(self)
+                    // SAFETY: see the module safety note.
+                    .unwrap_or_else(|| unsafe { msg_send![super(self), accessibilityFrame] })
+            })
+        }
+    }
+);
+
+impl ReportsResponse for LeafWebView {
+    fn response_geometry(&self) -> &ResponseGeometry {
+        self.ivars()
+    }
+}
 
 impl WebView {
     extern_methods!(
@@ -593,7 +656,7 @@ define_class!(
             };
             let progress = view.estimated_progress();
             let handler = self.ivars().handler.clone();
-            crate::callback::guarded("web view progress observer", || handler(progress));
+            guarded("web view progress observer", || handler(progress));
         }
     }
 );
@@ -1193,16 +1256,18 @@ impl WebViewController {
             objc2_foundation::NSPoint::new(0.0, 0.0),
             objc2_foundation::NSSize::new(0.0, 0.0),
         );
+        let view = LeafWebView::alloc(mtm).set_ivars(ResponseGeometry::default());
         // SAFETY: see the module safety note.
-        let view: Retained<WebView> = unsafe {
+        let view: Retained<LeafWebView> = unsafe {
             // SAFETY: `initWithFrame:configuration:` is the designated
             // initializer; `configuration` is a live object.
             msg_send![
-                WebView::alloc(mtm),
+                super(view),
                 initWithFrame: frame,
                 configuration: &*configuration
             ]
         };
+        let view = Retained::into_super(view);
         let handlers = Rc::new(handlers);
         let delegate = Delegate::new(mtm, handlers.clone());
         // SAFETY: both are live protocol objects; the controller retains
@@ -1245,16 +1310,17 @@ impl WebViewController {
 
     /// Navigates to `url`.
     ///
-    /// # Panics
-    ///
-    /// When `url` is not a URL Foundation can parse.
+    /// A `url` Foundation cannot parse breaks the contract: it is reported and
+    /// nothing is loaded.
     ///
     /// Returns the navigation the engine started — the same `WKNavigation`
     /// the action later reports as `mainFrameNavigation`, which the policy
     /// uses to tell the loads the application issued from the page's own.
     pub fn load_url(&self, url: &str) -> Option<Retained<WKNavigation>> {
-        let url = NSURL::URLWithString(&NSString::from_str(url))
-            .expect("WebView received an invalid URL");
+        let Some(url) = NSURL::URLWithString(&NSString::from_str(url)) else {
+            contract_violation!("WebView received an invalid URL {url:?}; nothing is loaded");
+            return None;
+        };
         // SAFETY: `url` is a live `NSURL`.
         let request = NSURLRequest::requestWithURL(&url);
         self.load_request(&request)

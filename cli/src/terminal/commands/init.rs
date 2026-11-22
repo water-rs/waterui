@@ -86,7 +86,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     let answers = resolve_answers(shell, &args, &entries)?;
     let actions = plan_init(&project_root, &entries, &answers)?;
     let package_manager = answers
-        .package_manager
+        .package_manager()
         .expect("resolve_answers always settles the package manager");
 
     super::web::ensure_installed(&host, package_manager).await?;

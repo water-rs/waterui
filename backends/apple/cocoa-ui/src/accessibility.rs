@@ -13,7 +13,7 @@
 /// What a view is, for assistive technologies.
 ///
 /// The case set is the one the consuming renderer's accessibility
-/// vocabulary uses; [`uikit_traits`] and [`appkit_role`] translate it into
+/// vocabulary uses; `traits` (iOS) and `role` (macOS) translate it into
 /// each platform's terms.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {

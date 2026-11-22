@@ -58,7 +58,7 @@ pub unsafe fn raw_ivars<T: ClassType + DefinedClass>(this: &T) -> &T::Ivars {
     // class's ivar offset to another.
     let offset = T::class()
         .instance_variable(c"ivars")
-        .expect("objc2 stores DefinedClass ivars under the `ivars` ivar")
+        .expect("objc2 stores DefinedClass ivars under the `ivars` ivar: `T: DefinedClass` registers it")
         .offset();
     // SAFETY: `ivars` is the storage `#[ivars]` registers, so the offset
     // points at a correctly aligned `T::Ivars`; the caller guarantees the

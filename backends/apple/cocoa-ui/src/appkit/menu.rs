@@ -28,8 +28,8 @@ use objc2::{
     ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel,
 };
 use objc2_app_kit::{
-    NSColor, NSControlStateValueOff, NSControlStateValueOn, NSForegroundColorAttributeName,
-    NSImage, NSMenu, NSMenuItem, NSPopUpButton, NSView,
+    NSButton, NSColor, NSControlStateValueOff, NSControlStateValueOn,
+    NSForegroundColorAttributeName, NSImage, NSMenu, NSMenuItem, NSPopUpButton, NSView,
 };
 use objc2_foundation::{
     NSMutableAttributedString, NSObject, NSObjectProtocol, NSRange, NSRect, NSString,
@@ -267,6 +267,13 @@ impl MenuButton {
     /// Replaces the menu the button opens.
     pub fn set_menu(&self, menu: &Menu) {
         self.button.setMenu(Some(&menu.menu));
+    }
+
+    /// The pull-down as the `NSButton` it is, for its bezel, control size
+    /// and bezel colour.
+    #[must_use]
+    pub fn button(&self) -> Retained<NSButton> {
+        Retained::into_super(self.button.clone())
     }
 
     /// The button, for adding to a view hierarchy and framing.

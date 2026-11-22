@@ -52,13 +52,16 @@ fn to_decimal(n: f64) -> Decimal {
 
     format!("{n:.2}")
         .parse()
-        .expect("fixed decimal fallback formatting should always produce a parseable decimal")
+        .expect("a finite f64 printed to two fractional digits is a plain decimal literal, which `Decimal` always parses")
 }
 
 pub(crate) fn format_number_text(locale: &Locale, value: &str) -> String {
-    let decimal = value.parse::<Decimal>().unwrap_or_else(|error| {
-        panic!("localized numeric argument `{value}` is not a valid decimal: {error}")
-    });
+    // A numeric argument's `Display` text is a plain decimal, except for the
+    // non-finite floats (`NaN`, `inf`, `-inf`), which have no decimal form: they
+    // are shown as Rust prints them.
+    let Ok(decimal) = value.parse::<Decimal>() else {
+        return value.to_owned();
+    };
     decimal_formatter(locale).map_or_else(
         || value.to_owned(),
         |formatter| formatter.format(&decimal).to_string(),

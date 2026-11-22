@@ -263,7 +263,9 @@ impl Clock {
     /// The current frame time.
     #[must_use]
     pub fn time(&self) -> FrameTime {
-        FrameTime::at(self.origin + TICK * u32::try_from(self.frame).unwrap_or(u32::MAX))
+        FrameTime::unpresented_at(
+            self.origin + TICK * u32::try_from(self.frame).unwrap_or(u32::MAX),
+        )
     }
 
     /// Advances the clock one tick.

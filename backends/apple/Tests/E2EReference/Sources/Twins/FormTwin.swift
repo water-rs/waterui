@@ -45,7 +45,7 @@ struct FormTwin: View {
         labeledSlider("Volume", value: 0)
       }
       wuiDivider()
-      Text("Live Preview:").fontWeight(.bold)
+      Text("Live Preview:").bold()
       Text("Name: ")
       Text("Email: ")
       Text("Age: 0")
@@ -68,7 +68,7 @@ struct FormTwin: View {
         toggle("Notifications Enabled", isOn: false)
       }
       wuiDivider()
-      Text("Current Settings:").fontWeight(.bold)
+      Text("Current Settings:").bold()
       HStack(spacing: 10) {
         Text("Dark Mode: ")
         Text("false")
@@ -99,7 +99,7 @@ struct FormTwin: View {
         Text("50%")
       }
       wuiDivider()
-      Text("Manual Controls Preview:").fontWeight(.bold)
+      Text("Manual Controls Preview:").bold()
       Text("Username: ")
       Text("Bio: ")
       Text("Feature Enabled: false")

@@ -11,24 +11,26 @@ use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
 use std::sync::Arc;
 
-use waterui_graphics::draw::color::WorkingColor;
-use waterui_graphics::draw::kurbo::{
+use cherenkov_record::color::WorkingColor;
+use cherenkov_record::kurbo::{
     Affine, BezPath, Cap, Join, PathEl, Point, Rect, Shape as _, Stroke, Vec2,
 };
-use waterui_graphics::draw::{
+use cherenkov_record::{
     BlendMode, Command, DisplayList, Extend, FillRule, GlyphRun, GlyphStyle, Group, ImageId,
     ImagePattern, MeshColorInterpolation, MeshGradient, PATH_TOLERANCE, Paint, Picture, Sampling,
     ShaderPaint, Shadow, ShapeData, SweepGradient, blends_within,
 };
 
-use waterui_graphics::draw::TextLayoutId;
+use cherenkov_record::TextLayoutId;
 
 use super::HwuiError;
 use super::buffer::{CommandBuffer, Field, Fields};
 use super::color::{
     MAX_SWEEP_STOPS, color_long, gradient_stops, premultiplied_linear_srgb, sweep_turn,
 };
-use super::geometry::{Matrix, affine_matrix, ceil_i32, floor_i32, intersect, is_identity, union};
+use super::geometry::{
+    Matrix, affine_matrix, ceil_i32, floor_i32, intersect, is_identity, narrow, union,
+};
 use super::ids::IdPool;
 use super::protocol::{
     MESH_BAND_PATCHES, MESH_PATCH_FLOATS, Op, blend, cap, fill_type, glyph_style, join,
@@ -37,11 +39,6 @@ use super::protocol::{
 };
 use super::resources::{Kind, Registry, SharedRegistry};
 use super::text::TextLayoutIds;
-
-/// `drawMesh`.
-pub const MESH_API: u32 = 34;
-/// AGSL `RuntimeShader`.
-pub const RUNTIME_SHADER_API: u32 = 33;
 
 /// The id pools of what recordings define.
 #[derive(Debug)]
@@ -71,10 +68,14 @@ pub struct Owned {
     paths: Vec<u32>,
     shaders: Vec<u32>,
     cached_paths: Vec<PathKey>,
-    pictures: Vec<usize>,
+    pictures: Vec<PictureKey>,
 }
 
 type PathKey = (usize, bool);
+
+/// A shared picture's identity and the density its filtered groups' nodes
+/// were recorded at.
+type PictureKey = (usize, u64);
 
 #[derive(Debug)]
 struct CachedPath {
@@ -97,7 +98,7 @@ struct SharedPicture {
 #[derive(Debug, Default)]
 pub struct Caches {
     paths: HashMap<PathKey, CachedPath>,
-    pictures: BTreeMap<usize, SharedPicture>,
+    pictures: BTreeMap<PictureKey, SharedPicture>,
 }
 
 /// Reused arrays for variable-length records.
@@ -226,6 +227,9 @@ enum GroupLowering {
 }
 
 fn classify(group: &Group, list: &DisplayList, inner: Range<usize>) -> GroupLowering {
+    if group.filter.is_some() {
+        return GroupLowering::Node;
+    }
     if group.blend == BlendMode::Normal {
         if group.opacity >= 1.0 && !blends_within(list, inner.clone()) {
             return GroupLowering::Inline;
@@ -251,8 +255,8 @@ fn list_key(list: &DisplayList) -> usize {
     std::ptr::from_ref(list).addr()
 }
 
-fn picture_key(picture: &Picture) -> usize {
-    list_key(picture.display_list())
+fn picture_key(picture: &Picture, density: f64) -> PictureKey {
+    (list_key(picture.display_list()), density.to_bits())
 }
 
 /// The android `BlendMode` code of `blend`.
@@ -299,9 +303,11 @@ pub struct Lower<'a> {
     pub registry: &'a SharedRegistry,
     pub text_layouts: &'a TextLayoutIds,
     pub scratch: &'a mut Scratch,
-    pub api_level: u32,
     /// The layer being lowered, for errors.
     pub layer: u64,
+    /// Device pixels per point: a node that carries an effect is recorded
+    /// at this many pixels per unit (see [`Lower::open_scaled`]).
+    pub density: f64,
 }
 
 impl Lower<'_> {
@@ -309,19 +315,6 @@ impl Lower<'_> {
         HwuiError::Unsupported {
             layer: self.layer,
             what: what.into(),
-        }
-    }
-
-    const fn require(&self, what: &'static str, needs: u32) -> Result<(), HwuiError> {
-        if self.api_level >= needs {
-            Ok(())
-        } else {
-            Err(HwuiError::RequiresApi {
-                layer: self.layer,
-                what,
-                needs,
-                device: self.api_level,
-            })
         }
     }
 
@@ -353,6 +346,19 @@ impl Lower<'_> {
         origin: [i32; 2],
         size: [i32; 2],
     ) -> Result<(), HwuiError> {
+        self.open_scaled(node, origin, size, 1.0)
+    }
+
+    /// Opens `node`'s recording of `size` pixels, whose content is drawn in
+    /// the layer's own units: translated by `-origin`, then scaled by
+    /// `scale` pixels per unit.
+    pub fn open_scaled(
+        &mut self,
+        node: u32,
+        origin: [i32; 2],
+        size: [i32; 2],
+        scale: f64,
+    ) -> Result<(), HwuiError> {
         self.buffer.op(
             Op::Record,
             &[
@@ -361,11 +367,11 @@ impl Lower<'_> {
                 Field::I("height", size[1]),
             ],
         )?;
-        if origin != [0, 0] {
-            self.concat(&affine_matrix(Affine::translate(Vec2::new(
-                -f64::from(origin[0]),
-                -f64::from(origin[1]),
-            ))))?;
+        if origin != [0, 0] || scale.to_bits() != 1.0f64.to_bits() {
+            self.concat(&affine_matrix(
+                Affine::scale(scale)
+                    * Affine::translate(Vec2::new(-f64::from(origin[0]), -f64::from(origin[1]))),
+            ))?;
         }
         Ok(())
     }
@@ -406,6 +412,37 @@ impl Lower<'_> {
             &[
                 Field::U("layout", layout),
                 Field::Fs("matrix", &affine_matrix(transform)),
+            ],
+        )
+    }
+
+    /// `PaintedText`: draws platform text layout `layout` under
+    /// `transform`, its default-coloured runs in `paint`.
+    ///
+    /// # Errors
+    ///
+    /// [`HwuiError::Unregistered`] naming the layer when the platform holds
+    /// no such layout, and [`HwuiError::Encoding`] for a paint other than a
+    /// solid colour — a platform layout's default runs take one colour.
+    pub fn painted_text(
+        &mut self,
+        layout: TextLayoutId,
+        transform: Affine,
+        paint: &Paint,
+    ) -> Result<(), HwuiError> {
+        let Paint::Solid(color) = paint else {
+            return Err(HwuiError::Encoding {
+                op: "PaintedText",
+                reason: format!("a text layout's default runs take a solid colour, not {paint:?}"),
+            });
+        };
+        let layout = self.text_layouts.resolve(layout.raw(), self.layer)?;
+        self.buffer.op(
+            Op::PaintedText,
+            &[
+                Field::U("layout", layout),
+                Field::Fs("matrix", &affine_matrix(transform)),
+                Field::Color("color", color_long(*color, 1.0)),
             ],
         )
     }
@@ -480,11 +517,6 @@ impl Lower<'_> {
                 }
                 Command::BeginGroup { group, end } => {
                     let end = *end as usize;
-                    if group.filter.is_some() {
-                        return Err(self.unsupported(
-                            "filters a group; filter lowering to RenderEffect is water-rs/waterui#1750",
-                        ));
-                    }
                     let inner = index + 1..end;
                     self.prepare(list, inner.clone(), owned, groups)?;
                     if classify(group, list, inner.clone()) == GroupLowering::Node {
@@ -497,7 +529,40 @@ impl Lower<'_> {
                             &self.registry.lock(),
                         );
                         let (origin, size) = extent(ink);
-                        set_position(self.buffer, node, bounds(origin, size), true)?;
+                        // A node that carries an effect is rasterized into
+                        // a layer of its own size: it spans device pixels
+                        // and scales back by the inverse.
+                        let scale = if group.filter.is_some() {
+                            self.density
+                        } else {
+                            1.0
+                        };
+                        let pixels = size.map(|side| ceil_i32(f64::from(side) * scale));
+                        set_position(
+                            self.buffer,
+                            node,
+                            bounds(origin, pixels),
+                            group.filter.is_none(),
+                        )?;
+                        if scale.to_bits() != 1.0f64.to_bits() {
+                            let inverse = narrow(1.0 / scale);
+                            set_transform(
+                                self.buffer,
+                                node,
+                                &[0.0, 0.0, inverse, inverse, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                            )?;
+                        }
+                        if let Some(filter) = group.filter {
+                            let effect = self.registry.lock().resolve(
+                                Kind::Effect,
+                                filter.raw(),
+                                self.layer,
+                            )?;
+                            self.buffer.op(
+                                Op::SetEffect,
+                                &[Field::U("node", node), Field::U("effect", effect)],
+                            )?;
+                        }
                         self.buffer.op(
                             Op::SetAlpha,
                             &[Field::U("node", node), Field::F("alpha", group.opacity)],
@@ -510,7 +575,7 @@ impl Lower<'_> {
                                 Field::U("layer", 1),
                             ],
                         )?;
-                        self.open(node, ink)?;
+                        self.open_scaled(node, origin, pixels, scale)?;
                         self.emit(list, inner, groups, owned)?;
                         self.close()?;
                         groups.insert((list_key(list), index), node);
@@ -542,7 +607,6 @@ impl Lower<'_> {
         owned: &mut Owned,
         groups: &mut GroupNodes,
     ) -> Result<(), HwuiError> {
-        self.require("a mesh gradient", MESH_API)?;
         let command = &list.commands()[index];
         let ink = content_ink(
             list,
@@ -640,7 +704,7 @@ impl Lower<'_> {
     /// The node of the shared `picture`, recorded once and reused by
     /// identity; `owned` takes a reference.
     pub fn share(&mut self, picture: &Picture, owned: &mut Owned) -> Result<u32, HwuiError> {
-        let key = picture_key(picture);
+        let key = picture_key(picture, self.density);
         if let Some(entry) = self.caches.pictures.get_mut(&key) {
             entry.refs += 1;
             owned.pictures.push(key);
@@ -688,7 +752,7 @@ impl Lower<'_> {
         let node = self
             .caches
             .pictures
-            .get(&picture_key(picture))
+            .get(&picture_key(picture, self.density))
             .ok_or_else(|| HwuiError::Encoding {
                 op: "DrawNode",
                 reason: "a shared picture was not prepared".to_owned(),
@@ -733,14 +797,21 @@ impl Lower<'_> {
                     sampling,
                 } => self.image(*image, *dst, *sampling)?,
                 Command::Picture { picture, transform } => self.picture(picture, *transform)?,
-                Command::Text { layout, transform } => {
+                Command::Text {
+                    layout,
+                    transform,
+                    paint,
+                } => {
                     if alpha < 1.0 {
                         return Err(HwuiError::Encoding {
                             op: "Text",
                             reason: "a text layout's node cannot take a folded opacity".to_owned(),
                         });
                     }
-                    self.text(*layout, *transform)?;
+                    match paint {
+                        Some(paint) => self.painted_text(*layout, *transform, paint)?,
+                        None => self.text(*layout, *transform)?,
+                    }
                 }
                 Command::BeginClip { shape, .. } => {
                     self.buffer.op(Op::Save, &[])?;
@@ -1106,7 +1177,6 @@ impl Lower<'_> {
     }
 
     fn runtime_shader(&mut self, shader: &ShaderPaint, local: Affine) -> Result<u32, HwuiError> {
-        self.require("a runtime shader", RUNTIME_SHADER_API)?;
         let runtime =
             self.registry
                 .lock()
@@ -1489,8 +1559,8 @@ fn sweep_span(sweep: &SweepGradient) -> Option<f64> {
 /// A shape grown by `spread`, or `None` for a path, which has no exact
 /// offset.
 fn grow(shape: &ShapeData, spread: f64) -> Option<ShapeData> {
-    use waterui_graphics::draw::ContinuousRect;
-    use waterui_graphics::draw::kurbo::{Circle, Ellipse, RoundedRect, RoundedRectRadii};
+    use cherenkov_record::ContinuousRect;
+    use cherenkov_record::kurbo::{Circle, Ellipse, RoundedRect, RoundedRectRadii};
     if spread == 0.0 {
         return Some(shape.clone());
     }
@@ -1697,6 +1767,7 @@ pub fn content_ink(
             Command::Text {
                 layout,
                 transform: placed,
+                ..
             } => {
                 if let Some(bounds) = text_layouts.bounds(layout.raw()) {
                     add(bounds, transform * *placed, clip);
@@ -1740,6 +1811,32 @@ pub fn content_ink(
 #[must_use]
 pub fn clear_color(color: WorkingColor) -> u64 {
     color_long(color, 1.0)
+}
+
+/// `SetTransform` with the ten node properties in wire order.
+pub fn set_transform(
+    buffer: &mut CommandBuffer,
+    node: u32,
+    values: &[f32; 10],
+) -> Result<(), HwuiError> {
+    let names = [
+        "translation_x",
+        "translation_y",
+        "scale_x",
+        "scale_y",
+        "rotation",
+        "pivot_x",
+        "pivot_y",
+        "rotation_x",
+        "rotation_y",
+        "camera_distance",
+    ];
+    let mut fields = Fields::new();
+    fields.push(Field::U("node", node));
+    for (name, value) in names.into_iter().zip(values) {
+        fields.push(Field::F(name, *value));
+    }
+    buffer.op(Op::SetTransform, fields.as_slice())
 }
 
 /// `SetPosition`.

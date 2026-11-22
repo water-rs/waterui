@@ -549,11 +549,13 @@ fn transform_paint(paint: &mut Paint, t: Affine) {
                 mesh.rows(),
                 mesh.points().iter().map(|point| t * *point).collect(),
                 mesh.colors().to_vec(),
-            );
+            )
+            .expect("the grid is the one a valid mesh already holds");
         }
         Paint::Image(i) => i.transform = t * i.transform,
         Paint::Transformed { transform, .. } => *transform = t * *transform,
         Paint::Solid(_) => {}
+        Paint::Shader(_) => unreachable!("scene validation keeps shader paints off glyph runs"),
     }
 }
 
@@ -588,10 +590,12 @@ fn paint_opacity(paint: &mut Paint, alpha: f32) {
                 mesh.rows(),
                 mesh.points().to_vec(),
                 colors,
-            );
+            )
+            .expect("the grid is the one a valid mesh already holds");
             None
         }
         Paint::Image(_) => None,
+        Paint::Shader(_) => unreachable!("scene validation keeps shader paints off glyph runs"),
     };
     if let Some(stops) = stops {
         for s in stops {
@@ -628,6 +632,7 @@ fn node_to_item(node: Node, place: Affine, scene_rect: Rect) -> Item {
             clip: clip.map(|p| Shape::Path { path: place * p }),
             opacity: f64::from(opacity),
             blend,
+            blend_space: None,
             id: None,
             backdrop: None,
             filter: None,
@@ -962,8 +967,7 @@ pub fn items_for_glyph_run(
     let palette: Vec<skrifa::color::Color> = font
         .color_palettes()
         .get(0)
-        .map(|p| p.colors().to_vec())
-        .unwrap_or_default();
+        .map_or_default(|p| p.colors().to_vec());
     let foreground_color = match &run.paint {
         Paint::Solid(c) => *c,
         // Non-solid run paints still act as the foreground brush; inside a
@@ -1093,6 +1097,7 @@ pub fn items_for_glyph_run(
                     clip: None,
                     opacity: 1.0,
                     blend: BlendMode::Normal,
+                    blend_space: None,
                     id: None,
                     backdrop: None,
                     filter: None,

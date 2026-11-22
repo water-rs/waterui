@@ -27,26 +27,31 @@ use cocoa_ui::{PlatformView, Rect, Retained, focus, view};
 use objc2::rc::Weak;
 use objc2_foundation::{NSRange, NSString};
 use waterui::Str;
-use waterui::component::menu::ResolvedMenuItem;
+use waterui::component::input::ContentType;
 #[cfg(target_os = "ios")]
-use waterui::component::text_field::KeyboardType;
-use waterui::component::text_field::{ContentType, ResolvedTextFieldConfig};
+use waterui::component::input::KeyboardType;
+use waterui::component::menu::ResolvedMenuItem;
+use waterui::component::text_field::ResolvedTextFieldConfig;
 use waterui::component::text_selection::{CustomTextSelection, TextSelection};
 use waterui::graphics::color::WorkingColor;
 use waterui::reactive::Computed;
 use waterui::reactive::{Binding, Signal};
 use waterui::resolve::Resolvable;
 use waterui::text::StyledStr;
-use waterui::text::font::{FontDesign, FontWeight, ResolvedFont};
+#[cfg(target_os = "macos")]
+use waterui::text::font::Body;
+use waterui::text::font::ResolvedFont;
 use waterui::theme::color::Foreground;
 use waterui_backend_core::Environment;
 use waterui_core::interaction::Disabled;
 use waterui_core::layout::{
-    HorizontalAlignment, ProposalSize, Size, StretchAxis, SubView, ViewDimensions,
+    HorizontalAlignment, LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size,
+    StretchAxis, SubView, ViewDimensions,
 };
 
+use super::font::platform_font;
 use crate::contract::{Mounted, NativeLeaf};
-use crate::dispatch::Dispatcher;
+use crate::proposal;
 
 #[cfg(target_os = "macos")]
 mod platform {
@@ -63,6 +68,7 @@ mod platform {
     pub(super) use cocoa_ui::uikit::{HostView, TextField};
 }
 
+use crate::contract::RenderContext;
 use platform::{HostView, TextField};
 
 /// The platform color a [`StyledPush`]'s default foreground draws in.
@@ -150,72 +156,6 @@ fn platform_color(color: &WorkingColor) -> Retained<PlatformColor> {
     }
 }
 
-/// The platform weight of a `FontWeight` on the `UIFont`/`NSFont` scale.
-const fn platform_weight(weight: FontWeight) -> f64 {
-    use cocoa_ui::font::weight;
-    match weight {
-        FontWeight::Thin => weight::THIN,
-        FontWeight::UltraLight => weight::ULTRA_LIGHT,
-        FontWeight::Light => weight::LIGHT,
-        FontWeight::Normal => weight::REGULAR,
-        FontWeight::Medium => weight::MEDIUM,
-        FontWeight::SemiBold => weight::SEMI_BOLD,
-        FontWeight::Bold => weight::BOLD,
-        FontWeight::UltraBold => weight::HEAVY,
-        FontWeight::Black => weight::BLACK,
-    }
-}
-
-/// The comma-separated candidates of a CSS-style family list — as in `text`.
-fn family_candidates(family: &str) -> impl Iterator<Item = &str> {
-    family
-        .split(',')
-        .map(str::trim)
-        .filter(|candidate| !candidate.is_empty())
-}
-
-/// The platform face a resolved font names — the same rule as `text`.
-///
-/// # Panics
-///
-/// When the family names no installed font and no generic — the same
-/// `fatalError` the Swift port raises.
-fn platform_font(
-    mtm: cocoa_ui::MainThreadMarker,
-    resolved: &ResolvedFont,
-    italic: bool,
-) -> Retained<cocoa_ui::Font> {
-    let size = f64::from(resolved.size);
-    let weight = platform_weight(resolved.weight);
-    let mut font = match resolved.family.as_deref() {
-        Some(family) if !family.is_empty() => {
-            let mut resolved_font = None;
-            for candidate in family_candidates(family) {
-                resolved_font = match candidate {
-                    "system" | "sans-serif" => Some(cocoa_ui::font::system(mtm, size, weight)),
-                    _ => cocoa_ui::font::named(candidate, size),
-                };
-                if resolved_font.is_some() {
-                    break;
-                }
-            }
-            resolved_font.unwrap_or_else(|| {
-                panic!(
-                    "WaterUI: font family '{family}' not found. Ensure the font is bundled and registered."
-                )
-            })
-        }
-        _ => match resolved.design {
-            FontDesign::Default => cocoa_ui::font::system(mtm, size, weight),
-            FontDesign::Monospaced => cocoa_ui::font::monospaced(mtm, size, weight),
-        },
-    };
-    if italic && let Some(italic_font) = cocoa_ui::font::italic_variant(&font) {
-        font = italic_font;
-    }
-    font
-}
-
 /// The attributed string the current chunks render into — `text`'s builder
 /// run against this state's default foreground.
 fn render_attributed(state: &StyledPush) -> Retained<objc2_foundation::NSAttributedString> {
@@ -252,8 +192,8 @@ fn render_attributed(state: &StyledPush) -> Retained<objc2_foundation::NSAttribu
             background: backgrounds[i].as_deref(),
             underline: chunk.underline,
             strikethrough: chunk.strikethrough,
-            letter_spacing: f64::from(chunk.font.letter_spacing),
-            line_height: chunk.font.line_height.map_or(0.0, f64::from),
+            letter_spacing: f64::from(chunk.font.letter_spacing()),
+            line_height: chunk.font.line_height().map_or(0.0, f64::from),
         })
         .collect();
     cocoa_ui::text::build(state.mtm, &runs).into_super()
@@ -294,17 +234,23 @@ fn apply_styled(state: &Rc<RefCell<StyledPush>>, styled: &StyledStr) {
     let mut chunks = Vec::with_capacity(styled.chunks().len());
     let mut guards: Vec<Box<dyn Any>> = Vec::new();
     for (index, (text, style)) in styled.chunks().iter().enumerate() {
-        let font = style.font.resolve(&env);
-        let foreground = style.foreground.as_ref().map(|color| color.resolve(&env));
-        let background = style.background.as_ref().map(|color| color.resolve(&env));
+        let font = style.get_font().resolve(&env);
+        let foreground = style
+            .get_foreground()
+            .as_ref()
+            .map(|color| color.resolve(&env));
+        let background = style
+            .get_background()
+            .as_ref()
+            .map(|color| color.resolve(&env));
         chunks.push(Chunk {
             text: text.clone(),
             font: font.snapshot(),
             foreground: foreground.as_ref().map(Signal::snapshot),
             background: background.as_ref().map(Signal::snapshot),
-            italic: style.italic,
-            underline: style.underline,
-            strikethrough: style.strikethrough,
+            italic: style.get_italic(),
+            underline: style.get_underline(),
+            strikethrough: style.get_strikethrough(),
         });
 
         guards.push(Box::new(font.watch({
@@ -364,14 +310,21 @@ fn apply_alignment(field: &TextField, alignment: HorizontalAlignment) {
 /// The `Keyboard` a `KeyboardType` asks for — `WuiKeyboardType.uiKeyboardType`'s
 /// table. `AppKit` has no on-screen keyboard; there the hint is unused.
 #[cfg(target_os = "ios")]
-const fn keyboard(kind: &KeyboardType) -> platform::Keyboard {
+/// A kind the backend does not know is a contract violation of the
+/// framework above; the plain text keyboard is used.
+fn keyboard(kind: &KeyboardType) -> platform::Keyboard {
     match kind {
         KeyboardType::Text => platform::Keyboard::Text,
         KeyboardType::Email => platform::Keyboard::Email,
         KeyboardType::URL => platform::Keyboard::Url,
         KeyboardType::Number => platform::Keyboard::Number,
         KeyboardType::PhoneNumber => platform::Keyboard::PhoneNumber,
-        _ => panic!("unsupported WaterUI keyboard type"),
+        _ => {
+            waterui::contract_violation!(
+                "unsupported WaterUI keyboard type; the text keyboard is used"
+            );
+            platform::Keyboard::Text
+        }
     }
 }
 
@@ -492,11 +445,12 @@ fn wire_prompt(
     field: &Retained<TextField>,
     prompt: &waterui::component::text::TextConfig,
 ) {
+    let content = prompt.content();
     let state = styled_push(
         mtm,
         ctx.env(),
         platform::colors::placeholder_text(),
-        &prompt.content.snapshot(),
+        &content.snapshot(),
         {
             let field = field.clone();
             move |state| {
@@ -505,8 +459,8 @@ fn wire_prompt(
             }
         },
     );
-    leaf.watch(&prompt.content, restyle(&state));
-    leaf.bind(&prompt.paragraph_alignment, {
+    leaf.watch(&content, restyle(&state));
+    leaf.bind(prompt.paragraph_alignment(), {
         let field = field.clone();
         move |alignment| apply_alignment(&field, alignment)
     });
@@ -519,23 +473,26 @@ struct FieldState {
     label: Mounted,
 }
 
-/// Lays out the children inside `view`'s bounds: the label at top-leading,
-/// then the field spanning the full width below it — `WuiTextField`'s
-/// constraints as manual frames. `UIKit` centers the input inside the
-/// region between the label and the container's bottom, the way the
-/// field's `inputRegion` layout guide does.
-fn layout_children(view: &PlatformView, state: &FieldState) {
-    let bounds = view::bounds(view);
+/// Lays out the children inside the `response` rectangle: the label at
+/// top-leading, then the field spanning the full width below it —
+/// `WuiTextField`'s constraints as manual frames. `UIKit` centers the input
+/// inside the region between the label and the container's bottom, the way
+/// the field's `inputRegion` layout guide does.
+fn layout_children(view: &PlatformView, response: Rect, state: &FieldState) {
+    let bounds = response;
     let label = state.label.layout().measure(ProposalSize::UNSPECIFIED).size;
     let has_label = label.height > 0.0;
     view::set_hidden(state.label.view(), !has_label);
 
     // The label pins top+leading and keeps its intrinsic width; the measure
     // reports bare text bounds, which is narrower than the cell's drawing
-    // frame, so the full region width is what keeps it unclipped.
-    view::set_frame(
+    // frame, so the full region width is its allocation and its response
+    // is anchored at the leading edge of it.
+    proposal::place_leading(
         state.label.view(),
-        Rect::new(0.0, 0.0, bounds.size.width, f64::from(label.height)),
+        Rect::new(0.0, 0.0, bounds.size.width, f64::from(label.height)).translated(response.origin),
+        ProposalSize::UNSPECIFIED,
+        cocoa_ui::view::is_right_to_left(view),
     );
 
     let region_top = if has_label {
@@ -555,7 +512,7 @@ fn layout_children(view: &PlatformView, state: &FieldState) {
         field_height,
     );
     let field_view: &PlatformView = &state.field;
-    view::set_frame(field_view, field_frame);
+    view::set_frame(field_view, field_frame.translated(response.origin));
 }
 
 /// The container's layout face: reports `WuiTextField.sizeThatFits`'s
@@ -589,6 +546,14 @@ const fn measure_width(_proposal: ProposalSize, _label_width: f64) -> f64 {
 }
 
 impl SubView for TextFieldSubView {
+    fn resolve_extent(
+        &self,
+        bounds: LayoutRect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     // `measure` speaks f32; the geometry math runs in f64 — the narrowing is
     // the layout contract, as in `text`.
     #[expect(
@@ -622,152 +587,173 @@ impl SubView for TextFieldSubView {
     }
 }
 
-/// Installs the `text_field` handler on the dispatcher:
+/// The `text_field` realization:
 /// `Native<ResolvedTextFieldConfig>` maps to a container with the platform
 /// field and the mounted label child; binding, prompt, disabled state and
 /// accessibility stay live through watchers.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<ResolvedTextFieldConfig>(|config, ctx| {
-        let mtm = ctx.mtm();
-        let host = HostView::new(mtm, Rect::ZERO);
+pub fn realize_resolved_text_field_config(
+    config: ResolvedTextFieldConfig,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    let mtm = ctx.mtm();
+    let host = HostView::new(mtm, Rect::ZERO);
 
-        #[cfg(target_os = "ios")]
-        let field = {
-            let field = TextField::new(mtm);
-            field.set_keyboard(keyboard(&config.keyboard));
-            field
-        };
-        #[cfg(target_os = "macos")]
-        let field = TextField::new(mtm, config.line_limit.map(core::num::NonZero::get));
+    #[cfg(target_os = "ios")]
+    let field = {
+        let field = TextField::new(mtm);
+        field.set_keyboard(keyboard(config.keyboard()));
+        field
+    };
+    #[cfg(target_os = "macos")]
+    let field = TextField::new(mtm, config.line_limit().map(core::num::NonZero::get));
 
-        // The declared content type is the whole one-time-code feature on
-        // both kits — `UITextContentType`/`NSTextContentType` is what the
-        // system offers an SMS code for.
-        if let Some(declared) = config.content_type {
-            field.set_content_type(content_type(declared));
-        }
+    // The declared content type is the whole one-time-code feature on
+    // both kits — `UITextContentType`/`NSTextContentType` is what the
+    // system offers an SMS code for.
+    if let Some(declared) = config.content_type() {
+        field.set_content_type(content_type(declared));
+    }
 
-        let field_view: &PlatformView = &field;
-        host.add_subview(field_view);
+    let field_view: &PlatformView = &field;
+    host.add_subview(field_view);
 
-        // The label renders above the field; its semantic text names the
-        // control while the visual label leaves the accessibility tree —
-        // `WuiControlAccessibility`'s split.
-        let accessibility_label = config.label.accessibility_label();
-        let host_view: &PlatformView = &host;
-        let mounted = ctx
-            .render(waterui_backend_core::AnyView::new(config.label))
-            .mount(host_view);
-        view::hide_from_accessibility(mounted.view());
+    // The label renders above the field; its semantic text names the
+    // control while the visual label leaves the accessibility tree —
+    // `WuiControlAccessibility`'s split.
+    let (label, value, prompt, _, _, selection_menu, _, on_submit) = config.into_parts();
+    let accessibility_label = label.accessibility_label();
+    let host_view: &PlatformView = &host;
+    let mounted = ctx
+        .render(waterui_backend_core::AnyView::new(label))
+        .mount(host_view);
+    view::hide_from_accessibility(mounted.view());
 
-        let state = Rc::new(FieldState {
-            field: field.clone(),
-            label: mounted,
-        });
-        host.set_layout_handler({
-            let state = Rc::clone(&state);
-            move |view| layout_children(view, &state)
-        });
-
-        let control = view::retain_base(field_view);
-        let mut leaf = NativeLeaf::new(
-            host_view,
-            TextFieldSubView {
-                state: Rc::clone(&state),
-            },
-        );
-
-        // Signal → field: the resolved attributed string for the current
-        // binding value, re-pushed by every per-chunk style signal too.
-        let value_state = styled_push(
-            mtm,
-            ctx.env(),
-            platform_color(&Foreground.resolve(ctx.env()).snapshot()),
-            &config.value.snapshot(),
-            {
-                let field = field.clone();
-                move |state| {
-                    crate::measure_memo::invalidate();
-                    let attributed = render_attributed(state);
-                    #[cfg(target_os = "ios")]
-                    field.set_attributed_text(&attributed);
-                    #[cfg(target_os = "macos")]
-                    field.set_attributed_string(&attributed);
-                }
-            },
-        );
-
-        wire_value(&mut leaf, &config.value, ctx, &field, &value_state);
-
-        // Return submits through the configured action.
-        if let Some(on_submit) = config.on_submit {
-            let env = ctx.env().clone();
-            #[cfg(target_os = "ios")]
-            leaf.keep(field.install_submit_handler(move |_| on_submit.call(&env)));
-            #[cfg(target_os = "macos")]
-            field.on_submit(move |_| on_submit.call(&env));
-        }
-
-        // The prompt renders into the placeholder under the placeholder
-        // color — `WuiStyledStrRenderer`'s `defaultForegroundColor`.
-        wire_prompt(mtm, &mut leaf, ctx, &field, &config.prompt);
-
-        // Announce the label's semantic text on the field.
-        leaf.bind(&accessibility_label, {
-            move |styled| {
-                let plain = cocoa_ui::text::strip_bidi_controls(&styled.to_plain());
-                view::set_accessibility_label(&control, &plain);
-            }
-        });
-
-        // A disabled subtree must not respond to input.
-        let disabled = Disabled::resolve(ctx.env(), false);
-        leaf.bind(&disabled, {
-            let field = field.clone();
-            move |is_disabled| field.set_enabled(!is_disabled)
-        });
-
-        // The field is this subtree's focus anchor: `Metadata<Focused>`
-        // resolves it by walking the view hierarchy, as
-        // `installWuiFocusTarget` marked it in Swift.
-        leaf.keep(focus::install(mtm, field_view));
-
-        // `selection_menu` rows ride the platform edit menu, on an
-        // environment carrying the field's live `TextSelection`.
-        install_selection_menu(
-            mtm,
-            ctx.env(),
-            &config.selection_menu,
-            &field,
-            &config.value,
-        );
-
-        leaf.keep(state);
-        leaf.keep(value_state);
-        leaf
+    let state = Rc::new(FieldState {
+        field: field.clone(),
+        label: mounted,
     });
+    host.set_layout_handler({
+        let state = Rc::clone(&state);
+        move |view| layout_children(view, proposal::response(view), &state)
+    });
+
+    let control = view::retain_base(field_view);
+    let mut leaf = NativeLeaf::new(
+        host_view,
+        TextFieldSubView {
+            state: Rc::clone(&state),
+        },
+    );
+
+    // Signal → field: the resolved attributed string for the current
+    // binding value, re-pushed by every per-chunk style signal too.
+    let value_state = styled_push(
+        mtm,
+        ctx.env(),
+        platform_color(&Foreground.resolve(ctx.env()).snapshot()),
+        &value.snapshot(),
+        {
+            let field = field.clone();
+            move |state| {
+                crate::measure_memo::invalidate();
+                let attributed = render_attributed(state);
+                #[cfg(target_os = "ios")]
+                field.set_attributed_text(&attributed);
+                #[cfg(target_os = "macos")]
+                field.set_attributed_string(&attributed);
+            }
+        },
+    );
+
+    wire_value(&mut leaf, &value, ctx, &field, &value_state);
+
+    // Return submits through the configured action.
+    if let Some(on_submit) = on_submit {
+        let env = ctx.env().clone();
+        #[cfg(target_os = "ios")]
+        leaf.keep(field.install_submit_handler(move |_| on_submit.run(&env)));
+        #[cfg(target_os = "macos")]
+        field.on_submit(move |_| on_submit.run(&env));
+    }
+
+    // The prompt renders into the placeholder under the placeholder
+    // color — `WuiStyledStrRenderer`'s `defaultForegroundColor`.
+    wire_prompt(mtm, &mut leaf, ctx, &field, &prompt);
+
+    // The theme `Body` font is the field's own font, as in the secure
+    // field: a single-line `NSTextField` cell positions its line by that
+    // font, not by the attributed value or placeholder, and typing into
+    // an empty field starts in it.
+    #[cfg(target_os = "macos")]
+    leaf.bind(&Body.resolve(ctx.env()), {
+        let field = field.clone();
+        move |font| {
+            crate::measure_memo::invalidate();
+            field.set_font(&platform_font(mtm, &font, false));
+        }
+    });
+
+    // Announce the label's semantic text on the field.
+    leaf.bind(&accessibility_label, {
+        move |styled| {
+            let plain = cocoa_ui::text::strip_bidi_controls(&styled.to_plain());
+            view::set_accessibility_label(&control, &plain);
+        }
+    });
+
+    // A disabled subtree must not respond to input.
+    let disabled = Disabled::resolve(ctx.env(), false);
+    leaf.bind(&disabled, {
+        let field = field.clone();
+        move |is_disabled| field.set_enabled(!is_disabled)
+    });
+
+    // The field is this subtree's focus anchor: `Metadata<Focused>`
+    // resolves it by walking the view hierarchy, as
+    // `installWuiFocusTarget` marked it in Swift.
+    leaf.keep(focus::install(mtm, field_view));
+
+    // `selection_menu` rows ride the platform edit menu, on an
+    // environment carrying the field's live `TextSelection`.
+    install_selection_menu(mtm, ctx.env(), &selection_menu, &field, &value);
+
+    leaf.keep(state);
+    leaf.keep(value_state);
+    leaf
 }
 
 /// A `TextSelection`'s byte range as the UTF-16 units the kit's selection
-/// APIs count. An edge off a char boundary is a contract violation.
-fn utf16_range(text: &str, range: &Range<usize>) -> NSRange {
+/// APIs count. An edge off a char boundary is a contract violation of the
+/// caller; there is no range (`None`) and the command is ignored.
+fn utf16_range(text: &str, range: &Range<usize>) -> Option<NSRange> {
     let edge = |byte: usize| {
-        cocoa_ui::text::utf16_offset_at_byte(text, byte).unwrap_or_else(|| {
-            panic!("selection edge {byte} is not a UTF-8 boundary of the field's text")
-        })
+        let edge = cocoa_ui::text::utf16_offset_at_byte(text, byte);
+        if edge.is_none() {
+            waterui::contract_violation!(
+                "selection edge {byte} is not a UTF-8 boundary of the field's text; \
+                 the selection command is ignored"
+            );
+        }
+        edge
     };
-    let location = edge(range.start);
-    NSRange::new(location, edge(range.end) - location)
+    let location = edge(range.start)?;
+    Some(NSRange::new(location, edge(range.end)? - location))
 }
 
-/// The field editor's UTF-16 range as `TextSelection`'s byte range.
-fn utf16_byte_range(text: &str, range: NSRange) -> Range<usize> {
+/// The field editor's UTF-16 range as `TextSelection`'s byte range. A
+/// platform edge inside a surrogate pair or past the text is logged and
+/// answers `None`.
+fn utf16_byte_range(text: &str, range: NSRange) -> Option<Range<usize>> {
     let edge = |unit: usize| {
-        cocoa_ui::text::byte_offset_at_utf16(text, unit).expect(
-            "the platform reported a selection edge inside a surrogate pair or past the text",
-        )
+        let edge = cocoa_ui::text::byte_offset_at_utf16(text, unit);
+        if edge.is_none() {
+            tracing::error!(
+                "the platform reported a selection edge {unit} inside a surrogate pair or past the text"
+            );
+        }
+        edge
     };
-    edge(range.location)..edge(range.location + range.length)
+    Some(edge(range.location)?..edge(range.location + range.length)?)
 }
 
 /// The [`CustomTextSelection`] a `selection_menu` command's `TextSelection`
@@ -791,52 +777,72 @@ impl Clone for FieldSelection {
 impl FieldSelection {
     /// The field with a live editing session, beginning one through the
     /// platform's own first-responder path when the selection is written
-    /// outside an open session.
-    fn editable_field(&self) -> Retained<TextField> {
-        let field = self
-            .field
-            .load()
-            .expect("a selection command fired after its field was released");
-        assert!(
-            field.selected_range().is_some() || field.begin_editing(),
-            "the field cannot begin an editing session for the selection command"
-        );
+    /// outside an open session. `None` when the field is gone or cannot begin
+    /// a session: the command is ignored.
+    fn editable_field(&self) -> Option<Retained<TextField>> {
+        let field = self.live_field()?;
+        if field.selected_range().is_none() && !field.begin_editing() {
+            tracing::error!(
+                "the field cannot begin an editing session for the selection command; \
+                 the command is ignored"
+            );
+            return None;
+        }
+        Some(field)
+    }
+
+    /// The field, or `None` after it was released: a selection command that
+    /// outlives its field is a contract violation of the app holding the
+    /// `TextSelection`, and answers as an empty selection.
+    fn live_field(&self) -> Option<Retained<TextField>> {
+        let field = self.field.load();
+        if field.is_none() {
+            waterui::contract_violation!(
+                "a selection command fired after its field was released; \
+                 the command answers as an empty selection"
+            );
+        }
         field
     }
 }
 
 impl CustomTextSelection for FieldSelection {
     fn text(&self) -> Str {
-        Str::from(
-            self.field
-                .load()
-                .expect("a selection command fired after its field was released")
-                .string(),
-        )
+        self.live_field()
+            .map_or_else(Str::default, |field| Str::from(field.string()))
     }
 
     fn range(&self) -> Range<usize> {
-        let field = self
-            .field
-            .load()
-            .expect("a selection command fired after its field was released");
+        let Some(field) = self.live_field() else {
+            return 0..0;
+        };
         let text = field.string();
-        let utf16 = field
-            .selected_range()
-            .expect("a selection command fired on a field with no editing session");
-        utf16_byte_range(&text, utf16)
+        let Some(utf16) = field.selected_range() else {
+            waterui::contract_violation!(
+                "a selection command fired on a field with no editing session; \
+                 the selection reads as empty"
+            );
+            return 0..0;
+        };
+        utf16_byte_range(&text, utf16).unwrap_or(0..0)
     }
 
     fn replace_range(&self, range: Range<usize>, inserted: &str) {
-        let field = self.editable_field();
-        let utf16 = utf16_range(&field.string(), &range);
-        field.replace_range(utf16, &NSString::from_str(inserted));
+        let Some(field) = self.editable_field() else {
+            return;
+        };
+        if let Some(utf16) = utf16_range(&field.string(), &range) {
+            field.replace_range(utf16, &NSString::from_str(inserted));
+        }
     }
 
     fn select(&self, range: Range<usize>) {
-        let field = self.editable_field();
-        let utf16 = utf16_range(&field.string(), &range);
-        field.set_selected_range(utf16);
+        let Some(field) = self.editable_field() else {
+            return;
+        };
+        if let Some(utf16) = utf16_range(&field.string(), &range) {
+            field.set_selected_range(utf16);
+        }
     }
 
     fn styled_value(&self) -> Option<Binding<StyledStr>> {

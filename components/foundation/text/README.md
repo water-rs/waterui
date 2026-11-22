@@ -6,7 +6,7 @@ Text and typography components for WaterUI with rich styling, fonts, markdown, a
 
 `waterui-text` provides comprehensive text rendering and formatting capabilities for the WaterUI framework. It handles everything from simple text display to complex styled text with multiple font properties, inline-focused markdown styling, and syntax highlighting for code snippets across 40+ programming languages.
 
-The crate is designed around reactive primitives, automatically updating text when underlying data changes. All text rendering delegates to native platform widgets (UIKit/AppKit on Apple, Android View on Android), ensuring platform-native appearance and accessibility.
+The crate is designed around reactive primitives, automatically updating text when underlying data changes.
 
 Core features include semantic font styles (body, title, headline), granular styling control (bold, italic, underline, colors), inline markdown parsing for styled text runs, and production-ready syntax highlighting via `syntect`.
 
@@ -168,7 +168,7 @@ waterui-text = { version = "0.5", features = ["highlight"] }
 ```rust
 use waterui_text::highlight::{DefaultHighlighter, Language, highlight_text};
 use waterui_core::Str;
-use waterui_graphics::color::ColorScheme;
+use waterui_color::ColorScheme;
 
 // Create highlighter with the palette for the surface it is read against
 let mut highlighter = DefaultHighlighter::new(ColorScheme::Light);
@@ -249,7 +249,7 @@ Key dependencies that shape the API:
 
 - **waterui-core** - Provides `View` trait, `Environment`, and reactive primitives
 - **nami** - Fine-grained reactivity system (`Binding`, `Computed`, `Signal`)
-- **waterui-graphics** - Color types for text and background styling
+- **waterui-color** - Color types for text and background styling
 - **pulldown-cmark** - Markdown parsing engine
 - **syntect** - Syntax highlighting for code blocks
 - **two-face** - Extended syntax definitions including Swift

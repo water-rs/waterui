@@ -12,7 +12,8 @@
 //! parent types. A declaration placed directly over a conditional is
 //! adopted by that `Dynamic` host ([`adopt_by_dynamic`]) and applies to each
 //! content instance it swaps in and out. A declaration nobody owns fails at
-//! the first pass that reaches it, naming the fix.
+//! the first pass that reaches it, naming the fix, and draws without a
+//! transition.
 //!
 //! Every site drives its instances through the same pieces: a
 //! [`TransitionClock`] per instance, a [`TransitionRuntime`] holding that
@@ -24,19 +25,24 @@
 use super::*;
 use std::rc::Rc;
 
-use waterui_core::transition::{
-    AnyTransition, Ghost, GhostSlot, Transition, TransitionGeometry, TransitionPhase,
-    TransitionProperties, TransitionSpec, TransitionState,
+use waterui_core::contract_violation;
+use waterui_graphics::backend::{AnyEffect, ParamGuards};
+#[cfg(feature = "navigation")]
+use waterui_structural_transition::{AnyTransition, Transition};
+use waterui_structural_transition::{
+    Ghost, GhostSlot, TransitionGeometry, TransitionPhase, TransitionProperties, TransitionSpec,
+    TransitionState,
 };
-use waterui_graphics::{AnyEffect, ParamGuards};
 
 use crate::renderer::effects::FilteredRuntime;
 
 /// A `.transition(...)` declaration as the retained tree carries it: the
-/// declared spec, and whether a structural site took ownership of it.
+/// declared spec, whether a structural site took ownership of it, and whether
+/// the missing owner was already reported.
 pub struct TransitionDeclaration {
     spec: TransitionSpec,
     owned: Cell<bool>,
+    reported: Cell<bool>,
 }
 
 impl TransitionDeclaration {
@@ -44,6 +50,7 @@ impl TransitionDeclaration {
         Self {
             spec,
             owned: Cell::new(false),
+            reported: Cell::new(false),
         }
     }
 
@@ -53,11 +60,13 @@ impl TransitionDeclaration {
         self.spec.clone()
     }
 
-    /// Fails when no structural site claimed this declaration: a transition
-    /// with no owner has no clock and no honest rendering path.
-    pub fn assert_owned(&self) {
-        assert!(
-            self.owned.get(),
+    /// Reports, once, a declaration no structural site claimed: a transition
+    /// with no owner has no clock, so the content draws through without it.
+    pub fn report_unowned(&self) {
+        if self.owned.get() || self.reported.replace(true) {
+            return;
+        }
+        contract_violation!(
             "Hydrolysis: `.transition(...)` reached a view with no structural transition owner. \
              A transition declares how a view is inserted and removed, so it must be the \
              outermost modifier of the content a structural site swaps — of a `when`/`watch` \
@@ -65,7 +74,8 @@ impl TransitionDeclaration {
              content, or an anchored-overlay body. A declaration beneath another modifier \
              (`.padding`, `.frame`, `.background`, `.alignment_guide`, …), a stack, a scroll \
              or a widget is never claimed: move `.transition(...)` outward so it is the \
-             outermost modifier of that content (layout-spec.md §4.5)"
+             outermost modifier of that content (layout-spec.md §4.5); the content is drawn \
+             without the transition"
         );
     }
 }
@@ -84,7 +94,7 @@ fn declaration<E: crate::text::TextEngine>(node: &RenderNode<E>) -> Option<&Tran
 
 /// Claims the transition declared at a structural instance's root. Only the
 /// root is looked at: a declaration beneath any other node stays unowned and
-/// fails with [`TransitionDeclaration::assert_owned`]'s message.
+/// is reported by [`TransitionDeclaration::report_unowned`].
 pub fn claim_transition<E: crate::text::TextEngine>(
     node: &RenderNode<E>,
 ) -> Option<TransitionSpec> {
@@ -96,6 +106,7 @@ pub fn claim_transition<E: crate::text::TextEngine>(
 /// content ([`WidgetBehavior::claim_page_transition`]). Only the stack calls
 /// this — a navigation view anywhere else is not a structural instance, so a
 /// declaration on its content stays unowned.
+#[cfg(feature = "navigation")]
 pub fn claim_page_transition<E: crate::text::TextEngine>(
     page: &RenderNode<E>,
 ) -> Option<TransitionSpec> {
@@ -126,26 +137,28 @@ pub fn adopt_by_dynamic<E: crate::text::TextEngine>(
     host.adopt(declaration.take_ownership());
 }
 
-/// Fails fast on a transition whose resolved form still needs pixel capture:
+/// Reports a transition whose resolved form still needs pixel capture:
 /// capture-based effects are realized by the transition overlay, which is not
-/// implemented in Hydrolysis yet. The Reduce Motion form is resolved first, so
-/// a capture effect whose declared reduction is a property effect still runs.
+/// implemented in Hydrolysis yet, so the transition runs without its overlay.
+/// The Reduce Motion form is resolved first, so a capture effect whose
+/// declared reduction is a property effect still runs.
 pub fn checked_transition(state: TransitionState) -> TransitionState {
-    assert_property_transition(state.captures_content());
+    report_capture_transition(state.captures_content());
     state
 }
 
-/// The capture rejection [`checked_transition`] applies, for a transition
+/// The capture report [`checked_transition`] makes, for a transition
 /// resolved without a clock.
-fn assert_property_transition(captures_content: bool) {
-    assert!(
-        !captures_content,
-        "Hydrolysis: pixel-capture transitions (a `Transition` whose `captures_content` \
-         is true, such as disintegrate or dissolve) are not realized yet — their \
-         window-level capture overlay is water-rs/waterui#1388. Use a property transition \
-         (opacity, scale, move, blur, rotation) or declare a property `reduced()` form \
-         and enable Reduce Motion"
-    );
+fn report_capture_transition(captures_content: bool) {
+    if captures_content {
+        contract_violation!(
+            "Hydrolysis: pixel-capture transitions (a `Transition` whose `captures_content` \
+             is true, such as disintegrate or dissolve) are not realized yet — their \
+             window-level capture overlay is water-rs/waterui#1388. Use a property transition \
+             (opacity, scale, move, blur, rotation) or declare a property `reduced()` form \
+             and enable Reduce Motion; the transition runs without its capture overlay"
+        );
+    }
 }
 
 /// Starts a removal ghost after its semantic detachment, rejecting a
@@ -172,12 +185,12 @@ pub fn start_ghost<T>(
 /// delta that puts it back: what [`flush_transitioned`] scopes an instance
 /// that is already placed at `ctx`.
 pub fn slot_context(ctx: RenderContext) -> (RenderContext, kurbo::Affine) {
-    let delta = kurbo::Affine::translate((ctx.bounds.x0, ctx.bounds.y0));
+    let delta = kurbo::Affine::translate((ctx.bounds().x0, ctx.bounds().y0));
     (
-        RenderContext {
-            local: ctx.local * delta,
-            bounds: kurbo::Rect::new(0.0, 0.0, ctx.bounds.width(), ctx.bounds.height()),
-        },
+        RenderContext::new(
+            ctx.local() * delta,
+            kurbo::Rect::new(0.0, 0.0, ctx.bounds().width(), ctx.bounds().height()),
+        ),
         delta,
     )
 }
@@ -288,19 +301,21 @@ impl<E: crate::text::TextEngine> TransitionRun<E> {
 /// presence when the gesture is cancelled. Reduce Motion and the capture
 /// rejection resolve exactly as [`TransitionSpec::start`] and
 /// [`checked_transition`] resolve them for a clock-driven removal.
+#[cfg(feature = "navigation")]
 pub struct ScrubbedRemoval<E: crate::text::TextEngine> {
     transition: AnyTransition,
     runtime: TransitionRuntime<E>,
 }
 
+#[cfg(feature = "navigation")]
 impl<E: crate::text::TextEngine> ScrubbedRemoval<E> {
     pub fn new(spec: &TransitionSpec, reduce_motion: bool, now: Instant) -> Self {
         let transition = if reduce_motion {
-            AnyTransition::new(Transition::reduced(&spec.transition))
+            AnyTransition::new(Transition::reduced(spec.transition()))
         } else {
-            spec.transition.clone()
+            spec.transition().clone()
         };
-        assert_property_transition(transition.captures_content(TransitionPhase::Removal));
+        report_capture_transition(transition.captures_content(TransitionPhase::Removal));
         Self {
             transition,
             runtime: TransitionRuntime::new(now),
@@ -380,13 +395,13 @@ pub fn flush_transitioned<E: crate::text::TextEngine>(
     flush: impl FnOnce(&mut HydrolysisRenderer<E>, RenderContext),
 ) {
     let properties = paint.properties;
-    let bounds = child_ctx.bounds;
+    let bounds = child_ctx.bounds();
     let local = transition_transform(&properties, bounds);
-    let paint_space = child_ctx.local * local;
+    let paint_space = child_ctx.local() * local;
     let layer = renderer.program().origin().inverse() * paint_space;
     let scope = crate::renderer::ScopeDelta {
         transform: delta * local,
-        hit_alpha: properties.opacity,
+        hit_alpha: properties.opacity(),
     };
     let key = crate::renderer::mount::ScopeKey {
         role: "transition",
@@ -395,7 +410,7 @@ pub fn flush_transitioned<E: crate::text::TextEngine>(
     renderer.open_scope_with(
         key,
         layer,
-        properties.opacity,
+        properties.opacity(),
         Some(&crate::renderer::frame::ScopeClip::Rect(kurbo::Rect::new(
             0.0,
             0.0,
@@ -422,13 +437,13 @@ pub fn transition_transform(
         bounds.y0 + bounds.height() / 2.0,
     );
     kurbo::Affine::translate((
-        f64::from(properties.translation[0]),
-        f64::from(properties.translation[1]),
+        f64::from(properties.translation()[0]),
+        f64::from(properties.translation()[1]),
     )) * kurbo::Affine::translate(centre)
-        * kurbo::Affine::rotate(f64::from(properties.rotation))
+        * kurbo::Affine::rotate(f64::from(properties.rotation()))
         * kurbo::Affine::scale_non_uniform(
-            f64::from(properties.scale[0]),
-            f64::from(properties.scale[1]),
+            f64::from(properties.scale()[0]),
+            f64::from(properties.scale()[1]),
         )
         * kurbo::Affine::translate((-centre.0, -centre.1))
 }
@@ -443,19 +458,24 @@ pub fn record_blurred<E: crate::text::TextEngine>(
     flush: impl FnOnce(&mut HydrolysisRenderer<E>, RenderContext),
 ) {
     let properties = paint.properties;
-    let bounds = ctx.bounds;
-    assert!(
-        properties.blur.is_finite() && properties.blur >= 0.0,
-        "Hydrolysis: a transition sampled the blur radius {}, which is not a finite \
-         non-negative logical-pixel radius",
-        properties.blur
-    );
-    if properties.blur > 0.0 {
+    let bounds = ctx.bounds();
+    let radius_sample = properties.blur();
+    let radius_sample = if radius_sample.is_finite() && radius_sample >= 0.0 {
+        radius_sample
+    } else {
+        contract_violation!(
+            "Hydrolysis: a transition sampled the blur radius {radius_sample}, which is not a \
+             finite non-negative logical-pixel radius; the instance is drawn without blur"
+        );
+        0.0
+    };
+    if radius_sample > 0.0 {
         let mut slot = paint.runtime.blur.borrow_mut();
         let blur = slot.get_or_insert_with(|| {
-            let radius = nami::Binding::container(properties.blur);
+            let radius = nami::Binding::container(radius_sample);
             let mut guards = ParamGuards::default();
-            let filter = waterui_graphics::filtrate::filters::Blur(guards.bind(radius.clone()));
+            let filter =
+                waterui_graphics::backend::filtrate::filters::Blur(guards.bind(radius.clone()));
             let core = renderer.new_core();
             core.cell.set_parent(paint.owner);
             TransitionBlur {
@@ -471,8 +491,8 @@ pub fn record_blurred<E: crate::text::TextEngine>(
             clippy::float_cmp,
             reason = "an unchanged sample skips the parameter write; any change is written"
         )]
-        if nami::Signal::snapshot(&blur.radius) != properties.blur {
-            blur.radius.set(properties.blur);
+        if nami::Signal::snapshot(&blur.radius) != radius_sample {
+            blur.radius.set(radius_sample);
         }
         // The filtered layer host records the instance exactly as a
         // `FilteredView` node records its child: the engine filter covers
@@ -492,7 +512,7 @@ pub fn record_blurred<E: crate::text::TextEngine>(
 mod tests {
     use super::*;
     use std::time::Duration;
-    use waterui_core::transition::PropertyTransition;
+    use waterui_structural_transition::PropertyTransition;
 
     fn removal_spec(milliseconds: u64) -> TransitionSpec {
         TransitionSpec::new(PropertyTransition::opacity())

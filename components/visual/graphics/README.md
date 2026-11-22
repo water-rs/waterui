@@ -6,10 +6,10 @@ GPU and engine rendering primitives for WaterUI applications.
 
 `waterui-graphics` hosts the rendering contracts a WaterUI backend consumes:
 
-- **GpuContentView** - a view driven by a `GpuContent` producer drawing raw wgpu frames
-- **SceneView** - a view whose `SceneContent` records vector scenes into `waterui_graphics::draw::Recorder`
+- **GpuView** - a view driven by a `GpuContent` producer drawing raw wgpu frames
+- **SceneView** - a view whose `SceneContent` records vector scenes into `waterui_graphics::backend::draw::Recorder`
 - **ShaderPaintView** - a view painted by a WGSL fragment shader
-- **Gradients** - `Gradient` (linear, radial, angular, mesh), the signal-driven `MeshGradient`, and the GPU-animated `AnimatedMeshGradient` and `FlowingGradient`
+- **Gradients** - `Gradient` (linear, radial, angular, mesh), the signal-driven `MeshGradient`, and the canvas-drawn `AnimatedMeshGradient`, and the GPU-animated `FlowingGradient`
 - **OffscreenRenderer** - headless rendering of either kind of content to `OffscreenImage`
 - **Effects** - GPU filter, transition and capture effects applied to arbitrary views
 
@@ -33,13 +33,13 @@ waterui = "0.3"
 
 ## Quick Start
 
-### GpuContentView - Full wgpu Control
+### GpuView - Full wgpu Control
 
 For custom GPU rendering, implement the `GpuContent` trait and wrap it in a
-`GpuContentView`:
+`GpuView`:
 
 ```rust
-use waterui::graphics::{Context, Frame, GpuContent, GpuContentView};
+use waterui::graphics::{Context, Frame, GpuContent, GpuView};
 use waterui::prelude::*;
 
 struct Flame;
@@ -56,7 +56,7 @@ impl GpuContent for Flame {
 }
 
 fn main() -> impl View {
-    GpuContentView::new(Flame).size(400.0, 500.0)
+    GpuView::new(Flame).size(400.0, 500.0)
 }
 ```
 
@@ -66,7 +66,7 @@ engine, a camera stream — keep their state in a `.on_frame` hook and post
 frames to the render side through shared state:
 
 ```rust
-GpuContentView::new(RenderSide::new())
+GpuView::new(RenderSide::new())
     .on_frame(move || bridge.borrow_mut().frame())
 ```
 
@@ -75,11 +75,11 @@ Per-view hooks also exist for input (`on_input`), the IME caret
 
 ### SceneView - Vector Scenes
 
-`SceneContent` records a vector scene into a `waterui_graphics::draw::Recorder` each frame;
+`SceneContent` records a vector scene into a `waterui_graphics::backend::draw::Recorder` each frame;
 the engine resources it names come from `RecordingResources`:
 
 ```rust
-use waterui::graphics::{RecordingResources, SceneContent, SceneView, draw};
+use waterui::graphics::backend::{RecordingResources, SceneContent, SceneView, draw};
 
 struct Graph;
 
@@ -139,7 +139,7 @@ pub trait GpuContent: Send + 'static {
 Frames that already live in GPU memory — a video decoder's `CVPixelBuffer`, an
 `AHardwareBuffer`, a dmabuf — are not drawn by content. An
 `ExternalFrameSource` imports their planes onto the host's device and
-publishes `cherenkov_gpu::interop::ExternalFrame`s, which become the content
+publishes `waterui_graphics::gpu::interop::ExternalFrame`s, which become the content
 of the `ExternalFrameView`'s own engine layer:
 
 ```rust
@@ -166,18 +166,18 @@ pub trait ExternalFrameSource: 'static {
 
 ### Offscreen Rendering
 
-`GpuRuntime::render_content(content, size, scale)` renders a `GpuContent` to an
-`OffscreenImage` without a window; `OffscreenRenderer` does the same for scene
-content on either the GPU or CPU (`OffscreenRenderer::cpu`).
+`GpuRuntime::render_content(content, size, scale).await` renders a `GpuContent`
+to an `OffscreenImage` without a window; `OffscreenRenderer` does the same for
+scene content on either the GPU or CPU (`OffscreenRenderer::cpu`).
 
 ## API Overview
 
 ### Gpu Module
 
-- `GpuContentView::new(content)` - Create a view from a `GpuContent`
+- `GpuView::new(content)` - Create a view from a `GpuContent`
 - `ExternalFrameView::new(source)` - Create a view from an `ExternalFrameSource`
 - `FrameOutput` - Where a source publishes frames: `device()`, `queue()`, `present(frame)`
-- `GpuContentRenderer` / `ExternalFrameRenderer` - Host-side renderers presenting either view into a native texture
+- `GpuContentRenderer` / `ExternalFrameRenderer` - Host-side renderers presenting either view into a native texture: `submit` hands a frame to the render thread and returns a `HostedFrame` future, and `composite` draws the resolved frame into the host's texture
 - `Context` - GPU resources during setup (adapter, device, queue, format, redraw)
 - `Frame` - Frame data during render (device, queue, texture, view, dimensions, timings)
 - `GpuRuntime` - Shared wgpu runtime for offscreen and host-driven rendering
@@ -192,10 +192,11 @@ content on either the GPU or CPU (`OffscreenRenderer::cpu`).
 
 ### Re-exported Dependencies
 
-- `wgpu` - Direct access to wgpu types for `GpuContent` implementations
-- `cherenkov` - The scene engine (`Recorder`, `Engine`, `Display`)
-- `kurbo` - 2D geometry
-- `bytemuck` - Safe byte conversions for uniform buffers
+- `gpu::wgpu` - Direct access to wgpu types for `GpuContent` implementations
+- `gpu::{Display, FrameTime, Offscreen, OffscreenFormat, Readback, Gpu, interop}` - The engine types a `GpuContent` author names
+- `gpu::bytemuck` - Safe byte conversions for uniform buffers
+- `filter_view::{filters, Filter, Effect, ..}` - The filters `.filter(F)` takes and the types a custom `.effect(E)` is written in
+- `backend::{draw, cherenkov, filtrate, ..}` - The backend contract: recorder vocabulary, engine crates and the leaf and resource types a backend realizes
 
 ## Platform Support
 

@@ -7,7 +7,14 @@ use super::ContainerNode;
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
-use waterui_graphics::scene_stretch_axis;
+use crate::text::TextEngine;
+use crate::theme::WidgetTheme;
+use waterui_core::contract_violation;
+use waterui_core::layout::{
+    Layout, LayoutError, LayoutPlacement, PlacedSubview, Rect as LayoutRect, ResolvedExtent,
+    SubviewPlacement, place_layout, resolve_layout_extent,
+};
+use waterui_graphics::backend::scene_stretch_axis;
 use waterui_layout::scroll::scroll_stretch_axis;
 
 impl<E: crate::text::TextEngine> RenderNode<E> {
@@ -44,7 +51,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// treats a child answering `true` as a non-member (§4.4: it takes no
     /// slot and no spacing), and a `Dynamic` flipping between `()` and content
     /// is a membership change — `layout` re-asks this every pass.
-    pub(super) fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         match self {
             Self::Widget(node) => node.behavior.renders_nothing(),
             Self::Opacity(node) => node.child.is_empty(),
@@ -67,7 +74,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         }
     }
 
-    pub(super) fn stretch(&self) -> StretchAxis {
+    pub(in crate::renderer) fn stretch(&self) -> StretchAxis {
         match self {
             Self::Color(_) => StretchAxis::Both,
             // §6: a scroll stretches on its scrolling axis and on the
@@ -125,8 +132,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     }
 
     /// Measure this node under a proposal (recursive). Text shaping runs through
-    /// the renderer's [`HydroState`] on the main thread. Visible crate-wide so
-    /// the `Dynamic` dispatch measure can re-measure the retained child.
+    /// the renderer's [`HydroState`] on the main thread.
     ///
     /// Memoized per frame on the node's own [`NodeMeasureEntry`], for
     /// container-like nodes only: a layout engine that re-probes a child
@@ -161,6 +167,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         let mut gate = memo_gate.get();
         if !gate.probe(frame, proposal) {
             memo_gate.set(gate);
+            state.measurement.record_miss();
             return self.measure_body(state, env, theme, proposal);
         }
         memo_gate.set(gate);
@@ -168,8 +175,10 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         let env_identity = env.identity();
         let hit = memo_slots.borrow().dims(env_identity, frame, proposal);
         if let Some(hit) = hit {
+            state.measurement.record_hit();
             return hit;
         }
+        state.measurement.record_miss();
         let dimensions = self.measure_body(state, env, theme, proposal);
         let mut memo = memo_slots.borrow_mut();
         memo.ensure_current(frame);
@@ -196,18 +205,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 proposal.width.unwrap_or(0.0),
                 proposal.height.unwrap_or(0.0),
             )),
-            Self::Text(text) => {
-                let content = state.measure_signal(&text.content);
-                let alignment = state.measure_signal(&text.alignment);
-                HydrolysisRenderer::measure_text_dimensions(
-                    state,
-                    content,
-                    alignment,
-                    env,
-                    proposal.width,
-                    text.line_limit,
-                )
-            }
+            Self::Text(text) => text_dimensions(text, state, env, proposal),
             Self::Container(container) => {
                 let cell = RefCell::new(state);
                 let subs: Vec<NodeSubView<E>> = container
@@ -216,7 +214,8 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                     .map(|child| NodeSubView::new(child, &cell, env, theme))
                     .collect();
                 let refs: Vec<&dyn SubView> = subs.iter().map(|sub| sub as &dyn SubView).collect();
-                ViewDimensions::new(container.layout.size_that_fits(proposal, &refs))
+                let size = container.layout.size_that_fits(proposal, &refs);
+                container_dimensions(&*container.layout, size, proposal, &subs, &refs)
             }
             // Transform/opacity wrappers are layout-transparent.
             Self::Opacity(node) => node.child.measure(state, env, theme, proposal),
@@ -225,17 +224,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Self::Offset(node) => node.child.measure(state, env, theme, proposal),
             Self::Retain(node) => node.child.measure(state, env, theme, proposal),
             Self::Env(node) => node.child.measure(state, &node.env, theme, proposal),
-            Self::Dynamic(node) => {
-                let dimensions = node.child.borrow().measure(state, env, theme, proposal);
-                // The connected node's real per-proposal answers feed the
-                // dispatch measure of the same `Dynamic` (`measure_dynamic`).
-                state.measurement.store_dynamic_dimensions(
-                    node.source.identity(),
-                    proposal,
-                    dimensions.clone(),
-                );
-                dimensions
-            }
+            Self::Dynamic(node) => node.child.borrow().measure(state, env, theme, proposal),
             // Scene content that is naturally a size (an SVG's viewBox, a
             // formula's typeset box) answers with it on whichever axis the
             // container left open; content that is not fills the proposal.
@@ -371,7 +360,12 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                             },
                         )
                     }
-                    _ => panic!("hydrolysis render tree: unsupported scroll axis"),
+                    other => {
+                        contract_violation!(
+                            "hydrolysis render tree: unsupported scroll axis {other:?}; the scroll view measures as zero"
+                        );
+                        Size::zero()
+                    }
                 };
                 ViewDimensions::new(size)
             }
@@ -382,6 +376,89 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Self::Wrapper(node) => node.child.measure(state, &node.env, theme, proposal),
             Self::Fill(node) => node.child.measure(state, env, theme, proposal),
             Self::Widget(node) => node.behavior.measure(state, proposal, &node.env, theme),
+        }
+    }
+
+    /// This node's response geometry (water-rs/waterui#1323), dispatched
+    /// exactly like [`Self::measure_body`] so the two cannot drift: a container
+    /// answers [`resolve_layout_extent`] over its retained children, a lazy
+    /// stack answers its stack rule from the lazy measurement alone, and a
+    /// layout-transparent wrapper forwards to its child with the same bounds,
+    /// proposal and the environment `measure_body` gives that child.
+    ///
+    /// `None` means the node is a leaf: the caller answers
+    /// [`ResolvedExtent::centred`] with its own measured, stretch-applied
+    /// answer, the same size its parent laid it out with.
+    ///
+    /// # Errors
+    ///
+    /// A [`LayoutError`] when the answer or `bounds` is not valid geometry, or
+    /// a layout broke the response-extent identity.
+    pub(crate) fn resolve_extent(
+        &self,
+        state: &mut HydroState<E>,
+        env: &Environment,
+        theme: &Rc<dyn WidgetTheme>,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<Option<ResolvedExtent>, LayoutError> {
+        match self {
+            Self::Container(container) => {
+                let cell = RefCell::new(state);
+                let subs: Vec<NodeSubView<E>> = container
+                    .children
+                    .iter()
+                    .map(|child| NodeSubView::new(child, &cell, env, theme))
+                    .collect();
+                let refs: Vec<&dyn SubView> = subs.iter().map(|sub| sub as &dyn SubView).collect();
+                resolve_layout_extent(&*container.layout, bounds, proposal, &refs).map(Some)
+            }
+            Self::Opacity(node) => node
+                .child
+                .resolve_extent(state, env, theme, bounds, proposal),
+            Self::Scale(node) => node
+                .child
+                .resolve_extent(state, env, theme, bounds, proposal),
+            Self::Rotation(node) => node
+                .child
+                .resolve_extent(state, env, theme, bounds, proposal),
+            Self::Offset(node) => node
+                .child
+                .resolve_extent(state, env, theme, bounds, proposal),
+            Self::Retain(node) => node
+                .child
+                .resolve_extent(state, env, theme, bounds, proposal),
+            Self::Fill(node) => node
+                .child
+                .resolve_extent(state, env, theme, bounds, proposal),
+            Self::Env(node) => node
+                .child
+                .resolve_extent(state, &node.env, theme, bounds, proposal),
+            Self::Filtered(node) => node
+                .child
+                .resolve_extent(state, &node.env, theme, bounds, proposal),
+            Self::Wrapper(node) => node
+                .child
+                .resolve_extent(state, &node.env, theme, bounds, proposal),
+            Self::Dynamic(node) => node
+                .child
+                .borrow()
+                .resolve_extent(state, env, theme, bounds, proposal),
+            Self::LazyStack(node) => node
+                .resolve_extent(state, theme, bounds, proposal)
+                .map(Some),
+            Self::Collection(node) => node
+                .resolve_extent(state, theme, bounds, proposal)
+                .map(Some),
+            // Leaves: a scroll answers its offer, widgets and text measure
+            // themselves, scene/GPU/external content answers its intrinsic size.
+            Self::Color(_)
+            | Self::Text(_)
+            | Self::Scroll(_)
+            | Self::SceneView(_)
+            | Self::Widget(_) => Ok(None),
+            #[cfg(hydrolysis_gpu)]
+            Self::GpuContent(_) | Self::ExternalFrame(_) => Ok(None),
         }
     }
 
@@ -482,9 +559,26 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         proposal: ProposalSize,
         size: Size,
     ) {
+        self.layout_in(renderer, env, safe_area, proposal, Rect::from_size(size));
+    }
+
+    /// [`Self::layout`] over placement `bounds` given in the node's
+    /// allocation-local space. The allocation is `bounds`' size at the local
+    /// origin; a host whose rule positions this node's response (a list row,
+    /// water-rs/waterui#3888) moves `bounds` so the response lands where the
+    /// rule puts it, and the node's children and drawing follow, while the
+    /// allocation, and with it the node's hit target, stays.
+    pub(crate) fn layout_in(
+        &mut self,
+        renderer: &mut HydrolysisRenderer<E>,
+        env: &Environment,
+        safe_area: Option<safe_area::SafeAreaLayout>,
+        proposal: ProposalSize,
+        bounds: Rect,
+    ) {
         let core = self.core().clone();
         renderer.with_reader(&core, ReaderPhase::Layout, |renderer| {
-            self.layout_inner(renderer, env, safe_area, proposal, size);
+            self.layout_inner(renderer, env, safe_area, proposal, bounds);
         });
     }
 
@@ -498,15 +592,17 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         env: &Environment,
         safe_area: Option<safe_area::SafeAreaLayout>,
         proposal: ProposalSize,
-        size: Size,
+        bounds: Rect,
     ) {
         renderer.state.counters.layout_calls += 1;
         // The selected proposal and resolved size are distinct layout inputs.
         // Transparent wrappers preserve both without reconstructing an offer.
         let theme = renderer.theme();
+        let size = *bounds.size();
+        let allocation = Rect::from_size(size);
         match self {
             Self::Container(container) => {
-                let placements = {
+                let placement = {
                     let cell = RefCell::new(&mut renderer.state);
                     let subs: Vec<NodeSubView<E>> = container
                         .children
@@ -515,47 +611,60 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                         .collect();
                     let refs: Vec<&dyn SubView> =
                         subs.iter().map(|sub| sub as &dyn SubView).collect();
-                    // Only the accessibility scope reads `resolved` — skip the
-                    // measure in builds without it.
-                    #[cfg(feature = "accessibility")]
-                    {
-                        container.resolved = resolved_content_rect(
-                            container.layout.size_that_fits(proposal, &refs),
-                            size,
-                        );
-                    }
-                    container
-                        .layout
-                        .place(Rect::from_size(size), proposal, &refs)
+                    placed_layout(&*container.layout, bounds, proposal, &refs)
                 };
-                for (child, placement) in container.children.iter_mut().zip(&placements) {
-                    let child_area = safe_area.as_ref().map(|area| area.child(placement.frame));
+                #[cfg(feature = "accessibility")]
+                {
+                    container.geometry = Some(PlacedGeometry {
+                        proposal,
+                        answer: placement.answer,
+                        allocation,
+                        response_rect: placement.response_rect,
+                    });
+                }
+                for (child, child_placement) in
+                    container.children.iter_mut().zip(&placement.children)
+                {
+                    let child_area = safe_area
+                        .as_ref()
+                        .map(|area| area.child(child_placement.frame));
                     child.layout(
                         renderer,
                         env,
                         child_area,
-                        placement.proposal,
-                        *placement.frame.size(),
+                        child_placement.proposal,
+                        *child_placement.frame.size(),
                     );
                 }
-                container.placed = placements
+                container.placed = placement
+                    .children
                     .into_iter()
-                    .map(|placement| placement.frame)
+                    .map(|child_placement| child_placement.frame)
                     .collect();
             }
             // Transform/opacity wrappers are layout-transparent: the child lays out
             // at the same concrete size as the wrapper, inside the same
             // laid-out frame — visual transforms are not part of §7.1's
             // "laid-out frame" and never change the touch test.
-            Self::Opacity(node) => node.child.layout(renderer, env, safe_area, proposal, size),
-            Self::Scale(node) => node.child.layout(renderer, env, safe_area, proposal, size),
-            Self::Rotation(node) => node.child.layout(renderer, env, safe_area, proposal, size),
-            Self::Offset(node) => node.child.layout(renderer, env, safe_area, proposal, size),
-            Self::Retain(node) => node.child.layout(renderer, env, safe_area, proposal, size),
+            Self::Opacity(node) => node
+                .child
+                .layout_in(renderer, env, safe_area, proposal, bounds),
+            Self::Scale(node) => node
+                .child
+                .layout_in(renderer, env, safe_area, proposal, bounds),
+            Self::Rotation(node) => node
+                .child
+                .layout_in(renderer, env, safe_area, proposal, bounds),
+            Self::Offset(node) => node
+                .child
+                .layout_in(renderer, env, safe_area, proposal, bounds),
+            Self::Retain(node) => node
+                .child
+                .layout_in(renderer, env, safe_area, proposal, bounds),
             Self::Env(node) => {
                 let node_env = node.env.clone();
                 node.child
-                    .layout(renderer, &node_env, safe_area, proposal, size);
+                    .layout_in(renderer, &node_env, safe_area, proposal, bounds);
             }
             // Layout-transparent: the child lays out at the same concrete size,
             // under the wrapper's scoped environment — except `.ignore_safe_area`,
@@ -569,7 +678,8 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 if let WrapperEffect::IgnoreSafeArea(ignore) = &node.effect {
                     let Some(area) = safe_area else {
                         node.released_offsets.set(safe_area::EdgeOffsets::default());
-                        node.child.layout(renderer, &node_env, None, proposal, size);
+                        node.child
+                            .layout_in(renderer, &node_env, None, proposal, bounds);
                         return;
                     };
                     // The declaration's named edges resolve under the
@@ -585,16 +695,16 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                         proposal.width.map(|_| child_size.width),
                         proposal.height.map(|_| child_size.height),
                     );
-                    node.child.layout(
+                    node.child.layout_in(
                         renderer,
                         &node_env,
                         Some(child_area),
                         child_proposal,
-                        child_size,
+                        Rect::new(bounds.origin(), child_size),
                     );
                 } else {
                     node.child
-                        .layout(renderer, &node_env, safe_area, proposal, size);
+                        .layout_in(renderer, &node_env, safe_area, proposal, bounds);
                 }
             }
             Self::Dynamic(node) => {
@@ -603,14 +713,19 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 store_safe_area(&mut node.safe_area, safe_area.clone());
                 node.child
                     .borrow_mut()
-                    .layout(renderer, env, safe_area, proposal, size);
+                    .layout_in(renderer, env, safe_area, proposal, bounds);
             }
             Self::Scroll(node) => {
                 let child_proposal = match node.axis {
                     ScrollAxis::Horizontal => ProposalSize::new(None, Some(size.height)),
                     ScrollAxis::Vertical => ProposalSize::new(Some(size.width), None),
                     ScrollAxis::All => ProposalSize::UNSPECIFIED,
-                    _ => panic!("hydrolysis render tree: unsupported scroll axis"),
+                    other => {
+                        contract_violation!(
+                            "hydrolysis render tree: unsupported scroll axis {other:?}; the scroll view is not laid out"
+                        );
+                        return;
+                    }
                 };
                 let intrinsic = node
                     .child
@@ -627,7 +742,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                         intrinsic.width.max(size.width),
                         intrinsic.height.max(size.height),
                     ),
-                    _ => panic!("hydrolysis render tree: unsupported scroll axis"),
+                    _ => unreachable!("an unsupported scroll axis returned above"),
                 };
                 // §7.1's scroll surface: the extension is computed once
                 // here — the edges whose laid-out frame touches the
@@ -698,17 +813,17 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                         // A request carries an optional animation: `None`
                         // lands in place; `Some` glides along its curve via
                         // the smooth-scroll pump this render registers.
-                        if let Some(animation) = request.animation {
+                        if let Some(animation) = request.animation().cloned() {
                             let _ = handle.scroll_to_animated(
-                                f64::from(request.target.x),
-                                f64::from(request.target.y),
+                                f64::from(request.target().x),
+                                f64::from(request.target().y),
                                 animation,
                                 renderer.frame_instant(),
                             );
                         } else {
                             let _ = handle.scroll_to(
-                                f64::from(request.target.x),
-                                f64::from(request.target.y),
+                                f64::from(request.target().x),
+                                f64::from(request.target().y),
                             );
                         }
                         node.applied_scroll_generation.set(generation);
@@ -723,11 +838,11 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 node.child
                     .layout(renderer, env, None, child_proposal, content_size);
             }
-            Self::Collection(node) => node.layout(renderer, safe_area.as_ref(), proposal, size),
+            Self::Collection(node) => node.layout(renderer, safe_area.as_ref(), proposal, bounds),
             Self::Filtered(node) => {
                 let node_env = node.env.clone();
                 node.child
-                    .layout(renderer, &node_env, safe_area, proposal, size);
+                    .layout_in(renderer, &node_env, safe_area, proposal, bounds);
             }
             // §7.1's fill rule, layout side: the slot fill records the
             // paint extension its laid-out frame earns (extension is a
@@ -740,7 +855,8 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                         .as_ref()
                         .map(safe_area::SafeAreaLayout::touched_edge_offsets),
                 );
-                node.child.layout(renderer, env, safe_area, proposal, size);
+                node.child
+                    .layout_in(renderer, env, safe_area, proposal, bounds);
             }
             Self::Widget(node) => {
                 node.behavior.update_scroll_surface(
@@ -754,51 +870,125 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             }
             // The context a lazy stack's flush-time item placements read —
             // its items inherit the context it laid out against, like a
-            // collection's placed children do.
+            // collection's placed children do. Its response follows the stack
+            // rule from the lazy measurement, read by the naming scope the
+            // stack owns.
             Self::LazyStack(node) => {
+                #[cfg(feature = "accessibility")]
+                {
+                    let resolved = resolved_or_collapsed(
+                        node.resolve_extent(&mut renderer.state, &theme, bounds, proposal),
+                        bounds,
+                    );
+                    node.geometry = Some(PlacedGeometry {
+                        proposal,
+                        answer: resolved.answer,
+                        allocation,
+                        response_rect: resolved.rect,
+                    });
+                }
                 store_safe_area(&mut node.safe_area, safe_area);
             }
-            // Text, color and GPU leaves render at flush from `ctx.bounds`.
-            Self::Color(_) | Self::Text(_) | Self::SceneView(_) => {}
+            // The foundation leaf rule: the text's answer centred in its
+            // placement bounds. The glyphs draw and the accessibility node
+            // reports in that response rectangle.
+            Self::Text(node) => {
+                let answer = text_dimensions(node, &mut renderer.state, env, proposal).size;
+                let resolved =
+                    resolved_or_collapsed(ResolvedExtent::centred(bounds, answer), bounds);
+                node.geometry = Some(PlacedGeometry {
+                    proposal,
+                    answer,
+                    allocation,
+                    response_rect: resolved.rect,
+                });
+            }
+            // Color and GPU leaves render at flush from `ctx.bounds`.
+            Self::Color(_) | Self::SceneView(_) => {}
             #[cfg(hydrolysis_gpu)]
             Self::GpuContent(_) | Self::ExternalFrame(_) => {}
         }
     }
 }
 
-/// The rect a container resolved for itself — the size it answered to the
-/// selected proposal, centred on the assigned frame — in the same local space
-/// as `placed`. A container is routinely assigned more than it answered (a
-/// window's `Overlay` places its base over the whole bounds), so the assigned
-/// frame is not the element's own extent; centring the answer on the assigned
-/// frame reports where the view actually sits, matching the centre-anchored
-/// underfill convention the layout contract and `SwiftUI` share. Anchoring on
-/// the placed envelope instead would shift the rect by wherever the children
-/// happen to sit — a leading-inset padding pushes it outside the assigned
-/// frame entirely. A non-finite answer axis falls back to the assigned extent
-/// on that axis.
+/// Places a container's children in `bounds` through [`place_layout`], which
+/// resolves the container's own response from the same answer
+/// (`docs/layout-spec.md` §7). A container is routinely assigned more than it
+/// answered (a window's `Overlay` places its base over the whole bounds), so
+/// its response, not its allocation, is its own extent.
+pub(super) fn placed_layout(
+    layout: &dyn Layout,
+    bounds: Rect,
+    proposal: ProposalSize,
+    children: &[&dyn SubView],
+) -> LayoutPlacement {
+    place_layout(layout, bounds, proposal, children).unwrap_or_else(|error| {
+        contract_violation!(
+            "hydrolysis layout: {error}; the container and its children collapse to zero size at the container's origin"
+        );
+        let collapsed = Rect::new(bounds.origin(), Size::zero());
+        LayoutPlacement {
+            answer: Size::zero(),
+            response_rect: collapsed,
+            children: children
+                .iter()
+                .map(|_| SubviewPlacement::new(collapsed, ProposalSize::new(Some(0.0), Some(0.0))))
+                .collect(),
+        }
+    })
+}
+
+/// `result`, or after a contract violation a zero-size response at `bounds`'
+/// origin when the layout driver rejected the answer or the bounds.
+pub(super) fn resolved_or_collapsed(
+    result: Result<ResolvedExtent, LayoutError>,
+    bounds: Rect,
+) -> ResolvedExtent {
+    result.unwrap_or_else(|error| {
+        contract_violation!(
+            "hydrolysis layout: {error}; the view collapses to zero size at its origin"
+        );
+        ResolvedExtent {
+            answer: Size::zero(),
+            rect: Rect::new(bounds.origin(), Size::zero()),
+        }
+    })
+}
+
+/// A text leaf's answer to `proposal`, shaped under `env`.
+fn text_dimensions<E: TextEngine>(
+    text: &TextNode<E>,
+    state: &mut HydroState<E>,
+    env: &Environment,
+    proposal: ProposalSize,
+) -> ViewDimensions {
+    let content = state.measure_signal(&text.content);
+    let alignment = state.measure_signal(&text.alignment);
+    HydrolysisRenderer::measure_text_dimensions(
+        state,
+        content,
+        alignment,
+        env,
+        proposal.width,
+        text.line_limit,
+    )
+}
+
+/// The rectangle an accessibility element reports in its owner's
+/// allocation-local space: the owner's response, unless a naming modifier in
+/// `env` names another source (`docs/layout-spec.md` §7.2).
 #[cfg(feature = "accessibility")]
-pub(super) fn resolved_content_rect(answer: Size, assigned: Size) -> Rect {
-    let width = if answer.width.is_finite() {
-        answer.width
-    } else {
-        assigned.width
-    };
-    let height = if answer.height.is_finite() {
-        answer.height
-    } else {
-        assigned.height
-    };
-    let center = Rect::from_size(assigned).center();
-    Rect::new(
-        Point::new(center.x - width / 2.0, center.y - height / 2.0),
-        Size::new(width, height),
+pub(super) fn accessibility_rect(env: &Environment, geometry: &PlacedGeometry) -> kurbo::Rect {
+    kurbo_rect(
+        env.get::<AccessibilityGeometry>()
+            .copied()
+            .unwrap_or_default()
+            .resolve(geometry),
     )
 }
 
 /// `rect` in kurbo coordinates — [`Rect`] is the f32 layout space while
 /// `RenderContext` geometry is kurbo f64.
-#[cfg(feature = "accessibility")]
 pub(super) fn kurbo_rect(rect: Rect) -> kurbo::Rect {
     kurbo::Rect::new(
         f64::from(rect.x()),
@@ -918,4 +1108,59 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Self::LazyStack(node) => node.item_cache.borrow().signature_into(hasher),
         }
     }
+}
+
+/// A container's answer to `proposal`: its `size` with the explicit alignment
+/// guides it exports (§2.2) — the alignments its layout declares and those
+/// its children answered, each resolved by the layout over the placement it
+/// makes inside `size`. A container whose layout declares none and whose
+/// children answered none exports none, without placing.
+fn container_dimensions<E: crate::text::TextEngine>(
+    layout: &dyn Layout,
+    size: Size,
+    proposal: ProposalSize,
+    subs: &[NodeSubView<'_, E>],
+    refs: &[&dyn SubView],
+) -> ViewDimensions {
+    let mut dimensions = ViewDimensions::new(size);
+    let mut horizontal = layout.explicit_horizontal_alignments();
+    let mut vertical = layout.explicit_vertical_alignments();
+    if !size.width.is_finite()
+        || !size.height.is_finite()
+        || (horizontal.is_empty()
+            && vertical.is_empty()
+            && !subs.iter().any(NodeSubView::answered_guides))
+    {
+        return dimensions;
+    }
+    let bounds = LayoutRect::from_size(size);
+    let placed: Vec<PlacedSubview<'_>> = refs
+        .iter()
+        .zip(layout.place(bounds, proposal, refs))
+        .map(|(view, placement)| PlacedSubview::new(*view, placement))
+        .collect();
+    for child in &placed {
+        let child_dimensions = child.dimensions();
+        for (alignment, _) in child_dimensions.explicit_horizontal_guides() {
+            if !horizontal.contains(&alignment) {
+                horizontal.push(alignment);
+            }
+        }
+        for (alignment, _) in child_dimensions.explicit_vertical_guides() {
+            if !vertical.contains(&alignment) {
+                vertical.push(alignment);
+            }
+        }
+    }
+    for alignment in horizontal {
+        if let Some(value) = layout.explicit_horizontal(alignment, bounds, &placed) {
+            dimensions.set_horizontal(alignment, value);
+        }
+    }
+    for alignment in vertical {
+        if let Some(value) = layout.explicit_vertical(alignment, bounds, &placed) {
+            dimensions.set_vertical(alignment, value);
+        }
+    }
+    dimensions
 }

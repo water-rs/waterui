@@ -84,6 +84,11 @@ impl HostWake for EventFdWake {
     }
 }
 
+/// The Android host's executor: the shared main-thread executor woken through
+/// the `eventfd` the main `ALooper` watches.
+#[cfg(target_os = "android")]
+pub type AndroidExecutor = HostMainThreadExecutor<EventFdWake>;
+
 /// The UI-local executor adapted to a host's main thread: the same channel
 /// queue the headless runner drains, but a waker's send also fires the
 /// host's [`HostWake`] — work scheduled from any thread lands on the UI

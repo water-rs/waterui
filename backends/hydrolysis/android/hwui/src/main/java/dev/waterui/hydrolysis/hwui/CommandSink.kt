@@ -70,6 +70,9 @@ interface CommandSink {
 
     fun text(layout: Int, matrix: FloatArray)
 
+    /** [text], the layout's default-coloured runs drawn in `color`. */
+    fun paintedText(layout: Int, matrix: FloatArray, color: Long)
+
     fun image(bitmap: Int, left: Float, top: Float, right: Float, bottom: Float, sampling: Int)
 
     /**
@@ -155,6 +158,12 @@ interface CommandSink {
     fun releaseBitmap(bitmap: Int)
 
     fun releaseRuntimeShader(runtimeShader: Int)
+
+    /**
+     * Rebuilds the platform `RenderEffect` chain `effect` names from `count`
+     * stages of `kind + 12 float values` each.
+     */
+    fun defineEffect(effect: Int, count: Int, kinds: IntArray, values: FloatArray)
 
     fun releaseEffect(effect: Int)
 

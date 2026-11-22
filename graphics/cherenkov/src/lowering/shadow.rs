@@ -142,3 +142,31 @@ pub fn spread_taps(
     }
     Ok(taps)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::check_sigma;
+    use crate::animation::{AnimLanes as _, Spring, spring_step};
+    use crate::{Shadow, WorkingColor};
+
+    /// A raised shadow settling to none under an overshooting spring keeps
+    /// every sampled blur valid for the engine.
+    #[test]
+    fn a_spring_overshooting_a_shadow_to_none_samples_a_valid_sigma() {
+        let raised = Shadow::new(8.0, WorkingColor::new([0.0, 0.0, 0.0, 0.3]));
+        let none = Shadow::new(0.0, WorkingColor::new([0.0, 0.0, 0.0, 0.3]));
+        let mut lanes = raised
+            .anim_lanes(&none)
+            .expect("a shadow animates by lanes");
+        let spring = Spring::bouncy();
+        let mut overshot = false;
+        for step in 0..=100_u32 {
+            let (sigma, _) = spring_step([8.0], [0.0], [0.0], &spring, f64::from(step) * 0.01);
+            overshot |= sigma[0] < 0.0;
+            lanes[0] = sigma[0];
+            check_sigma(raised.with_lanes(&lanes).sigma)
+                .unwrap_or_else(|error| panic!("step {step} sampled sigma {}: {error}", sigma[0]));
+        }
+        assert!(overshot, "the bouncy spring must pass below zero");
+    }
+}

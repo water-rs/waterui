@@ -21,12 +21,38 @@ pub mod external;
 pub mod runtime;
 pub use external::{
     ExternalFrameSource, ExternalFrameStream, ExternalFrameView, FrameOutput, FrameReceiver,
-    RetiredOutput,
+    PresentedSize, RetiredOutput,
 };
 pub use runtime::{
     DeviceLoss, ExternalFrameRenderer, GpuContentRenderer, GpuRuntime, GpuRuntimeError,
     HostedLayerError, SharedGpuContext, preferred_surface_format,
 };
+#[cfg(not(target_arch = "wasm32"))]
+pub use runtime::{HostedFrame, RebuildHold, RenderedFrame, Unrecoverable};
+
+/// The rectangle an IME caret query ([`CaretQuery`]) answers with.
+pub use crate::draw::kurbo::Rect;
+/// The display a frame is composited for and the presentation time it
+/// targets, which [`GpuContentRenderer`] and [`ExternalFrameRenderer`] take
+/// per frame, and the offscreen target and readback a content author renders
+/// a frame into to read it back.
+pub use cherenkov::{Display, FrameTime, Offscreen, OffscreenFormat, Readback};
+/// The GPU backend [`OffscreenRenderer`](crate::OffscreenRenderer) and
+/// [`GpuRuntime`]'s engines run on.
+pub use cherenkov_gpu::Gpu;
+/// Importing frames that already live in GPU memory — a decoder's, a
+/// camera's or a browser compositor's planes, shader modules, platform
+/// textures — onto the engine's device, with the colour description each
+/// frame carries.
+pub use cherenkov_gpu::interop;
+
+/// The exact `wgpu` this build links: [`Context`] and [`Frame`] hand content
+/// its device, queue and target in its types.
+pub use wgpu;
+
+/// Plain-bytes casts for the uniform and vertex data content writes to its
+/// buffers, so a content author uses the version the framework links.
+pub use bytemuck;
 
 use alloc::boxed::Box;
 use alloc::rc::Rc;
@@ -35,11 +61,13 @@ use alloc::sync::Arc;
 use core::fmt;
 use core::time::Duration;
 
+use cherenkov::Instant;
+
 use std::sync::Mutex;
 
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
-use waterui_core::{Environment, Native, NativeView, View};
-use wgpu::{Adapter, Device, Queue, Texture, TextureFormat, TextureView};
+use waterui_core::{Environment, Native, NativeView, View, contract_violation};
+use wgpu::{Adapter, Device, Instance, Queue, Texture, TextureFormat, TextureView};
 
 use crate::draw::kurbo;
 
@@ -59,7 +87,7 @@ type Shared<T> = Rc<T>;
 ///
 /// The backend supplies it in [`Context`]; requesting a redraw while a frame
 /// is already scheduled is a no-op. It wakes the same view instance only: a
-/// [`GpuContentView`] that a parent rebuild tears down takes its content with
+/// [`GpuView`] that a parent rebuild tears down takes its content with
 /// it, and a later request through its handle redraws nothing.
 #[derive(Clone)]
 pub struct RedrawHandle(Arc<dyn Fn() + Send + Sync>);
@@ -86,16 +114,78 @@ impl RedrawHandle {
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct Context<'a> {
+    /// The instance the adapter was created from.
+    instance: &'a Instance,
     /// The adapter the device was created from.
-    pub adapter: &'a Adapter,
+    adapter: &'a Adapter,
     /// The device the engine renders with.
-    pub device: &'a Device,
+    device: &'a Device,
     /// Its queue.
-    pub queue: &'a Queue,
+    queue: &'a Queue,
     /// The format of the texture the content renders into.
-    pub format: TextureFormat,
+    format: TextureFormat,
     /// Wakes the host for another frame from any thread.
-    pub redraw: RedrawHandle,
+    redraw: RedrawHandle,
+}
+
+impl<'a> Context<'a> {
+    /// A context over the engine's device: the instance and adapter it was
+    /// created from, the device and its queue, the format content renders
+    /// into, and the handle that wakes the host for another frame.
+    #[must_use]
+    pub const fn new(
+        instance: &'a Instance,
+        adapter: &'a Adapter,
+        device: &'a Device,
+        queue: &'a Queue,
+        format: TextureFormat,
+        redraw: RedrawHandle,
+    ) -> Self {
+        Self {
+            instance,
+            adapter,
+            device,
+            queue,
+            format,
+            redraw,
+        }
+    }
+
+    /// The instance the adapter was created from.
+    #[must_use]
+    pub const fn instance(&self) -> &'a Instance {
+        self.instance
+    }
+
+    /// The adapter the device was created from.
+    #[must_use]
+    pub const fn adapter(&self) -> &'a Adapter {
+        self.adapter
+    }
+
+    /// The device the engine renders with.
+    #[must_use]
+    pub const fn device(&self) -> &'a Device {
+        self.device
+    }
+
+    /// Its queue.
+    #[must_use]
+    pub const fn queue(&self) -> &'a Queue {
+        self.queue
+    }
+
+    /// The format of the texture the content renders into.
+    #[must_use]
+    pub const fn format(&self) -> TextureFormat {
+        self.format
+    }
+
+    /// Wakes the host for another frame from any thread.
+    #[must_use]
+    pub const fn redraw(&self) -> &RedrawHandle {
+        &self.redraw
+    }
 }
 
 /// One frame of a [`GpuContent`]: the texture to draw into and the clock.
@@ -121,6 +211,11 @@ pub struct Frame<'a> {
     pub elapsed: Duration,
     /// Time since the previous frame.
     pub delta: Duration,
+    /// When the platform will present this frame, where it reports a target
+    /// presentation time: a display link's target timestamp, a frame
+    /// scheduler's expected presentation time. `None` on platforms that
+    /// report none.
+    pub presentation_time: Option<Instant>,
     redraw: bool,
 }
 
@@ -137,6 +232,7 @@ impl<'a> Frame<'a> {
         (width, height): (u32, u32),
         scale: f32,
         (elapsed, delta): (Duration, Duration),
+        presentation_time: Option<Instant>,
     ) -> Self {
         Self {
             device,
@@ -149,6 +245,7 @@ impl<'a> Frame<'a> {
             scale,
             elapsed,
             delta,
+            presentation_time,
             redraw: false,
         }
     }
@@ -217,7 +314,7 @@ pub trait GpuContent: Send + 'static {
     /// - `Some(false)`: prefer an SDR target.
     /// - `None` — the default — means follow the host's surrounding policy.
     ///
-    /// The view's own [`prefer_hdr_surface`](GpuContentView::prefer_hdr_surface)
+    /// The view's own [`prefer_hdr_surface`](GpuView::prefer_hdr_surface)
     /// overrides this answer.
     fn preferred_surface_hdr(&self) -> Option<bool> {
         None
@@ -235,7 +332,8 @@ fn measure_by_intrinsic_size(intrinsic: Option<Size>, proposal: ProposalSize) ->
     }))
 }
 
-/// A UI-side handler for input the backend routes to a [`GpuContentView`].
+/// A UI-side handler for input the backend routes to a [`GpuView`]
+/// or an [`ExternalFrameView`].
 pub type InputHandler = Rc<dyn Fn(&SurfaceInputEvent)>;
 
 /// A UI-side hook the backend runs once per frame, before the content renders.
@@ -248,6 +346,38 @@ pub type FrameHook = Rc<dyn Fn()>;
 /// A UI-side query for where the content's text caret is, in logical
 /// view-local coordinates, so a host can place its input-method panel.
 pub type CaretQuery = Rc<dyn Fn() -> Option<kurbo::Rect>>;
+
+/// The UI-thread hooks a GPU-backed view carries for its host: input
+/// routing, the per-frame pump and the caret query, shared by
+/// [`GpuView`] and [`ExternalFrameView`].
+#[derive(Default)]
+struct SurfaceHooks {
+    input: Option<InputHandler>,
+    frame: Option<FrameHook>,
+    caret: Option<CaretQuery>,
+}
+
+impl SurfaceHooks {
+    const fn wants_input_events(&self) -> bool {
+        self.input.is_some()
+    }
+
+    fn input(&self, event: &SurfaceInputEvent) {
+        if let Some(handler) = &self.input {
+            handler(event);
+        }
+    }
+
+    fn frame(&self) {
+        if let Some(hook) = &self.frame {
+            hook();
+        }
+    }
+
+    fn ime_caret(&self) -> Option<kurbo::Rect> {
+        self.caret.as_ref().and_then(|query| query())
+    }
+}
 
 /// A view whose pixels come from [`GpuContent`].
 ///
@@ -263,22 +393,20 @@ pub type CaretQuery = Rc<dyn Fn() -> Option<kurbo::Rect>>;
 ///
 /// Stretches on both axes unless the content reports an intrinsic size, in
 /// which case it is that size and does not stretch.
-pub struct GpuContentView {
+pub struct GpuView {
     content: Option<Box<dyn GpuContent>>,
     content_handle: Option<GpuContentHandle>,
     intrinsic_size: Option<Size>,
     opaque: bool,
     surface_prefers_hdr: Option<bool>,
-    input: Option<InputHandler>,
-    frame: Option<FrameHook>,
-    caret: Option<CaretQuery>,
+    hooks: SurfaceHooks,
     label: Option<String>,
     value: Option<String>,
 }
 
-impl fmt::Debug for GpuContentView {
+impl fmt::Debug for GpuView {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("GpuContentView")
+        f.debug_struct("GpuView")
             .field("intrinsic_size", &self.intrinsic_size)
             .field("opaque", &self.opaque)
             .field("label", &self.label)
@@ -286,7 +414,7 @@ impl fmt::Debug for GpuContentView {
     }
 }
 
-impl GpuContentView {
+impl GpuView {
     /// A view drawing `content`.
     #[must_use]
     pub fn new(content: impl GpuContent) -> Self {
@@ -296,9 +424,7 @@ impl GpuContentView {
             content: Some(Box::new(content)),
             content_handle: None,
             surface_prefers_hdr: None,
-            input: None,
-            frame: None,
-            caret: None,
+            hooks: SurfaceHooks::default(),
             label: None,
             value: None,
         }
@@ -308,35 +434,33 @@ impl GpuContentView {
     /// this view.
     #[must_use]
     pub fn on_input(mut self, handler: impl Fn(&SurfaceInputEvent) + 'static) -> Self {
-        self.input = Some(Rc::new(handler));
+        self.hooks.input = Some(Rc::new(handler));
         self
     }
 
     /// Runs `hook` on the UI thread once per frame before the content renders.
     #[must_use]
     pub fn on_frame(mut self, hook: impl Fn() + 'static) -> Self {
-        self.frame = Some(Rc::new(hook));
+        self.hooks.frame = Some(Rc::new(hook));
         self
     }
 
     /// Answers where the content's text caret is, for input-method panels.
     #[must_use]
     pub fn on_ime_caret(mut self, query: impl Fn() -> Option<kurbo::Rect> + 'static) -> Self {
-        self.caret = Some(Rc::new(query));
+        self.hooks.caret = Some(Rc::new(query));
         self
     }
 
     /// The content's text caret, if it has one right now.
     #[must_use]
     pub fn ime_caret(&self) -> Option<kurbo::Rect> {
-        self.caret.as_ref().and_then(|query| query())
+        self.hooks.ime_caret()
     }
 
     /// Runs the per-frame UI hook, if any.
     pub fn frame(&self) {
-        if let Some(hook) = &self.frame {
-            hook();
-        }
+        self.hooks.frame();
     }
 
     /// The accessibility name of the content.
@@ -356,14 +480,12 @@ impl GpuContentView {
     /// Whether this view takes input events.
     #[must_use]
     pub const fn wants_input_events(&self) -> bool {
-        self.input.is_some()
+        self.hooks.wants_input_events()
     }
 
     /// Routes an input event to the content's handler.
     pub fn input(&self, event: &SurfaceInputEvent) {
-        if let Some(handler) = &self.input {
-            handler(event);
-        }
+        self.hooks.input(event);
     }
 
     /// The natural size of the content, if it has one.
@@ -375,7 +497,7 @@ impl GpuContentView {
     /// Measures this view's content against a layout proposal.
     ///
     /// Unlike [`intrinsic_size`](Self::intrinsic_size) — the snapshot taken at
-    /// [`GpuContentView::new`] — this asks the live content, so a source whose
+    /// [`GpuView::new`] — this asks the live content, so a source whose
     /// size resolves asynchronously reports it once it has one.
     #[must_use]
     pub fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
@@ -451,8 +573,8 @@ impl GpuContentView {
     /// engine surface that draws the layer. The UI hooks and input handlers
     /// stay in this view.
     ///
-    /// # Panics
-    /// Panics if the content has already been transferred.
+    /// Content already taken with [`take_content`](Self::take_content) is a
+    /// contract violation: the layer draws nothing.
     #[must_use]
     pub fn take_engine_content(&mut self) -> cherenkov_gpu::interop::GpuContentBox {
         cherenkov_gpu::interop::GpuContentBox::new(self.engine_content())
@@ -465,37 +587,45 @@ impl GpuContentView {
     /// so the engine's setup runs the one content on the new device, keeping
     /// the state the content had accumulated.
     ///
-    /// # Panics
-    /// Panics if the content was already taken with [`take_content`].
+    /// Content already taken with [`take_content`] is a contract violation:
+    /// the handle is to content that draws nothing.
     ///
     /// [`take_content`]: Self::take_content
     pub fn engine_content(&mut self) -> GpuContentHandle {
-        if self.content_handle.is_none() {
-            let content = self
-                .content
-                .take()
-                .expect("GpuContentView content installed twice");
-            self.content_handle = Some(GpuContentHandle::new(content));
-        }
+        let content = &mut self.content;
         self.content_handle
-            .as_ref()
-            .expect("GpuContentView content installed twice")
+            .get_or_insert_with(|| GpuContentHandle::new(take_once(content)))
             .clone()
     }
 
     /// Takes the content out for installation on a layer.
     ///
-    /// # Panics
-    /// When the content was already taken: a view is installed once.
+    /// Taking it twice is a contract violation, a view being installed once:
+    /// the second call answers content that draws nothing.
     #[must_use]
     pub fn take_content(&mut self) -> Box<dyn GpuContent> {
-        self.content
-            .take()
-            .expect("GpuContentView content installed twice")
+        take_once(&mut self.content)
     }
 }
 
-impl NativeView for GpuContentView {
+/// The content in `slot`, or [`Vacant`] when it was already taken.
+fn take_once(slot: &mut Option<Box<dyn GpuContent>>) -> Box<dyn GpuContent> {
+    slot.take().unwrap_or_else(|| {
+        contract_violation!("GpuView content installed twice; the layer draws nothing");
+        Box::new(Vacant)
+    })
+}
+
+/// Content that draws nothing: what a view's second installation gets.
+struct Vacant;
+
+impl GpuContent for Vacant {
+    fn setup(&mut self, _gpu: &Context<'_>) {}
+
+    fn render(&mut self, _frame: &mut Frame<'_>) {}
+}
+
+impl NativeView for GpuView {
     fn stretch_axis(&self) -> StretchAxis {
         if self.intrinsic_size.is_some() {
             StretchAxis::None
@@ -505,13 +635,9 @@ impl NativeView for GpuContentView {
     }
 }
 
-impl View for GpuContentView {
+impl View for GpuView {
     fn body(self, _env: &Environment) -> impl View {
         Native::new(self)
-    }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        NativeView::stretch_axis(self)
     }
 }
 
@@ -567,6 +693,7 @@ impl cherenkov_gpu::interop::GpuContent for GpuContentHandle {
     ) -> impl core::future::Future<Output = ()> {
         let redraw = gpu.redraw.clone();
         self.lock().setup(&Context {
+            instance: gpu.instance,
             adapter: gpu.adapter,
             device: gpu.device,
             queue: gpu.queue,
@@ -586,10 +713,52 @@ impl cherenkov_gpu::interop::GpuContent for GpuContentHandle {
             (gpu.width, gpu.height),
             gpu.scale,
             (gpu.elapsed, gpu.delta),
+            gpu.presentation_time,
         );
         self.lock().render(&mut frame);
         if frame.redraw_requested() {
             gpu.request_redraw();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Content that reports an intrinsic size, so it differs from [`Vacant`].
+    struct Sized;
+
+    impl GpuContent for Sized {
+        fn setup(&mut self, _gpu: &Context<'_>) {}
+
+        fn render(&mut self, _frame: &mut Frame<'_>) {}
+
+        fn intrinsic_size(&self) -> Option<Size> {
+            Some(Size::new(4.0, 4.0))
+        }
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "GpuView content installed twice")
+    )]
+    fn content_taken_twice_draws_nothing() {
+        let mut view = GpuView::new(Sized);
+        assert!(view.take_content().intrinsic_size().is_some());
+        assert!(view.take_content().intrinsic_size().is_none());
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "GpuView content installed twice")
+    )]
+    fn an_engine_handle_after_taking_the_content_draws_nothing() {
+        let mut view = GpuView::new(Sized);
+        let _ = view.take_content();
+        let handle = view.engine_content();
+        assert!(handle.lock().intrinsic_size().is_none());
     }
 }

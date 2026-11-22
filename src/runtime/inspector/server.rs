@@ -6,7 +6,12 @@
 //!   dispatcher;
 //! - one **reader** per client turns inbound control messages into dispatches;
 //! - the **dispatcher** owns every client and is the only thread that writes to
-//!   a socket, so client state needs no lock.
+//!   an authenticated socket, so client state needs no lock.
+//!
+//! The dispatcher, not the acceptor, sends `Welcome`, and only once it counts
+//! the client: an inspector that has been welcomed is attached, so asking to
+//! inspect an element right after the handshake reveals it there instead of
+//! launching a second inspector.
 
 use std::io;
 use std::net::{TcpListener, TcpStream};
@@ -32,7 +37,6 @@ pub(super) fn accept_loop(
     listener: &TcpListener,
     hub: &Arc<EventHub>,
     token: &str,
-    target: &TargetInfo,
     available: ChannelSet,
 ) {
     for connection in listener.incoming() {
@@ -49,7 +53,7 @@ pub(super) fn accept_loop(
         };
 
         let peer = socket.peer_addr().ok();
-        match handshake(socket, token, target, available) {
+        match handshake(socket, token, available) {
             Ok((socket, channels)) => {
                 tracing::debug!(
                     target: "waterui::inspector",
@@ -72,10 +76,11 @@ pub(super) fn accept_loop(
 }
 
 /// Authenticates a connection and negotiates its initial subscription.
+///
+/// The `Welcome` that completes the handshake is the dispatcher's to send.
 fn handshake(
     mut socket: TcpStream,
     expected_token: &str,
-    target: &TargetInfo,
     available: ChannelSet,
 ) -> io::Result<(TcpStream, ChannelSet)> {
     socket.set_nodelay(true)?;
@@ -120,14 +125,6 @@ fn handshake(
     }
 
     socket.set_read_timeout(None)?;
-    write_frame_blocking(
-        &mut socket,
-        &InspectorServerMessage::Welcome {
-            protocol: protocol_info(),
-            target: target.clone(),
-            available,
-        },
-    )?;
 
     Ok((socket, channels & available))
 }
@@ -210,8 +207,14 @@ fn read_control_messages(hub: &EventHub, client: ClientId, mut socket: TcpStream
 pub(super) fn dispatch_loop(
     hub: &Arc<EventHub>,
     receiver: &async_channel::Receiver<Dispatch>,
+    target: &TargetInfo,
     available: ChannelSet,
 ) {
+    let welcome = InspectorServerMessage::Welcome {
+        protocol: protocol_info(),
+        target: target.clone(),
+        available,
+    };
     let mut clients: Vec<Client> = Vec::new();
     // A node asked for before any inspector was attached, sent to the first one
     // that arrives.
@@ -235,19 +238,23 @@ pub(super) fn dispatch_loop(
                 socket,
                 channels,
             } => {
-                clients.push(Client {
+                let mut entry = Client {
                     id: client,
                     socket,
                     channels,
-                });
-                // Inspecting an element launches an inspector that is not
-                // connected yet, so the node it was asked to reveal waits here
-                // for it rather than being sent to nobody.
-                if let Some(node) = pending_select.take()
-                    && let Some(entry) = clients.last_mut()
-                {
-                    let message = InspectorServerMessage::Select { node };
-                    let _ = write_frame_blocking(&mut entry.socket, &message);
+                };
+                // Counted before it is welcomed, so the endpoint never tells
+                // an inspector it is attached while still reporting nobody.
+                hub.set_client_count(clients.len() + 1);
+                if write_frame_blocking(&mut entry.socket, &welcome).is_ok() {
+                    // Inspecting an element launches an inspector that is not
+                    // connected yet, so the node it was asked to reveal waits
+                    // here for it rather than being sent to nobody.
+                    if let Some(node) = pending_select.take() {
+                        let message = InspectorServerMessage::Select { node };
+                        let _ = write_frame_blocking(&mut entry.socket, &message);
+                    }
+                    clients.push(entry);
                 }
                 update_subscription(hub, &clients, available);
             }

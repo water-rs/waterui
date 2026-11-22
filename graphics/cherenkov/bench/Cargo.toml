@@ -32,13 +32,13 @@ skia-metal = ["dep:skia-safe", "dep:objc2", "dep:objc2-metal", "objc2-metal/bloc
 # below; their `dep:` entries resolve only on the matching target.
 cherenkov = [
     "dep:cherenkov", "dep:cherenkov-gpu", "cherenkov-gpu/bench", "dep:wgpu", "dep:ash",
-    "dep:half", "dep:filtrate", "cherenkov-scene/text",
+    "dep:half", "dep:filtrate", "dep:nami", "cherenkov-scene/text",
     "dep:objc2", "dep:objc2-metal", "dep:objc2-core-video",
     # `external-cost`'s IOSurface plane textures (#168).
     "objc2-metal/objc2-io-surface",
     "dep:objc2-core-foundation", "dep:ndk-sys",
 ]
-cherenkov-cpu = ["dep:cherenkov", "dep:cherenkov-cpu", "dep:filtrate", "cherenkov-scene/text"]
+cherenkov-cpu = ["dep:cherenkov", "dep:cherenkov-cpu", "cherenkov-cpu/shaders", "dep:filtrate", "dep:nami", "cherenkov-scene/text"]
 
 [dependencies]
 cherenkov = { path = "..", optional = true }
@@ -48,7 +48,7 @@ cherenkov-scene = { path = "../scene" }
 cherenkov-oracle = { path = "../oracle" }
 filtrate = { path = "../../filtrate", optional = true }
 kurbo = "0.13"
-nami = { version = "0.13", default-features = false, features = ["std", "kurbo"] }
+nami = { version = "0.13", default-features = false, features = ["std", "kurbo"], optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Decodes `powermetrics --format plist` output for `measure --energy`.
@@ -60,14 +60,13 @@ clap = { version = "4", features = ["derive"] }
 # The fork pinned in the workspace `[patch.crates-io]` declares 0.11.0.
 vello = { version = "0.11", default-features = false, optional = true, features = ["wgpu", "wgpu-profiler"] }
 vello_gpu = { version = "0.3", default-features = false, optional = true, features = ["wgpu", "text"] }
-vello_cpu = { version = "0.3", default-features = false, optional = true, features = ["std", "text", "u8_pipeline"] }
+vello_cpu = { version = "0.3", default-features = false, optional = true, features = ["std", "text", "png", "u8_pipeline"] }
 vello_common = { version = "0.3", default-features = false, optional = true, features = ["std"] }
 skia-safe = { version = "0.153", optional = true }
 # `no-compile` unifies onto skia-safe's transitive skia-bindings.
 skia-bindings = { version = "0.153", optional = true, default-features = false, features = ["no-compile"] }
-ash = { version = "0.38", optional = true }
 
-wgpu = { version = "30.0.1", optional = true }
+wgpu = { workspace = true, optional = true }
 pollster = { version = "1.0", optional = true }
 peniko = "0.6"
 skrifa = "0.48"
@@ -75,7 +74,13 @@ read-fonts = "0.45"
 bytemuck = "1"
 half = { version = "2", optional = true }
 glifo = { version = "0.4", optional = true, features = ["png"] }
-# Minimal surface: CPU list + brand string for `cpu_model`.
+
+[build-dependencies]
+waterui-git-head.workspace = true
+
+# Minimal surface: CPU list + brand string for `cpu_model` (Android reads
+# `/proc/cpuinfo` and iOS calls `sysctlbyname`).
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 sysinfo = { version = "0.39", default-features = false, features = ["system"] }
 
 # `sched_setaffinity` / `sched_getcpu` for `measure --cpu`; `kill` to
@@ -87,6 +92,11 @@ libc = "0.2"
 [target.'cfg(target_os = "android")'.dependencies]
 ndk-sys = { version = "0.6", optional = true }
 
+# Each native target renders through its one wgpu backend (see the workspace
+# `wgpu` entry), also for the vello adapters that do not link `cherenkov-gpu`.
+[target.'cfg(target_os = "windows")'.dependencies]
+wgpu = { workspace = true, optional = true, features = ["dx12"] }
+
 # The Skia GPU backend set for this target, declared on a second `skia-safe`
 # entry under the platform table: Cargo merges same-name declarations, so
 # whichever adapter feature enabled `dep:skia-safe` gets the prebuilt combo
@@ -94,12 +104,15 @@ ndk-sys = { version = "0.6", optional = true }
 # Graphite/Metal where `skia-metal` compiles. The backends deliberately stay
 # off the feature lists above: the union is what `--all-features` asks for.
 [target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
+ash = { version = "0.38", optional = true }
 skia-safe = { version = "0.153", optional = true, features = ["vulkan", "ganesh"] }
+wgpu = { workspace = true, optional = true, features = ["vulkan"] }
 
 # `external-cost`'s `CVPixelBuffer`/`IOSurface` producer (#168) and
 # skia-metal's Metal handle plumbing.
 [target.'cfg(target_vendor = "apple")'.dependencies]
 skia-safe = { version = "0.153", optional = true, features = ["metal", "graphite"] }
+wgpu = { workspace = true, optional = true, features = ["metal"] }
 objc2 = { version = "0.6.3", optional = true, default-features = false }
 # skia-metal's completion marker: `MTLCommandBuffer::addCompletedHandler`.
 block2 = { version = "0.6.2", optional = true, default-features = false, features = ["alloc"] }

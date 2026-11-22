@@ -1,6 +1,6 @@
 //! `water package` command implementation.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{Args as ClapArgs, ValueEnum};
 use eyre::{Result, bail};
@@ -124,6 +124,9 @@ impl AndroidArch {
     reason = "every boolean is a documented --flag, not structural state — the shape follows the CLI surface"
 )]
 pub struct Args {
+    #[command(flatten)]
+    features: super::FeatureArgs,
+
     /// Target platform to package for.
     #[arg(short, long, value_enum)]
     platform: TargetPlatform,
@@ -253,8 +256,14 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
         args.profile(),
         args.distribution,
     );
-    let kotlin_toolchain =
-        check_packaging_toolchain(shell, args.platform, context.backend, &args.arch).await?;
+    let kotlin_toolchain = check_packaging_toolchain(
+        shell,
+        context.project.root(),
+        args.platform,
+        context.backend,
+        &args.arch,
+    )
+    .await?;
     // The per-backend artifact builds cross clippy's `large_futures` threshold
     // (16 KiB) on Windows, so the future is pinned on the heap.
     let built = Box::pin(build_packaging_artifacts(
@@ -291,7 +300,7 @@ async fn prepare_packaging_context(shell: &Shell, args: &Args) -> Result<Option<
         managed_backends,
     )
     .await?;
-    if project.manifest().package.embedded {
+    if project.manifest().package().embedded() {
         bail!(
             "`water package` does not apply to embedded projects: `water build` already produces the host-consumable artifact"
         );
@@ -351,8 +360,9 @@ async fn prepare_packaging_context(shell: &Shell, args: &Args) -> Result<Option<
     }
     let project = super::ensure_generated_backend(shell, project, backend.cli_backend()).await?;
 
-    let mut build_options =
-        BuildOptions::packaging(args.profile()).with_progress(shell.build_progress());
+    let mut build_options = BuildOptions::packaging(args.profile())
+        .with_progress(shell.build_progress())
+        .with_features(args.features.values());
     if let Some(sccache_path) =
         super::detect_sccache_path(shell, &waterui_cli::toolchain::Host::current()).await
     {
@@ -395,6 +405,7 @@ fn print_packaging_header(
 
 async fn check_packaging_toolchain(
     shell: &Shell,
+    project_root: &Path,
     platform: TargetPlatform,
     backend: TargetBackend,
     arch: &[AndroidArch],
@@ -402,6 +413,7 @@ async fn check_packaging_toolchain(
     let spinner = shell.spinner("Checking toolchain...");
     let kotlin_toolchain = check_toolchain_for_backend(
         &waterui_cli::toolchain::Host::current(),
+        project_root,
         platform,
         backend,
         arch,
@@ -611,6 +623,21 @@ async fn package_artifact_inner(
     // tools run under.
     let project = &context.project.with_std_output(std_output);
     let package_options = context.package_options.clone();
+    if args.platform == TargetPlatform::Web {
+        let features = context
+            .build_options
+            .app_features(project)
+            .collect::<Vec<_>>();
+        let site = waterui_cli::hydrolysis::platform::package_hydrolysis_web_site(
+            project,
+            package_options.is_debug(),
+            false,
+            &features,
+        )
+        .await?;
+        return Ok(Artifact::new(project.bundle_identifier(), site));
+    }
+
     match context.backend {
         TargetBackend::Apple => {
             let built = built.ok_or_else(|| {
@@ -757,6 +784,7 @@ fn validate_arch_args(
 
 async fn check_toolchain_for_backend(
     host: &waterui_cli::toolchain::Host,
+    project_root: &Path,
     platform: TargetPlatform,
     backend: TargetBackend,
     arch: &[AndroidArch],
@@ -780,7 +808,7 @@ async fn check_toolchain_for_backend(
             if platform != TargetPlatform::Linux {
                 bail!("Internal error: GTK4 backend is not supported on {platform:?}");
             }
-            toolchain_checks::check_gtk4(host).await?;
+            toolchain_checks::check_gtk4(host, project_root).await?;
         }
         TargetBackend::Hydrolysis => {
             match platform {
@@ -810,7 +838,7 @@ async fn check_toolchain_for_backend(
             if platform == TargetPlatform::Web {
                 toolchain_checks::check_web(host).await?;
             } else {
-                toolchain_checks::check_hydrolysis(host).await?;
+                toolchain_checks::check_hydrolysis(host, project_root).await?;
             }
         }
         TargetBackend::WinUi => {

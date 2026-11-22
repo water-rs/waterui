@@ -109,7 +109,28 @@ pub enum BlendMode {
     PlusLighter,
 }
 
-/// The space in which a group blends.
+impl BlendMode {
+    /// Whether a transparent source changes the destination under this
+    /// operator — `Clear`, `Src`, `SrcIn`, `SrcOut`, `DestIn` and
+    /// `DestAtop` — instead of leaving it as it is. Such a composite covers
+    /// the whole clip it applies under, not only the source's pixels.
+    #[must_use]
+    pub const fn is_destructive(self) -> bool {
+        matches!(
+            self,
+            Self::Clear | Self::Src | Self::SrcIn | Self::SrcOut | Self::DestIn | Self::DestAtop
+        )
+    }
+}
+
+/// The space in which a group blends, or in which a surface stores its
+/// pixels ([`Shared::set_storage_space`](crate::surface::Shared::set_storage_space)).
+///
+/// A layer or group that declares no space composites in the space of
+/// the level it composites into, so a surface storing
+/// [`BlendSpace::SrgbEncoded`] blends its plain translucent paints as
+/// sRGB-space alpha blends without isolating them. One that declares a
+/// space unlike that level's isolates and composites across the spaces.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum BlendSpace {
@@ -123,19 +144,45 @@ pub enum BlendSpace {
 /// A filter chain registered with the render target.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct FilterId(u64);
+pub struct FilterId {
+    raw: u64,
+    coordinate_remap: bool,
+}
 
 impl FilterId {
-    /// Creates an identifier from a backend-assigned raw value.
+    /// Creates an identifier from a backend-assigned raw value, for a
+    /// filter that is not a coordinate remap.
     #[must_use]
     pub const fn new(raw: u64) -> Self {
-        Self(raw)
+        Self {
+            raw,
+            coordinate_remap: false,
+        }
+    }
+
+    /// Declares whether the filter is a pure coordinate remap
+    /// (`filtrate_core::Filter::COORDINATE_REMAP`), set by whoever
+    /// registers it from the filter's type.
+    #[must_use]
+    pub const fn with_coordinate_remap(self, coordinate_remap: bool) -> Self {
+        Self {
+            coordinate_remap,
+            ..self
+        }
     }
 
     /// The raw value.
     #[must_use]
     pub const fn raw(self) -> u64 {
-        self.0
+        self.raw
+    }
+
+    /// Whether the filter is a pure coordinate remap: it commutes with
+    /// source-over compositing up to edge filtering, so a group it filters
+    /// may be filtered part by part in paint order.
+    #[must_use]
+    pub const fn is_coordinate_remap(self) -> bool {
+        self.coordinate_remap
     }
 }
 
@@ -147,20 +194,22 @@ pub struct Group {
     pub opacity: f32,
     /// Blend mode of the group onto its parent.
     pub blend: BlendMode,
-    /// The space in which the group blends.
-    pub blend_space: BlendSpace,
+    /// The space in which the group blends; `None` blends in the space of
+    /// the level the group composites into.
+    pub blend_space: Option<BlendSpace>,
     /// Filter applied to the group.
     pub filter: Option<FilterId>,
 }
 
 impl Group {
-    /// An opaque, normally blended group with no filter.
+    /// An opaque, normally blended group with no filter, blending in the
+    /// space it composites into.
     #[must_use]
     pub const fn new() -> Self {
         Self {
             opacity: 1.,
             blend: BlendMode::Normal,
-            blend_space: BlendSpace::Linear,
+            blend_space: None,
             filter: None,
         }
     }
@@ -178,11 +227,12 @@ impl Group {
     }
 
     /// Sets the blend space: members composite with each other in this
-    /// space, and the group composites onto its backdrop in it.
+    /// space, and the group composites onto its backdrop in it. A space
+    /// unlike the enclosing level's isolates the group.
     #[must_use]
     pub const fn blend_space(self, blend_space: BlendSpace) -> Self {
         Self {
-            blend_space,
+            blend_space: Some(blend_space),
             ..self
         }
     }
@@ -217,7 +267,9 @@ impl crate::animation::AnimLanes for Shadow {
     )]
     fn with_lanes(&self, lanes: &[f64]) -> Self {
         Self {
-            sigma: lanes[0],
+            // A spring that overshoots its target passes below a zero blur,
+            // which the engine rejects: a blur has no negative extent.
+            sigma: lanes[0].max(0.0),
             offset: Vec2::new(lanes[1], lanes[2]),
             spread: lanes[3],
             color: WorkingColor::new([
@@ -251,3 +303,21 @@ impl crate::animation::AnimLanes for Group {
 }
 
 nami_core::impl_constant!(Shadow, Group);
+
+#[cfg(test)]
+mod tests {
+    use super::Shadow;
+    use crate::animation::AnimLanes as _;
+    use crate::color::WorkingColor;
+
+    /// A spring overshooting a shadow's blur past zero leaves it at zero.
+    #[test]
+    fn an_overshooting_blur_stops_at_zero() {
+        let shadow = Shadow::new(2.0, WorkingColor::new([0.0, 0.0, 0.0, 0.3]));
+        let mut lanes = shadow
+            .anim_lanes(&shadow)
+            .expect("a shadow animates by lanes");
+        lanes[0] = -0.4;
+        assert!(shadow.with_lanes(&lanes).sigma.abs() < f64::EPSILON);
+    }
+}

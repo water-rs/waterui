@@ -18,6 +18,7 @@ mod host;
 mod insets;
 mod scene;
 
+#[cfg(feature = "menu")]
 use std::any::Any;
 use std::cell::{OnceCell, RefCell};
 use std::collections::BTreeMap;
@@ -29,12 +30,13 @@ use cocoa_ui::uikit::{self, ApplicationHandlers, Window, WindowScene};
 use executor_core::{LocalExecutor as _, Task as _};
 use waterui::app::App;
 use waterui::theme::ColorScheme;
+#[cfg(feature = "menu")]
 use waterui_apple_menu::ios::{Declared, build_handler, declared, install_declared};
 use waterui_core::Environment;
 
 use super::session::AppleExecutor;
 use crate::platform::EngineGpuContext;
-use crate::renderer::MenuShortcutRegistry;
+
 use crate::runner::{HostEnvironment, assemble_host_environment, init_main_thread_executors};
 use crate::text::ParleyEngine;
 use crate::theme::WidgetTheme;
@@ -60,7 +62,7 @@ pub(super) struct Process {
     env: Environment,
     theme: Rc<dyn WidgetTheme>,
     fonts: waterui_text::FontCollection,
-    shortcuts: MenuShortcutRegistry<ParleyEngine>,
+    identities: crate::renderer::WindowIdentities,
     gpu: EngineGpuContext,
     /// The one window declaration; taken by the scene that mounts it.
     window: RefCell<Option<waterui::window::Window>>,
@@ -90,9 +92,11 @@ struct UiKitApplication {
     color_scheme: nami::Binding<ColorScheme>,
     process: OnceCell<Rc<Process>>,
     scenes: RefCell<BTreeMap<String, Rc<UiKitScene>>>,
+    #[cfg(feature = "menu")]
     /// What the `build_menus` handler reads: the resolved menu bar and the
     /// environment its actions run under, filled by launch.
     menus: Declared,
+    #[cfg(feature = "menu")]
     /// Keeps the menu bar's change watch alive for the process.
     menu_watch: RefCell<Option<Box<dyn Any>>>,
 }
@@ -114,6 +118,7 @@ impl UiKitApplication {
             .expect("the application finishes launching once");
         let waterui::app::AppParts {
             windows,
+            #[cfg(feature = "menu")]
             menu_bar,
             env,
             // iOS ends the process without notice: the last-window policy
@@ -135,9 +140,10 @@ impl UiKitApplication {
             env,
             theme,
             fonts,
-            shortcuts,
+            identities,
         } = assemble_host_environment::<ParleyEngine>(
             &env.layered_on(&services),
+            #[cfg(feature = "menu")]
             &menu_bar,
             style,
             self.color_scheme.clone(),
@@ -147,25 +153,31 @@ impl UiKitApplication {
         // The iPadOS main menu is built from the environment the chords above
         // were registered under, so its actions run with the application
         // environment as the macOS winit bar's do.
-        *self.menu_watch.borrow_mut() = Some(install_declared(
-            MainThreadMarker::new().expect("launch runs on the main thread"),
-            &menu_bar,
-            &env,
-            &self.menus,
-        ));
+        #[cfg(feature = "menu")]
+        {
+            *self.menu_watch.borrow_mut() = Some(install_declared(
+                MainThreadMarker::new().expect("launch runs on the main thread"),
+                &menu_bar,
+                &env,
+                &self.menus,
+            ));
+        }
 
         let application = Rc::clone(self);
         self.executor
             .spawn_local(async move {
                 // The engine presents each view itself, so no surface exists
                 // to pick the adapter by; the context opens before any scene
-                // renders and never blocks the main thread.
-                let gpu = EngineGpuContext::request("hydrolysis uikit").await;
+                // renders and never blocks the main thread. A device with no
+                // GPU the engine renders on cannot show the app at all.
+                let gpu = EngineGpuContext::request("hydrolysis uikit")
+                    .await
+                    .unwrap_or_else(|error| crate::runner::exit_without_gpu(error));
                 application.process_ready(Process {
                     env,
                     theme,
                     fonts,
-                    shortcuts,
+                    identities,
                     gpu,
                     window: RefCell::new(Some(window)),
                     pending_window_queue,
@@ -260,6 +272,7 @@ pub(in crate::runner) fn run(
 
     let mut services = Environment::new();
     waterui::inspector::install(&mut services, inspector);
+    #[cfg(feature = "menu")]
     let menus = declared();
     let application = Rc::new(UiKitApplication {
         executor,
@@ -272,35 +285,39 @@ pub(in crate::runner) fn run(
         color_scheme: nami::binding(framework_scheme(uikit::current_scheme())),
         process: OnceCell::new(),
         scenes: RefCell::new(BTreeMap::new()),
+        #[cfg(feature = "menu")]
         menus: Rc::clone(&menus),
+        #[cfg(feature = "menu")]
         menu_watch: RefCell::new(None),
     });
     let handlers = ApplicationHandlers::new({
         let application = Rc::clone(&application);
         move |scene| application.connect(scene)
-    })
-    .build_menus(build_handler(menus))
-    .did_finish_launching({
-        let application = Rc::clone(&application);
-        move |_| application.did_finish_launching()
-    })
-    .scene_will_enter_foreground({
-        let application = Rc::clone(&application);
-        move |id| application.with_scene(id, UiKitScene::entered_foreground)
-    })
-    .scene_did_enter_background({
-        let application = Rc::clone(&application);
-        move |id| application.with_scene(id, UiKitScene::entered_background)
-    })
-    .scene_did_become_active({
-        let application = Rc::clone(&application);
-        move |id| application.with_scene(id, UiKitScene::became_active)
-    })
-    .scene_will_resign_active({
-        let application = Rc::clone(&application);
-        move |id| application.with_scene(id, UiKitScene::resigned_active)
-    })
-    .scene_did_disconnect(move |id| application.disconnect(id));
+    });
+    #[cfg(feature = "menu")]
+    let handlers = handlers.build_menus(build_handler(menus));
+    let handlers = handlers
+        .did_finish_launching({
+            let application = Rc::clone(&application);
+            move |_| application.did_finish_launching()
+        })
+        .scene_will_enter_foreground({
+            let application = Rc::clone(&application);
+            move |id| application.with_scene(id, UiKitScene::entered_foreground)
+        })
+        .scene_did_enter_background({
+            let application = Rc::clone(&application);
+            move |id| application.with_scene(id, UiKitScene::entered_background)
+        })
+        .scene_did_become_active({
+            let application = Rc::clone(&application);
+            move |id| application.with_scene(id, UiKitScene::became_active)
+        })
+        .scene_will_resign_active({
+            let application = Rc::clone(&application);
+            move |id| application.with_scene(id, UiKitScene::resigned_active)
+        })
+        .scene_did_disconnect(move |id| application.disconnect(id));
     uikit::run(mtm, handlers)
 }
 

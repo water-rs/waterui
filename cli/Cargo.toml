@@ -7,7 +7,6 @@ rust-version.workspace = true
 license.workspace = true
 readme = "README.md"
 repository.workspace = true
-homepage = "https://github.com/water-rs/waterui"
 description = "Cross-platform tooling for WaterUI applications"
 keywords = ["ui", "framework", "rust", "gui", "water"]
 categories = ["gui"]
@@ -120,7 +119,6 @@ zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
 # `.tar.gz` (sccache on Linux and macOS).
 flate2 = "1"
 tar = "0.4"
-roxmltree = "0.21"            # Android SDK repository XML parsing
 fs_extra = "1.3"
 askama = "0.16"
 resvg = { version = "0.48.1", optional = true }
@@ -234,12 +232,10 @@ zenwave = { version = "0.7.1", default-features = false, features = ["hyper-back
 
 [build-dependencies]
 toml = "1.1.8"
+waterui-git-head.workspace = true
 
 [lints]
 workspace = true
 
 [dev-dependencies]
 syn = { version = "3.0.9", default-features = false, features = ["parsing", "full"] }
-
-[package.metadata.cargo-machete]
-ignored = ["roxmltree"]

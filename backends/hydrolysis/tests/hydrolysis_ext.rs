@@ -1,5 +1,6 @@
 //! End-to-end checks for the public `hydrolysis` API surface consumed
 //! through the `waterui` facade: GPU content views, environments, and frames.
+#![cfg(feature = "gpu")]
 
 use std::rc::Rc;
 use std::sync::Arc;
@@ -7,25 +8,24 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use hydrolysis::testing::TestStyle;
 use hydrolysis::{
-    FontFamilyResolution, HydrolysisRenderTarget, HydrolysisRenderer, OffscreenGpuContext,
-    OffscreenWindow, readback_texture_rgba8,
+    FontFamilyResolution, HydrolysisRenderer, OffscreenGpuContext, OffscreenWindow,
+    readback_texture_rgba8,
 };
 use waterui::Color;
 use waterui::View;
 use waterui::color::WorkingColor;
 use waterui::env::Environment;
 use waterui::graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
-use waterui::graphics::{GpuContent, GpuContentView};
+use waterui::graphics::{GpuContent, GpuView};
 use waterui::prelude::zstack;
 use waterui::shape::RoundedRectangle;
 use waterui::{FilterViewExt, ViewExt};
 use waterui_core::AnyView;
-use waterui_graphics::FilteredView;
-use waterui_graphics::filtrate::{
+use waterui_graphics::backend::{FilteredView, SceneViewMergeToParent};
+use waterui_graphics::filter_view::{
     Effect, EffectContext, EffectInput, EffectOutput, EffectRenderResult, EffectSetupResult,
     RetainedMemory,
 };
-use waterui_graphics::scene_view::SceneViewMergeToParent;
 
 #[derive(Clone)]
 struct CloneableRect;
@@ -129,12 +129,13 @@ impl Effect for CopyTextureEffect {
         output: &EffectOutput<'_>,
         encoder: &mut wgpu::CommandEncoder,
     ) -> EffectRenderResult {
+        let (width, height) = input.size();
         encoder.copy_texture_to_texture(
-            input.texture.as_image_copy(),
-            output.texture.as_image_copy(),
+            input.texture().as_image_copy(),
+            output.texture().as_image_copy(),
             wgpu::Extent3d {
-                width: input.width,
-                height: input.height,
+                width,
+                height,
                 depth_or_array_layers: 1,
             },
         );
@@ -153,7 +154,7 @@ struct GpuSurfaceOpacityView;
 
 impl View for GpuSurfaceOpacityView {
     fn body(self, _env: &Environment) -> impl View {
-        GpuContentView::new(SolidClearRenderer {
+        GpuView::new(SolidClearRenderer {
             color: wgpu::Color {
                 r: 0.9,
                 g: 0.3,
@@ -171,7 +172,7 @@ struct GpuSurfaceUnderOverlayView;
 impl View for GpuSurfaceUnderOverlayView {
     fn body(self, _env: &Environment) -> impl View {
         zstack((
-            GpuContentView::new(SolidClearRenderer {
+            GpuView::new(SolidClearRenderer {
                 color: wgpu::Color {
                     r: 0.9,
                     g: 0.3,
@@ -191,7 +192,7 @@ struct TransparentGpuSurfaceOpacityView {
 
 impl View for TransparentGpuSurfaceOpacityView {
     fn body(self, _env: &Environment) -> impl View {
-        GpuContentView::new(CountingClearRenderer {
+        GpuView::new(CountingClearRenderer {
             color: wgpu::Color {
                 r: 0.9,
                 g: 0.3,
@@ -209,7 +210,7 @@ struct GpuSurfaceClipView;
 
 impl View for GpuSurfaceClipView {
     fn body(self, _env: &Environment) -> impl View {
-        GpuContentView::new(SolidClearRenderer {
+        GpuView::new(SolidClearRenderer {
             color: wgpu::Color {
                 r: 0.2,
                 g: 0.8,
@@ -227,7 +228,7 @@ struct GpuSurfaceFilteredView;
 impl View for GpuSurfaceFilteredView {
     fn body(self, _env: &Environment) -> impl View {
         FilteredView::new(
-            GpuContentView::new(SolidClearRenderer {
+            GpuView::new(SolidClearRenderer {
                 color: wgpu::Color {
                     r: 0.35,
                     g: 0.55,
@@ -245,7 +246,7 @@ struct GpuSurfaceAppliedFilterView;
 
 impl View for GpuSurfaceAppliedFilterView {
     fn body(self, _env: &Environment) -> impl View {
-        GpuContentView::new(SolidClearRenderer {
+        GpuView::new(SolidClearRenderer {
             color: wgpu::Color {
                 r: 0.85,
                 g: 0.45,
@@ -299,7 +300,8 @@ fn render(view: impl View, width: u32, height: u32) -> Snapshot {
     let fonts = hydrolysis::native_collection(&env);
     fonts.clone().install(&mut env);
 
-    let gpu = OffscreenGpuContext::new_for_tests_blocking();
+    let gpu = OffscreenGpuContext::new_blocking()
+        .unwrap_or_else(|error| panic!("the test host has no usable GPU: {error}"));
     let mut platform =
         OffscreenWindow::on_context(gpu.clone(), width, height, wgpu::TextureFormat::Rgba8Unorm);
     let mut renderer =
@@ -319,19 +321,11 @@ fn render(view: impl View, width: u32, height: u32) -> Snapshot {
     );
     renderer.finish_rebuild_frame();
 
-    let frame = surface.acquire();
+    let frame = surface
+        .acquire()
+        .unwrap_or_else(|error| panic!("offscreen frame acquisition failed: {error}"));
     renderer
-        .render_scene_to_texture(HydrolysisRenderTarget {
-            adapter: surface.adapter(),
-            device: surface.device(),
-            queue: surface.queue(),
-            device_loss: surface.device_loss().clone(),
-            texture: frame.texture(),
-            format: surface.format(),
-            width,
-            height,
-            base_color: WorkingColor::TRANSPARENT,
-        })
+        .render_scene_to_texture(surface, frame.texture(), WorkingColor::TRANSPARENT)
         .unwrap_or_else(|error| panic!("offscreen render failed: {error}"));
     let rgba8 = readback_texture_rgba8(&*surface, frame.texture(), width, height)
         .unwrap_or_else(|error| panic!("frame readback failed: {error}"));
@@ -407,7 +401,7 @@ fn hydrolysis_ext_skips_transparent_gpu_surface_inside_opacity_layer() {
     assert_eq!(
         calls.load(Ordering::Relaxed),
         0,
-        "transparent opacity layer should not render hidden GpuContentView content"
+        "transparent opacity layer should not render hidden GpuView content"
     );
     let center =
         ((output.width as usize / 2) + (output.height as usize / 2) * output.width as usize) * 4;
@@ -438,7 +432,7 @@ fn hydrolysis_ext_captures_gpu_surface_inside_filtered_view() {
     let center_alpha = center_pixel(&output.rgba8, output.width, output.height)[3];
     assert!(
         center_alpha > 200,
-        "FilteredView must capture its nested GpuContentView"
+        "FilteredView must capture its nested GpuView"
     );
 }
 
@@ -449,7 +443,7 @@ fn hydrolysis_ext_captures_gpu_surface_inside_applied_filter() {
     let center_alpha = center_pixel(&output.rgba8, output.width, output.height)[3];
     assert!(
         center_alpha > 200,
-        "AppliedFilter must capture its nested GpuContentView"
+        "AppliedFilter must capture its nested GpuView"
     );
 }
 
@@ -459,8 +453,10 @@ fn hydrolysis_ext_captures_gpu_surface_inside_applied_filter() {
 fn offscreen_window_scale_factor_scales_the_surface_only() {
     use hydrolysis::PlatformWindow as _;
 
-    let window =
-        hydrolysis::OffscreenWindow::new_for_tests(320, 200, wgpu::TextureFormat::Rgba8Unorm);
+    let window = hydrolysis::OffscreenWindow::new(
+        hydrolysis::OffscreenSurface::new_blocking(320, 200, wgpu::TextureFormat::Rgba8Unorm)
+            .unwrap_or_else(|error| panic!("the test host has no usable GPU: {error}")),
+    );
     assert_eq!(window.surface_ref().size(), (320, 200));
     assert!((window.scale_factor() - 1.0).abs() < f64::EPSILON);
 

@@ -117,19 +117,27 @@ impl FocusRequest {
     /// re-seat it and clear `dispatching`: the machine stays armed for
     /// the requests that follow.
     ///
+    /// # Contract
+    ///
+    /// A machine that was never armed — the window was never realized, or
+    /// its platform cannot activate a mapped window — breaks the contract: a
+    /// debug build panics, and a release build logs the error and drops the
+    /// request.
+    ///
     /// # Panics
     ///
-    /// When the machine was never armed — the window was never realized,
-    /// or its platform cannot activate a mapped window — or the hook
-    /// itself panicked.
+    /// When the hook itself panicked.
     pub(crate) fn request(&self) {
         {
             let mut shared = self.inner.borrow_mut();
-            assert!(
-                shared.armed,
-                "a focus request was filed for a window that was never \
-                 realized, or whose platform cannot activate a mapped window",
-            );
+            if !shared.armed {
+                crate::contract_violation!(
+                    "a focus request was filed for a window that was never \
+                     realized, or whose platform cannot activate a mapped window; \
+                     the request is dropped",
+                );
+                return;
+            }
             shared.queued += 1;
             if shared.dispatching {
                 return;
@@ -149,7 +157,7 @@ impl FocusRequest {
                 shared
                     .hook
                     .take()
-                    .expect("an armed machine always holds its hook")
+                    .expect("an armed machine holds its hook except while a dispatch runs it, and only one dispatch runs at a time")
             };
             let mut put_back = PutBack {
                 shared: &self.inner,
@@ -158,7 +166,7 @@ impl FocusRequest {
             (put_back
                 .hook
                 .as_mut()
-                .expect("the hook leaves its slot only in drop"))();
+                .expect("`PutBack` holds `Some(hook)` until its own drop takes it"))();
         }
     }
 }
@@ -237,10 +245,17 @@ mod tests {
         assert_eq!(calls.get(), 2);
     }
 
-    /// A request on a never-armed machine panics, as documented.
+    /// A request on a never-armed machine is dropped, as documented.
     #[test]
-    #[should_panic(expected = "never realized")]
-    fn a_request_before_realization_panics() {
-        FocusRequest::new().request();
+    #[cfg_attr(debug_assertions, should_panic(expected = "never realized"))]
+    fn a_request_before_realization_is_dropped() {
+        let machine = FocusRequest::new();
+        machine.request();
+        let calls = Rc::new(Cell::new(0u32));
+        machine.arm({
+            let calls = calls.clone();
+            move || calls.set(calls.get() + 1)
+        });
+        assert_eq!(calls.get(), 0);
     }
 }

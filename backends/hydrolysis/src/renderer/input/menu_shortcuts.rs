@@ -28,9 +28,10 @@ use waterui_controls::menu::{
 };
 use waterui_core::Environment;
 use waterui_core::Str;
+use waterui_core::contract_violation;
 use waterui_core::handler::SharedAction;
-use waterui_core::impl_extractor;
 
+use super::WindowId;
 use super::popup_menu::{PopupMenuNode, PopupMenuStateGroup};
 use crate::HydrolysisRenderer;
 use crate::platform::Modifiers;
@@ -51,7 +52,7 @@ struct ChordModifiers {
 
 impl ChordModifiers {
     const fn of(shortcut: &Shortcut) -> Self {
-        let modifiers = shortcut.modifiers;
+        let modifiers = shortcut.modifiers();
         #[cfg(target_os = "macos")]
         {
             Self {
@@ -95,7 +96,7 @@ impl MenuShortcut {
     ) -> Self {
         Self {
             modifiers: ChordModifiers::of(shortcut),
-            key: shortcut.key.clone(),
+            key: shortcut.key().clone(),
             action,
             disabled,
             label,
@@ -112,12 +113,26 @@ impl MenuShortcut {
     }
 }
 
-/// The panic text for a renderer resolving menu chords in an environment no
-/// runner prepared: registering and dispatching both name it, so the missing
-/// seed names the runner that skipped it.
+/// The contract-violation text for a renderer resolving menu chords in an
+/// environment no runner prepared: registering and dispatching both name it,
+/// so the missing seed names the runner that skipped it.
 pub const MISSING_MENU_SHORTCUT_REGISTRY: &str = "menu shortcuts require the runner to seed a MenuShortcutRegistry into the window's \
      environment — the winit runner, headless run and HeadlessRuntime, SemanticRuntime and \
      the web runner all install one; a renderer built outside a runner seeds its own";
+
+/// The [`MenuShortcutRegistry`] the runner seeded into `env`, or `None` after
+/// a contract violation when it seeded none; `outcome` states what the caller
+/// does without it.
+pub fn menu_shortcut_registry<'env, E: crate::text::TextEngine>(
+    env: &'env Environment,
+    outcome: &str,
+) -> Option<&'env MenuShortcutRegistry<E>> {
+    let registry = env.get::<MenuShortcutRegistry<E>>();
+    if registry.is_none() {
+        contract_violation!("{MISSING_MENU_SHORTCUT_REGISTRY}; {outcome}");
+    }
+    registry
+}
 
 /// The window-close primitive a declared `MenuItem::CloseWindow` stands
 /// for: handed a [`WindowId`], it asks that window to close through the
@@ -183,38 +198,6 @@ pub fn close_window_command(env: &Environment, owner_closable: bool) -> Option<R
     Some(command)
 }
 
-/// A window's identity for menu-chord dispatch: the runner assigns one when it
-/// creates the window and hands it to the window's renderer, so the shared
-/// [`MenuShortcutRegistry`] can scope a mounted `Menu`'s chords to the window
-/// they mounted in. Unlike a pointer address, it cannot drift when the
-/// renderer moves nor alias a recycled allocation (water-rs/hydrolysis#247).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum WindowId {
-    /// A winit window — its native `winit::window::WindowId`.
-    #[cfg(hydrolysis_winit)]
-    Winit(winit::window::WindowId),
-    /// A window on a runner without a native window id — an ordinal the
-    /// registry hands out in window-creation order.
-    Runner(u64),
-    /// A renderer no runner claimed — embedded GPU hosts and renderers built
-    /// directly in tests. Their mounted sources answer only to their own
-    /// dispatch.
-    Orphan,
-}
-
-impl WindowId {
-    /// The winit window this id names, when it names one.
-    #[cfg(hydrolysis_closable_windows)]
-    pub(crate) const fn as_winit(self) -> Option<winit::window::WindowId> {
-        match self {
-            Self::Winit(id) => Some(id),
-            Self::Runner(_) | Self::Orphan => None,
-        }
-    }
-}
-
-impl_extractor!(WindowId);
-
 impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// (Re)register a mounted `Menu` trigger's chords on the app's shared
     /// registry, scoped to this renderer's window — the trigger's render
@@ -230,10 +213,12 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         items: Computed<Vec<ResolvedMenuItem>>,
         env: Environment,
     ) {
-        env.get::<MenuShortcutRegistry<E>>()
-            .cloned()
-            .expect(MISSING_MENU_SHORTCUT_REGISTRY)
-            .register_mounted(self.window_id, menu_state, items, env);
+        let Some(registry) =
+            menu_shortcut_registry::<E>(&env, "the menu's shortcuts are not registered").cloned()
+        else {
+            return;
+        };
+        registry.register_mounted(self.window_id, menu_state, items, env);
     }
 }
 
@@ -280,7 +265,7 @@ fn collect_command_shortcut(command: &ResolvedCommand, out: &mut Vec<MenuShortcu
             shortcut,
             command.action.clone(),
             command.disabled.clone(),
-            command.label.content.snapshot().to_plain(),
+            command.label.content().snapshot().to_plain(),
         ));
     }
 }
@@ -384,9 +369,6 @@ struct MenuShortcutRegistryState<E: crate::text::TextEngine> {
     /// Registration order across every window — a chord conflict resolves to
     /// the most recently registered source.
     next_seq: u64,
-    /// Ordinals minted in creation order for windows whose runner has no
-    /// native window id.
-    next_window_ordinal: u64,
 }
 
 impl<E: crate::text::TextEngine> MenuShortcutRegistryState<E> {
@@ -398,15 +380,6 @@ impl<E: crate::text::TextEngine> MenuShortcutRegistryState<E> {
 }
 
 impl<E: crate::text::TextEngine> MenuShortcutRegistry<E> {
-    /// A fresh window id for a runner with no native one — minted in creation
-    /// order. Winit windows take [`WindowId::Winit`] instead.
-    pub(crate) fn mint_window_id(&self) -> WindowId {
-        let mut inner = self.0.borrow_mut();
-        let id = WindowId::Runner(inner.next_window_ordinal);
-        inner.next_window_ordinal += 1;
-        id
-    }
-
     /// (Re)register a mounted `Menu` trigger's chords — called from the
     /// trigger's render on every flush; a live source just refreshes its
     /// items signal and environment, keeping its registration order.
@@ -533,7 +506,7 @@ impl<E: crate::text::TextEngine> MenuShortcutRegistry<E> {
                 for entry in entries {
                     if entry.matches(pressed, modifiers) {
                         if winner.is_some() {
-                            conflicts.push(entry.label.clone());
+                            conflicts.push(entry.label);
                         } else {
                             let (group, env) = match source {
                                 MenuShortcutSource::Mounted { env, .. }
@@ -589,7 +562,6 @@ impl<E: crate::text::TextEngine> Default for MenuShortcutRegistryState<E> {
         Self {
             sources: Vec::default(),
             next_seq: Default::default(),
-            next_window_ordinal: Default::default(),
         }
     }
 }

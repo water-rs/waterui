@@ -1,12 +1,13 @@
-//! The port contract every component handler compiles against.
+//! The port contract every component realization compiles against.
 //!
 //! FROZEN: a component port may rely on exactly these items. Anything it needs
 //! beyond them is a kit addition (a change to `cocoa-ui`, never a reactivity
 //! type), not a change to this file.
 //!
-//! The model: the dispatcher walks an [`AnyView`]; each registered handler
-//! claims a type and answers a [`NativeLeaf`] — a platform view plus the
-//! layout face a container lays out with. A handler that wraps other views
+//! The model: a view tree dispatches statically to [`crate::backend::AppleBackend`],
+//! whose `NativeBackend` methods each realize one payload as a [`NativeLeaf`]
+//! — a platform view plus the layout face a container lays out with. A
+//! realization that wraps other views
 //! renders its children through [`RenderContext::render`] and mounts them
 //! with [`NativeLeaf::mount`]; the returned [`Mounted`] detaches the child's
 //! view when it drops, which is how a container releases a child it replaces.
@@ -24,12 +25,20 @@ use cocoa_ui::PlatformView;
 use cocoa_ui::appkit::HostView;
 #[cfg(target_os = "ios")]
 use cocoa_ui::uikit::HostView;
+use cocoa_ui::view::retain_base;
 use waterui::reactive::Signal;
 use waterui::reactive::watcher::Context;
-use waterui_backend_core::{AnyView, Environment, View};
+use waterui_backend_core::{AnyView, Environment, Realize, View};
+use waterui_core::backend::{Backend, DynBackend, ErasedPayload, cast};
 use waterui_core::layout::SubView;
+use waterui_core::metadata::MetadataKey;
+use waterui_core::{Metadata, NativeView};
 
 use cocoa_ui::Retained;
+
+use crate::backend::AppleBackend;
+use crate::measure_memo::MemoizingSubView;
+use crate::proposal::{self, CommittedGeometry};
 
 /// What a rendered component owns beyond its platform view: watcher guards,
 /// action targets, rendered children, the platform objects they act on.
@@ -93,12 +102,30 @@ pub struct NativeLeaf {
     keepalive: KeepAlive,
     layout: Rc<dyn SubView>,
     view: Retained<PlatformView>,
+    /// The geometry the leaf's last placement committed
+    /// (`docs/layout-spec.md` §7.2), which its content layout and
+    /// accessibility frame read.
+    geometry: CommittedGeometry,
     /// The `.transition(...)` declaration the `Metadata<TransitionSpec>`
     /// handler stored on this leaf, waiting for a structural site to claim
     /// it. A leaf rendered beneath another modifier keeps its declaration,
     /// but only a leaf a site holds directly can be claimed — the
     /// outermost-modifier rule docs/layout-spec.md §4.5 states.
     transition: Option<crate::transition::TransitionClaim>,
+    /// The environment this leaf's modifier chain resolves in, recorded by
+    /// the environment-only and handler wrappers that pass it through: a
+    /// `with_env` leaf records its scope, a handler wrapper the environment
+    /// its own handler resolved in. A handler wrapped around this leaf
+    /// resolves in it, so a `.state(..)` install on either side of the
+    /// handler in the same chain reaches it (water-rs/waterui#1292). `None`
+    /// for every other leaf: the chain ends there.
+    handler_env: Option<Environment>,
+    /// Whether an accessibility-state scope already applied its state to
+    /// this leaf's view. The innermost scope applies the state merged over
+    /// every enclosing scope (`AccessibilityStateSignal::install`), so an
+    /// enclosing scope rendered around the same leaf must not apply its own,
+    /// less specific state over it.
+    accessibility_state_applied: bool,
     /// The view controllers [`mount`] adopted from this leaf's subtree —
     /// `UIKit` only forwards appearance and layout callbacks down a real
     /// containment chain.
@@ -117,15 +144,42 @@ impl fmt::Debug for NativeLeaf {
 impl NativeLeaf {
     /// A leaf whose platform view is `view` (any `NSView`/`UIView`
     /// subclass), retained for the leaf's life.
+    ///
+    /// A view whose class carries response geometry commits it under the
+    /// leaf's rule at the start of every layout pass and reports the
+    /// committed response as its accessibility frame; a container driver
+    /// takes the commit over through `drive_geometry`.
     pub fn new<V: AsRef<PlatformView> + ?Sized>(view: &V, layout: impl SubView + 'static) -> Self {
+        let layout: Rc<dyn SubView> = Rc::new(MemoizingSubView::new(Box::new(layout)));
+        let view = retain_base(view);
+        let geometry = proposal::install(&view, &layout);
         Self {
             keepalive: KeepAlive::default(),
-            layout: Rc::new(crate::measure_memo::MemoizingSubView::new(Box::new(layout))),
-            view: cocoa_ui::view::retain_base(view),
+            layout,
+            view,
+            geometry,
             transition: None,
+            handler_env: None,
+            accessibility_state_applied: false,
             #[cfg(target_os = "ios")]
             attached_controllers: Vec::new(),
         }
+    }
+
+    /// The environment a handler wrapped around this leaf resolves in:
+    /// the environment this leaf's modifier chain resolved in, or `env` —
+    /// the environment the wrapper renders under — when the chain ends at
+    /// this leaf.
+    #[must_use]
+    pub fn handler_env(&self, env: &Environment) -> Environment {
+        self.handler_env.as_ref().unwrap_or(env).clone()
+    }
+
+    /// Records the environment this leaf's modifier chain resolves in —
+    /// called by an environment-only or handler wrapper, so a handler
+    /// wrapped around it resolves through the same chain.
+    pub fn set_handler_env(&mut self, env: Environment) {
+        self.handler_env = Some(env);
     }
 
     /// Stores the leaf's `.transition(...)` declaration — the
@@ -137,7 +191,7 @@ impl NativeLeaf {
     /// outer declaration wins, the inner one dropping unowned.
     pub fn set_transition(&mut self, claim: crate::transition::TransitionClaim) {
         if self.transition.is_some() {
-            crate::transition::transition_violation!(
+            waterui::contract_violation!(
                 "waterui-apple: a `.transition(...)` declaration beneath another `.transition(...)` \
                  is never owned — remove the inner declaration (docs/layout-spec.md §4.5)"
             );
@@ -152,6 +206,14 @@ impl NativeLeaf {
     #[must_use]
     pub const fn take_transition(&mut self) -> Option<crate::transition::TransitionClaim> {
         self.transition.take()
+    }
+
+    /// Claims this leaf's view for an accessibility-state scope, answering
+    /// whether the claim is new. `false` means a nested scope already
+    /// applied the state merged over this one, and this scope applies
+    /// nothing.
+    pub(crate) const fn claim_accessibility_state(&mut self) -> bool {
+        !core::mem::replace(&mut self.accessibility_state_applied, true)
     }
 
     /// The platform view. Borrowed: the leaf owns it.
@@ -173,6 +235,28 @@ impl NativeLeaf {
     #[must_use]
     pub(crate) fn layout_handle(&self) -> Rc<dyn SubView> {
         Rc::clone(&self.layout)
+    }
+
+    /// The geometry the leaf's last placement committed — what a handler
+    /// that names the leaf's accessibility geometry reads.
+    #[must_use]
+    pub(crate) fn geometry(&self) -> CommittedGeometry {
+        self.geometry.clone()
+    }
+
+    /// Hands the leaf's committed geometry to the container driver that
+    /// places its children: the driver commits it from the
+    /// `place_layout` answer of each pass, so the leaf stops resolving it
+    /// under its own rule.
+    ///
+    /// # Panics
+    ///
+    /// When the leaf's view carries no response geometry — a driver lays
+    /// its children out in a `HostView`.
+    #[must_use]
+    pub(crate) fn drive_geometry(&self) -> CommittedGeometry {
+        proposal::drive(&self.view);
+        self.geometry.clone()
     }
 
     /// Mirrors the leaf's layout face onto the view's intrinsic measure,
@@ -229,7 +313,7 @@ impl NativeLeaf {
     #[must_use]
     pub fn mount(mut self, parent: &PlatformView) -> Mounted {
         if self.transition.take().is_some() {
-            crate::transition::transition_violation!(
+            waterui::contract_violation!(
                 "waterui-apple: `.transition(...)` reached a view with no structural transition \
                  owner. A transition declares how a view is inserted and removed, so it must be \
                  the outermost modifier of the content a structural site swaps — of a \
@@ -302,12 +386,14 @@ impl Drop for NativeLeaf {
     /// the leaf finds `None`. Other handler-holding views clear through the
     /// `cocoa_ui::HandlerTeardown` guard their component keeps in
     /// `keepalive`, which drops after this and before the layout face and the
-    /// view. The view stays where it is: removing it from its superview is
-    /// the owner's job, as [`Mounted`] does.
+    /// view. Any other view carrying response geometry drops the geometry
+    /// handlers the leaf installed. The view stays where it is: removing it
+    /// from its superview is the owner's job, as [`Mounted`] does.
     fn drop(&mut self) {
         if let Some(host) = self.view.downcast_ref::<HostView>() {
             host.clear_handlers();
         }
+        proposal::release(&self.view);
     }
 }
 
@@ -353,6 +439,11 @@ fn view_is_ghost(view: &PlatformView) -> bool {
         || cocoa_ui::view::has_retired_ancestor(view)
 }
 
+/// The invariant behind every `Mounted` accessor: the leaf is taken only by
+/// `unmount`, `into_retired_leaf`, which consume the handle, and by `Drop`.
+const LIVE_MOUNTED: &str =
+    "a `Mounted` holds its leaf until `unmount`, `into_retired_leaf` or `Drop` takes it";
+
 /// A child leaf attached to a parent view. Dropping it detaches the view
 /// from its superview, then drops the leaf: this is how a container
 /// releases a child it replaces or removes.
@@ -368,7 +459,7 @@ impl Mounted {
     /// outside `Drop`.
     #[must_use]
     pub fn view(&self) -> &PlatformView {
-        self.0.as_ref().expect("a live Mounted").view()
+        self.0.as_ref().expect(LIVE_MOUNTED).view()
     }
 
     /// The child's measure handle — the query its `SubView` layout face
@@ -380,7 +471,7 @@ impl Mounted {
     #[cfg(all(target_os = "ios", feature = "context_menu"))]
     #[must_use]
     pub(crate) fn layout_handle(&self) -> Rc<dyn SubView> {
-        self.0.as_ref().expect("a live Mounted").layout_handle()
+        self.0.as_ref().expect(LIVE_MOUNTED).layout_handle()
     }
 
     /// The child's layout face.
@@ -390,7 +481,7 @@ impl Mounted {
     /// When called on a `Mounted` that is already unmounting.
     #[must_use]
     pub fn layout(&self) -> &dyn SubView {
-        self.0.as_ref().expect("a live Mounted").layout()
+        self.0.as_ref().expect(LIVE_MOUNTED).layout()
     }
 
     /// Detaches the view and hands the leaf back, for moving it elsewhere.
@@ -400,7 +491,7 @@ impl Mounted {
     /// When called on a `Mounted` that is already unmounting.
     #[must_use]
     pub fn unmount(mut self) -> NativeLeaf {
-        let mut leaf = self.0.take().expect("a live Mounted");
+        let mut leaf = self.0.take().expect(LIVE_MOUNTED);
         leaf.detach();
         leaf
     }
@@ -413,17 +504,20 @@ impl Mounted {
     ///
     /// # Panics
     ///
-    /// When the view is no retired `HostView` and none of its strict
-    /// ancestors is either — the internal invariant of the hand-off.
-    #[cfg(feature = "transition_sites")]
+    /// In a debug build, when the view is no retired `HostView` and none
+    /// of its strict ancestors is either — the internal invariant of the
+    /// hand-off. A release build logs the violation and unwinds the
+    /// containment as a plain unmount does.
     #[must_use]
     pub(crate) fn into_retired_leaf(mut self) -> NativeLeaf {
-        let mut leaf = self.0.take().expect("a live Mounted");
-        assert!(
-            view_is_ghost(&leaf.view),
-            "waterui-apple: `into_retired_leaf` needs a retired `HostView` — \
-             retire the transition host before ending the mount"
-        );
+        let mut leaf = self.0.take().expect(LIVE_MOUNTED);
+        if !view_is_ghost(&leaf.view) {
+            waterui::contract_violation!(
+                "waterui-apple: `into_retired_leaf` needs a retired `HostView` — \
+                 retire the transition host before ending the mount; \
+                 the containment ends as a plain unmount does"
+            );
+        }
         leaf.unwind();
         leaf
     }
@@ -485,7 +579,6 @@ pub(crate) fn adopt_controllers(
 /// What a handler sees while it renders.
 pub struct RenderContext<'a> {
     env: &'a Environment,
-    dispatcher: Rc<crate::dispatch::Dispatcher>,
     mtm: cocoa_ui::MainThreadMarker,
 }
 
@@ -496,16 +589,8 @@ impl fmt::Debug for RenderContext<'_> {
 }
 
 impl<'a> RenderContext<'a> {
-    pub(crate) const fn new(
-        env: &'a Environment,
-        dispatcher: Rc<crate::dispatch::Dispatcher>,
-        mtm: cocoa_ui::MainThreadMarker,
-    ) -> Self {
-        Self {
-            env,
-            dispatcher,
-            mtm,
-        }
+    pub(crate) const fn new(env: &'a Environment, mtm: cocoa_ui::MainThreadMarker) -> Self {
+        Self { env, mtm }
     }
 
     /// The environment this subtree resolves against.
@@ -520,24 +605,11 @@ impl<'a> RenderContext<'a> {
         self.mtm
     }
 
-    /// Renders `view` into a leaf: registered handlers claim it, composers
-    /// expand through `body()`, and anything the backend does not own yet
-    /// crosses to the fallback.
-    ///
-    /// # Panics
-    ///
-    /// When the fallback also declines the view — the same contract
-    /// `WuiAnyView` enforced with a fatal error.
+    /// Renders `view` into a leaf: composites expand through `body()` and
+    /// each native payload or metadata wrapper reaches its realization.
     #[must_use]
-    pub fn render(&self, view: impl Into<AnyView>) -> NativeLeaf {
-        self.try_render(view)
-            .expect("native view has no backend handler")
-    }
-
-    /// Renders `view`, answering `None` when nothing claims it.
-    #[must_use]
-    pub fn try_render(&self, view: impl Into<AnyView>) -> Option<NativeLeaf> {
-        self.dispatcher.render(view.into(), self.env, self.mtm)
+    pub fn render(&self, view: impl View) -> NativeLeaf {
+        crate::dispatch::render(view, self.env, self.mtm)
     }
 
     /// The same context under another environment — for metadata handlers
@@ -546,8 +618,8 @@ impl<'a> RenderContext<'a> {
     /// — and keep the clone in the leaf's [`KeepAlive`] when the subtree's
     /// signals may resolve through it after the handler returns.
     #[must_use]
-    pub fn with_env<'b>(&self, env: &'b Environment) -> RenderContext<'b> {
-        RenderContext::new(env, self.dispatcher.clone(), self.mtm)
+    pub const fn with_env<'b>(&self, env: &'b Environment) -> RenderContext<'b> {
+        RenderContext::new(env, self.mtm)
     }
 
     /// An owned handle that can render after the handler returns — from a
@@ -557,84 +629,117 @@ impl<'a> RenderContext<'a> {
     pub fn renderer(&self) -> Renderer {
         Renderer {
             env: self.env.clone(),
-            dispatcher: self.dispatcher.clone(),
             mtm: self.mtm,
         }
     }
 }
 
-/// A `'static` render capability: an environment clone, the dispatcher and
-/// the main-thread proof. `!Send`, so it can only be used on the main
-/// thread.
+/// A `'static` render capability: an environment clone and the main-thread
+/// proof. `!Send`, so it can only be used on the main thread.
 #[derive(Debug, Clone)]
 pub struct Renderer {
     env: Environment,
-    dispatcher: Rc<crate::dispatch::Dispatcher>,
     mtm: cocoa_ui::MainThreadMarker,
 }
 
 impl Renderer {
     /// Renders `view` under the captured environment.
-    ///
-    /// # Panics
-    ///
-    /// When nothing claims the view — same contract as
-    /// [`RenderContext::render`].
     #[must_use]
-    pub fn render(&self, view: impl Into<AnyView>) -> NativeLeaf {
-        self.try_render(view)
-            .expect("native view has no backend handler")
-    }
-
-    /// Renders `view`, answering `None` when nothing claims it.
-    #[must_use]
-    pub fn try_render(&self, view: impl Into<AnyView>) -> Option<NativeLeaf> {
-        self.dispatcher.render(view.into(), &self.env, self.mtm)
+    pub fn render(&self, view: impl View) -> NativeLeaf {
+        crate::dispatch::render(view, &self.env, self.mtm)
     }
 
     /// Renders `view` and answers the environment its leaf resolved
     /// under: the scope of the *leading* `Metadata<Environment>` chain —
     /// the environment layers at the root of `view` and the composite
-    /// bodies that produce them — and nothing below the first
-    /// handler-claimed view, so a scope a descendant installs (a
-    /// `.disabled` child inside the content) never leaks into the
-    /// answer. `body()` runs once per expansion, the same single pass
-    /// [`Renderer::render`] makes, and the peeled view renders under the
-    /// scope its outermost environment layers resolved to — each
-    /// `Metadata<Environment>` replaces the environment for its subtree,
-    /// matching `with_env`.
+    /// bodies that produce them — and nothing below the first native
+    /// payload or other metadata, so a scope a descendant installs (a
+    /// `.disabled` child inside the content) never leaks into the answer.
+    /// Each `Metadata<Environment>` replaces the environment for its
+    /// subtree, matching `with_env`.
     #[must_use]
-    pub fn render_resolved(&self, view: impl Into<AnyView>) -> (NativeLeaf, Environment) {
-        let mut env = self.env.clone();
-        let mut view = view.into();
-        loop {
-            match view.downcast::<waterui_core::Metadata<Environment>>() {
-                Ok(metadata) => {
-                    let waterui_core::Metadata { content, value } = *metadata;
-                    env = value;
-                    view = content;
-                }
-                Err(back) => {
-                    view = back;
-                    if self.dispatcher.claims(&view) {
-                        break;
-                    }
-                    view = AnyView::new(view.body(&env));
-                }
-            }
-        }
-        let leaf = Self {
-            env: env.clone(),
-            dispatcher: self.dispatcher.clone(),
-            mtm: self.mtm,
-        }
-        .render(view);
-        (leaf, env)
+    pub fn render_resolved(&self, view: impl View) -> (NativeLeaf, Environment) {
+        let mut backend = AppleBackend::new(self.mtm);
+        view.dispatch(&mut ResolveEnvironment(&mut backend), &self.env, ())
     }
 
-    /// The captured environment and dispatcher as a context.
+    /// The captured environment as a context.
     #[must_use]
-    pub fn context(&self) -> RenderContext<'_> {
-        RenderContext::new(&self.env, self.dispatcher.clone(), self.mtm)
+    pub const fn context(&self) -> RenderContext<'_> {
+        RenderContext::new(&self.env, self.mtm)
+    }
+}
+
+/// Peels the leading `Metadata<Environment>` chain for
+/// [`Renderer::render_resolved`], then realizes the rest through
+/// [`AppleBackend`] under the environment the chain resolved to.
+struct ResolveEnvironment<'a>(&'a mut AppleBackend);
+
+impl Backend for ResolveEnvironment<'_> {
+    type Output = (NativeLeaf, Environment);
+    type Ctx = ();
+
+    fn native<T: NativeView + 'static>(
+        &mut self,
+        native: T,
+        env: &Environment,
+        (): (),
+    ) -> Self::Output {
+        (Realize::new(self.0).native(native, env, ()), env.clone())
+    }
+
+    fn metadata<K: MetadataKey>(
+        &mut self,
+        metadata: Metadata<K>,
+        env: &Environment,
+        (): (),
+    ) -> Self::Output {
+        match cast::<Metadata<K>, Metadata<Environment>>(metadata) {
+            Ok(Metadata { content, value }) => content.dispatch(self, &value, ()),
+            Err(metadata) => (
+                Realize::new(self.0).metadata(metadata, env, ()),
+                env.clone(),
+            ),
+        }
+    }
+
+    fn erased(&mut self, view: AnyView, env: &Environment, (): ()) -> Self::Output {
+        *view
+            .dispatch_dyn(self, env, Box::new(()))
+            .downcast::<(NativeLeaf, Environment)>()
+            .expect("the erased path returns this probe's own output")
+    }
+}
+
+impl DynBackend for ResolveEnvironment<'_> {
+    fn native_dyn(
+        &mut self,
+        native: ErasedPayload<'_>,
+        env: &Environment,
+        _cx: Box<dyn Any>,
+    ) -> Box<dyn Any> {
+        Box::new((
+            Realize::new(self.0).native_dyn(native, env, ()),
+            env.clone(),
+        ))
+    }
+
+    fn metadata_dyn(
+        &mut self,
+        mut metadata: ErasedPayload<'_>,
+        env: &Environment,
+        _cx: Box<dyn Any>,
+    ) -> Box<dyn Any> {
+        if let Some(Metadata { content, value }) = metadata.take::<Metadata<Environment>>() {
+            return Box::new(content.dispatch(self, &value, ()));
+        }
+        Box::new((
+            Realize::new(self.0).metadata_dyn(metadata, env, ()),
+            env.clone(),
+        ))
+    }
+
+    fn erased_dyn(&mut self, view: AnyView, env: &Environment, _cx: Box<dyn Any>) -> Box<dyn Any> {
+        Box::new(self.erased(view, env, ()))
     }
 }

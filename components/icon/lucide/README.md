@@ -18,11 +18,11 @@ See [LICENSE](https://github.com/lucide-icons/lucide/blob/main/LICENSE) for full
 use waterui_icons_lucide as lucide;
 
 // Get an icon as Svg component (svg feature)
-lucide::home()
+lucide::house()
 lucide::settings()
 lucide::user()
 
 // Or access the raw SVG path data
-lucide::HOME_PATH
+lucide::HOUSE_PATH
 lucide::SETTINGS_PATH
 ```

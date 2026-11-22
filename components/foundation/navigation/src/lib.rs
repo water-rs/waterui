@@ -25,10 +25,10 @@ use core::{
 
 use nami::{Binding, Computed, Signal as _, SignalExt as _};
 use waterui_controls::{ButtonStyle, IntoLabel, button};
-use waterui_core::handler::{AnyViewBuilder, BoxedAction, Handler, boxed_action};
+use waterui_core::handler::{AnyViewBuilder, BoxedAction, Handler, ReportExtraction, boxed_action};
 use waterui_core::{
-    AnyView, Environment, Error, IgnorableMetadata, IntoSignal, Metadata, Native, NativeView,
-    Retain, SerialDispatch, Str, View, env::use_env, extract::ExtractionState, extract::Extractor,
+    AnyView, Environment, Error, IntoSignal, Metadata, Native, NativeView, Retain, SerialDispatch,
+    Str, View, contract_violation, env::use_env, extract::ExtractionState, extract::Extractor,
     extract::State, flatten_signal, handler::ViewBuilder, impl_extractor, layout::StretchAxis,
     metadata::MetadataKey, raw_view,
 };
@@ -59,10 +59,6 @@ pub use transition::{
 /// The `NavigationView` contains a navigation bar with a title and other
 /// configuration options, along with the actual content to display.
 #[must_use]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "backends destructure the whole navigation view, so a new field must fail their build instead of being ignored"
-)]
 pub struct NavigationView {
     /// The navigation bar for this view
     pub bar: Bar,
@@ -99,15 +95,47 @@ impl Debug for NavigationView {
 #[non_exhaustive]
 pub struct NavigationDestinationState {
     /// Whether a user or system initiated pop may begin.
-    pub pop_enabled: Computed<bool>,
+    pop_enabled: Computed<bool>,
     /// Called for a real user/system pop request, including a denied request.
-    pub pop_attempted: Option<BoxedAction>,
+    pop_attempted: Option<BoxedAction>,
     /// Called after the destination becomes active.
-    pub appear: Option<BoxedAction>,
+    appear: Option<BoxedAction>,
     /// Called after the destination ceases to be active.
-    pub disappear: Option<BoxedAction>,
+    disappear: Option<BoxedAction>,
     /// Called only after a completed pop removes the destination.
-    pub pop: Option<BoxedAction>,
+    pop: Option<BoxedAction>,
+}
+
+impl NavigationDestinationState {
+    /// Whether a user or system initiated pop may begin.
+    #[must_use]
+    pub const fn pop_enabled(&self) -> &Computed<bool> {
+        &self.pop_enabled
+    }
+
+    /// Called for a real user/system pop request, including a denied request.
+    #[must_use]
+    pub const fn pop_attempted(&self) -> Option<&BoxedAction> {
+        self.pop_attempted.as_ref()
+    }
+
+    /// Called after the destination becomes active.
+    #[must_use]
+    pub const fn appear(&self) -> Option<&BoxedAction> {
+        self.appear.as_ref()
+    }
+
+    /// Called after the destination ceases to be active.
+    #[must_use]
+    pub const fn disappear(&self) -> Option<&BoxedAction> {
+        self.disappear.as_ref()
+    }
+
+    /// Called only after a completed pop removes the destination.
+    #[must_use]
+    pub const fn pop(&self) -> Option<&BoxedAction> {
+        self.pop.as_ref()
+    }
 }
 
 impl Debug for NavigationDestinationState {
@@ -140,7 +168,7 @@ impl NavigationDestinationState {
     #[doc(hidden)]
     pub fn attempt_pop(&mut self, env: &Environment) -> bool {
         if let Some(handler) = &mut self.pop_attempted {
-            handler(env);
+            handler(env).report_extraction();
         }
         self.pop_enabled.snapshot()
     }
@@ -149,7 +177,7 @@ impl NavigationDestinationState {
     #[doc(hidden)]
     pub fn appeared(&mut self, env: &Environment) {
         if let Some(handler) = &mut self.appear {
-            handler(env);
+            handler(env).report_extraction();
         }
     }
 
@@ -157,7 +185,7 @@ impl NavigationDestinationState {
     #[doc(hidden)]
     pub fn disappeared(&mut self, env: &Environment) {
         if let Some(handler) = &mut self.disappear {
-            handler(env);
+            handler(env).report_extraction();
         }
     }
 
@@ -165,7 +193,7 @@ impl NavigationDestinationState {
     #[doc(hidden)]
     pub fn popped(&mut self, env: &Environment) {
         if let Some(handler) = &mut self.pop {
-            handler(env);
+            handler(env).report_extraction();
         }
     }
 }
@@ -180,10 +208,6 @@ type PathPopHandler = Rc<dyn Fn(usize)>;
 /// A transaction always replaces a suffix: the first [`Self::retained_prefix`]
 /// entries stay untouched, the [`Self::removed`] entries above them are
 /// discarded, and [`Self::inserted`] is appended in their place.
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "backends destructure the whole navigation transaction, so a new field must fail their build instead of being ignored"
-)]
 pub struct NavigationTransaction {
     /// Stack-scoped identifier acknowledged by
     /// [`NavigationController::transition_completed`] or
@@ -398,15 +422,18 @@ impl NavigationController {
 
     /// Installs the mutation used to commit a native pop into an explicit path.
     ///
-    /// # Panics
+    /// # Contract violation
     ///
-    /// Panics if a path-pop handler is already installed on this controller.
+    /// A controller drives one explicit path. Installing a second handler is
+    /// reported: a debug build panics; a release build logs it and the later
+    /// handler replaces the earlier one.
     pub fn install_path_pop_handler(&self, handler: impl Fn(usize) + 'static) {
         let previous = self.state.path_pop_handler.replace(Some(Rc::new(handler)));
-        assert!(
-            previous.is_none(),
-            "a navigation controller cannot drive more than one explicit path"
-        );
+        if previous.is_some() {
+            contract_violation!(
+                "a navigation controller cannot drive more than one explicit path; the later path handler replaces the earlier one"
+            );
+        }
     }
 
     /// Splits `count` pops into the link-pushed entries the controller owns and
@@ -419,11 +446,15 @@ impl NavigationController {
     /// on [`NavigationPath::pop_n`] still hold for callers that mutate the path
     /// directly, where an over-long pop really is a programming error.
     ///
-    /// # Panics
+    /// # Contract violation
     ///
-    /// Panics when `count` is zero.
+    /// A zero `count` is reported: a debug build panics; a release build logs
+    /// it and pops nothing.
     fn split_pop(&self, count: usize) -> (usize, usize) {
-        assert!(count != 0, "navigation pop count must be non-zero");
+        if count == 0 {
+            contract_violation!("navigation pop count must be non-zero; nothing is popped");
+            return (0, 0);
+        }
         let count = count.min(self.state.depth.get());
         let detached = self.detached_depth().min(count);
         (detached, count - detached)
@@ -445,9 +476,10 @@ impl NavigationController {
     /// path so route state stays authoritative. Asking to pop more than the
     /// projected stack holds pops what there is.
     ///
-    /// # Panics
+    /// # Contract violation
     ///
-    /// Panics when `count` is zero.
+    /// A zero `count` is reported: a debug build panics; a release build logs
+    /// it and pops nothing.
     pub fn request_pop(&self, count: usize) {
         let (detached, from_path) = self.split_pop(count);
         if detached != 0 {
@@ -462,10 +494,12 @@ impl NavigationController {
 
     /// Commits a pop that the native container has already completed.
     ///
-    /// # Panics
+    /// # Contract violation
     ///
-    /// Panics when `count` is zero, exceeds the projected stack depth, or when
-    /// the explicit path fails to absorb the pop in the same update.
+    /// A zero `count`, or an explicit path that fails to absorb the pop in the
+    /// same update, is reported: a debug build panics; a release build logs it
+    /// and drops the pop that was not applied. A `count` beyond the projected
+    /// stack depth pops what there is.
     pub fn complete_native_pop(&self, count: usize) {
         let (detached, from_path) = self.split_pop(count);
         if detached != 0 {
@@ -477,12 +511,13 @@ impl NavigationController {
             let handler = self.path_pop_handler();
             self.state.native_applied_pops.set(from_path);
             handler(from_path);
-            assert_eq!(
-                self.state.native_applied_pops.get(),
-                0,
-                "a native navigation pop must be absorbed by the explicit path in the same update, \
-                 but the path did not shrink by {from_path}"
-            );
+            let unabsorbed = self.state.native_applied_pops.replace(0);
+            if unabsorbed != 0 {
+                contract_violation!(
+                    "a native navigation pop must be absorbed by the explicit path in the same update, \
+                     but the path did not shrink by {from_path}; the unabsorbed pop is dropped"
+                );
+            }
         }
     }
 
@@ -680,10 +715,6 @@ impl View for NavigationView {
         self.resolve_native_fields(env);
         Native::new(self)
     }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::Both
-    }
 }
 
 /// The display mode for the navigation bar title.
@@ -744,9 +775,9 @@ pub enum NavigationToolbarPlacement {
 #[non_exhaustive]
 pub struct NavigationToolbarItem {
     /// Semantic placement resolved by each platform backend.
-    pub placement: NavigationToolbarPlacement,
+    placement: NavigationToolbarPlacement,
     /// Item content.
-    pub content: AnyView,
+    content: AnyView,
     /// The item's name, when it was declared as a semantic label.
     ///
     /// Kept beside the content rather than only inside it, because the
@@ -756,9 +787,70 @@ pub struct NavigationToolbarItem {
     /// commonly shows the text. Once the label is erased into a view, no
     /// backend can tell the name from the icon, so both travel separately and
     /// each platform draws what its own chrome calls for.
-    pub title: Option<Text>,
+    title: Option<Text>,
     /// The item's icon, when it was declared as a semantic label.
-    pub icon: Option<ToolbarItemIcon>,
+    icon: Option<ToolbarItemIcon>,
+}
+
+impl NavigationToolbarItem {
+    /// Takes the value apart into its fields, in declaration order.
+    pub fn into_parts(
+        self,
+    ) -> (
+        NavigationToolbarPlacement,
+        AnyView,
+        Option<Text>,
+        Option<ToolbarItemIcon>,
+    ) {
+        (self.placement, self.content, self.title, self.icon)
+    }
+
+    /// Semantic placement resolved by each platform backend.
+    #[must_use]
+    pub const fn placement(&self) -> NavigationToolbarPlacement {
+        self.placement
+    }
+
+    /// Item content.
+    #[must_use]
+    pub const fn content(&self) -> &AnyView {
+        &self.content
+    }
+
+    /// Takes the item content out, leaving an empty view behind.
+    pub fn take_content(&mut self) -> AnyView {
+        core::mem::take(&mut self.content)
+    }
+
+    /// Sets the item content.
+    pub fn set_content(&mut self, content: AnyView) {
+        self.content = content;
+    }
+
+    /// Sets the item's icon.
+    pub fn set_icon(&mut self, icon: Option<ToolbarItemIcon>) {
+        self.icon = icon;
+    }
+
+    /// The item's name, when it was declared as a semantic label.
+    ///
+    /// Kept beside the content rather than only inside it, because the
+    /// platforms disagree about how much of a toolbar action to draw: a Mac
+    /// shows the icon alone and keeps the name for the overflow menu, its
+    /// tooltip and assistive technology, while a phone's navigation bar
+    /// commonly shows the text. Once the label is erased into a view, no
+    /// backend can tell the name from the icon, so both travel separately and
+    /// each platform draws what its own chrome calls for.
+    #[must_use]
+    pub const fn title(&self) -> Option<&Text> {
+        self.title.as_ref()
+    }
+
+    /// The item's icon, when it was declared as a semantic label.
+    #[must_use]
+    pub const fn icon(&self) -> Option<&ToolbarItemIcon> {
+        self.icon.as_ref()
+    }
 }
 
 /// A toolbar item's icon, kept apart from its name.
@@ -843,7 +935,25 @@ impl NavigationToolbarItem {
 #[non_exhaustive]
 pub struct NavigationToolbar {
     /// Semantic toolbar items in declaration order.
-    pub items: Vec<NavigationToolbarItem>,
+    items: Vec<NavigationToolbarItem>,
+}
+
+impl NavigationToolbar {
+    /// Semantic toolbar items in declaration order.
+    #[must_use]
+    pub const fn items(&self) -> &[NavigationToolbarItem] {
+        self.items.as_slice()
+    }
+
+    /// The items, for in-place edits.
+    pub const fn items_mut(&mut self) -> &mut [NavigationToolbarItem] {
+        self.items.as_mut_slice()
+    }
+
+    /// Takes the items out of the toolbar, leaving it empty.
+    pub fn take_items(&mut self) -> Vec<NavigationToolbarItem> {
+        core::mem::take(&mut self.items)
+    }
 }
 
 impl NavigationToolbar {
@@ -866,10 +976,6 @@ impl NavigationToolbar {
 /// Represents the appearance and behavior of a navigation bar, including
 /// its title, color, and visibility.
 #[derive(Debug)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "backends destructure the whole navigation bar configuration, so a new field must fail their build instead of being ignored"
-)]
 pub struct Bar {
     /// The title view displayed in the navigation bar
     pub title: AnyView,
@@ -908,13 +1014,9 @@ impl Default for Bar {
 /// The link itself renders and behaves as a plain button; this marker is how
 /// a platform that draws a destination-following affordance around the row a
 /// link sits in — the iOS disclosure chevron — recognizes one. It carries no
-/// behavior, and a renderer with no such affordance (a Mac list, say) ignores
-/// it, which is why it wraps as [`IgnorableMetadata`].
+/// behavior, and a backend with no such affordance (a Mac list, say) ignores
+/// it explicitly.
 #[derive(Debug, Clone, Copy, Default)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "field-less metadata marker inserted by name"
-)]
 pub struct NavigationLinkHint;
 
 impl MetadataKey for NavigationLinkHint {}
@@ -968,9 +1070,23 @@ impl BarColor {
 #[non_exhaustive]
 pub struct NavigationLink<Label, Content> {
     /// The label view displayed for this link
-    pub label: Label,
+    label: Label,
     /// A function that creates the destination view when the link is activated
-    pub content: Content,
+    content: Content,
+}
+
+impl<Label, Content> NavigationLink<Label, Content> {
+    /// The label view displayed for this link
+    #[must_use]
+    pub const fn label(&self) -> &Label {
+        &self.label
+    }
+
+    /// A function that creates the destination view when the link is activated
+    #[must_use]
+    pub const fn content(&self) -> &Content {
+        &self.content
+    }
 }
 
 /// A typed navigation link that pushes a route value onto a path-backed stack.
@@ -979,9 +1095,23 @@ pub struct NavigationLink<Label, Content> {
 #[non_exhaustive]
 pub struct NavigationValueLink<Label, T> {
     /// The label view displayed for this link.
-    pub label: Label,
+    label: Label,
     /// The route value pushed when the link is activated.
-    pub value: T,
+    value: T,
+}
+
+impl<Label, T> NavigationValueLink<Label, T> {
+    /// The label view displayed for this link.
+    #[must_use]
+    pub const fn label(&self) -> &Label {
+        &self.label
+    }
+
+    /// The route value pushed when the link is activated.
+    #[must_use]
+    pub const fn value(&self) -> &T {
+        &self.value
+    }
 }
 
 impl<Label, Content> NavigationLink<Label, Content>
@@ -1077,19 +1207,21 @@ impl HeterogeneousDestinations {
                 }),
             },
         );
-        assert!(
-            previous.is_none(),
-            "navigation destination for `{type_name}` was registered more than once"
-        );
+        if previous.is_some() {
+            contract_violation!(
+                "navigation destination for `{type_name}` was registered more than once; the later registration replaces the earlier one"
+            );
+        }
     }
 
     fn build(&self, route: &ErasedNavigationRoute) -> NavigationView {
-        let destination = self.entries.get(&route.type_id()).unwrap_or_else(|| {
-            panic!(
-                "heterogeneous navigation route `{}` has no registered destination",
+        let Some(destination) = self.entries.get(&route.type_id()) else {
+            contract_violation!(
+                "heterogeneous navigation route `{}` has no registered destination; an empty page is shown",
                 route.type_name()
-            )
-        });
+            );
+            return NavigationView::new("", ());
+        };
         (destination.build)(route)
     }
 }
@@ -1307,12 +1439,6 @@ where
             },
         )
     }
-
-    /// Resolves through `path_stack_body` to a `NavigationStack<(), ()>` leaf,
-    /// which fills both axes.
-    fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::Both
-    }
 }
 
 impl View for NavigationStack<NavigationPath<ErasedNavigationRoute>, HeterogeneousDestinations> {
@@ -1330,12 +1456,6 @@ impl View for NavigationStack<NavigationPath<ErasedNavigationRoute>, Heterogeneo
             },
         )
     }
-
-    /// Resolves through `path_stack_body` to a `NavigationStack<(), ()>` leaf,
-    /// which fills both axes.
-    fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::Both
-    }
 }
 
 impl<Label, Content> View for NavigationLink<Label, Content>
@@ -1350,7 +1470,7 @@ where
         );
 
         let destination = AnyViewBuilder::new(self.content);
-        IgnorableMetadata::new(
+        Metadata::new(
             button(self.label)
                 // A navigation link carries no chrome of its own. It is a button
                 // semantically — it is activated, and reads as one to assistive
@@ -1390,9 +1510,12 @@ where
                     .action(move || navigator.push(value.clone())),
             )
         } else {
-            panic!("NavigationLink::value used outside of a compatible path-backed stack")
+            contract_violation!(
+                "NavigationLink::value used outside of a compatible path-backed stack; the link does nothing when activated"
+            );
+            AnyView::new(button(self.label).style(ButtonStyle::Plain).action(|| {}))
         };
-        IgnorableMetadata::new(link, NavigationLinkHint)
+        Metadata::new(link, NavigationLinkHint)
     }
 }
 
@@ -1401,7 +1524,9 @@ impl NavigationView {
     #[doc(hidden)]
     pub fn resolve_native_fields(&mut self, env: &Environment) {
         if let Some(search) = &mut self.bar.search {
-            search.prompt = waterui_text::Text::computed(search.prompt.resolve(env).content);
+            search.set_prompt(waterui_text::Text::computed(
+                search.prompt().resolve(env).into_content(),
+            ));
         }
 
         // A toolbar item's name crosses the boundary as resolved content, so it
@@ -1410,7 +1535,7 @@ impl NavigationView {
         // to resolve one against.
         for item in &mut self.bar.toolbar.items {
             if let Some(title) = item.title.take() {
-                item.title = Some(Text::computed(title.resolve(env).content));
+                item.title = Some(Text::computed(title.resolve(env).into_content()));
             }
         }
 
@@ -1651,6 +1776,54 @@ mod tests {
                 .set(self.pushes.get() + transaction.inserted.len());
             self.pops.set(self.pops.get() + transaction.removed);
         }
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "navigation pop count must be non-zero")
+    )]
+    fn a_zero_pop_request_pops_nothing() {
+        let pushes = Rc::new(Cell::new(0));
+        let pops = Rc::new(Cell::new(0));
+        let controller = NavigationController::new(CountingNavigationController {
+            pushes: Rc::clone(&pushes),
+            pops: Rc::clone(&pops),
+        });
+        controller.push_builder(AnyViewBuilder::new(|| NavigationView::new("One", ())));
+
+        // Release outcome: the request is ignored.
+        controller.request_pop(0);
+
+        assert_eq!(pops.get(), 0);
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(
+            expected = "a navigation controller cannot drive more than one explicit path"
+        )
+    )]
+    fn a_second_path_handler_replaces_the_first() {
+        let controller = NavigationController::new(CountingNavigationController {
+            pushes: Rc::new(Cell::new(0)),
+            pops: Rc::new(Cell::new(0)),
+        });
+        let first = Rc::new(Cell::new(0));
+        let second = Rc::new(Cell::new(0));
+        controller.install_path_pop_handler({
+            let first = Rc::clone(&first);
+            move |count| first.set(first.get() + count)
+        });
+        controller.install_path_pop_handler({
+            let second = Rc::clone(&second);
+            move |count| second.set(second.get() + count)
+        });
+
+        controller.path_pop_handler()(1);
+
+        assert_eq!((first.get(), second.get()), (0, 1));
     }
 
     #[test]

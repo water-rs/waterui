@@ -10,19 +10,17 @@
 //!   colours, rendered by the backend as a native gradient where it has one.
 //! - [`MeshGradient`] — a mesh gradient whose colours and control points
 //!   follow signals; a change updates the recorded paint in place.
-//! - `AnimatedMeshGradient` — a 4×4 palette warped by flowing noise on the
-//!   GPU, advanced by the engine's frame clock (`gpu` feature).
+//! - `AnimatedMeshGradient` — a 4×4 mesh whose vertices and colours flow
+//!   with the canvas clock, drawn through [`Canvas`](crate::canvas::Canvas).
 //! - `FlowingGradient` — drifting noise-driven colour bands on the GPU
 //!   (`gpu` feature).
 
-#[cfg(feature = "gpu")]
 mod animated_mesh;
 #[cfg(feature = "gpu")]
 mod flowing;
 mod mesh;
 mod paint;
 
-#[cfg(feature = "gpu")]
 pub use animated_mesh::{
     ANIMATED_MESH_PALETTE_LEN, AnimatedMeshGradient, AnimatedMeshGradientConfig,
 };

@@ -1,7 +1,7 @@
 //! Snippets from `.claude/skills/waterui/references/project.md`, in file order.
 //! Transcription conventions are documented in the crate README.
 //!
-//! project.md is mostly shell and TOML; it has four rust blocks.
+//! project.md is mostly shell and TOML; it has five rust blocks.
 
 use waterui::prelude::*;
 
@@ -25,7 +25,7 @@ fn content(_state: AppState) -> impl View {
 }
 
 // ---------------------------------------------------------------------------
-// project.md § "## Project shape" — rust block 1/4
+// project.md § "## Project shape" — rust block 1/5
 // ---------------------------------------------------------------------------
 pub mod project_block_01 {
     use super::root_view;
@@ -39,7 +39,7 @@ pub mod project_block_01 {
 }
 
 // ---------------------------------------------------------------------------
-// project.md § "## Project shape" — rust block 2/4
+// project.md § "## Project shape" — rust block 2/5
 // ---------------------------------------------------------------------------
 pub mod project_block_02 {
     use super::{AppState, content};
@@ -53,7 +53,7 @@ pub mod project_block_02 {
 }
 
 // ---------------------------------------------------------------------------
-// project.md § "## Permissions: declaring and requesting" — rust block 3/4
+// project.md § "## Permissions: declaring and requesting" — rust block 3/5
 // ---------------------------------------------------------------------------
 pub fn project_block_03() -> impl View {
     let granted = Binding::bool(false);
@@ -78,9 +78,43 @@ pub fn project_block_03() -> impl View {
 }
 
 // ---------------------------------------------------------------------------
-// project.md § "## Logging and debugging" — rust block 4/4
+// project.md § "## Home-screen widgets" — rust block 4/5
+// Needs `waterui`'s `widgets` feature (outside `all`); the harness Cargo.toml
+// must enable it for this module to compile.
 // ---------------------------------------------------------------------------
-pub fn project_block_04() {
+pub mod project_block_04 {
+    use waterui::widgets::*;
+
+    #[waterui::widget_intent(name = "Mark done")]
+    pub struct MarkDone {
+        id: u32,
+    }
+
+    impl WidgetIntent for MarkDone {
+        fn perform(self) {
+            waterui::log::info!("done {}", self.id);
+        }
+    }
+
+    #[waterui::widget(name = "Tasks", description = "Open tasks", families = [systemSmall, systemMedium])]
+    pub fn tasks(context: WidgetContext) -> impl WidgetContent {
+        let title = Font::style(if context.family() == WidgetFamily::SystemSmall {
+            FontStyle::Headline
+        } else {
+            FontStyle::Title
+        });
+        vstack((
+            text("Tasks").font(title),
+            intent(&MarkDone { id: 1 }, text("Mark done")),
+        ))
+        .alignment(HorizontalAlignment::Leading)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// project.md § "## Logging and debugging" — rust block 5/5
+// ---------------------------------------------------------------------------
+pub fn project_block_05() {
     use waterui::log::{debug, info};
 
     let value = 42_i32;

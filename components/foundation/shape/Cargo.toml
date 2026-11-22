@@ -10,36 +10,10 @@ description = "Shape primitives and filled shapes for WaterUI using Lyon tessell
 keywords = ["shape", "graphics", "waterui", "lyon", "hdr"]
 categories = ["gui"]
 
-[features]
-default = ["gpu"]
-# Cherenkov shader-paint fallback for morphing shapes. When disabled, morph
-# shapes still emit their `ResolvedMorphShape` native semantic object for
-# backends to render, but no in-crate fallback is compiled.
-gpu = [
-    "waterui-graphics/gpu",
-    "dep:executor-core",
-    "dep:native-executor",
-    "dep:num-traits",
-    "dep:web-time",
-]
-
 [dependencies]
 waterui-core.workspace = true
 waterui-graphics = { workspace = true, default-features = false }
 nami.workspace = true
-executor-core = { workspace = true, optional = true }
-native-executor = { workspace = true, optional = true }
-num-traits = { version = "0.2", default-features = false, optional = true }
-
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-web-time = { version = "1", optional = true }
-
-[dev-dependencies]
-# The morph clock's unit test runs the driver on a local `async-executor`
-# installed for the test thread.
-executor-core = { workspace = true, features = ["async-executor"] }
-futures-lite.workspace = true
-async-channel.workspace = true
 
 [lints]
 workspace = true

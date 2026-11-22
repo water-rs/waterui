@@ -90,10 +90,6 @@ pub async fn output(
 
 /// Toolchain for `git`.
 #[derive(Debug, Clone, Default)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a unit toolchain marker with no fields to add"
-)]
 pub struct Git;
 
 impl Toolchain for Git {

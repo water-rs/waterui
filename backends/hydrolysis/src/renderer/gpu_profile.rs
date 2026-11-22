@@ -29,25 +29,96 @@ const QUERY_SLOTS: u32 = 3;
 pub struct FrameStageTimes {
     /// Runtime and reactive update plus the retained-tree patch: viewport
     /// setup, frame-boundary bookkeeping and `RenderNode::patch`.
-    pub update: Duration,
+    update: Duration,
     /// Measure and layout of the retained tree.
-    pub layout: Duration,
+    layout: Duration,
     /// The retained tree's record into its nodes' programs.
-    pub encode: Duration,
+    encode: Duration,
     /// Timestamped span covering the frame's layer-content submits — the
     /// engine's render and the effect passes around it. `None` when the
     /// device lacks `TIMESTAMP_QUERY`.
-    pub content_gpu: Option<Duration>,
+    content_gpu: Option<Duration>,
     /// Timestamped span covering the final surface pass — the presenter's
     /// conversion submit, or the whole-window render on the direct
     /// GPU-surface path. `None` like `content_gpu`.
-    pub compositor_gpu: Option<Duration>,
+    compositor_gpu: Option<Duration>,
     /// CPU time spent waiting for GPU work: the queue drain each marker does
     /// plus the blocking timestamp resolve — the wait for this frame's GPU
     /// submits to complete.
-    pub gpu_wait: Duration,
+    gpu_wait: Duration,
     /// CPU time spent reading the presented texture back for a snapshot.
-    pub readback: Duration,
+    readback: Duration,
+}
+
+impl FrameStageTimes {
+    /// Runtime and reactive update plus the retained-tree patch: viewport
+    /// setup, frame-boundary bookkeeping and `RenderNode::patch`.
+    #[must_use]
+    pub const fn update(&self) -> Duration {
+        self.update
+    }
+
+    /// Sets the `update`.
+    pub const fn set_update(&mut self, update: Duration) {
+        self.update = update;
+    }
+
+    /// Measure and layout of the retained tree.
+    #[must_use]
+    pub const fn layout(&self) -> Duration {
+        self.layout
+    }
+
+    /// Sets the `layout`.
+    pub const fn set_layout(&mut self, layout: Duration) {
+        self.layout = layout;
+    }
+
+    /// The retained tree's record into its nodes' programs.
+    #[must_use]
+    pub const fn encode(&self) -> Duration {
+        self.encode
+    }
+
+    /// Sets the `encode`.
+    pub const fn set_encode(&mut self, encode: Duration) {
+        self.encode = encode;
+    }
+
+    /// Timestamped span covering the frame's layer-content submits — the
+    /// engine's render and the effect passes around it. `None` when the
+    /// device lacks `TIMESTAMP_QUERY`.
+    #[must_use]
+    pub const fn content_gpu(&self) -> Option<Duration> {
+        self.content_gpu
+    }
+
+    /// Timestamped span covering the final surface pass — the presenter's
+    /// conversion submit, or the whole-window render on the direct
+    /// GPU-surface path. `None` like `content_gpu`.
+    #[must_use]
+    pub const fn compositor_gpu(&self) -> Option<Duration> {
+        self.compositor_gpu
+    }
+
+    /// CPU time spent waiting for GPU work: the queue drain each marker does
+    /// plus the blocking timestamp resolve — the wait for this frame's GPU
+    /// submits to complete.
+    #[must_use]
+    pub const fn gpu_wait(&self) -> Duration {
+        self.gpu_wait
+    }
+
+    /// CPU time spent reading the presented texture back for a snapshot.
+    #[must_use]
+    pub const fn readback(&self) -> Duration {
+        self.readback
+    }
+
+    /// Sets the `readback`.
+    pub const fn set_readback(&mut self, readback: Duration) {
+        self.readback = readback;
+    }
 }
 
 /// Which GPU a runtime renders on — attribution for a frame-profile report.
@@ -55,13 +126,49 @@ pub struct FrameStageTimes {
 #[non_exhaustive]
 pub struct GpuIdentity {
     /// `Adapter::get_info` for the adapter the device was requested from.
-    pub adapter: wgpu::AdapterInfo,
+    adapter: wgpu::AdapterInfo,
     /// Features the adapter advertises.
-    pub adapter_features: wgpu::Features,
+    adapter_features: wgpu::Features,
     /// Features the device was opened with — `TIMESTAMP_QUERY` may be absent
     /// here even when the adapter has it, when the device request ran before
     /// the feature was wired in.
-    pub device_features: wgpu::Features,
+    device_features: wgpu::Features,
+}
+
+impl GpuIdentity {
+    /// Creates a `GpuIdentity` from its parts.
+    #[must_use]
+    pub const fn new(
+        adapter: wgpu::AdapterInfo,
+        adapter_features: wgpu::Features,
+        device_features: wgpu::Features,
+    ) -> Self {
+        Self {
+            adapter,
+            adapter_features,
+            device_features,
+        }
+    }
+
+    /// `Adapter::get_info` for the adapter the device was requested from.
+    #[must_use]
+    pub const fn adapter(&self) -> &wgpu::AdapterInfo {
+        &self.adapter
+    }
+
+    /// Features the adapter advertises.
+    #[must_use]
+    pub const fn adapter_features(&self) -> &wgpu::Features {
+        &self.adapter_features
+    }
+
+    /// Features the device was opened with — `TIMESTAMP_QUERY` may be absent
+    /// here even when the adapter has it, when the device request ran before
+    /// the feature was wired in.
+    #[must_use]
+    pub const fn device_features(&self) -> &wgpu::Features {
+        &self.device_features
+    }
 }
 
 /// The timestamp query set plus its resolve and staging buffers, created once
@@ -134,8 +241,14 @@ impl GpuFrameProfiler {
     }
 
     /// Submits the resolve and waits for it — the frame's GPU drain. Returns
-    /// the resolved nanosecond timestamps in slot order.
-    fn resolve(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> [u64; QUERY_SLOTS as usize] {
+    /// the resolved nanosecond timestamps in slot order, or `None` when the
+    /// device fails to hand the staging buffer back (the failure is logged and
+    /// the frame reports no GPU spans).
+    fn resolve(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) -> Option<[u64; QUERY_SLOTS as usize]> {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("hydrolysis_frame_profile_resolve_encoder"),
         });
@@ -155,21 +268,42 @@ impl GpuFrameProfiler {
             let _ = sender.send(result);
         });
         let _ = device.poll(wgpu::PollType::wait_indefinitely());
-        receiver
-            .recv()
-            .expect("hydrolysis frame profile map callback dropped")
-            .expect("hydrolysis failed to map frame profile buffer");
+        match receiver.recv() {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                tracing::error!(
+                    %error,
+                    "hydrolysis failed to map the frame profile buffer; the frame reports no GPU spans"
+                );
+                return None;
+            }
+            Err(error) => {
+                tracing::error!(
+                    %error,
+                    "hydrolysis frame profile map callback was dropped; the frame reports no GPU spans"
+                );
+                return None;
+            }
+        }
 
-        let mapped = slice
-            .get_mapped_range()
-            .expect("hydrolysis failed to read frame profile buffer");
+        let mapped = match slice.get_mapped_range() {
+            Ok(mapped) => mapped,
+            Err(error) => {
+                tracing::error!(
+                    %error,
+                    "hydrolysis failed to read the frame profile buffer; the frame reports no GPU spans"
+                );
+                self.staging_buffer.unmap();
+                return None;
+            }
+        };
         let mut timestamps = [0u64; QUERY_SLOTS as usize];
         for (slot, bytes) in mapped.as_chunks::<8>().0.iter().enumerate() {
             timestamps[slot] = u64::from_le_bytes(*bytes);
         }
         drop(mapped);
         self.staging_buffer.unmap();
-        timestamps
+        Some(timestamps)
     }
 }
 
@@ -224,8 +358,11 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         };
         let wait_started_at = Instant::now();
         self.core.state_mut().counters.gpu_submissions += 1;
-        let [before_content, before_composite, end] = profiler.resolve(device, queue);
+        let resolved = profiler.resolve(device, queue);
         self.frame_stage_times.gpu_wait += wait_started_at.elapsed();
+        let Some([before_content, before_composite, end]) = resolved else {
+            return;
+        };
         // Query results are device-clock ticks; the period turns them into ns
         // (1.0 on most adapters, but not guaranteed).
         let period = f64::from(queue.get_timestamp_period());

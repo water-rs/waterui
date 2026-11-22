@@ -85,10 +85,21 @@ pub mod effect;
 #[cfg(feature = "gpu")]
 mod executor;
 pub mod filters;
+#[cfg(feature = "lanes")]
+mod lanes;
 #[cfg(feature = "gpu")]
 mod pipeline_cache;
+#[cfg(any(feature = "gpu", feature = "lanes"))]
+mod plan;
+mod reach;
 #[cfg(feature = "gpu")]
 pub mod shader_effect;
+#[cfg(any(feature = "gpu", feature = "lanes"))]
+mod shape_field;
+#[cfg(all(test, any(feature = "gpu", feature = "lanes")))]
+mod test_filters;
+#[cfg(feature = "waterkit-video")]
+pub mod video;
 
 #[cfg(feature = "gpu")]
 pub use aux_image::TextureImage;
@@ -97,7 +108,7 @@ pub use aux_image::{FilterImage, LutImage};
 pub use effect::{
     Effect, EffectContext, EffectFrameClock, EffectFrameTiming, EffectInput, EffectOutput,
     EffectRedrawCallback, EffectRenderError, EffectRenderResult, EffectSetupError,
-    EffectSetupResult, RetainedMemory, ShapeTextures,
+    EffectSetupResult, RetainedMemory, TextureViews,
 };
 #[cfg(feature = "gpu")]
 pub use executor::Executor;
@@ -108,8 +119,11 @@ pub use filtrate_core::{
     OperatingSpace, ParamArray, ParamSource, Placed, ShapeInput, SignalVisitor, SpatialFilter,
     SpatialStage, StageCollector, WatchGuard, WorkingSpace, kind, space,
 };
+#[cfg(feature = "lanes")]
+pub use lanes::{LaneFilterError, LaneProgram};
 #[cfg(feature = "gpu")]
 pub use pipeline_cache::PipelineCache;
+pub use reach::{KindReach, Reach};
 
 #[cfg(feature = "gpu")]
 pub use shader_effect::{SHADER_EFFECT_MAX_PARAMS, ShaderEffect, ShaderEffectError};

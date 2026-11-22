@@ -30,6 +30,9 @@ const VARIANT_COMPOSITE: u32 = 8u;
 // The blend backdrop: a copy of the target's region, sampled like `source`.
 @group(1) @binding(1) var backdrop: texture_2d<f32>;
 @group(1) @binding(2) var image_tex: texture_2d<f32>;
+// Linear mag/min, nearest mipmap, clamp-to-edge: the hardware bilinear
+// fetches of `backdrop_sample_blur` read `source` through it.
+@group(1) @binding(4) var backdrop_sampler: sampler;
 
 // image-source
 // The sRGB transfer decode of each 8-bit code (`image_storage::transfer_table`).
@@ -39,12 +42,17 @@ struct ImageDecode {
 @group(0) @binding(5) var<storage, read> image_decode: ImageDecode;
 // image-source
 
-// Abramowitz & Stegun 7.1.26, |error| < 1.5e-7.
+// Abramowitz & Stegun 7.1.26: `erf(x) ≈ 1 − erf_tail(t)·exp(−x²)` for
+// `x ≥ 0` with `t = 1 / (1 + 0.3275911·x)`, `|error| < 1.5e-7`.
+fn erf_tail(t: f32) -> f32 {
+    return (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t;
+}
+
 fn erf(x: f32) -> f32 {
     let s = sign(x);
     let a = abs(x);
     let t = 1.0 / (1.0 + 0.3275911 * a);
-    let y = 1.0 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * exp(-a * a);
+    let y = 1.0 - erf_tail(t) * exp(-a * a);
     return s * y;
 }
 
@@ -437,7 +445,7 @@ fn paint_mesh(first: u32, count: u32, point: vec2<f32>, smooth_color: bool) -> v
     return vec4<f32>(0.0);
 }
 
-fn paint(i: u32, meta_: vec4<u32>, color: vec4<f32>, local: vec2<f32>, device: vec2<f32>) -> vec4<f32> {
+fn paint(i: u32, meta_: vec4<u32>, color: Color, local: vec2<f32>, device: vec2<f32>) -> vec4<f32> {
     let kind = meta_.y & 0xffffu;
     var point = local;
     if (meta_.y & 0x10000u) != 0u {
@@ -449,7 +457,7 @@ fn paint(i: u32, meta_: vec4<u32>, color: vec4<f32>, local: vec2<f32>, device: v
     // non-gradient-paint
     switch kind {
         case PAINT_SOLID: {
-            return vec4<f32>(color.rgb * color.a, color.a);
+            return vec4<f32>(color);
         }
         case PAINT_TEXTURE: {
             // `grad.xy` carries the source region's device-space origin.
@@ -506,13 +514,23 @@ fn paint(i: u32, meta_: vec4<u32>, color: vec4<f32>, local: vec2<f32>, device: v
 
 // Per-member backdrop effects: a member composite bilinearly samples the
 // bound capture and applies the effect packed in meta_.w's low bits.
-// `backdrop_origin`/`backdrop_size`/`backdrop_scale`/`backdrop_levels`
-// are set per instance by paint_backdrop; registered effect shaders call
-// backdrop_sample and backdrop_sample_level.
+// `backdrop_origin`/`backdrop_size`/`backdrop_scale`/`backdrop_levels`/
+// `backdrop_space` are set per instance by paint_backdrop; registered
+// effect shaders call backdrop_sample and backdrop_sample_level. The
+// capture stores its group's working space (`backdrop_space`, from
+// FLAG_TEX_SRGB): every read interpolates there and returns the linear
+// working space.
 var<private> backdrop_origin: vec2<f32>;
 var<private> backdrop_size: vec2<f32>;
 var<private> backdrop_scale: f32;
 var<private> backdrop_levels: f32;
+var<private> backdrop_space: u32;
+
+// A read of the capture, interpolated in its group's working space, in
+// the linear working space.
+fn backdrop_read(raw: vec4<f32>) -> vec4<f32> {
+    return move_space(raw, backdrop_space, SPACE_LINEAR);
+}
 
 // Bilinear sample of the bound capture's level `k` at device point `q`:
 // on the level-k grid `q` is `q · scale / 2^k`, the four texels around
@@ -543,7 +561,7 @@ fn backdrop_sample_at(q: vec2<f32>, k: u32) -> vec4<f32> {
 // 0.5 (texel centres) are read, clamped to the capture region, values
 // unclamped.
 fn backdrop_sample(q: vec2<f32>) -> vec4<f32> {
-    return backdrop_sample_at(q, 0u);
+    return backdrop_read(backdrop_sample_at(q, 0u));
 }
 
 // Trilinear sample of the capture pyramid at device point `q`: `level`
@@ -555,10 +573,149 @@ fn backdrop_sample_level(q: vec2<f32>, level: f32) -> vec4<f32> {
     let k0 = u32(base);
     let lo = backdrop_sample_at(q, k0);
     let phase = lc - base;
-    if phase == 0.0 { return lo; }
+    if phase == 0.0 { return backdrop_read(lo); }
     let k1 = min(k0 + 1u, u32(backdrop_levels) - 1u);
     let hi = backdrop_sample_at(q, k1);
-    return mix(lo, hi, phase);
+    return backdrop_read(mix(lo, hi, phase));
+}
+
+// The variance, in texels², a bilinear read adds along each axis: the
+// least residual a level is read at (`A = 1/6`).
+const BLUR_BILINEAR_VARIANCE: f32 = 0.16666666666666666;
+// The residual variance, in level texels², over which a level's read
+// cross-fades in from the level below.
+const BLUR_FADE: f32 = 0.25;
+// The largest residual a level takes where it is the deepest:
+// `5/4 + 4·A`, the residual at which the next level would begin.
+const BLUR_CAP: f32 = 1.9166666666666667;
+
+// `H(x) = x·Φ(x / s) + s·ϕ(x / s)` for `s > 0`, `Φ` the standard normal
+// CDF and `ϕ` its density: the second antiderivative of the Gaussian of
+// deviation `s`, whose second difference at unit spacing is the
+// Gaussian's weight on a texel. `erf` is Abramowitz & Stegun 7.1.26
+// (`erf_tail`), and the `exp(−u²)` it needs is the one `ϕ` needs.
+fn backdrop_gaussian_h(x: f32, s: f32) -> f32 {
+    let u = x / (s * 1.4142135623730951);
+    let e = exp(-u * u);
+    let t = 1.0 / (1.0 + 0.3275911 * abs(u));
+    let cdf = 0.5 * (1.0 + sign(u) * (1.0 - erf_tail(t) * e));
+    return x * cdf + s * 0.3989422804014327 * e;
+}
+
+// One axis of a level read: four bilinear fetches, `w` their weights
+// (summing to 1) and `pos` their positions in level-texel-index
+// coordinates (texel `i` at `i`).
+struct BackdropTaps {
+    w: vec4<f32>,
+    pos: vec4<f32>,
+}
+
+// The weights of the eight texels `c + n`, `n = −3 ..= 4`, around
+// texel-index coordinate `p` (`c = floor(p)`, `φ = p − c`) under a
+// Gaussian of deviation `s` level texels applied to the bilinearly
+// interpolated level: `w_n = H(n + 1 − φ) − 2·H(n − φ) + H(n − 1 − φ)`,
+// normalised to sum to 1. At (near) zero `s`, `H(x) = max(x, 0)` and the
+// weights are the bilinear `1 − φ` and `φ`. Each adjacent pair
+// `(−3, −2), (−1, 0), (1, 2), (3, 4)` is realised as one hardware
+// bilinear fetch of the pair's total weight at the pair's weighted
+// centre; a pair of zero weight contributes nothing.
+fn backdrop_taps(p: f32, s: f32) -> BackdropTaps {
+    let c = floor(p);
+    let phi = p - c;
+    // `H` at the ten nodes `m − φ`, `m = −4 ..= 5`.
+    var h: array<f32, 10>;
+    for (var i = 0u; i < 10u; i++) {
+        let x = f32(i) - 4.0 - phi;
+        if s < 1e-3 {
+            h[i] = max(x, 0.0);
+        } else {
+            h[i] = backdrop_gaussian_h(x, s);
+        }
+    }
+    var taps: BackdropTaps;
+    var total = 0.0;
+    for (var i = 0u; i < 4u; i++) {
+        // The weights of texels `n_a = 2i − 3` and `n_a + 1`.
+        let a = 2u * i;
+        let wa = h[a + 2u] - 2.0 * h[a + 1u] + h[a];
+        let wb = h[a + 3u] - 2.0 * h[a + 2u] + h[a + 1u];
+        let pair = wa + wb;
+        total += pair;
+        taps.w[i] = pair;
+        taps.pos[i] = c + f32(a) - 3.0 + select(0.5, wb / pair, pair != 0.0);
+    }
+    taps.w /= total;
+    return taps;
+}
+
+// Level `k` of the capture, bilinearly interpolated and convolved with a
+// Gaussian of per-axis variance `rv − 1/6` level-`k` texels² (the
+// bilinear interpolation supplies the other 1/6; no Gaussian below it),
+// at device point `q`: a separable 4×4 of hardware bilinear fetches on
+// mip `k`. Each fetch's coordinate is clamped to the level's extent
+// `ceil(backdrop_size / 2^k)` as `backdrop_sample_at` clamps its texel
+// indices, values unclamped, and converted to UV by the bound mip's own
+// dimensions (the texture is aligned up to the deepest level, so they
+// are at least the extent). It touches level-0 texels up to `4.5·2^k`
+// from `q`.
+fn backdrop_level_read(q: vec2<f32>, k: u32, rv: f32) -> vec4<f32> {
+    let size = vec2<f32>(
+        (vec2<u32>(backdrop_size) + vec2<u32>((1u << k) - 1u)) >> vec2<u32>(k),
+    );
+    let dims = vec2<f32>(textureDimensions(source, i32(k)));
+    let p = (q * backdrop_scale - backdrop_origin) / f32(1u << k) - 0.5;
+    let s = sqrt(max(rv - BLUR_BILINEAR_VARIANCE, 0.0));
+    let tx = backdrop_taps(p.x, s);
+    let ty = backdrop_taps(p.y, s);
+    var sum = vec4<f32>(0.0);
+    for (var j = 0u; j < 4u; j++) {
+        let v = clamp(ty.pos[j] + 0.5, 0.5, size.y - 0.5) / dims.y;
+        var row = vec4<f32>(0.0);
+        for (var i = 0u; i < 4u; i++) {
+            let u = clamp(tx.pos[i] + 0.5, 0.5, size.x - 0.5) / dims.x;
+            row += tx.w[i] * textureSampleLevel(source, backdrop_sampler, vec2<f32>(u, v), f32(k));
+        }
+        sum += ty.w[j] * row;
+    }
+    return sum;
+}
+
+// The capture, bilinearly interpolated, convolved with a Gaussian, at
+// device point `q`: a kernel of mean `q` and variance `sigma²` level-0
+// texels² per axis, read from a Gaussian pyramid (level `k` is the
+// capture under variance `V(k) = 5·(4^k − 1) / 12`). Bilinear
+// interpolation alone has variance 1/6, so the Gaussian's variance is
+// `max(sigma² − 1/6, 0)` and at `sigma ≤ 1/√6` the read is
+// `backdrop_sample`. With `v = sigma²` it reads the deepest level `k`
+// with `V(k) + 4^k / 6 ≤ v` — the deepest whose bilinear read is not
+// already wider than the kernel — at the residual `(v − V(k)) / 4^k`,
+// and cross-fades from level `k − 1` over the first quarter texel² of
+// that residual above `1/6`. `sigma` clamps to
+// `sqrt(V(top) + (23/12)·4^top)` for the deepest level `top`;
+// `sigma = 0` is `backdrop_sample`.
+fn backdrop_sample_blur(q: vec2<f32>, sigma: f32) -> vec4<f32> {
+    let v = sigma * sigma;
+    if v == 0.0 {
+        return backdrop_sample(q);
+    }
+    let top = u32(backdrop_levels) - 1u;
+    let deepest = floor(0.5 * log2((12.0 * v + 5.0) / 7.0));
+    let k = u32(clamp(deepest, 0.0, f32(top)));
+    let texels = f32(1u << (2u * k));
+    var rv = (v - 5.0 * (texels - 1.0) / 12.0) / texels;
+    if k == top {
+        rv = min(rv, BLUR_CAP);
+    }
+    let upper = backdrop_level_read(q, k, rv);
+    if k > 0u {
+        let t = (rv - BLUR_BILINEAR_VARIANCE) / BLUR_FADE;
+        if t < 1.0 {
+            let below = f32(1u << (2u * (k - 1u)));
+            let lower = backdrop_level_read(q, k - 1u, (v - 5.0 * (below - 1.0) / 12.0) / below);
+            return backdrop_read(mix(lower, upper, t));
+        }
+    }
+    return backdrop_read(upper);
 }
 
 // The effect entry's pixel input: the device-space sample point, the
@@ -627,6 +784,11 @@ fn paint_backdrop(i: u32, pixel: vec2<f32>) -> vec4<f32> {
     backdrop_scale = inst.grad.z;
     backdrop_levels = inst.grad.w;
     backdrop_size = inst.grad2.xy;
+    backdrop_space = select(
+        SPACE_LINEAR,
+        SPACE_SRGB,
+        ((inst.meta_.w >> 24u) & FLAG_TEX_SRGB) != 0u,
+    );
     let kind = inst.meta_.w & 0xffu;
     let first = inst.meta_.z;
     if kind == EFFECT_SAMPLE {
@@ -750,7 +912,7 @@ fn fs_simple(in: VsOut, classified: bool) -> vec4<f32> {
         }
     }
     cov = clamp(cov, 0.0, 1.0) * in.params.y;
-    return move_space(vec4<f32>(in.color.rgb * in.color.a, in.color.a) * cov, SPACE_LINEAR, globals.space);
+    return move_space(vec4<f32>(in.color * ColorScalar(cov)), SPACE_LINEAR, globals.space);
 }
 
 // Retained path spans already describe full coverage. Their opacity is
@@ -762,7 +924,7 @@ fn opaque_span(inst: Instance) -> bool {
 
 struct OpaqueOut {
     @builtin(position) position: vec4<f32>,
-    @location(0) @interpolate(flat) color: vec3<f32>,
+    @location(0) @interpolate(flat) color: ColorRgb,
 }
 
 // Coverage replay needs only the original local/atlas coordinate, the
@@ -899,7 +1061,10 @@ fn vs_partial(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) 
         let m = inst.affine[0];
         let r = vec2<f32>(s.half.x, s.half.x * s.aspect);
         let h = 0.5 * device_grad_scale(inst.affine) * vec2<f32>(abs(m.w) + abs(m.z), abs(m.y) + abs(m.x));
-        let margin = length(h) / min(r.x, r.y);
+        // Bound the pixel in normalized ellipse space. Scaling each axis
+        // by its own radius keeps the bound conservative without widening
+        // the costly rim to the shortest radius on both axes.
+        let margin = length(h / r);
         out.affine1.z = max(1.0 - margin, 0.0) * max(1.0 - margin, 0.0);
         out.affine1.w = (1.0 + margin) * (1.0 + margin);
     }
@@ -923,7 +1088,7 @@ fn vs_partial(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) 
 
 @fragment
 fn fs_opaque(in: OpaqueOut) -> @location(0) vec4<f32> {
-    return move_space(vec4<f32>(in.color, 1.0), SPACE_LINEAR, globals.space);
+    return move_space(vec4<f32>(vec3<f32>(in.color), 1.0), SPACE_LINEAR, globals.space);
 }
 
 @fragment
@@ -943,7 +1108,7 @@ fn fs_partial(in: PartialOut) -> @location(0) vec4<f32> {
     kind = in.cell_meta.x;
     // cell-buffer
     data.meta_.x = select(kind, KIND_GLYPH, kind == KIND_REGION);
-    data.color = inst.color;
+    data.color = premultiplied_color(inst.color);
     data.params.y = inst.params.y;
     if data.meta_.x != KIND_GLYPH && data.meta_.x != KIND_SPAN {
         data.shape_a = vec4<f32>(inst.shape.half, inst.shape.aspect, inst.shape.exponent);
@@ -966,7 +1131,7 @@ fn fs_shadow(in: VsOut) -> vec4<f32> {
         cov = shadow(s, in.local, sigma);
     }
     cov = clamp(cov, 0.0, 1.0) * in.params.y;
-    return move_space(vec4<f32>(in.color.rgb * in.color.a, in.color.a) * cov, SPACE_LINEAR, globals.space);
+    return move_space(vec4<f32>(in.color * ColorScalar(cov)), SPACE_LINEAR, globals.space);
 }
 
 fn glyph_coverage(in: VsOut) -> f32 {
@@ -1120,9 +1285,9 @@ fn fs_full(fragment: VsOut) -> vec4<f32> {
         return composite_space(mode, tspace, cb, cs);
     }
     if in.meta_.y == PAINT_BACKDROP {
-        // The bound capture stores its own space (FLAG_TEX_SRGB): the
-        // effect evaluates on it and the result lands in globals.space.
-        let tspace = select(SPACE_LINEAR, SPACE_SRGB, (flags & FLAG_TEX_SRGB) != 0u);
+        // The capture's reads return the linear working space whatever
+        // space it stores: the effect evaluates there and the result
+        // lands in globals.space.
         if (flags & FLAG_BLEND_SRC) != 0u {
             // The member blends in its group's space, unlike the pass's
             // storage (two spaces exist, so it is the other one): the
@@ -1136,14 +1301,14 @@ fn fs_full(fragment: VsOut) -> vec4<f32> {
                 return cb;
             }
             let space = select(SPACE_SRGB, SPACE_LINEAR, globals.space == SPACE_SRGB);
-            let cs = move_space(paint_backdrop(i, in.device) * cov, tspace, space);
+            let cs = move_space(paint_backdrop(i, in.device) * cov, SPACE_LINEAR, space);
             let over = cs + move_space(cb, globals.space, space) * (1.0 - cs.a);
             return move_space(over, space, globals.space);
         }
-        return move_space(paint_backdrop(i, in.device) * cov, tspace, globals.space);
+        return move_space(paint_backdrop(i, in.device) * cov, SPACE_LINEAR, globals.space);
     }
     // generic-composite
-    return move_space(paint(i, in.meta_, in.color, in.local, in.device) * cov, SPACE_LINEAR, globals.space);
+    return move_space(color_coverage(paint(i, in.meta_, in.color, in.local, in.device), cov), SPACE_LINEAR, globals.space);
 }
 
 // full-fragment

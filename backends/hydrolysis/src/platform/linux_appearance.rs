@@ -11,8 +11,10 @@
 //! with no tree rebuild.
 //!
 //! Per the portal spec an absent service and an unknown key both mean "no
-//! preference", which reads as Light; any other unexpected reply — a wrong
-//! variant type or a value outside the spec's `0..=2` — is a clear panic.
+//! preference", which reads as Light. Any other D-Bus failure is logged and
+//! reads as Light too, and a reply that breaks the spec is a contract
+//! violation by the portal: a value outside `0..=2` reads as Light, and a
+//! reply of the wrong shape is ignored, so the scheme keeps its last value.
 //! The client is one task on the runner's local executor, and zbus runs the
 //! socket I/O on its own internal executor, so the event-loop thread never
 //! blocks on D-Bus. The subscription dies with this value.
@@ -23,21 +25,24 @@
 
 use nami::Binding;
 use waterui::theme::ColorScheme;
+use waterui_core::contract_violation;
 
 /// A portal `color-scheme` value mapped onto the scheme per the spec: `1`
 /// is "prefer dark"; `0` ("no preference") and `2` ("prefer light") read as
 /// Light.
 ///
-/// # Panics
-///
-/// On a value outside the spec's `0..=2` — the spec names no fourth state.
+/// A value outside the spec's `0..=2` — the spec names no fourth state — is
+/// a contract violation by the portal and reads as Light.
 fn color_scheme_of(value: u32) -> ColorScheme {
     match value {
         1 => ColorScheme::Dark,
         0 | 2 => ColorScheme::Light,
-        _ => panic!(
-            "hydrolysis Linux appearance: portal color-scheme {value} is outside the spec's 0–2"
-        ),
+        _ => {
+            contract_violation!(
+                "hydrolysis Linux appearance: portal color-scheme {value} is outside the spec's 0–2; it reads as Light"
+            );
+            ColorScheme::Light
+        }
     }
 }
 
@@ -71,6 +76,7 @@ mod portal {
     use futures_core::Stream as _;
     use nami::{Binding, Computed, Signal as _, SignalExt as _};
     use waterui::theme::ColorScheme;
+    use waterui_core::contract_violation;
     use zbus::zvariant::OwnedValue;
 
     use super::sync_portal_color_scheme;
@@ -160,16 +166,19 @@ mod portal {
         }
     }
 
-    /// Lets the errors the portal spec calls "no preference" through as
-    /// `Err` for the caller to fold; every other error panics naming the
-    /// step that failed.
-    fn expected<T>(result: zbus::Result<T>, step: &str) -> zbus::Result<T> {
-        result.map_err(|error| {
-            assert!(
-                no_preference(&error),
-                "hydrolysis Linux appearance: {step} failed: {error}"
-            );
-            error
+    /// A portal client step that failed.
+    struct StepFailed {
+        /// What the client was doing.
+        step: &'static str,
+        /// Boxed: `zbus::Error` is large, and every step's `Result` carries it.
+        error: Box<zbus::Error>,
+    }
+
+    /// Names the step a portal call belongs to, so a failure reports it.
+    fn step<T>(result: zbus::Result<T>, step: &'static str) -> Result<T, StepFailed> {
+        result.map_err(|error| StepFailed {
+            step,
+            error: Box::new(error),
         })
     }
 
@@ -183,11 +192,11 @@ mod portal {
         // The match rule registers before the initial read so a change
         // landing between the two is queued by the daemon, not lost.
         let subscribed = async {
-            let connection = expected(
+            let connection = step(
                 zbus::Connection::session().await,
                 "connecting to the session bus",
             )?;
-            let proxy = expected(
+            let proxy = step(
                 zbus::Proxy::new(
                     &connection,
                     SETTINGS_SERVICE,
@@ -197,7 +206,7 @@ mod portal {
                 .await,
                 "building the portal Settings proxy",
             )?;
-            let changes = expected(
+            let changes = step(
                 proxy
                     .receive_signal_with_args(
                         "SettingChanged",
@@ -209,11 +218,11 @@ mod portal {
             // `ReadOne` exists only from version 2 of
             // `org.freedesktop.portal.Settings`; older portals answer
             // `Read`, the double-wrapped variant `portal_u32` peels.
-            let version: u32 = expected(
+            let version: u32 = step(
                 proxy.get_property("version").await,
                 "reading the portal Settings version",
             )?;
-            let reply = expected(
+            let reply = step(
                 if version >= 2 {
                     proxy
                         .call_method("ReadOne", &(APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY))
@@ -225,38 +234,57 @@ mod portal {
                 },
                 "reading the portal colour scheme",
             )?;
-            zbus::Result::Ok((proxy, changes, reply))
+            Result::<_, StepFailed>::Ok((proxy, changes, reply))
         }
         .await;
-        let Ok((_proxy, mut changes, reply)) = subscribed else {
-            // No session bus, no portal service or no such setting: the
-            // spec's answer is "no preference" — Light, the value the
-            // binding was seeded with.
-            tracing::debug!(
-                "hydrolysis Linux appearance: portal colour scheme unavailable; \
-                 holding the spec's no-preference scheme"
-            );
-            initial_read.set(true);
-            wake();
-            return;
+        let (_proxy, mut changes, reply) = match subscribed {
+            Ok(subscribed) => subscribed,
+            Err(StepFailed { step, error }) => {
+                // No session bus, no portal service or no such setting: the
+                // spec's answer is "no preference" — Light, the value the
+                // binding was seeded with. Any other failure is an
+                // operational one, reported, and the scheme holds Light too.
+                if no_preference(&error) {
+                    tracing::debug!(
+                        "hydrolysis Linux appearance: portal colour scheme unavailable; \
+                         holding the spec's no-preference scheme"
+                    );
+                } else {
+                    tracing::error!(
+                        "hydrolysis Linux appearance: {step} failed: {error}; \
+                         holding the no-preference scheme"
+                    );
+                }
+                initial_read.set(true);
+                wake();
+                return;
+            }
         };
-        let value = reply
-            .body()
-            .deserialize::<OwnedValue>()
-            .expect("hydrolysis Linux appearance: portal ReadOne reply is not a variant");
-        sync_portal_color_scheme(&scheme, portal_u32(&value));
+        match reply.body().deserialize::<OwnedValue>() {
+            Ok(value) => {
+                if let Some(value) = portal_u32(&value) {
+                    sync_portal_color_scheme(&scheme, value);
+                }
+            }
+            Err(error) => contract_violation!(
+                "hydrolysis Linux appearance: the portal's colour-scheme reply is not a variant: {error}; the scheme holds Light"
+            ),
+        }
         initial_read.set(true);
         wake();
         while let Some(signal) =
             std::future::poll_fn(|cx| std::pin::Pin::new(&mut changes).poll_next(cx)).await
         {
-            let args = signal
-                .body()
-                .deserialize::<(String, String, OwnedValue)>()
-                .expect(
-                    "hydrolysis Linux appearance: SettingChanged body is not the spec's (s, s, v)",
-                );
-            sync_portal_color_scheme(&scheme, portal_u32(&args.2));
+            match signal.body().deserialize::<(String, String, OwnedValue)>() {
+                Ok(args) => {
+                    if let Some(value) = portal_u32(&args.2) {
+                        sync_portal_color_scheme(&scheme, value);
+                    }
+                }
+                Err(error) => contract_violation!(
+                    "hydrolysis Linux appearance: SettingChanged body is not the spec's (s, s, v): {error}; the scheme keeps its value"
+                ),
+            }
         }
     }
 
@@ -264,19 +292,20 @@ mod portal {
     /// peeling nested variants: `ReadOne` and `SettingChanged` wrap once,
     /// while some services keep `Read`'s double wrap for `ReadOne` too.
     ///
-    /// # Panics
-    ///
-    /// On anything that is not a `u` — the spec's `color-scheme` type.
-    fn portal_u32(value: &OwnedValue) -> u32 {
+    /// Anything that is not a `u` — the spec's `color-scheme` type — is a
+    /// contract violation by the portal and reads as `None`.
+    fn portal_u32(value: &OwnedValue) -> Option<u32> {
         let mut leaf: &zbus::zvariant::Value<'static> = value;
         while let zbus::zvariant::Value::Value(inner) = leaf {
             leaf = inner.as_ref();
         }
-        u32::try_from(leaf).unwrap_or_else(|_| {
-            panic!(
-                "hydrolysis Linux appearance: portal colour scheme {leaf:?} is not the spec's u32"
-            )
-        })
+        u32::try_from(leaf)
+            .inspect_err(|_| {
+                contract_violation!(
+                    "hydrolysis Linux appearance: portal colour scheme {leaf:?} is not the spec's u32; the value is ignored"
+                );
+            })
+            .ok()
     }
 }
 
@@ -335,10 +364,12 @@ mod tests {
         assert_eq!(color_scheme_of(2), ColorScheme::Light);
     }
 
+    /// The spec names no fourth state: the portal broke its contract, which
+    /// a debug build reports as a panic and a release build reads as Light.
     #[test]
-    #[should_panic(expected = "outside the spec's 0–2")]
-    fn a_portal_value_outside_the_spec_panics() {
-        let _ = color_scheme_of(3);
+    #[cfg_attr(debug_assertions, should_panic(expected = "outside the spec's 0–2"))]
+    fn a_portal_value_outside_the_spec_reads_as_light() {
+        assert_eq!(color_scheme_of(3), ColorScheme::Light);
     }
 
     /// Only the absent service and the unknown key are the spec's "no

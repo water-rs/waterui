@@ -19,7 +19,6 @@ use tree_sitter::{InputEdit, Parser, Point, Tree};
 use waterui_core::{
     AnyView, Metadata, Retain, SerialDispatch, View,
     dynamic::{Dynamic, DynamicHandler},
-    id::Identifiable,
 };
 use waterui_layout::stack::{HorizontalAlignment, VStack};
 use waterui_text::styled::StyledStr;

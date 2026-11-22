@@ -272,9 +272,14 @@ fn pass_state(frame: &Frame, index: usize, version: &impl Fn(&DrawRange) -> u64)
                 capture.region,
                 capture.copy_from,
                 capture.levels,
-                capture
-                    .resolve
-                    .map(|resolve| (resolve.scale.to_bits(), resolve.device, resolve.extent)),
+                capture.resolve.map(|resolve| {
+                    (
+                        resolve.scale.to_bits(),
+                        resolve.space == cherenkov::BlendSpace::Linear,
+                        resolve.device,
+                        resolve.extent,
+                    )
+                }),
             )
         })
         .hash(&mut hash);

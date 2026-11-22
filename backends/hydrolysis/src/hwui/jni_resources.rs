@@ -3,9 +3,9 @@
 
 use std::fmt;
 
+use cherenkov_record::ImageLimits;
 use jni::objects::{JByteBuffer, JObject, JValue};
 use jni::signature::{Primitive, ReturnType};
-use waterui_graphics::draw::ImageLimits;
 
 use super::jni::{JniObject, Method};
 use super::platform::{AgslUniform, BitmapUpload, FontReader, ResourcePlatform};
@@ -53,7 +53,11 @@ impl HwuiResources {
         encoder: &Encoder,
     ) -> Result<Self, String> {
         let platform = JniResources::new(env, sink)?;
-        Ok(Self::new(Box::new(platform), encoder.registry().clone()))
+        Ok(Self::new(
+            Box::new(platform),
+            encoder.registry().clone(),
+            encoder.effects().clone(),
+        ))
     }
 }
 

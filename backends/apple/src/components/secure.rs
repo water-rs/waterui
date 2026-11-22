@@ -13,12 +13,15 @@ use cocoa_ui::view;
 use cocoa_ui::{PlatformView, Rect};
 use waterui::metadata::secure::Secure;
 use waterui_core::Metadata;
-use waterui_core::layout::{ProposalSize, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
+    ViewDimensions,
+};
 
 use crate::contract::{Mounted, NativeLeaf};
-use crate::dispatch::Dispatcher;
 use crate::proposal;
 
+use crate::contract::RenderContext;
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::HostView;
 #[cfg(target_os = "ios")]
@@ -54,6 +57,14 @@ impl core::fmt::Debug for SecureSubView {
 }
 
 impl SubView for SecureSubView {
+    fn resolve_extent(
+        &self,
+        bounds: LayoutRect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        self.state.child.layout().resolve_extent(bounds, proposal)
+    }
+
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         self.state.child.layout().measure(proposal)
     }
@@ -71,70 +82,68 @@ impl SubView for SecureSubView {
     }
 }
 
-/// Installs the `secure` handler on the dispatcher: `Metadata<Secure>` maps
+/// The `secure` realization: `Metadata<Secure>` maps
 /// to a transparent container whose `UIKit` secure-field overlay marks the
 /// subtree as capture-protected.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_view::<Metadata<Secure>>(|metadata, ctx| {
-        let mtm = ctx.mtm();
-        let host = HostView::new(mtm, Rect::ZERO);
-        let host_view: &PlatformView = &host;
+pub fn realize_secure_metadata(metadata: Metadata<Secure>, ctx: &RenderContext<'_>) -> NativeLeaf {
+    let mtm = ctx.mtm();
+    let host = HostView::new(mtm, Rect::ZERO);
+    let host_view: &PlatformView = &host;
 
-        // `UIKit`: the secure text field sits beneath the content —
-        // `insertSubview(secureField, at: 0)` before `addSubview(contentView)`.
-        // Nearly invisible, but enough to put the container into secure mode.
+    // `UIKit`: the secure text field sits beneath the content —
+    // `insertSubview(secureField, at: 0)` before `addSubview(contentView)`.
+    // Nearly invisible, but enough to put the container into secure mode.
+    #[cfg(target_os = "ios")]
+    let overlay = {
+        let field = SecureField::new(mtm);
+        let field_view: &PlatformView = &field;
+        view::set_user_interaction_enabled(field_view, false);
+        view::set_alpha(field_view, 0.01);
+        view::add_subview(host_view, field_view);
+        field
+    };
+
+    let mounted = ctx.render(metadata.content).mount(host_view);
+    crate::primary_content::forward(&host, mounted.view());
+    view::set_translates_autoresizing(mounted.view(), true);
+
+    let state = Rc::new(SecureState {
+        child: mounted,
         #[cfg(target_os = "ios")]
-        let overlay = {
-            let field = SecureField::new(mtm);
-            let field_view: &PlatformView = &field;
-            view::set_user_interaction_enabled(field_view, false);
-            view::set_alpha(field_view, 0.01);
-            view::add_subview(host_view, field_view);
-            field
-        };
-
-        let mounted = ctx.render(metadata.content).mount(host_view);
-        crate::primary_content::forward(&host, mounted.view());
-        view::set_translates_autoresizing(mounted.view(), true);
-
-        let state = Rc::new(SecureState {
-            child: mounted,
-            #[cfg(target_os = "ios")]
-            overlay,
-        });
-
-        // Both platforms lay the secure field and the content over the full
-        // bounds.
-        host.set_layout_handler({
-            let state = Rc::clone(&state);
-            move |host| {
-                let bounds = view::bounds(host);
-                #[cfg(target_os = "ios")]
-                {
-                    let field_view: &PlatformView = &state.overlay;
-                    view::set_frame(field_view, bounds);
-                }
-                view::set_frame(state.child.view(), bounds);
-            }
-        });
-
-        // `setPlacementProposal`: the proposal selected for this wrapper is
-        // the proposal its content was negotiated with.
-        let sink_guard = proposal::register_sink(host_view, {
-            let state = Rc::clone(&state);
-            move |selected| {
-                proposal::deliver(state.child.view(), selected);
-            }
-        });
-
-        let mut leaf = NativeLeaf::new(
-            host_view,
-            SecureSubView {
-                state: Rc::clone(&state),
-            },
-        );
-        leaf.keep(sink_guard);
-        leaf.keep(state);
-        leaf
+        overlay,
     });
+
+    // Both platforms lay the secure field and the content over the full
+    // bounds.
+    host.set_layout_handler({
+        let state = Rc::clone(&state);
+        move |host| {
+            let bounds = view::bounds(host);
+            #[cfg(target_os = "ios")]
+            {
+                let field_view: &PlatformView = &state.overlay;
+                view::set_frame(field_view, bounds);
+            }
+            view::set_frame(state.child.view(), bounds);
+        }
+    });
+
+    // `setPlacementProposal`: the proposal selected for this wrapper is
+    // the proposal its content was negotiated with.
+    let sink_guard = proposal::register_sink(host_view, {
+        let state = Rc::clone(&state);
+        move |selected| {
+            proposal::deliver(state.child.view(), selected);
+        }
+    });
+
+    let mut leaf = NativeLeaf::new(
+        host_view,
+        SecureSubView {
+            state: Rc::clone(&state),
+        },
+    );
+    leaf.keep(sink_guard);
+    leaf.keep(state);
+    leaf
 }

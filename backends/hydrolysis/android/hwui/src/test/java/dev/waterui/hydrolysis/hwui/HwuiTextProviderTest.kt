@@ -2,6 +2,7 @@ package dev.waterui.hydrolysis.hwui
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -66,6 +67,25 @@ class HwuiTextProviderTest {
             TextWire.NO_LINE_LIMIT,
             0,
         )
+    }
+
+    @Test
+    fun `a discarded display list is re-recorded from the retained layout`() {
+        val provider = provider()
+        shape(provider, 100, "Cached text", listOf(run(0, 0, 16f, 400, null)))
+        val node = provider.node(100)
+        assertTrue(node.hasDisplayList())
+        // Model the missing display list observed when returning to a
+        // cached text value (#3739).
+        node.discardDisplayList()
+        assertFalse(node.hasDisplayList())
+        // The same retained node returns with its recording restored —
+        // no reshape, no new id, no substitute node.
+        val restored = provider.node(100)
+        assertSame(node, restored)
+        assertTrue(restored.hasDisplayList())
+        assertSame(restored, provider.node(100))
+        provider.release(100)
     }
 
     @Test
@@ -139,6 +159,41 @@ class HwuiTextProviderTest {
         provider.release(4)
         provider.release(5)
     }
+
+    private fun shapeAligned(
+        provider: HwuiTextProvider,
+        id: Int,
+        text: String,
+        paragraph: Int,
+    ): FloatArray =
+        provider.shape(
+            id,
+            text,
+            1,
+            run(0, 0, 20f, 400, null),
+            emptyArray(),
+            "",
+            300f,
+            TextWire.NO_LINE_LIMIT,
+            paragraph,
+        )
+
+    @Test
+    fun `ink is measured from the line start however the line is aligned`() {
+        val provider = provider()
+        val start = shapeAligned(provider, 8, "Row", TextWire.ALIGN_START)
+        val end = shapeAligned(provider, 9, "Row", TextWire.ALIGN_END)
+        val rtl = shapeAligned(provider, 10, "Row", TextWire.ALIGN_END or TextWire.RIGHT_TO_LEFT)
+        val ink = TextWire.REPLY_HEADER + 3
+        for (reply in listOf(end, rtl)) {
+            assertEquals("ink left", start[ink], reply[ink], 0.5f)
+            assertEquals("ink right", start[ink + 1], reply[ink + 1], 0.5f)
+        }
+        provider.release(8)
+        provider.release(9)
+        provider.release(10)
+    }
+
     @Test
     fun `a bidirectional selection returns one rectangle per disjoint run`() {
         val provider = provider()

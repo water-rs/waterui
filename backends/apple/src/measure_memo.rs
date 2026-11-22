@@ -25,7 +25,9 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use waterui_core::layout::{ProposalSize, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect, ResolvedExtent, StretchAxis, SubView, ViewDimensions,
+};
 
 /// The negotiation epoch: bumped by every measure-affecting mutation.
 static GENERATION: AtomicU64 = AtomicU64::new(0);
@@ -107,6 +109,14 @@ impl fmt::Debug for MemoizingSubView {
 }
 
 impl SubView for MemoizingSubView {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        self.inner.resolve_extent(bounds, proposal)
+    }
+
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         self.memo.measure(proposal, || self.inner.measure(proposal))
     }

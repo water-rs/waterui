@@ -107,10 +107,6 @@ impl Scenario {
 
 /// A built scenario's live layers.
 #[derive(Debug)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "the built tree is the harness's own state; closed by design"
-)]
 pub struct Built {
     /// The layer the video installs on.
     pub video: Option<Layer>,

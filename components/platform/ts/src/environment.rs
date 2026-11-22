@@ -35,13 +35,31 @@ use crate::tether::Tethered;
 #[non_exhaustive]
 pub struct Theme {
     /// The light or dark appearance the application is drawn in.
-    pub color_scheme: ColorScheme,
+    color_scheme: ColorScheme,
     /// The colour tokens the environment installs, in the fixed token order.
     ///
     /// A token the environment does not install is absent rather than
     /// defaulted: a theme that never declared a colour has none, and inventing
     /// one would put a value on screen that no theme chose.
-    pub colors: Vec<(&'static str, WorkingColor)>,
+    colors: Vec<(&'static str, WorkingColor)>,
+}
+
+impl Theme {
+    /// The light or dark appearance the application is drawn in.
+    #[must_use]
+    pub const fn color_scheme(&self) -> ColorScheme {
+        self.color_scheme
+    }
+
+    /// The colour tokens the environment installs, in the fixed token order.
+    ///
+    /// A token the environment does not install is absent rather than
+    /// defaulted: a theme that never declared a colour has none, and inventing
+    /// one would put a value on screen that no theme chose.
+    #[must_use]
+    pub const fn colors(&self) -> &[(&'static str, WorkingColor)] {
+        self.colors.as_slice()
+    }
 }
 
 /// The locale a mounted module formats in, in the shape `useLocale()` reads.
@@ -49,11 +67,31 @@ pub struct Theme {
 #[non_exhaustive]
 pub struct HostLocale {
     /// The canonical BCP-47 tag, for example `"en-US"`.
-    pub identifier: String,
+    identifier: String,
     /// The language subtag alone, for example `"en"`.
-    pub language_code: String,
+    language_code: String,
     /// `"ltr"` or `"rtl"`, resolved from the locale's script.
-    pub text_direction: &'static str,
+    text_direction: &'static str,
+}
+
+impl HostLocale {
+    /// The canonical BCP-47 tag, for example `"en-US"`.
+    #[must_use]
+    pub const fn identifier(&self) -> &str {
+        self.identifier.as_str()
+    }
+
+    /// The language subtag alone, for example `"en"`.
+    #[must_use]
+    pub const fn language_code(&self) -> &str {
+        self.language_code.as_str()
+    }
+
+    /// `"ltr"` or `"rtl"`, resolved from the locale's script.
+    #[must_use]
+    pub const fn text_direction(&self) -> &'static str {
+        self.text_direction
+    }
 }
 
 impl From<&Locale> for HostLocale {
@@ -159,12 +197,15 @@ theme_tokens!(
     BorderColor => "border",
     AccentColor => "accent",
     MutedForegroundColor => "mutedForeground",
+    TertiaryForegroundColor => "tertiaryForeground",
+    DisabledForegroundColor => "disabledForeground",
     AccentForegroundColor => "accentForeground",
     AccentContainerColor => "accentContainer",
     TertiaryColor => "tertiary",
     TertiaryContainerColor => "tertiaryContainer",
     SelectionContainerColor => "selectionContainer",
     SelectionForegroundColor => "selectionForeground",
+    UnemphasizedSelectionColor => "unemphasizedSelection",
     ErrorColor => "error",
     ErrorForegroundColor => "errorForeground",
 );

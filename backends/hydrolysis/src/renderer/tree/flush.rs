@@ -2,6 +2,7 @@
 //! into the nodes' programs using the cached placements.
 
 #[cfg(feature = "accessibility")]
+use super::layout::accessibility_rect;
 use super::layout::kurbo_rect;
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
@@ -39,6 +40,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         ctx: RenderContext,
         env: &Environment,
     ) {
+        #[cfg(feature = "navigation")]
         if let Self::Wrapper(node) = self
             && let WrapperEffect::NavigationTransitionSource(id)
             | WrapperEffect::NavigationTransitionDestination(id) = &node.effect
@@ -50,13 +52,18 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             if !matched {
                 self.core().cell.placement().set_paint_parent(None);
             }
-            renderer.record_layer_node_in(self.core(), ctx.bounds, !matched, |renderer, local| {
-                self.flush_inner(renderer, local, env);
-            });
+            renderer.record_layer_node_in(
+                self.core(),
+                ctx.bounds(),
+                !matched,
+                |renderer, local| {
+                    self.flush_inner(renderer, local, env);
+                },
+            );
             return;
         }
         if self.is_layer_node() {
-            renderer.record_layer_node(self.core(), ctx.bounds, |renderer, local| {
+            renderer.record_layer_node(self.core(), ctx.bounds(), |renderer, local| {
                 self.flush_inner(renderer, local, env);
             });
         } else {
@@ -85,16 +92,18 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             | Self::Widget(_) => true,
             #[cfg(hydrolysis_gpu)]
             Self::GpuContent(_) | Self::ExternalFrame(_) => true,
-            Self::Wrapper(node) => matches!(
-                node.effect,
+            Self::Wrapper(node) => match node.effect {
                 WrapperEffect::Clip(_)
-                    | WrapperEffect::Border(_)
-                    | WrapperEffect::Shadow(_)
-                    | WrapperEffect::PopupMenuSurface
-                    | WrapperEffect::Material(_)
-                    | WrapperEffect::NavigationTransitionSource(_)
-                    | WrapperEffect::NavigationTransitionDestination(_)
-            ),
+                | WrapperEffect::Border(_)
+                | WrapperEffect::Shadow(_)
+                | WrapperEffect::Material(_) => true,
+                #[cfg(feature = "menu")]
+                WrapperEffect::PopupMenuSurface(_) => true,
+                #[cfg(feature = "navigation")]
+                WrapperEffect::NavigationTransitionSource(_)
+                | WrapperEffect::NavigationTransitionDestination(_) => true,
+                _ => false,
+            },
             _ => false,
         }
     }
@@ -139,11 +148,11 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         match self {
             Self::Color(node) => {
                 renderer.state.counters.recorded_view_contents += 1;
-                if nami::Signal::snapshot(&node.bounds) != ctx.bounds {
-                    node.bounds.set(ctx.bounds);
+                if nami::Signal::snapshot(&node.bounds) != ctx.bounds() {
+                    node.bounds.set(ctx.bounds());
                 }
                 renderer.scene_mut().live_rect(
-                    ctx.local,
+                    ctx.local(),
                     node.bounds.clone().into(),
                     node.color.clone(),
                 );
@@ -159,6 +168,15 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                     .flush(renderer, ctx, env, kurbo::Affine::IDENTITY);
             }
             Self::Text(text) => {
+                // The glyphs draw in the response rectangle, centred in an
+                // allocation larger than the text's answer.
+                let geometry = text
+                    .geometry
+                    .expect("hydrolysis text flushed before its layout");
+                let ctx = RenderContext::new(ctx.local(), kurbo_rect(geometry.response_rect));
+                // The answer's own f32 width breaks lines; the rectangle only
+                // positions the text.
+                let max_width = geometry.response_rect.width();
                 renderer.state.counters.recorded_view_contents += 1;
                 renderer.push_render_owner(&text.accessibility_identity);
                 // Read the content/alignment signals through `read_signal` so a change
@@ -168,18 +186,46 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 let styled = renderer.read_signal(&text.content);
                 let alignment = renderer.read_signal(&text.alignment);
                 #[cfg(feature = "accessibility")]
-                let text_node_id = TextNode::emit_accessibility(renderer, Some(ctx), &styled, env);
+                let text_node_id = TextNode::emit_accessibility(
+                    renderer,
+                    Some(RenderContext::new(
+                        ctx.local(),
+                        accessibility_rect(env, &geometry),
+                    )),
+                    &styled,
+                    env,
+                );
                 #[cfg(not(feature = "accessibility"))]
                 TextNode::emit_accessibility(renderer, Some(ctx), &styled, env);
                 renderer.pop_render_owner();
                 let tail = text.line_limit.map_or(TailMark::None, TailMark::Ellipsis);
+                // A widget label placed under a live label paint draws its
+                // default-coloured runs in it.
+                let paint = env
+                    .get::<crate::renderer::chrome::LabelPaint>()
+                    .map(|paint| paint.0.clone());
                 if styled.tap_spans().is_empty() {
                     // Content that lost its spans drops their retained targets.
                     text.tap_span_targets.borrow_mut().clear();
-                    renderer.render_styled_text_limited(ctx, styled, alignment, env, tail);
+                    renderer.render_styled_text_limited(
+                        ctx,
+                        max_width,
+                        styled,
+                        alignment,
+                        env,
+                        tail,
+                        paint.as_ref(),
+                    );
                 } else {
-                    let layout =
-                        renderer.render_styled_text_with_layout(ctx, &styled, alignment, env, tail);
+                    let layout = renderer.render_styled_text_with_layout(
+                        ctx,
+                        max_width,
+                        &styled,
+                        alignment,
+                        env,
+                        tail,
+                        paint.as_ref(),
+                    );
                     // Span targets and `Link` children belong to this leaf:
                     // register them under its render owner so their ancestry
                     // matches the node that emitted them.
@@ -204,11 +250,10 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 // container no longer carries semantics to claim.
                 #[cfg(feature = "accessibility")]
                 let container_scope = accessibility_container_child_environment(env).map(|_| {
-                    let (bounds, extent) = (
-                        ctx.bounds,
-                        renderer.resolve_window_rect(kurbo_rect(container.resolved)),
-                    );
-                    renderer.begin_accessibility_container(bounds, Some(extent), env)
+                    let geometry = container
+                        .geometry
+                        .expect("hydrolysis container flushed before its layout");
+                    renderer.begin_accessibility_container(accessibility_rect(env, &geometry), env)
                 });
                 #[cfg(feature = "accessibility")]
                 let child_env = container.accessibility_child_env.as_ref().unwrap_or(env);
@@ -244,76 +289,67 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                     renderer.pop_accessibility_owner();
                 }
             }
+            // The four wrappers hand their layer engine-run motion: the
+            // engine samples it on the render thread, the children record
+            // at rest, and placement evaluates the same tracks at event
+            // time (water-rs/waterui#2203).
             Self::Opacity(node) => {
-                let alpha = renderer.resolve_owned_scalar(
-                    &node.value.value,
-                    &node.core.cell,
-                    OPACITY_ANIMATION_KEY,
-                    cherenkov_record::tree::RATE_SLOW,
-                );
+                renderer.bind_motion(&node.motion, &node.core.cell, OPACITY_ANIMATION_KEY);
+                let reach = node.motion.reach(renderer.frame_instant());
                 let program = renderer.program().program_mut();
+                // What the record can show over the whole track; the layer
+                // itself follows the motion.
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "an opacity's f64 lane holds an f32 value"
+                )]
+                let alpha = reach as f32;
                 program.opacity = alpha;
-                program.clip = Some(waterui_graphics::draw::ShapeData::of(&ctx.bounds));
+                program.opacity_motion = Some(node.motion.clone());
+                program.clip = Some(cherenkov_record::ShapeData::of(&ctx.bounds()));
                 renderer.push_placement_scope(
                     crate::renderer::ScopeDelta::RECORD_SPACE,
-                    Some(ctx.bounds),
+                    Some(ctx.bounds()),
                 );
                 node.child
                     .flush(renderer, ctx, env, kurbo::Affine::IDENTITY);
                 renderer.pop_placement_scope();
             }
             Self::Scale(node) => {
-                let center = anchor_point(ctx.bounds, node.value.anchor);
-                let scale_x = renderer.resolve_owned_scalar(
-                    &node.value.x,
-                    &node.core.cell,
-                    SCALE_X_ANIMATION_KEY,
-                    cherenkov_record::tree::RATE_FAST,
+                flush_transform_wrapper(
+                    renderer,
+                    ctx,
+                    env,
+                    &node.core,
+                    &node.motion,
+                    Some(node.anchor),
+                    &node.child,
+                    [SCALE_X_ANIMATION_KEY, SCALE_Y_ANIMATION_KEY],
                 );
-                let scale_y = renderer.resolve_owned_scalar(
-                    &node.value.y,
-                    &node.core.cell,
-                    SCALE_Y_ANIMATION_KEY,
-                    cherenkov_record::tree::RATE_FAST,
-                );
-                let transform = kurbo::Affine::translate((center.x, center.y))
-                    * kurbo::Affine::scale_non_uniform(f64::from(scale_x), f64::from(scale_y))
-                    * kurbo::Affine::translate((-center.x, -center.y));
-                node.child
-                    .flush(renderer, ctx.child(transform, ctx.bounds), env, transform);
             }
             Self::Rotation(node) => {
-                let center = anchor_point(ctx.bounds, node.value.anchor);
-                let radians = f64::from(renderer.resolve_owned_scalar(
-                    &node.value.angle,
-                    &node.core.cell,
-                    ROTATION_ANIMATION_KEY,
-                    cherenkov_record::tree::RATE_FAST,
-                ))
-                .to_radians();
-                let transform = kurbo::Affine::translate((center.x, center.y))
-                    * kurbo::Affine::rotate(radians)
-                    * kurbo::Affine::translate((-center.x, -center.y));
-                node.child
-                    .flush(renderer, ctx.child(transform, ctx.bounds), env, transform);
+                flush_transform_wrapper(
+                    renderer,
+                    ctx,
+                    env,
+                    &node.core,
+                    &node.motion,
+                    Some(node.anchor),
+                    &node.child,
+                    [ROTATION_ANIMATION_KEY],
+                );
             }
             Self::Offset(node) => {
-                let offset_x = renderer.resolve_owned_scalar(
-                    &node.value.x,
-                    &node.core.cell,
-                    OFFSET_X_ANIMATION_KEY,
-                    cherenkov_record::tree::RATE_FAST,
+                flush_transform_wrapper(
+                    renderer,
+                    ctx,
+                    env,
+                    &node.core,
+                    &node.motion,
+                    None,
+                    &node.child,
+                    [OFFSET_X_ANIMATION_KEY, OFFSET_Y_ANIMATION_KEY],
                 );
-                let offset_y = renderer.resolve_owned_scalar(
-                    &node.value.y,
-                    &node.core.cell,
-                    OFFSET_Y_ANIMATION_KEY,
-                    cherenkov_record::tree::RATE_FAST,
-                );
-                let transform =
-                    kurbo::Affine::translate((f64::from(offset_x), f64::from(offset_y)));
-                node.child
-                    .flush(renderer, ctx.child(transform, ctx.bounds), env, transform);
             }
             Self::Dynamic(node) => {
                 if node.apply_pending_mid_pass(renderer) {
@@ -325,7 +361,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                     // sub-view re-lays out (re-placing this host) before its
                     // next flush.
                     #[allow(clippy::cast_possible_truncation)]
-                    let size = Size::new(ctx.bounds.width() as f32, ctx.bounds.height() as f32);
+                    let size = Size::new(ctx.bounds().width() as f32, ctx.bounds().height() as f32);
                     let proposal = ProposalSize::new(Some(size.width), Some(size.height));
                     let safe_area = node.safe_area.as_deref().cloned();
                     node.child
@@ -334,13 +370,25 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 }
                 node.flush_content(renderer, ctx, env);
             }
-            Self::Retain(node) => node
-                .child
-                .flush(renderer, ctx, env, kurbo::Affine::IDENTITY),
+            Self::Retain(node) => {
+                #[cfg(hydrolysis_video_plane)]
+                if let Some(plane) = &node.plane {
+                    let (table, placement) = plane.placement();
+                    renderer.register_platform_view_placement(ctx.bounds(), table, placement);
+                }
+                node.child
+                    .flush(renderer, ctx, env, kurbo::Affine::IDENTITY);
+            }
             Self::Env(node) => {
                 renderer.register_modal_scope(&node.env);
+                #[cfg(feature = "accessibility")]
+                let walk_env = renderer.accessibility_scope_walk_env(&node.env);
+                #[cfg(feature = "accessibility")]
+                let env: &Environment = &walk_env;
+                #[cfg(not(feature = "accessibility"))]
+                let env = &node.env;
                 node.child
-                    .flush(renderer, ctx, &node.env, kurbo::Affine::IDENTITY);
+                    .flush(renderer, ctx, env, kurbo::Affine::IDENTITY);
             }
             Self::Wrapper(node) => {
                 renderer.push_render_owner(&node.accessibility_identity);
@@ -350,6 +398,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 // keep updating, instead of being frozen by a one-shot capture.
                 let child_env = &node.env;
                 match &node.effect {
+                    #[cfg(feature = "navigation")]
                     WrapperEffect::NavigationTransitionSource(id) => {
                         flush_navigation_transition_element(
                             renderer,
@@ -360,6 +409,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                             *id,
                         );
                     }
+                    #[cfg(feature = "navigation")]
                     WrapperEffect::NavigationTransitionDestination(id) => {
                         flush_navigation_transition_element(
                             renderer,
@@ -412,16 +462,21 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                             "hydrolysis renderer: a material member under a `.material_group()` scope re-recorded with an empty scope stack — the partial descent did not establish the enclosing scopes"
                         );
                         let program = renderer.program().program_mut();
-                        program.clip = Some(waterui_graphics::draw::ShapeData::of(&ctx.bounds));
+                        program.clip = Some(cherenkov_record::ShapeData::of(&ctx.bounds()));
                         program.material = Some(mount::MaterialRequest {
                             scope,
                             level: *level,
                             scheme,
-                            bounds: ctx.bounds,
+                            bounds: ctx.bounds(),
                             visible,
                         });
                         node.child
                             .flush(renderer, ctx, child_env, kurbo::Affine::IDENTITY);
+                    }
+                    WrapperEffect::Glass(effect) => {
+                        HydrolysisRenderer::apply_glass(renderer, ctx, child_env, effect, |r| {
+                            node.child.flush(r, ctx, child_env, kurbo::Affine::IDENTITY);
+                        });
                     }
                     WrapperEffect::MaterialGroup => {
                         // The scope's anchor is an item at its position:
@@ -438,10 +493,17 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                             .flush(renderer, ctx, child_env, kurbo::Affine::IDENTITY);
                         renderer.material_group_scopes.pop();
                     }
-                    WrapperEffect::PopupMenuSurface => {
-                        HydrolysisRenderer::apply_popup_menu_surface(renderer, ctx, |r| {
-                            node.child.flush(r, ctx, child_env, kurbo::Affine::IDENTITY);
-                        });
+                    #[cfg(feature = "menu")]
+                    WrapperEffect::PopupMenuSurface(selected_row) => {
+                        HydrolysisRenderer::apply_popup_menu_surface(
+                            renderer,
+                            ctx,
+                            child_env,
+                            *selected_row,
+                            |r| {
+                                node.child.flush(r, ctx, child_env, kurbo::Affine::IDENTITY);
+                            },
+                        );
                     }
                     WrapperEffect::AnchoredOverlay(value) => {
                         HydrolysisRenderer::apply_anchored_overlay(
@@ -467,7 +529,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                     WrapperEffect::Transition(declaration) => {
                         // The owning site paints the transition around its
                         // whole instance; the declaration itself draws through.
-                        declaration.assert_owned();
+                        declaration.report_unowned();
                         node.child
                             .flush(renderer, ctx, child_env, kurbo::Affine::IDENTITY);
                     }
@@ -506,6 +568,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                             },
                         );
                     }
+                    #[cfg(feature = "menu")]
                     WrapperEffect::ContextMenu(value) => {
                         HydrolysisRenderer::apply_context_menu(
                             renderer,
@@ -545,6 +608,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                             ctx,
                             child_env,
                             effect,
+                            &node.child,
                             |r, walk_env| {
                                 node.child.flush(r, ctx, walk_env, kurbo::Affine::IDENTITY);
                             },
@@ -603,14 +667,16 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                         content: Rc::clone(&node.content),
                         invalidator: Rc::clone(&node.invalidator),
                         association: Rc::clone(&node.association),
-                        bounds: ctx.bounds,
+                        resize: Rc::clone(&node.resize),
+                        bounds: ctx.bounds(),
+                        time: renderer.frame_instant(),
                     }));
                 // Content that handles its own input receives the pointer,
                 // keyboard, IME and scroll events landing on its bounds, through
-                // the same routing an interactive `GpuContentView` uses.
+                // the same routing an interactive `GpuView` uses.
                 if wants_input {
                     renderer.register_surface_input_target(
-                        ctx.bounds,
+                        ctx.bounds(),
                         Rc::clone(&node.content),
                         #[cfg(feature = "accessibility")]
                         _focus_node,
@@ -619,75 +685,34 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             }
             #[cfg(hydrolysis_gpu)]
             Self::GpuContent(node) => {
-                renderer.state.counters.recorded_view_contents += 1;
-                // The view's own name and content, read every flush — it is
-                // re-asked after each frame it produces.
-                let (content_label, content_value, wants_input) = {
-                    let view = &node.runtime.borrow().view;
-                    (
-                        view.accessibility_label().map(str::to_owned),
-                        view.accessibility_value().map(str::to_owned),
-                        view.wants_input_events(),
-                    )
-                };
-                renderer.push_render_owner(&node.accessibility_identity);
-                #[allow(
-                    clippy::let_unit_value,
-                    reason = "without the accessibility feature the stub returns (); with it the binding carries the focus id into node.flush below"
-                )]
-                let _focus_node = emit_graphics_image_accessibility(
+                record_hosted_gpu(
                     renderer,
-                    Some(ctx),
+                    ctx,
                     env,
-                    content_label,
-                    content_value,
-                    wants_input,
+                    &node.accessibility_identity,
+                    &node.runtime,
                 );
-                renderer.pop_render_owner();
                 let visible = renderer.record_alpha() != 0.0;
                 renderer.program().program_mut().producer = Some(mount::ProducerContent::Gpu {
                     runtime: Rc::clone(&node.runtime),
-                    bounds: ctx.bounds,
+                    bounds: ctx.bounds(),
                     visible,
                 });
-                if wants_input {
-                    renderer.register_surface_input_target(
-                        ctx.bounds,
-                        Rc::clone(&node.runtime),
-                        #[cfg(feature = "accessibility")]
-                        _focus_node,
-                    );
-                }
             }
             #[cfg(hydrolysis_gpu)]
             Self::ExternalFrame(node) => {
-                renderer.state.counters.recorded_view_contents += 1;
-                let (content_label, content_value) = {
-                    let view = &node.runtime.borrow().view;
-                    (
-                        view.accessibility_label().map(str::to_owned),
-                        view.accessibility_value().map(str::to_owned),
-                    )
-                };
-                renderer.push_render_owner(&node.accessibility_identity);
-                #[allow(
-                    clippy::let_unit_value,
-                    reason = "without the accessibility feature the stub returns ()"
-                )]
-                let _focus_node = emit_graphics_image_accessibility(
+                record_hosted_gpu(
                     renderer,
-                    Some(ctx),
+                    ctx,
                     env,
-                    content_label,
-                    content_value,
-                    false,
+                    &node.accessibility_identity,
+                    &node.runtime,
                 );
-                renderer.pop_render_owner();
                 let visible = renderer.record_alpha() != 0.0;
                 renderer.program().program_mut().producer =
                     Some(mount::ProducerContent::External {
                         runtime: Rc::clone(&node.runtime),
-                        bounds: ctx.bounds,
+                        bounds: ctx.bounds(),
                         visible,
                     });
             }
@@ -716,7 +741,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 // grown by the extension layout computed — the surface
                 // paints through the bands its frame touched, clips its
                 // content there, and its own subtree owns the inset.
-                let viewport_rect = safe_area::grow_rect(ctx.bounds, node.surface.extension());
+                let viewport_rect = safe_area::grow_rect(ctx.bounds(), node.surface.extension());
                 let Some(handle) = node.handle.borrow().clone() else {
                     return;
                 };
@@ -726,6 +751,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 // frame by frame, so this flush paints the field already
                 // clear — `begin_flush` first, metrics after (the order
                 // `List`/`Table` use).
+                #[cfg(any(feature = "text-field", feature = "secure-field"))]
                 node.surface.begin_flush(renderer, &handle);
                 let metrics = handle.metrics();
                 {
@@ -741,10 +767,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                             f64::from(node.content_size.width),
                             f64::from(node.content_size.height),
                         );
-                        let content_ctx = RenderContext {
-                            local: ctx.local,
-                            bounds: content_bounds,
-                        };
+                        let content_ctx = RenderContext::new(ctx.local(), content_bounds);
                         // Publish the visible window (in content coordinates) —
                         // the viewport window grown by the same extension —
                         // so a virtualized `LazyStack` child builds the rows
@@ -805,7 +828,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                             stretch,
                             Rc::clone(&viewport),
                         );
-                        let world = renderer.record_world(content_ctx.local);
+                        let world = renderer.record_world(content_ctx.local());
                         renderer.push_lazy_viewport(crate::renderer::lifecycle::LazyViewport {
                             bounds: lazy_viewport,
                             transform: world * kurbo::Affine::translate(-offset),
@@ -823,6 +846,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 }
                 // The focused-field clearance runs after recording, over
                 // the retained input targets.
+                #[cfg(any(feature = "text-field", feature = "secure-field"))]
                 node.surface.register_clearance(renderer, &handle);
                 // The indicators ride the surface's own frame, not the
                 // extended clip: they stay visible at the avoided edge.
@@ -830,7 +854,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 crate::widgets::draw_scroll_indicators(
                     &mut widget_ctx,
                     &node.env,
-                    ctx.bounds,
+                    ctx.bounds(),
                     metrics,
                     node.axis,
                     &handle,
@@ -873,6 +897,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// produce, and every registration goes through the no-bounds semantic
     /// path.
     #[cfg(feature = "accessibility")]
+    #[cfg(hydrolysis_cherenkov)]
     pub(crate) fn emit_accessibility(&self, renderer: &mut SemanticCore<E>, env: &Environment) {
         renderer.with_reader(self.core(), ReaderPhase::Record, |renderer| {
             self.emit_accessibility_inner(renderer, env);
@@ -888,6 +913,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         clippy::option_if_let_else,
         reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
     )]
+    #[cfg(hydrolysis_cherenkov)]
     fn emit_accessibility_inner(&self, renderer: &mut SemanticCore<E>, env: &Environment) {
         match self {
             // A color fill carries no semantics.
@@ -940,7 +966,8 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Self::Retain(node) => node.child.emit_accessibility(renderer, env),
             Self::Env(node) => {
                 renderer.register_modal_scope(&node.env);
-                node.child.emit_accessibility(renderer, &node.env);
+                let env = renderer.accessibility_scope_walk_env(&node.env);
+                node.child.emit_accessibility(renderer, &env);
             }
             Self::Wrapper(node) => {
                 renderer.push_accessibility_owner(&node.accessibility_identity);
@@ -948,7 +975,10 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 match &node.effect {
                     WrapperEffect::GestureObserver(effect) => {
                         let claim = HydrolysisRenderer::emit_gesture_observer_accessibility(
-                            renderer, child_env, effect,
+                            renderer,
+                            child_env,
+                            effect,
+                            &node.child,
                         );
                         // The gesture's node claimed the naming scope: the
                         // content walks under the same shielded environment a
@@ -1051,7 +1081,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                         }
                     }
                     WrapperEffect::Transition(declaration) => {
-                        declaration.assert_owned();
+                        declaration.report_unowned();
                         node.child.emit_accessibility(renderer, child_env);
                     }
                     _ => node.child.emit_accessibility(renderer, child_env),
@@ -1091,51 +1121,21 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             }
             #[cfg(hydrolysis_gpu)]
             Self::GpuContent(node) => {
-                let (content_label, content_value, wants_input) = {
-                    let view = &node.runtime.borrow().view;
-                    (
-                        view.accessibility_label().map(str::to_owned),
-                        view.accessibility_value().map(str::to_owned),
-                        view.wants_input_events(),
-                    )
-                };
-                renderer.push_accessibility_owner(&node.accessibility_identity);
-                let focus_node = emit_graphics_image_accessibility(
+                emit_hosted_gpu_accessibility(
                     renderer,
-                    None,
                     env,
-                    content_label,
-                    content_value,
-                    wants_input,
+                    &node.accessibility_identity,
+                    &node.runtime,
                 );
-                renderer.pop_accessibility_owner();
-                if wants_input {
-                    renderer.register_surface_input_target(
-                        kurbo::Rect::ZERO,
-                        Rc::clone(&node.runtime),
-                        focus_node,
-                    );
-                }
             }
             #[cfg(hydrolysis_gpu)]
             Self::ExternalFrame(node) => {
-                let (content_label, content_value) = {
-                    let view = &node.runtime.borrow().view;
-                    (
-                        view.accessibility_label().map(str::to_owned),
-                        view.accessibility_value().map(str::to_owned),
-                    )
-                };
-                renderer.push_accessibility_owner(&node.accessibility_identity);
-                emit_graphics_image_accessibility(
+                emit_hosted_gpu_accessibility(
                     renderer,
-                    None,
                     env,
-                    content_label,
-                    content_value,
-                    false,
+                    &node.accessibility_identity,
+                    &node.runtime,
                 );
-                renderer.pop_accessibility_owner();
             }
             // The filter is a paint concern: the semantic tree keeps the
             // child exactly as it emits on its own.
@@ -1184,8 +1184,10 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                         // The semantic domain has no frame pump to advance an
                         // animation, so a request lands in place whether or
                         // not it carries one.
-                        let _ = handle
-                            .scroll_to(f64::from(request.target.x), f64::from(request.target.y));
+                        let _ = handle.scroll_to(
+                            f64::from(request.target().x),
+                            f64::from(request.target().y),
+                        );
                         node.applied_scroll_generation.set(generation);
                     }
                 }
@@ -1221,6 +1223,37 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     }
 }
 
+/// Records a transform wrapper: its frame layer follows `motion` — about
+/// `anchor`'s point in the wrapper's bounds, when the motion turns or
+/// scales — and the child records at rest in the frame. `slots` names each
+/// of the motion's axes for the animation controller, in
+/// [`LayerMotion::motions`] order.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a wrapper's context, environment, core, motion, anchor, child and slots are independent inputs"
+)]
+fn flush_transform_wrapper<E: crate::text::TextEngine, const SLOTS: usize>(
+    renderer: &mut HydrolysisRenderer<E>,
+    ctx: RenderContext,
+    env: &Environment,
+    core: &NodeCore<E>,
+    motion: &Rc<mount::motion::LayerMotion>,
+    anchor: Option<waterui::style::Anchor>,
+    child: &RenderNode<E>,
+    slots: [usize; SLOTS],
+) {
+    if let Some(anchor) = anchor {
+        let pivot = anchor_point(ctx.bounds(), anchor);
+        motion.set_pivot(kurbo::Vec2::new(pivot.x, pivot.y));
+    }
+    for (axis, slot) in motion.motions().zip(slots) {
+        renderer.bind_motion(axis, &core.cell, slot);
+    }
+    renderer.program().program_mut().motion = Some(Rc::clone(motion));
+    child.flush(renderer, ctx, env, kurbo::Affine::IDENTITY);
+}
+
+#[cfg(feature = "navigation")]
 fn flush_navigation_transition_element<E: crate::text::TextEngine>(
     renderer: &mut HydrolysisRenderer<E>,
     ctx: RenderContext,
@@ -1229,6 +1262,70 @@ fn flush_navigation_transition_element<E: crate::text::TextEngine>(
     source: bool,
     id: RawId,
 ) {
-    renderer.note_navigation_element(source, id, ctx.bounds);
+    renderer.note_navigation_element(source, id, ctx.bounds());
     child.flush(renderer, ctx, env, kurbo::Affine::IDENTITY);
+}
+
+/// Records a GPU-backed leaf's per-flush semantics — a `GpuView`'s
+/// or an `ExternalFrameView`'s: the accessibility node, read off the view
+/// every flush, and, when the view takes input, the input target that
+/// routes pointer, keyboard and IME events landing on its bounds to it.
+#[cfg(hydrolysis_gpu)]
+fn record_hosted_gpu<E, R>(
+    renderer: &mut HydrolysisRenderer<E>,
+    ctx: RenderContext,
+    env: &Environment,
+    identity: &Rc<()>,
+    runtime: &Rc<core::cell::RefCell<R>>,
+) where
+    E: crate::text::TextEngine,
+    R: crate::gpu_view::HostedGpuView + crate::renderer::SurfaceInputReceiver + 'static,
+{
+    renderer.state.counters.recorded_view_contents += 1;
+    let (label, value, wants_input) = runtime.borrow().semantics();
+    renderer.push_render_owner(identity);
+    #[cfg(feature = "accessibility")]
+    let focus_node =
+        emit_graphics_image_accessibility(renderer, Some(ctx), env, label, value, wants_input);
+    #[cfg(not(feature = "accessibility"))]
+    emit_graphics_image_accessibility(renderer, Some(ctx), env, label, value, wants_input);
+    renderer.pop_render_owner();
+    // The HWUI painter hosts the view in a platform surface of its own,
+    // placed like any other platform view.
+    #[cfg(hydrolysis_hwui_gpu)]
+    {
+        let (table, placement) = runtime.borrow().placement();
+        renderer.register_platform_view_placement(ctx.bounds(), table, placement);
+    }
+    if wants_input {
+        renderer.register_surface_input_target(
+            ctx.bounds(),
+            Rc::clone(runtime),
+            #[cfg(feature = "accessibility")]
+            focus_node,
+        );
+    }
+}
+
+/// The semantic walk's counterpart of [`record_hosted_gpu`]: the same
+/// accessibility node, and the same input target as a focus-bookkeeping
+/// slot — there is no layout to bound it, so it is not a hit rect.
+#[cfg(all(hydrolysis_cherenkov, hydrolysis_gpu, feature = "accessibility"))]
+fn emit_hosted_gpu_accessibility<E, R>(
+    renderer: &mut SemanticCore<E>,
+    env: &Environment,
+    identity: &Rc<()>,
+    runtime: &Rc<core::cell::RefCell<R>>,
+) where
+    E: crate::text::TextEngine,
+    R: crate::gpu_view::HostedGpuView + crate::renderer::SurfaceInputReceiver + 'static,
+{
+    let (label, value, wants_input) = runtime.borrow().semantics();
+    renderer.push_accessibility_owner(identity);
+    let focus_node =
+        emit_graphics_image_accessibility(renderer, None, env, label, value, wants_input);
+    renderer.pop_accessibility_owner();
+    if wants_input {
+        renderer.register_surface_input_target(kurbo::Rect::ZERO, Rc::clone(runtime), focus_node);
+    }
 }

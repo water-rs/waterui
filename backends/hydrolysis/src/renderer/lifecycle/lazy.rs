@@ -1,7 +1,10 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
-use waterui_layout::stack::LazyStackAxis;
+use waterui_core::contract_violation;
+use waterui_core::layout::{LayoutError, PlacementInput};
+use waterui_layout::container::directional_response;
+use waterui_layout::stack::{HStackLayout, LazyStackAxis, VStackLayout};
 
 #[derive(Default)]
 pub struct LazyState {
@@ -22,6 +25,7 @@ impl LazyState {
 }
 
 #[derive(Debug, Default)]
+#[cfg(feature = "table")]
 pub struct LazyTableSlot {
     pub(crate) column_widths: Vec<f64>,
     pub max_rows: usize,
@@ -35,6 +39,7 @@ pub struct VisibleIndexWindow {
 }
 
 #[derive(Debug, Clone, Copy)]
+#[cfg(feature = "table")]
 pub struct VisibleColumnWindow {
     pub(crate) start: usize,
     pub(crate) end: usize,
@@ -56,6 +61,36 @@ pub enum LazyStackAxisConfig {
 }
 
 impl LazyStackAxisConfig {
+    /// The stack's own response: the stack layout's rule for the same axis
+    /// and alignment, which reads no children, under the stack's direction.
+    pub(crate) fn resolve_extent(&self, input: PlacementInput) -> Result<LayoutRect, LayoutError> {
+        let direction = self.direction().snapshot();
+        match self {
+            Self::Vertical {
+                spacing, alignment, ..
+            } => directional_response(
+                &VStackLayout {
+                    alignment: *alignment,
+                    spacing: spacing.clone(),
+                },
+                direction,
+                input,
+                &[],
+            ),
+            Self::Horizontal {
+                spacing, alignment, ..
+            } => directional_response(
+                &HStackLayout {
+                    alignment: *alignment,
+                    spacing: spacing.clone(),
+                },
+                direction,
+                input,
+                &[],
+            ),
+        }
+    }
+
     pub(crate) const fn direction(&self) -> &nami::Computed<waterui_core::layout::LayoutDirection> {
         match self {
             Self::Vertical { direction, .. } | Self::Horizontal { direction, .. } => direction,
@@ -63,6 +98,7 @@ impl LazyStackAxisConfig {
     }
 }
 
+#[cfg(feature = "table")]
 impl LazyTableSlot {
     pub(crate) fn prepare_columns(&mut self, len: usize, metrics: crate::theme::TableMetrics) {
         self.column_widths.resize(len, metrics.min_column_width);
@@ -218,10 +254,12 @@ impl VirtualExtentIndex {
     }
 
     pub(crate) fn set_measured(&mut self, index: usize, extent: f64) {
-        assert!(
-            extent.is_finite() && extent >= 0.0,
-            "virtualized item extent must be finite and non-negative"
-        );
+        if !(extent.is_finite() && extent >= 0.0) {
+            contract_violation!(
+                "virtualized item extent {extent} must be finite and non-negative; the item keeps its previous extent"
+            );
+            return;
+        }
         let previous = self.measured[index].unwrap_or(self.estimate);
         self.measured[index] = Some(extent);
         let delta = extent - previous;
@@ -233,11 +271,13 @@ impl VirtualExtentIndex {
     }
 
     #[must_use]
+    #[cfg(any(test, feature = "list"))]
     pub(crate) fn measured(&self, index: usize) -> Option<f64> {
         self.measured[index]
     }
 
     #[must_use]
+    #[cfg(any(test, feature = "list"))]
     pub(crate) fn offset_of(&self, index: usize) -> f64 {
         assert!(
             index <= self.measured.len(),
@@ -322,6 +362,7 @@ impl VirtualExtentIndex {
     }
 }
 
+#[cfg(feature = "table")]
 pub fn resolve_visible_column_window(
     widths: &[f64],
     start_offset: f64,
@@ -360,6 +401,7 @@ pub fn resolve_visible_column_window(
     }
 }
 
+#[cfg(feature = "table")]
 pub fn resolve_table_visible_rows(
     offset_y: f64,
     viewport_height: f64,
@@ -378,6 +420,7 @@ pub fn resolve_table_visible_rows(
     }
 }
 
+#[cfg(feature = "table")]
 pub fn table_metrics_from_slot(
     slot: &LazyTableSlot,
     metrics: crate::theme::TableMetrics,
@@ -412,6 +455,22 @@ mod tests {
         assert_eq!(window.end, 90_010);
         approx::assert_relative_eq!(window.leading_offset, 90_000.0 * 52.0);
         assert!(index.measured(89_999).is_none());
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "virtualized item extent NaN must be finite and non-negative")
+    )]
+    fn a_non_finite_extent_leaves_the_item_at_its_previous_extent() {
+        let mut index = VirtualExtentIndex::default();
+        index.reset(2, 10.0, 0.0);
+        index.set_measured(0, 20.0);
+
+        index.set_measured(0, f64::NAN);
+
+        assert_eq!(index.measured(0), Some(20.0));
+        approx::assert_relative_eq!(index.offset_of(1), 20.0);
     }
 
     #[test]

@@ -43,9 +43,9 @@ fn emit_item(shell: &Shell, item: &DoctorItem) {
         return;
     }
 
-    match item.status {
-        CheckStatus::Ok => success!(shell, "{}", item.name),
-        CheckStatus::Missing if item.optional => print_optional_missing_item(shell, item),
+    match item.status() {
+        CheckStatus::Ok => success!(shell, "{}", item.name()),
+        CheckStatus::Missing if item.optional() => print_optional_missing_item(shell, item),
         CheckStatus::Missing => print_missing_item(shell, item),
         CheckStatus::Skipped => print_skipped_item(shell, item),
     }
@@ -53,35 +53,35 @@ fn emit_item(shell: &Shell, item: &DoctorItem) {
 
 fn print_missing_item(shell: &Shell, item: &DoctorItem) {
     let is_fixable = item.is_fixable();
-    if let Some(message) = &item.message {
+    if let Some(message) = item.message() {
         if is_fixable {
-            warn!(shell, "{} ({message}) [fixable]", item.name);
+            warn!(shell, "{} ({message}) [fixable]", item.name());
         } else {
-            warn!(shell, "{} ({message}) [manual]", item.name);
+            warn!(shell, "{} ({message}) [manual]", item.name());
         }
     } else if is_fixable {
-        warn!(shell, "{} [fixable]", item.name);
+        warn!(shell, "{} [fixable]", item.name());
     } else {
-        warn!(shell, "{} [manual]", item.name);
+        warn!(shell, "{} [manual]", item.name());
     }
 }
 
 /// A missing piece of a backend that is out of scope: the install hint
 /// without the warning, so it neither reads as a failure nor is counted.
 fn print_optional_missing_item(shell: &Shell, item: &DoctorItem) {
-    if let Some(message) = &item.message {
-        line!(shell, "  - {} (not installed: {message})", item.name);
+    if let Some(message) = item.message() {
+        line!(shell, "  - {} (not installed: {message})", item.name());
     } else {
-        line!(shell, "  - {} (not installed)", item.name);
+        line!(shell, "  - {} (not installed)", item.name());
     }
 }
 
 fn print_section_heading(shell: &Shell, section: &DoctorSection) {
     line!(shell);
-    if section.optional {
-        header!(shell, "{} (optional)", section.group.title());
+    if section.optional() {
+        header!(shell, "{} (optional)", section.group().title());
     } else {
-        header!(shell, "{}", section.group.title());
+        header!(shell, "{}", section.group().title());
     }
 }
 
@@ -106,18 +106,18 @@ async fn install_fixable_items(
     yes: bool,
 ) -> Vec<(&'static str, &'static str)> {
     let mut failures = Vec::new();
-    for item in items {
-        let name = item.name;
-        if let Some(install_fn) = item.install_fn {
-            if item.system_wide
-                && let Some(message) = &item.message
+    for mut item in items {
+        let name = item.name();
+        if let Some(install_fn) = item.take_install_fn() {
+            if item.system_wide()
+                && let Some(message) = item.message()
             {
                 note!(
                     shell,
                     "{name} modifies the system outside ~/.water: {message}"
                 );
             }
-            if item.system_wide && !yes && !shell.is_interactive() {
+            if item.system_wide() && !yes && !shell.is_interactive() {
                 note!(
                     shell,
                     "Skipped {name}: pass `--yes` to allow system-wide installs on a non-interactive run."
@@ -147,7 +147,7 @@ async fn install_fixable_items(
             match result {
                 Ok(()) => success!(shell, "Installed {name}"),
                 Err(e) => {
-                    failures.push((item.id, name));
+                    failures.push((item.id(), name));
                     error!(shell, "Failed to install {name}: {e}");
                 }
             }
@@ -165,7 +165,7 @@ fn collect_remaining_missing(
     let mut remaining_fixable = Vec::new();
 
     for item in items {
-        if item.status != CheckStatus::Missing || item.optional {
+        if item.status() != CheckStatus::Missing || item.optional() {
             continue;
         }
         remaining_missing += 1;
@@ -242,7 +242,7 @@ fn print_diagnostics(shell: &Shell, items: Vec<DoctorItem>) -> DoctorSummary {
 
     for section in sections(items) {
         print_section_heading(shell, &section);
-        for item in section.items {
+        for item in section.into_items() {
             emit_item(shell, &item);
             summarize_item(&mut summary, item);
         }
@@ -251,7 +251,7 @@ fn print_diagnostics(shell: &Shell, items: Vec<DoctorItem>) -> DoctorSummary {
 }
 
 fn summarize_item(summary: &mut DoctorSummary, item: DoctorItem) {
-    if item.status != CheckStatus::Missing || item.optional {
+    if item.status() != CheckStatus::Missing || item.optional() {
         return;
     }
     summary.all_ok = false;
@@ -261,10 +261,10 @@ fn summarize_item(summary: &mut DoctorSummary, item: DoctorItem) {
 }
 
 fn print_skipped_item(shell: &Shell, item: &DoctorItem) {
-    if let Some(msg) = &item.message {
-        line!(shell, "  - {} (skipped: {})", item.name, msg);
+    if let Some(msg) = item.message() {
+        line!(shell, "  - {} (skipped: {})", item.name(), msg);
     } else {
-        line!(shell, "  - {} (skipped)", item.name);
+        line!(shell, "  - {} (skipped)", item.name());
     }
 }
 
@@ -327,12 +327,12 @@ async fn attempt_auto_fix_loop<F, Fut>(
         // A system-wide item this run cannot consent to was already reported
         // as still missing; keeping it in the retry set would only re-skip
         // it on every remaining pass.
-        next_fixable.retain(|item| !item.system_wide || yes || shell.is_interactive());
+        next_fixable.retain(|item| !item.system_wide() || yes || shell.is_interactive());
         // An install that failed fails deterministically on retry (the same
         // package manager, the same package list), so it leaves the retry
         // set — the re-diagnosis still reports it missing, and the failures
         // are named in the report after the loop.
-        next_fixable.retain(|item| !failed.iter().any(|(id, _)| *id == item.id));
+        next_fixable.retain(|item| !failed.iter().any(|(id, _)| *id == item.id()));
 
         if remaining_missing == 0 {
             success!(shell, "All detected issues were fixed.");
@@ -474,7 +474,7 @@ mod tests {
     /// — it needs `--yes` (or an interactive prompt) to install.
     fn system_wide_item(id: &'static str, calls: &Arc<Mutex<Vec<&'static str>>>) -> DoctorItem {
         let mut item = fixable_item(id, calls, Ok(()));
-        item.system_wide = true;
+        item.set_system_wide(true);
         item
     }
 
@@ -482,8 +482,8 @@ mod tests {
     /// never run.
     fn optional_item(id: &'static str, calls: &Arc<Mutex<Vec<&'static str>>>) -> DoctorItem {
         let mut item = fixable_item(id, calls, Ok(()));
-        item.group = DoctorGroup::Android;
-        item.optional = true;
+        item.set_group(DoctorGroup::Android);
+        item.set_optional(true);
         item
     }
 

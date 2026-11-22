@@ -28,12 +28,13 @@
 //! ```
 
 use nami::signal::IntoComputed;
+use std::sync::Arc;
 use suiteki::Str;
-use waterui_core::{AnyView, Computed, IgnorableMetadata, View, metadata::MetadataKey};
+use waterui_core::{AnyView, Computed, Metadata, View, metadata::MetadataKey};
 use waterui_graphics::color::{Color, Srgb};
 use waterui_graphics::gradient::Gradient;
 use waterui_layout::BackgroundView;
-use waterui_shape::{Capsule, Shape, ShapeKind};
+use waterui_shape::{Capsule, ClipShape, Shape, ShapeKind};
 
 /// A material background metadata: the [`Material`] a backend realizes
 /// behind the wrapped content, following the contract [`Material`] states.
@@ -48,10 +49,6 @@ use waterui_shape::{Capsule, Shape, ShapeKind};
 /// let frosted = text!("Hello").background(Material::Regular);
 /// ```
 #[derive(Debug, Clone, Copy)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "metadata newtype; backends destructure the wrapped material"
-)]
 pub struct MaterialBackground(pub Material);
 
 impl MetadataKey for MaterialBackground {}
@@ -70,19 +67,18 @@ pub trait IntoBackground {
 }
 
 impl IntoBackground for Material {
-    type Output<Content: View> = IgnorableMetadata<MaterialBackground>;
+    type Output<Content: View> = Metadata<MaterialBackground>;
 
     fn apply_background<Content: View>(self, content: Content) -> Self::Output<Content> {
-        IgnorableMetadata::new(AnyView::new(content), MaterialBackground(self))
+        Metadata::new(AnyView::new(content), MaterialBackground(self))
     }
 }
 
 /// A Liquid Glass background metadata.
 ///
-/// This is an ignorable metadata delegated to native backends, the same way
-/// [`MaterialBackground`] is: a backend that has the platform's glass primitive
-/// projects it, and any other backend approximates it or renders the content
-/// without a background.
+/// Every backend realizes it, as it does [`MaterialBackground`]: a backend
+/// that has the platform's glass primitive projects it, and any other backend
+/// approximates it.
 ///
 /// Use via the `.background(Glass::…)` API rather than directly:
 ///
@@ -92,19 +88,15 @@ impl IntoBackground for Material {
 /// let pill = text!("Now Playing").padding().background(Glass::regular());
 /// ```
 #[derive(Debug, Clone)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "metadata newtype; backends destructure the wrapped glass"
-)]
 pub struct GlassBackground(pub Glass);
 
 impl MetadataKey for GlassBackground {}
 
 impl IntoBackground for Glass {
-    type Output<Content: View> = IgnorableMetadata<GlassBackground>;
+    type Output<Content: View> = Metadata<GlassBackground>;
 
     fn apply_background<Content: View>(self, content: Content) -> Self::Output<Content> {
-        IgnorableMetadata::new(AnyView::new(content), GlassBackground(self))
+        Metadata::new(AnyView::new(content), GlassBackground(self))
     }
 }
 
@@ -122,16 +114,12 @@ impl IntoBackground for Glass {
 /// group of its own, and its materials do not join the outer one. A
 /// material outside every group is a group of its own.
 ///
-/// This is ignorable metadata, like [`MaterialBackground`]: a realization
-/// whose style does not group materials renders the content unchanged.
+/// Every backend handles it: a realization whose materials do not share a
+/// backdrop renders the content unchanged.
 ///
 /// Use via [`material_group`](crate::ViewExt::material_group) rather than
 /// directly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "field-less metadata marker inserted by name"
-)]
 pub struct MaterialGroup;
 
 impl MetadataKey for MaterialGroup {}
@@ -168,10 +156,9 @@ pub enum Background {
 /// Materials create translucent blur effects that allow content behind the view
 /// to show through with varying degrees of blur and vibrancy.
 ///
-/// The mainline backends, Apple and Hydrolysis, realize `Material`. As a
-/// view's background it travels as ignorable metadata, so a backend that does
-/// not realize it, such as an experimental one, draws the content without it;
-/// as a window's background see [`WindowBackground::Material`]. The levels
+/// Every backend realizes `Material`, as a view's background through
+/// metadata and as a window's background through
+/// [`WindowBackground::Material`]. The levels
 /// fall in two groups:
 ///
 /// - **Within-window levels** — [`Regular`](Self::Regular),
@@ -301,7 +288,7 @@ pub struct Glass {
     style: GlassStyle,
     interactive: bool,
     tint: Option<Color>,
-    shape: ShapeKind,
+    shape: Arc<ClipShape>,
 }
 
 impl Default for Glass {
@@ -319,7 +306,7 @@ impl Glass {
             style,
             interactive: false,
             tint: None,
-            shape: Capsule.shape_kind(),
+            shape: Arc::new(ClipShape::new(Capsule)),
         }
     }
 
@@ -350,14 +337,15 @@ impl Glass {
         self
     }
 
-    /// The outline of the glass surface.
+    /// The outline of the glass surface: the rectangle family, a capsule, a
+    /// circle, an ellipse or a custom path.
+    ///
+    /// Apple's system glass takes its outline from a corner configuration, so
+    /// an ellipse and a custom path are unsupported there, and on macOS so
+    /// are per-corner radii.
     #[must_use]
-    #[expect(
-        clippy::needless_pass_by_value,
-        reason = "shapes are unit values passed by value everywhere else (`.clip(Capsule)`); a reference here would read as a different API"
-    )]
     pub fn shape(mut self, shape: impl Shape) -> Self {
-        self.shape = shape.shape_kind();
+        self.shape = Arc::new(ClipShape::new(shape));
         self
     }
 
@@ -379,10 +367,17 @@ impl Glass {
         self.tint.as_ref()
     }
 
-    /// The outline of the glass surface.
+    /// The kind of the glass surface's outline.
     #[must_use]
-    pub const fn shape_kind(&self) -> ShapeKind {
-        self.shape
+    pub fn shape_kind(&self) -> ShapeKind {
+        self.shape.kind()
+    }
+
+    /// The glass surface's outline: its kind and, for a custom path, the
+    /// unit-space path commands.
+    #[must_use]
+    pub fn outline(&self) -> &ClipShape {
+        &self.shape
     }
 }
 

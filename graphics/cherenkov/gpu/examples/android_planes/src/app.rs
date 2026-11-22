@@ -368,7 +368,7 @@ impl Run {
         if now >= self.next_log {
             self.next_log = now + Duration::from_secs(1);
             if let Some(scene) = &self.recorded {
-                let memory = self.engine.memory();
+                let memory = self.engine.memory().expect("memory query");
                 for layer in &scene.layers {
                     logcat::line(&format!(
                         "scenario={} side={} count={} lifetime={} engine={} frame={} layer=LayerId({}) decision={} gpu_bytes={} cpu_bytes={} passes={}",

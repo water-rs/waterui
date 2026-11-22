@@ -21,7 +21,7 @@
 use std::rc::Rc;
 
 use suiteki::Str;
-use waterui_core::{AnyView, Environment, Metadata, Retain, View};
+use waterui_core::{AnyView, Environment, Metadata, Retain, View, contract_violation};
 use waterui_ts_engine::{JsError, JsFunction, JsValue};
 use waterui_ts_schema::{TsProps, TsType, struct_name};
 
@@ -38,10 +38,6 @@ use crate::runtime::TsRuntime;
 /// every module rather than for most of them. `tsx!("./promo.tsx")` mounts
 /// against this.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, TsProps)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "the empty props contract: it has no fields by definition"
-)]
 pub struct NoProps {}
 
 /// The loaded TypeScript runtime, as a mounted view reaches it.
@@ -298,19 +294,27 @@ fn take_mounted(
 }
 
 impl View for Mount {
-    /// # Panics
+    /// # Contract violation
     ///
-    /// Panics when the module cannot be mounted, with the message
+    /// When the module cannot be mounted, with the message
     /// [`try_mount`](Self::try_mount) would have returned. `View::body` has no
     /// error channel, and every one of those failures means the bundle and the
-    /// binary disagree — a build-time mistake that a blank rectangle would
-    /// hide at the one moment it is still diagnosable. A caller that wants to
-    /// decide for itself calls `try_mount`.
+    /// binary disagree — a build-time mistake that is diagnosable at the
+    /// moment a debug build panics. A release build logs it and the module
+    /// renders nothing. A caller that wants to decide for itself calls
+    /// `try_mount`.
     fn body(self, environment: &Environment) -> impl View {
         let module = self.module;
-        self.try_mount(environment).unwrap_or_else(|error| {
-            panic!("mounting the TypeScript module \"{module}\" failed: {error}")
-        })
+        match self.try_mount(environment) {
+            Ok(view) => Some(view),
+            Err(error) => {
+                contract_violation!(
+                    "mounting the TypeScript module \"{module}\" failed: {error}; \
+                     the module renders nothing"
+                );
+                None
+            }
+        }
     }
 }
 

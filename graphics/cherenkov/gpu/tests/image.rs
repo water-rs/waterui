@@ -123,7 +123,7 @@ fn an_image_in_an_isolated_layer_selects_its_native_entry() -> Result<(), Box<dy
     });
     wait!(engine.render(cherenkov::FrameTime::now()))?;
     if cfg!(any(target_vendor = "apple", target_os = "android")) {
-        assert!(wait!(engine.memory()).tile_reserved.0 > 0, "image uses a native tile epoch");
+        assert!(wait!(engine.memory())?.tile_reserved.0 > 0, "image uses a native tile epoch");
     }
     Ok(())
 }
@@ -660,11 +660,11 @@ split_test! {
 fn native_image_memory_tracks_the_storage_format()
     -> Result<(), Box<dyn std::error::Error>> {
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
-    let baseline = engine.memory().gpu.0;
+    let baseline = engine.memory()?.gpu.0;
     let rgba8 = engine.image(ImageData::<Rgba8>::new(256, 256, vec![128; 256 * 256 * 4])?)?;
-    assert_eq!(engine.memory().gpu.0 - baseline, 256 * 256 * 4);
+    assert_eq!(engine.memory()?.gpu.0 - baseline, 256 * 256 * 4);
     let hdr = engine.image(ImageData::<cherenkov::Rgba16F>::new(256, 256, vec![0; 256 * 256 * 8])?)?;
-    assert_eq!(engine.memory().gpu.0 - baseline, 256 * 256 * 12);
+    assert_eq!(engine.memory()?.gpu.0 - baseline, 256 * 256 * 12);
     drop((rgba8, hdr));
     Ok(())
 }
@@ -713,14 +713,14 @@ where
         })?;
         let surface =
             engine.surface(Offscreen::new((33, 33), OffscreenFormat::LinearF16), || {})?;
-        let baseline = engine.memory().gpu.0;
+        let baseline = engine.memory()?.gpu.0;
         let image = engine.image(ImageData::<F>::new(3, 2, block)?)?;
         assert_eq!(
             engine.image_limits().check_beside::<F>(3, 2, 0)?,
             if native { 16 } else { 24 }
         );
         assert_eq!(
-            engine.memory().gpu.0 - baseline,
+            engine.memory()?.gpu.0 - baseline,
             if native { 16 } else { 24 }
         );
         surface.update(|tx| {

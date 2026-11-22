@@ -1,6 +1,5 @@
 //! A gradient of drifting, noise-driven colour bands, animated on the GPU.
 
-use waterui_core::layout::StretchAxis;
 use waterui_core::{Environment, View};
 
 use crate::shader_paint::ShaderPaintView;
@@ -12,7 +11,6 @@ use crate::shader_paint::ShaderPaintView;
 ///
 /// Stretches on both axes; constrain it with `.frame()`.
 #[derive(Debug, Clone, Copy, Default)]
-#[expect(clippy::exhaustive_structs, reason = "field-less view used by name")]
 pub struct FlowingGradient;
 
 impl FlowingGradient {
@@ -26,9 +24,5 @@ impl FlowingGradient {
 impl View for FlowingGradient {
     fn body(self, _env: &Environment) -> impl View {
         ShaderPaintView::new(include_str!("flowing.wgsl")).animated(true)
-    }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::Both
     }
 }

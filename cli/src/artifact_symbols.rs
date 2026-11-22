@@ -121,10 +121,11 @@ impl ArtifactSymbols {
     /// decode.
     pub fn bundle_mount_meta(&self, leaf: &str) -> Result<BundleMountMeta> {
         let mut meta = BundleMountMeta::from_payload(&self.meta_record(leaf)?)?;
-        meta.path = dunce::simplified(&meta.path).to_path_buf();
-        meta.project = meta
-            .project
-            .map(|project| dunce::simplified(&project).to_path_buf());
+        meta.set_path(dunce::simplified(meta.path()).to_path_buf());
+        let project = meta
+            .project()
+            .map(|project| dunce::simplified(project).to_path_buf());
+        meta.set_project(project);
         Ok(meta)
     }
 
@@ -258,7 +259,9 @@ mod tests {
         args.push("--lib");
         args.extend_from_slice(extra_args);
         let artifacts = built_fixture(
-            &crate::toolchain::Host::current().without_cargo_target_dir(),
+            &crate::toolchain::Host::current()
+                .without_cargo_target_dir()
+                .without_apple_deployment_targets(),
             fixture,
             &args,
         )?;
@@ -548,13 +551,13 @@ mod tests {
         // The fixture is built with plain `cargo`, so the deployment targets
         // its `Water.toml` declares reach the build the way they reach a
         // project's own `cargo` commands: through the generated
-        // `.cargo/config.toml`.
-        let declared = crate::project::Manifest::parse(
+        // `.cargo/config.toml`, which `built_lib_fixture` keeps the enclosing
+        // workspace's inherited targets from overriding.
+        let manifest = crate::project::Manifest::parse(
             &std::fs::read_to_string(staged.join("Water.toml")).expect("the fixture Water.toml"),
         )
-        .expect("the fixture Water.toml parses")
-        .apple
-        .deployment_targets;
+        .expect("the fixture Water.toml parses");
+        let declared = manifest.apple().deployment_targets();
         let cargo_config = futures_lite::future::block_on(async {
             crate::framework::ResolvedFramework::for_local_checkout(
                 &crate::toolchain::Host::current(),
@@ -562,7 +565,7 @@ mod tests {
             )
             .await
             .expect("the pinned framework resolves")
-            .cargo_config(&staged, &declared)
+            .cargo_config(&staged, declared)
             .await
             .expect("the fixture's deployment targets resolve")
         });
@@ -678,14 +681,14 @@ mod tests {
             let meta = symbols
                 .bundle_mount_meta("waterui_meta_bundle_web")
                 .expect("payload should decode as BundleMountMeta");
-            assert_eq!(meta.mount, "web");
+            assert_eq!(meta.mount(), "web");
             assert!(
-                meta.path.ends_with("dist"),
+                meta.path().ends_with("dist"),
                 "the default out dir is dist: {}",
-                meta.path.display()
+                meta.path().display()
             );
             assert_eq!(
-                meta.project.as_deref(),
+                meta.project().map(PathBuf::as_path),
                 Some(
                     dunce::canonicalize(project.join("web"))
                         .as_deref()

@@ -30,10 +30,11 @@ use waterui::reactive::{Computed, Signal};
 use waterui::text::{StyledStr, Text};
 use waterui::views::{AnyViewsSnapshot, ViewSnapshot, Views};
 use waterui_backend_core::AnyView;
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
+};
 
 use crate::contract::{NativeLeaf, RenderContext, Renderer};
-use crate::dispatch::Dispatcher;
 
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::{HostView, TableView};
@@ -544,8 +545,7 @@ fn materialize_column(
     // on `AppKit`, the `NSTableColumn` title. The rest of the resolved
     // `TextConfig` — `paragraph_alignment`, `line_limit` — is consumed and
     // released here, as `WuiTableColumnNode` releases the alignment signal.
-    let label_config = column.label().resolve(&env);
-    let label_content = label_config.content;
+    let label_content = column.label().resolve(&env).into_content();
 
     // A label `content` event only records the reload request while a
     // transaction is active; otherwise it drains immediately — the watch
@@ -774,6 +774,14 @@ impl core::fmt::Debug for TableSubView {
 }
 
 impl SubView for TableSubView {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
         ViewDimensions::new(size_that_fits(&self.state.borrow()))
     }
@@ -922,8 +930,8 @@ fn render(config: TableConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
 }
 
 /// Registers the `table` leaf.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<TableConfig>(render);
+pub fn realize_table_config(value: TableConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
+    render(value, ctx)
 }
 
 #[cfg(test)]

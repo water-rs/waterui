@@ -37,6 +37,7 @@ mod app_values;
 mod apple_metadata;
 mod gradle_plugins;
 pub mod icon;
+mod keep_rules;
 mod unified;
 mod web;
 
@@ -120,7 +121,7 @@ const HYDROLYSIS_DEFAULT_FONT_FAMILY: &str = "Roboto";
 const FONT_MANIFEST_FILE_NAME: &str = "waterui-fonts.json";
 
 /// A resolved font with its absolute path.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResolvedFont {
     /// Font family name.
     pub name: String,
@@ -255,6 +256,9 @@ struct AndroidTable {
     /// Gradle plugins to apply to the generated application module.
     #[serde(default)]
     gradle_plugin: Vec<gradle_plugins::GradlePlugin>,
+    /// Classes and members R8 keeps because JNI reaches them by name.
+    #[serde(default)]
+    keep: Vec<keep_rules::KeepRule>,
 }
 
 impl AndroidTable {
@@ -268,6 +272,7 @@ impl AndroidTable {
             && self.receiver.is_empty()
             && self.meta_data.is_empty()
             && self.gradle_plugin.is_empty()
+            && self.keep.is_empty()
     }
 }
 
@@ -315,26 +320,29 @@ fn manifest_font_declarations(
     manifest: &crate::project::Manifest,
     root: &Path,
 ) -> eyre::Result<Vec<FontDeclaration>> {
-    let Some(assets) = manifest.assets.as_ref() else {
+    let Some(assets) = manifest.assets() else {
         return Ok(Vec::new());
     };
-    let mut declarations = Vec::with_capacity(assets.font.len());
-    for font in &assets.font {
+    let mut declarations = Vec::with_capacity(assets.font().len());
+    for font in assets.font() {
         let source = FontSource::from_declaration(
             root,
-            font.local_path.clone(),
-            font.remote_path.clone(),
-            &manifest.package.name,
-            &font.name,
+            font.local_path().map(ToOwned::to_owned),
+            font.remote_path().map(ToOwned::to_owned),
+            manifest.package().name(),
+            font.name(),
         )
-        .wrap_err_with(|| format!("[[assets.font]] entry '{}' in Water.toml", font.name))?;
-        let platforms =
-            font_platform_scope(font.platforms.clone(), &manifest.package.name, &font.name)
-                .wrap_err_with(|| format!("[[assets.font]] entry '{}' in Water.toml", font.name))?;
+        .wrap_err_with(|| format!("[[assets.font]] entry '{}' in Water.toml", font.name()))?;
+        let platforms = font_platform_scope(
+            font.platforms().map(<[_]>::to_vec),
+            manifest.package().name(),
+            font.name(),
+        )
+        .wrap_err_with(|| format!("[[assets.font]] entry '{}' in Water.toml", font.name()))?;
         declarations.push(FontDeclaration::new(
-            font.name.clone(),
+            font.name().to_owned(),
             source,
-            manifest.package.name.clone(),
+            manifest.package().name().to_owned(),
             platforms,
         ));
     }
@@ -370,8 +378,18 @@ pub async fn scan_fonts(
     build_manifest: &Path,
     platforms: &[FontPlatform],
 ) -> eyre::Result<Vec<FontDeclaration>> {
+    scan_fonts_with_features(project, build_manifest, platforms, &[]).await
+}
+
+/// Scan fonts in the dependency graph selected by the build's Cargo features.
+pub async fn scan_fonts_with_features(
+    project: &Project,
+    build_manifest: &Path,
+    platforms: &[FontPlatform],
+    features: &[String],
+) -> eyre::Result<Vec<FontDeclaration>> {
     let mut declarations = manifest_font_declarations(project.manifest(), project.root())?;
-    declarations.extend(scan_crate_font_declarations(project, build_manifest).await?);
+    declarations.extend(scan_crate_font_declarations(project, build_manifest, features).await?);
     declarations.retain(|declaration| {
         platforms
             .iter()
@@ -414,7 +432,7 @@ pub async fn seed_managed_crate_lock(
     // checkout's own `Cargo.lock` is still the canonical pin for the
     // transitive packages only the managed crate reaches.
     let has_framework =
-        project.manifest().framework.is_some() || project.manifest().waterui_path.is_some();
+        project.manifest().framework().is_some() || project.manifest().waterui_path().is_some();
     let canonical = if has_framework {
         project
             .resolved_framework()
@@ -473,17 +491,13 @@ fn crate_metadata_command(
 /// The features cargo resolved on each package of `metadata`'s graph — what
 /// every feature-gated declaration is checked against.
 fn resolved_features(metadata: &cargo_metadata::Metadata) -> HashMap<&PackageId, HashSet<&str>> {
-    metadata
-        .resolve
-        .as_ref()
-        .map(|resolve| {
-            resolve
-                .nodes
-                .iter()
-                .map(|node| (&node.id, node.features.iter().map(|f| f.as_str()).collect()))
-                .collect()
-        })
-        .unwrap_or_default()
+    metadata.resolve.as_ref().map_or_default(|resolve| {
+        resolve
+            .nodes
+            .iter()
+            .map(|node| (&node.id, node.features.iter().map(|f| f.as_str()).collect()))
+            .collect()
+    })
 }
 
 /// Whether cargo resolved `feature` on `package`.
@@ -533,6 +547,7 @@ fn parse_waterui_metadata(
 async fn scan_crate_font_declarations(
     project: &Project,
     build_manifest: &Path,
+    features: &[String],
 ) -> eyre::Result<Vec<FontDeclaration>> {
     debug!(
         "Scanning fonts from dependencies via cargo metadata on {}",
@@ -545,6 +560,7 @@ async fn scan_crate_font_declarations(
         .facts()
         .answer(&DependencyFonts {
             manifest: build_manifest.to_path_buf(),
+            features: features.to_vec(),
         })
         .await
         .wrap_err_with(|| {
@@ -580,20 +596,21 @@ async fn scan_crate_font_declarations(
 /// `cargo metadata` document it was read from.
 struct DependencyFonts {
     manifest: PathBuf,
+    features: Vec<String>,
 }
 
 impl Fact for DependencyFonts {
     const KIND: &'static str = "dependency-fonts";
-    type Question = PathBuf;
+    type Question = (PathBuf, Vec<String>);
     type Value = Vec<RecordedFont>;
 
-    fn question(&self) -> PathBuf {
-        self.manifest.clone()
+    fn question(&self) -> Self::Question {
+        (self.manifest.clone(), self.features.clone())
     }
 
     async fn resolve(&self, scope: &Scope<'_>) -> eyre::Result<Vec<RecordedFont>> {
         let metadata = scope
-            .cargo_metadata(&crate_metadata_command(&self.manifest, &[]))
+            .cargo_metadata(&crate_metadata_command(&self.manifest, &self.features))
             .await?;
         let fonts =
             dependency_font_declarations(&metadata, GraphScope::Build).wrap_err_with(|| {
@@ -630,9 +647,10 @@ enum RecordedFontSource {
 
 impl From<FontDeclaration> for RecordedFont {
     fn from(font: FontDeclaration) -> Self {
+        let (name, source, crate_name, platforms) = font.into_parts();
         Self {
-            name: font.name,
-            source: match font.source {
+            name,
+            source: match source {
                 FontSource::Local {
                     crate_root,
                     relative_path,
@@ -643,8 +661,8 @@ impl From<FontDeclaration> for RecordedFont {
                 FontSource::Remote { url } => RecordedFontSource::Remote { url },
                 FontSource::BuiltIn => RecordedFontSource::BuiltIn,
             },
-            crate_name: font.crate_name,
-            platforms: font.platforms,
+            crate_name,
+            platforms,
         }
     }
 }
@@ -693,6 +711,8 @@ pub struct AndroidClasspath {
     pub kotlin_sources: Vec<PathBuf>,
     /// `group:artifact:version` coordinates to emit as Gradle dependencies.
     pub maven: BTreeSet<String>,
+    /// Classes and members R8 keeps because JNI reaches them by name.
+    pub keep: keep_rules::KeepRules,
 }
 
 /// Which Gradle configuration a module's classpath dependencies land on.
@@ -829,6 +849,7 @@ fn collect_android_declarations(
                 );
                 declarations.classpath.maven.insert(coordinate);
             }
+            declarations.classpath.keep.merge(table.keep);
             declarations
                 .manifest
                 .merge(package.name.as_str(), components)?;
@@ -971,7 +992,7 @@ pub async fn stage_android_declarations(
         module_dir,
         project.root(),
         &declarations.app_values,
-        &project.manifest().app_values,
+        project.manifest().app_values(),
         scope,
     )
     .await?;
@@ -1077,7 +1098,7 @@ async fn stage_classpath_files(
     }
 
     write_android_dependencies(module_dir, &classpath.maven, scope).await?;
-    write_android_keeps(module_dir, &keep_packages).await?;
+    write_android_keeps(module_dir, &keep_packages, &classpath.keep).await?;
     Ok(())
 }
 
@@ -1184,7 +1205,11 @@ async fn write_android_dependencies(
 /// R8's release shrink cannot remove or rename classes JNI loads by name.
 /// An empty set removes a block an earlier stage left; the file itself is
 /// only written when its contents change.
-async fn write_android_keeps(module_dir: &Path, packages: &BTreeSet<String>) -> eyre::Result<()> {
+async fn write_android_keeps(
+    module_dir: &Path,
+    packages: &BTreeSet<String>,
+    declared: &keep_rules::KeepRules,
+) -> eyre::Result<()> {
     let rules_path = module_dir.join("proguard-rules.pro");
     let existing = match fs::read_to_string(&rules_path).await {
         Ok(contents) => contents,
@@ -1208,15 +1233,11 @@ async fn write_android_keeps(module_dir: &Path, packages: &BTreeSet<String>) -> 
         body.pop();
     }
 
-    if !packages.is_empty() {
-        body.push_str(ANDROID_KEEPS_BEGIN);
-        body.push('\n');
-        for package in packages {
-            body.push_str("-keep class ");
-            body.push_str(package);
-            body.push_str(".** { *; }\n");
-        }
-        body.push_str(ANDROID_KEEPS_END);
+    if !packages.is_empty() || !declared.is_empty() {
+        let block = declared
+            .block(ANDROID_KEEPS_BEGIN, ANDROID_KEEPS_END, packages)
+            .wrap_err("failed to render the managed keep block")?;
+        body.push_str(&block);
         body.push('\n');
     }
 
@@ -1269,11 +1290,9 @@ async fn resolve_fonts_with(
     let mut resolved = Vec::with_capacity(satisfied.len());
     for (decl, path) in satisfied {
         let path = path?;
-        debug!("Resolved font '{}' -> {}", decl.name, path.display());
-        resolved.push(ResolvedFont {
-            name: decl.name,
-            path,
-        });
+        debug!("Resolved font '{}' -> {}", decl.name(), path.display());
+        let (name, ..) = decl.into_parts();
+        resolved.push(ResolvedFont { name, path });
     }
 
     info!("Resolved {} fonts", resolved.len());
@@ -1294,14 +1313,17 @@ fn resolve_declarations(declarations: Vec<FontDeclaration>) -> Vec<FontDeclarati
     // Group by name
     let mut by_name: HashMap<String, Vec<FontDeclaration>> = HashMap::new();
     for decl in declarations {
-        by_name.entry(decl.name.clone()).or_default().push(decl);
+        by_name
+            .entry(decl.name().to_owned())
+            .or_default()
+            .push(decl);
     }
 
     let mut resolved: Vec<FontDeclaration> = by_name
         .into_values()
         .map(|mut decls| {
             // Sort by priority: Local > Remote > BuiltIn, take the first.
-            decls.sort_by_key(|d| match &d.source {
+            decls.sort_by_key(|d| match &d.source() {
                 FontSource::Local { .. } => 0,
                 FontSource::Remote { .. } => 1,
                 FontSource::BuiltIn => 2,
@@ -1309,7 +1331,7 @@ fn resolve_declarations(declarations: Vec<FontDeclaration>) -> Vec<FontDeclarati
             decls.into_iter().next().unwrap()
         })
         .collect();
-    resolved.sort_by(|left, right| left.name.cmp(&right.name));
+    resolved.sort_by(|left, right| left.name().cmp(right.name()));
     resolved
 }
 
@@ -1359,8 +1381,8 @@ async fn satisfy_font(
     registry: &FontRegistry,
     fetch: FontFetch,
 ) -> eyre::Result<PathBuf> {
-    let name = &decl.name;
-    match &decl.source {
+    let name = &decl.name();
+    match &decl.source() {
         FontSource::Local {
             crate_root,
             relative_path,
@@ -1377,7 +1399,7 @@ async fn satisfy_font(
                 format!(
                     "font '{name}' has an invalid local path '{}' (declared by {})",
                     relative_path.display(),
-                    decl.crate_name
+                    decl.crate_name()
                 )
             }),
         },
@@ -1407,8 +1429,8 @@ async fn satisfy_font(
 fn unsatisfiable_local_font(decl: &FontDeclaration, expected: &Path) -> eyre::Report {
     eyre::eyre!(
         "font '{}' is declared by {} at '{}', which does not exist in that crate",
-        decl.name,
-        decl.crate_name,
+        decl.name(),
+        decl.crate_name(),
         expected.display(),
     )
 }
@@ -1420,8 +1442,8 @@ fn unsatisfiable_builtin_font(decl: &FontDeclaration) -> eyre::Report {
         "font '{}' is declared by {} by name alone, but no font of that name \
          is in the built-in registry — give the declaration a `local_path` or a \
          `remote_path`",
-        decl.name,
-        decl.crate_name
+        decl.name(),
+        decl.crate_name()
     )
 }
 
@@ -1692,7 +1714,7 @@ async fn seed_font_cache_scoped(
         .map_err(SeedFontCacheError::Scaffold)?;
     for manifest in manifests {
         declarations.extend(
-            scan_crate_font_declarations(project, &manifest)
+            scan_crate_font_declarations(project, &manifest, &[])
                 .await
                 .map_err(SeedFontCacheError::Fonts)?,
         );
@@ -1887,17 +1909,17 @@ async fn fetch_declared_font(
     registry: &FontRegistry,
     fetch: FontFetch,
 ) -> eyre::Result<FetchOutcome> {
-    let outcome = match &decl.source {
+    let outcome = match &decl.source() {
         // Whatever fetching cannot fix — a crate-local file that is not
         // there — is reported exactly as the build reports it.
         FontSource::Local { .. } => {
             match satisfy_font(host, decl, cache_dir, registry, fetch).await {
                 Ok(path) => FetchOutcome::Satisfied {
-                    name: decl.name.clone(),
+                    name: decl.name().to_owned(),
                     path,
                 },
                 Err(error) => FetchOutcome::Unsatisfiable {
-                    name: decl.name.clone(),
+                    name: decl.name().to_owned(),
                     error,
                 },
             }
@@ -1906,24 +1928,24 @@ async fn fetch_declared_font(
             match declaration_origin(decl, registry) {
                 Some(origin) => {
                     if let Some(path) =
-                        cached_font_entry(host, &decl.name, origin.url, cache_dir).await?
+                        cached_font_entry(host, decl.name(), origin.url, cache_dir).await?
                     {
                         FetchOutcome::Satisfied {
-                            name: decl.name.clone(),
+                            name: decl.name().to_owned(),
                             path,
                         }
                     } else {
                         let path =
-                            fetch_remote_font(host, &decl.name, origin, cache_dir, fetch).await?;
+                            fetch_remote_font(host, decl.name(), origin, cache_dir, fetch).await?;
                         FetchOutcome::Fetched {
-                            name: decl.name.clone(),
+                            name: decl.name().to_owned(),
                             path,
                         }
                     }
                 }
                 // Only a `BuiltIn` declaration reaches this arm.
                 None => FetchOutcome::Unsatisfiable {
-                    name: decl.name.clone(),
+                    name: decl.name().to_owned(),
                     error: unsatisfiable_builtin_font(decl),
                 },
             }
@@ -1939,9 +1961,9 @@ fn declaration_origin<'a>(
     decl: &'a FontDeclaration,
     registry: &'a FontRegistry,
 ) -> Option<FontOrigin<'a>> {
-    match &decl.source {
+    match &decl.source() {
         FontSource::Remote { url } => Some(FontOrigin { url, sha256: None }),
-        FontSource::BuiltIn => registry.origin(&decl.name),
+        FontSource::BuiltIn => registry.origin(decl.name()),
         FontSource::Local { .. } => None,
     }
 }
@@ -2329,6 +2351,8 @@ pub fn scan_project_font_assets(manifest: &BundleManifest) -> eyre::Result<Vec<R
     unified::scan_project_fonts(manifest)
 }
 
+pub use unified::cached_project_fonts;
+
 pub use unified::LaunchAssets;
 
 /// Resolve the project's launch screen and load its artwork.
@@ -2381,13 +2405,15 @@ pub async fn stage_hydrolysis_web_fonts(
     project: &Project,
     backend_path: &Path,
     site_root: &Path,
+    features: &[String],
 ) -> eyre::Result<()> {
     let mut resolved_fonts = resolve_fonts(
         project.host(),
-        scan_fonts(
+        scan_fonts_with_features(
             project,
             &backend_path.join("Cargo.toml"),
             &[FontPlatform::Web],
+            features,
         )
         .await?,
     )
@@ -2478,7 +2504,7 @@ pub async fn package_feature_enabled(
     target: &Triple,
 ) -> eyre::Result<bool> {
     let enabled = project
-        .generated_manifest_features(build_manifest, target)
+        .generated_manifest_features(build_manifest, target, &[])
         .await
         .wrap_err_with(|| {
             format!(
@@ -2486,6 +2512,7 @@ pub async fn package_feature_enabled(
                 build_manifest.display()
             )
         })?
+        .enabled
         .get(package)
         .is_some_and(|features| features.contains(feature));
     debug!("resolved feature {package}/{feature} for {target}: {enabled}");
@@ -2561,6 +2588,143 @@ const OPTIONAL_CAPABILITIES: &[Capability] = &[
         feature: None,
     },
 ];
+
+/// Widget capabilities are selected by their defining components, including
+/// direct component imports that do not pass through the facade.
+const WIDGET_CAPABILITIES: &[Capability] = &[
+    Capability {
+        name: "menu",
+        package: "waterui-controls",
+        feature: Some("menu"),
+    },
+    Capability {
+        name: "calendar",
+        package: "waterui-form",
+        feature: Some("calendar"),
+    },
+    Capability {
+        name: "color-picker",
+        package: "waterui-form",
+        feature: Some("color-picker"),
+    },
+    Capability {
+        name: "date-picker",
+        package: "waterui-form",
+        feature: Some("date-picker"),
+    },
+    Capability {
+        name: "file-picker",
+        package: "waterui-form",
+        feature: Some("file-picker"),
+    },
+    Capability {
+        name: "multi-date-picker",
+        package: "waterui-form",
+        feature: Some("multi-date-picker"),
+    },
+    Capability {
+        name: "picker",
+        package: "waterui-form",
+        feature: Some("picker"),
+    },
+    Capability {
+        name: "secure-field",
+        package: "waterui-form",
+        feature: Some("secure-field"),
+    },
+    Capability {
+        name: "slider",
+        package: "waterui-controls",
+        feature: Some("slider"),
+    },
+    Capability {
+        name: "stepper",
+        package: "waterui-controls",
+        feature: Some("stepper"),
+    },
+    Capability {
+        name: "text-field",
+        package: "waterui-controls",
+        feature: Some("text-field"),
+    },
+    Capability {
+        name: "toggle",
+        package: "waterui-controls",
+        feature: Some("toggle"),
+    },
+    Capability {
+        name: "validation",
+        package: "waterui-form",
+        feature: Some("validation"),
+    },
+    Capability {
+        name: "list",
+        package: "waterui-internal",
+        feature: Some("list"),
+    },
+    Capability {
+        name: "table",
+        package: "waterui-internal",
+        feature: Some("table"),
+    },
+    Capability {
+        name: "navigation",
+        package: "waterui-navigation",
+        feature: None,
+    },
+];
+
+fn selected_widget_capabilities(graph: &BTreeMap<String, BTreeSet<String>>) -> Vec<&'static str> {
+    WIDGET_CAPABILITIES
+        .iter()
+        .filter(|capability| {
+            graph.get(capability.package).is_some_and(|features| {
+                capability
+                    .feature
+                    .is_none_or(|feature| features.contains(feature))
+            })
+        })
+        .map(|capability| capability.name)
+        .collect()
+}
+
+/// Resolve widget capabilities for this exact target and Cargo feature selection.
+///
+/// # Errors
+/// Returns an error when Cargo cannot resolve the generated manifest.
+pub async fn widget_features(
+    project: &Project,
+    build_manifest: &Path,
+    target: &Triple,
+    features: &[String],
+    destinations: &[&str],
+) -> eyre::Result<Vec<String>> {
+    seed_managed_crate_lock(project, build_manifest).await?;
+    let graph = project
+        .generated_manifest_features(build_manifest, target, features)
+        .await?;
+    Ok(backend_widget_features(&graph, destinations))
+}
+
+fn backend_widget_features(
+    graph: &super::project::ResolvedManifestFeatures,
+    destinations: &[&str],
+) -> Vec<String> {
+    selected_widget_capabilities(&graph.enabled)
+        .into_iter()
+        .flat_map(|capability| {
+            destinations
+                .iter()
+                .filter(move |destination| {
+                    graph
+                        .declared
+                        .get(**destination)
+                        .is_some_and(|declared| declared.contains(capability))
+                })
+                .map(move |destination| format!("{destination}/{capability}"))
+        })
+        .collect()
+}
 
 /// Returns whether this app's resolved graph carries the named capability.
 ///
@@ -2647,6 +2811,58 @@ mod tests {
     use std::fs;
     use tempfile::tempdir;
 
+    #[test]
+    fn widget_capabilities_follow_defining_components() {
+        let graph = BTreeMap::from([
+            (
+                "waterui-form".into(),
+                BTreeSet::from(["secure-field".into()]),
+            ),
+            ("waterui-controls".into(), BTreeSet::from(["menu".into()])),
+            ("waterui-navigation".into(), BTreeSet::new()),
+            ("unrelated".into(), BTreeSet::from(["slider".into()])),
+        ]);
+        assert_eq!(
+            selected_widget_capabilities(&graph),
+            ["menu", "secure-field", "navigation"]
+        );
+    }
+
+    #[test]
+    fn widget_features_only_forward_capabilities_declared_by_each_backend() {
+        let graph = super::super::project::ResolvedManifestFeatures {
+            enabled: BTreeMap::from([
+                ("waterui-internal".into(), BTreeSet::from(["list".into()])),
+                ("waterui-controls".into(), BTreeSet::from(["slider".into()])),
+            ]),
+            declared: BTreeMap::from([
+                (
+                    "hydrolysis".into(),
+                    BTreeSet::from(["list".into(), "slider".into()]),
+                ),
+                ("hydrolysis-m3".into(), BTreeSet::from(["list".into()])),
+            ]),
+        };
+        assert_eq!(
+            backend_widget_features(&graph, &["hydrolysis", "hydrolysis-m3"]),
+            ["hydrolysis/slider", "hydrolysis/list", "hydrolysis-m3/list"]
+        );
+        assert_eq!(
+            backend_widget_features(&graph, &["older-backend"]),
+            [] as [std::string::String; 0]
+        );
+    }
+
+    #[test]
+    fn list_capability_does_not_select_other_controls() {
+        let graph = BTreeMap::from([
+            ("waterui-internal".into(), BTreeSet::from(["list".into()])),
+            ("waterui-form".into(), BTreeSet::new()),
+            ("waterui-controls".into(), BTreeSet::new()),
+        ]);
+        assert_eq!(selected_widget_capabilities(&graph), ["list"]);
+    }
+
     /// A `FontFetch` stub for declarations that must never be downloaded.
     fn must_not_download<'a>(
         _url: &'a str,
@@ -2703,9 +2919,9 @@ mod tests {
         let declarations =
             manifest_font_declarations(&manifest, Path::new("/project")).expect("declarations");
         assert_eq!(declarations.len(), 1);
-        assert_eq!(declarations[0].name, "Inter");
-        assert_eq!(declarations[0].crate_name, "Demo");
-        assert!(matches!(declarations[0].source, FontSource::BuiltIn));
+        assert_eq!(declarations[0].name(), "Inter");
+        assert_eq!(declarations[0].crate_name(), "Demo");
+        assert!(matches!(declarations[0].source(), FontSource::BuiltIn));
     }
 
     #[test]
@@ -2740,7 +2956,7 @@ mod tests {
         let FontSource::Local {
             crate_root,
             relative_path,
-        } = &declarations[0].source
+        } = &declarations[0].source()
         else {
             panic!("expected a local font source");
         };
@@ -3431,7 +3647,7 @@ fn required_permissions(
             required.push(RequiredPermission {
                 package: package.name.to_string(),
                 key,
-                reason: requirement.reason.clone(),
+                reason: requirement.reason,
                 evidence: PermissionEvidence::Declared,
             });
         }
@@ -3519,7 +3735,7 @@ pub fn warn_missing_permissions(
 ) {
     let enabled: HashSet<PermissionKey> = project
         .manifest()
-        .permissions
+        .permissions()
         .iter()
         .filter(|(_, entry)| entry.is_enabled())
         .map(|(key, _)| *key)
@@ -3647,6 +3863,43 @@ mod permission_audit_tests {
             app.is_empty(),
             "the app graph does not carry `theme` and must stay silent"
         );
+    }
+
+    #[test]
+    fn font_queries_distinguish_feature_selected_dependency_graphs() {
+        smol::block_on(async {
+            let directory = tempdir().expect("temp project");
+            let root = directory.path().join("app");
+            write_crate(
+                &directory.path().join("fonts"),
+                "fonts",
+                "[[package.metadata.waterui.assets.font]]\nname = \"Feature Face\"\nlocal_path = \"face.ttf\"\n",
+            );
+            let manifest = write_crate(
+                &root,
+                "app",
+                "[features]\nextra = [\"dep:fonts\"]\n[dependencies]\nfonts = { path = \"../fonts\", optional = true }\n",
+            );
+            std::fs::write(root.join("Water.toml"),
+                "[package]\nname = \"Feature Fonts\"\nbundle_identifier = \"dev.waterui.featurefonts\"\n")
+                .expect("project manifest");
+            let host = crate::toolchain::testing::real_toolchain_host(directory.path());
+            let project =
+                crate::project::Project::open(&host, &root, crate::project::ManagedBackends::NONE)
+                    .await
+                    .expect("project opens");
+            for (features, count) in [(vec![], 0), (vec![String::from("extra")], 1), (vec![], 0)] {
+                let fonts = super::scan_fonts_with_features(
+                    &project,
+                    &manifest,
+                    &[FontPlatform::Android],
+                    &features,
+                )
+                .await
+                .expect("fonts scan");
+                assert_eq!(fonts.len(), count);
+            }
+        });
     }
 
     #[test]
@@ -4030,6 +4283,75 @@ mod permission_audit_tests {
         assert!(message.contains("`other-push`"), "{message}");
     }
 
+    /// Keep rules are collected across the resolved graph — two crates
+    /// keeping one class keep the union of their members — and a wildcard
+    /// fails the collection naming the declaring crate.
+    #[test]
+    fn keep_rules_are_collected_across_the_graph() {
+        let project = tempdir().expect("temp project");
+        write_crate(
+            &project.path().join("sdk"),
+            "sdk-bridge",
+            "[[package.metadata.waterui.android.keep]]\n\
+             class = \"com.example.sdk.Entry\"\n\
+             members = [\"public static void start(android.content.Context)\"]\n",
+        );
+        write_crate(
+            &project.path().join("ads"),
+            "ads-bridge",
+            "[[package.metadata.waterui.android.keep]]\n\
+             class = \"com.example.sdk.Entry\"\n\
+             members = [\"void stop()\"]\n",
+        );
+        let app = write_crate(
+            &project.path().join("app"),
+            "app",
+            "[dependencies]\n\
+             sdk-bridge = { path = \"../sdk\" }\n\
+             ads-bridge = { path = \"../ads\" }\n",
+        );
+        let collect = |manifest: &Path| {
+            let metadata = smol::block_on(crate_metadata(
+                &crate::toolchain::Host::current(),
+                manifest,
+                &[],
+            ))
+            .expect("resolve the fixture graph");
+            collect_android_declarations(&metadata)
+        };
+
+        let declarations = collect(&app).expect("collect the graph");
+        let block = declarations
+            .classpath
+            .keep
+            .block("# begin", "# end", &BTreeSet::new())
+            .expect("render");
+        assert_eq!(
+            block,
+            "# begin\n\
+             -keep class com.example.sdk.Entry {\n    \
+             public static void start(android.content.Context);\n    void stop();\n}\n\
+             # end"
+        );
+
+        write_crate(
+            &project.path().join("broad"),
+            "broad-bridge",
+            "[[package.metadata.waterui.android.keep]]\n\
+             class = \"com.example.sdk.Entry\"\n\
+             members = [\"*** get*(...)\"]\n",
+        );
+        let broad = write_crate(
+            &project.path().join("broad-app"),
+            "broad-app",
+            "[dependencies]\nbroad-bridge = { path = \"../broad\" }\n",
+        );
+        let message = collect(&broad)
+            .expect_err("a wildcard keep must fail")
+            .to_string();
+        assert!(message.contains("broad-bridge"), "{message}");
+    }
+
     /// The iOS development entitlements `declarations` merge into an empty
     /// table.
     fn signed_entitlements(declarations: &AppleDeclarations) -> plist::Dictionary {
@@ -4299,6 +4621,7 @@ mod permission_audit_tests {
             &AndroidClasspath {
                 kotlin_sources: vec![source],
                 maven: BTreeSet::from(["androidx.health.connect:connect-client:1.1.0".to_string()]),
+                keep: keep_rules::KeepRules::default(),
             },
             &module_dir,
             AndroidDependencyScope::Implementation,
@@ -4335,6 +4658,7 @@ mod permission_audit_tests {
             &AndroidClasspath {
                 kotlin_sources: Vec::new(),
                 maven: BTreeSet::from(["androidx.health.connect:connect-client:1.1.0".to_string()]),
+                keep: keep_rules::KeepRules::default(),
             },
             &module_dir,
             AndroidDependencyScope::Api,
@@ -4365,6 +4689,7 @@ mod permission_audit_tests {
             &AndroidClasspath {
                 kotlin_sources: vec![source],
                 maven: BTreeSet::from(["androidx.health.connect:connect-client:1.1.0".to_string()]),
+                keep: keep_rules::KeepRules::default(),
             },
             &module_dir,
             AndroidDependencyScope::Implementation,
@@ -4405,6 +4730,7 @@ mod permission_audit_tests {
             &AndroidClasspath {
                 kotlin_sources: vec![source],
                 maven: BTreeSet::new(),
+                keep: keep_rules::KeepRules::default(),
             },
             &module_dir,
             AndroidDependencyScope::Implementation,
@@ -4427,6 +4753,7 @@ mod permission_audit_tests {
             &AndroidClasspath {
                 kotlin_sources: Vec::new(),
                 maven: BTreeSet::from(["androidx.health.connect:connect-client:1.1.0".to_string()]),
+                keep: keep_rules::KeepRules::default(),
             },
             &module_dir,
             AndroidDependencyScope::Implementation,
@@ -4452,6 +4779,7 @@ mod permission_audit_tests {
             &AndroidClasspath {
                 kotlin_sources: Vec::new(),
                 maven: BTreeSet::new(),
+                keep: keep_rules::KeepRules::default(),
             },
             &module_dir,
             AndroidDependencyScope::Implementation,
@@ -4468,6 +4796,7 @@ mod permission_audit_tests {
             &AndroidClasspath {
                 kotlin_sources: Vec::new(),
                 maven: BTreeSet::new(),
+                keep: keep_rules::KeepRules::default(),
             },
             &module_dir,
             AndroidDependencyScope::Implementation,

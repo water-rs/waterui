@@ -2,7 +2,7 @@
 
 use core::fmt::Debug;
 
-use waterui_core::{Metadata, View, id::Id, metadata::MetadataKey};
+use waterui_core::{Metadata, View, contract_violation, id::Id, metadata::MetadataKey};
 
 /// Marks the source geometry for a matched navigation transition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,13 +70,39 @@ pub enum NavigationTransitionDirection {
 #[non_exhaustive]
 pub struct NavigationTransitionLayer {
     /// Horizontal offset as a fraction of the navigation viewport width.
-    pub offset_x: f32,
+    offset_x: f32,
     /// Vertical offset as a fraction of the navigation viewport height.
-    pub offset_y: f32,
+    offset_y: f32,
     /// Uniform scale.
-    pub scale: f32,
+    scale: f32,
     /// Layer opacity.
-    pub opacity: f32,
+    opacity: f32,
+}
+
+impl NavigationTransitionLayer {
+    /// Horizontal offset as a fraction of the navigation viewport width.
+    #[must_use]
+    pub const fn offset_x(&self) -> f32 {
+        self.offset_x
+    }
+
+    /// Vertical offset as a fraction of the navigation viewport height.
+    #[must_use]
+    pub const fn offset_y(&self) -> f32 {
+        self.offset_y
+    }
+
+    /// Uniform scale.
+    #[must_use]
+    pub const fn scale(&self) -> f32 {
+        self.scale
+    }
+
+    /// Layer opacity.
+    #[must_use]
+    pub const fn opacity(&self) -> f32 {
+        self.opacity
+    }
 }
 
 impl NavigationTransitionLayer {
@@ -101,9 +127,23 @@ impl NavigationTransitionLayer {
 #[non_exhaustive]
 pub struct NavigationTransitionFrame {
     /// Transform and opacity applied to the page that was active.
-    pub outgoing: NavigationTransitionLayer,
+    outgoing: NavigationTransitionLayer,
     /// Transform and opacity applied to the page becoming active.
-    pub incoming: NavigationTransitionLayer,
+    incoming: NavigationTransitionLayer,
+}
+
+impl NavigationTransitionFrame {
+    /// Transform and opacity applied to the page that was active.
+    #[must_use]
+    pub const fn outgoing(&self) -> NavigationTransitionLayer {
+        self.outgoing
+    }
+
+    /// Transform and opacity applied to the page becoming active.
+    #[must_use]
+    pub const fn incoming(&self) -> NavigationTransitionLayer {
+        self.incoming
+    }
 }
 
 impl NavigationTransitionFrame {
@@ -203,19 +243,29 @@ impl AnyNavigationTransition {
 
     /// Resolves a frame for a retained renderer.
     ///
-    /// # Panics
+    /// # Contract violation
     ///
-    /// Panics unless `progress` is within `0.0..=1.0`.
+    /// `progress` must be within `0.0..=1.0`. Otherwise a debug build
+    /// panics; a release build logs it and clamps the progress into the
+    /// range (`NaN` becomes `0.0`).
     #[must_use]
     pub fn frame(
         &self,
         progress: f32,
         direction: NavigationTransitionDirection,
     ) -> NavigationTransitionFrame {
-        assert!(
-            (0.0..=1.0).contains(&progress),
-            "navigation transition progress must be in 0.0..=1.0"
-        );
+        let progress = if (0.0..=1.0).contains(&progress) {
+            progress
+        } else {
+            contract_violation!(
+                "navigation transition progress must be in 0.0..=1.0; the progress is clamped into the range"
+            );
+            if progress.is_nan() {
+                0.0
+            } else {
+                progress.clamp(0.0, 1.0)
+            }
+        };
         self.0.frame(progress, direction)
     }
 
@@ -281,18 +331,10 @@ pub mod navigation_transition {
 
     /// Platform-default navigation motion.
     #[derive(Debug, Clone, Copy, Default)]
-    #[expect(
-        clippy::exhaustive_structs,
-        reason = "field-less transition marker used by name"
-    )]
     pub struct Automatic;
 
     /// Cross-fade navigation motion.
     #[derive(Debug, Clone, Copy, Default)]
-    #[expect(
-        clippy::exhaustive_structs,
-        reason = "field-less transition marker used by name"
-    )]
     pub struct Fade;
 
     /// Platform-native zoom/shared-element navigation motion.
@@ -303,10 +345,6 @@ pub mod navigation_transition {
 
     /// Navigation with animation disabled.
     #[derive(Debug, Clone, Copy, Default)]
-    #[expect(
-        clippy::exhaustive_structs,
-        reason = "field-less transition marker used by name"
-    )]
     pub struct None;
 
     /// Uses the platform-default navigation motion.
@@ -424,6 +462,26 @@ mod tests {
         NavigationTransitionDirection, NavigationTransitionFrame, NavigationTransitionLayer,
         RetainedNavigationTransition, navigation_transition,
     };
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "navigation transition progress must be in 0.0..=1.0")
+    )]
+    fn out_of_range_progress_is_clamped() {
+        let transition = AnyNavigationTransition::new(navigation_transition::fade());
+        let direction = NavigationTransitionDirection::Push;
+
+        // Release outcome: the progress is clamped into the range.
+        assert_eq!(
+            transition.frame(2.0, direction),
+            transition.frame(1.0, direction)
+        );
+        assert_eq!(
+            transition.frame(f32::NAN, direction),
+            transition.frame(0.0, direction)
+        );
+    }
 
     /// A transition that wants the platform's own motion on Apple and Android
     /// but draws its own curve everywhere else — the combination that used to

@@ -7,6 +7,8 @@
 //! [`SpatialFilter`](crate::SpatialFilter) require the matching kind, so a
 //! chain's kind is decided by the type system, never by a runtime flag.
 
+use core::convert::Infallible;
+
 use crate::{Filter, SpatialFilter};
 
 mod sealed {
@@ -25,11 +27,11 @@ pub trait Kind: sealed::Sealed + 'static {
 
 /// A filter that maps each pixel's colour to a colour.
 #[derive(Debug)]
-pub enum Color {}
+pub struct Color(Infallible);
 
 /// A filter that samples its input around each pixel.
 #[derive(Debug)]
-pub enum Spatial {}
+pub struct Spatial(Infallible);
 
 impl sealed::Sealed for Color {}
 impl sealed::Sealed for Spatial {}

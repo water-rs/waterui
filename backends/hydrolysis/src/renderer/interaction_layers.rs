@@ -11,8 +11,26 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::renderer::chrome::LiveChrome;
-use crate::theme::{InteractionMotion, MAX_PRESS_WAVES, PressWave, PressWaves};
+#[cfg(feature = "picker")]
+use crate::renderer::live_segmented::LiveSegmented;
+#[cfg(feature = "navigation")]
+use crate::renderer::live_tabs::LiveTabs;
+#[cfg(any(feature = "toggle", feature = "picker"))]
+use crate::renderer::live_toggle::LiveToggle;
+use crate::theme::InteractionMotion;
 use waterui_core::interaction::InteractionState;
+
+/// Maximum number of overlapping press ripple waves tracked per widget.
+pub const MAX_PRESS_WAVES: usize = 4;
+
+/// A sampled press ripple wave for interaction unit tests.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SampledWave {
+    pub origin: Option<kurbo::Point>,
+    pub progress: f32,
+    pub opacity: f32,
+}
 
 /// One press ripple wave slot: every press spawns its own wave (Material/the M3 reference
 /// semantics), so rapid re-presses overlap while older waves fade out.
@@ -22,8 +40,8 @@ pub struct WaveLayer {
     progress: AnimatedScalarHandle,
     /// Origin of this wave's press in WINDOW coordinates (the raw pointer-down
     /// point). Widgets map it into their own local frame at draw time via
-    /// `local_interaction_state` and the live hit transform, so it stays
-    /// correct under arbitrary nesting and scroll offsets.
+    /// the live hit transform, so it stays correct under arbitrary nesting
+    /// and scroll offsets.
     origin: Cell<Option<kurbo::Point>>,
     pressing: Cell<bool>,
     pressed_at: Cell<Option<Instant>>,
@@ -116,11 +134,99 @@ pub struct InteractionLayerHandles {
     /// Widget chrome (not just the state layer) samples interaction state, so
     /// hover/press changes must re-render the widget instead of replaying.
     chrome_state_dependent: Cell<bool>,
-    /// The widget's engine-realized chrome (water-rs/waterui#1433): hover,
-    /// press and focus changes steer its live operands directly, so they
-    /// need no re-render and no repaint of the widget.
-    live: RefCell<Option<Rc<LiveChrome>>>,
+    /// The widget's engine-realized chrome or toggle control
+    /// (water-rs/waterui#1433, #1434): hover, press and focus changes steer
+    /// its live operands directly, so they need no re-render and no repaint
+    /// of the widget.
+    live: RefCell<Option<Steered>>,
     motion: InteractionMotion,
+}
+
+/// What the interaction changes of one widget steer.
+#[derive(Debug)]
+enum Steered {
+    /// A button-like control's chrome.
+    Chrome(Rc<LiveChrome>),
+    /// A toggle's control.
+    #[cfg(any(feature = "toggle", feature = "picker"))]
+    Toggle(Rc<LiveToggle>),
+    /// One segment of a segmented picker, by its index.
+    #[cfg(feature = "picker")]
+    Segment(Rc<LiveSegmented>, usize),
+    /// One item of a tab container, by its index.
+    #[cfg(feature = "navigation")]
+    Tab(Rc<LiveTabs>, usize),
+}
+
+impl Steered {
+    fn set_flag(&self, flag: InteractionState, on: bool) {
+        match self {
+            Self::Chrome(chrome) => chrome.set_flag(flag, on),
+            #[cfg(any(feature = "toggle", feature = "picker"))]
+            Self::Toggle(toggle) => toggle.set_flag(flag, on),
+            #[cfg(feature = "picker")]
+            Self::Segment(picker, index) => picker.set_flag(*index, flag, on),
+            #[cfg(feature = "navigation")]
+            Self::Tab(tabs, index) => tabs.set_flag(*index, flag, on),
+        }
+    }
+
+    fn begin_press(&self, index: usize, origin: Option<kurbo::Point>) {
+        match self {
+            Self::Chrome(chrome) => {
+                chrome.begin_wave(index, origin);
+                chrome.set_flag(InteractionState::PRESSED, true);
+            }
+            #[cfg(any(feature = "toggle", feature = "picker"))]
+            Self::Toggle(toggle) => {
+                toggle.begin_wave(origin);
+                toggle.set_flag(InteractionState::PRESSED, true);
+            }
+            #[cfg(feature = "picker")]
+            Self::Segment(picker, segment) => picker.begin_press(*segment, index, origin),
+            #[cfg(feature = "navigation")]
+            Self::Tab(tabs, item) => tabs.begin_press(*item, index, origin),
+        }
+    }
+
+    fn move_press(&self, point: kurbo::Point) {
+        match self {
+            Self::Chrome(chrome) => chrome.move_press(point),
+            #[cfg(feature = "picker")]
+            Self::Segment(picker, segment) => picker.move_press(*segment, point),
+            #[cfg(feature = "navigation")]
+            Self::Tab(tabs, item) => tabs.move_press(*item, point),
+            // A toggle's parts follow the pressed flag and its drag.
+            #[cfg(any(feature = "toggle", feature = "picker"))]
+            Self::Toggle(_) => {}
+        }
+    }
+
+    fn fade_wave(&self, index: usize) {
+        match self {
+            Self::Chrome(chrome) => chrome.fade_wave(index),
+            #[cfg(feature = "picker")]
+            Self::Segment(picker, segment) => picker.fade_wave(*segment, index),
+            #[cfg(feature = "navigation")]
+            Self::Tab(tabs, item) => tabs.fade_wave(*item, index),
+            // A toggle's parts draw their own press feedback from the
+            // pressed flag.
+            #[cfg(any(feature = "toggle", feature = "picker"))]
+            Self::Toggle(_) => {}
+        }
+    }
+
+    fn clear_waves(&self) {
+        match self {
+            Self::Chrome(chrome) => chrome.clear_waves(),
+            #[cfg(feature = "picker")]
+            Self::Segment(picker, segment) => picker.clear_waves(*segment),
+            #[cfg(feature = "navigation")]
+            Self::Tab(tabs, item) => tabs.clear_waves(*item),
+            #[cfg(any(feature = "toggle", feature = "picker"))]
+            Self::Toggle(_) => {}
+        }
+    }
 }
 
 impl InteractionLayerHandles {
@@ -154,7 +260,28 @@ impl InteractionLayerHandles {
 
     /// Steers `chrome` from this widget's interaction changes.
     pub(crate) fn attach_live(&self, chrome: Rc<LiveChrome>) {
-        *self.live.borrow_mut() = Some(chrome);
+        *self.live.borrow_mut() = Some(Steered::Chrome(chrome));
+    }
+
+    /// Steers the toggle control `toggle` from this widget's interaction
+    /// changes.
+    #[cfg(any(feature = "toggle", feature = "picker"))]
+    pub(crate) fn attach_live_toggle(&self, toggle: Rc<LiveToggle>) {
+        *self.live.borrow_mut() = Some(Steered::Toggle(toggle));
+    }
+
+    /// Steers segment `index` of the segmented picker `picker` from this
+    /// widget's interaction changes.
+    #[cfg(feature = "picker")]
+    pub(crate) fn attach_live_segment(&self, picker: Rc<LiveSegmented>, index: usize) {
+        *self.live.borrow_mut() = Some(Steered::Segment(picker, index));
+    }
+
+    /// Steers item `index` of the tab container `tabs` from this widget's
+    /// interaction changes.
+    #[cfg(feature = "navigation")]
+    pub(crate) fn attach_live_tab(&self, tabs: Rc<LiveTabs>, index: usize) {
+        *self.live.borrow_mut() = Some(Steered::Tab(tabs, index));
     }
 
     /// What an interaction change of this widget marks its owner with:
@@ -174,7 +301,57 @@ impl InteractionLayerHandles {
     /// The attached live chrome, if any.
     #[cfg(test)]
     pub(crate) fn live_chrome(&self) -> Option<Rc<LiveChrome>> {
-        self.live.borrow().clone()
+        match self.live.borrow().as_ref()? {
+            Steered::Chrome(chrome) => Some(Rc::clone(chrome)),
+            #[cfg(feature = "navigation")]
+            Steered::Tab(..) => None,
+            #[cfg(any(feature = "toggle", feature = "picker"))]
+            Steered::Toggle(_) => None,
+            #[cfg(feature = "picker")]
+            Steered::Segment(..) => None,
+        }
+    }
+
+    /// The attached live toggle control, if any.
+    #[cfg(test)]
+    #[cfg(any(feature = "toggle", feature = "picker"))]
+    pub(crate) fn live_toggle(&self) -> Option<Rc<LiveToggle>> {
+        match self.live.borrow().as_ref()? {
+            Steered::Toggle(toggle) => Some(Rc::clone(toggle)),
+            Steered::Chrome(_) => None,
+            #[cfg(feature = "navigation")]
+            Steered::Tab(..) => None,
+            #[cfg(feature = "picker")]
+            Steered::Segment(..) => None,
+        }
+    }
+
+    /// The attached live segmented picker, if any.
+    #[cfg(test)]
+    #[cfg(feature = "picker")]
+    pub(crate) fn live_segmented(&self) -> Option<Rc<LiveSegmented>> {
+        match self.live.borrow().as_ref()? {
+            Steered::Segment(picker, _) => Some(Rc::clone(picker)),
+            Steered::Chrome(_) => None,
+            #[cfg(feature = "navigation")]
+            Steered::Tab(..) => None,
+            #[cfg(any(feature = "toggle", feature = "picker"))]
+            Steered::Toggle(_) => None,
+        }
+    }
+
+    /// The attached live tab container, if any.
+    #[cfg(test)]
+    #[cfg(feature = "navigation")]
+    pub(crate) fn live_tabs(&self) -> Option<Rc<LiveTabs>> {
+        match self.live.borrow().as_ref()? {
+            Steered::Tab(tabs, _) => Some(Rc::clone(tabs)),
+            Steered::Chrome(_) => None,
+            #[cfg(any(feature = "toggle", feature = "picker"))]
+            Steered::Toggle(_) => None,
+            #[cfg(feature = "picker")]
+            Steered::Segment(..) => None,
+        }
     }
 
     fn is_live(&self) -> bool {
@@ -201,15 +378,15 @@ impl InteractionLayerHandles {
             .min()
     }
 
-    fn with_live(&self, steer: impl FnOnce(&LiveChrome)) {
-        if let Some(chrome) = self.live.borrow().as_deref() {
-            steer(chrome);
+    fn with_live(&self, steer: impl FnOnce(&Steered)) {
+        if let Some(live) = self.live.borrow().as_ref() {
+            steer(live);
         }
     }
 
     /// Shows or hides keyboard focus on the engine-realized chrome.
     pub(crate) fn set_focus_visible(&self, visible: bool) {
-        self.with_live(|chrome| chrome.set_flag(InteractionState::FOCUSED, visible));
+        self.with_live(|live| live.set_flag(InteractionState::FOCUSED, visible));
     }
 
     pub(crate) const fn hovering(&self) -> bool {
@@ -272,7 +449,7 @@ impl InteractionLayerHandles {
         };
         self.hover_alpha
             .apply_target(target, self.scalar(&animation), now);
-        self.with_live(|chrome| chrome.set_flag(InteractionState::HOVERED, hovering));
+        self.with_live(|live| live.set_flag(InteractionState::HOVERED, hovering));
         true
     }
 
@@ -313,10 +490,13 @@ impl InteractionLayerHandles {
         // ripple's fade it is not gated by the minimum press duration.
         self.press_progress
             .apply_target(1.0, self.scalar(&self.motion.press_shape), now);
-        self.with_live(|chrome| {
-            chrome.begin_wave(index, local_origin);
-            chrome.set_flag(InteractionState::PRESSED, true);
-        });
+        self.with_live(|live| live.begin_press(index, local_origin));
+    }
+
+    /// Moves the press point of the active press to `local`, in the widget's
+    /// own space, so the look's values that read it follow the pointer.
+    pub(crate) fn move_press(&self, local: kurbo::Point) {
+        self.with_live(|live| live.move_press(local));
     }
 
     /// The slot a new press claims: the first invisible wave, or the oldest
@@ -348,7 +528,7 @@ impl InteractionLayerHandles {
             // instant, not from the next bind.
             self.press_progress
                 .apply_target(0.0, self.scalar(&self.motion.press_shape), now);
-            self.with_live(|chrome| chrome.set_flag(InteractionState::PRESSED, false));
+            self.with_live(|live| live.set_flag(InteractionState::PRESSED, false));
             self.flush_release(now);
         }
         changed
@@ -380,7 +560,7 @@ impl InteractionLayerHandles {
                 wave.fading_until
                     .set(Some(now + self.motion.press_fade_out.duration()));
             }
-            self.with_live(|chrome| chrome.fade_wave(index));
+            self.with_live(|live| live.fade_wave(index));
         }
         pending
     }
@@ -391,7 +571,7 @@ impl InteractionLayerHandles {
         for wave in &self.waves {
             wave.clear();
         }
-        self.with_live(LiveChrome::clear_waves);
+        self.with_live(Steered::clear_waves);
     }
 
     /// Whether a released press is still waiting for its deferred fade-out
@@ -409,22 +589,28 @@ impl InteractionLayerHandles {
 
     /// Samples the currently visible waves, ordered oldest to newest, with
     /// origins in window coordinates.
-    pub(crate) fn sample_waves(&self, now: Instant) -> PressWaves {
+    #[cfg(test)]
+    pub(crate) fn sample_waves(&self, now: Instant) -> Vec<SampledWave> {
         let mut order: [usize; MAX_PRESS_WAVES] = core::array::from_fn(|index| index);
         order.sort_unstable_by_key(|index| self.waves[*index].seq.get());
-        let mut sampled = PressWaves::EMPTY;
+        let mut sampled = Vec::new();
         for index in order {
             let wave = &self.waves[index];
             if !wave.visible(now) {
                 continue;
             }
-            sampled.push(PressWave {
+            sampled.push(SampledWave {
                 origin: wave.origin.get(),
                 progress: wave.progress.sample(now),
                 opacity: wave.alpha.sample(now),
             });
         }
         sampled
+    }
+
+    #[cfg(test)]
+    pub(crate) fn press_progress_at(&self, now: Instant) -> f32 {
+        self.press_progress.sample(now)
     }
 }
 

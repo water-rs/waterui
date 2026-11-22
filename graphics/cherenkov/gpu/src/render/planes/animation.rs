@@ -18,75 +18,25 @@ impl Scalar {
         match self.animation {
             Animation::Curve(_) => true,
             Animation::Spring(spring) => {
-                spring.response > 0.0
-                    && spring.damping > 0.0
-                    && spring.response.is_finite()
-                    && spring.damping.is_finite()
-                    && (self.target - self.from != 0.0 || self.velocity == 0.0)
+                spring.is_valid() && (self.target - self.from != 0.0 || self.velocity == 0.0)
             }
             Animation::Decay(_) => false,
         }
     }
 
-    /// A duration after which both displacement and velocity stay below
-    /// the engine's absolute 1e-3 settlement tolerance. Core Animation's
-    /// normalized settling duration alone cannot account for layer size.
+    /// A duration after which both displacement and velocity stay within
+    /// the shared absolute settle tolerance — the spring's own settling
+    /// duration from this lane's displacement and velocity. Core
+    /// Animation's normalized settling duration alone cannot account for
+    /// layer size.
     pub fn duration(self) -> f64 {
-        let Animation::Spring(spring) = self.animation else {
-            let Animation::Curve(curve) = self.animation else {
-                unreachable!("only springs and curves are handed off");
-            };
-            return curve.duration.as_secs_f64();
-        };
-        let omega = std::f64::consts::TAU / spring.response;
-        let displacement = self.from - self.target;
-        let velocity = self.velocity;
-        let damping = spring.damping;
-        let (bound, decay) = if damping < 1.0 {
-            let decay = damping * omega;
-            let frequency = omega * damping.mul_add(-damping, 1.0).sqrt();
-            let amplitude = displacement.hypot(decay.mul_add(displacement, velocity) / frequency);
-            (amplitude * omega.max(1.0), decay)
-        } else if damping > 1.0 {
-            let sum = damping + damping.mul_add(damping, -1.0).sqrt();
-            let slow = -omega / sum;
-            let fast = -omega * sum;
-            let a = fast.mul_add(-displacement, velocity) / (slow - fast);
-            let b = displacement - a;
-            (
-                (a.abs() + b.abs()).max((a * slow).abs() + (b * fast).abs()),
-                -slow,
-            )
-        } else {
-            let slope = omega.mul_add(displacement, velocity);
-            let bound = displacement
-                .abs()
-                .max(slope.abs())
-                .max(velocity.abs())
-                .max((omega * slope).abs());
-            if bound <= 1e-3 {
-                return 0.0;
+        match self.animation {
+            Animation::Spring(spring) => {
+                spring.settling_duration(self.from - self.target, self.velocity)
             }
-            let envelope = |time: f64| bound * (1.0 + time) * (-omega * time).exp();
-            let mut low = 1.0 / omega;
-            let mut high = low;
-            loop {
-                if envelope(high) <= 1e-3 {
-                    break;
-                }
-                high *= 2.0;
-            }
-            for _ in 0..48 {
-                let middle = low.midpoint(high);
-                if envelope(middle) > 1e-3 {
-                    low = middle;
-                } else {
-                    high = middle;
-                }
-            }
-            return high;
-        };
-        (bound / 1e-3).ln().max(0.0) / decay
+            Animation::Curve(curve) => curve.duration.as_secs_f64(),
+            Animation::Decay(_) => unreachable!("only springs and curves are handed off"),
+        }
     }
 }
 

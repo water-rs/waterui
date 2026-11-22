@@ -35,28 +35,16 @@ pub struct JsRequest {
 
 /// Extracts the payload as JSON, deserialized into `T`.
 #[derive(Debug, Clone)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "extractor newtype destructured in handler parameters"
-)]
 pub struct Json<T>(pub T);
 
 /// Extracts the payload as raw bytes.
 #[derive(Debug, Clone)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "extractor newtype destructured in handler parameters"
-)]
 pub struct Bytes(pub Vec<u8>);
 
 /// Extracts the handler name that was called.
 ///
 /// Useful when one closure serves several names.
 #[derive(Debug, Clone)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "extractor newtype destructured in handler parameters"
-)]
 pub struct HandlerName(pub Str);
 
 fn request(env: &Environment) -> Result<JsRequest, Error> {
@@ -235,8 +223,18 @@ where
             name: name.clone(),
             payload: Rc::from(payload),
         });
-        let future = handler.borrow_mut().call(&scoped);
-        Box::pin(async move { future.await.into_js_reply() })
+        // The payload is untrusted page input, not a contract violation: a
+        // payload the handler cannot extract rejects the page's promise.
+        let future = handler.borrow_mut().call(&scoped).map_err(|error| {
+            tracing::debug!(%error, "rejecting a page call whose payload cannot be extracted");
+            error.to_string()
+        });
+        Box::pin(async move {
+            match future {
+                Ok(future) => future.await.into_js_reply(),
+                Err(message) => Err(message),
+            }
+        })
     })
 }
 
@@ -289,6 +287,25 @@ mod tests {
         let env = env_with("greet", b"[]");
         let error = Json::<Greet>::extract(&env).expect_err("rejects");
         let message = error.to_string();
+        assert!(message.contains("greet"), "{message}");
+    }
+
+    #[test]
+    fn a_page_payload_of_the_wrong_shape_rejects_instead_of_panicking() {
+        use futures::FutureExt as _;
+
+        let handler = super::boxed_handler(
+            Environment::new(),
+            Str::from("greet"),
+            |Json(greet): Json<Greet>| async move { greet.name },
+        );
+
+        // A page calls `waterui.invoke("greet", [])`.
+        let message = handler(b"[]")
+            .now_or_never()
+            .expect("a rejection is ready without polling the handler")
+            .expect_err("a payload that is not a `Greet` rejects the promise");
+        assert!(message.contains("failed to extract"), "{message}");
         assert!(message.contains("greet"), "{message}");
     }
 

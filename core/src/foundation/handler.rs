@@ -13,25 +13,67 @@ use core::fmt;
 
 use crate::Environment;
 
+/// A handler parameter could not be extracted from the environment, so the
+/// handler did not run.
+///
+/// The dispatcher of the action decides the outcome: an ordinary action does
+/// not run and [`report`](Self::report)s the failure, key handling treats the
+/// key as not handled, and a web view rejects the page's promise.
+#[derive(Debug, thiserror::Error)]
+#[error("failed to extract `{type_name}` from environment for action: {cause}")]
+pub struct ExtractionError {
+    type_name: &'static str,
+    cause: crate::Error,
+}
+
+impl ExtractionError {
+    /// The name of the parameter type that could not be extracted.
+    #[must_use]
+    pub const fn type_name(&self) -> &'static str {
+        self.type_name
+    }
+
+    /// Reports the failure as a contract violation: a debug build panics and
+    /// a release build logs it.
+    pub fn report(&self) {
+        crate::contract_violation!("{self}");
+    }
+}
+
+/// Reporting of a failed handler invocation by a dispatcher that has no
+/// better outcome than dropping the action.
+pub trait ReportExtraction<T> {
+    /// Returns the handler's result, or [`report`](ExtractionError::report)s
+    /// the extraction failure and returns `None`.
+    fn report_extraction(self) -> Option<T>;
+}
+
+impl<T> ReportExtraction<T> for Result<T, ExtractionError> {
+    fn report_extraction(self) -> Option<T> {
+        self.map_err(|error| error.report()).ok()
+    }
+}
+
 /// A boxed action handler that can be called multiple times.
 ///
-/// This is essentially `Box<dyn FnMut(&Environment) -> T>`.
-pub type BoxedAction<T = ()> = Box<dyn FnMut(&Environment) -> T>;
+/// This is essentially `Box<dyn FnMut(&Environment) -> Result<T, ExtractionError>>`.
+pub type BoxedAction<T = ()> = Box<dyn FnMut(&Environment) -> Result<T, ExtractionError>>;
 
 /// A boxed action handler that can only be called once.
 ///
-/// This is essentially `Box<dyn FnOnce(&Environment) -> T>`.
-pub type BoxedActionOnce<T = ()> = Box<dyn FnOnce(&Environment) -> T>;
+/// This is essentially `Box<dyn FnOnce(&Environment) -> Result<T, ExtractionError>>`.
+pub type BoxedActionOnce<T = ()> = Box<dyn FnOnce(&Environment) -> Result<T, ExtractionError>>;
 
 /// Type alias for a boxed action handler (backwards compatibility).
 pub type ActionObject = BoxedAction<()>;
 
-fn extract_or_panic<T: Extractor>(env: &Environment, state: &mut ExtractionState) -> T {
-    T::extract_from_action(env, state).unwrap_or_else(|error| {
-        panic!(
-            "failed to extract `{}` from environment for action: {error}",
-            type_name::<T>()
-        )
+fn extract<T: Extractor>(
+    env: &Environment,
+    state: &mut ExtractionState,
+) -> Result<T, ExtractionError> {
+    T::extract_from_action(env, state).map_err(|cause| ExtractionError {
+        type_name: type_name::<T>(),
+        cause,
     })
 }
 
@@ -43,13 +85,23 @@ fn extract_or_panic<T: Extractor>(env: &Environment, state: &mut ExtractionState
 )]
 pub trait Handler<Args, T = ()>: 'static {
     /// Invokes the handler using values extracted from `env`.
-    fn call(&mut self, env: &Environment) -> T;
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`ExtractionError`] without running the handler when one of
+    /// its parameters cannot be extracted from `env`.
+    fn call(&mut self, env: &Environment) -> Result<T, ExtractionError>;
 }
 
 /// A one-shot handler that can extract arguments from the environment.
 pub trait HandlerOnce<Args, T = ()>: 'static {
     /// Invokes the handler once using values extracted from `env`.
-    fn call_once(self, env: &Environment) -> T;
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`ExtractionError`] without running the handler when one of
+    /// its parameters cannot be extracted from `env`.
+    fn call_once(self, env: &Environment) -> Result<T, ExtractionError>;
 }
 
 macro_rules! impl_handler {
@@ -58,8 +110,8 @@ macro_rules! impl_handler {
         where
             F: FnMut() -> Output + 'static,
         {
-            fn call(&mut self, _env: &Environment) -> Output {
-                self()
+            fn call(&mut self, _env: &Environment) -> Result<Output, ExtractionError> {
+                Ok(self())
             }
         }
 
@@ -67,8 +119,8 @@ macro_rules! impl_handler {
         where
             F: FnOnce() -> Output + 'static,
         {
-            fn call_once(self, _env: &Environment) -> Output {
-                self()
+            fn call_once(self, _env: &Environment) -> Result<Output, ExtractionError> {
+                Ok(self())
             }
         }
     };
@@ -79,10 +131,10 @@ macro_rules! impl_handler {
             $($T: Extractor),+
         {
             #[allow(non_snake_case)]
-            fn call(&mut self, env: &Environment) -> Output {
+            fn call(&mut self, env: &Environment) -> Result<Output, ExtractionError> {
                 let mut state = ExtractionState::default();
-                $(let $T = extract_or_panic::<$T>(env, &mut state);)+
-                self($($T),+)
+                $(let $T = extract::<$T>(env, &mut state)?;)+
+                Ok(self($($T),+))
             }
         }
 
@@ -92,10 +144,10 @@ macro_rules! impl_handler {
             $($T: Extractor),+
         {
             #[allow(non_snake_case)]
-            fn call_once(self, env: &Environment) -> Output {
+            fn call_once(self, env: &Environment) -> Result<Output, ExtractionError> {
                 let mut state = ExtractionState::default();
-                $(let $T = extract_or_panic::<$T>(env, &mut state);)+
-                self($($T),+)
+                $(let $T = extract::<$T>(env, &mut state)?;)+
+                Ok(self($($T),+))
             }
         }
     };
@@ -130,13 +182,14 @@ pub fn boxed_action_once<Args, T: 'static>(f: impl HandlerOnce<Args, T>) -> Boxe
 /// A boxed event handler that consumes one event payload alongside the
 /// environment-driven extractors.
 ///
-/// This is essentially `Box<dyn FnMut(E, &Environment) -> T>` and is the
+/// This is essentially `Box<dyn FnMut(E, &Environment) -> Result<T, ExtractionError>>` and is the
 /// counterpart to [`BoxedAction`] for views that report events upward —
 /// for example media playback events, video errors, or any photo-style
 /// completion notification. The first argument is the event payload (typed
 /// to the producing component); the remaining arguments are extracted from
 /// `env` exactly like [`Handler`] arguments.
-pub type BoxedEventAction<E, T = ()> = Box<dyn FnMut(E, &Environment) -> T>;
+pub type BoxedEventAction<E, T = ()> =
+    Box<dyn FnMut(E, &Environment) -> Result<T, ExtractionError>>;
 
 /// A repeatable event handler that consumes a typed event payload plus
 /// environment-extracted arguments.
@@ -154,7 +207,12 @@ pub type BoxedEventAction<E, T = ()> = Box<dyn FnMut(E, &Environment) -> T>;
 pub trait EventHandler<E, Args, T = ()>: 'static {
     /// Invokes the handler with the given event payload and the extractor
     /// arguments resolved from `env`.
-    fn call(&mut self, event: E, env: &Environment) -> T;
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`ExtractionError`] without running the handler when one of
+    /// its extractor parameters cannot be extracted from `env`.
+    fn call(&mut self, event: E, env: &Environment) -> Result<T, ExtractionError>;
 }
 
 macro_rules! impl_event_handler {
@@ -163,8 +221,8 @@ macro_rules! impl_event_handler {
         where
             F: FnMut(E) -> Output + 'static,
         {
-            fn call(&mut self, event: E, _env: &Environment) -> Output {
-                self(event)
+            fn call(&mut self, event: E, _env: &Environment) -> Result<Output, ExtractionError> {
+                Ok(self(event))
             }
         }
     };
@@ -175,10 +233,10 @@ macro_rules! impl_event_handler {
             $($T: Extractor),+
         {
             #[allow(non_snake_case)]
-            fn call(&mut self, event: E, env: &Environment) -> Output {
+            fn call(&mut self, event: E, env: &Environment) -> Result<Output, ExtractionError> {
                 let mut state = ExtractionState::default();
-                $(let $T = extract_or_panic::<$T>(env, &mut state);)+
-                self(event, $($T),+)
+                $(let $T = extract::<$T>(env, &mut state)?;)+
+                Ok(self(event, $($T),+))
             }
         }
     };
@@ -215,7 +273,7 @@ where
 ///
 /// This uses `Rc<RefCell<...>>` to allow the action to be shared across
 /// multiple owners while still supporting mutation.
-type SharedActionFn<T> = Rc<RefCell<Box<dyn FnMut(&Environment) -> T>>>;
+type SharedActionFn<T> = Rc<RefCell<BoxedAction<T>>>;
 
 /// Cloneable action handle backed by shared mutable state.
 #[derive(Clone)]
@@ -228,12 +286,22 @@ impl<T: 'static> SharedAction<T> {
     }
 
     /// Calls the action with the given environment.
-    #[expect(
-        clippy::must_use_candidate,
-        reason = "actions are side-effectful and may intentionally return unit"
-    )]
-    pub fn call(&self, env: &Environment) -> T {
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`ExtractionError`] without running the action when one of
+    /// its parameters cannot be extracted from `env`.
+    pub fn call(&self, env: &Environment) -> Result<T, ExtractionError> {
         (self.0.borrow_mut())(env)
+    }
+}
+
+impl SharedAction<()> {
+    /// Runs the action as an ordinary dispatcher does: when a parameter
+    /// cannot be extracted, the action does not run and the failure is
+    /// [`report`](ExtractionError::report)ed.
+    pub fn run(&self, env: &Environment) {
+        self.call(env).report_extraction();
     }
 }
 
@@ -315,6 +383,7 @@ impl<V> fmt::Debug for AnyViewBuilder<V> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::extract::State;
     use alloc::rc::Rc;
     use core::cell::Cell;
 
@@ -324,8 +393,8 @@ mod tests {
         let captured_count = Rc::clone(&count);
         let action = shared_action(move || captured_count.set(captured_count.get() + 1));
 
-        action.call(&Environment::default());
-        action.call(&Environment::default());
+        action.run(&Environment::default());
+        action.run(&Environment::default());
 
         assert_eq!(count.get(), 2);
     }
@@ -334,6 +403,28 @@ mod tests {
     fn shared_action_preserves_return_values() {
         let action = shared_action(|| 7);
 
-        assert_eq!(action.call(&Environment::default()), 7);
+        assert_eq!(action.call(&Environment::default()).ok(), Some(7));
+    }
+
+    #[test]
+    fn failed_extraction_does_not_run_the_handler() {
+        let ran = Rc::new(Cell::new(false));
+        let captured = Rc::clone(&ran);
+        let action = shared_action(move |_: State<u8>| captured.set(true));
+
+        let error = action
+            .call(&Environment::default())
+            .expect_err("the state is not installed");
+
+        assert!(!ran.get());
+        assert!(error.type_name().contains("State"));
+        assert!(error.to_string().contains("not found"));
+    }
+
+    #[test]
+    #[should_panic(expected = "failed to extract")]
+    #[cfg(debug_assertions)]
+    fn reporting_a_failed_extraction_panics_in_debug() {
+        shared_action(|_: State<u8>| {}).run(&Environment::default());
     }
 }

@@ -8,7 +8,7 @@ use accesskit::{
 };
 use hydrolysis::{
     AccessibilityActivationPointError, FontFamilyResolution, HeadlessRuntime, KeyCode, Modifiers,
-    PointerKind, SemanticRuntime, Style,
+    PainterUnavailable, PointerKind, SemanticRuntime, Style,
 };
 use waterui::app::{App, AppParts};
 use waterui::window::Window;
@@ -31,10 +31,6 @@ use crate::wait::{Expectation, ExpectationKind, WaitOptions, WaitResult};
 /// point. A `UiBuilder<NoStyle>` mounts only the semantic runtime — geometry,
 /// pointer and capture belong to the styled builder.
 #[derive(Clone, Copy, Debug, Default)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "field-less builder state used by name"
-)]
 pub struct NoStyle;
 
 /// The style state of a [`UiBuilder`] that carries a `hydrolysis` [`Style`].
@@ -64,8 +60,8 @@ pub fn ui() -> UiBuilder {
 /// session, taking `style` the way `hydrolysis::run(app, env, style)` does.
 ///
 /// The session mounts at the window's declared frame on the default builder
-/// configuration — [`RuntimeFlavor::Test`] and scale factor 1. When the
-/// session needs its own viewport, runtime flavor or scale factor, mount
+/// configuration — scale factor 1. When the
+/// session needs its own viewport or scale factor, mount
 /// through the styled builder instead:
 /// `ui().theme(style).viewport(w, h).mount_app(app)`.
 ///
@@ -103,19 +99,6 @@ fn frame_points_as_u32(points: f32) -> u32 {
     u32::try_from(points.max(1.0).round() as i32).expect("clamped frame size is positive")
 }
 
-/// Which Hydrolysis headless runtime backs a session.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum RuntimeFlavor {
-    /// Software adapters permitted (the default for tests). Fonts resolve the
-    /// application's way on every flavor — the system collection plus the
-    /// staged fonts directory.
-    #[default]
-    Test,
-    /// Production adapter selection — what `water run` shows.
-    Application,
-}
-
 /// Runtime test host and configuration.
 ///
 /// `S` is the builder's style state: [`NoStyle`] for the semantic builder
@@ -135,7 +118,6 @@ pub struct UiBuilder<S = NoStyle> {
     height: u32,
     style: S,
     perf_config: PerfConfig,
-    flavor: RuntimeFlavor,
     scale_factor: f64,
 }
 
@@ -145,7 +127,6 @@ impl<S> core::fmt::Debug for UiBuilder<S> {
             .field("width", &self.width)
             .field("height", &self.height)
             .field("perf_config", &self.perf_config)
-            .field("flavor", &self.flavor)
             .field("scale_factor", &self.scale_factor)
             .finish_non_exhaustive()
     }
@@ -167,7 +148,6 @@ impl UiBuilder<NoStyle> {
             height: 844,
             style: NoStyle,
             perf_config: PerfConfig::default(),
-            flavor: RuntimeFlavor::Test,
             scale_factor: 1.0,
         }
     }
@@ -187,7 +167,6 @@ impl UiBuilder<NoStyle> {
             height: self.height,
             style: Styled { style },
             perf_config: self.perf_config,
-            flavor: self.flavor,
             scale_factor: self.scale_factor,
         }
     }
@@ -245,18 +224,6 @@ impl<S> UiBuilder<S> {
     #[must_use]
     pub const fn perf_config(mut self, config: PerfConfig) -> Self {
         self.perf_config = config;
-        self
-    }
-
-    /// Selects which Hydrolysis headless runtime backs the session.
-    ///
-    /// [`RuntimeFlavor::Test`] (the default) permits software adapters;
-    /// [`RuntimeFlavor::Application`] selects adapters the way `water run`
-    /// does. Fonts resolve the application's way on both — a styled session
-    /// resolves the families its style package names strictly.
-    #[must_use]
-    pub const fn runtime(mut self, flavor: RuntimeFlavor) -> Self {
-        self.flavor = flavor;
         self
     }
 
@@ -361,7 +328,6 @@ impl<S: Style> UiBuilder<Styled<S>> {
             height,
             style: Styled { style },
             perf_config,
-            flavor,
             scale_factor,
         } = self;
         (
@@ -371,7 +337,6 @@ impl<S: Style> UiBuilder<Styled<S>> {
                 height,
                 style: NoStyle,
                 perf_config,
-                flavor,
                 scale_factor,
             },
             style,
@@ -495,25 +460,20 @@ impl<S: Style> UiBuilder<Styled<S>> {
             width,
             height,
             style,
-            flavor,
             scale_factor,
             ..
         } = self;
         let ledger = ContentLedger::new();
         env.insert(ledger.clone());
-        let runtime = match flavor {
-            RuntimeFlavor::Test => {
-                HeadlessRuntime::new_for_tests(env, content, width, height, style.style)
-            }
-            RuntimeFlavor::Application => HeadlessRuntime::new(
-                env,
-                content,
-                width,
-                height,
-                style.style,
-                FontFamilyResolution::Strict,
-            ),
-        };
+        let runtime = HeadlessRuntime::new(
+            env,
+            content,
+            width,
+            height,
+            style.style,
+            FontFamilyResolution::Strict,
+        )
+        .unwrap_or_else(|error| no_painter(error));
         Self::wrap_rendered(runtime, width, height, scale_factor, ledger)
     }
 
@@ -529,25 +489,20 @@ impl<S: Style> UiBuilder<Styled<S>> {
             width,
             height,
             style,
-            flavor,
             scale_factor,
             ..
         } = self;
         let ledger = ContentLedger::new();
         env.insert(ledger.clone());
-        let runtime = match flavor {
-            RuntimeFlavor::Test => {
-                HeadlessRuntime::new_for_tests_with_window(env, window, width, height, style.style)
-            }
-            RuntimeFlavor::Application => HeadlessRuntime::new_with_window(
-                env,
-                window,
-                width,
-                height,
-                style.style,
-                FontFamilyResolution::Strict,
-            ),
-        };
+        let runtime = HeadlessRuntime::new_with_window(
+            env,
+            window,
+            width,
+            height,
+            style.style,
+            FontFamilyResolution::Strict,
+        )
+        .unwrap_or_else(|error| no_painter(error));
         Self::wrap_rendered(runtime, width, height, scale_factor, ledger)
     }
 
@@ -609,18 +564,45 @@ impl<S: Style> UiBuilder<Styled<S>> {
 #[non_exhaustive]
 pub struct DragOptions {
     /// Number of intermediate pointer-move samples (at least 1).
-    pub steps: u16,
+    steps: u16,
     /// Pump one virtual frame between samples so each move lands on its own
     /// frame: gesture recognizers then observe a real motion timeline
     /// (velocity, glide) instead of every sample arriving at once.
-    pub frame_per_step: bool,
+    frame_per_step: bool,
     /// The pointer kind the drag dispatches. `PointerKind::Touch` is what a
     /// real device's finger produces: the scroll claim, the touch slop and
     /// the fling all key on the pointer kind, which `PointerKind::Mouse`
     /// never reaches. The runtime reports no touch-scroll configuration
     /// until [`OffscreenApp::set_touch_scroll_config`] supplies it — on a
     /// host without one a touch drag still dispatches but claims nothing.
-    pub pointer: PointerKind,
+    pointer: PointerKind,
+}
+
+impl DragOptions {
+    /// Number of intermediate pointer-move samples (at least 1).
+    #[must_use]
+    pub const fn steps(&self) -> u16 {
+        self.steps
+    }
+
+    /// Pump one virtual frame between samples so each move lands on its own
+    /// frame: gesture recognizers then observe a real motion timeline
+    /// (velocity, glide) instead of every sample arriving at once.
+    #[must_use]
+    pub const fn frame_per_step(&self) -> bool {
+        self.frame_per_step
+    }
+
+    /// The pointer kind the drag dispatches. `PointerKind::Touch` is what a
+    /// real device's finger produces: the scroll claim, the touch slop and
+    /// the fling all key on the pointer kind, which `PointerKind::Mouse`
+    /// never reaches. The runtime reports no touch-scroll configuration
+    /// until [`OffscreenApp::set_touch_scroll_config`] supplies it — on a
+    /// host without one a touch drag still dispatches but claims nothing.
+    #[must_use]
+    pub const fn pointer(&self) -> PointerKind {
+        self.pointer
+    }
 }
 
 impl Default for DragOptions {
@@ -729,16 +711,15 @@ impl OffscreenApp {
 
     /// Captures the latest RGBA snapshot from the offscreen renderer.
     ///
+    /// A frame the GPU device was lost under is rendered again at the same
+    /// frame instant once the runtime has recovered the device.
+    ///
     /// # Panics
     ///
-    /// Panics if the offscreen driver does not produce a snapshot.
+    /// Panics if a capture frame carries no snapshot and no device loss
+    /// skipped it, or the device is lost past the runtime's recovery budget.
     pub fn snapshot(&mut self) -> Snapshot {
-        let _ = crate::executor::drain_parked_local_work();
-        let at = self.app.tick(VIRTUAL_FRAME);
-        let outcome = RuntimeDriver::pump_at(&mut self.app.runtime, at, true);
-        self.app
-            .apply_pump_result(outcome)
-            .unwrap_or_else(|| panic!("waterui-testing driver did not produce a snapshot"))
+        self.app.capture_frame()
     }
 
     /// Captures a snapshot and stores it in `WaterUI`'s canonical artifact layout.
@@ -1009,8 +990,8 @@ impl<R: RuntimeDriver> SemanticApp<R> {
     pub fn wait_for(&mut self, expectations: &[Expectation], options: WaitOptions) -> WaitResult {
         self.wait_bounded(
             expectations,
-            options.enforce_order,
-            WaitBound::WallClock(Instant::now() + options.timeout),
+            options.get_enforce_order(),
+            WaitBound::WallClock(Instant::now() + options.timeout()),
         )
     }
 
@@ -1467,7 +1448,9 @@ impl<R: RuntimeDriver> SemanticApp<R> {
 
     /// Pumps virtual frames until the runtime reports quiescence — no queued
     /// input, no spawned work awaiting a drain, and no renderer-scheduled
-    /// semantic work — or until the virtual cap elapses.
+    /// semantic work. Finite work runs to its end however long it lasts: a
+    /// physical spring settles on its own clock, and returning before it
+    /// lands would hand the test an in-flight value.
     ///
     /// Quiescence alone is not the whole story: a view whose content arrives
     /// through a load — a `Photo` fetch or decode, a `Suspense` future — holds
@@ -1496,18 +1479,27 @@ impl<R: RuntimeDriver> SemanticApp<R> {
     ///
     /// Repeat-forever animations (an indeterminate progress spinner, a
     /// repeating morph) do not hold settling: a scene whose only remaining
-    /// activity is one settles at once. The virtual cap bounds anything else
-    /// that never ends; every finite transition ends well before it. Each pump
-    /// advances the virtual clock one frame, so the cap costs pump work, never
-    /// wall-clock sleeps.
+    /// activity is one settles at once. Each pump advances the virtual clock
+    /// one frame, so finite work costs pump work, never wall-clock sleeps.
     ///
     /// Public because a test that drives non-visual work — a handler that spawns
     /// onto the local executor, a coalesced push that lands on the next tick —
     /// has to be able to say "let queued work finish" without inventing an
     /// accessibility node to wait on.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the runtime still reports finite work after a minute of
+    /// virtual time: work the runtime counts as finite that never ends is a
+    /// runtime defect, and returning would hand the test a scene still in
+    /// motion. A test that samples a transition mid-flight steps it with
+    /// [`Self::pump_for`] instead of settling.
     pub fn settle(&mut self) {
-        /// Virtual time budget for work that never ends; ~62 pumps at 16ms.
-        const SETTLE_CAP: Duration = Duration::from_secs(1);
+        /// Guard against finite work that never ends, not a budget for work
+        /// that does: a minute of virtual time outlasts any transition a UI
+        /// schedules, and pumping it at one frame per pump costs a few
+        /// seconds of wall clock on the path that is already a defect.
+        const SETTLE_CAP: Duration = Duration::from_secs(60);
         /// Wall-clock budget for content still owed once the scene is
         /// quiescent. Long enough for a remote fetch on a slow link; bounded
         /// so a load that never completes cannot hang the caller forever.
@@ -1519,9 +1511,11 @@ impl<R: RuntimeDriver> SemanticApp<R> {
             let _ = self.pump_once();
             if !self.runtime.is_settled_except_perpetual() {
                 remaining = remaining.saturating_sub(VIRTUAL_FRAME);
-                if remaining.is_zero() {
-                    return;
-                }
+                assert!(
+                    !remaining.is_zero(),
+                    "settle: the runtime still reports finite work after {SETTLE_CAP:?} of \
+                     virtual time; finite work that never ends is a runtime defect"
+                );
                 continue;
             }
             // Quiescent but a view may still owe content its load has not
@@ -1591,10 +1585,41 @@ impl<R: RuntimeDriver> SemanticApp<R> {
         rebuilt
     }
 
+    /// Advances the virtual clock one frame and captures it.
+    ///
+    /// A frame whose GPU device was lost under it carries no snapshot; the
+    /// runtime recovers the device on its next pump, so the capture renders
+    /// again at the same instant — a mid-animation capture lands on the
+    /// phase it asked for — until one carries a snapshot. A device that keeps
+    /// dying runs out the runtime's recovery budget, and the pump reporting
+    /// that terminal failure panics in the driver, so the loop ends there.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a capture frame carries no snapshot and no device loss
+    /// skipped it.
+    pub(crate) fn capture_frame(&mut self) -> Snapshot {
+        let _ = crate::executor::drain_parked_local_work();
+        let at = self.tick(VIRTUAL_FRAME);
+        loop {
+            let outcome = self.runtime.pump_at(at, true);
+            let device_lost = outcome.device_lost;
+            if let Some(snapshot) = self.apply_pump_result(outcome) {
+                return snapshot;
+            }
+            assert!(
+                device_lost,
+                "waterui-testing driver did not produce a snapshot: the capture frame carried none, and no device loss skipped it"
+            );
+        }
+    }
+
     fn apply_pump_result(&mut self, outcome: DriverPumpResult) -> Option<Snapshot> {
         self.ui_focus = outcome.ui_focus;
         if let Some(update) = outcome.tree_update {
-            self.tree = TreeSnapshot::from_update(self.revision, update, &outcome.content_types);
+            self.tree = self
+                .tree
+                .apply(self.revision, update, &outcome.content_types);
             self.revision = self
                 .revision
                 .checked_add(1)
@@ -1997,12 +2022,12 @@ impl SemanticApp<HeadlessRuntime> {
         let _ = crate::executor::drain_parked_local_work();
         let started_at = Instant::now();
         let outcome = RuntimeDriver::pump_at(&mut self.runtime, at, false);
-        let timing = FrameTiming {
-            total: outcome.profile.total.max(started_at.elapsed()),
-            rebuilt: outcome.rebuilt,
-            profile: outcome.profile,
-            resources: self.resources.sample(),
-        };
+        let timing = FrameTiming::new(
+            outcome.profile.total().max(started_at.elapsed()),
+            outcome.rebuilt,
+            outcome.profile,
+            self.resources.sample(),
+        );
         let _ = self.apply_pump_result(outcome);
         timing
     }
@@ -2075,4 +2100,14 @@ const fn wait_bound_outcome(all_non_inverted: bool) -> WaitResult {
     } else {
         WaitResult::TimedOut
     }
+}
+
+/// Fails a rendered mount whose host has no painter Hydrolysis can render
+/// with — no usable GPU, or a CPU engine that cannot start: a rendered test
+/// cannot run without one.
+fn no_painter(error: PainterUnavailable) -> ! {
+    panic!(
+        "waterui-testing rendered mount: {:#}",
+        waterui_core::Error::from(error)
+    )
 }

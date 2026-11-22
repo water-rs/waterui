@@ -13,7 +13,7 @@ use objc2::rc::{Retained, Weak};
 use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_core_foundation::CGRect;
 use objc2_foundation::NSObjectProtocol;
-use objc2_ui_kit::{NSObjectUIAccessibility, UIControl, UISlider};
+use objc2_ui_kit::{NSObjectUIAccessibility, UIColor, UIControl, UISlider};
 
 use crate::ActionTarget;
 use crate::action::ControlEvents;
@@ -91,6 +91,11 @@ impl Slider {
     /// Whether the slider responds to input.
     pub fn set_enabled(&self, enabled: bool) {
         self.setEnabled(enabled);
+    }
+
+    /// The colour the filled part of the track draws with.
+    pub fn set_track_tint(&self, color: &UIColor) {
+        self.setMinimumTrackTintColor(Some(color));
     }
 
     /// How large the control is drawn.

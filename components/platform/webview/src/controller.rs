@@ -4,7 +4,7 @@ use waterui_core::{impl_debug, impl_extractor};
 #[cfg(not(target_arch = "wasm32"))]
 use waterui_url::Url;
 
-use crate::{AnyWebViewHandle, WebView, WebViewConfig, WebViewHandle};
+use crate::{AnyWebViewHandle, WebView, WebViewConfig, WebViewHandle, WebViewOpenError};
 
 /// A trait for custom web view controllers.
 ///
@@ -22,7 +22,14 @@ pub trait CustomWebViewController: 'static {
     /// first navigation — CEF hands them to its renderer processes with the
     /// browser itself — and the admission rules stay fixed for the view's
     /// life.
-    fn open(&self, config: WebViewConfig) -> impl WebViewHandle;
+    ///
+    /// # Errors
+    ///
+    /// A [`WebViewOpenError`] when the engine cannot create the view — the
+    /// caller is off the thread the engine requires, or the platform refused.
+    /// The facade reports it as a contract violation and hands the application
+    /// an unavailable [`WebView`] rather than a crash.
+    fn open(&self, config: WebViewConfig) -> Result<impl WebViewHandle, WebViewOpenError>;
 
     #[cfg(not(target_arch = "wasm32"))]
     /// The origin this engine serves bundled assets under, known before any
@@ -59,12 +66,22 @@ impl WebViewController {
     /// Opens a new blank web view.
     ///
     /// The web view starts blank - use `go_to(url)` on the returned view to navigate.
+    ///
+    /// # Contract violation
+    ///
+    /// When the engine cannot open the view: a debug build panics, a release
+    /// build logs the failure and returns an unavailable view that draws a
+    /// placeholder and ignores every operation.
     #[must_use]
     pub fn open(&self) -> WebView {
         self.open_with(WebViewConfig::default())
     }
 
     /// Opens a new blank web view honoring `config`'s creation-time inputs.
+    ///
+    /// # Contract violation
+    ///
+    /// As [`open`](Self::open).
     #[must_use]
     pub fn open_with(&self, config: WebViewConfig) -> WebView {
         WebView::from_handle(self.open_handle(config))

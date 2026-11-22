@@ -187,10 +187,6 @@ impl<T: LocalizedDisplay> Display for LocalizedArgument<'_, T> {
 /// ```
 #[cfg(feature = "list")]
 #[derive(Debug)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "formatting newtype over the borrowed list"
-)]
 pub struct LocalizedList<'a>(pub &'a [&'a str]);
 
 #[cfg(feature = "list")]
@@ -226,6 +222,22 @@ mod tests {
         assert!(formatted.starts_with('\u{2068}'));
         assert!(formatted.ends_with('\u{2069}'));
         assert!(formatted.contains("1.234,5"));
+    }
+
+    #[test]
+    fn localized_argument_shows_non_finite_floats_as_rust_prints_them() {
+        assert_eq!(
+            LocalizedArgument::new(&f64::NAN, &locales::EN).to_string(),
+            "\u{2068}NaN\u{2069}"
+        );
+        assert_eq!(
+            LocalizedArgument::new(&f64::INFINITY, &locales::EN).to_string(),
+            "\u{2068}inf\u{2069}"
+        );
+        assert_eq!(
+            LocalizedArgument::new(&f64::NEG_INFINITY, &locales::EN).to_string(),
+            "\u{2068}-inf\u{2069}"
+        );
     }
 
     #[test]

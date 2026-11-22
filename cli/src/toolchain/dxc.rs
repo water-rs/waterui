@@ -13,10 +13,6 @@ use crate::toolchain::{
 
 /// `dxc` on the host's `PATH` or under the managed tool directory.
 #[derive(Debug, Clone, Copy, Default)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a unit toolchain marker with no fields to add"
-)]
 pub struct Dxc;
 
 impl Dxc {
@@ -45,10 +41,6 @@ impl Toolchain for Dxc {
 /// Install `dxc` from the pinned `microsoft/DirectXShaderCompiler` release
 /// into `~/.water/tools`.
 #[derive(Debug, Clone, Copy)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a unit toolchain marker with no fields to add"
-)]
 pub struct DxcInstallation;
 
 /// Errors that can occur while installing `dxc`.
@@ -97,7 +89,7 @@ mod tests {
         let install_dir = dxc
             .install_dir(&machine.host(Vec::<(String, String)>::new()))
             .unwrap();
-        let binary = install_dir.join(&dxc.binary);
+        let binary = install_dir.join(dxc.binary());
         std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
         std::fs::write(&binary, b"").unwrap();
 
@@ -111,7 +103,7 @@ mod tests {
         let dxc = crate::toolchain::managed_tool::dxc();
         let host = machine.host(Vec::<(String, String)>::new());
         let install_dir = dxc.install_dir(&host).unwrap();
-        let binary = install_dir.join(&dxc.binary);
+        let binary = install_dir.join(dxc.binary());
         std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
         std::fs::write(&binary, b"").unwrap();
 

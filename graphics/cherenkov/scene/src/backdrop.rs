@@ -40,9 +40,13 @@ use serde::{Deserialize, Serialize};
 /// A `levels` count above one reduces the filtered capture (level 0) into
 /// a pyramid: level `k` texel `(i, j)` is the mean of level `k−1` texels
 /// `(2i..=2i+1, 2j..=2j+1)`, a partial box at the grid's edge averaging the
-/// texels present. Members read deeper levels through
-/// [`BackdropEffectSpec::Level`]'s trilinear sample, which a variable-blur
-/// material needs; `1` is the single-level capture.
+/// texels present ([`CapturePyramid::Box`]; the default). Members read
+/// deeper levels through [`BackdropEffectSpec::Level`]'s trilinear sample,
+/// which a variable-blur material needs; `1` is the single-level capture.
+/// A [`CapturePyramid::Gaussian`] group reduces with the
+/// `[1, 5, 10, 10, 5, 1] / 32` kernel instead: level `k` texel `(i, j)` is
+/// `Σ_{a, b ∈ 0..=5} w[a]·w[b]·L[k−1](2i − 2 + a, 2j − 2 + b)`, source
+/// indices clamped to the source level's extent, values unclamped.
 ///
 /// A `union` smoothing distance `k` (device pixels, finite and above 0 —
 /// [`crate::Scene::load`] validates it) makes every member composite
@@ -72,6 +76,10 @@ pub struct BackdropGroup {
     /// capture.
     #[serde(default = "default_levels", skip_serializing_if = "is_default_levels")]
     pub levels: u32,
+    /// How the pyramid reduces a level into the next; absent means
+    /// [`CapturePyramid::Box`].
+    #[serde(default, skip_serializing_if = "is_box")]
+    pub pyramid: CapturePyramid,
     /// The [`crate::Layer::id`] of the layer the capture anchors at: the
     /// capture is taken beneath that layer, at its paint-order position
     /// before the layer's own content and children. Every member may be
@@ -87,14 +95,20 @@ pub struct BackdropGroup {
     /// every member against its own clip only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub union: Option<f64>,
-    /// The space every member composites its sample onto its canvas in:
-    /// the sample at its coverage — antialiased edge and outer extent
+    /// The group's working space. The capture's area mean, `filters`, the
+    /// pyramid reduction (box and Gaussian) and every member read —
+    /// effects' and backdrop shaders' samples alike — average
+    /// premultiplied values in it, and a read returns the linear working
+    /// space. Every member then composites its sample onto its canvas in
+    /// it: the sample at its coverage — antialiased edge and outer extent
     /// included — and the canvas convert into it, blend source-over, and
     /// the result converts back. [`BlendSpace::Linear`] (the default)
-    /// composites in the linear working space; a member's own content
-    /// composites as before either way.
+    /// does all of this in the linear working space;
+    /// [`BlendSpace::SrgbEncoded`] averages and blends sRGB-encoded
+    /// values. A member's own content composites as before either way.
     ///
     /// [`BlendSpace::Linear`]: crate::BlendSpace::Linear
+    /// [`BlendSpace::SrgbEncoded`]: crate::BlendSpace::SrgbEncoded
     #[serde(default, skip_serializing_if = "is_linear")]
     pub blend_space: crate::BlendSpace,
 }
@@ -114,6 +128,7 @@ impl BackdropGroup {
             filters,
             scale,
             levels,
+            pyramid: CapturePyramid::Box,
             anchor: None,
             union: None,
             blend_space: crate::BlendSpace::Linear,
@@ -121,11 +136,31 @@ impl BackdropGroup {
     }
 }
 
+/// How a backdrop group's pyramid reduces a level into the next.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CapturePyramid {
+    /// Exact 2×2 box means.
+    #[default]
+    Box,
+    /// The `[1, 5, 10, 10, 5, 1] / 32` binomial kernel centred on the 2×2
+    /// box.
+    Gaussian,
+}
+
 #[expect(
     clippy::trivially_copy_pass_by_ref,
     reason = "serde's skip_serializing_if takes a reference"
 )]
-fn is_linear(space: &crate::BlendSpace) -> bool {
+fn is_box(pyramid: &CapturePyramid) -> bool {
+    *pyramid == CapturePyramid::Box
+}
+
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if takes a reference"
+)]
+pub fn is_linear(space: &crate::BlendSpace) -> bool {
     *space == crate::BlendSpace::Linear
 }
 
@@ -215,5 +250,20 @@ pub enum BackdropEffectSpec {
         edge_level: f64,
         /// The pyramid level deep inside the clip (`t = 0`).
         interior_level: f64,
+    },
+    /// A user WGSL `backdrop_effect` under the engine's backdrop shader
+    /// contract (`cherenkov::BackdropShaderSource`): it receives the
+    /// member pixel's `BackdropPixel` and reads the capture through
+    /// `backdrop_sample`, `backdrop_sample_level` and `backdrop_field`.
+    /// SDF-required like `Refraction`.
+    Shader {
+        /// The source defining `backdrop_effect`, without the prelude.
+        source: String,
+        /// The `params` values packed four per `vec4`, zero-filled; at
+        /// most [`crate::ShaderPaint::MAX_PARAMS`].
+        params: Vec<f64>,
+        /// How far, in device pixels, the shader's sample points can land
+        /// from the member pixel.
+        reach: f64,
     },
 }

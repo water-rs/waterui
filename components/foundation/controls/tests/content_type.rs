@@ -5,7 +5,7 @@
 //! `content_type` selectors match on it. A field that declares none reads
 //! `None`.
 
-use waterui::component::text_field::{ContentType, KeyboardType};
+use waterui::component::input::{ContentType, KeyboardType};
 use waterui::component::vstack;
 use waterui::{Binding, Str, View};
 use waterui_testing::{ContentType as SnapshotContentType, Role, UiBuilder};

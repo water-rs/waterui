@@ -178,10 +178,13 @@ impl PathBuilder {
     ///
     /// # Panics
     ///
-    /// If `CGPathCreateCopy` returns null for a live path.
+    /// Never in practice: `CGPathCreateCopy` of a live path fails only on
+    /// memory exhaustion.
     #[must_use]
     pub fn finish(&self) -> CFRetained<CGPath> {
-        CGPath::new_copy(Some(&self.path)).expect("CGPathCreateCopy of a live path is non-null")
+        CGPath::new_copy(Some(&self.path)).expect(
+            "`CGPathCreateCopy` of a live path is non-null: it fails only on memory exhaustion",
+        )
     }
 }
 

@@ -18,10 +18,6 @@ use crate::regional;
 /// `Locale` (not `LanguageIdentifier`) preserves Unicode extension data like
 /// `u-ca`, `u-hc`, and `u-nu`, enabling full locale preferences.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "newtype over the ICU locale: the wrapped locale is the whole value"
-)]
 pub struct Locale(pub IcuLocale);
 
 impl_constant!(Locale);

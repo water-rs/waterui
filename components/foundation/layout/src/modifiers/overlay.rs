@@ -11,7 +11,8 @@ use alloc::{vec, vec::Vec};
 use waterui_core::View;
 
 use crate::{
-    Layout, PlacedSubview, Point, ProposalSize, Rect, Size, StretchAxis, SubView, SubviewPlacement,
+    Layout, LayoutError, PlacedSubview, PlacementInput, Point, ProposalSize, Rect, Size,
+    StretchAxis, SubView, SubviewPlacement,
     container::FixedContainer,
     stack::{
         Alignment, HorizontalAlignment, VerticalAlignment,
@@ -117,6 +118,23 @@ impl Layout for OverlayLayout {
         placements
     }
 
+    /// The base decides the response: its own response origin, with the
+    /// overlay's answer as the extent — the two coincide whenever the base's
+    /// answer is finite. Decorations contribute nothing. The base is queried
+    /// with the overlay's incoming proposal, not the bounds-derived one it is
+    /// placed with.
+    fn resolve_extent(
+        &self,
+        input: PlacementInput,
+        children: &[&dyn SubView],
+    ) -> Result<Rect, LayoutError> {
+        let base = children
+            .first()
+            .expect("OverlayLayout requires a base child at index 0");
+        let base = base.resolve_extent(input.bounds, input.proposal)?.rect;
+        Ok(Rect::new(base.origin(), input.extent()?))
+    }
+
     fn explicit_horizontal(
         &self,
         alignment: HorizontalAlignment,
@@ -200,13 +218,6 @@ where
         } = self;
         FixedContainer::new(layout, (base, layer))
     }
-
-    /// Resolves to `FixedContainer` over the same layout and children in
-    /// `[base, layer]` order; reports what that container would.
-    fn stretch_axis(&self) -> StretchAxis {
-        self.layout
-            .stretch_axis(&[self.base.stretch_axis(), self.layer.stretch_axis()])
-    }
 }
 
 /// Convenience constructor for creating an [`Overlay`] with the default alignment.
@@ -220,7 +231,7 @@ pub const fn overlay<Base: View, Layer: View>(base: Base, layer: Layer) -> Overl
 mod tests {
     use super::*;
     use crate::container::FixedContainer;
-    use crate::{StretchAxis, ViewDimensions};
+    use crate::{LayoutError, Rect, ResolvedExtent, StretchAxis, ViewDimensions};
     use waterui_core::{AnyView, Environment, View};
 
     struct MockSubView {
@@ -228,6 +239,13 @@ mod tests {
     }
 
     impl SubView for MockSubView {
+        fn resolve_extent(
+            &self,
+            bounds: Rect,
+            proposal: ProposalSize,
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        }
         fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
             ViewDimensions::new(self.size)
         }
@@ -236,16 +254,6 @@ mod tests {
         }
         fn priority(&self) -> i32 {
             0
-        }
-    }
-
-    struct StretchingBase;
-
-    impl View for StretchingBase {
-        fn body(self, _env: &Environment) -> impl View {}
-
-        fn stretch_axis(&self) -> StretchAxis {
-            StretchAxis::Horizontal
         }
     }
 
@@ -318,14 +326,16 @@ mod tests {
     #[test]
     fn test_overlay_body_preserves_base_stretch_axis() {
         let env = Environment::default();
-        let body = overlay(StretchingBase, ()).body(&env);
+        let body = overlay((), ()).body(&env);
         let container = AnyView::new(body)
             .downcast::<FixedContainer>()
             .expect("overlay body should be a FixedContainer");
         let (layout, children) = container.as_parts();
 
         assert_eq!(children.len(), 2);
-        let child_axes: Vec<StretchAxis> = children.iter().map(View::stretch_axis).collect();
-        assert_eq!(layout.stretch_axis(&child_axes), StretchAxis::Horizontal);
+        assert_eq!(
+            layout.stretch_axis(&[StretchAxis::Horizontal, StretchAxis::None]),
+            StretchAxis::Horizontal
+        );
     }
 }

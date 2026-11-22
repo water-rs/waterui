@@ -223,7 +223,9 @@ fn parameters(args: &[serde_json::Value]) -> String {
 /// cannot touch anything else.
 fn arguments(args: &[serde_json::Value]) -> String {
     serde_json::to_string(args)
-        .expect("interpolated JavaScript arguments must serialize")
+        .expect(
+            "interpolated JavaScript arguments are `serde_json::Value`s, which always serialize",
+        )
         .replace('\u{2028}', "\\u2028")
         .replace('\u{2029}', "\\u2029")
 }

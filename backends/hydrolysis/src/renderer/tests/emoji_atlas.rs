@@ -18,8 +18,8 @@ use crate::HeadlessRuntime;
 use crate::runner::HeadlessSnapshot;
 
 fn pixel(snapshot: &HeadlessSnapshot, x: u32, y: u32) -> [u8; 4] {
-    let index = ((y * snapshot.width + x) * 4) as usize;
-    snapshot.rgba8[index..index + 4]
+    let index = ((y * snapshot.width() + x) * 4) as usize;
+    snapshot.rgba8()[index..index + 4]
         .try_into()
         .expect("four channels per pixel")
 }
@@ -29,8 +29,8 @@ fn pixel(snapshot: &HeadlessSnapshot, x: u32, y: u32) -> [u8; 4] {
 /// plain text face, and the dark blurred chip are all near-neutral).
 fn count_emoji_pixels(snapshot: &HeadlessSnapshot) -> usize {
     let mut count = 0;
-    for y in 0..snapshot.height {
-        for x in 0..snapshot.width {
+    for y in 0..snapshot.height() {
+        for x in 0..snapshot.width() {
             let [r, g, b, a] = pixel(snapshot, x, y);
             if a == 255 {
                 let max = r.max(g).max(b);
@@ -88,7 +88,7 @@ fn patch_free_capture_does_not_blank_color_emoji() {
     // assertion would be vacuous if the subset face never drew.
     let first = runtime
         .pump_at(true, start)
-        .snapshot
+        .into_snapshot()
         .expect("a pumped frame must produce a snapshot");
     assert!(
         count_emoji_pixels(&first) > 0,
@@ -102,7 +102,7 @@ fn patch_free_capture_does_not_blank_color_emoji() {
     let mut snapshot: Option<HeadlessSnapshot> = None;
     for frame in 1..12 {
         let result = runtime.pump_at(true, start + Duration::from_millis(16 * frame));
-        snapshot = result.snapshot.or(snapshot);
+        snapshot = result.into_snapshot().or(snapshot);
     }
     let later = snapshot.expect("a pumped frame must produce a snapshot");
     assert!(

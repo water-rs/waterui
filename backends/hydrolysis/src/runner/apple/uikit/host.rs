@@ -29,7 +29,7 @@ use waterui::cursor::CursorStyle;
 use waterui::window::{Window, WindowState};
 use waterui_core::Environment;
 use waterui_core::layout::{Size, layout_direction};
-use waterui_graphics::gpu::RedrawHandle;
+
 use waterui_layout::padding::EdgeInsets;
 
 use super::super::input::InputTranslator;
@@ -38,8 +38,8 @@ use super::super::surface::AppleViewSurface;
 use super::insets;
 use crate::num_cast::{f64_as_f32, f64_as_u32};
 use crate::platform::{
-    GpuSurfaceWindow, InputEvent, PlatformWindow, PresentationSurface as _, ScrollPlatform,
-    TextInputState, TouchScrollConfig, validated_window_frame,
+    InputConventions, InputEvent, PaintedWindow, PlatformWindow, PresentationSurface as _,
+    ScrollPlatform, TextInputState, TouchScrollConfig, validated_window_frame,
 };
 use crate::runner::host_executor::{UiThreadPoster, redraw_wake};
 use crate::runner::window::{FrameOutcome, FrameTransaction};
@@ -468,12 +468,18 @@ impl PlatformWindow for UiKitHostWindow {
         Some(TouchScrollConfig::for_platform(ScrollPlatform::Apple))
     }
 
+    /// `UIKit` publishes no tap interval or distance, so the run takes the
+    /// Apple data defaults; the paste shortcut is Command-V.
+    fn input_conventions(&self) -> InputConventions {
+        InputConventions::for_platform(ScrollPlatform::Apple)
+    }
+
     fn refresh_rate_hz(&self) -> Option<f64> {
         Some(f64::from(self.shared.max_frames_per_second()))
     }
 
     fn sync_text_input_state(&mut self, state: Option<TextInputState>) {
-        let soft_input = state.map(|state| state.activation);
+        let soft_input = state.map(|state| state.activation());
         if soft_input == self.soft_input {
             return;
         }
@@ -497,15 +503,15 @@ impl PlatformWindow for UiKitHostWindow {
     }
 }
 
-impl GpuSurfaceWindow for UiKitHostWindow {
+impl PaintedWindow for UiKitHostWindow {
     type Presentation = AppleViewSurface;
 
     fn surface(&mut self) -> &mut AppleViewSurface {
         &mut self.surface
     }
 
-    fn gpu_surface_redraw_handle(&self) -> Option<RedrawHandle> {
-        Some(RedrawHandle::new(self.content_redraw_wake()))
+    fn host_redraw_handle(&self) -> Option<crate::renderer::HostRedraw> {
+        Some(crate::renderer::HostRedraw::new(self.content_redraw_wake()))
     }
 }
 

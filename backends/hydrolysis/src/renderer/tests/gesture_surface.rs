@@ -10,13 +10,15 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use cherenkov_record::Recorder;
 use waterui::gesture::{DragEvent, DragGesture, GesturePhase};
 use waterui::{AnyView, Color, ViewExt as _};
 use waterui_core::extract::Use;
 use waterui_core::handler::AnyViewBuilder;
-use waterui_graphics::draw::Recorder;
+use waterui_graphics::backend::{
+    NextFrame, RecordingResources, SceneContent, SceneInvalidator, SceneView,
+};
 use waterui_graphics::input::SurfaceInputEvent;
-use waterui_graphics::{RecordingResources, SceneContent, SceneInvalidator, SceneView};
 use waterui_layout::stack::hstack;
 
 use super::{MinimalTestTheme, test_environment};
@@ -42,8 +44,8 @@ impl SceneContent for RecorderPane {
         _resources: &mut RecordingResources<'_>,
         _width: f32,
         _height: f32,
-    ) -> bool {
-        false
+    ) -> NextFrame {
+        NextFrame::Idle
     }
 
     fn set_invalidator(&mut self, _invalidator: Option<SceneInvalidator>) {}
@@ -111,7 +113,7 @@ fn drag_handle(phases: Rc<RefCell<Vec<GesturePhase>>>) -> AnyView {
     AnyView::new(Color::srgb_hex("#3F3F46").width(HANDLE_WIDTH).gesture(
         DragGesture::new(0.0),
         move |drag: Use<DragEvent>| {
-            phases.borrow_mut().push(drag.phase);
+            phases.borrow_mut().push(drag.phase());
         },
     ))
 }

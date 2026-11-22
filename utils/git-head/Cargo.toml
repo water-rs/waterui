@@ -1,0 +1,18 @@
+[package]
+name = "waterui-git-head"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+description = "Build-script helper that embeds the checked-out Git commit and reruns only when it moves"
+keywords = ["git", "build-script", "waterui"]
+categories = ["development-tools::build-utils"]
+
+[dev-dependencies]
+tempfile = "3.27"
+
+[lints]
+workspace = true

@@ -19,7 +19,7 @@ the control means.
 
 The crate is `no_std` (it needs only `alloc`) and holds no rendering code of its
 own. Every control lowers to a configuration struct that a backend projects onto
-a real platform widget — UIKit/AppKit on Apple, Android Views on Android — or
+a real platform widget — UIKit/AppKit on Apple — or
 draws itself in the Hydrolysis and Dew renderers.
 
 ## Installation
@@ -252,7 +252,7 @@ formatter styles the inline value only — the semantic label is untouched.
 
 ```rust,no_run
 use core::num::NonZeroUsize;
-use text_field::KeyboardType;
+use input::KeyboardType;
 use waterui::prelude::*;
 
 fn email(value: &Binding<Str>) -> impl View {
@@ -379,7 +379,7 @@ fn note(value: &Binding<Str>) -> impl View {
 - `ControlSize` — `ExtraSmall`, `Small`, `Medium`, `Large`, `ExtraLarge`, shared by buttons and sliders;
   scales height, padding, icon size, and corner shape together.
 - `ToggleStyle` — `Automatic`, `Switch`, `Checkbox`.
-- `text_field::KeyboardType` — `Text`, `Email`, `URL`, `Number`, `PhoneNumber`.
+- `input::KeyboardType` — `Text`, `Email`, `URL`, `Number`, `PhoneNumber`.
 
 ### Backend-facing configuration
 

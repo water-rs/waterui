@@ -90,7 +90,11 @@ impl KeyboardBand {
                 let Some(window) = tracker.load().and_then(|view| view.window()) else {
                     return;
                 };
-                handler(super::keyboard::change(notification, &window).duration);
+                // A notification missing its payload was already reported by
+                // `change`; it announces no animation.
+                if let Some(change) = super::keyboard::change(notification, &window) {
+                    handler(change.duration);
+                }
             },
         )
     }

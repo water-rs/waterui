@@ -1777,6 +1777,7 @@ pub fn add(corpus: &mut Corpus, ctx: &mut TextContext) -> Result<(), SceneError>
 
     blend_space(corpus, "blend-space-linear", "linear")?;
     blend_space(corpus, "blend-space-srgb", "srgb-encoded")?;
+    blend_space_layer(corpus)?;
     blend_space_documents(corpus)?;
 
     component_rotation(
@@ -1826,6 +1827,52 @@ pub fn add(corpus: &mut Corpus, ctx: &mut TextContext) -> Result<(), SceneError>
     gamut_text(corpus, ctx)?;
     glyph_transform(corpus, ctx)?;
     Ok(())
+}
+
+/// `blend-space-srgb-layer`: a backdrop rect, then a layer in
+/// srgb-encoded space at opacity 0.5 holding the rect + circle of
+/// [`blend_space`]: its members composite with each other, and the layer
+/// fades onto the backdrop, in encoded values.
+fn blend_space_layer(corpus: &mut Corpus) -> Result<(), SceneError> {
+    let members = vec![
+        fill(
+            rect(f(20.0), f(20.0), f(88.0), f(88.0)),
+            solid("srgb", vec![f(0.85), f(0.15), f(0.2), f(1.0)]),
+        ),
+        fill(
+            circle(f(84.0), f(84.0), f(36.0)),
+            solid("srgb", vec![f(0.15), f(0.3), f(0.85), f(0.5)]),
+        ),
+    ];
+    let encoded = o(vec![(
+        "layer",
+        o(vec![
+            ("transform", affine(IDENTITY_F)),
+            ("opacity", f(0.5)),
+            ("blend", s("normal")),
+            ("blend_space", s("srgb-encoded")),
+            ("items", a(members)),
+        ]),
+    )]);
+    let items = vec![
+        fill(
+            rect(f(0.0), f(0.0), f(128.0), f(128.0)),
+            solid("srgb", vec![f(0.1), f(0.1), f(0.12), f(1.0)]),
+        ),
+        encoded,
+    ];
+    emit(
+        corpus,
+        "blend-space-srgb-layer",
+        1,
+        &mut scene_j(128, 128, dark_clear(), affine(IDENTITY_F), items),
+        Vec::new(),
+        &[
+            ("fill", None),
+            ("opacity", None),
+            ("blend-space", Some("srgb-encoded")),
+        ],
+    )
 }
 
 /// `blend-space-srgb-{document,per-element}`: the 48-swatch document

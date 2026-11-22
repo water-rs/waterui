@@ -23,17 +23,19 @@
 use alloc::rc::Rc;
 use core::cell::{Cell, RefCell};
 
-use cocoa_ui::geometry::{MeasureProposal, Rect};
+use cocoa_ui::geometry::Rect;
 use cocoa_ui::{Retained, view};
 use waterui::component::Dynamic;
 use waterui_backend_core::AnyView;
 use waterui_core::Metadata;
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size, StretchAxis, SubView,
+    ViewDimensions,
+};
 use waterui_core::metadata::Retain;
 
 use crate::contract::{NativeLeaf, RenderContext, Renderer};
-use crate::dispatch::Dispatcher;
-use crate::proposal::{self, Placement};
+use crate::proposal::{self, Placement, to_proposal};
 use crate::transition::TransitionClaim;
 use crate::transition::ghost::Ghost;
 use crate::transition::live::{LiveChild, Removal};
@@ -75,18 +77,6 @@ impl core::fmt::Debug for DynamicState {
     }
 }
 
-/// `MeasureProposal` (f64 axes) as a layout `ProposalSize` (f32 axes).
-fn to_proposal(proposal: MeasureProposal) -> ProposalSize {
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "the layout contract is f32; kit geometry is f64"
-    )]
-    ProposalSize::new(
-        proposal.width.map(|width| width as f32),
-        proposal.height.map(|height| height as f32),
-    )
-}
-
 /// The leaf's layout face: delegates every answer to the current child's
 /// `SubView`, measuring empty until a child is mounted.
 struct DynamicSubView {
@@ -101,6 +91,19 @@ impl core::fmt::Debug for DynamicSubView {
 }
 
 impl SubView for DynamicSubView {
+    /// Forwards to the mounted child with the same bounds and proposal; an
+    /// absent child answers a zero size centred in `bounds`, as `measure` does.
+    fn resolve_extent(
+        &self,
+        bounds: LayoutRect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        self.state.borrow().child.as_ref().map_or_else(
+            || ResolvedExtent::centred(bounds, Size::zero()),
+            |child| child.layout().resolve_extent(bounds, proposal),
+        )
+    }
+
     /// `measure(_:)`: the child owns the full measurement packet — its
     /// alignment guides ride along inside stacks.
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
@@ -184,7 +187,7 @@ pub fn render_adopting(
 
 /// `updateChild`: render `view`, retire the previous child, mount the
 /// new leaf into the host, then re-forward the negotiated proposal and
-/// invalidate up the hierarchy. A render miss keeps the previous child.
+/// invalidate up the hierarchy.
 ///
 /// The borrow is released before `layout_if_needed`: that call runs the
 /// host's layout handler synchronously, and the handler borrows the same
@@ -193,9 +196,7 @@ fn update_child(state: &Rc<RefCell<DynamicState>>, view: AnyView) {
     let host = {
         let state_rc = Rc::clone(state);
         let mut state = state.borrow_mut();
-        let Some(leaf) = state.renderer.try_render(view) else {
-            return;
-        };
+        let leaf = state.renderer.render(view);
         // The outgoing child leaves the semantic tree now: a claimed
         // instance retires into a ghost painted beneath the incoming
         // child — a conditional holds no slot (§4.5) — and an unclaimed
@@ -332,15 +333,17 @@ fn render(
     leaf
 }
 
-/// Installs the `dynamic` handler on the dispatcher: `Native<Dynamic>`
+/// The `dynamic` realization: `Native<Dynamic>`
 /// becomes a host whose single child the handler's receiver swaps per
 /// delivered `Context<AnyView>`.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<Dynamic>(|dynamic, ctx| render(dynamic, ctx, None));
+pub fn realize_dynamic(dynamic: Dynamic, ctx: &RenderContext<'_>) -> NativeLeaf {
+    render(dynamic, ctx, None)
 }
 
 #[cfg(test)]
 mod tests {
+    use cocoa_ui::geometry::MeasureProposal;
+
     use super::*;
 
     #[test]

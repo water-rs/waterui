@@ -112,10 +112,12 @@ impl View for FilePicker {
                     let Some(selected_paths) = selected_paths else {
                         return;
                     };
-                    assert!(
-                        !selected_paths.is_empty(),
-                        "FilePicker dialog returned an empty selection"
-                    );
+                    if selected_paths.is_empty() {
+                        tracing::error!(
+                            "FilePicker dialog returned an empty selection; the selection is left unchanged"
+                        );
+                        return;
+                    }
 
                     let mut urls = Vec::with_capacity(selected_paths.len());
                     for path in selected_paths.into_iter().take(self.num.max(1)) {
@@ -130,8 +132,8 @@ impl View for FilePicker {
                 )))]
                 {
                     let _ = value;
-                    panic!(
-                        "FilePicker native file dialog is unavailable on this target (import={}, max_count={})",
+                    tracing::error!(
+                        "FilePicker native file dialog is unavailable on this target (import={}, max_count={}); the selection is left unchanged",
                         self.import, self.num
                     );
                 }

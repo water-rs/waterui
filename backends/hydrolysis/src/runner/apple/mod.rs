@@ -12,9 +12,11 @@
 //! - [`accessibility`]: the accessibility tree publish and action routing
 //! - [`uikit`]: the `UIKit` host
 
+#[cfg(feature = "accessibility")]
 mod accessibility;
 mod input;
 mod session;
 mod surface;
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 mod text_input;
 pub(super) mod uikit;

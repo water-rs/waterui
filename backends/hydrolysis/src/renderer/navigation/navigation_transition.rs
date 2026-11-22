@@ -4,6 +4,7 @@ use waterui::navigation::{
     NavigationTransitionFrame as ResolvedNavigationTransitionFrame, NavigationTransitionLayer,
     RetainedNavigationTransition,
 };
+use waterui_core::contract_violation;
 
 /// How a transition presents its two pages this frame.
 pub enum NavigationPresentation {
@@ -48,10 +49,10 @@ pub fn transition_layer_transform(
 ) -> kurbo::Affine {
     let center = bounds.center();
     kurbo::Affine::translate((
-        f64::from(layer.offset_x) * paint_bounds.width(),
-        f64::from(layer.offset_y) * paint_bounds.height(),
+        f64::from(layer.offset_x()) * paint_bounds.width(),
+        f64::from(layer.offset_y()) * paint_bounds.height(),
     )) * kurbo::Affine::translate((center.x, center.y))
-        * kurbo::Affine::scale(f64::from(layer.scale))
+        * kurbo::Affine::scale(f64::from(layer.scale()))
         * kurbo::Affine::translate((-center.x, -center.y))
 }
 
@@ -62,18 +63,24 @@ fn material_shared_axis_x_frame(
     viewport_width: f64,
     fade_through_threshold: f32,
 ) -> ResolvedNavigationTransitionFrame {
-    assert!(
-        viewport_width > 0.0,
-        "navigation shared-axis viewport width must be positive"
-    );
-    assert!(
-        slide_distance >= 0.0 && slide_distance.is_finite(),
-        "navigation shared-axis slide distance must be finite and non-negative"
-    );
-    assert!(
-        (0.0..1.0).contains(&fade_through_threshold),
-        "navigation fade-through threshold must be in 0.0..1.0"
-    );
+    if viewport_width <= 0.0 {
+        contract_violation!(
+            "navigation shared-axis viewport width must be positive; the pages show without a transition"
+        );
+        return ResolvedNavigationTransitionFrame::IDENTITY;
+    }
+    if !(slide_distance >= 0.0 && slide_distance.is_finite()) {
+        contract_violation!(
+            "navigation shared-axis slide distance must be finite and non-negative; the pages show without a transition"
+        );
+        return ResolvedNavigationTransitionFrame::IDENTITY;
+    }
+    if !(0.0..1.0).contains(&fade_through_threshold) {
+        contract_violation!(
+            "navigation fade-through threshold must be in 0.0..1.0; the pages show without a transition"
+        );
+        return ResolvedNavigationTransitionFrame::IDENTITY;
+    }
     let slide_fraction = crate::num_cast::f64_as_f32(slide_distance / viewport_width);
     let direction = match direction {
         NavigationTransitionDirection::Push => -1.0,
@@ -140,10 +147,10 @@ mod tests {
             300.0,
             0.35,
         );
-        assert_near(start.outgoing.offset_x, 0.0);
-        assert_near(start.outgoing.opacity, 1.0);
-        assert_near(start.incoming.offset_x, 0.1);
-        assert_near(start.incoming.opacity, 0.0);
+        assert_near(start.outgoing().offset_x(), 0.0);
+        assert_near(start.outgoing().opacity(), 1.0);
+        assert_near(start.incoming().offset_x(), 0.1);
+        assert_near(start.incoming().opacity(), 0.0);
 
         let threshold = material_shared_axis_x_frame(
             0.35,
@@ -152,8 +159,8 @@ mod tests {
             300.0,
             0.35,
         );
-        assert_near(threshold.outgoing.opacity, 0.0);
-        assert_near(threshold.incoming.opacity, 0.0);
+        assert_near(threshold.outgoing().opacity(), 0.0);
+        assert_near(threshold.incoming().opacity(), 0.0);
 
         let end = material_shared_axis_x_frame(
             1.0,
@@ -162,10 +169,24 @@ mod tests {
             300.0,
             0.35,
         );
-        assert_near(end.outgoing.offset_x, -0.1);
-        assert_near(end.outgoing.opacity, 0.0);
-        assert_near(end.incoming.offset_x, 0.0);
-        assert_near(end.incoming.opacity, 1.0);
+        assert_near(end.outgoing().offset_x(), -0.1);
+        assert_near(end.outgoing().opacity(), 0.0);
+        assert_near(end.incoming().offset_x(), 0.0);
+        assert_near(end.incoming().opacity(), 1.0);
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "viewport width must be positive")
+    )]
+    fn a_zero_viewport_shows_the_pages_without_a_transition() {
+        let frame =
+            material_shared_axis_x_frame(0.5, NavigationTransitionDirection::Push, 30.0, 0.0, 0.35);
+        assert_near(frame.outgoing().offset_x(), 0.0);
+        assert_near(frame.outgoing().opacity(), 1.0);
+        assert_near(frame.incoming().offset_x(), 0.0);
+        assert_near(frame.incoming().opacity(), 1.0);
     }
 
     #[test]
@@ -178,7 +199,7 @@ mod tests {
             0.35,
         );
 
-        assert_near(middle.outgoing.offset_x, 0.05);
-        assert_near(middle.incoming.offset_x, -0.05);
+        assert_near(middle.outgoing().offset_x(), 0.05);
+        assert_near(middle.incoming().offset_x(), -0.05);
     }
 }

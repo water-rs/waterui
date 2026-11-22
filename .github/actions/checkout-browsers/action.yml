@@ -35,7 +35,7 @@ runs:
         assert len(git_sources) == 1, sources
         source = git_sources.pop()
         prefix, _, rev = source.partition('#')
-        assert prefix == 'git+https://github.com/water-rs/browsers?branch=dev', source
+        assert prefix == 'git+https://github.com/water-rs/browsers?branch=main', source
         assert len(rev) == 40 and all(c in '0123456789abcdef' for c in rev), source
         print(rev)
         PY

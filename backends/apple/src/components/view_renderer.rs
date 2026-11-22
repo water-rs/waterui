@@ -19,8 +19,8 @@ use waterui_core::{AnyView, ContentLedger};
 
 use crate::contract::{NativeLeaf, Renderer};
 
-/// The backend's `CustomViewRenderer`: a `'static` `Renderer` carrying the
-/// dispatcher, an environment clone and the main-thread proof.
+/// The backend's `CustomViewRenderer`: a `'static` `Renderer` carrying an
+/// environment clone and the main-thread proof.
 struct AppleViewRenderer {
     renderer: Renderer,
     mtm: cocoa_ui::MainThreadMarker,
@@ -69,6 +69,8 @@ fn render_error(failure: crate::capture_image::CaptureFailure) -> RenderError {
     use crate::capture_image::CaptureFailure;
     match failure {
         CaptureFailure::GpuSurfaceFailed(_)
+        | CaptureFailure::GpuRuntimeUnavailable
+        | CaptureFailure::GpuUnrecoverable(_)
         | CaptureFailure::CompositionFailed { .. }
         | CaptureFailure::TargetAllocation { .. } => RenderError::Gpu(Box::new(failure)),
         #[cfg(target_os = "ios")]
@@ -83,11 +85,11 @@ fn render_error(failure: crate::capture_image::CaptureFailure) -> RenderError {
 ///
 /// # Panics
 ///
-/// On a failure to confirm the main thread.
+/// Off the main thread: the backend installs its services while starting on it.
 pub fn install_service(env: &mut Environment) {
-    let mtm = cocoa_ui::MainThreadMarker::new().expect("main thread");
-    let renderer =
-        crate::contract::RenderContext::new(env, crate::dispatch::dispatcher(env), mtm).renderer();
+    let mtm = cocoa_ui::MainThreadMarker::new()
+        .expect("the backend installs its services on the main thread");
+    let renderer = crate::contract::RenderContext::new(env, mtm).renderer();
     env.insert(ViewRenderer::new(AppleViewRenderer { renderer, mtm }));
 }
 
@@ -119,23 +121,23 @@ async fn capture_leaf_to_rgba(
 ) -> Result<(alloc::vec::Vec<u8>, u32, u32), RenderError> {
     let view = leaf.view();
     let proposed = cocoa_ui::Size::new(
-        f64::from(request.size.width),
-        f64::from(request.size.height),
+        f64::from(request.size().width),
+        f64::from(request.size().height),
     );
     cocoa_ui::view::set_frame(
         view,
         cocoa_ui::Rect::new(0.0, 0.0, proposed.width, proposed.height),
     );
     let host = host::CaptureHost::attach(view, proposed, mtm)?;
-    lay_out(view, request.size);
+    lay_out(view, request.size());
     // The capture window cannot present, so the surfaces inside never
     // attach: the drive keeps their frames — and the content their scenes
     // settle — moving from here until the terminal capture. Declared
     // after `host` so the scopes it opened end before the leaf unhosts.
     #[cfg(feature = "gpu_surface")]
     let drive = crate::capture_image::CaptureDrive::begin(view, env, mtm);
-    crate::content::await_content(ledger, view, request.content_deadline).await?;
-    lay_out(view, request.size);
+    crate::content::await_content(ledger, view, request.content_deadline()).await?;
+    lay_out(view, request.size());
 
     #[cfg(feature = "gpu_surface")]
     let captured = {
@@ -151,7 +153,7 @@ async fn capture_leaf_to_rgba(
     #[cfg(not(feature = "gpu_surface"))]
     let captured = crate::capture::capture_presented(view)
         .await
-        .map(|result| (result.rgba_data, result.width, result.height))
+        .map(RenderResult::into_parts)
         .map_err(|error| RenderError::Capture(Box::new(error)));
     drop(host);
     captured
@@ -255,7 +257,9 @@ mod host {
             mtm: cocoa_ui::MainThreadMarker,
         ) -> Result<Self, RenderError> {
             let window = cocoa_ui::bitmap::capture_window(mtm, proposed);
-            let content = window.contentView().expect("offscreen window content");
+            let content = window
+                .contentView()
+                .expect("a window built by `capture_window` has a content view");
             cocoa_ui::view::add_subview(&content, view);
             Ok(Self { _window: window })
         }

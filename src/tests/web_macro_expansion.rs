@@ -7,10 +7,9 @@
 //! evaluated — `DirectoryServer::new` resolves the staged bundle root, which a
 //! test process does not have — so the function is only type-checked.
 //!
-//! The expansion installs a navigation policy, which builds on Apple only at a
-//! deployment target of OS 27 or newer, above the workspace's floor. The paths
-//! it checks are the same on every target, so it compiles where the gate does
-//! not apply.
+//! On Apple the expansion's `stay_on_origin` policy needs a deployment target
+//! of OS 27, above the workspace floor, so there it is by design an error and
+//! the test compiles only on the other targets.
 #![cfg(all(feature = "webview", feature = "assets", not(target_vendor = "apple")))]
 
 /// `CARGO_MANIFEST_DIR` is the `waterui` package root (`src/`), so the fixture

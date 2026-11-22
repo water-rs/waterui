@@ -151,12 +151,14 @@ pub const ENGINE_GROUP0: &[Entry] = &[
 pub const IMAGE_DECODE_BINDING: u32 = 5;
 
 /// Group 1 of the engine pipelines: the textures a composite or paint
-/// samples — composite source, blend backdrop, image paint, clip mask.
+/// samples — composite source, blend backdrop, image paint, clip mask —
+/// and the linear sampler `backdrop_sample_blur` reads the source through.
 pub const ENGINE_GROUP1: &[Entry] = &[
     Entry::texture(0),
     Entry::texture(1),
     Entry::texture(2),
     Entry::texture(3),
+    Entry::sampler(4),
 ];
 
 /// The present pipeline's single group (`present.wgsl`): source texture,

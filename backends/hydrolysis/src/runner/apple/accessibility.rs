@@ -4,14 +4,11 @@
 //! accessibility elements from the renderer's tree. The adapter's handlers
 //! only stash: the initial tree is the last published update, and an action
 //! joins a queue the next frame transaction performs, so no handler enters
-//! the session while a transaction runs. Without the `accessibility` feature
-//! the bridge is an empty type and every operation vanishes.
+//! the session while a transaction runs. The module exists only under the
+//! `accessibility` feature.
 
 #[cfg(feature = "accessibility")]
 pub(super) use enabled::AccessibilityBridge;
-
-#[cfg(not(feature = "accessibility"))]
-pub(super) use disabled::AccessibilityBridge;
 
 #[cfg(feature = "accessibility")]
 mod enabled {
@@ -26,7 +23,9 @@ mod enabled {
     use waterui_core::Environment;
 
     use crate::platform::PlatformWindow;
-    use crate::runner::window::{RuntimeWindow, runtime_window_origin};
+    use crate::runner::window::RuntimeWindow;
+    #[cfg(any(feature = "menu", feature = "color-picker"))]
+    use crate::runner::window::runtime_window_origin;
     use crate::text::ParleyEngine;
 
     /// What the adapter's handlers share with the bridge.
@@ -125,8 +124,9 @@ mod enabled {
                     node = ?request.target_node,
                     "accessibility action requested"
                 );
-                let env = env.extending(runtime_window_origin(runtime));
-                if runtime.renderer.handle_accessibility_action(request, &env) {
+                #[cfg(any(feature = "menu", feature = "color-picker"))]
+                let env = &env.extending(runtime_window_origin(runtime));
+                if runtime.renderer.handle_accessibility_action(request, env) {
                     runtime.request_refresh();
                     runtime.request_redraw();
                 }
@@ -148,43 +148,6 @@ mod enabled {
             if let Some(events) = self.adapter.update_if_active(|| update) {
                 events.raise();
             }
-        }
-    }
-}
-
-#[cfg(not(feature = "accessibility"))]
-mod disabled {
-    use std::rc::Rc;
-
-    use cocoa_ui::PlatformView;
-    use waterui_core::Environment;
-
-    use crate::platform::PlatformWindow;
-    use crate::runner::window::RuntimeWindow;
-    use crate::text::ParleyEngine;
-
-    /// Without the feature there is no tree to serve.
-    pub(in crate::runner::apple) struct AccessibilityBridge;
-
-    impl AccessibilityBridge {
-        pub(in crate::runner::apple) const fn new(
-            _view: &PlatformView,
-            _request_frame: &Rc<dyn Fn()>,
-        ) -> Self {
-            Self
-        }
-
-        pub(in crate::runner::apple) const fn perform_actions<P: PlatformWindow>(
-            &self,
-            _runtime: &mut RuntimeWindow<P, ParleyEngine>,
-            _env: &Environment,
-        ) {
-        }
-
-        pub(in crate::runner::apple) const fn publish<P: PlatformWindow>(
-            &self,
-            _runtime: &mut RuntimeWindow<P, ParleyEngine>,
-        ) {
         }
     }
 }

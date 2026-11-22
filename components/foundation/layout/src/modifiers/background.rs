@@ -23,8 +23,8 @@ use alloc::vec::Vec;
 use waterui_core::View;
 
 use crate::{
-    HorizontalAlignment, Layout, PlacedSubview, ProposalSize, Rect, Size, StretchAxis, SubView,
-    SubviewPlacement, VerticalAlignment, container::FixedContainer,
+    HorizontalAlignment, Layout, LayoutError, PlacedSubview, PlacementInput, ProposalSize, Rect,
+    Size, StretchAxis, SubView, SubviewPlacement, VerticalAlignment, container::FixedContainer,
 };
 
 /// Layout used by [`BackgroundView`] to render a background behind content.
@@ -32,7 +32,6 @@ use crate::{
 /// The content child determines the size, the background fills the bounds.
 /// Children order: `[background, content]`
 #[derive(Debug, Clone, Copy, Default)]
-#[expect(clippy::exhaustive_structs, reason = "field-less layout used by name")]
 pub struct BackgroundLayout;
 
 impl Layout for BackgroundLayout {
@@ -82,6 +81,21 @@ impl Layout for BackgroundLayout {
         ));
 
         placements
+    }
+
+    /// The content decides the response, queried with the background's
+    /// incoming proposal; the background layer contributes nothing, so adding
+    /// one never moves the response.
+    fn resolve_extent(
+        &self,
+        input: PlacementInput,
+        children: &[&dyn SubView],
+    ) -> Result<Rect, LayoutError> {
+        let content = children
+            .get(1)
+            .expect("BackgroundLayout requires a content child at index 1");
+        let content = content.resolve_extent(input.bounds, input.proposal)?.rect;
+        Ok(Rect::new(content.origin(), input.extent()?))
     }
 
     fn explicit_horizontal(
@@ -147,14 +161,6 @@ where
         // Background is first (renders behind), content is second (renders on top)
         FixedContainer::new(BackgroundLayout, (background, content))
     }
-
-    /// Resolves to `FixedContainer` over `BackgroundLayout` and the two
-    /// children in `[background, content]` order; reports what that container
-    /// would — `BackgroundLayout` is transparent to the content child's axis.
-    fn stretch_axis(&self) -> StretchAxis {
-        BackgroundLayout
-            .stretch_axis(&[self.background.stretch_axis(), self.content.stretch_axis()])
-    }
 }
 
 /// Convenience constructor for creating a [`BackgroundView`].
@@ -171,6 +177,7 @@ pub const fn background<Content: View, Bg: View>(
 mod tests {
     use waterui_core::layout::Point;
     use waterui_core::layout::ViewDimensions;
+    use waterui_core::layout::{LayoutError, Rect, ResolvedExtent};
 
     use super::*;
     use alloc::vec;
@@ -180,6 +187,13 @@ mod tests {
     }
 
     impl SubView for MockSubView {
+        fn resolve_extent(
+            &self,
+            bounds: Rect,
+            proposal: ProposalSize,
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        }
         fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
             ViewDimensions::new(self.size)
         }

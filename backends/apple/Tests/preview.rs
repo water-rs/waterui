@@ -103,6 +103,14 @@ mod suite {
                 run_trial("image_asset", Expect::Png);
                 Ok(())
             }),
+            // Its first pass runs at layout, before the view has a window;
+            // joining the window changes the backing scale and rebuilds the
+            // installed layer tree (#4209).
+            #[cfg(feature = "canvas")]
+            Trial::test("preview::captures_a_canvas_that_joins_a_window", || {
+                run_trial("canvas", Expect::Png);
+                Ok(())
+            }),
             Trial::test(
                 "preview::fails_naming_content_still_owed_at_the_deadline",
                 || {
@@ -271,6 +279,8 @@ mod suite {
             "image_asset" => {
                 image_run("image_asset", 200.0, 200.0, image_asset_view).map_err(Into::into)
             }
+            #[cfg(feature = "canvas")]
+            "canvas" => image_run("canvas", 200.0, 200.0, canvas_view).map_err(Into::into),
             "content_deadline" => content_run(
                 "content_deadline",
                 Duration::from_millis(200),
@@ -653,6 +663,23 @@ mod suite {
             .size(160.0, 160.0)
             .padding()
             .anyview()
+    }
+
+    /// A red square drawn by a `Canvas`.
+    #[cfg(feature = "canvas")]
+    fn canvas_view() -> AnyView {
+        use waterui::color::WorkingColor;
+        use waterui::graphics::canvas::Canvas;
+        use waterui::layout::{Rect, Size};
+
+        Canvas::new(|cx| {
+            cx.fill(
+                Rect::from_size(Size::new(100.0, 100.0)),
+                WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+            );
+        })
+        .intrinsic_size(Size::new(100.0, 100.0))
+        .anyview()
     }
 
     /// A `Suspense` whose content never arrives: the capture fails at its

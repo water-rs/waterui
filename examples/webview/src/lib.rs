@@ -1,4 +1,4 @@
-//! WebView example.
+//! `WebView` example.
 //!
 //! The whole web view is described before it exists: `WebView::open` returns a
 //! builder that records the URL it follows, its redirect policy, the user agent,
@@ -66,6 +66,12 @@ impl PageApi {
     /// `{ text: "Hi Lexo" }` — the object, not a string of it.
     ///
     /// `async` is how `#[js_api]` tells a handler from mirrored state.
+    #[expect(
+        clippy::future_not_send,
+        clippy::unused_async,
+        clippy::unused_async_trait_impl,
+        reason = "#[js_api] classifies a method as a handler by its async signature and dispatches on the UI thread"
+    )]
     async fn greet(&self, name: String) -> Json<Greeting> {
         self.greetings.with_mut(|v| *v += 1);
         Json(Greeting {
@@ -123,18 +129,18 @@ struct NavigateState {
 /// The controls beside the page. Every action takes a [`WebViewProxy`], which the
 /// surrounding `with_proxy` scope supplies. `bridge` holds the controls that
 /// need more of the page than navigation.
-fn toolbar(
-    status: Binding<Str>,
+fn toolbar<B: View>(
+    status: &Binding<Str>,
     progress_value: Binding<f64>,
-    address: Binding<Str>,
-    bridge: impl View,
-) -> impl View {
+    address: &Binding<Str>,
+    bridge: B,
+) -> impl View + use<B> {
     vstack((
         text("WebView Playground")
             .title()
             .foreground(theme_color::Foreground),
         hstack((
-            TextField::new("Address", &address).hide_label(),
+            TextField::new("Address", address).hide_label(),
             button("Go")
                 .style(ButtonStyle::Bordered)
                 .action(|proxy: WebViewProxy, nav: NavigateState| {
@@ -159,7 +165,7 @@ fn toolbar(
             text!("{status}").body().foreground(theme_color::Foreground),
         ))
         .spacing(8.0),
-        progress(progress_value.clone()).label(text("Load progress").caption()),
+        progress(progress_value).label(text("Load progress").caption()),
     ))
     .spacing(5.0)
     .max_width(420.0)
@@ -168,7 +174,7 @@ fn toolbar(
 /// History, the redirect policy and JavaScript evaluation: what a native web
 /// view offers beyond navigation.
 #[cfg(not(target_arch = "wasm32"))]
-fn bridge_controls(allow_redirects: Binding<bool>) -> impl View {
+fn bridge_controls(allow_redirects: &Binding<bool>) -> impl View + use<> {
     let js_result: Binding<Str> = binding("");
     vstack((
         hstack((
@@ -178,7 +184,7 @@ fn bridge_controls(allow_redirects: Binding<bool>) -> impl View {
             button("Stop").action(|proxy: WebViewProxy| proxy.stop()),
         ))
         .spacing(8.0),
-        Toggle::new(text("Allow redirects"), &allow_redirects),
+        Toggle::new(text("Allow redirects"), allow_redirects),
         button("Get Title (JS)")
             .style(ButtonStyle::Bordered)
             .action_async(
@@ -249,15 +255,15 @@ fn webview_playground() -> impl View {
         let address = address.clone();
         let allow_redirects = allow_redirects.clone();
         move |event| {
-            handle_webview_event(event, &status, &progress_value, &address, &allow_redirects)
+            handle_webview_event(event, &status, &progress_value, &address, &allow_redirects);
         }
     });
 
     #[cfg(not(target_arch = "wasm32"))]
-    let bridge = bridge_controls(allow_redirects);
+    let bridge = bridge_controls(&allow_redirects);
     #[cfg(target_arch = "wasm32")]
     let bridge = ();
-    open.with_proxy(move || toolbar(status, progress_value, address, bridge))
+    open.with_proxy(move || toolbar(&status, progress_value, &address, bridge))
 }
 
 #[derive(Debug)]
@@ -270,6 +276,7 @@ impl View for WebViewDemo {
     }
 }
 
+/// The web view demo: a playground page with navigation, history and JavaScript controls.
 #[preview]
 pub fn demo() -> impl View {
     WebViewDemo

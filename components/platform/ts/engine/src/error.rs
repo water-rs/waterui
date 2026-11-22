@@ -16,11 +16,41 @@ use std::fmt;
 #[non_exhaustive]
 pub struct JsError {
     /// The exception class name (`"Error"`, `"TypeError"`, …).
-    pub name: String,
+    name: String,
     /// The exception message.
-    pub message: String,
+    message: String,
     /// The JavaScript stack trace (`error.stack`), when the engine gives one.
-    pub stack: Option<String>,
+    stack: Option<String>,
+}
+
+impl JsError {
+    /// The exception class name (`"Error"`, `"TypeError"`, …).
+    #[must_use]
+    pub const fn name(&self) -> &str {
+        self.name.as_str()
+    }
+
+    /// The exception message.
+    #[must_use]
+    pub const fn message(&self) -> &str {
+        self.message.as_str()
+    }
+
+    /// Sets the `message`.
+    pub fn set_message(&mut self, message: String) {
+        self.message = message;
+    }
+
+    /// The JavaScript stack trace (`error.stack`), when the engine gives one.
+    #[must_use]
+    pub fn stack(&self) -> Option<&str> {
+        self.stack.as_deref()
+    }
+
+    /// Sets the `stack`.
+    pub fn set_stack(&mut self, stack: Option<String>) {
+        self.stack = stack;
+    }
 }
 
 impl JsError {

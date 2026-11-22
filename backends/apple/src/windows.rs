@@ -22,7 +22,7 @@ mod imp {
     use super::{into_kit_rect, into_kit_size, into_layout_rect};
     use cocoa_ui::appkit::{AttentionRequest, HostView, WindowLevel as KitLevel, WindowStyle};
     use cocoa_ui::{MainThreadMarker, Retained};
-    use waterui::animation::Animation;
+    use waterui::animation::ChangeAnimation;
     use waterui::reactive::{Binding, Computed, Signal};
     use waterui::window::{
         ResolvedWindowBackground, UserAttention, Window, WindowHandle, WindowLevel, WindowState,
@@ -105,6 +105,16 @@ mod imp {
         HOSTS.with(|hosts| hosts.borrow_mut().push(host));
     }
 
+    /// Releases every open window and the view tree it owns. The quit path
+    /// calls it from `applicationWillTerminate:`, while the main thread is
+    /// still alive: the process exit that follows would otherwise drop the
+    /// windows in thread-local teardown, where the GPU objects they own
+    /// can no longer reach their own thread-locals.
+    pub fn close_all() {
+        let hosts = HOSTS.with(|hosts| core::mem::take(&mut *hosts.borrow_mut()));
+        drop(hosts);
+    }
+
     /// Realizes `declaration` as a platform window and returns its host. The
     /// window is ordered front at full transparency and revealed when its
     /// content reports ready — the same path the Swift host took, so a GPU
@@ -161,7 +171,9 @@ mod imp {
                 applying.set(true);
                 window.set_content_rect(
                     into_kit_rect(*context.value()),
-                    context.metadata().try_get::<Animation>().is_some(),
+                    ChangeAnimation::of(context.metadata())
+                        .animation()
+                        .is_some(),
                 );
                 applying.set(false);
             }
@@ -266,9 +278,7 @@ mod imp {
         // host each layout pass, at the safe-area-aware frame `content_frame`
         // resolves.
         let content = declaration.build_content();
-        let leaf = crate::dispatch::dispatcher(env)
-            .render(content, env, mtm)
-            .expect("window content must render: no handler or fallback claims it");
+        let leaf = crate::dispatch::render(content, env, mtm);
 
         let host = HostView::new(mtm, window.content_rect());
         host.add_subview(leaf.view());
@@ -321,10 +331,8 @@ mod imp {
         // each child becomes an `NSToolbarItem`, which is what gives it the
         // system's capsule, spacing and overflow.
         if let Some(toolbar) = declaration.toolbar {
-            let toolbar_env = crate::toolbar::toolbar_environment(env);
-            let toolbar_leaf = crate::dispatch::dispatcher(env)
-                .render(toolbar, &toolbar_env, mtm)
-                .expect("window toolbar must render: no handler or fallback claims it");
+            let toolbar_env = crate::toolbar_chrome::toolbar_environment(env);
+            let toolbar_leaf = crate::dispatch::render(toolbar, &toolbar_env, mtm);
             install_toolbar(
                 window.native(),
                 toolbar_leaf.view(),
@@ -343,12 +351,14 @@ mod imp {
         apply_state(&window, declaration.state.snapshot());
         // `alphaValue` is already 0 from construction — ordering in stays
         // invisible until the first presented frame says otherwise.
+        // Ordering in builds the window's key-view loop from the geometry
+        // of its views and makes the first key view first responder, so the
+        // tree is laid out at the content size first, as a window whose
+        // content exists when it is shown always is. Unplaced views all sit
+        // at the origin, which leaves both the initial focus and the Tab
+        // order to an arbitrary tie-break.
+        host.layout_if_needed();
         window.make_key_and_order_front();
-        // The leaf tree is mounted before the window becomes key, so AppKit's
-        // automatic first-responder pick lands on the first editable field;
-        // the Swift backend showed its windows before content mounted, so
-        // none was ever picked. Clear the pick to match that launch state.
-        window.clear_first_responder();
         window.display_if_needed();
         #[cfg(feature = "gpu_surface")]
         {
@@ -724,7 +734,7 @@ mod imp {
                 );
                 let layer = painted
                     .layer()
-                    .expect("a layer-backed view always answers `layer`");
+                    .expect("`setWantsLayer(true)` above made the view layer-backed");
                 // SAFETY: `layer` is the view's live backing layer; the `CGColor`
                 // `color.CGColor` produces outlives the call.
                 unsafe {
@@ -738,7 +748,8 @@ mod imp {
     }
 
     fn mtm() -> MainThreadMarker {
-        MainThreadMarker::new().expect("window realization runs on the main thread")
+        MainThreadMarker::new()
+            .expect("the `WindowManager` is an `Rc` built on the main thread, so `show` runs on it")
     }
 }
 
@@ -749,10 +760,15 @@ mod imp {
     use alloc::vec::Vec;
     use core::cell::{Cell, RefCell};
 
+    use cocoa_ui::objc2_ui_kit::{NSObjectUIAccessibility as _, UIView, UIWindow};
     use cocoa_ui::uikit::{
         ColorSchemeObservation, HostView, ViewController, WindowScene, window_root,
     };
-    use cocoa_ui::{MainThreadMarker, Retained};
+    use cocoa_ui::{MainThreadMarker, Retained, view};
+    use waterui::graphics::Color;
+    use waterui::graphics::color::WorkingColor;
+    use waterui::reactive::Computed;
+    use waterui::theme::color::Background;
     use waterui::window::Window;
     use waterui_backend_core::Environment;
 
@@ -777,17 +793,64 @@ mod imp {
         }
     }
 
-    #[cfg(feature = "gpu_surface")]
-    use objc2::rc::Weak;
+    /// What a scene window shows until its content has painted: an opaque
+    /// cover over the whole window in the theme background, the colour the
+    /// launch screen draws. The launch screen gives way to that colour and
+    /// it to the content, never to the black behind a window with nothing
+    /// painted. The default status bar style takes its glyph colour from
+    /// what lies beneath it, so a black interval left light glyphs over a
+    /// light header (water-rs/waterui#3608).
+    ///
+    /// The cover is the window's topmost subview, a sibling of the root
+    /// view rather than an ancestor of the content, so the content stays
+    /// visible to the GPU surfaces' visibility gate and presents its first
+    /// frames underneath. It is modal to accessibility, so no content is
+    /// reachable before it shows. Dropping the veil lifts it.
+    pub struct Veil {
+        view: Retained<UIView>,
+        _background: KeepAlive,
+    }
+
+    impl Veil {
+        /// Covers `window`, which must already be visible with its root view
+        /// installed, in `background` and every later value of it.
+        #[must_use]
+        pub fn cover(window: &UIWindow, background: &Computed<WorkingColor>) -> Self {
+            use objc2::MainThreadOnly as _;
+            let mtm = window.mtm();
+            let veil = UIView::new(mtm);
+            view::set_frame(&veil, view::bounds(window));
+            view::set_autoresizing_flexible_size(&veil);
+            veil.setAccessibilityViewIsModal(true, mtm);
+            let mut binding = KeepAlive::default();
+            let painted = veil.clone();
+            binding.bind(background, move |color| {
+                view::set_background_color(&painted, Some(&crate::theme::platform_color(&color)));
+            });
+            view::add_subview(window, &veil);
+            Self {
+                view: veil,
+                _background: binding,
+            }
+        }
+    }
+
+    impl Drop for Veil {
+        fn drop(&mut self) {
+            view::remove_from_superview(&self.view);
+        }
+    }
 
     /// A scene connected before its declaration landed: `UIKit` asks for a
-    /// window eagerly at connection, so the platform objects exist already
-    /// and the content arrives when [`declare`] runs.
-    struct Pending {
-        session_id: String,
-        window: Retained<cocoa_ui::objc2_ui_kit::UIWindow>,
-        controller: Retained<ViewController>,
-        observation: ColorSchemeObservation,
+    /// window eagerly at connection, so the platform objects exist already,
+    /// shown under their [`Veil`], and the content arrives when [`declare`]
+    /// runs.
+    pub struct Pending {
+        pub session_id: String,
+        pub window: Retained<UIWindow>,
+        pub controller: Retained<ViewController>,
+        pub observation: ColorSchemeObservation,
+        pub veil: Veil,
     }
 
     /// All declarations, observations and scene content belonging to one mount.
@@ -821,7 +884,7 @@ mod imp {
                     .env
                     .borrow()
                     .clone()
-                    .expect("declared scenes have an environment");
+                    .expect("`declare` stores the environment before it declares any scene");
                 let id = pending.session_id.clone();
                 let host = realize(&declaration, pending, &env, mtm);
                 self.hosts.borrow_mut().insert(id, host);
@@ -841,7 +904,7 @@ mod imp {
     fn scene_id(window: &cocoa_ui::objc2_ui_kit::UIWindow) -> String {
         window
             .windowScene()
-            .expect("a scene window has its scene")
+            .expect("every window here is created from the scene being connected")
             .session()
             .persistentIdentifier()
             .to_string()
@@ -852,18 +915,22 @@ mod imp {
     /// fails the way the Swift implementation did.
     pub fn install_manager(env: &mut Environment) {
         env.insert(waterui::window::WindowManager::new(|_| {
-            panic!("WaterUI multi-window is unsupported on iOS");
+            waterui::contract_violation!(
+                "WaterUI multi-window is unsupported on iOS; the window is not shown"
+            );
         }));
     }
 
     /// Connects `scene`: the platform window must exist at connection time,
-    /// so it is built eagerly — with an empty root — and its declaration
-    /// fills it; with no declarations landed yet, the scene queues in
-    /// its owner's pending list until [`declare`] runs.
+    /// so it is built eagerly — with an empty root under a [`Veil`] in
+    /// `background`, the theme background — and its declaration fills it;
+    /// with no declarations landed yet, the scene queues in its owner's
+    /// pending list until [`declare`] runs.
     pub fn connect(
         scenes: &Scenes,
         scene: &WindowScene,
         theme: Rc<ThemeSignals>,
+        background: &Computed<WorkingColor>,
         _mtm: MainThreadMarker,
     ) -> cocoa_ui::uikit::Window {
         let mtm = scene.main_thread();
@@ -879,12 +946,14 @@ mod imp {
         });
 
         let native_window = cocoa_ui::uikit::window_of(controller.host_view())
-            .expect("a visible root controller belongs to its scene window");
+            .expect("the controller was made the root of the visible window just above");
+        let veil = Veil::cover(&native_window, background);
         let pending = Pending {
             session_id: scene_id(&native_window),
             window: native_window,
             controller,
             observation,
+            veil,
         };
         scenes.receive(pending, mtm);
         window
@@ -895,24 +964,25 @@ mod imp {
         scenes: &Scenes,
         scene: &cocoa_ui::objc2_ui_kit::UIWindowScene,
         mtm: MainThreadMarker,
-    ) -> Retained<cocoa_ui::objc2_ui_kit::UIWindow> {
+    ) -> Retained<UIWindow> {
         use objc2::MainThreadOnly;
-        let window = cocoa_ui::objc2_ui_kit::UIWindow::initWithWindowScene(
-            cocoa_ui::objc2_ui_kit::UIWindow::alloc(mtm),
-            scene,
-        );
+        let window = UIWindow::initWithWindowScene(UIWindow::alloc(mtm), scene);
         let controller = ViewController::new(mtm, window_root(mtm));
         window.setRootViewController(Some(&controller));
-        let mut env = scenes
-            .env
-            .borrow()
-            .clone()
-            .expect("an embedded mount has declared its windows");
+        let mut env = scenes.env.borrow().clone().expect(
+            "`mount` declares its windows before it returns the scene id the host connects by",
+        );
         let theme = Rc::new(crate::theme::install(&mut env, controller.color_scheme()));
         let observation =
             controller.observe_color_scheme(move |scheme| crate::theme::refresh(&theme, scheme));
+        // The window shows as `connect` shows it, under its veil, and the
+        // content fills it the way a late declaration fills a shown scene.
+        window.makeKeyAndVisible();
+        let veil = Veil::cover(&window, &Color::new(Background).resolve(&env));
         // Scene-local appearance overlays the mount's resources and services.
-        let declaration = scenes.claim().expect("an embedded app has a root window");
+        let declaration = scenes
+            .claim()
+            .expect("`mount` declares at least the root window before the host connects a scene");
         let session_id = scene.session().persistentIdentifier().to_string();
         let host = realize(
             &declaration,
@@ -921,12 +991,12 @@ mod imp {
                 window: window.clone(),
                 controller,
                 observation,
+                veil,
             },
             &env,
             mtm,
         );
         scenes.hosts.borrow_mut().insert(session_id, host);
-        window.makeKeyAndVisible();
         window
     }
 
@@ -1012,7 +1082,7 @@ mod imp {
     /// Fills a connected scene's window with `declaration`'s content: the
     /// tree becomes one leaf laid out inside the controller's host view, at
     /// the safe-area-aware frame `content_frame` resolves.
-    fn realize(
+    pub fn realize(
         declaration: &Window,
         pending: Pending,
         env: &Environment,
@@ -1047,59 +1117,64 @@ mod imp {
         );
 
         let content = declaration.build_content();
-        let leaf = crate::dispatch::dispatcher(env)
-            .render(content, env, mtm)
-            .expect("window content must render: no handler or fallback claims it");
-        host.add_subview(leaf.view());
-        // The declared root can carry view controllers — a tab bar or a
-        // navigation stack, often under a `HostView` wrapper. Without real
-        // containment `UIKit` never delivers `viewWillLayoutSubviews` or the
-        // appearance callbacks to them, so chrome that integrates in them
-        // (a `UISearchController`'s bar) collapses.
-        for controller in crate::contract::adopt_controllers(leaf.view()) {
-            cocoa_ui::uikit::view_controller::did_move_to_parent(&controller);
-        }
+        let leaf = crate::dispatch::render(content, env, mtm);
         let leaf_view = cocoa_ui::view::retain_base(leaf.view());
         #[cfg(feature = "gpu_surface")]
         let reveal_view = leaf_view.clone();
 
+        // The root host places the content before the content joins the live
+        // window and before any of its controllers is adopted
+        // (water-rs/waterui#3744).
+        crate::inspector::install(&host, env, &mut keepalive);
+        crate::embedding::place_then_join(
+            &host,
+            {
+                let leaf_view = leaf_view.clone();
+                move |host| {
+                    let host_view: &cocoa_ui::PlatformView = host;
+                    // SAFETY: `content_frame` borrows the views for the call;
+                    // `leaf_view` holds the retain for the host's lifetime.
+                    let frame = crate::native_layout::LayoutContext::of(host_view)
+                        .content_frame(&leaf_view);
+                    // The window's content rect is platform geometry on the
+                    // device-pixel grid; the content negotiates no proposal.
+                    crate::proposal::place(
+                        &leaf_view,
+                        frame,
+                        None,
+                        cocoa_ui::view::SubpixelOffset::ZERO,
+                    );
+                }
+            },
+            || {
+                host.add_subview(leaf.view());
+                // The declared root can carry view controllers — a tab bar or
+                // a navigation stack, often under a `HostView` wrapper.
+                // Without real containment `UIKit` never delivers
+                // `viewWillLayoutSubviews` or the appearance callbacks to
+                // them, so chrome that integrates in them (a
+                // `UISearchController`'s bar) collapses.
+                for controller in crate::contract::adopt_controllers(leaf.view()) {
+                    cocoa_ui::uikit::view_controller::did_move_to_parent(&controller);
+                }
+            },
+        );
+
         crate::first_paint::mark(&leaf_view, env);
 
-        // Reveal: the scene's window orders in at `alpha` 0 — still onscreen
-        // to UIKit, still effectively visible to the presenter — and the
-        // first `PresentedFrame` receipt restores it. The probe-validated
-        // mechanism: alpha before `makeKeyAndVisible`, no timer, no
-        // force-reveal.
+        // Reveal: the veil lifts once every GPU surface in the content has
+        // presented its first frame, so none shows before it has painted.
+        // The task is owned by the scene `KeepAlive`: dropping the scene
+        // cancels it and drops the veil with it.
+        let veil = pending.veil;
         #[cfg(feature = "gpu_surface")]
-        {
-            pending.window.setAlpha(0.0);
-            // Owned by the scene `KeepAlive` (drop cancels); the window edge
-            // is weak for the same reason as the macOS reveal.
-            let window = Weak::from_retained(&pending.window);
-            keepalive.keep(executor_core::spawn_local(async move {
-                crate::components::gpu_surface::wait_for_first_frames(&reveal_view).await;
-                if let Some(window) = window.load() {
-                    window.setAlpha(1.0);
-                }
-            }));
-        }
+        keepalive.keep(executor_core::spawn_local(async move {
+            crate::components::gpu_surface::wait_for_first_frames(&reveal_view).await;
+            drop(veil);
+        }));
+        #[cfg(not(feature = "gpu_surface"))]
+        drop(veil);
 
-        crate::inspector::install(&host, env, &mut keepalive);
-        host.set_layout_handler(move |host| {
-            let host_view: &cocoa_ui::PlatformView = host;
-            // SAFETY: `content_frame` borrows the views for the call;
-            // `leaf_view` holds the retain for the host's lifetime.
-            let frame =
-                crate::native_layout::LayoutContext::of(host_view).content_frame(&leaf_view);
-            // The window's content rect is platform geometry on the
-            // device-pixel grid; the content negotiates no proposal.
-            crate::proposal::place(
-                &leaf_view,
-                frame,
-                None,
-                cocoa_ui::view::SubpixelOffset::ZERO,
-            );
-        });
         keepalive.keep(leaf);
         keepalive.keep(pending.observation);
         keepalive.keep(SceneWindow(pending.window));
@@ -1147,10 +1222,12 @@ mod imp {
 #[cfg(target_os = "ios")]
 pub use imp::bind_background;
 pub use imp::install_manager;
+#[cfg(all(target_os = "ios", feature = "native-test"))]
+pub use imp::{Pending, Veil, WindowHost, realize};
 #[cfg(target_os = "ios")]
 pub use imp::{Scenes, connect, connect_embedded, declare};
 #[cfg(target_os = "macos")]
-pub use imp::{bind_background, realize, track};
+pub use imp::{bind_background, close_all, realize, track};
 
 /// A waterui layout rect, as the kit sees it.
 #[cfg(target_os = "macos")]

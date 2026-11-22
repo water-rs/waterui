@@ -83,16 +83,16 @@ pub async fn create_vite(
 /// page — reported as a note, never an error.
 pub fn brand_overlay(shell: &Shell, web_dir: &Path, display_name: &str) -> Result<()> {
     let report = web::apply_brand_overlay(web_dir, display_name)?;
-    for warning in &report.warnings {
+    for warning in report.warnings() {
         warn!(shell, "{warning}");
     }
-    if report.branded {
+    if report.branded() {
         success!(shell, "Applied the WaterUI starter page");
-    } else if let Some(frontend) = report.frontend {
+    } else if let Some(frontend) = report.frontend() {
         note!(
             shell,
             "The starter page is the {} default — only the title and favicon were branded",
-            frontend.framework.display_name()
+            frontend.framework().display_name()
         );
     }
     Ok(())

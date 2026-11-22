@@ -73,6 +73,15 @@ pub enum SceneError {
     /// A `backdrop_effect` parameter is non-finite or out of range.
     #[error("invalid backdrop effect: {0}")]
     InvalidBackdropEffect(&'static str),
+    /// A shader paint or backdrop shader has more than
+    /// [`crate::ShaderPaint::MAX_PARAMS`] parameters or a non-finite one.
+    #[error("a shader's params must be at most 64 finite values")]
+    InvalidShaderParams,
+    /// A shader paint is not a fill's own paint: under a paint transform,
+    /// on a stroke or on a glyph run, the bounds its `uv` spans are an
+    /// engine's choice, not the scene's.
+    #[error("a shader paint is only a fill's own paint")]
+    ShaderPaintPlacement,
     /// A `projection` or a `Motion::Tilt` is misplaced: on the scene root,
     /// a tilt motion without a projection, or a rotation motion on a
     /// projective layer.

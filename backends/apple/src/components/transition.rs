@@ -13,12 +13,12 @@
 //! docs/layout-spec.md §4.5.
 
 use waterui_core::Metadata;
-use waterui_core::transition::TransitionSpec;
+use waterui_structural_transition::TransitionSpec;
 
-use crate::dispatch::Dispatcher;
+use crate::contract::{NativeLeaf, RenderContext};
 use crate::transition::{SnapshotDemand, TransitionClaim};
 
-/// Installs the `transition` handler on the dispatcher:
+/// The `transition` realization:
 /// `Metadata<TransitionSpec>` maps to the content's own leaf carrying
 /// the declaration — or, when the content is a conditional, to the
 /// adopted `Dynamic` leaf.
@@ -26,32 +26,30 @@ use crate::transition::{SnapshotDemand, TransitionClaim};
 /// A claim is unconditional — like `Native<()>`, the wrapper can be
 /// produced by any view tree since `.transition(...)` lives on `View`
 /// itself, so no Cargo feature gates it.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_view::<Metadata<TransitionSpec>>(|metadata, ctx| {
-        let claim = TransitionClaim::new(metadata.value, ctx.env());
-        // `SnapshotDemand` arms every GPU and filtered surface under the
-        // declaration for the frozen-frame hand-off — unconditionally,
-        // since an asymmetric transition can still resolve to a blur or
-        // pixel phase (§2.1).
-        let env = ctx.env().extending(SnapshotDemand);
-        // Conditional content adopts the declaration for each child it
-        // swaps in; without the `dynamic` port nothing conditional renders.
-        #[cfg(feature = "dynamic")]
-        let content = match crate::components::dynamic::expand_to_dynamic(metadata.content) {
-            Ok((dynamic, retained)) => {
-                return crate::components::dynamic::render_adopting(
-                    dynamic,
-                    retained,
-                    claim,
-                    &ctx.with_env(&env),
-                );
-            }
-            Err(content) => content,
-        };
-        #[cfg(not(feature = "dynamic"))]
-        let content = metadata.content;
-        let mut leaf = ctx.with_env(&env).render(content);
-        leaf.set_transition(claim);
-        leaf
-    });
+pub fn realize_transition_spec_metadata(
+    metadata: Metadata<TransitionSpec>,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    let claim = TransitionClaim::new(metadata.value, ctx.env());
+    // `SnapshotDemand` arms every GPU and filtered surface under the
+    // declaration for the frozen-frame hand-off — unconditionally,
+    // since an asymmetric transition can still resolve to a blur or
+    // pixel phase (§2.1).
+    let env = ctx.env().extending(SnapshotDemand);
+    // Conditional content adopts the declaration for each child it
+    // swaps in; without the `dynamic` port nothing conditional renders.
+    let content = match crate::components::dynamic::expand_to_dynamic(metadata.content) {
+        Ok((dynamic, retained)) => {
+            return crate::components::dynamic::render_adopting(
+                dynamic,
+                retained,
+                claim,
+                &ctx.with_env(&env),
+            );
+        }
+        Err(content) => content,
+    };
+    let mut leaf = ctx.with_env(&env).render(content);
+    leaf.set_transition(claim);
+    leaf
 }

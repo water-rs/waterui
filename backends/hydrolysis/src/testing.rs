@@ -47,27 +47,419 @@ pub fn artifact_snapshot_path(suite: &str, case: &str, stage: &str) -> PathBuf {
     artifact_case_dir(suite, case).join(format!("{stage}.png"))
 }
 
+/// A toggle control with no parts, 10 by 20 points and 3 points from its
+/// label: what a test style's toggles measure, place and hit-test as.
+#[must_use]
+pub fn plain_toggle_control() -> crate::theme::ToggleControl {
+    crate::theme::ToggleControl::new(
+        kurbo::Size::new(10.0, 20.0),
+        crate::theme::Motion::uniform(waterui::animation::Animation::linear(
+            std::time::Duration::from_millis(100),
+        )),
+    )
+    .label_spacing(3.0)
+}
+
+/// A chrome drawing nothing: a clear square surface and a state layer with no
+/// feedback, over a 15 millisecond linear motion.
+#[must_use]
+pub fn plain_chrome() -> crate::theme::Chrome {
+    use crate::theme::Surface;
+    use crate::theme::{Chrome, CornerShape, FocusIndicator, Motion, PressFeedback, StateLayer};
+    Chrome::new(
+        Surface::clear(CornerShape::radius(0.0)),
+        StateLayer::new(waterui::graphics::Color::new(
+            waterui::theme::color::Foreground,
+        )),
+        PressFeedback::new(),
+        FocusIndicator::Tint,
+        Motion::uniform(waterui::animation::Animation::linear(
+            std::time::Duration::from_millis(15),
+        )),
+    )
+}
+
+/// The measures of a test style's navigation chrome: 64 point bars and a
+/// 40 point back button.
+#[must_use]
+#[cfg(feature = "navigation")]
+pub const fn plain_navigation_metrics() -> crate::theme::NavigationMetrics {
+    crate::theme::NavigationMetrics {
+        automatic_bar_height: 64.0,
+        inline_bar_height: 64.0,
+        medium_bar_height: 112.0,
+        large_bar_height: 152.0,
+        inline_title_height: 28.0,
+        medium_title_height: 36.0,
+        large_title_height: 36.0,
+        title_leading_inset: 16.0,
+        title_trailing_inset: 16.0,
+        large_title_bottom_inset: 28.0,
+        horizontal_inset: 4.0,
+        item_spacing: 0.0,
+        search_height: 56.0,
+        search_vertical_inset: 4.0,
+        back_button_size: 40.0,
+        back_button_leading_inset: 4.0,
+        back_button_top_inset: 12.0,
+    }
+}
+
+/// The page transition of a test style: 450 milliseconds on the standard
+/// easing.
+#[must_use]
+#[cfg(feature = "navigation")]
+pub const fn plain_navigation_motion() -> crate::theme::NavigationMotion {
+    crate::theme::NavigationMotion {
+        transition_duration: std::time::Duration::from_millis(450),
+        transition_easing: waterui::EasingCurve::bezier(0.2, 0.0, 0.0, 1.0),
+        shared_axis_slide_distance: 30.0,
+        fade_through_threshold: 0.35,
+    }
+}
+
+/// A navigation look measured by [`plain_navigation_metrics`], drawing
+/// nothing: what a test style's navigation chrome measures, places and
+/// hit-tests as.
+#[must_use]
+#[cfg(feature = "navigation")]
+pub fn plain_navigation_look() -> crate::theme::NavigationBarLook {
+    crate::theme::NavigationBarLook::new(
+        plain_navigation_metrics(),
+        plain_navigation_motion(),
+        plain_chrome(),
+        crate::theme::Custom::new((), |_recorder, _frame, ()| {}),
+    )
+}
+
+/// The measures of a test style's tab bars: 48 points high, items at least
+/// 48 points wide.
+#[must_use]
+#[cfg(feature = "navigation")]
+pub const fn plain_tabs_metrics() -> crate::theme::TabsMetrics {
+    crate::theme::TabsMetrics::new(48.0, 48.0, 16.0, 4.0)
+}
+
+/// The motion of a test style's tab highlights: 15 milliseconds, linear.
+#[must_use]
+#[cfg(feature = "navigation")]
+pub fn plain_tabs_motion() -> crate::theme::Motion {
+    crate::theme::Motion::uniform(waterui::animation::Animation::linear(
+        std::time::Duration::from_millis(15),
+    ))
+}
+
+/// A tabs look measured by [`plain_tabs_metrics`], drawing nothing: what a
+/// test style's tab containers measure, place and hit-test as.
+#[must_use]
+#[cfg(feature = "navigation")]
+pub fn plain_tabs_look() -> crate::theme::TabsLook {
+    use crate::theme::Custom;
+    crate::theme::TabsLook::new(
+        plain_tabs_metrics(),
+        Custom::new((), |_recorder, _frame, ()| {}),
+        Custom::new((), |_recorder, _frame, ()| {}),
+        plain_tabs_motion(),
+        |_item, _selected| plain_chrome(),
+    )
+}
+
+/// A stepper look with ends 14 by 14 points, 4 points apart and 8 points from
+/// the label, drawing nothing: what a test style's steppers measure, place
+/// and hit-test as.
+#[must_use]
+pub fn plain_stepper_look() -> crate::theme::StepperLook {
+    crate::theme::StepperLook::new(plain_chrome(), plain_chrome(), kurbo::Size::new(14.0, 14.0))
+        .spacing(4.0)
+        .label_spacing(8.0)
+}
+
+/// The measures of a test style's menus: 56 point rows, 12 points of vertical
+/// padding, 16 of horizontal, at least 112 points wide and at most 320.
+#[must_use]
+#[cfg(feature = "menu")]
+pub const fn plain_menu_layout() -> crate::theme::MenuLayout {
+    crate::theme::MenuLayout {
+        row_height: 56.0,
+        horizontal_padding: 16.0,
+        vertical_padding: 12.0,
+        min_width: 112.0,
+        max_width: 320.0,
+        width_per_char: 8.5,
+        corner_radius: 4.0,
+        separator_horizontal_inset: 16.0,
+        separator_thickness: 1.0,
+    }
+}
+
+/// A menu look measured by [`plain_menu_layout`], drawing nothing: what a
+/// test style's picker popups, text context menus and popup windows measure,
+/// place and hit-test as.
+#[must_use]
+#[cfg(feature = "menu")]
+pub fn plain_menu_look() -> crate::theme::MenuLook {
+    use crate::theme::Custom;
+    crate::theme::MenuLook::new(
+        plain_menu_layout(),
+        Custom::new((), |_recorder, _frame, ()| {}),
+        Custom::new((), |_recorder, _frame, ()| {}),
+    )
+}
+
+/// A list look drawing nothing.
+///
+/// Rows are at least 56 points tall inset 16 by 10 points, with 16-point
+/// separator insets, a 20-point move control, a 26-point delete control and
+/// section headers 48 and footers 40 points tall. A swipe dismisses at half the row's width, a reorder drag steps at
+/// half a slot, a drag begins after 8 points and rows settle over 15
+/// milliseconds.
+#[must_use]
+#[cfg(feature = "list")]
+pub fn plain_list_look() -> crate::theme::ListLook {
+    use crate::theme::{Custom, ListControls, ListGestures, ListLook, ListMetrics};
+    ListLook::new(
+        ListMetrics {
+            one_line_row_height: 56.0,
+            horizontal_inset: 16.0,
+            vertical_inset: 10.0,
+            divider_leading_inset: 16.0,
+            divider_trailing_inset: 16.0,
+            move_control_width: 20.0,
+            delete_control_width: 26.0,
+            trailing_control_spacing: 6.0,
+            trailing_control_vertical_inset: 6.0,
+            section_header_height: 48.0,
+            section_footer_height: 40.0,
+        },
+        ListGestures {
+            swipe_threshold: 0.5,
+            reorder_threshold: 0.5,
+            slop: 8.0,
+            settle: waterui::animation::Animation::linear(std::time::Duration::from_millis(15)),
+        },
+        Custom::new((), |_recorder, _frame, ()| {}),
+        Custom::new((), |_recorder, _frame, ()| {}),
+        ListControls {
+            move_up: plain_chrome(),
+            move_down: plain_chrome(),
+            delete: plain_chrome(),
+        },
+    )
+}
+
+/// A table look drawing nothing: columns at least 72 points wide, padded 32
+/// points, cells inset 16 points vertically, a header 56 points tall and
+/// rows 52 points tall.
+#[must_use]
+#[cfg(feature = "table")]
+pub fn plain_table_look() -> crate::theme::TableLook {
+    use crate::theme::{Custom, TableLook, TableMetrics};
+    TableLook::new(
+        TableMetrics {
+            min_column_width: 72.0,
+            cell_horizontal_padding: 32.0,
+            cell_vertical_inset: 16.0,
+            header_height: 56.0,
+            row_height: 52.0,
+            outline_width: 1.0,
+        },
+        Custom::new((), |_recorder, _frame, ()| {}),
+        Custom::new((), |_recorder, _frame, ()| {}),
+        Custom::new((), |_recorder, _frame, ()| {}),
+        Custom::new((), |_recorder, _frame, ()| {}),
+    )
+}
+
+/// A badge look drawing nothing: a 6-point dot and a 16-point count pill
+/// padded 4 points, in the default font and white.
+#[must_use]
+pub fn plain_badge_look() -> crate::theme::BadgeLook {
+    use crate::theme::{BadgeLook, BadgeMetrics, Custom};
+    BadgeLook::new(
+        BadgeMetrics {
+            small_size: 6.0,
+            large_size: 16.0,
+            large_horizontal_padding: 4.0,
+            small_offset_x: 6.0,
+            small_offset_y: 6.0,
+            large_offset_x: 12.0,
+            large_offset_y: 14.0,
+        },
+        waterui_text::font::Font::default(),
+        waterui::Color::srgb(255, 255, 255),
+        Custom::new((), |_recorder, _frame, ()| {}),
+        Custom::new((), |_recorder, _frame, ()| {}),
+    )
+}
+
+/// A scroll indicator look drawing nothing: a thumb 2.5 points thick, 6.5
+/// while dragged, inset 1.5 points from the edge, at least 12 points long,
+/// taking a drag in a 12-point gutter.
+#[must_use]
+pub fn plain_scroll_indicator_look() -> crate::theme::ScrollIndicatorLook {
+    use crate::theme::{Custom, ScrollIndicatorLook};
+    ScrollIndicatorLook::new(2.5, 6.5, Custom::new((), |_recorder, _frame, ()| {}))
+        .edge_inset(1.5)
+        .min_extent(12.0)
+        .gutter(12.0)
+}
+
+/// A menu picker look drawing nothing: a field at least 72 by 28 points,
+/// inset 8 by 6 points with 18 points for the indicator, 8 points below its
+/// label and 4 points above the popup it opens.
+#[must_use]
+pub fn plain_menu_picker_look() -> crate::theme::MenuPickerLook {
+    crate::theme::MenuPickerLook::new(
+        plain_chrome(),
+        crate::theme::MenuPickerLayout {
+            min_width: 72.0,
+            min_height: 28.0,
+            horizontal_inset: 8.0,
+            vertical_inset: 6.0,
+            label_spacing: 8.0,
+            indicator_space: 18.0,
+            popup_gap: 4.0,
+        },
+    )
+}
+
+/// A radio group look drawing nothing: indicators 16 points square and
+/// 8 points from their labels, in rows 8 points apart, in a group at least
+/// 72 by 28 points inset 8 by 6 points.
+#[must_use]
+pub fn plain_radio_group_look() -> crate::theme::RadioGroupLook {
+    use crate::theme::{Motion, RadioGroupLook, RadioLayout, ToggleControl};
+    RadioGroupLook::new(
+        ToggleControl::new(
+            kurbo::Size::new(16.0, 16.0),
+            Motion::uniform(waterui::animation::Animation::linear(
+                std::time::Duration::from_millis(1),
+            )),
+        )
+        .label_spacing(8.0),
+        RadioLayout {
+            min_width: 72.0,
+            min_height: 28.0,
+            horizontal_inset: 8.0,
+            vertical_inset: 6.0,
+            label_spacing: 8.0,
+            row_spacing: 8.0,
+        },
+    )
+}
+
+/// A segmented look drawing nothing: what a test style's segmented pickers
+/// measure, place and hit-test as.
+///
+/// Its row is at least 28 points tall, its labels are padded 8 by 6 points
+/// in segments at least 58 points wide, 8 points below the heading, in the
+/// default font and foreground.
+#[must_use]
+#[cfg(feature = "picker")]
+pub fn plain_segmented_look() -> crate::theme::SegmentedLook {
+    use crate::theme::{Motion, SegmentLabel, SegmentedLayout, SegmentedLook};
+    SegmentedLook::new(
+        SegmentedLayout {
+            row_height: 28.0,
+            label_padding: kurbo::Vec2::new(8.0, 6.0),
+            minimum_segment_width: 58.0,
+            minimum_width: 72.0,
+            label_spacing: 8.0,
+            reach: 0.0,
+        },
+        SegmentLabel::new(
+            waterui_text::font::Font::default(),
+            waterui::graphics::Color::new(waterui::theme::color::Foreground),
+        ),
+        Motion::uniform(waterui::animation::Animation::linear(
+            std::time::Duration::from_millis(15),
+        )),
+    )
+}
+
+/// A text field look over `container` and `metrics`.
+///
+/// Its floating label moves by a 15 ms linear motion, and its caret, selection
+/// and placeholder are plain: what a test style's fields measure, place and
+/// hit-test as.
+#[must_use]
+pub fn plain_text_field_look(
+    container: crate::theme::Chrome,
+    metrics: crate::theme::InputFieldMetrics,
+) -> crate::theme::TextFieldLook {
+    use crate::theme::{Caret, FloatingLabel, Label, TextCaretMotion, TextFieldLook, ValueMotion};
+    use cherenkov_record::Paint;
+    use std::time::Duration;
+    use waterui::animation::Animation;
+    use waterui::graphics::color::Srgb;
+    let label = FloatingLabel::new(
+        Label::new(),
+        ValueMotion::Follow(Animation::linear(Duration::from_millis(15))),
+    )
+    .scale(0.75)
+    .top(4.0);
+    let caret = Caret::new(
+        Paint::Solid(Srgb::new(0.12, 0.14, 0.18).resolve()),
+        TextCaretMotion {
+            fade_cycle_duration: Duration::from_millis(1_060),
+            frame_interval: Duration::from_millis(530),
+            min_opacity: 0.2,
+        },
+    );
+    let selection = Paint::Solid(Srgb::new(0.20, 0.45, 0.90).resolve().with_alpha(0.28));
+    TextFieldLook::new(container, metrics, label, caret, selection)
+        .placeholder(Label::new().color(waterui::graphics::Color::srgb(0, 0, 0)))
+}
+
+/// The metrics a test style's fields lay out by.
+#[must_use]
+pub const fn plain_input_metrics() -> crate::theme::InputFieldMetrics {
+    crate::theme::InputFieldMetrics {
+        label_height: 14.0,
+        min_width: 100.0,
+        min_height: 32.0,
+        horizontal_inset: 8.0,
+        vertical_inset: 6.0,
+    }
+}
+
 mod test_style {
+    #[cfg(feature = "table")]
+    use crate::theme::TableLook;
+    #[cfg(feature = "list")]
+    use crate::theme::{ListLook, ListSpec};
+    #[cfg(feature = "navigation")]
+    use crate::theme::{NavigationBarLook, NavigationSpec};
     use std::time::Duration;
 
+    #[cfg(feature = "picker")]
+    use crate::theme::RadioGroupLook;
     use crate::theme::{
-        BadgeMetrics, ButtonMetrics, DividerMetrics, InputFieldMetrics, InteractionMotion,
-        ListMetrics, NavigationMetrics, NavigationMotion, PickerMetrics, ProgressIndicatorStyle,
-        ProgressMetrics, ProgressMotion, RadioIndicatorState, RadioSelectionMotion, SliderMetrics,
-        SliderValueIndicatorMetrics, StepperEnd, StepperMetrics, TabItemGeometry, TabItemLayout,
-        TableMetrics, TabsMetrics, TextCaretMotion, TextContextMenuMetrics, ToggleMetrics,
-        WidgetInteractionState, WidgetTheme,
+        BadgeLook, ButtonLook, ButtonSpec, Chrome, CornerShape, FocusIndicator, HitRegion,
+        IndicatorLook, Label, LinearProgressLook, Motion, PressFeedback, ProgressControl,
+        ProgressSpec, ScrollIndicatorLook, StateLayer, Surface, WidgetTheme,
     };
-    use kurbo::{BezPath, Point, Rect};
+    #[cfg(feature = "toggle")]
+    use crate::theme::{CheckboxLook, SwitchDrag, SwitchLook, ToggleSpec};
+    #[cfg(feature = "slider")]
+    use crate::theme::{DragMapping, Knob, SliderLayout, SliderLook, SliderSpec};
+    #[cfg(feature = "menu")]
+    use crate::theme::{MenuLook, MenuSpec};
+    #[cfg(any(feature = "picker", feature = "date-picker"))]
+    use crate::theme::{MenuPickerLook, PickerSpec};
+    #[cfg(feature = "stepper")]
+    use crate::theme::{StepperLook, StepperSpec};
+    #[cfg(feature = "navigation")]
+    use crate::theme::{TabsLook, TabsSpec};
+    #[cfg(any(
+        feature = "text-field",
+        feature = "secure-field",
+        feature = "date-picker",
+        feature = "color-picker"
+    ))]
+    use crate::theme::{TextFieldLook, TextFieldSpec};
     use waterui::animation::Animation;
-    use waterui::{Color, EasingCurve, Environment};
-    use waterui_controls::ControlSize;
-    use waterui_controls::button::ButtonStyle;
-    use waterui_controls::toggle::ToggleStyle;
-    use waterui_form::picker::PickerStyle;
-    use waterui_graphics::color::Srgb;
-    use waterui_graphics::draw::{Paint, Recorder};
-    use waterui_text::font::Font;
+    use waterui::{Color, Environment};
 
     type TokenInstaller = std::sync::Arc<dyn Fn(&mut Environment) + Send + Sync>;
 
@@ -130,473 +522,154 @@ mod test_style {
     }
 
     impl WidgetTheme for TestStyle {
-        fn interaction_motion(&self) -> InteractionMotion {
-            InteractionMotion {
-                hover_opacity: 0.08,
-                focus_opacity: 0.12,
-                pressed_opacity: 0.12,
-                dragged_opacity: 0.16,
-                hover_enter: Animation::linear(Duration::from_millis(15)),
-                hover_exit: Animation::linear(Duration::from_millis(15)),
-                focus_enter: Animation::linear(Duration::from_millis(15)),
-                focus_exit: Animation::linear(Duration::from_millis(15)),
-                press_fade_in: Animation::linear(Duration::from_millis(105)),
-                press_fade_out: Animation::linear(Duration::from_millis(375)),
-                press_grow: Animation::bezier(Duration::from_millis(450), 0.2, 0.0, 0.0, 1.0),
-                press_shape: Animation::linear(Duration::from_millis(15)),
-                minimum_press_duration: Duration::from_millis(225),
-                touch_delay: Duration::from_millis(150),
-            }
+        /// A button with no visible chrome: a clear surface, a state layer
+        /// with no opacity in any state and no press feedback, so a test
+        /// sees the button's content and layout alone.
+        fn button(&self, _spec: &ButtonSpec, _env: &Environment) -> ButtonLook {
+            let chrome = Chrome::new(
+                Surface::clear(CornerShape::radius(0.0)),
+                StateLayer::new(Color::new(waterui::theme::color::Foreground)),
+                PressFeedback::new(),
+                FocusIndicator::Tint,
+                Motion::uniform(Animation::linear(Duration::from_millis(15))),
+            )
+            // The theme's `touch_delay`.
+            .hit(HitRegion::NONE.press_delay(Duration::from_millis(150)));
+            ButtonLook::new(chrome, Label::new())
+                .padding(1.0, 2.0)
+                .minimum_size(kurbo::Size::new(123.0, 45.0))
         }
 
-        fn progress_motion(&self) -> ProgressMotion {
-            ProgressMotion {
-                linear_determinate: Animation::bezier(
-                    Duration::from_millis(250),
-                    0.4,
-                    0.0,
-                    0.6,
-                    1.0,
-                ),
-                circular_determinate: Animation::bezier(
-                    Duration::from_millis(500),
-                    0.0,
-                    0.0,
-                    0.2,
-                    1.0,
-                ),
-                linear_indeterminate_cycle: Duration::from_secs(2),
-                loading_cycle: Duration::from_millis(4_666),
-                circular_indeterminate_cycle: Duration::from_millis(5_332),
-            }
+        #[cfg(feature = "toggle")]
+        fn switch(&self, spec: &ToggleSpec, _env: &Environment) -> SwitchLook {
+            SwitchLook::new(
+                super::plain_toggle_control(),
+                SwitchDrag::new(6.0, spec.direction()),
+            )
         }
 
-        fn text_caret_motion(&self) -> TextCaretMotion {
-            TextCaretMotion {
-                fade_cycle_duration: Duration::from_millis(1_060),
-                frame_interval: Duration::from_millis(530),
-                min_opacity: 0.2,
-            }
+        #[cfg(feature = "toggle")]
+        fn checkbox(&self, _spec: &ToggleSpec, _env: &Environment) -> CheckboxLook {
+            CheckboxLook::new(super::plain_toggle_control())
         }
 
-        fn navigation_motion(&self) -> NavigationMotion {
-            NavigationMotion {
-                transition_duration: Duration::from_millis(450),
-                transition_easing: EasingCurve::bezier(0.2, 0.0, 0.0, 1.0),
-                shared_axis_slide_distance: 30.0,
-                fade_through_threshold: 0.35,
-            }
+        #[cfg(feature = "stepper")]
+        fn stepper(&self, _spec: &StepperSpec, _env: &Environment) -> StepperLook {
+            super::plain_stepper_look()
         }
 
-        fn button_metrics(&self, _style: ButtonStyle, _size: ControlSize) -> ButtonMetrics {
-            ButtonMetrics {
-                padding_x: 1.0,
-                padding_y: 2.0,
-                min_width: 123.0,
-                min_height: 45.0,
-            }
+        #[cfg(any(
+            feature = "text-field",
+            feature = "secure-field",
+            feature = "date-picker",
+            feature = "color-picker"
+        ))]
+        fn text_field(&self, _spec: &TextFieldSpec, _env: &Environment) -> TextFieldLook {
+            super::plain_text_field_look(super::plain_chrome(), super::plain_input_metrics())
         }
 
-        fn draw_button_chrome(
+        #[cfg(feature = "menu")]
+        fn menu(&self, _spec: &MenuSpec, _env: &Environment) -> MenuLook {
+            super::plain_menu_look()
+        }
+
+        #[cfg(any(feature = "picker", feature = "date-picker"))]
+        fn menu_picker(&self, _spec: &PickerSpec, _env: &Environment) -> MenuPickerLook {
+            super::plain_menu_picker_look()
+        }
+
+        #[cfg(feature = "picker")]
+        fn radio_group(&self, _spec: &PickerSpec, _env: &Environment) -> RadioGroupLook {
+            super::plain_radio_group_look()
+        }
+
+        #[cfg(feature = "picker")]
+        fn segmented_picker(
             &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _style: ButtonStyle,
-            _icon_only: bool,
-            _state: WidgetInteractionState,
-        ) {
+            _spec: &crate::theme::SegmentedSpec,
+            _env: &Environment,
+        ) -> crate::theme::SegmentedLook {
+            super::plain_segmented_look()
         }
 
-        fn toggle_metrics(&self, _style: ToggleStyle) -> ToggleMetrics {
-            ToggleMetrics {
-                width: 10.0,
-                height: 20.0,
-                label_spacing: 3.0,
-            }
-        }
-
-        fn toggle_value_animation(&self) -> Animation {
-            Animation::linear(Duration::from_millis(100))
-        }
-
-        fn draw_toggle_switch(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _progress: f32,
-            _selected: bool,
-            _state: WidgetInteractionState,
-        ) {
-        }
-
-        fn draw_toggle_checkbox(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _progress: f32,
-            _state: WidgetInteractionState,
-        ) {
-        }
-
-        fn stepper_metrics(&self) -> StepperMetrics {
-            StepperMetrics {
-                button_min_size: 12.0,
-                button_max_size: 18.0,
-                button_intrinsic_size: 14.0,
-                button_spacing: 4.0,
-                label_spacing: 8.0,
-            }
-        }
-
-        fn draw_stepper_button(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _end: StepperEnd,
-            _state: WidgetInteractionState,
-        ) {
-        }
-        fn draw_stepper_decrement_icon(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-        fn draw_stepper_increment_icon(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-
-        fn input_field_metrics(&self) -> InputFieldMetrics {
-            InputFieldMetrics {
-                label_height: 14.0,
-                min_width: 100.0,
-                min_height: 32.0,
-                horizontal_inset: 8.0,
-                vertical_inset: 6.0,
-            }
-        }
-
-        fn input_placeholder_color(&self) -> Color {
-            Color::srgb(0, 0, 0)
-        }
-
-        fn input_selection_paint(&self) -> Paint {
-            Paint::Solid(Srgb::new(0.20, 0.45, 0.90).resolve().with_alpha(0.28))
-        }
-
-        fn input_caret_paint(&self, opacity: f32) -> Paint {
-            Paint::Solid(Srgb::new(0.12, 0.14, 0.18).resolve().with_alpha(opacity))
-        }
-
-        fn draw_input_field(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _state: WidgetInteractionState,
-        ) {
-        }
-
-        fn text_context_menu_metrics(&self) -> TextContextMenuMetrics {
-            TextContextMenuMetrics {
-                row_height: 56.0,
-                horizontal_padding: 16.0,
-                vertical_padding: 12.0,
-                min_width: 112.0,
-                max_width: 320.0,
-                width_per_char: 8.5,
-                corner_radius: 4.0,
-                separator_horizontal_inset: 16.0,
-                separator_thickness: 1.0,
-            }
-        }
-
-        fn draw_text_context_menu_panel(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-        fn draw_text_context_menu_separator(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-
-        fn picker_metrics(&self, _style: PickerStyle) -> PickerMetrics {
-            PickerMetrics {
-                min_width: 72.0,
-                min_height: 28.0,
-                horizontal_inset: 8.0,
-                vertical_inset: 6.0,
-                label_spacing: 8.0,
-                indicator_space: 18.0,
-                radio_indicator_size: 16.0,
-                radio_label_spacing: 8.0,
-                radio_row_spacing: 8.0,
-                popup_top_spacing: 4.0,
-                popup_row_height: 48.0,
-                popup_corner_radius: 6.0,
-                segment_min_width: 58.0,
-            }
-        }
-
-        fn radio_selection_motion(&self) -> RadioSelectionMotion {
-            RadioSelectionMotion {
-                inner_grow: Animation::linear(Duration::from_millis(1)),
-                inner_opacity: Animation::linear(Duration::from_millis(1)),
-                outer_color: Animation::linear(Duration::from_millis(1)),
-            }
-        }
-
-        fn draw_picker_indicator(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-
-        fn draw_picker_popup(&self, _recorder: &mut Recorder, _popup_rect: Rect) {}
-
-        fn draw_picker_popup_row_background(
-            &self,
-            _recorder: &mut Recorder,
-            _row_rect: Rect,
-            _selected: bool,
-        ) {
-        }
-
-        fn draw_picker_separator(&self, _recorder: &mut Recorder, _separator: Rect) {}
-
-        fn draw_radio_indicator(
-            &self,
-            _recorder: &mut Recorder,
-            _center: Point,
-            _radius: f64,
-            _state: RadioIndicatorState,
-        ) {
-        }
-
-        fn slider_metrics(&self, _size: ControlSize) -> SliderMetrics {
-            SliderMetrics {
-                horizontal_inset: 12.0,
-                horizontal_spacing: 8.0,
-                vertical_spacing: 6.0,
-                min_track_width: 72.0,
-                track_height: 6.0,
-                handle_width: 4.0,
-                handle_height: 44.0,
-            }
-        }
-
-        fn draw_slider_track(
-            &self,
-            _recorder: &mut Recorder,
-            _track_rect: Rect,
-            _fill_rect: Rect,
-            _size: ControlSize,
-            _state: WidgetInteractionState,
-        ) {
-        }
-
-        fn draw_slider_thumb(
-            &self,
-            _recorder: &mut Recorder,
-            _center: Point,
-            _radius: f64,
-            _size: ControlSize,
-            _state: WidgetInteractionState,
-        ) {
-        }
-
-        fn slider_value_indicator_metrics(&self) -> SliderValueIndicatorMetrics {
-            SliderValueIndicatorMetrics::new(8.0, 4.0, 4.0, 0.0, 0.0)
-        }
-
-        fn slider_value_indicator_color(&self) -> Color {
-            Color::srgb(255, 255, 255)
-        }
-
-        fn slider_value_indicator_font(&self) -> Font {
-            Font::default()
-        }
-
-        fn draw_slider_value_indicator(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-
-        fn progress_metrics(&self, style: ProgressIndicatorStyle) -> ProgressMetrics {
-            match style {
-                ProgressIndicatorStyle::Loading => ProgressMetrics::loading(48.0, 38.0),
-                ProgressIndicatorStyle::Linear => ProgressMetrics {
-                    label_height: 18.0,
-                    bar_top_offset: 10.0,
-                    bar_height: 8.0,
-                    bar_horizontal_inset: 8.0,
-                    value_label_top_spacing: 6.0,
-                    min_track_width: 72.0,
-                    circular_diameter: 0.0,
-                    circular_stroke_width: 0.0,
-                    loading_indicator_size: 0.0,
+        #[cfg(feature = "slider")]
+        fn slider(&self, _spec: &SliderSpec, _env: &Environment) -> SliderLook {
+            SliderLook::new(
+                SliderLayout {
+                    row_height: 44.0,
+                    track_inset: 12.0,
+                    label_inset: 12.0,
+                    label_gap: 8.0,
+                    minimum_track: 72.0,
+                    label_spacing: Some(6.0),
                 },
-                ProgressIndicatorStyle::Circular => ProgressMetrics {
-                    label_height: 0.0,
-                    bar_top_offset: 0.0,
-                    bar_height: 0.0,
-                    bar_horizontal_inset: 0.0,
-                    value_label_top_spacing: 0.0,
-                    min_track_width: 0.0,
-                    circular_diameter: 32.0,
-                    circular_stroke_width: 5.0,
-                    loading_indicator_size: 0.0,
+                Knob {
+                    size: kurbo::Size::new(4.0, 44.0),
+                    hit: HitRegion::NONE,
                 },
-            }
+                DragMapping::Absolute,
+                Motion::uniform(Animation::linear(Duration::from_millis(15))),
+            )
         }
 
-        fn draw_progress_linear_track(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _active_end: Option<f64>,
-        ) {
-        }
-        fn draw_progress_linear_fill(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-        fn draw_progress_linear_indeterminate(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _elapsed: Duration,
-            _four_color: bool,
-        ) {
-        }
-        fn draw_progress_circular_track(
-            &self,
-            _recorder: &mut Recorder,
-            _center: Point,
-            _radius: f64,
-            _width: f64,
-            _active_turns: Option<f64>,
-        ) {
-        }
-        fn draw_progress_circular_fill(
-            &self,
-            _recorder: &mut Recorder,
-            _path: &BezPath,
-            _width: f64,
-        ) {
-        }
-        fn draw_progress_loading(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _elapsed: Duration,
-            _four_color: bool,
-        ) {
+        /// A bar with no parts: a 72 wide, 8 tall track inset 8 from each
+        /// side, below a label band 18 tall and 10 away and above a value
+        /// label 6 away.
+        fn linear_progress(&self, _spec: &ProgressSpec, _env: &Environment) -> LinearProgressLook {
+            LinearProgressLook::new(
+                ProgressControl::new(
+                    kurbo::Size::new(72.0, 8.0),
+                    Motion::uniform(Animation::linear(Duration::from_millis(15))),
+                ),
+                8.0,
+            )
+            .label_band(18.0, 10.0)
+            .value_label_band(6.0)
         }
 
-        fn draw_progress_circular_indeterminate(
-            &self,
-            _recorder: &mut Recorder,
-            _center: Point,
-            _radius: f64,
-            _width: f64,
-            _elapsed: Duration,
-            _four_color: bool,
-        ) {
+        /// A 32 square with no parts.
+        fn circular_progress(&self, _spec: &ProgressSpec, _env: &Environment) -> IndicatorLook {
+            IndicatorLook::new(ProgressControl::new(
+                kurbo::Size::new(32.0, 32.0),
+                Motion::uniform(Animation::linear(Duration::from_millis(15))),
+            ))
         }
 
-        fn navigation_metrics(&self) -> NavigationMetrics {
-            NavigationMetrics {
-                automatic_bar_height: 64.0,
-                inline_bar_height: 64.0,
-                medium_bar_height: 112.0,
-                large_bar_height: 152.0,
-                inline_title_height: 28.0,
-                medium_title_height: 36.0,
-                large_title_height: 36.0,
-                title_leading_inset: 16.0,
-                title_trailing_inset: 16.0,
-                large_title_bottom_inset: 28.0,
-                horizontal_inset: 4.0,
-                item_spacing: 0.0,
-                search_height: 56.0,
-                search_vertical_inset: 4.0,
-                back_button_size: 40.0,
-                back_button_leading_inset: 4.0,
-                back_button_top_inset: 12.0,
-            }
+        /// A 48 square with no parts.
+        fn loading_indicator(&self, _spec: &ProgressSpec, _env: &Environment) -> IndicatorLook {
+            IndicatorLook::new(ProgressControl::new(
+                kurbo::Size::new(48.0, 48.0),
+                Motion::uniform(Animation::linear(Duration::from_millis(15))),
+            ))
         }
 
-        fn draw_navigation_bar(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _background: &Paint,
-        ) {
+        #[cfg(feature = "navigation")]
+        fn navigation_bar(&self, _spec: &NavigationSpec, _env: &Environment) -> NavigationBarLook {
+            super::plain_navigation_look()
         }
 
-        fn draw_navigation_bar_separator(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-        fn draw_navigation_back_button(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-        fn tabs_metrics(&self, _layout: TabItemLayout) -> TabsMetrics {
-            TabsMetrics {
-                bar_height: 48.0,
-                button_min_width: 48.0,
-                button_horizontal_inset: 16.0,
-                icon_label_spacing: 4.0,
-            }
-        }
-        fn draw_tabs_bar(&self, _recorder: &mut Recorder, _surface: Rect) {}
-        fn draw_tabs_bar_divider(&self, _recorder: &mut Recorder, _divider: Rect) {}
-        fn draw_tabs_highlight(&self, _recorder: &mut Recorder, _item: TabItemGeometry) {}
-        fn draw_scroll_indicator(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-
-        fn divider_metrics(&self) -> DividerMetrics {
-            DividerMetrics { thickness: 1.0 }
+        #[cfg(feature = "navigation")]
+        fn tabs(&self, _spec: &TabsSpec, _env: &Environment) -> TabsLook {
+            super::plain_tabs_look()
         }
 
-        fn draw_divider(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-
-        fn badge_metrics(&self) -> BadgeMetrics {
-            BadgeMetrics {
-                small_size: 6.0,
-                large_size: 16.0,
-                large_horizontal_padding: 4.0,
-                small_offset_x: 6.0,
-                small_offset_y: 6.0,
-                large_offset_x: 12.0,
-                large_offset_y: 14.0,
-            }
+        fn scroll_indicator(&self, _env: &Environment) -> ScrollIndicatorLook {
+            super::plain_scroll_indicator_look()
         }
 
-        fn badge_label_color(&self) -> Color {
-            Color::srgb(255, 255, 255)
+        fn badge(&self, _env: &Environment) -> BadgeLook {
+            super::plain_badge_look()
         }
 
-        fn badge_label_font(&self) -> Font {
-            Font::default()
+        #[cfg(feature = "list")]
+        fn list(&self, _spec: &ListSpec, _env: &Environment) -> ListLook {
+            super::plain_list_look()
         }
 
-        fn draw_badge_small(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-        fn draw_badge_large(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-
-        fn list_metrics(&self) -> ListMetrics {
-            ListMetrics {
-                one_line_row_height: 56.0,
-                horizontal_inset: 16.0,
-                vertical_inset: 10.0,
-                divider_leading_inset: 16.0,
-                divider_trailing_inset: 16.0,
-                move_control_width: 20.0,
-                delete_control_width: 26.0,
-                trailing_control_spacing: 6.0,
-                trailing_control_vertical_inset: 6.0,
-                section_header_height: 48.0,
-                section_footer_height: 40.0,
-            }
+        #[cfg(feature = "table")]
+        fn table(&self, _env: &Environment) -> TableLook {
+            super::plain_table_look()
         }
-
-        fn draw_list_row_background(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _alternate: bool,
-        ) {
-        }
-        fn draw_list_move_control(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-        fn draw_list_delete_control(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-        fn draw_list_separator(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-
-        fn table_metrics(&self) -> TableMetrics {
-            TableMetrics {
-                min_column_width: 72.0,
-                cell_horizontal_padding: 32.0,
-                cell_vertical_inset: 16.0,
-                header_height: 56.0,
-                row_height: 52.0,
-                outline_width: 1.0,
-            }
-        }
-
-        fn draw_table_background(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-        fn draw_table_header_background(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-        fn draw_table_cell_border(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-        fn draw_table_column_separator(&self, _recorder: &mut Recorder, _from: Point, _to: Point) {}
     }
 }
 

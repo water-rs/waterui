@@ -13,8 +13,21 @@ use eyre::{Context as _, bail, eyre};
 
 /// The byte the harness wrote; the runner's process exits with it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub struct TestStatus(pub u8);
+pub struct TestStatus(u8);
+
+impl TestStatus {
+    /// The status for a reported exit `code`.
+    #[must_use]
+    pub const fn new(code: u8) -> Self {
+        Self(code)
+    }
+
+    /// The byte the harness wrote.
+    #[must_use]
+    pub const fn code(&self) -> u8 {
+        self.0
+    }
+}
 
 /// What the `WATERUI_NATIVE_TEST_STATUS` value names for one launch.
 ///
@@ -126,7 +139,7 @@ impl StatusFile {
         })?;
         let status = u8::try_from(status)
             .map_err(|_| eyre!("the status {bundle_id} reported is out of range: {trimmed:?}"))?;
-        Ok(TestStatus(status))
+        Ok(TestStatus::new(status))
     }
 }
 
@@ -152,13 +165,20 @@ mod tests {
 
     #[test]
     fn a_status_byte_round_trips() {
-        assert_eq!(StatusFile::conclude(Some(b"0"), "dev.test").unwrap().0, 0);
         assert_eq!(
-            StatusFile::conclude(Some(b"42\n"), "dev.test").unwrap().0,
+            StatusFile::conclude(Some(b"0"), "dev.test").unwrap().code(),
+            0
+        );
+        assert_eq!(
+            StatusFile::conclude(Some(b"42\n"), "dev.test")
+                .unwrap()
+                .code(),
             42
         );
         assert_eq!(
-            StatusFile::conclude(Some(b"255"), "dev.test").unwrap().0,
+            StatusFile::conclude(Some(b"255"), "dev.test")
+                .unwrap()
+                .code(),
             255
         );
     }

@@ -9,19 +9,29 @@ extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
 
+#[cfg(feature = "text-field")]
 use alloc::string::String;
+#[cfg(feature = "color-picker")]
 use waterui_graphics::color::Color;
 
 /// Picker form component module.
+#[cfg(feature = "calendar")]
 pub mod calendar;
-pub use calendar::Calendar;
+#[cfg(feature = "calendar")]
+pub use calendar::{Calendar, CalendarConfig, CalendarGrid};
 /// Native picker controls for colors, dates, files, and multiple dates.
 pub mod picker;
+#[cfg(feature = "picker")]
 pub use picker::{Picker, PickerItem, PickerStyle};
 /// Validation helpers for form fields.
+#[cfg(feature = "validation")]
 pub mod valid;
 
-use waterui_controls::{IntoLabel, slider::slider, stepper::stepper};
+use waterui_controls::IntoLabel;
+#[cfg(feature = "slider")]
+use waterui_controls::slider::slider;
+#[cfg(feature = "stepper")]
+use waterui_controls::stepper::stepper;
 use waterui_core::{Binding, Str, View};
 
 /// Trait for types that can be automatically converted to form UI components.
@@ -120,6 +130,7 @@ pub trait FormBuilder: Sized {
     }
 }
 
+#[cfg(feature = "text-field")]
 fn with_optional_prompt(
     mut field: waterui_controls::TextField,
     placeholder: Str,
@@ -130,12 +141,14 @@ fn with_optional_prompt(
     field
 }
 
+#[cfg(feature = "text-field")]
 fn map_string_binding(binding: &Binding<String>) -> Binding<Str> {
     Binding::mapping(binding, Str::from, |binding, str_val: Str| {
         binding.set(str_val.into());
     })
 }
 
+#[cfg(feature = "text-field")]
 impl FormBuilder for Str {
     type View = waterui_controls::TextField;
 
@@ -147,6 +160,7 @@ impl FormBuilder for Str {
     }
 }
 
+#[cfg(feature = "text-field")]
 impl FormBuilder for String {
     type View = waterui_controls::TextField;
 
@@ -160,6 +174,7 @@ impl FormBuilder for String {
 }
 
 // Other components don't have prompt
+#[cfg(feature = "stepper")]
 impl FormBuilder for i32 {
     type View = waterui_controls::Stepper;
     fn view<L: IntoLabel>(binding: &Binding<Self>, label: L, _placeholder: Str) -> Self::View {
@@ -167,6 +182,7 @@ impl FormBuilder for i32 {
     }
 }
 
+#[cfg(feature = "toggle")]
 impl FormBuilder for bool {
     type View = waterui_controls::Toggle;
     fn view<L: IntoLabel>(binding: &Binding<Self>, label: L, _placeholder: Str) -> Self::View {
@@ -174,6 +190,7 @@ impl FormBuilder for bool {
     }
 }
 
+#[cfg(feature = "color-picker")]
 impl FormBuilder for Color {
     type View = picker::ColorPicker;
     fn view<L: IntoLabel>(binding: &Binding<Self>, label: L, _placeholder: Str) -> Self::View {
@@ -181,6 +198,7 @@ impl FormBuilder for Color {
     }
 }
 
+#[cfg(feature = "slider")]
 impl FormBuilder for f64 {
     type View = waterui_controls::Slider;
     fn view<L: IntoLabel>(binding: &Binding<Self>, label: L, _placeholder: Str) -> Self::View {
@@ -188,6 +206,7 @@ impl FormBuilder for f64 {
     }
 }
 
+#[cfg(feature = "slider")]
 impl FormBuilder for f32 {
     type View = waterui_controls::Slider;
     fn view<L: IntoLabel>(binding: &Binding<Self>, label: L, _placeholder: Str) -> Self::View {
@@ -200,7 +219,9 @@ impl FormBuilder for f32 {
 }
 
 /// Secure form components for handling sensitive data like passwords.
+#[cfg(feature = "secure-field")]
 pub mod secure;
+#[cfg(feature = "secure-field")]
 pub use secure::{SecureField, secure};
 
 /// Creates a form view from a binding to a type that implements [`FormBuilder`].
@@ -281,7 +302,7 @@ pub fn form<T: FormBuilder>(binding: &Binding<T>) -> T::View {
     T::view(binding, Str::default(), Str::default())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "text-field"))]
 mod tests {
     use alloc::string::String;
 

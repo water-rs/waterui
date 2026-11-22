@@ -231,10 +231,10 @@ pub(crate) async fn apple_dependency_features(
     features.extend(
         crate::project_model::assets::capability_features(project, &build_manifest, target).await?,
     );
-    if browser_runtime.chromium {
+    if browser_runtime.chromium() {
         features.push("chromium".to_string());
     }
-    if browser_runtime.cef_webview {
+    if browser_runtime.cef_webview() {
         features.push("webview-cef".to_string());
     }
     Ok(features)
@@ -297,6 +297,7 @@ pub(crate) async fn apple_rust_build(
     let target_underscore = target.replace('-', "_");
     let mut build = RustBuild::for_project(project, crate_path, triple)
         .with_features(features)
+        .with_features(options.app_features(project))
         .with_envs(options.cargo_envs().iter().cloned())
         .with_env("PKG_CONFIG_ALLOW_CROSS", "1")
         .with_env(format!("PKG_CONFIG_ALLOW_CROSS_{target_underscore}"), "1")
@@ -358,13 +359,13 @@ pub(crate) async fn build_rust_lib_with_links(
     // Apple-invalid one before the Rust build pays for it. An embedded build
     // produces a library the host app embeds, so its identifier never reaches
     // an Apple manifest here.
-    if !project.manifest().package.embedded {
+    if !project.manifest().package().embedded() {
         let _ = project
             .bundle_identifier()
             .apple_bundle_identifier()
             .map_err(|error| eyre::eyre!("{error}"))?;
     }
-    let options = if project.manifest().package.embedded {
+    let options = if project.manifest().package().embedded() {
         options.with_static_runtime()
     } else {
         options
@@ -376,10 +377,11 @@ pub(crate) async fn build_rust_lib_with_links(
 
     // Resolve fonts BEFORE cargo build - this ensures icons.json is present
     // for crates like fontawesome7 that need it during build.rs
-    let font_declarations = crate::assets::scan_fonts(
+    let font_declarations = crate::assets::scan_fonts_with_features(
         project,
         &project.apple_crate_path().join("Cargo.toml"),
         &[platform.font_platform()],
+        &options.app_features(project).collect::<Vec<_>>(),
     )
     .await?;
     let _resolved_fonts = crate::assets::resolve_fonts(project.host(), font_declarations).await?;
@@ -394,7 +396,7 @@ pub(crate) async fn build_rust_lib_with_links(
         &options,
     )
     .await?;
-    if project.manifest().package.embedded {
+    if project.manifest().package().embedded() {
         build = build.with_final_rustc_arg("--print=native-static-libs");
     }
     let target_dir = project.water_target_dir(options.linkage()).await?;
@@ -412,7 +414,7 @@ pub(crate) async fn build_rust_lib_with_links(
         // keeps its single-crate-type build and the `native_static_libraries`
         // call below stays in the same dependency mode — a union emit here
         // would leave the override compiling the whole graph a second time.
-        AppleHostLibrary::Archive if project.manifest().package.embedded => {
+        AppleHostLibrary::Archive if project.manifest().package().embedded() => {
             build
                 .clone()
                 .with_crate_type_override(host_library.crate_type())
@@ -504,7 +506,7 @@ pub(crate) async fn build_rust_lib_with_links(
         dynamic_runtime::prepare_host_runtime(project.host(), &staged_runtime).await?;
     }
 
-    if project.manifest().package.embedded {
+    if project.manifest().package().embedded() {
         let links = build
             .clone()
             .with_crate_type_override("staticlib")
@@ -739,8 +741,8 @@ pub async fn apple_deployment_target(
     })?;
     let target = project
         .manifest()
-        .apple
-        .deployment_targets
+        .apple()
+        .deployment_targets()
         .effective(project.resolved_framework().await?, key)?;
     Ok((environment, target))
 }
@@ -866,7 +868,7 @@ pub async fn package_apple(
         &apple_dependency_features(project, &browser_runtime_plan, &triple).await?,
     )
     .await?;
-    apple_declarations.supply_app_values(&project.manifest().app_values)?;
+    apple_declarations.supply_app_values(project.manifest().app_values())?;
 
     let project_path = project.backend_path::<AppleBackend>();
 
@@ -891,6 +893,7 @@ pub async fn package_apple(
         &project.apple_crate_path().join("Cargo.toml"),
         &built.app_symbols().await?,
         options.uses_dev_server(),
+        &built.features,
     )
     .await?;
 
@@ -948,10 +951,7 @@ pub async fn package_apple(
         &product_name,
         &staging_dir,
         &info_plist,
-        &app_bundle::AppleSdkSpec {
-            sdk_name,
-            deployment_target: &deployment_target,
-        },
+        &app_bundle::AppleSdkSpec::new(sdk_name, &deployment_target),
     )
     .await?;
 
@@ -960,6 +960,7 @@ pub async fn package_apple(
     // statically linked package carries neither.
     let shared_runtime = if options.uses_shared_rust_runtime(&triple) {
         let bin_built = BuiltTarget {
+            build_scripts: Vec::new(),
             features: built.features.clone(),
             profile_dir: built.profile_dir.clone(),
             artifact: layout.executable_file(&product_name),
@@ -972,9 +973,9 @@ pub async fn package_apple(
             cef_helper: None,
         };
         let libraries = RustDynamicLibraries::resolve(&bin_built, &triple, project).await?;
-        libraries.stage(&layout.frameworks_dir).await?;
+        libraries.stage(layout.frameworks_dir()).await?;
         let staged_runtime = libraries
-            .stage_apple_canonical(&layout.frameworks_dir)
+            .stage_apple_canonical(layout.frameworks_dir())
             .await?;
         // Redirect the executable's recorded runtime dependency to the
         // canonical `@rpath` name of the staged Rust runtime.
@@ -987,7 +988,7 @@ pub async fn package_apple(
         dynamic_runtime::prepare_host_runtime(project.host(), &staged_runtime).await?;
         Some(libraries)
     } else {
-        RustDynamicLibraries::remove_staged(&layout.frameworks_dir, &triple).await?;
+        RustDynamicLibraries::remove_staged(layout.frameworks_dir(), &triple).await?;
         None
     };
     let _ = shared_runtime;
@@ -1036,7 +1037,7 @@ pub async fn package_apple(
     .await?;
 
     let project_entitlements =
-        app_bundle::apple_project_entitlements_path(&backend.scheme, &project_path);
+        app_bundle::apple_project_entitlements_path(backend.scheme(), &project_path);
     app_bundle::sign_apple_app(
         &layout,
         platform,
@@ -1044,7 +1045,7 @@ pub async fn package_apple(
         &app_bundle::SigningFiles {
             project_entitlements: Some(&project_entitlements),
             scratch_root: &project_path,
-            name: &backend.scheme,
+            name: backend.scheme(),
         },
         project,
         &deployment_target,
@@ -1071,14 +1072,20 @@ pub(crate) async fn copy_assets_and_fonts(
     build_manifest: &Path,
     symbols: &crate::artifact_symbols::ArtifactSymbols,
     dev_server: bool,
+    features: &[String],
 ) -> eyre::Result<()> {
     // Stage project assets using platform-native conventions.
     let manifest =
         assets::stage_project_assets_for_apple(project, dest_dir, symbols, dev_server).await?;
 
     // Scan and resolve dependency fonts
-    let font_declarations =
-        assets::scan_fonts(project, build_manifest, &[platform.font_platform()]).await?;
+    let font_declarations = assets::scan_fonts_with_features(
+        project,
+        build_manifest,
+        &[platform.font_platform()],
+        features,
+    )
+    .await?;
     let mut resolved_fonts = assets::resolve_fonts(project.host(), font_declarations).await?;
     resolved_fonts.extend(assets::scan_project_font_assets(&manifest)?);
 

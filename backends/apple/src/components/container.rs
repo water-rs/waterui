@@ -15,7 +15,7 @@ use alloc::vec::Vec;
 use core::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 
-use cocoa_ui::geometry::MeasureProposal;
+use cocoa_ui::response::ReportsResponse;
 use cocoa_ui::scroll::{
     ScrollObservation, enclosing_scroll_view, observe_scroll_viewport, scroll_viewport,
 };
@@ -29,18 +29,19 @@ use waterui::views::{AnyViewsSnapshot, ViewSnapshot, Views};
 use waterui_backend_core::AnyView;
 use waterui_core::Computed;
 use waterui_core::layout::{
-    HorizontalAlignment, Layout, LayoutDirection, ProposalSize, Size, StretchAxis, SubView,
-    VerticalAlignment, ViewDimensions, measure_layout, with_memoized_children,
+    HorizontalAlignment, Layout, LayoutDirection, LayoutError, PlacedGeometry, PlacementInput,
+    Point, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size, StretchAxis, SubView,
+    VerticalAlignment, ViewDimensions, measure_layout, place_layout, resolve_layout_extent,
 };
 use waterui_core::views::AnyViews;
 
 use crate::contract::{NativeLeaf, Renderer};
-use crate::dispatch::Dispatcher;
-use crate::proposal::{self, Placement};
+use crate::proposal::{self, CommittedGeometry, Placement, to_proposal};
 use crate::transition::ghost::Ghost;
 use crate::transition::live::{LiveChild, Removal};
 use crate::transition::slots::{FrozenPlacement, GhostKey, Slot, SlotSequence};
 
+use crate::contract::RenderContext;
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::{HitTest, HostView};
 #[cfg(target_os = "ios")]
@@ -98,18 +99,6 @@ fn resolve_visible_window(
         end: index.min(count),
         leading_offset,
     }
-}
-
-/// A `MeasureProposal` (f64 axes) as a layout `ProposalSize` (f32 axes).
-fn to_proposal(proposal: MeasureProposal) -> ProposalSize {
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "the layout contract is f32; kit geometry is f64"
-    )]
-    ProposalSize::new(
-        proposal.width.map(|width| width as f32),
-        proposal.height.map(|height| height as f32),
-    )
 }
 
 /// `LazyStackConfig`: the axis the layout virtualizes along plus the
@@ -225,6 +214,10 @@ struct ContainerState {
     scroll: Option<ScrollObservation>,
     /// The guards `layout.watch_invalidation` returned — held, not read.
     layout_guards: Vec<BoxWatcherGuard>,
+    /// The leaf's committed geometry, which each pass commits — the fixed
+    /// path from its `place_layout` answer, the lazy path from its
+    /// virtualized answer. `None` only until the leaf hands it over.
+    geometry: Option<CommittedGeometry>,
 }
 
 impl core::fmt::Debug for ContainerState {
@@ -319,7 +312,7 @@ fn retire_member(
     state_rc: &Rc<RefCell<ContainerState>>,
     key: GhostKey,
     child: LiveChild,
-    slot: waterui_core::transition::GhostSlot,
+    slot: waterui_structural_transition::GhostSlot,
 ) {
     let weak = Rc::downgrade(state_rc);
     let Some(ghost) = child.remove(Removal {
@@ -375,7 +368,10 @@ fn depart_members(
 }
 
 /// A ghost slot's frozen size read on the lazy stack's axes.
-fn ghost_main_cross(slot: &waterui_core::transition::GhostSlot, lazy: &LazyConfig) -> (f64, f64) {
+fn ghost_main_cross(
+    slot: &waterui_structural_transition::GhostSlot,
+    lazy: &LazyConfig,
+) -> (f64, f64) {
     let size = slot.size();
     main_cross(
         cocoa_ui::Size::new(f64::from(size.width), f64::from(size.height)),
@@ -655,6 +651,23 @@ fn subview_order(state: &ContainerState) -> Vec<Retained<PlatformView>> {
         .collect()
 }
 
+/// Whether `ids` are pairwise distinct. A duplicate id is a contract
+/// violation of the collection above the container; the update carrying it
+/// is not applied and the container keeps its previous children.
+fn has_unique_ids(ids: &[ItemId]) -> bool {
+    let mut seen = HashSet::with_capacity(ids.len());
+    for &id in ids {
+        if !seen.insert(id) {
+            waterui::contract_violation!(
+                "duplicate child view id in container: {id:?}; the update is ignored and \
+                 the container keeps its previous children"
+            );
+            return false;
+        }
+    }
+    true
+}
+
 /// `syncChildren`: the id-keyed reconcile — the slot sequence first
 /// rebases every live id and ghost against the new order, departing
 /// members retire through [`depart_members`] (a declared, placed
@@ -666,13 +679,6 @@ fn sync_children(
     state_rc: &Rc<RefCell<ContainerState>>,
     ids: Vec<ItemId>,
 ) {
-    let mut seen = HashSet::with_capacity(ids.len());
-    for &id in &ids {
-        assert!(
-            seen.insert(id),
-            "duplicate child view id in container: {id:?}"
-        );
-    }
     let reconciled = state.slots.reconcile(&ids, |id| {
         state
             .rendered
@@ -750,6 +756,9 @@ fn deliver_children(state: &Rc<RefCell<ContainerState>>, pending: &Rc<RefCell<Pe
         crate::animation::with_platform_animation(&metadata, {
             let state = Rc::clone(state);
             move || {
+                if !has_unique_ids(&ids) {
+                    return;
+                }
                 let mut borrowed = state.borrow_mut();
                 borrowed.snapshot = snapshot;
                 if borrowed.lazy.is_some() {
@@ -796,13 +805,7 @@ fn update_virtual_ids(
     state_rc: &Rc<RefCell<ContainerState>>,
     ids: Vec<ItemId>,
 ) {
-    let mut seen = HashSet::with_capacity(ids.len());
-    for &id in &ids {
-        assert!(
-            seen.insert(id),
-            "duplicate child view id in container: {id:?}"
-        );
-    }
+    let seen: HashSet<ItemId> = ids.iter().copied().collect();
     let reconciled = state.slots.reconcile(&ids, |id| {
         state
             .rendered
@@ -901,9 +904,32 @@ fn member_frame(
 struct LazyPass<'a> {
     lazy: &'a LazyConfig,
     cross: f64,
-    bounds: cocoa_ui::Size,
+    /// The stack's committed response in the host's coordinates: the
+    /// members lay out inside it, wherever the parent's rule placed it.
+    response: Rect,
     child_proposal: ProposalSize,
     rtl: bool,
+}
+
+impl LazyPass<'_> {
+    /// The frame a member at `cursor` lands in — the cursor-positioned
+    /// frame inside the stack's response.
+    fn member_frame(&self, cursor: f64, size: cocoa_ui::Size, stretches: bool) -> Rect {
+        let frame = member_frame(
+            &self.lazy.axis,
+            self.response.size,
+            cursor,
+            size,
+            stretches,
+            self.rtl,
+        );
+        Rect::new(
+            frame.origin.x + self.response.origin.x,
+            frame.origin.y + self.response.origin.y,
+            frame.size.width,
+            frame.size.height,
+        )
+    }
 }
 
 /// Mounts the live member `id` if needed, measures it and places it at
@@ -926,14 +952,7 @@ fn place_live_member(
         measure_lazy_child_dimensions(mounted.layout(), pass.cross, pass.lazy);
     let (main, cross_axis) = main_cross(size, pass.lazy);
     // The lazy path places cursor-based frames directly, pixel-aligned.
-    let frame = member_frame(
-        &pass.lazy.axis,
-        pass.bounds,
-        cursor,
-        size,
-        stretches,
-        pass.rtl,
-    );
+    let frame = pass.member_frame(cursor, size, stretches);
     // The virtualized child is natively hosted: its selected proposal
     // is the offer it was measured with, not the frame it lands in.
     proposal::place(
@@ -989,15 +1008,56 @@ fn place_ghost_member(
         Axis::Horizontal => cocoa_ui::Size::new(main, cross),
         _ => unreachable!("lazy stack axis is vertical or horizontal"),
     };
-    let frame = member_frame(&pass.lazy.axis, pass.bounds, cursor, size, false, pass.rtl);
+    let frame = pass.member_frame(cursor, size, false);
     ghost.place(frame, state.placement.get().offset);
     main
+}
+
+/// Commits the lazy stack's geometry for this pass: its response comes
+/// from its virtualized answer, and the leaf retains it with the
+/// placement. Answers the committed response in the host's coordinates —
+/// where the parent's rule placed it, which the members lay out inside
+/// (translation covariance, `docs/layout-spec.md` §2.4).
+fn commit_lazy_geometry(state: &mut ContainerState) -> Rect {
+    let proposal = pass_proposal(state);
+    let allocation = proposal::allocation(&state.host);
+    let answer = lazy_size_that_fits(state, proposal);
+    let response_rect = state
+        .layout
+        .resolve_extent(
+            PlacementInput {
+                bounds: allocation,
+                proposal,
+                answer,
+            },
+            &[],
+        )
+        .expect("a lazy stack's layout resolves its response");
+    let moved = commit_geometry(state, proposal, answer, allocation, response_rect);
+    proposal::view_rect(response_rect.translated(moved.x, moved.y))
+}
+
+/// `viewport`'s start and end on the stack's main axis in the members' own
+/// space — measured from the origin of the stack's `response`.
+fn main_span(viewport: Rect, lazy: &LazyConfig, response: Rect) -> (f64, f64) {
+    match lazy.main_axis() {
+        Axis::Vertical => {
+            let start = viewport.origin.y - response.origin.y;
+            (start, start + viewport.size.height)
+        }
+        Axis::Horizontal => {
+            let start = viewport.origin.x - response.origin.x;
+            (start, start + viewport.size.width)
+        }
+        _ => unreachable!("lazy stack axis is vertical or horizontal"),
+    }
 }
 
 /// `performLazyStackLayout`: find the viewport window plus overscan, mount
 /// only it, place children along the main axis.
 fn perform_lazy_layout(state: &mut ContainerState) {
     let lazy = state.lazy.clone().expect("lazy path under a stack layout");
+    let response = commit_lazy_geometry(state);
     if state.item_ids.is_empty() {
         // No live members — only the ghosts a removal left behind, in
         // slot order beneath them.
@@ -1026,11 +1086,7 @@ fn perform_lazy_layout(state: &mut ContainerState) {
     let viewport = current_viewport(state);
     let estimate = estimated_main_extent(state, cross, &lazy);
     let overscan = estimate.max(1.0) * 2.0;
-    let (viewport_start, viewport_end) = match lazy.main_axis() {
-        Axis::Vertical => (viewport.origin.y, viewport.origin.y + viewport.size.height),
-        Axis::Horizontal => (viewport.origin.x, viewport.origin.x + viewport.size.width),
-        _ => unreachable!("lazy stack axis is vertical or horizontal"),
-    };
+    let (viewport_start, viewport_end) = main_span(viewport, &lazy, response);
     let members = members(state);
     let count = members.len();
     let window = resolve_visible_window(
@@ -1061,7 +1117,7 @@ fn perform_lazy_layout(state: &mut ContainerState) {
     let pass = LazyPass {
         lazy: &lazy,
         cross,
-        bounds: bounds.size,
+        response,
         child_proposal: lazy_child_proposal(cross, &lazy),
         rtl,
     };
@@ -1110,6 +1166,50 @@ fn perform_lazy_layout(state: &mut ContainerState) {
     }
 }
 
+/// The proposal this pass lays the container out under. Placed by a Rust
+/// parent: the proposal it selected. Natively hosted: the boundary offer
+/// for the rect this container fills. Measure and place share it, as
+/// `measure_layout` does.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the layout contract is f32; kit geometry is f64"
+)]
+fn pass_proposal(state: &ContainerState) -> ProposalSize {
+    let bounds = view::bounds(&state.host);
+    state.placement.get().proposal.unwrap_or_else(|| {
+        ProposalSize::new(
+            Some(bounds.size.width as f32),
+            Some(bounds.size.height as f32),
+        )
+    })
+}
+
+/// Retains the container's geometry for this pass — `response_rect` in the
+/// allocation's coordinates — and answers how far its parent's anchor
+/// moved the response, which every member moves by with it (translation
+/// covariance, `docs/layout-spec.md` §2.4).
+fn commit_geometry(
+    state: &ContainerState,
+    proposal: ProposalSize,
+    answer: Size,
+    allocation: LayoutRect,
+    response_rect: LayoutRect,
+) -> Point {
+    state
+        .geometry
+        .as_ref()
+        .expect("a container's driver holds its leaf's geometry")
+        .commit(
+            state.host.response_geometry(),
+            PlacedGeometry {
+                proposal,
+                answer,
+                allocation,
+                response_rect: response_rect.translated(-allocation.x(), -allocation.y()),
+            },
+        )
+}
+
 /// `performLayout`: the non-lazy path — measure for a size answer first,
 /// then place, proposals before frames, frames pixel-aligned.
 #[expect(
@@ -1118,53 +1218,37 @@ fn perform_lazy_layout(state: &mut ContainerState) {
 )]
 fn perform_fixed_layout(state: &mut ContainerState) {
     let members = members(state);
-    if members.is_empty() {
-        return;
-    }
-    let bounds = view::bounds(&state.host);
-    // Placed by a Rust parent: the proposal it selected. Natively hosted:
-    // the boundary offer for the rect this container fills. Measure and
-    // place share it, as `measure_layout` does.
     let placed = state.placement.get();
-    let proposal = placed.proposal.unwrap_or_else(|| {
-        ProposalSize::new(
-            Some(bounds.size.width as f32),
-            Some(bounds.size.height as f32),
-        )
-    });
-    let bounds_layout = waterui_core::layout::Rect::new(
-        waterui_core::layout::Point::new(bounds.origin.x as f32, bounds.origin.y as f32),
-        waterui_core::layout::Size::new(bounds.size.width as f32, bounds.size.height as f32),
+    let proposal = pass_proposal(state);
+    let bounds_layout = proposal::allocation(&state.host);
+    // The container's response and its children's placements come from one
+    // answer; the leaf retains that geometry with the placement. Where the
+    // parent anchors the response elsewhere in the allocation, the
+    // children move with it.
+    let placements = place_layout(&*state.layout, bounds_layout, proposal, &children(state))
+        .expect("a container's layout resolves its response");
+    let moved = commit_geometry(
+        state,
+        proposal,
+        placements.answer,
+        bounds_layout,
+        placements.response_rect,
     );
-    let placements = {
-        let children = children(state);
-        // `containerSize` warms the same measurement pass `placements` reads
-        // — `measure_layout`'s own call.
-        let _ = with_memoized_children(&children, |memoized| {
-            state.layout.size_that_fits(proposal, memoized)
-        });
-        with_memoized_children(&children, |memoized| {
-            state.layout.place(bounds_layout, proposal, memoized)
-        })
-    };
-    assert_eq!(
-        placements.len(),
-        members.len(),
-        "container layout returned {} placements for {} members",
-        placements.len(),
-        members.len()
-    );
-    for (index, (member, placement)) in members.iter().zip(placements.iter()).enumerate() {
+    for (index, (member, placement)) in members.iter().zip(placements.children.iter()).enumerate() {
+        let placed_frame = placement.frame.translated(moved.x, moved.y);
         let frame = Rect::new(
-            f64::from(placement.frame.x()),
-            f64::from(placement.frame.y()),
-            f64::from(placement.frame.width()),
-            f64::from(placement.frame.height()),
+            f64::from(placed_frame.x()),
+            f64::from(placed_frame.y()),
+            f64::from(placed_frame.width()),
+            f64::from(placed_frame.height()),
         );
-        assert!(
-            frame.is_valid_for_layout(),
-            "container received an invalid layout rect for member {index}: {frame:?}"
-        );
+        if !frame.is_valid_for_layout() {
+            waterui::contract_violation!(
+                "container received an invalid layout rect for member {index}: {frame:?}; \
+                 the member is not placed"
+            );
+            continue;
+        }
         match member {
             Member::Id { id, .. } => {
                 let child = &state.rendered[id];
@@ -1229,6 +1313,33 @@ impl core::fmt::Debug for ContainerSubView {
 }
 
 impl SubView for ContainerSubView {
+    /// A virtualized stack cannot enumerate its children, so it asks its
+    /// layout with none: the stack rule reads no children, and the answer
+    /// from the lazy measurement state is authoritative. Every other
+    /// container answers its layout's rule over its real children.
+    fn resolve_extent(
+        &self,
+        bounds: LayoutRect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        if self.state.borrow().lazy.is_some() {
+            let answer = self.measure(proposal).size;
+            let rect = self.state.borrow().layout.resolve_extent(
+                PlacementInput {
+                    bounds,
+                    proposal,
+                    answer,
+                },
+                &[],
+            )?;
+            return Ok(ResolvedExtent { answer, rect });
+        }
+        with_children_tx(&self.state, &self.pending, || {
+            let state = self.state.borrow();
+            resolve_layout_extent(&*state.layout, bounds, proposal, &children(&state))
+        })
+    }
+
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         measure(&self.state, &self.pending, proposal)
     }
@@ -1260,175 +1371,178 @@ impl SubView for ContainerSubView {
     }
 }
 
-/// Installs the `container` handler on the dispatcher.
+/// The `container` realization.
 #[expect(
     clippy::too_many_lines,
-    reason = "the handler mirrors the baseline's single render entry"
+    reason = "one component's whole realization, as the handler it replaces"
 )]
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<LazyContainer>(|container, ctx| {
-        let mtm = ctx.mtm();
-        let direction = container.direction();
-        let (layout, contents) = container.into_inner();
-        let host = HostView::new(mtm, Rect::ZERO);
+pub fn realize_lazy_container(container: LazyContainer, ctx: &RenderContext<'_>) -> NativeLeaf {
+    let mtm = ctx.mtm();
+    let direction = container.direction();
+    let (layout, contents) = container.into_inner();
+    let host = HostView::new(mtm, Rect::ZERO);
 
-        let lazy = LazyConfig::new(&*layout);
-        let state = Rc::new(RefCell::new(ContainerState {
-            layout,
-            snapshot: contents.snapshot(),
-            contents,
-            renderer: ctx.renderer(),
-            host: host.clone(),
-            lazy,
-            direction,
-            item_ids: Vec::new(),
-            rendered: HashMap::new(),
-            slots: SlotSequence::new(Vec::new()),
-            ghosts: HashMap::new(),
-            placed: HashMap::new(),
-            order: Vec::new(),
-            pending_inserts: HashSet::new(),
-            built: false,
-            measured_main: HashMap::new(),
-            measured_cross: HashMap::new(),
-            last_cross: -1.0,
-            placement: Cell::new(Placement::UNPLACED),
-            scroll: None,
-            layout_guards: Vec::new(),
-        }));
+    let lazy = LazyConfig::new(&*layout);
+    let state = Rc::new(RefCell::new(ContainerState {
+        layout,
+        snapshot: contents.snapshot(),
+        contents,
+        renderer: ctx.renderer(),
+        host: host.clone(),
+        lazy,
+        direction,
+        item_ids: Vec::new(),
+        rendered: HashMap::new(),
+        slots: SlotSequence::new(Vec::new()),
+        ghosts: HashMap::new(),
+        placed: HashMap::new(),
+        order: Vec::new(),
+        pending_inserts: HashSet::new(),
+        built: false,
+        measured_main: HashMap::new(),
+        measured_cross: HashMap::new(),
+        last_cross: -1.0,
+        placement: Cell::new(Placement::UNPLACED),
+        scroll: None,
+        layout_guards: Vec::new(),
+        geometry: None,
+    }));
 
-        host.set_hit_test_handler(|_host, _point| HitTest::PassIfSelf);
-        host.set_intrinsic_auto_layout(true);
-        // The scroll-surface search descends through this container's
-        // children, in stacking order.
-        host.set_scroll_surface_handler({
-            let state = Rc::clone(&state);
-            move |_host| {
-                let state = state.borrow();
-                state
-                    .order
-                    .iter()
-                    .map(|id| view::retain_base(state.rendered[id].view()))
-                    .collect()
-            }
-        });
-        let pending = Rc::new(RefCell::new(PendingChildren::default()));
-        host.set_measure_handler({
-            let state = Rc::clone(&state);
-            let pending = Rc::clone(&pending);
-            move |_host, proposal| {
-                let measured = measure(&state, &pending, to_proposal(proposal));
-                cocoa_ui::Size::new(
-                    f64::from(measured.size.width),
-                    f64::from(measured.size.height),
-                )
-            }
-        });
-        host.set_layout_handler({
-            let state = Rc::clone(&state);
-            let pending = Rc::clone(&pending);
-            move |_host| {
-                perform_layout(&state, &pending);
-            }
-        });
-        // Moving superviews can change the enclosing scroll view.
-        host.set_superview_handler({
-            let state = Rc::clone(&state);
-            move |_host| {
-                let mut borrowed = state.borrow_mut();
-                teardown_scroll_observation(&mut borrowed);
-                install_scroll_observation(&mut borrowed);
-            }
-        });
-
-        let sink_guard = proposal::register_sink(&host, {
-            let state = Rc::clone(&state);
-            let host = host.clone();
-            move |placement| {
-                let state = state.borrow();
-                if state.placement.get() != placement {
-                    state.placement.set(placement);
-                    host.set_needs_layout();
-                }
-            }
-        });
-
-        // `watchAnyViewsIds` — the collection's membership watch. An
-        // event only records into `pending` while a transaction is
-        // active; otherwise it delivers immediately, so an emission
-        // inside a child's own materialization can never collide with
-        // the borrow that materialization holds. Subscribing delivers
-        // nothing: the initial population below reads the snapshot.
-        let watcher = state.borrow().contents.watch(.., {
-            let state = Rc::clone(&state);
-            let pending = Rc::clone(&pending);
-            move |ctx, _change| {
-                let snapshot = ctx.value().clone();
-                let metadata = ctx.metadata().clone();
-                let ids: Vec<ItemId> = snapshot
-                    .range()
-                    .filter_map(|index| snapshot.get_id(index))
-                    .collect();
-                let in_transaction = {
-                    let mut pending = pending.borrow_mut();
-                    pending.record(snapshot, ids, metadata);
-                    pending.depth > 0
-                };
-                if !in_transaction {
-                    deliver_children(&state, &pending);
-                }
-            }
-        });
-
-        // The layout's own invalidation signal — `wuiLayout.setOwner` +
-        // `WuiLayoutInvalidationTarget.invalidate`: rebuild by re-laying
-        // out, since stretch axes and priorities bake into the child set.
-        let layout_guards = state.borrow().layout.watch_invalidation(Rc::new({
-            // The guards are stored inside the very state a strong capture
-            // would keep alive — a self-cycle with no outside participant
-            // (WaterUI #1575). Both captures stay weak; a dead owner no-ops.
-            let state = Rc::downgrade(&state);
-            let host = objc2::rc::Weak::new(&*host);
-            move || {
-                let (Some(_state), Some(host)) = (state.upgrade(), host.load()) else {
-                    return;
-                };
-                crate::invalidation::invalidate_layout_hierarchy(&host);
-            }
-        }));
-        state.borrow_mut().layout_guards = layout_guards;
-
-        // `reloadChildrenFromRust` — the initial population, a
-        // transaction since materializing children may emit back.
-        with_children_tx(&state, &pending, || {
-            let ids: Vec<ItemId> = {
-                let state_ref = state.borrow();
-                state_ref
-                    .snapshot
-                    .range()
-                    .filter_map(|index| state_ref.snapshot.get_id(index))
-                    .collect()
-            };
-            let mut state_ref = state.borrow_mut();
-            if state_ref.lazy.is_some() {
-                update_virtual_ids(&mut state_ref, &state, ids);
-            } else {
-                sync_children(&mut state_ref, &state, ids);
-            }
-        });
-
-        let mut leaf = NativeLeaf::new(
-            &*host,
-            ContainerSubView {
-                state: Rc::clone(&state),
-                pending: Rc::clone(&pending),
-            },
-        );
-        leaf.keep(sink_guard);
-        leaf.keep(watcher);
-        leaf.keep(state);
-        leaf
+    host.set_hit_test_handler(|_host, _point| HitTest::PassIfSelf);
+    host.set_intrinsic_auto_layout(true);
+    // The scroll-surface search descends through this container's
+    // children, in stacking order.
+    host.set_scroll_surface_handler({
+        let state = Rc::clone(&state);
+        move |_host| {
+            let state = state.borrow();
+            state
+                .order
+                .iter()
+                .map(|id| view::retain_base(state.rendered[id].view()))
+                .collect()
+        }
     });
+    let pending = Rc::new(RefCell::new(PendingChildren::default()));
+    host.set_measure_handler({
+        let state = Rc::clone(&state);
+        let pending = Rc::clone(&pending);
+        move |_host, proposal| {
+            let measured = measure(&state, &pending, to_proposal(proposal));
+            cocoa_ui::Size::new(
+                f64::from(measured.size.width),
+                f64::from(measured.size.height),
+            )
+        }
+    });
+    host.set_layout_handler({
+        let state = Rc::clone(&state);
+        let pending = Rc::clone(&pending);
+        move |_host| {
+            perform_layout(&state, &pending);
+        }
+    });
+    // Moving superviews can change the enclosing scroll view.
+    host.set_superview_handler({
+        let state = Rc::clone(&state);
+        move |_host| {
+            let mut borrowed = state.borrow_mut();
+            teardown_scroll_observation(&mut borrowed);
+            install_scroll_observation(&mut borrowed);
+        }
+    });
+
+    let sink_guard = proposal::register_sink(&host, {
+        let state = Rc::clone(&state);
+        let host = host.clone();
+        move |placement| {
+            let state = state.borrow();
+            if state.placement.get() != placement {
+                state.placement.set(placement);
+                host.set_needs_layout();
+            }
+        }
+    });
+
+    // `watchAnyViewsIds` — the collection's membership watch. An
+    // event only records into `pending` while a transaction is
+    // active; otherwise it delivers immediately, so an emission
+    // inside a child's own materialization can never collide with
+    // the borrow that materialization holds. Subscribing delivers
+    // nothing: the initial population below reads the snapshot.
+    let watcher = state.borrow().contents.watch(.., {
+        let state = Rc::clone(&state);
+        let pending = Rc::clone(&pending);
+        move |ctx, _change| {
+            let snapshot = ctx.value().clone();
+            let metadata = ctx.metadata().clone();
+            let ids: Vec<ItemId> = snapshot
+                .range()
+                .filter_map(|index| snapshot.get_id(index))
+                .collect();
+            let in_transaction = {
+                let mut pending = pending.borrow_mut();
+                pending.record(snapshot, ids, metadata);
+                pending.depth > 0
+            };
+            if !in_transaction {
+                deliver_children(&state, &pending);
+            }
+        }
+    });
+
+    // The layout's own invalidation signal — `wuiLayout.setOwner` +
+    // `WuiLayoutInvalidationTarget.invalidate`: rebuild by re-laying
+    // out, since stretch axes and priorities bake into the child set.
+    let layout_guards = state.borrow().layout.watch_invalidation(Rc::new({
+        // The guards are stored inside the very state a strong capture
+        // would keep alive — a self-cycle with no outside participant
+        // (WaterUI #1575). Both captures stay weak; a dead owner no-ops.
+        let state = Rc::downgrade(&state);
+        let host = objc2::rc::Weak::new(&*host);
+        move || {
+            let (Some(_state), Some(host)) = (state.upgrade(), host.load()) else {
+                return;
+            };
+            crate::invalidation::invalidate_layout_hierarchy(&host);
+        }
+    }));
+    state.borrow_mut().layout_guards = layout_guards;
+
+    // `reloadChildrenFromRust` — the initial population, a
+    // transaction since materializing children may emit back.
+    with_children_tx(&state, &pending, || {
+        let ids: Vec<ItemId> = {
+            let state_ref = state.borrow();
+            state_ref
+                .snapshot
+                .range()
+                .filter_map(|index| state_ref.snapshot.get_id(index))
+                .collect()
+        };
+        if !has_unique_ids(&ids) {
+            return;
+        }
+        let mut state_ref = state.borrow_mut();
+        if state_ref.lazy.is_some() {
+            update_virtual_ids(&mut state_ref, &state, ids);
+        } else {
+            sync_children(&mut state_ref, &state, ids);
+        }
+    });
+
+    let mut leaf = NativeLeaf::new(
+        &*host,
+        ContainerSubView {
+            state: Rc::clone(&state),
+            pending: Rc::clone(&pending),
+        },
+    );
+    state.borrow_mut().geometry = Some(leaf.drive_geometry());
+    leaf.keep(sink_guard);
+    leaf.keep(watcher);
+    leaf.keep(state);
+    leaf
 }
 
 #[cfg(test)]
@@ -1559,6 +1673,14 @@ mod tests {
     }
 
     impl SubView for FixedChild {
+        fn resolve_extent(
+            &self,
+            bounds: LayoutRect,
+            proposal: ProposalSize,
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        }
+
         fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
             self.last_proposal.set(Some(proposal));
             ViewDimensions::new(self.size)

@@ -1,6 +1,6 @@
 //! The binary boundary the generated extension calls across.
 //!
-//! [`#[widget]`](macro@crate::widget)-attributed functions are exported as
+//! `#[waterui::widget]`-attributed functions are exported as
 //! `waterui_widget_<crate>_<fn>` C symbols that take a JSON [`WidgetContext`]
 //! and return a [`Buffer`] — an owned, leaked byte buffer carrying the
 //! serialized [`Timeline`]. The extension frees each buffer through
@@ -19,19 +19,47 @@ use crate::schema::{Timeline, WidgetContext};
 #[non_exhaustive]
 pub struct Buffer {
     /// The buffer's first byte.
-    pub ptr: *const u8,
+    ptr: *const u8,
     /// Bytes initialized at `ptr`.
-    pub len: usize,
+    len: usize,
     /// The allocation's capacity.
-    pub cap: usize,
+    cap: usize,
+}
+
+impl Buffer {
+    /// The buffer's first byte.
+    #[must_use]
+    pub const fn ptr(&self) -> *const u8 {
+        self.ptr
+    }
+
+    /// Bytes initialized at `ptr`.
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Whether no bytes are initialized at `ptr`.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// The allocation's capacity.
+    #[must_use]
+    pub const fn cap(&self) -> usize {
+        self.cap
+    }
 }
 
 impl Buffer {
     /// Serializes `timeline` and leaks the bytes for the extension to read.
     #[must_use]
     pub fn from_timeline(timeline: &Timeline) -> Self {
-        let bytes =
-            serde_json::to_vec(timeline).expect("a widget timeline always serializes to JSON");
+        let bytes = serde_json::to_vec(timeline).expect(
+            "a timeline holds only strings, numbers and derived enums, \
+             which always serialize to JSON",
+        );
         Self::from_vec(bytes)
     }
 
@@ -56,7 +84,11 @@ pub unsafe fn decode_context(ptr: *const u8, len: usize) -> WidgetContext {
     // SAFETY: the caller contract above requires `ptr`/`len` to name a
     // valid byte slice.
     let bytes = unsafe { core::slice::from_raw_parts(ptr, len) };
-    serde_json::from_slice(bytes).expect("the extension's widget context JSON must decode")
+    serde_json::from_slice(bytes).expect(
+        "the generated extension writes the widget context from the same schema, \
+         mapping an unknown `WidgetKit` family to a fatal error on its own side \
+         before Rust is called, so the JSON always decodes",
+    )
 }
 
 /// Frees the allocation a `waterui_widget_*` export's [`Buffer`] owns.

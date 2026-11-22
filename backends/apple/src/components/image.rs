@@ -14,12 +14,14 @@ use waterui::graphics::color::WorkingColor;
 use waterui::icon::SystemIcon;
 use waterui::reactive::Signal;
 use waterui::resolve::Resolvable;
-use waterui::text::font::{Body, FontWeight, ResolvedFont};
+use waterui::text::font::{Body, ResolvedFont};
 use waterui::theme::color::Foreground;
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
+};
 
+use super::font::resolved_weight;
 use crate::contract::NativeLeaf;
-use crate::dispatch::Dispatcher;
 
 #[cfg(target_os = "macos")]
 mod platform {
@@ -33,6 +35,7 @@ mod platform {
     pub(super) use cocoa_ui::uikit::colors;
 }
 
+use crate::contract::RenderContext;
 use cocoa_ui::PlatformView;
 use platform::ImageView;
 
@@ -70,42 +73,27 @@ fn platform_color(color: &WorkingColor) -> Retained<cocoa_ui::objc2_app_kit::NSC
     }
 }
 
-/// The platform weight of a `FontWeight` on the `UIFont`/`NSFont` scale —
-/// the same table `WuiFontWeight.toNSFontWeight()` applies.
-const fn platform_weight(weight: FontWeight) -> f64 {
-    use cocoa_ui::font::weight;
-    match weight {
-        FontWeight::Thin => weight::THIN,
-        FontWeight::UltraLight => weight::ULTRA_LIGHT,
-        FontWeight::Light => weight::LIGHT,
-        FontWeight::Normal => weight::REGULAR,
-        FontWeight::Medium => weight::MEDIUM,
-        FontWeight::SemiBold => weight::SEMI_BOLD,
-        FontWeight::Bold => weight::BOLD,
-        FontWeight::UltraBold => weight::HEAVY,
-        FontWeight::Black => weight::BLACK,
-    }
-}
-
 /// Pushes the themed font onto the symbol: `preferredSymbolConfiguration`
 /// with a font-derived configuration on `UIKit`.
 #[cfg(target_os = "ios")]
 fn apply_symbol_font(mtm: cocoa_ui::MainThreadMarker, view: &ImageView, font: &ResolvedFont) {
-    let font = cocoa_ui::font::system(mtm, f64::from(font.size), platform_weight(font.weight));
-    assert!(
-        view.set_symbol_font(&font),
-        "SF Symbol rejected the themed font configuration"
-    );
+    let font = cocoa_ui::font::system(mtm, f64::from(font.size()), resolved_weight(mtm, font));
+    if !view.set_symbol_font(&font) {
+        tracing::error!(
+            "SF Symbol rejected the themed font configuration; the symbol keeps its size"
+        );
+    }
 }
 
 /// Pushes the themed font onto the symbol: a point-size/weight symbol
 /// configuration rebuilt from the symbol's name on `AppKit`.
 #[cfg(target_os = "macos")]
-fn apply_symbol_font(_mtm: cocoa_ui::MainThreadMarker, view: &ImageView, font: &ResolvedFont) {
-    assert!(
-        view.set_symbol_configuration(f64::from(font.size), platform_weight(font.weight)),
-        "SF Symbol rejected the themed font configuration"
-    );
+fn apply_symbol_font(mtm: cocoa_ui::MainThreadMarker, view: &ImageView, font: &ResolvedFont) {
+    if !view.set_symbol_configuration(f64::from(font.size()), resolved_weight(mtm, font)) {
+        tracing::error!(
+            "SF Symbol rejected the themed font configuration; the symbol keeps its size"
+        );
+    }
 }
 
 /// The image view's layout face: intrinsic, non-stretching.
@@ -121,6 +109,14 @@ impl core::fmt::Debug for ImageSubView {
 }
 
 impl SubView for ImageSubView {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     // The platform measures in f64; `ViewDimensions` speaks f32 — the
     // narrowing is the layout contract.
     #[expect(
@@ -128,10 +124,9 @@ impl SubView for ImageSubView {
         reason = "the layout contract is f32; measured points always fit"
     )]
     fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
-        let size = self
-            .view
-            .image_size()
-            .expect("SF Symbol has no intrinsic size");
+        // A symbol the platform did not resolve (an unknown name, reported
+        // when the leaf is built) has no image and measures zero.
+        let size = self.view.image_size().unwrap_or_default();
         ViewDimensions::new(Size::new(size.width as f32, size.height as f32))
     }
 
@@ -144,60 +139,40 @@ impl SubView for ImageSubView {
     }
 }
 
-/// Installs the `image` handler on the dispatcher: `Native<SystemIcon>` maps
+/// The `image` realization: `Native<SystemIcon>` maps
 /// to a kit image view drawing the named `SF Symbol`, tinted by the theme
 /// foreground and sized by the theme body font.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<SystemIcon>(|config, ctx| {
-        let mtm = ctx.mtm();
-        let view = ImageView::new(mtm);
-        view.set_scale_mode(cocoa_ui::ScaleMode::Fit);
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "NativeBackend hands each payload by value"
+)]
+pub fn realize_system_icon(config: SystemIcon, ctx: &RenderContext<'_>) -> NativeLeaf {
+    let mtm = ctx.mtm();
+    let view = ImageView::new(mtm);
+    view.set_scale_mode(cocoa_ui::ScaleMode::Fit);
 
-        let name = config.name.as_str();
-        assert!(
-            view.set_system_symbol(name),
-            "Unknown SF Symbol name: {name}"
-        );
-
-        let mut leaf = NativeLeaf::new(as_view(&view), ImageSubView { view: view.clone() });
-
-        // The theme foreground tints the symbol; the theme body font
-        // re-renders it at the themed type size — both push imperatively,
-        // exactly as the Swift leaf's two observations did. Watchers only
-        // fire on change, so the current values are applied eagerly.
-        let foreground = Foreground.resolve(ctx.env());
-        view.set_tint_color(Some(&platform_color(&foreground.snapshot())));
-        leaf.bind(&foreground, {
-            let view = view.clone();
-            move |color| view.set_tint_color(Some(&platform_color(&color)))
-        });
-        let body = Body.resolve(ctx.env());
-        apply_symbol_font(mtm, &view, &body.snapshot());
-        leaf.bind(&body, move |font| apply_symbol_font(mtm, &view, &font));
-        leaf
-    });
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn platform_weight_maps_every_font_weight() {
-        use cocoa_ui::font::weight;
-        let table: [(FontWeight, f64); 9] = [
-            (FontWeight::Thin, weight::THIN),
-            (FontWeight::UltraLight, weight::ULTRA_LIGHT),
-            (FontWeight::Light, weight::LIGHT),
-            (FontWeight::Normal, weight::REGULAR),
-            (FontWeight::Medium, weight::MEDIUM),
-            (FontWeight::SemiBold, weight::SEMI_BOLD),
-            (FontWeight::Bold, weight::BOLD),
-            (FontWeight::UltraBold, weight::HEAVY),
-            (FontWeight::Black, weight::BLACK),
-        ];
-        for (weight, expected) in table {
-            assert_eq!(platform_weight(weight).to_bits(), expected.to_bits());
-        }
+    let name = config.name().as_str();
+    if !view.set_system_symbol(name) {
+        waterui::contract_violation!("Unknown SF Symbol name: {name}; the view draws no symbol");
     }
+
+    // The image view draws the symbol in the leaf's response rectangle
+    // at the symbol's own size, which the leaf answers
+    // (docs/layout-spec.md §6).
+    let mut leaf = NativeLeaf::new(as_view(&view), ImageSubView { view: view.clone() });
+
+    // The theme foreground tints the symbol; the theme body font
+    // re-renders it at the themed type size — both push imperatively,
+    // exactly as the Swift leaf's two observations did. Watchers only
+    // fire on change, so the current values are applied eagerly.
+    let foreground = Foreground.resolve(ctx.env());
+    view.set_tint_color(Some(&platform_color(&foreground.snapshot())));
+    leaf.bind(&foreground, {
+        let view = view.clone();
+        move |color| view.set_tint_color(Some(&platform_color(&color)))
+    });
+    let body = Body.resolve(ctx.env());
+    apply_symbol_font(mtm, &view, &body.snapshot());
+    leaf.bind(&body, move |font| apply_symbol_font(mtm, &view, &font));
+    leaf
 }

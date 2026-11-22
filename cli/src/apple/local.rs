@@ -17,18 +17,49 @@ use eyre::eyre;
 
 /// Information about a macOS window.
 #[derive(Debug, Clone)]
-#[non_exhaustive]
 pub struct WindowInfo {
     /// The window ID (used for screencapture -l).
-    pub window_id: u32,
+    window_id: u32,
     /// The window title/name.
-    pub name: String,
+    name: String,
     /// The owning process ID.
-    pub owner_pid: i32,
+    owner_pid: i32,
     /// The owning application name.
-    pub owner_name: String,
+    owner_name: String,
     /// Window layer (0 = normal windows).
-    pub layer: i32,
+    layer: i32,
+}
+
+impl WindowInfo {
+    /// The window ID (used for `screencapture -l`).
+    #[must_use]
+    pub const fn window_id(&self) -> u32 {
+        self.window_id
+    }
+
+    /// The window title/name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The owning process ID.
+    #[must_use]
+    pub const fn owner_pid(&self) -> i32 {
+        self.owner_pid
+    }
+
+    /// The owning application name.
+    #[must_use]
+    pub fn owner_name(&self) -> &str {
+        &self.owner_name
+    }
+
+    /// Window layer (0 = normal windows).
+    #[must_use]
+    pub const fn layer(&self) -> i32 {
+        self.layer
+    }
 }
 
 /// List all windows belonging to a specific process.
@@ -102,29 +133,23 @@ pub fn list_windows_by_pid(pid: i32) -> eyre::Result<Vec<WindowInfo>> {
 
         // Get window name (may be empty)
         let name_key = CFString::new("kCGWindowName");
-        let name = window_dict
-            .find(&name_key)
-            .map(|v| {
-                // SAFETY: the value came out of the window-info dictionary, which owns it
-                // for as long as the array is alive; the *get* rule borrows without
-                // taking a reference, matching that ownership.
-                let cf_str = unsafe { CFString::wrap_under_get_rule(v.as_CFTypeRef().cast()) };
-                cf_str.to_string()
-            })
-            .unwrap_or_default();
+        let name = window_dict.find(&name_key).map_or_default(|v| {
+            // SAFETY: the value came out of the window-info dictionary, which owns it
+            // for as long as the array is alive; the *get* rule borrows without
+            // taking a reference, matching that ownership.
+            let cf_str = unsafe { CFString::wrap_under_get_rule(v.as_CFTypeRef().cast()) };
+            cf_str.to_string()
+        });
 
         // Get owner name
         let owner_name_key = CFString::new("kCGWindowOwnerName");
-        let owner_name = window_dict
-            .find(&owner_name_key)
-            .map(|v| {
-                // SAFETY: the value came out of the window-info dictionary, which owns it
-                // for as long as the array is alive; the *get* rule borrows without
-                // taking a reference, matching that ownership.
-                let cf_str = unsafe { CFString::wrap_under_get_rule(v.as_CFTypeRef().cast()) };
-                cf_str.to_string()
-            })
-            .unwrap_or_default();
+        let owner_name = window_dict.find(&owner_name_key).map_or_default(|v| {
+            // SAFETY: the value came out of the window-info dictionary, which owns it
+            // for as long as the array is alive; the *get* rule borrows without
+            // taking a reference, matching that ownership.
+            let cf_str = unsafe { CFString::wrap_under_get_rule(v.as_CFTypeRef().cast()) };
+            cf_str.to_string()
+        });
 
         // Get window layer
         let layer_key = CFString::new("kCGWindowLayer");

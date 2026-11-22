@@ -78,7 +78,8 @@ pub(crate) enum PresentPattern {
 /// `external-cost --path` choices (#168): `e` is external-frame import,
 /// `c` is copy-and-convert.
 ///
-/// See [`crate::external_cost`].
+/// The measurement lives in the `external_cost` module, built with the
+/// `cherenkov` feature.
 #[derive(Clone, Copy, Debug, clap::ValueEnum)]
 pub enum ExternalPath {
     /// Cherenkov external-frame import + composite.
@@ -828,6 +829,7 @@ fn alloc_diag_cmd(
     let blobs = convert::load_blobs(&scene, dir)?;
     let input = EncodeInput {
         scroll_offset: None,
+        drift: None,
         scene: &scene,
         blobs: &blobs,
     };
@@ -1483,6 +1485,7 @@ fn render_scene(
     t.reference = at.elapsed().as_secs_f64();
     let input = EncodeInput {
         scroll_offset: None,
+        drift: None,
         scene: &scene,
         blobs: &blobs,
     };
@@ -1589,11 +1592,20 @@ struct FrameLoopOptions {
     wait_for_completion: bool,
 }
 
-fn scroll_frame_input<'a>(
+/// The input of frame `frame` of a run of `warmup` warmup and `frames`
+/// measured frames: a scrolling scene's offset for the frame, or a static
+/// scene's [`crate::content_drift`]. Every frame of a static scene thus
+/// carries content no earlier frame drew, so each does the work of drawing
+/// the scene fresh instead of being served from what the engine kept of the
+/// last. A scene that changes on every frame keeps its behaviour, and so
+/// does a motion while the engine reports it `animating`; once the motion
+/// has come to rest its frames are static and drift too.
+fn frame_input<'a>(
     input: &EncodeInput<'a>,
     frame: u32,
     warmup: u32,
     frames: u32,
+    animating: bool,
 ) -> EncodeInput<'a> {
     let scroll_offset = input.scene.scroll_extent.map(|extent| {
         let (index, count) = if frame < warmup {
@@ -1603,10 +1615,16 @@ fn scroll_frame_input<'a>(
         };
         extent * (f64::from(index) / f64::from(count.saturating_sub(1).max(1)))
     });
+    // Frame 0 draws the scene as authored: no earlier frame exists for it
+    // to repeat, and a motion is committed with it, before the engine can
+    // report it animating.
+    let drift = (frame > 0 && !(animating || crate::changes_every_frame(input.scene)))
+        .then(|| crate::content_drift(input.scene, frame));
     EncodeInput {
         scene: input.scene,
         blobs: input.blobs,
         scroll_offset,
+        drift,
     }
 }
 
@@ -1710,15 +1728,21 @@ fn run_frames(
         if frame >= warmup {
             missed_deadlines += pace_frame(frame - warmup, period, start);
         }
+        let animating = engine.animating();
+        let frame_in = frame_input(input, frame, warmup, frames, animating);
         let cpu_start = affinity::current_cpu();
         let t0 = Instant::now();
         if pause_at == Some(frame) {
             pause_before_frame(frame)?;
         }
-        engine.encode(&scroll_frame_input(input, frame, warmup, frames))?;
+        engine.encode(&frame_in)?;
         let t1 = Instant::now();
         let submit = engine.submit(u64::from(frame), false)?;
         let t2 = Instant::now();
+        let unchanged = engine.drew_nothing();
+        if unchanged && frame >= warmup {
+            check_unchanged_frame(frame - warmup, animating, frame_in.drift.is_some())?;
+        }
         if wait_for_completion {
             engine.wait_idle()?;
         }
@@ -1729,13 +1753,7 @@ fn run_frames(
         // latency wait's - so arming the signal times into neither.
         let completion = engine.completion()?;
         check_completion(&*engine, signal, frame, completion.is_some())?;
-        let frame_counters = match gpu_counters.as_deref_mut() {
-            Some(counters) if frame >= warmup => {
-                engine.wait_idle()?;
-                Some(counters.sample()?)
-            }
-            _ => None,
-        };
+        let frame_counters = sample_counters(engine, gpu_counters.as_deref_mut(), frame >= warmup)?;
         if frame < warmup {
             memory_samples.push(MemorySnapshot::capture(
                 engine.memory(),
@@ -1748,6 +1766,7 @@ fn run_frames(
                 submit_seconds: t2.duration_since(t1).as_secs_f64() - submit.gpu_wait_seconds,
                 gpu_wait_seconds: submit.gpu_wait_seconds,
                 gpu_seconds: None,
+                unchanged,
                 latency_seconds,
                 cpu_start,
                 cpu_end,
@@ -1771,6 +1790,7 @@ fn run_frames(
         }
     }
     attribute_gpu(&mut samples, warmup, engine.finish_gpu()?);
+    check_gpu_timed(&*engine, &samples)?;
     // finish_gpu has waited for every submission, so every in-flight
     // completion callback has run.
     if !completions.is_empty() {
@@ -1784,6 +1804,23 @@ fn run_frames(
         start,
         missed_deadlines,
     })
+}
+
+/// The hardware counters of the measured frame just submitted, read once
+/// the GPU has finished it; `None` for a warmup frame or a run without
+/// counters.
+fn sample_counters(
+    engine: &mut dyn Engine,
+    counters: Option<&mut crate::gpu_counters::Session>,
+    measured: bool,
+) -> Result<Option<crate::report::GpuCounterSample>, BenchError> {
+    match counters {
+        Some(counters) if measured => {
+            engine.wait_idle()?;
+            Ok(Some(counters.sample()?))
+        }
+        _ => Ok(None),
+    }
 }
 
 fn pause_before_frame(frame: u32) -> Result<(), BenchError> {
@@ -1858,6 +1895,56 @@ fn attribute_completions(
         previous = Some(at);
     }
     Ok(())
+}
+
+/// Accepts a measured frame the engine drew nothing for only when it is the
+/// scene's own animation that ran: the engine reported it `animating` before
+/// the frame and the bench drifted nothing, so the frame was meant to change
+/// but its pixel-snapped content did not. Any other unchanged frame is the
+/// static-scene defect of #4086: the engine served the frame from what it
+/// kept, so the run would measure none of the scene's cost.
+///
+/// # Errors
+/// [`BenchError::Engine`] naming the measured frame.
+fn check_unchanged_frame(index: u32, animating: bool, drifted: bool) -> Result<(), BenchError> {
+    if animating && !drifted {
+        return Ok(());
+    }
+    Err(BenchError::Engine(format!(
+        "measured frame {index} drew nothing because no surface changed, although the scene was \
+         not animating or the bench had drifted its content: the engine served the frame from \
+         what it kept, so the run measures none of the scene's cost"
+    )))
+}
+
+/// Fails unless every measured frame carries its GPU time, when `engine`
+/// times the GPU, except the frames the engine reported unchanged. A frame
+/// without one submitted no timed GPU work —
+/// an engine that skipped the frame's rendering, say — so the run would
+/// report a scene's GPU cost from frames that rendered none of it.
+///
+/// # Errors
+/// [`BenchError::Engine`] naming how many measured frames carry no GPU time
+/// and the first of them.
+fn check_gpu_timed(engine: &dyn Engine, samples: &[FrameSample]) -> Result<(), BenchError> {
+    if engine.gpu_timing_unavailable().is_some() {
+        return Ok(());
+    }
+    let mut untimed = samples
+        .iter()
+        .enumerate()
+        .filter(|(_, sample)| sample.gpu_seconds.is_none() && !sample.unchanged)
+        .map(|(index, _)| index);
+    let Some(first) = untimed.next() else {
+        return Ok(());
+    };
+    Err(BenchError::Engine(format!(
+        "{} of {} measured frames carry no GPU time (first: measured frame {first}) although \
+         the adapter times the GPU: those frames submitted no timed GPU work, so the run \
+         measures none of the scene's GPU cost",
+        untimed.count() + 1,
+        samples.len()
+    )))
 }
 
 /// Stores each GPU timing on the measured sample of the frame it times;
@@ -1996,6 +2083,7 @@ fn measure_scene(
     let blobs = convert::load_blobs(&scene, dir)?;
     let input = EncodeInput {
         scroll_offset: None,
+        drift: None,
         scene: &scene,
         blobs: &blobs,
     };
@@ -2049,6 +2137,8 @@ fn measure_scene(
     let pacing = rate.map(|hz| pacing_report(hz, frames, missed_deadlines, window_seconds));
     let placement = measure_placement(pinned, heterogeneous, prepare_cpu, &samples);
     let percentiles = frame_percentiles(&samples);
+    let unchanged_frames = u32::try_from(samples.iter().filter(|s| s.unchanged).count())
+        .expect("measured frames fit u32");
     let (completion_signal, completion_unavailable) = match engine.completion_signal() {
         crate::CompletionSignal::Measured(signal) => (Some(signal), None),
         crate::CompletionSignal::Unavailable(reason) => (None, Some(reason)),
@@ -2071,6 +2161,7 @@ fn measure_scene(
         samples,
         placement,
         percentiles,
+        unchanged_frames,
         pacing,
         energy: energy_outcome.map(|o| o.report),
         conditions,
@@ -2317,6 +2408,7 @@ fn probe_once(
         scene,
         blobs,
         scroll_offset: None,
+        drift: None,
     };
     engine.prepare(&input)?;
     let prepare_memory = MemorySnapshot::capture(engine.memory(), SampleDetail::Full);
@@ -2595,16 +2687,72 @@ mod scroll_tests {
             scene: &scene,
             blobs: &blobs,
             scroll_offset: None,
+            drift: None,
         };
         let offsets: Vec<_> = (0..5)
             .map(|frame| {
-                scroll_frame_input(&input, frame, 3, 2)
+                frame_input(&input, frame, 3, 2, false)
                     .scroll_offset
                     .unwrap()
                     .y
             })
             .collect();
         assert_eq!(offsets, [0.0, 100.0, 200.0, 0.0, 200.0]);
+        assert!(
+            (0..5).all(|frame| frame_input(&input, frame, 3, 2, false).drift.is_none()),
+            "a scrolling scene is not drifted"
+        );
+    }
+
+    #[test]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the engines key rasters on the f32 linear part"
+    )]
+    fn static_frames_never_repeat_the_linear_part_of_a_transform() {
+        let scene = Scene::new(100, 100, cherenkov_scene::Color::srgb(1.0, 1.0, 1.0));
+        let blobs = std::collections::BTreeMap::default();
+        let input = EncodeInput {
+            scene: &scene,
+            blobs: &blobs,
+            scroll_offset: None,
+            drift: None,
+        };
+        assert!(
+            frame_input(&input, 0, 16, 4080, false).drift.is_none(),
+            "frame 0 draws the scene as authored"
+        );
+        let linear: Vec<_> = (1..4096)
+            .map(|frame| {
+                let drift = frame_input(&input, frame, 16, 4080, false)
+                    .drift
+                    .expect("a static scene drifts after frame 0");
+                let [a, b, c, d, ..] = drift.as_coeffs();
+                [a, b, c, d].map(|v| (v as f32).to_bits())
+            })
+            .collect();
+        let distinct: std::collections::BTreeSet<_> = linear.iter().collect();
+        assert_eq!(distinct.len(), linear.len());
+    }
+
+    #[test]
+    fn a_motion_drifts_once_it_has_come_to_rest() {
+        let scene = Scene::new(100, 100, cherenkov_scene::Color::srgb(1.0, 1.0, 1.0));
+        let blobs = std::collections::BTreeMap::default();
+        let input = EncodeInput {
+            scene: &scene,
+            blobs: &blobs,
+            scroll_offset: None,
+            drift: None,
+        };
+        assert!(
+            frame_input(&input, 5, 2, 8, true).drift.is_none(),
+            "a running motion changes the frame itself"
+        );
+        assert!(
+            frame_input(&input, 6, 2, 8, false).drift.is_some(),
+            "a settled motion's frame is static"
+        );
     }
 }
 
@@ -2615,7 +2763,16 @@ mod completion_tests {
     #[derive(Default)]
     struct Probe {
         events: Vec<&'static str>,
-        pending_frame: Option<u64>,
+        /// Submitted frames whose timestamps the next drain returns.
+        pending_frames: Vec<u64>,
+        /// Frames that submit no GPU work and so carry no time.
+        untimed: Vec<u64>,
+        /// Frames the probe draws nothing for, like an engine skipping a
+        /// frame no surface changed in; they carry no time either.
+        skipped: Vec<u64>,
+        last_frame: u64,
+        /// Whether the probe reports its scene's animation as running.
+        animating: bool,
         awaiting_completion: bool,
     }
 
@@ -2635,7 +2792,10 @@ mod completion_tests {
         }
         fn submit(&mut self, frame: u64, _: bool) -> Result<crate::Submit, BenchError> {
             self.events.push("submit");
-            self.pending_frame = Some(frame);
+            if !self.untimed.contains(&frame) && !self.skipped.contains(&frame) {
+                self.pending_frames.push(frame);
+            }
+            self.last_frame = frame;
             self.awaiting_completion = true;
             Ok(crate::Submit {
                 image: None,
@@ -2646,6 +2806,12 @@ mod completion_tests {
                 render_seconds: None,
                 readback_seconds: None,
             })
+        }
+        fn animating(&self) -> bool {
+            self.animating
+        }
+        fn drew_nothing(&self) -> bool {
+            self.skipped.contains(&self.last_frame)
         }
         fn completion_signal(&self) -> crate::CompletionSignal {
             crate::CompletionSignal::Measured("test probe")
@@ -2665,37 +2831,52 @@ mod completion_tests {
         fn finish_gpu(&mut self) -> Result<Vec<crate::GpuSample>, BenchError> {
             self.events.push("collect timestamps");
             Ok(self
-                .pending_frame
-                .take()
-                .into_iter()
+                .pending_frames
+                .drain(..)
                 .flat_map(|frame| crate::GpuSample::whole_frame(frame, Some(0.001)))
                 .collect())
+        }
+        fn gpu_timing_unavailable(&self) -> Option<&'static str> {
+            None
         }
         fn counters(&self) -> crate::Counters {
             crate::Counters::default()
         }
         fn memory(&self) -> crate::memory::AdapterMemory {
-            unreachable!("test has no warmup memory samples")
+            fn unavailable<T>() -> crate::memory::Reading<T> {
+                crate::memory::Reading::Unavailable("test probe".into())
+            }
+            crate::memory::AdapterMemory {
+                engine: unavailable(),
+                wgpu_allocator: unavailable(),
+                skia_budgeted: unavailable(),
+                vk_memory_budget: unavailable(),
+                metal_allocated_bytes: unavailable(),
+            }
         }
         fn device(&self) -> crate::DeviceInfo {
             unreachable!("frame loop does not request device metadata")
         }
     }
 
-    fn run_probe(wait_for_completion: bool) -> (Probe, Window) {
+    fn run_frames_of(
+        engine: &mut Probe,
+        warmup: u32,
+        wait_for_completion: bool,
+    ) -> Result<Window, BenchError> {
         let scene = Scene::new(1, 1, cherenkov_scene::Color::srgb(0.0, 0.0, 0.0));
         let blobs = std::collections::BTreeMap::new();
         let input = EncodeInput {
             scene: &scene,
             blobs: &blobs,
             scroll_offset: None,
+            drift: None,
         };
-        let mut engine = Probe::default();
-        let window = run_frames(
-            &mut engine,
+        run_frames(
+            engine,
             &input,
             2,
-            0,
+            warmup,
             FrameLoopOptions {
                 pause_at: None,
                 period: None,
@@ -2705,18 +2886,89 @@ mod completion_tests {
             },
             None,
         )
-        .unwrap();
+    }
+
+    fn run_probe(wait_for_completion: bool) -> (Probe, Window) {
+        let mut engine = Probe::default();
+        let window = run_frames_of(&mut engine, 0, wait_for_completion).unwrap();
         (engine, window)
+    }
+
+    #[test]
+    fn fails_a_measured_frame_without_gpu_time() {
+        // The second measured frame submits no GPU work, like a retained
+        // frame an engine skips: the run measured nothing for it.
+        let mut engine = Probe {
+            untimed: vec![3],
+            ..Probe::default()
+        };
+        let error = run_frames_of(&mut engine, 2, false)
+            .err()
+            .expect("an untimed measured frame fails the run")
+            .to_string();
+        assert!(
+            error.contains("1 of 2 measured frames carry no GPU time (first: measured frame 1)"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn excludes_and_counts_unchanged_frames_while_the_scene_animates() {
+        let mut engine = Probe {
+            skipped: vec![3],
+            animating: true,
+            ..Probe::default()
+        };
+        let window = run_frames_of(&mut engine, 2, false).unwrap();
+        let unchanged: Vec<_> = window.samples.iter().map(|s| s.unchanged).collect();
+        assert_eq!(unchanged, [false, true]);
+        assert_eq!(window.samples[0].gpu_seconds, Some(0.001));
+        assert_eq!(window.samples[1].gpu_seconds, None);
+    }
+
+    #[test]
+    fn fails_an_unchanged_frame_while_nothing_animates() {
+        // The static scene is drifted every frame, so drawing nothing is
+        // the engine serving a stale frame.
+        let mut engine = Probe {
+            skipped: vec![3],
+            ..Probe::default()
+        };
+        let error = run_frames_of(&mut engine, 2, false)
+            .err()
+            .expect("an unchanged frame of a static scene fails the run")
+            .to_string();
+        assert!(error.contains("measured frame 1 drew nothing"), "{error}");
+    }
+
+    #[test]
+    fn warmup_frames_need_no_gpu_time() {
+        // Frames 0 and 1 warm up without GPU work; measured frames 2 and 3
+        // are timed.
+        let mut engine = Probe {
+            untimed: vec![0, 1],
+            ..Probe::default()
+        };
+        let window = run_frames_of(&mut engine, 2, false).unwrap();
+        assert!(
+            window
+                .samples
+                .iter()
+                .all(|sample| sample.gpu_seconds == Some(0.001))
+        );
     }
 
     #[test]
     fn arms_completion_after_submit_returns() {
         let (engine, window) = run_probe(false);
-        // The step follows submit as a separate call, so the submit
-        // interval the loop times excludes it.
+        // The measured window opens on an idle GPU even without warmup
+        // frames, since `prepare` may have submitted uploads. The step
+        // follows submit as a separate call, so the submit interval the
+        // loop times excludes it.
         assert_eq!(
             engine.events,
             [
+                "complete",
                 "encode",
                 "submit",
                 "arm completion",
@@ -2738,10 +2990,12 @@ mod completion_tests {
     #[test]
     fn completes_each_frame_before_draining_its_timestamps() {
         let (engine, window) = run_probe(true);
-        // The step follows the latency wait, so latency_seconds excludes it.
+        // The first wait opens the measured window on an idle GPU. The step
+        // follows the latency wait, so latency_seconds excludes it.
         assert_eq!(
             engine.events,
             [
+                "complete",
                 "encode",
                 "submit",
                 "complete",
@@ -2774,6 +3028,7 @@ mod completion_tests {
             submit_seconds: 0.0,
             gpu_wait_seconds: 0.0,
             gpu_seconds: None,
+            unchanged: false,
             latency_seconds: None,
             completed_seconds: None,
             completion_interval_seconds: None,

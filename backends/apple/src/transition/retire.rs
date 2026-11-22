@@ -5,7 +5,7 @@
 use alloc::rc::Rc;
 
 use cocoa_ui::{PlatformView, Retained, focus, view};
-use waterui_core::transition::TransitionGeometry;
+use waterui_structural_transition::TransitionGeometry;
 
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::HostView;
@@ -128,7 +128,10 @@ pub fn install_frozen_surfaces(
     }
     // The device every frozen stand-in blits on: the subtree's GPU
     // runtime, which armed surfaces always render under.
-    let device = crate::gpu_runtime::raw_metal_device(&crate::gpu_runtime::runtime(env).context());
+    let runtime = crate::gpu_runtime::runtime(env).expect(
+        "armed surfaces render under a GPU runtime: without one every GPU-backed view mounts empty",
+    );
+    let device = crate::gpu_runtime::raw_metal_device(&runtime.context());
     surfaces
         .into_iter()
         .map(|(view, frame, layer)| {

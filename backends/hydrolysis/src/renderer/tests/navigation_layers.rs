@@ -1,5 +1,5 @@
 //! Content a navigation page presents through its own compositor layer — a
-//! `GpuContentView`, a `SceneView` — belongs to the page: the stack records
+//! `GpuView`, a `SceneView` — belongs to the page: the stack records
 //! each page in the page's own space and presents it at the stack's place in
 //! the window, and those layers have to be placed the same way and only when
 //! the page itself is presented.
@@ -21,7 +21,7 @@ use waterui_core::handler::AnyViewBuilder;
 use waterui_core::layout::Size;
 use waterui_core::{AnyView, Environment};
 use waterui_graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
-use waterui_graphics::{GpuContent, GpuContentView};
+use waterui_graphics::{GpuContent, GpuView};
 use waterui_layout::padding::EdgeInsets;
 use waterui_layout::stack::vstack;
 use waterui_navigation::{NavigationPath, NavigationStack, NavigationView, navigation_transition};
@@ -62,7 +62,7 @@ fn gpu(size: Size) -> impl waterui_core::View {
 }
 
 fn probe_view(probe: Probe, size: Size) -> impl waterui_core::View {
-    GpuContentView::new(probe).size(size.width, size.height)
+    GpuView::new(probe).size(size.width, size.height)
 }
 
 fn env_with_top_inset(top: f32) -> Environment {
@@ -149,8 +149,10 @@ fn root_stack() -> impl waterui_core::View {
     NavigationStack::new(NavigationView::new("Root", vstack((gpu(ROOT_CONTENT),))))
 }
 
-/// The page's GPU layer sits where the page is drawn: one top inset lower
-/// than it sits without insets.
+/// The page's GPU layer sits where the page is drawn. The top inset pushes
+/// the bar and the page's top edge down by the inset while its bottom edge
+/// stays put, and the page's column centres its block in what is left
+/// (`docs/layout-spec.md` §4.2), so the layer moves down by half the inset.
 #[test]
 fn a_page_gpu_layer_follows_the_stack_placement() {
     let bare = single(&presented_gpu_rects(&capture(
@@ -162,9 +164,9 @@ fn a_page_gpu_layer_follows_the_stack_placement() {
         &env_with_top_inset(TOP_INSET),
     )));
     assert!(
-        (inset.y0 - bare.y0 - f64::from(TOP_INSET)).abs() <= 0.5
+        (inset.y0 - bare.y0 - f64::from(TOP_INSET) / 2.0).abs() <= 0.5
             && (inset.x0 - bare.x0).abs() <= 0.5,
-        "the GPU layer should move down by the top inset with the page: \
+        "the GPU layer should move down by half the top inset with the page: \
          {bare:?} without insets, {inset:?} with a {TOP_INSET} top inset"
     );
 }

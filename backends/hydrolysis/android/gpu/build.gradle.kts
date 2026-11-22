@@ -7,7 +7,7 @@ android {
     namespace = "dev.waterui.hydrolysis.gpu"
 
     defaultConfig {
-        minSdk = 31
+        minSdk = 33
     }
 
     compileOptions {

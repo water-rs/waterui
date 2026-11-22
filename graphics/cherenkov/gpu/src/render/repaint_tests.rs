@@ -134,14 +134,20 @@ fn compare_frames(isolated: bool, blurred: bool) -> Result<(), Box<dyn std::erro
         let reports = diagnostics.take();
         let retained_report = reports
             .iter()
-            .find(|report| report.surface == retained.id().raw())
-            .expect("retained surface report");
-        if step == 0 {
+            .find(|report| report.surface == retained.id().raw());
+        if !blurred && step == 2 {
+            assert!(
+                retained_report.is_none(),
+                "identical replacement skips rendering"
+            );
+        } else if step == 0 {
+            let retained_report = retained_report.expect("initial surface report");
             assert_eq!(
                 retained_report.repaint_pixels,
                 u64::from(size.0) * u64::from(size.1)
             );
         } else if !blurred {
+            let retained_report = retained_report.expect("changed surface report");
             // Re-recording replaces both the moving shape and the distant
             // fixed shape. One scissor encloses them, including the clean gap,
             // but never reaches the rest of the 256 x 192 attachment.
@@ -208,4 +214,77 @@ fn paint_frame(
         Rect::new(180.0, 100.0, 194.0, 114.0),
         WorkingColor::new([0.0, 0.8, 0.1, 0.6]),
     );
+}
+
+#[test]
+fn partial_clear_preserves_srgb_encoded_background() -> Result<(), Box<dyn std::error::Error>> {
+    use cherenkov::{BlendSpace, Color, Srgb};
+
+    let diagnostics = super::super::composition::Sink::new();
+    let engine = Engine::<Gpu>::new(GpuConfig {
+        composition_diag: Some(diagnostics.clone()),
+        ..GpuConfig::default()
+    })?;
+    let size = (64, 64);
+    for background in [
+        Color::<Srgb>::new([254.0 / 255.0, 247.0 / 255.0, 1.0, 1.0]).to_working(),
+        WorkingColor::new([0.2, 0.3, 0.4, 0.5]),
+    ] {
+        let (target, _textures) = TextureTarget::new(size);
+        let retained = engine.surface(target, || {})?;
+        retained.storage_space(BlendSpace::SrgbEncoded);
+        retained.clear_color(background);
+        retained.update(|tx| {
+            tx[retained.root()].content(retained.record(|r| {
+                r.fill(Rect::new(8.0, 8.0, 20.0, 20.0), WorkingColor::BLACK);
+            }));
+        });
+        engine.render(FrameTime::now())?;
+        let _ = diagnostics.take();
+
+        // Removing the rect damages only its region and triggers partial clear.
+        let (ref_target, _ref_textures) = TextureTarget::new(size);
+        let reference = engine.surface(ref_target, || {})?;
+        reference.storage_space(BlendSpace::SrgbEncoded);
+        reference.clear_color(background);
+        retained.update(|tx| {
+            tx[retained.root()].content(retained.record(|_| {}));
+        });
+        engine.render(FrameTime::now())?;
+
+        let reports = diagnostics.take();
+        let report = reports
+            .iter()
+            .find(|r| r.surface == retained.id().raw())
+            .expect("partial repaint report");
+        assert!(
+            report.repaint_pixels > 0
+                && report.repaint_pixels < u64::from(size.0) * u64::from(size.1),
+            "expected partial repaint, got {} pixels",
+            report.repaint_pixels
+        );
+
+        let actual = retained.readback()?;
+        let expected = reference.readback()?;
+        let repaired = actual.pixels[14 * size.0 as usize + 14];
+        let untouched = actual.pixels[2 * size.0 as usize + 2];
+        for (a, b) in repaired.into_iter().zip(untouched) {
+            assert!(
+                (a - b).abs() < 1e-4,
+                "partial clear {repaired:?} != full clear {untouched:?}"
+            );
+        }
+        let actual = cherenkov_oracle::F32Image {
+            width: actual.width,
+            height: actual.height,
+            pixels: actual.pixels,
+        };
+        let expected = cherenkov_oracle::F32Image {
+            width: expected.width,
+            height: expected.height,
+            pixels: expected.pixels,
+        };
+        cherenkov_oracle::metrics::assert_images_match(&expected, &actual);
+    }
+    Ok(())
 }

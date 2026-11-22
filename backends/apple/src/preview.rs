@@ -28,6 +28,7 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::time::Instant;
 
 use cocoa_ui::MainThreadMarker;
 #[cfg(target_os = "macos")]
@@ -97,6 +98,24 @@ pub enum PreviewError {
     /// The run loop returned without the capture handing its result back.
     #[error("the main run loop returned before the capture settled")]
     RunLoopExited,
+    /// The preview was started off the main thread, where no platform view
+    /// can exist.
+    #[error("the preview must run on the main thread")]
+    NotMainThread,
+    /// `AppKit` refused the `Prohibited` activation policy the preview must
+    /// hold before it finishes launching, so a capture could show a window,
+    /// take focus or put an icon in the Dock.
+    #[cfg(target_os = "macos")]
+    #[error(
+        "the preview process must hold the Prohibited activation policy before AppKit finishes launching"
+    )]
+    ActivationPolicyRefused,
+    /// The Catalyst preview binary does not run under the iPad idiom.
+    #[cfg(catalyst)]
+    #[error(
+        "the Catalyst preview binary must embed `waterui_apple::preview_info_plist!()`: UIKit draws the iOS look only under the iPad idiom (UIDeviceFamily 2)"
+    )]
+    MissingPadIdiom,
 }
 
 /// Runs one preview capture and answers its result.
@@ -126,15 +145,13 @@ pub enum PreviewError {
 /// rasterized. [`PreviewError::Write`] when the PNG cannot be encoded or
 /// written. [`PreviewError::RunLoopExited`] when the main run
 /// loop returns without the capture's result — a return is never success
-/// on its own.
-///
-/// # Panics
-///
-/// Panics off the main thread, or when `AppKit` refuses the `Prohibited`
-/// activation policy before launch — the constraint the entry exists to
-/// keep, so a refusal is fatal rather than a fallback. On Mac Catalyst,
-/// also panics when the process does not run under the iPad idiom — the
-/// binary did not embed [`preview_info_plist!`](crate::preview_info_plist).
+/// on its own. [`PreviewError::NotMainThread`] off the main thread.
+/// [`PreviewError::ActivationPolicyRefused`] when `AppKit` refuses the
+/// `Prohibited` activation policy before launch — the constraint the entry
+/// exists to keep, so a refusal ends the run rather than falling back. On
+/// Mac Catalyst, [`PreviewError::MissingPadIdiom`] when the process does
+/// not run under the iPad idiom — the binary did not embed
+/// [`preview_info_plist!`](crate::preview_info_plist).
 ///
 /// Once per process: process bring-up happens inside the call and a
 /// second `run` in one process is a bug — the bring-up fails loudly, the
@@ -159,28 +176,29 @@ fn drive(
     resources: ResourceContext,
     config: PreviewRunConfig,
 ) -> Result<(), PreviewError> {
-    let mtm = MainThreadMarker::new().expect("preview runs on the main thread");
+    let load_started = Instant::now();
+    let mtm = MainThreadMarker::new().ok_or(PreviewError::NotMainThread)?;
     // Startup before anything else can panic or error — the panic hook and
     // the unconditional stderr layer are what the contract guarantees
     // everything else through.
     let inspector = crate::startup::initialize_for_preview();
 
     let content_deadline = config.content_deadline();
-    let output = match config.mode {
+    let size = cocoa_ui::Size::new(f64::from(config.width()), f64::from(config.height()));
+    let output = match config.into_mode() {
         PreviewRunMode::Image { output } => output,
         PreviewRunMode::Scenario { .. } => {
             return Err(PreviewError::UnsupportedMode("scenario"));
         }
         PreviewRunMode::Semantic => return Err(PreviewError::UnsupportedMode("semantic")),
     };
-    let size = cocoa_ui::Size::new(f64::from(config.width), f64::from(config.height));
 
     // The keepers live on `drive`'s frame and are declared before `env`, so
     // `env` drops first and `keepers` — the theme, appearance observer,
     // locale and font registrations `prepare` requires to outlive `env` —
     // drops last.
     let mut keepers = crate::contract::KeepAlive::default();
-    let (mut env, host) = prepare(mtm, resources, &mut keepers, inspector);
+    let (mut env, host) = prepare(mtm, resources, &mut keepers, inspector)?;
 
     let env_ptr = &raw mut env;
     let outcome = Rc::new(RefCell::new(None::<Result<(), PreviewError>>));
@@ -203,6 +221,11 @@ fn drive(
                     crate::components::webview::install_service(&mut env);
                     env
                 };
+                tracing::info!(
+                    phase = "load",
+                    elapsed_ms = load_started.elapsed().as_millis(),
+                    "Apple preview phase"
+                );
                 executor_core::spawn_local(async move {
                     *outcome.borrow_mut() = Some(
                         render_and_write(
@@ -219,7 +242,9 @@ fn drive(
                         .await,
                     );
                     CFRunLoop::current()
-                        .expect("the render task runs on a thread that has a run loop")
+                        .expect(
+                            "the main executor drives this task from the main thread's run loop",
+                        )
                         .stop();
                 })
                 .detach();
@@ -260,16 +285,18 @@ pub(crate) struct Host {
 /// locale, font registrations — land on `keepers`, which must outlive
 /// `env`.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics when `AppKit` refuses the `Prohibited` activation policy, and on
-/// Mac Catalyst when the process does not run under the iPad idiom.
+/// [`PreviewError::ActivationPolicyRefused`] when `AppKit` refuses the
+/// `Prohibited` activation policy, and on Mac Catalyst
+/// [`PreviewError::MissingPadIdiom`] when the process does not run under
+/// the iPad idiom.
 pub(crate) fn prepare(
     mtm: MainThreadMarker,
     resources: ResourceContext,
     keepers: &mut crate::contract::KeepAlive,
     inspector: Option<waterui::inspector::InspectorRuntime>,
-) -> (Environment, Host) {
+) -> Result<(Environment, Host), PreviewError> {
     let mut env = Environment::new();
     waterui::inspector::install(&mut env, inspector);
     waterui::text::install_system_font_collection(&mut env);
@@ -285,13 +312,12 @@ pub(crate) fn prepare(
         // `AppKit` must be told before launch completes; a bundle that
         // already declares `UIElement`, or an unbundled process, arrives
         // `Prohibited` and may refuse a redundant change — so the set runs
-        // only when the policy is not already there, and a refusal fails at
-        // the call that refused it.
-        if application.activation_policy() != ActivationPolicy::Prohibited {
-            assert!(
-                application.set_activation_policy(ActivationPolicy::Prohibited),
-                "the preview process must hold the Prohibited activation policy before AppKit finishes launching"
-            );
+        // only when the policy is not already there, and a refusal ends
+        // the run at the call that refused it.
+        if application.activation_policy() != ActivationPolicy::Prohibited
+            && !application.set_activation_policy(ActivationPolicy::Prohibited)
+        {
+            return Err(PreviewError::ActivationPolicyRefused);
         }
         let theme = Rc::new(crate::theme::install(&mut env, application.color_scheme()));
         let appearance = application.observe_color_scheme({
@@ -305,10 +331,9 @@ pub(crate) fn prepare(
     #[cfg(catalyst)]
     let host = {
         let application = cocoa_ui::uikit::catalyst::BackgroundApplication::bring_up(mtm);
-        assert!(
-            cocoa_ui::uikit::catalyst::runs_under_pad_idiom(mtm),
-            "the Catalyst preview binary must embed `waterui_apple::preview_info_plist!()`: UIKit draws the iOS look only under the iPad idiom (UIDeviceFamily 2)"
-        );
+        if !cocoa_ui::uikit::catalyst::runs_under_pad_idiom(mtm) {
+            return Err(PreviewError::MissingPadIdiom);
+        }
         // No controller exists yet to answer the scheme; the capture window
         // refreshes the theme from its own traits once the view mounts.
         let theme = Rc::new(crate::theme::install(
@@ -320,7 +345,7 @@ pub(crate) fn prepare(
     let locale = crate::locale::install(&mut env, mtm);
     keepers.keep(locale);
     keepers.keep(fonts);
-    (env, host)
+    Ok((env, host))
 }
 
 /// What one capture produces: the viewport, how long it waits for owed
@@ -360,19 +385,32 @@ async fn render_and_write(
     view: impl FnOnce() -> waterui::AnyView,
     capture: Capture<'_>,
 ) -> Result<(), PreviewError> {
+    let render_started = Instant::now();
     let ledger = waterui_core::ContentLedger::new();
     let content_env = env.extending(ledger.clone());
     let stage = Stage::mount(&content_env, mtm, host, view, capture.size);
     crate::content::await_content(&ledger, &stage.root, capture.content_deadline).await?;
     let result = stage.capture().await?;
     drop(stage);
+    tracing::info!(
+        phase = "render",
+        elapsed_ms = render_started.elapsed().as_millis(),
+        "Apple preview phase"
+    );
+    let encode_started = Instant::now();
+    let (rgba_data, width, height) = result.into_parts();
     waterui_preview_protocol::run::write_png(
         capture.output,
-        result.width,
-        result.height,
-        result.rgba_data,
+        width,
+        height,
+        rgba_data,
         Alpha::Premultiplied,
     )?;
+    tracing::info!(
+        phase = "encode",
+        elapsed_ms = encode_started.elapsed().as_millis(),
+        "Apple preview phase"
+    );
     Ok(())
 }
 
@@ -444,7 +482,7 @@ impl Stage {
         let root = HostView::new(mtm, cocoa_ui::Rect::new(0.0, 0.0, size.width, size.height));
         window.setContentView(Some(&*root));
         let mut keepalive = crate::contract::KeepAlive::default();
-        let content = crate::embedding::mount_content(&root, view(), env, &mut keepalive);
+        let content = crate::embedding::mount_content(&root, view(), env, &mut keepalive, mtm);
         crate::first_paint::mark(&root, env);
         // The window never orders in, so the surfaces inside cannot
         // present: the drive keeps their frames — and the content their
@@ -497,7 +535,7 @@ impl Stage {
             move |scheme| crate::theme::refresh(&theme, scheme)
         });
         let mut keepalive = crate::contract::KeepAlive::default();
-        let content = crate::embedding::mount_content(&root, view(), env, &mut keepalive);
+        let content = crate::embedding::mount_content(&root, view(), env, &mut keepalive, mtm);
         crate::first_paint::mark(&root, env);
         window.layoutIfNeeded();
         // The scene-less window never reaches a presentable scene, so the

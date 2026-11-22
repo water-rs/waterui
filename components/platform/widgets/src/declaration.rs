@@ -19,16 +19,62 @@ pub struct WidgetDeclaration {
     /// The attributed function's name — the `waterui_widget_*` export's
     /// suffix after the crate name.
     #[serde(rename = "fn")]
-    pub function: String,
+    function: String,
     /// The `WidgetConfiguration` kind string; defaults to `function`.
-    pub kind: String,
+    kind: String,
     /// The name shown in the widget gallery.
-    pub display_name: String,
+    display_name: String,
     /// The description shown in the widget gallery.
-    pub description: String,
+    description: String,
     /// The `WidgetFamily` case names the widget supports
     /// (`systemSmall`, `systemMedium`, …).
-    pub families: Vec<String>,
+    families: Vec<String>,
+}
+
+impl WidgetDeclaration {
+    /// The attributed function's name — the `waterui_widget_*` export's
+    /// suffix after the crate name.
+    #[must_use]
+    pub const fn function(&self) -> &str {
+        self.function.as_str()
+    }
+
+    /// The `WidgetConfiguration` kind string; defaults to `function`.
+    #[must_use]
+    pub const fn kind(&self) -> &str {
+        self.kind.as_str()
+    }
+
+    /// The name shown in the widget gallery.
+    #[must_use]
+    pub const fn display_name(&self) -> &str {
+        self.display_name.as_str()
+    }
+
+    /// The description shown in the widget gallery.
+    #[must_use]
+    pub const fn description(&self) -> &str {
+        self.description.as_str()
+    }
+
+    /// The `WidgetFamily` case names the widget supports
+    /// (`systemSmall`, `systemMedium`, …).
+    #[must_use]
+    pub const fn families(&self) -> &[String] {
+        self.families.as_slice()
+    }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(self) -> (String, String, String, String, Vec<String>) {
+        (
+            self.function,
+            self.kind,
+            self.display_name,
+            self.description,
+            self.families,
+        )
+    }
 }
 
 /// What a `#[widget_intent]` action declares — the `waterui_meta_intent_*`

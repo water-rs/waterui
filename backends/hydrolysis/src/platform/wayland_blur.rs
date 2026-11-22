@@ -11,6 +11,7 @@
 
 use std::ffi::c_void;
 
+use waterui_core::contract_violation;
 use wayland_client::backend::{Backend, ObjectId};
 use wayland_client::globals::{GlobalListContents, registry_queue_init};
 use wayland_client::protocol::wl_compositor::WlCompositor;
@@ -83,21 +84,28 @@ impl WaylandBlur {
     /// display handle: the event loop that owns it outlives the window, and
     /// the backend only ever borrows it.
     ///
-    /// # Panics
-    /// Panics when the registry queue cannot be initialised or when a global
-    /// the compositor advertised fails to bind — neither is an unsupported
-    /// case.
+    /// A registry queue that cannot be initialised, or a global the
+    /// compositor advertised that fails to bind, is an operational failure
+    /// of the connection, not the unsupported case: it is logged and the
+    /// window is left unblurred the same way.
     pub(super) fn new(display: *mut c_void) -> Option<Self> {
         // SAFETY: `display` is the live `wl_display` winit owns for the event
         // loop, which outlives the window this state is stored on;
         // `from_foreign_display` only borrows it and never disconnects it.
         let backend = unsafe { Backend::from_foreign_display(display.cast()) };
         let connection = Connection::from_backend(backend);
-        let (globals, queue) = registry_queue_init::<WaylandBlurState>(&connection)
-            .expect("the borrowed wl_display refused its registry queue init");
+        let (globals, queue) = match registry_queue_init::<WaylandBlurState>(&connection) {
+            Ok(initialised) => initialised,
+            Err(error) => {
+                tracing::error!(
+                    "the borrowed wl_display refused its registry queue init: {error}; the window is not blurred"
+                );
+                return None;
+            }
+        };
         // A compositor that never advertised the manager is the decided
         // unsupported case; one that advertised it but fails the bind is a
-        // bug, told apart by the registry's own global list.
+        // failure, told apart by the registry's own global list.
         let advertised = globals.contents().with_list(|list| {
             list.iter()
                 .any(|global| global.interface == ExtBackgroundEffectManagerV1::interface().name)
@@ -105,13 +113,22 @@ impl WaylandBlur {
         if !advertised {
             return None;
         }
-        let manager: ExtBackgroundEffectManagerV1 =
-            globals.bind(&queue.handle(), 1..=1, ()).expect(
-                "the compositor advertised ext_background_effect_manager_v1 but the bind failed",
-            );
-        let compositor: WlCompositor = globals
-            .bind(&queue.handle(), 1..=1, ())
-            .expect("every compositor advertises wl_compositor, but the bind failed");
+        let manager: ExtBackgroundEffectManagerV1 = match globals.bind(&queue.handle(), 1..=1, ()) {
+            Ok(manager) => manager,
+            Err(error) => {
+                tracing::error!(
+                    "the compositor advertised ext_background_effect_manager_v1 but the bind failed: {error}; the window is not blurred"
+                );
+                return None;
+            }
+        };
+        let compositor: WlCompositor = match globals.bind(&queue.handle(), 1..=1, ()) {
+            Ok(compositor) => compositor,
+            Err(error) => {
+                tracing::error!("binding wl_compositor failed: {error}; the window is not blurred");
+                return None;
+            }
+        };
         Some(Self {
             connection,
             manager,
@@ -132,48 +149,63 @@ impl WaylandBlur {
     /// lands on the surface's next commit, which the frame the renderer
     /// presents after this per-frame application provides.
     ///
-    /// # Panics
-    /// Panics when dispatching or flushing the borrowed connection fails,
-    /// when the window's `wl_surface` pointer does not resolve on this
-    /// connection, or when a clear arrives with no effect bound — a clear
-    /// follows a set, which binds the effect.
+    /// A dispatch or flush of the borrowed connection that fails is an
+    /// operational failure of the connection: it is logged and the ask is
+    /// dropped. A `wl_surface` pointer that does not resolve on this
+    /// connection is the window handle's contract violation: it is reported
+    /// and the window is left unblurred. A clear with no effect bound has
+    /// nothing to clear.
     pub(super) fn set_blur(&mut self, blur: bool, surface: *mut c_void) {
         // winit's reads of the shared socket queue this binding's events —
         // capability announcements, later globals — here; nothing acts on
         // them, but they are drained so the queue does not grow with the
         // window's lifetime.
-        self.queue
-            .dispatch_pending(&mut WaylandBlurState)
-            .expect("dispatching the borrowed wl_display's queue failed");
+        if let Err(error) = self.queue.dispatch_pending(&mut WaylandBlurState) {
+            tracing::error!(
+                "dispatching the borrowed wl_display's queue failed: {error}; the blur ask is dropped"
+            );
+            return;
+        }
         if blur {
-            let effect = self.effect.get_or_insert_with(|| {
+            if self.effect.is_none() {
                 // Wrap the `wl_surface` winit owns only long enough to pass
                 // it to `get_background_effect` — the request keeps the
                 // server-side association, not this proxy.
                 // SAFETY: `surface` is the live `wl_surface` of the window
                 // this state is stored on; `ObjectId::from_ptr` checks the
                 // proxy's interface against `wl_surface`'s.
-                let id = unsafe { ObjectId::from_ptr(WlSurface::interface(), surface.cast()) }
-                    .expect("the window's wl_surface pointer names no live wl_surface proxy");
-                let wl_surface = WlSurface::from_id(&self.connection, id)
-                    .expect("the window's wl_surface proxy is not on this connection");
-                self.manager
-                    .get_background_effect(&wl_surface, &self.queue.handle(), ())
-            });
-            let region = self.compositor.create_region(&self.queue.handle(), ());
-            region.add(0, 0, i32::MAX, i32::MAX);
-            effect.set_blur_region(Some(&region));
-            // The blur region copies on request — the `wl_region` is done.
-            region.destroy();
-        } else {
-            self.effect
-                .as_ref()
-                .expect("a blur clear follows a blur set, which binds the effect")
-                .set_blur_region(None);
+                let id = unsafe { ObjectId::from_ptr(WlSurface::interface(), surface.cast()) };
+                let wl_surface = id.map_err(|error| error.to_string()).and_then(|id| {
+                    WlSurface::from_id(&self.connection, id).map_err(|error| error.to_string())
+                });
+                let wl_surface = match wl_surface {
+                    Ok(wl_surface) => wl_surface,
+                    Err(error) => {
+                        contract_violation!(
+                            "the window's wl_surface pointer does not resolve to a live wl_surface proxy on this connection: {error}; the window is not blurred"
+                        );
+                        return;
+                    }
+                };
+                self.effect = Some(self.manager.get_background_effect(
+                    &wl_surface,
+                    &self.queue.handle(),
+                    (),
+                ));
+            }
+            if let Some(effect) = &self.effect {
+                let region = self.compositor.create_region(&self.queue.handle(), ());
+                region.add(0, 0, i32::MAX, i32::MAX);
+                effect.set_blur_region(Some(&region));
+                // The blur region copies on request — the `wl_region` is done.
+                region.destroy();
+            }
+        } else if let Some(effect) = &self.effect {
+            effect.set_blur_region(None);
         }
-        self.queue
-            .flush()
-            .expect("flushing the borrowed wl_display's queue failed");
+        if let Err(error) = self.queue.flush() {
+            tracing::error!("flushing the borrowed wl_display's queue failed: {error}");
+        }
     }
 }
 

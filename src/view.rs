@@ -10,12 +10,14 @@
 //! These extensions help create a fluent API for constructing user interfaces.
 
 use executor_core::spawn_local;
-use nami::{Binding, Signal, SignalExt as _, signal::IntoComputed};
+use nami::{Binding, Computed, Signal, SignalExt as _, signal::IntoComputed};
 use waterui_core::IntoSignalF32;
+#[cfg(feature = "std")]
+use waterui_core::handler::ReportExtraction;
 pub use waterui_core::view::*;
 use waterui_core::{
-    AnyView, Environment, IgnorableMetadata, Retain,
-    env::{With, use_env},
+    AnyView, Environment, Metadata, Retain,
+    env::{Installed, With},
     extract::State,
     handler::{EventHandler, Handler, HandlerOnce},
     layout::{HorizontalAlignment, VerticalAlignment, ViewDimensions},
@@ -39,12 +41,14 @@ use waterui_layout::{
     padding::{EdgeInsets, Padding},
     stack::Alignment,
 };
+#[cfg(feature = "navigation")]
 use waterui_navigation::NavigationView;
 
 use crate::{
     accessibility::{
-        self, AccessibilityChildren, AccessibilityHidden, AccessibilityIdentifier,
-        AccessibilityLabel, AccessibilityRole, AccessibilityState, AccessibilityValue,
+        self, AccessibilityChildren, AccessibilityGeometry, AccessibilityHidden,
+        AccessibilityIdentifier, AccessibilityLabel, AccessibilityRole, AccessibilityState,
+        AccessibilityValue,
     },
     background::IntoBackground,
     border::Border,
@@ -54,7 +58,6 @@ use crate::{
     interaction::Hittable,
     metadata::secure::Secure,
     theme,
-    view_ext::OnChange,
 };
 use crate::{
     component::{badge::Badge, focus::Focused},
@@ -65,11 +68,11 @@ use crate::{
 };
 #[cfg(feature = "std")]
 use waterkit_haptic::{Haptic, Intensity};
-use waterui_core::Metadata;
-use waterui_core::event::{Event, LifeCycle, LifeCycleHook, OnEvent};
+use waterui_core::event::{Event, LifeCycle, LifeCycleHook, OnChange, OnEvent};
 use waterui_core::id::TaggedView;
-use waterui_core::interaction::{InteractionReport, InteractionState, Selected};
+use waterui_core::interaction::{Disabled, InteractionReport, InteractionState, Selected};
 use waterui_core::key::{KeyHandling, OnKeyPress};
+use waterui_structural_transition::{Transition, Transitioned};
 
 /// Plays an impact haptic. `Haptic::impact` is async; the event that
 /// triggers it does not wait for it.
@@ -123,6 +126,16 @@ pub trait ViewExt: View + Sized {
         }
     }
 
+    /// Animates structural insertion and removal of this view.
+    ///
+    /// Value updates do not trigger a transition. Applied to a `Dynamic`, this
+    /// decorates its replacing content; applied to a collection item, it follows
+    /// that item's membership. Removal immediately ends semantic membership,
+    /// while the backend retains a non-interactive visual and a fixed-size slot.
+    fn transition(self, transition: impl Transition) -> Transitioned<Self> {
+        Transitioned::new(self, transition)
+    }
+
     /// Adjusts the opacity (transparency) of this view.
     ///
     /// This produces a lightweight `Metadata<Opacity>` that maps directly to
@@ -166,7 +179,16 @@ pub trait ViewExt: View + Sized {
     /// * `visible` - A reactive boolean indicating whether the view should be visible
     fn visible(self, visible: impl IntoComputed<bool>) -> impl View {
         let visible = visible.into_computed();
-        let accessibility_state = visible.map(|visible| AccessibilityState::new().hidden(!visible));
+        // A visible scope says nothing about hiding: like the opacity it
+        // multiplies, `.visible(true)` never reveals what an enclosing
+        // `.visible(false)` hid, so it leaves the flag to the enclosing scope.
+        let accessibility_state = visible.map(|visible| {
+            if visible {
+                AccessibilityState::new()
+            } else {
+                AccessibilityState::new().hidden(true)
+            }
+        });
         let opacity_value = visible.map(|visible| if visible { 1.0 } else { 0.0 });
         let hittable_value = visible;
 
@@ -184,6 +206,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `title` - The semantic title for the navigation view
+    #[cfg(feature = "navigation")]
     fn title(self, title: impl crate::text::IntoText) -> NavigationView {
         NavigationView::new(title, self)
     }
@@ -206,8 +229,9 @@ pub trait ViewExt: View + Sized {
     ///
     /// The handler is an [`EventHandler`]: the new value comes first, then any
     /// extractor arguments — `State<T>`, `Environment`, … — resolved from the
-    /// environment this view is rendered in. A `Binding` the handler writes
-    /// is injected with [`ViewExt::state`] and read back as a
+    /// environment this view resolves in, so a [`ViewExt::state`] install
+    /// reaches it on either side of `.on_change(..)`. A `Binding` the handler
+    /// writes is injected with [`ViewExt::state`] and read back as a
     /// `State<Binding<T>>` parameter rather than captured, so the handler can
     /// be a named function and the data flow stays visible at the call site.
     ///
@@ -226,7 +250,7 @@ pub trait ViewExt: View + Sized {
     ///     })
     ///     .state(&last_seen);
     /// ```
-    fn on_change<C, H, A>(self, source: &C, handler: H) -> OnChange<Self, C>
+    fn on_change<C, H, A>(self, source: &C, handler: H) -> OnChange<Self>
     where
         C: Signal,
         C::Output: PartialEq + Clone,
@@ -301,8 +325,8 @@ pub trait ViewExt: View + Sized {
     /// ))
     /// .material_group();
     /// ```
-    fn material_group(self) -> IgnorableMetadata<crate::background::MaterialGroup> {
-        IgnorableMetadata::new(AnyView::new(self), crate::background::MaterialGroup)
+    fn material_group(self) -> Metadata<crate::background::MaterialGroup> {
+        Metadata::new(AnyView::new(self), crate::background::MaterialGroup)
     }
 
     /// Sets the foreground color for this view and all its descendants.
@@ -347,6 +371,27 @@ pub trait ViewExt: View + Sized {
     /// ```
     fn muted(self) -> impl View {
         self.foreground(theme::color::MutedForeground)
+    }
+
+    /// Sets the tint the controls in this view's subtree draw with.
+    ///
+    /// A control's tint is the nearest enclosing `tint`, and the theme's
+    /// `Accent` token when none is set. Buttons, switches, sliders and other
+    /// controls draw their emphasis with it. The colour may be a signal; a
+    /// change updates the controls in place.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use waterui::prelude::*;
+    ///
+    /// vstack((
+    ///     button("Delete").action(|| {}).tint(Color::red()),
+    ///     button("Save").action(|| {}),
+    /// ));
+    /// ```
+    fn tint(self, color: impl Into<Color>) -> impl View {
+        self.with(theme::Tint::new(color))
     }
 
     /// Adds an overlay to this view.
@@ -485,7 +530,7 @@ pub trait ViewExt: View + Sized {
     /// let query = binding::<Str>(Str::default());
     /// field("Search", &query).on_key_press(
     ///     |Use(press): Use<KeyPress>, State(open): State<Binding<bool>>| {
-    ///         if press.key == Key::Named(NamedKey::Escape) {
+    ///         if press.key() == &Key::Named(NamedKey::Escape) {
     ///             open.set(false);
     ///             KeyHandling::Handled
     ///         } else {
@@ -615,7 +660,7 @@ pub trait ViewExt: View + Sized {
     /// Adds padding to this view with custom edge insets.
     ///
     /// `EdgeInsets` converts from a single `f32` (every edge), a
-    /// `(vertical, horizontal)` pair and a `[top, bottom, leading, trailing]`
+    /// `(vertical, horizontal)` pair and a `[top, leading, bottom, trailing]`
     /// array, so the common shapes need no constructor:
     ///
     /// ```rust
@@ -623,7 +668,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// text!("a").padding_with(16.0);
     /// text!("b").padding_with((8.0, 16.0));
-    /// text!("c").padding_with([4.0, 12.0, 16.0, 16.0]);
+    /// text!("c").padding_with([4.0, 16.0, 12.0, 16.0]);
     /// ```
     ///
     /// # Arguments
@@ -692,8 +737,8 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `label` - The accessibility label to apply, constant or reactive
-    fn a11y_label(self, label: impl IntoComputed<Str>) -> IgnorableMetadata<AccessibilityLabel> {
-        IgnorableMetadata::new(self, accessibility::AccessibilityLabel::new(label))
+    fn a11y_label(self, label: impl IntoComputed<Str>) -> Metadata<AccessibilityLabel> {
+        Metadata::new(self, accessibility::AccessibilityLabel::new(label))
     }
 
     /// Sets the accessibility value for this view.
@@ -709,19 +754,16 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `value` - The accessibility value to apply, constant or reactive
-    fn a11y_value(self, value: impl IntoComputed<Str>) -> IgnorableMetadata<AccessibilityValue> {
-        IgnorableMetadata::new(self, accessibility::AccessibilityValue::new(value))
+    fn a11y_value(self, value: impl IntoComputed<Str>) -> Metadata<AccessibilityValue> {
+        Metadata::new(self, accessibility::AccessibilityValue::new(value))
     }
 
     /// Sets the accessibility role for this view.
     ///
     /// # Arguments
     /// * `role` - The accessibility role to apply
-    fn a11y_role(
-        self,
-        role: accessibility::AccessibilityRole,
-    ) -> IgnorableMetadata<AccessibilityRole> {
-        IgnorableMetadata::new(self, role)
+    fn a11y_role(self, role: accessibility::AccessibilityRole) -> Metadata<AccessibilityRole> {
+        Metadata::new(self, role)
     }
 
     /// Sets a stable automation identifier for locating this view in UI tests.
@@ -729,40 +771,49 @@ pub trait ViewExt: View + Sized {
     /// Identifiers are invisible to end users and assistive technologies; they
     /// exist for `waterui-testing` selectors and native automation frameworks
     /// (`XCUITest` `accessibilityIdentifier`, Android `UiAutomator`).
-    fn a11y_id(self, identifier: impl Into<Str>) -> IgnorableMetadata<AccessibilityIdentifier> {
-        IgnorableMetadata::new(
+    fn a11y_id(self, identifier: impl Into<Str>) -> Metadata<AccessibilityIdentifier> {
+        Metadata::new(
             self,
             accessibility::AccessibilityIdentifier::new(identifier),
         )
     }
 
     /// Overrides whether this view is hidden from assistive technologies.
-    fn a11y_hidden(self, hidden: bool) -> IgnorableMetadata<AccessibilityHidden> {
-        IgnorableMetadata::new(self, accessibility::AccessibilityHidden::new(hidden))
+    fn a11y_hidden(self, hidden: bool) -> Metadata<AccessibilityHidden> {
+        Metadata::new(self, accessibility::AccessibilityHidden::new(hidden))
+    }
+
+    /// Chooses which rectangle this view's accessibility element reports.
+    ///
+    /// An element reports the view's own answer, positioned in its assigned
+    /// frame, by default. `AccessibilityGeometry::Allocation` reports the
+    /// whole assigned frame — a canvas whose drawing fills it, or a gap a
+    /// stack allocated to a spacer — and `AccessibilityGeometry::Region`
+    /// an explicit rectangle in the view's own coordinates. Hit testing,
+    /// focus and drawing are unaffected.
+    fn a11y_geometry(self, geometry: AccessibilityGeometry) -> Metadata<AccessibilityGeometry> {
+        Metadata::new(self, geometry)
     }
 
     /// Controls how descendants contribute semantics for this view.
     fn a11y_children(
         self,
         behavior: accessibility::AccessibilityChildren,
-    ) -> IgnorableMetadata<AccessibilityChildren> {
-        IgnorableMetadata::new(self, behavior)
+    ) -> Metadata<AccessibilityChildren> {
+        Metadata::new(self, behavior)
     }
 
     /// Applies explicit accessibility state metadata.
-    fn a11y_state(
-        self,
-        state: accessibility::AccessibilityState,
-    ) -> IgnorableMetadata<AccessibilityState> {
-        IgnorableMetadata::new(self, state)
+    fn a11y_state(self, state: accessibility::AccessibilityState) -> Metadata<AccessibilityState> {
+        Metadata::new(self, state)
     }
 
     /// Applies reactive accessibility state metadata.
     fn a11y_state_signal(
         self,
         state: impl IntoComputed<accessibility::AccessibilityState>,
-    ) -> IgnorableMetadata<accessibility::AccessibilityStateSignal> {
-        IgnorableMetadata::new(self, accessibility::AccessibilityStateSignal::new(state))
+    ) -> Metadata<accessibility::AccessibilityStateSignal> {
+        Metadata::new(self, accessibility::AccessibilityStateSignal::new(state))
     }
 
     /// Observes a gesture and executes an action when the gesture is recognized.
@@ -863,7 +914,7 @@ pub trait ViewExt: View + Sized {
         let mut action = action;
         self.gesture(TapGesture::new(), move |env: Environment| {
             trigger_impact_haptic(intensity);
-            action.call(&env);
+            action.call(&env).report_extraction();
         })
     }
 
@@ -892,7 +943,7 @@ pub trait ViewExt: View + Sized {
             LongPressGesture::new(minimum_duration_ms),
             move |env: Environment| {
                 trigger_impact_haptic(intensity);
-                action.call(&env);
+                action.call(&env).report_extraction();
             },
         )
     }
@@ -1148,14 +1199,12 @@ pub trait ViewExt: View + Sized {
     ///         "Paste".action(|| {}),
     ///     ]);
     /// ```
+    #[cfg(feature = "menu")]
     fn context_menu(
         self,
         menu: impl crate::metadata::context_menu::IntoContextMenu,
     ) -> crate::metadata::context_menu::ContextMenuView<Self> {
-        crate::metadata::context_menu::ContextMenuView {
-            content: self,
-            menu: menu.into_context_menu(),
-        }
+        crate::metadata::context_menu::ContextMenuView::new(self, menu.into_context_menu())
     }
 
     /// Presents `overlay` next to this view, above all other content in the
@@ -1241,6 +1290,7 @@ pub trait ViewExt: View + Sized {
     /// ))
     /// .list_min_row_height(0.0);
     /// ```
+    #[cfg(feature = "list")]
     fn list_min_row_height(
         self,
         height: f32,
@@ -1284,10 +1334,7 @@ pub trait ViewExt: View + Sized {
 
     /// Installs a plugin into the environment.
     fn install(self, plugin: impl Plugin) -> impl View {
-        use_env(move |mut env: Environment| {
-            plugin.install(&mut env);
-            Metadata::new(self, env)
-        })
+        Installed::new(self, plugin)
     }
 
     /// Retains a value for the lifetime of this view.
@@ -1446,19 +1493,20 @@ pub trait ViewExt: View + Sized {
     fn disabled(self, is_disabled: impl IntoComputed<bool>) -> impl View {
         let is_disabled = is_disabled.into_computed();
 
-        let accessibility_state =
-            is_disabled.map(|disabled| AccessibilityState::new().disabled(disabled));
+        // Disabled scopes OR-combine (`Disabled::install`), so an enabled
+        // scope leaves the flag to the enclosing scope rather than claim it.
+        let accessibility_state = is_disabled.map(|disabled| {
+            if disabled {
+                AccessibilityState::new().disabled(true)
+            } else {
+                AccessibilityState::new()
+            }
+        });
         let hittable_value = is_disabled.map(|d| !d);
-        let scope = is_disabled;
 
-        use_env(move |mut env: Environment| {
-            waterui_core::interaction::Disabled::install(&mut env, scope);
-            Metadata::new(
-                self.a11y_state_signal(accessibility_state)
-                    .hittable(hittable_value),
-                env,
-            )
-        })
+        self.a11y_state_signal(accessibility_state)
+            .hittable(hittable_value)
+            .install(DisabledScope(is_disabled))
     }
 
     /// Reports the state of the interactive control this modifies — or the
@@ -1474,7 +1522,7 @@ pub trait ViewExt: View + Sized {
     /// let outline = state.map(|s: InteractionState| if s.contains(InteractionState::FOCUSED) { 3.0 } else { 1.0 });
     /// let chip = button("Filter").action(|| {}).interaction_state(&state);
     /// ```
-    fn interaction_state(self, state: &Binding<InteractionState>) -> impl View {
+    fn interaction_state(self, state: &Binding<InteractionState>) -> impl View + use<Self> {
         self.install(InteractionReport(state.clone()))
     }
 
@@ -1539,3 +1587,33 @@ pub trait ViewExt: View + Sized {
 }
 
 impl<V: View + Sized> ViewExt for V {}
+
+/// The scope [`ViewExt::disabled`] installs: OR-combined with any disabled
+/// scope inherited from an enclosing `.disabled(...)`.
+struct DisabledScope(Computed<bool>);
+
+impl Plugin for DisabledScope {
+    fn install(self, env: &mut Environment) {
+        Disabled::install(env, self.0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use waterui_core::{AnyView, Binding, View, interaction::InteractionState};
+
+    use super::ViewExt;
+
+    /// `interaction_state` clones the binding it reports into, so the view it
+    /// returns must not borrow it: the binding is usually a local the body
+    /// also reads.
+    #[test]
+    fn interaction_state_does_not_borrow_the_binding() {
+        fn reported(content: AnyView) -> impl View {
+            let state = Binding::container(InteractionState::empty());
+            content.interaction_state(&state)
+        }
+
+        let _ = reported;
+    }
+}

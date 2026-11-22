@@ -7,7 +7,7 @@
 //! built effect is not, so the adapter is a cell that holds the recipe while
 //! it crosses to the render thread, builds it inside `setup` (which the engine
 //! drives there), and delegates every later call to the built
-//! [`waterui_graphics::filter_view::ErasedEffect`].
+//! [`waterui_graphics::backend::ErasedEffect`].
 //!
 //! [`FilteredRuntime`] is what a mount keeps on the UI side: the unbuilt
 //! source until registration, the engine `Filter` handle once registered (its
@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
 use super::mount::target::FilterHandle;
-use waterui_graphics::{AnyEffect, ParamGuards};
+use waterui_graphics::backend::{AnyEffect, ParamGuards};
 
 /// Per-frame applied-filter telemetry shared between the UI side and the
 /// engine's render thread.
@@ -82,8 +82,21 @@ pub use gpu::EngineEffect;
 /// the nami subscriptions feeding the filter's parameter slots alive for as
 /// long as the layer can draw, and tears them down when the node is dropped.
 pub struct FilteredRuntime {
-    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
+    #[cfg_attr(
+        not(any(test, hydrolysis_runtime)),
+        expect(
+            dead_code,
+            reason = "a build without a painter mounts no filtered view"
+        )
+    )]
     source: Option<AnyEffect>,
+    #[cfg_attr(
+        not(any(test, hydrolysis_runtime)),
+        expect(
+            dead_code,
+            reason = "a build without a painter mounts no filtered view"
+        )
+    )]
     filter: Option<FilterHandle>,
     _guards: ParamGuards,
 }
@@ -107,23 +120,25 @@ impl FilteredRuntime {
     /// The filter handle this mount installs on its wrapper layer.
     ///
     /// Registers the effect on first call and returns its id — the runtime
-    /// retains the registration until the mount drops it.
-    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
+    /// retains the registration until the mount drops it. `None` when the
+    /// registration was rejected; the source is consumed by that attempt,
+    /// so later calls stay `None` without retrying.
+    #[cfg_attr(
+        not(any(test, hydrolysis_runtime)),
+        expect(
+            dead_code,
+            reason = "a build without a painter mounts no filtered view"
+        )
+    )]
     pub(crate) fn filter(
         &mut self,
-        register: impl FnOnce(AnyEffect) -> FilterHandle,
-    ) -> cherenkov_record::FilterId {
+        register: impl FnOnce(AnyEffect) -> Option<FilterHandle>,
+    ) -> Option<cherenkov_record::FilterId> {
         if self.filter.is_none() {
-            let source = self
-                .source
-                .take()
-                .expect("hydrolysis filtered mount without an effect source");
-            self.filter = Some(register(source));
+            let source = self.source.take()?;
+            self.filter = register(source);
         }
-        self.filter
-            .as_ref()
-            .expect("hydrolysis filtered mount lost its filter handle")
-            .id()
+        self.filter.as_ref().map(FilterHandle::id)
     }
 }
 
@@ -134,7 +149,7 @@ impl<E: crate::text::TextEngine> crate::renderer::HydrolysisRenderer<E> {
     /// The capture leg is `0`: the engine captures a filtered subtree inside
     /// the same render pass as the effect encode and reports no per-phase
     /// split, so only the encode leg remains measurable.
-    #[cfg(hydrolysis_gpu_painter)]
+    #[cfg(hydrolysis_cherenkov)]
     pub(crate) fn applied_filter_stats(&self) -> (u32, u64, u64) {
         (
             self.frame_applied_filter_count,

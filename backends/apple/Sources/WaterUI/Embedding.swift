@@ -32,19 +32,19 @@ private func mountCreate(
   _ _: UnsafePointer<CChar>, _ _: UnsafePointer<CChar>,
   _ _: Bool, _ _: Bool, _ _: UnsafePointer<CChar>?,
   _ _: UnsafePointer<Double>?
-) -> UnsafeMutableRawPointer
+) -> UnsafeMutableRawPointer?
 @_extern(c, "waterui_apple_mount_drop")
-private func mountDrop(_ _: UnsafeMutableRawPointer)
+private func mountDrop(_ _: UnsafeMutableRawPointer?)
 @_extern(c, "waterui_apple_update_visibility")
-private func updateVisibilityNative(_ _: UnsafeRawPointer)
+private func updateVisibilityNative(_ _: UnsafeRawPointer?)
 @_extern(c, "waterui_apple_update_environment")
 private func updateEnvironmentNative(
-  _ _: UnsafeRawPointer, _ _: Bool, _ _: Bool,
+  _ _: UnsafeRawPointer?, _ _: Bool, _ _: Bool,
   _ _: UnsafePointer<CChar>, _ _: UnsafePointer<Double>
 )
 @_extern(c, "waterui_apple_measure")
 private func measureNative(
-  _ _: UnsafeRawPointer, _ _: Double, _ _: Double,
+  _ _: UnsafeRawPointer?, _ _: Double, _ _: Double,
   _ _: Bool, _ _: Bool, _ _: UnsafeMutablePointer<Double>
 )
 
@@ -101,8 +101,8 @@ private final class PendingRuntime {
 
 /// A host's declared environment for one mount: the snapshot a `SwiftUI`
 /// representable hands the backend — scheme, direction and the six
-/// resolved text styles as `(size, weight, lineHeight)` triples in Body,
-/// Title1, Headline, Subheadline, Caption1, Footnote order.
+/// resolved text styles as `(size, weight, boldWeightCoordinate, lineHeight)` groups
+/// in Body, Title1, Headline, Subheadline, Caption1, Footnote order.
 private struct HostEnvironment: Equatable {
   var dark: Bool
   var rtl: Bool
@@ -112,18 +112,41 @@ private struct HostEnvironment: Equatable {
   /// Resolves the environment's own text styles through `Font.resolve(in:)`
   /// against its `fontResolutionContext` — the host's content-size
   /// category included — and reads size, weight and face metrics off each
-  /// resolved `CTFont`.
+  /// resolved `CTFont`, plus the weight `SwiftUI` gives the style's bold
+  /// (`style.bold()`), the platform bold of that text style.
   init(_ environment: EnvironmentValues) {
     dark = environment.colorScheme == .dark
     rtl = environment.layoutDirection == .rightToLeft
     locale = environment.locale.identifier(.bcp47)
     let context = environment.fontResolutionContext
+    func weight(_ font: CTFont) -> Double {
+      let traits = CTFontCopyTraits(font) as NSDictionary
+      return (traits[kCTFontWeightTrait] as? NSNumber)?.doubleValue ?? 0.0
+    }
+    // The bold face keeps the weight trait of the style it came from (the
+    // macOS headline's bold declares Bold and draws Heavy), so its weight is
+    // read from the face: the `wght` axis coordinate, which CoreText omits
+    // when it is the axis default.
+    let weightAxis = NSNumber(value: 0x7767_6874)
+    func weightCoordinate(_ font: CTFont) -> Double {
+      if let value = (CTFontCopyVariation(font) as NSDictionary?)?[weightAxis] as? NSNumber {
+        return value.doubleValue
+      }
+      guard let axes = CTFontCopyVariationAxes(font) as? [NSDictionary],
+        let axis = axes.first(where: {
+          $0[kCTFontVariationAxisIdentifierKey] as? NSNumber == weightAxis
+        }),
+        let value = axis[kCTFontVariationAxisDefaultValueKey] as? NSNumber
+      else {
+        fatalError("the system bold face has no wght variation axis")
+      }
+      return value.doubleValue
+    }
     fonts = [Font.body, .title, .headline, .subheadline, .caption, .footnote]
       .flatMap { style -> [Double] in
         let font = style.resolve(in: context).ctFont
-        let traits = CTFontCopyTraits(font) as NSDictionary
-        let weight = (traits[kCTFontWeightTrait] as? NSNumber)?.doubleValue ?? 0.0
-        return [Double(CTFontGetSize(font)), weight,
+        let bold = style.bold().resolve(in: context).ctFont
+        return [Double(CTFontGetSize(font)), weight(font), weightCoordinate(bold),
                 Double(CTFontGetAscent(font) + CTFontGetDescent(font) + CTFontGetLeading(font))]
       }
   }
@@ -136,7 +159,9 @@ private struct HostEnvironment: Equatable {
 @MainActor
 private final class WaterUIMount {
   private let runtime: WaterUIRuntime
-  let pointer: UnsafeMutableRawPointer
+  /// The backend's mount handle; nil when the app declares no root window,
+  /// a mount that shows no content and answers every call neutrally.
+  let pointer: UnsafeMutableRawPointer?
 
   init(runtime: WaterUIRuntime, host: AnyObject, resources: WaterUIResourceContext,
        environment: HostEnvironment?) {
@@ -161,7 +186,7 @@ private final class WaterUIMount {
   func updateEnvironment(_ environment: HostEnvironment) {
     environment.withFontsPointer { hostFonts in
       environment.locale.withCString { locale in
-        updateEnvironmentNative(UnsafeRawPointer(pointer),
+        updateEnvironmentNative(pointer.map { UnsafeRawPointer($0) },
                                 environment.dark, environment.rtl, locale, hostFonts)
       }
     }
@@ -172,7 +197,7 @@ private final class WaterUIMount {
   func measure(_ proposal: ProposedViewSize) -> CGSize {
     var result = [Double](repeating: 0, count: 2)
     result.withUnsafeMutableBufferPointer { buffer in
-      measureNative(UnsafeRawPointer(pointer),
+      measureNative(pointer.map { UnsafeRawPointer($0) },
                     proposal.width ?? 0, proposal.height ?? 0,
                     proposal.width != nil, proposal.height != nil, buffer.baseAddress!)
     }
@@ -183,7 +208,9 @@ private final class WaterUIMount {
 
   #if canImport(UIKit)
   var sceneOwner: WaterUISceneOwner {
-    WaterUISceneOwner(runtime: runtime, id: mountSceneID(UnsafeRawPointer(pointer)))
+    // Scene ids start at 1, so 0 routes to no mount: `connect` answers nil.
+    WaterUISceneOwner(
+      runtime: runtime, id: pointer.map { mountSceneID(UnsafeRawPointer($0)) } ?? 0)
   }
   #endif
 }
@@ -286,8 +313,8 @@ public final class WaterUIHostController: UIViewController {
   /// nothing a mounted surface can observe; call this so surfaces parked
   /// for visibility re-check and resume.
   public func updateVisibility() {
-    guard let mount else { return }
-    updateVisibilityNative(UnsafeRawPointer(mount.pointer))
+    guard let pointer = mount?.pointer else { return }
+    updateVisibilityNative(UnsafeRawPointer(pointer))
   }
 
   public var sceneOwner: WaterUISceneOwner {
@@ -388,8 +415,8 @@ public final class WaterUIHostController: NSViewController {
   /// whenever the host mutates one of them and surfaces parked for
   /// visibility re-check and resume.
   public func updateVisibility() {
-    guard let mount else { return }
-    updateVisibilityNative(UnsafeRawPointer(mount.pointer))
+    guard let pointer = mount?.pointer else { return }
+    updateVisibilityNative(UnsafeRawPointer(pointer))
   }
 }
 

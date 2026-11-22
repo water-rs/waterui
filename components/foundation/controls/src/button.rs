@@ -195,7 +195,9 @@ use fmt::Debug;
 
 use alloc::boxed::Box;
 use executor_core::spawn_local;
-use waterui_core::handler::{BoxedAction, Handler};
+#[cfg(feature = "menu")]
+use waterui_core::handler::ReportExtraction;
+use waterui_core::handler::{BoxedAction, ExtractionError, Handler};
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
 use waterui_core::{AnyView, Environment, Native, NativeView, View, impl_debug};
 use waterui_text::IntoText;
@@ -333,13 +335,54 @@ pub struct ButtonConfig {
     /// and the spoken text used by assistive technology. Hooks receiving a
     /// `ButtonConfig` get a typed `Label`, so they can wrap or restyle it but
     /// cannot strip away the semantic identity.
-    pub label: Label,
+    label: Label,
     /// The action to execute when the button is clicked.
-    pub action: BoxedAction<()>,
+    action: BoxedAction<()>,
     /// The visual style of the button.
-    pub style: ButtonStyle,
+    style: ButtonStyle,
     /// How large the button is drawn.
-    pub size: ControlSize,
+    size: ControlSize,
+}
+
+impl ButtonConfig {
+    /// The semantic label displayed on the button.
+    ///
+    /// [`Label`] carries both the visual chrome (text + icon + display mode)
+    /// and the spoken text used by assistive technology. Hooks receiving a
+    /// `ButtonConfig` get a typed `Label`, so they can wrap or restyle it but
+    /// cannot strip away the semantic identity.
+    #[must_use]
+    pub const fn label(&self) -> &Label {
+        &self.label
+    }
+
+    /// The action to execute when the button is clicked.
+    #[must_use]
+    pub const fn action(&self) -> &BoxedAction<()> {
+        &self.action
+    }
+
+    /// The action to execute when the button is clicked, for calling it.
+    pub const fn action_mut(&mut self) -> &mut BoxedAction<()> {
+        &mut self.action
+    }
+
+    /// Splits the value into its label, action, style and size.
+    pub fn into_parts(self) -> (Label, BoxedAction<()>, ButtonStyle, ControlSize) {
+        (self.label, self.action, self.style, self.size)
+    }
+
+    /// The visual style of the button.
+    #[must_use]
+    pub const fn style(&self) -> ButtonStyle {
+        self.style
+    }
+
+    /// How large the button is drawn.
+    #[must_use]
+    pub const fn size(&self) -> ControlSize {
+        self.size
+    }
 }
 
 impl_debug!(ButtonConfig);
@@ -350,22 +393,27 @@ impl ButtonConfig {
     #[must_use]
     fn resolve(mut self, env: &Environment) -> Self {
         self.label = self.label.resolve(env);
-        // `Automatic` means "whatever this context calls for". A surrounding
-        // scope can say what that is — a list row wants row-style buttons, not
-        // the filled containers a screen's primary action gets — while an
-        // explicit style on the button still wins.
-        if matches!(self.style, ButtonStyle::Automatic)
-            && let Some(ambient) = env.get::<ButtonStyle>()
-        {
-            self.style = *ambient;
-        }
+        self.style = self.style.resolve(env);
         self
+    }
+}
+
+impl ButtonStyle {
+    /// This style in `env`. `Automatic` means "whatever this context calls
+    /// for", and a surrounding scope can say what that is — a list row wants
+    /// row-style buttons, not the filled containers a screen's primary
+    /// action gets — while an explicit style still wins.
+    pub(crate) fn resolve(self, env: &Environment) -> Self {
+        match (self, env.get::<Self>()) {
+            (Self::Automatic, Some(ambient)) => *ambient,
+            (style, _) => style,
+        }
     }
 }
 
 fn render_button_config<Action>(button: Button<Action>) -> ButtonConfig
 where
-    Action: FnMut(&Environment) + 'static,
+    Action: FnMut(&Environment) -> Result<(), ExtractionError> + 'static,
 {
     ButtonConfig {
         // A button label stays one truncated line — the SwiftUI and Material
@@ -383,7 +431,7 @@ where
 
 impl<Action> View for Button<Action>
 where
-    Action: FnMut(&Environment) + 'static,
+    Action: FnMut(&Environment) -> Result<(), ExtractionError> + 'static,
 {
     fn body(self, env: &Environment) -> impl View {
         let config = render_button_config(self);
@@ -392,10 +440,6 @@ where
         } else {
             AnyView::new(Native::new(config.resolve(env)))
         }
-    }
-
-    fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
-        waterui_core::layout::StretchAxis::None
     }
 }
 
@@ -414,7 +458,7 @@ impl ViewConfiguration for ButtonConfig {
 
 impl<Action> ConfigurableView for Button<Action>
 where
-    Action: FnMut(&Environment) + 'static,
+    Action: FnMut(&Environment) -> Result<(), ExtractionError> + 'static,
 {
     type Config = ButtonConfig;
 
@@ -498,7 +542,10 @@ impl<Action: Clone> Clone for Button<Action> {
     }
 }
 
-impl Button<fn(&Environment)> {
+/// The action of a button that has none configured yet.
+pub type NoAction = fn(&Environment) -> Result<(), ExtractionError>;
+
+impl Button<NoAction> {
     /// Creates a new button with the specified semantic label.
     ///
     /// The button has no action by default. Use [`action`](Self::action) or
@@ -605,7 +652,10 @@ impl<Action> Button<Action> {
     /// # }
     /// ```
     #[must_use]
-    pub fn action<F, Args>(self, action: F) -> Button<impl FnMut(&Environment)>
+    pub fn action<F, Args>(
+        self,
+        action: F,
+    ) -> Button<impl FnMut(&Environment) -> Result<(), ExtractionError>>
     where
         F: Handler<Args, ()> + 'static,
     {
@@ -644,24 +694,42 @@ impl<Action> Button<Action> {
     /// });
     /// # }
     /// ```
-    pub fn action_async<F, Fut, Args>(self, action: F) -> Button<impl FnMut(&Environment)>
+    pub fn action_async<F, Fut, Args>(
+        self,
+        action: F,
+    ) -> Button<impl FnMut(&Environment) -> Result<(), ExtractionError>>
     where
         F: Handler<Args, Fut> + 'static,
         Fut: Future<Output = ()> + 'static,
     {
         let mut action = action;
-        self.action(move |env: Environment| {
-            spawn_local(action.call(&env)).detach();
-        })
+        Button {
+            label: self.label,
+            // A failed extraction means the action does not run: no future is
+            // spawned, and the failure travels to the button's dispatcher.
+            action: move |env: &Environment| {
+                spawn_local(action.call(env)?).detach();
+                Ok(())
+            },
+            style: self.style,
+            size: self.size,
+        }
     }
 }
 
 /// No-op action for buttons without a configured action.
-const fn noop(_env: &Environment) {}
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "the signature is the button action's"
+)]
+const fn noop(_env: &Environment) -> Result<(), ExtractionError> {
+    Ok(())
+}
 
+#[cfg(feature = "menu")]
 impl<Action> From<Button<Action>> for crate::menu::Command
 where
-    Action: FnMut(&Environment) + 'static,
+    Action: FnMut(&Environment) -> Result<(), ExtractionError> + 'static,
 {
     fn from(value: Button<Action>) -> Self {
         let Button {
@@ -670,13 +738,16 @@ where
             style: _,
             size: _,
         } = value;
-        Self::builder(label).action(move |env: Environment| action(&env))
+        Self::builder(label).action(move |env: Environment| {
+            action(&env).report_extraction();
+        })
     }
 }
 
+#[cfg(feature = "menu")]
 impl<Action> From<Button<Action>> for crate::menu::MenuItem
 where
-    Action: FnMut(&Environment) + 'static,
+    Action: FnMut(&Environment) -> Result<(), ExtractionError> + 'static,
 {
     fn from(value: Button<Action>) -> Self {
         Self::Command(value.into())
@@ -704,11 +775,11 @@ where
 /// button("Click me").action(|| {});
 /// # }
 /// ```
-pub fn button(label: impl IntoLabel) -> Button<fn(&Environment)> {
+pub fn button(label: impl IntoLabel) -> Button<NoAction> {
     Button::new(label.into_label())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "menu"))]
 mod tests {
     use super::*;
     use waterui_core::Signal;
@@ -725,20 +796,20 @@ mod tests {
         let command: crate::menu::Command = rendered.into();
         assert_eq!(
             command
-                .label
+                .label()
                 .semantic_text()
                 .resolve(&Environment::default())
-                .content
+                .content()
                 .snapshot()
                 .to_plain()
                 .as_str(),
             "Edit"
         );
         let icon = command
-            .label
+            .label()
             .semantic_icon()
             .expect("semantic label icon should be preserved");
-        assert_eq!(icon.name.as_str(), "magnifyingglass");
+        assert_eq!(icon.name().as_str(), "magnifyingglass");
     }
 
     #[test]
@@ -755,10 +826,10 @@ mod tests {
         let command: crate::menu::Command = rendered.into();
         assert_eq!(
             command
-                .label
+                .label()
                 .semantic_text()
                 .resolve(&Environment::default())
-                .content
+                .content()
                 .snapshot()
                 .to_plain()
                 .as_str(),
@@ -766,7 +837,7 @@ mod tests {
         );
         assert_eq!(
             command
-                .label
+                .label()
                 .clone()
                 .resolve(&Environment::default())
                 .accessibility_label()
@@ -776,9 +847,9 @@ mod tests {
             "Edit document"
         );
         let icon = command
-            .label
+            .label()
             .semantic_icon()
             .expect("icon should be preserved when only the spoken text is overridden");
-        assert_eq!(icon.name.as_str(), "magnifyingglass");
+        assert_eq!(icon.name().as_str(), "magnifyingglass");
     }
 }

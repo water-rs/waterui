@@ -16,10 +16,12 @@ use waterui::cursor::Cursor;
 #[cfg(target_os = "macos")]
 use waterui::cursor::CursorStyle;
 use waterui_core::Metadata;
-use waterui_core::layout::{ProposalSize, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
+    ViewDimensions,
+};
 
 use crate::contract::{Mounted, NativeLeaf};
-use crate::dispatch::Dispatcher;
 use crate::proposal;
 
 #[cfg(target_os = "macos")]
@@ -27,6 +29,7 @@ use cocoa_ui::appkit::{self as appkit, HostView};
 #[cfg(target_os = "macos")]
 use cocoa_ui::pointer::{PointerEvent, PointerEvents};
 
+use crate::contract::RenderContext;
 #[cfg(target_os = "ios")]
 use cocoa_ui::uikit::{self as uikit, HostView};
 
@@ -55,6 +58,18 @@ impl core::fmt::Debug for CursorSubView {
 }
 
 impl SubView for CursorSubView {
+    fn resolve_extent(
+        &self,
+        bounds: LayoutRect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        self.state
+            .borrow()
+            .child
+            .layout()
+            .resolve_extent(bounds, proposal)
+    }
+
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         self.state.borrow().child.layout().measure(proposal)
     }
@@ -91,90 +106,88 @@ const fn kit_style(style: CursorStyle) -> appkit::Cursor {
     }
 }
 
-/// Installs the `cursor` handler on the dispatcher.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_view::<Metadata<Cursor>>(|metadata, ctx| {
-        let mtm = ctx.mtm();
-        let host = HostView::new(mtm, Rect::ZERO);
-        let mounted = ctx.render(metadata.content).mount(&host);
-        crate::primary_content::forward(&host, mounted.view());
-        view::set_translates_autoresizing(mounted.view(), true);
+/// The `cursor` realization.
+pub fn realize_cursor_metadata(metadata: Metadata<Cursor>, ctx: &RenderContext<'_>) -> NativeLeaf {
+    let mtm = ctx.mtm();
+    let host = HostView::new(mtm, Rect::ZERO);
+    let mounted = ctx.render(metadata.content).mount(&host);
+    crate::primary_content::forward(&host, mounted.view());
+    view::set_translates_autoresizing(mounted.view(), true);
 
-        let state = Rc::new(RefCell::new(CursorState { child: mounted }));
+    let state = Rc::new(RefCell::new(CursorState { child: mounted }));
 
-        // The content always fills the wrapper.
-        host.set_layout_handler({
-            let state = Rc::clone(&state);
-            move |host| {
-                let state = state.borrow();
-                view::set_frame(state.child.view(), view::bounds(host));
-            }
-        });
+    // The content always fills the wrapper.
+    host.set_layout_handler({
+        let state = Rc::clone(&state);
+        move |host| {
+            let state = state.borrow();
+            view::set_frame(state.child.view(), view::bounds(host));
+        }
+    });
 
-        // `setPlacementProposal` forwards to the content.
-        let sink_guard = proposal::register_sink(&host, {
-            let state = Rc::clone(&state);
-            move |selected| {
-                let state = state.borrow();
-                proposal::deliver(state.child.view(), selected);
-            }
-        });
+    // `setPlacementProposal` forwards to the content.
+    let sink_guard = proposal::register_sink(&host, {
+        let state = Rc::clone(&state);
+        move |selected| {
+            let state = state.borrow();
+            proposal::deliver(state.child.view(), selected);
+        }
+    });
 
-        let mut leaf = NativeLeaf::new(
-            &*host,
-            CursorSubView {
-                state: Rc::clone(&state),
+    let mut leaf = NativeLeaf::new(
+        &*host,
+        CursorSubView {
+            state: Rc::clone(&state),
+        },
+    );
+    leaf.keep(sink_guard);
+
+    #[cfg(target_os = "macos")]
+    {
+        use core::cell::Cell;
+        let current = Rc::new(Cell::new(CursorStyle::Arrow));
+        // Enter applies the style, exit restores the arrow; a style
+        // change while the pointer is inside re-applies immediately —
+        // `updateTrackingAreas` keeps the same area as `bounds` moves.
+        host.set_pointer_handler(
+            PointerEvents::ENTERED
+                .union(PointerEvents::EXITED)
+                .union(PointerEvents::CURSOR_UPDATE),
+            {
+                let current = Rc::clone(&current);
+                move |_, event| {
+                    match event {
+                        PointerEvent::Entered | PointerEvent::CursorUpdate => {
+                            kit_style(current.get()).set();
+                        }
+                        PointerEvent::Exited => {
+                            appkit::Cursor::Arrow.set();
+                        }
+                        PointerEvent::Moved(_) => {}
+                    }
+                    false
+                }
             },
         );
-        leaf.keep(sink_guard);
-
-        #[cfg(target_os = "macos")]
-        {
-            use core::cell::Cell;
-            let current = Rc::new(Cell::new(CursorStyle::Arrow));
-            // Enter applies the style, exit restores the arrow; a style
-            // change while the pointer is inside re-applies immediately —
-            // `updateTrackingAreas` keeps the same area as `bounds` moves.
-            host.set_pointer_handler(
-                PointerEvents::ENTERED
-                    .union(PointerEvents::EXITED)
-                    .union(PointerEvents::CURSOR_UPDATE),
-                {
-                    let current = Rc::clone(&current);
-                    move |_, event| {
-                        match event {
-                            PointerEvent::Entered | PointerEvent::CursorUpdate => {
-                                kit_style(current.get()).set();
-                            }
-                            PointerEvent::Exited => {
-                                appkit::Cursor::Arrow.set();
-                            }
-                            PointerEvent::Moved(_) => {}
-                        }
-                        false
-                    }
-                },
-            );
-            leaf.bind(&metadata.value.style, {
-                move |style| {
-                    current.set(style);
-                    if host.is_pointer_inside() {
-                        kit_style(style).set();
-                    }
+        leaf.bind(metadata.value.style(), {
+            move |style| {
+                current.set(style);
+                if host.is_pointer_inside() {
+                    kit_style(style).set();
                 }
-            });
-        }
+            }
+        });
+    }
 
-        #[cfg(target_os = "ios")]
-        {
-            // `UIPointerInteraction` gives the lifted region a
-            // rounded-rect pointer shape; the style signal does not
-            // change it — `UIKit` has no cursor vocabulary.
-            leaf.keep(uikit::PointerInteraction::rounded_rect(&host));
-            let _ = &metadata.value.style;
-        }
+    #[cfg(target_os = "ios")]
+    {
+        // `UIPointerInteraction` gives the lifted region a
+        // rounded-rect pointer shape; the style signal does not
+        // change it — `UIKit` has no cursor vocabulary.
+        leaf.keep(uikit::PointerInteraction::rounded_rect(&host));
+        let _ = metadata.value.style();
+    }
 
-        leaf.keep(state);
-        leaf
-    });
+    leaf.keep(state);
+    leaf
 }

@@ -6,6 +6,10 @@ val painter = providers.gradleProperty("hydrolysis.painter").getOrElse("gpu")
 require(painter in setOf("gpu", "hwui")) {
     "hydrolysis.painter must be \"gpu\" or \"hwui\", got \"$painter\""
 }
+val scene = providers.gradleProperty("hydrolysis.scene").getOrElse("host")
+require(scene in setOf("host", "filters", "stretch", "gpu-video", "gpu-map")) {
+    "hydrolysis.scene must be host, filters, stretch, gpu-video or gpu-map"
+}
 
 val targetAbis =
     providers.gradleProperty("hydrolysis.abis")
@@ -25,7 +29,8 @@ android {
         applicationId =
             if (painter == "hwui") "dev.waterui.hydrolysis.testapp.hwui"
             else "dev.waterui.hydrolysis.testapp"
-        minSdk = 31
+        // The HWUI painter's API floor is 34 (drawMesh); the GPU painter's is 33.
+        minSdk = if (painter == "hwui") 34 else 33
         targetSdk = 36
         versionCode = 1
         versionName = "1.0"
@@ -67,7 +72,7 @@ android {
 // The Rust cdylib is built per painter and build type: the release APK
 // ships the release .so, debug ships debug.
 for (buildType in listOf("debug", "release")) {
-    val output = rootProject.file("test-app/build/jniLibs/$painter/$buildType")
+    val output = rootProject.file("test-app/build/jniLibs/$painter/$scene/$buildType")
     android.sourceSets.named(buildType) {
         jniLibs.srcDir(output)
     }
@@ -81,12 +86,22 @@ for (buildType in listOf("debug", "release")) {
             androidComponents.sdkComponents.ndkDirectory.get().asFile.absolutePath,
         )
         val args =
-            mutableListOf("cargo", "ndk", "--platform", "31")
+            mutableListOf("cargo", "ndk", "--platform", "33")
         targetAbis.forEach { args.addAll(listOf("--target", it)) }
         args.addAll(
             listOf(
                 "--output-dir", output.absolutePath,
-                "build", "--no-default-features", "--features", painter,
+                "build", "--no-default-features",
+                "--features",
+                when (scene) {
+                    "filters" -> "$painter,filter-probe"
+                    "stretch" -> "$painter,stretch-probe"
+                    // The HWUI painter with the GPU crates present: the
+                    // combination that hosts GPU content (water-rs/waterui#1812).
+                    "gpu-video" -> "$painter,gpu-video-probe"
+                    "gpu-map" -> "$painter,gpu-map-probe"
+                    else -> painter
+                },
             ),
         )
         if (buildType == "release") args.add("--release")

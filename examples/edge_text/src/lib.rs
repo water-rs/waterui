@@ -85,6 +85,7 @@ fn long_paragraph() -> impl View {
     )
 }
 
+/// The edge-case text demo: unbroken, combining, emoji, mixed-script and empty text.
 #[preview]
 pub fn demo() -> impl View {
     scroll(
@@ -120,6 +121,7 @@ pub fn demo() -> impl View {
     )
 }
 
+/// Builds the edge-case text app around [`demo`].
 pub fn app(env: Environment) -> App {
     App::new(demo, env)
 }

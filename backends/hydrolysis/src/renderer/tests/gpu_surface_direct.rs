@@ -1,10 +1,10 @@
-//! A full-window `GpuContentView` presented through the engine layer tree.
+//! A full-window `GpuView` presented through the engine layer tree.
 //!
 //! Before the Cherenkov cutover a full-window opaque GPU surface could render
 //! straight into the window's own target, skipping the compositor; whether a
 //! frame took that branch or the composited one was a Hydrolysis decision with
 //! its own counters. In the engine-content model there is exactly one path: a
-//! `GpuContentView`'s producer installs once on a keyed engine layer, draws
+//! `GpuView`'s producer installs once on a keyed engine layer, draws
 //! into an engine-owned attachment, and presentation is the engine's.
 //!
 //! What stays pinned here:
@@ -30,7 +30,7 @@ use waterui::Binding;
 use waterui_core::AnyView;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
-use waterui_graphics::{GpuContent, GpuContentView};
+use waterui_graphics::{GpuContent, GpuView};
 use waterui_layout::frame::Frame;
 
 use super::{MinimalTestTheme, pumped_test_environment};
@@ -144,7 +144,7 @@ impl GpuContent for FillProbe {
 /// A window whose entire content is one GPU surface, sized by the test.
 ///
 /// The size is a `Binding` rather than a rebuild so the surface's node — and
-/// therefore the `GpuContentView` inside it and everything `setup` gave it —
+/// therefore the `GpuView` inside it and everything `setup` gave it —
 /// survives every change the tests make.
 fn runtime_with(
     log: &ProbeLog,
@@ -161,7 +161,7 @@ fn runtime_with(
             .take()
             .expect("the probe window is built once");
         AnyView::new(
-            Frame::new(GpuContentView::new(FillProbe { log, opaque }))
+            Frame::new(GpuView::new(FillProbe { log, opaque }))
                 .width(width)
                 .height(height),
         )
@@ -216,9 +216,9 @@ impl Frames {
         let at = self.at();
         let result = runtime.pump_at(true, at);
         RenderedFrame {
-            counters: result.profile.counters,
+            counters: result.profile().counters(),
             snapshot: result
-                .snapshot
+                .into_snapshot()
                 .expect("a capturing pump must produce a snapshot"),
         }
     }
@@ -260,14 +260,18 @@ fn write_png(name: &str, snapshot: &crate::runner::HeadlessSnapshot) -> std::pat
     let directory = image_dir();
     std::fs::create_dir_all(&directory).expect("the image directory must be creatable");
     let path = directory.join(name);
-    let image = image::RgbaImage::from_raw(snapshot.width, snapshot.height, snapshot.rgba8.clone())
-        .expect("snapshot dimensions must match the rgba buffer");
+    let image = image::RgbaImage::from_raw(
+        snapshot.width(),
+        snapshot.height(),
+        snapshot.rgba8().to_vec(),
+    )
+    .expect("snapshot dimensions must match the rgba buffer");
     image.save(&path).expect("snapshot png must be writable");
     path
 }
 
 #[test]
-fn a_full_window_gpu_content_view_mounts_as_one_engine_layer_at_every_scale() {
+fn a_full_window_gpu_view_mounts_as_one_engine_layer_at_every_scale() {
     for scale in [1.0_f64, 2.0] {
         let log = ProbeLog::default();
         let (width, height) = full_window_bindings();
@@ -277,17 +281,20 @@ fn a_full_window_gpu_content_view_mounts_as_one_engine_layer_at_every_scale() {
 
         let counters = frames.render(&mut runtime).counters;
         assert_eq!(
-            counters.gpu_content_layers, 1,
+            counters.gpu_content_layers(),
+            1,
             "a surface covering the whole window mounts as one engine content \
              layer at scale {scale}"
         );
         assert_eq!(
-            counters.scene_segment_layers, 0,
+            counters.scene_segment_layers(),
+            0,
             "and a window holding only that layer draws no scene segments at \
              scale {scale}"
         );
         assert_eq!(
-            counters.scene_layers, 1,
+            counters.scene_layers(),
+            1,
             "the GPU content layer is the window's only composited layer at \
              scale {scale}"
         );
@@ -305,7 +312,8 @@ fn a_non_opaque_full_window_surface_mounts_the_same_way_at_every_scale() {
 
         let counters = frames.render(&mut runtime).counters;
         assert_eq!(
-            counters.gpu_content_layers, 1,
+            counters.gpu_content_layers(),
+            1,
             "`is_opaque` being false mounts the same single content layer — the \
              declaration is advisory, not a different presentation path (scale {scale})"
         );
@@ -313,7 +321,7 @@ fn a_non_opaque_full_window_surface_mounts_the_same_way_at_every_scale() {
 }
 
 #[test]
-fn resizing_a_gpu_content_view_never_re_runs_setup() {
+fn resizing_a_gpu_view_never_re_runs_setup() {
     let log = ProbeLog::default();
     let (width, height) = full_window_bindings();
     let mut runtime = runtime_with(&log, true, &width, &height, 2.0);
@@ -321,7 +329,7 @@ fn resizing_a_gpu_content_view_never_re_runs_setup() {
     settled(&mut runtime, &mut frames, &log);
 
     assert_eq!(
-        frames.render(&mut runtime).counters.gpu_content_layers,
+        frames.render(&mut runtime).counters.gpu_content_layers(),
         1,
         "the surface starts out covering the window"
     );
@@ -333,7 +341,7 @@ fn resizing_a_gpu_content_view_never_re_runs_setup() {
     height.set(crate::num_cast::u32_as_f32(WINDOW_HEIGHT) - 20.0);
     frames.pump(&mut runtime, 2);
     let counters = frames.render(&mut runtime).counters;
-    assert_eq!(counters.gpu_content_layers, 1);
+    assert_eq!(counters.gpu_content_layers(), 1);
     assert_eq!(
         log.setups(),
         1,
@@ -344,7 +352,7 @@ fn resizing_a_gpu_content_view_never_re_runs_setup() {
     height.set(crate::num_cast::u32_as_f32(WINDOW_HEIGHT));
     frames.pump(&mut runtime, 2);
     assert_eq!(
-        frames.render(&mut runtime).counters.gpu_content_layers,
+        frames.render(&mut runtime).counters.gpu_content_layers(),
         1,
         "and the layer persists once it covers the window again"
     );
@@ -374,7 +382,7 @@ fn opaque_and_non_opaque_content_present_identically() {
     let mut direct_frames = Frames::new();
     settled(&mut direct_runtime, &mut direct_frames, &direct_log);
     let direct = direct_frames.render(&mut direct_runtime);
-    assert_eq!(direct.counters.gpu_content_layers, 1);
+    assert_eq!(direct.counters.gpu_content_layers(), 1);
     let direct = direct.snapshot;
 
     let composed_log = ProbeLog::default();
@@ -389,7 +397,7 @@ fn opaque_and_non_opaque_content_present_identically() {
     let mut composed_frames = Frames::new();
     settled(&mut composed_runtime, &mut composed_frames, &composed_log);
     let composed = composed_frames.render(&mut composed_runtime);
-    assert_eq!(composed.counters.gpu_content_layers, 1);
+    assert_eq!(composed.counters.gpu_content_layers(), 1);
     let composed = composed.snapshot;
 
     let direct_path = write_png("direct_scale2.png", &direct);
@@ -401,16 +409,17 @@ fn opaque_and_non_opaque_content_present_identically() {
     );
 
     assert_eq!(
-        (direct.width, direct.height),
+        (direct.width(), direct.height()),
         (WINDOW_WIDTH * 2, WINDOW_HEIGHT * 2),
         "a 2x window captures at twice its logical size"
     );
     assert_eq!(
-        (composed.width, composed.height),
-        (direct.width, direct.height)
+        (composed.width(), composed.height()),
+        (direct.width(), direct.height())
     );
     assert_eq!(
-        direct.rgba8, composed.rgba8,
+        direct.rgba8(),
+        composed.rgba8(),
         "declaring `is_opaque` does not change what identical content presents"
     );
 
@@ -418,7 +427,7 @@ fn opaque_and_non_opaque_content_present_identically() {
     // thing would pass that. What the surface drew has to actually be there,
     // over the whole window, with none of the window's base colour left
     // anywhere.
-    let (pixels, _) = direct.rgba8.as_chunks::<4>();
+    let (pixels, _) = direct.rgba8().as_chunks::<4>();
     let expected = *pixels.first().expect("the capture must have pixels");
     assert!(
         near_fill(expected),
@@ -435,7 +444,7 @@ fn opaque_and_non_opaque_content_present_identically() {
 /// scale — so a scale-2 window hands the surface `bounds * 2` device pixels,
 /// not `bounds * 4`.
 #[test]
-fn a_gpu_content_view_renders_at_one_display_scale() {
+fn a_gpu_view_renders_at_one_display_scale() {
     for (scale, expected) in [
         (1.0_f64, (WINDOW_WIDTH, WINDOW_HEIGHT)),
         (2.0, (WINDOW_WIDTH * 2, WINDOW_HEIGHT * 2)),

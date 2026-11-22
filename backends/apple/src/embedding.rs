@@ -14,9 +14,14 @@ use waterui::{Environment, app::App, reactive::Binding};
 use waterui_core::layout::{LayoutDirection, ProposalSize};
 use waterui_locale::Locale;
 
+/// The `f64`s the ABI packs per host text style: `size`, `weight`,
+/// `bold_weight_coordinate`, `line_height`, in this order. The bold weight
+/// travels as the `wght` axis coordinate of `SwiftUI`'s bold face, because
+/// that face keeps the weight trait of the style it came from.
+const HOST_FONT_FIELDS: usize = 4;
+
 /// The six platform text styles a `SwiftUI` host resolves and the ABI packs
-/// as 18 `f64` triples — `size`, `weight`, `line_height` per style, in this
-/// order.
+/// as [`HOST_FONT_FIELDS`] `f64`s per style, in this order.
 const HOST_FONT_STYLES: [cocoa_ui::system_font::TextStyle; 6] = [
     cocoa_ui::system_font::TextStyle::Body,
     cocoa_ui::system_font::TextStyle::Title1,
@@ -58,16 +63,12 @@ impl Runtime {
 /// A host's declared presentation environment for one mount — a `SwiftUI`
 /// representable's snapshot rather than the platform ambient.
 ///
-/// `fonts` is the six resolved metrics in [`HOST_FONT_STYLES`] order:
+/// `fonts` is the six resolved metrics in `HOST_FONT_STYLES` order:
 /// `SwiftUI`'s own `Font.resolve(in:)` against the host's
 /// `fontResolutionContext`, so the sizes, weights and line heights are the
 /// host's, including its content-size category — never a synthesized
 /// scale table on top of the ambient platform font.
 #[derive(Debug, Clone)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "closed: the declared host snapshot is scheme, direction, locale and the six fonts"
-)]
 pub struct HostEnvironment {
     /// The host's `SwiftUI` color scheme.
     pub scheme: cocoa_ui::ColorScheme,
@@ -76,22 +77,25 @@ pub struct HostEnvironment {
     /// The host's locale, BCP-47 — scoped to the mount; the process's own
     /// regional settings stay the embedder's.
     pub locale: Locale,
-    /// Resolved metrics in [`HOST_FONT_STYLES`] order.
+    /// Resolved metrics in `HOST_FONT_STYLES` order.
     pub fonts: [cocoa_ui::system_font::FontMetrics; 6],
 }
 
 impl HostEnvironment {
     /// Reads one ABI snapshot: `dark`/`rtl` from the host's trait
     /// environment, `locale` as a NUL-terminated BCP-47 string, and
-    /// `HOST_FONT_STYLES.len() * 3` `f64`s from `fonts` — one
-    /// `(size, weight, line_height)` triple per style, in that order.
+    /// `HOST_FONT_STYLES.len() * HOST_FONT_FIELDS` `f64`s from `fonts` — one
+    /// `(size, weight, bold_weight_coordinate, line_height)` group per
+    /// style, in that order.
     ///
-    /// # Panics
-    /// Panics when `locale` is not valid UTF-8 or a valid BCP-47 tag.
+    /// A `locale` that is not valid UTF-8 or a valid BCP-47 tag is a host
+    /// contract violation: a debug build panics, a release build reports it
+    /// and the mount takes English.
     ///
     /// # Safety
     /// `locale` is a live NUL-terminated string and `fonts` points to
-    /// eighteen readable, initialized `f64`s for the duration of the call.
+    /// `HOST_FONT_STYLES.len() * HOST_FONT_FIELDS` readable, initialized
+    /// `f64`s for the duration of the call.
     #[must_use]
     pub unsafe fn from_abi(
         dark: bool,
@@ -100,19 +104,31 @@ impl HostEnvironment {
         fonts: *const f64,
     ) -> Self {
         // SAFETY: the caller contract supplies a live NUL-terminated string.
-        let locale = unsafe { CStr::from_ptr(locale) }
+        let tag = unsafe { CStr::from_ptr(locale) };
+        let locale = tag
             .to_str()
-            .expect("the host locale is valid UTF-8")
-            .parse::<Locale>()
-            .expect("the host locale is a valid BCP-47 tag");
-        // SAFETY: the caller contract supplies the eighteen readable doubles.
-        let slice = unsafe { std::slice::from_raw_parts(fonts, HOST_FONT_STYLES.len() * 3) };
-        // `HOST_FONT_STYLES` is the index contract: triple `i` carries the
+            .map_err(|error| format!("{error}"))
+            .and_then(|tag| tag.parse::<Locale>().map_err(|error| format!("{error}")))
+            .unwrap_or_else(|error| {
+                waterui::contract_violation!(
+                    "the host locale {tag:?} is not valid UTF-8 and a valid BCP-47 tag: \
+                     {error}; English is used"
+                );
+                waterui_locale::locales::EN
+            });
+        // SAFETY: the caller contract supplies the readable doubles.
+        let slice =
+            unsafe { std::slice::from_raw_parts(fonts, HOST_FONT_STYLES.len() * HOST_FONT_FIELDS) };
+        // `HOST_FONT_STYLES` is the index contract: group `i` carries the
         // metrics of style `i`.
-        let fonts = std::array::from_fn(|index| cocoa_ui::system_font::FontMetrics {
-            size: slice[index * 3],
-            weight: slice[index * 3 + 1],
-            line_height: slice[index * 3 + 2],
+        let fonts = std::array::from_fn(|index| {
+            let group = &slice[index * HOST_FONT_FIELDS..(index + 1) * HOST_FONT_FIELDS];
+            cocoa_ui::system_font::FontMetrics {
+                size: group[0],
+                weight: group[1],
+                bold_weight: cocoa_ui::font::weight_at_coordinate(group[0], group[2]),
+                line_height: group[3],
+            }
         });
         Self {
             scheme: if dark {
@@ -221,7 +237,6 @@ pub(crate) fn install_services(env: &mut Environment) {
         env.insert_hook::<waterui_map::MapConfig, _>(|_env, config| config.render());
     }
     crate::windows::install_manager(env);
-    #[cfg(feature = "view_renderer")]
     crate::components::view_renderer::install_service(env);
 }
 
@@ -286,6 +301,9 @@ pub unsafe extern "C" fn waterui_apple_runtime_drop(runtime: *mut c_void) {
 /// On iOS the host belongs to a view controller. The returned mount is owned.
 /// Registered font files must remain in place until process exit, including
 /// when another package reuses the same font data after this mount is dropped.
+/// An app that declares no root window is a contract violation: nothing is
+/// mounted and the result is null, which every other entry point accepts as
+/// a mount with no content.
 pub unsafe fn mount(
     runtime: *const c_void,
     host: *mut c_void,
@@ -329,9 +347,12 @@ pub unsafe fn mount(
     #[cfg(feature = "webview")]
     crate::components::webview::install_service(&mut env);
     let mut windows = parts.windows.into_iter();
-    let declaration = windows
-        .next()
-        .expect("an embedded app must declare a root window");
+    let Some(declaration) = windows.next() else {
+        waterui::contract_violation!(
+            "an embedded app must declare a root window; nothing is mounted and the host shows no content"
+        );
+        return std::ptr::null_mut();
+    };
 
     #[cfg(target_os = "ios")]
     {
@@ -344,7 +365,13 @@ pub unsafe fn mount(
     cocoa_ui::view::add_subview(host, &root);
     #[cfg(target_os = "ios")]
     cocoa_ui::uikit::view_controller::did_move_to_parent(&controller);
-    let content = mount_content(&root, declaration.build_content(), &env, &mut keepalive);
+    let content = mount_content(
+        &root,
+        declaration.build_content(),
+        &env,
+        &mut keepalive,
+        mtm,
+    );
     #[cfg(target_os = "macos")]
     {
         crate::windows::bind_background(
@@ -477,39 +504,68 @@ fn create_root(
     HostView::new(mtm, cocoa_ui::view::bounds(host))
 }
 
+/// Joins window content to its root `host` in the one order that never
+/// leaves content in a live window unplaced.
+///
+/// The root's placement handler is installed and applied first, so the
+/// content already carries its content frame when `join` adds it to the
+/// host and adopts its view controllers. Joined first, a layout pass that
+/// runs before the handler exists lays the whole subtree out at zero size
+/// inside the live window — a split collapses, a navigation stack and its
+/// floating bar settle at 0x0 — and `UIKit` keeps the inset it derived
+/// there (water-rs/waterui#3744). This is a placement, not a forced
+/// layout; every later pass runs through the same handler.
+pub(crate) fn place_then_join<R>(
+    host: &HostView,
+    place: impl Fn(&HostView) + 'static,
+    join: impl FnOnce() -> R,
+) -> R {
+    let place = Rc::new(place);
+    host.set_layout_handler({
+        let place = Rc::clone(&place);
+        move |host| place(host)
+    });
+    place(host);
+    join()
+}
+
 pub(crate) fn mount_content(
     root: &HostView,
     view: waterui::AnyView,
     env: &Environment,
     keepalive: &mut KeepAlive,
+    mtm: MainThreadMarker,
 ) -> Rc<Mounted> {
-    let leaf = crate::dispatch::render(view, env);
-    let content = Rc::new(leaf.mount(root));
-    crate::primary_content::forward(root, content.view());
-    let placed = Rc::clone(&content);
+    let leaf = crate::dispatch::render(view, env, mtm);
+    let placed = cocoa_ui::view::retain_base(leaf.view());
     crate::inspector::install(root, env, keepalive);
-    root.set_layout_handler(move |root| {
-        let frame = crate::native_layout::LayoutContext::of(root).content_frame(placed.view());
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "the layout contract uses f32 points"
-        )]
-        let proposal = waterui_core::layout::ProposalSize::new(
-            Some(frame.size.width as f32),
-            Some(frame.size.height as f32),
-        );
-        // The root fills platform geometry, which sits on the device-pixel
-        // grid, so its own layout origin discarded nothing.
-        crate::proposal::place(
-            placed.view(),
-            frame,
-            Some(proposal),
-            cocoa_ui::view::SubpixelOffset::ZERO,
-        );
-        // Placement changes the child's bounds after the host's own layout.
-        // Complete that child's pending layout before this placement finishes.
-        cocoa_ui::view::layout_immediately(placed.view());
-    });
+    let content = place_then_join(
+        root,
+        move |root| {
+            let frame = crate::native_layout::LayoutContext::of(root).content_frame(&placed);
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "the layout contract uses f32 points"
+            )]
+            let proposal = waterui_core::layout::ProposalSize::new(
+                Some(frame.size.width as f32),
+                Some(frame.size.height as f32),
+            );
+            // The root fills platform geometry, which sits on the device-pixel
+            // grid, so its own layout origin discarded nothing.
+            crate::proposal::place(
+                &placed,
+                frame,
+                Some(proposal),
+                cocoa_ui::view::SubpixelOffset::ZERO,
+            );
+            // Placement changes the child's bounds after the host's own layout.
+            // Complete that child's pending layout before this placement finishes.
+            cocoa_ui::view::layout_immediately(&placed);
+        },
+        || Rc::new(leaf.mount(root)),
+    );
+    crate::primary_content::forward(root, content.view());
     content
 }
 
@@ -519,10 +575,14 @@ pub(crate) fn mount_content(
 /// Panics off the main thread.
 ///
 /// # Safety
-/// `mount` is the owned result of `waterui_apple_mount`, consumed once on the main thread.
+/// `mount` is the owned result of `waterui_apple_mount`, consumed once on the
+/// main thread, or null (an app with no root window), which is ignored.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_apple_mount_drop(mount: *mut c_void) {
     MainThreadMarker::new().expect("unmount runs on the main thread");
+    if mount.is_null() {
+        return;
+    }
     // SAFETY: the caller transfers the live mount box exactly once.
     drop(unsafe { Box::from_raw(mount.cast::<Mount>()) });
 }
@@ -541,10 +601,14 @@ pub unsafe extern "C" fn waterui_apple_mount_drop(mount: *mut c_void) {
 /// Panics off the main thread.
 ///
 /// # Safety
-/// `mount` is a live mount handle borrowed on the main thread.
+/// `mount` is a live mount handle borrowed on the main thread, or null (an app
+/// with no root window), which is ignored.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_apple_update_visibility(mount: *const c_void) {
     MainThreadMarker::new().expect("visibility refresh runs on the main thread");
+    if mount.is_null() {
+        return;
+    }
     // SAFETY: the caller borrows a live mount for this call. Emitting on
     // the mounted root wakes every surface watch that subscribed to it —
     // ancestor subscriptions cover the whole mounted tree.
@@ -559,14 +623,18 @@ pub unsafe extern "C" fn waterui_apple_update_visibility(mount: *const c_void) {
 /// the theme and direction without remounting.
 ///
 /// # Panics
-/// Panics off the main thread, or on a mount created without a host
-/// environment — the ambient path owns its own observers.
+/// Panics off the main thread. A mount created without a host environment
+/// — the ambient path owns its own observers — is a host contract
+/// violation: a debug build panics, a release build reports it and ignores
+/// the update.
 ///
 /// # Safety
 /// `mount` is a live mount handle borrowed on the main thread, created with
-/// a host environment. `host_fonts` points to eighteen readable, initialized
-/// `f64`s — six `(size, weight, line_height)` triples in
-/// [`HostEnvironment`]'s style order.
+/// a host environment, or null (an app with no root window), which is
+/// ignored. `host_fonts` points to the readable, initialized
+/// `f64`s [`HostEnvironment::from_abi`] documents — six
+/// `(size, weight, bold_weight_coordinate, line_height)` groups in its style
+/// order.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_apple_update_environment(
     mount: *const c_void,
@@ -576,13 +644,19 @@ pub unsafe extern "C" fn waterui_apple_update_environment(
     host_fonts: *const f64,
 ) {
     MainThreadMarker::new().expect("environment updates run on the main thread");
+    if mount.is_null() {
+        return;
+    }
     // SAFETY: the caller borrows a live mount and passes a live locale
-    // string and eighteen readable doubles per the documented ABI.
+    // string and the readable doubles per the documented ABI.
     let mount = unsafe { &*mount.cast::<Mount>() };
-    let scope = mount
-        .host_scope
-        .as_ref()
-        .expect("environment updates require a mount created with a host environment");
+    let Some(scope) = mount.host_scope.as_ref() else {
+        waterui::contract_violation!(
+            "environment updates require a mount created with a host environment; \
+             the update is ignored"
+        );
+        return;
+    };
     // SAFETY: `locale` and `host_fonts` follow `from_abi`'s contract.
     let host = unsafe { HostEnvironment::from_abi(dark, rtl, locale, host_fonts) };
     crate::theme::refresh_host(&scope.signals, host.scheme, &host.fonts);
@@ -603,8 +677,9 @@ pub unsafe extern "C" fn waterui_apple_update_environment(
 /// Panics off the main thread.
 ///
 /// # Safety
-/// `mount` is a live mount handle borrowed on the main thread. `result`
-/// points to two writable `f64`s.
+/// `mount` is a live mount handle borrowed on the main thread, or null (an app
+/// with no root window), which measures as zero. `result` points to two
+/// writable `f64`s.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_apple_measure(
     mount: *const c_void,
@@ -615,6 +690,14 @@ pub unsafe extern "C" fn waterui_apple_measure(
     result: *mut f64,
 ) {
     MainThreadMarker::new().expect("measuring runs on the main thread");
+    if mount.is_null() {
+        // SAFETY: `result` is a live two-element buffer per the caller contract.
+        unsafe {
+            result.write(0.0);
+            result.add(1).write(0.0);
+        }
+        return;
+    }
     // SAFETY: the caller borrows a live mount and passes a writable
     // two-element `f64` buffer.
     let mount = unsafe { &*mount.cast::<Mount>() };

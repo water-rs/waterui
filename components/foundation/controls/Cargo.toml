@@ -25,7 +25,13 @@ thiserror = { version = "2.0.21", default-features = false }
 
 
 [features]
-default = []
+default = ["all"]
+all = ["menu", "slider", "stepper", "text-field", "toggle"]
+menu = []
+slider = []
+stepper = []
+text-field = ["menu"]
+toggle = []
 # Serialize `ContentType` (camelCase names) — the Hydrolysis Android publish
 # and the MCP snapshot tree both cross a JSON boundary with it.
 serde = ["dep:serde"]
@@ -37,5 +43,3 @@ waterui-testing = { path = "../../../testing" }
 
 [lints]
 workspace = true
-[package.metadata.cargo-machete]
-ignored = ["waterui-macros"]

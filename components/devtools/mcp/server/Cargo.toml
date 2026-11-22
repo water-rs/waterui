@@ -28,12 +28,8 @@ tracing.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
 
 [dev-dependencies]
-waterui = { workspace = true, features = ["gpu", "assets", "snackbar", "highlight", "locale-datetime", "locale-list"] }
+waterui = { workspace = true, features = ["gpu", "assets", "snackbar", "highlight", "locale-datetime", "locale-list", "toggle"] }
 hydrolysis-m3.workspace = true
 
 [lints]
 workspace = true
-
-# `waterui-controls` is declared only to enable its `serde` feature.
-[package.metadata.cargo-machete]
-ignored = ["waterui-controls"]

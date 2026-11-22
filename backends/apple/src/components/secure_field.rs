@@ -24,12 +24,16 @@ use cocoa_ui::{PlatformView, Rect, Retained, focus, view};
 use waterui::component::form::secure::{Secure, SecureFieldConfig};
 use waterui::resolve::Resolvable;
 use waterui::text::StyledStr;
-use waterui::text::font::{Body, FontDesign, FontWeight, ResolvedFont};
+use waterui::text::font::Body;
 use waterui_core::interaction::Disabled;
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size, StretchAxis, SubView,
+    ViewDimensions,
+};
 
+use super::font::platform_font;
 use crate::contract::{Mounted, NativeLeaf};
-use crate::dispatch::Dispatcher;
+use crate::proposal;
 
 #[cfg(target_os = "macos")]
 mod platform {
@@ -41,77 +45,13 @@ mod platform {
     pub(super) use cocoa_ui::uikit::{HostView, SecureField};
 }
 
+use crate::contract::RenderContext;
 use platform::{HostView, SecureField};
 
 /// The gap between the label and the field — `WuiSecureField.verticalSpacing`.
 const VERTICAL_SPACING: f64 = 4.0;
 /// The narrowest width the leaf reports — `WuiSecureField`'s 100pt floor.
 const MIN_WIDTH: f64 = 100.0;
-
-/// The platform weight of a `FontWeight` on the `UIFont`/`NSFont` scale —
-/// the same table `text_field` uses.
-const fn platform_weight(weight: FontWeight) -> f64 {
-    use cocoa_ui::font::weight;
-    match weight {
-        FontWeight::Thin => weight::THIN,
-        FontWeight::UltraLight => weight::ULTRA_LIGHT,
-        FontWeight::Light => weight::LIGHT,
-        FontWeight::Normal => weight::REGULAR,
-        FontWeight::Medium => weight::MEDIUM,
-        FontWeight::SemiBold => weight::SEMI_BOLD,
-        FontWeight::Bold => weight::BOLD,
-        FontWeight::UltraBold => weight::HEAVY,
-        FontWeight::Black => weight::BLACK,
-    }
-}
-
-/// The comma-separated candidates of a CSS-style family list — as in
-/// `text_field`.
-fn family_candidates(family: &str) -> impl Iterator<Item = &str> {
-    family
-        .split(',')
-        .map(str::trim)
-        .filter(|candidate| !candidate.is_empty())
-}
-
-/// The platform face a resolved font names — the same rule as
-/// `text_field`'s `platform_font` with no italic pass: a masked field
-/// draws plain text.
-///
-/// # Panics
-///
-/// When the family names no installed font and no generic — the same
-/// `fatalError` the Swift port raises.
-fn platform_font(
-    mtm: cocoa_ui::MainThreadMarker,
-    resolved: &ResolvedFont,
-) -> Retained<cocoa_ui::Font> {
-    let size = f64::from(resolved.size);
-    let weight = platform_weight(resolved.weight);
-    match resolved.family.as_deref() {
-        Some(family) if !family.is_empty() => {
-            let mut resolved_font = None;
-            for candidate in family_candidates(family) {
-                resolved_font = match candidate {
-                    "system" | "sans-serif" => Some(cocoa_ui::font::system(mtm, size, weight)),
-                    _ => cocoa_ui::font::named(candidate, size),
-                };
-                if resolved_font.is_some() {
-                    break;
-                }
-            }
-            resolved_font.unwrap_or_else(|| {
-                panic!(
-                    "WaterUI: font family '{family}' not found. Ensure the font is bundled and registered."
-                )
-            })
-        }
-        _ => match resolved.design {
-            FontDesign::Default => cocoa_ui::font::system(mtm, size, weight),
-            FontDesign::Monospaced => cocoa_ui::font::monospaced(mtm, size, weight),
-        },
-    }
-}
 
 /// The field's share of a measure — the text height `WuiSecureField`
 /// reports. `AppKit` reads `intrinsicContentSize`; `UIKit` floors
@@ -134,20 +74,22 @@ struct FieldState {
     label: Mounted,
 }
 
-/// Lays out the children inside `view`'s bounds: the label at top-leading,
-/// then the field spanning the full width below it — `WuiSecureField`'s
-/// constraints as manual frames. `UIKit` centers the input inside the
-/// region between the label and the container's bottom, the way the
-/// field's `inputRegion` layout guide does.
-fn layout_children(view: &PlatformView, state: &FieldState) {
-    let bounds = view::bounds(view);
+/// Lays out the children inside the `response` rectangle: the label at
+/// top-leading, then the field spanning the full width below it —
+/// `WuiSecureField`'s constraints as manual frames. `UIKit` centers the
+/// input inside the region between the label and the container's bottom,
+/// the way the field's `inputRegion` layout guide does.
+fn layout_children(view: &PlatformView, response: Rect, state: &FieldState) {
+    let bounds = response;
     let label = state.label.layout().measure(ProposalSize::UNSPECIFIED).size;
     let has_label = label.height > 0.0;
     view::set_hidden(state.label.view(), !has_label);
 
-    view::set_frame(
+    proposal::place_leading(
         state.label.view(),
-        Rect::new(0.0, 0.0, f64::from(label.width), f64::from(label.height)),
+        Rect::new(0.0, 0.0, bounds.size.width, f64::from(label.height)).translated(response.origin),
+        ProposalSize::UNSPECIFIED,
+        cocoa_ui::view::is_right_to_left(view),
     );
 
     let region_top = if has_label {
@@ -167,7 +109,7 @@ fn layout_children(view: &PlatformView, state: &FieldState) {
         field_height,
     );
     let field_view: &PlatformView = &state.field;
-    view::set_frame(field_view, field_frame);
+    view::set_frame(field_view, field_frame.translated(response.origin));
 }
 
 /// The container's layout face: reports `WuiSecureField.sizeThatFits`'s
@@ -201,6 +143,14 @@ const fn measure_width(_proposal: ProposalSize, _label_width: f64) -> f64 {
 }
 
 impl SubView for SecureFieldSubView {
+    fn resolve_extent(
+        &self,
+        bounds: LayoutRect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     // `measure` speaks f32; the geometry math runs in f64 — the narrowing
     // is the layout contract, as in `text_field`.
     #[expect(
@@ -234,102 +184,104 @@ impl SubView for SecureFieldSubView {
     }
 }
 
-/// Installs the `secure_field` handler on the dispatcher:
+/// The `secure_field` realization:
 /// `Native<SecureFieldConfig>` maps to a container with the platform
 /// secure field and the mounted label child; the binding, the theme font,
 /// disabled state and accessibility stay live through watchers.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<SecureFieldConfig>(|config, ctx| {
-        let mtm = ctx.mtm();
-        let host = HostView::new(mtm, Rect::ZERO);
-        let field = SecureField::new(mtm);
+pub fn realize_secure_field_config(
+    config: SecureFieldConfig,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    let mtm = ctx.mtm();
+    let host = HostView::new(mtm, Rect::ZERO);
+    let field = SecureField::new(mtm);
 
-        let field_view: &PlatformView = &field;
-        host.add_subview(field_view);
+    let field_view: &PlatformView = &field;
+    host.add_subview(field_view);
 
-        // The label renders above the field; its semantic text names the
-        // control while the visual label leaves the accessibility tree —
-        // `WuiControlAccessibility`'s split.
-        let accessibility_label = config.label.accessibility_label();
-        let host_view: &PlatformView = &host;
-        let mounted = ctx
-            .render(waterui_backend_core::AnyView::new(config.label))
-            .mount(host_view);
-        view::hide_from_accessibility(mounted.view());
+    // The label renders above the field; its semantic text names the
+    // control while the visual label leaves the accessibility tree —
+    // `WuiControlAccessibility`'s split.
+    let (label, value) = config.into_parts();
+    let accessibility_label = label.accessibility_label();
+    let host_view: &PlatformView = &host;
+    let mounted = ctx
+        .render(waterui_backend_core::AnyView::new(label))
+        .mount(host_view);
+    view::hide_from_accessibility(mounted.view());
 
-        let state = Rc::new(FieldState {
-            field: field.clone(),
-            label: mounted,
-        });
-        host.set_layout_handler({
-            let state = Rc::clone(&state);
-            move |view| layout_children(view, &state)
-        });
-
-        let control = view::retain_base(field_view);
-        let mut leaf = NativeLeaf::new(
-            host_view,
-            SecureFieldSubView {
-                state: Rc::clone(&state),
-            },
-        );
-
-        // Binding → field: external writes land on the field; an equal
-        // value is skipped so a user's own edit cannot echo back and move
-        // the caret (the role `isSyncingFromBinding` played in Swift —
-        // nami notifies synchronously inside `binding.set`).
-        leaf.bind(&config.value, {
-            let field = field.clone();
-            move |secure: Secure| {
-                let text = secure.expose();
-                if field.string() != text {
-                    field.set_string(text);
-                }
-            }
-        });
-
-        // Field → binding: user edits write back; the `String` moves into
-        // `Secure` with no plaintext copy kept.
-        #[cfg(target_os = "ios")]
-        leaf.keep(field.install_change_handler({
-            let binding = config.value.clone();
-            move |field| binding.set(Secure::new(field.string()))
-        }));
-        #[cfg(target_os = "macos")]
-        field.on_change({
-            let binding = config.value.clone();
-            move |field| binding.set(Secure::new(field.string()))
-        });
-
-        // The theme `Body` font drives the field's font —
-        // `bodyFontObservation` in `WuiSecureField`.
-        let body = Body.resolve(ctx.env());
-        leaf.bind(&body, {
-            let field = field.clone();
-            move |font| field.set_font(&platform_font(mtm, &font))
-        });
-
-        // Announce the label's semantic text on the field.
-        leaf.bind(&accessibility_label, {
-            move |styled: StyledStr| {
-                let plain = cocoa_ui::text::strip_bidi_controls(&styled.to_plain());
-                view::set_accessibility_label(&control, &plain);
-            }
-        });
-
-        // A disabled subtree must not respond to input.
-        let disabled = Disabled::resolve(ctx.env(), false);
-        leaf.bind(&disabled, {
-            let field = field.clone();
-            move |is_disabled| field.set_enabled(!is_disabled)
-        });
-
-        // The field is this subtree's focus anchor, as in `text_field`.
-        leaf.keep(focus::install(mtm, field_view));
-
-        leaf.keep(state);
-        leaf
+    let state = Rc::new(FieldState {
+        field: field.clone(),
+        label: mounted,
     });
+    host.set_layout_handler({
+        let state = Rc::clone(&state);
+        move |view| layout_children(view, proposal::response(view), &state)
+    });
+
+    let control = view::retain_base(field_view);
+    let mut leaf = NativeLeaf::new(
+        host_view,
+        SecureFieldSubView {
+            state: Rc::clone(&state),
+        },
+    );
+
+    // Binding → field: external writes land on the field; an equal
+    // value is skipped so a user's own edit cannot echo back and move
+    // the caret (the role `isSyncingFromBinding` played in Swift —
+    // nami notifies synchronously inside `binding.set`).
+    leaf.bind(&value, {
+        let field = field.clone();
+        move |secure: Secure| {
+            let text = secure.expose();
+            if field.string() != text {
+                field.set_string(text);
+            }
+        }
+    });
+
+    // Field → binding: user edits write back; the `String` moves into
+    // `Secure` with no plaintext copy kept.
+    #[cfg(target_os = "ios")]
+    leaf.keep(field.install_change_handler({
+        let binding = value.clone();
+        move |field| binding.set(Secure::new(field.string()))
+    }));
+    #[cfg(target_os = "macos")]
+    field.on_change({
+        let binding = value.clone();
+        move |field| binding.set(Secure::new(field.string()))
+    });
+
+    // The theme `Body` font drives the field's font —
+    // `bodyFontObservation` in `WuiSecureField`.
+    let body = Body.resolve(ctx.env());
+    leaf.bind(&body, {
+        let field = field.clone();
+        move |font| field.set_font(&platform_font(mtm, &font, false))
+    });
+
+    // Announce the label's semantic text on the field.
+    leaf.bind(&accessibility_label, {
+        move |styled: StyledStr| {
+            let plain = cocoa_ui::text::strip_bidi_controls(&styled.to_plain());
+            view::set_accessibility_label(&control, &plain);
+        }
+    });
+
+    // A disabled subtree must not respond to input.
+    let disabled = Disabled::resolve(ctx.env(), false);
+    leaf.bind(&disabled, {
+        let field = field.clone();
+        move |is_disabled| field.set_enabled(!is_disabled)
+    });
+
+    // The field is this subtree's focus anchor, as in `text_field`.
+    leaf.keep(focus::install(mtm, field_view));
+
+    leaf.keep(state);
+    leaf
 }
 
 #[cfg(test)]

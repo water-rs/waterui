@@ -64,7 +64,7 @@ pub mod prelude {
         AnimationExt, AnyView, Binding, Color, Computed, Signal, SignalExt, State, Str, Use, View,
         ViewExt, accessibility, animation, app, binding, color, component, cursor, drag_drop,
         entry, env, error, filter, form, fullscreen, gesture, gradient, id, layout, locale,
-        metadata, navigation, reactive, regional, shape, signal, style, task, text, widget, window,
+        metadata, reactive, regional, shape, signal, style, task, text, widget, window,
     };
 
     #[cfg(feature = "flow-markdown")]
@@ -86,24 +86,28 @@ pub mod prelude {
     pub use super::form::*;
     pub use super::layout::padding::*;
     pub use super::layout::*;
-    pub use super::navigation::*;
+    #[cfg(feature = "navigation")]
+    pub use super::navigation::{self, *};
     pub use super::style::*;
     pub use waterui_core::dynamic::{DynamicHandler, watch};
 
     pub use super::theme::{
-        self, ColorScheme, ColorSettings, FontSettings, Theme, color as theme_color,
+        self, ColorScheme, ColorSettings, FontSettings, Theme, Tint, color as theme_color,
     };
 
     pub use super::text::{TextConfig, font, highlight, styled};
 
     pub use super::component::link::{Link, LinkTarget, link};
+    #[cfg(feature = "list")]
     pub use super::component::list::{
         List, ListContent, ListItem, ListMinRowHeight, ListSection, Row, Section, detail_row, row,
     };
+    #[cfg(feature = "menu")]
     pub use super::component::menu::{
         Command, CommandExt, CommandRole, Menu, MenuItem, NamedKey, Shortcut, ShortcutKey,
         ShortcutModifiers,
     };
+    #[cfg(feature = "menu")]
     pub use super::metadata::context_menu::{ContextMenu, DismissContextMenu};
 
     // Drag and drop extension traits
@@ -120,7 +124,8 @@ pub mod prelude {
 
     // Gradient views
     #[cfg(feature = "gpu")]
-    pub use super::gradient::{AnimatedMeshGradient, AnimatedMeshGradientConfig, FlowingGradient};
+    pub use super::gradient::FlowingGradient;
+    pub use super::gradient::{AnimatedMeshGradient, AnimatedMeshGradientConfig};
     pub use super::gradient::{Gradient, MeshGradient};
 
     // Background types (explicit to avoid module name conflict with layout::background)
@@ -153,17 +158,15 @@ pub use view::FilterViewExt;
 pub use view::ViewExt;
 #[cfg(feature = "barcode")]
 pub use waterui_barcode as barcode;
-#[cfg(feature = "canvas")]
-pub use waterui_canvas as canvas;
 #[cfg(feature = "chart")]
 pub use waterui_chart as chart;
 pub use waterui_form as form;
+#[cfg(feature = "canvas")]
+pub use waterui_graphics::canvas;
 pub use waterui_graphics::color;
 pub use waterui_graphics::gradient;
 #[cfg(feature = "gpu")]
-pub use waterui_graphics::{
-    GpuContent, GpuContentView, RedrawHandle, ShaderPaintView, image_decode,
-};
+pub use waterui_graphics::{GpuContent, GpuView, RedrawHandle, ShaderPaintView, image_decode};
 pub use waterui_icon as icon;
 #[cfg(feature = "particle")]
 pub use waterui_particle as particle;
@@ -183,12 +186,15 @@ pub use waterui_macros::ui_test as test;
 pub use waterui_macros::*;
 #[cfg(feature = "media")]
 pub use waterui_media as media;
+#[cfg(feature = "navigation")]
 pub use waterui_navigation as navigation;
 #[cfg(feature = "gpu")]
 pub use waterui_svg as svg;
 pub use waterui_text as text;
 #[cfg(feature = "ts")]
 pub mod ts;
+#[cfg(feature = "map")]
+pub use waterui_map as map;
 #[cfg(feature = "video")]
 pub use waterui_video as video;
 #[cfg(feature = "webview")]
@@ -225,7 +231,7 @@ pub use waterui_url::Url;
 
 #[doc(inline)]
 pub use waterui_core::{
-    AnyView, ContentLedger, Error, Str, animation,
+    AnyView, ContentLedger, Error, Str, animation, contract_violation,
     easing::{self, EasingCurve, Interpolatable},
     env::{self, Environment},
     event,
@@ -239,8 +245,9 @@ pub use waterui_core::{
 
 // Selective re-exports only: `waterui::transition` stays free for the
 // `waterui-transition` pixel-effects crate re-export (#1389).
-pub use waterui_core::transition::{
-    AnyTransition, Edge, PropertyTransition, ReduceMotion, Transition,
+pub use waterui_structural_transition::{
+    AnyTransition, Edge, PropertyTransition, ReduceMotion, Transition, TransitionContext,
+    TransitionFrame, TransitionGeometry, TransitionPhase, TransitionProperties, Transitioned,
 };
 
 /// Haptic feedback intensity for the `on_*_haptic` modifiers.
@@ -248,7 +255,6 @@ pub use waterui_core::transition::{
 #[doc(inline)]
 pub use waterkit_haptic::Intensity;
 
-pub(crate) mod view_ext;
 pub use nami as reactive;
 pub use nami::SignalExt;
 #[doc(inline)]

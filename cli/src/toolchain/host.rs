@@ -249,13 +249,11 @@ impl Host {
     /// [`Host::cwd`] masquerade as installed on a declared host.
     #[must_use]
     pub fn path_entries(&self) -> Vec<PathBuf> {
-        self.env("PATH")
-            .map(|paths| {
-                env::split_paths(paths)
-                    .filter(|entry| !entry.as_os_str().is_empty())
-                    .collect()
-            })
-            .unwrap_or_default()
+        self.env("PATH").map_or_default(|paths| {
+            env::split_paths(paths)
+                .filter(|entry| !entry.as_os_str().is_empty())
+                .collect()
+        })
     }
 
     /// Working directory for spawned processes and relative-path lookups.
@@ -464,6 +462,22 @@ impl Host {
     pub fn without_cargo_target_dir(&self) -> Self {
         self.without_env("CARGO_TARGET_DIR")
             .without_env("CARGO_BUILD_TARGET_DIR")
+    }
+
+    /// A host whose environment carries no Apple deployment target: every
+    /// `*_DEPLOYMENT_TARGET` variable an Apple platform reads is removed.
+    ///
+    /// Test fixtures that build a project with plain `cargo` strip these so
+    /// the project's own `.cargo/config.toml` decides the target, as it does
+    /// in a user's shell. A test process inherits the enclosing workspace's
+    /// `[env]` deployment targets from the `cargo` that runs it, and Cargo's
+    /// `[env]` never overrides an inherited variable, so the fixture would
+    /// otherwise build at the workspace's targets instead of its own. The
+    /// real CLI sets these explicitly on every cargo process it starts.
+    #[must_use]
+    pub fn without_apple_deployment_targets(&self) -> Self {
+        crate::platform::apple_deployment_target_settings()
+            .fold(self.clone(), |host, key| host.without_env(key))
     }
 
     /// A host whose environment carries no compiler wrapper: `RUSTC_WRAPPER`

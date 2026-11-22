@@ -130,13 +130,6 @@ impl Module {
         render(self.app().tree())
     }
 
-    /// The accessibility tree the module's view produces on the rendered
-    /// runtime — the [`Self::tree`] for a test whose cases differ only in
-    /// where a node sits.
-    pub fn offscreen_tree(&self) -> String {
-        render(self.offscreen_app().tree())
-    }
-
     /// The frame the module's view renders.
     pub fn pixels(&self) -> Snapshot {
         self.offscreen_app().snapshot()
@@ -225,12 +218,6 @@ pub fn rust_tree(view: impl waterui_core::View + 'static) -> String {
     render(mount_view(AnyView::new(view)).tree())
 }
 
-/// The accessibility tree of a Rust view on the rendered runtime — the
-/// [`rust_tree`] an offscreen TypeScript tree compares against.
-pub fn rust_tree_offscreen(view: impl waterui_core::View + 'static) -> String {
-    render(mount_view_offscreen(AnyView::new(view)).tree())
-}
-
 /// The frame a Rust view renders.
 pub fn rust_pixels(view: impl waterui_core::View + 'static) -> Snapshot {
     mount_view_offscreen(AnyView::new(view)).snapshot()
@@ -252,12 +239,12 @@ pub fn rust_pixels(view: impl waterui_core::View + 'static) -> Snapshot {
 /// Panics when the frames differ in size or in any pixel.
 pub fn assert_same_pixels(case: &str, jsx: &Snapshot, rust: &Snapshot) {
     assert_eq!(
-        (jsx.width, jsx.height),
-        (rust.width, rust.height),
+        (jsx.width(), jsx.height()),
+        (rust.width(), rust.height()),
         "{case}: the JSX form and the Rust form render at different sizes"
     );
-    let (jsx_pixels, _) = jsx.rgba8.as_chunks::<4>();
-    let (rust_pixels, _) = rust.rgba8.as_chunks::<4>();
+    let (jsx_pixels, _) = jsx.rgba8().as_chunks::<4>();
+    let (rust_pixels, _) = rust.rgba8().as_chunks::<4>();
     let differing = jsx_pixels
         .iter()
         .zip(rust_pixels)

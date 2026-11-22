@@ -12,7 +12,6 @@
 
 use core::cell::RefCell;
 
-use crate::dispatch::Dispatcher;
 use waterui::navigation::{
     NavigationSplitLayout, split::NavigationSplitDetailBuilder as DetailBuilder,
 };
@@ -20,19 +19,33 @@ use waterui::reactive::{Binding, Signal};
 use waterui_backend_core::AnyView;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::Id;
-use waterui_core::layout::{StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect, ResolvedExtent, StretchAxis, SubView, ViewDimensions,
+};
 
 use crate::contract::KeepAlive;
+use crate::contract::{NativeLeaf, RenderContext};
 
-/// Installs the `NavigationSplitLayout` handler.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<NavigationSplitLayout>(platform::split_leaf);
+/// The `NavigationSplitLayout` realization.
+pub fn realize_navigation_split_layout(
+    value: NavigationSplitLayout,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    platform::split_leaf(value, ctx)
 }
 
 struct Fill;
 
 impl SubView for Fill {
-    fn measure(&self, _proposal: waterui_core::layout::ProposalSize) -> ViewDimensions {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
+    fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
         ViewDimensions::new(waterui_core::layout::Size::new(0.0, 0.0))
     }
 
@@ -308,7 +321,9 @@ mod platform {
         // not the safe-area rect.
         let host = HostView::new(mtm, Rect::ZERO);
         host.set_manages_safe_area(true);
-        let split_view = nav_for_binds.view().expect("split view");
+        let split_view = nav_for_binds
+            .view()
+            .expect("a split view controller always has a view");
         view::add_subview(&host, &split_view);
         host.set_primary_content_handler({
             let split_view = split_view.clone();

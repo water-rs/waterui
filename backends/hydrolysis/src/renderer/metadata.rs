@@ -5,7 +5,8 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::renderer::frame::ScopeClip;
-use waterui_graphics::draw::Draw as _;
+use waterui_core::contract_violation;
+use waterui_core::handler::ReportExtraction as _;
 
 /// The claim a tap gesture registered for the wrapped view: the node it
 /// stands for, the environment it was registered under — carrying the naming
@@ -18,6 +19,7 @@ use waterui_graphics::draw::Draw as _;
 /// post-walk single-child collapse. An explicit `a11y_role` claim is the
 /// element the author declared, so it never collapses.
 #[cfg(feature = "accessibility")]
+#[cfg(hydrolysis_cherenkov)]
 pub(super) struct GestureA11yClaim {
     /// The registered claim node.
     pub(super) node_id: AccessibilityNodeId,
@@ -45,10 +47,10 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         // does, and fall back to the unit-space commands only for a custom path.
         // The commands are normalized per axis, so resolving them against a
         // non-square rect makes every circular corner elliptical.
-        let clip_path = shape_kind_path(value.kind(), ctx.bounds)
-            .unwrap_or_else(|| path_commands_to_path(value.commands(), ctx.bounds));
-        let clip = if let Some(regular_clip) = kind_clip_shape(value.kind(), ctx.bounds)
-            .or_else(|| regular_clip_shape(value.commands(), ctx.bounds))
+        let clip_path = shape_kind_path(value.kind(), ctx.bounds())
+            .unwrap_or_else(|| path_commands_to_path(value.commands(), ctx.bounds()));
+        let clip = if let Some(regular_clip) = kind_clip_shape(value.kind(), ctx.bounds())
+            .or_else(|| regular_clip_shape(value.commands(), ctx.bounds()))
         {
             match regular_clip {
                 RegularClipShape::Rect(rect) => ScopeClip::Rect(rect),
@@ -83,66 +85,66 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     ) {
         render_content(renderer);
 
-        if border.width <= 0.0 {
+        if border.width() <= 0.0 {
             return;
         }
 
-        let paint = || Paint::Solid(border.color.resolve(env).snapshot());
-        let width = f64::from(border.width);
+        let paint = || Paint::Solid(border.color().resolve(env).snapshot());
+        let width = f64::from(border.width());
 
-        if border.edges.all() && border.corner_radius > 0.0 {
+        if border.get_edges().all() && border.get_corner_radius() > 0.0 {
             let rounded =
-                kurbo::RoundedRect::from_rect(ctx.bounds, f64::from(border.corner_radius));
+                kurbo::RoundedRect::from_rect(ctx.bounds(), f64::from(border.get_corner_radius()));
             let stroke = kurbo::Stroke::new(width);
             renderer
                 .scene_mut()
-                .stroke_paint(&stroke, ctx.local, paint(), &rounded);
+                .stroke_paint(&stroke, ctx.local(), paint(), &rounded);
             return;
         }
 
-        if border.edges.top {
+        if border.get_edges().top {
             let top = kurbo::Rect::new(
-                ctx.bounds.x0,
-                ctx.bounds.y0,
-                ctx.bounds.x1,
-                ctx.bounds.y0 + width,
+                ctx.bounds().x0,
+                ctx.bounds().y0,
+                ctx.bounds().x1,
+                ctx.bounds().y0 + width,
             );
             renderer
                 .scene_mut()
-                .fill_paint(peniko::Fill::NonZero, ctx.local, paint(), &top);
+                .fill_paint(peniko::Fill::NonZero, ctx.local(), paint(), &top);
         }
-        if border.edges.bottom {
+        if border.get_edges().bottom {
             let bottom = kurbo::Rect::new(
-                ctx.bounds.x0,
-                ctx.bounds.y1 - width,
-                ctx.bounds.x1,
-                ctx.bounds.y1,
+                ctx.bounds().x0,
+                ctx.bounds().y1 - width,
+                ctx.bounds().x1,
+                ctx.bounds().y1,
             );
             renderer
                 .scene_mut()
-                .fill_paint(peniko::Fill::NonZero, ctx.local, paint(), &bottom);
+                .fill_paint(peniko::Fill::NonZero, ctx.local(), paint(), &bottom);
         }
-        if border.edges.leading {
+        if border.get_edges().leading {
             let leading = kurbo::Rect::new(
-                ctx.bounds.x0,
-                ctx.bounds.y0,
-                ctx.bounds.x0 + width,
-                ctx.bounds.y1,
+                ctx.bounds().x0,
+                ctx.bounds().y0,
+                ctx.bounds().x0 + width,
+                ctx.bounds().y1,
             );
             renderer
                 .scene_mut()
-                .fill_paint(peniko::Fill::NonZero, ctx.local, paint(), &leading);
+                .fill_paint(peniko::Fill::NonZero, ctx.local(), paint(), &leading);
         }
-        if border.edges.trailing {
+        if border.get_edges().trailing {
             let trailing = kurbo::Rect::new(
-                ctx.bounds.x1 - width,
-                ctx.bounds.y0,
-                ctx.bounds.x1,
-                ctx.bounds.y1,
+                ctx.bounds().x1 - width,
+                ctx.bounds().y0,
+                ctx.bounds().x1,
+                ctx.bounds().y1,
             );
             renderer
                 .scene_mut()
-                .fill_paint(peniko::Fill::NonZero, ctx.local, paint(), &trailing);
+                .fill_paint(peniko::Fill::NonZero, ctx.local(), paint(), &trailing);
         }
     }
 
@@ -156,22 +158,22 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         shadow: &Shadow,
         render_content: impl FnOnce(&mut Self),
     ) {
-        let blur = f64::from(shadow.radius.max(0.0));
-        let offset_x = f64::from(shadow.offset.x);
-        let offset_y = f64::from(shadow.offset.y);
+        let blur = f64::from(shadow.radius().max(0.0));
+        let offset_x = f64::from(shadow.offset().x);
+        let offset_y = f64::from(shadow.offset().y);
         let shadow_rect = kurbo::Rect::new(
-            ctx.bounds.x0 + offset_x,
-            ctx.bounds.y0 + offset_y,
-            ctx.bounds.x1 + offset_x,
-            ctx.bounds.y1 + offset_y,
+            ctx.bounds().x0 + offset_x,
+            ctx.bounds().y0 + offset_y,
+            ctx.bounds().x1 + offset_x,
+            ctx.bounds().y1 + offset_y,
         );
-        let shadow_color = shadow.color.resolve(env).snapshot();
+        let shadow_color = shadow.color().resolve(env).snapshot();
 
         // The silhouette states the caster's shape. `kind_clip_shape` — the
         // same resolver a clip uses to decide between the uniform rounded-rect
         // fast path and the general path route — answers whether the shadow can
         // feed the engine's blurred-rounded-rect primitive directly.
-        let silhouette = &shadow.silhouette;
+        let silhouette = &shadow.silhouette();
         let uniform_radius = match kind_clip_shape(silhouette.kind(), shadow_rect) {
             Some(RegularClipShape::RoundedRect { corner_width, .. }) => Some(corner_width),
             Some(RegularClipShape::Rect(_)) => Some(0.0),
@@ -179,7 +181,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         };
         match uniform_radius {
             Some(corner_radius) => renderer.scene_mut().blurred_rounded_rect(
-                ctx.local,
+                ctx.local(),
                 shadow_rect,
                 shadow_color,
                 corner_radius,
@@ -187,7 +189,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             ),
             None => Self::draw_blurred_silhouette(
                 renderer,
-                ctx.local,
+                ctx.local(),
                 silhouette,
                 shadow_rect,
                 shadow_color,
@@ -245,18 +247,30 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// surface ([`WrapperEffect::PopupMenuSurface`]): on Material 3 themes it
     /// is `md.comp.menu.container.color` (`surface-container`), the extra-small
     /// 4 dp `md.sys.shape.corner.extra-small` shape and
-    /// `md.comp.menu.container.elevation` level 2 — drawn by the theme's
-    /// `draw_text_context_menu_panel`. The window leaves the panel's shadow
-    /// room inside its own bounds via `POPUP_MENU_PANEL_MARGIN`.
+    /// `md.comp.menu.container.elevation` level 2 — drawn by the panel part
+    /// of the theme's `MenuLook`, with the look's selected-row part over
+    /// `selected_row` (a picker popup's selected row, in the panel's own
+    /// space). The window leaves the panel's shadow room inside its own
+    /// bounds via `POPUP_MENU_PANEL_MARGIN`.
+    #[cfg(feature = "menu")]
     pub(super) fn apply_popup_menu_surface(
         renderer: &mut Self,
         ctx: RenderContext,
+        env: &Environment,
+        selected_row: Option<kurbo::Rect>,
         render_content: impl FnOnce(&mut Self),
     ) {
         {
-            let theme = renderer.theme();
-            renderer.scene_mut().record_picture(ctx.local, |draw| {
-                theme.draw_text_context_menu_panel(&mut *draw, ctx.bounds);
+            let look = crate::renderer::input::menu_look(&renderer.theme(), env);
+            renderer.scene_mut().record_picture(ctx.local(), |draw| {
+                look.record_panel(&mut *draw, ctx.bounds());
+                if let Some(row) = selected_row {
+                    let bounds = ctx.bounds();
+                    look.record_selected_row(
+                        &mut *draw,
+                        row.with_origin((bounds.x0 + row.x0, bounds.y0 + row.y0)),
+                    );
+                }
             });
         }
         render_content(renderer);
@@ -286,6 +300,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// wiring over the text-input and surface targets the semantic walk
     /// registered, with no renderer in hand.
     #[cfg(feature = "accessibility")]
+    #[cfg(hydrolysis_cherenkov)]
     pub(super) fn apply_focused_semantic(
         renderer: &mut SemanticCore<E>,
         value: &Focused,
@@ -318,7 +333,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         value: &Hittable,
         render_content: impl FnOnce(&mut Self),
     ) {
-        let enabled = renderer.read_signal(&value.enabled);
+        let enabled = renderer.read_signal(value.enabled());
         if enabled {
             render_content(renderer);
             return;
@@ -340,8 +355,8 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         value: &Cursor,
         render_content: impl FnOnce(&mut Self),
     ) {
-        let style = renderer.read_signal(&value.style);
-        let bounds = ctx.bounds;
+        let style = renderer.read_signal(value.style());
+        let bounds = ctx.bounds();
         renderer.register_cursor_target(bounds, style);
         render_content(renderer);
     }
@@ -359,7 +374,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         Rc::new(RefCell::new(
             move |_renderer: &mut crate::renderer::SemanticCore<E>, runtime_env: &Environment| {
                 let action_env = captured_env.layered_on(runtime_env);
-                action.borrow_mut()(&action_env);
+                action.borrow_mut()(&action_env).report_extraction();
                 true
             },
         ))
@@ -380,11 +395,19 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         clippy::too_many_lines,
         reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
     )]
+    #[cfg_attr(
+        not(feature = "accessibility"),
+        expect(
+            unused_variables,
+            reason = "the content only names the synthesized accessibility claim"
+        )
+    )]
     pub(super) fn apply_gesture_observer(
         renderer: &mut Self,
         ctx: RenderContext,
         env: &Environment,
         effect: &GestureObserverEffect,
+        content: &RenderNode<E>,
         render_content: impl FnOnce(&mut Self, &Environment),
     ) {
         // The action environment contract (water-rs/hydrolysis#177,
@@ -396,7 +419,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         // modifier chain. Every dispatch arm — a11y Activate, `layered_action`,
         // the press slot, keyboard activation, hover — applies this same
         // `captured_env.layered_on(runtime_env)` rule.
-        let bounds = ctx.bounds;
+        let bounds = ctx.bounds();
         let disabled = env
             .get::<waterui_core::interaction::Disabled>()
             .is_some_and(|disabled| renderer.read_signal(disabled.signal()));
@@ -441,9 +464,8 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                         AccessibilityNodeRole::Button,
                     ),
                 );
-                if let Some(label) =
-                    renderer.resolve_accessibility_label(env, effect.default_a11y_label.clone())
-                {
+                let default_label = content.accessibility_label(renderer);
+                if let Some(label) = renderer.resolve_accessibility_label(env, default_label) {
                     node.set_label(label);
                 }
                 if let Some(value) = renderer.resolve_accessibility_value(env, None) {
@@ -532,19 +554,39 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         let action = Rc::clone(&effect.action);
         let mut layered_action: BoxedAction<()> = Box::new(move |runtime_env: &Environment| {
             let action_env = captured_env.layered_on(runtime_env);
-            action.borrow_mut()(&action_env);
+            action.borrow_mut()(&action_env)
         });
 
         if matches!(effect.gesture, Gesture::Tap(_))
-            && let Some(style) = env.get::<crate::theme::InteractionStyle>().cloned()
+            && let Some(chrome) = env.get::<crate::theme::Chrome>().cloned()
         {
             let interaction_key = InteractionKey::for_rc(&effect.action, 0);
-            let (interaction, press_slot, _) = renderer.bind_control_interaction_target(
+            let target = chrome.target(bounds);
+            let (_, press_slot, handles) = renderer.bind_live_chrome_target(
                 interaction_key.clone(),
-                bounds,
+                target,
                 env,
                 disabled,
+                &chrome,
             );
+            let state = renderer.reported_interaction_state(&interaction_key);
+            if effect.chrome_state.snapshot() != state {
+                effect.chrome_state.set(state);
+            }
+            let parts = crate::renderer::chrome::LiveChromeParts::ensure(
+                &mut effect.chrome.borrow_mut(),
+                &chrome,
+                &crate::renderer::chrome::ChromeContent::default(),
+                bounds,
+                state,
+                env,
+                &effect.chrome_state,
+            )
+            .clone();
+            handles.attach_live(Rc::clone(parts.chrome()));
+            // The surface below the composed control's own content, the
+            // interaction layers above it.
+            parts.push_below(renderer, ctx);
             // The claim parents the wrapped content's nodes for the walk, the
             // way a naming container's node parents its children's — without
             // it the content registers beside the claim and the synthesized
@@ -571,42 +613,15 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 }
             }
 
-            let state = renderer.reported_interaction_state(&interaction_key);
-            let color_signal = style.state_layer_color.resolve(env);
-            let color = renderer.read_signal(&color_signal);
-            let interaction =
-                local_interaction_state(interaction, renderer.current_hit_transform());
-            {
-                let theme = renderer.theme();
-                let layer_bounds = style.state_layer_bounds(ctx.bounds);
-                let radii = *style.state_layer_radii.resolve(state);
-                let ring =
-                    interaction_focus_ring(renderer, env, layer_bounds, radii, &style, state);
-                renderer.draw_context(ctx, |draw| {
-                    theme.draw_interaction_state_layer(
-                        draw,
-                        layer_bounds,
-                        radii,
-                        color,
-                        interaction,
-                    );
-                    if let Some((ring_bounds, ring_radii, color, width)) = ring {
-                        draw.stroke(
-                            kurbo::RoundedRect::from_rect(ring_bounds, ring_radii),
-                            kurbo::Stroke::new(width),
-                            color,
-                        );
-                    }
-                });
-            }
+            parts.push_above(renderer, ctx);
 
             if !disabled {
                 renderer.register_interactive_pointer_target_with_keyboard(
-                    bounds,
+                    target,
                     press_slot,
-                    style.keyboard_focusable,
+                    chrome.keyboard_focusable(),
                     move |_renderer, _point, runtime_env| {
-                        layered_action(runtime_env);
+                        layered_action(runtime_env).report_extraction();
                         false
                     },
                 );
@@ -691,10 +706,12 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// When a scope exists that the tap did not claim, the activation is
     /// delegated to the scope's representative instead, and `None` returns.
     #[cfg(feature = "accessibility")]
+    #[cfg(hydrolysis_cherenkov)]
     pub(super) fn emit_gesture_observer_accessibility(
         renderer: &mut SemanticCore<E>,
         env: &Environment,
         effect: &GestureObserverEffect,
+        content: &RenderNode<E>,
     ) -> Option<GestureA11yClaim> {
         if !matches!(effect.gesture, Gesture::Tap(_)) {
             return None;
@@ -732,9 +749,8 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                     AccessibilityNodeRole::Button,
                 ),
             );
-            if let Some(label) =
-                renderer.resolve_accessibility_label(env, effect.default_a11y_label.clone())
-            {
+            let default_label = content.accessibility_label(renderer);
+            if let Some(label) = renderer.resolve_accessibility_label(env, default_label) {
                 node.set_label(label);
             }
             node.add_action(AccessibilityAction::Focus);
@@ -786,7 +802,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     ) {
         let event = handler.borrow().event();
         let interaction_key = InteractionKey::for_rc(&handler, 0);
-        let bounds = ctx.bounds;
+        let bounds = ctx.bounds();
         match event {
             Event::HoverEnter => {
                 let captured_env = env.clone();
@@ -821,7 +837,9 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                     true
                 });
             }
-            _ => panic!("hydrolysis event variant is not supported"),
+            other => contract_violation!(
+                "hydrolysis event variant {other:?} is not supported; its handler is not registered"
+            ),
         }
         render_content(renderer);
     }
@@ -832,6 +850,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// registration and the preview/accessory slots travel with the target for
     /// the open presentation to mount. The node's environment travels with the
     /// target so the popup opens inside it (water-rs/hydrolysis#140).
+    #[cfg(feature = "menu")]
     pub(super) fn apply_context_menu(
         renderer: &mut Self,
         ctx: RenderContext,
@@ -839,7 +858,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         value: &ContextMenuEffect<E>,
         render_content: impl FnOnce(&mut Self),
     ) {
-        let bounds = ctx.bounds;
+        let bounds = ctx.bounds();
         renderer.register_context_menu_target(
             bounds,
             value.items.clone(),
@@ -865,7 +884,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         value: &AnchoredOverlayEffect<E>,
         render_content: impl FnOnce(&mut Self),
     ) {
-        let bounds = renderer.resolve_window_rect(ctx.bounds);
+        let bounds = renderer.resolve_window_rect(ctx.bounds());
         let presented = renderer.read_signal(&value.is_presented);
         renderer
             .popup_menu
@@ -922,7 +941,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         value: &Rc<Draggable>,
         render_content: impl FnOnce(&mut Self),
     ) {
-        let bounds = ctx.bounds;
+        let bounds = ctx.bounds();
         renderer.register_draggable_target(bounds, Rc::clone(value));
         render_content(renderer);
     }
@@ -938,7 +957,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         handles: &DropDestinationHandles,
         render_content: impl FnOnce(&mut Self),
     ) {
-        let bounds = ctx.bounds;
+        let bounds = ctx.bounds();
         renderer.register_drop_destination_handles(bounds, handles, env);
         render_content(renderer);
     }

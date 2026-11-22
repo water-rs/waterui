@@ -70,8 +70,9 @@ pub trait RuntimeDriver {
 
 /// What one pump produced: whether it rebuilt, the phase timings, the
 /// accessibility tree update plus the content types its nodes declared, the
-/// captured snapshot when one was requested, and the UI focus target when
-/// the runtime tracks one.
+/// captured snapshot when one was requested, whether the runtime's GPU
+/// device was lost during the pump, and the UI focus target when the runtime
+/// tracks one.
 #[derive(Debug)]
 pub struct DriverPumpResult {
     pub(crate) rebuilt: bool,
@@ -79,6 +80,9 @@ pub struct DriverPumpResult {
     pub(crate) tree_update: Option<AccessibilityTreeUpdate>,
     pub(crate) content_types: AccessibilityContentTypes,
     pub(crate) snapshot: Option<Snapshot>,
+    /// A recoverable loss: the next pump recreates the device, and a device
+    /// that keeps dying ends in the terminal failure the driver panics with.
+    pub(crate) device_lost: bool,
     pub(crate) ui_focus: Option<NodeId>,
 }
 
@@ -88,14 +92,15 @@ impl RuntimeDriver for SemanticRuntime {
     }
 
     fn pump_at(&mut self, at: Instant, _capture_snapshot: bool) -> DriverPumpResult {
-        let result = Self::pump_at(self, at);
+        let mut result = Self::pump_at(self, at);
         DriverPumpResult {
-            rebuilt: result.rebuilt,
-            profile: result.profile,
-            tree_update: result.tree_update,
-            content_types: result.content_types,
+            rebuilt: result.rebuilt(),
+            profile: result.profile(),
+            tree_update: result.take_tree_update(),
+            content_types: result.take_content_types(),
             snapshot: None,
-            ui_focus: result.ui_focus.map(NodeId::from),
+            device_lost: false,
+            ui_focus: result.ui_focus().map(NodeId::from),
         }
     }
 
@@ -134,18 +139,26 @@ impl RuntimeDriver for HeadlessRuntime {
     }
 
     fn pump_at(&mut self, at: Instant, capture_snapshot: bool) -> DriverPumpResult {
-        let result = Self::pump_at(self, capture_snapshot, at);
+        let mut result = Self::pump_at(self, capture_snapshot, at);
+        // A window whose surface failed for good never renders again: the
+        // test host cannot go on, and the failure names why.
+        if let Some(error) = result.take_failure() {
+            panic!(
+                "waterui-testing: the window's surface failed for good: {:#}",
+                waterui_core::Error::from(error)
+            );
+        }
         DriverPumpResult {
-            rebuilt: result.rebuilt,
-            profile: result.profile,
-            tree_update: result.tree_update,
-            content_types: result.content_types,
-            snapshot: result.snapshot.map(|snapshot| Snapshot {
-                width: snapshot.width,
-                height: snapshot.height,
-                rgba8: snapshot.rgba8,
+            rebuilt: result.rebuilt(),
+            profile: result.profile(),
+            tree_update: result.take_tree_update(),
+            content_types: result.take_content_types(),
+            snapshot: result.take_snapshot().map(|snapshot| {
+                let (width, height, rgba8, _) = snapshot.into_parts();
+                Snapshot::new(width, height, rgba8)
             }),
-            ui_focus: result.ui_focus.map(NodeId::from),
+            device_lost: result.device_lost(),
+            ui_focus: result.ui_focus().map(NodeId::from),
         }
     }
 
@@ -183,13 +196,55 @@ impl RuntimeDriver for HeadlessRuntime {
 #[non_exhaustive]
 pub struct FrameTiming {
     /// Wall-clock duration spent advancing one offscreen Hydrolysis frame.
-    pub total: std::time::Duration,
+    total: std::time::Duration,
     /// Whether the frame rebuilt scene/layout state.
-    pub rebuilt: bool,
+    rebuilt: bool,
     /// Detailed Hydrolysis phase timings and counters.
-    pub profile: FrameProfile,
+    profile: FrameProfile,
     /// Process CPU / memory sample collected immediately after the frame.
-    pub resources: ResourceSample,
+    resources: ResourceSample,
+}
+
+impl FrameTiming {
+    /// Creates a `FrameTiming` from its parts.
+    #[must_use]
+    pub const fn new(
+        total: std::time::Duration,
+        rebuilt: bool,
+        profile: FrameProfile,
+        resources: ResourceSample,
+    ) -> Self {
+        Self {
+            total,
+            rebuilt,
+            profile,
+            resources,
+        }
+    }
+
+    /// Wall-clock duration spent advancing one offscreen Hydrolysis frame.
+    #[must_use]
+    pub const fn total(&self) -> std::time::Duration {
+        self.total
+    }
+
+    /// Whether the frame rebuilt scene/layout state.
+    #[must_use]
+    pub const fn rebuilt(&self) -> bool {
+        self.rebuilt
+    }
+
+    /// Detailed Hydrolysis phase timings and counters.
+    #[must_use]
+    pub const fn profile(&self) -> FrameProfile {
+        self.profile
+    }
+
+    /// Process CPU / memory sample collected immediately after the frame.
+    #[must_use]
+    pub const fn resources(&self) -> ResourceSample {
+        self.resources
+    }
 }
 
 /// Host process resource sample captured during a perf run.

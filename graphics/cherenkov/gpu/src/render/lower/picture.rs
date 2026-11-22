@@ -1,0 +1,492 @@
+//! Picture-local raster retention, using the shared local-image cache.
+use super::{
+    Affine, Emission, EmissionStorage, GlyphContext, LayerId, LocalKey, Lowering, Op, Placement,
+    Range, Realization, Rect, RenderError, Target,
+};
+use crate::render::projective::{Key, PictureId, PictureImage, Realize};
+use cherenkov::lowering::projective::{Homography, LocalImage, mip_levels};
+
+/// Picture bounds survive texture eviction and admission retries. Keeping the
+/// immutable source alive makes allocation identity safe across replacements.
+pub(super) struct PreparedDomain {
+    source: cherenkov::Picture,
+    bucket: i32,
+    source_bytes: u64,
+    visible: bool,
+    domain: Option<crate::render::planes::static_layer::Domain>,
+    /// What the driver commits for the domain's image with its mip chain,
+    /// by the base size it was asked for.
+    committed: Option<((u32, u32), u64)>,
+}
+
+impl PreparedDomain {
+    pub(super) fn matches_source(&self, source: &cherenkov::Picture) -> bool {
+        std::ptr::eq(self.source.display_list(), source.display_list())
+    }
+
+    pub(super) const fn source_bytes(&self) -> u64 {
+        self.source_bytes
+    }
+
+    /// The bytes the driver commits for this domain's image with every mip
+    /// level, asked once per size.
+    fn committed(&mut self, device: &wgpu::Device, size: (u32, u32)) -> Result<u64, RenderError> {
+        if let Some((s, bytes)) = self.committed
+            && s == size
+        {
+            return Ok(bytes);
+        }
+        let bytes = crate::render::resident::texture_bytes(
+            device,
+            &crate::render::projective::descriptor(&mip_levels(size)),
+        )?;
+        self.committed = Some((size, bytes));
+        Ok(bytes)
+    }
+}
+
+impl<'a> super::PictureInputs<'a> {
+    pub fn new(
+        (retained, inputs, device): (
+            &'a super::FxHashMap<LayerId, Vec<crate::render::projective::Entry>>,
+            &'a crate::render::projective::Inputs,
+            &'a wgpu::Device,
+        ),
+        available: u64,
+        layers: &super::FxHashMap<LayerId, super::ContentData>,
+    ) -> Self {
+        let mut candidates = Vec::new();
+        for (&layer, content) in layers {
+            let Some((ops, _)) = content.retained.current() else {
+                continue;
+            };
+            for (&index, prepared) in &content.storage.picture_domains {
+                if !prepared.visible {
+                    continue;
+                }
+                if !matches!(ops.get(index), Some(Op::BeginPicture { picture, .. }) if prepared.matches_source(picture))
+                {
+                    continue;
+                }
+                let Some(domain) = prepared.domain else {
+                    continue;
+                };
+                // A visible domain was sized when it was planned; one whose
+                // size moved since is planned again before it ranks.
+                let Some((size, bytes)) = prepared.committed else {
+                    continue;
+                };
+                if size != domain.size {
+                    continue;
+                }
+                let key = LocalKey {
+                    layer,
+                    picture: Some(PictureId::of(&prepared.source)),
+                    bucket: prepared.bucket,
+                };
+                candidates.push((key, prepared.source_bytes(), bytes));
+            }
+        }
+        let selected = if candidates.is_empty() {
+            None
+        } else {
+            // Geometry preparation saved per retained texture byte, rather
+            // than paint order deciding which content receives the budget.
+            candidates.sort_by(|a, b| {
+                (u128::from(b.1) * u128::from(a.2)).cmp(&(u128::from(a.1) * u128::from(b.2)))
+            });
+            let mut remaining = available;
+            let mut selected = super::FxHashSet::default();
+            for (key, _, bytes) in candidates {
+                if bytes <= remaining && selected.insert(key) {
+                    remaining -= bytes;
+                }
+            }
+            Some(selected)
+        };
+        Self {
+            retained,
+            inputs,
+            device,
+            available,
+            selected,
+            realize: Vec::new(),
+            composed: Vec::new(),
+        }
+    }
+}
+
+struct PicturePlan {
+    image: LocalImage,
+    key: LocalKey,
+    cache: Key,
+    current: bool,
+    interop: u64,
+    domain: crate::render::planes::static_layer::Domain,
+    /// The bytes the driver commits for the image, which admission counted.
+    bytes: u64,
+}
+
+impl Lowering<'_> {
+    /// Retains source-over pictures in their own stable texel coordinates.
+    /// Fractional or shaped outer clips remain distributed over the original
+    /// commands; grouping their coverage would change overlapping edges.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "bounds are clamped to the raster"
+    )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one admission decision computes local bounds, identity and budget together"
+    )]
+    fn plan_picture(
+        &mut self,
+        picture: &cherenkov::Picture,
+        local: Affine,
+        source: &cherenkov::DisplayList,
+        ops: &[Op],
+        (layer, domains, index): (LayerId, &mut super::FxHashMap<usize, PreparedDomain>, usize),
+        glyphs: &GlyphContext<'_>,
+    ) -> Result<Option<PicturePlan>, RenderError> {
+        let Some(context) = self.pictures.as_ref() else {
+            return Ok(None);
+        };
+        if self.depth != 0 {
+            return Ok(None);
+        }
+        // The image stores the space of the pass it composites into: its
+        // commands blend with each other there, and the image composites
+        // source-over there, exactly as the commands drawn inline would.
+        let space = self.current_space();
+        if self.clip.is_some_and(|clip| {
+            clip.mask.is_some()
+                || clip
+                    .aligned_rect
+                    .is_none_or(|r| [r.x0, r.y0, r.x1, r.y1].iter().any(|v| v.fract() != 0.0))
+        }) {
+            return Ok(None);
+        }
+        let to_parent = self.transform * local;
+        let [a, b, c, d, _, _] = to_parent.as_coeffs();
+        // The largest singular value measures scale without charging rotation
+        // as magnification. Match the raster's f32 precision before bucketing,
+        // so roundoff in an orthogonal transform cannot double its density.
+        let (xx, yy, xy) = (
+            b.mul_add(b, a * a),
+            d.mul_add(d, c * c),
+            b.mul_add(d, a * c),
+        );
+        let scale = ((xx + yy + (xx - yy).hypot(2.0 * xy)) * 0.5).sqrt();
+        // Half-octave buckets bound excess texel area to 2x while preserving
+        // pixels across small scale changes. Whole octaves can charge 4x.
+        let density = (f64::from(scale as f32).log2() * 2.0).ceil();
+        let density = (density * 0.5).exp2();
+        let key = LocalKey {
+            layer,
+            picture: Some(PictureId::of(picture)),
+            bucket: crate::render::projective::bucket(density),
+        };
+        let entry = context
+            .retained
+            .get(&layer)
+            .and_then(|entries| entries.iter().find(|entry| entry.matches(key)));
+        let pending = context.realize.iter().find(|image| image.key == key);
+        let snapshot = entry
+            .and_then(|entry| entry.picture.as_ref())
+            .or_else(|| pending.and_then(|image| image.picture.as_ref()));
+        let domain = if let Some(snapshot) = snapshot {
+            snapshot.domain
+        } else {
+            // Composite pictures keep their children independently reusable when
+            // their placement changes or the enclosing recording is replaced.
+            // Groups may depend on the destination and keep their own path.
+            if ops.iter().any(|op| {
+                matches!(
+                    op,
+                    Op::BeginPicture { .. } | Op::BeginIsolate { .. } | Op::BeginShadow { .. }
+                )
+            }) {
+                return Ok(None);
+            }
+            let cached = domains
+                .get(&index)
+                .filter(|entry| entry.bucket == key.bucket && entry.matches_source(picture));
+            let domain = if let Some(cached) = cached {
+                cached.domain
+            } else {
+                let domain = crate::render::planes::static_layer::domain_in(
+                    local.inverse(),
+                    ops,
+                    source,
+                    glyphs.fonts,
+                    density,
+                    context.inputs.limits.max_dimension,
+                )?;
+                domains.insert(
+                    index,
+                    PreparedDomain {
+                        source: picture.clone(),
+                        bucket: key.bucket,
+                        source_bytes: picture
+                            .display_list()
+                            .heap_bytes(cherenkov::lowering::memory::command_bytes),
+                        visible: true,
+                        domain,
+                        committed: None,
+                    },
+                );
+                domain
+            };
+            let Some(domain) = domain else {
+                return Ok(None);
+            };
+            domain
+        };
+        let raster = domain.raster();
+        let forward = to_parent * raster;
+        let bounds = forward
+            .transform_rect_bbox(Rect::new(
+                0.0,
+                0.0,
+                f64::from(domain.size.0),
+                f64::from(domain.size.1),
+            ))
+            .expand()
+            .intersect(Rect::new(
+                0.0,
+                0.0,
+                f64::from(self.width),
+                f64::from(self.height),
+            ));
+        let prepared = domains.entry(index).or_insert_with(|| PreparedDomain {
+            source: picture.clone(),
+            bucket: key.bucket,
+            source_bytes: picture
+                .display_list()
+                .heap_bytes(cherenkov::lowering::memory::command_bytes),
+            visible: true,
+            domain: Some(domain),
+            committed: None,
+        });
+        prepared.bucket = key.bucket;
+        prepared.domain = Some(domain);
+        prepared.visible = !bounds.is_zero_area();
+        if !prepared.visible {
+            return Ok(None);
+        }
+        // Sized before selection, so a picture ranks once it is planned.
+        let committed = prepared.committed(context.device, domain.size)?;
+        let mut image = LocalImage {
+            density,
+            local_to_texel: raster.inverse(),
+            size: domain.size,
+            levels: Vec::new(),
+            inverse: Homography::affine(forward.inverse()),
+            forward: Homography::affine(forward),
+            to_parent: Homography::affine(to_parent),
+            bounds: [
+                bounds.x0 as u32,
+                bounds.y0 as u32,
+                bounds.x1 as u32,
+                bounds.y1 as u32,
+            ],
+        };
+        let cache = Key::new(&image, space, 0, context.inputs.replacements);
+        let current = pending.is_some()
+            || (!context.inputs.stale.contains(&key)
+                && entry.is_some_and(|entry| entry.key == Some(cache)));
+        if context
+            .selected
+            .as_ref()
+            .is_some_and(|selected| !selected.contains(&key))
+        {
+            return Ok(None);
+        }
+        let already_composed = context.composed.contains(&key);
+        let bytes = if current {
+            entry.map_or_else(
+                || {
+                    pending
+                        .expect("current image is retained or pending")
+                        .bytes()
+                },
+                crate::render::projective::Entry::bytes,
+            )
+        } else {
+            image.levels = mip_levels(image.size);
+            committed
+        };
+        if !already_composed && bytes > context.available {
+            return Ok(None);
+        }
+        let interop = context.inputs.interop;
+        if !already_composed {
+            let context = self.pictures.as_mut().expect("picture inputs");
+            context.available -= bytes;
+            context.composed.push(key);
+        }
+        Ok(Some(PicturePlan {
+            image,
+            key,
+            cache,
+            current,
+            interop,
+            domain,
+            bytes,
+        }))
+    }
+
+    /// Lowers the picture scope opened at `ops[open]`: its retained image
+    /// when admission accepts one, its commands inline otherwise. Returns the
+    /// index after the scope's end and whether anything was realized.
+    ///
+    /// Kept out of line so the per-op dispatch loop keeps the code shape it
+    /// has without pictures: picture-free content pays nothing for the arm
+    /// (`bench/scripts/ir_gate.py`).
+    #[inline(never)]
+    pub(super) fn picture_ops(
+        &mut self,
+        source: &cherenkov::DisplayList,
+        ops: &[Op],
+        emissions: &mut [Realization<Emission>],
+        storage: &mut EmissionStorage,
+        (layer, open): (LayerId, usize),
+        glyphs: &GlyphContext<'_>,
+    ) -> Result<(usize, bool), RenderError> {
+        let Op::BeginPicture {
+            picture,
+            local,
+            end,
+        } = &ops[open]
+        else {
+            unreachable!("picture_ops opens at a picture scope")
+        };
+        let (body, next) = (open + 1..*end as usize, *end as usize + 1);
+        if let Some(realized) = self.cached_picture(
+            picture,
+            *local,
+            source,
+            ops,
+            emissions,
+            storage,
+            (layer, body.clone()),
+            glyphs,
+        )? {
+            return Ok((next, realized));
+        }
+        let changed = self.ops(source, ops, emissions, storage, (layer, body), glyphs)?;
+        Ok((next, changed))
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one retained operation range and its source"
+    )]
+    pub(super) fn cached_picture(
+        &mut self,
+        picture: &cherenkov::Picture,
+        local: Affine,
+        source: &cherenkov::DisplayList,
+        ops: &[Op],
+        emissions: &mut [Realization<Emission>],
+        storage: &mut EmissionStorage,
+        (layer, range): (LayerId, Range<usize>),
+        glyphs: &GlyphContext<'_>,
+    ) -> Result<Option<bool>, RenderError> {
+        let Some(PicturePlan {
+            image,
+            key,
+            cache,
+            current,
+            interop,
+            domain,
+            bytes,
+        }) = self.plan_picture(
+            picture,
+            local,
+            source,
+            &ops[range.clone()],
+            (layer, &mut storage.picture_domains, range.start - 1),
+            glyphs,
+        )?
+        else {
+            return Ok(None);
+        };
+        if !current {
+            let saved = (
+                self.transform,
+                self.width,
+                self.height,
+                self.clip,
+                self.member_outer_clip,
+                self.root_target,
+                self.root_space,
+                self.semantic_target,
+                self.animating,
+            );
+            let target = self.current_target();
+            self.finish_pass();
+            self.set_clip(None);
+            self.member_outer_clip = None;
+            self.root_target = Target::Projected(key);
+            self.root_space = cache.space;
+            self.semantic_target = self.root_target;
+            self.transform = image.local_to_texel * local.inverse();
+            self.animating = false;
+            self.raster(image.size);
+            self.begin_pass(self.root_target, Some([0.0; 4]));
+            let (filters, passes) = (self.frame.filters.len(), self.frame.passes.len());
+            // The outer image already retains nested pictures' pixels.
+            let context = self.pictures.take();
+            let result = self.ops(source, ops, emissions, storage, (layer, range), glyphs);
+            self.pictures = context;
+            self.finish_pass();
+            let deps = crate::render::projective::Deps::of(self.frame, filters, passes, interop);
+            self.push_mips(self.frame.passes.len() - 1, key);
+            (
+                self.transform,
+                self.width,
+                self.height,
+                _,
+                self.member_outer_clip,
+                self.root_target,
+                self.root_space,
+                self.semantic_target,
+                self.animating,
+            ) = saved;
+            self.set_clip(saved.3);
+            self.begin_pass(target, None);
+            result?;
+            self.pictures
+                .as_mut()
+                .expect("a planned picture has inputs")
+                .realize
+                .push(Realize {
+                    key,
+                    cache,
+                    bytes,
+                    levels: image.levels,
+                    picture: Some(PictureImage {
+                        source: picture.clone(),
+                        domain,
+                    }),
+                    deps,
+                });
+        }
+        self.projective_draws += 1;
+        self.emit_projected(
+            &Placement {
+                key,
+                inverse: image.inverse,
+                to_parent: image.to_parent,
+                bounds: image.bounds,
+                density: image.density,
+            },
+            1.0,
+            cherenkov::BlendMode::Normal,
+            cache.space,
+        );
+        Ok(Some(!current))
+    }
+}

@@ -163,6 +163,14 @@ pub struct HydrolysisAndroidTemplateEntry {
     /// The band class [`painter_band_import`](Self::painter_band_import)
     /// supplies, when set.
     pub painter_band_class: Option<String>,
+    /// Import path of the region band `View` the painter's platform-view
+    /// registry stacks after each embedded platform view — the GPU
+    /// painter's (water-rs/waterui#2225) — `None` for a painter without one.
+    pub painter_region_band_import: Option<String>,
+    /// The region band class
+    /// [`painter_region_band_import`](Self::painter_region_band_import)
+    /// supplies, when set.
+    pub painter_region_band_class: Option<String>,
 }
 
 /// The two `WebView` answers one generated-manifest section gets from the
@@ -176,6 +184,10 @@ pub struct BrowserAnswers {
     /// The browser engine crate the application's normal-edge graph
     /// links, if any.
     pub engine: Option<ResolvedWebViewBackend>,
+    /// The application's graph enables a `video-gpu` feature — the GPU
+    /// video player is linked, and Android's backend realizes its decoder
+    /// plane.
+    pub video_gpu: bool,
 }
 
 /// The Hydrolysis Android preview host scaffold's parameters: the managed
@@ -467,9 +479,9 @@ fn kotlin_string_literal(value: &str) -> String {
 /// in place of the backend's published coordinate.
 #[derive(Debug, Clone, Default)]
 pub struct BackendDevCheckouts {
-    /// `WATERUI_WINUI_PATH`: a `water-rs/waterui-winui` checkout.
+    /// `WATERUI_WINUI_PATH`: a `water-rs/winui-backend` checkout.
     pub winui: Option<PathBuf>,
-    /// `WATERUI_TUI_PATH`: a `water-rs/tui` checkout.
+    /// `WATERUI_TUI_PATH`: a `water-rs/tui-backend` checkout.
     pub tui: Option<PathBuf>,
 }
 
@@ -611,14 +623,14 @@ impl TemplateContext {
         framework: &ResolvedFramework,
         local_sources: &LocalBackendSources,
     ) -> Self {
-        let waterui_path = options.waterui_path.clone();
+        let waterui_path = options.waterui_path().map(std::path::Path::to_path_buf);
         Self {
-            app_display_name: options.name.clone(),
-            app_name: options.name.replace(' ', ""),
+            app_display_name: options.name().to_owned(),
+            app_name: options.name().replace(' ', ""),
             crate_name,
             crate_version: String::new(),
-            bundle_identifier: options.bundle_identifier.clone(),
-            author: options.author.clone(),
+            bundle_identifier: options.bundle_identifier().clone(),
+            author: options.author().to_owned(),
             apple_pieces: false,
             waterui_path,
             backend_checkouts: BackendDevCheckouts::from_host(host),
@@ -632,7 +644,7 @@ impl TemplateContext {
             ios_permissions: Vec::new(),
             accessory: false,
             project_packages: None,
-            web_frontend_arg: options.web.as_ref().map(|web| web.include_arg.clone()),
+            web_frontend_arg: options.web().map(|web| web.include_arg().to_owned()),
             android_signing: None,
             launch: LaunchTemplateEntry::default(),
             hydrolysis_android: None,
@@ -656,15 +668,15 @@ impl TemplateContext {
         local_sources: &LocalBackendSources,
     ) -> Self {
         Self {
-            app_display_name: manifest.package.name.clone(),
+            app_display_name: manifest.package().name().to_owned(),
             app_name: app_name.into(),
             crate_name,
             crate_version: String::new(),
-            bundle_identifier: manifest.package.bundle_identifier.clone(),
+            bundle_identifier: manifest.package().bundle_identifier().clone(),
             author: String::new(),
             // Selected at invocation, never from declared config.
             apple_pieces: false,
-            waterui_path: manifest.waterui_path.as_ref().map(PathBuf::from),
+            waterui_path: manifest.waterui_path().map(PathBuf::from),
             backend_checkouts: BackendDevCheckouts::from_host(host),
             local_sources: local_sources.clone(),
             framework: framework.clone(),
@@ -674,14 +686,13 @@ impl TemplateContext {
             project_root_path: None,
             android_permissions: Vec::new(),
             ios_permissions: Vec::new(),
-            accessory: manifest.package.accessory,
+            accessory: manifest.package().accessory(),
             project_packages: None,
-            web_frontend_arg: manifest.web.as_ref().map(|_| "web".to_string()),
-            embedded: manifest.package.embedded,
+            web_frontend_arg: manifest.web().map(|_| "web".to_string()),
+            embedded: manifest.package().embedded(),
             android_signing: manifest
-                .signing
-                .android
-                .as_ref()
+                .signing()
+                .android()
                 .map(AndroidSigningTemplateEntry::from),
             launch: LaunchTemplateEntry::default(),
             hydrolysis_android: None,
@@ -821,6 +832,18 @@ impl TemplateContext {
     /// its own.
     pub(crate) fn webview_backend_feature(&self) -> io::Result<Option<&'static str>> {
         Ok(webview_backend_feature(self.browser.android_answers()?))
+    }
+
+    /// The backend feature the launcher's Android section selects for the
+    /// GPU video player — `video-gpu` when the application's graph links it,
+    /// so the backend realizes the player's decoder plane and an app
+    /// without the player links none of it.
+    pub(crate) fn video_gpu_backend_feature(&self) -> io::Result<Option<&'static str>> {
+        Ok(self
+            .browser
+            .android_answers()?
+            .video_gpu
+            .then_some("video-gpu"))
     }
 
     /// The `cfg` predicate matching the OSes whose tables link the CEF
@@ -974,6 +997,12 @@ impl TemplateContext {
         &self.hydrolysis_android_entry().painter_module
     }
 
+    /// Whether the selected host uses the retained HWUI session painter.
+    #[must_use]
+    pub fn hydrolysis_android_is_hwui(&self) -> bool {
+        self.hydrolysis_android_entry().painter_module == "hwui"
+    }
+
     /// The generated app's `minSdk`.
     #[must_use]
     pub const fn hydrolysis_android_min_api_level(&self) -> u32 {
@@ -1004,6 +1033,35 @@ impl TemplateContext {
             .painter_band_class
             .as_deref()
             .expect("Hydrolysis Android entry has no painter band")
+    }
+
+    /// Whether the selected painter stacks a region band `View` after each
+    /// embedded platform view.
+    #[must_use]
+    pub const fn hydrolysis_android_has_region_band(&self) -> bool {
+        self.hydrolysis_android_entry()
+            .painter_region_band_class
+            .is_some()
+    }
+
+    /// The region band `View`'s import path; only valid when
+    /// [`Self::hydrolysis_android_has_region_band`].
+    #[must_use]
+    pub fn hydrolysis_android_region_band_import(&self) -> &str {
+        self.hydrolysis_android_entry()
+            .painter_region_band_import
+            .as_deref()
+            .expect("Hydrolysis Android entry has no region band")
+    }
+
+    /// The region band `View`'s class name; only valid when
+    /// [`Self::hydrolysis_android_has_region_band`].
+    #[must_use]
+    pub fn hydrolysis_android_region_band_class(&self) -> &str {
+        self.hydrolysis_android_entry()
+            .painter_region_band_class
+            .as_deref()
+            .expect("Hydrolysis Android entry has no region band")
     }
 
     /// Whether the app bridges the system `WebView` — the pinned host's
@@ -1526,7 +1584,8 @@ define_scaffold_templates! {
 #[cfg(test)]
 mod tests {
     use super::{
-        BrowserTemplateContext, HydrolysisAndroidPreviewTemplateEntry, LaunchTemplateEntry,
+        BrowserTemplateContext, HydrolysisAndroidEmbeddedTemplateEntry,
+        HydrolysisAndroidPreviewTemplateEntry, HydrolysisAndroidTemplateEntry, LaunchTemplateEntry,
         ResolvedFramework, ResolvedWebViewBackend, TemplateContext, TemplateNamespace, embedded,
         generated_profiles, gtk4, local_backend_sources, normalize_path_for_config,
         render_scaffold_template,
@@ -1610,6 +1669,7 @@ mod tests {
         let answers = super::BrowserAnswers {
             webview_enabled,
             engine,
+            video_gpu: false,
         };
         ctx.with_browser(BrowserTemplateContext::desktop(
             answers, answers, answers, answers,
@@ -1818,6 +1878,80 @@ mod tests {
             gtk4_manifest["dependencies"].get("waterui").is_some(),
             "gtk4 manifest must depend on waterui for `configure_environment!`"
         );
+    }
+
+    #[test]
+    fn hydrolysis_android_hwui_session_factory_reaches_both_hosts() {
+        use crate::hydrolysis::android::HydrolysisAndroidPainter;
+
+        for painter in [
+            HydrolysisAndroidPainter::Gpu,
+            HydrolysisAndroidPainter::Hwui,
+        ] {
+            let app = HydrolysisAndroidTemplateEntry {
+                native_library_name: "waterui_test_hydrolysis".to_owned(),
+                host_project_dir: "../android-host/rev/android".to_owned(),
+                project_root: "..".to_owned(),
+                painter_dependency: painter.gradle_dependency(),
+                painter_module: painter.host_module().to_owned(),
+                min_api_level: 33,
+                painter_band_import: painter.band_import(),
+                painter_band_class: painter.band_class(),
+                painter_region_band_import: painter.region_band_import(),
+                painter_region_band_class: painter.region_band_class(),
+            };
+            let standalone = project_ctx().with_hydrolysis_android(app.clone());
+            let embedded_context = project_ctx().with_hydrolysis_android_embedded(
+                HydrolysisAndroidEmbeddedTemplateEntry {
+                    app,
+                    host_version: "test".to_owned(),
+                    host_modules: vec!["host".to_owned(), painter.host_module().to_owned()],
+                    compile_sdk: 37,
+                },
+            );
+            let activity = render_embedded(
+                TemplateNamespace::HydrolysisAndroid,
+                &embedded::HYDROLYSIS_ANDROID,
+                "app/src/main/java/MainActivity.kt.tpl",
+                &standalone,
+            );
+            let waterui = render_embedded(
+                TemplateNamespace::HydrolysisAndroidEmbedded,
+                &embedded::HYDROLYSIS_ANDROID_EMBEDDED,
+                "waterui/src/main/java/WaterUi.kt.tpl",
+                &embedded_context,
+            );
+            let is_hwui = painter == HydrolysisAndroidPainter::Hwui;
+            for (label, rendered) in [("MainActivity", &activity), ("WaterUi", &waterui)] {
+                assert_eq!(
+                    is_hwui,
+                    rendered.contains("import dev.waterui.hydrolysis.hwui.HwuiPainter"),
+                    "{painter} {label} HwuiPainter import: {rendered}"
+                );
+            }
+            // `SessionPainter` names the standalone override's return type;
+            // the embedded path passes `{ HwuiPainter() }` without it.
+            assert_eq!(
+                is_hwui,
+                activity.contains("SessionPainter"),
+                "{painter} standalone SessionPainter surface: {activity}"
+            );
+            assert_eq!(
+                is_hwui,
+                activity.contains("override fun createPainter(): SessionPainter = HwuiPainter()"),
+                "{painter} standalone factory: {activity}"
+            );
+            assert_eq!(
+                is_hwui,
+                waterui.contains("createPainter = { HwuiPainter() },"),
+                "{painter} embedded factory: {waterui}"
+            );
+            assert_eq!(
+                painter == HydrolysisAndroidPainter::Gpu,
+                activity.contains("import dev.waterui.hydrolysis.gpu.HydrolysisGpuBand"),
+                "{painter} standalone band import: {activity}"
+            );
+        }
     }
 
     #[test]
@@ -2261,9 +2395,11 @@ mod tests {
                 project_root: "..".to_string(),
                 painter_dependency: "dev.waterui.hydrolysis:gpu".to_string(),
                 painter_module: "gpu".to_string(),
-                min_api_level: 31,
+                min_api_level: 33,
                 painter_band_import: None,
                 painter_band_class: None,
+                painter_region_band_import: None,
+                painter_region_band_class: None,
             });
         let unsigned = render(&ctx);
         assert!(!unsigned.contains("signingConfigs"));
@@ -2401,7 +2537,7 @@ mod tests {
         assert!(!gtk_wpe_manifest.contains("webview-system"));
 
         let hydrolysis_ctx = all_os_browser(project_ctx(), true, Some(ResolvedWebViewBackend::Cef));
-        let cargo_toml = crate::templates::hydrolysis::rendered_outputs(
+        let cargo_toml = crate::templates::hydrolysis::rendered_outputs_with_painters(
             &hydrolysis_ctx,
             "waterui-test-hydrolysis",
         )
@@ -2505,26 +2641,31 @@ mod tests {
             super::BrowserAnswers {
                 webview_enabled: true,
                 engine: Some(ResolvedWebViewBackend::Cef),
+                video_gpu: false,
             },
             super::BrowserAnswers {
                 webview_enabled: true,
                 engine: Some(ResolvedWebViewBackend::Wpe),
+                video_gpu: false,
             },
             super::BrowserAnswers {
                 webview_enabled: true,
                 engine: None,
+                video_gpu: false,
             },
             super::BrowserAnswers::default(),
         ));
-        let cargo_toml =
-            crate::templates::hydrolysis::rendered_outputs(&ctx, "waterui-test-hydrolysis")
-                .expect("hydrolysis outputs should render")
-                .into_iter()
-                .find_map(|(path, content)| {
-                    (path == std::path::Path::new("Cargo.toml"))
-                        .then(|| String::from_utf8(content).expect("Cargo.toml must be UTF-8"))
-                })
-                .expect("hydrolysis Cargo.toml output should exist");
+        let cargo_toml = crate::templates::hydrolysis::rendered_outputs_with_painters(
+            &ctx,
+            "waterui-test-hydrolysis",
+        )
+        .expect("hydrolysis outputs should render")
+        .into_iter()
+        .find_map(|(path, content)| {
+            (path == std::path::Path::new("Cargo.toml"))
+                .then(|| String::from_utf8(content).expect("Cargo.toml must be UTF-8"))
+        })
+        .expect("hydrolysis Cargo.toml output should exist");
         let manifest = cargo_toml
             .parse::<toml::Table>()
             .expect("hydrolysis Cargo.toml should parse");
@@ -2537,13 +2678,12 @@ mod tests {
                 .and_then(|deps| deps.get("hydrolysis"))
                 .and_then(|dep| dep.get("features"))
                 .and_then(toml::Value::as_array)
-                .map(|features| {
+                .map_or_default(|features| {
                     features
                         .iter()
                         .filter_map(|feature| feature.as_str().map(str::to_string))
                         .collect()
                 })
-                .unwrap_or_default()
         };
         // Shared native table: `winit` only — the engine pieces moved out.
         assert_eq!(
@@ -2576,15 +2716,17 @@ mod tests {
         // The subprocess helper bin is declared once for the manifest, and
         // its source gates the Chromium dispatch on the macOS section that
         // provides the crate.
-        let helper =
-            crate::templates::hydrolysis::rendered_outputs(&ctx, "waterui-test-hydrolysis")
-                .expect("hydrolysis outputs should render")
-                .into_iter()
-                .find_map(|(path, content)| {
-                    (path == std::path::Path::new("src/bin/waterui-cef-helper.rs"))
-                        .then(|| String::from_utf8(content).expect("helper source must be UTF-8"))
-                })
-                .expect("the helper source renders");
+        let helper = crate::templates::hydrolysis::rendered_outputs_with_painters(
+            &ctx,
+            "waterui-test-hydrolysis",
+        )
+        .expect("hydrolysis outputs should render")
+        .into_iter()
+        .find_map(|(path, content)| {
+            (path == std::path::Path::new("src/bin/waterui-cef-helper.rs"))
+                .then(|| String::from_utf8(content).expect("helper source must be UTF-8"))
+        })
+        .expect("the helper source renders");
         assert!(
             helper.contains("any(target_os = \"macos\")"),
             "the helper compiles its dispatch where the CEF dep exists: {helper}"
@@ -2598,15 +2740,17 @@ mod tests {
     fn hydrolysis_wasm_table_bridges_only_what_the_app_uses() {
         let wasm_features = |web: super::WebAnswers| -> Vec<String> {
             let ctx = all_os_browser(project_ctx(), false, None).with_web(web);
-            let cargo_toml =
-                crate::templates::hydrolysis::rendered_outputs(&ctx, "waterui-test-hydrolysis")
-                    .expect("hydrolysis outputs should render")
-                    .into_iter()
-                    .find_map(|(path, content)| {
-                        (path == std::path::Path::new("Cargo.toml"))
-                            .then(|| String::from_utf8(content).expect("Cargo.toml must be UTF-8"))
-                    })
-                    .expect("hydrolysis Cargo.toml output should exist");
+            let cargo_toml = crate::templates::hydrolysis::rendered_outputs_with_painters(
+                &ctx,
+                "waterui-test-hydrolysis",
+            )
+            .expect("hydrolysis outputs should render")
+            .into_iter()
+            .find_map(|(path, content)| {
+                (path == std::path::Path::new("Cargo.toml"))
+                    .then(|| String::from_utf8(content).expect("Cargo.toml must be UTF-8"))
+            })
+            .expect("hydrolysis Cargo.toml output should exist");
             let manifest = cargo_toml
                 .parse::<toml::Table>()
                 .expect("hydrolysis Cargo.toml should parse");
@@ -2648,15 +2792,17 @@ mod tests {
     #[test]
     fn hydrolysis_manifest_gives_lib_and_bin_targets_distinct_names() {
         let package_name = "e2eapp-hydrolysis-1a2b3c4d";
-        let cargo_toml =
-            crate::templates::hydrolysis::rendered_outputs(&project_ctx(), package_name)
-                .expect("hydrolysis outputs should render")
-                .into_iter()
-                .find_map(|(path, content)| {
-                    (path == std::path::Path::new("Cargo.toml"))
-                        .then(|| String::from_utf8(content).expect("Cargo.toml must be UTF-8"))
-                })
-                .expect("hydrolysis Cargo.toml output should exist");
+        let cargo_toml = crate::templates::hydrolysis::rendered_outputs_with_painters(
+            &project_ctx(),
+            package_name,
+        )
+        .expect("hydrolysis outputs should render")
+        .into_iter()
+        .find_map(|(path, content)| {
+            (path == std::path::Path::new("Cargo.toml"))
+                .then(|| String::from_utf8(content).expect("Cargo.toml must be UTF-8"))
+        })
+        .expect("hydrolysis Cargo.toml output should exist");
         let manifest = cargo_toml
             .parse::<toml::Table>()
             .expect("hydrolysis Cargo.toml should parse");
@@ -2687,7 +2833,7 @@ mod tests {
     /// build registers the app factory for `NativeBridge`.
     #[test]
     fn hydrolysis_lib_splits_the_android_entry_on_preview_mode() {
-        let lib_rs = crate::templates::hydrolysis::rendered_outputs(
+        let lib_rs = crate::templates::hydrolysis::rendered_outputs_with_painters(
             &project_ctx(),
             "waterui-test-hydrolysis",
         )
@@ -2718,7 +2864,7 @@ mod tests {
         let ctx =
             project_ctx().with_hydrolysis_android_preview(HydrolysisAndroidPreviewTemplateEntry {
                 host_project_dir: "../hydrolysis-android-host".to_string(),
-                min_api_level: 31,
+                min_api_level: 33,
                 version_code: 42,
             });
         let outputs = crate::templates::hydrolysis_android_preview::rendered_outputs(&ctx)
@@ -2765,36 +2911,50 @@ mod tests {
     /// The Android launcher's `hydrolysis` carries `webview-system` exactly
     /// when the app uses the standard `WebView` with no engine of its own —
     /// the platform-view instance the system `WebView` mounts through is
-    /// compiled in, and every other build ships no bridge code at all.
+    /// compiled in, and every other build ships no bridge code at all —
+    /// and `video-gpu` exactly when the app links the GPU video player, the
+    /// decoder plane the backend realizes for it.
     #[test]
-    fn hydrolysis_android_manifest_carries_webview_system_only_for_the_bridge() {
-        for (webview_enabled, expected) in [
-            (true, vec!["accessibility", "webview-system"]),
-            (false, vec!["accessibility"]),
+    fn hydrolysis_android_manifest_carries_the_bridge_features_only_when_used() {
+        for (webview_enabled, video_gpu, expected) in [
+            (true, false, vec!["accessibility", "webview-system"]),
+            (false, false, vec!["accessibility"]),
+            (false, true, vec!["accessibility", "video-gpu"]),
         ] {
             // `webview_backend_feature` is the one decision: the Gradle
             // flag and the Cargo feature both read it.
-            let ctx = all_os_browser(project_ctx(), webview_enabled, None).with_hydrolysis_android(
-                super::HydrolysisAndroidTemplateEntry {
+            let answers = super::BrowserAnswers {
+                webview_enabled,
+                engine: None,
+                video_gpu,
+            };
+            let ctx = project_ctx()
+                .with_browser(BrowserTemplateContext::desktop(
+                    answers, answers, answers, answers,
+                ))
+                .with_hydrolysis_android(super::HydrolysisAndroidTemplateEntry {
                     native_library_name: "waterui_test_hydrolysis".to_string(),
                     host_project_dir: "../android-host/rev/android".to_string(),
                     project_root: "..".to_string(),
                     painter_dependency: "dev.waterui.hydrolysis:gpu".to_string(),
                     painter_module: "gpu".to_string(),
-                    min_api_level: 31,
+                    min_api_level: 33,
                     painter_band_import: None,
                     painter_band_class: None,
-                },
-            );
-            let cargo_toml =
-                crate::templates::hydrolysis::rendered_outputs(&ctx, "waterui-test-hydrolysis")
-                    .expect("hydrolysis outputs should render")
-                    .into_iter()
-                    .find_map(|(path, content)| {
-                        (path == std::path::Path::new("Cargo.toml"))
-                            .then(|| String::from_utf8(content).expect("Cargo.toml must be UTF-8"))
-                    })
-                    .expect("hydrolysis Cargo.toml output should exist");
+                    painter_region_band_import: None,
+                    painter_region_band_class: None,
+                });
+            let cargo_toml = crate::templates::hydrolysis::rendered_outputs_with_painters(
+                &ctx,
+                "waterui-test-hydrolysis",
+            )
+            .expect("hydrolysis outputs should render")
+            .into_iter()
+            .find_map(|(path, content)| {
+                (path == std::path::Path::new("Cargo.toml"))
+                    .then(|| String::from_utf8(content).expect("Cargo.toml must be UTF-8"))
+            })
+            .expect("hydrolysis Cargo.toml output should exist");
             let manifest = cargo_toml
                 .parse::<toml::Table>()
                 .expect("hydrolysis Cargo.toml should parse");
@@ -2805,7 +2965,10 @@ mod tests {
                 .iter()
                 .map(|feature| feature.as_str().expect("feature should be a string"))
                 .collect::<Vec<_>>();
-            assert_eq!(features, expected, "webview_enabled={webview_enabled}");
+            assert_eq!(
+                features, expected,
+                "webview_enabled={webview_enabled} video_gpu={video_gpu}"
+            );
         }
     }
 
@@ -2815,7 +2978,7 @@ mod tests {
         // wasm32 default target features enabled, binaryen rejects the
         // bulk-memory ops rustc emits for memcpy/memset and every `--release`
         // web bundle fails validation (#95).
-        let cargo_toml = crate::templates::hydrolysis::rendered_outputs(
+        let cargo_toml = crate::templates::hydrolysis::rendered_outputs_with_painters(
             &project_ctx(),
             "waterui-test-hydrolysis",
         )
@@ -2876,7 +3039,7 @@ mod tests {
             Some(PathBuf::from("managed_backends/hydrolysis")),
             None,
         );
-        let cargo_toml = crate::templates::hydrolysis::rendered_outputs(
+        let cargo_toml = crate::templates::hydrolysis::rendered_outputs_with_painters(
             &hydrolysis_ctx,
             "waterui-test-hydrolysis",
         )
@@ -2973,7 +3136,7 @@ mod tests {
             Some(PathBuf::from("managed_backends/hydrolysis")),
             Some(workspace.join("app")),
         );
-        let cargo_toml = crate::templates::hydrolysis::rendered_outputs(
+        let cargo_toml = crate::templates::hydrolysis::rendered_outputs_with_painters(
             &hydrolysis_ctx,
             "patched-app-hydrolysis",
         )
@@ -3090,15 +3253,6 @@ mod tests {
     /// is not emitted at all.
     #[test]
     fn forwarded_features_follow_each_destination_package() {
-        let mut manifest = cargo_toml::Manifest::<()>::default();
-        manifest.dependencies.insert(
-            "waterui".to_string(),
-            cargo_toml::Dependency::Simple(super::cargo_version_req("0.0.0")),
-        );
-        manifest.dependencies.insert(
-            "waterui-apple".to_string(),
-            cargo_toml::Dependency::Simple(super::cargo_version_req("0.0.0")),
-        );
         let mut tables = super::FeatureTables::new();
         tables.insert(
             "waterui".to_string(),
@@ -3114,7 +3268,7 @@ mod tests {
 
         // `media` reaches both the facade and the Apple backend.
         assert_eq!(
-            super::feature_forwards("media", &manifest, &tables),
+            super::feature_forwards("media", &tables),
             vec![
                 "waterui/media".to_string(),
                 "waterui-apple/media".to_string()
@@ -3123,43 +3277,148 @@ mod tests {
         // `map` is declared only by the Apple package; the facade carries no
         // `map` feature at all, so only the backend entry is emitted.
         assert_eq!(
-            super::feature_forwards("map", &manifest, &tables),
+            super::feature_forwards("map", &tables),
             vec!["waterui-apple/map".to_string()]
         );
         // `gpu` is a facade capability with no backend destination.
         assert_eq!(
-            super::feature_forwards("gpu", &manifest, &tables),
+            super::feature_forwards("gpu", &tables),
             vec!["waterui/gpu".to_string()]
         );
         // No destination declares `inspector` or `chromium` — `chromium`
         // routes to `waterui-browser-cef`, which this manifest never
         // declares.
         assert_eq!(
-            super::feature_forwards("inspector", &manifest, &tables),
+            super::feature_forwards("inspector", &tables),
             Vec::<String>::new()
         );
         assert_eq!(
-            super::feature_forwards("chromium", &manifest, &tables),
+            super::feature_forwards("chromium", &tables),
             Vec::<String>::new()
         );
 
         // A destination the manifest declares but whose resolved package
         // lacks the feature emits nothing: the forward names the feature
         // verbatim, so an older package would fail the whole resolution.
-        let mut older = cargo_toml::Manifest::<()>::default();
-        older.dependencies.insert(
-            "waterui-apple".to_string(),
-            cargo_toml::Dependency::Simple(super::cargo_version_req("0.0.0")),
-        );
         let mut older_tables = super::FeatureTables::new();
         older_tables.insert(
             "waterui-apple".to_string(),
             std::collections::BTreeSet::new(),
         );
         assert_eq!(
-            super::feature_forwards("media", &older, &older_tables),
+            super::feature_forwards("media", &older_tables),
             Vec::<String>::new()
         );
+    }
+
+    /// The Hydrolysis launcher's painter features follow the packages the
+    /// manifest resolves to: a `hydrolysis` without `gpu`/`hwui` (any
+    /// framework revision before the painters landed) gets neither feature,
+    /// and a current one gets both with their full forward lists.
+    #[test]
+    fn hydrolysis_painter_features_follow_the_resolved_packages() {
+        let features = |tables: &super::FeatureTables| {
+            let ctx = all_os_browser(project_ctx(), true, Some(ResolvedWebViewBackend::Cef));
+            let package = "waterui-test-hydrolysis";
+            let cargo_toml = crate::templates::hydrolysis::rendered_outputs(&ctx, package, tables)
+                .expect("hydrolysis outputs should render")
+                .into_iter()
+                .find_map(|(path, content)| {
+                    (path == std::path::Path::new("Cargo.toml"))
+                        .then(|| String::from_utf8(content).expect("Cargo.toml must be UTF-8"))
+                })
+                .expect("hydrolysis Cargo.toml output should exist");
+            cargo_toml
+                .parse::<toml::Table>()
+                .expect("hydrolysis Cargo.toml should parse")["features"]
+                .as_table()
+                .expect("the manifest declares features")
+                .clone()
+        };
+        let declare = |dep: &str, declared: &[&str], tables: &mut super::FeatureTables| {
+            tables.insert(
+                dep.to_string(),
+                declared.iter().map(ToString::to_string).collect(),
+            );
+        };
+
+        let mut older = super::FeatureTables::new();
+        declare("waterui", &["video"], &mut older);
+        declare("hydrolysis", &["accessibility"], &mut older);
+        let older = features(&older);
+        assert!(older.get("gpu").is_none(), "{older:?}");
+        assert!(older.get("cpu").is_none(), "{older:?}");
+        assert!(older.get("hwui").is_none(), "{older:?}");
+        assert!(older.contains_key("waterui-preview-mode"), "{older:?}");
+
+        let mut current = super::FeatureTables::new();
+        declare("waterui", &["gpu", "cpu", "video"], &mut current);
+        declare("hydrolysis", &["gpu", "cpu", "hwui"], &mut current);
+        let current = features(&current);
+        let forwards = |name: &str| {
+            let mut entries = current[name]
+                .as_array()
+                .expect("a painter feature is a forward list")
+                .iter()
+                .map(|entry| entry.as_str().expect("forward entries are strings"))
+                .collect::<Vec<_>>();
+            entries.sort_unstable();
+            entries
+        };
+        assert_eq!(forwards("gpu"), ["hydrolysis/gpu", "waterui/gpu"]);
+        assert_eq!(forwards("cpu"), ["hydrolysis/cpu", "waterui/cpu"]);
+        assert_eq!(forwards("hwui"), ["hydrolysis/hwui"]);
+
+        // A facade without `gpu` keeps only the `hydrolysis` half.
+        let mut partial = super::FeatureTables::new();
+        declare("waterui", &[], &mut partial);
+        declare("hydrolysis", &["gpu"], &mut partial);
+        assert_eq!(features(&partial)["gpu"].as_array().map(Vec::len), Some(1));
+    }
+
+    /// The real resolution path reads the feature tables of the checkout's
+    /// own `waterui` and `hydrolysis` manifests. The generated manifest it
+    /// resolves from carries `[package.metadata.wasm-pack]`, which the
+    /// resolution must accept (a unit-metadata parse rejects it).
+    #[test]
+    fn resolved_painter_tables_accept_the_generated_package_metadata() {
+        let tempdir = tempdir().expect("temporary checkout dir");
+        let checkout = tempdir.path().join("waterui");
+        std::fs::create_dir_all(checkout.join("backends/hydrolysis")).expect("checkout dirs");
+        std::fs::write(
+            checkout.join("Cargo.toml"),
+            format!(
+                "{}\n[package]\nname = \"waterui\"\nversion = \"0.0.0\"\n\n\
+                 [features]\ngpu = []\n",
+                include_str!("../../tests/fixtures/local_checkout_patches.toml"),
+            ),
+        )
+        .expect("checkout manifest");
+        std::fs::write(
+            checkout.join("backends/hydrolysis/Cargo.toml"),
+            "[package]\nname = \"hydrolysis\"\nversion = \"0.0.0\"\n\n\
+             [features]\ngpu = []\nhwui = []\n",
+        )
+        .expect("member manifest");
+        let ctx = ctx(
+            Some(checkout),
+            Some(PathBuf::from("managed_backends/hydrolysis")),
+            None,
+        );
+
+        let backend_dir = tempdir.path().join("backend");
+        let tables = smol::block_on(crate::templates::hydrolysis::resolved_painter_tables(
+            &crate::toolchain::Host::current(),
+            &backend_dir,
+            &ctx,
+            "waterui-test-hydrolysis",
+        ))
+        .expect("the generated manifest's package metadata must not fail the resolution");
+        assert_eq!(
+            tables["hydrolysis"],
+            ["gpu", "hwui"].map(ToString::to_string).into()
+        );
+        assert_eq!(tables["waterui"], ["gpu".to_string()].into());
     }
 
     /// A local checkout answers the forward filter itself: the scaffolded
@@ -3909,7 +4168,7 @@ mod tests {
         // started; both must happen at entry, before `app(env)` installs the
         // engine. The generated main carries the calls exactly when the
         // application linked `waterui-browser-cef`.
-        let main_rs = crate::templates::hydrolysis::rendered_outputs(
+        let main_rs = crate::templates::hydrolysis::rendered_outputs_with_painters(
             &all_os_browser(project_ctx(), false, Some(ResolvedWebViewBackend::Cef)),
             "waterui-test-hydrolysis",
         )
@@ -3940,7 +4199,7 @@ mod tests {
             );
         }
 
-        let without_cef = crate::templates::hydrolysis::rendered_outputs(
+        let without_cef = crate::templates::hydrolysis::rendered_outputs_with_painters(
             &project_ctx(),
             "waterui-test-hydrolysis-nocef",
         )
@@ -4519,8 +4778,50 @@ mod tests {
         assert_eq!(release["panic"].as_str(), Some("abort"));
     }
 
-    /// The scaffolded app links text, layout and controls — none of which is
-    /// feature-gated — so the waterui dependency declares no features; video
+    #[test]
+    fn root_manifest_control_features_follow_framework_metadata() {
+        for (declared, web) in [(false, false), (true, false), (true, true)] {
+            let temp = tempfile::tempdir().expect("temp dir");
+            let root = temp.path().join("project");
+            let mut ctx = ctx(None, None, Some(root.clone()));
+            let controls = ["slider", "stepper", "text-field", "toggle"];
+            if declared {
+                let mut selection: toml::Value =
+                    toml::from_str(&toml::to_string(&ctx.framework).unwrap()).unwrap();
+                selection["metadata"].as_table_mut().unwrap().insert(
+                    "scaffold-features".to_string(),
+                    toml::Value::try_from(controls).unwrap(),
+                );
+                ctx.framework = selection.try_into().unwrap();
+            }
+            if web {
+                ctx.web_frontend_arg = Some("web".to_string());
+            }
+            smol::block_on(crate::templates::root::scaffold(&root, &ctx, "assets"))
+                .expect("root scaffold should succeed");
+            let manifest: toml::Table = std::fs::read_to_string(root.join("Cargo.toml"))
+                .unwrap()
+                .parse()
+                .unwrap();
+            let features = manifest["dependencies"]["waterui"]
+                .get("features")
+                .and_then(toml::Value::as_array)
+                .map_or_default(|features| {
+                    features
+                        .iter()
+                        .map(|feature| feature.as_str().unwrap())
+                        .collect::<Vec<_>>()
+                });
+            let expected = if declared && !web {
+                controls.to_vec()
+            } else {
+                Vec::new()
+            };
+            assert_eq!(features, expected);
+        }
+    }
+
+    /// The scaffold enables the controls used by its form and counter; video
     /// is declared as the crate's own `media` feature and left off, because
     /// `waterui/media` carries the system media stack (VA-API, `PipeWire`) a
     /// hello-world never uses.
@@ -4547,14 +4848,13 @@ mod tests {
             manifest["target"]["cfg(not(target_arch = \"wasm32\"))"]["dependencies"]["waterui"]
                 .get("features")
                 .and_then(toml::Value::as_array)
-                .map(|features| {
+                .map_or_default(|features| {
                     features
                         .iter()
                         .map(|feature| feature.as_str().expect("feature name"))
                         .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-        assert_eq!(native_features, Vec::<&str>::new());
+                });
+        assert_eq!(native_features, [] as [&str; 0]);
         assert_eq!(
             manifest["dependencies"]["waterui"]["default-features"].as_bool(),
             Some(false)
@@ -5456,7 +5756,7 @@ async fn configure_capability_forwards(
     ))
     .await?;
     for name in FORWARDED_FEATURES {
-        let forwards = feature_forwards(name, manifest, &tables);
+        let forwards = feature_forwards(name, &tables);
         if !forwards.is_empty() {
             manifest.features.insert((*name).to_string(), forwards);
         }
@@ -5841,7 +6141,7 @@ pub mod winui {
     /// The `waterui-winui` dependency the launcher resolves, paired with the
     /// `gpu-allocator` patch entry the same source carries:
     /// `WATERUI_WINUI_PATH` when set (the escape hatch for developing the
-    /// backend itself), a `water-rs/waterui-winui` checkout beside a local
+    /// backend itself), a `water-rs/winui-backend` checkout beside a local
     /// `waterui_path`, and the framework-declared backend coordinate otherwise.
     ///
     /// `waterui-winui` keeps a vendored `gpu-allocator` workspace member that
@@ -5861,7 +6161,7 @@ pub mod winui {
             .and_then(|root| dunce::canonicalize(root).ok())
             && let Some(sibling) = root
                 .parent()
-                .map(|parent| parent.join("water-rs/waterui-winui"))
+                .map(|parent| parent.join("water-rs/winui-backend"))
             && sibling.join("Cargo.toml").is_file()
         {
             return Ok((
@@ -5935,7 +6235,7 @@ pub mod winui {
 /// Hydrolysis backend templates.
 pub mod hydrolysis {
     use super::{
-        GeneratedBinSection, GeneratedCargoManifest, GeneratedDependencyDetail,
+        FeatureTables, GeneratedBinSection, GeneratedCargoManifest, GeneratedDependencyDetail,
         GeneratedDependencyValue, GeneratedTargetSection, GeneratedWorkspaceSection, HYDROLYSIS,
         NativeBackendDependencySource, NativeBackendDependencySpec, Path, TemplateContext,
         TemplateNamespace, embedded, io, scaffold_dir, write_generated_cargo_toml,
@@ -5948,11 +6248,13 @@ pub mod hydrolysis {
     ///
     /// Returns an error if file operations fail.
     pub async fn scaffold(
+        host: &crate::toolchain::Host,
         base_dir: &Path,
         ctx: &TemplateContext,
         package_name: &str,
     ) -> io::Result<()> {
-        generate_cargo_toml(base_dir, ctx, package_name).await?;
+        let tables = resolved_painter_tables(host, base_dir, ctx, package_name).await?;
+        generate_cargo_toml(base_dir, ctx, package_name, &tables).await?;
         scaffold_dir(
             TemplateNamespace::Hydrolysis,
             &embedded::HYDROLYSIS,
@@ -5963,7 +6265,8 @@ pub mod hydrolysis {
     }
 
     /// Every file `scaffold` would write, as backend-relative path and
-    /// content, without touching the filesystem.
+    /// content, without touching the filesystem. `painter_tables` is
+    /// [`resolved_painter_tables`]' answer.
     ///
     /// # Errors
     ///
@@ -5971,22 +6274,85 @@ pub mod hydrolysis {
     pub fn rendered_outputs(
         ctx: &TemplateContext,
         package_name: &str,
+        painter_tables: &FeatureTables,
     ) -> io::Result<Vec<(std::path::PathBuf, Vec<u8>)>> {
         let mut outputs =
             super::render_dir_outputs(TemplateNamespace::Hydrolysis, &embedded::HYDROLYSIS, ctx)?;
         let patch = super::generated_crate_patches(ctx)?;
         outputs.push((
             std::path::PathBuf::from("Cargo.toml"),
-            super::render_generated_cargo_toml(&generated_manifest(ctx, package_name, patch)?)?
-                .into_bytes(),
+            super::render_generated_cargo_toml(&generated_manifest(
+                ctx,
+                package_name,
+                patch,
+                painter_tables,
+            )?)?
+            .into_bytes(),
         ));
         Ok(outputs)
+    }
+
+    /// The launcher features that select a painter, named after the
+    /// `hydrolysis` features they forward to: the Cherenkov render backends
+    /// (`gpu`, `cpu`) and the Android `RenderNode` painter (`hwui`).
+    const PAINTER_FEATURES: [&str; 3] = ["gpu", "cpu", "hwui"];
+
+    /// The `[features]` tables of the `waterui` and `hydrolysis` packages the
+    /// manifest [`scaffold`] writes into `base_dir` resolves to — what
+    /// decides which painter features the manifest can declare. Both
+    /// [`scaffold`] and the regeneration check render against the answer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a dependency's manifest cannot be read or the
+    /// probe resolution fails; there is no fallback table.
+    pub async fn resolved_painter_tables(
+        host: &crate::toolchain::Host,
+        base_dir: &Path,
+        ctx: &TemplateContext,
+        package_name: &str,
+    ) -> io::Result<FeatureTables> {
+        let patch = {
+            let ctx = TemplateContext::clone(ctx);
+            smol::unblock(move || super::generated_crate_patches(&ctx)).await?
+        };
+        let mut probe = generated_manifest(ctx, package_name, patch, &FeatureTables::new())?;
+        // The resolution reads dependencies, `[patch]` and `[features]`;
+        // `[package.metadata]` is wasm-pack tuning a unit-metadata manifest
+        // cannot hold.
+        probe.package.metadata = None;
+        let rendered = super::render_generated_cargo_toml(&probe)?;
+        let manifest = toml::from_str::<cargo_toml::Manifest<()>>(&rendered)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        Box::pin(super::resolved_forward_tables(
+            host,
+            &manifest,
+            base_dir,
+            &["waterui", "hydrolysis"],
+        ))
+        .await
+    }
+
+    /// [`rendered_outputs`] against tables declaring both painter features on
+    /// both packages — the shape of a current framework.
+    #[cfg(test)]
+    pub fn rendered_outputs_with_painters(
+        ctx: &TemplateContext,
+        package_name: &str,
+    ) -> io::Result<Vec<(std::path::PathBuf, Vec<u8>)>> {
+        let declared = |features: &[&str]| features.iter().map(ToString::to_string).collect();
+        let tables = FeatureTables::from([
+            ("waterui".to_string(), declared(&["gpu", "cpu"])),
+            ("hydrolysis".to_string(), declared(&["gpu", "cpu", "hwui"])),
+        ]);
+        rendered_outputs(ctx, package_name, &tables)
     }
 
     fn generated_manifest(
         ctx: &TemplateContext,
         package_name: &str,
         patch: cargo_toml::PatchSet,
+        painter_tables: &FeatureTables,
     ) -> io::Result<GeneratedCargoManifest<GeneratedDependencyValue>> {
         let mut package = super::generated_package(package_name, Vec::new());
         package.autobins = Some(false);
@@ -6022,46 +6388,50 @@ pub mod hydrolysis {
         // output filename stem in the shared target directory.
         let mut lib = super::generated_lib(&["cdylib", "rlib"]);
         lib.name = Some(hydrolysis_library_target_name(package_name));
+        let mut features = BTreeMap::from([
+            // The preview runtime module compiles under the feature
+            // alone — it no longer consumes the `waterui-preview`
+            // support-app crate.
+            (
+                "waterui-preview-mode".to_string(),
+                vec!["dep:waterui-preview-protocol".to_string()],
+            ),
+            (
+                "waterui-preview-test-mode".to_string(),
+                vec![
+                    "dep:waterui-testing".to_string(),
+                    "dep:waterui-preview-protocol".to_string(),
+                ],
+            ),
+            (
+                "waterui-mcp-mode".to_string(),
+                vec![
+                    "dep:waterui-mcp".to_string(),
+                    "dep:waterui-testing".to_string(),
+                    "dep:waterui-preview-protocol".to_string(),
+                ],
+            ),
+        ]);
+        // The painters: an Android build enables the resolved painter's
+        // feature on the launcher, mirroring the test-app's wiring — `gpu`
+        // links the Cherenkov GPU attachment and the GPU-capable `waterui`,
+        // `hwui` the platform `RenderNode` target and no GPU stack. A desktop
+        // or offscreen build enables the resolved `[hydrolysis] render`
+        // backends, `gpu` and/or `cpu`. Each forward is kept only where the
+        // resolved package declares the feature, so a framework revision
+        // that predates a painter resolves without it.
+        for painter in PAINTER_FEATURES {
+            let forwards = super::feature_forwards(painter, painter_tables);
+            if !forwards.is_empty() {
+                features.insert((*painter).to_string(), forwards);
+            }
+        }
         Ok(GeneratedCargoManifest {
             package,
             lib,
             bins,
             profile: super::generated_profiles(ctx.project_packages.as_ref())?,
-            features: BTreeMap::from([
-                // The Android painters: `water build`/`run`/`package` enable
-                // the resolved painter's feature on the launcher, mirroring
-                // the test-app's wiring — `gpu` links the Cherenkov GPU
-                // attachment and the GPU-capable `waterui`, `hwui` the
-                // platform `RenderNode` target and no GPU stack. Off Android
-                // the features select nothing the desktop build lacks.
-                (
-                    "gpu".to_string(),
-                    vec!["hydrolysis/gpu".to_string(), "waterui/gpu".to_string()],
-                ),
-                ("hwui".to_string(), vec!["hydrolysis/hwui".to_string()]),
-                // The preview runtime module compiles under the feature
-                // alone — it no longer consumes the `waterui-preview`
-                // support-app crate.
-                (
-                    "waterui-preview-mode".to_string(),
-                    vec!["dep:waterui-preview-protocol".to_string()],
-                ),
-                (
-                    "waterui-preview-test-mode".to_string(),
-                    vec![
-                        "dep:waterui-testing".to_string(),
-                        "dep:waterui-preview-protocol".to_string(),
-                    ],
-                ),
-                (
-                    "waterui-mcp-mode".to_string(),
-                    vec![
-                        "dep:waterui-mcp".to_string(),
-                        "dep:waterui-testing".to_string(),
-                        "dep:waterui-preview-protocol".to_string(),
-                    ],
-                ),
-            ]),
+            features,
             dependencies: cargo_dependencies(ctx)?,
             // The build script embeds the staged Windows icon resource; the
             // crate is a no-op on every other target.
@@ -6097,12 +6467,13 @@ pub mod hydrolysis {
         base_dir: &Path,
         ctx: &TemplateContext,
         package_name: &str,
+        painter_tables: &FeatureTables,
     ) -> io::Result<()> {
         let patch = {
             let ctx = TemplateContext::clone(ctx);
             smol::unblock(move || super::generated_crate_patches(&ctx)).await?
         };
-        let manifest = generated_manifest(ctx, package_name, patch)?;
+        let manifest = generated_manifest(ctx, package_name, patch, painter_tables)?;
         write_generated_cargo_toml(base_dir, super::render_generated_cargo_toml(&manifest)?).await
     }
 
@@ -6269,6 +6640,7 @@ pub mod hydrolysis {
         // substitution reads this same `webview_backend_feature` answer
         // through `hydrolysis_android_has_system_webview`.
         hydrolysis_features.extend(ctx.webview_backend_feature()?);
+        hydrolysis_features.extend(ctx.video_gpu_backend_feature()?);
         Ok(BTreeMap::from([
             (
                 "hydrolysis".to_string(),
@@ -6796,7 +7168,7 @@ pub mod tui {
 
     /// The `waterui-tui` dependency the launcher resolves:
     /// `WATERUI_TUI_PATH` when set (the escape hatch for developing the backend
-    /// itself), a `water-rs/tui` checkout beside a local `waterui_path`, and
+    /// itself), a `water-rs/tui-backend` checkout beside a local `waterui_path`, and
     /// the pinned backend revision otherwise.
     fn tui_backend_dependency(ctx: &TemplateContext) -> io::Result<Dependency> {
         if let Some(path) = ctx.backend_checkouts.tui.as_deref() {
@@ -6805,7 +7177,9 @@ pub mod tui {
         if let Some(root) = ctx
             .waterui_workspace_root()
             .and_then(|root| dunce::canonicalize(root).ok())
-            && let Some(sibling) = root.parent().map(|parent| parent.join("water-rs/tui"))
+            && let Some(sibling) = root
+                .parent()
+                .map(|parent| parent.join("water-rs/tui-backend"))
             && sibling.join("Cargo.toml").is_file()
         {
             return Ok(path_dependency(&sibling));
@@ -7305,10 +7679,27 @@ fn local_checkout_dependency(
     let manifest_path = root.join("Cargo.toml");
     let manifest = parse_cargo_manifest(&manifest_path)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    let declared = manifest
-        .workspace
+    // A package no member links is declared as a `scaffold-pins` entry of the
+    // framework metadata instead of a `[workspace.dependencies]` one.
+    let pinned = manifest
+        .package
         .as_ref()
-        .and_then(|workspace| workspace.dependencies.get(crate_name));
+        .and_then(|package| package.metadata.as_ref())
+        .and_then(|metadata| metadata.get("waterui"))
+        .and_then(|metadata| metadata.get("scaffold-pins"))
+        .and_then(|pins| pins.get(crate_name))
+        .map(|pin| {
+            pin.clone()
+                .try_into::<cargo_toml::Dependency>()
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+        })
+        .transpose()?;
+    let declared = pinned.as_ref().or_else(|| {
+        manifest
+            .workspace
+            .as_ref()
+            .and_then(|workspace| workspace.dependencies.get(crate_name))
+    });
     let patch = manifest
         .patch
         .get("crates-io")
@@ -7404,7 +7795,7 @@ pub fn project_patches(
     project_root: &Path,
     manifest: &crate::project::Manifest,
 ) -> io::Result<cargo_toml::PatchSet> {
-    match (&manifest.framework, &manifest.waterui_path) {
+    match (&manifest.framework(), &manifest.waterui_path()) {
         (Some(framework), _) => Ok(framework.patches()),
         (None, Some(waterui_path)) => {
             let members =
@@ -7484,8 +7875,13 @@ const FORWARDED_FEATURES: &[&str] = &[
 /// `WebKit` leaves — and the framework links they carry through `cocoa-ui` —
 /// compile only for apps whose graph holds `waterui-video` /
 /// `waterui-webview`. The CEF runtime listens under its own feature names —
-/// `webview-cef` turns on `waterui-browser-cef/webview`.
+/// `webview-cef` turns on `waterui-browser-cef/webview`. The Hydrolysis
+/// launcher's painter features (`gpu`, `cpu`, `hwui`) forward to
+/// `hydrolysis` the same way.
 const BACKEND_FEATURE_FORWARDS: &[(&str, &str, &str)] = &[
+    ("gpu", "hydrolysis", "gpu"),
+    ("cpu", "hydrolysis", "cpu"),
+    ("hwui", "hydrolysis", "hwui"),
     ("map", "waterui-apple", "map"),
     ("media", "waterui-apple", "media"),
     ("webview", "waterui-apple", "webview"),
@@ -7495,8 +7891,9 @@ const BACKEND_FEATURE_FORWARDS: &[(&str, &str, &str)] = &[
 
 /// The selectable features that also reach the `waterui` facade crate — the
 /// gpu/media/video/webview capability surface the native Apple entry
-/// compiles. Emitted only while the Apple backend is selected.
-const APPLE_RUNTIME_FEATURE_FORWARDS: &[&str] = &["gpu", "media", "video", "webview"];
+/// compiles; the Hydrolysis launcher's `gpu` and `cpu` painter features
+/// reach the facade through the same entry.
+const APPLE_RUNTIME_FEATURE_FORWARDS: &[&str] = &["gpu", "cpu", "media", "video", "webview"];
 
 /// The declaration `name` carries in `manifest`, wherever it lives:
 /// `[dependencies]` or a `[target.*.dependencies]` table. A generated
@@ -7518,7 +7915,7 @@ fn declared_dependency<'m>(
 
 /// The `[features]` tables of the packages a generated manifest forwards
 /// features into, keyed by the dependency's name in that manifest.
-type FeatureTables = std::collections::BTreeMap<String, std::collections::BTreeSet<String>>;
+pub type FeatureTables = std::collections::BTreeMap<String, std::collections::BTreeSet<String>>;
 
 /// Whether `tables` records `dep` as declaring `feature`.
 fn declares(tables: &FeatureTables, dep: &str, feature: &str) -> bool {
@@ -7526,9 +7923,13 @@ fn declares(tables: &FeatureTables, dep: &str, feature: &str) -> bool {
 }
 
 /// The `dep/feature` entries a selectable feature forwards to: the `waterui`
-/// facade and each backend destination the manifest declares, each kept only
-/// when that destination's resolved package declares the feature. Empty when
-/// no destination declares it — the feature is not emitted at all.
+/// facade and each backend destination, each kept only when that
+/// destination's resolved package declares the feature. Empty when no
+/// destination declares it — the feature is not emitted at all.
+///
+/// `tables` holds an entry for exactly the destinations the manifest
+/// declares (`resolved_forward_tables` rejects an undeclared target), so a
+/// destination absent from it is a dependency the manifest does not have.
 ///
 /// A forward names a feature of the dependency verbatim
 /// (`name = ["waterui/name"]`), so a package that lacks the feature fails the
@@ -7540,26 +7941,17 @@ fn declares(tables: &FeatureTables, dep: &str, feature: &str) -> bool {
 /// dependencies — while a backend destination keeps its own entry even when
 /// the facade side never declared the feature: `map` still reaches
 /// `waterui-apple/map` when an older facade drops out of the forward.
-fn feature_forwards(
-    name: &str,
-    manifest: &cargo_toml::Manifest<()>,
-    tables: &FeatureTables,
-) -> Vec<String> {
+fn feature_forwards(name: &str, tables: &FeatureTables) -> Vec<String> {
     let mut forwards = Vec::new();
-    // The `waterui` facade forwards ride with the native Apple runtime —
-    // the only target these generated crates name — and only for the
-    // capability surface the entry compiles.
-    if APPLE_RUNTIME_FEATURE_FORWARDS.contains(&name)
-        && declared_dependency(manifest, "waterui").is_some()
-        && declares(tables, "waterui", name)
-    {
+    // The `waterui` facade forwards ride with the native runtime the
+    // generated crate links — Apple's, or the Hydrolysis launcher's `gpu`
+    // — and only for the capability surface the entry compiles.
+    if APPLE_RUNTIME_FEATURE_FORWARDS.contains(&name) && declares(tables, "waterui", name) {
         forwards.push(format!("waterui/{name}"));
     }
     for (dep, dep_feature) in BACKEND_FEATURE_FORWARDS
         .iter()
-        .filter(|(feature, dep, _)| {
-            feature == &name && declared_dependency(manifest, dep).is_some()
-        })
+        .filter(|(feature, _, _)| feature == &name)
         .map(|(_, dep, dep_feature)| (dep, dep_feature))
     {
         if declares(tables, dep, dep_feature) {
@@ -8358,17 +8750,25 @@ pub mod root {
             || GeneratedDependencyDetail::framework(ctx, "waterui"),
             |waterui_path| Ok(GeneratedDependencyDetail::path(waterui_path)),
         )?;
-        Ok(detail.with_default_features(false))
+        let detail = detail.with_default_features(false);
+        Ok(if ctx.web_frontend_arg.is_some() {
+            detail
+        } else {
+            detail.with_features(
+                &ctx.framework
+                    .scaffold_features()
+                    .map_err(io::Error::other)?,
+            )
+        })
     }
 
     fn native_target_section(
         waterui_dependency: GeneratedDependencyDetail,
         web_frontend: bool,
     ) -> BTreeMap<String, GeneratedTargetSection<GeneratedDependencyDetail>> {
-        // The scaffold carries only the features the generated sources use:
-        // nothing the plain template reaches for is feature-gated, so the
-        // dependency declares none. A web frontend needs `assets` for the
-        // `include_web!` bundle API plus `webview` for the surface. The
+        // A web frontend needs `assets` for the `include_web!` bundle API
+        // plus `webview` for the surface. The plain demo's control features
+        // are already declared on the shared dependency. The
         // `assets`/`media` codec stack and `flow-markdown` are heavy —
         // they enter the manifest only when the author enables them, which
         // is what keeps the built dylib at the app's own feature set.

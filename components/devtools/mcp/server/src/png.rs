@@ -32,9 +32,9 @@ pub fn flatten_alpha_over_white(rgba: &mut [u8]) {
 pub fn encode(snapshot: &Snapshot) -> image::ImageResult<Vec<u8>> {
     let mut bytes = Vec::new();
     PngEncoder::new(&mut bytes).write_image(
-        &snapshot.rgba8,
-        snapshot.width,
-        snapshot.height,
+        snapshot.rgba8(),
+        snapshot.width(),
+        snapshot.height(),
         image::ExtendedColorType::Rgba8,
     )?;
     Ok(bytes)

@@ -118,6 +118,13 @@ measure_platform() {
         echo "::error::water package did not report a packaged bundle for ${label} on ${platform}"
         return 1
     fi
+    # The script's work directory is removed on exit, so a caller that wants
+    # the measured bundle itself (the release-metrics artifact) names a
+    # directory to keep a copy in.
+    if [[ -n "${PACKAGES_DIR:-}" ]]; then
+        mkdir -p "${PACKAGES_DIR}/${platform}"
+        cp -R "${app_path}" "${PACKAGES_DIR}/${platform}/"
+    fi
     if ! "${script_dir}/release-metrics.py" inspect-app \
             --label "${label}" --platform "${platform}" \
             --app "${app_path}" --out "${measured_jsonl}"; then

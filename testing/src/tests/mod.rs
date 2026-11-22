@@ -1,4 +1,7 @@
+mod canvas;
 mod harness;
+mod settle;
+mod shape_morph;
 mod transitions;
 
 use super::*;
@@ -15,15 +18,18 @@ use accesskit::{
 use hydrolysis::InputEvent;
 use waterui::Binding;
 use waterui::ViewExt as _;
+use waterui::accessibility::AccessibilityGeometry;
 use waterui::component::list::{List, ListItem};
 use waterui::component::{text, vstack};
+use waterui::graphics::WorkingColor;
+use waterui::graphics::backend::draw::{self, Draw as _, Recorder};
+use waterui::graphics::backend::{
+    NextFrame, RecordingResources, SceneContent, SceneView, SceneViewMergeToParent,
+};
+use waterui::graphics::canvas::Canvas;
 use waterui::graphics::color::Srgb;
-use waterui::graphics::draw::{self, Draw as _, Recorder, kurbo};
-use waterui::graphics::scene_view::SceneViewMergeToParent;
-use waterui::graphics::{RecordingResources, SceneContent, SceneView, WorkingColor};
 use waterui::layout::scroll::ScrollView;
 use waterui::text::Text;
-use waterui_canvas::Canvas;
 use waterui_core::layout::{Point, Rect, Size};
 use waterui_core::{AnyView, ContentLedger, Native, Signal, View};
 
@@ -38,6 +44,7 @@ impl RuntimeDriver for NoopDriver {
             tree_update: None,
             content_types: hydrolysis::AccessibilityContentTypes::new(),
             snapshot: None,
+            device_lost: false,
             ui_focus: None,
         }
     }
@@ -194,6 +201,7 @@ impl RuntimeDriver for EmitThenSettleDriver {
             tree_update: (self.pumps == self.emit_at).then(|| self.update.clone()),
             content_types: hydrolysis::AccessibilityContentTypes::new(),
             snapshot: None,
+            device_lost: false,
             ui_focus: None,
         }
     }
@@ -225,6 +233,127 @@ impl RuntimeDriver for EmitThenSettleDriver {
     fn wait_for_local_work(&self, _timeout: Duration) -> bool {
         false
     }
+}
+
+/// One scripted capture frame: a snapshot, or a frame its device loss
+/// skipped, or neither.
+#[derive(Clone, Copy)]
+enum CaptureFrame {
+    Captured,
+    DeviceLost,
+    Empty,
+}
+
+/// A driver that answers each capture pump with the next scripted
+/// [`CaptureFrame`] and records the instant and capture flag every pump got.
+/// The headless runtime's own device-loss reporting is covered against a
+/// real device in Hydrolysis (`generation_tests`); this checks what the
+/// capture does with the report.
+struct CaptureDriver {
+    frames: std::collections::VecDeque<CaptureFrame>,
+    pumps: Vec<(std::time::Instant, bool)>,
+}
+
+impl CaptureDriver {
+    fn new(frames: impl IntoIterator<Item = CaptureFrame>) -> Self {
+        Self {
+            frames: frames.into_iter().collect(),
+            pumps: Vec::new(),
+        }
+    }
+}
+
+impl RuntimeDriver for CaptureDriver {
+    fn pump_at(&mut self, at: std::time::Instant, capture_snapshot: bool) -> DriverPumpResult {
+        self.pumps.push((at, capture_snapshot));
+        let frame = self
+            .frames
+            .pop_front()
+            .expect("the capture pumped past its scripted frames");
+        DriverPumpResult {
+            rebuilt: false,
+            profile: hydrolysis::FrameProfile::default(),
+            tree_update: None,
+            content_types: hydrolysis::AccessibilityContentTypes::new(),
+            snapshot: matches!(frame, CaptureFrame::Captured)
+                .then(|| Snapshot::new(1, 1, vec![255, 0, 0, 255])),
+            device_lost: matches!(frame, CaptureFrame::DeviceLost),
+            ui_focus: None,
+        }
+    }
+
+    fn is_settled(&self) -> bool {
+        true
+    }
+
+    fn is_settled_except_perpetual(&self) -> bool {
+        true
+    }
+
+    fn has_pending_semantic_update(&self) -> bool {
+        false
+    }
+
+    fn perform_accessibility_action(&mut self, _request: AccessibilityActionRequest) -> bool {
+        false
+    }
+
+    fn push_input_event(&mut self, _event: InputEvent) {}
+
+    fn request_redraw(&mut self) {}
+
+    fn clear_ui_focus(&mut self) -> bool {
+        false
+    }
+
+    fn wait_for_local_work(&self, _timeout: Duration) -> bool {
+        false
+    }
+}
+
+/// A capture whose frames lose their device re-renders at the same frame
+/// instant until one carries a snapshot, so the capture neither fails on a
+/// recoverable loss nor lands a frame later than it asked for.
+#[test]
+fn capture_rerenders_a_device_lost_frame_at_the_same_instant() {
+    let mut app = mounted_on(
+        CaptureDriver::new([
+            CaptureFrame::DeviceLost,
+            CaptureFrame::DeviceLost,
+            CaptureFrame::Captured,
+        ]),
+        tree(vec![node(1, Role::GROUP, Some("root"), None, true)]),
+    );
+    let snapshot = app.capture_frame();
+    assert_eq!((snapshot.width(), snapshot.height()), (1, 1));
+
+    let pumps = &app.runtime.pumps;
+    assert_eq!(pumps.len(), 3, "two lost frames, then the captured one");
+    assert!(
+        pumps
+            .iter()
+            .all(|&(at, capture)| at == pumps[0].0 && capture),
+        "every attempt captures at the one frame instant"
+    );
+}
+
+/// A capture frame that carries no snapshot without a device loss to
+/// explain it fails at once, naming why.
+#[test]
+fn capture_without_a_snapshot_or_device_loss_fails_fast() {
+    let mut app = mounted_on(
+        CaptureDriver::new([CaptureFrame::Empty]),
+        tree(vec![node(1, Role::GROUP, Some("root"), None, true)]),
+    );
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = app.capture_frame();
+    }));
+    let message = panic_message(&*outcome.expect_err("an empty capture frame must fail"));
+    assert!(
+        message.contains("did not produce a snapshot") && message.contains("no device loss"),
+        "the failure names the missing snapshot and that no loss explains it: {message}"
+    );
+    assert_eq!(app.runtime.pumps.len(), 1, "no retry without a device loss");
 }
 
 /// A full-tree update carrying a `role`/`label` node under the root.
@@ -292,26 +421,21 @@ mod token_probe {
     use std::time::Duration;
 
     use hydrolysis::theme::{
-        BadgeMetrics, ButtonMetrics, DividerMetrics, InputFieldMetrics, InteractionMotion,
-        ListMetrics, NavigationMetrics, NavigationMotion, PickerMetrics, ProgressIndicatorStyle,
-        ProgressMetrics, ProgressMotion, RadioIndicatorState, RadioSelectionMotion, SliderMetrics,
-        SliderValueIndicatorMetrics, StepperEnd, StepperMetrics, TabItemGeometry, TabItemLayout,
-        TableMetrics, TabsMetrics, TextCaretMotion, TextContextMenuMetrics, ToggleMetrics,
-        WidgetInteractionState, WidgetTheme,
+        BadgeLook, ButtonLook, ButtonSpec, Chrome, CornerShape, DragMapping, FocusIndicator,
+        HitRegion, IndicatorLook, Knob, Label, LinearProgressLook, ListLook, ListSpec, MenuLook,
+        MenuPickerLook, MenuSpec, Motion, NavigationBarLook, NavigationSpec, PickerSpec,
+        PressFeedback, ProgressControl, ProgressSpec, RadioGroupLook, ScrollIndicatorLook,
+        SliderLayout, SliderLook, SliderSpec, StateLayer, StepperLook, StepperSpec, Surface,
+        TableLook, TabsLook, TabsSpec, TextFieldLook, TextFieldSpec, ToggleSpec, WidgetTheme,
     };
-    use kurbo::{BezPath, Point, Rect};
+    use hydrolysis::theme::{CheckboxLook, SwitchDrag, SwitchLook};
     use waterui::animation::Animation;
     use waterui::color::Srgb;
     use waterui::component::text;
-    use waterui::component::toggle::ToggleStyle;
-    use waterui::component::{ControlSize, button::ButtonStyle};
     use waterui::env::use_env;
-    use waterui::form::picker::PickerStyle;
-    use waterui::graphics::draw::{Paint, Recorder};
     use waterui::reactive::constant;
-    use waterui::text::font::Font;
     use waterui::theme::{color as theme_color, install_color_signal, installed_color_signal};
-    use waterui::{Color, EasingCurve, Environment, Signal as _, SignalExt as _, View};
+    use waterui::{Color, Environment, Signal as _, SignalExt as _, View};
 
     use crate::Style;
 
@@ -351,474 +475,131 @@ mod token_probe {
     }
 
     impl WidgetTheme for TokenProbeStyle {
-        fn interaction_motion(&self) -> InteractionMotion {
-            InteractionMotion {
-                hover_opacity: 0.08,
-                focus_opacity: 0.12,
-                pressed_opacity: 0.12,
-                dragged_opacity: 0.16,
-                hover_enter: Animation::linear(Duration::from_millis(15)),
-                hover_exit: Animation::linear(Duration::from_millis(15)),
-                focus_enter: Animation::linear(Duration::from_millis(15)),
-                focus_exit: Animation::linear(Duration::from_millis(15)),
-                press_fade_in: Animation::linear(Duration::from_millis(105)),
-                press_fade_out: Animation::linear(Duration::from_millis(375)),
-                press_grow: Animation::bezier(Duration::from_millis(450), 0.2, 0.0, 0.0, 1.0),
-                press_shape: Animation::linear(Duration::from_millis(15)),
-                minimum_press_duration: Duration::from_millis(225),
-                touch_delay: Duration::from_millis(150),
-            }
+        fn button(&self, _spec: &ButtonSpec, _env: &Environment) -> ButtonLook {
+            let chrome = Chrome::new(
+                Surface::clear(CornerShape::radius(0.0)),
+                StateLayer::new(Color::new(theme_color::Foreground)),
+                PressFeedback::new(),
+                FocusIndicator::Tint,
+                Motion::uniform(Animation::linear(Duration::from_millis(15))),
+            )
+            // The theme's `touch_delay`.
+            .hit(HitRegion::NONE.press_delay(Duration::from_millis(150)));
+            ButtonLook::new(chrome, Label::new())
+                .padding(1.0, 2.0)
+                .minimum_size(kurbo::Size::new(123.0, 45.0))
         }
 
-        fn progress_motion(&self) -> ProgressMotion {
-            ProgressMotion {
-                linear_determinate: Animation::bezier(
-                    Duration::from_millis(250),
-                    0.4,
-                    0.0,
-                    0.6,
-                    1.0,
-                ),
-                circular_determinate: Animation::bezier(
-                    Duration::from_millis(500),
-                    0.0,
-                    0.0,
-                    0.2,
-                    1.0,
-                ),
-                linear_indeterminate_cycle: Duration::from_secs(2),
-                loading_cycle: Duration::from_millis(4_666),
-                circular_indeterminate_cycle: Duration::from_millis(5_332),
-            }
+        fn switch(&self, spec: &ToggleSpec, _env: &Environment) -> SwitchLook {
+            SwitchLook::new(
+                hydrolysis::testing::plain_toggle_control(),
+                SwitchDrag::new(6.0, spec.direction()),
+            )
         }
 
-        fn text_caret_motion(&self) -> TextCaretMotion {
-            TextCaretMotion {
-                fade_cycle_duration: Duration::from_millis(1_060),
-                frame_interval: Duration::from_millis(530),
-                min_opacity: 0.2,
-            }
+        fn checkbox(&self, _spec: &ToggleSpec, _env: &Environment) -> CheckboxLook {
+            CheckboxLook::new(hydrolysis::testing::plain_toggle_control())
         }
 
-        fn navigation_motion(&self) -> NavigationMotion {
-            NavigationMotion {
-                transition_duration: Duration::from_millis(450),
-                transition_easing: EasingCurve::bezier(0.2, 0.0, 0.0, 1.0),
-                shared_axis_slide_distance: 30.0,
-                fade_through_threshold: 0.35,
-            }
+        fn stepper(&self, _spec: &StepperSpec, _env: &Environment) -> StepperLook {
+            hydrolysis::testing::plain_stepper_look()
         }
 
-        fn button_metrics(&self, _style: ButtonStyle, _size: ControlSize) -> ButtonMetrics {
-            ButtonMetrics {
-                padding_x: 1.0,
-                padding_y: 2.0,
-                min_width: 123.0,
-                min_height: 45.0,
-            }
+        fn text_field(&self, _spec: &TextFieldSpec, _env: &Environment) -> TextFieldLook {
+            hydrolysis::testing::plain_text_field_look(
+                hydrolysis::testing::plain_chrome(),
+                hydrolysis::testing::plain_input_metrics(),
+            )
         }
 
-        fn draw_button_chrome(
+        fn menu(&self, _spec: &MenuSpec, _env: &Environment) -> MenuLook {
+            hydrolysis::testing::plain_menu_look()
+        }
+
+        fn menu_picker(&self, _spec: &PickerSpec, _env: &Environment) -> MenuPickerLook {
+            hydrolysis::testing::plain_menu_picker_look()
+        }
+
+        fn radio_group(&self, _spec: &PickerSpec, _env: &Environment) -> RadioGroupLook {
+            hydrolysis::testing::plain_radio_group_look()
+        }
+
+        fn segmented_picker(
             &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _style: ButtonStyle,
-            _icon_only: bool,
-            _state: WidgetInteractionState,
-        ) {
+            _spec: &hydrolysis::theme::SegmentedSpec,
+            _env: &Environment,
+        ) -> hydrolysis::theme::SegmentedLook {
+            hydrolysis::testing::plain_segmented_look()
         }
 
-        fn toggle_metrics(&self, _style: ToggleStyle) -> ToggleMetrics {
-            ToggleMetrics {
-                width: 10.0,
-                height: 20.0,
-                label_spacing: 3.0,
-            }
-        }
-
-        fn toggle_value_animation(&self) -> Animation {
-            Animation::linear(Duration::from_millis(100))
-        }
-
-        fn draw_toggle_switch(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _progress: f32,
-            _selected: bool,
-            _state: WidgetInteractionState,
-        ) {
-        }
-
-        fn draw_toggle_checkbox(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _progress: f32,
-            _state: WidgetInteractionState,
-        ) {
-        }
-
-        fn stepper_metrics(&self) -> StepperMetrics {
-            StepperMetrics {
-                button_min_size: 12.0,
-                button_max_size: 18.0,
-                button_intrinsic_size: 14.0,
-                button_spacing: 4.0,
-                label_spacing: 8.0,
-            }
-        }
-
-        fn draw_stepper_button(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _end: StepperEnd,
-            _state: WidgetInteractionState,
-        ) {
-        }
-        fn draw_stepper_decrement_icon(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-        fn draw_stepper_increment_icon(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-
-        fn input_field_metrics(&self) -> InputFieldMetrics {
-            InputFieldMetrics {
-                label_height: 14.0,
-                min_width: 100.0,
-                min_height: 32.0,
-                horizontal_inset: 8.0,
-                vertical_inset: 6.0,
-            }
-        }
-
-        fn input_placeholder_color(&self) -> Color {
-            Color::srgb(0, 0, 0)
-        }
-
-        fn input_selection_paint(&self) -> Paint {
-            Paint::Solid(Srgb::new(0.20, 0.45, 0.90).resolve().with_alpha(0.28))
-        }
-
-        fn input_caret_paint(&self, opacity: f32) -> Paint {
-            Paint::Solid(Srgb::new(0.12, 0.14, 0.18).resolve().with_alpha(opacity))
-        }
-
-        fn draw_input_field(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _state: WidgetInteractionState,
-        ) {
-        }
-
-        fn text_context_menu_metrics(&self) -> TextContextMenuMetrics {
-            TextContextMenuMetrics {
-                row_height: 56.0,
-                horizontal_padding: 16.0,
-                vertical_padding: 12.0,
-                min_width: 112.0,
-                max_width: 320.0,
-                width_per_char: 8.5,
-                corner_radius: 4.0,
-                separator_horizontal_inset: 16.0,
-                separator_thickness: 1.0,
-            }
-        }
-
-        fn draw_text_context_menu_panel(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-
-        fn draw_text_context_menu_separator(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-
-        fn picker_metrics(&self, _style: PickerStyle) -> PickerMetrics {
-            PickerMetrics {
-                min_width: 72.0,
-                min_height: 28.0,
-                horizontal_inset: 8.0,
-                vertical_inset: 6.0,
-                label_spacing: 8.0,
-                indicator_space: 18.0,
-                radio_indicator_size: 16.0,
-                radio_label_spacing: 8.0,
-                radio_row_spacing: 8.0,
-                popup_top_spacing: 4.0,
-                popup_row_height: 48.0,
-                popup_corner_radius: 6.0,
-                segment_min_width: 58.0,
-            }
-        }
-
-        fn radio_selection_motion(&self) -> RadioSelectionMotion {
-            RadioSelectionMotion {
-                inner_grow: Animation::linear(Duration::from_millis(1)),
-                inner_opacity: Animation::linear(Duration::from_millis(1)),
-                outer_color: Animation::linear(Duration::from_millis(1)),
-            }
-        }
-
-        fn draw_picker_indicator(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-
-        fn draw_picker_popup(&self, _recorder: &mut Recorder, _popup_rect: Rect) {}
-
-        fn draw_picker_popup_row_background(
-            &self,
-            _recorder: &mut Recorder,
-            _row_rect: Rect,
-            _selected: bool,
-        ) {
-        }
-
-        fn draw_picker_separator(&self, _recorder: &mut Recorder, _separator: Rect) {}
-
-        fn draw_radio_indicator(
-            &self,
-            _recorder: &mut Recorder,
-            _center: Point,
-            _radius: f64,
-            _state: RadioIndicatorState,
-        ) {
-        }
-
-        fn slider_metrics(&self, _size: ControlSize) -> SliderMetrics {
-            SliderMetrics {
-                horizontal_inset: 12.0,
-                horizontal_spacing: 8.0,
-                vertical_spacing: 6.0,
-                min_track_width: 72.0,
-                track_height: 6.0,
-                handle_width: 4.0,
-                handle_height: 44.0,
-            }
-        }
-
-        fn draw_slider_track(
-            &self,
-            _recorder: &mut Recorder,
-            _track_rect: Rect,
-            _fill_rect: Rect,
-            _size: ControlSize,
-            _state: WidgetInteractionState,
-        ) {
-        }
-
-        fn draw_slider_thumb(
-            &self,
-            _recorder: &mut Recorder,
-            _center: Point,
-            _radius: f64,
-            _size: ControlSize,
-            _state: WidgetInteractionState,
-        ) {
-        }
-
-        fn slider_value_indicator_metrics(&self) -> SliderValueIndicatorMetrics {
-            SliderValueIndicatorMetrics::new(8.0, 4.0, 4.0, 0.0, 0.0)
-        }
-
-        fn slider_value_indicator_color(&self) -> Color {
-            Color::srgb(255, 255, 255)
-        }
-
-        fn slider_value_indicator_font(&self) -> Font {
-            Font::default()
-        }
-
-        fn draw_slider_value_indicator(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-
-        fn progress_metrics(&self, style: ProgressIndicatorStyle) -> ProgressMetrics {
-            match style {
-                ProgressIndicatorStyle::Loading => ProgressMetrics::loading(48.0, 38.0),
-                ProgressIndicatorStyle::Linear => ProgressMetrics {
-                    label_height: 18.0,
-                    bar_top_offset: 10.0,
-                    bar_height: 8.0,
-                    bar_horizontal_inset: 8.0,
-                    value_label_top_spacing: 6.0,
-                    min_track_width: 72.0,
-                    circular_diameter: 0.0,
-                    circular_stroke_width: 0.0,
-                    loading_indicator_size: 0.0,
+        fn slider(&self, _spec: &SliderSpec, _env: &Environment) -> SliderLook {
+            SliderLook::new(
+                SliderLayout {
+                    row_height: 44.0,
+                    track_inset: 12.0,
+                    label_inset: 12.0,
+                    label_gap: 8.0,
+                    minimum_track: 72.0,
+                    label_spacing: Some(6.0),
                 },
-                ProgressIndicatorStyle::Circular => ProgressMetrics {
-                    label_height: 0.0,
-                    bar_top_offset: 0.0,
-                    bar_height: 0.0,
-                    bar_horizontal_inset: 0.0,
-                    value_label_top_spacing: 0.0,
-                    min_track_width: 0.0,
-                    circular_diameter: 32.0,
-                    circular_stroke_width: 5.0,
-                    loading_indicator_size: 0.0,
+                Knob {
+                    size: kurbo::Size::new(4.0, 44.0),
+                    hit: HitRegion::NONE,
                 },
-            }
+                DragMapping::Absolute,
+                Motion::uniform(Animation::linear(Duration::from_millis(15))),
+            )
         }
 
-        fn draw_progress_linear_track(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _active_end: Option<f64>,
-        ) {
-        }
-        fn draw_progress_linear_fill(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-        fn draw_progress_linear_indeterminate(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _elapsed: Duration,
-            _four_color: bool,
-        ) {
-        }
-        fn draw_progress_circular_track(
-            &self,
-            _recorder: &mut Recorder,
-            _center: Point,
-            _radius: f64,
-            _width: f64,
-            _active_turns: Option<f64>,
-        ) {
-        }
-        fn draw_progress_circular_fill(
-            &self,
-            _recorder: &mut Recorder,
-            _path: &BezPath,
-            _width: f64,
-        ) {
-        }
-        fn draw_progress_loading(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _elapsed: Duration,
-            _four_color: bool,
-        ) {
+        fn linear_progress(&self, _spec: &ProgressSpec, _env: &Environment) -> LinearProgressLook {
+            LinearProgressLook::new(
+                ProgressControl::new(
+                    kurbo::Size::new(72.0, 8.0),
+                    Motion::uniform(Animation::linear(Duration::from_millis(15))),
+                ),
+                8.0,
+            )
+            .label_band(18.0, 10.0)
+            .value_label_band(6.0)
         }
 
-        fn draw_progress_circular_indeterminate(
-            &self,
-            _recorder: &mut Recorder,
-            _center: Point,
-            _radius: f64,
-            _width: f64,
-            _elapsed: Duration,
-            _four_color: bool,
-        ) {
+        fn circular_progress(&self, _spec: &ProgressSpec, _env: &Environment) -> IndicatorLook {
+            IndicatorLook::new(ProgressControl::new(
+                kurbo::Size::new(32.0, 32.0),
+                Motion::uniform(Animation::linear(Duration::from_millis(15))),
+            ))
         }
 
-        fn navigation_metrics(&self) -> NavigationMetrics {
-            NavigationMetrics {
-                automatic_bar_height: 64.0,
-                inline_bar_height: 64.0,
-                medium_bar_height: 112.0,
-                large_bar_height: 152.0,
-                inline_title_height: 28.0,
-                medium_title_height: 36.0,
-                large_title_height: 36.0,
-                title_leading_inset: 16.0,
-                title_trailing_inset: 16.0,
-                large_title_bottom_inset: 28.0,
-                horizontal_inset: 4.0,
-                item_spacing: 0.0,
-                search_height: 56.0,
-                search_vertical_inset: 4.0,
-                back_button_size: 40.0,
-                back_button_leading_inset: 4.0,
-                back_button_top_inset: 12.0,
-            }
+        fn loading_indicator(&self, _spec: &ProgressSpec, _env: &Environment) -> IndicatorLook {
+            IndicatorLook::new(ProgressControl::new(
+                kurbo::Size::new(48.0, 48.0),
+                Motion::uniform(Animation::linear(Duration::from_millis(15))),
+            ))
         }
 
-        fn draw_navigation_bar(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _background: &Paint,
-        ) {
+        fn navigation_bar(&self, _spec: &NavigationSpec, _env: &Environment) -> NavigationBarLook {
+            hydrolysis::testing::plain_navigation_look()
         }
 
-        fn draw_navigation_bar_separator(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-        fn draw_navigation_back_button(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-        fn tabs_metrics(&self, _layout: TabItemLayout) -> TabsMetrics {
-            TabsMetrics {
-                bar_height: 48.0,
-                button_min_width: 48.0,
-                button_horizontal_inset: 16.0,
-                icon_label_spacing: 4.0,
-            }
-        }
-        fn draw_tabs_bar(&self, _recorder: &mut Recorder, _surface: Rect) {}
-        fn draw_tabs_bar_divider(&self, _recorder: &mut Recorder, _divider: Rect) {}
-        fn draw_tabs_highlight(&self, _recorder: &mut Recorder, _item: TabItemGeometry) {}
-        fn draw_scroll_indicator(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-
-        fn divider_metrics(&self) -> DividerMetrics {
-            DividerMetrics { thickness: 1.0 }
+        fn tabs(&self, _spec: &TabsSpec, _env: &Environment) -> TabsLook {
+            hydrolysis::testing::plain_tabs_look()
         }
 
-        fn draw_divider(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-
-        fn badge_metrics(&self) -> BadgeMetrics {
-            BadgeMetrics {
-                small_size: 6.0,
-                large_size: 16.0,
-                large_horizontal_padding: 4.0,
-                small_offset_x: 6.0,
-                small_offset_y: 6.0,
-                large_offset_x: 12.0,
-                large_offset_y: 14.0,
-            }
+        fn scroll_indicator(&self, _env: &Environment) -> ScrollIndicatorLook {
+            hydrolysis::testing::plain_scroll_indicator_look()
         }
 
-        fn badge_label_color(&self) -> Color {
-            Color::srgb(255, 255, 255)
+        fn badge(&self, _env: &Environment) -> BadgeLook {
+            hydrolysis::testing::plain_badge_look()
         }
 
-        fn badge_label_font(&self) -> Font {
-            Font::default()
+        fn list(&self, _spec: &ListSpec, _env: &Environment) -> ListLook {
+            hydrolysis::testing::plain_list_look()
         }
 
-        fn draw_badge_small(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-        fn draw_badge_large(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-
-        fn list_metrics(&self) -> ListMetrics {
-            ListMetrics {
-                one_line_row_height: 56.0,
-                horizontal_inset: 16.0,
-                vertical_inset: 10.0,
-                divider_leading_inset: 16.0,
-                divider_trailing_inset: 16.0,
-                move_control_width: 20.0,
-                delete_control_width: 26.0,
-                trailing_control_spacing: 6.0,
-                trailing_control_vertical_inset: 6.0,
-                section_header_height: 48.0,
-                section_footer_height: 40.0,
-            }
+        fn table(&self, _env: &Environment) -> TableLook {
+            hydrolysis::testing::plain_table_look()
         }
-
-        fn draw_list_row_background(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _alternate: bool,
-        ) {
-        }
-        fn draw_list_move_control(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-        fn draw_list_delete_control(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-        fn draw_list_separator(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-
-        fn table_metrics(&self) -> TableMetrics {
-            TableMetrics {
-                min_column_width: 72.0,
-                cell_horizontal_padding: 32.0,
-                cell_vertical_inset: 16.0,
-                header_height: 56.0,
-                row_height: 52.0,
-                outline_width: 1.0,
-            }
-        }
-
-        fn draw_table_background(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-        fn draw_table_header_background(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-        fn draw_table_cell_border(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-        fn draw_table_column_separator(&self, _recorder: &mut Recorder, _from: Point, _to: Point) {}
     }
 }
 
@@ -857,13 +638,18 @@ fn styled_semantic_mount_installs_style_tokens_over_framework_defaults() {
 }
 
 /// `UiBuilder<Styled<S>>::mount_app` honours the builder's viewport and scale
-/// factor over the window's declared frame: the full-window content reports
+/// factor over the window's declared frame: the window content is allocated
 /// `320x240` logical points — not the `800x600` `Window::new` declares — and
 /// the scale factor stays a capture concern, so bounds read back in logical
-/// points.
+/// points. A text root reports its centred response by default
+/// (`docs/layout-spec.md` §6), so the label names its allocation (§7.2) to
+/// report the frame the mount assigned.
 #[test]
 fn styled_builder_mount_app_mounts_at_the_builder_viewport() {
-    let app = waterui::app::App::new(|| text("app content").body(), waterui::Environment::new());
+    let app = waterui::app::App::new(
+        || text("app content").a11y_geometry(AccessibilityGeometry::Allocation),
+        waterui::Environment::new(),
+    );
     let mut app = ui()
         .theme(token_probe::TokenProbeStyle)
         .viewport(320, 240)
@@ -875,10 +661,15 @@ fn styled_builder_mount_app_mounts_at_the_builder_viewport() {
 
 /// The free `mount_app(app, style)` convenience is the builder form with the
 /// viewport sized from the window's declared frame — `Window::new`'s default
-/// `800x600` here, not the builder's `390x844` default.
+/// `800x600` here, not the builder's `390x844` default. The label names its
+/// allocation (`docs/layout-spec.md` §7.2) so it reports that frame rather
+/// than the text's centred response.
 #[test]
 fn free_mount_app_mounts_at_the_window_frame() {
-    let app = waterui::app::App::new(|| text("app content").body(), waterui::Environment::new());
+    let app = waterui::app::App::new(
+        || text("app content").a11y_geometry(AccessibilityGeometry::Allocation),
+        waterui::Environment::new(),
+    );
     let mut app = mount_app(app, token_probe::TokenProbeStyle);
     let bounds = app.query().role(Role::LABEL).single().bounds();
     assert_eq!(bounds, NodeBounds::new(0.0, 0.0, 800.0, 600.0));
@@ -1084,16 +875,18 @@ fn tappable_composed_view_exposes_clickable_accessibility_node() {
         .assert_not_exists();
 }
 
-/// A `Canvas` composes to `SceneView`, whose accessibility metadata is a
+/// A `Canvas` composes to `CanvasView`, whose accessibility metadata is a
 /// product of the view tree — the IMAGE role and its label exist on the
 /// semantic pipeline with nothing rendered.
 #[test]
 fn canvas_and_text_expose_accessibility_nodes_semantically() {
     let mut app = ui().viewport(320, 320).mount(|| {
         vstack((
-            Canvas::new(|ctx| {
-                ctx.set_fill_style(Srgb::new(0.0, 0.85, 0.65));
-                ctx.fill_rect(Rect::new(Point::new(0.0, 0.0), Size::new(240.0, 180.0)));
+            Canvas::new(|cx| {
+                cx.fill(
+                    Rect::new(Point::new(0.0, 0.0), Size::new(240.0, 180.0)),
+                    Srgb::new(0.0, 0.85, 0.65).resolve(),
+                );
             })
             .size(240.0, 180.0)
             .a11y_role(waterui::accessibility::AccessibilityRole::Image)
@@ -1143,7 +936,7 @@ impl SceneContent for TestSceneContent {
         _resources: &mut RecordingResources<'_>,
         width: f32,
         height: f32,
-    ) -> bool {
+    ) -> NextFrame {
         self.0.set(true);
         let rect = kurbo::Rect::from_origin_size(
             (8.0, 8.0),
@@ -1151,7 +944,7 @@ impl SceneContent for TestSceneContent {
         );
         let red = draw::Color::<draw::Srgb>::new([1.0, 0.0, 0.0, 1.0]);
         recorder.fill(rect, WorkingColor::from(red));
-        false
+        NextFrame::Idle
     }
 
     fn rebuild_for_engine(&mut self) {}
@@ -1426,6 +1219,36 @@ fn wait_for_frames_observes_the_pump_that_settled_the_runtime() {
 
     let motion = app.expect_exists(Selector::default().role(Role::IMAGE).label("Video content"));
     assert_eq!(app.wait_for_frames(&[motion], 60), WaitResult::Completed);
+}
+
+#[test]
+fn a_focus_only_update_keeps_the_tree() {
+    // An update without `tree` is incremental (water-rs/waterui#2940): a
+    // focus move carries no nodes, and the tree it lands on is unchanged.
+    let focus_move = AccessibilityTreeUpdate {
+        nodes: Vec::new(),
+        tree: None,
+        tree_id: AccessibilityTreeId::ROOT,
+        focus: AccessibilityNodeId(3),
+    };
+    let mut app = mounted_on(
+        EmitThenSettleDriver {
+            pumps: 0,
+            emit_at: 1,
+            update: focus_move,
+        },
+        tree(vec![
+            node(1, Role::LIST, Some("root"), None, true),
+            node(2, Role::BUTTON, Some("Save"), None, true),
+            node(3, Role::BUTTON, Some("Cancel"), None, true),
+        ]),
+    );
+
+    app.settle();
+
+    assert!(app.query().role(Role::BUTTON).label("Save").exists());
+    assert_eq!(app.tree.root, node_id(1));
+    assert_eq!(app.tree.focus, node_id(3));
 }
 
 #[test]

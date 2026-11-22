@@ -14,6 +14,9 @@ publish = false
 [features]
 dev = ["waterui/dynamic_linking"]
 
+[lints]
+workspace = true
+
 [dependencies]
-waterui = { workspace = true, features = ["gpu", "assets", "snackbar", "highlight", "locale-datetime", "locale-list"] }
+waterui = { workspace = true, features = ["gpu", "assets", "snackbar", "highlight", "locale-datetime", "locale-list", "picker", "date-picker", "calendar", "multi-date-picker", "color-picker", "file-picker"] }
 jiff.workspace = true

@@ -13,9 +13,10 @@ categories = ["gui"]
 
 [dependencies]
 waterui-core.workspace = true
+waterui-contract.workspace = true
 nami.workspace = true
 smallvec.workspace = true
-waterui-graphics.workspace = true
+waterui-color.workspace = true
 num-traits = { version = "0.2", default-features = false }
 
 [dev-dependencies]
@@ -31,7 +32,3 @@ waterui-testing = { path = "../../../testing" }
 
 [lints]
 workspace = true
-
-# The facade is used by the crate's compiled rustdoc examples; cargo-machete does not scan those imports.
-[package.metadata.cargo-machete]
-ignored = ["waterui"]

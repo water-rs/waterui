@@ -27,22 +27,27 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::cell::{Cell, OnceCell, RefCell};
 
+#[cfg(target_os = "macos")]
+use cocoa_ui::appkit::HostView;
+#[cfg(target_os = "ios")]
+use cocoa_ui::uikit::HostView;
 use cocoa_ui::{MainThreadMarker, web_kit};
 use waterui::Str;
 use waterui::reactive::watcher::BoxWatcherGuard;
 use waterui::reactive::{Computed, Signal};
 use waterui_backend_core::Environment;
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
+};
 use waterui_webview::{
     ASSET_HOST, ASSET_ORIGIN, ASSET_SCHEME, AnsweredNavigations, BackendEvent, Cookie,
     CustomWebViewController, DOCUMENT_START_SCRIPT, DocumentScripts, NavigationPolicy,
     NavigationRequest, OriginPolicy, ScriptInjectionTime, ScriptMessageHandler, Url, UserScript,
-    WatcherGuard, WatcherSet, WebViewConfig, WebViewError, WebViewEvent, WebViewHandle, assets,
-    bridge,
+    WatcherGuard, WatcherSet, WebViewConfig, WebViewError, WebViewEvent, WebViewHandle,
+    WebViewOpenError, assets, bridge,
 };
 
-use crate::contract::NativeLeaf;
-use crate::dispatch::Dispatcher;
+use crate::contract::{NativeLeaf, RenderContext};
 
 /// The page-visible global the bridge script calls — `bridge::SEND_FUNCTION`,
 /// which is also the name the script-message transport registers under.
@@ -131,9 +136,17 @@ impl Shared {
             }
             *last = Some(url.to_string());
         }
-        self.emit(WebViewEvent::WillNavigate {
-            url: parse_url(url),
-        });
+        if let Some(url) = parse_url(url) {
+            self.emit(WebViewEvent::WillNavigate { url });
+        }
+    }
+
+    /// Emits a `Redirect` between two engine-reported URLs; one that does
+    /// not parse drops the event.
+    fn emit_redirect(&self, from: &str, to: &str) {
+        if let (Some(from), Some(to)) = (parse_url(from), parse_url(to)) {
+            self.emit(WebViewEvent::Redirect { from, to });
+        }
     }
 
     /// Registers the single `__wateruiSend` script-message handler every
@@ -210,7 +223,7 @@ impl Shared {
         );
         for entry in self.scripts.borrow().iter() {
             self.view()
-                .add_user_script(&entry.source, injection_time(entry.time), true);
+                .add_user_script(entry.source(), injection_time(entry.time()), true);
         }
     }
 
@@ -265,14 +278,14 @@ impl Shared {
         };
         // Release the borrow before invoking: a handler may register or
         // remove handlers on the same view.
-        let handler = self.handlers.borrow().get(&request.name).map(Rc::clone);
+        let handler = self.handlers.borrow().get(request.name()).map(Rc::clone);
         let Some(handler) = handler else {
             tracing::warn!(
-                handler = %request.name,
+                handler = %request.name(),
                 "page script called a WaterUI handler that is not registered"
             );
             reply.resolve(
-                &bridge::Reply::failure(&format!("no WaterUI handler named `{}`", request.name))
+                &bridge::Reply::failure(&format!("no WaterUI handler named `{}`", request.name()))
                     .to_json(),
             );
             return;
@@ -282,7 +295,7 @@ impl Shared {
         // future completes. The reply needs no view: the channel answers the
         // document that asked, and `ScriptReply`'s `Drop` covers a view that
         // died mid-await.
-        let future = handler(&request.payload);
+        let future = handler(request.payload());
         executor_core::spawn_local(async move {
             let answer = match future.await {
                 Ok(answer) => bridge::Reply::from(answer),
@@ -410,14 +423,19 @@ impl Shared {
     /// The navigation policy's answer to a page-initiated navigation:
     /// whether the engine proceeds. `OpenExternally` has already been
     /// carried out by [`NavigationPolicy::allows`] when it answers `false`.
-    /// An action naming no URL is allowed — nothing would navigate anyway.
+    /// An action naming no URL is allowed — nothing would navigate anyway; one
+    /// naming a URL the policy cannot read is refused, as the policy cannot
+    /// admit it.
     fn policy_allows(&self, url: Option<&str>, is_main_frame: bool, user_initiated: bool) -> bool {
         let (Some(policy), Some(url)) = (&self.navigation_policy, url) else {
             return true;
         };
+        let Some(target) = parse_url(url) else {
+            return false;
+        };
         policy.allows(&NavigationRequest::new(
-            parse_url(url),
-            self.view().url_string().map(|url| parse_url(&url)),
+            target,
+            self.view().url_string().and_then(|url| parse_url(&url)),
             is_main_frame,
             user_initiated,
         ))
@@ -497,10 +515,7 @@ impl Shared {
             .map_or_else(String::new, |location| {
                 web_kit::resolve_redirect(&info.url, location)
             });
-        self.emit(WebViewEvent::Redirect {
-            from: parse_url(&info.url),
-            to: parse_url(&to),
-        });
+        self.emit_redirect(&info.url, &to);
         self.view().stop_loading();
         web_kit::Policy::Cancel
     }
@@ -518,10 +533,12 @@ impl Shared {
             match web_kit::evaluate_server_trust(trust) {
                 Ok(()) => return web_kit::ChallengeDecision::UseCredential,
                 Err(message) => {
-                    self.emit(WebViewEvent::Error(WebViewError::Ssl {
-                        url: parse_url(&challenge.current_url),
-                        message: Str::from(message),
-                    }));
+                    if let Some(url) = parse_url(&challenge.current_url) {
+                        self.emit(WebViewEvent::Error(WebViewError::Ssl {
+                            url,
+                            message: Str::from(message),
+                        }));
+                    }
                     return web_kit::ChallengeDecision::Cancel;
                 }
             }
@@ -542,10 +559,7 @@ impl Shared {
                 let to = self.view().url_string().unwrap_or_default();
                 let from = self.last_navigation.borrow().clone().unwrap_or_default();
                 if !self.redirects_enabled.get() {
-                    self.emit(WebViewEvent::Redirect {
-                        from: parse_url(&from),
-                        to: parse_url(&to),
-                    });
+                    self.emit_redirect(&from, &to);
                     self.view().stop_loading();
                     return;
                 }
@@ -637,9 +651,11 @@ impl WebViewHandle for WkWebViewHandle {
 
     fn set_cookie(&self, cookie: Cookie<'static>) {
         let header = cookie.to_string();
-        self.controller()
-            .set_cookie_header(&header)
-            .expect("WebView received an invalid Set-Cookie value");
+        if let Err(error) = self.controller().set_cookie_header(&header) {
+            tracing::error!(
+                "WebView received an invalid Set-Cookie value: {error}; the cookie is not set"
+            );
+        }
     }
 
     fn set_redirects_enabled(&self, enabled: impl Signal<Output = bool>) {
@@ -765,19 +781,20 @@ impl core::fmt::Debug for AppleWebViewController {
 }
 
 impl CustomWebViewController for AppleWebViewController {
-    fn open(&self, config: WebViewConfig) -> impl WebViewHandle {
-        let mtm = MainThreadMarker::new().expect("a WebView opens on the main thread");
+    fn open(&self, config: WebViewConfig) -> Result<impl WebViewHandle, WebViewOpenError> {
+        let mtm = MainThreadMarker::new().ok_or(WebViewOpenError::MainThreadRequired)?;
         // Interception can only be registered while the configuration is
         // being assembled, so the asset server arrives at creation.
         let scripts = DocumentScripts::new(&config);
-        let scheme = config.asset_server.map(|server| asset_scheme(&server));
-        WkWebViewHandle::new(
+        let (asset_server, bridge_origins, navigation_policy, ..) = config.into_parts();
+        let scheme = asset_server.as_ref().map(asset_scheme);
+        Ok(WkWebViewHandle::new(
             mtm,
             scheme,
-            config.bridge_origins,
+            bridge_origins,
             scripts,
-            config.navigation_policy,
-        )
+            navigation_policy,
+        ))
     }
 
     fn asset_origin(&self) -> Option<Url> {
@@ -793,12 +810,16 @@ const fn injection_time(time: ScriptInjectionTime) -> web_kit::InjectionTime {
     }
 }
 
-/// A URL the event payloads carry: backend-emitted strings that do not
-/// parse are a bug loud enough to stop for, matching the FFI layer.
-fn parse_url(string: &str) -> Url {
-    string.parse().unwrap_or_else(|error| {
-        panic!("the web view backend emitted an unparseable URL {string:?}: {error}")
-    })
+/// A URL the event payloads carry. A string the web engine reports that does
+/// not parse is logged and answers `None`: the event it belongs to is dropped.
+fn parse_url(string: &str) -> Option<Url> {
+    match string.parse() {
+        Ok(url) => Some(url),
+        Err(error) => {
+            tracing::error!("the web view engine reported an unparseable URL {string:?}: {error}");
+            None
+        }
+    }
 }
 
 /// The leaf's layout face: `WuiWebViewComponent.sizeThatFits` — the
@@ -812,6 +833,14 @@ impl core::fmt::Debug for WebViewSubView {
 }
 
 impl SubView for WebViewSubView {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         ViewDimensions::new(Size::new(
             proposal.width.unwrap_or(320.0),
@@ -828,22 +857,28 @@ impl SubView for WebViewSubView {
     }
 }
 
-/// Installs the `webview` handler: `Native<WebView>` mounts the kit view the
+/// The `webview` realization: `Native<WebView>` mounts the kit view the
 /// handle owns, keeping the `WebView` — and with it the event, navigation
 /// and signal subscriptions — alive for the leaf's life.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<waterui_webview::WebView>(|webview, _ctx| {
-        let handle = webview.handle().downcast_ref::<WkWebViewHandle>().expect(
-            "a WebView leaf was handed a handle from another engine; the \
-                 WebViewController in this environment is not the Apple backend's",
-        );
-        let mut leaf = NativeLeaf::new(&**handle.controller().view(), WebViewSubView);
-        // The component owns the subscriptions that drive `can_go_back`,
-        // `can_go_forward` and the event signal; dropping it would leave a
-        // live view whose reactive state had gone dead.
+pub fn realize_web_view(webview: waterui_webview::WebView, ctx: &RenderContext<'_>) -> NativeLeaf {
+    // The controller failed to open this view and `waterui-webview`
+    // already reported it: mount an empty host where the page would be.
+    if webview.handle().is_unavailable() {
+        let host = HostView::new(ctx.mtm(), cocoa_ui::Rect::ZERO);
+        let mut leaf = NativeLeaf::new(&*host, WebViewSubView);
         leaf.keep(webview);
-        leaf
-    });
+        return leaf;
+    }
+    let handle = webview.handle().downcast_ref::<WkWebViewHandle>().expect(
+        "a WebView leaf was handed a handle from another engine; the \
+                 WebViewController in this environment is not the Apple backend's",
+    );
+    let mut leaf = NativeLeaf::new(&**handle.controller().view(), WebViewSubView);
+    // The component owns the subscriptions that drive `can_go_back`,
+    // `can_go_forward` and the event signal; dropping it would leave a
+    // live view whose reactive state had gone dead.
+    leaf.keep(webview);
+    leaf
 }
 
 /// The `SchemeHandler` an `asset_origin` view registers — `AssetSchemeHandler`,
@@ -861,14 +896,14 @@ fn asset_scheme(server: &assets::AssetServer) -> web_kit::SchemeHandler {
                 &request.path,
                 request.query.as_deref().or(Some("")),
             );
+            let (status, headers, body) = response.into_parts();
             web_kit::SchemeResponse {
-                status: response.status,
-                headers: response
-                    .headers
+                status,
+                headers: headers
                     .iter()
                     .map(|(name, value)| (name.to_string(), value.to_string()))
                     .collect(),
-                body: response.body,
+                body,
             }
         }),
     }
@@ -977,8 +1012,8 @@ mod tests {
         let request =
             bridge::Request::parse(r#"{"id":7,"name":"alert","payload":{"message":"hi"}}"#)
                 .expect("a well-formed envelope parses");
-        assert_eq!(request.id, 7);
-        assert_eq!(request.name, "alert");
+        assert_eq!(request.id(), 7);
+        assert_eq!(request.name(), "alert");
 
         let json = bridge::Reply::failure("boom").to_json();
         assert!(json.contains("boom"));

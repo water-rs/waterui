@@ -91,7 +91,10 @@ struct MenuTwin: View {
           Button("Delete") {}
         }
       } label: {
-        Text("Actions").fontWeight(.bold)
+        // `.fontWeight` is a text attribute the macOS menu-label path
+        // normalises away; an explicit `Font` value is not — WaterUI keeps
+        // the declared weight, so the twin carries it the same way (#3598).
+        Text("Actions").font(.body.bold())
       }
       Spacer().frame(height: 12)
       Text("No action yet").font(.caption).foregroundStyle(.secondary)
@@ -218,12 +221,12 @@ struct MenuTwin: View {
   private func toolbarButton(_ title: String, icon: String, iconOnly: Bool) -> some View {
     Button {} label: {
       if iconOnly {
-        Text(icon).font(.caption).fontWeight(.bold)
+        Text(icon).font(.caption).bold()
       } else {
         Label {
           Text(title)
         } icon: {
-          Text(icon).font(.caption).fontWeight(.bold)
+          Text(icon).font(.caption).bold()
         }
       }
     }

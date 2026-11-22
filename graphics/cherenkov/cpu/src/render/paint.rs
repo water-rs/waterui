@@ -5,6 +5,8 @@
 use std::mem::MaybeUninit;
 
 use cherenkov::kurbo::Affine;
+#[cfg(feature = "shaders")]
+use cherenkov::kurbo::Rect;
 use cherenkov::{ColorStop, Extend, Interpolation, Paint};
 use rustc_hash::FxHashMap;
 
@@ -12,6 +14,7 @@ use cherenkov::RenderError;
 use fearless_simd::{Simd, SimdInterleaved, f32x4};
 use filtrate_core::space::{P3_TO_SRGB, SRGB_TO_P3, srgb_decode, srgb_encode, transform};
 
+#[cfg(not(feature = "shaders"))]
 use crate::names;
 
 /// A gradient stop in interpolation-space straight-alpha components.
@@ -60,6 +63,22 @@ pub enum PaintData {
     Linear(LinearPaint),
     /// A two-point radial gradient.
     Radial(RadialPaint),
+    /// A shader paint before placement: the lowering renders it into an
+    /// image once the draw's device bounds are known, so no evaluator
+    /// sees one.
+    #[cfg(feature = "shaders")]
+    Shader(std::sync::Arc<ShaderLeaf>),
+}
+
+/// A [`PaintData::Shader`] payload: the registered shader and its
+/// uniforms, in the shader's declared order.
+#[cfg(feature = "shaders")]
+#[derive(Debug)]
+pub struct ShaderLeaf {
+    /// The registered shader's id.
+    pub shader: u64,
+    /// The uniform values.
+    pub uniforms: Box<[f32]>,
 }
 
 /// A [`PaintData::Linear`] payload: the resolved parameters the
@@ -461,6 +480,23 @@ fn extra_paint(
                 sampling: pattern.sampling,
             }))
         }
+        #[cfg(feature = "shaders")]
+        Paint::Shader(shader) => {
+            let leaf = PaintData::Shader(std::sync::Arc::new(ShaderLeaf {
+                shader: shader.shader.raw(),
+                uniforms: shader.uniforms.clone().into(),
+            }));
+            if inv == Affine::IDENTITY {
+                leaf
+            } else {
+                PaintData::Transformed(std::sync::Arc::new(TransformedPaint {
+                    paint: leaf,
+                    inverse: inv,
+                    inverse_f32: affine_f32(inv),
+                }))
+            }
+        }
+        #[cfg(not(feature = "shaders"))]
         Paint::Shader(_) => return Err(RenderError::Unsupported(names::SHADER)),
         _ => unreachable!("common paint compiler handles solid, ordinary gradients and transforms"),
     })
@@ -645,6 +681,97 @@ impl PaintData {
         }))
     }
 
+    /// Whether the paint holds a shader leaf.
+    #[cfg(feature = "shaders")]
+    #[must_use]
+    pub fn has_shader(&self) -> bool {
+        match self {
+            Self::Shader(_) => true,
+            Self::Transformed(link) => link.paint.has_shader(),
+            _ => false,
+        }
+    }
+
+    /// `self` with its shader leaf rendered for a draw whose shape-local
+    /// `bounds` sit under `transform` (local to device), or `None` when it
+    /// holds no shader. As on the GPU backend, the texture covers the
+    /// bounds' ceiled device extent and maps over the local bounds; a
+    /// collapsed axis samples its centre. `render` renders leaf `leaf` at
+    /// a texture size.
+    ///
+    /// # Errors
+    /// [`RenderError::Render`] on non-finite bounds, or what `render`
+    /// returns.
+    #[cfg(feature = "shaders")]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a texture side is a finite, positive, ceiled device extent"
+    )]
+    pub fn render_shaders(
+        &self,
+        bounds: Rect,
+        transform: Affine,
+        render: &mut impl FnMut(
+            &ShaderLeaf,
+            (u32, u32),
+        ) -> Result<std::sync::Arc<super::image::CpuImage>, RenderError>,
+    ) -> Result<Option<Self>, RenderError> {
+        match self {
+            Self::Shader(leaf) => {
+                let device = transform.transform_rect_bbox(bounds);
+                if ![
+                    device.width(),
+                    device.height(),
+                    bounds.width(),
+                    bounds.height(),
+                ]
+                .iter()
+                .all(|v| v.is_finite())
+                {
+                    return Err(RenderError::Render(
+                        "shader paint requires finite bounds".into(),
+                    ));
+                }
+                let size = (
+                    device.width().ceil().max(1.0) as u32,
+                    device.height().ceil().max(1.0) as u32,
+                );
+                let image = render(leaf, size)?;
+                let axis = |extent: f64, texels: u32, origin: f64| {
+                    if extent == 0.0 {
+                        (0.0, 0.5)
+                    } else {
+                        let scale = f64::from(texels) / extent;
+                        (scale, -origin * scale)
+                    }
+                };
+                let (x, offset_x) = axis(bounds.width(), size.0, bounds.x0);
+                let (y, offset_y) = axis(bounds.height(), size.1, bounds.y0);
+                let mapping = Affine::new([x, 0.0, 0.0, y, offset_x, offset_y]);
+                Ok(Some(Self::Image(Box::new(ImagePaintData {
+                    mapping,
+                    inv: affine_f32(mapping),
+                    image,
+                    extend_x: Extend::Pad,
+                    extend_y: Extend::Pad,
+                    sampling: cherenkov::Sampling::Linear,
+                }))))
+            }
+            Self::Transformed(link) => Ok(link
+                .paint
+                .render_shaders(bounds, transform, render)?
+                .map(|paint| {
+                    Self::Transformed(std::sync::Arc::new(TransformedPaint {
+                        paint,
+                        inverse: link.inverse,
+                        inverse_f32: link.inverse_f32,
+                    }))
+                })),
+            _ => Ok(None),
+        }
+    }
+
     /// Apply sampled device placement without resolving or copying gradient stops.
     #[must_use]
     pub fn transformed(&self, transform: Affine) -> Self {
@@ -659,6 +786,8 @@ impl PaintData {
             Self::Linear(linear) => linear.inv = affine_f32(transform),
             Self::Radial(radial) => radial.inv = affine_f32(transform),
             Self::Sweep(sweep) => sweep.inv = affine_f32(transform),
+            #[cfg(feature = "shaders")]
+            Self::Shader(_) => unreachable!("the lowering renders a shader leaf before placing it"),
         }
         paint
     }
@@ -711,6 +840,8 @@ impl PaintData {
 
             Self::Linear(p) => output.linear(self, p),
             Self::Radial(p) => output.radial(self, p),
+            #[cfg(feature = "shaders")]
+            Self::Shader(_) => unreachable!("the lowering renders a shader leaf before placing it"),
         }
     }
 

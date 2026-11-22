@@ -5,22 +5,29 @@
 //! [`Style`](crate::Style): a [`WidgetTheme`] plus a token installer. The
 //! contract is everything a style package names from Hydrolysis:
 //!
-//! - [`WidgetTheme`], the widget chrome the renderer lays out and draws from:
-//!   motion policies, per-widget metrics and the `draw_*` methods;
-//! - the state the renderer hands a theme on every draw:
-//!   [`WidgetInteractionState`] with its [`PressWaves`], and
-//!   [`RadioIndicatorState`];
+//! - [`WidgetTheme`], the declarative widget looks the renderer measures,
+//!   places, hit-tests, records and animates from;
 //! - the motion and metric token tables a theme returns, such as
-//!   [`InteractionMotion`], [`ProgressMotion`] and [`ButtonMetrics`];
+//!   [`InteractionMotion`] and [`ListMetrics`];
+//! - the looks a theme returns for each widget family (water-rs/waterui#1434),
+//!   such as [`ButtonLook`] for a
+//!   [`ButtonSpec`], [`SwitchLook`] for a [`ToggleSpec`], [`StepperLook`]
+//!   for a [`StepperSpec`], [`SegmentedLook`] for a [`SegmentedSpec`],
+//!   [`MenuLook`] for a [`MenuSpec`], [`MenuPickerLook`] and
+//!   [`RadioGroupLook`] for a [`PickerSpec`] and [`LinearProgressLook`] for a
+//!   [`ProgressSpec`], [`NavigationBarLook`] for a [`NavigationSpec`],
+//!   [`TabsLook`] for a [`TabsSpec`] and [`GlassLook`] for a
+//!   `.background(Glass…)`, built from the look vocabulary: [`Driven`] values over
+//!   the widget's [`Inputs`] with their [`Motion`], [`Custom`] parts,
+//!   [`Label`] styling and [`HitRegion`]s;
 //! - the engine-provided chrome primitives a theme describes interactive
-//!   chrome with instead of drawing it — [`Surface`], [`CornerShape`],
-//!   [`Elevation`], [`StateLayer`], [`PressFeedback`] and
-//!   [`FocusIndicator`], bundled per widget part as [`Chrome`] — which
-//!   Hydrolysis records once and animates through live operands;
+//!   chrome with instead of drawing it — [`Surface`] with its [`Fill`] or
+//!   [`Backdrop`], [`CornerShape`], [`Elevation`], [`StateLayer`],
+//!   [`PressFeedback`] and [`FocusIndicator`], bundled per widget part as
+//!   [`Chrome`] — which Hydrolysis records once and animates through live
+//!   operands;
 //! - the presentation plugins a style package installs on composed controls:
-//!   [`InteractionStyle`], [`InteractionFocusBinding`],
-//!   [`ModalInteraction`], and the [`IconOnlyButtonLabel`] marker the
-//!   renderer installs for a theme to read.
+//!   [`Chrome`], [`InteractionFocusBinding`] and [`ModalInteraction`].
 //!
 //! Drawing goes through the render-target-neutral recording vocabulary of
 //! `cherenkov-record` ([`Recorder`](cherenkov_record::Recorder),
@@ -43,54 +50,96 @@
 //! type scale. A `Style` may overwrite any of them, and the application
 //! overwrites both.
 
+mod badge;
 mod chrome;
+mod glass;
+#[cfg(feature = "list")]
+mod list;
+#[cfg(hydrolysis_runtime)]
+pub(crate) mod live;
+mod look;
+#[cfg(feature = "slider")]
+pub use look::{DragMapping, Knob, SliderLayout, SliderLook, SliderSpec, ValueIndicator};
+#[cfg(feature = "menu")]
+mod menu;
+#[cfg(feature = "navigation")]
+mod navigation;
+mod picker;
+mod progress;
+mod scroll_indicator;
+#[cfg(feature = "picker")]
+mod segmented;
+mod stepper;
+#[cfg(feature = "table")]
+mod table;
+#[cfg(feature = "navigation")]
+mod tabs;
+mod text_field;
+mod toggle;
 mod widget;
 
+pub use badge::BadgeLook;
 pub use chrome::{
-    Border, Chrome, CornerShape, Corners, Elevation, FocusIndicator, PressFeedback, Ripple,
-    StateLayer, Surface,
+    Backdrop, Border, Chrome, CornerShape, Corners, Elevation, Fill, FocusIndicator, PressFeedback,
+    Ripple, StateLayer, Surface, Wash,
 };
+pub use glass::GlassLook;
+#[cfg(feature = "list")]
+pub use list::{ListControls, ListGestures, ListLook, ListSpec};
+pub use look::{
+    ButtonLook, ButtonSpec, Custom, Driven, DrivenSet, HitRegion, Inputs, Label, Motion, SpecTint,
+    Transition, ValueMotion,
+};
+#[cfg(hydrolysis_runtime)]
+pub(crate) use look::{Change, CustomPart, LayerRotation, LiveDriven, RealizedCustom, Retarget};
+#[cfg(feature = "menu")]
+pub use menu::{MenuLayout, MenuLook, MenuSpec};
+#[cfg(feature = "navigation")]
+pub use navigation::{
+    BarSurface, NavigationBarLook, NavigationMetrics, NavigationMotion, NavigationSpec,
+};
+pub use picker::{MenuPickerLayout, MenuPickerLook, PickerSpec, RadioGroupLook, RadioLayout};
+pub use progress::{
+    IndicatorLook, LinearLayout, LinearProgressLook, ProgressControl, ProgressSpec,
+};
+pub use scroll_indicator::ScrollIndicatorLook;
+#[cfg(feature = "picker")]
+pub use segmented::{
+    Segment, SegmentLabel, SegmentedDrag, SegmentedLayout, SegmentedLook, SegmentedSpec,
+    SegmentedValue,
+};
+pub use stepper::{StepperLook, StepperSpec};
+#[cfg(feature = "table")]
+pub use table::TableLook;
+#[cfg(feature = "navigation")]
+pub use tabs::{TabItem, TabItemGeometry, TabItemLayout, TabsLook, TabsMetrics, TabsSpec};
+pub use text_field::{Caret, FloatingLabel, TextFieldLook, TextFieldSpec};
+#[cfg(feature = "toggle")]
+pub use toggle::ToggleSpec;
+pub use toggle::{CheckboxLook, SwitchDrag, SwitchLook, ToggleBackdrop, ToggleControl};
 pub use widget::{
-    BadgeMetrics, ButtonMetrics, ButtonSpec, DividerMetrics, FocusRing, InputFieldMetrics,
-    InteractionFocusBinding, InteractionMotion, InteractionStyle, ListDividerMetrics, ListMetrics,
-    ListRowMetrics, ListSectionMetrics, ListTrailingControlMetrics, MAX_PRESS_WAVES,
-    ModalInteraction, NavigationMetrics, NavigationMotion, PickerMetrics, PressWave, PressWaves,
-    ProgressIndicatorStyle, ProgressMetrics, ProgressMotion, RadioIndicatorState,
-    RadioSelectionMotion, SliderMetrics, SliderValueIndicatorMetrics, StepperEnd, StepperMetrics,
-    TabItemGeometry, TabItemLayout, TableMetrics, TabsMetrics, TextCaretMotion,
-    TextContextMenuMetrics, ToggleMetrics, WidgetInteractionState, WidgetTheme,
+    BadgeMetrics, InputFieldMetrics, InteractionFocusBinding, InteractionMotion,
+    ListDividerMetrics, ListMetrics, ListRowMetrics, ListSectionMetrics,
+    ListTrailingControlMetrics, ModalInteraction, TableMetrics, TextCaretMotion, WidgetTheme,
 };
-
-/// Marks the subtree of a button label that resolved to an icon-only
-/// presentation.
-///
-/// The backend installs it into the icon-only label's environment so a
-/// theme's resolvable [`WidgetTheme::button_label_color`] can paint the
-/// standard icon button's content color rather than the filled text
-/// button's — `ButtonStyle::Automatic` resolves to a different variant for
-/// the two.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "field-less metadata marker inserted by name"
-)]
-pub struct IconOnlyButtonLabel;
-
-impl waterui::Plugin for IconOnlyButtonLabel {}
 
 #[cfg(hydrolysis_runtime)]
 use waterui::{
     Environment, Plugin,
     color::{Srgb, WorkingColor},
-    reactive::{Computed, SignalExt as _, signal::IntoComputed},
-    theme::{ColorScheme, ColorSettings, FontSettings, Theme, installed_color_scheme},
+    reactive::signal::IntoComputed,
+    theme::{
+        ColorDerivation, ColorScheme, ColorSettings, FontSettings, Theme, color as token,
+        install_color_derivation, installed_color_scheme,
+    },
 };
 
 /// The framework's baseline palette for one colour scheme, as encoded sRGB.
 ///
 /// Not a theme: the opaque colour slots a bare application resolves when
 /// neither a style package nor the application installs its own. The scrim
-/// is the same in both schemes and is not part of it.
+/// is the same in both schemes and is not part of it, nor is the disabled
+/// foreground, which derives from the scheme's foreground.
 #[cfg(hydrolysis_runtime)]
 struct Palette {
     background: u32,
@@ -99,6 +148,7 @@ struct Palette {
     border: u32,
     foreground: u32,
     muted_foreground: u32,
+    tertiary_foreground: u32,
     accent: u32,
     accent_container: u32,
     accent_foreground: u32,
@@ -106,9 +156,15 @@ struct Palette {
     tertiary_container: u32,
     selection_container: u32,
     selection_foreground: u32,
+    unemphasized_selection: u32,
     error: u32,
     error_foreground: u32,
 }
+
+/// The disabled foreground is the scheme's foreground at this alpha, the
+/// contrast Material gives disabled content (on-surface at 38%).
+#[cfg(hydrolysis_runtime)]
+pub(crate) const DISABLED_FOREGROUND_ALPHA: f32 = 0.38;
 
 /// Dark content on light surfaces.
 #[cfg(hydrolysis_runtime)]
@@ -119,6 +175,7 @@ const LIGHT: Palette = Palette {
     border: 0xD1_D5_DB,
     foreground: 0x11_18_27,
     muted_foreground: 0x4B_55_63,
+    tertiary_foreground: 0x6B_72_80,
     accent: 0x25_63_EB,
     accent_container: 0xDB_EA_FE,
     accent_foreground: 0xFF_FF_FF,
@@ -126,6 +183,7 @@ const LIGHT: Palette = Palette {
     tertiary_container: 0xED_E9_FE,
     selection_container: 0x25_63_EB,
     selection_foreground: 0xFF_FF_FF,
+    unemphasized_selection: 0xD1_D5_DB,
     error: 0xDC_26_26,
     error_foreground: 0xFF_FF_FF,
 };
@@ -141,6 +199,7 @@ const DARK: Palette = Palette {
     border: 0x4B_55_63,
     foreground: 0xF9_FA_FB,
     muted_foreground: 0x9C_A3_AF,
+    tertiary_foreground: 0x6B_72_80,
     accent: 0x60_A5_FA,
     accent_container: 0x1E_3A_8A,
     accent_foreground: 0x17_25_54,
@@ -148,6 +207,7 @@ const DARK: Palette = Palette {
     tertiary_container: 0x4C_1D_95,
     selection_container: 0x60_A5_FA,
     selection_foreground: 0x17_25_54,
+    unemphasized_selection: 0x4B_55_63,
     error: 0xF8_71_71,
     error_foreground: 0x45_0A_0A,
 };
@@ -165,13 +225,46 @@ fn color(rgb: u32) -> WorkingColor {
     Srgb::from_u32(rgb).resolve()
 }
 
-/// One palette slot as a signal over `scheme`: a scheme change re-resolves
-/// exactly the views that read the slot.
+/// Installs every palette slot as a derivation from the colour scheme: a
+/// scheme change re-resolves exactly the views that read a slot, and a scheme
+/// installed on a subtree re-derives the slots that subtree resolves.
 #[cfg(hydrolysis_runtime)]
-fn slot(scheme: &Computed<ColorScheme>, pick: fn(&Palette) -> u32) -> Computed<WorkingColor> {
-    scheme
-        .map(move |scheme| color(pick(palette(scheme))))
-        .computed()
+fn install_default_colors(env: &mut Environment) {
+    macro_rules! slots {
+        ($( $slot:ident => $field:ident ),* $(,)?) => {
+            $(
+                install_color_derivation::<token::$slot>(
+                    env,
+                    ColorDerivation::new(|scheme| color(palette(scheme).$field)),
+                );
+            )*
+        };
+    }
+    slots! {
+        Background => background,
+        Surface => surface,
+        SurfaceVariant => surface_variant,
+        Border => border,
+        Foreground => foreground,
+        MutedForeground => muted_foreground,
+        TertiaryForeground => tertiary_foreground,
+        Accent => accent,
+        AccentContainer => accent_container,
+        AccentForeground => accent_foreground,
+        Tertiary => tertiary,
+        TertiaryContainer => tertiary_container,
+        SelectionContainer => selection_container,
+        SelectionForeground => selection_foreground,
+        UnemphasizedSelection => unemphasized_selection,
+        Error => error,
+        ErrorForeground => error_foreground,
+    }
+    install_color_derivation::<token::DisabledForeground>(
+        env,
+        ColorDerivation::new(|scheme| {
+            color(palette(scheme).foreground).with_alpha(DISABLED_FOREGROUND_ALPHA)
+        }),
+    );
 }
 
 /// Writes `resolved` into `scheme`, only when it moved.
@@ -199,9 +292,10 @@ pub(crate) fn sync_color_scheme(scheme: &nami::Binding<ColorScheme>, resolved: C
 /// the host keeps current — the system appearance on macOS — or a fixed
 /// scheme where the host has none. The installed colour scheme is the
 /// application's own when it installed one and `appearance` otherwise, and
-/// the framework default colours are signals over that scheme, so a plain
-/// view is drawn in the right scheme and an appearance change updates the
-/// bound tokens in place, never rebuilding the tree.
+/// the framework default colours are derivations from that scheme, so a
+/// plain view is drawn in the right scheme, an appearance change updates the
+/// bound tokens in place, never rebuilding the tree, and a scheme installed
+/// on a subtree re-derives the tokens of that subtree.
 ///
 /// The style installs into an environment that already carries the
 /// application's entries layered over the framework defaults, so a style
@@ -218,29 +312,13 @@ pub(crate) fn install_theme_tokens(
     let scheme = installed_color_scheme(env).unwrap_or_else(|| appearance.into_computed());
     let mut defaults = Environment::new();
     Theme::new()
-        .color_scheme(scheme.clone())
-        .colors(
-            ColorSettings::new()
-                .background(slot(&scheme, |p| p.background))
-                .surface(slot(&scheme, |p| p.surface))
-                .surface_variant(slot(&scheme, |p| p.surface_variant))
-                .border(slot(&scheme, |p| p.border))
-                .foreground(slot(&scheme, |p| p.foreground))
-                .muted_foreground(slot(&scheme, |p| p.muted_foreground))
-                .accent(slot(&scheme, |p| p.accent))
-                .accent_container(slot(&scheme, |p| p.accent_container))
-                .accent_foreground(slot(&scheme, |p| p.accent_foreground))
-                .tertiary(slot(&scheme, |p| p.tertiary))
-                .tertiary_container(slot(&scheme, |p| p.tertiary_container))
-                .selection_container(slot(&scheme, |p| p.selection_container))
-                .selection_foreground(slot(&scheme, |p| p.selection_foreground))
-                .error(slot(&scheme, |p| p.error))
-                .error_foreground(slot(&scheme, |p| p.error_foreground))
-                // Scrim: black at 32% over the content beneath a modal layer.
-                .scrim(Srgb::BLACK.resolve().with_alpha(0.32)),
-        )
+        .color_scheme(scheme)
+        // Scrim: black at 32% over the content beneath a modal layer, the
+        // same in both schemes.
+        .colors(ColorSettings::new().scrim(Srgb::BLACK.resolve().with_alpha(0.32)))
         .fonts(FontSettings::default_scale())
         .install(&mut defaults);
+    install_default_colors(&mut defaults);
     let mut styled = env.layered_on(&defaults);
     if let Some(style) = style {
         style.install_tokens(&mut styled);
@@ -296,6 +374,46 @@ mod tests {
         assert_eq!(scheme.snapshot(), ColorScheme::Dark);
         assert_eq!(resolved::<Background>(&env), bits(color(DARK.background)));
         assert_eq!(resolved::<Foreground>(&env), bits(color(DARK.foreground)));
+    }
+
+    /// The tertiary, disabled and unemphasized-selection tokens have
+    /// framework defaults that follow the scheme: the disabled foreground is
+    /// the scheme's foreground at the disabled alpha.
+    #[test]
+    fn default_tokens_carry_the_tier_colors() {
+        use waterui::theme::color::{
+            DisabledForeground, TertiaryForeground, UnemphasizedSelection,
+        };
+
+        let appearance = binding(ColorScheme::Light);
+        let mut env = Environment::new();
+        install_theme_tokens(&mut env, None, appearance.clone());
+        assert_eq!(
+            resolved::<TertiaryForeground>(&env),
+            bits(color(LIGHT.tertiary_foreground))
+        );
+        assert_eq!(
+            resolved::<UnemphasizedSelection>(&env),
+            bits(color(LIGHT.unemphasized_selection))
+        );
+        assert_eq!(
+            resolved::<DisabledForeground>(&env),
+            bits(color(LIGHT.foreground).with_alpha(super::DISABLED_FOREGROUND_ALPHA))
+        );
+
+        appearance.set(ColorScheme::Dark);
+        assert_eq!(
+            resolved::<TertiaryForeground>(&env),
+            bits(color(DARK.tertiary_foreground))
+        );
+        assert_eq!(
+            resolved::<UnemphasizedSelection>(&env),
+            bits(color(DARK.unemphasized_selection))
+        );
+        assert_eq!(
+            resolved::<DisabledForeground>(&env),
+            bits(color(DARK.foreground).with_alpha(super::DISABLED_FOREGROUND_ALPHA))
+        );
     }
 
     /// An application that installs its own scheme overrides the host's

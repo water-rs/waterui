@@ -227,13 +227,13 @@ pub fn js_exceptions_arrive_with_stack<R: JsRuntime>() {
             "conformance.js",
         )
         .expect_err("the throw propagates");
-    assert_eq!(error.name, "TypeError");
-    assert!(error.message.contains("boom"), "{}", error.message);
-    assert!(error.stack.is_some(), "the JavaScript stack is carried");
+    assert_eq!(error.name(), "TypeError");
+    assert!(error.message().contains("boom"), "{}", error.message());
+    assert!(error.stack().is_some(), "the JavaScript stack is carried");
 
     // A syntax error is an error too, not a panic and not `undefined`.
     let error = rt.eval("(", "conformance.js").expect_err("fails to parse");
-    assert_ne!(error.message, "");
+    assert_ne!(error.message(), "");
 }
 
 /// A `Err` from a host function throws in JavaScript, catchably.
@@ -475,7 +475,7 @@ pub fn cyclic_objects_are_typed_errors<R: JsRuntime>() {
     let error = rt
         .eval("(a = {}, a.self = a, a)", "conformance.js")
         .expect_err("a cyclic object cannot convert");
-    assert_eq!(error.name, "TypeError");
+    assert_eq!(error.name(), "TypeError");
 }
 
 /// `Map`, `Date`, `RegExp`, `Error`, `Promise` and typed arrays have no
@@ -495,11 +495,11 @@ pub fn exotic_objects_are_typed_errors<R: JsRuntime>() {
         ("new Uint8Array(2)", "Uint8Array"),
     ] {
         let error = rt.eval(source, "conformance.js").expect_err(source);
-        assert_eq!(error.name, "TypeError", "{source}");
+        assert_eq!(error.name(), "TypeError", "{source}");
         assert!(
-            error.message.contains(kind),
+            error.message().contains(kind),
             "{source} should name its kind: {}",
-            error.message
+            error.message()
         );
     }
     // A null-prototype object *is* plain — it converts to empty entries.
@@ -585,11 +585,11 @@ pub fn rewritten_globals_do_not_change_conversion<R: JsRuntime>() {
     let error = rt
         .eval("new Map()", "conformance.js")
         .expect_err("a Map cannot convert");
-    assert_eq!(error.name, "TypeError");
+    assert_eq!(error.name(), "TypeError");
     assert!(
-        error.message.contains("Map"),
+        error.message().contains("Map"),
         "the error names the kind: {}",
-        error.message
+        error.message()
     );
 }
 

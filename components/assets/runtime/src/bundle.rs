@@ -104,12 +104,13 @@ impl ImageAsset {
 #[cfg(feature = "media")]
 impl View for ImageAsset {
     fn body(self, env: &Environment) -> impl View {
-        Photo::new(self.url(ResourceContext::from_environment(env)))
-    }
-
-    /// Matches the non-resizable `Photo` constructed by `body`, independent of its URL.
-    fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
-        waterui_core::layout::StretchAxis::None
+        let Some(resources) = ResourceContext::from_environment(env) else {
+            waterui_core::contract_violation!(
+                "an image asset needs the host's ResourceContext in its environment"
+            );
+            return None;
+        };
+        Some(Photo::new(self.url(resources)))
     }
 }
 
@@ -157,12 +158,13 @@ impl VideoAsset {
 #[cfg(feature = "video")]
 impl View for VideoAsset {
     fn body(self, env: &Environment) -> impl View {
-        self.raw(ResourceContext::from_environment(env))
-    }
-
-    /// Matches the default fit-mode `Video` constructed by `body`, independent of its URL.
-    fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
-        waterui_core::layout::StretchAxis::Horizontal
+        let Some(resources) = ResourceContext::from_environment(env) else {
+            waterui_core::contract_violation!(
+                "a video asset needs the host's ResourceContext in its environment"
+            );
+            return None;
+        };
+        Some(self.raw(resources))
     }
 }
 
@@ -317,24 +319,5 @@ mod tests {
             Path::new("/second/assets/documents/readme.json")
         );
         assert_eq!(bundle_root(&first), Path::new("/first/assets"));
-    }
-
-    #[cfg(feature = "media")]
-    #[test]
-    fn image_asset_axis_matches_the_resolved_photo() {
-        let context = ResourceContext::new("/fixture/assets", "/fixture/fonts");
-        let image = ImageAsset::new(Bundle::main(), "image.png");
-        assert_eq!(
-            image.stretch_axis(),
-            Photo::new(image.url(&context)).stretch_axis()
-        );
-    }
-
-    #[cfg(feature = "video")]
-    #[test]
-    fn video_asset_axis_matches_the_resolved_video() {
-        let context = ResourceContext::new("/fixture/assets", "/fixture/fonts");
-        let video = VideoAsset::new(Bundle::main(), "movie.mp4");
-        assert_eq!(video.stretch_axis(), video.raw(&context).stretch_axis());
     }
 }

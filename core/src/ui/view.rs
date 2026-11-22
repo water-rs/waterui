@@ -12,7 +12,8 @@
 //! These abstractions support a declarative and composable approach to UI building, allowing
 //! for flexible combinations of views and transformations.
 
-use crate::{AnyView, Environment, components::Metadata, layout::StretchAxis};
+use crate::backend::Backend;
+use crate::{AnyView, Environment, components::Metadata};
 use alloc::{boxed::Box, vec::Vec};
 use core::any::type_name;
 use core::fmt;
@@ -45,35 +46,17 @@ pub trait View: 'static {
     /// WARNING: This method should not be called directly by user.
     fn body(self, _env: &Environment) -> impl View;
 
-    /// Animates structural insertion and removal of this view.
+    /// Turns this view into `backend`'s node.
     ///
-    /// Value updates do not trigger a transition. Applied to a `Dynamic`, this
-    /// decorates its replacing content; applied to a collection item, it follows
-    /// that item's membership. Removal immediately ends semantic membership,
-    /// while the backend retains a non-interactive visual and a fixed-size slot.
-    fn transition(
-        self,
-        transition: impl crate::transition::Transition,
-    ) -> Metadata<crate::transition::TransitionSpec>
+    /// A composite expands its `body` in place, so a tree of composites
+    /// resolves through monomorphized code down to the native payloads and
+    /// metadata the backend realizes. Native and metadata wrappers override
+    /// it to reach the backend; nothing else does.
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output
     where
         Self: Sized,
     {
-        Metadata::new(self, crate::transition::TransitionSpec::new(transition))
-    }
-
-    #[doc(hidden)]
-    /// Returns the stretch axis for this view.
-    ///
-    /// The answer is static: it must describe the leaf this view eventually
-    /// resolves to. Wrappers that only decorate or observe their content
-    /// (metadata, `Option`, `Result`, single-element tuples) forward the
-    /// content's axis. A composite view whose `body` produces a stretching
-    /// leaf (a `GpuContentView`, a scroll container, a stack with stretchy
-    /// children) must declare that leaf's axis here — callers read the axis
-    /// before `body` runs and without an [`Environment`], so it cannot be
-    /// discovered by expansion.
-    fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::None
+        self.body(env).dispatch(backend, env, cx)
     }
 }
 
@@ -91,10 +74,10 @@ impl<V: View, E: View> View for Result<V, E> {
         }
     }
 
-    fn stretch_axis(&self) -> StretchAxis {
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
         match self {
-            Ok(view) => view.stretch_axis(),
-            Err(view) => view.stretch_axis(),
+            Ok(view) => view.dispatch(backend, env, cx),
+            Err(view) => view.dispatch(backend, env, cx),
         }
     }
 }
@@ -104,8 +87,11 @@ impl<V: View> View for Option<V> {
         self.map_or_else(|| AnyView::new(()), AnyView::new)
     }
 
-    fn stretch_axis(&self) -> StretchAxis {
-        self.as_ref().map_or(StretchAxis::None, View::stretch_axis)
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        match self {
+            Some(view) => view.dispatch(backend, env, cx),
+            None => ().dispatch(backend, env, cx),
+        }
     }
 }
 
@@ -147,15 +133,6 @@ pub trait TupleViews {
     ///
     /// A `Vec<AnyView>` containing each view from the original collection.
     fn into_views(self) -> Vec<AnyView>;
-
-    /// Reports each element's declared [`View::stretch_axis`], in order,
-    /// without consuming the collection.
-    ///
-    /// Composite containers answer their own `stretch_axis` from this:
-    /// they resolve to a [`Layout`](crate::layout::Layout)-driven container
-    /// in `body`, and that layout's `stretch_axis` is a function of the
-    /// children's axes — which must be readable before `body` runs.
-    fn stretch_axes(&self) -> Vec<StretchAxis>;
 }
 
 impl<V: View> TupleViews for Vec<V> {
@@ -164,10 +141,6 @@ impl<V: View> TupleViews for Vec<V> {
             .map(|content| AnyView::new(content))
             .collect()
     }
-
-    fn stretch_axes(&self) -> Vec<StretchAxis> {
-        self.iter().map(View::stretch_axis).collect()
-    }
 }
 
 impl<V: View, const N: usize> TupleViews for [V; N] {
@@ -175,10 +148,6 @@ impl<V: View, const N: usize> TupleViews for [V; N] {
         self.into_iter()
             .map(|content| AnyView::new(content))
             .collect()
-    }
-
-    fn stretch_axes(&self) -> Vec<StretchAxis> {
-        self.iter().map(View::stretch_axis).collect()
     }
 }
 
@@ -289,11 +258,6 @@ macro_rules! impl_tuple_views {
                 let ($($ty,)*)=self;
                 alloc::vec![$(AnyView::new($ty)),*]
             }
-
-            fn stretch_axes(&self) -> Vec<StretchAxis> {
-                let ($($ty,)*)=self;
-                alloc::vec![$($ty.stretch_axis()),*]
-            }
         }
     };
 }
@@ -305,10 +269,6 @@ raw_view!(());
 impl<V: View> View for (V,) {
     fn body(self, _env: &Environment) -> impl View {
         self.0
-    }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        self.0.stretch_axis()
     }
 }
 

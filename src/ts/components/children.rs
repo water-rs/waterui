@@ -73,10 +73,12 @@ fn reactive(bridge: &Bridge, child: &JsValue) -> Result<AnyView, JsError> {
     };
     handler.set(build(&source.snapshot())?);
     let guard = source.watch(move |context| {
-        let view = build(&context.into_value()).unwrap_or_else(|error| {
-            panic!("a reactive child of a TypeScript view could not be realized: {error}")
-        });
-        handler.set(view);
+        match build(&context.into_value()) {
+            Ok(view) => handler.set(view),
+            Err(error) => crate::contract_violation!(
+                "a reactive child of a TypeScript view could not be realized, so it keeps its last view: {error}"
+            ),
+        }
     });
     // The signal is retained beside its guard, not only the guard: a watch
     // registration does not keep what it watches alive, and this signal owns

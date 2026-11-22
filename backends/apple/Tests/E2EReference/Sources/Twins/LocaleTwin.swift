@@ -28,7 +28,7 @@ struct LocaleTwin: View {
   var body: some View {
     ScrollView {
       VStack(spacing: 10) {
-        Text("WaterUI World Fair").font(.system(size: 28)).fontWeight(.bold)
+        Text("WaterUI World Fair").font(.system(size: 28)).bold()
         Text("Live translations for a tiny world-fair kiosk").font(.system(size: 14))
         wuiDivider()
         languageBooth
@@ -47,13 +47,13 @@ struct LocaleTwin: View {
 
   private var languageBooth: some View {
     VStack(spacing: 10) {
-      Text("Language Booth").font(.system(size: 16)).fontWeight(.bold)
-      HStack {
+      Text("Language Booth").font(.system(size: 16)).bold()
+      HStack(spacing: 10) {
         Text("Detected Locale:")
         Spacer(minLength: 0)
         Text(detectedLocale)
       }
-      HStack {
+      HStack(spacing: 10) {
         Text("Chosen Language:")
         Spacer(minLength: 0)
         Picker("", selection: $selection) {
@@ -69,25 +69,25 @@ struct LocaleTwin: View {
   private var localizedContent: some View {
     VStack(spacing: 10) {
       VStack(spacing: 10) {
-        Text("Welcome Desk").font(.system(size: 16)).fontWeight(.bold)
+        Text("Welcome Desk").font(.system(size: 16)).bold()
         Text("Welcome to the World Fair!").font(.system(size: 24))
       }
       wuiDivider()
       VStack(spacing: 10) {
-        Text("Human Rights - Article 1").font(.system(size: 16)).fontWeight(.bold)
+        Text("Human Rights - Article 1").font(.system(size: 16)).bold()
         Text(
           "All human beings are born free and equal in dignity and rights. They are endowed with reason and conscience and should act towards one another in a spirit of brotherhood."
         ).font(.system(size: 14))
       }
       wuiDivider()
       VStack(spacing: 10) {
-        Text("Local Flavor").font(.system(size: 16)).fontWeight(.bold)
-        HStack { Spacer(minLength: 0); Text("Color"); Spacer(minLength: 0) }
-        HStack { Spacer(minLength: 0); Text("Favorite"); Spacer(minLength: 0) }
+        Text("Local Flavor").font(.system(size: 16)).bold()
+        HStack(spacing: 10) { Spacer(minLength: 0); Text("Color"); Spacer(minLength: 0) }
+        HStack(spacing: 10) { Spacer(minLength: 0); Text("Favorite"); Spacer(minLength: 0) }
       }
       wuiDivider()
       VStack(spacing: 10) {
-        Text("Passport Stamps").font(.system(size: 16)).fontWeight(.bold)
+        Text("Passport Stamps").font(.system(size: 16)).bold()
         Text("I have 0 passport stamps")
         Text("I have 1 passport stamp")
         Text("I have 2 passport stamps")
@@ -106,23 +106,23 @@ struct LocaleTwin: View {
   private var formattedContent: some View {
     VStack(spacing: 10) {
       VStack(spacing: 10) {
-        Text("Festival Date (2006-03-20)").font(.system(size: 16)).fontWeight(.bold)
-        HStack {
+        Text("Festival Date (2006-03-20)").font(.system(size: 16)).bold()
+        HStack(spacing: 10) {
           Text("Short:")
           Spacer(minLength: 0)
           Text(festivalDateString(.short))
         }
-        HStack {
+        HStack(spacing: 10) {
           Text("Long:")
           Spacer(minLength: 0)
           Text(festivalDateString(.long))
         }
-        HStack {
+        HStack(spacing: 10) {
           Text("Timezone:")
           Spacer(minLength: 0)
           Text(TimeZone.current.identifier)
         }
-        HStack {
+        HStack(spacing: 10) {
           Text("Kickoff (TZ):")
           Spacer(minLength: 0)
           Text(kickoffString)
@@ -130,8 +130,8 @@ struct LocaleTwin: View {
       }
       wuiDivider()
       VStack(spacing: 10) {
-        Text("Distance Guide").font(.system(size: 16)).fontWeight(.bold)
-        HStack {
+        Text("Distance Guide").font(.system(size: 16)).bold()
+        HStack(spacing: 10) {
           Text("City Walk:")
           Spacer(minLength: 0)
           Text(
@@ -139,7 +139,7 @@ struct LocaleTwin: View {
               .formatted(.measurement(width: .abbreviated, usage: .road))
           )
         }
-        HStack {
+        HStack(spacing: 10) {
           Text("Marathon Route:")
           Spacer(minLength: 0)
           Text(

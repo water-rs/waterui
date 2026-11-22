@@ -11,6 +11,7 @@ use waterui::prelude::*;
 use waterui::preview;
 use waterui::snackbar::{Snackbar, SnackbarManager};
 
+/// The multi-scene demo: a button that shows a snackbar in the current scene only.
 #[preview]
 pub fn demo() -> impl View {
     vstack((
@@ -24,6 +25,7 @@ pub fn demo() -> impl View {
     .padding()
 }
 
+/// Builds the example app, showing the multi-scene demo.
 pub fn app(env: Environment) -> App {
     App::new(demo, env)
 }

@@ -45,15 +45,15 @@ use objc2_web_kit::{
     WKURLSchemeHandler, WKURLSchemeTask, WKUserContentController, WKUserScript,
     WKUserScriptInjectionTime, WKWebView, WKWebViewConfiguration,
 };
-use waterui_core::{Computed, Environment, Str};
-use waterui_webview::{
+use waterui::webview::{
     ASSET_ORIGIN, ASSET_SCHEME, AnsweredNavigations, AssetResponse, AssetServer, BackendEvent,
     Cookie, CustomWebViewController, DocumentScripts, NavigationPolicy, NavigationRequest,
     OriginPolicy, ScriptInjectionTime, Url, UserScript, WatcherGuard, WatcherSet, WebViewConfig,
-    WebViewController, WebViewError, WebViewEvent, WebViewHandle,
+    WebViewController, WebViewError, WebViewEvent, WebViewHandle, WebViewOpenError,
     assets::{asset_target, dispatch},
     bridge,
 };
+use waterui_core::{Computed, Environment, Str, contract_violation};
 
 /// The reply channel `WebKit` hands a `WKScriptMessageHandlerWithReply`
 /// callback.
@@ -126,7 +126,7 @@ impl Drop for ScriptReply {
     }
 }
 
-type JavaScriptHandler = Rc<waterui_webview::ScriptMessageHandler>;
+type JavaScriptHandler = Rc<waterui::webview::ScriptMessageHandler>;
 
 #[path = "macos_hosted.rs"]
 mod hosted;
@@ -265,16 +265,17 @@ impl SharedState {
         let error = if !is_url_error {
             WebViewError::LoadFailed(message)
         } else if TLS_ERROR_CODES.contains(&code) {
-            WebViewError::Ssl {
-                // The URL that failed is the one the navigation started at;
-                // `WKWebView::URL` still points at the document being replaced.
-                url: Self::parse_url(
-                    self.last_navigation_url
-                        .borrow()
-                        .as_deref()
-                        .unwrap_or_default(),
-                ),
-                message,
+            // The URL that failed is the one the navigation started at;
+            // `WKWebView::URL` still points at the document being replaced.
+            let url = Self::parse_url(
+                self.last_navigation_url
+                    .borrow()
+                    .as_deref()
+                    .unwrap_or_default(),
+            );
+            match url {
+                Some(url) => WebViewError::Ssl { url, message },
+                None => WebViewError::LoadFailed(message),
             }
         } else if TRANSPORT_ERROR_CODES.contains(&code) {
             WebViewError::Network(message)
@@ -311,12 +312,17 @@ impl SharedState {
     /// Parsed through `FromStr` rather than [`Url::parse`], which keeps only web
     /// URLs: a web view legitimately navigates to `about:blank`, and that is not
     /// an error. An absolute string `WKWebView` emits that does not parse at all
-    /// is a contract break worth crashing on, matching the `WebKitGTK` and WPE
-    /// bridges; the `Url::from(String)` fallback this replaces used to
-    /// manufacture a bogus `Url` and hand it to the application instead.
-    fn parse_url(raw: &str) -> Url {
+    /// is a contract violation by `WebKit`, reported; the caller then drops
+    /// whatever the URL was for (`None`) instead of manufacturing a bogus
+    /// `Url` and handing it to the application.
+    fn parse_url(raw: &str) -> Option<Url> {
         raw.parse()
-            .unwrap_or_else(|error| panic!("WebKit emitted an invalid URL {raw:?}: {error}"))
+            .inspect_err(|error| {
+                contract_violation!(
+                    "WebKit emitted an invalid URL {raw:?}: {error}; the URL's event is dropped"
+                );
+            })
+            .ok()
     }
 }
 
@@ -397,10 +403,14 @@ define_class!(
                             == objc2_web_kit::WKNavigationType::LinkActivated
                     };
                     if let Some(url) = url.as_deref() {
+                        let Some(parsed) = SharedState::parse_url(url) else {
+                            decision_handler.call((WKNavigationActionPolicy::Cancel,));
+                            return;
+                        };
                         let request = NavigationRequest::new(
-                            SharedState::parse_url(url),
+                            parsed,
                             SharedState::current_url(web_view)
-                                .map(|url| SharedState::parse_url(&url)),
+                                .and_then(|url| SharedState::parse_url(&url)),
                             is_main_frame,
                             user_initiated,
                         );
@@ -450,9 +460,9 @@ define_class!(
                     .shared
                     .last_navigation_url
                     .replace(Some(url.clone()));
-                self.ivars().shared.emit(WebViewEvent::WillNavigate {
-                    url: SharedState::parse_url(&url),
-                });
+                if let Some(url) = SharedState::parse_url(&url) {
+                    self.ivars().shared.emit(WebViewEvent::WillNavigate { url });
+                }
             }
             self.ivars()
                 .shared
@@ -477,18 +487,18 @@ define_class!(
                 .borrow()
                 .clone()
                 .unwrap_or_else(|| to.clone());
-            self.ivars().shared.emit(WebViewEvent::Redirect {
-                from: SharedState::parse_url(&from),
-                to: SharedState::parse_url(&to),
-            });
-            if self.ivars().shared.redirects_enabled.borrow().snapshot() {
+            let from_url = SharedState::parse_url(&from);
+            let to_url = SharedState::parse_url(&to);
+            if let (Some(from), Some(to)) = (from_url, to_url.clone()) {
                 self.ivars()
                     .shared
-                    .last_navigation_url
-                    .replace(Some(to.clone()));
-                self.ivars().shared.emit(WebViewEvent::WillNavigate {
-                    url: SharedState::parse_url(&to),
-                });
+                    .emit(WebViewEvent::Redirect { from, to });
+            }
+            if self.ivars().shared.redirects_enabled.borrow().snapshot() {
+                self.ivars().shared.last_navigation_url.replace(Some(to));
+                if let Some(url) = to_url {
+                    self.ivars().shared.emit(WebViewEvent::WillNavigate { url });
+                }
             } else {
                 // SAFETY: main-thread message send to an object this wrapper
                 // retains; see the module safety note.
@@ -609,17 +619,17 @@ define_class!(
                 .shared
                 .handlers
                 .borrow()
-                .get(&request.name)
+                .get(request.name())
                 .map(Rc::clone);
             let Some(handler) = handler else {
                 tracing::warn!(
-                    handler = %request.name,
+                    handler = %request.name(),
                     "page script called a WaterUI handler that is not registered"
                 );
                 reply.resolve(
                     &bridge::Reply::failure(&format!(
                         "no WaterUI handler named `{}`",
-                        request.name
+                        request.name()
                     ))
                     .to_json(),
                 );
@@ -630,7 +640,7 @@ define_class!(
             // completes rather than when this callback returns. The reply needs
             // no web view: the channel answers the document that asked, and
             // `ScriptReply`'s `Drop` covers a view that died mid-await.
-            let future = handler(&request.payload);
+            let future = handler(request.payload());
             executor_core::spawn_local(async move {
                 let answer = match future.await {
                     Ok(answer) => bridge::Reply::from(answer),
@@ -675,8 +685,12 @@ fn add_user_script(controller: &WKUserContentController, source: &str, time: Scr
         ScriptInjectionTime::DocumentStart => WKUserScriptInjectionTime::AtDocumentStart,
         ScriptInjectionTime::DocumentEnd => WKUserScriptInjectionTime::AtDocumentEnd,
     };
-    let mtm = MainThreadMarker::new()
-        .expect("Hydrolysis WKWebView scripts must be installed on the macOS main thread");
+    let Some(mtm) = MainThreadMarker::new() else {
+        contract_violation!(
+            "Hydrolysis WKWebView scripts must be installed on the macOS main thread; the script is not installed"
+        );
+        return;
+    };
     // SAFETY: main-thread message send to an object this wrapper retains; see
     // the module safety note. The `forMainFrameOnly` argument is `true`: the
     // bridge is documented as reaching the main frame only, and the message
@@ -726,18 +740,18 @@ fn install_user_scripts(controller: &WKUserContentController, shared: &SharedSta
     );
     add_user_script(
         controller,
-        waterui_webview::DOCUMENT_START_SCRIPT,
+        waterui::webview::DOCUMENT_START_SCRIPT,
         ScriptInjectionTime::DocumentStart,
     );
     for script in shared.scripts.borrow().iter() {
-        add_user_script(controller, &script.source, script.time);
+        add_user_script(controller, script.source(), script.time());
     }
 }
 
 /// The string an evaluation produced.
 ///
 /// Both evaluation paths run scripts that encode their answer in the page —
-/// the raw path through `waterui_webview::raw_evaluation`, the awaited one
+/// the raw path through `waterui::webview::raw_evaluation`, the awaited one
 /// through the shared wrapper's envelope — so `WebKit` hands back a string,
 /// returned as it is. Anything else, `nil` for `undefined` included, means the
 /// script broke that contract and is reported rather than re-encoded here.
@@ -854,13 +868,12 @@ fn answer_scheme_task(
     let url = request_url
         .and_then(|url| NSURL::URLWithString(&NSString::from_str(url)))
         .expect("WebKit only starts scheme tasks for URLs it could parse");
-    let names: Vec<Retained<NSString>> = response
-        .headers
+    let (status, response_headers, body) = response.into_parts();
+    let names: Vec<Retained<NSString>> = response_headers
         .iter()
         .map(|(name, _)| NSString::from_str(name))
         .collect();
-    let values: Vec<Retained<NSString>> = response
-        .headers
+    let values: Vec<Retained<NSString>> = response_headers
         .iter()
         .map(|(_, value)| NSString::from_str(value))
         .collect();
@@ -871,7 +884,7 @@ fn answer_scheme_task(
     let ns_response = NSHTTPURLResponse::initWithURL_statusCode_HTTPVersion_headerFields(
         NSHTTPURLResponse::alloc(),
         &url,
-        NSInteger::try_from(response.status).expect("HTTP status fits NSInteger"),
+        NSInteger::try_from(status).expect("HTTP status fits NSInteger"),
         Some(&NSString::from_str("HTTP/1.1")),
         Some(&headers),
     )
@@ -880,8 +893,8 @@ fn answer_scheme_task(
     // completes, and `stopURLSchemeTask` makes no further callbacks.
     unsafe {
         task.didReceiveResponse(&ns_response);
-        if !response.body.is_empty() {
-            task.didReceiveData(&NSData::from_vec(response.body));
+        if !body.is_empty() {
+            task.didReceiveData(&NSData::from_vec(body));
         }
         task.didFinish();
     }
@@ -912,10 +925,13 @@ impl core::fmt::Debug for MacSystemWebViewHandle {
 impl crate::HostedContent for MacSystemWebViewHandle {
     fn mount(&self, occlusion: crate::HostedOcclusion) -> crate::HostedObject {
         let mut port = self.inner.port.borrow_mut();
-        assert!(
-            port.is_none(),
-            "WKWebView is already mounted in another node"
-        );
+        if let Some(previous) = port.take() {
+            contract_violation!(
+                "WKWebView is already mounted in another node; the new mount takes the web view over"
+            );
+            previous.stop_observing();
+            previous.removeFromSuperview();
+        }
         let view =
             hosted::WebPort::new(&self.inner.web_view, self.inner.focused.clone(), occlusion);
         let object = cherenkov_gpu::interop::apple::HostedView::new(
@@ -927,12 +943,10 @@ impl crate::HostedContent for MacSystemWebViewHandle {
     }
 
     fn unmount(&self) {
-        let port = self
-            .inner
-            .port
-            .borrow_mut()
-            .take()
-            .expect("WKWebView unmounted without a mount");
+        let Some(port) = self.inner.port.borrow_mut().take() else {
+            contract_violation!("WKWebView unmounted without a mount; there is nothing to unmount");
+            return;
+        };
         // A page leaving with the window's focus hands it back to the content
         // view, whose first-responder status Hydrolysis's own focus rides on.
         if self.inner.focused.snapshot()
@@ -950,24 +964,23 @@ impl crate::HostedContent for MacSystemWebViewHandle {
     }
 
     fn request_focus(&self) {
-        self.inner
-            .port
-            .borrow()
-            .as_ref()
-            .expect("cannot focus an unmounted WKWebView")
-            .request_focus();
+        let port = self.inner.port.borrow();
+        let Some(port) = port.as_ref() else {
+            contract_violation!(
+                "cannot focus an unmounted WKWebView; the focus request is ignored"
+            );
+            return;
+        };
+        port.request_focus();
     }
 }
 
 impl MacSystemWebViewHandle {
-    fn new(config: WebViewConfig) -> Self {
-        let mtm = MainThreadMarker::new()
-            .expect("Hydrolysis WKWebView must be created on the macOS main thread");
-        let shared = Rc::new(SharedState::new(
-            config.bridge_origins.clone(),
-            DocumentScripts::new(&config),
-            config.navigation_policy.clone(),
-        ));
+    fn new(config: WebViewConfig) -> Result<Self, WebViewOpenError> {
+        let mtm = MainThreadMarker::new().ok_or(WebViewOpenError::MainThreadRequired)?;
+        let scripts = DocumentScripts::new(&config);
+        let (asset_server, bridge_origins, navigation_policy, ..) = config.into_parts();
+        let shared = Rc::new(SharedState::new(bridge_origins, scripts, navigation_policy));
         let delegate = WebViewDelegate::new(mtm, Rc::clone(&shared));
         // SAFETY: main-thread message send to an object this wrapper retains; see
         // the module safety note.
@@ -975,7 +988,7 @@ impl MacSystemWebViewHandle {
         // The bundled-asset origin exists only when the view was opened with a
         // server to answer it; the configuration retains the handler it is
         // registered under.
-        if let Some(server) = config.asset_server {
+        if let Some(server) = asset_server {
             let handler = AssetSchemeHandler::new(mtm, server);
             // SAFETY: main-thread message send to an object this wrapper
             // retains; see the module safety note.
@@ -1010,7 +1023,7 @@ impl MacSystemWebViewHandle {
             }),
         };
         handle.rebuild_user_scripts();
-        handle
+        Ok(handle)
     }
 
     fn user_content_controller(&self) -> Retained<WKUserContentController> {
@@ -1033,8 +1046,13 @@ impl MacSystemWebViewHandle {
         }
         let controller = self.user_content_controller();
         let name = NSString::from_str(bridge::SEND_FUNCTION);
-        let mtm = MainThreadMarker::new()
-            .expect("Hydrolysis WKWebView handlers must be registered on the macOS main thread");
+        let Some(mtm) = MainThreadMarker::new() else {
+            contract_violation!(
+                "Hydrolysis WKWebView handlers must be registered on the macOS main thread; the handler is not registered"
+            );
+            self.inner.shared.transport_registered.set(false);
+            return;
+        };
         // SAFETY: `mtm` is the main-thread marker `pageWorld` requires.
         let world = unsafe { WKContentWorld::pageWorld(mtm) };
         // SAFETY: main-thread message sends to live objects this wrapper
@@ -1053,12 +1071,23 @@ impl MacSystemWebViewHandle {
         install_user_scripts(&self.user_content_controller(), &self.inner.shared);
     }
 
-    fn native_cookie(cookie: &Cookie<'static>, web_view: &WKWebView) -> Retained<NSHTTPCookie> {
+    /// The native form of `cookie`. A cookie the web view cannot take — set
+    /// before navigation without a `Domain`, or not a valid `Set-Cookie` value —
+    /// is a contract violation by the app, reported; it is then not set (`None`).
+    fn native_cookie(
+        cookie: &Cookie<'static>,
+        web_view: &WKWebView,
+    ) -> Option<Retained<NSHTTPCookie>> {
         let value = cookie.to_string();
-        let source_url = SharedState::current_url(web_view).unwrap_or_else(|| {
-            let domain = cookie.domain().unwrap_or_else(|| {
-                panic!("A cookie set before navigation requires a Domain attribute")
-            });
+        let source_url = if let Some(url) = SharedState::current_url(web_view) {
+            url
+        } else {
+            let Some(domain) = cookie.domain() else {
+                contract_violation!(
+                    "A cookie set before navigation requires a Domain attribute; the cookie is not set"
+                );
+                return None;
+            };
             let domain = domain.trim_start_matches('.');
             let scheme = if cookie.secure() == Some(true) {
                 "https"
@@ -1066,18 +1095,24 @@ impl MacSystemWebViewHandle {
                 "http"
             };
             format!("{scheme}://{domain}/")
-        });
-        let source_url = NSURL::URLWithString(&NSString::from_str(&source_url))
-            .expect("Hydrolysis WKWebView cookie source URL must be valid");
+        };
+        let Some(source_url) = NSURL::URLWithString(&NSString::from_str(&source_url)) else {
+            contract_violation!(
+                "Hydrolysis WKWebView cookie source URL {source_url:?} must be valid; the cookie is not set"
+            );
+            return None;
+        };
         let header_name = NSString::from_str("Set-Cookie");
         let header_value = NSString::from_str(&value);
         let headers = NSDictionary::from_slices(&[&*header_name], &[&*header_value]);
         let cookies = NSHTTPCookie::cookiesWithResponseHeaderFields_forURL(&headers, &source_url);
-        assert!(
-            cookies.count() == 1,
-            "Hydrolysis WKWebView received an invalid Set-Cookie value: {value}"
-        );
-        cookies.objectAtIndex(0)
+        if cookies.count() != 1 {
+            contract_violation!(
+                "Hydrolysis WKWebView received an invalid Set-Cookie value: {value}; the cookie is not set"
+            );
+            return None;
+        }
+        Some(cookies.objectAtIndex(0))
     }
 
     fn cookie_from_native(cookie: &NSHTTPCookie) -> Result<Cookie<'static>, waterui_core::Error> {
@@ -1093,7 +1128,7 @@ impl MacSystemWebViewHandle {
             // expiry unset; one whose interval names no representable date
             // fails the whole query rather than silently dropping the expiry.
             let seconds = expires.timeIntervalSince1970();
-            builder = builder.expires(waterui_webview::cookie_expiry(&name, seconds)?);
+            builder = builder.expires(waterui::webview::cookie_expiry(&name, seconds)?);
         }
         Ok(builder.build())
     }
@@ -1115,8 +1150,10 @@ impl WebViewHandle for MacSystemWebViewHandle {
     }
 
     fn go_to(&self, url: &Url) {
-        let url = NSURL::URLWithString(&NSString::from_str(url.as_str()))
-            .unwrap_or_else(|| panic!("WKWebView rejected the URL: {url}"));
+        let Some(url) = NSURL::URLWithString(&NSString::from_str(url.as_str())) else {
+            contract_violation!("WKWebView rejected the URL: {url}; the navigation is not started");
+            return;
+        };
         let request = NSURLRequest::requestWithURL(&url);
         // SAFETY: main-thread message send to an object this wrapper retains; see
         // the module safety note.
@@ -1133,11 +1170,13 @@ impl WebViewHandle for MacSystemWebViewHandle {
         self.rebuild_user_scripts();
     }
 
-    fn add_handler(&self, name: &str, handler: Box<waterui_webview::ScriptMessageHandler>) {
-        assert!(
-            !name.is_empty(),
-            "Hydrolysis WKWebView handler name must not be empty"
-        );
+    fn add_handler(&self, name: &str, handler: Box<waterui::webview::ScriptMessageHandler>) {
+        if name.is_empty() {
+            contract_violation!(
+                "Hydrolysis WKWebView handler name must not be empty; the handler is not registered"
+            );
+            return;
+        }
         // Registering the same name twice replaces the handler, matching every
         // other backend.
         self.inner
@@ -1204,7 +1243,9 @@ impl WebViewHandle for MacSystemWebViewHandle {
     }
 
     fn set_cookie(&self, cookie: Cookie<'static>) {
-        let cookie = Self::native_cookie(&cookie, &self.inner.web_view);
+        let Some(cookie) = Self::native_cookie(&cookie, &self.inner.web_view) else {
+            return;
+        };
         // SAFETY: main-thread message send to an object this wrapper retains; see
         // the module safety note.
         let store = unsafe {
@@ -1247,10 +1288,12 @@ impl WebViewHandle for MacSystemWebViewHandle {
                     Self::cookie_from_native(&cookie)
                 })
                 .collect::<Result<Vec<_>, _>>();
-            let sender = sender
-                .borrow_mut()
-                .take()
-                .expect("Hydrolysis WKWebView cookie callback invoked twice");
+            let Some(sender) = sender.borrow_mut().take() else {
+                contract_violation!(
+                    "Hydrolysis WKWebView cookie callback invoked twice; the second answer is dropped"
+                );
+                return;
+            };
             let _ = sender.send(values);
         });
         // SAFETY: main-thread message send to an object this wrapper retains; see
@@ -1258,9 +1301,11 @@ impl WebViewHandle for MacSystemWebViewHandle {
         unsafe {
             store.getAllCookies(&completion);
         }
-        receiver
-            .await
-            .expect("Hydrolysis WKWebView cookie query was cancelled")
+        receiver.await.unwrap_or_else(|_| {
+            Err(waterui_core::Error::msg(
+                "Hydrolysis WKWebView cookie query was cancelled",
+            ))
+        })
     }
 
     #[expect(
@@ -1274,13 +1319,13 @@ impl WebViewHandle for MacSystemWebViewHandle {
         // the module safety note.
         unsafe {
             self.inner.web_view.evaluateJavaScript_completionHandler(
-                &NSString::from_str(&waterui_webview::raw_evaluation(script)),
+                &NSString::from_str(&waterui::webview::raw_evaluation(script)),
                 Some(&completion),
             );
         }
         receiver
             .await
-            .expect("Hydrolysis WKWebView JavaScript evaluation was cancelled")
+            .unwrap_or_else(|_| Err(evaluation_cancelled()))
     }
 
     #[expect(
@@ -1288,8 +1333,14 @@ impl WebViewHandle for MacSystemWebViewHandle {
         reason = "the evaluation runs on the macOS main thread: the future holds the `MainThreadMarker` and the non-`Send` completion block until WebKit answers"
     )]
     async fn call_async_javascript(&self, body: &str) -> Result<Str, Str> {
-        let mtm = MainThreadMarker::new()
-            .expect("Hydrolysis WKWebView JavaScript must be evaluated on the macOS main thread");
+        let Some(mtm) = MainThreadMarker::new() else {
+            contract_violation!(
+                "Hydrolysis WKWebView JavaScript must be evaluated on the macOS main thread; the evaluation fails"
+            );
+            return Err(Str::from(
+                "WKWebView JavaScript must be evaluated on the macOS main thread",
+            ));
+        };
         let (sender, receiver) = oneshot::channel();
         let completion = Self::javascript_completion(sender);
         // `callAsyncJavaScript` runs the body as an async function and settles
@@ -1316,8 +1367,15 @@ impl WebViewHandle for MacSystemWebViewHandle {
         }
         receiver
             .await
-            .expect("Hydrolysis WKWebView JavaScript evaluation was cancelled")
+            .unwrap_or_else(|_| Err(evaluation_cancelled()))
     }
+}
+
+/// The answer to an evaluation whose completion block `WebKit` dropped without
+/// calling: logged, and an evaluation error for the caller.
+fn evaluation_cancelled() -> Str {
+    tracing::error!("Hydrolysis WKWebView JavaScript evaluation was cancelled");
+    Str::from("WKWebView JavaScript evaluation was cancelled")
 }
 
 impl MacSystemWebViewHandle {
@@ -1333,10 +1391,12 @@ impl MacSystemWebViewHandle {
                 || javascript_string(value),
                 |error| Err(Str::from(error.localizedDescription().to_string())),
             );
-            let sender = sender
-                .borrow_mut()
-                .take()
-                .expect("Hydrolysis WKWebView JavaScript callback invoked twice");
+            let Some(sender) = sender.borrow_mut().take() else {
+                contract_violation!(
+                    "Hydrolysis WKWebView JavaScript callback invoked twice; the second answer is dropped"
+                );
+                return;
+            };
             let _ = sender.send(result);
         })
     }
@@ -1349,14 +1409,10 @@ impl MacSystemWebViewHandle {
 /// through the shared `WebViewHandle` contract. Applications never need it:
 /// the backend installs it as the default controller on macOS.
 #[derive(Debug, Clone, Copy)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "field-less controller used by name"
-)]
 pub struct MacSystemWebViewController;
 
 impl CustomWebViewController for MacSystemWebViewController {
-    fn open(&self, config: WebViewConfig) -> impl WebViewHandle {
+    fn open(&self, config: WebViewConfig) -> Result<impl WebViewHandle, WebViewOpenError> {
         MacSystemWebViewHandle::new(config)
     }
 

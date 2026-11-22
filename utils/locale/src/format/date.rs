@@ -60,10 +60,6 @@ pub enum TimeStyle {
 
 /// A simple date structure for formatting.
 #[derive(Debug, Clone, Copy)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a calendar date: year, month and day are the whole value"
-)]
 pub struct SimpleDate {
     /// Year (e.g., 2023)
     pub year: i32,
@@ -83,10 +79,6 @@ impl SimpleDate {
 
 /// A simple time structure for formatting.
 #[derive(Debug, Clone, Copy)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "a time of day: hour, minute and second are the whole value"
-)]
 pub struct SimpleTime {
     /// Hour (0-23)
     pub hour: u8,

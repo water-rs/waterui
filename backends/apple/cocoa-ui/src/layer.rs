@@ -146,6 +146,12 @@ impl ShapeLayer {
         self.0.setLineWidth(width);
     }
 
+    /// How much of the path is stroked, as the `0..=1` fraction of its
+    /// length measured from the start; changing it animates implicitly.
+    pub fn set_stroke_end(&self, end: f64) {
+        self.0.setStrokeEnd(end);
+    }
+
     /// A butt line cap — stroke ends stop at their endpoints.
     pub fn set_line_cap_butt(&self) {
         use objc2_quartz_core::kCALineCapButt;

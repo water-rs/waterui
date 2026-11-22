@@ -115,7 +115,7 @@ fn options(groups: &[&[Entry]]) -> hlsl::Options {
         }
     }
     hlsl::Options {
-        shader_model: hlsl::ShaderModel::V6_0,
+        shader_model: hlsl::ShaderModel::V6_2,
         binding_map,
         fake_missing_bindings: false,
         special_constants_binding: Some(target(cbv)),
@@ -203,9 +203,9 @@ impl Emitter<'_> {
         let hlsl_path = out_dir.join(format!("{stem}.hlsl"));
         std::fs::write(&hlsl_path, &source).expect("write HLSL");
         let profile = match stage {
-            naga::ShaderStage::Vertex => "vs_6_0",
-            naga::ShaderStage::Fragment => "ps_6_0",
-            naga::ShaderStage::Compute => "cs_6_0",
+            naga::ShaderStage::Vertex => "vs_6_2",
+            naga::ShaderStage::Fragment => "ps_6_2",
+            naga::ShaderStage::Compute => "cs_6_2",
             _ => unreachable!("{stem}: the engine has no {stage:?} stages"),
         };
         let file = format!("{stem}.dxil");
@@ -242,6 +242,7 @@ fn compile_dxc_job(job: &DxcJob) -> Result<Vec<u8>, String> {
             "2018",
             "-no-warnings",
             "-Ges",
+            "-enable-16bit-types",
         ])
         .args(["-Qstrip_debug", "-Qstrip_reflect", "-Fo"])
         .arg(&job.dxil_path)

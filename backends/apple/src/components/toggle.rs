@@ -9,15 +9,20 @@
 //! the control; the payload's stretch axis picks how the row fills its
 //! offer (`docs/layout-spec.md` §3, §6).
 
-use waterui::animation::Animation;
+use waterui::animation::{Animation, ChangeAnimation};
+use waterui::component::ControlSize;
 use waterui::component::toggle::{ToggleConfig, ToggleStyle};
 use waterui::reactive::Signal;
 use waterui::reactive::watcher::Metadata;
 use waterui_core::interaction::Disabled;
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
+};
 
+#[cfg(target_os = "ios")]
+use crate::components::button_chrome;
+use crate::components::control_size::platform_control_size;
 use crate::contract::{Mounted, NativeLeaf};
-use crate::dispatch::Dispatcher;
 
 #[cfg(target_os = "macos")]
 mod platform {
@@ -29,29 +34,40 @@ mod platform {
     pub(super) use cocoa_ui::uikit::toggle::{Kind, StateChange, Toggle};
 }
 
+use crate::contract::RenderContext;
 use platform::{Kind, StateChange, Toggle};
 
 /// The control a resolved style draws. The native payload never carries
 /// `Automatic`: `ToggleConfig`'s resolver replaces it with the platform
 /// default before the backend sees the config.
-const fn kind(style: ToggleStyle) -> Kind {
+///
+/// An unresolved `Automatic` or a style the backend does not know is a
+/// contract violation of the framework above; the switch is drawn.
+fn kind(style: ToggleStyle) -> Kind {
     match style {
         ToggleStyle::Switch => Kind::Switch,
         ToggleStyle::Checkbox => Kind::Checkbox,
         ToggleStyle::Automatic => {
-            panic!("the toggle payload reached the backend with an unresolved Automatic style")
+            waterui::contract_violation!(
+                "the toggle payload reached the backend with an unresolved Automatic style; \
+                 the switch is drawn"
+            );
+            Kind::Switch
         }
-        _ => panic!("unsupported WaterUI toggle style"),
+        _ => {
+            waterui::contract_violation!("unsupported WaterUI toggle style; the switch is drawn");
+            Kind::Switch
+        }
     }
 }
 
 /// The `StateChange` the metadata asks for, `withCrossDissolveAnimation`'s
-/// table: an absent animation writes directly, and any present animation
-/// plays — a switch slides, a checkbox cross-fades for the seconds the
-/// table gives.
+/// table: a change that names no animation or disables it writes directly,
+/// and any named animation plays — a switch slides, a checkbox cross-fades
+/// for the seconds the table gives.
 #[cfg(target_os = "ios")]
 fn state_change(metadata: &Metadata) -> StateChange {
-    match metadata.try_get::<Animation>() {
+    match ChangeAnimation::of(metadata).animation() {
         None => StateChange::Immediate,
         Some(Animation::Default) => StateChange::Dissolve { seconds: 0.25 },
         Some(Animation::Bezier { duration, .. }) => StateChange::Dissolve {
@@ -63,10 +79,10 @@ fn state_change(metadata: &Metadata) -> StateChange {
 
 /// The `StateChange` the metadata asks for, `withPlatformAnimation`'s table:
 /// a bezier becomes an implicit group under its curve, a spring an implicit
-/// group under its clamped estimate.
+/// group lasting the spring's settling duration.
 #[cfg(target_os = "macos")]
 fn state_change(metadata: &Metadata) -> StateChange {
-    match metadata.try_get::<Animation>() {
+    match ChangeAnimation::of(metadata).animation() {
         None => StateChange::Immediate,
         Some(Animation::Default) => StateChange::Implicit {
             seconds: 0.25,
@@ -82,13 +98,10 @@ fn state_change(metadata: &Metadata) -> StateChange {
             seconds: duration.as_secs_f64(),
             control_points: Some((x1, y1, x2, y2)),
         },
-        Some(Animation::Spring { stiffness, damping }) => {
-            let estimate = 2.0 * f64::sqrt(1.0 / f64::from(stiffness)) * f64::from(damping);
-            StateChange::Implicit {
-                seconds: estimate.clamp(0.1, 2.0),
-                control_points: None,
-            }
-        }
+        Some(spring @ Animation::Spring { .. }) => StateChange::Implicit {
+            seconds: spring.duration().as_secs_f64(),
+            control_points: None,
+        },
     }
 }
 
@@ -114,6 +127,14 @@ impl core::fmt::Debug for ToggleSubView {
 }
 
 impl SubView for ToggleSubView {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     // Measured points come back in f64; `ViewDimensions` speaks f32 — the
     // narrowing is the layout contract.
     #[expect(
@@ -158,68 +179,86 @@ impl SubView for ToggleSubView {
     }
 }
 
-/// Installs the `toggle` handler on the dispatcher: `Native<ToggleConfig>`
+/// The `toggle` realization: `Native<ToggleConfig>`
 /// maps to a kit row whose binding, enabled state, and accessibility name
 /// stay live through watchers.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<ToggleConfig>(|config, ctx| {
-        let mtm = ctx.mtm();
-        let stretch = waterui_core::NativeView::stretch_axis(&config);
-        let toggle = Toggle::new(mtm, kind(config.style), config.toggle.snapshot());
-        let disabled = Disabled::resolve(ctx.env(), false);
+pub fn realize_toggle_config(config: ToggleConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
+    let mtm = ctx.mtm();
+    let stretch = waterui_core::NativeView::stretch_axis(&config);
+    let (label, binding, style, size) = config.into_parts();
+    let toggle = Toggle::new(mtm, kind(style), binding.snapshot());
+    // `Toggle`'s documented default size is `Small`; the mapping is
+    // relative to it, so a bare toggle draws at the platform's regular
+    // size like a bare `NSSwitch` or checkbox. `AppKit` honours every
+    // size on the switch and the checkbox; `UIKit` draws one size at
+    // every control size, so the platform fixes the size on iOS and
+    // `set_control_size` ignores the value there.
+    toggle.set_control_size(platform_control_size(size, ControlSize::Small));
+    let disabled = Disabled::resolve(ctx.env(), false);
 
-        // The label's spoken name lands on the control; the visual label
-        // leaves the accessibility tree — `WuiControlAccessibility`'s split.
-        let accessibility_label = config.label.accessibility_label();
+    // The label's spoken name lands on the control; the visual label
+    // leaves the accessibility tree — `WuiControlAccessibility`'s split.
+    let accessibility_label = label.accessibility_label();
 
-        // The label renders as a mounted child of the row's container.
-        let child = ctx.render(waterui_backend_core::AnyView::new(config.label));
-        let mounted = child.mount(toggle.container());
-        toggle.set_label(mounted.view());
-        cocoa_ui::view::hide_from_accessibility(mounted.view());
+    // The label renders as a mounted child of the row's container.
+    let child = ctx.render(waterui_backend_core::AnyView::new(label));
+    let mounted = child.mount(toggle.container());
+    toggle.set_label(mounted.view());
+    cocoa_ui::view::hide_from_accessibility(mounted.view());
 
-        let mut leaf = NativeLeaf::new(
-            toggle.container(),
-            ToggleSubView {
-                toggle: toggle.clone(),
-                stretch,
-                label: mounted,
-            },
-        );
+    let mut leaf = NativeLeaf::new(
+        toggle.container(),
+        ToggleSubView {
+            toggle: toggle.clone(),
+            stretch,
+            label: mounted,
+        },
+    );
 
-        // Signal → control, under the watcher metadata's animation.
-        leaf.watch(&config.toggle, {
-            let toggle = toggle.clone();
-            move |ctx| {
-                toggle.set_on(*ctx.value(), state_change(ctx.metadata()));
-            }
-        });
-
-        // Control → binding: user edits write back through the action.
-        leaf.keep(toggle.on_change({
-            let binding = config.toggle.clone();
-            let toggle = toggle.clone();
-            move |_| binding.set(toggle.is_on())
-        }));
-
-        leaf.bind(&disabled, {
-            let toggle = toggle.clone();
-            move |is_disabled| toggle.set_enabled(!is_disabled)
-        });
-
-        let control = cocoa_ui::view::retain_base(toggle.control());
-        leaf.bind(&accessibility_label, move |styled| {
-            let plain = cocoa_ui::text::strip_bidi_controls(&styled.to_plain());
-            cocoa_ui::view::set_accessibility_label(&control, &plain);
-        });
-
-        leaf
+    // Signal → control, under the watcher metadata's animation.
+    leaf.watch(&binding, {
+        let toggle = toggle.clone();
+        move |ctx| {
+            toggle.set_on(*ctx.value(), state_change(ctx.metadata()));
+        }
     });
+
+    // Control → binding: user edits write back through the action.
+    leaf.keep(toggle.on_change({
+        let toggle = toggle.clone();
+        move |_| binding.set(toggle.is_on())
+    }));
+
+    leaf.bind(&disabled, {
+        let toggle = toggle.clone();
+        move |is_disabled| toggle.set_enabled(!is_disabled)
+    });
+
+    // The tint colours the on state: a switch's track, a checkbox's
+    // glyph. `AppKit` has no per-control tint for `NSSwitch` or the
+    // checkbox `NSButton` (`contentTintColor` touches borderless
+    // buttons only, `bezelColor` bordered ones), so they draw with the
+    // application's accent colour there.
+    #[cfg(target_os = "ios")]
+    leaf.bind(&button_chrome::tint_signal(ctx.env()), {
+        let toggle = toggle.clone();
+        move |color| toggle.set_tint(&button_chrome::platform_color(&color))
+    });
+
+    let control = cocoa_ui::view::retain_base(toggle.control());
+    leaf.bind(&accessibility_label, move |styled| {
+        let plain = cocoa_ui::text::strip_bidi_controls(&styled.to_plain());
+        cocoa_ui::view::set_accessibility_label(&control, &plain);
+    });
+
+    leaf
 }
 
 #[cfg(test)]
 mod tests {
     use core::time::Duration;
+
+    use waterui::animation::NoAnimation;
 
     use super::*;
 
@@ -243,9 +282,22 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "unresolved Automatic style")]
-    fn kind_rejects_an_unresolved_automatic_style() {
-        let _ = kind(ToggleStyle::Automatic);
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "unresolved Automatic style")
+    )]
+    fn kind_draws_a_switch_for_an_unresolved_automatic_style() {
+        assert_eq!(kind(ToggleStyle::Automatic), Kind::Switch);
+    }
+
+    /// A change that disables animation writes directly, even when an
+    /// animation is attached too.
+    #[test]
+    fn state_change_snaps_when_animation_is_disabled() {
+        let disabled = Metadata::new().with(Animation::Default).with(NoAnimation);
+        let StateChange::Immediate = state_change(&disabled) else {
+            panic!("a change that disables animation must write immediately");
+        };
     }
 
     #[cfg(target_os = "ios")]
@@ -308,7 +360,8 @@ mod tests {
                     stiffness: 170.0,
                     damping: 15.0,
                 },
-                2.0,
+                // The spring runs for its own settling duration.
+                Animation::spring(170.0, 15.0).duration().as_secs_f64(),
                 None,
             ),
         ];

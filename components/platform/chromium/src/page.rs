@@ -16,10 +16,6 @@ use crate::{CdpError, CdpSession, ChromiumController, CustomCdpSession};
 
 /// Chromium profile and persistent data-store selection.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "every Chromium host destructures the whole profile, so a new field must fail their build instead of being ignored"
-)]
 pub struct ChromiumProfile {
     /// Optional profile name within the configured data directory.
     pub name: Option<String>,
@@ -31,10 +27,6 @@ pub struct ChromiumProfile {
 
 /// Configuration shared by visible and headless Chromium pages.
 #[derive(Clone, Default)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "every Chromium host destructures the whole configuration, so a new field must fail their build instead of being ignored"
-)]
 pub struct ChromiumConfiguration {
     /// Initial page URL. A missing URL opens `about:blank`.
     pub url: Option<Url>,
@@ -471,10 +463,6 @@ impl View for ChromiumView {
             AnyView::new(self.render())
         }
     }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::Both
-    }
 }
 
 /// Deferred visible Chromium component.
@@ -494,10 +482,6 @@ impl Chromium {
 impl View for Chromium {
     fn body(self, _env: &Environment) -> impl View {
         use_env(move |controller: ChromiumController| controller.open(self.configuration))
-    }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::Both
     }
 }
 

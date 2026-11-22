@@ -23,10 +23,11 @@ waterui-text.workspace = true
 waterui-media = { workspace = true, optional = true }
 waterui-video = { workspace = true, optional = true }
 native-executor.workspace = true
-waterui-navigation.workspace = true
+waterui-navigation = { workspace = true, optional = true }
 waterui-form.workspace = true
 waterui-controls.workspace = true
 waterui-webview = { workspace = true, optional = true }
+waterui-map = { workspace = true, optional = true }
 waterui-widgets = { workspace = true, optional = true }
 # `number` is not optional here: `text!` interpolates every numeric argument
 # through `waterui_locale::LocalizedArgument`, so a WaterUI application that
@@ -38,8 +39,9 @@ waterui-meta = { workspace = true, optional = true }
 executor-core.workspace = true
 futures.workspace = true
 tracing.workspace = true
+thiserror = { version = "2.0.21", default-features = false }
 # `Link` opens its URL in the system handler.
-robius-open.workspace = true
+waterkit-deeplink.workspace = true
 # Grapheme clusters for the avatar monogram: a name's first "letter" is a
 # cluster, not a `char`, wherever a combining mark or an emoji sequence is one.
 unicode-segmentation = "1.13"
@@ -51,8 +53,8 @@ waterui-macros.workspace = true
 waterui-graphics = { workspace = true, default-features = false }
 waterui-icon.workspace = true
 waterui-shape = { workspace = true, default-features = false }
+waterui-structural-transition.workspace = true
 waterui-svg = { workspace = true, optional = true }
-waterui-canvas = { workspace = true, optional = true }
 waterui-chart = { workspace = true, optional = true }
 waterui-barcode = { workspace = true, optional = true }
 waterui-particle = { workspace = true, optional = true }
@@ -85,7 +87,39 @@ getrandom = { workspace = true, optional = true }
 cpu-time.workspace = true
 
 [features]
+list = []
+table = ["list"]
+navigation = ["dep:waterui-navigation"]
+menu = ["waterui-controls/menu"]
+calendar = ["waterui-form/calendar"]
+color-picker = ["waterui-form/color-picker"]
+date-picker = ["waterui-form/date-picker"]
+file-picker = ["waterui-form/file-picker"]
+multi-date-picker = ["calendar", "waterui-form/multi-date-picker"]
+picker = ["waterui-form/picker"]
+secure-field = ["waterui-form/secure-field"]
+slider = ["waterui-form/slider"]
+stepper = ["waterui-form/stepper"]
+text-field = ["menu", "waterui-form/text-field"]
+toggle = ["waterui-form/toggle"]
+validation = ["text-field", "waterui-form/validation"]
 default = [
+    "list",
+    "table",
+    "navigation",
+    "menu",
+    "calendar",
+    "color-picker",
+    "date-picker",
+    "file-picker",
+    "multi-date-picker",
+    "picker",
+    "secure-field",
+    "slider",
+    "stepper",
+    "text-field",
+    "toggle",
+    "validation",
     "gpu",
     "assets",
     "dialog",
@@ -132,9 +166,11 @@ effects = ["waterui-graphics/effects"]
 gpu = [
     "effects",
     "waterui-graphics/gpu",
-    "waterui-shape/gpu",
     "dep:waterui-svg",
 ]
+# CPU rendering stack (waterui-graphics' Cherenkov engine on `cherenkov-cpu`),
+# with no wgpu.
+cpu = ["effects", "waterui-graphics/cpu"]
 # `asset!` expands image-kind assets into `waterui::media::Photo` (`ImageAsset`,
 # behind `waterui-assets`' `media` feature) and video-kind assets into
 # `waterui::video` (`VideoAsset`, behind `waterui-assets`' `video` feature);
@@ -158,6 +194,8 @@ remote = [
 # wasm32 it links nothing.
 video-gpu = ["video", "gpu", "dep:waterui-video-gpu"]
 webview = ["dep:waterui-webview"]
+# Maps (`waterui::map`).
+map = ["dep:waterui-map"]
 # The `#[waterui::widget]` authoring surface and its `WidgetKit` snapshot
 # schema (`waterui::widgets`). Off by default: an application that declares
 # no widgets pays for none of the schema or its FFI glue — and the `water`
@@ -171,14 +209,14 @@ widgets = ["dep:waterui-widgets", "waterui-macros/widgets"]
 # links a JavaScript engine. An application that writes no `tsx!` and leaves
 # this off links none of it — `waterui-ts` is an optional dependency and no
 # other feature pulls it in.
-ts = ["dep:waterui-ts"]
+ts = ["dep:waterui-ts", "navigation", "table", "picker", "slider", "stepper", "text-field", "toggle"]
 # The over-the-air update client for TypeScript view bundles: fetches a
 # signed manifest and bundle, verifies them, and caches them for the next
 # launch. Separate from `ts` because it links an HTTP client, a signature
 # verifier and the file-system kit; an application that ships only its
 # baseline bundle leaves it off and opens no connection by construction.
 ts-ota = ["ts", "waterui-ts/ota"]
-navigation-restoration = ["waterui-navigation/serde"]
+navigation-restoration = ["navigation", "waterui-navigation/serde"]
 # Markdown rendering: `RichText` and `include_markdown!`, which parse CommonMark
 # with `pulldown-cmark`, plus `FlowMarkdown`'s streaming renderer, which
 # re-parses the document incrementally with the tree-sitter Markdown grammar.
@@ -203,7 +241,9 @@ flow-markdown = [
 # sign in prose stays a dollar sign, exactly as it does today.
 markdown-math = ["flow-markdown", "dep:waterui-math"]
 std = ["dep:waterkit-haptic"]
-canvas = ["dep:waterui-canvas"]
+# `waterui::canvas`: the target-neutral drawing API, `waterui_graphics::canvas`.
+# It costs no dependency; the feature only exposes the re-export.
+canvas = []
 chart = ["dep:waterui-chart"]
 barcode = ["dep:waterui-barcode"]
 particle = ["dep:waterui-particle"]
@@ -212,6 +252,22 @@ particle = ["dep:waterui-particle"]
 # modules opts in explicitly rather than paying for them through the
 # full-feature set — the same reasoning `markdown-math` carries above.
 all = [
+    "list",
+    "table",
+    "navigation",
+    "menu",
+    "calendar",
+    "color-picker",
+    "date-picker",
+    "file-picker",
+    "multi-date-picker",
+    "picker",
+    "secure-field",
+    "slider",
+    "stepper",
+    "text-field",
+    "toggle",
+    "validation",
     "canvas",
     "chart",
     "barcode",
@@ -224,6 +280,7 @@ all = [
     "assets",
     "media",
     "webview",
+    "map",
     "widgets",
     "flow-markdown",
     "markdown-math",

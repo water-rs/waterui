@@ -10,8 +10,9 @@
 use std::collections::HashMap;
 
 use naga::{
-    Arena, BinaryOperator, Block, Expression, Function, Handle, ImageQuery, Literal, LocalVariable,
-    MathFunction, Module, SampleLevel, ScalarKind, Statement, TypeInner, UnaryOperator,
+    AddressSpace, Arena, ArraySize, BinaryOperator, Block, Expression, Function, GlobalVariable,
+    Handle, ImageQuery, Literal, LocalVariable, MathFunction, Module, SampleLevel, ScalarKind,
+    Statement, TypeInner, UnaryOperator,
 };
 
 use crate::SamplerFilter;
@@ -39,6 +40,9 @@ pub enum Value {
     /// A pointer into a local variable: the variable, then the member or
     /// component index taken at each level below it.
     Pointer(Handle<LocalVariable>, Vec<u32>),
+    /// A pointer into a module-scope variable bound with [`Eval::bind`],
+    /// with the same index path.
+    Global(Handle<GlobalVariable>, Vec<u32>),
 }
 
 impl Value {
@@ -198,11 +202,27 @@ impl<'t> Texture<'t> {
     }
 }
 
+/// A function the caller supplies in place of a module function's body.
+type HostFunction<'m> = Box<dyn Fn(&[Value]) -> Value + 'm>;
+
 /// Evaluates functions of one module.
-#[derive(Debug)]
 pub struct Eval<'m> {
     module: &'m Module,
     textures: Vec<Texture<'m>>,
+    /// Values bound to module-scope variables with [`Eval::bind`].
+    globals: HashMap<Handle<GlobalVariable>, Value>,
+    /// Functions whose calls run a caller's closure ([`Eval::host`]).
+    hosts: HashMap<Handle<Function>, HostFunction<'m>>,
+}
+
+impl std::fmt::Debug for Eval<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Eval")
+            .field("textures", &self.textures)
+            .field("globals", &self.globals)
+            .field("hosts", &self.hosts.len())
+            .finish_non_exhaustive()
+    }
 }
 
 /// How a block finished: by running to its end, by leaving the innermost
@@ -224,11 +244,40 @@ struct Frame<'f> {
 impl<'m> Eval<'m> {
     /// An evaluator for `module`'s functions.
     #[must_use]
-    pub const fn new(module: &'m Module) -> Self {
+    pub fn new(module: &'m Module) -> Self {
         Self {
             module,
             textures: Vec::new(),
+            globals: HashMap::new(),
+            hosts: HashMap::new(),
         }
+    }
+
+    /// Binds the module-scope variable `name` to `value`: a uniform's
+    /// contents, a private variable's state, or a texture or sampler.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the module declares no variable of that name.
+    pub fn bind(&mut self, name: &str, value: Value) {
+        let handle = self
+            .module
+            .global_variables
+            .iter()
+            .find(|(_, global)| global.name.as_deref() == Some(name))
+            .map_or_else(|| panic!("no global `{name}`"), |(handle, _)| handle);
+        self.globals.insert(handle, value);
+    }
+
+    /// Runs `body` in place of the function named `name` whenever the
+    /// module calls it, as a backend binds a prelude's declared hooks.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the module has no function of that name.
+    pub fn host(&mut self, name: &str, body: impl Fn(&[Value]) -> Value + 'm) {
+        let function = self.function(name);
+        self.hosts.insert(function, Box::new(body));
     }
 
     /// Registers a texture and returns the value that passes it as an
@@ -236,6 +285,19 @@ impl<'m> Eval<'m> {
     pub fn texture(&mut self, texture: Texture<'m>) -> Value {
         self.textures.push(texture);
         Value::Texture(self.textures.len() - 1)
+    }
+
+    /// The value [`Eval::bind`] gave `global`.
+    fn bound(&self, global: Handle<GlobalVariable>) -> &Value {
+        self.globals.get(&global).unwrap_or_else(|| {
+            panic!(
+                "global `{}` read before it was bound",
+                self.module.global_variables[global]
+                    .name
+                    .as_deref()
+                    .unwrap_or("<unnamed>")
+            )
+        })
     }
 
     /// The texture object a `Value::Texture` refers to.
@@ -269,7 +331,31 @@ impl<'m> Eval<'m> {
     /// returns no value.
     #[must_use]
     pub fn call(&self, function: Handle<Function>, args: Vec<Value>) -> Value {
-        let function = &self.module.functions[function];
+        if let Some(host) = self.hosts.get(&function) {
+            return host(&args);
+        }
+        self.run(&self.module.functions[function], args)
+    }
+
+    /// Calls the entry point named `name` with `args`, its arguments in
+    /// declaration order, and returns its result.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the module has no entry point of that name, and as
+    /// [`Eval::call`] does.
+    #[must_use]
+    pub fn call_entry(&self, name: &str, args: Vec<Value>) -> Value {
+        let entry = self
+            .module
+            .entry_points
+            .iter()
+            .find(|entry| entry.name == name)
+            .unwrap_or_else(|| panic!("no entry point `{name}`"));
+        self.run(&entry.function, args)
+    }
+
+    fn run(&self, function: &Function, args: Vec<Value>) -> Value {
         let mut frame = Frame {
             function,
             args,
@@ -409,6 +495,12 @@ impl<'m> Eval<'m> {
             TypeInner::Struct { members, .. } => {
                 Value::Struct(members.iter().map(|member| self.zero(member.ty)).collect())
             }
+            // An array is a struct of its elements to the evaluator.
+            TypeInner::Array {
+                base,
+                size: ArraySize::Constant(count),
+                ..
+            } => Value::Struct(vec![self.zero(*base); count.get() as usize]),
             other => panic!("no zero value for {other:?}"),
         }
     }
@@ -458,13 +550,14 @@ impl<'m> Eval<'m> {
                     _ => Value::Vector(values.iter().flat_map(Value::components).collect()),
                 }
             }
-            Expression::AccessIndex { base, index } => match sub(base, frame) {
-                Value::Pointer(local, mut path) => {
-                    path.push(index);
-                    Value::Pointer(local, path)
-                }
-                value => value.at(&[index]),
-            },
+            Expression::AccessIndex { base, index } => index_into(sub(base, frame), index),
+            Expression::Access { base, index } => {
+                let Value::Int(index) = sub(index, frame) else {
+                    panic!("an index that is not an integer");
+                };
+                let index = u32::try_from(index).expect("a non-negative index");
+                index_into(sub(base, frame), index)
+            }
             Expression::Splat { size, value } => {
                 let Value::Float(value) = sub(value, frame) else {
                     panic!("splat of a non-scalar");
@@ -486,12 +579,19 @@ impl<'m> Eval<'m> {
             }
             Expression::FunctionArgument(index) => frame.args[index as usize].clone(),
             Expression::LocalVariable(local) => Value::Pointer(local, Vec::new()),
-            Expression::Load { pointer } => {
-                let Value::Pointer(local, path) = sub(pointer, frame) else {
-                    panic!("load through a non-local pointer");
-                };
-                frame.locals[&local].at(&path)
+            // A handle (texture or sampler) is its value; any other global
+            // is read through a pointer.
+            Expression::GlobalVariable(global)
+                if self.module.global_variables[global].space == AddressSpace::Handle =>
+            {
+                self.bound(global).clone()
             }
+            Expression::GlobalVariable(global) => Value::Global(global, Vec::new()),
+            Expression::Load { pointer } => match sub(pointer, frame) {
+                Value::Pointer(local, path) => frame.locals[&local].at(&path),
+                Value::Global(global, path) => self.bound(global).at(&path),
+                other => panic!("load through {other:?}"),
+            },
             Expression::ImageSample {
                 image,
                 sampler,
@@ -622,6 +722,22 @@ impl<'m> Eval<'m> {
     }
 }
 
+/// Member, element or component `index` of `base`: a deeper pointer for a
+/// pointer, the value itself otherwise.
+fn index_into(base: Value, index: u32) -> Value {
+    match base {
+        Value::Pointer(local, mut path) => {
+            path.push(index);
+            Value::Pointer(local, path)
+        }
+        Value::Global(global, mut path) => {
+            path.push(index);
+            Value::Global(global, path)
+        }
+        value => value.at(&[index]),
+    }
+}
+
 /// A value of `like`'s shape holding `components`.
 fn numeric(like: &Value, components: Vec<f32>) -> Value {
     match like {
@@ -716,7 +832,24 @@ fn math(fun: MathFunction, first: &Value, second: Option<&Value>, third: Option<
         |apply: fn(f32) -> f32| numeric(first, first.components().into_iter().map(apply).collect());
     match fun {
         MathFunction::Abs => unary(f32::abs),
+        MathFunction::Exp => unary(f32::exp),
         MathFunction::Exp2 => unary(f32::exp2),
+        MathFunction::SmoothStep => {
+            // `smoothstep(low, high, x)`: `first` is `low`.
+            let high = second.expect("smoothstep takes three");
+            let x = third.expect("smoothstep takes three");
+            let span = zip(high, first, |high, low| high - low);
+            let t = zip(&zip(x, first, |x, low| x - low), &span, |offset, span| {
+                (offset / span).clamp(0.0, 1.0)
+            });
+            numeric(
+                &t,
+                t.components()
+                    .into_iter()
+                    .map(|t| t * t * 2.0f32.mul_add(-t, 3.0))
+                    .collect(),
+            )
+        }
         MathFunction::Sqrt => unary(f32::sqrt),
         MathFunction::Floor => unary(f32::floor),
         MathFunction::Fract => unary(f32::fract),

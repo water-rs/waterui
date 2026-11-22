@@ -5,9 +5,9 @@
 use std::rc::Rc;
 
 use crate::theme::WidgetTheme;
+use cherenkov_record::SurfaceId;
 use jni::objects::JObject;
 use waterui::Environment;
-use waterui_graphics::draw::SurfaceId;
 
 use super::jni::JniError;
 use crate::hwui::{HwuiSurface, JniPainter};
@@ -33,6 +33,10 @@ pub(super) struct HwuiWindow {
     /// Scratch for the frame's platform-view bindings — reused, never
     /// reallocated while the binding count fits.
     bindings: Vec<crate::hwui::PlatformViewBinding>,
+    /// The owner of the window's GPU-content surfaces: the host's JNI
+    /// callbacks address it by placement id.
+    #[cfg(hydrolysis_hwui_gpu)]
+    pub(super) hosted: Rc<super::hosted_gpu::HostedGpu>,
 }
 
 impl HwuiWindow {
@@ -50,20 +54,14 @@ impl HwuiWindow {
         id: SurfaceId,
         theme: Rc<dyn WidgetTheme>,
         wake: Rc<dyn Fn()>,
+        effect_wake: std::sync::Arc<dyn Fn() + Send + Sync>,
+        #[cfg(hydrolysis_hwui_gpu)] hosted: Rc<super::hosted_gpu::HostedGpu>,
     ) -> Result<(Self, HydrolysisRenderer<AndroidTextEngine>), JniError> {
         if peer.is_null() {
             return Err(JniError(
                 "hydrolysis HWUI: nativeCreateSession got a null HwuiPainter".to_owned(),
             ));
         }
-        let api = env
-            .get_static_field(
-                jni::jni_str!("android/os/Build$VERSION"),
-                jni::jni_str!("SDK_INT"),
-                jni::jni_sig!("I"),
-            )?
-            .i()?;
-        let api = u32::try_from(api).expect("Build.VERSION.SDK_INT is never negative");
         let text_object = env
             .call_method(
                 peer,
@@ -81,8 +79,7 @@ impl HwuiWindow {
             )?
             .l()?;
 
-        let surface =
-            HwuiSurface::new(id, api, move || wake()).map_err(|e| JniError(e.to_string()))?;
+        let surface = HwuiSurface::new(id, move || wake()).map_err(|e| JniError(e.to_string()))?;
         // The window starts parked: `set_host_attached` and metrics unhide
         // it the way the GPU band's surface attach does.
         surface.set_hidden(true);
@@ -99,7 +96,7 @@ impl HwuiWindow {
                 .map_err(JniError)?,
         );
         let painter = JniPainter::new(env, peer).map_err(JniError)?;
-        let (mount, host) = renderer.mount_hwui(&surface, resources);
+        let (mount, host) = renderer.mount_hwui(&surface, resources, effect_wake);
         Ok((
             Self {
                 surface,
@@ -107,6 +104,8 @@ impl HwuiWindow {
                 mount,
                 painter,
                 bindings: Vec::new(),
+                #[cfg(hydrolysis_hwui_gpu)]
+                hosted,
             },
             renderer,
         ))
@@ -127,11 +126,14 @@ impl HwuiWindow {
     ) -> Result<bool, JniError> {
         runtime.platform.apply_properties(&runtime.window);
         let background = SurfaceBackground::of(&runtime.window, env);
-        assert!(
-            background.behind_level().is_none(),
-            "hydrolysis HWUI: behind-window material is unsupported \
-             (water-rs/waterui#1899)"
-        );
+        if background.behind_level().is_some() {
+            // The frame renders without the blur: the window keeps its
+            // backdrop and clear colour.
+            waterui_core::contract_violation!(
+                "hydrolysis HWUI: behind-window material is unsupported \
+                 (water-rs/waterui#1899); the window renders without it"
+            );
+        }
         runtime.platform.set_transparent(background.transparent());
         runtime.renderer.set_window_backdrop(background.backdrop());
         pump_window_scene(runtime, env, drain);
@@ -140,18 +142,22 @@ impl HwuiWindow {
             .borrow_mut()
             .set_clear(recording::working_color(background.clear(env)));
         let scale = runtime.platform.scale_factor();
+        #[cfg(hydrolysis_hwui_gpu)]
+        self.hosted.set_scale(scale);
         runtime
             .renderer
             .commit_mount(&mut self.mount, &self.host, scale);
         runtime.renderer.platform_view_bindings(&mut self.bindings);
         self.surface.set_platform_views(&self.bindings);
+        // The presented frame's instant, so operand animations the encoder
+        // samples advance with the frames the pump presents.
         let frame = self
             .surface
-            .frame(cherenkov_record::Instant::now(), scale)
+            .frame(runtime.renderer.frame_instant(), scale)
             .map_err(|e| JniError(e.to_string()))?;
-        let animating = frame.content_animating || frame.sampling.rate.is_some();
+        let animating = frame.content_animating() || frame.sampling().rate.is_some();
         self.painter
-            .replay(frame.words, frame.clear)
+            .replay(frame.words(), frame.clear())
             .map_err(JniError)?;
         sync_platform_input(runtime);
         if runtime.renderer.take_redraw_request() || animating || self.surface.has_pending() {

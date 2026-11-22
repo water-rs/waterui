@@ -26,11 +26,10 @@ use objc2_core_video::{
 use objc2_metal::{
     MTLDevice, MTLPixelFormat, MTLStorageMode, MTLTexture, MTLTextureDescriptor, MTLTextureUsage,
 };
-use waterui_graphics::cherenkov::{Display, FrameTime, Readback};
-use waterui_graphics::cherenkov_gpu::interop::{ExternalFrame, FrameColor, metal};
+use waterui_graphics::gpu::interop::{ExternalFrame, FrameColor, metal};
 use waterui_graphics::gpu::{
-    ExternalFrameRenderer, ExternalFrameSource, ExternalFrameView, FrameOutput, GpuRuntime,
-    RedrawHandle, RetiredOutput,
+    Display, ExternalFrameRenderer, ExternalFrameSource, ExternalFrameView, FrameOutput, FrameTime,
+    GpuRuntime, PresentedSize, Readback, RedrawHandle, RetiredOutput,
 };
 use waterui_graphics::offscreen::{OffscreenImage, OffscreenSize};
 
@@ -72,13 +71,13 @@ fn size(width: usize, height: usize) -> OffscreenSize {
 }
 
 fn renderer(runtime: &GpuRuntime, view: &ExternalFrameView) -> ExternalFrameRenderer {
-    ExternalFrameRenderer::new(
+    pollster::block_on(ExternalFrameRenderer::new(
         runtime,
         runtime.context(),
         &view.stream(),
         size(FRAME.0, FRAME.1),
         RedrawHandle::new(|| {}),
-    )
+    ))
     .expect("the external frame renderer settles")
 }
 
@@ -225,7 +224,14 @@ fn import_planes(
         // SAFETY: the texture was created on the device `device` wraps, and
         // `format` matches its pixel format; the test keeps the pixel buffer
         // alive for as long as frames referencing it render.
-        unsafe { metal::import_texture(device, texture, format) }
+        unsafe {
+            metal::import_texture(
+                device,
+                texture,
+                format,
+                wgpu::TextureUsages::TEXTURE_BINDING,
+            )
+        }
     };
     [plane(0, luma), plane(1, chroma)]
 }
@@ -370,8 +376,7 @@ fn planes_are_sampled_in_place() {
         .expect("the output is live");
 
     let first = host_target(device, (64, 32));
-    renderer
-        .present(&first, SDR, FrameTime(std::time::Instant::now()))
+    pollster::block_on(renderer.present(&first, SDR, FrameTime::now()))
         .expect("the frame presents");
     let shown = read(device, queue, &first).pixel(32, 16);
     assert!(
@@ -382,8 +387,7 @@ fn planes_are_sampled_in_place() {
     fill(&buffer, Layout::Nv12, dimensions, flat(BLUE));
     // A resize forces the next pass to draw; nothing new was published.
     let second = host_target(device, (96, 48));
-    renderer
-        .present(&second, SDR, FrameTime(std::time::Instant::now()))
+    pollster::block_on(renderer.present(&second, SDR, FrameTime::now()))
         .expect("the frame presents");
     let shown = read(device, queue, &second).pixel(48, 24);
     assert!(
@@ -425,8 +429,7 @@ fn frames_add_no_textures_beyond_their_planes() {
 
     // The first frame builds the engine's external-frame pipeline state.
     publish(RED);
-    renderer
-        .present(&target, SDR, FrameTime(std::time::Instant::now()))
+    pollster::block_on(renderer.present(&target, SDR, FrameTime::now()))
         .expect("the frame presents");
     device
         .poll(wgpu::PollType::wait_indefinitely())
@@ -435,8 +438,7 @@ fn frames_add_no_textures_beyond_their_planes() {
 
     for code in [BLUE, RED, BLUE] {
         publish(code);
-        renderer
-            .present(&target, SDR, FrameTime(std::time::Instant::now()))
+        pollster::block_on(renderer.present(&target, SDR, FrameTime::now()))
             .expect("the frame presents");
         device
             .poll(wgpu::PollType::wait_indefinitely())
@@ -452,6 +454,135 @@ fn frames_add_no_textures_beyond_their_planes() {
     assert!(
         shown[2] > 200 && shown[0] < 40,
         "the last frame (blue) is on screen, got {shown:?}"
+    );
+}
+
+/// A frame's release hook tells the producer when the host will never read
+/// its planes again: a frame the mailbox superseded before any pass is
+/// released at once, an installed frame when a newer one replaces it, and
+/// the last installed frame when the host is dropped — never while shown.
+#[test]
+fn frames_are_released_once_the_host_is_done_with_them() {
+    let runtime = runtime();
+    let context = runtime.context();
+    let device = context.device();
+    let (view, outputs) = producer_view();
+    let mut renderer = renderer(&runtime, &view);
+    let target = host_target(device, (64, 32));
+    let dimensions = (64, 32);
+    let buffer = pixel_buffer(Layout::Nv12, dimensions);
+    fill(&buffer, Layout::Nv12, dimensions, flat(RED));
+    let (released, release) = std::sync::mpsc::channel();
+    let frame = |name: &'static str| {
+        let released = released.clone();
+        let (frame, _planes) = frame(
+            device,
+            &buffer,
+            Layout::Nv12,
+            dimensions,
+            FrameColor::BT709_VIDEO,
+        );
+        frame.on_release(move || {
+            released
+                .send(name)
+                .expect("the test receives every release");
+        })
+    };
+    let output = outputs.borrow()[0].clone();
+    let pass = |renderer: &mut ExternalFrameRenderer| {
+        pollster::block_on(renderer.present(&target, SDR, FrameTime::now()))
+            .expect("the frame presents");
+    };
+
+    output
+        .present(frame("unshown"))
+        .expect("the output is live");
+    output.present(frame("first")).expect("the output is live");
+    assert_eq!(
+        release.try_recv().ok(),
+        Some("unshown"),
+        "a frame superseded in the mailbox is released at once"
+    );
+    pass(&mut renderer);
+    assert_eq!(
+        release.try_recv().ok(),
+        None,
+        "a shown frame is not released"
+    );
+
+    output.present(frame("second")).expect("the output is live");
+    pass(&mut renderer);
+    assert_eq!(
+        release.try_recv().ok(),
+        Some("first"),
+        "a replaced frame is released"
+    );
+
+    // Dropping the host never waits on the render thread: the installed
+    // frame is released there, once the worker runs its ordered shutdown.
+    drop(renderer);
+    assert_eq!(
+        release
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .ok(),
+        Some("second"),
+        "dropping the host releases its installed frame"
+    );
+    assert_eq!(release.try_recv().ok(), None, "every hook ran once");
+}
+
+/// The source learns the size its frames are presented at — absent until
+/// the host's first pass, then the layer's pixel extent and the display's
+/// scale every pass — and can wake the host without publishing a frame.
+#[test]
+fn the_source_sees_the_presented_size_and_can_request_a_pass() {
+    let runtime = runtime();
+    let device = runtime.context().device().clone();
+    let (view, outputs) = producer_view();
+    let wakes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let woken = std::sync::Arc::clone(&wakes);
+    let mut renderer = pollster::block_on(ExternalFrameRenderer::new(
+        &runtime,
+        runtime.context(),
+        &view.stream(),
+        size(FRAME.0, FRAME.1),
+        RedrawHandle::new(move || {
+            woken.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }),
+    ))
+    .expect("the external frame renderer settles");
+    let output = outputs.borrow()[0].clone();
+    assert_eq!(
+        output.shared_device().device,
+        *runtime.context().device(),
+        "the output carries the host's device-creation chain"
+    );
+    assert_eq!(output.presented_size(), None, "no pass has run yet");
+
+    let retina = Display {
+        scale: 2.0,
+        headroom: 1.0,
+    };
+    for (width, height) in [(96, 48), (64, 32)] {
+        let target = host_target(&device, (width, height));
+        pollster::block_on(renderer.present(&target, retina, FrameTime::now()))
+            .expect("the pass runs without a frame");
+        assert_eq!(
+            output.presented_size(),
+            Some(PresentedSize {
+                pixels: size(width, height),
+                scale: 2.0,
+            }),
+            "each pass reports the extent it presents at"
+        );
+    }
+
+    let before = wakes.load(std::sync::atomic::Ordering::Relaxed);
+    output.request_redraw();
+    assert_eq!(
+        wakes.load(std::sync::atomic::Ordering::Relaxed),
+        before + 1,
+        "request_redraw wakes the host"
     );
 }
 
@@ -514,19 +645,20 @@ fn the_renderer_reports_the_generation_of_the_context_it_was_given() {
     lost_runtime
         .context()
         .mark_device_lost_for_testing("test device loss");
-    let fresh = pollster::block_on(lost_runtime.context_after(0));
+    let fresh = pollster::block_on(lost_runtime.context_after(0))
+        .expect("a lost context within the rebuild budget recovers");
     assert!(
         fresh.generation() > live_runtime.context().generation(),
         "the rebuild advanced the lost runtime past the live one"
     );
     let (view, _outputs) = producer_view();
-    let renderer = ExternalFrameRenderer::new(
+    let renderer = pollster::block_on(ExternalFrameRenderer::new(
         &lost_runtime,
         live_runtime.context(),
         &view.stream(),
         size(FRAME.0, FRAME.1),
         RedrawHandle::new(|| {}),
-    )
+    ))
     .expect("the external frame renderer settles");
     assert_eq!(
         renderer.generation(),
@@ -547,18 +679,19 @@ fn an_idle_device_loss_recovers_through_context_publication() {
     runtime
         .context()
         .mark_device_lost_for_testing("test device loss");
-    let fresh = pollster::block_on(runtime.context_after(stale_generation));
+    let fresh = pollster::block_on(runtime.context_after(stale_generation))
+        .expect("a lost context within the rebuild budget recovers");
     assert!(fresh.generation() > stale_generation);
     drop(stale_renderer);
 
     let device = fresh.device().clone();
-    let mut second = ExternalFrameRenderer::new(
+    let mut second = pollster::block_on(ExternalFrameRenderer::new(
         &runtime,
         fresh.clone(),
         &view.stream(),
         size(FRAME.0, FRAME.1),
         RedrawHandle::new(|| {}),
-    )
+    ))
     .expect("the rebuilt external frame renderer settles");
     assert_eq!(second.generation(), fresh.generation());
     let dimensions = (64, 32);
@@ -575,9 +708,7 @@ fn an_idle_device_loss_recovers_through_context_publication() {
         .present(red)
         .expect("the restarted source's output is live");
     let target = host_target(&device, dimensions);
-    second
-        .present(&target, SDR, FrameTime(std::time::Instant::now()))
-        .expect("the frame presents");
+    pollster::block_on(second.present(&target, SDR, FrameTime::now())).expect("the frame presents");
     let shown = read(&device, fresh.queue(), &target).pixel(32, 16);
     assert!(
         shown[0] > 200 && shown[2] < 40,
@@ -752,8 +883,7 @@ fn gpu_export_external_frame_images() {
             .present(frame)
             .expect("the output is live");
         let target = host_target(device, FRAME);
-        renderer
-            .present(&target, SDR, FrameTime(std::time::Instant::now()))
+        pollster::block_on(renderer.present(&target, SDR, FrameTime::now()))
             .expect("the frame presents");
         read(device, queue, &target)
             .save_png(directory.join(name))

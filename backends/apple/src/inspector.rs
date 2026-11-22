@@ -35,7 +35,7 @@ impl Inspection {
         let recorder = self
             .env
             .get::<TreeRecorder>()
-            .expect("inspector installs its tree recorder");
+            .expect("`waterui::inspector::install` inserts the tree recorder with the runtime `install` checks for");
         if !recorder.is_active() {
             return;
         }
@@ -48,7 +48,7 @@ impl Inspection {
         self.publish(root);
         self.env
             .get::<InspectorRuntime>()
-            .expect("inspection is installed only with an inspector runtime")
+            .expect("`install` creates an `Inspection` only when the environment has the runtime")
             .inspect_node(identifier(view));
     }
 }
@@ -221,18 +221,18 @@ fn install_interaction(root: &HostView, inspection: &Rc<Inspection>) {
     });
     let native = gesture
         .recognizer()
-        .expect("new gesture remains attached to the root");
+        .expect("a gesture just attached to the root still holds its recognizer");
     // This touch chord has no pointer-button restriction, matching UIKit's
     // unfiltered long-press recognizer. The attachment still owns its target.
     native.setDelegate(None);
     native
         .downcast_ref::<UILongPressGestureRecognizer>()
-        .expect("long_press installs a long-press recognizer")
+        .expect("`gesture::long_press` installs a `UILongPressGestureRecognizer`")
         .setNumberOfTouchesRequired(2);
     native.setCancelsTouchesInView(false);
     recognizer
         .set(Weak::new(&native))
-        .expect("recognizer is assigned once");
+        .expect("the cell is created empty above and set only here");
     *inspection.gesture.borrow_mut() = Some(gesture);
 }
 

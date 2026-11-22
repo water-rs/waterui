@@ -18,7 +18,7 @@
 
 use alloc::rc::{Rc, Weak};
 use core::cell::{Cell, RefCell};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use cocoa_ui::capture::{CaptureError, ViewCapture};
 use cocoa_ui::{MainThreadMarker, PlatformView, Retained, view};
@@ -27,8 +27,8 @@ use objc2_metal::MTLTexture;
 use waterui::reactive::{Binding, SignalExt};
 use waterui_backend_core::{AnyView, Environment};
 use waterui_core::layout::{LayoutDirection, Point, Rect as CoreRect, Size};
-use waterui_core::transition::{TransitionFrame, TransitionState};
 use waterui_graphics::gpu::GpuRuntime;
+use waterui_structural_transition::{TransitionFrame, TransitionState};
 
 use crate::components::filtered::{FrozenEffect, LiveEffect, Sendable};
 use crate::transition::ghost::GhostRun;
@@ -84,8 +84,12 @@ impl FrozenInput {
             on_ready(Err(CaptureError::Deferred));
             return Rc::new(Self { capture });
         }
-        let window =
-            view::window(&visual.host).expect("a ghost runs only while its host is windowed");
+        let Some(window) = view::window(&visual.host) else {
+            // The host's window closed mid-flight — nothing to size the
+            // capture by; the next tick retries until the clock ends the run.
+            on_ready(Err(CaptureError::Deferred));
+            return Rc::new(Self { capture });
+        };
         #[cfg(target_os = "macos")]
         let scale = window.backingScaleFactor();
         #[cfg(target_os = "ios")]
@@ -98,7 +102,13 @@ impl FrozenInput {
             on_ready(Err(CaptureError::Deferred));
             return Rc::new(Self { capture });
         }
-        let target = crate::components::filtered::new_capture_input(&context, width, height);
+        let target = match crate::components::filtered::new_capture_input(&context, width, height) {
+            Ok(target) => target,
+            Err(error) => {
+                on_ready(Err(CaptureError::Failed(Arc::new(error))));
+                return Rc::new(Self { capture });
+            }
+        };
         // The completion is `Fn` and `Send`-bound — the texture and the
         // non-`Send` callback cross it inside slots, and `ViewCapture`
         // lands them on the main queue.
@@ -158,18 +168,16 @@ impl core::fmt::Debug for PixelOverlay {
 
 /// The view a pixel overlay mounts into for `within`'s window — the
 /// content view on `AppKit`, the `UIWindow` itself on `UIKit`.
-fn overlay_parent(within: &PlatformView) -> Retained<PlatformView> {
-    let window =
-        view::window(within).expect("a pixel transition runs only while its host is windowed");
+/// `None` while `within` is in no window — a window that closes mid-flight.
+fn overlay_parent(within: &PlatformView) -> Option<Retained<PlatformView>> {
+    let window = view::window(within)?;
     #[cfg(target_os = "macos")]
     {
-        window
-            .contentView()
-            .expect("an `NSWindow` with a mounted transition host has a content view")
+        window.contentView()
     }
     #[cfg(target_os = "ios")]
     {
-        Retained::into_super(window)
+        Some(Retained::into_super(window))
     }
 }
 
@@ -177,7 +185,8 @@ impl PixelOverlay {
     /// A fresh retired overlay covering `within`'s window.
     pub fn over(within: &PlatformView) -> Self {
         let mtm = MainThreadMarker::new().expect("a pixel overlay builds on the main thread");
-        let parent = overlay_parent(within);
+        let parent = overlay_parent(within)
+            .expect("a pixel transition starts only while its host is in a window");
         let host = HostView::new(mtm, view::bounds(&parent));
         host.retire();
         let view: &PlatformView = &host;
@@ -190,9 +199,12 @@ impl PixelOverlay {
     }
 
     /// Re-homes the overlay when `within` moved to another window — an
-    /// insertion whose host changed windows mid-flight.
+    /// insertion whose host changed windows mid-flight. A host in no window
+    /// leaves the overlay where it is.
     fn sync_window(&self, within: &PlatformView) {
-        let current = overlay_parent(within);
+        let Some(current) = overlay_parent(within) else {
+            return;
+        };
         let mut stored = self.window.borrow_mut();
         if !core::ptr::eq(&raw const *current, &raw const **stored) {
             view::remove_from_superview(&self.host);
@@ -268,6 +280,10 @@ pub struct PixelRemoval {
     env: Environment,
     /// A frozen capture is in flight — the next tick waits for it.
     pending: Cell<bool>,
+    /// Armed by the effect's first presentation — the run must not end
+    /// before it or the root's un-hide lands before it was ever hidden
+    /// (§2.7's hide-on-first-present contract).
+    first_presented: Cell<bool>,
     /// The in-flight capture — kept alive until it settles.
     input: RefCell<Option<Rc<FrozenInput>>>,
     /// The landed effect — `None` until the capture delivers.
@@ -291,7 +307,7 @@ impl PixelRemoval {
         let frame = Binding::container(frame_now(
             overlay.view(),
             &visual.host,
-            visual.geometry.direction,
+            visual.geometry.direction(),
         ));
         let body = state.body(AnyView::new(()), frame.computed());
         Rc::new(Self {
@@ -300,9 +316,20 @@ impl PixelRemoval {
             body: RefCell::new(Some(body)),
             env: env.clone(),
             pending: Cell::new(false),
+            first_presented: Cell::new(false),
             input: RefCell::new(None),
             effect: RefCell::new(None),
         })
+    }
+
+    /// Whether the run must stay alive for this removal: a capture is in
+    /// flight, an effect is armed but has not presented its first frame,
+    /// or a `Deferred` retry is still worth issuing while the retired
+    /// root has pixels to capture (#3798's terminal/retryable split).
+    pub fn in_flight(&self, retired_has_pixels: bool) -> bool {
+        self.pending.get()
+            || (self.effect.borrow().is_none() && retired_has_pixels)
+            || (self.effect.borrow().is_some() && !self.first_presented.get())
     }
 
     /// The tick's frame republish plus the `Deferred` capture retry —
@@ -312,7 +339,7 @@ impl PixelRemoval {
         this.frame.set(frame_now(
             this.overlay.view(),
             &run.visual.host,
-            run.visual.geometry.direction,
+            run.visual.geometry.direction(),
         ));
         if !this.pending.get() && this.effect.borrow().is_none() {
             Self::attempt(this, &run.visual, Rc::downgrade(run));
@@ -323,8 +350,16 @@ impl PixelRemoval {
     /// installs on its texture, a `Deferred` outcome waits a tick and a
     /// `Failed` one ends the run (§10).
     fn attempt(this: &Rc<Self>, visual: &RetiredVisual, weak_run: Weak<GhostRun>) {
+        // No GPU runtime: nothing can capture or draw the effect, so the
+        // removal ends at once instead of retrying every tick.
+        let Some(runtime) = crate::gpu_runtime::runtime(&this.env) else {
+            tracing::error!("GPU runtime unavailable; a pixel removal's effect is not drawn");
+            if let Some(run) = weak_run.upgrade() {
+                run.complete();
+            }
+            return;
+        };
         this.pending.set(true);
-        let runtime = crate::gpu_runtime::runtime(&this.env);
         let weak_this = Rc::downgrade(this);
         *this.input.borrow_mut() = Some(FrozenInput::start(visual, &runtime, move |outcome| {
             let Some(this) = weak_this.upgrade() else {
@@ -349,8 +384,12 @@ impl PixelRemoval {
                             // The root hides only once the effect's first
                             // frame is on screen — never before (§2.7).
                             let root = run.visual.root.clone();
+                            let weak_this = Rc::downgrade(&this);
                             effect.on_first_present(move || {
                                 view::set_hidden(&root, true);
+                                if let Some(this) = weak_this.upgrade() {
+                                    this.first_presented.set(true);
+                                }
                             });
                             effect.request_render();
                             *this.effect.borrow_mut() = Some(effect);
@@ -384,7 +423,7 @@ pub struct PixelInsertion {
     frame: Binding<TransitionFrame>,
     /// The live-capture effect — held for its lifetime: its drop
     /// un-hides the content and detaches the output.
-    _effect: LiveEffect,
+    effect: LiveEffect,
 }
 
 impl core::fmt::Debug for PixelInsertion {
@@ -411,8 +450,25 @@ impl PixelInsertion {
         Some(Self {
             overlay,
             frame,
-            _effect: effect,
+            effect,
         })
+    }
+
+    /// Whether the effect has presented its first frame — the content is
+    /// actually hidden beneath it only from then on. The run must not
+    /// end before it or the drop's un-hide lands before the hide (§2.7).
+    pub fn presented(&self) -> bool {
+        self.effect.presented()
+    }
+
+    /// The effect's first-present readiness — see
+    /// [`LiveEffect::first_present`].
+    #[expect(
+        clippy::future_not_send,
+        reason = "the wait runs on the main thread; the Rc surface it holds is not Send"
+    )]
+    pub fn first_present(&self) -> impl Future<Output = ()> + 'static {
+        self.effect.first_present()
     }
 
     /// The tick's frame republish — called on every advancing frame

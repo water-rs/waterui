@@ -10,23 +10,45 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-/// The per-window epoch that placement resolutions cache against.
+use super::motion::LayerMotion;
+use super::stretch::ShownStretch;
+use crate::time::Instant;
+
+/// The per-window epoch that placement resolutions cache against, and the
+/// instant they evaluate engine-run motion at.
 ///
 /// Every [`Placement`] setter bumps it, so any placement change invalidates
 /// every cached resolution in the window at once — cheaper than tracking
 /// per-chain dependencies.
-pub struct PlacementClock(Cell<u64>);
+///
+/// A wrapper's transform motion (water-rs/waterui#2203) moves its layer on
+/// the engine's clock with no placement write, so placement evaluates it at
+/// the clock's instant: the last event's ([`Self::advance`]). Moving the
+/// instant bumps the epoch only while a track is in flight, and a frame
+/// re-evaluates once a track ends ([`Self::settle`]) — never every frame.
+pub struct PlacementClock {
+    epoch: Cell<u64>,
+    /// The instant motion evaluates at; `None` before the first event,
+    /// which evaluates every motion at rest.
+    instant: Cell<Option<Instant>>,
+    /// When each track started since the last evaluation is done.
+    settles: RefCell<Vec<Instant>>,
+}
 
 impl PlacementClock {
     /// A clock at epoch zero.
     pub fn new() -> Rc<Self> {
-        Rc::new(Self(Cell::new(0)))
+        Rc::new(Self {
+            epoch: Cell::new(0),
+            instant: Cell::new(None),
+            settles: RefCell::new(Vec::new()),
+        })
     }
 
     /// Advances the epoch; every setter calls it.
     pub fn bump(&self) {
-        self.0.set(
-            self.0
+        self.epoch.set(
+            self.epoch
                 .get()
                 .checked_add(1)
                 .expect("hydrolysis placement clock overflow"),
@@ -35,7 +57,49 @@ impl PlacementClock {
 
     /// The current epoch.
     pub const fn epoch(&self) -> u64 {
-        self.0.get()
+        self.epoch.get()
+    }
+
+    /// The instant placement evaluates motion at.
+    pub const fn instant(&self) -> Option<Instant> {
+        self.instant.get()
+    }
+
+    /// A motion changed: it moved, and — with `until` — a track runs until
+    /// that instant.
+    pub fn note_motion(&self, until: Option<Instant>) {
+        if let Some(until) = until {
+            self.settles.borrow_mut().push(until);
+        }
+        self.bump();
+    }
+
+    /// Evaluates motion at `now` from here on: an event at `now` asks where
+    /// things are. Bumps the epoch when a track was in flight at the
+    /// instant placement last evaluated at, since it has moved since.
+    pub fn advance(&self, now: Instant) {
+        let previous = self.instant.replace(Some(now));
+        if previous == Some(now) {
+            return;
+        }
+        let mut settles = self.settles.borrow_mut();
+        let moved = settles
+            .iter()
+            .any(|until| previous.is_none_or(|previous| *until > previous));
+        settles.retain(|until| *until > now);
+        drop(settles);
+        if moved {
+            self.bump();
+        }
+    }
+
+    /// A frame at `now`: re-evaluates at `now` only when a track that was
+    /// in flight at the last evaluation is done by then, so the rest
+    /// placement every track ends at is resolved once.
+    pub fn settle(&self, now: Instant) {
+        if self.settles.borrow().iter().any(|until| *until <= now) {
+            self.advance(now);
+        }
     }
 }
 
@@ -96,6 +160,7 @@ pub enum HitGate {
     Inactive,
     /// The lifted context-menu preview: dev truncated the input lists plus
     /// drop, context-menu and native-occlusion registrations.
+    #[cfg(feature = "menu")]
     Preview,
 }
 
@@ -103,7 +168,9 @@ impl HitGate {
     /// The hit alpha the gate's scope multiplies into its chain.
     pub const fn alpha(self) -> f32 {
         match self {
-            Self::Unhittable | Self::Preview => 1.0,
+            Self::Unhittable => 1.0,
+            #[cfg(feature = "menu")]
+            Self::Preview => 1.0,
             Self::Inactive => 0.0,
         }
     }
@@ -113,6 +180,7 @@ impl HitGate {
         match self {
             Self::Unhittable => HitClasses::INPUT,
             Self::Inactive => HitClasses::NONE,
+            #[cfg(feature = "menu")]
             Self::Preview => HitClasses::INPUT
                 .union(HitClasses::DROP)
                 .union(HitClasses::CONTEXT_MENU)
@@ -166,6 +234,9 @@ pub struct Placement {
     paint_parent: RefCell<Option<Rc<Self>>>,
     /// The node's transform in its parent's space.
     transform: Cell<kurbo::Affine>,
+    /// The engine-run transform motion over `transform` — a wrapper's
+    /// offset, rotation or scale — evaluated at the clock's instant.
+    motion: RefCell<Option<Rc<LayerMotion>>>,
     /// Content offset applied inside the node's own frame (scroll).
     content_offset: Cell<kurbo::Vec2>,
     /// A clip bounding box in the node's own space.
@@ -182,11 +253,28 @@ pub struct Placement {
     /// the items took their indices from, so content registered before,
     /// between or after children orders the same as its emission.
     item_cursor: Cell<u32>,
+    /// The overscroll stretch the node's content draws with while it
+    /// shows: a scroll node's viewport placement carries it, so a platform
+    /// view inside resolves the warp its host applies
+    /// ([`resolved_stretches`](Self::resolved_stretches)).
+    stretch: Cell<Option<ShownStretch>>,
     /// The window clock every write bumps.
     clock: Rc<PlacementClock>,
     /// The structural chain's resolution at the epoch it was computed —
     /// recomputed lazily per clock epoch.
     resolved_hit: RefCell<Option<(u64, ChainResolution)>>,
+}
+
+/// One scroll view's overscroll stretch resolved down a placement chain.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ResolvedStretch {
+    /// The stretch filter's parameters with the window's logical units as
+    /// its device space ([`ShownStretch::params`]).
+    pub params: [f32; 10],
+    /// The stage's interpolation strength.
+    pub strength: f32,
+    /// The stretching viewport in window space.
+    pub viewport: kurbo::Rect,
 }
 
 /// A chain composed down to one placement.
@@ -206,12 +294,14 @@ impl Placement {
             parent: RefCell::new(None),
             paint_parent: RefCell::new(None),
             transform: Cell::new(kurbo::Affine::IDENTITY),
+            motion: RefCell::new(None),
             content_offset: Cell::new(kurbo::Vec2::ZERO),
             clip: Cell::new(None),
             alpha: Cell::new(1.0),
             removes: Cell::new(HitClasses::NONE),
             index: Cell::new(0),
             item_cursor: Cell::new(0),
+            stretch: Cell::new(None),
             clock: Rc::clone(clock),
             resolved_hit: RefCell::new(None),
         })
@@ -298,6 +388,47 @@ impl Placement {
         self.clock.bump();
     }
 
+    /// Moves the node's frame by `motion` over its transform: the wrapper
+    /// that owns the placement animates its layer on the engine's clock.
+    pub fn set_motion(&self, motion: Rc<LayerMotion>) {
+        *self.motion.borrow_mut() = Some(motion);
+        self.clock.bump();
+    }
+
+    /// The node's transform into its parent's space with its motion at
+    /// `at` (at rest with `None`) — the layer's transform as the engine
+    /// draws it then.
+    fn local_transform(&self, at: Option<Instant>) -> kurbo::Affine {
+        let transform = self.transform.get();
+        self.motion
+            .borrow()
+            .as_ref()
+            .map_or(transform, |motion| motion.matrix(transform, at))
+    }
+
+    /// The motions moving this placement's paint chain, itself included:
+    /// the wrappers whose tracks carry content drawn here.
+    pub fn paint_chain_motions(&self) -> Vec<Rc<LayerMotion>> {
+        self.ancestors(false)
+            .iter()
+            .map(Rc::as_ref)
+            .chain(std::iter::once(self))
+            .filter_map(|placement| placement.motion.borrow().clone())
+            .collect()
+    }
+
+    /// The paint chain's `(transform, clip, alpha)` with every motion on it
+    /// evaluated at `at`, uncached — what the engine draws for a frame
+    /// presented then, for the one consumer placed per frame: a platform
+    /// view under a running motion.
+    pub fn resolved_paint_chain_at(
+        &self,
+        at: Instant,
+    ) -> (kurbo::Affine, Option<kurbo::Rect>, f32) {
+        let resolved = self.resolve_chain(false, Some(at));
+        (resolved.transform, resolved.clip, resolved.alpha)
+    }
+
     /// Sets the clip bounding box in the node's own space.
     pub fn set_content_offset(&self, offset: kurbo::Vec2) {
         self.content_offset.set(offset);
@@ -306,6 +437,7 @@ impl Placement {
 
     /// Redirects the paint chain through `parent` (`None` follows the
     /// structural parent again).
+    #[cfg(feature = "navigation")]
     pub fn set_paint_parent(&self, parent: Option<Rc<Self>>) {
         *self.paint_parent.borrow_mut() = parent;
         self.clock.bump();
@@ -325,6 +457,15 @@ impl Placement {
         while let Some(placement) = parent {
             if Rc::ptr_eq(&placement, anchor) {
                 return transform;
+            }
+            // A placement with motion is a layer node's frame: the frames
+            // under it anchor on it, so no paint delta crosses it — the
+            // engine moves its layer, never a descendant's transform.
+            if placement.motion.borrow().is_some() {
+                waterui_core::contract_violation!(
+                    "hydrolysis placement: a paint delta crosses an engine-animated frame; \
+                     the layer is placed at the frame's rest transform"
+                );
             }
             transform = placement.transform.get()
                 * kurbo::Affine::translate(placement.content_offset.get())
@@ -372,7 +513,46 @@ impl Placement {
         self.alpha.set(1.0);
         self.removes.set(HitClasses::NONE);
         self.item_cursor.set(0);
+        self.stretch.set(None);
         self.clock.bump();
+    }
+
+    /// Sets the overscroll stretch the node's content draws with, `None`
+    /// at rest. Only a change bumps the clock: a scroll view re-states its
+    /// stretch at every flush.
+    pub(super) fn set_stretch(&self, stretch: Option<ShownStretch>) {
+        if self.stretch.replace(stretch) != stretch {
+            self.clock.bump();
+        }
+    }
+
+    /// Every overscroll stretch on the paint chain down to this placement,
+    /// outermost first, as a platform view at this placement is warped by
+    /// them: the window's logical units are the device space the
+    /// parameters carry. Motions on the chain evaluate at `at`; `None`
+    /// evaluates them at the clock's instant.
+    pub fn resolved_stretches(&self, at: Option<Instant>) -> Vec<ResolvedStretch> {
+        let at = at.or_else(|| self.clock.instant());
+        let ancestors = self.ancestors(false);
+        let mut transform = kurbo::Affine::IDENTITY;
+        let mut stretches = Vec::new();
+        for placement in ancestors
+            .iter()
+            .rev()
+            .map(Rc::as_ref)
+            .chain(std::iter::once(self))
+        {
+            transform *= placement.local_transform(at);
+            if let Some(shown) = placement.stretch.get() {
+                stretches.push(ResolvedStretch {
+                    params: shown.params(transform),
+                    strength: waterui_graphics::backend::filtrate::filters::STRETCH_INTERPOLATION_STRENGTH,
+                    viewport: crate::renderer::transformed_rect(transform, shown.viewport),
+                });
+            }
+            transform *= kurbo::Affine::translate(placement.content_offset.get());
+        }
+        stretches
     }
 
     /// Resolves a rect from this placement's local space to window space
@@ -395,32 +575,29 @@ impl Placement {
     /// the clock epoch, so any placement write anywhere in the window
     /// invalidates it.
     fn resolution(&self, hit: bool) -> ChainResolution {
+        let at = self.clock.instant();
         if !hit {
-            return self.resolve_chain(false);
+            return self.resolve_chain(false, at);
         }
         let epoch = self.clock.epoch();
-        if let Some((at, resolved)) = *self.resolved_hit.borrow()
-            && at == epoch
+        if let Some((cached, resolved)) = *self.resolved_hit.borrow()
+            && cached == epoch
         {
             return resolved;
         }
-        let resolved = self.resolve_chain(true);
+        let resolved = self.resolve_chain(true, at);
         *self.resolved_hit.borrow_mut() = Some((epoch, resolved));
         resolved
     }
 
     /// Composes transform, clip, alpha and removed kinds down the chain —
-    /// `hit` walks the structural parents, otherwise the paint parents.
+    /// `hit` walks the structural parents, otherwise the paint parents —
+    /// with every motion on the chain at `at`.
     ///
     /// The walk collects `Rc` clones bottom-up then composes top-down, so
     /// no level can disappear mid-resolve.
-    fn resolve_chain(&self, hit: bool) -> ChainResolution {
-        let mut ancestors: Vec<Rc<Self>> = Vec::new();
-        let mut parent = self.parent_for(hit);
-        while let Some(placement) = parent {
-            parent = placement.parent_for(hit);
-            ancestors.push(placement);
-        }
+    fn resolve_chain(&self, hit: bool, at: Option<Instant>) -> ChainResolution {
+        let ancestors = self.ancestors(hit);
         let mut transform = kurbo::Affine::IDENTITY;
         let mut clip: Option<kurbo::Rect> = None;
         let mut alpha = 1.0f32;
@@ -432,7 +609,7 @@ impl Placement {
             .chain(std::iter::once(self))
         {
             removes = removes.union(placement.removes.get());
-            transform *= placement.transform.get();
+            transform *= placement.local_transform(at);
             alpha *= placement.alpha.get();
             if let Some(rect) = placement.clip.get() {
                 // The clip lives in the placement's own frame, outside its
@@ -449,6 +626,18 @@ impl Placement {
             alpha,
             removes,
         }
+    }
+
+    /// The placements above this one, nearest first — `hit` walks the
+    /// structural parents, otherwise the paint parents.
+    fn ancestors(&self, hit: bool) -> Vec<Rc<Self>> {
+        let mut ancestors: Vec<Rc<Self>> = Vec::new();
+        let mut parent = self.parent_for(hit);
+        while let Some(placement) = parent {
+            parent = placement.parent_for(hit);
+            ancestors.push(placement);
+        }
+        ancestors
     }
 
     /// The chain link one level up: `parent`, or `paint_parent` when the

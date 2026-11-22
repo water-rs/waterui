@@ -223,9 +223,29 @@ impl From<[f32; 4]> for ParamValue {
 #[non_exhaustive]
 pub struct Param {
     /// The member name in the snippet's `Params` struct.
-    pub name: String,
+    name: String,
     /// The member type.
-    pub ty: ParamType,
+    ty: ParamType,
+}
+
+impl Param {
+    /// Creates a Param from its parts.
+    #[must_use]
+    pub const fn new(name: String, ty: ParamType) -> Self {
+        Self { name, ty }
+    }
+
+    /// The member name in the snippet's `Params` struct.
+    #[must_use]
+    pub const fn name(&self) -> &str {
+        self.name.as_str()
+    }
+
+    /// The member type.
+    #[must_use]
+    pub const fn ty(&self) -> ParamType {
+        self.ty
+    }
 }
 
 /// The inner type of the canonical working-space block.

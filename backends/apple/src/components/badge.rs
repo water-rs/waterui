@@ -19,10 +19,12 @@ use waterui::graphics::color::WorkingColor;
 use waterui::reactive::{Computed, Signal, SignalExt};
 use waterui::resolve::Resolvable;
 use waterui::theme::color::AccentForeground;
-use waterui_core::layout::{ProposalSize, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
+    ViewDimensions,
+};
 
 use crate::contract::{Mounted, NativeLeaf, RenderContext};
-use crate::dispatch::Dispatcher;
 
 #[cfg(target_os = "macos")]
 mod platform {
@@ -131,6 +133,18 @@ impl core::fmt::Debug for BadgeSubView {
 }
 
 impl SubView for BadgeSubView {
+    fn resolve_extent(
+        &self,
+        bounds: LayoutRect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        self.state
+            .borrow()
+            .content
+            .layout()
+            .resolve_extent(bounds, proposal)
+    }
+
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         self.state.borrow().content.layout().measure(proposal)
     }
@@ -243,10 +257,10 @@ fn render(config: BadgeConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
     leaf
 }
 
-/// Installs the `badge` handler on the dispatcher: `Native<BadgeConfig>`
+/// The `badge` realization: `Native<BadgeConfig>`
 /// maps to the overlay container.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<BadgeConfig>(render);
+pub fn realize_badge_config(value: BadgeConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
+    render(value, ctx)
 }
 
 #[cfg(test)]

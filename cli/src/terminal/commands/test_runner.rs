@@ -129,5 +129,5 @@ pub async fn run(args: &Args, interrupts: Receiver<()>) -> eyre::Result<u8> {
         .run(&host, &invocation, interrupts, out, err)
         .await
         .wrap_err("the test-runner invocation failed")?;
-    Ok(status.0)
+    Ok(status.code())
 }

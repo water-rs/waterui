@@ -5,14 +5,21 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::renderer::recording::transform_paint;
+#[cfg(feature = "menu")]
 use waterui::app::Quit;
 
+#[cfg(feature = "menu")]
+use waterui_core::handler::ReportExtraction as _;
+#[cfg(feature = "slider")]
 pub fn slider_value_epsilon(span: f64, track_width: f64) -> f64 {
     (span / track_width).abs().max(f64::EPSILON)
 }
 
+/// Runs `action` for its effect: a result is discarded, and an action whose
+/// parameters cannot be extracted does not run and is reported.
+#[cfg(feature = "menu")]
 pub fn call_action_discarding_result<T: 'static>(action: &SharedAction<T>, env: &Environment) {
-    let _ = action.call(env);
+    action.call(env).report_extraction();
 }
 
 /// Resolved menu items as popup-menu nodes. A declared `MenuItem::Quit`
@@ -21,6 +28,7 @@ pub fn call_action_discarding_result<T: 'static>(action: &SharedAction<T>, env: 
 /// `MenuItem::CloseWindow` becomes the row [`close_window_command`] builds
 /// — disabled for a non-closable `owner_closable` — and is omitted where
 /// the host's windows cannot be closed.
+#[cfg(feature = "menu")]
 pub fn popup_menu_nodes(
     items: &[ResolvedMenuItem],
     env: &Environment,
@@ -33,6 +41,7 @@ pub fn popup_menu_nodes(
         .collect()
 }
 
+#[cfg(feature = "menu")]
 fn popup_menu_node(
     item: ResolvedMenuItem,
     env: &Environment,
@@ -48,7 +57,7 @@ fn popup_menu_node(
         }
         ResolvedMenuItem::Divider => Some(PopupMenuNode::Divider),
         ResolvedMenuItem::Menu(menu) => {
-            let styled = menu.label.content.snapshot() + StyledStr::plain(" ›");
+            let styled = menu.label.content().snapshot() + StyledStr::plain(" ›");
             let plain_label = styled.to_plain().to_string();
             let semantic_text = menu.semantic_label.semantic_text().clone();
             let label = SemanticLabel::new(semantic_text, move || {
@@ -71,8 +80,9 @@ fn popup_menu_node(
     clippy::option_if_let_else,
     reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
 )]
+#[cfg(feature = "menu")]
 fn command_node(command: ResolvedCommand) -> PopupMenuNode {
-    let mut styled = command.label.content.snapshot();
+    let mut styled = command.label.content().snapshot();
     if command.selected.snapshot() {
         styled = StyledStr::plain("✓ ") + styled;
     }
@@ -118,7 +128,7 @@ fn command_node(command: ResolvedCommand) -> PopupMenuNode {
 }
 
 /// Emits the image accessibility node shared by the static graphics leaves
-/// (gradient, shape, morph shape). Their a11y is *not* render-driven: the leaf
+/// (gradient, shape). Their a11y is *not* render-driven: the leaf
 /// emits a single `Image` node from the surrounding environment's label and
 /// value, or the leaf-provided defaults where no override is installed. Shared
 /// by the dispatch path and the retained `Widget`-node path so both produce the
@@ -163,7 +173,7 @@ pub fn graphics_image_accessibility<E: crate::text::TextEngine>(
     }
 }
 
-/// Graphics leaves (gradient/shape/morph/GPU surface/scene) fill the proposal:
+/// Graphics leaves (gradient/shape/GPU surface/scene) fill the proposal:
 /// they stretch to whatever bounds the layout proposes (`StretchAxis::Both`).
 pub fn graphics_dimensions_from_proposal(proposal: ProposalSize) -> ViewDimensions {
     ViewDimensions::new(LayoutSize::new(
@@ -282,74 +292,12 @@ pub fn render_shape_parts<E: crate::text::TextEngine>(
         let resolved = shape.borrow();
         (
             resolved_shape_to_path(&resolved, bounds),
-            resolved.fill.clone(),
+            resolved.fill().clone(),
         )
     };
-    let fill = waterui_graphics::draw::Paint::Solid(ctx.renderer_mut().read_signal(&fill_signal));
+    let fill = cherenkov_record::Paint::Solid(ctx.renderer_mut().read_signal(&fill_signal));
     let transform = ctx.local;
     ctx.renderer_mut()
-        .scene_mut()
-        .fill_paint(peniko::Fill::NonZero, transform, fill, &path);
-}
-
-/// Measures a retained morph-shape leaf: a morph shape fills the proposed bounds.
-pub fn measure_morph_shape_node<E: crate::text::TextEngine>(
-    _shape: &ResolvedMorphShape,
-    proposal: ProposalSize,
-    _state: &mut HydroState<E>,
-    _env: &Environment,
-    _theme: &Rc<dyn crate::theme::WidgetTheme>,
-) -> ViewDimensions {
-    graphics_dimensions_from_proposal(proposal)
-}
-
-/// Renders a retained morph-shape leaf every flush: emits a11y (unless hidden) then
-/// fills the morphed path at the current animation progress. The morph progress is
-/// resolved via the animation controller every frame (explicit `progress` signal
-/// watched through `resolve_owned_scalar`; time-based
-/// animation driven by `sample_morph_progress`), so the morph stays live.
-pub fn render_morph_shape_node<E: crate::text::TextEngine>(
-    ctx: &mut WidgetRenderContext<'_, E>,
-    shape: &Rc<RefCell<ResolvedMorphShape>>,
-    env: &Environment,
-) {
-    let hidden = env
-        .get::<AccessibilityHidden>()
-        .is_some_and(AccessibilityHidden::is_hidden);
-    if !hidden {
-        let render_ctx = ctx.render_context();
-        graphics_image_accessibility(ctx.renderer_mut(), Some(render_ctx), env, None, None);
-    }
-    render_morph_shape_parts(ctx, shape, env);
-}
-
-pub fn render_morph_shape_parts<E: crate::text::TextEngine>(
-    ctx: &mut WidgetRenderContext<'_, E>,
-    shape: &Rc<RefCell<ResolvedMorphShape>>,
-    _env: &Environment,
-) {
-    let bounds = ctx.bounds;
-    let transform = ctx.local;
-    let renderer = ctx.renderer_mut();
-    let (path, fill) = {
-        let resolved = shape.borrow();
-        let progress = if let Some(progress) = resolved.progress.as_ref() {
-            renderer.resolve_owned_scalar(
-                progress,
-                shape,
-                MORPH_PROGRESS_ANIMATION_KEY,
-                cherenkov_record::tree::RATE_FAST,
-            )
-        } else {
-            renderer.sample_morph_progress(resolved.animation, shape)
-        };
-        let fill = renderer.read_signal(&resolved.fill);
-        (
-            resolved_morph_shape_to_path(&resolved, progress, bounds),
-            waterui_graphics::draw::Paint::Solid(fill),
-        )
-    };
-    renderer
         .scene_mut()
         .fill_paint(peniko::Fill::NonZero, transform, fill, &path);
 }
@@ -405,9 +353,8 @@ pub fn str_accessibility<E: crate::text::TextEngine>(
     }
 }
 
-/// Measures a retained string leaf from its immutable content, mirroring how
-/// [`measure_view_dimensions_with_proposal`] measures a `Str` (plain styled text,
-/// leading alignment, wrapped at the proposal width).
+/// Measures a retained string leaf from its immutable content: plain styled
+/// text, leading alignment, wrapped at the proposal width.
 pub fn measure_str_node<E: crate::text::TextEngine>(
     text: &Str,
     proposal: ProposalSize,
@@ -452,6 +399,7 @@ pub fn render_str_parts<E: crate::text::TextEngine>(
 /// Emits a retained `Str` leaf's accessibility node for the semantic walk —
 /// the same node `str_accessibility` registers, with no bounds.
 #[cfg(feature = "accessibility")]
+#[cfg(hydrolysis_cherenkov)]
 pub fn emit_str_accessibility<E: crate::text::TextEngine>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     text: &Rc<RefCell<Str>>,
@@ -464,6 +412,7 @@ pub fn emit_str_accessibility<E: crate::text::TextEngine>(
 /// walk — the same node `graphics_image_accessibility` registers, with no
 /// bounds.
 #[cfg(feature = "accessibility")]
+#[cfg(hydrolysis_cherenkov)]
 pub fn emit_graphics_leaf_accessibility<T, E: crate::text::TextEngine>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     _state: &Rc<RefCell<T>>,
@@ -475,7 +424,7 @@ pub fn emit_graphics_leaf_accessibility<T, E: crate::text::TextEngine>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use waterui_graphics::draw::WorkingColor;
+    use cherenkov_record::WorkingColor;
 
     #[test]
     fn radial_gradient_radii_use_the_shorter_side_of_a_200x100_box() {

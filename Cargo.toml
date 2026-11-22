@@ -77,6 +77,10 @@ repository.workspace = true
 description = "A modern UI framework for Rust"
 keywords = ["ui", "framework", "rust", "gui", "water"]
 categories = ["gui"]
+# `build.rs` exports the enabled features to direct dependents as
+# `DEP_WATERUI_FEATURES`, so a backend implements exactly the components the
+# application enabled.
+links = "waterui"
 
 # WaterUI framework release policy shared by the `water` CLI and release
 # automation. This table is the framework's own scaffold metadata: the
@@ -89,6 +93,8 @@ categories = ["gui"]
 # launch-environment provider; apps built by older CLIs would fail the
 # handoff.
 minimum-cli-version = "0.4.6"
+# Features used by the CLI's native demo scaffold.
+scaffold-features = ["slider", "stepper", "text-field", "toggle"]
 # Native Apple deployment targets, carried into every project's Cargo config.
 apple-deployment-targets = { macos = "26.0", ios = "26.0", tvos = "26.0", watchos = "26.0", visionos = "2.5" }
 # The Apple deployment targets a project that bundles a web frontend declares:
@@ -99,7 +105,7 @@ apple-deployment-targets = { macos = "26.0", ios = "26.0", tvos = "26.0", watcho
 web-frontend-apple-deployment-targets = { macos = "27.0", ios = "27.0", tvos = "27.0", watchos = "27.0", visionos = "27.0" }
 # The Android API floor the native runtime supports; the backend's Gradle
 # `minSdk` must agree.
-android-min-api-level = 31
+android-min-api-level = 33
 # The Gradle release every project this framework assembles runs — the
 # scaffolded `gradle-wrapper.properties` renders it and the in-tree Hydrolysis
 # host pins it, so the version CI exercises is the one users' `./gradlew`
@@ -129,11 +135,15 @@ hydrolysis-android-host-subdirectory = "backends/hydrolysis/android"
 # `[workspace.dependencies]` below. `hydrolysis` is absent deliberately: it
 # is an in-tree member resolved through `hydrolysis-path`, not a scaffold
 # package with a requirement of its own.
+#
+# A package absent from `[workspace.dependencies]` because no member links
+# it takes its requirement from `scaffold-pins` below.
 scaffold-packages = [
     "hydrolysis-m3",
     "waterui-gtk",
     "waterui-winui",
 ]
+
 # Third-party crates the facade re-exports into its public API, mapped to
 # the facade path the re-export answers at. A project that also depends on
 # one of these directly must resolve the same package the framework does:
@@ -141,7 +151,19 @@ scaffold-packages = [
 # matching, and cargo reports the split as hundreds of type errors that
 # never name a version. The `water` CLI fails on that divergence before it
 # reaches the compiler.
-reexported-dependencies = { anyhow = "waterui::Error", bytemuck = "waterui::graphics::bytemuck", cherenkov = "waterui::graphics::cherenkov", cherenkov-cpu = "waterui::graphics::cherenkov_cpu", cherenkov-gpu = "waterui::graphics::cherenkov_gpu", cherenkov-record = "waterui::graphics::draw", color = "waterui::graphics::Color", executor-core = "waterui::task", filtrate = "waterui::graphics::filtrate", filtrate-core = "waterui::media::Filter", keyboard-types = "waterui::graphics::input", nami = "waterui::reactive", nami-core = "waterui::reactive", native-executor = "waterui::task", pastey = "waterui::pastey", serde = "waterui::webview::serde", serde_json = "waterui::webview::serde_json", suiteki = "waterui::Str", tracing = "waterui::log", url = "waterui::media::Url", waterkit-haptic = "waterui::Intensity", wgpu = "waterui::graphics::wgpu" }
+reexported-dependencies = { anyhow = "waterui::Error", bytemuck = "waterui::graphics::gpu::bytemuck", cherenkov = "waterui::graphics::backend::cherenkov", cherenkov-cpu = "waterui::graphics::backend::cherenkov_cpu", cherenkov-gpu = "waterui::graphics::backend::cherenkov_gpu", cherenkov-record = "waterui::graphics::backend::draw", color = "waterui::graphics::Color", executor-core = "waterui::task", filtrate = "waterui::graphics::backend::filtrate", filtrate-core = "waterui::media::Filter", keyboard-types = "waterui::graphics::input", nami = "waterui::reactive", nami-core = "waterui::reactive", native-executor = "waterui::task", pastey = "waterui::pastey", serde = "waterui::webview::serde", serde_json = "waterui::webview::serde_json", suiteki = "waterui::Str", tracing = "waterui::log", url = "waterui::media::Url", waterkit-haptic = "waterui::Intensity", wgpu = "waterui::graphics::gpu::wgpu" }
+
+# Nothing in this workspace links the GTK or WinUI backends: the `water`
+# CLI reads these pins to scaffold a launcher crate. Each pins the
+# backend's nami-migration head — the published releases still require the
+# pre-rename nami line (`^0.11.2` and peers) — so `dev`, `nightly` and
+# local-checkout scaffolds declare the commit directly while `stable`
+# withholds the packages under `experimental-packages`. All three heads are
+# on nami 0.12 (water-rs/gtk-backend#144 and water-rs/waterui-winui#84).
+# Drop the `git`/`rev` half once each backend releases a migrated version.
+[package.metadata.waterui.scaffold-pins]
+waterui-gtk = { version = "0.2.1", git = "https://github.com/water-rs/gtk-backend", rev = "0173db0e8e066305ff49bc4e12197c1056321831" }
+waterui-winui = { version = "0.1.0", git = "https://github.com/water-rs/winui-backend", rev = "4c8c82bb133940d1d2671c1d29c5b448ad035255" }
 
 [lib]
 path = "facade.rs"
@@ -159,6 +181,8 @@ keywords = ["ui", "framework", "rust", "gui", "water"]
 categories = ["gui"]
 
 [workspace.lints]
+# Cargo's own unused-dependency lint replaces the `cargo-machete` CI step.
+cargo.unused_dependencies = "deny"
 rust.missing_docs = "warn"
 rust.missing_debug_implementations = "warn"
 clippy.all = "warn"
@@ -172,11 +196,10 @@ clippy.nursery = "warn"
 clippy.cargo = "warn"
 # Every `unsafe` must state why it is sound, in a form the compiler checks.
 clippy.undocumented_unsafe_blocks = "warn"
-# Public types are `#[non_exhaustive]` unless deliberately closed, so adding
-# a variant or a field is not a breaking change; a closed type says why
-# through an item-level `expect`.
+# Public enums are `#[non_exhaustive]` unless deliberately closed, so adding
+# a variant is not a breaking change; a closed enum says why through an
+# item-level `expect`.
 clippy.exhaustive_enums = "warn"
-clippy.exhaustive_structs = "warn"
 clippy.multiple_crate_versions =  { level = "allow", priority = 1 }
 
 
@@ -208,11 +231,8 @@ executor-core = { version = "0.7.1", features = ["std"]}
 # off. (waterkit keeps it: its streaming code does `block_on`.)
 futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 futures-lite = "2.6"
-geo = { version = "0.33", default-features = false }
 getrandom = { version = "0.4", default-features = false }
-geo-types = "0.7"
 lru = "0.19"
-mvt-reader = "2.5.0"
 # W3C UI Events key/code/modifier vocabulary, shared by the GPU-surface input
 # contract and every backend that feeds it.
 keyboard-types = { version = "0.8.3", default-features = false }
@@ -236,8 +256,6 @@ cherenkov = { version = "0.0.0", path = "graphics/cherenkov" }
 cherenkov-cpu = { version = "0.0.0", path = "graphics/cherenkov/cpu" }
 cherenkov-gpu = { version = "0.0.0", path = "graphics/cherenkov/gpu" }
 cherenkov-record = { version = "0.0.0", path = "graphics/cherenkov/record" }
-cherenkov-stroke = { version = "0.0.0", path = "graphics/cherenkov/stroke" }
-pin-project-lite = "0.2"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2.0.21"
@@ -253,11 +271,12 @@ waterui-media = { version = "0.5.1", path = "components/multimedia/media" }
 waterui-image = "0.5.0"
 waterui-video = { version = "0.5.1", path = "components/multimedia/video" }
 waterui-video-gpu = "0.4.0"
-waterui-form = { version = "0.5.1", path = "components/foundation/form" }
-waterui-controls = { version = "0.5.1", path = "components/foundation/controls"}
+waterui-form = { version = "0.5.1", path = "components/foundation/form", default-features = false }
+waterui-controls = { version = "0.5.1", path = "components/foundation/controls", default-features = false }
+waterui-color = { version = "0.5.1", path = "components/foundation/color" }
 waterui-graphics = { version = "0.5.1", path = "components/visual/graphics", default-features = false }
-waterui-canvas = "0.2.0"
 waterui-shape = { version = "0.5.1", path = "components/foundation/shape", default-features = false }
+waterui-structural-transition = { version = "0.5.1", path = "components/foundation/transition" }
 waterui-svg = "0.4.0"
 waterui-math = "0.2.0"
 waterui-layout = { version = "0.5.1", path = "components/foundation/layout" }
@@ -265,32 +284,33 @@ waterui-navigation = { version = "0.5.1", path = "components/foundation/navigati
 waterui-webview = { version = "0.5.1", path = "components/platform/webview" }
 waterui-widgets = { version = "0.5.1", path = "components/platform/widgets" }
 waterui-chromium = { version = "0.5.1", path = "components/platform/chromium" }
-waterui-browser-cef = { version = "0.1.0", git = "https://github.com/water-rs/browsers", branch = "dev", default-features = false }
-waterui-browser-wpe = { version = "0.1.0", git = "https://github.com/water-rs/browsers", branch = "dev", default-features = false }
+waterui-browser-cef = { version = "0.1.0", git = "https://github.com/water-rs/browsers", branch = "main", default-features = false }
+waterui-browser-wpe = { version = "0.1.0", git = "https://github.com/water-rs/browsers", branch = "main", default-features = false }
 wgpu-external-frame = "0.4.0"
 waterui-icon = { version = "0.5.1", path = "components/foundation/icon" }
 waterui-icons-sf-symbol = { version = "0.5.1", path = "components/icon/sf_symbol" }
 waterui-icons-material-icon = { version = "0.5.1", path = "components/icon/material" }
-waterui-icons-fontawesome7 = { version = "0.5.1", path = "components/icon/fontawesome7" }
 waterui-icons-lucide = { version = "0.5.1", path = "components/icon/lucide" }
-waterui-icons-native = { version = "0.5.1", path = "components/icon/native" }
 waterui-locale = { version = "0.5.1", path = "utils/locale" }
 waterui-map = { version = "0.5.1", path = "components/data/map" }
 waterui-meta = { version = "0.5.1", path = "utils/meta" }
+waterui-git-head = { version = "0.5.1", path = "utils/git-head" }
+waterui-contract = { version = "0.5.1", path = "utils/contract" }
+waterui-easing = { version = "0.5.1", path = "utils/easing" }
 waterui-apple-os = { version = "0.5.1", path = "utils/apple-os" }
-waterkit-location = "0.2"
-waterkit-screen = "0.2"
-waterkit-audio = { version = "0.2", default-features = false }
-waterkit-clipboard = "0.2"
-waterkit-permission = "0.2"
-waterkit-dialog = "0.2"
-waterkit-fs = "0.2"
-waterkit-haptic = "0.2"
-waterkit-camera = "0.2"
-waterkit-codec = { version = "0.2", default-features = false }
-waterkit-video = { version = "0.2", features = ["streaming"] }
-waterkit-build = "0.2"
-waterkit-menu = "0.2"
+waterkit-location = "0.3"
+waterkit-deeplink = "0.3"
+waterkit-audio = { version = "0.3", default-features = false }
+waterkit-clipboard = "0.3"
+waterkit-permission = "0.3"
+waterkit-dialog = "0.3"
+waterkit-fs = "0.3"
+waterkit-haptic = "0.3"
+waterkit-camera = "0.3"
+waterkit-build = "0.3"
+waterkit-menu = "0.3"
+waterkit-video-core = "0.3"
+waterkit-video-processing = "0.2"
 waterui-backend-core = { version = "0.5.2", path = "backends/core", default-features = false }
 # The `filtrate` family — the filter library `.filter(F)`/`.effect(E)` and
 # Cherenkov share — lives in-tree under `graphics/filtrate/` (#1449). Every
@@ -298,7 +318,6 @@ waterui-backend-core = { version = "0.5.2", path = "backends/core", default-feat
 # built on one side is a different type on the other.
 filtrate = { version = "0.2.1", path = "graphics/filtrate", default-features = false }
 filtrate-core = { version = "0.2.0", path = "graphics/filtrate/core" }
-filtrate-derive = { version = "0.1.0", path = "graphics/filtrate/derive" }
 waterui-barcode = "0.3.0"
 waterui-particle = "0.2.0"
 waterui-chart = "0.3.0"
@@ -308,20 +327,8 @@ waterui-assets-core = { version = "0.5.1", path = "components/assets/core" }
 waterui-assets-planner = { version = "0.5.1", path = "components/assets/planner" }
 waterui-assets-macros = { version = "0.5.1", path = "components/assets/macros" }
 waterui-inspector-protocol = { version = "0.5.1", path = "components/devtools/inspector/protocol" }
-waterui-inspector-app = { version = "0.5.2", path = "components/devtools/inspector/app" }
 waterui-preview-protocol = { version = "0.5.1", path = "components/devtools/preview/protocol" }
 waterui-mcp-protocol = { version = "0.5.1", path = "components/devtools/mcp/protocol" }
-waterui-mcp = { version = "0.5.1", path = "components/devtools/mcp/server" }
-# Nothing in this workspace links the GTK or WinUI backends: the `water`
-# CLI reads these entries to scaffold a launcher crate. Each pins the
-# backend's nami-migration head — the published releases still require the
-# pre-rename nami line (`^0.11.2` and peers) — so `dev`, `nightly` and
-# local-checkout scaffolds declare the commit directly while `stable`
-# withholds the packages under `experimental-packages`. All three heads are
-# on nami 0.12 (water-rs/gtk-backend#144 and water-rs/waterui-winui#84).
-# Drop the `git`/`rev` half once each backend releases a migrated version.
-waterui-gtk = { version = "0.2.1", git = "https://github.com/water-rs/gtk-backend", rev = "0173db0e8e066305ff49bc4e12197c1056321831" }
-waterui-winui = { version = "0.1.0", git = "https://github.com/water-rs/waterui-winui", rev = "4c8c82bb133940d1d2671c1d29c5b448ad035255" }
 waterui-testing = { path = "testing" }
 waterui-internal = { version = "0.5.1", path = "src", default-features = false }
 waterui-dylib = { version = "0.5.1", path = "utils/dylib", default-features = false }
@@ -355,57 +362,23 @@ serde = { version = "1.0", default-features = false, features = ["alloc"] }
 erased-serde = { version = "0.4.10", default-features = false, features = ["alloc"] }
 # 30, the exact minor `cherenkov-gpu` builds against: an application can link
 # only one wgpu, and every `wgpu` type that crosses between the engine and a
-# `GpuContent` producer must be one type.
-wgpu = "30.0.1"
+# `GpuContent` producer must be one type. Only target-neutral features live
+# here: a workspace dependency cannot be target-specific, so each crate that
+# creates a GPU instance enables its target's one native backend (`dx12` on
+# Windows, `metal` on Apple, `vulkan` on Linux and Android) in a target table.
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "wgsl", "webgpu"] }
 parley = { version = "0.12", default-features = false }
 kurbo = "0.13"
 skrifa = "0.48.0"
-# The only crate in the Rust ecosystem that reads the OpenType `MATH` table.
-# `read-fonts`/`skrifa` do not expose it (googlefonts/fontations#1269 has been
-# open since 2024-11), and neither `rustybuzz` nor `harfrust` port HarfBuzz's
-# `hb-ot-math`. Math layout is computed from that table, so it is depended on
-# directly rather than reached through the text stack.
-ttf-parser = "0.25"
-# LaTeX front end. A pull parser over a public `Event` enum, so events are
-# consumed straight into the math AST; the alternative (`math-core`) only emits
-# a MathML string, which would have to be parsed back.
-pulldown-latex = "0.8"
-# Writes the MathML an accessibility tree carries. XML is structured output, so
-# it goes through a writer that escapes and balances tags rather than through
-# `push_str`/`format!` chains.
-quick-xml = "0.42"
-# Turns that MathML into the sentence a screen reader reads out — the ClearSpeak
-# / MathSpeak engine assistive-technology vendors ship. `include-zip` compiles
-# the speech rules into the binary as one bzip2 archive served from an in-memory
-# filesystem, so the rules are not files anything has to install, bundle, or
-# find at runtime; without it MathCAT looks for a `Rules` directory on disk.
-mathcat = { version = "0.7.5", features = ["include-zip"] }
 toml = "1.1.8"
-lyon = "1.0"
-wgpu-hal = { version = "30.0.1", features = ["gles", "metal"] }
-# Must match the `glow` version wgpu-hal links against, or GLES handles from
-# `wgpu::hal::gles` fail to unify with locally created ones.
-# Tracks whatever `wgpu-hal` links, not the newest release: the GTK backend
-# hands a `glow::NativeFramebuffer` straight to
-# `wgpu::hal::gles::TextureInner::ExternalNativeFramebuffer`, so a different
-# major here makes that a different type and the backend stops compiling.
-glow = "0.18"
-tiny-skia = "0.12"
+wgpu-hal = { version = "30.0.1", default-features = false, features = ["metal"] }
 zenwave = { version = "0.7.1", default-features = false, features = ["hyper-backend"] }
-futures-timer = "3"
 pastey = "0.2.3"
 tracing-panic = "0.1.3"
-robius-open = { version = "0.3", default-features = false }
-gtk4 = "0.11"
-gdk4 = "0.11"
-glib = "0.22"
 pollster = "1.0"
 jiff = { version = "0.2", features = ["serde"] }
 async-channel = "2.5"
-cpal = "0.18"
 rustc-hash = "2.1.3"
-swift-bridge = "0.1"
-swift-bridge-build = "0.1"
 jni = "0.22"
 windows = { version = "0.62", features = ["Devices_Geolocation", "Foundation"] }
 web-time = "1.1"
@@ -433,7 +406,39 @@ waterui = { path = ".", features = ["media"] }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 
 [features]
+list = ["waterui-internal/list", "waterui-dylib?/list"]
+table = ["waterui-internal/table", "waterui-dylib?/table"]
+navigation = ["waterui-internal/navigation", "waterui-dylib?/navigation"]
+menu = ["waterui-internal/menu", "waterui-dylib?/menu"]
+calendar = ["waterui-internal/calendar", "waterui-dylib?/calendar"]
+color-picker = ["waterui-internal/color-picker", "waterui-dylib?/color-picker"]
+date-picker = ["waterui-internal/date-picker", "waterui-dylib?/date-picker"]
+file-picker = ["waterui-internal/file-picker", "waterui-dylib?/file-picker"]
+multi-date-picker = ["waterui-internal/multi-date-picker", "waterui-dylib?/multi-date-picker"]
+picker = ["waterui-internal/picker", "waterui-dylib?/picker"]
+secure-field = ["waterui-internal/secure-field", "waterui-dylib?/secure-field"]
+slider = ["waterui-internal/slider", "waterui-dylib?/slider"]
+stepper = ["waterui-internal/stepper", "waterui-dylib?/stepper"]
+text-field = ["waterui-internal/text-field", "waterui-dylib?/text-field"]
+toggle = ["waterui-internal/toggle", "waterui-dylib?/toggle"]
+validation = ["waterui-internal/validation", "waterui-dylib?/validation"]
 default = [
+    "list",
+    "table",
+    "navigation",
+    "menu",
+    "calendar",
+    "color-picker",
+    "date-picker",
+    "file-picker",
+    "multi-date-picker",
+    "picker",
+    "secure-field",
+    "slider",
+    "stepper",
+    "text-field",
+    "toggle",
+    "validation",
     "gpu",
     "assets",
     "dialog",
@@ -452,6 +457,10 @@ locale-list = ["waterui-internal/locale-list", "waterui-dylib?/locale-list"]
 # it to cross-compile a lean WaterUI app for embedded targets without the GPU
 # stack.
 gpu = ["effects", "waterui-internal/gpu", "waterui-dylib?/gpu"]
+# CPU rendering stack (waterui-graphics' Cherenkov engine on `cherenkov-cpu`),
+# with no wgpu. A self-drawn backend built with both renders on the GPU when
+# the host has a usable hardware adapter and on the CPU otherwise.
+cpu = ["effects", "waterui-internal/cpu", "waterui-dylib?/cpu"]
 # Filters on views and their portable description, without the GPU stack.
 # Implied by `gpu`.
 effects = ["waterui-internal/effects", "waterui-dylib?/effects"]
@@ -479,6 +488,7 @@ remote = ["waterui-internal/remote", "waterui-dylib?/remote"]
 # link it. The backend without one selects this.
 video-gpu = ["waterui-internal/video-gpu", "waterui-dylib?/video-gpu"]
 webview = ["waterui-internal/webview", "waterui-dylib?/webview"]
+map = ["waterui-internal/map", "waterui-dylib?/map"]
 # The `WidgetKit` authoring surface (`waterui::widgets`, `#[waterui::widget]`).
 widgets = ["waterui-internal/widgets", "waterui-dylib?/widgets"]
 # TypeScript views: the embedded JavaScript engine, the signal bridge, the
@@ -514,6 +524,22 @@ particle = ["waterui-internal/particle", "waterui-dylib?/particle"]
 # TypeScript view modules opts in explicitly rather than paying for them through
 # the full-feature set — the same reasoning that keeps `markdown-math` out.
 all = [
+    "list",
+    "table",
+    "navigation",
+    "menu",
+    "calendar",
+    "color-picker",
+    "date-picker",
+    "file-picker",
+    "multi-date-picker",
+    "picker",
+    "secure-field",
+    "slider",
+    "stepper",
+    "text-field",
+    "toggle",
+    "validation",
     "canvas",
     "chart",
     "barcode",
@@ -528,6 +554,7 @@ all = [
     "assets",
     "media",
     "webview",
+    "map",
     "flow-markdown",
     "video-gpu",
     "navigation-restoration",
@@ -607,8 +634,8 @@ lto = "thin"
 # xcb 1.7.0 still builds with vulnerable quick-xml 0.30. Upstream has migrated
 # to quick-xml 0.41, but has not released that change yet.
 [patch.crates-io]
-shaderloom = { git = "https://github.com/water-rs/shaderloom", branch = "dev" }
-# Extracted crates on crates.io (waterui-canvas #185, waterui-chart #188, …) depend on the
+shaderloom = { git = "https://github.com/water-rs/shaderloom", branch = "main" }
+# Extracted crates on crates.io (waterui-chart #188, …) depend on the
 # registry `waterui-core` and `waterui-graphics`; the workspace must resolve
 # those to its own copies or the graph carries two of each and every `View`
 # is a different type on either side. Publishing ignores this table, so the
@@ -645,16 +672,16 @@ waterui-chromium = { path = "components/platform/chromium" }
 waterui-watcher-set = { path = "utils/watcher-set" }
 # `hydrolysis-m3` declares its renderer requirement against the registry;
 # this entry makes it resolve to the in-tree backend so the graph carries
-# exactly one hydrolysis. The registry 0.3.1 theme implements the
-# four-argument `draw_button_chrome` removed on this branch; the pinned
-# revision carries the icon-button contract (water-rs/hydrolysis#115) and the
-# split tabs-bar surface and divider calls (#1982). Drop the git pin once a
-# release has both changes.
+# exactly one hydrolysis. The registry 0.3.1 theme implements button hooks
+# this branch replaced with `WidgetTheme::button`; the pinned revision carries
+# the icon-button contract (water-rs/hydrolysis#115), the button look (#4037)
+# and the split tabs-bar surface and divider calls (#1982). Drop the git pin
+# once a release has these changes.
 hydrolysis = { path = "backends/hydrolysis" }
-hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", branch = "dev" }
+hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", branch = "main" }
 # The waterkit family follows waterkit's `dev` so the framework consumes its
 # unreleased changes; the patches apply only while the `[workspace.dependencies]`
-# requirements admit `dev`'s version (0.2). Every waterkit crate the
+# requirements admit `dev`'s version (0.3). Every waterkit crate the
 # video/audio graph shares types across comes from the same source — a
 # registry `waterkit-audio` beside the patched `waterkit-video` gives two
 # `DecodedAudioFrame` types — and `waterkit-core` keeps the whole waterkit
@@ -718,40 +745,41 @@ wgpu-types = { git = "https://github.com/water-rs/wgpu", branch = "fix/metal-sha
 # wgpu-external-frame hands wgpu-hal's GLES textures to its own glow context, so
 # it must link the glow 0.18 the branch above carries; its crates.io 0.4.0 links
 # 0.17 (water-rs/wgpu-external-frame#43). Drop it with the wgpu entries.
-wgpu-external-frame = { git = "https://github.com/water-rs/wgpu-external-frame", branch = "dev" }
+wgpu-external-frame = { git = "https://github.com/water-rs/wgpu-external-frame", branch = "main" }
 
 # Split component repositories, the waterkit family and suiteki follow their
-# `dev` branch; `Cargo.lock` records the exact commit.
-waterui-barcode = { git = "https://github.com/water-rs/barcode", branch = "dev" }
-waterui-canvas = { git = "https://github.com/water-rs/canvas", branch = "dev" }
-waterui-chart = { git = "https://github.com/water-rs/chart", branch = "dev" }
-waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", branch = "dev" }
-waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", branch = "dev" }
-waterui-particle = { git = "https://github.com/water-rs/particle", rev = "bf663af85211d1f0bcce511b94ac435efad046a6" }
-waterui-image = { git = "https://github.com/water-rs/image", branch = "dev" }
-waterui-svg = { git = "https://github.com/water-rs/svg", rev = "16f99e021f735d0b1b31c95552b074e953d56418" }
-waterkit-build = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
-waterkit-camera = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
-waterkit-clipboard = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
-waterkit-dialog = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
-waterkit-fs = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
-waterkit-haptic = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
-waterkit-location = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
-waterkit-menu = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
-waterkit-permission = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
-waterkit-audio = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
-waterkit-codec = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
-waterkit-core = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
-waterkit-video = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
-waterkit-video-container = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
-waterkit-video-core = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
-waterkit-video-player = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
-waterkit-video-streaming = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
-waterui-math = { git = "https://github.com/water-rs/math", branch = "dev" }
+# `main` branch; `Cargo.lock` records the exact commit.
+waterui-barcode = { git = "https://github.com/water-rs/barcode", branch = "refactor/strict-metadata" }
+waterui-chart = { git = "https://github.com/water-rs/chart", branch = "refactor/realized-stretch-axis" }
+waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", branch = "refactor/strict-metadata" }
+waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", branch = "refactor/strict-metadata" }
+waterui-particle = { git = "https://github.com/water-rs/particle", branch = "main" }
+waterui-image = { git = "https://github.com/water-rs/image", branch = "main" }
+waterui-svg = { git = "https://github.com/water-rs/svg", branch = "main" }
+waterkit-build = { git = "https://github.com/water-rs/waterkit", branch = "main" }
+waterkit-camera = { git = "https://github.com/water-rs/waterkit", branch = "main" }
+waterkit-clipboard = { git = "https://github.com/water-rs/waterkit", branch = "main" }
+waterkit-deeplink = { git = "https://github.com/water-rs/waterkit", branch = "main" }
+waterkit-dialog = { git = "https://github.com/water-rs/waterkit", branch = "main" }
+waterkit-fs = { git = "https://github.com/water-rs/waterkit", branch = "main" }
+waterkit-haptic = { git = "https://github.com/water-rs/waterkit", branch = "main" }
+waterkit-location = { git = "https://github.com/water-rs/waterkit", branch = "main" }
+waterkit-menu = { git = "https://github.com/water-rs/waterkit", branch = "main" }
+waterkit-permission = { git = "https://github.com/water-rs/waterkit", branch = "main" }
+waterkit-audio = { git = "https://github.com/water-rs/waterkit", branch = "main" }
+waterkit-codec = { git = "https://github.com/water-rs/waterkit", branch = "main" }
+waterkit-core = { git = "https://github.com/water-rs/waterkit", branch = "main" }
+waterkit-video = { git = "https://github.com/water-rs/waterkit", branch = "main" }
+waterkit-video-container = { git = "https://github.com/water-rs/waterkit", branch = "main" }
+waterkit-video-core = { git = "https://github.com/water-rs/waterkit", branch = "main" }
+waterkit-video-processing = { git = "https://github.com/water-rs/waterkit", branch = "main" }
+waterkit-video-player = { git = "https://github.com/water-rs/waterkit", branch = "main" }
+waterkit-video-streaming = { git = "https://github.com/water-rs/waterkit", branch = "main" }
+waterui-math = { git = "https://github.com/water-rs/math", branch = "main" }
 # suiteki 0.1.1 on crates.io implements nami-core 0.3's `Signal`; suiteki's
 # `dev` implements 0.5's (water-rs/suiteki#29). Drop once a release carries
 # it.
-suiteki = { git = "https://github.com/water-rs/suiteki", branch = "dev" }
+suiteki = { git = "https://github.com/water-rs/suiteki", branch = "main" }
 # `homedir` (via axoupdater) and `clipboard-rs` (via waterkit-clipboard) pin
 # `windows` 0.61 and 0.59 — both inside gpu-allocator's `>=0.58, <=0.62`
 # range, so any relock can settle gpu-allocator on a different `windows`

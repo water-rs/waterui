@@ -14,9 +14,9 @@ impl FirstPaint {
 }
 
 pub fn mark(view: &PlatformView, env: &Environment) {
-    let state = env
-        .get::<FirstPaint>()
-        .expect("first-paint state is installed");
+    let state = env.get::<FirstPaint>().expect(
+        "`entry::run` and `runtime_create` install the first-paint state with the environment",
+    );
     if !state.claim() {
         return;
     }

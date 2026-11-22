@@ -5,8 +5,8 @@ use nami::collection::Collection;
 use waterui_core::{AnyView, View, id::Identifiable, view::TupleViews, views::ForEach};
 
 use crate::{
-    Layout, LazyContainer, PlacedSubview, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
-    SubviewPlacement, ViewDimensions,
+    Layout, LayoutError, LazyContainer, PlacedSubview, PlacementInput, Point, ProposalSize, Rect,
+    Size, StretchAxis, SubView, SubviewPlacement, UnitPoint, ViewDimensions,
     container::FixedContainer,
     stack::{
         Alignment, HorizontalAlignment, VerticalAlignment,
@@ -59,10 +59,6 @@ fn zstack_vertical_metrics(
 /// reported sizes. If you instead need the base child to dictate the container
 /// size while layering secondary content, see [`crate::overlay::OverlayLayout`].
 #[derive(Debug, Clone, Default)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "frozen layout contract (docs/layout-spec.md): the stack's parameter is its alignment"
-)]
 pub struct ZStackLayout {
     /// The alignment used to position children within the `ZStack`
     pub alignment: Alignment,
@@ -70,7 +66,7 @@ pub struct ZStackLayout {
 
 impl Layout for ZStackLayout {
     /// A `ZStack` is content-sized only while every child is — a child that
-    /// stretches (a `Color`, a `GpuContentView`) makes the stack stretch on the
+    /// stretches (a `Color`, a `GpuView`) makes the stack stretch on the
     /// same axes, since `place` hands such children the full bounds.
     ///
     /// Axis-relative answers have no direction to resolve against here:
@@ -202,6 +198,23 @@ impl Layout for ZStackLayout {
         placements
     }
 
+    /// The stack's answer, anchored on both axes by the stack's alignment
+    /// (custom guides at the start). Layers overflowing the envelope do not
+    /// move it.
+    fn resolve_extent(
+        &self,
+        input: PlacementInput,
+        _children: &[&dyn SubView],
+    ) -> Result<Rect, LayoutError> {
+        Ok(input.bounds.align(
+            input.extent()?,
+            UnitPoint::new(
+                LineAnchor::horizontal(self.alignment.horizontal()).response_unit(),
+                LineAnchor::vertical(self.alignment.vertical()).response_unit(),
+            ),
+        ))
+    }
+
     fn explicit_horizontal(
         &self,
         alignment: HorizontalAlignment,
@@ -326,13 +339,6 @@ where
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         FixedContainer::new(self.layout, self.contents.0)
     }
-
-    /// Resolves to `FixedContainer` over the same layout and children;
-    /// reports what that container would — matching `FixedContainer`'s
-    /// `View::stretch_axis`.
-    fn stretch_axis(&self) -> StretchAxis {
-        self.layout.stretch_axis(&self.contents.0.stretch_axes())
-    }
 }
 
 impl<C, F, V> View for ZStack<ForEach<C, F, V>>
@@ -345,25 +351,25 @@ where
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         LazyContainer::new(self.layout, self.contents)
     }
-
-    /// Resolves to `LazyContainer`, which cannot enumerate children without
-    /// materializing them and answers its layout's axis over an empty child
-    /// set — matching `LazyContainer::stretch_axis`.
-    fn stretch_axis(&self) -> StretchAxis {
-        self.layout.stretch_axis(&[])
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::StretchAxis;
+    use crate::{LayoutError, Rect, ResolvedExtent, StretchAxis};
 
     struct MockSubView {
         size: Size,
     }
 
     impl SubView for MockSubView {
+        fn resolve_extent(
+            &self,
+            bounds: Rect,
+            proposal: ProposalSize,
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        }
         fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
             ViewDimensions::new(self.size)
         }
@@ -406,11 +412,18 @@ mod tests {
     struct ZStackSpacerLeaf;
 
     impl SubView for ZStackSpacerLeaf {
+        fn resolve_extent(
+            &self,
+            bounds: Rect,
+            proposal: ProposalSize,
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        }
         fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
             ViewDimensions::new(Size::zero())
         }
         fn stretch_axis(&self) -> StretchAxis {
-            crate::spacer::spacer().stretch_axis()
+            waterui_core::NativeView::stretch_axis(&crate::spacer::spacer())
         }
         fn priority(&self) -> i32 {
             crate::spacer::Spacer::DEFAULT_LAYOUT_PRIORITY

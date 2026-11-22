@@ -22,49 +22,20 @@
 //! a claim; `remove` performs the retirement sequence of §1.5 and hands
 //! back the ghost the site holds until `on_complete` fires.
 
-/// The panic policy for transition contract violations — states user
-/// code can trigger, like an unowned `.transition(...)` declaration or a
-/// failed pixel capture. A debug build panics with the message; a
-/// release build logs it and the caller continues to the violation's
-/// defined end state (a dropped claim, a completed instance), since a
-/// GUI framework must not crash a shipped app. Internal invariants —
-/// states that cannot occur — keep `unreachable!`/`expect`.
-macro_rules! transition_violation {
-    ($($arg:tt)*) => {
-        if cfg!(debug_assertions) {
-            panic!($($arg)*);
-        } else {
-            tracing::error!($($arg)*);
-        }
-    };
-}
-
-pub(crate) use transition_violation;
-
-#[cfg(feature = "transition_sites")]
 pub mod clock;
-#[cfg(feature = "transition_sites")]
 pub mod ghost;
-#[cfg(feature = "transition_sites")]
 pub mod host;
-#[cfg(feature = "transition_sites")]
 pub mod live;
-#[cfg(all(
-    feature = "transition_sites",
-    any(feature = "applied_filter", feature = "view_effect")
-))]
+#[cfg(any(feature = "applied_filter", feature = "view_effect"))]
 pub mod pixel;
-#[cfg(feature = "transition_sites")]
 pub mod property;
-#[cfg(feature = "transition_sites")]
 pub mod retire;
-#[cfg(feature = "transition_sites")]
 pub mod slots;
 
 use waterui::reactive::Signal;
 use waterui_backend_core::Environment;
 use waterui_core::layout::{LayoutDirection, layout_direction};
-use waterui_core::transition::{ReduceMotion, TransitionSpec};
+use waterui_structural_transition::{ReduceMotion, TransitionSpec};
 
 /// The `.transition(...)` declaration a leaf carries until a structural
 /// site claims it: the spec plus the environment answers resolved where

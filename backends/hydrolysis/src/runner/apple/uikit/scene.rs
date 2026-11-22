@@ -23,9 +23,11 @@ use nami::Signal as _;
 use waterui::theme::ColorScheme;
 use waterui_layout::padding::EdgeInsets;
 
+#[cfg(feature = "accessibility")]
 use super::super::accessibility::AccessibilityBridge;
 use super::super::session::{AppleExecutor, AppleSession};
 use super::super::surface::{AppleViewHandle, AppleViewSurface};
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 use super::super::text_input::{DocumentClient, ImeShared};
 use super::Process;
 use super::host::{SceneShared, UiKitHostWindow};
@@ -40,6 +42,7 @@ use crate::text::ParleyEngine;
 /// first, then everything `UIKit` still calls into.
 pub(super) struct UiKitScene {
     session: RefCell<Option<AppleSession<UiKitHostWindow>>>,
+    #[cfg(feature = "accessibility")]
     /// Handed to the session when it mounts.
     accessibility: RefCell<Option<AccessibilityBridge>>,
     pub(super) shared: Rc<SceneShared>,
@@ -106,6 +109,7 @@ impl UiKitScene {
             move |_| request_frame()
         });
 
+        #[cfg(feature = "accessibility")]
         // The adapter subclasses the view, which must happen before the view
         // is first shown.
         let accessibility = AccessibilityBridge::new(&view, &request_frame);
@@ -129,6 +133,7 @@ impl UiKitScene {
 
         let scene = Rc::new(Self {
             session: RefCell::new(None),
+            #[cfg(feature = "accessibility")]
             accessibility: RefCell::new(Some(accessibility)),
             shared,
             session_id: scene.session_id(),
@@ -187,9 +192,9 @@ impl UiKitScene {
             Rc::clone(&process.theme),
             ParleyEngine::from_collection(&process.fonts, FontFamilyResolution::Lenient),
         );
-        renderer.set_window_id(process.shortcuts.mint_window_id());
+        renderer.set_window_id(process.identities.mint_window_id());
         renderer.set_window_closable(declaration.closable);
-        let mut runtime = crate::runner::window::RuntimeWindow::new_gpu(
+        let mut runtime = crate::runner::window::RuntimeWindow::new_painted(
             declaration,
             platform,
             renderer,
@@ -203,10 +208,13 @@ impl UiKitScene {
         crate::runner::apple::session::AppleHostWindow::frame_transaction(&runtime.platform)
             .sync_occlusion(occluded);
 
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         let ime = ImeShared::new(shared.view.text_input_notifier(), frame_requester(shared));
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         shared
             .view
             .set_text_input_client(Rc::new(DocumentClient(Rc::clone(&ime))));
+        #[cfg(feature = "accessibility")]
         let accessibility = self
             .accessibility
             .borrow_mut()
@@ -216,7 +224,9 @@ impl UiKitScene {
             env,
             runtime,
             executor.clone(),
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             ime,
+            #[cfg(feature = "accessibility")]
             accessibility,
             Rc::clone(&process.pending_window_queue),
         )));

@@ -27,9 +27,12 @@ use cherenkov_record::ResourceId;
 
 use crate::resource::{
     Filter, Font, FontSource, FrameSink, GpuProducer, Image, ImageBudget, ReplaceImage, Shader,
+    TextLayoutHandle,
 };
 use crate::style::FilterId;
 use crate::surface::Surface;
+use crate::text::{TextLayout, TextLayoutData};
+use cherenkov_record::TextLayoutId;
 
 /// Owns the device and a serial executor on the creating JS thread.
 ///
@@ -55,6 +58,7 @@ pub struct Engine<B: Backend> {
     surfaces: RefCell<super::Surfaces<B>>,
     next_surface: Cell<u64>,
     next_font: Cell<u64>,
+    next_text: Cell<u64>,
     next_image: Cell<u64>,
     next_shader: Cell<u64>,
     next_filter: Cell<u64>,
@@ -131,6 +135,7 @@ impl<B: Backend> Engine<B> {
             surfaces: RefCell::new(Vec::new()),
             next_surface: Cell::new(0),
             next_font: Cell::new(1),
+            next_text: Cell::new(1),
             next_image: Cell::new(1),
             next_shader: Cell::new(1),
             next_filter: Cell::new(1),
@@ -198,22 +203,22 @@ impl<B: Backend> Engine<B> {
 
     /// The engine's current memory usage.
     ///
-    /// # Panics
-    /// Panics if the reply channel drops without answering, which cannot
-    /// happen while the render thread is alive.
-    #[must_use]
+    /// # Errors
+    /// [`RenderError::Thread`] when the executor or its reply channel is
+    /// gone — an unmeasurable engine is an error, never a fabricated zero
+    /// usage.
     #[expect(
         clippy::future_not_send,
         reason = "the browser engine is single-threaded and its futures run on the page's event loop"
     )]
-    pub async fn memory(&self) -> MemoryUsage {
+    pub async fn memory(&self) -> Result<MemoryUsage, RenderError> {
         let (reply, rx) = crate::local::channel();
         if self.tx.send(Message::Memory { reply }).is_err() {
-            return MemoryUsage::default();
+            return Err(RenderError::Thread);
         }
         rx.recv()
             .await
-            .map_or_else(|_| MemoryUsage::default(), |reply| reply.usage)
+            .map_or_else(|_| Err(RenderError::Thread), |reply| Ok(reply.usage))
     }
 
     /// Reports system memory pressure. `Critical` drops every cache.
@@ -251,6 +256,29 @@ impl<B: Backend> Engine<B> {
         Ok(Font::new(
             id,
             self.on_release(ResourceId::Font(id), move |r| r.remove_font(id)),
+        ))
+    }
+
+    /// Registers a laid-out text. The layout's fonts, registered when it
+    /// was lowered, stay registered as long as the handle lives.
+    ///
+    /// # Errors
+    /// [`ResourceError::Lost`] when the executor is gone.
+    pub fn text_layout(&self, layout: TextLayout) -> Result<TextLayoutHandle, ResourceError> {
+        let (commands, default, fonts) = layout.into_parts();
+        let data = TextLayoutData::new(commands, default, &fonts);
+        let id = TextLayoutId::new(Self::alloc(&self.next_text));
+        self.tx
+            .send(Message::Resource(Box::new(move |r: &mut B::Renderer| {
+                r.add_text_layout(id, data);
+            })))
+            .map_err(|_| ResourceError::Lost)?;
+        Ok(TextLayoutHandle::new(
+            id,
+            fonts,
+            self.on_release(ResourceId::TextLayout(id), move |r| {
+                r.remove_text_layout(id);
+            }),
         ))
     }
 
@@ -359,6 +387,7 @@ impl<B: Backend> Engine<B> {
                     shared: Rc::downgrade(&surface.shared),
                     waker: Arc::clone(&surface.waker),
                     next_frame: Rc::downgrade(&surface.next_frame),
+                    running_tracks: Rc::downgrade(&surface.running_tracks),
                 });
                 Ok(surface)
             }
@@ -541,7 +570,8 @@ impl<B: Filters> Engine<B> {
     where
         B: Runs<F>,
     {
-        let id = FilterId::new(Self::alloc(&self.next_filter));
+        let id = FilterId::new(Self::alloc(&self.next_filter))
+            .with_coordinate_remap(F::COORDINATE_REMAP);
         (self.post)(Message::Resource(Box::new(move |r: &mut B::Renderer| {
             B::add_filter(r, id, filter);
         })));

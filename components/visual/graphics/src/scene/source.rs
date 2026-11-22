@@ -7,14 +7,16 @@
 //! rejected at registration with a [`ResourceError`] naming the problem,
 //! never silently dropped.
 //!
-//! [`SceneResources`]: crate::resources::SceneResources
-//! [`SceneBackend`]: crate::resources::SceneBackend
+//! [`SceneResources`]: crate::backend::SceneResources
+//! [`SceneBackend`]: crate::backend::SceneBackend
 //! [`ResourceError`]: crate::draw::ResourceError
 
 use alloc::borrow::Cow;
 use alloc::string::String;
 use alloc::sync::Arc;
 use std::path::Path;
+
+use waterui_core::contract_violation;
 
 /// The source of a font to register.
 ///
@@ -86,13 +88,18 @@ impl FontSource {
 
     /// Selects a face index inside the file's collection.
     ///
-    /// # Panics
-    /// When the source is a `System` reference, which has no collection.
+    /// A `System` reference has no collection: selecting an index on one is
+    /// a contract violation, and the call is ignored.
     #[must_use]
     pub fn with_index(self, index: u32) -> Self {
         match self {
             Self::Bytes { data, .. } => Self::Bytes { data, index },
-            Self::System { .. } => panic!("a system-font reference has no collection index"),
+            Self::System { .. } => {
+                contract_violation!(
+                    "a system-font reference has no collection index; the index {index} is ignored"
+                );
+                self
+            }
         }
     }
 }
@@ -126,12 +133,49 @@ impl std::fmt::Display for ShaderLanguage {
 #[non_exhaustive]
 pub struct ShaderSource {
     /// The fragment's source text in `language`.
-    pub source: Cow<'static, str>,
+    source: Cow<'static, str>,
     /// The language `source` is written in.
-    pub language: ShaderLanguage,
+    language: ShaderLanguage,
     /// Whether the fragment samples `uniforms.time`, so the engine
     /// re-renders it every frame.
-    pub animated: bool,
+    animated: bool,
+}
+
+impl ShaderSource {
+    /// Creates a `ShaderSource` from its parts.
+    #[must_use]
+    pub const fn new(source: Cow<'static, str>, language: ShaderLanguage, animated: bool) -> Self {
+        Self {
+            source,
+            language,
+            animated,
+        }
+    }
+
+    /// The fragment's source text in `language`.
+    #[must_use]
+    pub const fn source(&self) -> &Cow<'static, str> {
+        &self.source
+    }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(self) -> (Cow<'static, str>, ShaderLanguage, bool) {
+        (self.source, self.language, self.animated)
+    }
+
+    /// The language `source` is written in.
+    #[must_use]
+    pub const fn language(&self) -> ShaderLanguage {
+        self.language
+    }
+
+    /// Whether the fragment samples `uniforms.time`, so the engine
+    /// re-renders it every frame.
+    #[must_use]
+    pub const fn get_animated(&self) -> bool {
+        self.animated
+    }
 }
 
 impl std::fmt::Debug for ShaderSource {
@@ -181,3 +225,18 @@ impl ShaderSource {
 pub use cherenkov_record::{
     Format, ImageColorSpace, ImageData, ImageFormat, ResourceError, Rgba8, Rgba16F,
 };
+
+#[cfg(test)]
+mod tests {
+    use super::FontSource;
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "a system-font reference has no collection index")
+    )]
+    fn an_index_on_a_system_font_is_ignored() {
+        let font = FontSource::system("Helvetica").with_index(3);
+        assert!(matches!(font, FontSource::System { family } if family == "Helvetica"));
+    }
+}

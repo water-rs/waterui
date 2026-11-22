@@ -2,8 +2,10 @@ package dev.waterui.hydrolysis
 
 import android.content.Context
 import android.content.res.Configuration
+import android.graphics.ColorSpace
 import android.os.Handler
 import android.os.Looper
+import android.view.Surface
 import android.view.View
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
@@ -162,6 +164,50 @@ class HydrolysisSession internal constructor(
         else placementPullPending = true
     }
 
+    /**
+     * The `TextureView` mounted for GPU content placement [id] has a
+     * [surface] the session presents frames into.
+     */
+    fun hostedSurfaceAttached(id: Long, surface: Surface, width: Int, height: Int) {
+        withNativePtr(NativeBridge::nativeHostedSurfaceAttached.name) { ptr ->
+            NativeBridge.nativeHostedSurfaceAttached(ptr, id, surface, width, height)
+        }
+    }
+
+    /** The hosted placement [id]'s surface changed size. */
+    fun hostedSurfaceResized(id: Long, width: Int, height: Int) {
+        withNativePtr(NativeBridge::nativeHostedSurfaceResized.name) { ptr ->
+            NativeBridge.nativeHostedSurfaceResized(ptr, id, width, height)
+        }
+    }
+
+    /**
+     * The hosted placement [id]'s surface is being released. A destroyed
+     * session has already dropped its swapchains with its native peer, so
+     * the late report has nothing to release.
+     */
+    fun hostedSurfaceDestroyed(id: Long) {
+        if (destroyed) return
+        withNativePtr(NativeBridge::nativeHostedSurfaceDestroyed.name) { ptr ->
+            NativeBridge.nativeHostedSurfaceDestroyed(ptr, id)
+        }
+    }
+
+    /** The Java host of the GPU video player's decoder plane [id] exists. */
+    fun videoPlaneAttached(id: Long, host: Any) {
+        withNativePtr(NativeBridge::nativeVideoPlaneAttached.name) { ptr ->
+            NativeBridge.nativeVideoPlaneAttached(ptr, id, host)
+        }
+    }
+
+    /** The decoder plane [id]'s `Surface` was destroyed by the platform. */
+    fun videoPlaneSurfaceDestroyed(id: Long) {
+        if (destroyed) return
+        withNativePtr(NativeBridge::nativeVideoPlaneSurfaceDestroyed.name) { ptr ->
+            NativeBridge.nativeVideoPlaneSurfaceDestroyed(ptr, id)
+        }
+    }
+
     /** The view currently presenting this session, or none between bindings. */
     internal var hostView: HydrolysisHostView? = null
         private set
@@ -213,9 +259,9 @@ class HydrolysisSession internal constructor(
 
     /**
      * The retained tree's platform view under host pixel (`x`, `y`) — the
-     * HWUI painter's ordered hit test; `null` means no view is drawn there
-     * or an interactive target above it takes the point. GPU sessions never
-     * call this.
+     * ordered hit test of the HWUI painter and of the GPU band; `null` means
+     * no view is drawn there or an interactive target above it takes the
+     * point.
      */
     internal fun platformViewAt(x: Float, y: Float): Long? {
         val id =
@@ -232,6 +278,14 @@ class HydrolysisSession internal constructor(
         }
         hostView = view
         painter?.attach(view)
+        // The paint-order hit query every binding needs for gesture
+        // ownership — the painter's OrderedContent covers the draw side;
+        // on the GPU painter, whose bands take no touches and whose base
+        // surface lives outside the platform-view container, this is the
+        // whole ordered answer (water-rs/waterui#2225).
+        view.platformViewRegistry.setOrderedHitTest(
+            OrderedHitTest { x, y -> platformViewAt(x, y) },
+        )
         withNativePtr(NativeBridge::nativeSetHostAttached.name) { ptr ->
             NativeBridge.nativeSetHostAttached(ptr, true)
         }
@@ -261,6 +315,7 @@ class HydrolysisSession internal constructor(
         // retained session, so they must be free of the old slots before
         // the next binding mounts them.
         view.platformViewRegistry.detachInstances()
+        view.platformViewRegistry.setOrderedHitTest(null)
         painter?.detach(view)
         if (!destroyed) {
             withNativePtr(NativeBridge::nativeSetHostAttached.name) { ptr ->
@@ -431,6 +486,19 @@ class HydrolysisSession internal constructor(
 
     // ---- native → host callbacks (names are the JNI contract) ----
 
+    /** A completed GPU frame applies immediately outside any native borrow. */
+    @CalledFromNative
+    fun onNativeFrameCompleted() {
+        if (destroyRequested) return
+        if (nativeDepth != 0) {
+            mainHandler.post { onNativeFrameCompleted() }
+            return
+        }
+        withNativePtr(NativeBridge::nativeCompleteFrame.name) { ptr ->
+            NativeBridge.nativeCompleteFrame(ptr)
+        }
+    }
+
     /**
      * The scheduler belongs to the session, so a request made while no
      * view is bound — between a configuration change's unbind and the new
@@ -533,6 +601,36 @@ class HydrolysisSession internal constructor(
         if (nativeDepth == 0) translucencyListeners.forEach { it(next) }
         else translucencyPending = true
     }
+
+    /**
+     * A frame that changed the band above the platform view whose placement
+     * id is [view] finished on the GPU: the band shows its newest image,
+     * encoded in the `ColorSpace.Named` constant [colorSpace] its swapchain
+     * rendered in (water-rs/waterui#2225). The native frame updates every
+     * band it changed in one UI-thread turn and then applies the base
+     * surface's transaction, so all of them draw in the same view frame.
+     * Showing only acquires an image and invalidates — nothing re-enters
+     * native.
+     */
+    @CalledFromNative
+    fun onNativeBandShow(view: Long, colorSpace: String) {
+        bandAbove(view).show(ColorSpace.get(ColorSpace.Named.valueOf(colorSpace)))
+    }
+
+    /**
+     * A frame emptied the region of the band above the platform view whose
+     * placement id is [view]: the band shows nothing. Applied in the same
+     * turn as [onNativeBandShow].
+     */
+    @CalledFromNative
+    fun onNativeBandClear(view: Long) {
+        bandAbove(view).clear()
+    }
+
+    private fun bandAbove(view: Long): RegionBand =
+        checkNotNull(hostView?.platformViewRegistry?.band(view)) {
+            "hydrolysis: the native frame updated the band above view $view, which no View shows"
+        }
 }
 
 /**

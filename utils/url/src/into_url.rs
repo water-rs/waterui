@@ -1,6 +1,9 @@
 //! Infallible conversion into [`Url`].
 
-use crate::Url;
+use suiteki::Str;
+use waterui_contract::contract_violation;
+
+use crate::{Url, parser};
 
 /// Types that already name a URL, converted without a fallible step.
 ///
@@ -52,12 +55,23 @@ impl IntoUrl for &Url {
 }
 
 impl IntoUrl for &'static str {
-    /// # Panics
-    ///
-    /// Panics when the literal is not a valid URL, matching [`Url::new`]. Write
-    /// the value into a `const` to move that check to compile time.
+    /// A malformed literal is a contract violation: it panics in a debug build,
+    /// and a release build logs it and uses `about:blank`. Write the value into
+    /// a `const` [`Url::new`] to move that check to compile time.
     fn into_url(self) -> Url {
-        Url::new(self)
+        match parser::try_parse_url(self.as_bytes()) {
+            Ok(components) => Url {
+                inner: Str::from_static(self),
+                components,
+            },
+            Err(error) => {
+                contract_violation!(
+                    "the URL literal {self:?} is malformed: {}; about:blank is used instead",
+                    error.message()
+                );
+                Url::new("about:blank")
+            }
+        }
     }
 }
 
@@ -83,5 +97,14 @@ mod tests {
     fn non_web_literals_are_accepted() {
         assert!("about:blank".into_url().is_opaque());
         assert!("file:///tmp/page.html".into_url().is_local());
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "the URL literal \"\" is malformed")
+    )]
+    fn a_malformed_literal_becomes_about_blank() {
+        assert_eq!("".into_url().as_str(), "about:blank");
     }
 }

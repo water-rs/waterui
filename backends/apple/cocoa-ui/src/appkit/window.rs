@@ -300,18 +300,9 @@ impl Window {
     /// it keyboard focus.
     ///
     /// A window whose key-view loop is already populated picks the first
-    /// valid key view as its first responder when it becomes key. Callers
-    /// that mount content before ordering and want no control focused at
-    /// reveal clear that pick with [`Self::clear_first_responder`].
+    /// valid key view as its first responder when it becomes key.
     pub fn make_key_and_order_front(&self) {
         self.window.makeKeyAndOrderFront(None);
-    }
-
-    /// Hands first responder back to the window itself, undoing the
-    /// automatic pick `AppKit` makes when the window becomes key with a
-    /// populated key-view loop.
-    pub fn clear_first_responder(&self) {
-        self.window.makeFirstResponder(None);
     }
 
     /// Shows the window without giving it keyboard focus.
@@ -678,13 +669,17 @@ impl Delegate {
 /// The main screen's backing scale — the display scale an off-window view
 /// rasterizes at, `1.0` when there is no main screen.
 ///
-/// # Panics
-///
-/// Off the main thread.
+/// Off the main thread this breaks the contract: it is reported and `1.0` is
+/// answered.
 #[must_use]
 pub fn main_screen_scale() -> f64 {
-    objc2_app_kit::NSScreen::mainScreen(objc2::MainThreadMarker::new().expect("main thread"))
-        .map_or(1.0, |screen| screen.backingScaleFactor())
+    let Some(mtm) = objc2::MainThreadMarker::new() else {
+        waterui_contract::contract_violation!(
+            "main_screen_scale runs on the main thread; 1.0 is answered"
+        );
+        return 1.0;
+    };
+    objc2_app_kit::NSScreen::mainScreen(mtm).map_or(1.0, |screen| screen.backingScaleFactor())
 }
 
 /// Whether `window` could show a frame it was handed: visible and not

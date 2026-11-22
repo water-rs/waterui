@@ -1,8 +1,8 @@
-//! Multi-Window Example - Demonstrates WaterUI's multi-window capabilities
+//! Multi-Window Example - Demonstrates `WaterUI`'s multi-window capabilities
 //!
 //! This example showcases:
 //! - Creating and managing multiple windows
-//! - Different window styles (Titled, Borderless, FullSizeContentView)
+//! - Different window styles (Titled, Borderless, `FullSizeContentView`)
 //! - Window backgrounds with Color and Material blur effects
 //! - Window state management and control
 //! - Reactive window handles
@@ -22,6 +22,7 @@ use waterui::window::{
     conditional_window,
 };
 
+/// The multi-window example page: one window per window style, each with its state.
 #[preview]
 pub fn demo() -> impl View {
     // Reactive state to track window states. `WindowState::default()` is
@@ -257,7 +258,8 @@ fn controls_window_content(handle: &WindowHandle, always_on_top: &Binding<bool>)
                     spawn_local(async move {
                         sleep(Duration::from_secs(3)).await;
                         handle.request_attention(UserAttention::Informational);
-                    });
+                    })
+                    .detach();
                 }
             }),
             spacer().width(12.0),
@@ -334,6 +336,7 @@ fn material_item(name: &'static str, description: &'static str) -> impl View {
     .padding_vertical(4.0)
 }
 
+/// Builds the multi-window example app.
 pub fn app(env: Environment) -> App {
     App::new(demo, env)
 }

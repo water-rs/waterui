@@ -1,6 +1,6 @@
 //! `water run` command implementation.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{Args as ClapArgs, ValueEnum};
 use eyre::{Context as _, Result, bail};
@@ -155,6 +155,9 @@ impl TargetPlatform {
     reason = "every boolean is a documented --flag, not structural state — the shape follows the CLI surface"
 )]
 pub struct Args {
+    #[command(flatten)]
+    features: super::FeatureArgs,
+
     /// Target platform to run on.
     /// Defaults to the host platform when omitted.
     #[arg(short, long, value_enum)]
@@ -206,7 +209,7 @@ pub struct Args {
     ///
     /// The terminal becomes the application surface: `water` hands the TTY to
     /// the built launcher binary, so device and log streaming flags do not
-    /// apply. The backend is pinned to a fixed `water-rs/tui` revision; set
+    /// apply. The backend is pinned to a fixed `water-rs/tui-backend` revision; set
     /// `WATERUI_TUI_PATH` to a local checkout when developing the backend.
     #[arg(
         long,
@@ -254,6 +257,7 @@ pub struct Args {
 impl std::fmt::Debug for Args {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Args")
+            .field("features", &self.features)
             .field("platform", &self.platform)
             .field("backend", &self.backend)
             .field("painter", &self.painter)
@@ -381,13 +385,14 @@ pub async fn run(shell: &Shell, args: Args, interrupts: smol::channel::Receiver<
         let kotlin_toolchain = check_run_toolchain(
             shell,
             context.project.host(),
+            context.project.root(),
             context.platform,
             context.backend,
         )
         .await?;
 
         if context.platform == TargetPlatform::Web {
-            run_web_app(shell, &context.project).await?;
+            run_web_app(shell, &context.project, &args.features).await?;
             return Ok(None);
         }
         let selection = Box::pin(select_run_device(
@@ -534,7 +539,7 @@ async fn prepare_run_context(shell: &Shell, args: &Args) -> Result<Option<RunCon
         managed_backends,
     ))
     .await?;
-    if project.manifest().package.embedded {
+    if project.manifest().package().embedded() {
         bail!(
             "`water run` does not apply to embedded projects: the crate is a library the host app embeds — build the artifact with `water build` and run the host app"
         );
@@ -579,11 +584,13 @@ fn print_run_header(shell: &Shell, context: &RunContext) {
 async fn check_run_toolchain(
     shell: &Shell,
     host: &waterui_cli::toolchain::Host,
+    project_root: &Path,
     platform: TargetPlatform,
     backend: TargetBackend,
 ) -> Result<Option<waterui_cli::android::KotlinToolchain>> {
     let spinner = shell.spinner("Checking toolchain...");
-    let kotlin_toolchain = check_toolchain_for_backend(host, platform, backend).await?;
+    let kotlin_toolchain =
+        check_toolchain_for_backend(host, project_root, platform, backend).await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
@@ -591,9 +598,17 @@ async fn check_run_toolchain(
     Ok(kotlin_toolchain)
 }
 
-async fn run_web_app(shell: &Shell, project: &Project) -> Result<()> {
+async fn run_web_app(
+    shell: &Shell,
+    project: &Project,
+    features: &super::FeatureArgs,
+) -> Result<()> {
     let spinner = shell.spinner("Building Hydrolysis web app...");
-    let site_root = prepare_hydrolysis_web_dev_site(project).await?;
+    let features = BuildOptions::development(BuildProfile::Debug)
+        .with_features(features.values())
+        .app_features(project)
+        .collect::<Vec<_>>();
+    let site_root = prepare_hydrolysis_web_dev_site(project, &features).await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
@@ -650,6 +665,7 @@ async fn build_run_config(
 
     let profile = run_profile(args, backend);
     Ok(BuildRunConfig {
+        features: args.features.values().map(str::to_owned).collect(),
         run_options,
         sccache_path,
         profile,
@@ -769,13 +785,13 @@ async fn augment_event_with_crash_report(
                 DeviceEvent::Crashed(Crash::new(CrashCause::Report(Box::new(report))))
             }),
         DeviceEvent::Crashed(crash)
-            if crash.report.is_none() && !matches!(crash.cause, CrashCause::Report(_)) =>
+            if crash.report().is_none() && !matches!(crash.cause(), CrashCause::Report(_)) =>
         {
             let Some(report) = find_latest_ips_report(ctx).await else {
                 return DeviceEvent::Crashed(crash);
             };
             let mut crash = crash;
-            crash.report = Some(Box::new(report));
+            crash.set_report(Some(Box::new(report)));
             DeviceEvent::Crashed(crash)
         }
         other => other,
@@ -798,7 +814,7 @@ async fn build_and_run(
     // destination's hardware UDID — capture it before the selection is
     // consumed by the launch task.
     let device_udid = match &selection.device {
-        SelectedDevice::ApplePhysical(device) => Some(device.udid.clone()),
+        SelectedDevice::ApplePhysical(device) => Some(device.udid().to_owned()),
         _ => None,
     };
     let launch_task = spawn_device_launch_task(
@@ -882,14 +898,12 @@ async fn start_web_dev_server(
         return Ok(None);
     };
     let root = meta
-        .project
-        .as_ref()
+        .project()
         .expect("web_mount only returns a mount that declares a project");
-    let package_manager = project
-        .manifest()
-        .web
-        .as_ref()
-        .map_or_else(web::PackageManager::default, |web| web.package_manager);
+    let package_manager = project.manifest().web().map_or_else(
+        web::PackageManager::default,
+        waterui_cli::web::WebConfig::package_manager,
+    );
     if !package_manager.is_installed(project.host()).await {
         bail!(
             "`{}` is not installed; run `water doctor`",
@@ -1007,6 +1021,7 @@ fn build_options(config: &BuildRunConfig) -> BuildOptions {
             |sccache| BuildOptions::development(config.profile).with_sccache(sccache.clone()),
         )
         .with_dev_server(config.dev_server)
+        .with_features(config.features.iter().cloned())
 }
 
 async fn build_for_backend(
@@ -1107,6 +1122,7 @@ async fn package_for_backend(
 }
 
 struct BuildRunConfig {
+    features: Vec<String>,
     run_options: RunOptions,
     sccache_path: Option<PathBuf>,
     /// The Cargo profile the run builds under — see `run_profile`.
@@ -1153,7 +1169,7 @@ impl SelectedDevice {
     /// Check if the device needs to be launched before running.
     fn needs_launch(&self) -> bool {
         match self {
-            Self::AppleSimulator(sim) => sim.state != "Booted",
+            Self::AppleSimulator(sim) => sim.state() != "Booted",
             Self::ApplePhysical(_) | Self::Local(_) | Self::AndroidDevice(_) => false,
             Self::AndroidEmulator(_) => true,
         }
@@ -1284,7 +1300,7 @@ async fn select_ios_device(
             waterui_cli::water_dir::record_last_used_device(
                 project.host(),
                 ios_device_memory_key(),
-                &device.identifier,
+                device.identifier(),
             )
             .await;
             return Ok(SelectedDevice::ApplePhysical(device));
@@ -1293,7 +1309,7 @@ async fn select_ios_device(
         waterui_cli::water_dir::record_last_used_device(
             project.host(),
             ios_device_memory_key(),
-            &sim.udid,
+            sim.udid(),
         )
         .await;
         return Ok(SelectedDevice::AppleSimulator(sim));
@@ -1339,17 +1355,17 @@ async fn ios_device_candidates(
 
     let mut simulators = AppleSimulator::scan_ios(project.host()).await?;
     simulators.retain(|sim| sim.supports_deployment_target(&sim_target));
-    simulators.sort_by_key(|sim| usize::from(sim.state != "Booted"));
+    simulators.sort_by_key(|sim| usize::from(sim.state() != "Booted"));
     let mut candidates: Vec<DeviceCandidate> = simulators
         .into_iter()
         .map(|sim| DeviceCandidate {
             label: format!(
                 "{} — {} ({})",
-                sim.name,
-                ios_version(sim.runtime_version.as_ref()),
-                sim.state
+                sim.name(),
+                ios_version(sim.runtime_version()),
+                sim.state()
             ),
-            id: sim.udid.clone(),
+            id: sim.udid().to_owned(),
             device: SelectedDevice::AppleSimulator(sim),
         })
         .collect();
@@ -1363,15 +1379,15 @@ async fn ios_device_candidates(
             .map(|device| DeviceCandidate {
                 label: format!(
                     "{} — {} ({})",
-                    device.name,
-                    ios_version(device.os_version.as_ref()),
-                    match device.transport {
+                    device.name(),
+                    ios_version(device.os_version()),
+                    match device.transport() {
                         waterui_cli::apple::physical::Transport::Wired => "USB",
                         waterui_cli::apple::physical::Transport::LocalNetwork => "Wi-Fi",
                         waterui_cli::apple::physical::Transport::Other => "paired",
                     }
                 ),
-                id: device.identifier.clone(),
+                id: device.identifier().to_owned(),
                 device: SelectedDevice::ApplePhysical(device.clone()),
             }),
     );
@@ -1391,7 +1407,9 @@ async fn select_physical_ios(
 ) -> Result<Option<ApplePhysicalDevice>> {
     let matches: Vec<&ApplePhysicalDevice> = devices
         .iter()
-        .filter(|device| device.identifier == query || device.udid == query || device.name == query)
+        .filter(|device| {
+            device.identifier() == query || device.udid() == query || device.name() == query
+        })
         .collect();
     let device = match matches.as_slice() {
         [] => return Ok(None),
@@ -1399,7 +1417,7 @@ async fn select_physical_ios(
         candidates => {
             use std::fmt::Write as _;
             let list = candidates.iter().fold(String::new(), |mut out, device| {
-                write!(out, "\n  {} ({})", device.name, device.identifier)
+                write!(out, "\n  {} ({})", device.name(), device.identifier())
                     .expect("writing to a String cannot fail");
                 out
             });
@@ -1424,8 +1442,8 @@ async fn select_physical_ios(
     if !device.supports_deployment_target(&deployment_target) {
         bail!(
             "{} runs {}, but this app requires iOS {deployment_target} (IPHONEOS_DEPLOYMENT_TARGET)",
-            device.name,
-            device.os_version.as_ref().map_or_else(
+            device.name(),
+            device.os_version().map_or_else(
                 || String::from("an unknown iOS version"),
                 |v| format!("iOS {v}")
             ),
@@ -1441,6 +1459,7 @@ async fn select_physical_ios(
 
 async fn check_toolchain_for_backend(
     host: &waterui_cli::toolchain::Host,
+    project_root: &Path,
     platform: TargetPlatform,
     backend: TargetBackend,
 ) -> Result<Option<waterui_cli::android::KotlinToolchain>> {
@@ -1462,7 +1481,7 @@ async fn check_toolchain_for_backend(
             if platform != TargetPlatform::Linux {
                 bail!("Internal error: GTK4 backend is not supported on {platform:?}");
             }
-            toolchain_checks::check_gtk4(host).await?;
+            toolchain_checks::check_gtk4(host, project_root).await?;
         }
         TargetBackend::Hydrolysis => {
             if platform != TargetPlatform::Macos
@@ -1487,7 +1506,7 @@ async fn check_toolchain_for_backend(
             if platform == TargetPlatform::Web {
                 toolchain_checks::check_web(host).await?;
             } else {
-                toolchain_checks::check_hydrolysis(host).await?;
+                toolchain_checks::check_hydrolysis(host, project_root).await?;
             }
         }
         TargetBackend::WinUi => {
@@ -1568,8 +1587,8 @@ async fn select_android_device(
 
 fn device_name(device: &SelectedDevice) -> String {
     match device {
-        SelectedDevice::AppleSimulator(sim) => sim.name.clone(),
-        SelectedDevice::ApplePhysical(dev) => dev.name.clone(),
+        SelectedDevice::AppleSimulator(sim) => sim.name().to_owned(),
+        SelectedDevice::ApplePhysical(dev) => dev.name().to_owned(),
         SelectedDevice::Local(local) => local.name().to_string(),
         SelectedDevice::AndroidDevice(dev) => dev.identifier().to_string(),
         SelectedDevice::AndroidEmulator(emu) => format!("{} (emulator)", emu.avd_name()),
@@ -1693,15 +1712,14 @@ pub(super) fn handle_device_event(
             Ok(())
         }
         DeviceEvent::Crashed(crash) => {
-            if let CrashCause::Panic(panic) = &crash.cause {
+            if let CrashCause::Panic(panic) = crash.cause() {
                 let extra = crash.panic_note();
                 shell.panic(
                     host,
                     panic,
                     extra.as_deref(),
                     crash
-                        .report
-                        .as_deref()
+                        .report()
                         .map(waterui_cli::debug::CrashReport::log_path),
                 );
             } else {
@@ -1748,6 +1766,7 @@ mod tests {
     #[test]
     fn args_debug_reports_the_env_count_not_the_declarations() {
         let args = Args {
+            features: super::super::FeatureArgs::default(),
             platform: None,
             backend: None,
             painter: None,

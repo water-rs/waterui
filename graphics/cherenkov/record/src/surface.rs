@@ -17,23 +17,25 @@ use std::ops::{Index, IndexMut};
 use std::rc::{Rc, Weak};
 
 use kurbo::{Affine, Size, Vec2};
-use nami_core::watcher::Context;
+use nami_core::watcher::{Context, Metadata};
 use rustc_hash::{FxHashMap, FxHashSet};
+use waterui_contract::contract_violation;
 
 use crate::Instant;
-use crate::animation::Animation;
+use crate::animation::{Animation, KeyframeAnimation};
 use crate::ops::{
-    AnimationStart, BackdropId, ChangeSet, ContentOp, Install, LayerId, LayerOp, Op, Prop,
-    SurfaceId,
+    Axis, BackdropId, ChangeSet, ContentOp, Install, KeyframeProp, LayerId, LayerKeyframes,
+    LayerOp, Op, Prop, Retarget, SurfaceId, TrackStart,
 };
 use crate::projective::Projective;
 use crate::record::{Binding, Content, ContentSpare, Live, LiveOwner, SampleFlag};
 use crate::shape::Shape;
 use crate::shape::ShapeData;
 use crate::size::LayoutSize;
-use crate::style::{BlendMode, FilterId};
+use crate::style::{BlendMode, BlendSpace, FilterId};
 use crate::target::{BackdropSampling, GpuInstalls, ProjectiveLayers, Queue, Target};
-use crate::{BackdropSample, ContentChange, Picture, WorkingColor};
+use crate::tree::RunningTracks;
+use crate::{BackdropSample, Picture, WorkingColor};
 
 /// Declares [`PropKind`] and its `ALL` list from one variant list, so
 /// the list a layer removal walks can never miss a kind.
@@ -56,8 +58,12 @@ macro_rules! prop_kinds {
 prop_kinds![
     Transform,
     Translation,
+    TranslationX,
+    TranslationY,
     Rotation,
     Scale,
+    ScaleX,
+    ScaleY,
     Skew,
     Pivot,
     Projection,
@@ -83,7 +89,7 @@ impl PropKind {
 }
 
 /// A set of [`PropKind`]s, one bit per kind.
-type KindSet = u16;
+type KindSet = u32;
 
 /// A surface's kept property subscriptions, indexed by layer.
 ///
@@ -196,10 +202,16 @@ pub struct Shared<T: Target> {
     removed_layers: FxHashSet<LayerId>,
     /// Content and reusable storage per layer.
     contents: FxHashMap<LayerId, ContentSlot>,
+    /// The layer hierarchy as the consumer's tree holds it, mirrored from
+    /// the drained ops: only the content of a layer that reaches the root
+    /// is sampled.
+    hierarchy: Hierarchy,
     /// Each layer's layout size, created when first set or recorded for.
     sizes: FxHashMap<LayerId, LayoutSize>,
     /// Pending clear colour.
     clear: Option<WorkingColor>,
+    /// Pending storage space.
+    storage_space: Option<BlendSpace>,
     /// The vectors an outermost commit moves its replaced and removed
     /// contents out of the surface borrow in, handed back after their
     /// drops run: reused across commits so a steady-state commit
@@ -249,6 +261,52 @@ struct ContentSlot {
     spare: ContentSpare,
 }
 
+/// Each layer's parent, mirrored from drained ops in the order
+/// the consumer's tree applies them, so the queue side knows which
+/// layers the tree draws.
+#[derive(Default)]
+struct Hierarchy {
+    parents: FxHashMap<LayerId, LayerId>,
+}
+
+impl Hierarchy {
+    /// Applies the attachment ops among `ops`. Returns whether one
+    /// attached a layer, whose content may need sampling again.
+    fn apply<T: Target>(&mut self, ops: &[Op<T>]) -> bool {
+        let mut attached = false;
+        for op in ops {
+            match op {
+                Op::Layer(
+                    LayerOp::Push { parent, child } | LayerOp::Insert { parent, child, .. },
+                ) => {
+                    self.parents.insert(*child, *parent);
+                    attached = true;
+                }
+                // A removed layer's children keep their entry, naming a
+                // parent that is gone: ids are never reused, so their
+                // chain stops short of the root until they are attached
+                // again or removed in turn.
+                Op::Layer(LayerOp::Detach { child, .. } | LayerOp::Remove(child)) => {
+                    self.parents.remove(child);
+                }
+                _ => {}
+            }
+        }
+        attached
+    }
+
+    /// Whether `layer`'s parent chain reaches the root.
+    fn reaches_root(&self, mut layer: LayerId) -> bool {
+        while layer.raw() != 0 {
+            match self.parents.get(&layer) {
+                Some(&parent) => layer = parent,
+                None => return false,
+            }
+        }
+        true
+    }
+}
+
 impl<T: Target> std::fmt::Debug for Shared<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Shared")
@@ -275,8 +333,10 @@ impl<T: Target> Shared<T> {
             next_edit_seq: 0,
             removed_layers: FxHashSet::default(),
             contents: FxHashMap::default(),
+            hierarchy: Hierarchy::default(),
             sizes: FxHashMap::default(),
             clear: None,
+            storage_space: None,
             spare_replaced: Vec::new(),
             spare_removed: Vec::new(),
             next_layer: Cell::new(1),
@@ -317,6 +377,15 @@ impl<T: Target> Shared<T> {
     /// Queues the clear colour into the pending change set.
     pub fn set_clear(&mut self, color: WorkingColor) {
         self.clear = Some(color);
+        self.flush();
+    }
+
+    /// Queues the surface's storage space into the pending change set:
+    /// the space its root canvas stores premultiplied pixels in, which
+    /// every layer and group declaring no space of its own composites
+    /// in. [`BlendSpace::Linear`] until set.
+    pub fn set_storage_space(&mut self, space: BlendSpace) {
+        self.storage_space = Some(space);
         self.flush();
     }
 
@@ -390,6 +459,23 @@ impl<T: Target> Shared<T> {
         self.drain(Some(time))
     }
 
+    /// The operand animations the contents drawn under the root still run
+    /// or have queued: what a surface's frame sampling has yet to settle.
+    /// Detached contents are skipped like in the sampling pass, which never
+    /// advances them.
+    #[must_use]
+    pub fn running_operands(&self) -> RunningTracks {
+        let mut running = RunningTracks::default();
+        for (id, slot) in &self.contents {
+            if let Some(content) = &slot.content
+                && self.hierarchy.reaches_root(*id)
+            {
+                content.note_running(&mut running);
+            }
+        }
+        running
+    }
+
     /// Drains pending ops and live content changes into a change set,
     /// sampling running operand animations first when a frame `time` is
     /// given. Returns `None` when nothing changed.
@@ -397,6 +483,11 @@ impl<T: Target> Shared<T> {
         let mut ops = std::mem::take(&mut self.spare_ops);
         let recycled = std::mem::take(&mut self.spare_recycled);
         ops.append(&mut self.pending);
+        // A layer attached again may hold content whose tracks were not
+        // sampled while it was detached: raise the flag for one probe.
+        if self.hierarchy.apply(&ops) {
+            self.animated.set(true);
+        }
         let mut animating = false;
         // `animated` is poked by a content's `LiveState` the moment an
         // animated operand arrives, so a surface that never saw one
@@ -409,32 +500,30 @@ impl<T: Target> Shared<T> {
             };
             // The sample queues the operands' per-frame values, so
             // `take_change` emits them like signal updates. The flag read
-            // keeps a static content at a probe, not a call.
+            // keeps a static content at a probe, not a call. A layer the
+            // tree does not draw is not sampled (see `Layer`).
             if let Some(time) = sampling
                 && content.needs_sample()
+                && self.hierarchy.reaches_root(*id)
                 && content.sample(time).is_animating()
             {
                 animating = true;
             }
             if let Some(change) = content.take_change() {
-                ops.push(Op::Layer(LayerOp::Content(
-                    *id,
-                    Some(match change {
-                        ContentChange::Replace(list) => ContentOp::Replace(list),
-                        ContentChange::Update(updates) => ContentOp::Update(updates),
-                    }),
-                )));
+                ops.push(Op::Layer(LayerOp::Content(*id, Some(change.into()))));
             }
         }
         let clear = self.clear.take();
+        let storage_space = self.storage_space.take();
         if sampling.is_some() && !animating {
             // Nothing sampled this pass: the flag stays down until an
             // animated change pokes it up again.
             self.animated.set(false);
         }
-        if clear.is_some() || !ops.is_empty() || !recycled.is_empty() {
+        if clear.is_some() || storage_space.is_some() || !ops.is_empty() || !recycled.is_empty() {
             Some(ChangeSet {
                 clear,
+                storage_space,
                 ops,
                 recycled,
                 animating,
@@ -611,16 +700,8 @@ impl<T: Target> Shared<T> {
                                     let stored = slot.content.as_mut().expect("just inserted");
                                     stored.attach(Rc::downgrade(&owner), &animated);
                                     if let Some(change) = stored.take_change() {
-                                        let content_op = match change {
-                                            ContentChange::Replace(list) => {
-                                                ContentOp::Replace(list)
-                                            }
-                                            ContentChange::Update(updates) => {
-                                                ContentOp::Update(updates)
-                                            }
-                                        };
                                         state.pending[i] =
-                                            Op::Layer(LayerOp::Content(id, Some(content_op)));
+                                            Op::Layer(LayerOp::Content(id, Some(change.into())));
                                     } else {
                                         drop_at.push(i);
                                     }
@@ -724,7 +805,8 @@ impl<T: Target> Shared<T> {
     }
 
     /// Binds `live` so its later changes queue `op(layer, value, animation,
-    /// start)` and notify the queue, returning the value the binding starts
+    /// metadata)` — the change's metadata names its start — and notify the
+    /// queue, returning the value the binding starts
     /// from: the signal's value now. Replaces the property's previous
     /// binding. While a transaction is open the changes queue through
     /// [`Shared::deferred`] for the outermost commit to resolve.
@@ -738,14 +820,33 @@ impl<T: Target> Shared<T> {
     ) -> V
     where
         V: 'static,
-        F: Fn(LayerId, V, Option<Animation>, Option<Instant>) -> LayerOp + 'static,
+        F: Fn(LayerId, V, Option<Animation>, &Metadata) -> LayerOp + 'static,
+    {
+        Self::bind_keyframed(shared, layer, kind, live, op, None)
+    }
+
+    /// [`bind`](Self::bind) for a property that also runs keyframe tracks:
+    /// a change carrying a [`KeyframeAnimation`] queues `track_op(layer,
+    /// track)` instead of `op`. Without `track_op`, such a change panics.
+    #[inline]
+    fn bind_keyframed<V, F>(
+        shared: &Rc<RefCell<Self>>,
+        layer: LayerId,
+        kind: PropKind,
+        live: Live<V>,
+        op: F,
+        track_op: Option<fn(LayerId, KeyframeProp<V>) -> LayerOp>,
+    ) -> V
+    where
+        V: 'static,
+        F: Fn(LayerId, V, Option<Animation>, &Metadata) -> LayerOp + 'static,
     {
         // The watcher carries the generation the binding will be kept
         // under, taken before the watch starts: it fires only while the
         // property's current binding is still the one that registered it.
         let mark = shared.borrow_mut().draw_watcher();
         let generation = mark.generation();
-        let (target, guard) = live.watch(Self::watcher(shared, layer, kind, mark, op));
+        let (target, guard) = live.watch(Self::watcher(shared, layer, kind, mark, op, track_op));
         let watching = Self::kept_watcher(shared, generation);
         Self::keep(shared, layer, kind, generation, watching, guard);
         target
@@ -788,20 +889,53 @@ impl<T: Target> Shared<T> {
         kind: PropKind,
         mark: WatcherMark,
         op: F,
+        track_op: Option<fn(LayerId, KeyframeProp<V>) -> LayerOp>,
     ) -> impl Fn(Context<V>) + 'static
     where
         V: 'static,
-        F: Fn(LayerId, V, Option<Animation>, Option<Instant>) -> LayerOp + 'static,
+        F: Fn(LayerId, V, Option<Animation>, &Metadata) -> LayerOp + 'static,
     {
         let weak = Rc::downgrade(shared);
         move |context: Context<V>| {
-            let animation = context.metadata().try_get::<Animation>();
-            let start = context.metadata().try_get::<AnimationStart>();
-            let target = context.into_value();
+            let (target, metadata) = context.into_parts();
+            let track = metadata.try_get::<KeyframeAnimation>();
+            let animation = metadata.try_get::<Animation>();
             if let Some(shared) = weak.upgrade() {
                 // `op` runs user code — a clip's `Shape::into_data` — so
                 // the op is built before the surface is borrowed.
-                let op = Op::Layer(op(layer, target, animation, start.map(|s| s.0)));
+                let keyed = match (track, track_op) {
+                    (Some(track), Some(track_op)) => {
+                        if animation.is_some() {
+                            contract_violation!(
+                                "a change carries an `Animation` or a `KeyframeAnimation`, \
+                                 never both; the `Animation` is ignored"
+                            );
+                        }
+                        track
+                            .property::<V>()
+                            .map(|(keyframes, repeat)| (track_op, keyframes, repeat))
+                    }
+                    (Some(_), None) => {
+                        contract_violation!(
+                            "the {kind:?} layer property does not take a keyframe track: \
+                             transform, translation, rotation, scale and opacity do; the change \
+                             is applied without the track"
+                        );
+                        None
+                    }
+                    (None, _) => None,
+                };
+                let op = Op::Layer(match keyed {
+                    Some((track_op, keyframes, repeat)) => track_op(
+                        layer,
+                        KeyframeProp {
+                            target,
+                            keyframes,
+                            repeat,
+                        },
+                    ),
+                    None => op(layer, target, animation, &metadata),
+                });
                 let mut shared = shared.borrow_mut();
                 // `mark.generation()` captures the whole mark: the watcher
                 // owns it, so it drops — and records the drop — with the
@@ -1056,6 +1190,17 @@ impl<T: Target> LayerOwner for RefCell<Shared<T>> {
 /// from its surface at the next commit. Its children stay in the tree,
 /// detached and undrawn, until their own handles drop or they are
 /// re-attached.
+///
+/// A layer is drawn only while its parent chain reaches the surface's
+/// root. A detached one — removed from its parent, or under a detached
+/// or dropped ancestor — has neither its content's animated operands nor
+/// its property tracks sampled, and keeps no frame loop awake, whether
+/// or not its handle lives. Its animations stay on the host's clock:
+/// re-attached, each shows the value its clock gives at that frame — the
+/// final one, when it ended meanwhile — as though it had run out of
+/// view. A track that never drew a frame starts at the first frame that
+/// draws it, and a retarget made while detached continues from the value
+/// the layer last drew.
 pub struct Layer {
     id: LayerId,
     owner: Rc<dyn LayerOwner>,
@@ -1174,8 +1319,10 @@ impl<T: Target> From<Picture> for LayerContent<T> {
 /// constant. The last write in program order wins: a bound signal's
 /// change made while a transaction is open lands at the outermost
 /// commit, after the transaction's edits, only if the binding is still
-/// the property's current one. An [`AnimationStart`] next to it starts
-/// the track at that instant instead of the first frame that samples it.
+/// the property's current one. An [`AnimationStart`](crate::AnimationStart)
+/// next to it starts the track at that instant instead of the first frame
+/// that samples it, and an [`AnimationOrigin`](crate::AnimationOrigin)
+/// beside that starts it from that exact state.
 pub struct LayerEdit<T: Target> {
     /// The layer the handle currently points at.
     layer: LayerId,
@@ -1266,13 +1413,13 @@ impl<T: ProjectiveLayers> LayerEdit<T> {
             self.layer,
             PropKind::Tilt,
             value.into(),
-            |layer, target, animation, start| {
+            |layer, target, animation, metadata| {
                 LayerOp::Tilt(
                     layer,
                     Prop {
                         target,
                         animation,
-                        start,
+                        start: TrackStart::of(metadata),
                     },
                 )
             },
@@ -1282,7 +1429,7 @@ impl<T: ProjectiveLayers> LayerEdit<T> {
             Prop {
                 target,
                 animation: self.default_animation,
-                start: self.default_start,
+                start: self.default_start.map(TrackStart::at),
             },
         )));
         self
@@ -1297,13 +1444,13 @@ impl<T: ProjectiveLayers> LayerEdit<T> {
             self.layer,
             PropKind::Depth,
             value.into(),
-            |layer, target, animation, start| {
+            |layer, target, animation, metadata| {
                 LayerOp::Depth(
                     layer,
                     Prop {
                         target,
                         animation,
-                        start,
+                        start: TrackStart::of(metadata),
                     },
                 )
             },
@@ -1313,7 +1460,7 @@ impl<T: ProjectiveLayers> LayerEdit<T> {
             Prop {
                 target,
                 animation: self.default_animation,
-                start: self.default_start,
+                start: self.default_start.map(TrackStart::at),
             },
         )));
         self
@@ -1337,18 +1484,29 @@ impl<T: BackdropSampling> LayerEdit<T> {
     /// effect evaluated in the member's composite.
     ///
     /// The sample is a constant or a signal. A bound signal keeps updating
-    /// the membership with no further transactions: each change replaces
-    /// the sample whole. The property is not animatable: a change's
-    /// `Animation` metadata is ignored.
+    /// the membership with no further transactions. A change carrying an
+    /// `Animation` in its metadata moves the effect's parameters there
+    /// lane by lane, like a recorded operand; a change of group, recording
+    /// scale or effect kind snaps, and a keyframe track is a contract
+    /// violation that snaps.
     pub fn backdrop(&mut self, sample: impl Into<Live<BackdropSample>>) -> &mut Self {
         let target = Shared::bind(
             &self.shared,
             self.layer,
             PropKind::Backdrop,
             sample.into(),
-            |layer, sample, _, _| LayerOp::Backdrop(layer, Some(sample)),
+            |layer, sample, animation, metadata| {
+                LayerOp::Backdrop(layer, Some(Retarget::of(sample, animation, metadata)))
+            },
         );
-        self.queue(Op::Layer(LayerOp::Backdrop(self.layer, Some(target))));
+        self.queue(Op::Layer(LayerOp::Backdrop(
+            self.layer,
+            Some(Retarget {
+                target,
+                animation: self.default_animation,
+                start: self.default_start,
+            }),
+        )));
         self
     }
 
@@ -1364,28 +1522,29 @@ impl<T: BackdropSampling> LayerEdit<T> {
 impl<T: Target> LayerEdit<T> {
     /// Sets the local transform.
     pub fn transform(&mut self, transform: impl Into<Live<Affine>>) -> &mut Self {
-        let target = Shared::bind(
+        let target = Shared::bind_keyframed(
             &self.shared,
             self.layer,
             PropKind::Transform,
             transform.into(),
-            |layer, target, animation, start| {
+            |layer, target, animation, metadata| {
                 LayerOp::Transform(
                     layer,
                     Prop {
                         target,
                         animation,
-                        start,
+                        start: TrackStart::of(metadata),
                     },
                 )
             },
+            Some(|layer, prop| LayerOp::Keyframes(layer, LayerKeyframes::Transform(prop))),
         );
         self.queue(Op::Layer(LayerOp::Transform(
             self.layer,
             Prop {
                 target,
                 animation: self.default_animation,
-                start: self.default_start,
+                start: self.default_start.map(TrackStart::at),
             },
         )));
         self
@@ -1394,30 +1553,36 @@ impl<T: Target> LayerEdit<T> {
     /// Sets the translation in local coordinates.
     /// Component properties compose after [`Self::transform`]. Each keeps
     /// its own live subscription and animation track; changing it never
-    /// re-records content.
+    /// re-records content. Each axis runs a track of its own, so a later
+    /// [`Self::translation_axis`] retargets one axis and leaves the other
+    /// running; binding the joint value drops both axes' bindings.
     pub fn translation(&mut self, value: impl Into<Live<Vec2>>) -> &mut Self {
-        let target = Shared::bind(
+        for kind in [PropKind::TranslationX, PropKind::TranslationY] {
+            Shared::unbind(&self.shared, self.layer, kind);
+        }
+        let target = Shared::bind_keyframed(
             &self.shared,
             self.layer,
             PropKind::Translation,
             value.into(),
-            |layer, target, animation, start| {
+            |layer, target, animation, metadata| {
                 LayerOp::Translation(
                     layer,
                     Prop {
                         target,
                         animation,
-                        start,
+                        start: TrackStart::of(metadata),
                     },
                 )
             },
+            Some(|layer, prop| LayerOp::Keyframes(layer, LayerKeyframes::Translation(prop))),
         );
         self.queue(Op::Layer(LayerOp::Translation(
             self.layer,
             Prop {
                 target,
                 animation: self.default_animation,
-                start: self.default_start,
+                start: self.default_start.map(TrackStart::at),
             },
         )));
         self
@@ -1430,28 +1595,69 @@ impl<T: Target> LayerEdit<T> {
     /// its own live subscription and animation track; changing it never
     /// re-records content.
     pub fn rotation(&mut self, value: impl Into<Live<f64>>) -> &mut Self {
-        let target = Shared::bind(
+        let target = Shared::bind_keyframed(
             &self.shared,
             self.layer,
             PropKind::Rotation,
             value.into(),
-            |layer, target, animation, start| {
+            |layer, target, animation, metadata| {
                 LayerOp::Rotation(
                     layer,
                     Prop {
                         target,
                         animation,
-                        start,
+                        start: TrackStart::of(metadata),
                     },
                 )
             },
+            Some(|layer, prop| LayerOp::Keyframes(layer, LayerKeyframes::Rotation(prop))),
         );
         self.queue(Op::Layer(LayerOp::Rotation(
             self.layer,
             Prop {
                 target,
                 animation: self.default_animation,
-                start: self.default_start,
+                start: self.default_start.map(TrackStart::at),
+            },
+        )));
+        self
+    }
+
+    /// Sets one axis of the translation, with a live subscription and
+    /// animation track of its own: x and y can follow different signals
+    /// under different animations. Binding an axis drops the joint
+    /// [`Self::translation`] binding; the other axis keeps its value and
+    /// its track.
+    pub fn translation_axis(&mut self, axis: Axis, value: impl Into<Live<f64>>) -> &mut Self {
+        let kind = match axis {
+            Axis::X => PropKind::TranslationX,
+            Axis::Y => PropKind::TranslationY,
+        };
+        Shared::unbind(&self.shared, self.layer, PropKind::Translation);
+        let target = Shared::bind(
+            &self.shared,
+            self.layer,
+            kind,
+            value.into(),
+            move |layer, target, animation, metadata| {
+                LayerOp::TranslationAxis(
+                    layer,
+                    axis,
+                    Prop {
+                        target,
+                        animation,
+                        start: TrackStart::of(metadata),
+                    },
+                )
+            },
+        );
+        self.queue(Op::Layer(LayerOp::TranslationAxis(
+            self.layer,
+            axis,
+            Prop {
+                target,
+                animation: self.default_animation,
+                start: self.default_start.map(TrackStart::at),
             },
         )));
         self
@@ -1460,30 +1666,76 @@ impl<T: Target> LayerEdit<T> {
     /// Sets the x/y scale factors; initially (1, 1).
     /// Component properties compose after [`Self::transform`]. Each keeps
     /// its own live subscription and animation track; changing it never
-    /// re-records content.
+    /// re-records content. Each axis runs a track of its own, so a later
+    /// [`Self::scale_axis`] retargets one axis and leaves the other
+    /// running; binding the joint value drops both axes' bindings.
     pub fn scale(&mut self, value: impl Into<Live<Vec2>>) -> &mut Self {
-        let target = Shared::bind(
+        for kind in [PropKind::ScaleX, PropKind::ScaleY] {
+            Shared::unbind(&self.shared, self.layer, kind);
+        }
+        let target = Shared::bind_keyframed(
             &self.shared,
             self.layer,
             PropKind::Scale,
             value.into(),
-            |layer, target, animation, start| {
+            |layer, target, animation, metadata| {
                 LayerOp::Scale(
                     layer,
                     Prop {
                         target,
                         animation,
-                        start,
+                        start: TrackStart::of(metadata),
                     },
                 )
             },
+            Some(|layer, prop| LayerOp::Keyframes(layer, LayerKeyframes::Scale(prop))),
         );
         self.queue(Op::Layer(LayerOp::Scale(
             self.layer,
             Prop {
                 target,
                 animation: self.default_animation,
-                start: self.default_start,
+                start: self.default_start.map(TrackStart::at),
+            },
+        )));
+        self
+    }
+
+    /// Sets one axis's scale factor, with a live subscription and
+    /// animation track of its own: x and y can follow different signals
+    /// under different animations. Binding an axis drops the joint
+    /// [`Self::scale`] binding; the other axis keeps its value and its
+    /// track.
+    pub fn scale_axis(&mut self, axis: Axis, value: impl Into<Live<f64>>) -> &mut Self {
+        let kind = match axis {
+            Axis::X => PropKind::ScaleX,
+            Axis::Y => PropKind::ScaleY,
+        };
+        Shared::unbind(&self.shared, self.layer, PropKind::Scale);
+        let target = Shared::bind(
+            &self.shared,
+            self.layer,
+            kind,
+            value.into(),
+            move |layer, target, animation, metadata| {
+                LayerOp::ScaleAxis(
+                    layer,
+                    axis,
+                    Prop {
+                        target,
+                        animation,
+                        start: TrackStart::of(metadata),
+                    },
+                )
+            },
+        );
+        self.queue(Op::Layer(LayerOp::ScaleAxis(
+            self.layer,
+            axis,
+            Prop {
+                target,
+                animation: self.default_animation,
+                start: self.default_start.map(TrackStart::at),
             },
         )));
         self
@@ -1500,13 +1752,13 @@ impl<T: Target> LayerEdit<T> {
             self.layer,
             PropKind::Skew,
             value.into(),
-            |layer, target, animation, start| {
+            |layer, target, animation, metadata| {
                 LayerOp::Skew(
                     layer,
                     Prop {
                         target,
                         animation,
-                        start,
+                        start: TrackStart::of(metadata),
                     },
                 )
             },
@@ -1516,7 +1768,7 @@ impl<T: Target> LayerEdit<T> {
             Prop {
                 target,
                 animation: self.default_animation,
-                start: self.default_start,
+                start: self.default_start.map(TrackStart::at),
             },
         )));
         self
@@ -1532,13 +1784,13 @@ impl<T: Target> LayerEdit<T> {
             self.layer,
             PropKind::Pivot,
             value.into(),
-            |layer, target, animation, start| {
+            |layer, target, animation, metadata| {
                 LayerOp::Pivot(
                     layer,
                     Prop {
                         target,
                         animation,
-                        start,
+                        start: TrackStart::of(metadata),
                     },
                 )
             },
@@ -1548,7 +1800,7 @@ impl<T: Target> LayerEdit<T> {
             Prop {
                 target,
                 animation: self.default_animation,
-                start: self.default_start,
+                start: self.default_start.map(TrackStart::at),
             },
         )));
         self
@@ -1556,28 +1808,29 @@ impl<T: Target> LayerEdit<T> {
 
     /// Sets the opacity.
     pub fn opacity(&mut self, opacity: impl Into<Live<f32>>) -> &mut Self {
-        let target = Shared::bind(
+        let target = Shared::bind_keyframed(
             &self.shared,
             self.layer,
             PropKind::Opacity,
             opacity.into(),
-            |layer, target, animation, start| {
+            |layer, target, animation, metadata| {
                 LayerOp::Opacity(
                     layer,
                     Prop {
                         target,
                         animation,
-                        start,
+                        start: TrackStart::of(metadata),
                     },
                 )
             },
+            Some(|layer, prop| LayerOp::Keyframes(layer, LayerKeyframes::Opacity(prop))),
         );
         self.queue(Op::Layer(LayerOp::Opacity(
             self.layer,
             Prop {
                 target,
                 animation: self.default_animation,
-                start: self.default_start,
+                start: self.default_start.map(TrackStart::at),
             },
         )));
         self
@@ -1590,13 +1843,13 @@ impl<T: Target> LayerEdit<T> {
             self.layer,
             PropKind::ScrollOffset,
             offset.into(),
-            |layer, target, animation, start| {
+            |layer, target, animation, metadata| {
                 LayerOp::ScrollOffset(
                     layer,
                     Prop {
                         target,
                         animation,
-                        start,
+                        start: TrackStart::of(metadata),
                     },
                 )
             },
@@ -1606,24 +1859,38 @@ impl<T: Target> LayerEdit<T> {
             Prop {
                 target,
                 animation: self.default_animation,
-                start: self.default_start,
+                start: self.default_start.map(TrackStart::at),
             },
         )));
         self
     }
 
     /// Sets the clip shape, applied in the layer's own space.
+    ///
+    /// A bound signal's change carrying an `Animation` in its metadata
+    /// moves the shape there lane by lane, like a recorded operand; a
+    /// shape of another kind or path layout snaps, and a keyframe track is
+    /// a contract violation that snaps.
     pub fn clip<S: Shape + 'static>(&mut self, shape: impl Into<Live<S>>) -> &mut Self {
         let target = Shared::bind(
             &self.shared,
             self.layer,
             PropKind::Clip,
             shape.into(),
-            |layer, shape: S, _, _| LayerOp::Clip(layer, Some(ShapeData::of(&shape))),
+            |layer, shape: S, animation, metadata| {
+                LayerOp::Clip(
+                    layer,
+                    Some(Retarget::of(ShapeData::of(&shape), animation, metadata)),
+                )
+            },
         );
         self.queue(Op::Layer(LayerOp::Clip(
             self.layer,
-            Some(target.into_data()),
+            Some(Retarget {
+                target: target.into_data(),
+                animation: self.default_animation,
+                start: self.default_start,
+            }),
         )));
         self
     }
@@ -1639,6 +1906,24 @@ impl<T: Target> LayerEdit<T> {
     /// Sets the blend mode the layer composites onto its parent with.
     pub fn blend(&mut self, blend: BlendMode) -> &mut Self {
         self.queue(Op::Layer(LayerOp::Blend(self.layer, blend)));
+        self
+    }
+
+    /// Sets the blend space, with the meaning of
+    /// [`Group::blend_space`](crate::Group::blend_space): the layer's
+    /// content and children composite with each other in this space, and
+    /// the layer composites onto its parent in it. A space unlike its
+    /// parent level's isolates the layer. Until set, or once
+    /// [cleared](Self::clear_blend_space), the layer composites in its
+    /// parent's space.
+    pub fn blend_space(&mut self, space: BlendSpace) -> &mut Self {
+        self.queue(Op::Layer(LayerOp::BlendSpace(self.layer, Some(space))));
+        self
+    }
+
+    /// Clears the blend space: the layer composites in its parent's.
+    pub fn clear_blend_space(&mut self) -> &mut Self {
+        self.queue(Op::Layer(LayerOp::BlendSpace(self.layer, None)));
         self
     }
 
@@ -1763,19 +2048,31 @@ impl<T: Target> LayerEdit<T> {
         self
     }
 
+    /// Marks or unmarks the layer as an external host window's frame:
+    /// the engine draws nothing for a marked layer, and its paint-order
+    /// position starts a new region of the surface, presented in a band
+    /// the host stacks above that window (water-rs/waterui#2225). `window`
+    /// is the host's id for the window — the band's key — and `None`
+    /// unmarks the layer.
+    pub fn host_window(&mut self, window: Option<u64>) -> &mut Self {
+        self.queue(Op::Layer(LayerOp::HostWindow(self.layer, window)));
+        self
+    }
+
     /// Overrides the animation of the last property op this handle
     /// recorded — its own last edit, not whatever the shared stream
     /// holds last.
     ///
-    /// # Panics
-    /// Panics unless the last op this handle recorded was a transform
-    /// component, `tilt`,
-    /// `depth`, `transform`, `opacity` or `scroll_offset` — `.animation(...)` on any other property is an
-    /// invariant violation — and panics when `animation` is a
-    /// [`Decay`](crate::Decay) on anything but `scroll_offset`.
+    /// # Contract
+    /// The last op this handle recorded must be a transform component,
+    /// `tilt`, `depth`, `transform`, `opacity`, `scroll_offset`, `clip` or
+    /// `backdrop`, and
+    /// `animation` must not be a [`Decay`](crate::Decay) on anything but
+    /// `scroll_offset`. Otherwise it is a contract violation, and the call
+    /// changes nothing: the op keeps the animation it had.
     pub fn animation(&mut self, animation: impl Into<Animation>) -> &mut Self {
         let animation = animation.into();
-        {
+        'apply: {
             let mut shared = self.shared.borrow_mut();
             // The sequence tells the recorded entry from one that took
             // its index after an unwind truncated it: retargeting that
@@ -1786,22 +2083,31 @@ impl<T: Target> LayerEdit<T> {
                     .then(|| &mut shared.pending[stream_start + index])
             });
             let Some(Op::Layer(op)) = last else {
-                panic!("animation() must follow an animatable layer property")
+                contract_violation!(
+                    "animation() must follow an animatable layer property; the call is ignored"
+                );
+                break 'apply;
             };
-            assert!(
-                !matches!(animation, Animation::Decay(_))
-                    || matches!(op, LayerOp::ScrollOffset(..)),
-                "Decay is only legal on scroll_offset"
-            );
+            if matches!(animation, Animation::Decay(_)) && !matches!(op, LayerOp::ScrollOffset(..))
+            {
+                contract_violation!("Decay is only legal on scroll_offset; the call is ignored");
+                break 'apply;
+            }
             let is_projection = matches!(op, LayerOp::Projection(..));
             match op.animation_mut() {
                 Some(slot) => *slot = Some(animation),
                 None if is_projection => {
-                    panic!(
-                        "the projection matrix is not animatable; animate tilt, depth or the components"
-                    )
+                    contract_violation!(
+                        "the projection matrix is not animatable; animate tilt, depth or the \
+                         components; the call is ignored"
+                    );
                 }
-                None => panic!("animation() must follow an animatable layer property"),
+                None => {
+                    contract_violation!(
+                        "animation() must follow an animatable layer property; the call is \
+                         ignored"
+                    );
+                }
             }
         }
         self
@@ -1833,10 +2139,11 @@ impl<T: Target> Index<&Layer> for Transaction<'_, T> {
     type Output = LayerEdit<T>;
 
     fn index(&self, layer: &Layer) -> &Self::Output {
-        assert_eq!(
-            self.edit.layer, layer.id,
-            "the transaction's edit handle points at another layer"
-        );
+        if self.edit.layer != layer.id {
+            contract_violation!(
+                "the transaction's edit handle points at another layer; it is returned as it is"
+            );
+        }
         &self.edit
     }
 }
@@ -1862,6 +2169,8 @@ mod tests {
     use nami::{SignalExt, binding};
     use nami_core::Signal;
     use std::time::Duration;
+
+    use crate::ops::AnimationStart;
 
     /// A target for queue tests: always visible (never drains inline),
     /// installs nothing.
@@ -2154,7 +2463,7 @@ mod tests {
             matches!(
                 ops.as_slice(),
                 [LayerOp::Create(_), LayerOp::Backdrop(id, Some(s))]
-                    if *id == layer.id() && *s == BackdropSample::with_effect(group, rim(1.0))
+                    if *id == layer.id() && s.target == BackdropSample::with_effect(group, rim(1.0))
             ),
             "the bound sample starts whole: {ops:?}"
         );
@@ -2171,7 +2480,7 @@ mod tests {
             assert!(
                 matches!(
                     ops.as_slice(),
-                    [LayerOp::Backdrop(id, Some(s))] if *id == layer.id() && *s == next
+                    [LayerOp::Backdrop(id, Some(s))] if *id == layer.id() && s.target == next
                 ),
                 "a bound change replaces the sample: {ops:?}"
             );
@@ -2214,9 +2523,9 @@ mod tests {
                     LayerOp::Opacity(_, Prop { target: one, .. }),
                     LayerOp::Backdrop(_, Some(b)),
                     LayerOp::Opacity(_, Prop { target: quarter, .. }),
-                ] if *a == first
+                ] if a.target == first
                     && one.to_bits() == 1.0_f32.to_bits()
-                    && *b == newest
+                    && b.target == newest
                     && quarter.to_bits() == 0.25_f32.to_bits()
             ),
             "the transaction's edits queue ahead of its signals' changes: {ops:?}"
@@ -2310,9 +2619,9 @@ mod tests {
                         LayerOp::Opacity(_, Prop { target: one, .. }),
                         LayerOp::Backdrop(_, Some(b)),
                         LayerOp::Opacity(_, Prop { target: quarter, .. }),
-                    ] if *a == first
+                    ] if a.target == first
                         && one.to_bits() == 1.0_f32.to_bits()
-                        && *b == newest
+                        && b.target == newest
                         && quarter.to_bits() == 0.25_f32.to_bits()
                 )
             ),
@@ -2341,8 +2650,10 @@ mod tests {
         assert!(
             matches!(
                 ops.as_slice(),
-                [LayerOp::Create(_), LayerOp::Clip(_, Some(ShapeData::Rect(rect)))]
-                    if *rect == Rect::new(0.0, 0.0, 10.0, 10.0)
+                [
+                    LayerOp::Create(_),
+                    LayerOp::Clip(_, Some(Retarget { target: ShapeData::Rect(rect), .. })),
+                ] if *rect == Rect::new(0.0, 0.0, 10.0, 10.0)
             ),
             "the bound clip starts from its shape: {ops:?}"
         );
@@ -3149,8 +3460,27 @@ mod tests {
         );
     }
 
+    /// The animation each queued opacity op carries.
+    fn opacity_animations(shared: &Rc<RefCell<Shared<TestTarget>>>) -> Vec<Option<Animation>> {
+        let changes = shared
+            .borrow_mut()
+            .take_changes(crate::Instant::now())
+            .expect("the transaction queued ops");
+        changes
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                Op::Layer(LayerOp::Opacity(_, prop)) => Some(prop.animation),
+                _ => None,
+            })
+            .collect()
+    }
+
     #[test]
-    #[should_panic(expected = "animation() must follow an animatable layer property")]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "animation() must follow an animatable layer property")
+    )]
     fn animation_does_not_retarget_another_layers_edit() {
         let shared = shared();
         let a = layer(&shared);
@@ -3161,10 +3491,46 @@ mod tests {
             // animation must not silently land on `a`'s edit.
             tx[&b].animation(Curve::linear(Duration::from_millis(100)));
         });
+        assert_eq!(opacity_animations(&shared), [None]);
     }
 
     #[test]
-    #[should_panic(expected = "animation() must follow an animatable layer property")]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "Decay is only legal on scroll_offset")
+    )]
+    fn a_decay_animation_on_opacity_is_ignored() {
+        let shared = shared();
+        let a = layer(&shared);
+        Shared::run_transaction(&shared, None, None, |tx| {
+            tx[&a]
+                .opacity(0.5_f32)
+                .animation(crate::Decay::new(Vec2::new(0., 100.)));
+        });
+        assert_eq!(opacity_animations(&shared), [None]);
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "the transaction's edit handle points at another layer")
+    )]
+    fn indexing_a_transaction_by_a_layer_it_does_not_point_at_returns_its_handle() {
+        let shared = shared();
+        let a = layer(&shared);
+        let b = layer(&shared);
+        Shared::run_transaction(&shared, None, None, |tx| {
+            tx[&a].opacity(0.5_f32);
+            let edit = &tx[&b];
+            assert_eq!(edit.layer, a.id());
+        });
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "animation() must follow an animatable layer property")
+    )]
     fn animation_does_not_retarget_an_edit_truncated_under_the_handle() {
         let shared = shared();
         let a = layer(&shared);
@@ -3192,6 +3558,20 @@ mod tests {
             }
             tx[&a].animation(Curve::linear(Duration::from_millis(100)));
         });
+        let changes = shared
+            .borrow_mut()
+            .take_changes(crate::Instant::now())
+            .expect("the transaction queued ops");
+        assert!(changes.ops.iter().all(|op| !matches!(
+            op,
+            Op::Layer(LayerOp::Transform(
+                _,
+                Prop {
+                    animation: Some(_),
+                    ..
+                }
+            ))
+        )));
     }
 
     #[test]
@@ -3354,11 +3734,11 @@ mod tests {
         for op in &changes.ops {
             match op {
                 Op::Layer(LayerOp::Opacity(_, prop)) => {
-                    assert_eq!(prop.start, Some(start));
+                    assert_eq!(prop.start.as_ref().map(|named| named.at), Some(start));
                     seen += 1;
                 }
                 Op::Layer(LayerOp::Scale(_, prop)) => {
-                    assert_eq!(prop.start, Some(start));
+                    assert_eq!(prop.start.as_ref().map(|named| named.at), Some(start));
                     seen += 1;
                 }
                 _ => {}
@@ -3369,6 +3749,264 @@ mod tests {
 
     /// A bound change's `AnimationStart` metadata reaches the prop's
     /// `start` (dev's test — the merge dropped it).
+    #[test]
+    fn a_keyframed_rotation_change_queues_its_track() {
+        let shared = shared();
+        let layer = layer(&shared);
+        let unit = Duration::from_millis(500);
+        let spin = crate::Keyframes::new(unit, 0.0_f64).then(
+            1.,
+            Curve::linear(unit),
+            std::f64::consts::TAU,
+        );
+        let rotation = binding(0.0_f64);
+        Shared::run_transaction(&shared, None, None, |tx| {
+            tx[&layer].rotation(
+                rotation
+                    .clone()
+                    .with(KeyframeAnimation::new(spin.clone(), crate::Repeat::Forever)),
+            );
+        });
+        let _ = shared.borrow_mut().take_changes(crate::Instant::now());
+        rotation.set(1.0);
+        let Some(changes) = shared.borrow_mut().take_changes(crate::Instant::now()) else {
+            panic!("the bound change queued an op");
+        };
+        let [Op::Layer(LayerOp::Keyframes(_, LayerKeyframes::Rotation(prop)))] =
+            changes.ops.as_slice()
+        else {
+            panic!("one rotation keyframe op: {:?}", changes.ops);
+        };
+        assert!((prop.target - 1.0).abs() < f64::EPSILON);
+        assert_eq!(prop.keyframes, spin);
+        assert_eq!(prop.repeat, crate::Repeat::Forever);
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "does not take a keyframe track")
+    )]
+    fn a_keyframed_skew_change_lands_without_the_track() {
+        let shared = shared();
+        let layer = layer(&shared);
+        let unit = Duration::from_millis(500);
+        let skew = binding(kurbo::Vec2::ZERO);
+        Shared::run_transaction(&shared, None, None, |tx| {
+            tx[&layer].skew(skew.clone().with(KeyframeAnimation::new(
+                crate::Keyframes::new(unit, kurbo::Vec2::ZERO),
+                crate::Repeat::Forever,
+            )));
+        });
+        let _ = shared.borrow_mut().take_changes(crate::Instant::now());
+        skew.set(kurbo::Vec2::new(0.1, 0.0));
+        let changes = shared
+            .borrow_mut()
+            .take_changes(crate::Instant::now())
+            .expect("the change queued an op");
+        assert!(matches!(
+            changes.ops.as_slice(),
+            [Op::Layer(LayerOp::Skew(
+                _,
+                Prop {
+                    animation: None,
+                    ..
+                }
+            ))]
+        ));
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "never both; the `Animation` is ignored")
+    )]
+    fn a_keyframe_track_beside_an_animation_wins_on_a_layer_property() {
+        let shared = shared();
+        let layer = layer(&shared);
+        let unit = Duration::from_millis(500);
+        let fade = crate::Keyframes::new(unit, 1.0_f32).then(1., Curve::linear(unit), 0.0);
+        let opacity = binding(1.0_f32);
+        Shared::run_transaction(&shared, None, None, |tx| {
+            tx[&layer].opacity(
+                opacity
+                    .clone()
+                    .with(Animation::from(Curve::linear(unit)))
+                    .with(KeyframeAnimation::new(fade.clone(), crate::Repeat::Forever)),
+            );
+        });
+        let _ = shared.borrow_mut().take_changes(crate::Instant::now());
+        opacity.set(0.5);
+        let changes = shared
+            .borrow_mut()
+            .take_changes(crate::Instant::now())
+            .expect("the bound change queued an op");
+        let [Op::Layer(LayerOp::Keyframes(_, LayerKeyframes::Opacity(prop)))] =
+            changes.ops.as_slice()
+        else {
+            panic!("one opacity keyframe op: {:?}", changes.ops);
+        };
+        assert_eq!(prop.keyframes, fade);
+    }
+
+    /// The scale ops a change set carries: the joint ones and the per-axis
+    /// ones, in order.
+    fn scale_ops(changes: Option<ChangeSet<TestTarget>>) -> (usize, Vec<Axis>) {
+        let Some(changes) = changes else {
+            return (0, Vec::new());
+        };
+        let mut joint = 0;
+        let mut per_axis = Vec::new();
+        for op in &changes.ops {
+            match op {
+                Op::Layer(LayerOp::Scale(..)) => joint += 1,
+                Op::Layer(LayerOp::ScaleAxis(_, axis, _)) => per_axis.push(*axis),
+                _ => {}
+            }
+        }
+        (joint, per_axis)
+    }
+
+    /// Binding a scale axis drops the joint `scale` binding: the joint
+    /// signal's later changes no longer reach the layer, the axis's do.
+    #[test]
+    fn a_scale_axis_binding_drops_the_joint_scale_binding() {
+        let shared = shared();
+        let layer = layer(&shared);
+        let joint = binding(Vec2::new(1.0, 1.0));
+        let x = binding(1.0_f64);
+        Shared::run_transaction(&shared, None, None, |tx| {
+            tx[&layer].scale(joint.clone());
+        });
+        let _ = shared.borrow_mut().take_changes(crate::Instant::now());
+        Shared::run_transaction(&shared, None, None, |tx| {
+            tx[&layer].scale_axis(Axis::X, x.clone());
+        });
+        let _ = shared.borrow_mut().take_changes(crate::Instant::now());
+
+        joint.set(Vec2::new(2.0, 2.0));
+        assert_eq!(
+            scale_ops(shared.borrow_mut().take_changes(crate::Instant::now())),
+            (0, Vec::new()),
+            "the joint binding was dropped"
+        );
+        x.set(3.0);
+        assert_eq!(
+            scale_ops(shared.borrow_mut().take_changes(crate::Instant::now())),
+            (0, vec![Axis::X]),
+            "the axis binding drives the layer"
+        );
+    }
+
+    /// Binding the joint `scale` drops both axes' bindings.
+    #[test]
+    fn a_joint_scale_binding_drops_the_axis_bindings() {
+        let shared = shared();
+        let layer = layer(&shared);
+        let x = binding(1.0_f64);
+        let y = binding(1.0_f64);
+        let joint = binding(Vec2::new(1.0, 1.0));
+        Shared::run_transaction(&shared, None, None, |tx| {
+            tx[&layer]
+                .scale_axis(Axis::X, x.clone())
+                .scale_axis(Axis::Y, y.clone());
+        });
+        let _ = shared.borrow_mut().take_changes(crate::Instant::now());
+        Shared::run_transaction(&shared, None, None, |tx| {
+            tx[&layer].scale(joint.clone());
+        });
+        let _ = shared.borrow_mut().take_changes(crate::Instant::now());
+
+        x.set(2.0);
+        y.set(0.5);
+        assert_eq!(
+            scale_ops(shared.borrow_mut().take_changes(crate::Instant::now())),
+            (0, Vec::new()),
+            "both axis bindings were dropped"
+        );
+        joint.set(Vec2::new(3.0, 3.0));
+        assert_eq!(
+            scale_ops(shared.borrow_mut().take_changes(crate::Instant::now())),
+            (1, Vec::new()),
+            "the joint binding drives the layer"
+        );
+    }
+
+    /// A bound change's `AnimationOrigin` reaches the prop's start next to
+    /// its `AnimationStart`.
+    #[test]
+    fn a_bound_change_reads_its_animation_origin_from_metadata() {
+        let shared = shared();
+        let layer = layer(&shared);
+        let start = crate::Instant::now();
+        let opacity = binding(1.0_f32);
+        let origin = crate::ops::TrackOrigin::<f32> {
+            from: [0.25],
+            velocity: [-2.0],
+        };
+        Shared::run_transaction(&shared, None, None, |tx| {
+            tx[&layer].opacity(
+                opacity
+                    .clone()
+                    .with(Animation::from(Curve::linear(Duration::from_millis(400))))
+                    .with(AnimationStart(start))
+                    .with(crate::ops::AnimationOrigin(origin)),
+            );
+        });
+        let _ = shared.borrow_mut().take_changes(crate::Instant::now());
+        opacity.set(0.5);
+        let Some(changes) = shared.borrow_mut().take_changes(crate::Instant::now()) else {
+            panic!("the bound change queued an op");
+        };
+        let [Op::Layer(LayerOp::Opacity(_, prop))] = changes.ops.as_slice() else {
+            panic!("one opacity op: {:?}", changes.ops);
+        };
+        let named = prop.start.as_ref().expect("the change names its start");
+        assert_eq!(named.at, start);
+        let carried = named.origin.as_ref().expect("the change names its origin");
+        assert_eq!((carried.from, carried.velocity), ([0.25], [-2.0]));
+    }
+
+    /// A bound clip's and a bound backdrop sample's changes carry the
+    /// animation and start their metadata names into their ops.
+    #[test]
+    fn a_bound_clip_and_backdrop_carry_their_change_animation() {
+        use crate::BackdropSample;
+
+        let shared = shared();
+        let layer = layer(&shared);
+        let start = crate::Instant::now();
+        let linear = Animation::from(Curve::linear(Duration::from_millis(400)));
+        let clip = binding(Rect::new(0.0, 0.0, 10.0, 10.0));
+        let sample = binding(BackdropSample::with_effect(BackdropId::new(1), rim(1.0)));
+        Shared::run_transaction(&shared, None, None, |tx| {
+            tx[&layer]
+                .clip(clip.clone().with(linear).with(AnimationStart(start)))
+                .backdrop(sample.clone().with(linear));
+        });
+        let _ = shared.borrow_mut().take_changes(crate::Instant::now());
+        clip.set(Rect::new(5.0, 0.0, 15.0, 10.0));
+        sample.set(BackdropSample::with_effect(BackdropId::new(1), rim(2.0)));
+        let Some(changes) = shared.borrow_mut().take_changes(crate::Instant::now()) else {
+            panic!("the bound changes queued ops");
+        };
+        let [
+            Op::Layer(LayerOp::Clip(_, Some(clip))),
+            Op::Layer(LayerOp::Backdrop(_, Some(backdrop))),
+        ] = changes.ops.as_slice()
+        else {
+            panic!("a clip op and a backdrop op: {:?}", changes.ops);
+        };
+        assert_eq!(
+            clip.target,
+            ShapeData::Rect(Rect::new(5.0, 0.0, 15.0, 10.0))
+        );
+        assert!(matches!(clip.animation, Some(Animation::Curve(_))));
+        assert_eq!(clip.start, Some(start));
+        assert!(matches!(backdrop.animation, Some(Animation::Curve(_))));
+        assert_eq!(backdrop.start, None);
+    }
+
     #[test]
     fn a_bound_change_reads_its_animation_start_from_metadata() {
         let shared = shared();
@@ -3394,7 +4032,7 @@ mod tests {
         let Op::Layer(LayerOp::Opacity(_, prop)) = op else {
             panic!("an opacity op: {op:?}");
         };
-        assert_eq!(prop.start, Some(start));
+        assert_eq!(prop.start.as_ref().map(|named| named.at), Some(start));
         assert!(matches!(prop.animation, Some(Animation::Curve(_))));
     }
 
@@ -3429,7 +4067,7 @@ mod tests {
                 continue;
             };
             assert_eq!(prop.target.to_bits(), 0.5_f32.to_bits());
-            assert_eq!(prop.start, Some(start));
+            assert_eq!(prop.start.as_ref().map(|named| named.at), Some(start));
             assert!(matches!(prop.animation, Some(Animation::Curve(_))));
             seen += 1;
         }
@@ -3437,12 +4075,15 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "detaching from the wrong parent")]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "detaching from the wrong parent")
+    )]
     fn a_reparented_child_cannot_be_removed_by_its_first_parent() {
         // `tx[a].push(c); tx[b].push(c); tx[a].remove(c)` records the ops in
         // program order: the second push reparents `child` onto `b`, so the
-        // later detach still naming `a` is the invariant violation and the
-        // tree refuses it — the commit does not silently resolve it.
+        // later detach still naming `a` is a contract violation and the
+        // tree refuses it: the child stays under `b`.
         let shared = shared();
         let mut tree = crate::SurfaceTree::new();
         let parent_a = layer(&shared);

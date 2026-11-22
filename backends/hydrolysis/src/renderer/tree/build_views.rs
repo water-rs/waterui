@@ -4,25 +4,36 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
+// Only the Android bridge and a build with no bridged engine report a WebView.
+#[cfg(all(
+    waterui_feature = "webview",
+    any(hydrolysis_android_system_webview, not(hydrolysis_system_webview))
+))]
+use waterui_core::contract_violation;
 
+#[cfg(feature = "list")]
 impl_widget_behavior!(
     crate::widgets::layout::list::ListRenderState<E>,
     crate::widgets::layout::list::render_list_node,
     |state: &crate::widgets::layout::list::ListRenderState<E>, proposal, hydro, env, theme| {
-        crate::widgets::layout::list::measure_list_node(&state.config, proposal, hydro, env, theme)
+        crate::widgets::layout::list::measure_list_node(state, proposal, hydro, env, theme)
     }
+    ; prepare: prepare_first_row
     ; a11y: crate::widgets::layout::list::emit_list_accessibility
     ; surface: surface
 );
+#[cfg(feature = "table")]
 impl_widget_behavior!(
     crate::widgets::layout::table::TableRenderState<E>,
     crate::widgets::layout::table::render_table_node,
     |state: &crate::widgets::layout::table::TableRenderState<E>, proposal, hydro, env, theme| {
-        crate::widgets::layout::table::measure_table_node(&state.config, proposal, hydro, env, theme)
+        crate::widgets::layout::table::measure_table_node(state, proposal, hydro, env, theme)
     }
+    ; prepare: prepare_headers
     ; a11y: crate::widgets::layout::table::emit_table_accessibility
     ; surface: surface
 );
+#[cfg(feature = "navigation")]
 impl_widget_behavior!(
     crate::widgets::nav::navigation::NavigationViewRenderState<E>,
     crate::widgets::nav::navigation::render_navigation_view_node,
@@ -34,11 +45,13 @@ impl_widget_behavior!(
 
 /// The declaration on a navigation view's content root — the page root a
 /// navigation stack owns.
+#[cfg(feature = "navigation")]
 fn navigation_page_transition<E: crate::text::TextEngine>(
     state: &crate::widgets::nav::navigation::NavigationViewRenderState<E>,
-) -> Option<waterui_core::transition::TransitionSpec> {
+) -> Option<waterui_structural_transition::TransitionSpec> {
     super::transition::claim_transition(state.content_node())
 }
+#[cfg(feature = "navigation")]
 impl_widget_behavior!(
     crate::widgets::nav::navigation::NavigationSplitRenderState<E>,
     crate::widgets::nav::navigation::render_navigation_split_node,
@@ -47,6 +60,7 @@ impl_widget_behavior!(
     ; dirty: take_layout_dirty
     ; a11y: crate::widgets::nav::navigation::emit_navigation_split_accessibility
 );
+#[cfg(feature = "navigation")]
 impl_widget_behavior!(
     crate::widgets::nav::navigation::NavigationStackRenderState<E>,
     crate::widgets::nav::navigation::render_navigation_stack_node,
@@ -54,6 +68,7 @@ impl_widget_behavior!(
     ; dirty: take_layout_dirty
     ; a11y: crate::widgets::nav::navigation::emit_navigation_stack_accessibility
 );
+#[cfg(feature = "navigation")]
 impl_widget_behavior!(
     crate::widgets::nav::tabs::TabsRenderState<E>,
     crate::widgets::nav::tabs::render_tabs_node,
@@ -72,12 +87,6 @@ impl_widget_behavior!(
     ResolvedShape,
     crate::renderer::render_shape_node,
     crate::renderer::measure_shape_node
-    ; a11y: crate::renderer::views::emit_graphics_leaf_accessibility
-);
-impl_widget_behavior!(
-    ResolvedMorphShape,
-    crate::renderer::render_morph_shape_node,
-    crate::renderer::measure_morph_shape_node
     ; a11y: crate::renderer::views::emit_graphics_leaf_accessibility
 );
 impl_widget_behavior!(
@@ -112,35 +121,47 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// a changing collection length stay live; the `LazyListController` row-extent
     /// cache (keyed by body-order cursor slot) persists across frames. Stretches to
     /// fill the proposal (`StretchAxis::Both`, read from the config).
+    #[cfg(feature = "list")]
     pub(super) fn build_list(
         config: ListConfig,
         env: &Environment,
-        renderer: &SemanticCore<E>,
+        renderer: &mut SemanticCore<E>,
     ) -> Self {
         use crate::widgets::layout::list::ListRenderState;
         let stretch = waterui_core::NativeView::stretch_axis(&config);
-        let state = Rc::new(RefCell::new(ListRenderState::from_config(
-            config, env, renderer,
-        )));
-        Self::build_widget(renderer, state, stretch, env)
+        let state = ListRenderState::from_config(config, env, renderer);
+        // The first row is realized under this widget's cell as the record
+        // reader, so its node attaches to the list rather than the window.
+        let core = renderer.new_core();
+        renderer.with_probe_reader(&core, ReaderPhase::Record, |renderer| {
+            state.refresh_first_row(env, renderer);
+        });
+        Self::build_widget_with_core(Rc::new(RefCell::new(state)), stretch, env, core)
     }
 
     /// Build a persistent table node: retain the config (its `columns` signal and
-    /// per-column reactive `rows` stay owned by the cell). Each flush re-reads the
-    /// columns, re-resolves the visible row/column windows from the enclosing
-    /// scroll's pushed viewport, and re-dispatches only those header/data cells, so
-    /// reactive cell content and a changing column/row set stay live; the
-    /// `LazyTableController` column-width/row-count cache (keyed by body-order cursor
-    /// slot) persists across frames. Stretch is read from the config.
+    /// per-column reactive `rows` stay owned by the cell) and realize every
+    /// column's header. Each flush re-reads the columns, re-resolves the visible
+    /// row/column windows from the enclosing scroll's pushed viewport, and
+    /// realizes only the data cells that become visible, so reactive cell content
+    /// and a changing column/row set stay live. Stretch is read from the config.
+    #[cfg(feature = "table")]
     pub(super) fn build_table(
-        renderer: &SemanticCore<E>,
+        renderer: &mut SemanticCore<E>,
         config: TableConfig,
         env: &Environment,
     ) -> Self {
         use crate::widgets::layout::table::TableRenderState;
         let stretch = waterui_core::NativeView::stretch_axis(&config);
-        let state = Rc::new(RefCell::new(TableRenderState::from_config(config)));
-        Self::build_widget(renderer, state, stretch, env)
+        let state = TableRenderState::from_config(config);
+        // The headers are realized under this widget's cell as the record
+        // reader, so their nodes attach to the table rather than the window.
+        let core = renderer.new_core();
+        renderer.with_probe_reader(&core, ReaderPhase::Record, |renderer| {
+            let columns = renderer.read_signal(&state.config.columns);
+            state.refresh_headers(&columns, env, renderer);
+        });
+        Self::build_widget_with_core(Rc::new(RefCell::new(state)), stretch, env, core)
     }
 
     /// Build a persistent navigation-view node: its bar `title`/`leading`/`trailing`
@@ -148,6 +169,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// [`RetainedSubview`]s; the bar's `color`/`hidden` signals are read through
     /// `read_signal` each frame so an appearance change schedules a frame and the
     /// bar re-renders. Stretch is `Both` (read from the config).
+    #[cfg(feature = "navigation")]
     pub(super) fn build_navigation_view(
         navigation: NavigationView,
         env: &Environment,
@@ -171,6 +193,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// frame, and the `selection` binding is read through `read_signal` so a
     /// selection change schedules a frame and the detail re-resolves. Stretch is
     /// `Both` (read from the config).
+    #[cfg(feature = "navigation")]
     pub(super) fn build_navigation_split(
         split: NavigationSplitLayout,
         env: &Environment,
@@ -196,6 +219,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// `Rc`-backed builders each flush; the navigation controller and transition
     /// slot persist across frames so push/pop transitions keep animating. Stretch is
     /// `Both` (read from the config).
+    #[cfg(feature = "navigation")]
     pub(super) fn build_navigation_stack(
         renderer: &SemanticCore<E>,
         stack: NavigationStack<(), ()>,
@@ -212,6 +236,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// from its `Rc`-backed builder each flush, and the `selection` binding is read
     /// through `read_signal` so a tab change schedules a frame and the active
     /// content/indicator updates. Stretch is `Both` (read from the config).
+    #[cfg(feature = "navigation")]
     pub(super) fn build_tabs(
         tabs: TabsLayout,
         env: &Environment,
@@ -265,22 +290,6 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         Self::build_widget(renderer, shape, stretch, env)
     }
 
-    /// Build a persistent morph-shape node: retain the resolved morph payload and
-    /// re-fill its interpolated path every flush. The morph progress is resolved
-    /// through the animation controller each frame — an explicit `progress` signal
-    /// is watched via `read_signal`/`resolve_owned_scalar`, and
-    /// a time-based animation drives continuous frames via `sample_morph_progress` —
-    /// so the morph stays live. Stretches to fill the proposal (`StretchAxis::Both`).
-    pub(super) fn build_morph_shape(
-        renderer: &SemanticCore<E>,
-        shape: ResolvedMorphShape,
-        env: &Environment,
-    ) -> Self {
-        let stretch = waterui_core::NativeView::stretch_axis(&shape);
-        let shape = Rc::new(RefCell::new(shape));
-        Self::build_widget(renderer, shape, stretch, env)
-    }
-
     /// Build the `WebView` leaf. Where a hosted system bridge exists it
     /// mounts through the hosted-content leaf (`WKWebView` on macOS, an
     /// `<iframe>` on the web); on Android the `HydrolysisWebView` wrapper the
@@ -290,6 +299,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// long as the leaf that embeds it. Where no engine is bridged at all a
     /// `WebView` that still reaches the backend has nothing to draw it — a
     /// missing realization, not a drawable stand-in.
+    #[cfg(waterui_feature = "webview")]
     pub(super) fn build_webview(
         webview: &WebView,
         env: &Environment,
@@ -297,10 +307,9 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     ) -> Self {
         #[cfg(hydrolysis_system_webview)]
         {
-            Self::build_hosted(
-                crate::widgets::platform::webview::hosted(webview),
-                env,
-                renderer,
+            crate::widgets::platform::webview::hosted(webview).map_or_else(
+                || Self::build_empty(renderer, env),
+                |hosted| Self::build_hosted(hosted, env, renderer),
             )
         }
         #[cfg(hydrolysis_android_system_webview)]
@@ -309,31 +318,37 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             use crate::widgets::platform::webview::AndroidSystemWebViewHandle;
 
             let handle = webview.handle();
-            let instance = handle
+            // The controller failed to open this view and `waterui-webview`
+            // already reported it: nothing to draw.
+            if handle.is_unavailable() {
+                return Self::build_empty(renderer, env);
+            }
+            let Some(instance) = handle
                 .downcast_ref::<AndroidSystemWebViewHandle>()
-                .map_or_else(
-                    || {
-                        panic!(
-                            "hydrolysis android: a WebView handle that is not \
-                             AndroidSystemWebViewHandle reached the backend; the \
-                             Android system bridge only draws views `WebView::open` \
-                             made through its controller — another engine must \
-                             install its `Hook<WebView>` realization"
-                        )
-                    },
-                    AndroidSystemWebViewHandle::instance,
+                .map(AndroidSystemWebViewHandle::instance)
+            else {
+                contract_violation!(
+                    "hydrolysis android: a WebView handle that is not \
+                     AndroidSystemWebViewHandle reached the backend; the \
+                     Android system bridge only draws views `WebView::open` \
+                     made through its controller — another engine must \
+                     install its `Hook<WebView>` realization; the web view is not drawn"
                 );
+                return Self::build_empty(renderer, env);
+            };
             let stretch = waterui_core::NativeView::stretch_axis(webview);
             let owner: Rc<dyn core::any::Any> = Rc::new(handle.clone());
-            let state = Rc::new(RefCell::new(PlatformViewRenderState::from_instance(
-                instance, owner, env,
-            )));
+            let Some(state) = PlatformViewRenderState::from_instance(instance, owner, env) else {
+                return Self::build_empty(renderer, env);
+            };
+            let state = Rc::new(RefCell::new(state));
             Self::build_widget(renderer, state, stretch, env)
         }
         #[cfg(not(any(hydrolysis_system_webview, hydrolysis_android_system_webview)))]
         {
-            let _ = (webview, env, renderer);
-            unsupported_webview()
+            let _ = webview;
+            contract_violation!("{UNSUPPORTED_WEBVIEW}; the web view is not drawn");
+            Self::build_empty(renderer, env)
         }
     }
 
@@ -361,8 +376,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
 
     /// Build a persistent divider node: a static separator line drawn from theme
     /// metrics, oriented by the enclosing stack axis (read from env every flush).
-    /// Stretches on its cross axis (`StretchAxis::CrossAxis`, matching the dispatch
-    /// path's [`effective_stretch_axis`] for `Divider`).
+    /// Stretches on its cross axis (`StretchAxis::CrossAxis`).
     pub(super) fn build_divider(
         renderer: &SemanticCore<E>,
         divider: Divider,

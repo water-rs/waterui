@@ -13,6 +13,8 @@ import android.view.Surface
 object NativeBridge {
     /**
      * Incremented in lock-step with `JNI_SCHEMA` in the Rust runner.
+     * 24 adds `DefineEffect` (`effect, stage_count, kind + 12 float` stages)
+     * for native `RenderEffect` chains (#1750).
      * History: 1 = surface/input/IME events; 2 = `nativeSetVisible`
      * (Activity `onStart`/`onStop` → pump visibility); 3 = the
      * InputConnection range protocol (`nativeEditOp`/`nativeEditingState`,
@@ -27,7 +29,7 @@ object NativeBridge {
      * `JNI_OnLoad`; 7 = `nativeSetMetrics` carries the `ViewConfiguration`
      * touch-scroll parameters (slop, min/max fling velocity, scroll
      * friction); 8 = [nativeCreateSession] drops `sdkInt`. The API floor is
-     * 31, so `ANativeWindow_setFrameRate` is linked directly; 9 =
+     * 33, so `ANativeWindow_setFrameRate` is linked directly; 9 =
      * [nativeBackEvent] and `onNativeBackAvailable` carry system back into
      * the navigation stack and report whether a back target is registered;
      * 10 = `nativeSetMetrics` splits the window insets into the container
@@ -62,9 +64,24 @@ object NativeBridge {
      * [nativeCreateSession] carries the configuration's night-mode flag so
      * the session's colour-scheme signal starts on the real `uiMode`, and
      * [nativeSetColorScheme] reports every later change
-     * (water-rs/waterui#3544).
+     * (water-rs/waterui#3544). 25 = the GPU band edge —
+     * [nativeBandAttached] / [nativeBandDetached] carry each band View's
+     * `ImageReader` surface, and `onNativeBandLatch` shows a band's newest
+     * image (water-rs/waterui#2225). 26 = the HWUI `DefineEffect` wire
+     * carries the overscroll stretch stage kind. 27 = [nativeSetMetrics]
+     * carries the `ViewConfiguration` double-tap timeout and slop, and
+     * [nativeOnFrame] carries the vsync callback's expected presentation
+     * time in place of the advisory vsync timestamp. 28 = the HWUI
+     * painter's hosted GPU-content edge: [nativeHostedSurfaceAttached] /
+     * [nativeHostedSurfaceResized] / [nativeHostedSurfaceDestroyed] carry
+     * the `Surface` of each GPU content view's `TextureView`
+     * (water-rs/waterui#1812). 29 = the GPU video player's decoder-plane
+     * edge: [nativeVideoPlaneAttached] / [nativeVideoPlaneSurfaceDestroyed].
      */
-    private const val SCHEMA: Int = 23
+    private const val SCHEMA: Int = 30
+
+    /** Applies the pending GPU result on the UI thread. */
+    @JvmStatic external fun nativeCompleteFrame(session: Long)
 
     /** [nativeBackEvent] phase: a predictive gesture began. */
     const val BACK_STARTED: Int = 0
@@ -196,14 +213,24 @@ object NativeBridge {
         minFlingVelocityPx: Float,
         maxFlingVelocityPx: Float,
         scrollFriction: Float,
+        doubleTapTimeoutMs: Int,
+        doubleTapSlopPx: Float,
     )
 
     /**
      * The frame transaction. Returns a bitmask: 1 = wants another vsync frame,
      * 2 = window requested close, 4 = a fallback deadline is available through
-     * [nativeFrameDeadlineInNanos].
+     * [nativeFrameDeadlineInNanos]. `hasPresentation` is set for a frame a
+     * vsync callback started, and `presentationNanos` is then its expected
+     * presentation time on the `System.nanoTime` clock; a delayed deadline
+     * frame has none.
      */
-    @JvmStatic external fun nativeOnFrame(sessionPtr: Long, vsyncNanos: Long): Long
+    @JvmStatic
+    external fun nativeOnFrame(
+        sessionPtr: Long,
+        hasPresentation: Boolean,
+        presentationNanos: Long,
+    ): Long
 
     @JvmStatic external fun nativeFrameDeadlineInNanos(sessionPtr: Long): Long
 
@@ -233,6 +260,27 @@ object NativeBridge {
     )
 
     @JvmStatic external fun nativeSurfaceDestroyed(sessionPtr: Long, generation: Long)
+
+    /**
+     * A band View created the `ImageReader` it shows — `surface` is the
+     * reader's, which the engine presents the self-drawn content above the
+     * platform view whose placement id is `view` into. A resize creates a
+     * new reader under a new [generation][nativeBandDetached]; the base
+     * band's attachment drives the frame cadence.
+     */
+    @JvmStatic
+    external fun nativeBandAttached(
+        sessionPtr: Long,
+        view: Long,
+        surface: Surface,
+        width: Int,
+        height: Int,
+        generation: Long,
+    )
+
+    /** The reader `generation` of the band above `view` is about to close. */
+    @JvmStatic
+    external fun nativeBandDetached(sessionPtr: Long, view: Long, generation: Long)
 
     /**
      * The Activity's started state (`onStart`/`onStop`) — drives the frame
@@ -341,5 +389,36 @@ object NativeBridge {
 
     /** Platform-view placement frame set, or null when unchanged. */
     @JvmStatic external fun nativePlatformViewFrames(sessionPtr: Long): String?
+
+    /**
+     * The `TextureView` mounted for GPU content placement [view] has a
+     * [surface] of `width` by `height` pixels the session presents frames
+     * into (HWUI painter with GPU content, water-rs/waterui#1812).
+     */
+    @JvmStatic
+    external fun nativeHostedSurfaceAttached(
+        sessionPtr: Long,
+        view: Long,
+        surface: Surface,
+        width: Int,
+        height: Int,
+    )
+
+    /** The hosted [view]'s surface changed size. */
+    @JvmStatic
+    external fun nativeHostedSurfaceResized(sessionPtr: Long, view: Long, width: Int, height: Int)
+
+    /** The hosted [view]'s surface is being released; the swapchain drops before this returns. */
+    @JvmStatic external fun nativeHostedSurfaceDestroyed(sessionPtr: Long, view: Long)
+
+    /**
+     * The [host] object of the GPU video player's decoder plane [plane]
+     * exists: the session hands it to the player, which calls
+     * `acquireVideoSurface` / `deactivateVideoSurface` on it.
+     */
+    @JvmStatic external fun nativeVideoPlaneAttached(sessionPtr: Long, plane: Long, host: Any)
+
+    /** The decoder plane [plane]'s `Surface` was destroyed by the platform. */
+    @JvmStatic external fun nativeVideoPlaneSurfaceDestroyed(sessionPtr: Long, plane: Long)
 
 }

@@ -21,7 +21,7 @@ use std::rc::{Rc, Weak};
 use nami::watcher::BoxWatcherGuard;
 use nami::{Binding, Computed, Signal};
 use wasm_bindgen::{JsCast, JsValue, closure::Closure};
-use waterui_core::{AnyView, Environment, Native};
+use waterui_core::{AnyView, Environment, Native, contract_violation};
 use waterui_video::video::{
     AudioTrackSelection, ContentMode, Event, PlaybackConfiguration, PlaybackOutputPath,
     PlaybackPowerPolicy, SubtitleSelection, SubtitleTrackInfo, SubtitleTrackOrigin, TrackCatalog,
@@ -78,59 +78,87 @@ fn leaf(
     controls: bool,
     loops: bool,
 ) -> AnyView {
-    assert!(
-        !projection.is_spherical(),
-        "spherical video projection is not supported by the web video element realization"
-    );
-    match playback.playback_policy.power {
+    // A configuration this realization cannot honour is a contract violation
+    // by the app: it is reported and the video is not drawn.
+    if projection.is_spherical() {
+        contract_violation!(
+            "spherical video projection is not supported by the web video element realization; the video is not drawn"
+        );
+        return AnyView::new(());
+    }
+    match playback.playback_policy.get_power() {
         PlaybackPowerPolicy::PlatformManaged => {}
         PlaybackPowerPolicy::RequireAudioOffload
         | PlaybackPowerPolicy::RequireAudioVideoTunneling => {
-            panic!(
-                "{:?} cannot be satisfied by the web video element realization",
-                playback.playback_policy.power
-            )
+            contract_violation!(
+                "{:?} cannot be satisfied by the web video element realization; the video is not drawn",
+                playback.playback_policy.get_power()
+            );
+            return AnyView::new(());
         }
-        other => panic!("hydrolysis web video: unsupported playback power policy {other:?}"),
+        other => {
+            contract_violation!(
+                "hydrolysis web video: unsupported playback power policy {other:?}; the video is not drawn"
+            );
+            return AnyView::new(());
+        }
     }
-    let element = video_element(content_mode, controls);
+    let object_fit = match content_mode {
+        ContentMode::Fit => "contain",
+        ContentMode::Fill => "cover",
+        ContentMode::Stretch => "fill",
+        other => {
+            contract_violation!(
+                "hydrolysis web video: unsupported content mode {other:?}; the video is not drawn"
+            );
+            return AnyView::new(());
+        }
+    };
+    let Some(element) = video_element(object_fit, controls) else {
+        return AnyView::new(());
+    };
     let player = Player::new(env, element, playback, loops);
     let aspect = player.aspect.clone().into();
     let natural_width = player.natural_width.clone().into();
     let hosted = Native::new(HostedView::new(VideoContent { player }));
     match content_mode {
         ContentMode::Fit => AnyView::new(waterui_video::fit_video(hosted, aspect, natural_width)),
-        ContentMode::Fill | ContentMode::Stretch => AnyView::new(hosted),
-        other => panic!("hydrolysis web video: unsupported content mode {other:?}"),
+        // `Fill` and `Stretch`: `object_fit` above rejected every other mode.
+        _ => AnyView::new(hosted),
     }
 }
 
-/// A `<video>` element configured for `content_mode`, with the browser's
-/// controls when `controls` is set.
-fn video_element(content_mode: ContentMode, controls: bool) -> HtmlVideoElement {
-    let element: HtmlVideoElement = web_sys::window()
-        .and_then(|window| window.document())
-        .expect("hydrolysis web video: the page has no document")
-        .create_element("video")
-        .expect("hydrolysis web video: failed to create a <video> element")
-        .unchecked_into();
+/// Carries on past a failed DOM call: the element belongs to the browser, and
+/// a call it refuses leaves it as it was. The failure is logged.
+fn dom_call<T>(result: Result<T, JsValue>, what: &str) -> Option<T> {
+    result
+        .inspect_err(|error| tracing::error!(?error, "hydrolysis web video: {what} failed"))
+        .ok()
+}
+
+/// A `<video>` element with the CSS `object-fit` of the content mode and the
+/// browser's controls when `controls` is set. `None` (logged) when the page
+/// gives no element to create.
+fn video_element(object_fit: &str, controls: bool) -> Option<HtmlVideoElement> {
+    let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+        tracing::error!("hydrolysis web video: the page has no document; the video is not drawn");
+        return None;
+    };
+    let element: HtmlVideoElement = dom_call(
+        document.create_element("video"),
+        "creating a <video> element",
+    )?
+    .unchecked_into();
     element.set_controls(controls);
     element.set_preload("auto");
     // Inline on iOS Safari, which otherwise takes playback fullscreen.
-    element
-        .set_attribute("playsinline", "")
-        .expect("hydrolysis web video: failed to mark the element inline");
+    dom_call(
+        element.set_attribute("playsinline", ""),
+        "marking the element inline",
+    );
     let style = element.style();
     for (property, value) in [
-        (
-            "object-fit",
-            match content_mode {
-                ContentMode::Fit => "contain",
-                ContentMode::Fill => "cover",
-                ContentMode::Stretch => "fill",
-                other => panic!("hydrolysis web video: unsupported content mode {other:?}"),
-            },
-        ),
+        ("object-fit", object_fit),
         // A player letterboxes on black, as the platform players do; a bare
         // video shows whatever lies behind its letterbox.
         (
@@ -138,11 +166,9 @@ fn video_element(content_mode: ContentMode, controls: bool) -> HtmlVideoElement 
             if controls { "black" } else { "transparent" },
         ),
     ] {
-        style
-            .set_property(property, value)
-            .expect("hydrolysis web video: failed to style the element");
+        dom_call(style.set_property(property, value), "styling the element");
     }
-    element
+    Some(element)
 }
 
 /// A DOM event listener, registered while it is held.
@@ -303,9 +329,7 @@ impl Player {
     /// Fails the current source: an error event, the failed phase, and an
     /// element that loads nothing.
     fn fail(&self, message: impl Into<String>) {
-        self.element
-            .remove_attribute("src")
-            .expect("hydrolysis web video: failed to clear the source");
+        dom_call(self.element.remove_attribute("src"), "clearing the source");
         self.element.load();
         self.emit_error(message);
         self.set_phase(PlaybackPhase::Failed);
@@ -314,8 +338,8 @@ impl Player {
     /// Loads `media` into the element, unless it is the source already
     /// loaded.
     fn load(&self, media: &MediaItem) {
-        let url = media.source.to_string();
-        let key = (url.clone(), media.delivery);
+        let url = media.source().to_string();
+        let key = (url.clone(), media.get_delivery());
         if self.source_key.borrow().as_ref() == Some(&key) {
             return;
         }
@@ -335,17 +359,18 @@ impl Player {
             track.remove();
         }
 
-        if media.delivery == Delivery::Dash {
+        if media.get_delivery() == Delivery::Dash {
             self.fail("MPEG-DASH is not supported by the web video element realization");
             return;
         }
-        if media.drm.is_some() {
+        if media.get_drm().is_some() {
             self.fail(
                 "DRM-protected sources are not supported by the web video element realization",
             );
             return;
         }
-        if media.delivery == Delivery::Hls && self.element.can_play_type(HLS_MIME).is_empty() {
+        if media.get_delivery() == Delivery::Hls && self.element.can_play_type(HLS_MIME).is_empty()
+        {
             self.fail("this browser's video element does not play HLS");
             return;
         }
@@ -358,36 +383,45 @@ impl Player {
     /// The source's sidecar subtitles, as `<track>` children and as the
     /// catalog's subtitle slice.
     fn add_subtitle_tracks(&self, media: &MediaItem) {
-        let document = self
-            .element
-            .owner_document()
-            .expect("hydrolysis web video: the element has no document");
-        let mut infos = Vec::with_capacity(media.subtitle_tracks.len());
-        let mut tracks = Vec::with_capacity(media.subtitle_tracks.len());
-        for (index, track) in media.subtitle_tracks.iter().enumerate() {
-            let element: HtmlTrackElement = document
-                .create_element("track")
-                .expect("hydrolysis web video: failed to create a <track> element")
-                .unchecked_into();
+        let Some(document) = self.element.owner_document() else {
+            tracing::error!(
+                "hydrolysis web video: the element has no document; its subtitle tracks are not added"
+            );
+            return;
+        };
+        let mut infos = Vec::with_capacity(media.subtitle_tracks().len());
+        let mut tracks = Vec::with_capacity(media.subtitle_tracks().len());
+        for (index, track) in media.subtitle_tracks().iter().enumerate() {
+            let Some(element) = dom_call(
+                document.create_element("track"),
+                "creating a <track> element",
+            ) else {
+                continue;
+            };
+            let element: HtmlTrackElement = element.unchecked_into();
             element.set_kind("subtitles");
-            element.set_src(track.source.as_ref());
-            if let Some(language) = &track.language {
+            element.set_src(track.source().as_ref());
+            if let Some(language) = track.get_language() {
                 element.set_srclang(language);
             }
             let label = track
-                .label
-                .clone()
-                .or_else(|| track.language.clone())
-                .unwrap_or_else(|| format!("Subtitles {}", index + 1));
+                .get_label()
+                .or_else(|| track.get_language())
+                .map_or_else(|| format!("Subtitles {}", index + 1), ToOwned::to_owned);
             element.set_label(&label);
-            self.element
-                .append_child(&element)
-                .expect("hydrolysis web video: failed to add a subtitle track");
+            if dom_call(
+                self.element.append_child(&element),
+                "adding a subtitle track",
+            )
+            .is_none()
+            {
+                continue;
+            }
             infos.push(SubtitleTrackInfo::new(
                 label,
-                track.language.clone(),
+                track.get_language().map(ToOwned::to_owned),
                 Vec::new(),
-                track.forced,
+                track.get_forced(),
                 SubtitleTrackOrigin::Sidecar,
             ));
             tracks.push(element);
@@ -462,22 +496,29 @@ impl Player {
         if rate > 0.0 {
             self.element.set_playback_rate(f64::from(rate));
         }
-        js_sys::Reflect::set(
-            &self.element,
-            &JsValue::from_str("preservesPitch"),
-            &JsValue::from_bool(self.bindings.preserve_pitch.snapshot()),
-        )
-        .expect("hydrolysis web video: failed to set preservesPitch");
+        dom_call(
+            js_sys::Reflect::set(
+                &self.element,
+                &JsValue::from_str("preservesPitch"),
+                &JsValue::from_bool(self.bindings.preserve_pitch.snapshot()),
+            ),
+            "setting preservesPitch",
+        );
     }
 
     /// Starts playback. A browser that refuses — an autoplay policy waiting
     /// for a user gesture — reports it as a playback error, and the request
     /// is withdrawn so the bindings say what the element does.
     fn start_playing(self: &Rc<Self>) {
-        let promise = self
-            .element
-            .play()
-            .expect("hydrolysis web video: HTMLMediaElement.play threw");
+        let promise = match self.element.play() {
+            Ok(promise) => promise,
+            Err(error) => {
+                let message = js_sys::Error::from(error).message();
+                self.emit_error(format!("the browser refused to play: {message}"));
+                self.bindings.desired_playing.set(false);
+                return;
+            }
+        };
         let weak = Rc::downgrade(self);
         wasm_bindgen_futures::spawn_local(async move {
             if let Err(error) = wasm_bindgen_futures::JsFuture::from(promise).await
@@ -496,9 +537,7 @@ impl Player {
                 self.start_playing();
             }
         } else if !self.element.paused() {
-            self.element
-                .pause()
-                .expect("hydrolysis web video: HTMLMediaElement.pause threw");
+            dom_call(self.element.pause(), "HTMLMediaElement.pause");
         }
     }
 
@@ -776,9 +815,15 @@ impl Player {
                     handler(&player);
                 }
             });
-            self.element
-                .add_event_listener_with_callback(name, closure.as_ref().unchecked_ref())
-                .unwrap_or_else(|_| panic!("hydrolysis web video: failed to listen for {name}"));
+            if dom_call(
+                self.element
+                    .add_event_listener_with_callback(name, closure.as_ref().unchecked_ref()),
+                &format!("listening for {name}"),
+            )
+            .is_none()
+            {
+                continue;
+            }
             listeners.push(closure);
         }
     }
@@ -859,12 +904,8 @@ impl Player {
 
     /// Stops the element and releases its source, listeners and shields.
     fn release(&self) {
-        self.element
-            .pause()
-            .expect("hydrolysis web video: HTMLMediaElement.pause threw");
-        self.element
-            .remove_attribute("src")
-            .expect("hydrolysis web video: failed to clear the source");
+        dom_call(self.element.pause(), "HTMLMediaElement.pause");
+        dom_call(self.element.remove_attribute("src"), "clearing the source");
         self.element.load();
         self.guards.take();
         self.shields.take();

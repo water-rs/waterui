@@ -13,7 +13,6 @@
 //! silently emulating it.
 #![expect(
     clippy::exhaustive_enums,
-    clippy::exhaustive_structs,
     reason = "publish = false: no semver surface until #2687 makes the crate publishable"
 )]
 
@@ -31,14 +30,14 @@ mod text;
 #[doc(hidden)]
 pub mod corpus;
 
-pub use backdrop::{BackdropEffectSpec, BackdropFilter, BackdropGroup};
+pub use backdrop::{BackdropEffectSpec, BackdropFilter, BackdropGroup, CapturePyramid};
 pub use builder::{LayerBuilder, SceneBuilder};
 pub use color::{Color, ColorSpace};
 pub use draw::{
     BlendMode, BlendSpace, Draw, Extend, FillRule, Glyph, GlyphRun, GradientStop, ImageColorSpace,
     ImageCompression, ImageEncoding, ImagePaint, LinearGradient, MeshColorInterpolation,
-    MeshGradient, MeshGradientError, NormalizedCoord, Paint, RadialGradient, Sampling, StrokeStyle,
-    SweepGradient,
+    MeshGradient, MeshGradientError, NormalizedCoord, Paint, RadialGradient, Sampling, ShaderPaint,
+    StrokeStyle, SweepGradient,
 };
 pub use error::SceneError;
 pub use layer::{

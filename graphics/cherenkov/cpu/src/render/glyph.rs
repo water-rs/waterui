@@ -223,6 +223,50 @@ pub fn stroke_outlines(
     Ok(paths)
 }
 
+/// The run-local box a shader paint over `run` covers under `transform`
+/// (run-local to device): every glyph's outline box snapped out to whole
+/// device pixels — the rectangles of the masks the GPU backend draws the
+/// run with — then mapped back. `None` when no glyph has ink.
+///
+/// # Errors
+/// [`RenderError::Font`] when the font does not parse.
+#[cfg(feature = "shaders")]
+pub fn ink_bounds(
+    font: &FontData,
+    run: &GlyphRun,
+    transform: Affine,
+) -> Result<Option<cherenkov::kurbo::Rect>, RenderError> {
+    use cherenkov::kurbo::Shape as _;
+    let font_ref = skrifa::FontRef::from_index(&font.data, font.index)
+        .map_err(|e| RenderError::Font(e.to_string()))?;
+    let upem = font_ref
+        .head()
+        .map_err(|e| RenderError::Font(e.to_string()))?
+        .units_per_em();
+    if upem == 0 {
+        return Err(RenderError::Font("zero units_per_em".into()));
+    }
+    let scale = f64::from(run.size) / f64::from(upem);
+    let coords: Vec<F2Dot14> = run.coords.iter().map(|c| F2Dot14::from_bits(*c)).collect();
+    let outlines = font_ref.outline_glyphs();
+    let mut device: Option<cherenkov::kurbo::Rect> = None;
+    for glyph in run.glyphs.iter() {
+        let Some(path) = outline(&outlines, &coords, glyph.id)? else {
+            continue;
+        };
+        let placement = transform
+            * Affine::translate((f64::from(glyph.x), f64::from(glyph.y)))
+            * Affine::scale_non_uniform(scale, -scale);
+        let ink = (placement * path).bounding_box();
+        if ink.is_zero_area() {
+            continue;
+        }
+        let ink = ink.expand();
+        device = Some(device.map_or(ink, |device| device.union(ink)));
+    }
+    Ok(device.map(|device| transform.inverse().transform_rect_bbox(device)))
+}
+
 /// The cache key for a glyph at a quantized device position — the same
 /// key the GPU slice computes.
 #[expect(

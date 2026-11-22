@@ -267,7 +267,7 @@ mod macos {
             pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
                 .expect("a Metal adapter");
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            required_features: wgpu::Features::PASSTHROUGH_SHADERS,
+            required_features: wgpu::Features::PASSTHROUGH_SHADERS | wgpu::Features::SHADER_F16,
             ..wgpu::DeviceDescriptor::default()
         }))
         .expect("a Metal device");
@@ -363,7 +363,14 @@ mod macos {
             .newTextureWithDescriptor_iosurface_plane(&descriptor, &surface, plane)
             .expect("an IOSurface plane texture");
         // SAFETY: the texture is on the engine's device and holds `format`.
-        unsafe { import_texture(&metal.shared.device, raw, format) }
+        unsafe {
+            import_texture(
+                &metal.shared.device,
+                raw,
+                format,
+                wgpu::TextureUsages::TEXTURE_BINDING,
+            )
+        }
     }
 
     const LUMA: (MTLPixelFormat, wgpu::TextureFormat) =

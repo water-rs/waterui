@@ -11,9 +11,13 @@ use waterui_controls::menu::{NamedKey, ShortcutKey};
 /// ⌫ key, W3C `Backspace`, sends `NSDeleteCharacter` (U+007F), not
 /// `NSBackspaceCharacter`.
 ///
+/// A named key `AppKit` has no key equivalent for is a contract violation:
+/// a debug build panics, a release build reports it and answers the empty
+/// key equivalent, which arms no shortcut.
+///
 /// # Panics
 ///
-/// On a named key `AppKit` has no key equivalent for.
+/// In a debug build, on a named key `AppKit` has no key equivalent for.
 #[must_use]
 #[cfg(target_os = "macos")]
 pub fn key_equivalent_for(key: &ShortcutKey) -> String {
@@ -86,10 +90,13 @@ pub fn key_equivalent_for(key: &ShortcutKey) -> String {
         NamedKey::F33 => appkit::NSF33FunctionKey,
         NamedKey::F34 => appkit::NSF34FunctionKey,
         NamedKey::F35 => appkit::NSF35FunctionKey,
-        _ => panic!(
-            "the shortcut key `{named}` has no AppKit key equivalent, so a macOS menu item cannot \
-             arm it; choose a key AppKit menus support"
-        ),
+        _ => {
+            waterui_core::contract_violation!(
+                "the shortcut key `{named}` has no AppKit key equivalent, so a macOS menu item \
+                 cannot arm it; choose a key AppKit menus support; the item has no shortcut"
+            );
+            return String::new();
+        }
     };
     String::from(
         char::from_u32(code).expect("AppKit key-equivalent constants are Unicode scalar values"),
@@ -102,9 +109,13 @@ pub fn key_equivalent_for(key: &ShortcutKey) -> String {
 /// `UIKeyInput*` constant for a named key `UIKit` names, and the control
 /// characters of Backspace, Tab and Return, which `UIKit` takes as inputs.
 ///
+/// A named key `UIKit` has no key-command input for is a contract
+/// violation: a debug build panics, a release build reports it and answers
+/// the empty input, which arms no shortcut.
+///
 /// # Panics
 ///
-/// On a named key `UIKit` has no key-command input for.
+/// In a debug build, on a named key `UIKit` has no key-command input for.
 #[must_use]
 #[cfg(not(target_os = "macos"))]
 pub fn key_equivalent_for(key: &ShortcutKey) -> String {
@@ -152,10 +163,14 @@ pub fn key_equivalent_for(key: &ShortcutKey) -> String {
             NamedKey::F10 => uikit::UIKeyInputF10,
             NamedKey::F11 => uikit::UIKeyInputF11,
             NamedKey::F12 => uikit::UIKeyInputF12,
-            _ => panic!(
-                "the shortcut key `{named}` has no UIKeyCommand input, so a UIKit menu command \
-                 cannot arm it; choose a key UIKit key commands support"
-            ),
+            _ => {
+                waterui_core::contract_violation!(
+                    "the shortcut key `{named}` has no UIKeyCommand input, so a UIKit menu \
+                     command cannot arm it; choose a key UIKit key commands support; the \
+                     command has no shortcut"
+                );
+                return String::new();
+            }
         }
     };
     input.to_string()

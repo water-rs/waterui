@@ -21,10 +21,6 @@ use waterui_graphics::color::Color;
 
 /// Configuration for the Badge component
 #[derive(Debug)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "backends destructure the whole badge configuration, so a new field must fail their build instead of being ignored"
-)]
 pub struct BadgeConfig {
     /// The numeric value to display on the badge
     pub value: Computed<i32>,

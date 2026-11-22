@@ -3,8 +3,8 @@
 //! against that edge — a browser filling the band behind its status bar —
 //! matches it to what the app paints there.
 
+use cherenkov_record::WorkingColor;
 use kurbo::{Affine, Rect};
-use waterui_graphics::draw::WorkingColor;
 
 use super::HydrolysisRenderer;
 use super::mount::layers::{LayerVisitor, visit};

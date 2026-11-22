@@ -6,6 +6,7 @@ use nami::Binding;
 use waterui_core::{Environment, configurable, layout::StretchAxis};
 
 use crate::label::{IntoLabel, Label, LabelDisplayMode, impl_label_style_methods};
+use crate::size::ControlSize;
 
 /// Visual style options for toggle controls.
 #[non_exhaustive]
@@ -27,8 +28,8 @@ impl ToggleStyle {
     /// [`Self::Automatic`] resolves to the platform's default — a checkbox on
     /// macOS, a switch everywhere else, iOS and Android included; every
     /// other style is already concrete. The default is a property of the
-    /// target, not of the backend, because a toggle's stretch axis depends on
-    /// it and is read before `body` runs, without an environment.
+    /// target, not of the backend, so every backend on one target answers
+    /// the same stretch axis for it.
     #[must_use]
     pub const fn resolved(self) -> Self {
         match self {
@@ -54,15 +55,68 @@ pub struct ToggleConfig {
     /// has a name to announce, even when
     /// [`LabelDisplayMode::Hidden`](crate::label::LabelDisplayMode::Hidden)
     /// removes the visible chrome.
-    pub label: Label,
+    label: Label,
     /// The binding to the toggle state.
-    pub toggle: Binding<bool>,
+    toggle: Binding<bool>,
     /// The visual style of the toggle.
     ///
     /// The native payload a backend receives is resolved: its style is never
     /// [`ToggleStyle::Automatic`], and its label's display mode is the
     /// effective one.
-    pub style: ToggleStyle,
+    style: ToggleStyle,
+    /// How large the toggle is drawn.
+    size: ControlSize,
+}
+
+impl ToggleConfig {
+    /// The label displayed for the toggle.
+    ///
+    /// Always present: it is required at construction so assistive technology
+    /// has a name to announce, even when
+    /// [`LabelDisplayMode::Hidden`](crate::label::LabelDisplayMode::Hidden)
+    /// removes the visible chrome.
+    #[must_use]
+    pub const fn label(&self) -> &Label {
+        &self.label
+    }
+
+    /// Sets the `label`.
+    pub fn set_label(&mut self, label: Label) {
+        self.label = label;
+    }
+
+    /// The label displayed for the control, for editing it in place.
+    pub const fn label_mut(&mut self) -> &mut Label {
+        &mut self.label
+    }
+
+    /// The binding to the toggle state.
+    #[must_use]
+    pub const fn toggle(&self) -> &Binding<bool> {
+        &self.toggle
+    }
+
+    /// The visual style of the toggle.
+    ///
+    /// The native payload a backend receives is resolved: its style is never
+    /// [`ToggleStyle::Automatic`], and its label's display mode is the
+    /// effective one.
+    #[must_use]
+    pub const fn style(&self) -> ToggleStyle {
+        self.style
+    }
+
+    /// How large the toggle is drawn.
+    #[must_use]
+    pub const fn size(&self) -> ControlSize {
+        self.size
+    }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(self) -> (Label, Binding<bool>, ToggleStyle, ControlSize) {
+        (self.label, self.toggle, self.style, self.size)
+    }
 }
 
 configurable!(
@@ -142,11 +196,9 @@ impl ToggleConfig {
     }
 
     /// `docs/layout-spec.md` §3: a toggle is `Horizontal` when it draws the
-    /// switch style with a visible label, and `None` otherwise.
-    ///
-    /// Before resolution only the label's own display mode is known — an
-    /// environment-wide [`LabelDisplayMode`] is not — so an unresolved
-    /// label counts as visible; the resolved payload answers exactly.
+    /// switch style with a visible label, and `None` otherwise. Backends ask
+    /// the resolved payload, whose label carries an environment-wide
+    /// [`LabelDisplayMode`] too.
     const fn layout_stretch_axis(&self) -> StretchAxis {
         let label_visible = !matches!(
             self.label.display_mode_preference(),
@@ -172,12 +224,22 @@ impl Toggle {
             label: label.into_label(),
             toggle: toggle.clone(),
             style: ToggleStyle::default(),
+            size: ControlSize::Small,
         })
     }
     #[must_use]
     /// Sets the visual style of the toggle.
     pub const fn style(mut self, style: ToggleStyle) -> Self {
         self.0.style = style;
+        self
+    }
+
+    /// Sets how large the toggle is drawn. A toggle is
+    /// [`ControlSize::Small`], like a [`Button`](crate::button::Button), when
+    /// none is chosen; a theme decides what each size changes.
+    #[must_use]
+    pub const fn size(mut self, size: ControlSize) -> Self {
+        self.0.size = size;
         self
     }
 
@@ -206,15 +268,14 @@ pub fn toggle(label: impl IntoLabel, toggle: &Binding<bool>) -> Toggle {
 mod tests {
     use nami::Binding;
     use waterui_core::layout::StretchAxis;
-    use waterui_core::{Environment, NativeView, View};
+    use waterui_core::{Environment, NativeView};
     use waterui_locale::locales;
 
     use super::{Toggle, ToggleConfig, ToggleStyle};
     use crate::label::LabelDisplayMode;
 
-    /// `docs/layout-spec.md` §3 over the style × label-visibility matrix,
-    /// both as the static answer a container reads before `body` and as the
-    /// resolved payload a backend receives.
+    /// `docs/layout-spec.md` §3 over the style × label-visibility matrix, on
+    /// the resolved payload a backend receives.
     #[test]
     fn stretch_axis_follows_style_and_label_visibility() {
         let on = Binding::bool(false);
@@ -243,11 +304,6 @@ mod tests {
                 let toggle = Toggle::new("Wi-Fi", &on).style(style);
                 if visible { toggle } else { toggle.hide_label() }
             };
-            assert_eq!(
-                View::stretch_axis(&make()),
-                expected,
-                "{style:?}, label visible: {visible} (static)"
-            );
             let resolved = make().0.resolve(&env);
             assert_eq!(
                 NativeView::stretch_axis(&resolved),

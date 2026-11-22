@@ -17,6 +17,8 @@ use objc2_core_graphics::{
     CGImage, CGImageAlphaInfo,
 };
 
+use waterui_contract::contract_violation;
+
 use crate::geometry::{Rect, Size};
 
 unsafe extern "C" {
@@ -41,20 +43,22 @@ const BYTES_PER_PIXEL: usize = 4;
 /// The context holds a raw pointer into `pixels`' buffer, so callers must not
 /// reallocate the buffer until the context is dropped.
 ///
-/// # Panics
-///
-/// When `pixels` is not exactly `width*height*4` bytes.
+/// `None` when the system cannot make the context, and also when `pixels` is
+/// not exactly `width*height*4` bytes, which breaks the contract and is
+/// reported.
 #[must_use]
 pub fn bitmap_context(
     pixels: &mut [u8],
     width: usize,
     height: usize,
 ) -> Option<CFRetained<CGContext>> {
-    assert_eq!(
-        pixels.len(),
-        width * height * BYTES_PER_PIXEL,
-        "a bitmap context needs exactly width*height*4 bytes"
-    );
+    if pixels.len() != width * height * BYTES_PER_PIXEL {
+        contract_violation!(
+            "a bitmap context needs exactly width*height*4 bytes: {width}x{height} over {} bytes; no context is made",
+            pixels.len()
+        );
+        return None;
+    }
     // SAFETY: `pixels` is a live `width*height*4` buffer kept alive by the
     // caller for the context's use; the RGB colorspace is a fresh system
     // object.
@@ -75,16 +79,18 @@ pub fn bitmap_context(
 
 /// A `CGImage` holding a copy of `pixels`' premultiplied RGBA8 content.
 ///
-/// # Panics
-///
-/// When `pixels` is not exactly `width*height*4` bytes.
+/// `None` when the system cannot make the image, and also when `pixels` is
+/// not exactly `width*height*4` bytes, which breaks the contract and is
+/// reported.
 #[must_use]
 pub fn image_from_rgba(pixels: &[u8], width: usize, height: usize) -> Option<CFRetained<CGImage>> {
-    assert_eq!(
-        pixels.len(),
-        width * height * BYTES_PER_PIXEL,
-        "an RGBA8 image needs exactly width*height*4 bytes"
-    );
+    if pixels.len() != width * height * BYTES_PER_PIXEL {
+        contract_violation!(
+            "an RGBA8 image needs exactly width*height*4 bytes: {width}x{height} over {} bytes; no image is made",
+            pixels.len()
+        );
+        return None;
+    }
     let data = CFData::from_bytes(pixels);
     let provider = CGDataProvider::with_cf_data(Some(&data))?;
     // SAFETY: `decode` is null; every other argument describes the
@@ -233,9 +239,12 @@ pub fn capture_window(
     }
 }
 
-/// An offscreen `UIWindow` in `scene` — hidden off-display but attached so
-/// `UIView` captures see a real window. Its safe-area insets are zeroed:
-/// capture windows never sit under a device notch.
+/// An offscreen `UIWindow` in `scene`, attached so `UIView` captures see a
+/// real window.
+///
+/// The window has no device regions: the layout region reader treats the
+/// capture root as the window (`is_capture_window`), whatever safe area
+/// `UIKit` propagates into it.
 #[cfg(target_os = "ios")]
 #[must_use]
 /// # Panics
@@ -288,25 +297,26 @@ objc2::define_class!(
     #[unsafe(super(objc2_ui_kit::UIWindow))]
     #[name = "CocoaUiCaptureWindow"]
     #[thread_kind = MainThreadOnly]
-    /// A capture window reporting zero safe-area insets: it never appears on
-    /// a display, so no device notch or home-indicator inset applies.
+    /// The window a view is rehosted in for capture. It never appears on a
+    /// display, so no device region applies: the layout region reader
+    /// treats the capture root (the root controller's view) as the window,
+    /// with zero container and keyboard depths, and measures chrome bands
+    /// against the capture root's own `safeAreaInsets`. `UIKit` still
+    /// propagates the scene's device bands into the window's descendants;
+    /// the reader, not the window's `safeAreaInsets`, is what ignores them.
     pub struct CaptureWindow;
 
     unsafe impl NSObjectProtocol for CaptureWindow {}
-
-    impl CaptureWindow {
-        /// Zero insets — the window is never on a device.
-        #[unsafe(method(safeAreaInsets))]
-        fn safe_area_insets(&self) -> objc2_ui_kit::UIEdgeInsets {
-            objc2_ui_kit::UIEdgeInsets {
-                top: 0.0,
-                left: 0.0,
-                bottom: 0.0,
-                right: 0.0,
-            }
-        }
-    }
 );
+
+/// Whether `window` is a [`CaptureWindow`] — the context whose layout
+/// regions follow the capture contract instead of the device's geometry.
+#[cfg(target_os = "ios")]
+#[must_use]
+pub fn is_capture_window(window: &objc2_ui_kit::UIWindow) -> bool {
+    use objc2::ClassType;
+    window.isKindOfClass(CaptureWindow::class())
+}
 
 /// Recursively forces every `NSTextField` inside `view` to draw — `AppKit`
 /// leaves text-field contents out of `cacheDisplay` unless they are marked
@@ -326,12 +336,15 @@ pub fn force_text_fields_display(view: &crate::PlatformView) {
 /// Mounts `view` in `window` through a plain `UIViewController`, unhides the
 /// window and lays everything out — the `UIKit` analogue of
 /// `orderFrontRegardless`.
-#[cfg(target_os = "ios")]
-/// # Panics
 ///
-/// On a failure to confirm the main thread.
+/// Off the main thread this breaks the contract: it is reported and the
+/// window is not shown.
+#[cfg(target_os = "ios")]
 pub fn show_capture_window(window: &CaptureWindow, view: &crate::PlatformView, size: Size) {
-    let mtm = objc2::MainThreadMarker::new().expect("main thread");
+    let Some(mtm) = objc2::MainThreadMarker::new() else {
+        contract_violation!("show_capture_window runs on the main thread; the window is not shown");
+        return;
+    };
     let controller = objc2_ui_kit::UIViewController::new(mtm);
     window.setRootViewController(Some(&controller));
     if let Some(content) = controller.view() {
@@ -433,17 +446,21 @@ pub fn view_template_image(
     ))
 }
 
-/// Any connected `UIWindowScene`:
-/// capture windows must attach to a real scene, and any connected one works.
+/// Any connected `UIWindowScene`.
+///
+/// Capture windows must attach to a real scene, and any connected one works.
 /// `None` also in a process without a `UIApplication`, which connects no
 /// scene.
+///
+/// Off the main thread this breaks the contract: it is reported and no scene
+/// is answered.
 #[cfg(target_os = "ios")]
 #[must_use]
-/// # Panics
-///
-/// Off the main thread.
 pub fn any_window_scene() -> Option<Retained<objc2_ui_kit::UIWindowScene>> {
-    let mtm = objc2::MainThreadMarker::new().expect("main thread");
+    let Some(mtm) = objc2::MainThreadMarker::new() else {
+        contract_violation!("any_window_scene runs on the main thread; no scene is answered");
+        return None;
+    };
     let application = crate::uikit::shared_application(mtm)?;
     let scenes = application.connectedScenes();
     let iterator = scenes.iter();

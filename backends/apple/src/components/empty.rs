@@ -8,10 +8,11 @@
 //! `body()`, where the panic propagates out of `render` and the packaging
 //! profile (`panic = "abort"`) turns that into a process abort.
 
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
+};
 
-use crate::contract::NativeLeaf;
-use crate::dispatch::Dispatcher;
+use crate::contract::{NativeLeaf, RenderContext};
 
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::HostView;
@@ -22,6 +23,14 @@ use cocoa_ui::uikit::HostView;
 struct EmptySubView;
 
 impl SubView for EmptySubView {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
         ViewDimensions::new(Size::new(0.0, 0.0))
     }
@@ -39,12 +48,10 @@ impl SubView for EmptySubView {
     }
 }
 
-/// Installs the `()` handler on the dispatcher: `Native<()>` maps to a
+/// The `()` realization: `Native<()>` maps to a
 /// hidden, zero-size view that never participates in layout.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<()>(|(), ctx| {
-        let view = HostView::new(ctx.mtm(), cocoa_ui::Rect::ZERO);
-        cocoa_ui::view::set_hidden(&view, true);
-        NativeLeaf::new(&*view, EmptySubView)
-    });
+pub fn realize_empty((): (), ctx: &RenderContext<'_>) -> NativeLeaf {
+    let view = HostView::new(ctx.mtm(), cocoa_ui::Rect::ZERO);
+    cocoa_ui::view::set_hidden(&view, true);
+    NativeLeaf::new(&*view, EmptySubView)
 }

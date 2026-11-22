@@ -15,14 +15,14 @@ use core::fmt;
 
 use nami::SignalExt;
 use suiteki::Str;
+use waterui_color::{
+    AccentColor, Color, CurrentColorScheme, MutedForegroundColor, SurfaceVariantColor,
+};
 use waterui_core::accessibility::AccessibilityRole;
 use waterui_core::gesture::{GestureObserver, TapGesture};
 use waterui_core::resolve::Resolvable;
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
-use waterui_core::{AnyView, Environment, IgnorableMetadata, Metadata, View};
-use waterui_graphics::color::{
-    AccentColor, Color, CurrentColorScheme, MutedForegroundColor, SurfaceVariantColor,
-};
+use waterui_core::{AnyView, Environment, Metadata, View, contract_violation};
 use waterui_layout::{
     background::background,
     padding::{EdgeInsets, Padding},
@@ -108,13 +108,16 @@ pub struct Code {
 impl Code {
     /// Creates a new `Code` view for the provided language and content.
     ///
-    /// # Panics
-    ///
-    /// Panics if the language cannot be converted into a supported [`Language`].
+    /// A language that cannot be converted into a supported [`Language`] is a
+    /// contract violation: the code is shown as [`Language::Plaintext`].
     pub fn new(language: impl TryInto<Language, Error: Error>, content: impl Into<Str>) -> Self {
+        let language = language.try_into().unwrap_or_else(|error| {
+            contract_violation!("Invalid language: {error}; the code is shown as plain text");
+            Language::Plaintext
+        });
         Self {
             info: None,
-            language: language.try_into().expect("Invalid language"),
+            language,
             content: content.into(),
             on_copied: None,
         }
@@ -151,15 +154,43 @@ impl Code {
 #[non_exhaustive]
 pub struct CodeConfig {
     /// The fence's info token as written (`mermaid`, `rust`, …), if it had one.
-    pub info: Option<Str>,
+    info: Option<Str>,
     /// The language that token resolved to; [`Language::Plaintext`] when it
     /// resolved to nothing.
-    pub language: Language,
+    language: Language,
     /// The block's text, verbatim.
-    pub content: Str,
+    content: Str,
     /// The caller's feedback for a copy, if it asked for any. Carried so a hook
     /// that declines the fence and renders the default keeps it.
-    pub on_copied: Option<OnCopied>,
+    on_copied: Option<OnCopied>,
+}
+
+impl CodeConfig {
+    /// The fence's info token as written (`mermaid`, `rust`, …), if it had one.
+    #[must_use]
+    pub const fn info(&self) -> Option<&Str> {
+        self.info.as_ref()
+    }
+
+    /// The language that token resolved to; [`Language::Plaintext`] when it
+    /// resolved to nothing.
+    #[must_use]
+    pub const fn language(&self) -> &Language {
+        &self.language
+    }
+
+    /// The block's text, verbatim.
+    #[must_use]
+    pub const fn content(&self) -> &Str {
+        &self.content
+    }
+
+    /// The caller's feedback for a copy, if it asked for any. Carried so a hook
+    /// that declines the fence and renders the default keeps it.
+    #[must_use]
+    pub const fn on_copied(&self) -> Option<&OnCopied> {
+        self.on_copied.as_ref()
+    }
 }
 
 impl ViewConfiguration for CodeConfig {
@@ -258,7 +289,7 @@ fn copy_button(content: String, on_copied: Option<OnCopied>) -> impl View {
     // resolves with `AccessibilityRole` in its environment registers an
     // accessibility node of that role — focusable, clickable, activatable —
     // while the label renders exactly as before.
-    IgnorableMetadata::new(
+    Metadata::new(
         Metadata::new(
             text("Copy").color(Color::new(AccentColor)),
             GestureObserver::new(TapGesture::new(), move |env: Environment| {
@@ -275,4 +306,21 @@ fn copy_button(content: String, on_copied: Option<OnCopied>) -> impl View {
 /// Convenience constructor for creating a [`Code`] view inline.
 pub fn code(language: impl TryInto<Language, Error: Error>, content: impl Into<Str>) -> Code {
     Code::new(language, content)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "Invalid language"))]
+    fn an_unknown_language_shows_the_code_as_plain_text() {
+        let code = Code::new("no-such-language", "fn main() {}");
+        assert_eq!(code.language, Language::Plaintext);
+    }
+
+    #[test]
+    fn a_known_language_is_kept() {
+        assert_eq!(Code::new("rust", "").language, Language::Rust);
+    }
 }

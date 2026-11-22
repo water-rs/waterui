@@ -7,7 +7,7 @@ android {
     namespace = "dev.waterui.hydrolysis.webview"
 
     defaultConfig {
-        minSdk = 31
+        minSdk = 33
         // The `AssetResponse.<init>` keep rule the native side's JNI
         // contract needs travels with the library.
         consumerProguardFiles("consumer-rules.pro")

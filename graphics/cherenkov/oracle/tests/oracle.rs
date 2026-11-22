@@ -1128,6 +1128,67 @@ fn an_encoded_member_edge_blends_with_the_content_beneath() {
     }
 }
 
+/// An `SrgbEncoded` group averages encoded values: across a black | white
+/// edge at x = 32, blurred at full and at half capture scale (columns
+/// 16..48 of a row under each group's member), each of its
+/// pixels is the decoded mean of the encoded backdrop with the linear
+/// group's weights — `decode(L)` for the linear group's `L`. The linear
+/// group still averages linear light, so pixels mirrored about the edge
+/// sum to white.
+#[test]
+fn an_encoded_group_blurs_in_the_encoded_space() {
+    for scale in [1.0, 0.5] {
+        let mut b = Scene::builder(64, 64);
+        let blur = || vec![cherenkov_scene::BackdropFilter::GaussianBlur { sigma: 2.0 }];
+        b.backdrop_group(BackdropGroup::new(1, blur(), scale, 1));
+        b.backdrop_group(BackdropGroup {
+            blend_space: BlendSpace::SrgbEncoded,
+            ..BackdropGroup::new(2, blur(), scale, 1)
+        });
+        b.root().fill(
+            Shape::Rect(Rect::new(0.0, 0.0, 32.0, 64.0)),
+            Paint::Solid(Color::srgb(0.0, 0.0, 0.0)),
+        );
+        b.root().fill(
+            Shape::Rect(Rect::new(32.0, 0.0, 64.0, 64.0)),
+            Paint::Solid(Color::srgb(1.0, 1.0, 1.0)),
+        );
+        // The second member sits far enough below the first that the
+        // first's sample, which the second group's capture holds, stays
+        // outside its blur.
+        for (group, rows) in [(1, (2.0, 14.0)), (2, (38.0, 62.0))] {
+            b.root().layer(|m| {
+                m.clip(Shape::Rect(Rect::new(8.0, rows.0, 56.0, rows.1)));
+                m.backdrop(group);
+            });
+        }
+        let img = Renderer::new(64, 64)
+            .render(&b.build(), &tmp())
+            .expect("oracle render");
+        let row = |y: usize| -> Vec<[f32; 4]> { img.pixels[y * 64 + 16..y * 64 + 48].to_vec() };
+        let (linear, encoded) = (row(8), row(50));
+        // The edge lies between indices 15 and 16.
+        for k in 0..16 {
+            let sum = f64::from(linear[15 - k][0]) + f64::from(linear[16 + k][0]);
+            metrics::assert_close(&[sum], &[1.0]);
+        }
+        let expected: Vec<f64> = linear
+            .iter()
+            .flat_map(|p| {
+                let gray = srgb_decode(f64::from(p[0]));
+                [gray, gray, gray, 1.0]
+            })
+            .collect();
+        let actual: Vec<f64> = encoded.iter().flatten().copied().map(f64::from).collect();
+        metrics::assert_close(&actual, &expected);
+        // Two pixels into the black side the encoded mean is far darker.
+        assert!(
+            encoded[14][0] < linear[14][0] - 0.1,
+            "scale {scale}: {encoded:?}"
+        );
+    }
+}
+
 /// A pass-through level opens no canvas: an opaque `Normal` child layer
 /// and a pass-through linear group leave an sRGB-encoded group, and an
 /// encoded backdrop member, compositing against the content beneath them
@@ -1149,7 +1210,7 @@ fn encoded_content_in_a_pass_through_level_renders_as_at_the_root() {
         })],
         opacity: 1.0,
         blend: BlendMode::Normal,
-        blend_space: BlendSpace::SrgbEncoded,
+        blend_space: Some(BlendSpace::SrgbEncoded),
         filter: None,
     };
     let scene = |group: Wrap, member: bool| {
@@ -1176,7 +1237,7 @@ fn encoded_content_in_a_pass_through_level_renders_as_at_the_root() {
                     items: vec![GroupItem::Group(encoded())],
                     opacity: 1.0,
                     blend: BlendMode::Normal,
-                    blend_space: BlendSpace::Linear,
+                    blend_space: None,
                     filter: None,
                 });
             }
@@ -1589,5 +1650,202 @@ fn a_member_inside_the_anchors_blended_child_is_unsupported() {
             "unexpected error {e}"
         ),
         Ok(_) => panic!("a member inside a blended descendant must fail"),
+    }
+}
+
+/// The members of the corpus's `blend-space-srgb-layer`: an opaque rect
+/// and a half-transparent circle over it.
+fn encoded_members() -> Vec<Draw> {
+    vec![
+        Draw::Fill {
+            shape: Shape::Rect(Rect::new(2.0, 2.0, 11.0, 11.0)),
+            rule: FillRule::NonZero,
+            paint: Paint::Solid(Color::srgb(0.85, 0.15, 0.2)),
+        },
+        Draw::Fill {
+            shape: Shape::Rect(Rect::new(6.0, 6.0, 15.0, 15.0)),
+            rule: FillRule::NonZero,
+            paint: Paint::Solid(Color::srgb(0.15, 0.3, 0.85).with_alpha(0.5)),
+        },
+    ]
+}
+
+/// A layer in `SrgbEncoded` space at opacity 0.5 composites like the
+/// group of the same space and opacity: its members composite with each
+/// other in encoded values, and the layer fades onto its backdrop in them.
+#[test]
+fn an_encoded_layer_composites_like_an_encoded_group() {
+    let backdrop = || {
+        let mut b = Scene::builder(W, H);
+        b.root().fill(
+            Shape::Rect(Rect::new(0.0, 0.0, 16.0, 16.0)),
+            Paint::Solid(Color::srgb(0.1, 0.1, 0.12)),
+        );
+        b
+    };
+    let mut layered = backdrop();
+    layered.root().layer(|l| {
+        l.opacity(0.5).blend_space(BlendSpace::SrgbEncoded);
+        for draw in encoded_members() {
+            if let Draw::Fill { shape, paint, .. } = draw {
+                l.fill(shape, paint);
+            }
+        }
+    });
+    let layered = layered.build();
+    assert!(
+        layered
+            .features
+            .contains(&cherenkov_scene::Feature::BlendSpace(
+                BlendSpace::SrgbEncoded
+            )),
+        "{:?}",
+        layered.features
+    );
+    let mut grouped = backdrop();
+    grouped.root().group(Group {
+        items: encoded_members().into_iter().map(GroupItem::Draw).collect(),
+        opacity: 0.5,
+        blend: BlendMode::Normal,
+        blend_space: Some(BlendSpace::SrgbEncoded),
+        filter: None,
+    });
+    let layer_img = render(&layered, &tmp());
+    let group_img = render(&grouped.build(), &tmp());
+    for (layer, group) in layer_img.pixels.iter().zip(&group_img.pixels) {
+        metrics::assert_close(layer, group);
+    }
+    // White over black at 0.5 in encoded values is encoded 0.5 (128 of
+    // 255), not the linear mix's encoded 0.735 (188).
+    let mut b = Scene::builder(W, H);
+    b.root().fill(
+        Shape::Rect(Rect::new(0.0, 0.0, 16.0, 16.0)),
+        Paint::Solid(Color::srgb(0.0, 0.0, 0.0)),
+    );
+    b.root().layer(|l| {
+        l.opacity(0.5).blend_space(BlendSpace::SrgbEncoded);
+        l.fill(
+            Shape::Rect(Rect::new(0.0, 0.0, 16.0, 16.0)),
+            Paint::Solid(Color::srgb(1.0, 1.0, 1.0)),
+        );
+    });
+    let px = render(&b.build(), &tmp()).pixels[8 * W as usize + 8];
+    let want = srgb_decode(0.5);
+    for ch in &px[..3] {
+        assert!((f64::from(*ch) - want).abs() < 1e-6, "{px:?}");
+    }
+}
+
+/// A projective layer's local image is reconstructed in linear values, so
+/// a non-linear blend space on it is unsupported rather than ignored.
+#[test]
+fn a_projective_encoded_layer_is_unsupported() {
+    use cherenkov_scene::Projection;
+    let mut b = Scene::builder(W, H);
+    b.root().layer(|p| {
+        p.clip(Shape::Rect(Rect::new(0.0, 0.0, f64::from(W), f64::from(H))));
+        p.projection(Projection {
+            matrix: Projection::perspective(100.0),
+            ..Projection::default()
+        });
+        p.blend_space(BlendSpace::SrgbEncoded);
+    });
+    match Renderer::new(W as usize, H as usize).render(&b.build(), &tmp()) {
+        Err(e) => assert!(
+            e.to_string().contains("projective-blend-space"),
+            "unexpected error {e}"
+        ),
+        Ok(_) => panic!("an encoded projective layer must fail"),
+    }
+}
+
+/// The 8-bit sRGB encoding of a premultiplied linear-P3 output pixel.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "an in-gamut channel rounds to an 8-bit code"
+)]
+fn srgb8(px: [f32; 4]) -> [u8; 3] {
+    let a = f64::from(px[3]);
+    let straight = [px[0], px[1], px[2]].map(|c| f64::from(c) / a);
+    linear_p3_to_linear_srgb(straight).map(|c| (srgb_encode(c) * 255.0).round() as u8)
+}
+
+/// Material 3's dark disabled filled text field: on-surface
+/// `(230, 224, 233)` at 4 % over surface `(20, 18, 24)`.
+fn m3_disabled_field(storage: BlendSpace, island: bool) -> Scene {
+    let surface = Color::srgb(20.0 / 255.0, 18.0 / 255.0, 24.0 / 255.0);
+    let on_surface = Color::srgb(230.0 / 255.0, 224.0 / 255.0, 233.0 / 255.0).with_alpha(0.04);
+    let shape = Shape::Rect(Rect::new(0.0, 0.0, f64::from(W), f64::from(H)));
+    let mut b = Scene::builder(W, H).clear(surface).storage_space(storage);
+    if island {
+        b.root().group(Group {
+            items: vec![GroupItem::Draw(Draw::Fill {
+                shape,
+                rule: FillRule::NonZero,
+                paint: Paint::Solid(on_surface),
+            })],
+            opacity: 1.0,
+            blend: BlendMode::Normal,
+            blend_space: Some(BlendSpace::Linear),
+            filter: None,
+        });
+    } else {
+        b.root().fill(shape, Paint::Solid(on_surface));
+    }
+    b.build()
+}
+
+/// A surface storing sRGB-encoded values blends a plain translucent fill
+/// as an sRGB-space alpha blend — the specified `(28, 26, 32)` — while a
+/// linear surface composites the same fill in linear light.
+#[test]
+fn an_encoded_surface_blends_a_translucent_fill_in_srgb() {
+    let encoded = render(&m3_disabled_field(BlendSpace::SrgbEncoded, false), &tmp());
+    assert_eq!(srgb8(encoded.pixels[8 * W as usize + 8]), [28, 26, 32]);
+    let linear = render(&m3_disabled_field(BlendSpace::Linear, false), &tmp());
+    assert_eq!(srgb8(linear.pixels[8 * W as usize + 8]), [55, 53, 57]);
+}
+
+/// A group declaring the linear space over an encoded surface is a linear
+/// island: it composites exactly as on a linear surface.
+#[test]
+fn a_linear_island_composites_linearly_over_an_encoded_surface() {
+    let island = render(&m3_disabled_field(BlendSpace::SrgbEncoded, true), &tmp());
+    let linear = render(&m3_disabled_field(BlendSpace::Linear, false), &tmp());
+    metrics::assert_images_match(&linear, &island);
+}
+
+/// A backdrop member over an encoded surface reads the surface converted
+/// from its stored space into the group's: with no filter and an identity
+/// effect, the sample reproduces the backdrop exactly, in either group
+/// space.
+#[test]
+fn a_backdrop_member_over_an_encoded_surface_samples_the_decoded_backdrop() {
+    for space in [BlendSpace::Linear, BlendSpace::SrgbEncoded] {
+        let scene = |member: bool| {
+            let mut b = Scene::builder(W, H)
+                .clear(Color::srgb(0.1, 0.1, 0.1))
+                .storage_space(BlendSpace::SrgbEncoded);
+            b.backdrop_group(BackdropGroup {
+                blend_space: space,
+                ..BackdropGroup::new(1, vec![], 1.0, 1)
+            });
+            b.root().fill(
+                Shape::Rect(Rect::new(0.0, 0.0, 8.0, 16.0)),
+                Paint::Solid(Color::srgb(0.9, 0.4, 0.2).with_alpha(0.5)),
+            );
+            if member {
+                b.root().layer(|m| {
+                    m.clip(Shape::Rect(Rect::new(2.0, 2.0, 14.0, 14.0)));
+                    m.backdrop(1);
+                });
+            }
+            b.build()
+        };
+        metrics::assert_images_match(
+            &render(&scene(false), &tmp()),
+            &render(&scene(true), &tmp()),
+        );
     }
 }

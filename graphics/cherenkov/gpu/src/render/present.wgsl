@@ -27,7 +27,9 @@ struct Present {
     // already clamped by the CPU side to what the destination carries —
     // 1 for SDR spaces, 10000/203 for PQ, 1000/203 for HLG.
     headroom: f32,
-    _pad: u32,
+    // The space the source stores premultiplied pixels in: 0 linear
+    // Display P3, 1 sRGB-encoded (`space_to_srgb`).
+    source_space: u32,
 }
 
 @group(0) @binding(0) var source: texture_2d<f32>;
@@ -435,6 +437,11 @@ fn present_encoded(encoded: vec3<f32>, alpha: f32) -> vec4<f32> {
 @fragment
 fn fs_main(in: Vertex) -> @location(0) vec4<f32> {
     var p3 = textureSample(source, source_sampler, in.uv);
+    if present.source_space == 1u {
+        // A surface storing sRGB-encoded values returns to the working
+        // space before any output encoding.
+        p3 = space_from_srgb(p3);
+    }
     var alpha = 1.0;
     if present.alpha != 0u {
         alpha = p3.a;

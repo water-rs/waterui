@@ -78,20 +78,21 @@ impl TerminationSignal {
 ///
 /// signal-hook has no query primitive, so this is one read-only `sigaction`
 /// ahead of the registrations `Signals::new` performs.
-fn ignored_at_launch(signal: TerminationSignal) -> bool {
+///
+/// # Errors
+///
+/// The OS error when the disposition cannot be queried.
+fn ignored_at_launch(signal: TerminationSignal) -> std::io::Result<bool> {
     let mut previous = std::mem::MaybeUninit::<libc::sigaction>::uninit();
     // SAFETY: a null `act` makes `sigaction` a pure query, and on success
     // `previous` is fully written.
     let status =
         unsafe { libc::sigaction(signal.number(), std::ptr::null(), previous.as_mut_ptr()) };
-    assert_eq!(
-        status,
-        0,
-        "hydrolysis runner: querying the {signal:?} disposition failed: {}",
-        std::io::Error::last_os_error()
-    );
+    if status != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
     // SAFETY: `sigaction` succeeded, so `previous` was written.
-    unsafe { previous.assume_init() }.sa_sigaction == libc::SIG_IGN
+    Ok(unsafe { previous.assume_init() }.sa_sigaction == libc::SIG_IGN)
 }
 
 /// Watches the termination signals while it is alive.
@@ -123,17 +124,20 @@ impl TerminationSignals {
     /// Starts watching; `handler` runs once, for the first delivered signal,
     /// on the watcher thread. Signals the launcher ignored stay ignored.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// When a disposition cannot be queried, the signals cannot be
-    /// registered, or the watcher thread cannot be spawned.
-    pub(super) fn install(handler: impl FnOnce(TerminationSignal) + Send + 'static) -> Self {
-        let watched: Vec<libc::c_int> = TerminationSignal::ALL
-            .iter()
-            .copied()
-            .filter(|signal| !ignored_at_launch(*signal))
-            .map(TerminationSignal::number)
-            .collect();
+    /// The OS error when a disposition cannot be queried, the signals cannot
+    /// be registered, or the watcher thread cannot be spawned. Nothing stays
+    /// armed: the signals keep their default action.
+    pub(super) fn install(
+        handler: impl FnOnce(TerminationSignal) + Send + 'static,
+    ) -> std::io::Result<Self> {
+        let mut watched = Vec::with_capacity(TerminationSignal::ALL.len());
+        for signal in TerminationSignal::ALL {
+            if !ignored_at_launch(signal)? {
+                watched.push(signal.number());
+            }
+        }
         // One flag decides first-vs-repeated inside the signal handler
         // itself. Registry actions run in registration order, so the
         // conditional default must precede the arming action: the first
@@ -141,18 +145,33 @@ impl TerminationSignals {
         // finds it set and dies by the signal's default action.
         let armed = Arc::new(AtomicBool::new(false));
         let mut arming = Vec::with_capacity(watched.len());
+        let unarm = |arming: &[SigId]| {
+            for &action in arming {
+                unregister(action);
+            }
+        };
         for &signal in &watched {
-            flag::register_conditional_default(signal, Arc::clone(&armed))
-                .expect("hydrolysis runner: failed to register the termination default");
-            arming.push(
-                flag::register(signal, Arc::clone(&armed))
-                    .expect("hydrolysis runner: failed to arm the termination flag"),
-            );
+            // The conditional defaults stay registered on failure: `armed` is
+            // never set, so they never fire.
+            let registered = flag::register_conditional_default(signal, Arc::clone(&armed))
+                .and_then(|_| flag::register(signal, Arc::clone(&armed)));
+            match registered {
+                Ok(action) => arming.push(action),
+                Err(error) => {
+                    unarm(&arming);
+                    return Err(error);
+                }
+            }
         }
         // Registered after the flag actions, the delivery reaches the watcher
         // only while `armed` is still clear — the one graceful request.
-        let mut signals = Signals::new(&watched)
-            .expect("hydrolysis runner: failed to watch the termination signals");
+        let mut signals = match Signals::new(&watched) {
+            Ok(signals) => signals,
+            Err(error) => {
+                unarm(&arming);
+                return Err(error);
+            }
+        };
         let handle = signals.handle();
         let mut handler = Some(handler);
         let thread = std::thread::Builder::new()
@@ -165,13 +184,16 @@ impl TerminationSignals {
                     handler(TerminationSignal::from_number(number));
                 }
             })
-            .expect("hydrolysis runner: failed to spawn the termination watcher");
-        Self {
+            .inspect_err(|_| {
+                handle.close();
+                unarm(&arming);
+            })?;
+        Ok(Self {
             handle,
             arming,
             armed,
             thread: Some(thread),
-        }
+        })
     }
 }
 
@@ -238,7 +260,8 @@ mod tests {
         }
         let _signals = TerminationSignals::install(|signal| {
             report(&format!("requested {}", signal.number()));
-        });
+        })
+        .expect("child: installing the termination watcher");
         report(READY);
         loop {
             std::thread::park();

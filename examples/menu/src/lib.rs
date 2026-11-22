@@ -1,4 +1,4 @@
-//! Menu Example - Demonstrates WaterUI's menu components
+//! Menu Example - Demonstrates `WaterUI`'s menu components
 //!
 //! This example showcases:
 //! - `Menu` as a semantic popup menu surface
@@ -83,12 +83,12 @@ fn menu_section(selected: &Binding<String>) -> impl View {
             (
                 "Option A"
                     .action(|State(selected): State<Binding<String>>| {
-                        selected.set("Option A".to_string())
+                        selected.set("Option A".to_string());
                     })
                     .state(selected),
                 "Option B"
                     .action(|State(selected): State<Binding<String>>| {
-                        selected.set("Option B".to_string())
+                        selected.set("Option B".to_string());
                     })
                     .state(selected),
                 Divider,
@@ -97,12 +97,12 @@ fn menu_section(selected: &Binding<String>) -> impl View {
                     (
                         "Option C"
                             .action(|State(selected): State<Binding<String>>| {
-                                selected.set("Option C".to_string())
+                                selected.set("Option C".to_string());
                             })
                             .state(selected),
                         "Reset"
                             .action(|State(selected): State<Binding<String>>| {
-                                selected.set("None".to_string())
+                                selected.set("None".to_string());
                             })
                             .state(selected),
                     ),
@@ -130,12 +130,12 @@ fn styled_menu_section(action_log: &Binding<String>) -> impl View {
             (
                 "Edit"
                     .action(|State(log): State<Binding<String>>| {
-                        log.set("Edit action triggered".to_string())
+                        log.set("Edit action triggered".to_string());
                     })
                     .state(action_log),
                 "Duplicate"
                     .action(|State(log): State<Binding<String>>| {
-                        log.set("Duplicate action triggered".to_string())
+                        log.set("Duplicate action triggered".to_string());
                     })
                     .state(action_log),
                 Divider,
@@ -143,7 +143,7 @@ fn styled_menu_section(action_log: &Binding<String>) -> impl View {
                     "Danger Zone",
                     ("Delete"
                         .action(|State(log): State<Binding<String>>| {
-                            log.set("Delete action triggered".to_string())
+                            log.set("Delete action triggered".to_string());
                         })
                         .state(action_log),),
                 ),
@@ -169,7 +169,7 @@ fn context_menu_section(context_action: &Binding<String>) -> impl View {
             .context_menu((
                 "Copy"
                     .action(|State(action): State<Binding<String>>| {
-                        action.set("Copied!".to_string())
+                        action.set("Copied!".to_string());
                     })
                     .state(context_action),
                 "Cut"
@@ -178,12 +178,12 @@ fn context_menu_section(context_action: &Binding<String>) -> impl View {
                 Divider,
                 "Paste"
                     .action(|State(action): State<Binding<String>>| {
-                        action.set("Pasted!".to_string())
+                        action.set("Pasted!".to_string());
                     })
                     .state(context_action),
                 "Select All"
                     .action(|State(action): State<Binding<String>>| {
-                        action.set("Selected all!".to_string())
+                        action.set("Selected all!".to_string());
                     })
                     .state(context_action),
             )),
@@ -211,13 +211,13 @@ fn context_menu_accessory_section(
                 ContextMenu::new((
                     "Copy"
                         .action(|State(action): State<Binding<String>>| {
-                            action.set("Copied!".to_string())
+                            action.set("Copied!".to_string());
                         })
                         .state(context_action),
                     "Share"
                         .command()
                         .action(|State(action): State<Binding<String>>| {
-                            action.set("Shared!".to_string())
+                            action.set("Shared!".to_string());
                         })
                         .state(context_action)
                         .subtitle("Sends a link"),
@@ -227,14 +227,14 @@ fn context_menu_accessory_section(
                         "Archive"
                             .command()
                             .action(|State(action): State<Binding<String>>| {
-                                action.set("Archived!".to_string())
+                                action.set("Archived!".to_string());
                             })
                             .state(context_action),
                     ),
                     "Delete"
                         .command()
                         .action(|State(action): State<Binding<String>>| {
-                            action.set("Deleted!".to_string())
+                            action.set("Deleted!".to_string());
                         })
                         .state(context_action)
                         .destructive(),
@@ -246,7 +246,7 @@ fn context_menu_accessory_section(
                         .foreground(ORANGE_FG),
                     button("Card Tap")
                         .action(|State(action): State<Binding<String>>| {
-                            action.set("CardTapped!".to_string())
+                            action.set("CardTapped!".to_string());
                         })
                         .state(context_action),
                 )))
@@ -283,12 +283,12 @@ fn selection_menu_section(selection_action: &Binding<String>) -> impl View {
         field("Draft", &draft).selection_menu((
             "Shout"
                 .action(|State(action): State<Binding<String>>| {
-                    action.set("Shouted the selection!".to_string())
+                    action.set("Shouted the selection!".to_string());
                 })
                 .state(selection_action),
             "Whisper"
                 .action(|State(action): State<Binding<String>>| {
-                    action.set("Whispered the selection!".to_string())
+                    action.set("Whispered the selection!".to_string());
                 })
                 .state(selection_action),
         )),
@@ -311,12 +311,12 @@ fn context_menu_views_section(view_action: &Binding<String>) -> impl View {
                 .context_menu((
                     "Red Action 1"
                         .action(|State(action): State<Binding<String>>| {
-                            action.set("Red Action 1".to_string())
+                            action.set("Red Action 1".to_string());
                         })
                         .state(view_action),
                     "Red Action 2"
                         .action(|State(action): State<Binding<String>>| {
-                            action.set("Red Action 2".to_string())
+                            action.set("Red Action 2".to_string());
                         })
                         .state(view_action),
                 )),
@@ -328,12 +328,12 @@ fn context_menu_views_section(view_action: &Binding<String>) -> impl View {
                 .context_menu((
                     "Green Action 1"
                         .action(|State(action): State<Binding<String>>| {
-                            action.set("Green Action 1".to_string())
+                            action.set("Green Action 1".to_string());
                         })
                         .state(view_action),
                     "Green Action 2"
                         .action(|State(action): State<Binding<String>>| {
-                            action.set("Green Action 2".to_string())
+                            action.set("Green Action 2".to_string());
                         })
                         .state(view_action),
                 )),
@@ -345,12 +345,12 @@ fn context_menu_views_section(view_action: &Binding<String>) -> impl View {
                 .context_menu((
                     "Blue Action 1"
                         .action(|State(action): State<Binding<String>>| {
-                            action.set("Blue Action 1".to_string())
+                            action.set("Blue Action 1".to_string());
                         })
                         .state(view_action),
                     "Blue Action 2"
                         .action(|State(action): State<Binding<String>>| {
-                            action.set("Blue Action 2".to_string())
+                            action.set("Blue Action 2".to_string());
                         })
                         .state(view_action),
                 )),
@@ -373,7 +373,7 @@ fn quit_section(quit_answer: &Binding<String>) -> impl View {
     .padding()
 }
 
-fn scene(toolbar_status: Binding<String>, quit_answer: Binding<String>) -> impl View {
+fn scene(toolbar_status: &Binding<String>, quit_answer: &Binding<String>) -> impl View + use<> {
     let menu_selected = Binding::container(String::from("None"));
     let styled_action = Binding::container(String::from("No action yet"));
     let context_action = Binding::container(String::from("No action yet"));
@@ -406,9 +406,9 @@ fn scene(toolbar_status: Binding<String>, quit_answer: Binding<String>) -> impl 
             )),
             Divider,
             vstack((
-                toolbar_scene_section(&toolbar_status),
+                toolbar_scene_section(toolbar_status),
                 Divider,
-                quit_section(&quit_answer),
+                quit_section(quit_answer),
             )),
             spacer().height(40.0),
         ))
@@ -421,8 +421,8 @@ fn scene(toolbar_status: Binding<String>, quit_answer: Binding<String>) -> impl 
 #[preview]
 pub fn demo() -> impl View {
     scene(
-        Binding::container(String::from("No toolbar action yet")),
-        Binding::container(String::from("No quit asked yet")),
+        &Binding::container(String::from("No toolbar action yet")),
+        &Binding::container(String::from("No quit asked yet")),
     )
 }
 
@@ -438,6 +438,8 @@ fn quit_menu(refuse_quit: &Binding<bool>) -> Menu {
     )
 }
 
+/// Builds the menu example app: menu bar, toolbar and the quit-refusal window.
+#[must_use]
 pub fn app(env: Environment) -> App {
     let toolbar_status = Binding::container(String::from("No toolbar action yet"));
     let content_toolbar_status = toolbar_status.clone();
@@ -448,7 +450,7 @@ pub fn app(env: Environment) -> App {
     App::new_with_windows(
         [
             Window::new("WaterUI Menu Examples", binding(Normal), move || {
-                scene(content_toolbar_status.clone(), content_quit_answer.clone())
+                scene(&content_toolbar_status, &content_quit_answer)
             })
             .toolbar(window_toolbar(&toolbar_status)),
         ],

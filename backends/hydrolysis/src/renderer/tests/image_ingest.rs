@@ -4,8 +4,8 @@
 //! `Queue::write_texture` untouched and panic there with a message naming
 //! neither the image nor the view; the unwind then panicked again in the
 //! swapchain destructor and aborted the process. Validation now happens at
-//! the first owned point on each ingest path: `assert_well_formed_image`
-//! guards the peniko payloads `Recording::image` lowers, and
+//! the first owned point on each ingest path: `check_well_formed_image`
+//! refuses the peniko payloads `Recording::image` lowers, and
 //! `cherenkov::ImageData::new` — whose `Err` names the expected and actual
 //! byte counts and the format — guards the `SceneResources::image`
 //! registration a `SceneContent::build_scene` drives.
@@ -13,18 +13,20 @@
 use std::cell::RefCell;
 use std::sync::Arc;
 
+use cherenkov_record::Recorder;
+use cherenkov_record::{Draw, ImagePattern, Paint, Sampling};
 use kurbo::Rect;
 use peniko::{Blob, ImageAlphaType, ImageData, ImageFormat};
 use waterui::{AnyView, View};
 use waterui_core::handler::AnyViewBuilder;
-use waterui_graphics::Rgba8;
-use waterui_graphics::draw::Recorder;
-use waterui_graphics::draw::{Draw, ImagePattern, Paint, Sampling};
-use waterui_graphics::{RecordingResources, SceneContent, SceneInvalidator, SceneView};
+use waterui_graphics::backend::Rgba8;
+use waterui_graphics::backend::{
+    NextFrame, RecordingResources, SceneContent, SceneInvalidator, SceneView,
+};
 
 use super::{MinimalTestTheme, test_environment};
 use crate::HeadlessRuntime;
-use crate::renderer::assert_well_formed_image;
+use crate::renderer::check_well_formed_image;
 
 const WINDOW: u32 = 160;
 
@@ -48,16 +50,20 @@ fn well_formed_image() -> ImageData {
 }
 
 #[test]
-#[should_panic(
-    expected = "Rgba8 at 10x10 needs width*height*bytes_per_pixel = 400 bytes, but the blob holds 100 bytes"
-)]
-fn malformed_image_data_is_named_at_ingest() {
-    assert_well_formed_image(&malformed_image());
+fn malformed_image_data_is_refused_at_ingest() {
+    let error = check_well_formed_image(&malformed_image())
+        .expect_err("a malformed blob is refused, never uploaded");
+    assert!(
+        error.to_string().contains(
+            "Rgba8 at 10x10 needs width*height*bytes_per_pixel = 400 bytes, but the blob holds 100 bytes"
+        ),
+        "{error}"
+    );
 }
 
 #[test]
 fn well_formed_image_data_passes_ingest() {
-    assert_well_formed_image(&well_formed_image());
+    check_well_formed_image(&well_formed_image()).expect("a well-formed image passes");
 }
 
 fn runtime_with(view: impl View) -> HeadlessRuntime {
@@ -87,7 +93,7 @@ struct ImagePane {
 }
 
 /// A retained `Registered` image handle, `None` until the pane registers.
-type ImageHandle = Option<waterui_graphics::Registered<waterui_graphics::draw::ImageId>>;
+type ImageHandle = Option<waterui_graphics::backend::Registered<cherenkov_record::ImageId>>;
 
 impl SceneContent for ImagePane {
     fn build_scene(
@@ -96,9 +102,9 @@ impl SceneContent for ImagePane {
         resources: &mut RecordingResources<'_>,
         _width: f32,
         _height: f32,
-    ) -> bool {
+    ) -> NextFrame {
         (self.draw)(recorder, resources, &mut self.image);
-        false
+        NextFrame::Idle
     }
 
     fn set_invalidator(&mut self, _invalidator: Option<SceneInvalidator>) {}
@@ -123,11 +129,11 @@ fn scene_view_rejects_malformed_image_at_image_upload() {
         draw: |recorder, resources, _| {
             let image = resources
                 .image(
-                    waterui_graphics::ImageData::<Rgba8>::new(10, 10, malformed_blob())
+                    waterui_graphics::backend::ImageData::<Rgba8>::new(10, 10, malformed_blob())
                         .expect("hydrolysis scene ingest must name malformed Rgba8 data"),
                 )
                 .expect("hydrolysis scene ingest: image registration failed");
-            let image = resources.name(&image);
+            let image = resources.name(&image).expect("registered on this target");
             recorder.image(image, Rect::new(0.0, 0.0, 10.0, 10.0), Sampling::Linear);
         },
         image: None,
@@ -144,17 +150,17 @@ fn scene_view_rejects_malformed_image_inside_a_fill_paint() {
         draw: |recorder, resources, _| {
             let image = resources
                 .image(
-                    waterui_graphics::ImageData::<Rgba8>::new(10, 10, malformed_blob())
+                    waterui_graphics::backend::ImageData::<Rgba8>::new(10, 10, malformed_blob())
                         .expect("hydrolysis scene ingest must name malformed Rgba8 data"),
                 )
                 .expect("hydrolysis scene ingest: image registration failed");
             recorder.fill(
                 Rect::new(0.0, 0.0, 10.0, 10.0),
                 Paint::Image(ImagePattern {
-                    image: resources.name(&image),
+                    image: resources.name(&image).expect("registered on this target"),
                     transform: kurbo::Affine::IDENTITY,
-                    extend_x: waterui_graphics::draw::Extend::Pad,
-                    extend_y: waterui_graphics::draw::Extend::Pad,
+                    extend_x: cherenkov_record::Extend::Pad,
+                    extend_y: cherenkov_record::Extend::Pad,
                     sampling: Sampling::Linear,
                 }),
             );
@@ -174,7 +180,7 @@ fn scene_view_accepts_a_well_formed_image() {
                 *image = Some(
                     resources
                         .image(
-                            waterui_graphics::ImageData::<Rgba8>::new(
+                            waterui_graphics::backend::ImageData::<Rgba8>::new(
                                 10,
                                 10,
                                 Arc::<[u8]>::from(vec![0u8; 400]),
@@ -184,7 +190,9 @@ fn scene_view_accepts_a_well_formed_image() {
                         .expect("hydrolysis scene ingest: image registration failed"),
                 );
             }
-            let id = resources.name(image.as_ref().expect("the pane registered its image"));
+            let id = resources
+                .name(image.as_ref().expect("the pane registered its image"))
+                .expect("registered on this target");
             recorder.image(id, Rect::new(0.0, 0.0, 10.0, 10.0), Sampling::Linear);
         },
         image: None,

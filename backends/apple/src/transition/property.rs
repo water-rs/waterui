@@ -12,12 +12,12 @@ use core::cell::RefCell;
 
 use cocoa_ui::{PlatformView, Retained, view};
 use waterui_core::layout::{LayoutDirection, Size};
-use waterui_core::transition::{
+use waterui_structural_transition::{
     TransitionGeometry, TransitionPhase, TransitionProperties, TransitionState,
 };
 
 use crate::transition::TransitionClaim;
-use crate::transition::clock::TransitionDriver;
+use crate::transition::clock::{Timeline, TransitionDriver};
 use crate::transition::host::TransitionHost;
 
 #[cfg(target_os = "macos")]
@@ -39,15 +39,15 @@ fn layer_transform(
     let cx = size.width * 0.5;
     let cy = size.height * 0.5;
     let translation = CATransform3D::new_translation(
-        f64::from(properties.translation[0]),
-        f64::from(properties.translation[1]),
+        f64::from(properties.translation()[0]),
+        f64::from(properties.translation()[1]),
         0.0,
     );
     let to_centre = CATransform3D::new_translation(cx, cy, 0.0);
-    let rotate = CATransform3D::new_rotation(f64::from(properties.rotation), 0.0, 0.0, 1.0);
+    let rotate = CATransform3D::new_rotation(f64::from(properties.rotation()), 0.0, 0.0, 1.0);
     let scale = CATransform3D::new_scale(
-        f64::from(properties.scale[0]),
-        f64::from(properties.scale[1]),
+        f64::from(properties.scale()[0]),
+        f64::from(properties.scale()[1]),
         1.0,
     );
     let back = CATransform3D::new_translation(-cx, -cy, 0.0);
@@ -61,16 +61,16 @@ fn layer_transform(
 /// `UIView.transform` already applies about the view's centre.
 #[cfg(target_os = "ios")]
 fn affine_transform(properties: &TransitionProperties) -> objc2_core_foundation::CGAffineTransform {
-    let (sin, cos) = f64::from(properties.rotation).sin_cos();
-    let sx = f64::from(properties.scale[0]);
-    let sy = f64::from(properties.scale[1]);
+    let (sin, cos) = f64::from(properties.rotation()).sin_cos();
+    let sx = f64::from(properties.scale()[0]);
+    let sy = f64::from(properties.scale()[1]);
     objc2_core_foundation::CGAffineTransform {
         a: sx * cos,
         b: sx * sin,
         c: -sy * sin,
         d: sy * cos,
-        tx: f64::from(properties.translation[0]),
-        ty: f64::from(properties.translation[1]),
+        tx: f64::from(properties.translation()[0]),
+        ty: f64::from(properties.translation()[1]),
     }
 }
 
@@ -120,23 +120,25 @@ impl PropertyTarget {
 
     /// Writes one sample inside `core_animation::without_animation`.
     ///
-    /// # Panics
-    ///
-    /// When a property is not finite or `blur` is negative — the same
-    /// contract `record_blurred` declares in Hydrolysis.
+    /// A property that is not finite or a negative `blur` — the same
+    /// contract `record_blurred` declares in Hydrolysis — is a contract
+    /// violation, and the sample is not applied.
     pub fn apply(&self, sample: &TransitionProperties) {
-        assert!(
-            sample.opacity.is_finite()
-                && sample.scale.iter().all(|value| value.is_finite())
-                && sample.translation.iter().all(|value| value.is_finite())
-                && sample.rotation.is_finite()
-                && sample.blur.is_finite()
-                && sample.blur >= 0.0,
-            "waterui-apple: a transition sampled {sample:?} — every property must be finite \
-             and the blur radius non-negative"
-        );
+        if !(sample.opacity().is_finite()
+            && sample.scale().iter().all(|value| value.is_finite())
+            && sample.translation().iter().all(|value| value.is_finite())
+            && sample.rotation().is_finite()
+            && sample.blur().is_finite()
+            && sample.blur() >= 0.0)
+        {
+            waterui::contract_violation!(
+                "waterui-apple: a transition sampled {sample:?} — every property must be finite \
+                 and the blur radius non-negative; the sample is not applied"
+            );
+            return;
+        }
         cocoa_ui::core_animation::without_animation(|| {
-            view::set_alpha(&self.host, f64::from(sample.opacity));
+            view::set_alpha(&self.host, f64::from(sample.opacity()));
             #[cfg(target_os = "macos")]
             {
                 let layer = view::layer(&self.host).expect("a layer-backed transition host");
@@ -169,23 +171,33 @@ pub struct InsertionRun {
     host: Rc<TransitionHost>,
     /// The display driver — `None` until the host is in a window.
     driver: Option<TransitionDriver>,
+    /// The timeline the driver measures frames on, resolved from the
+    /// site's environment.
+    timeline: Timeline,
     /// The site's environment — the lazy blur effect reads its GPU
     /// services from it.
     #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
     env: waterui_backend_core::Environment,
     /// The lazy blur effect (§2.6) — created on the first sample whose
     /// `blur > 0`, kept when the radius returns to 0. The run's drop
-    /// tears it down.
+    /// tears it down. The effect is `None` when the process has no GPU
+    /// runtime — reported once at creation and never retried.
     #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
     blur: Option<(
         waterui::reactive::Binding<f32>,
-        crate::components::filtered::LiveEffect,
+        Option<crate::components::filtered::LiveEffect>,
     )>,
     /// The `captures_content` realization (§2.7): the window overlay and
     /// its live-capture effect — built when the run arms. The run's drop
     /// tears it down.
     #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
     pixel: Option<crate::transition::pixel::PixelInsertion>,
+    /// The wait on the pixel effect's first-present readiness, started
+    /// at the animation's end when the effect has not presented yet; it
+    /// drops the run once the effect owes no frame. Dropping the run
+    /// cancels it.
+    #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
+    first_present_wait: Option<executor_core::AnyLocalExecutorTask<()>>,
     /// Set once a nonzero radius could not be realized — one violation
     /// report per run.
     #[cfg(not(any(feature = "applied_filter", feature = "view_effect")))]
@@ -222,8 +234,6 @@ impl InsertionRun {
         claim: &TransitionClaim,
         env: &waterui_backend_core::Environment,
     ) -> Rc<RefCell<Option<Self>>> {
-        #[cfg(not(any(feature = "applied_filter", feature = "view_effect")))]
-        let _ = env; // GPU services land with the pixel insertion (stage 9)
         let state = claim
             .spec
             .start(TransitionPhase::Insertion, claim.reduce_motion);
@@ -233,7 +243,7 @@ impl InsertionRun {
         // ended at once at identity.
         #[cfg(not(any(feature = "applied_filter", feature = "view_effect")))]
         if state.captures_content() {
-            crate::transition::transition_violation!(
+            waterui::contract_violation!(
                 "waterui-apple: a pixel transition needs the filtered pipeline \
                  (the view_effect or applied_filter feature)"
             );
@@ -252,12 +262,15 @@ impl InsertionRun {
             geometry,
             host: Rc::clone(host),
             driver: None,
+            timeline: Timeline::of(env),
             #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
             env: env.clone(),
             #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
             blur: None,
             #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
             pixel: None,
+            #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
+            first_present_wait: None,
             #[cfg(not(any(feature = "applied_filter", feature = "view_effect")))]
             blur_warned: core::cell::Cell::new(false),
         });
@@ -298,7 +311,7 @@ impl InsertionRun {
         run.update_blur(&sample);
         let mtm =
             cocoa_ui::MainThreadMarker::new().expect("a transition starts on the main thread");
-        let driver = TransitionDriver::start(mtm, &run.host.host, {
+        let driver = TransitionDriver::start(mtm, &run.host.host, run.timeline.clone(), {
             let slot = Rc::downgrade(slot);
             move |delta| {
                 let Some(slot) = slot.upgrade() else {
@@ -330,8 +343,19 @@ impl InsertionRun {
                     } else {
                         // Completion: restore the identity sample, then the
                         // run drops itself — never inside its own tick.
+                        // A pixel insertion whose effect has not presented
+                        // yet keeps the run alive until the effect's own
+                        // readiness settles: dropping it earlier un-hides
+                        // content the effect never hid (§2.7).
                         run.host.apply_sample(&TransitionProperties::IDENTITY);
-                        true
+                        #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
+                        {
+                            run.may_complete(mtm, Rc::downgrade(&slot))
+                        }
+                        #[cfg(not(any(feature = "applied_filter", feature = "view_effect")))]
+                        {
+                            true
+                        }
                     }
                 };
                 if done {
@@ -352,11 +376,11 @@ impl InsertionRun {
     #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
     fn update_blur(&mut self, sample: &TransitionProperties) {
         use waterui::reactive::Signal as _;
-        if self.blur.is_none() && sample.blur > 0.0 {
-            let radius = waterui::reactive::Binding::container(sample.blur);
-            let mut guards = waterui_graphics::filter_view::ParamGuards::default();
-            let effect = waterui_graphics::filter_view::AnyEffect::filter(
-                waterui_graphics::filtrate::filters::Blur(guards.bind(radius.clone())),
+        if self.blur.is_none() && sample.blur() > 0.0 {
+            let radius = waterui::reactive::Binding::container(sample.blur());
+            let mut guards = waterui_graphics::backend::ParamGuards::default();
+            let effect = waterui_graphics::backend::AnyEffect::filter(
+                waterui_graphics::backend::filtrate::filters::Blur(guards.bind(radius.clone())),
             );
             self.blur = Some((
                 radius,
@@ -369,9 +393,9 @@ impl InsertionRun {
             ));
         }
         if let Some((radius, _effect)) = &self.blur
-            && radius.snapshot().to_bits() != sample.blur.to_bits()
+            && radius.snapshot().to_bits() != sample.blur().to_bits()
         {
-            radius.set(sample.blur);
+            radius.set(sample.blur());
         }
     }
 
@@ -379,8 +403,8 @@ impl InsertionRun {
     /// realization — a user-triggerable failure, reported once per run.
     #[cfg(not(any(feature = "applied_filter", feature = "view_effect")))]
     fn update_blur(&self, sample: &TransitionProperties) {
-        if sample.blur > 0.0 && !self.blur_warned.replace(true) {
-            crate::transition::transition_violation!(
+        if sample.blur() > 0.0 && !self.blur_warned.replace(true) {
+            waterui::contract_violation!(
                 "waterui-apple: a blur transition needs the filtered pipeline \
                  (the view_effect or applied_filter feature)"
             );
@@ -414,6 +438,38 @@ impl InsertionRun {
             pixel.update(&self.host, self.direction);
         }
         true
+    }
+
+    /// Whether the run may drop at animation end. A pixel effect that has
+    /// not presented holds it open on its first-present readiness — a
+    /// frame, a settled terminal failure, or no frame owed — rather than
+    /// the clock: the driver stops, and the wait drops the run from the
+    /// main queue once it settles. A later window re-entry re-arms the
+    /// clock and lands here again; the wait already in flight stands.
+    #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
+    fn may_complete(
+        &mut self,
+        mtm: cocoa_ui::MainThreadMarker,
+        slot: alloc::rc::Weak<RefCell<Option<Self>>>,
+    ) -> bool {
+        let Some(pixel) = self.pixel.as_ref().filter(|pixel| !pixel.presented()) else {
+            return true;
+        };
+        if let Some(driver) = &self.driver {
+            driver.stop();
+        }
+        if self.first_present_wait.is_none() {
+            let first_present = pixel.first_present();
+            self.first_present_wait = Some(executor_core::spawn_local(async move {
+                first_present.await;
+                cocoa_ui::main_queue::enqueue_local(mtm, move |_mtm| {
+                    if let Some(slot) = slot.upgrade() {
+                        slot.borrow_mut().take();
+                    }
+                });
+            }));
+        }
+        false
     }
 }
 

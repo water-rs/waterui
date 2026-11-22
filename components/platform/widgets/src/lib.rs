@@ -92,21 +92,40 @@ meta::dir_static! {
 #[macro_export]
 macro_rules! __export_widget {
     ($fn_name:expr, $payload:expr, [$ctx_ptr:ident, $ctx_len:ident, $out:ident] => $body:block) => {
-        const _: () = {
-            const NAME: &[u8] = concat!(
+        $crate::pastey::paste! {
+            // `dir_static!` marks the record `#[used]` on every target: in a
+            // staticlib a `pub` static has internal linkage, and without the
+            // attribute an unreferenced record is dropped from the ELF or
+            // COFF object (water-rs/waterui#3905).
+            #[doc(hidden)]
+            const [<__WUI_WIDGET_META_LEN_ $fn_name>]: usize = concat!(
                 "waterui_meta_widget_",
                 env!("CARGO_CRATE_NAME"),
                 "_",
                 $fn_name
             )
-            .as_bytes();
-            const PAYLOAD: &[u8] = $payload.as_bytes();
-            const LEN: usize = NAME.len() + PAYLOAD.len() + 2;
+            .as_bytes()
+            .len() + $payload.as_bytes().len() + 2;
             $crate::meta::dir_static! {
-                static META: [u8; LEN] = $crate::meta::dir_entry::<LEN>(NAME, PAYLOAD);
+                /// The widget declaration record `water` reads out of the rlib.
+                #[doc(hidden)]
+                #[expect(
+                    non_upper_case_globals,
+                    reason = "tooling names the record by its `waterui_meta_` item name"
+                )]
+                pub static [<waterui_meta_widget_ env!("CARGO_CRATE_NAME") _ $fn_name>]:
+                    [u8; [<__WUI_WIDGET_META_LEN_ $fn_name>]] =
+                    $crate::meta::dir_entry::<{ [<__WUI_WIDGET_META_LEN_ $fn_name>] }>(
+                        concat!(
+                            "waterui_meta_widget_",
+                            env!("CARGO_CRATE_NAME"),
+                            "_",
+                            $fn_name
+                        )
+                        .as_bytes(),
+                        $payload.as_bytes(),
+                    );
             }
-        };
-        $crate::pastey::paste! {
             #[doc(hidden)]
             #[allow(unsafe_code)]
             #[unsafe(no_mangle)]
@@ -138,16 +157,27 @@ macro_rules! __export_widget {
 #[macro_export]
 macro_rules! __export_intent {
     ($hash:expr, $payload:expr, [$ptr:ident, $len:ident] => $body:block) => {
-        const _: () = {
-            const NAME: &[u8] =
-                concat!("waterui_meta_intent_", env!("CARGO_CRATE_NAME"), "_", $hash).as_bytes();
-            const PAYLOAD: &[u8] = $payload.as_bytes();
-            const LEN: usize = NAME.len() + PAYLOAD.len() + 2;
-            $crate::meta::dir_static! {
-                static META: [u8; LEN] = $crate::meta::dir_entry::<LEN>(NAME, PAYLOAD);
-            }
-        };
         $crate::pastey::paste! {
+            #[doc(hidden)]
+            const [<__WUI_INTENT_META_LEN_ $hash>]: usize =
+                concat!("waterui_meta_intent_", env!("CARGO_CRATE_NAME"), "_", $hash)
+                    .as_bytes()
+                    .len() + $payload.as_bytes().len() + 2;
+            $crate::meta::dir_static! {
+                /// The intent declaration record `water` reads out of the rlib.
+                #[doc(hidden)]
+                #[expect(
+                    non_upper_case_globals,
+                    reason = "tooling names the record by its `waterui_meta_` item name"
+                )]
+                pub static [<waterui_meta_intent_ env!("CARGO_CRATE_NAME") _ $hash>]:
+                    [u8; [<__WUI_INTENT_META_LEN_ $hash>]] =
+                    $crate::meta::dir_entry::<{ [<__WUI_INTENT_META_LEN_ $hash>] }>(
+                        concat!("waterui_meta_intent_", env!("CARGO_CRATE_NAME"), "_", $hash)
+                            .as_bytes(),
+                        $payload.as_bytes(),
+                    );
+            }
             #[doc(hidden)]
             #[allow(unsafe_code)]
             #[unsafe(no_mangle)]
@@ -213,8 +243,8 @@ mod tests {
             r#"{"family":"accessoryRectangular","displaySize":{"width":170.0,"height":44.0}}"#,
         )
         .unwrap();
-        assert_eq!(context.family, WidgetFamily::AccessoryRectangular);
-        assert_eq!(context.display_size.width, 170.0);
+        assert_eq!(context.family(), WidgetFamily::AccessoryRectangular);
+        assert_eq!(context.display_size().width, 170.0);
     }
 
     #[test]
@@ -244,13 +274,55 @@ mod tests {
         }
     }
 
+    /// An instant before the Unix epoch is a negative offset, never a panic.
+    #[test]
+    fn a_date_before_the_epoch_is_negative() {
+        use std::time::{Duration, UNIX_EPOCH};
+
+        let before = UNIX_EPOCH - Duration::from_secs(90);
+        assert!((Date::from(before).unix_seconds() + 90.0).abs() < f64::EPSILON);
+        let after = UNIX_EPOCH + Duration::from_secs(90);
+        assert!((Date::from(after).unix_seconds() - 90.0).abs() < f64::EPSILON);
+    }
+
+    /// An action whose `Serialize` fails is a contract violation; the region
+    /// then carries an empty payload.
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "the WidgetIntent action `unserializable` must serialize")
+    )]
+    fn an_unserializable_intent_action_carries_an_empty_payload() {
+        struct Unserializable;
+        impl serde::Serialize for Unserializable {
+            fn serialize<S: serde::Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+                Err(serde::ser::Error::custom("no JSON form"))
+            }
+        }
+        impl<'de> serde::Deserialize<'de> for Unserializable {
+            fn deserialize<D: serde::Deserializer<'de>>(_: D) -> Result<Self, D::Error> {
+                Ok(Self)
+            }
+        }
+        impl WidgetIntent for Unserializable {
+            fn perform(self) {}
+        }
+        impl DeclaredWidgetIntent for Unserializable {
+            const KIND: &'static str = "unserializable";
+        }
+
+        let region = Intent::new(&Unserializable, Shape::circle().fill(Color::ACCENT));
+        assert_eq!(region.kind(), "unserializable");
+        assert_eq!(region.payload(), "");
+    }
+
     #[test]
     fn widget_declaration_decodes_a_record_payload() {
         let declaration: WidgetDeclaration = serde_json::from_str(
             r#"{"fn":"steps","kind":"steps","displayName":"Steps","description":"Today","families":["systemSmall","systemMedium"]}"#,
         )
         .unwrap();
-        assert_eq!(declaration.function, "steps");
-        assert_eq!(declaration.families, ["systemSmall", "systemMedium"]);
+        assert_eq!(declaration.function(), "steps");
+        assert_eq!(declaration.families(), ["systemSmall", "systemMedium"]);
     }
 }

@@ -14,15 +14,18 @@ use alloc::rc::Rc;
 use alloc::string::String;
 use core::cell::RefCell;
 
-use cocoa_ui::{PlatformView, Rect, Retained};
+use cocoa_ui::{PlatformView, Rect, Retained, view};
 use waterui::component::stepper::StepperConfig;
 use waterui::reactive::Signal;
 use waterui::text::{StyledStr, TextConfig};
 use waterui_core::interaction::Disabled;
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size, StretchAxis, SubView,
+    ViewDimensions,
+};
 
 use crate::contract::{Mounted, NativeLeaf};
-use crate::dispatch::Dispatcher;
+use crate::proposal;
 
 #[cfg(target_os = "macos")]
 mod platform {
@@ -34,6 +37,7 @@ mod platform {
     pub(super) use cocoa_ui::uikit::{HostView, Stepper};
 }
 
+use crate::contract::RenderContext;
 use platform::{HostView, Stepper};
 
 /// The gap between the label, the formatted value, and the buttons —
@@ -112,23 +116,26 @@ fn intrinsic_height(sizes: ChildSizes, stepper_height: f64) -> f64 {
         .max(f64::from(sizes.formatted.height))
 }
 
-/// Lays out the children inside `view`'s bounds: label at the leading edge,
-/// stepper at the trailing edge, formatted value immediately before the
-/// buttons — `WuiStepper`'s `AutoLayout` constraints as manual frames, with
-/// the arrangement mirrored when the view is right-to-left.
-fn layout_children(view: &PlatformView, state: &StepperState) {
+/// Lays out the children inside the `response` rectangle: label at the
+/// leading edge, stepper at the trailing edge, formatted value immediately
+/// before the buttons — `WuiStepper`'s `AutoLayout` constraints as manual
+/// frames, with the arrangement mirrored when the view is right-to-left.
+fn layout_children(view: &PlatformView, response: Rect, state: &StepperState) {
     let Some(children) = &state.children else {
         return;
     };
-    let width = cocoa_ui::view::bounds(view).size.width;
-    let height = cocoa_ui::view::bounds(view).size.height;
+    let width = response.size.width;
+    let height = response.size.height;
     let sizes = child_sizes(children);
     let stepper_size = state.stepper.intrinsic_size();
     let rtl = cocoa_ui::view::is_right_to_left(view);
 
     let place = |child: &PlatformView, x: f64, w: f64, h: f64| {
         let x = if rtl { width - x - w } else { x };
-        cocoa_ui::view::set_frame(child, Rect::new(x, (height - h) / 2.0, w, h));
+        view::set_frame(
+            child,
+            Rect::new(x, (height - h) / 2.0, w, h).translated(response.origin),
+        );
     };
 
     let stepper_x = width - stepper_size.width;
@@ -157,8 +164,8 @@ fn layout_children(view: &PlatformView, state: &StepperState) {
     cocoa_ui::view::set_frame(
         &state.stepper,
         Rect::new(
-            stepper_frame_x,
-            (height - stepper_size.height) / 2.0,
+            response.origin.x + stepper_frame_x,
+            response.origin.y + (height - stepper_size.height) / 2.0,
             stepper_size.width,
             stepper_size.height,
         ),
@@ -183,6 +190,14 @@ impl core::fmt::Debug for StepperSubView {
 }
 
 impl SubView for StepperSubView {
+    fn resolve_extent(
+        &self,
+        bounds: LayoutRect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     // `measure` speaks f32; the geometry math runs in f64 — the narrowing is
     // the layout contract, as in `text`.
     #[expect(
@@ -239,132 +254,127 @@ fn accessibility_value(formatted: Option<&String>, value: i32) -> String {
     formatted.map_or_else(|| value.to_string(), Clone::clone)
 }
 
-/// Installs the `stepper` handler on the dispatcher: `Native<StepperConfig>`
+/// The `stepper` realization: `Native<StepperConfig>`
 /// maps to a container view with the platform stepper, the label child and,
 /// when a `value_formatter` is present, a text child showing the formatted
 /// value.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<StepperConfig>(|config, ctx| {
-        let mtm = ctx.mtm();
-        let stretch = waterui_core::NativeView::stretch_axis(&config);
-        let host = HostView::new(mtm, Rect::ZERO);
-        let stepper = Stepper::new(mtm);
-        stepper.set_range(
-            f64::from(*config.range.start()),
-            f64::from(*config.range.end()),
-        );
-        stepper.set_step(f64::from(config.step.snapshot()));
-        stepper.set_value(f64::from(config.value.snapshot()));
-        host.add_subview(as_view(&stepper));
+pub fn realize_stepper_config(config: StepperConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
+    let mtm = ctx.mtm();
+    let stretch = waterui_core::NativeView::stretch_axis(&config);
+    let host = HostView::new(mtm, Rect::ZERO);
+    let (value, step, label, value_formatter, range) = config.into_parts();
+    let stepper = Stepper::new(mtm);
+    stepper.set_range(f64::from(*range.start()), f64::from(*range.end()));
+    stepper.set_step(f64::from(step.snapshot()));
+    stepper.set_value(f64::from(value.snapshot()));
+    host.add_subview(as_view(&stepper));
 
-        let action = stepper.install_action({
-            let binding = config.value.clone();
-            move |value| binding.set(stepped(value))
-        });
+    let action = stepper.install_action({
+        let binding = value.clone();
+        move |value| binding.set(stepped(value))
+    });
 
-        // The label's semantic text is announced on the control itself; the
-        // visual children are hidden from the accessibility tree.
-        let accessibility_label = config.label.accessibility_label();
+    // The label's semantic text is announced on the control itself; the
+    // visual children are hidden from the accessibility tree.
+    let accessibility_label = label.accessibility_label();
 
-        let host_view: &PlatformView = &host;
-        let value_formatter = config.value_formatter;
-        let children = Children {
-            label: ctx
-                .render(waterui_backend_core::AnyView::new(config.label))
-                .mount(host_view),
-            formatted: value_formatter.clone().map(|formatter| {
-                ctx.render(waterui_backend_core::AnyView::new(
-                    waterui_core::Native::new(TextConfig::new(formatter)),
-                ))
-                .mount(host_view)
-            }),
-        };
-        cocoa_ui::view::hide_from_accessibility(children.label.view());
-        if let Some(formatted) = &children.formatted {
-            cocoa_ui::view::hide_from_accessibility(formatted.view());
+    let host_view: &PlatformView = &host;
+    let children = Children {
+        label: ctx
+            .render(waterui_backend_core::AnyView::new(label))
+            .mount(host_view),
+        formatted: value_formatter.clone().map(|formatter| {
+            ctx.render(waterui_backend_core::AnyView::new(
+                waterui_core::Native::new(TextConfig::new(formatter)),
+            ))
+            .mount(host_view)
+        }),
+    };
+    cocoa_ui::view::hide_from_accessibility(children.label.view());
+    if let Some(formatted) = &children.formatted {
+        cocoa_ui::view::hide_from_accessibility(formatted.view());
+    }
+
+    let state = Rc::new(RefCell::new(StepperState {
+        stepper: stepper.clone(),
+        children: Some(children),
+        formatted_text: None,
+        _action: action,
+    }));
+
+    host.set_layout_handler({
+        let state = Rc::clone(&state);
+        move |view| layout_children(view, proposal::response(view), &state.borrow())
+    });
+
+    let mut leaf = NativeLeaf::new(
+        host_view,
+        StepperSubView {
+            state: Rc::clone(&state),
+            stretch,
+        },
+    );
+
+    // Signal → control: binding changes land on the stepper and refresh
+    // the announced value.
+    leaf.watch(&value, {
+        let state = Rc::clone(&state);
+        move |change| {
+            let value = *change.value();
+            let state = state.borrow();
+            state.stepper.set_value(f64::from(value));
+            state.stepper.set_accessibility_value(&accessibility_value(
+                state.formatted_text.as_ref(),
+                value,
+            ));
         }
+    });
 
-        let state = Rc::new(RefCell::new(StepperState {
-            stepper: stepper.clone(),
-            children: Some(children),
-            formatted_text: None,
-            _action: action,
-        }));
+    // The step size is computed: every change re-arms the control.
+    leaf.bind(&step, {
+        let stepper = stepper.clone();
+        move |step| stepper.set_step(f64::from(step))
+    });
 
-        host.set_layout_handler({
+    // Announce the label's semantic text on the control.
+    leaf.bind(&accessibility_label, {
+        let stepper = stepper.clone();
+        move |styled: StyledStr| {
+            let text = cocoa_ui::text::strip_bidi_controls(&styled.to_plain());
+            stepper.set_accessibility_label(if text.is_empty() {
+                None
+            } else {
+                Some(text.as_str())
+            });
+        }
+    });
+
+    // The formatted value drives the spoken value too; the state keeps
+    // the latest plain text so value changes announce formatted text.
+    if let Some(formatter) = value_formatter {
+        leaf.bind(&formatter, {
             let state = Rc::clone(&state);
-            move |view| layout_children(view, &state.borrow())
-        });
-
-        let mut leaf = NativeLeaf::new(
-            host_view,
-            StepperSubView {
-                state: Rc::clone(&state),
-                stretch,
-            },
-        );
-
-        // Signal → control: binding changes land on the stepper and refresh
-        // the announced value.
-        leaf.watch(&config.value, {
-            let state = Rc::clone(&state);
-            move |change| {
-                let value = *change.value();
-                let state = state.borrow();
-                state.stepper.set_value(f64::from(value));
-                state.stepper.set_accessibility_value(&accessibility_value(
-                    state.formatted_text.as_ref(),
-                    value,
-                ));
-            }
-        });
-
-        // The step size is computed: every change re-arms the control.
-        leaf.bind(&config.step, {
-            let stepper = stepper.clone();
-            move |step| stepper.set_step(f64::from(step))
-        });
-
-        // Announce the label's semantic text on the control.
-        leaf.bind(&accessibility_label, {
-            let stepper = stepper.clone();
             move |styled: StyledStr| {
                 let text = cocoa_ui::text::strip_bidi_controls(&styled.to_plain());
-                stepper.set_accessibility_label(if text.is_empty() {
-                    None
-                } else {
-                    Some(text.as_str())
-                });
+                let mut state = state.borrow_mut();
+                state.formatted_text = Some(text.clone());
+                let value = stepped(state.stepper.value());
+                state
+                    .stepper
+                    .set_accessibility_value(&accessibility_value(Some(&text), value));
             }
         });
+    }
 
-        // The formatted value drives the spoken value too; the state keeps
-        // the latest plain text so value changes announce formatted text.
-        if let Some(formatter) = value_formatter {
-            leaf.bind(&formatter, {
-                let state = Rc::clone(&state);
-                move |styled: StyledStr| {
-                    let text = cocoa_ui::text::strip_bidi_controls(&styled.to_plain());
-                    let mut state = state.borrow_mut();
-                    state.formatted_text = Some(text.clone());
-                    let value = stepped(state.stepper.value());
-                    state
-                        .stepper
-                        .set_accessibility_value(&accessibility_value(Some(&text), value));
-                }
-            });
-        }
+    // A disabled subtree must not respond to input.
+    if let Some(disabled) = ctx.env().get::<Disabled>() {
+        leaf.bind(disabled.signal(), move |is_disabled: bool| {
+            stepper.set_enabled(!is_disabled);
+        });
+    }
 
-        // A disabled subtree must not respond to input.
-        if let Some(disabled) = ctx.env().get::<Disabled>() {
-            leaf.bind(disabled.signal(), move |is_disabled: bool| {
-                stepper.set_enabled(!is_disabled);
-            });
-        }
-
-        leaf.keep(state);
-        leaf
-    });
+    leaf.keep(state);
+    leaf
 }
 
 #[cfg(test)]

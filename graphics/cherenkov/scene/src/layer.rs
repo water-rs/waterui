@@ -49,10 +49,12 @@ pub struct Group {
     #[serde(default)]
     pub blend: BlendMode,
     /// The space the group blends and its members composite in: `linear`
-    /// (the default) composites premultiplied linear values; `srgb-encoded`
-    /// composites sRGB-encoded values.
-    #[serde(default)]
-    pub blend_space: BlendSpace,
+    /// composites premultiplied linear values; `srgb-encoded` composites
+    /// sRGB-encoded values. Absent (the default), the group blends in the
+    /// space of the level it composites into; a space unlike that level's
+    /// isolates the group.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blend_space: Option<BlendSpace>,
     /// A filter applied to the group's isolated content before `opacity`
     /// and `blend`. It works in the working space whatever `blend_space`
     /// the members composite in.
@@ -86,6 +88,12 @@ pub struct Layer {
     /// The blend mode used when compositing onto the parent.
     #[serde(default)]
     pub blend: BlendMode,
+    /// The space the layer's content and children composite with each
+    /// other in, and the layer composites onto its parent in, as a
+    /// [`Group`]'s `blend_space`: `linear`, `srgb-encoded`, or absent (the
+    /// default) for the space of the level the layer composites into.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blend_space: Option<BlendSpace>,
     /// An optional identifier a [`crate::BackdropGroup::anchor`] names:
     /// the group's capture is taken beneath the layer carrying it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -235,6 +243,13 @@ pub enum LayerFilter {
     GaussianBlur {
         /// Standard deviation in pixels.
         sigma: f64,
+    },
+    /// A 3×3 convolution of all four premultiplied channels (filtrate's
+    /// `Convolution3x3`): `out(x, y) = Σ kernel[3·(j+1) + (i+1)] ·
+    /// in(x + i, y + j)` for `i, j ∈ {−1, 0, 1}`, unnormalised.
+    Convolution3x3 {
+        /// The weights, row-major from the top-left.
+        kernel: [f64; 9],
     },
     /// A separable box blur: the mean of `2r + 1` texels per axis,
     /// `r = round(radius)`.
@@ -441,6 +456,7 @@ impl Default for Layer {
             clip: None,
             opacity: 1.0,
             blend: BlendMode::Normal,
+            blend_space: None,
             id: None,
             backdrop: None,
             filter: None,

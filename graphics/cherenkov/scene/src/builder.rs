@@ -1,6 +1,6 @@
 use crate::{
-    BackdropGroup, BlendMode, Color, Draw, FillRule, GlyphRun, Group, Item, Layer, LayerFilter,
-    Motion, Paint, ResourceHash, Sampling, Scene, Shape, StrokeStyle,
+    BackdropGroup, BlendMode, BlendSpace, Color, Draw, FillRule, GlyphRun, Group, Item, Layer,
+    LayerFilter, Motion, Paint, ResourceHash, Sampling, Scene, Shape, StrokeStyle,
 };
 use kurbo::{Affine, Rect, Vec2};
 
@@ -38,6 +38,13 @@ impl SceneBuilder {
         self
     }
 
+    /// Set the space the surface's root canvas stores its pixels in.
+    #[must_use]
+    pub const fn storage_space(mut self, space: BlendSpace) -> Self {
+        self.scene.storage_space = space;
+        self
+    }
+
     /// Set the endpoint of the performance harness's root-content scroll sweep.
     #[must_use]
     pub const fn scroll_extent(mut self, extent: Vec2) -> Self {
@@ -54,8 +61,8 @@ impl SceneBuilder {
     }
 
     /// Declare a backdrop group from its description — `id`, capture
-    /// `scale`, `filters`, pyramid `levels`, and optionally an `anchor`
-    /// layer id and a `union` field ([`BackdropGroup::new`] covers the
+    /// `scale`, `filters`, pyramid `levels`, and optionally a `pyramid`
+    /// kind, an `anchor` layer id and a `union` field ([`BackdropGroup::new`] covers the
     /// plain form); layers sample it via [`LayerBuilder::backdrop`].
     pub fn backdrop_group(&mut self, group: BackdropGroup) -> &mut Self {
         self.scene.backdrop_groups.push(group);
@@ -97,6 +104,7 @@ impl SceneBuilder {
         fn clip(shape: Shape);
         fn opacity(opacity: f64);
         fn blend(blend: BlendMode);
+        fn blend_space(blend_space: BlendSpace);
         fn backdrop(group: u32);
         fn backdrop_effect(effect: crate::BackdropEffectSpec);
         fn backdrop_outer(px: f64);
@@ -141,6 +149,13 @@ impl LayerBuilder<'_> {
         self
     }
 
+    /// Set the blend space the layer's items composite in and the layer
+    /// composites onto its parent in.
+    pub const fn blend_space(&mut self, blend_space: BlendSpace) -> &mut Self {
+        self.layer.blend_space = Some(blend_space);
+        self
+    }
+
     /// Make the layer a member of backdrop group `group`: the group's
     /// filtered capture is drawn as the bottom-most content inside the
     /// layer's clip.
@@ -157,7 +172,7 @@ impl LayerBuilder<'_> {
 
     /// Set the layer's per-member [`crate::BackdropEffectSpec`] on its
     /// backdrop composite.
-    pub const fn backdrop_effect(&mut self, effect: crate::BackdropEffectSpec) -> &mut Self {
+    pub fn backdrop_effect(&mut self, effect: crate::BackdropEffectSpec) -> &mut Self {
         self.layer.backdrop_effect = Some(effect);
         self
     }

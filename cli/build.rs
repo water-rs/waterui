@@ -8,7 +8,6 @@
 use std::{
     env, fs,
     path::{Path, PathBuf},
-    process::Command,
 };
 
 use toml::Value;
@@ -60,51 +59,11 @@ fn main() {
         dist_targets(&manifest).join(" ")
     );
 
-    let cli_commit =
-        git(&cli_manifest_dir, &["rev-parse", "HEAD"]).unwrap_or_else(|| "unknown".to_string());
+    let cli_commit = waterui_git_head::head_commit(&cli_manifest_dir, None)
+        .unwrap_or_else(|| "unknown".to_string());
     println!("cargo:rustc-env=WATERUI_CLI_COMMIT={cli_commit}");
 
     println!("cargo:rerun-if-changed={}", manifest_path.display());
-    register_git_head_rerun(&cli_manifest_dir);
-}
-
-fn git(repo_root: &Path, args: &[&str]) -> Option<String> {
-    Command::new("git")
-        .current_dir(repo_root)
-        .args(args)
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .and_then(|output| String::from_utf8(output.stdout).ok())
-        .map(|output| output.trim().to_string())
-        .filter(|output| !output.is_empty())
-}
-
-fn register_git_head_rerun(repo_root: &Path) {
-    // A packaged build has no `.git` to watch.
-    let Some(paths) = git(
-        repo_root,
-        &[
-            "rev-parse",
-            "--path-format=absolute",
-            "--git-path",
-            "HEAD",
-            "--git-common-dir",
-        ],
-    ) else {
-        return;
-    };
-    let mut paths = paths.lines();
-    let head = paths.next().expect("Git must report its HEAD path");
-    let common = Path::new(paths.next().expect("Git must report its common directory"));
-    println!("cargo:rerun-if-changed={head}");
-    println!("cargo:rerun-if-changed={}", common.join("refs").display());
-    for storage in ["packed-refs", "reftable"] {
-        let path = common.join(storage);
-        if path.exists() {
-            println!("cargo:rerun-if-changed={}", path.display());
-        }
-    }
 }
 
 /// The repository this crate lives in — where certified manifests, releases,

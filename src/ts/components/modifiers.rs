@@ -21,7 +21,7 @@ use crate::appearance::style::Vector;
 use nami::{Computed, SignalExt as _};
 use suiteki::Str;
 use waterui_core::accessibility::AccessibilityIdentifier;
-use waterui_core::{AnyView, IgnorableMetadata};
+use waterui_core::{AnyView, Metadata};
 use waterui_graphics::WorkingColor;
 use waterui_graphics::color::{Color, Working};
 use waterui_layout::background::BackgroundView;
@@ -106,7 +106,7 @@ pub fn apply(
         }
         "a11yId" => {
             let identifier = Str::from_js(value, bridge)?;
-            Ok(AnyView::new(IgnorableMetadata::new(
+            Ok(AnyView::new(Metadata::new(
                 view,
                 AccessibilityIdentifier::new(identifier),
             )))
@@ -118,9 +118,9 @@ pub fn apply(
         other => Err(JsError::conversion(format!(
             "`{other}` is not a view modifier. The catalog's modifiers are: {}",
             crate::ts::catalog::CATALOG
-                .modifiers
+                .modifiers()
                 .iter()
-                .map(|modifier| modifier.name)
+                .map(waterui_ts::schema::ModifierSchema::name)
                 .collect::<Vec<_>>()
                 .join(", ")
         ))),
@@ -171,16 +171,16 @@ fn semantic(bridge: &Bridge, value: &JsValue) -> Result<Computed<Str>, JsError> 
 impl From<ShadowValue> for Shadow {
     fn from(value: ShadowValue) -> Self {
         Self::new(
-            value.color.map_or_else(
+            value.color().map_or_else(
                 || Color::srgb(0, 0, 0),
                 |color| Color::new(Working(WorkingColor::from(color))),
             ),
             Vector {
-                x: value.x.unwrap_or_default(),
-                y: value.y.unwrap_or_default(),
+                x: value.x().unwrap_or_default(),
+                y: value.y().unwrap_or_default(),
             },
-            value.radius,
-            FixedRoundedRectangle::new(value.corner_radius.unwrap_or_default()),
+            value.radius(),
+            FixedRoundedRectangle::new(value.corner_radius().unwrap_or_default()),
         )
     }
 }
@@ -188,9 +188,9 @@ impl From<ShadowValue> for Shadow {
 impl From<BorderValue> for Border {
     fn from(value: BorderValue) -> Self {
         Self::new(
-            Color::new(Working(WorkingColor::from(value.color))),
-            value.width,
+            Color::new(Working(WorkingColor::from(value.color()))),
+            value.width(),
         )
-        .corner_radius(value.corner_radius.unwrap_or_default())
+        .corner_radius(value.corner_radius().unwrap_or_default())
     }
 }

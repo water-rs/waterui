@@ -1,4 +1,4 @@
-//! Gesture Example - Demonstrates WaterUI's gesture recognition capabilities
+//! Gesture Example - Demonstrates `WaterUI`'s gesture recognition capabilities
 //!
 //! This example showcases:
 //! - Tap gestures (single and multi-tap)
@@ -34,7 +34,7 @@ fn tap_section(tap_count: &Binding<i32>) -> impl View {
             .padding()
             .background(TAP_COLOR.with_opacity(0.3))
             .gesture(TapGesture::new(), |State(c): State<Binding<i32>>| {
-                *c.get_mut() += 1
+                *c.get_mut() += 1;
             })
             .state(tap_count),
     ))
@@ -54,7 +54,7 @@ fn double_tap_section(double_tap_count: &Binding<i32>) -> impl View {
             .padding()
             .background(DOUBLE_TAP_COLOR.with_opacity(0.3))
             .gesture(TapGesture::repeat(2), |State(c): State<Binding<i32>>| {
-                *c.get_mut() += 1
+                *c.get_mut() += 1;
             })
             .state(double_tap_count),
     ))
@@ -94,7 +94,7 @@ fn drag_section(drag_count: &Binding<i32>) -> impl View {
             .height(100.0)
             .background(DRAG_COLOR.with_opacity(0.3))
             .gesture(DragGesture::new(5.0), |State(c): State<Binding<i32>>| {
-                *c.get_mut() += 1
+                *c.get_mut() += 1;
             })
             .state(drag_count),
     ))
@@ -165,7 +165,7 @@ fn middle_click_tab_section(tabs: &ReactiveList<TabChip>, open_tabs: &Binding<i3
     .padding()
 }
 
-/// Section demonstrating on_tap shorthand
+/// Section demonstrating `on_tap` shorthand
 fn on_tap_section(tap_count: &Binding<i32>) -> impl View {
     vstack((
         text("on_tap Shorthand").headline(),
@@ -180,6 +180,11 @@ fn on_tap_section(tap_count: &Binding<i32>) -> impl View {
     .padding()
 }
 
+/// The gesture example page: tap, double-tap, long-press, drag and chained gestures.
+///
+/// # Panics
+///
+/// Panics if the tab list no longer fits in `u32` ids.
 #[preview]
 pub fn demo() -> impl View {
     let tap_count = Binding::i32(0);
@@ -193,7 +198,7 @@ pub fn demo() -> impl View {
             .iter()
             .enumerate()
             .map(|(id, title)| TabChip {
-                id: id as u32,
+                id: u32::try_from(id).expect("the tab list has four entries"),
                 title,
             })
             .collect::<Vec<_>>(),
@@ -227,6 +232,7 @@ pub fn demo() -> impl View {
     )
 }
 
+/// Builds the gesture example app.
 pub fn app(env: Environment) -> App {
     App::new(demo, env)
 }
