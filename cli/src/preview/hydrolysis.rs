@@ -99,6 +99,8 @@ pub struct HydrolysisPreviewRequest<'a> {
     pub color_scheme: Option<PreviewColorScheme>,
     /// Display scale factor applied to the captured image.
     pub scale: f32,
+    /// Capture extended-dynamic-range HDR output (`--hdr`).
+    pub hdr: bool,
     /// `sccache` binary used for compilation caching, when available.
     pub sccache_path: Option<PathBuf>,
     /// Sink compile progress is reported to while the preview build runs cargo.
@@ -289,6 +291,7 @@ pub async fn discover_hydrolysis_preview_exports(
         content_deadline: DEFAULT_CONTENT_DEADLINE,
         color_scheme: None,
         scale: DEFAULT_PREVIEW_SCALE,
+        hdr: false,
         sccache_path,
         progress,
     };
@@ -410,7 +413,8 @@ async fn run_preview_binary(
         request.content_deadline,
     )
     .with_optional_color_scheme(request.color_scheme)
-    .with_scale(request.scale);
+    .with_scale(request.scale)
+    .with_hdr(request.hdr);
     let backend_path = project.backend_path::<HydrolysisBackend>();
     let config_path = write_run_config(&backend_path, &config).await?;
     run::run_preview_binary(
@@ -482,7 +486,8 @@ async fn run_preview_test_binary(
         request.content_deadline,
     )
     .with_optional_color_scheme(request.color_scheme)
-    .with_scale(request.scale);
+    .with_scale(request.scale)
+    .with_hdr(request.hdr);
     let backend_path = project.backend_path::<HydrolysisBackend>();
     let config_path = write_run_config(&backend_path, &config).await?;
     let output = run::run_preview_binary(

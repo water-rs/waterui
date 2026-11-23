@@ -28,6 +28,10 @@ pub(crate) fn run() {
     hydrolysis::init_tracing();
     let config = PreviewRunConfig::load_from_env()
         .unwrap_or_else(|error| panic!("hydrolysis preview: {error}"));
+    assert!(
+        !config.hdr(),
+        "hydrolysis preview: --hdr capture requires linear Display P3 float readback from HeadlessRuntime"
+    );
     match config.mode() {
         PreviewRunMode::Image { output } => {
             run_image(output, &config);

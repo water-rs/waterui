@@ -141,6 +141,7 @@ waterui-preview-protocol.workspace = true
 # `water preview test --video`. `default-features = false` omits `wgpu` and
 # software codecs so encoding uses only the host's hardware encoder and fails
 # fast where none exists.
+half = { version = "2.7", default-features = false }
 waterkit-codec = { version = "0.3", default-features = false }
 waterkit-video-container = { version = "0.3", default-features = false }
 waterkit-video-core = { workspace = true, default-features = false }

@@ -84,6 +84,11 @@ pub struct PreviewArgs {
     /// naming them (default `10`).
     #[serde(default)]
     pub content_timeout: Option<f64>,
+
+    /// Capture extended-dynamic-range HDR output (16-bit Display P3 PQ PNGs
+    /// and 10-bit PQ HEVC video when recording).
+    #[serde(default)]
+    pub hdr: bool,
 }
 
 impl PreviewArgs {
@@ -112,7 +117,8 @@ impl PreviewArgs {
             content_deadline,
             self.color_scheme.map(Into::into),
             scale,
-        ))
+        )
+        .with_hdr(self.hdr))
     }
 }
 
@@ -229,6 +235,7 @@ impl PreviewTool {
                         content_deadline: request.content_deadline(),
                         color_scheme: request.color_scheme(),
                         scale: request.scale(),
+                        hdr: request.hdr(),
                         sccache_path: self.sccache_path.clone(),
                         // MCP serves JSON-RPC over stdio — there is no
                         // terminal sink to render compile progress into.
@@ -253,6 +260,7 @@ impl PreviewTool {
                         content_deadline: request.content_deadline(),
                         color_scheme: request.color_scheme(),
                         scale: request.scale(),
+                        hdr: request.hdr(),
                         sccache_path: self.sccache_path.clone(),
                         // MCP serves JSON-RPC over stdio — there is no
                         // terminal sink to render compile progress into.
