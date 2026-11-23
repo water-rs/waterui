@@ -8,15 +8,14 @@ use ndk::native_window::NativeWindow;
 
 use waterui::theme::ColorScheme;
 
-use super::gpu::{AndroidGpuContext, GpuError};
+use super::gpu::{AndroidGpuContext, DisplayRefresh, GpuError};
 use super::host::{AndroidSession, HostBridge, MetricsSnapshot, UiThreadServices};
 use super::jni::JniError;
 use crate::platform::InputEvent;
-use crate::runner::android_performance::{DisplayRefreshSpec, HeadroomSnapshot};
 
 pub(super) struct Attachment {
     pub window: NativeWindow,
-    pub refresh: DisplayRefreshSpec,
+    pub refresh: DisplayRefresh,
     pub width: u32,
     pub height: u32,
     pub generation: u64,
@@ -33,7 +32,6 @@ pub(super) struct Startup {
     pub attached: bool,
     pub surface: Option<Attachment>,
     pub demand: (bool, bool),
-    pub headroom: HeadroomSnapshot,
     events: Vec<(InputEvent, f64)>,
 }
 
@@ -65,7 +63,6 @@ impl Startup {
             attached: false,
             surface: None,
             demand: (false, false),
-            headroom: HeadroomSnapshot::default(),
             events: Vec::new(),
         }
     }
@@ -105,7 +102,6 @@ impl Startup {
                 )
                 .map_err(JniError)?;
         }
-        session.set_headroom(self.headroom);
         session
             .set_frame_demand(self.demand.0, self.demand.1)
             .map_err(JniError)?;

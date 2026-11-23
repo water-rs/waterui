@@ -745,11 +745,8 @@ class ShadowNativeBridge {
 
         var completions = 0
 
-        var completeFrameCpuNanos = 0L
-
         var deadlineNanos = 0L
         val highRefreshDemands = mutableListOf<Boolean>()
-        val headroomUpdates = mutableListOf<List<Float>>()
 
         /** Every `nativeSetVisible` call, in order. */
         val visibilities = mutableListOf<Boolean>()
@@ -789,7 +786,6 @@ class ShadowNativeBridge {
                 set(NativeBridge, null)
             }
             completions = 0
-            completeFrameCpuNanos = 0L
             frames = 0
             sessions = 0
             loads = 0
@@ -797,7 +793,6 @@ class ShadowNativeBridge {
             deadlineQueries = 0
             deadlineNanos = 0L
             highRefreshDemands.clear()
-            headroomUpdates.clear()
             visibilities.clear()
             resumptions.clear()
             createNightModes.clear()
@@ -884,10 +879,9 @@ class ShadowNativeBridge {
 
         @JvmStatic
         @Implementation
-        fun nativeCompleteFrame(sessionPtr: Long): Long {
+        fun nativeCompleteFrame(sessionPtr: Long) {
             assertLive(sessionPtr)
             completions += 1
-            return completeFrameCpuNanos
         }
 
         @JvmStatic
@@ -936,19 +930,6 @@ class ShadowNativeBridge {
         fun nativeSetFrameDemand(sessionPtr: Long, continuous: Boolean, touching: Boolean) {
             assertLive(sessionPtr)
             highRefreshDemands += continuous || touching
-        }
-
-        @JvmStatic
-        @Implementation
-        fun nativeSetHeadroom(
-            sessionPtr: Long,
-            cpuHeadroom: Float,
-            gpuHeadroom: Float,
-            thermalStatus: Int,
-            thermalHeadroom: Float,
-        ) {
-            assertLive(sessionPtr)
-            headroomUpdates += listOf(cpuHeadroom, gpuHeadroom, thermalStatus.toFloat(), thermalHeadroom)
         }
 
         @JvmStatic

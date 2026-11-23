@@ -13,13 +13,10 @@ use std::rc::Rc;
 use std::task::{Context, Poll};
 
 use ndk::native_window::{ChangeFrameRateStrategy, FrameRateCompatibility, NativeWindow};
-use waterui_frame_rate::FrameRate;
+use waterui_frame_rate::{DisplayCapabilities, FrameRate, resolve};
 
 use super::native_window::{AndroidDisplay, AndroidWindow};
 use crate::platform::{DeviceLostError, GpuGeneration, PresentationSurface, SurfaceError};
-use crate::runner::android_performance::{
-    DisplayRefreshSpec, HeadroomSnapshot, resolve_surface_refresh_rate, seconds_to_nanos,
-};
 use crate::runner::window::FrameFailure;
 
 /// One band's attachment: the `ImageReader` surface behind the host's
@@ -305,29 +302,36 @@ pub struct AndroidSurface {
 struct WindowLease {
     window: NativeWindow,
     /// Positive and finite; the JNI boundary rejects anything else.
-    refresh: DisplayRefreshSpec,
+    refresh: DisplayRefresh,
 }
 
-#[derive(Default, PartialEq)]
+/// Display capabilities supplied by the platform at attachment.
+#[derive(Clone, Copy)]
+pub struct DisplayRefresh {
+    pub peak: f32,
+    pub normal: f32,
+    pub high: f32,
+}
+
+#[derive(Default, PartialEq, Eq)]
 pub struct RefreshDemand {
     pub rate: Option<FrameRate>,
-    pub headroom: HeadroomSnapshot,
 }
 
-fn requested_refresh(
-    refresh: DisplayRefreshSpec,
-    demand: &RefreshDemand,
-) -> (f32, FrameRateCompatibility) {
-    let Some(vote) = demand.rate else {
-        return (0.0, FrameRateCompatibility::Default);
-    };
-    let rate = resolve_surface_refresh_rate(vote, demand.headroom, refresh);
-    let compatibility = if vote.is_fixed() {
-        FrameRateCompatibility::FixedSource
-    } else {
-        FrameRateCompatibility::Default
-    };
-    (rate, compatibility)
+impl DisplayRefresh {
+    fn requested(self, demand: &RefreshDemand) -> (f32, FrameRateCompatibility) {
+        let Some(vote) = demand.rate else {
+            return (0.0, FrameRateCompatibility::Default);
+        };
+        let steps = [self.normal, self.high];
+        let rate = resolve(vote, DisplayCapabilities::discrete(self.peak, &steps));
+        let compatibility = if vote.is_fixed() {
+            FrameRateCompatibility::FixedSource
+        } else {
+            FrameRateCompatibility::Default
+        };
+        (rate, compatibility)
+    }
 }
 
 impl AndroidSurface {
@@ -359,30 +363,6 @@ impl AndroidSurface {
         self.native_window.is_some() && self.width != 0 && self.height != 0
     }
 
-    /// Display refresh capabilities of the attached native window, if live.
-    pub(crate) fn refresh_spec(&self) -> Option<DisplayRefreshSpec> {
-        self.native_window.as_ref().map(|lease| lease.refresh)
-    }
-
-    /// Kernel thread ID (`gettid`) of the `"cherenkov-render"` worker thread.
-    pub(crate) fn render_thread_id(&self) -> i32 {
-        self.handles.engine().engine.info().render_thread_id
-    }
-
-    /// Total wall-clock nanoseconds spent on `"cherenkov-render"` phases for
-    /// the latest finished frame.
-    pub(crate) fn last_render_cpu_nanos(&self) -> i64 {
-        let phases = self.handles.engine().engine.stats().phases;
-        seconds_to_nanos(
-            phases.lower_seconds
-                + phases.encode_seconds
-                + phases.stamp_seconds
-                + phases.wait_seconds
-                + phases.glyph_seconds
-                + phases.shade_seconds,
-        )
-    }
-
     /// Attaches a new native window at `generation`, releasing any prior
     /// attachment first.
     ///
@@ -393,7 +373,7 @@ impl AndroidSurface {
     pub(crate) fn attach(
         &mut self,
         native_window: NativeWindow,
-        refresh: DisplayRefreshSpec,
+        refresh: DisplayRefresh,
         width: u32,
         height: u32,
         generation: u64,
@@ -430,10 +410,6 @@ impl AndroidSurface {
 
     pub(crate) const fn frame_pending(&self) -> bool {
         self.pending.is_some() || self.pending_window.is_some()
-    }
-
-    pub(crate) const fn gpu_work_pending(&self) -> bool {
-        self.pending.is_some()
     }
 
     pub(crate) const fn window_pending(&self) -> bool {
@@ -650,7 +626,7 @@ impl AndroidSurface {
         let Some(lease) = self.native_window.as_ref() else {
             return Ok(());
         };
-        let (rate, compatibility) = requested_refresh(lease.refresh, &self.refresh_demand);
+        let (rate, compatibility) = lease.refresh.requested(&self.refresh_demand);
         // `ANativeWindow_setFrameRateWithChangeStrategy` is API 31. The
         // framework floor is API 33, so the symbol is a direct link.
         lease
