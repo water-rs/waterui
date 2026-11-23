@@ -115,7 +115,7 @@ mod suite {
     /// The registered trials — one PNG per image run, written to
     /// `target/preview-captures/<trial>.png` for visual review.
     fn trials() -> Vec<Trial> {
-        vec![
+        let mut all = vec![
             png_trial(
                 "preview::captures_the_issue_view_set_windowless",
                 "view_set",
@@ -175,6 +175,33 @@ mod suite {
                 "offscreen_tabs_nav_checkbox",
                 None,
             ),
+            Trial::test("preview::captures_a_scenario_windowless", || {
+                run_trial("scenario", Expect::Success);
+                assert_scenario_output(&output_dir().join("scenario"));
+                Ok(())
+            }),
+            failure_trial(
+                "preview::rejects_a_semantic_run",
+                "semantic",
+                "apple preview does not support semantic runs",
+            ),
+            failure_trial(
+                "preview::errors_when_the_run_config_is_missing",
+                "missing_config",
+                "WATERUI_PREVIEW_RUN_CONFIG is not set",
+            ),
+            failure_trial(
+                "preview::errors_when_the_run_config_is_malformed",
+                "malformed_config",
+                "cannot parse preview run configuration",
+            ),
+        ];
+        all.extend(hdr_and_color_trials());
+        all
+    }
+
+    fn hdr_and_color_trials() -> Vec<Trial> {
+        vec![
             Trial::test("preview::captures_hdr_edr_highlights_windowless", || {
                 run_trial("hdr_edr", Expect::Success);
                 Ok(())
@@ -197,26 +224,21 @@ mod suite {
                 assert_hdr_scenario_output(&output_dir().join("hdr_scenario"));
                 Ok(())
             }),
-            Trial::test("preview::captures_a_scenario_windowless", || {
-                run_trial("scenario", Expect::Success);
-                assert_scenario_output(&output_dir().join("scenario"));
+            png_trial(
+                "preview::captures_p3_color_matching_windowless",
+                "p3_color_matching",
+                Some(assert_p3_color_matching_png),
+            ),
+            #[cfg(feature = "gpu_surface")]
+            png_trial(
+                "preview::captures_p3_color_matching_gpu_windowless",
+                "p3_color_matching_gpu",
+                Some(assert_p3_color_matching_gpu_png),
+            ),
+            Trial::test("preview::captures_hdr_p3_color_matching_windowless", || {
+                run_trial("hdr_p3_color_matching", Expect::Success);
                 Ok(())
             }),
-            failure_trial(
-                "preview::rejects_a_semantic_run",
-                "semantic",
-                "apple preview does not support semantic runs",
-            ),
-            failure_trial(
-                "preview::errors_when_the_run_config_is_missing",
-                "missing_config",
-                "WATERUI_PREVIEW_RUN_CONFIG is not set",
-            ),
-            failure_trial(
-                "preview::errors_when_the_run_config_is_malformed",
-                "malformed_config",
-                "cannot parse preview run configuration",
-            ),
         ]
     }
 
@@ -327,8 +349,87 @@ mod suite {
         }
         assert_eq!(count, 3, "20fps over 100ms must record 3 HDR frames");
         assert!(
-            max_channel > 1.2,
-            "WUIRF002 HDR stream must preserve unclamped >1.0 linear Display P3 highlights, got max_channel={max_channel}"
+            max_channel > 1.9,
+            "WUIRF002 HDR stream must preserve unclamped 2.0x linear Display P3 highlights, got max_channel={max_channel}"
+        );
+    }
+
+    fn assert_display_p3_cicp_and_decode(path: &Path) -> (Vec<u8>, usize, usize) {
+        let bytes = fs::read(path).expect("captured P3 PNG is readable");
+        let decoder = Decoder::new(Cursor::new(&bytes));
+        let mut reader = decoder.read_info().expect("P3 PNG header decodes");
+        let info = reader.info();
+        assert_eq!(info.bit_depth, BitDepth::Eight);
+        assert_eq!(info.color_type, ColorType::Rgba);
+        let cicp = info
+            .coding_independent_code_points
+            .expect("SDR PNG must carry Display P3 cICP chunk");
+        assert_eq!(
+            (
+                cicp.color_primaries,
+                cicp.transfer_function,
+                cicp.matrix_coefficients,
+                cicp.is_video_full_range_image,
+            ),
+            (12, 13, 0, true),
+            "SDR PNG must carry Display P3 full-range cICP"
+        );
+        let mut pixels = vec![0_u8; reader.output_buffer_size().expect("PNG buffer size")];
+        let output = reader.next_frame(&mut pixels).expect("P3 PNG decodes");
+        pixels.truncate(output.buffer_size());
+        (pixels, output.width as usize, output.height as usize)
+    }
+
+    fn assert_p3_color_matching_png(path: &Path) {
+        let (pixels, width, height) = assert_display_p3_cicp_and_decode(path);
+        let sample = |x: usize, y: usize| -> [u8; 4] {
+            let offset = (y * width + x) * 4;
+            [
+                pixels[offset],
+                pixels[offset + 1],
+                pixels[offset + 2],
+                pixels[offset + 3],
+            ]
+        };
+        let cx = width / 2;
+        // Top band: sRGB (234, 67, 53) maps in Display P3 to ~(216, 81, 64).
+        let [r, g, b, a] = sample(cx, height / 4);
+        assert!(
+            r.abs_diff(216) <= 2 && g.abs_diff(81) <= 2 && b.abs_diff(64) <= 2 && a == 255,
+            "SDR Display P3 PNG must color-match sRGB (234, 67, 53) to Display P3 ~(216, 81, 64), got ({r}, {g}, {b}, {a})"
+        );
+        // Bottom band: pure Display P3 red must stay wide-gamut ~(255, 0, 0).
+        let [pr, pg, pb, pa] = sample(cx, (3 * height) / 4);
+        assert!(
+            pr >= 253 && pg <= 2 && pb <= 2 && pa == 255,
+            "SDR Display P3 PNG must preserve wide-gamut Display P3 red ~(255, 0, 0) without sRGB clipping, got ({pr}, {pg}, {pb}, {pa})"
+        );
+    }
+
+    #[cfg(feature = "gpu_surface")]
+    fn assert_p3_color_matching_gpu_png(path: &Path) {
+        let (pixels, width, height) = assert_display_p3_cicp_and_decode(path);
+        let sample = |x: usize, y: usize| -> [u8; 4] {
+            let offset = (y * width + x) * 4;
+            [
+                pixels[offset],
+                pixels[offset + 1],
+                pixels[offset + 2],
+                pixels[offset + 3],
+            ]
+        };
+        let cx = width / 2;
+        // Top third: sRGB (234, 67, 53) -> Display P3 ~(216, 81, 64).
+        let [r, g, b, a] = sample(cx, height / 6);
+        assert!(
+            r.abs_diff(216) <= 2 && g.abs_diff(81) <= 2 && b.abs_diff(64) <= 2 && a == 255,
+            "GPU+native SDR Display P3 PNG must color-match sRGB (234, 67, 53) to ~(216, 81, 64), got ({r}, {g}, {b}, {a})"
+        );
+        // Middle third: pure Display P3 red -> ~(255, 0, 0).
+        let [pr, pg, pb, pa] = sample(cx, height / 2);
+        assert!(
+            pr >= 253 && pg <= 2 && pb <= 2 && pa == 255,
+            "GPU+native SDR Display P3 PNG must preserve wide-gamut Display P3 red ~(255, 0, 0), got ({pr}, {pg}, {pb}, {pa})"
         );
     }
 
@@ -497,6 +598,19 @@ mod suite {
             "hdr_scenario" => {
                 hdr_scenario_run("hdr_scenario", 160.0, 120.0, hdr_edr_view).map_err(Into::into)
             }
+            "p3_color_matching" => {
+                image_run("p3_color_matching", 120.0, 120.0, p3_color_matching_view)
+                    .map_err(Into::into)
+            }
+            #[cfg(feature = "gpu_surface")]
+            "p3_color_matching_gpu" => image_run(
+                "p3_color_matching_gpu",
+                120.0,
+                120.0,
+                p3_color_matching_gpu_view,
+            )
+            .map_err(Into::into),
+            "hdr_p3_color_matching" => hdr_p3_color_matching_run(),
             "scenario" => {
                 scenario_run("scenario", 200.0, 120.0, liquid_glass_view).map_err(Into::into)
             }
@@ -1425,6 +1539,97 @@ mod suite {
             .size(160.0, 120.0)
     }
 
+    fn p3_color_matching_view() -> impl View {
+        vstack((
+            Color::srgb(234, 67, 53).size(120.0, 60.0),
+            Color::p3(1.0, 0.0, 0.0).size(120.0, 60.0),
+        ))
+        .spacing(0.0)
+        .size(120.0, 120.0)
+    }
+
+    #[cfg(feature = "gpu_surface")]
+    fn p3_color_matching_gpu_view() -> impl View {
+        use waterui::graphics::ShaderPaintView;
+
+        const SHADER: &str = include_str!("gpu_set.wgsl");
+        vstack((
+            Color::srgb(234, 67, 53).size(120.0, 40.0),
+            Color::p3(1.0, 0.0, 0.0).size(120.0, 40.0),
+            ShaderPaintView::new(SHADER).size(120.0, 40.0),
+        ))
+        .spacing(0.0)
+        .size(120.0, 120.0)
+    }
+
+    fn hdr_p3_color_matching_view() -> impl View {
+        vstack((
+            Color::srgb(234, 67, 53).size(120.0, 60.0),
+            Color::p3(1.0, 0.0, 0.0).size(120.0, 60.0),
+            Color::srgb(255, 255, 255)
+                .with_headroom(1.0)
+                .size(120.0, 60.0),
+        ))
+        .spacing(0.0)
+        .size(120.0, 180.0)
+    }
+
+    fn hdr_p3_color_matching_run() -> Result<(), Box<dyn StdError>> {
+        let hdr = capture_hdr(
+            |env| env,
+            || AnyView::new(hdr_p3_color_matching_view()),
+            ResourceContext::new(PathBuf::new(), PathBuf::new()),
+            120,
+            180,
+            None,
+            DEFAULT_CONTENT_DEADLINE,
+        )?;
+        let width = hdr.width as usize;
+        let height = hdr.height as usize;
+        let sample = |x: usize, y: usize| -> [f32; 4] {
+            let offset = (y * width + x) * 4;
+            [
+                hdr.pixels[offset],
+                hdr.pixels[offset + 1],
+                hdr.pixels[offset + 2],
+                hdr.pixels[offset + 3],
+            ]
+        };
+        let cx = width / 2;
+
+        // Band 0: sRGB (234, 67, 53) in linear Display P3 is ~[0.6866, 0.0816, 0.0505, 1.0].
+        let srgb_px = sample(cx, height / 6);
+        assert!(
+            (srgb_px[0] - 0.6866).abs() < 0.015
+                && (srgb_px[1] - 0.0816).abs() < 0.015
+                && (srgb_px[2] - 0.0505).abs() < 0.015
+                && (srgb_px[3] - 1.0).abs() < 0.01,
+            "HDR capture must convert sRGB (234, 67, 53) to linear Display P3 ~[0.687, 0.082, 0.051, 1.0], got {srgb_px:?}"
+        );
+
+        // Band 1: pure Display P3 red in linear Display P3 is ~[1.0, 0.0, 0.0, 1.0].
+        let p3_px = sample(cx, height / 2);
+        assert!(
+            (p3_px[0] - 1.0).abs() < 0.015
+                && p3_px[1].abs() < 0.015
+                && p3_px[2].abs() < 0.015
+                && (p3_px[3] - 1.0).abs() < 0.01,
+            "HDR capture must preserve wide-gamut Display P3 red as linear Display P3 ~[1.0, 0.0, 0.0, 1.0], got {p3_px:?}"
+        );
+
+        // Band 2: SDR white with headroom = 1.0 (2^1 = 2.0x SDR white) is ~[2.0, 2.0, 2.0, 1.0].
+        let edr_px = sample(cx, (5 * height) / 6);
+        assert!(
+            (edr_px[0] - 2.0).abs() < 0.05
+                && (edr_px[1] - 2.0).abs() < 0.05
+                && (edr_px[2] - 2.0).abs() < 0.05
+                && (edr_px[3] - 1.0).abs() < 0.01,
+            "HDR capture must preserve linear 2.0x EDR headroom ~[2.0, 2.0, 2.0, 1.0], got {edr_px:?}"
+        );
+        assert_background_application();
+        Ok(())
+    }
+
     fn hdr_edr_run() -> Result<(), Box<dyn StdError>> {
         let raster = capture_hdr(
             |env| env,
@@ -1455,12 +1660,12 @@ mod suite {
             "Apple HDR render-server capture stats"
         );
         assert!(
-            max_channel > 1.2,
-            "ExtendedLinearDisplayP3 HDR capture must preserve unclamped >1.0 EDR highlights, got max_channel={max_channel}"
+            max_channel > 1.9,
+            "ExtendedLinearDisplayP3 HDR capture must preserve unclamped 2.0x EDR highlights, got max_channel={max_channel}"
         );
         assert!(
-            max_headroom > 1.2,
-            "HDR capture max_edr_headroom must exceed 1.0, got {max_headroom}"
+            max_headroom > 1.9,
+            "HDR capture max_edr_headroom must reach ~2.0, got {max_headroom}"
         );
         assert_background_application();
         Ok(())
@@ -1491,8 +1696,8 @@ mod suite {
             "Apple HDR GPU+glass capture stats"
         );
         assert!(
-            max_channel > 1.2,
-            "HDR GPU+glass capture must preserve unclamped >1.0 EDR highlights, got max_channel={max_channel}"
+            max_channel > 1.9,
+            "HDR GPU+glass capture must preserve unclamped 2.0x EDR highlights, got max_channel={max_channel}"
         );
         assert_background_application();
         Ok(())

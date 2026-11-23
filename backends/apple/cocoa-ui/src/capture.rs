@@ -92,9 +92,15 @@ use crate::bitmap::render_layer;
 ))]
 use crate::bitmap::{
     RenderServerTransform, image_from_display_p3_rgba,
-    render_layer_via_render_server_hdr_into_buffer, render_layer_via_render_server_transformed,
+    render_layer_via_render_server_extended_srgb_into_buffer,
+    render_layer_via_render_server_transformed,
 };
 use crate::core_animation::before_commit;
+#[cfg(all(
+    feature = "render-server-capture",
+    any(target_os = "macos", all(target_os = "ios", target_abi = "macabi"))
+))]
+use crate::dynamic_range::{DynamicRange, resolve as resolve_dynamic_range};
 use crate::geometry::Rect;
 use waterui_contract::contract_violation;
 
@@ -1926,6 +1932,7 @@ impl NativeRasterFrame {
         &self,
         layer: &CALayer,
         rs_transform: RenderServerTransform,
+        hdr: bool,
     ) -> Result<(), CaptureError> {
         if self.pixel_format == MTLPixelFormat::RGBA16Float {
             let total_bytes = self.row_bytes * self.pixel_height;
@@ -1935,20 +1942,25 @@ impl NativeRasterFrame {
             let dst = unsafe {
                 from_raw_parts_mut(self.buffer.contents().as_ptr().cast::<u8>(), total_bytes)
             };
-            if !render_layer_via_render_server_hdr_into_buffer(
+            if !render_layer_via_render_server_extended_srgb_into_buffer(
                 layer,
                 rs_transform,
                 self.pixel_width,
                 self.pixel_height,
                 dst,
                 self.row_bytes,
+                hdr,
             ) {
                 return Err(CaptureUnavailable::new(
-                    "in-process Core Animation render server failed to render HDR surface",
+                    "in-process Core Animation render server failed to render RGBA16F surface",
                 )
                 .into());
             }
-            self.color.set(shader_color(MTLPixelFormat::RGBA16Float));
+            // `CARenderServer` writes premultiplied `kCGColorSpaceExtendedSRGB`
+            // into `'RGhA'` (`BLEND_COLOR`); the compositor converts it to the
+            // destination's `target_color` (`ExtendedLinearDisplayP3` for
+            // `RGBA16Float`) on the GPU in `draw_overlay`.
+            self.color.set(BLEND_COLOR);
             return Ok(());
         }
         self.color.set(raster_color(self.pixel_format).1);
@@ -2040,11 +2052,12 @@ impl RasterLease {
         &self,
         layer: &CALayer,
         transform: RenderServerTransform,
+        hdr: bool,
     ) -> Result<(), CaptureError> {
         self.frame
             .as_ref()
             .expect("a lease owns its frame")
-            .draw_with_render_server(layer, transform)
+            .draw_with_render_server(layer, transform, hdr)
     }
 
     /// Hands the frame back — only the settle path may call this.
@@ -2425,6 +2438,7 @@ impl PreparedCluster {
         root: &CALayer,
         probes: &ProbeLayers,
         transform: RenderServerTransform,
+        hdr: bool,
     ) -> Result<(), CaptureError> {
         for (index, lease) in self.probes.iter().enumerate() {
             without_actions(|| {
@@ -2432,7 +2446,7 @@ impl PreparedCluster {
                     probes.set(member.surface, ClusterPlan::state(index, member.slot));
                 }
             });
-            lease.draw_with_render_server(root, transform)?;
+            lease.draw_with_render_server(root, transform, hdr)?;
         }
         without_actions(|| {
             for member in &self.plan.members {
@@ -3102,6 +3116,7 @@ fn render_server_region_transform(
 )]
 fn draw_rasters(
     render_server: bool,
+    hdr: bool,
     layer: &CALayer,
     snapshots: &[CapturedSnapshot],
     probe_space: &CGColorSpace,
@@ -3126,6 +3141,7 @@ fn draw_rasters(
         raster.draw_with_render_server(
             layer,
             render_server_region_transform(geometry, height, full_region),
+            hdr,
         )?;
         let probes = without_actions(|| ProbeLayers::insert(snapshots, probe_space));
         for cluster in clusters {
@@ -3133,6 +3149,7 @@ fn draw_rasters(
                 layer,
                 &probes,
                 render_server_region_transform(geometry, height, cluster.plan.region),
+                hdr,
             )?;
         }
         without_actions(|| {
@@ -3141,7 +3158,7 @@ fn draw_rasters(
         });
         return Ok(());
     }
-    let _ = render_server;
+    let _ = (render_server, hdr);
     // Declared in drop order: the probes leave the tree before suppression ends.
     let mut suppression = SuppressionGuard::new(snapshots);
     suppression.begin();
@@ -3482,8 +3499,19 @@ impl ViewCapture {
             let (raster, clusters) = self.issue_rasters(&device, target, generation, plans)?;
             let (probe_space, _) = raster_color(target.pixelFormat());
             let height = pixel_extent(target.height());
+            #[cfg(all(
+                feature = "render-server-capture",
+                any(target_os = "macos", all(target_os = "ios", target_abi = "macabi"))
+            ))]
+            let hdr = resolve_dynamic_range(&self.content) == Some(DynamicRange::High);
+            #[cfg(not(all(
+                feature = "render-server-capture",
+                any(target_os = "macos", all(target_os = "ios", target_abi = "macabi"))
+            )))]
+            let hdr = false;
             draw_rasters(
                 render_server,
+                hdr,
                 &layer,
                 &snapshots,
                 &probe_space,
