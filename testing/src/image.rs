@@ -3,15 +3,31 @@
 use std::fs;
 use std::path::Path;
 
-use image::{
-    ColorType, ImageFormat, ImageReader, RgbaImage as RawRgbaImage, save_buffer_with_format,
-};
+use image::{ImageReader, RgbaImage as RawRgbaImage};
+use png::{BitDepth, ColorType as PngColorType, Encoder as PngEncoder, chunk};
 use serde::{Deserialize, Serialize};
 
 use crate::error::VisualDiffError;
 #[cfg(feature = "flip")]
 use crate::flip::{FlipConfig, FlipResult, compare_flip, compare_flip_with};
 use crate::snapshot::Snapshot;
+
+/// ITU-T H.273 / PNG 3rd Edition `cICP` payload for SDR Display P3:
+/// Display P3 primaries (`12`), sRGB transfer (`13`), identity matrix (`0`),
+/// full range (`1`).
+pub const CICP_DISPLAY_P3_SDR: [u8; 4] = [12, 13, 0, 1];
+
+/// ITU-T H.273 / PNG 3rd Edition `cICP` payload for HDR Display P3 PQ:
+/// Display P3 primaries (`12`), SMPTE ST 2084 PQ transfer (`16`), identity
+/// matrix (`0`), full range (`1`).
+pub const CICP_DISPLAY_P3_PQ: [u8; 4] = [12, 16, 0, 1];
+
+/// ITU-R BT.2408 SDR reference white luminance in nits for HDR PQ encoding:
+/// linear `1.0` maps to `203` nits.
+pub const HDR_REFERENCE_WHITE_NITS: f32 = 203.0;
+
+/// SMPTE ST 2084 peak absolute luminance in nits.
+const PQ_PEAK_NITS: f64 = 10_000.0;
 
 /// Validates that `actual` equals `width * height * 4` without overflow.
 pub(crate) fn validate_rgba8_len(
@@ -37,6 +53,103 @@ pub(crate) fn validate_rgba8_len(
         });
     }
     Ok(expected)
+}
+
+/// Encodes an RGBA8 Display P3 buffer into PNG bytes tagged with
+/// [`CICP_DISPLAY_P3_SDR`] (`(12, 13, 0, 1)`).
+///
+/// # Errors
+///
+/// Returns [`VisualDiffError::InvalidImageBuffer`] when `rgba8.len()` does not
+/// match `width * height * 4`, or [`VisualDiffError::EncodePng`] when PNG
+/// encoding fails.
+pub(crate) fn encode_png_display_p3_rgba8(
+    width: u32,
+    height: u32,
+    rgba8: &[u8],
+) -> Result<Vec<u8>, VisualDiffError> {
+    validate_rgba8_len(width, height, rgba8.len())?;
+    let mut out = Vec::new();
+    let mut encoder = PngEncoder::new(&mut out, width, height);
+    encoder.set_color(PngColorType::Rgba);
+    encoder.set_depth(BitDepth::Eight);
+    let mut writer = encoder.write_header()?;
+    writer.write_chunk(chunk::cICP, &CICP_DISPLAY_P3_SDR)?;
+    writer.write_image_data(rgba8)?;
+    writer.finish()?;
+    Ok(out)
+}
+
+/// Encodes linear Display P3 luminance (where `1.0` = 203 nits per ITU-R
+/// BT.2408) with the SMPTE ST 2084 PQ OETF into an unsigned 16-bit code word.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "PQ output is clamped to [0.0, 1.0] before scaling to 0..=65535"
+)]
+pub(crate) fn linear_display_p3_to_pq_u16(linear: f32) -> u16 {
+    // Exact SMPTE ST 2084 / ITU-R BT.2100 rational constants.
+    const M1: f64 = 2610.0 / 16384.0;
+    const M2: f64 = (2523.0 / 4096.0) * 128.0;
+    const C1: f64 = 3424.0 / 4096.0;
+    const C2: f64 = (2413.0 / 4096.0) * 32.0;
+    const C3: f64 = (2392.0 / 4096.0) * 32.0;
+
+    if !linear.is_finite() || linear <= 0.0 {
+        return 0;
+    }
+    let y =
+        (f64::from(linear) * f64::from(HDR_REFERENCE_WHITE_NITS) / PQ_PEAK_NITS).clamp(0.0, 1.0);
+    let ym1 = y.powf(M1);
+    let pq = (C2.mul_add(ym1, C1) / C3.mul_add(ym1, 1.0)).powf(M2);
+    (pq.clamp(0.0, 1.0) * f64::from(u16::MAX)).round() as u16
+}
+
+/// Encodes an extended linear Display P3 `f32` RGBA buffer into 16-bit
+/// big-endian RGBA PNG bytes tagged with [`CICP_DISPLAY_P3_PQ`]
+/// (`(12, 16, 0, 1)`).
+///
+/// # Errors
+///
+/// Returns [`VisualDiffError::InvalidImageBuffer`] when `rgba_f32.len()` does
+/// not match `width * height * 4`, or [`VisualDiffError::EncodePng`] when PNG
+/// encoding fails.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "alpha is clamped to [0.0, 1.0] before scaling to 0..=65535"
+)]
+pub(crate) fn encode_png_display_p3_pq_rgba16(
+    width: u32,
+    height: u32,
+    rgba_f32: &[f32],
+) -> Result<Vec<u8>, VisualDiffError> {
+    validate_rgba8_len(width, height, rgba_f32.len())?;
+    let mut bytes = Vec::with_capacity(rgba_f32.len() * 2);
+    for px in rgba_f32.as_chunks::<4>().0 {
+        let r = linear_display_p3_to_pq_u16(px[0]);
+        let g = linear_display_p3_to_pq_u16(px[1]);
+        let b = linear_display_p3_to_pq_u16(px[2]);
+        let a_norm = if px[3].is_finite() {
+            f64::from(px[3]).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let a = (a_norm * f64::from(u16::MAX)).round() as u16;
+        bytes.extend_from_slice(&r.to_be_bytes());
+        bytes.extend_from_slice(&g.to_be_bytes());
+        bytes.extend_from_slice(&b.to_be_bytes());
+        bytes.extend_from_slice(&a.to_be_bytes());
+    }
+    let mut out = Vec::new();
+    let mut encoder = PngEncoder::new(&mut out, width, height);
+    encoder.set_color(PngColorType::Rgba);
+    encoder.set_depth(BitDepth::Sixteen);
+    let mut writer = encoder.write_header()?;
+    writer.write_chunk(chunk::cICP, &CICP_DISPLAY_P3_PQ)?;
+    writer.write_image_data(&bytes)?;
+    writer.finish()?;
+    Ok(out)
 }
 
 /// An owned RGBA8 image in row-major order (`4 * width * height` bytes).
@@ -90,12 +203,13 @@ impl RgbaImage {
         })
     }
 
-    /// Writes this RGBA8 image to `path` as a PNG file, creating parent
+    /// Writes this Display P3 RGBA8 image to `path` as a PNG file tagged with
+    /// the Display P3 `cICP` chunk (`(12, 13, 0, 1)`), creating parent
     /// directories as needed.
     ///
     /// # Errors
     ///
-    /// Returns [`VisualDiffError::Io`] or [`VisualDiffError::Image`] if the
+    /// Returns [`VisualDiffError::Io`] or [`VisualDiffError::EncodePng`] if the
     /// directory cannot be created or PNG encoding fails.
     pub fn save_png(&self, path: impl AsRef<Path>) -> Result<(), VisualDiffError> {
         let path = path.as_ref();
@@ -107,15 +221,8 @@ impl RgbaImage {
                 source,
             })?;
         }
-        save_buffer_with_format(
-            path,
-            &self.rgba8,
-            self.width,
-            self.height,
-            ColorType::Rgba8,
-            ImageFormat::Png,
-        )
-        .map_err(|source| VisualDiffError::Image {
+        let encoded = encode_png_display_p3_rgba8(self.width, self.height, &self.rgba8)?;
+        fs::write(path, encoded).map_err(|source| VisualDiffError::Io {
             path: path.to_path_buf(),
             source,
         })

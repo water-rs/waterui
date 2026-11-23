@@ -1,4 +1,5 @@
 use std::fs;
+use std::io;
 use std::path::Path;
 #[cfg(feature = "gpu")]
 use std::rc::Rc;
@@ -7,10 +8,10 @@ use std::rc::Rc;
 use hydrolysis::theme::WidgetTheme;
 #[cfg(feature = "gpu")]
 use hydrolysis::{
-    FontFamilyResolution, HydrolysisRenderer, OffscreenGpuContext, OffscreenWindow, Style,
-    readback_texture_rgba8,
+    DEFAULT_HDR_CAPTURE_HEADROOM, FontFamilyResolution, HydrolysisRenderer, OffscreenGpuContext,
+    OffscreenWindow, OutputColor, Style, readback_texture_rgba8, readback_texture_rgba16f,
 };
-use image::{ImageError, ImageResult, RgbaImage as RawRgbaImage};
+use image::{ImageError, ImageResult};
 #[cfg(feature = "gpu")]
 use waterui::graphics::WorkingColor;
 #[cfg(feature = "gpu")]
@@ -23,7 +24,10 @@ use crate::artifacts::{CapturedSnapshot, TestArtifacts};
 use crate::error::VisualDiffError;
 #[cfg(feature = "flip")]
 use crate::flip::{FlipConfig, FlipResult, compare_flip_rgba8};
-use crate::image::{BlankFrameAnalysis, RgbaImage, analyze_blank_rgba8};
+use crate::image::{
+    BlankFrameAnalysis, RgbaImage, analyze_blank_rgba8, encode_png_display_p3_pq_rgba16,
+    encode_png_display_p3_rgba8, validate_rgba8_len,
+};
 
 /// RGBA8 frame captured from a headless hydrolysis render pass.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,7 +93,8 @@ impl Snapshot {
         RgbaImage::load_png(path).map(Self::from)
     }
 
-    /// Saves the snapshot to a PNG file.
+    /// Saves the snapshot to a PNG file tagged with the Display P3 `cICP`
+    /// chunk (`(12, 13, 0, 1)`).
     ///
     /// # Errors
     ///
@@ -105,9 +110,18 @@ impl Snapshot {
         {
             fs::create_dir_all(parent).map_err(ImageError::IoError)?;
         }
-        let image = RawRgbaImage::from_raw(self.width, self.height, self.rgba8.clone())
-            .expect("Snapshot::save_png: rgba buffer shape must match dimensions");
-        image.save(path)
+        assert_eq!(
+            self.rgba8.len(),
+            self.width as usize * self.height as usize * 4,
+            "Snapshot::save_png: rgba buffer shape must match dimensions"
+        );
+        let encoded =
+            encode_png_display_p3_rgba8(self.width, self.height, &self.rgba8).map_err(|error| {
+                ImageError::IoError(io::Error::other(format!(
+                    "failed to encode Display P3 PNG: {error}"
+                )))
+            })?;
+        fs::write(path, encoded).map_err(ImageError::IoError)
     }
 
     /// Analyzes the snapshot to detect blank (empty, fully transparent, or
@@ -156,6 +170,206 @@ impl Snapshot {
             &candidate.rgba8,
             config,
         )
+    }
+}
+
+/// Extended linear Display P3 `f32` RGBA frame captured from an HDR offscreen
+/// render pass (`Rgba16Float` / `OutputColor::LinearDisplayP3`).
+///
+/// RGB channels hold unclamped linear light in Display P3 primaries where `1.0`
+/// corresponds to SDR reference white (`203` nits under ITU-R BT.2408) and
+/// values above `1.0` preserve HDR / EDR highlights.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct HdrSnapshot {
+    width: u32,
+    height: u32,
+    rgba_f32: Vec<f32>,
+    headroom: f32,
+}
+
+impl HdrSnapshot {
+    /// Creates an [`HdrSnapshot`] from row-major linear Display P3 `f32` RGBA
+    /// pixels (`width * height * 4` floats).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VisualDiffError::InvalidImageBuffer`] when `rgba_f32.len()`
+    /// does not equal `width * height * 4`.
+    pub fn new(width: u32, height: u32, rgba_f32: Vec<f32>) -> Result<Self, VisualDiffError> {
+        Self::with_headroom(width, height, rgba_f32, 10_000.0 / 203.0)
+    }
+
+    /// Creates an [`HdrSnapshot`] recording the capture target's display
+    /// headroom ceiling (`>= 1.0`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VisualDiffError::InvalidImageBuffer`] when `rgba_f32.len()`
+    /// does not equal `width * height * 4`.
+    pub fn with_headroom(
+        width: u32,
+        height: u32,
+        rgba_f32: Vec<f32>,
+        headroom: f32,
+    ) -> Result<Self, VisualDiffError> {
+        validate_rgba8_len(width, height, rgba_f32.len())?;
+        Ok(Self {
+            width,
+            height,
+            rgba_f32,
+            headroom: if headroom.is_finite() && headroom > 1.0 {
+                headroom
+            } else {
+                1.0
+            },
+        })
+    }
+
+    /// Frame width in pixels.
+    #[must_use]
+    pub const fn width(&self) -> u32 {
+        self.width
+    }
+
+    /// Frame height in pixels.
+    #[must_use]
+    pub const fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// Row-major extended linear Display P3 `f32` RGBA channels
+    /// (`width * height * 4` floats).
+    #[must_use]
+    pub const fn rgba_f32(&self) -> &[f32] {
+        self.rgba_f32.as_slice()
+    }
+
+    /// Configured capture target headroom ceiling (`>= 1.0`).
+    #[must_use]
+    pub const fn headroom(&self) -> f32 {
+        self.headroom
+    }
+
+    /// Consumes the snapshot and returns `(width, height, rgba_f32)`.
+    #[must_use]
+    pub fn into_parts(self) -> (u32, u32, Vec<f32>) {
+        (self.width, self.height, self.rgba_f32)
+    }
+
+    /// Returns the `[R, G, B, A]` linear Display P3 pixel at `(x, y)`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `x >= width` or `y >= height`.
+    #[must_use]
+    pub fn pixel(&self, x: u32, y: u32) -> [f32; 4] {
+        assert!(
+            x < self.width && y < self.height,
+            "pixel ({x}, {y}) out of bounds for {}x{}",
+            self.width,
+            self.height
+        );
+        let offset = ((y as usize) * (self.width as usize) + (x as usize)) * 4;
+        [
+            self.rgba_f32[offset],
+            self.rgba_f32[offset + 1],
+            self.rgba_f32[offset + 2],
+            self.rgba_f32[offset + 3],
+        ]
+    }
+
+    /// Maximum finite RGB channel value across the entire frame (`0.0` if
+    /// empty).
+    #[must_use]
+    pub fn max_channel(&self) -> f32 {
+        self.rgba_f32
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .flat_map(|px| [px[0], px[1], px[2]])
+            .filter(|v| v.is_finite())
+            .fold(0.0_f32, f32::max)
+    }
+
+    /// Peak EDR headroom observed in this frame relative to SDR white
+    /// (`>= 1.0`).
+    #[must_use]
+    pub fn max_edr_headroom(&self) -> f32 {
+        self.max_channel().max(1.0)
+    }
+
+    /// Encodes this HDR snapshot as a 16-bit big-endian RGBA PNG tagged with
+    /// Display P3 SMPTE ST 2084 PQ `cICP` `(12, 16, 0, 1)` at ITU-R BT.2408
+    /// `203`-nit reference white.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VisualDiffError::InvalidImageBuffer`] or
+    /// [`VisualDiffError::EncodePng`] if PNG encoding fails.
+    pub fn to_hdr_png(&self) -> Result<Vec<u8>, VisualDiffError> {
+        encode_png_display_p3_pq_rgba16(self.width, self.height, &self.rgba_f32)
+    }
+
+    /// Writes this HDR snapshot to `path` as a 16-bit Display P3 PQ PNG
+    /// (`cICP (12, 16, 0, 1)`), creating parent directories as needed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VisualDiffError::Io`] or [`VisualDiffError::EncodePng`] if
+    /// writing or PNG encoding fails.
+    pub fn save_hdr_png(&self, path: impl AsRef<Path>) -> Result<(), VisualDiffError> {
+        let path = path.as_ref();
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            fs::create_dir_all(parent).map_err(|source| VisualDiffError::Io {
+                path: parent.to_path_buf(),
+                source,
+            })?;
+        }
+        let encoded = self.to_hdr_png()?;
+        fs::write(path, encoded).map_err(|source| VisualDiffError::Io {
+            path: path.to_path_buf(),
+            source,
+        })
+    }
+
+    /// Converts this extended linear Display P3 snapshot into an 8-bit SDR
+    /// Display P3 [`Snapshot`] by clamping/tone-mapping highlights to SDR white
+    /// and applying the sRGB transfer function (Display P3's OETF).
+    #[must_use]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "sRGB OETF output is clamped to [0.0, 1.0] before scaling to 0..=255"
+    )]
+    pub fn to_sdr_snapshot(&self) -> Snapshot {
+        let mut rgba8 = Vec::with_capacity(self.rgba_f32.len());
+        for px in self.rgba_f32.as_chunks::<4>().0 {
+            let max_rgb = px[0].max(px[1]).max(px[2]);
+            let scale = if max_rgb > 1.0 { 1.0 / max_rgb } else { 1.0 };
+            for ch in [px[0] * scale, px[1] * scale, px[2] * scale] {
+                let encoded = linear_to_srgb(ch.clamp(0.0, 1.0));
+                rgba8.push((encoded * 255.0).round() as u8);
+            }
+            let alpha = if px[3].is_finite() {
+                px[3].clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            rgba8.push((alpha * 255.0).round() as u8);
+        }
+        Snapshot::new(self.width, self.height, rgba8)
+    }
+}
+
+/// IEC 61966-2-1 sRGB OETF (also used by Display P3).
+fn linear_to_srgb(linear: f32) -> f32 {
+    if linear <= 0.003_130_8 {
+        linear * 12.92
+    } else {
+        1.055_f32.mul_add(linear.powf(1.0 / 2.4), -0.055)
     }
 }
 
@@ -224,7 +438,7 @@ impl TestHost {
         }
     }
 
-    /// Renders a view and returns the captured RGBA8 snapshot.
+    /// Renders a view and returns the captured Display P3 RGBA8 snapshot.
     ///
     /// # Panics
     ///
@@ -237,6 +451,7 @@ impl TestHost {
             self.height.max(1),
             wgpu::TextureFormat::Rgba8Unorm,
         );
+        platform.surface().set_output_color(OutputColor::DisplayP3);
         let mut renderer = HydrolysisRenderer::with_fonts(
             Rc::clone(&self.theme),
             &self.fonts,
@@ -286,6 +501,75 @@ impl TestHost {
             height: self.height.max(1),
             rgba8,
         }
+    }
+
+    /// Renders a view onto an `Rgba16Float` (`OutputColor::LinearDisplayP3`)
+    /// offscreen surface with [`DEFAULT_HDR_CAPTURE_HEADROOM`] and returns the
+    /// unclamped extended linear Display P3 [`HdrSnapshot`].
+    ///
+    /// # Panics
+    ///
+    /// Panics with the cause if the frame fails to render or its readback
+    /// fails.
+    pub fn render_hdr<V: View>(&self, view: V) -> HdrSnapshot {
+        self.render_hdr_with_headroom(view, DEFAULT_HDR_CAPTURE_HEADROOM)
+    }
+
+    /// Renders a view onto an `Rgba16Float` (`OutputColor::LinearDisplayP3`)
+    /// offscreen surface at an explicit display `headroom` ceiling (`>= 1.0`).
+    ///
+    /// # Panics
+    ///
+    /// Panics with the cause if the frame fails to render or its readback
+    /// fails.
+    pub fn render_hdr_with_headroom<V: View>(&self, view: V, headroom: f32) -> HdrSnapshot {
+        let width = self.width.max(1);
+        let height = self.height.max(1);
+        let mut platform = OffscreenWindow::on_context(
+            self.gpu.clone(),
+            width,
+            height,
+            wgpu::TextureFormat::Rgba16Float,
+        );
+        platform.surface().set_headroom(headroom);
+        platform
+            .surface()
+            .set_output_color(OutputColor::LinearDisplayP3);
+        let effective_headroom = platform.surface().headroom();
+        let mut renderer = HydrolysisRenderer::with_fonts(
+            Rc::clone(&self.theme),
+            &self.fonts,
+            FontFamilyResolution::Strict,
+        );
+        let bounds = kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
+
+        let surface = platform.surface();
+        renderer.reset_scene();
+        renderer.begin_rebuild_frame();
+        renderer.capture_window_tree(
+            AnyView::new(view),
+            &self.env,
+            bounds,
+            kurbo::Affine::IDENTITY,
+            kurbo::Affine::IDENTITY,
+        );
+        renderer.finish_rebuild_frame();
+
+        let frame = surface
+            .acquire()
+            .unwrap_or_else(|error| snapshot_failed("acquiring the HDR frame", error));
+        renderer
+            .render_scene_to_texture(surface, frame.texture(), WorkingColor::TRANSPARENT)
+            .unwrap_or_else(|error| snapshot_failed("rendering the HDR frame", error));
+        let rgba_f32 = readback_texture_rgba16f(&*surface, frame.texture(), width, height)
+            .unwrap_or_else(|error| snapshot_failed("reading back the HDR frame", error));
+        surface.present(frame);
+        drop(renderer);
+        drop(platform);
+        self.gpu.reclaim();
+
+        HdrSnapshot::with_headroom(width, height, rgba_f32, effective_headroom)
+            .expect("readback_texture_rgba16f matches width * height * 4 floats")
     }
 
     /// Renders a view, stores the PNG in the canonical artifact layout, and returns both.

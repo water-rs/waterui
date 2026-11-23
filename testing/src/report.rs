@@ -106,6 +106,10 @@ pub struct GallerySummary {
     pub worst_block_flip_mean: Option<f64>,
     /// Worst `max_local_error` observed across all compared stages, if any.
     pub worst_local_error: Option<f64>,
+    /// Maximum EDR headroom (`>= 1.0`) observed across all HDR-measured stages,
+    /// if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_edr_headroom: Option<f32>,
 }
 
 impl GallerySummary {
@@ -120,6 +124,7 @@ impl GallerySummary {
         let mut worst_flip_mean: Option<f64> = None;
         let mut worst_block_flip_mean: Option<f64> = None;
         let mut worst_local_error: Option<f64> = None;
+        let mut max_edr_headroom: Option<f32> = None;
 
         for suite in suites {
             total_cases += suite.cases.len();
@@ -133,6 +138,12 @@ impl GallerySummary {
                     }
                     if stage.blank.is_blank() {
                         blank_stages += 1;
+                    }
+                    if let Some(headroom) = stage.max_edr_headroom
+                        && headroom.is_finite()
+                    {
+                        max_edr_headroom =
+                            Some(max_edr_headroom.map_or(headroom, |cur| cur.max(headroom)));
                     }
                     if let Some(cmp) = &stage.comparison {
                         worst_flip_mean =
@@ -164,6 +175,7 @@ impl GallerySummary {
             worst_flip_mean,
             worst_block_flip_mean,
             worst_local_error,
+            max_edr_headroom,
         }
     }
 }
@@ -214,6 +226,10 @@ pub struct StageReport {
     pub blank: BlankFrameAnalysis,
     /// Optional perceptual comparison against a reference render.
     pub comparison: Option<StageComparison>,
+    /// Optional peak EDR headroom (`>= 1.0`, relative to SDR white) measured
+    /// when this stage was captured in HDR.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_edr_headroom: Option<f32>,
     /// Whether this stage passed every check (blank-frame + FLIP thresholds).
     pub passed: bool,
     /// Human-readable reasons for any failed check.

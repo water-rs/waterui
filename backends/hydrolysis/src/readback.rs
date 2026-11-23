@@ -6,6 +6,8 @@
 //! `render_to_rgba` and `waterui-testing`'s snapshots — never by the
 //! interactive frame loop, which stays GPU-resident end to end.
 
+use half::f16;
+
 use crate::platform::{DeviceLostError, OffscreenSurface, PresentationSurface};
 
 /// wgpu's `COPY_BYTES_PER_ROW_ALIGNMENT`: texture-copy rows pad to 256 bytes.
@@ -54,14 +56,83 @@ pub fn readback_texture_rgba8(
 
 /// [`readback_texture_rgba8`] for any presentation surface the crate's
 /// headless paths render into.
+///
+/// # Errors
+///
+/// Returns [`ReadbackError`] when the device was lost or the copy could not
+/// be waited on, mapped or read.
+///
+/// # Panics
+///
+/// Panics when a padded row of `width` pixels exceeds `u32::MAX` bytes.
 pub fn readback_surface_texture_rgba8(
     surface: &(impl PresentationSurface + ?Sized),
     texture: &wgpu::Texture,
     width: u32,
     height: u32,
 ) -> Result<Vec<u8>, ReadbackError> {
+    readback_surface_texture_bytes(surface, texture, width, height, 4)
+}
+
+/// Copies an `Rgba16Float` `texture` into tightly packed unclamped `f32` RGBA
+/// channels (`width * height * 4` floats).
+///
+/// When the surface presented with `OutputColor::LinearDisplayP3`, channels
+/// carry extended linear Display P3 light where values above `1.0` represent
+/// HDR / EDR headroom.
+///
+/// # Errors
+///
+/// Returns [`ReadbackError`] when the device was lost or the copy could not
+/// be waited on, mapped or read.
+///
+/// # Panics
+///
+/// Panics when a padded row of `width` pixels exceeds `u32::MAX` bytes.
+pub fn readback_texture_rgba16f(
+    surface: &OffscreenSurface,
+    texture: &wgpu::Texture,
+    width: u32,
+    height: u32,
+) -> Result<Vec<f32>, ReadbackError> {
+    readback_surface_texture_rgba16f(surface, texture, width, height)
+}
+
+/// [`readback_texture_rgba16f`] for any presentation surface the crate's
+/// headless paths render into.
+///
+/// # Errors
+///
+/// Returns [`ReadbackError`] when the device was lost or the copy could not
+/// be waited on, mapped or read.
+///
+/// # Panics
+///
+/// Panics when a padded row of `width` pixels exceeds `u32::MAX` bytes.
+pub fn readback_surface_texture_rgba16f(
+    surface: &(impl PresentationSurface + ?Sized),
+    texture: &wgpu::Texture,
+    width: u32,
+    height: u32,
+) -> Result<Vec<f32>, ReadbackError> {
+    let raw = readback_surface_texture_bytes(surface, texture, width, height, 8)?;
+    Ok(raw
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|bytes| f16::from_le_bytes(*bytes).to_f32())
+        .collect())
+}
+
+fn readback_surface_texture_bytes(
+    surface: &(impl PresentationSurface + ?Sized),
+    texture: &wgpu::Texture,
+    width: u32,
+    height: u32,
+    bytes_per_pixel: u64,
+) -> Result<Vec<u8>, ReadbackError> {
     let (device, queue) = (surface.device(), surface.queue());
-    let row_bytes = u64::from(width) * 4;
+    let row_bytes = u64::from(width) * bytes_per_pixel;
     let padded_row_bytes =
         row_bytes.div_ceil(COPY_BYTES_PER_ROW_ALIGNMENT) * COPY_BYTES_PER_ROW_ALIGNMENT;
     let buffer_size = padded_row_bytes * u64::from(height);

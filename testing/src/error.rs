@@ -74,6 +74,10 @@ pub enum VisualDiffError {
     #[error("invalid FLIP configuration: {0}")]
     InvalidConfig(&'static str),
 
+    /// Encoding a PNG image stream failed.
+    #[error("PNG encoding error: {0}")]
+    EncodePng(#[from] png::EncodingError),
+
     /// Serializing `report.json` failed.
     #[error("failed to serialize gallery report: {0}")]
     SerializeReport(#[from] serde_json::Error),
