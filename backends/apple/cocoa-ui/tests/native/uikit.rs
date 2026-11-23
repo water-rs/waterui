@@ -1954,7 +1954,7 @@ fn render_server_captures_uikit_glass_without_windows() {
 
     let mut pixels = Vec::new();
     for _ in 0..2 {
-        pixels = render_layer_via_render_server(&root.layer(), 2.0, 640, 280, true)
+        pixels = render_layer_via_render_server(&root.layer(), 2.0, 640, 280)
             .expect("in-process CARenderServer capture must succeed on Mac Catalyst");
     }
 

@@ -1,104 +1,124 @@
-//! Unified visual, perceptual, and interaction conformance suite for `WaterUI`.
-//!
-//! `waterui-conformance` combines:
-//! - A pure-Rust cross-platform NVIDIA LDR-FLIP perceptual diff engine
-//!   ([`compare_flip`], [`FlipMetrics`], [`magma_heatmap`]) and blank-frame
-//!   detector ([`analyze_blank_frame`]) operating directly on RGBA8 PNGs with
-//!   no platform-specific decoders.
-//! - Machine-readable `report.json` and self-contained static `index.html`
-//!   gallery generation ([`GalleryReport`], [`write_gallery_artifacts`]).
-//! - Declarative multi-stage showcase suites (`RenderCase`, `ShowcaseSuite`,
-//!   `GalleryRunner`) built on `waterui-testing`, writing canonical
-//!   `<suite>/<case>/<stage>.png` artifacts under `WATERUI_TEST_ARTIFACTS_DIR`
-//!   (behind the `testing` feature).
-//! - Standard suites for core components (`waterui_standard_suite`) and
-//!   Hydrolysis `Style` packages (`hydrolysis_style_suite`).
-//! - Per-component offscreen `ViewRenderer` cross-backend parity comparison
-//!   (`ParityRunner`, `ParitySuite`, behind the `capture` feature).
+//! Unit tests for pure visual-diffing, RGBA8/PNG I/O, blank-frame analysis,
+//! and static HTML gallery reporting (zero UI harness dependencies).
 
-#[cfg(feature = "testing")]
-pub mod case;
-pub mod error;
-pub mod flip;
-pub mod image;
-#[cfg(feature = "capture")]
-pub mod parity;
-pub mod report;
-#[cfg(feature = "testing")]
-pub mod runner;
-#[cfg(feature = "testing")]
-pub mod suites;
+use std::env;
+use std::fs;
+use std::path::PathBuf;
+use std::process;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-#[cfg(feature = "testing")]
-pub use case::{Appearance, RenderCase, RenderStage, ShowcaseSuite, Viewport};
-pub use error::ConformanceError;
-pub use flip::{
-    ColorGamut, DEFAULT_BLOCK_SIZE, DEFAULT_PPD, FlipConfig, FlipMetrics, FlipResult,
-    FlipThresholds, compare_flip, compare_flip_with, magma_heatmap,
-};
-pub use image::{BlankFrameAnalysis, BlankFrameReason, RgbaImage, analyze_blank_frame};
-#[cfg(feature = "capture")]
-pub use parity::{
-    ParityCase, ParityCaseOutcome, ParityConfig, ParityRunOutput, ParityRunner, ParitySuite,
-    ParityTarget,
-};
-pub use report::{
-    CaseReport, GalleryArtifactPaths, GalleryReport, GallerySummary, REPORT_SCHEMA_VERSION,
-    StageComparison, StageReport, SuiteReport, sanitize_artifact_segment, write_gallery_artifacts,
-};
-#[cfg(feature = "testing")]
-pub use runner::{GalleryConfig, GalleryRunOutput, GalleryRunner};
-#[cfg(feature = "testing")]
-pub use suites::{
-    StyleConformanceSuite, hydrolysis_style_suite, hydrolysis_style_suite_with,
-    waterui_standard_suite,
-};
+use crate::{BlankFrameReason, RgbaImage, Snapshot, VisualDiffError, analyze_blank_frame};
 
-#[cfg(test)]
-mod tests {
-    use std::env;
-    use std::fs;
-    use std::path::PathBuf;
-    use std::process;
-    use std::time::{SystemTime, UNIX_EPOCH};
+fn solid_pixels(width: u32, height: u32, rgba: [u8; 4]) -> Vec<u8> {
+    let mut pixels = Vec::with_capacity((width * height * 4) as usize);
+    for _ in 0..(width * height) {
+        pixels.extend_from_slice(&rgba);
+    }
+    pixels
+}
 
-    use crate::{
-        BlankFrameReason, CaseReport, FlipConfig, FlipThresholds, GalleryReport, RgbaImage,
-        StageComparison, StageReport, SuiteReport, analyze_blank_frame, compare_flip,
-        compare_flip_with, write_gallery_artifacts,
-    };
+fn solid_image(width: u32, height: u32, rgba: [u8; 4]) -> RgbaImage {
+    RgbaImage::new(width, height, solid_pixels(width, height, rgba))
+        .expect("solid_image dimensions are valid")
+}
 
-    fn solid_image(width: u32, height: u32, rgba: [u8; 4]) -> RgbaImage {
-        let mut pixels = Vec::with_capacity((width * height * 4) as usize);
-        for _ in 0..(width * height) {
-            pixels.extend_from_slice(&rgba);
+fn checkerboard_pixels(width: u32, height: u32, a: [u8; 4], b: [u8; 4]) -> Vec<u8> {
+    let mut pixels = Vec::with_capacity((width * height * 4) as usize);
+    for y in 0..height {
+        for x in 0..width {
+            let px = if (x / 4 + y / 4) % 2 == 0 { a } else { b };
+            pixels.extend_from_slice(&px);
         }
-        RgbaImage::new(width, height, pixels).expect("solid_image dimensions are valid")
     }
+    pixels
+}
 
-    fn checkerboard_image(width: u32, height: u32, a: [u8; 4], b: [u8; 4]) -> RgbaImage {
-        let mut pixels = Vec::with_capacity((width * height * 4) as usize);
-        for y in 0..height {
-            for x in 0..width {
-                let px = if (x / 4 + y / 4) % 2 == 0 { a } else { b };
-                pixels.extend_from_slice(&px);
-            }
-        }
-        RgbaImage::new(width, height, pixels).expect("checkerboard dimensions are valid")
-    }
+fn checkerboard_image(width: u32, height: u32, a: [u8; 4], b: [u8; 4]) -> RgbaImage {
+    RgbaImage::new(width, height, checkerboard_pixels(width, height, a, b))
+        .expect("checkerboard dimensions are valid")
+}
 
-    fn unique_temp_dir(label: &str) -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock after UNIX_EPOCH")
-            .as_nanos();
-        let dir = env::temp_dir().join(format!(
-            "waterui-conformance-{label}-{}-{nanos}",
-            process::id()
-        ));
-        fs::create_dir_all(&dir).expect("create temp test directory");
-        dir
-    }
+fn unique_temp_dir(label: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock after UNIX_EPOCH")
+        .as_nanos();
+    let dir = env::temp_dir().join(format!(
+        "waterui-testing-visual-diff-{label}-{}-{nanos}",
+        process::id()
+    ));
+    fs::create_dir_all(&dir).expect("create temp test directory");
+    dir
+}
+
+#[test]
+fn blank_frame_detector_classifies_empty_transparent_uniform_and_rendered_frames() {
+    let empty = Snapshot::new(0, 0, Vec::new());
+    let empty_analysis = empty.analyze_blank();
+    assert!(empty_analysis.is_blank());
+    assert_eq!(
+        empty_analysis.reason,
+        Some(BlankFrameReason::EmptyDimensions)
+    );
+
+    let transparent = solid_image(16, 16, [0, 0, 0, 0]);
+    let analysis = analyze_blank_frame(&transparent);
+    assert!(analysis.is_blank());
+    assert_eq!(analysis.reason, Some(BlankFrameReason::FullyTransparent));
+
+    let uniform = solid_image(16, 16, [255, 255, 255, 255]);
+    let analysis = analyze_blank_frame(&uniform);
+    assert!(analysis.is_blank());
+    assert_eq!(
+        analysis.reason,
+        Some(BlankFrameReason::UniformColor {
+            rgba: [255, 255, 255, 255]
+        })
+    );
+
+    let rendered = checkerboard_image(16, 16, [10, 20, 30, 255], [240, 240, 240, 255]);
+    let analysis = analyze_blank_frame(&rendered);
+    assert!(!analysis.is_blank());
+    assert_eq!(analysis.reason, None);
+    assert!(analysis.max_channel_spread > 200);
+
+    let snapshot = Snapshot::from(rendered);
+    assert_eq!(snapshot.analyze_blank(), analysis);
+}
+
+#[test]
+fn snapshot_and_rgba_image_round_trip_png_and_conversions() {
+    let dir = unique_temp_dir("png-roundtrip");
+    let png_path = dir.join("nested/frame.png");
+    let original = checkerboard_image(16, 12, [12, 34, 56, 255], [210, 220, 230, 255]);
+    original.save_png(&png_path).expect("save RgbaImage PNG");
+
+    let reloaded = Snapshot::load_png(&png_path).expect("load Snapshot PNG");
+    assert_eq!(reloaded.width(), 16);
+    assert_eq!(reloaded.height(), 12);
+    assert_eq!(reloaded.rgba8(), original.rgba8());
+
+    let back_to_rgba = RgbaImage::try_from(&reloaded).expect("valid Snapshot -> RgbaImage");
+    assert_eq!(back_to_rgba, original);
+
+    let invalid = Snapshot::new(4, 4, vec![0; 8]);
+    assert!(matches!(
+        RgbaImage::try_from(invalid),
+        Err(VisualDiffError::InvalidImageBuffer {
+            width: 4,
+            height: 4,
+            expected: 64,
+            actual: 8,
+        })
+    ));
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[cfg(feature = "flip")]
+mod flip_tests {
+    use super::*;
+    use crate::{FlipConfig, FlipThresholds, compare_flip, compare_flip_with};
 
     #[test]
     fn flip_identical_images_report_zero_error() {
@@ -114,6 +134,12 @@ mod tests {
             FlipThresholds::strict().evaluate(&metrics),
             Vec::<String>::new()
         );
+
+        let snap = Snapshot::from(img);
+        let snap_result = snap
+            .compare_flip(&snap)
+            .expect("compare identical snapshots");
+        assert_eq!(snap_result.metrics(), metrics);
     }
 
     #[test]
@@ -170,7 +196,6 @@ mod tests {
         let heatmap = result.magma_heatmap();
         assert_eq!(heatmap.width(), 64);
         assert_eq!(heatmap.height(), 64);
-        // All magma heatmap pixels must be opaque.
         assert!(
             heatmap
                 .rgba8()
@@ -179,7 +204,6 @@ mod tests {
                 .iter()
                 .all(|px| px[3] == 255)
         );
-        // Inside the red patch should be noticeably brighter than the untouched corner.
         let corner_luma = u16::from(heatmap.rgba8()[0])
             + u16::from(heatmap.rgba8()[1])
             + u16::from(heatmap.rgba8()[2]);
@@ -191,31 +215,54 @@ mod tests {
             patch_luma > corner_luma,
             "heatmap should highlight the differing patch ({patch_luma}) brighter than untouched corner ({corner_luma})"
         );
+
+        let heatmap_snap = result.magma_heatmap_snapshot();
+        assert_eq!(heatmap_snap.rgba8(), heatmap.rgba8());
     }
 
     #[test]
-    fn blank_frame_detector_classifies_transparent_uniform_and_rendered_frames() {
-        let transparent = solid_image(16, 16, [0, 0, 0, 0]);
-        let analysis = analyze_blank_frame(&transparent);
-        assert!(analysis.is_blank());
-        assert_eq!(analysis.reason, Some(BlankFrameReason::FullyTransparent));
-
-        let uniform = solid_image(16, 16, [255, 255, 255, 255]);
-        let analysis = analyze_blank_frame(&uniform);
-        assert!(analysis.is_blank());
-        assert_eq!(
-            analysis.reason,
-            Some(BlankFrameReason::UniformColor {
-                rgba: [255, 255, 255, 255]
+    fn flip_rejects_mismatched_dimensions_and_invalid_config() {
+        let a = Snapshot::from(solid_image(16, 16, [10, 20, 30, 255]));
+        let b = Snapshot::from(solid_image(16, 8, [10, 20, 30, 255]));
+        assert!(matches!(
+            a.compare_flip(&b),
+            Err(VisualDiffError::DimensionMismatch {
+                ref_width: 16,
+                ref_height: 16,
+                test_width: 16,
+                test_height: 8,
             })
-        );
-
-        let rendered = checkerboard_image(16, 16, [10, 20, 30, 255], [240, 240, 240, 255]);
-        let analysis = analyze_blank_frame(&rendered);
-        assert!(!analysis.is_blank());
-        assert_eq!(analysis.reason, None);
-        assert!(analysis.max_channel_spread > 200);
+        ));
+        assert!(matches!(
+            a.compare_flip_with(
+                &a,
+                FlipConfig {
+                    ppd: 0.0,
+                    ..FlipConfig::default()
+                }
+            ),
+            Err(VisualDiffError::InvalidConfig(_))
+        ));
+        assert!(matches!(
+            a.compare_flip_with(
+                &a,
+                FlipConfig {
+                    block_size: 0,
+                    ..FlipConfig::default()
+                }
+            ),
+            Err(VisualDiffError::InvalidConfig(_))
+        ));
     }
+}
+
+#[cfg(feature = "gallery")]
+mod gallery_tests {
+    use super::*;
+    use crate::{
+        CaseReport, GalleryReport, StageComparison, StageReport, SuiteReport, compare_flip,
+        write_gallery_artifacts,
+    };
 
     #[test]
     fn gallery_artifacts_emit_valid_report_json_and_self_contained_html() {
@@ -225,7 +272,7 @@ mod tests {
         let flip = compare_flip(&reference, &candidate).expect("flip diff");
 
         let report = GalleryReport::new(
-            "Conformance <Test> & Gallery",
+            "Visual <Test> & Gallery",
             vec![SuiteReport {
                 name: "demo-suite".to_string(),
                 cases: vec![CaseReport {
@@ -269,7 +316,7 @@ mod tests {
         let html = fs::read_to_string(&paths.index_html).expect("read index.html");
         assert!(html.contains("<!DOCTYPE html>"));
         assert!(!html.contains("<Test>"));
-        assert!(html.contains("Conformance &#60;Test&#62; &#38; Gallery"));
+        assert!(html.contains("Visual &#60;Test&#62; &#38; Gallery"));
         assert!(html.contains("demo-suite/buttons-light/00_idle.png"));
         assert!(html.contains("demo-suite/buttons-light/00_idle__flip_heatmap.png"));
         assert!(html.contains("filter-flip"));

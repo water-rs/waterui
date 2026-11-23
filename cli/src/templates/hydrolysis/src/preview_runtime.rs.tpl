@@ -68,16 +68,11 @@ fn resolve_color_scheme(config: &PreviewRunConfig) -> Option<waterui::theme::Col
 
 fn new_runtime(config: &PreviewRunConfig, ledger: &ContentLedger) -> HeadlessRuntime {
     // The environment is the application's own composition root: `app(env)`
-    // installs the realizations and options the application configures
-    // (`waterui_map_gpu::install`, provider options, fonts), and the preview
-    // style is constructed alongside exactly as `main` hands its style to
-    // `hydrolysis::run`. On Apple that leaves video to AVPlayer, and this
-    // host is Hydrolysis on every OS, so the self-drawn player is installed
-    // here — otherwise a `VideoPlayer` stays an unbridged native view.
-    // The capture's ledger layers over that environment, so every view the
-    // preview mounts owes its content to this capture.
+    // installs the options and hooks the application configures, and the
+    // preview style is constructed alongside exactly as `main` hands its style
+    // to `hydrolysis::run`. The capture's ledger layers over that environment,
+    // so every view the preview mounts owes its content to this capture.
     let mut env = preview_symbol::app_environment();
-    waterui::realization::install_video(&mut env);
     let color_scheme = resolve_color_scheme(config);
     if let Some(scheme) = color_scheme {
         waterui::theme::install_color_scheme(&mut env, waterui::Computed::constant(scheme));

@@ -26,6 +26,10 @@ fn main() {
         // The in-process preview entry: the AppKit realization on macOS,
         // the UIKit realization through Mac Catalyst.
         preview_entry: { all(feature = "preview", any(target_os = "macos", catalyst)) },
+        // Opt-in in-process Core Animation render-server capture for windowless
+        // previews and native tests on macOS and Mac Catalyst — never active in
+        // production builds.
+        render_server_capture: { all(any(feature = "preview", feature = "native-test"), any(target_os = "macos", catalyst)) },
     }
 }
 

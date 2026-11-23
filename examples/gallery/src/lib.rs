@@ -664,11 +664,12 @@ pub fn app(env: Environment) -> App<impl Windows> {
 
 #[cfg(test)]
 mod tests {
-    use super::{catalog, new_state};
+    use super::{catalog, demo, new_state};
     use core::time::Duration;
+    use hydrolysis_m3::Material3;
     use waterui::Signal;
     use waterui::Str;
-    use waterui_testing::{Role, Styled, UiBuilder};
+    use waterui_testing::{OffscreenApp, Role, Styled, UiBuilder};
 
     /// Selecting each control in turn shows its demo — a smoke test that every
     /// catalog entry resolves and renders (the per-component MD3 visual review was
@@ -1062,38 +1063,21 @@ mod tests {
         let _ = app.capture_snapshot("material3-preview", "gallery", "stepper-selected");
     }
 
-    #[test]
-    fn conformance_gallery_captures_buttons_demo() {
-        use std::env;
-        use std::fs;
-        use std::process;
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        use hydrolysis_m3::Material3;
-        use waterui_conformance::{GalleryConfig, GalleryRunner, RenderCase, ShowcaseSuite};
-
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock after UNIX_EPOCH")
-            .as_nanos();
-        let dir = env::temp_dir().join(format!(
-            "waterui-gallery-conformance-{}-{nanos}",
-            process::id()
-        ));
-
-        let suite = ShowcaseSuite::new("gallery-example").with_case(
-            RenderCase::new("catalog", super::demo)
-                .viewport(900, 600)
-                .interaction_stage("00_idle", |app| {
-                    app.query().label("Buttons").assert_exists();
-                }),
+    #[waterui::test(
+        demo,
+        theme = Material3::defaults(),
+        viewport = (900, 600),
+        offscreen
+    )]
+    fn catalog_buttons_demo_renders_non_blank_offscreen(app: &mut OffscreenApp) {
+        app.query().label("Buttons").assert_exists();
+        let snapshot = app.snapshot();
+        assert_eq!(snapshot.width(), 900);
+        assert_eq!(snapshot.height(), 600);
+        let blank = snapshot.analyze_blank();
+        assert!(
+            !blank.is_blank(),
+            "offscreen Buttons demo capture should not be blank: {blank:?}"
         );
-
-        let output = GalleryRunner::new(GalleryConfig::default().artifact_root(&dir))
-            .run_suite(&suite, Material3::defaults())
-            .expect("gallery conformance run should succeed");
-        output.assert_pass();
-        assert!(dir.join("gallery-example/catalog/00_idle.png").is_file());
-        let _ = fs::remove_dir_all(&dir);
     }
 }

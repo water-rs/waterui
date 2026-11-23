@@ -81,6 +81,13 @@ use objc2_quartz_core::{CALayer, CAMetalLayer, CATransaction};
 
 use crate::PlatformView;
 use crate::bitmap::render_layer;
+#[cfg(all(
+    feature = "render-server-capture",
+    any(target_os = "macos", all(target_os = "ios", target_abi = "macabi"))
+))]
+use crate::bitmap::{
+    RenderServerTransform, image_from_srgb_rgba, render_layer_via_render_server_transformed,
+};
 use crate::core_animation::before_commit;
 use crate::geometry::Rect;
 use waterui_contract::contract_violation;
@@ -1892,6 +1899,45 @@ impl NativeRasterFrame {
         CGContext::restore_g_state(Some(context));
         CGContext::flush(Some(context));
     }
+
+    /// Rasterizes `layer`'s committed tree through the in-process
+    /// `Core Animation` render server so glass and backdrop layers composite
+    /// alongside external GPU surfaces in windowless previews and tests.
+    #[cfg(all(
+        feature = "render-server-capture",
+        any(target_os = "macos", all(target_os = "ios", target_abi = "macabi"))
+    ))]
+    fn draw_with_render_server(
+        &self,
+        layer: &CALayer,
+        rs_transform: RenderServerTransform,
+    ) -> Result<(), CaptureError> {
+        let context: &CGContext = &self.context;
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "a capture texture is at most a few thousand pixels on a side"
+        )]
+        let (width, height) = (self.pixel_width as f64, self.pixel_height as f64);
+        let pixels = render_layer_via_render_server_transformed(
+            layer,
+            rs_transform,
+            self.pixel_width,
+            self.pixel_height,
+        )
+        .ok_or_else(|| {
+            CaptureUnavailable::new("in-process Core Animation render server failed to render")
+        })?;
+        let image = image_from_srgb_rgba(&pixels, self.pixel_width, self.pixel_height)
+            .ok_or_else(|| CaptureUnavailable::refused("render-server sRGB CGImage"))?;
+        CGContext::clear_rect(Some(context), Rect::new(0.0, 0.0, width, height).into());
+        CGContext::draw_image(
+            Some(context),
+            Rect::new(0.0, 0.0, width, height).into(),
+            Some(&image),
+        );
+        CGContext::flush(Some(context));
+        Ok(())
+    }
 }
 
 /// A leased raster frame: the destination is owned outright from the
@@ -1938,6 +1984,23 @@ impl RasterLease {
             .as_ref()
             .expect("a lease owns its frame")
             .draw(layer, transform);
+    }
+
+    /// Rasterizes `layer`'s committed tree through the in-process
+    /// `Core Animation` render server into the leased destination.
+    #[cfg(all(
+        feature = "render-server-capture",
+        any(target_os = "macos", all(target_os = "ios", target_abi = "macabi"))
+    ))]
+    fn draw_with_render_server(
+        &self,
+        layer: &CALayer,
+        transform: RenderServerTransform,
+    ) -> Result<(), CaptureError> {
+        self.frame
+            .as_ref()
+            .expect("a lease owns its frame")
+            .draw_with_render_server(layer, transform)
     }
 
     /// Hands the frame back — only the settle path may call this.
@@ -2304,6 +2367,35 @@ impl PreparedCluster {
         for member in &self.plan.members {
             probes.set(member.surface, ProbeState::Transparent);
         }
+    }
+
+    /// Rasterizes `root`'s committed tree into each probe raster through the
+    /// in-process `Core Animation` render server, committing each probe-state
+    /// update with disabled actions so the render server observes it.
+    #[cfg(all(
+        feature = "render-server-capture",
+        any(target_os = "macos", all(target_os = "ios", target_abi = "macabi"))
+    ))]
+    fn draw_with_render_server(
+        &self,
+        root: &CALayer,
+        probes: &ProbeLayers,
+        transform: RenderServerTransform,
+    ) -> Result<(), CaptureError> {
+        for (index, lease) in self.probes.iter().enumerate() {
+            without_actions(|| {
+                for member in &self.plan.members {
+                    probes.set(member.surface, ClusterPlan::state(index, member.slot));
+                }
+            });
+            lease.draw_with_render_server(root, transform)?;
+        }
+        without_actions(|| {
+            for member in &self.plan.members {
+                probes.set(member.surface, ProbeState::Transparent);
+            }
+        });
+        Ok(())
     }
 }
 
@@ -2901,6 +2993,128 @@ fn drawn_in(layer: &CALayer, root: &CALayer) -> bool {
     }
 }
 
+/// Runs `body` inside a committed `CATransaction` with implicit actions
+/// disabled so offscreen render-server captures flush the mutated layer tree
+/// immediately without animating.
+#[cfg(all(
+    feature = "render-server-capture",
+    any(target_os = "macos", all(target_os = "ios", target_abi = "macabi"))
+))]
+fn without_actions<R>(body: impl FnOnce() -> R) -> R {
+    CATransaction::begin();
+    CATransaction::setDisableActions(true);
+    let result = body();
+    CATransaction::commit();
+    result
+}
+
+/// Computes the render-server scale and translation mapping `geometry` onto
+/// `region` inside a `full_height`-pixel-tall capture target.
+#[cfg(all(
+    feature = "render-server-capture",
+    any(target_os = "macos", all(target_os = "ios", target_abi = "macabi"))
+))]
+fn render_server_region_transform(
+    geometry: CaptureGeometry,
+    full_height: f64,
+    region: MTLScissorRect,
+) -> RenderServerTransform {
+    let translate_x =
+        (-geometry.source.origin.x).mul_add(geometry.scale_x, -pixel_extent(region.x));
+    let translate_y = if cfg!(target_os = "macos") {
+        // AppKit renders bottom-up into the IOSurface; the region's bottom edge
+        // sits at `full_height - (region.y + region.height)` from the bottom.
+        (-geometry.source.origin.y).mul_add(
+            geometry.scale_y,
+            -(full_height - pixel_extent(region.y + region.height)),
+        )
+    } else {
+        // Mac Catalyst (UIKit) renders top-down into the IOSurface.
+        (-geometry.source.origin.y).mul_add(geometry.scale_y, -pixel_extent(region.y))
+    };
+    RenderServerTransform {
+        scale_x: geometry.scale_x,
+        scale_y: geometry.scale_y,
+        translate_x,
+        translate_y,
+    }
+}
+
+/// Draws the base native raster and every overlap cluster's probe rasters
+/// while external GPU surfaces are suppressed.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "private draw helper sharing `ViewCapture::prepare`'s local borrow scope"
+)]
+#[cfg_attr(
+    not(all(
+        feature = "render-server-capture",
+        any(target_os = "macos", all(target_os = "ios", target_abi = "macabi"))
+    )),
+    expect(
+        clippy::unnecessary_wraps,
+        reason = "only the opt-in render-server path can fail during rasterization"
+    )
+)]
+fn draw_rasters(
+    render_server: bool,
+    layer: &CALayer,
+    snapshots: &[CapturedSnapshot],
+    probe_space: &CGColorSpace,
+    geometry: CaptureGeometry,
+    height: f64,
+    raster: &RasterLease,
+    clusters: &[PreparedCluster],
+) -> Result<(), CaptureError> {
+    #[cfg(all(
+        feature = "render-server-capture",
+        any(target_os = "macos", all(target_os = "ios", target_abi = "macabi"))
+    ))]
+    if render_server {
+        let mut suppression = SuppressionGuard::new(snapshots);
+        without_actions(|| suppression.begin());
+        let full_region = MTLScissorRect {
+            x: 0,
+            y: 0,
+            width: raster.texture().width(),
+            height: raster.texture().height(),
+        };
+        raster.draw_with_render_server(
+            layer,
+            render_server_region_transform(geometry, height, full_region),
+        )?;
+        let probes = without_actions(|| ProbeLayers::insert(snapshots, probe_space));
+        for cluster in clusters {
+            cluster.draw_with_render_server(
+                layer,
+                &probes,
+                render_server_region_transform(geometry, height, cluster.plan.region),
+            )?;
+        }
+        without_actions(|| {
+            drop(probes);
+            suppression.end();
+        });
+        return Ok(());
+    }
+    let _ = render_server;
+    // Declared in drop order: the probes leave the tree before suppression ends.
+    let mut suppression = SuppressionGuard::new(snapshots);
+    suppression.begin();
+    raster.draw(layer, raster_transform(geometry, height));
+    let probes = ProbeLayers::insert(snapshots, probe_space);
+    for cluster in clusters {
+        cluster.draw(
+            layer,
+            &probes,
+            region_transform(geometry, height, cluster.plan.region),
+        );
+    }
+    drop(probes);
+    suppression.end();
+    Ok(())
+}
+
 /// Captures `content`'s subtree into Metal textures. Main-thread only;
 /// created once per effect view and shut down before the view drops.
 pub struct ViewCapture {
@@ -2913,6 +3127,14 @@ pub struct ViewCapture {
     /// it settles `Deferred` instead of re-joining surfaces the shutdown
     /// already parted.
     shut_down: Cell<bool>,
+    /// Opt-in flag for windowless preview/test captures to rasterize native
+    /// layers through the in-process `Core Animation` render server instead of
+    /// `CALayer.renderInContext:`. Always `false` for live on-screen captures.
+    #[cfg(all(
+        feature = "render-server-capture",
+        any(target_os = "macos", all(target_os = "ios", target_abi = "macabi"))
+    ))]
+    use_render_server: Cell<bool>,
 }
 
 impl fmt::Debug for ViewCapture {
@@ -2936,7 +3158,37 @@ impl ViewCapture {
             renderer: RefCell::new(NativeRenderer::default()),
             active: RefCell::new(HashMap::new()),
             shut_down: Cell::new(false),
+            #[cfg(all(
+                feature = "render-server-capture",
+                any(target_os = "macos", all(target_os = "ios", target_abi = "macabi"))
+            ))]
+            use_render_server: Cell::new(false),
         }
+    }
+
+    /// Opts an offscreen windowless capture into rasterizing native layers
+    /// through the in-process `Core Animation` render server so glass and
+    /// backdrop layers composite alongside GPU surfaces.
+    ///
+    /// Must only be enabled on a capture whose host window is never ordered on
+    /// screen: flushing mutations to a local `CAContext` would detach a live
+    /// on-screen window's layer tree.
+    #[cfg(all(
+        feature = "render-server-capture",
+        any(target_os = "macos", all(target_os = "ios", target_abi = "macabi"))
+    ))]
+    pub fn set_use_render_server(&self, enabled: bool) {
+        self.use_render_server.set(enabled);
+    }
+
+    /// Whether this capture rasterizes native layers through the in-process
+    /// `Core Animation` render server.
+    #[cfg(all(
+        feature = "render-server-capture",
+        any(target_os = "macos", all(target_os = "ios", target_abi = "macabi"))
+    ))]
+    const fn uses_render_server(&self) -> bool {
+        self.use_render_server.get()
     }
 
     /// The redraw hook external surfaces call — installed by the owning
@@ -3107,10 +3359,24 @@ impl ViewCapture {
         // nests in the pass's transaction, and the one publication is
         // the pass's close (#4074).
         let (preparation, specs) = {
+            #[cfg(all(
+                feature = "render-server-capture",
+                any(target_os = "macos", all(target_os = "ios", target_abi = "macabi"))
+            ))]
+            let render_server = self.uses_render_server();
+            #[cfg(not(all(
+                feature = "render-server-capture",
+                any(target_os = "macos", all(target_os = "ios", target_abi = "macabi"))
+            )))]
+            let render_server = false;
+
             // Declared in drop order: `suppression` ends first, then
             // `restore` re-hides, then `transaction` closes — the
-            // commit only ever sees the original state.
-            let transaction = TransactionGuard::begin();
+            // commit only ever sees the original state. In offscreen
+            // render-server mode, no outer transaction stays open across the
+            // draw so each `CATransaction::flush()` commits immediately to the
+            // local `CAContext`.
+            let transaction = (!render_server).then(TransactionGuard::begin);
             let restore = HiddenRestore {
                 owner: self,
                 was: was_hidden,
@@ -3172,23 +3438,16 @@ impl ViewCapture {
             let (raster, clusters) = self.issue_rasters(&device, target, generation, plans)?;
             let (probe_space, _) = raster_color(target.pixelFormat());
             let height = pixel_extent(target.height());
-            {
-                // Declared in drop order: the probes leave the tree
-                // before suppression ends.
-                let mut suppression = SuppressionGuard::new(&snapshots);
-                suppression.begin();
-                raster.draw(&layer, raster_transform(geometry, height));
-                let probes = ProbeLayers::insert(&snapshots, &probe_space);
-                for cluster in &clusters {
-                    cluster.draw(
-                        &layer,
-                        &probes,
-                        region_transform(geometry, height, cluster.plan.region),
-                    );
-                }
-                drop(probes);
-                suppression.end();
-            }
+            draw_rasters(
+                render_server,
+                &layer,
+                &snapshots,
+                &probe_space,
+                geometry,
+                height,
+                &raster,
+                &clusters,
+            )?;
             let preparation = Preparation {
                 raster,
                 clusters,
@@ -3199,7 +3458,9 @@ impl ViewCapture {
             // Re-hide before the close — `restore` would do it on drop,
             // but the restore must be explicit before commit.
             drop(restore);
-            transaction.commit();
+            if let Some(transaction) = transaction {
+                transaction.commit();
+            }
             (preparation, specs)
         };
         Ok((preparation, specs))

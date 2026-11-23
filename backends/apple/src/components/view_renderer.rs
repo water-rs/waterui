@@ -13,11 +13,7 @@
 
 use cocoa_ui::PlatformView;
 use cocoa_ui::bitmap::set_window_color_scheme;
-#[cfg(all(
-    feature = "gpu_surface",
-    feature = "native-test",
-    any(target_os = "macos", catalyst)
-))]
+#[cfg(all(feature = "gpu_surface", render_server_capture))]
 use cocoa_ui::capture::collect_capturables;
 use cocoa_ui::view::window as view_window;
 use waterui_backend_core::{Environment, View};
@@ -26,10 +22,7 @@ use waterui_capture::view_renderer::{RenderError, RenderRequest, RenderResult, V
 use waterui_core::env::With;
 use waterui_core::layout::{ProposalSize, Size};
 
-#[cfg(any(
-    not(feature = "gpu_surface"),
-    all(feature = "native-test", any(target_os = "macos", catalyst))
-))]
+#[cfg(any(not(feature = "gpu_surface"), render_server_capture))]
 use crate::capture;
 use crate::contract::NativeLeaf;
 
@@ -84,6 +77,8 @@ fn render_error(failure: crate::capture_image::CaptureFailure) -> RenderError {
         | CaptureFailure::TargetAllocation { .. } => RenderError::Gpu(Box::new(failure)),
         #[cfg(target_os = "ios")]
         CaptureFailure::NoWindowScene => RenderError::Capture(Box::new(failure)),
+        #[cfg(render_server_capture)]
+        CaptureFailure::NativeCapture(_) => RenderError::Capture(Box::new(failure)),
     }
 }
 
@@ -127,11 +122,7 @@ async fn capture_leaf_to_rgba(
     crate::content::await_content(ledger, view, request.content_deadline()).await?;
     lay_out(view, request.size());
 
-    #[cfg(all(
-        feature = "gpu_surface",
-        feature = "native-test",
-        any(target_os = "macos", catalyst)
-    ))]
+    #[cfg(all(feature = "gpu_surface", render_server_capture))]
     let captured = {
         let mut has_capturable = false;
         collect_capturables(view, &mut |_| has_capturable = true);
@@ -149,10 +140,7 @@ async fn capture_leaf_to_rgba(
                 .map_err(|error| RenderError::Capture(Box::new(error)))
         }
     };
-    #[cfg(all(
-        feature = "gpu_surface",
-        not(all(feature = "native-test", any(target_os = "macos", catalyst)))
-    ))]
+    #[cfg(all(feature = "gpu_surface", not(render_server_capture)))]
     let captured = {
         // The central capture owns the native+GPU composite and its
         // lifecycle — a first-frame wait here could deadlock under
@@ -302,18 +290,18 @@ mod host {
 /// The capture window the leaf joins before it is measured.
 #[cfg(all(target_os = "ios", not(feature = "gpu_surface")))]
 mod host {
-    #[cfg(all(feature = "native-test", catalyst))]
+    #[cfg(all(render_server_capture, catalyst))]
     use cocoa_ui::bitmap::scene_less_capture_window;
     use cocoa_ui::bitmap::{
         CaptureWindow, any_window_scene, close_capture_window, make_offscreen_window,
         show_capture_window,
     };
-    #[cfg(all(feature = "native-test", catalyst))]
+    #[cfg(all(render_server_capture, catalyst))]
     use cocoa_ui::uikit::catalyst::BackgroundApplication;
     use cocoa_ui::{MainThreadMarker, PlatformView, Retained, Size};
     use waterui_capture::view_renderer::RenderError;
 
-    #[cfg(not(all(feature = "native-test", catalyst)))]
+    #[cfg(not(all(render_server_capture, catalyst)))]
     use crate::capture::CaptureError;
 
     /// `UIKit`: an offscreen `UIWindow` in a connected scene hosts the
@@ -324,10 +312,10 @@ mod host {
     impl CaptureHost {
         /// Attaches `view` to an offscreen window sized `proposed`.
         #[cfg_attr(
-            all(feature = "native-test", catalyst),
+            all(render_server_capture, catalyst),
             expect(
                 clippy::unnecessary_wraps,
-                reason = "non-Catalyst UIKit can fail with NoWindowScene; native-test Catalyst always attaches"
+                reason = "non-Catalyst UIKit can fail with NoWindowScene; render-server Catalyst always attaches"
             )
         )]
         pub fn attach(
@@ -335,7 +323,7 @@ mod host {
             proposed: Size,
             mtm: MainThreadMarker,
         ) -> Result<Self, RenderError> {
-            #[cfg(all(feature = "native-test", catalyst))]
+            #[cfg(all(render_server_capture, catalyst))]
             let window = any_window_scene().map_or_else(
                 || {
                     let application = BackgroundApplication::bring_up(mtm);
@@ -343,7 +331,7 @@ mod host {
                 },
                 |scene| make_offscreen_window(mtm, &scene, proposed),
             );
-            #[cfg(not(all(feature = "native-test", catalyst)))]
+            #[cfg(not(all(render_server_capture, catalyst)))]
             let window = {
                 let scene = any_window_scene()
                     .ok_or_else(|| RenderError::Capture(Box::new(CaptureError::NoWindowScene)))?;

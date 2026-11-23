@@ -36,7 +36,7 @@ const fn rgb(r: f32, g: f32, b: f32) -> WorkingColor {
     WorkingColor::new([r, g, b, 1.0])
 }
 
-fn rect(x: f32, y: f32, width: f32, height: f32) -> Rect {
+const fn rect(x: f32, y: f32, width: f32, height: f32) -> Rect {
     Rect::new(Point::new(x, y), Size::new(width, height))
 }
 
