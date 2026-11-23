@@ -816,6 +816,33 @@ impl RasterCherenkovSurface {
             &readback.pixels,
         ))
     }
+
+    /// Presents the last rendered frame as opaque `0x00RRGGBB` sRGB pixels
+    /// into `out`, the channel order `softbuffer` desktop surfaces expect.
+    ///
+    /// # Errors
+    ///
+    /// Returns the engine's [`cherenkov::RenderError`] when the readback
+    /// fails.
+    #[cfg(hydrolysis_software_surface)]
+    pub(crate) fn present_0rgb_into(
+        &self,
+        headroom: f32,
+        out: &mut [u32],
+    ) -> Result<(), cherenkov::RenderError> {
+        let rgba = self.readback_rgba8(headroom, cherenkov::OutputAlpha::Opaque)?;
+        pack_rgba8_to_0rgb(&rgba, out);
+        Ok(())
+    }
+}
+
+/// Packs sRGB RGBA8 bytes (`[R, G, B, _]`) into `softbuffer`'s `0x00RRGGBB`
+/// `u32` words.
+#[cfg(any(hydrolysis_software_surface, test))]
+fn pack_rgba8_to_0rgb(rgba: &[u8], out: &mut [u32]) {
+    for (dst, &[r, g, b, _]) in out.iter_mut().zip(rgba.as_chunks::<4>().0) {
+        *dst = (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b);
+    }
 }
 
 /// The engine-presented Apple window's output: the engine presents through
@@ -1225,5 +1252,16 @@ mod raster_teardown_tests {
             matches!(engine.memory(), Err(RenderError::Thread)),
             "CPU offscreen teardown must join the Cherenkov render thread before returning"
         );
+    }
+}
+
+#[cfg(test)]
+mod softbuffer_pixel_tests {
+    #[test]
+    fn pack_rgba8_to_0rgb_preserves_channels_and_clears_top_byte() {
+        let rgba = [0x12, 0x34, 0x56, 0xFF, 0xAB, 0xCD, 0xEF, 0x80];
+        let mut out = [u32::MAX; 2];
+        super::pack_rgba8_to_0rgb(&rgba, &mut out);
+        assert_eq!(out, [0x0012_3456, 0x00AB_CDEF]);
     }
 }
