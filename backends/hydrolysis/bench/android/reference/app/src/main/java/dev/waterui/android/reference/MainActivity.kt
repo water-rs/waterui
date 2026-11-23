@@ -5,6 +5,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.material3.MaterialTheme
@@ -15,6 +16,8 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.platform.testTag
 
 /**
@@ -30,6 +33,19 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        val benchmarkDisplay = requireNotNull(display) { "Benchmark activity has no display" }
+        val currentMode = benchmarkDisplay.mode
+        // Compare at the panel's highest refresh rate without changing resolution.
+        val benchmarkMode = benchmarkDisplay.supportedModes
+            .filter {
+                it.physicalWidth == currentMode.physicalWidth &&
+                    it.physicalHeight == currentMode.physicalHeight
+            }
+            .maxBy { it.refreshRate }
+        window.attributes = window.attributes.apply {
+            preferredDisplayModeId = benchmarkMode.modeId
+            preferredRefreshRate = benchmarkMode.refreshRate
+        }
         val example = intent.getStringExtra(EXTRA_EXAMPLE).orEmpty()
         val disableDynamic =
             intent.hasExtra("waterui.env.WATERUI_DISABLE_DYNAMIC_COLORS")
@@ -42,7 +58,7 @@ class MainActivity : ComponentActivity() {
             for (key in extras.keySet()) {
                 if (key.startsWith("waterui.env.")) {
                     AppEnv.values[key.removePrefix("waterui.env.")] =
-                        extras.get(key)?.toString() ?: ""
+                        requireNotNull(extras.getString(key)) { "Environment extra $key must be a string" }
                 }
             }
         }
@@ -61,14 +77,17 @@ class MainActivity : ComponentActivity() {
             MaterialTheme(colorScheme = scheme) {
                 Surface(
                     modifier =
-                        Modifier.fillMaxSize().safeDrawingPadding()
+                        Modifier.fillMaxSize()
+                            .semantics { testTagsAsResourceId = true }
                             .testTag("screen-root"),
                 ) {
-                    val twin = fixtureContent(example)
-                    if (twin != null) {
-                        twin()
-                    } else {
-                        Text("No twin registered for example '$example'")
+                    Box(Modifier.fillMaxSize().safeDrawingPadding()) {
+                        val twin = fixtureContent(example)
+                        if (twin != null) {
+                            twin()
+                        } else {
+                            Text("No twin registered for example '$example'")
+                        }
                     }
                 }
             }

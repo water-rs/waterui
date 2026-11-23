@@ -10,7 +10,7 @@ use super::{
 };
 
 #[derive(Parser)]
-#[command(about = "Color-managed FLIP comparison of Apple E2E PNG screenshots")]
+#[command(about = "Color-managed FLIP comparison of E2E PNG screenshots")]
 struct Args {
     #[command(subcommand)]
     command: Command,
@@ -38,7 +38,7 @@ struct Compare {
     /// points.
     #[arg(long, required_if_eq("limits", "twin"))]
     scale: Option<NonZeroU32>,
-    #[arg(long, value_parser = ["ios", "macos"])]
+    #[arg(long, value_parser = ["ios", "macos", "android"])]
     platform: String,
     /// OS major the capture was taken on, recorded in the report.
     #[arg(long)]
@@ -182,11 +182,16 @@ mod tests {
 
     #[test]
     fn route_limits_are_the_default_and_need_no_os_metadata() {
-        let args = Args::try_parse_from(compare_args()).unwrap();
-        let Command::Compare(compare) = args.command else {
-            panic!("compare subcommand expected");
-        };
-        assert!(matches!(compare.limits, LimitSet::Route));
+        for platform in ["ios", "macos", "android"] {
+            let mut input = compare_args();
+            input[6] = platform;
+            let args = Args::try_parse_from(input).unwrap();
+            let Command::Compare(compare) = args.command else {
+                panic!("compare subcommand expected");
+            };
+            assert!(matches!(compare.limits, LimitSet::Route));
+            assert_eq!(compare.platform, platform);
+        }
     }
 
     #[test]

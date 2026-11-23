@@ -22,13 +22,17 @@ Subcommands:
 """
 
 import argparse
+import functools
 import json
 import os
 import re
+import struct
 import subprocess
 import sys
 import time
 import tomllib
+import uuid
+from contextlib import contextmanager
 from io import BytesIO
 from pathlib import Path
 
@@ -121,32 +125,159 @@ def is_nonblank(png: bytes) -> bool:
     return ImageStat.Stat(image).stddev[0] >= BLANK_STDDEV
 
 
+@functools.lru_cache(maxsize=1)
+def _srgb_linear_lut() -> list[float]:
+    return [
+        u / 12.92 if u <= 0.04045 else ((u + 0.055) / 1.055) ** 2.4
+        for u in (i / 255.0 for i in range(256))
+    ]
+
+
+@functools.lru_cache(maxsize=1)
+def _display_p3_icc_bytes() -> bytes:
+    """Minimal ICC v4.3 Display P3 matrix/TRC profile (D65 -> D50 Bradford)."""
+    def s15f16(x: float) -> int:
+        return int(round(x * 65536.0))
+
+    def xyz_tag(x: float, y: float, z: float) -> bytes:
+        return struct.pack(">4sIiii", b"XYZ ", 0, s15f16(x), s15f16(y), s15f16(z))
+
+    para = struct.pack(
+        ">4sIH2x5i",
+        b"para", 0, 3,
+        s15f16(2.4),
+        s15f16(1.0 / 1.055),
+        s15f16(0.055 / 1.055),
+        s15f16(1.0 / 12.92),
+        s15f16(0.04045),
+    )
+    chad = struct.pack(
+        ">4sI9i", b"sf32", 0,
+        *[s15f16(v) for v in (
+            1.047882, 0.022919, -0.050201,
+            0.029587, 0.990479, -0.017059,
+            -0.009232, 0.015076, 0.751678,
+        )],
+    )
+    text = "Display P3".encode("utf-16-be")
+    mluc = struct.pack(">4sIIII2s2sII", b"mluc", 0, 1, 12, 0, b"en", b"US", len(text), 28) + text
+    tags = [
+        (b"desc", mluc),
+        (b"cprt", mluc),
+        (b"wtpt", xyz_tag(0.964188, 1.0, 0.82489)),
+        (b"rXYZ", xyz_tag(0.515121, 0.241196, -0.001053)),
+        (b"gXYZ", xyz_tag(0.291977, 0.692245, 0.041885)),
+        (b"bXYZ", xyz_tag(0.157104, 0.066574, 0.784073)),
+        (b"rTRC", para),
+        (b"gTRC", para),
+        (b"bTRC", para),
+        (b"chad", chad),
+    ]
+    table_size = 4 + 12 * len(tags)
+    offset = 128 + table_size
+    body = bytearray()
+    entries = []
+    for sig, payload in tags:
+        entries.append((sig, offset + len(body), len(payload)))
+        body.extend(payload)
+        while len(body) % 4:
+            body.append(0)
+    total_size = 128 + table_size + len(body)
+    header = bytearray(128)
+    struct.pack_into(">II4s", header, 0, total_size, 0, bytes.fromhex("04300000"))
+    struct.pack_into(">4s4s4s", header, 12, b"mntr", b"RGB ", b"XYZ ")
+    struct.pack_into(">6H", header, 24, 2026, 1, 1, 0, 0, 0)
+    struct.pack_into(">4sI", header, 36, b"acsp", 0)
+    struct.pack_into(">3i", header, 68, s15f16(0.9642), s15f16(1.0), s15f16(0.8249))
+    table = bytearray(struct.pack(">I", len(entries)))
+    for sig, off, sz in entries:
+        table.extend(struct.pack(">4sII", sig, off, sz))
+    return bytes(header) + bytes(table) + bytes(body)
+
+
+def _decode_linear_display_p3_bands(
+    image,
+    box: tuple[int, int, int, int],
+):
+    """Convert a PNG image (respecting iCCP / sRGB metadata) into linear Display P3 float bands."""
+    from PIL import ImageCms, ImageMath
+
+    icc_profile = image.info.get("icc_profile")
+    cropped = image.crop(box).convert("RGB")
+    lut = _srgb_linear_lut()
+    if icc_profile is not None:
+        src_profile = ImageCms.ImageCmsProfile(BytesIO(icc_profile))
+        dst_profile = ImageCms.ImageCmsProfile(BytesIO(_display_p3_icc_bytes()))
+        p3_rgb = ImageCms.profileToProfile(
+            cropped,
+            src_profile,
+            dst_profile,
+            renderingIntent=ImageCms.Intent.RELATIVE_COLORIMETRIC,
+            outputMode="RGB",
+        )
+        return tuple(band.point(lut, mode="F") for band in p3_rgb.split())
+
+    # No embedded iCCP profile (explicit sRGB chunk or Android default sRGB):
+    # decode sRGB transfer curve and map linear sRGB -> linear Display P3.
+    sr, sg, sb = (band.point(lut, mode="F") for band in cropped.split())
+    pr = ImageMath.lambda_eval(
+        lambda a: 0.8224619687239154 * a["r"] + 0.1775380312760846 * a["g"],
+        r=sr,
+        g=sg,
+    )
+    pg = ImageMath.lambda_eval(
+        lambda a: 0.0331941988565726 * a["r"] + 0.9668058011434274 * a["g"],
+        r=sr,
+        g=sg,
+    )
+    pb = ImageMath.lambda_eval(
+        lambda a: (
+            0.0170826307246200 * a["r"]
+            + 0.0723974406623800 * a["g"]
+            + 0.9105199286130000 * a["b"]
+        ),
+        r=sr,
+        g=sg,
+        b=sb,
+    )
+    return (pr, pg, pb)
+
+
 def compare_images(
     golden_path: Path, actual_path: Path, tolerance: int, max_fraction: float, diff_out: Path
 ) -> int:
-    from PIL import Image, ImageChops
+    from PIL import Image, ImageChops, ImageMath
 
-    golden = Image.open(golden_path).convert("RGB")
-    actual = Image.open(actual_path).convert("RGB")
-    if golden.size != actual.size:
+    golden_raw = Image.open(golden_path)
+    actual_raw = Image.open(actual_path)
+    if golden_raw.size != actual_raw.size:
         print(
-            f"compare: size mismatch golden={golden.size} actual={actual.size}",
+            f"compare: size mismatch golden={golden_raw.size} actual={actual_raw.size}",
             file=sys.stderr,
         )
         return 2
-    w, h = golden.size
+    w, h = golden_raw.size
     box = (0, int(h * CROP_TOP), w, h - int(h * CROP_BOTTOM))
-    golden = golden.crop(box)
-    actual = actual.crop(box)
+    golden_bands = _decode_linear_display_p3_bands(golden_raw, box)
+    actual_bands = _decode_linear_display_p3_bands(actual_raw, box)
 
-    diff = ImageChops.difference(golden, actual)
-    masks = [band.point(lambda v: 255 if v > tolerance else 0) for band in diff.split()]
+    threshold = tolerance / 255.0
+    diff_bands = [
+        ImageMath.lambda_eval(lambda a: abs(a["g"] - a["a"]), g=gb, a=ab)
+        for gb, ab in zip(golden_bands, actual_bands)
+    ]
+    masks = [
+        ImageMath.lambda_eval(lambda a, t=threshold: (a["d"] > t) * 255, d=db).convert("L")
+        for db in diff_bands
+    ]
     mask = masks[0]
     for other in masks[1:]:
         mask = ImageChops.lighter(mask, other)
 
     differing = mask.histogram()[255]
-    total = golden.size[0] * golden.size[1]
+    crop_w = box[2] - box[0]
+    crop_h = box[3] - box[1]
+    total = crop_w * crop_h
     fraction = differing / total
     print(
         f"compare: {differing}/{total} pixels differ beyond tolerance {tolerance} "
@@ -154,7 +285,11 @@ def compare_images(
     )
 
     if fraction > max_fraction:
-        diff.point(lambda v: min(255, v * 8)).save(diff_out)
+        amplified = [
+            ImageMath.lambda_eval(lambda a: a["d"] * (255.0 * 8.0), d=db).convert("L")
+            for db in diff_bands
+        ]
+        Image.merge("RGB", amplified).save(diff_out)
         return 1
     return 0
 
@@ -510,14 +645,43 @@ def install_apk(serial: str, apk: Path) -> str:
     return adb_out(serial, "install", "-r", str(apk)).decode("utf-8", "replace")
 
 
-def launch_app(serial: str, package: str, env: dict) -> str:
-    """`am start` the example's MainActivity, force-stopping any prior run.
-    `water run --env` reaches the app as `waterui.env.*` string extras —
-    the generated MainActivity applies them with `Os.setenv` before the
-    native library loads, so the same extras carry the e2e env overrides."""
-    args = ["shell", "am", "start", "-S", "-n", f"{package}/.MainActivity"]
-    for key, value in env.items():
-        args += ["--es", f"waterui.env.{key}", value]
+@contextmanager
+def launch_environment(serial: str, package: str, env: dict, *, compose: bool = False):
+    """Own a launch environment through the complete launch/capture cycle."""
+    if compose:
+        yield [arg for key, value in env.items() for arg in ("--es", f"waterui.env.{key}", value)]
+        return
+    if not env:
+        yield []
+        return
+    handoff = str(uuid.uuid4())
+    uri = f"content://{package}.waterui.launch-environment/{handoff}"
+    try:
+        staged = subprocess.run(
+            ["adb", "-s", serial, "shell", "content", "write", "--uri", uri],
+            input=json.dumps(env).encode(), capture_output=True, timeout=30, check=True,
+        )
+        if staged.stdout.strip() or staged.stderr.strip():
+            raise RuntimeError("could not stage the launch environment")
+        # A provider write starts the application process. Stop it before
+        # the caller starts any launch timer.
+        adb(serial, "shell", "am", "force-stop", package)
+        yield ["--es", "waterui.launch.environment", handoff]
+    finally:
+        try:
+            removed = subprocess.run(
+                ["adb", "-s", serial, "shell", "content", "delete", "--uri", uri],
+                capture_output=True, timeout=30, check=True,
+            )
+            if removed.stdout.strip() or removed.stderr.strip():
+                raise RuntimeError("could not remove the launch environment")
+        finally:
+            adb(serial, "shell", "am", "force-stop", package)
+
+
+def launch_app(serial: str, package: str, environment_args: list[str]) -> str:
+    """Launch the example after its private environment has been staged."""
+    args = ["shell", "am", "start", "-S", "-n", f"{package}/.MainActivity", *environment_args]
     return adb_out(serial, *args).decode("utf-8", "replace")
 
 
@@ -1087,8 +1251,8 @@ def example_config(manifest: dict, example: str) -> dict:
                                    defaults.get("pixel_tolerance", 8))),
         "max_fraction": float(entry.get("max_diff_fraction",
                                         defaults.get("max_diff_fraction", 0.005))),
-        # Environment forwarded to the app as `waterui.env.*` intent extras —
-        # the generated MainActivity applies them via `Os.setenv` before the
+        # Environment delivered through the private launch-environment provider;
+        # the generated MainActivity applies it via `Os.setenv` before the
         # native library loads. An example whose workload exceeds emulator
         # capacity tunes itself down here rather than being skipped.
         # WATERUI_DISABLE_DYNAMIC_COLORS pins the static MD3 baseline palette:
@@ -1207,171 +1371,172 @@ def _run_packaged_example(
     if "Success" not in install_out:
         return fail(f"adb install rejected the APK: {install_out.strip()}")
 
-    trace_proc = None
-    trace_remote = ""
-    if perfetto:
-        trace_proc, trace_remote = start_perfetto(
-            serial, example, cfg["settle_s"] + 15
-        )
-    launch_device_ms = device_now_ms(serial)
-    launch_t = time.monotonic()
-    try:
-        launch_out = launch_app(serial, package, cfg["env"])
-    except subprocess.CalledProcessError as error:
-        return fail(f"am start failed: {error}")
-    if "Error" in launch_out:
-        return fail(f"am start rejected the activity: {launch_out.strip()}")
-
-    sampler = start_proc_sampler(serial, package, cfg["settle_s"] + 20)
-    if not ensure_system_bars(serial):
-        print(
-            f"::warning::{example}: status-bar inset is zero after SystemUI "
-            "restarts — the settled frame may be offset"
-        )
-
-    watch = ProcessWatch(serial, package)
-    status = "PASS"
-    abort = watch.abort_reason()
-    died: str | None = None
-    settled_at_ms: int | None = None
-    try:
-        if cfg["mode"] == "verify":
-            anr_pkgs: list[str] = []
-            foreign_windows: list[str] = []
-            settled, frame, content_at = wait_for_settle(
-                serial, cfg["settle_s"], cfg["poll_s"], watch=watch,
-                package=package, anr=anr_pkgs, foreign=foreign_windows,
+    with launch_environment(serial, package, cfg["env"]) as environment_args:
+        trace_proc = None
+        trace_remote = ""
+        if perfetto:
+            trace_proc, trace_remote = start_perfetto(
+                serial, example, cfg["settle_s"] + 15
             )
-            if settled:
-                settled_at_ms = int((time.monotonic() - launch_t) * 1000)
-            abort = abort or watch.abort_reason()
-            detail = "settled" if settled else (
-                f"app ANR: {anr_pkgs[0]} not responding" if anr_pkgs else
-                f"{abort}, compared the final frame" if abort else
-                "app process never appeared after am start" if not watch.seen else
-                f"foreign window '{foreign_windows[-1]}' held focus"
-                if foreign_windows else
-                f"no settled frame within {cfg['settle_s']:g}s; compared the final frame"
-            )
-            if not frame:
-                detail += "; no framebuffer capture at all"
-                status = "FAIL"
-            elif not watch.seen:
-                # The frame is a crash dialog or the launcher, not the app —
-                # keep it as a forensic artifact but do not compare it.
-                actual.write_bytes(frame)
-                status = "FAIL"
-            elif not settled and foreign_windows:
-                # Focus never returned to the app — the captured frame is
-                # the foreign window. Keep it for forensics but never
-                # compare it or record it as a golden.
-                actual.write_bytes(frame)
-                status = "FAIL"
-            else:
-                actual.write_bytes(frame)
-                if not is_nonblank(frame):
-                    status = "FAIL"
-                    detail += "; screen stayed blank"
-                elif not verify_golden(
-                    example, actual, cfg, golden_mode, goldens_dir, artifacts_dir
-                ):
-                    status = "FAIL"
-                    detail += "; diverges from golden"
-                elif parity_budget is not None and golden_mode != "record":
-                    parity_detail = verify_parity(
-                        example, actual, serial, cfg, parity_budget, artifacts_dir
-                    )
-                    if parity_detail is not None:
-                        status = "FAIL"
-                        detail += f"; {parity_detail}"
-            if abort and status != "FAIL":
-                status = "FAIL"
-        else:  # smoke
-            anr_pkgs = []
-            foreign_windows = []
-            frame, content_at = wait_for_content(
-                serial, cfg["settle_s"], cfg["poll_s"], watch=watch,
-                package=package, anr=anr_pkgs, foreign=foreign_windows,
-            )
-            abort = abort or watch.abort_reason()
-            if frame is None:
-                status = "FAIL"
-                detail = (
-                    f"app ANR: {anr_pkgs[0]} not responding" if anr_pkgs else
-                    abort or (
-                        "app process never appeared after am start"
-                        if not watch.seen else
-                        f"foreign window '{foreign_windows[-1]}' held focus"
-                        if foreign_windows else
-                        f"screen stayed blank for {cfg['settle_s']:g}s after startup"
-                    )
-                )
-                last = capture_screen(serial)
-                if last:
-                    actual.write_bytes(last)
-            else:
-                actual.write_bytes(frame)
-                detail = "non-blank content on screen"
-        # All probes run while the process is still alive — after force_stop
-        # pidof is empty and every one of them reports nothing.
+        launch_device_ms = device_now_ms(serial)
+        launch_t = time.monotonic()
         try:
-            metrics.update(
-                collect_proc_sampler(
-                    sampler, artifacts_dir / f"{example}.procstats.txt"
-                )
-            )
-            metrics.update(
-                dump_gfxinfo(
-                    serial, package,
-                    artifacts_dir / f"{example}.gfxinfo.txt",
-                    artifacts_dir / f"{example}.framestats.txt",
-                )
-            )
-            metrics.update(
-                dump_meminfo(
-                    serial, example_path,
-                    artifacts_dir / f"{example}.meminfo.txt"
-                )
-            )
-            if trace_proc is not None:
-                stop_perfetto(
-                    serial, trace_proc, trace_remote,
-                    artifacts_dir / f"{example}.pftrace",
-                )
-            ready_ms = root_ready_ms(serial, launch_device_ms)
-            if ready_ms is not None:
-                metrics["root_ready_ms"] = ready_ms
-        except (subprocess.CalledProcessError, OSError) as error:
-            print(f"::warning::{example}: perf probes incomplete: {error}")
-        # Sample before force_stop — afterwards pidof is always empty and the
-        # watcher would report a death we caused ourselves.
-        died = watch.abort_reason()
-    finally:
-        force_stop(serial, package)
-    displayed = displayed_time_ms(serial, example_path)
-    if displayed is not None:
-        metrics["displayed_ms"] = displayed
-    if content_at is not None:
-        metrics["launch_to_first_frame_ms"] = int((content_at - launch_t) * 1000)
-    if settled_at_ms is not None:
-        metrics["settle_ms"] = settled_at_ms
-    write_metrics(artifacts_dir, example, cfg, status, metrics)
+            launch_out = launch_app(serial, package, environment_args)
+        except subprocess.CalledProcessError as error:
+            return fail(f"am start failed: {error}")
+        if "Error" in launch_out:
+            return fail(f"am start rejected the activity: {launch_out.strip()}")
 
-    if status == "FAIL":
-        dump_logcat(serial, artifacts_dir / f"{example}.logcat.txt")
-        if died:
-            detail += f"; {died} during capture — see logcat"
+        sampler = start_proc_sampler(serial, package, cfg["settle_s"] + 20)
+        if not ensure_system_bars(serial):
+            print(
+                f"::warning::{example}: status-bar inset is zero after SystemUI "
+                "restarts — the settled frame may be offset"
+            )
 
-    if golden_mode == "record" and cfg["mode"] == "verify" and settled:
-        (candidates_dir / f"{example}.png").write_bytes(actual.read_bytes())
+        watch = ProcessWatch(serial, package)
+        status = "PASS"
+        abort = watch.abort_reason()
+        died: str | None = None
+        settled_at_ms: int | None = None
+        try:
+            if cfg["mode"] == "verify":
+                anr_pkgs: list[str] = []
+                foreign_windows: list[str] = []
+                settled, frame, content_at = wait_for_settle(
+                    serial, cfg["settle_s"], cfg["poll_s"], watch=watch,
+                    package=package, anr=anr_pkgs, foreign=foreign_windows,
+                )
+                if settled:
+                    settled_at_ms = int((time.monotonic() - launch_t) * 1000)
+                abort = abort or watch.abort_reason()
+                detail = "settled" if settled else (
+                    f"app ANR: {anr_pkgs[0]} not responding" if anr_pkgs else
+                    f"{abort}, compared the final frame" if abort else
+                    "app process never appeared after am start" if not watch.seen else
+                    f"foreign window '{foreign_windows[-1]}' held focus"
+                    if foreign_windows else
+                    f"no settled frame within {cfg['settle_s']:g}s; compared the final frame"
+                )
+                if not frame:
+                    detail += "; no framebuffer capture at all"
+                    status = "FAIL"
+                elif not watch.seen:
+                    # The frame is a crash dialog or the launcher, not the app —
+                    # keep it as a forensic artifact but do not compare it.
+                    actual.write_bytes(frame)
+                    status = "FAIL"
+                elif not settled and foreign_windows:
+                    # Focus never returned to the app — the captured frame is
+                    # the foreign window. Keep it for forensics but never
+                    # compare it or record it as a golden.
+                    actual.write_bytes(frame)
+                    status = "FAIL"
+                else:
+                    actual.write_bytes(frame)
+                    if not is_nonblank(frame):
+                        status = "FAIL"
+                        detail += "; screen stayed blank"
+                    elif not verify_golden(
+                        example, actual, cfg, golden_mode, goldens_dir, artifacts_dir
+                    ):
+                        status = "FAIL"
+                        detail += "; diverges from golden"
+                    elif parity_budget is not None and golden_mode != "record":
+                        parity_detail = verify_parity(
+                            example, actual, serial, cfg, parity_budget, artifacts_dir
+                        )
+                        if parity_detail is not None:
+                            status = "FAIL"
+                            detail += f"; {parity_detail}"
+                if abort and status != "FAIL":
+                    status = "FAIL"
+            else:  # smoke
+                anr_pkgs = []
+                foreign_windows = []
+                frame, content_at = wait_for_content(
+                    serial, cfg["settle_s"], cfg["poll_s"], watch=watch,
+                    package=package, anr=anr_pkgs, foreign=foreign_windows,
+                )
+                abort = abort or watch.abort_reason()
+                if frame is None:
+                    status = "FAIL"
+                    detail = (
+                        f"app ANR: {anr_pkgs[0]} not responding" if anr_pkgs else
+                        abort or (
+                            "app process never appeared after am start"
+                            if not watch.seen else
+                            f"foreign window '{foreign_windows[-1]}' held focus"
+                            if foreign_windows else
+                            f"screen stayed blank for {cfg['settle_s']:g}s after startup"
+                        )
+                    )
+                    last = capture_screen(serial)
+                    if last:
+                        actual.write_bytes(last)
+                else:
+                    actual.write_bytes(frame)
+                    detail = "non-blank content on screen"
+            # All probes run while the process is still alive — after force_stop
+            # pidof is empty and every one of them reports nothing.
+            try:
+                metrics.update(
+                    collect_proc_sampler(
+                        sampler, artifacts_dir / f"{example}.procstats.txt"
+                    )
+                )
+                metrics.update(
+                    dump_gfxinfo(
+                        serial, package,
+                        artifacts_dir / f"{example}.gfxinfo.txt",
+                        artifacts_dir / f"{example}.framestats.txt",
+                    )
+                )
+                metrics.update(
+                    dump_meminfo(
+                        serial, example_path,
+                        artifacts_dir / f"{example}.meminfo.txt"
+                    )
+                )
+                if trace_proc is not None:
+                    stop_perfetto(
+                        serial, trace_proc, trace_remote,
+                        artifacts_dir / f"{example}.pftrace",
+                    )
+                ready_ms = root_ready_ms(serial, launch_device_ms)
+                if ready_ms is not None:
+                    metrics["root_ready_ms"] = ready_ms
+            except (subprocess.CalledProcessError, OSError) as error:
+                print(f"::warning::{example}: perf probes incomplete: {error}")
+            # Sample before force_stop — afterwards pidof is always empty and the
+            # watcher would report a death we caused ourselves.
+            died = watch.abort_reason()
+        finally:
+            force_stop(serial, package)
+        displayed = displayed_time_ms(serial, example_path)
+        if displayed is not None:
+            metrics["displayed_ms"] = displayed
+        if content_at is not None:
+            metrics["launch_to_first_frame_ms"] = int((content_at - launch_t) * 1000)
+        if settled_at_ms is not None:
+            metrics["settle_ms"] = settled_at_ms
+        write_metrics(artifacts_dir, example, cfg, status, metrics)
 
-    if status == "FAIL":
-        print(f"::error::Example {example}: {detail}")
-        print("\n".join(log_file.read_text(errors="replace").splitlines()[-50:]))
-    else:
-        print(f"Example {example}: {detail}")
-    results.append((example, status, detail))
-    return status != "FAIL"
+        if status == "FAIL":
+            dump_logcat(serial, artifacts_dir / f"{example}.logcat.txt")
+            if died:
+                detail += f"; {died} during capture — see logcat"
+
+        if golden_mode == "record" and cfg["mode"] == "verify" and settled:
+            (candidates_dir / f"{example}.png").write_bytes(actual.read_bytes())
+
+        if status == "FAIL":
+            print(f"::error::Example {example}: {detail}")
+            print("\n".join(log_file.read_text(errors="replace").splitlines()[-50:]))
+        else:
+            print(f"Example {example}: {detail}")
+        results.append((example, status, detail))
+        return status != "FAIL"
 
 
 def verify_golden(

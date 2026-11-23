@@ -185,7 +185,7 @@ private fun FruitCard(fruit: Fruit, modifier: Modifier = Modifier) {
             .clip(RoundedCornerShape(12.dp))
             .background(fruit.color.copy(alpha = 0.18f))
             .border(1.dp, fruit.color, RoundedCornerShape(12.dp))
-            .dragAndDropSource(block = {
+            .dragAndDropSource(transferData = {
                 DragAndDropTransferData(
                     clipData = android.content.ClipData.newPlainText(
                         "fruit", fruit.label,

@@ -3,3 +3,5 @@ __pycache__/
 out/
 build/
 .gradle/
+.kotlin/
+reference/app/src/*/generated/

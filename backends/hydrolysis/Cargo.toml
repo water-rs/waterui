@@ -528,7 +528,7 @@ testing = []
 # Per-frame CPU/GPU stage timing: wgpu timestamp queries around the
 # layer-content and compositor submits plus the CPU stage split the window
 # pump measures.
-frame-profile = ["gpu"]
+frame-profile = []
 # The Cherenkov GPU painter and its GPU-content surface: the `cherenkov`
 # engine crates, `wgpu`, the parley text engine, and the framework's GPU
 # component vocabulary (`GpuView`, `ExternalFrame`, `waterui_graphics::gpu`).

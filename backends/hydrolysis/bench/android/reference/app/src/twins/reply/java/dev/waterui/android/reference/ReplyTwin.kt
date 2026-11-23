@@ -24,7 +24,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.Email
 import androidx.compose.material.icons.outlined.Notifications
@@ -179,7 +179,7 @@ fun ReplyTwin() {
             NavigationRailItem(
                 selected = rail == 2,
                 onClick = { BenchMarkers.tap(); rail = 2 },
-                icon = { Icon(Icons.Filled.Send, "Chat") },
+                icon = { Icon(Icons.AutoMirrored.Filled.Send, "Chat") },
                 label = { Text("Chat") },
                 modifier = Modifier.testTag("rail:chat"),
             )

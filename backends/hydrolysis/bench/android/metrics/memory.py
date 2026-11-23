@@ -45,7 +45,7 @@ def collect_at(
     """`dumpsys meminfo` at one section-6 sample point.
 
     `point` is one of first_content_peak | settled_idle | steady_interaction
-    | script_peak — recorded on the result record so a replay round's samples
+    | script_peak; diagnostic captures use post_journey. Recorded so samples
     stay labeled by when they were taken.
     """
     try:

@@ -123,6 +123,13 @@
         {"op": "scroll", "direction": "up", "times": 8}
       ]
     },
+    "keyboard_panel": {
+      "journey": [
+        {"op": "settle"},
+        {"op": "swipe", "direction": "up", "times": 2},
+        {"op": "swipe", "direction": "down", "times": 2}
+      ]
+    },
     "list": {
       "journey": [
         {"op": "settle"},
@@ -169,6 +176,13 @@
         {"op": "tap", "text": "Choose an Option"},
         {"op": "wait_ms", "ms": 800},
         {"op": "back"}
+      ]
+    },
+    "multi_scene": {
+      "journey": [
+        {"op": "settle"},
+        {"op": "tap", "text": "Show snackbar"},
+        {"op": "wait_ms", "ms": 500}
       ]
     },
     "multi_window": {

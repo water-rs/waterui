@@ -2,6 +2,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <instrumentation
         android:name="androidx.test.runner.AndroidJUnitRunner"
-        android:targetPackage="dev.waterui.android.reference" />
+        android:targetPackage="dev.waterui.android.macrobenchmark" />
     <application />
 </manifest>
