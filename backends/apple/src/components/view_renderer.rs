@@ -11,10 +11,17 @@
 //! render server), or through `crate::capture` directly in a native-only
 //! build.
 
+#[cfg(target_os = "ios")]
+use alloc::vec::Vec;
+
 use cocoa_ui::PlatformView;
+#[cfg(target_os = "ios")]
+use cocoa_ui::Retained;
 use cocoa_ui::bitmap::set_window_color_scheme;
 #[cfg(all(feature = "gpu_surface", render_server_capture))]
 use cocoa_ui::capture::collect_capturables;
+#[cfg(target_os = "ios")]
+use cocoa_ui::objc2_ui_kit::UIViewController;
 use cocoa_ui::view::window as view_window;
 use waterui_backend_core::{Environment, View};
 use waterui_capture::ContentLedger;
@@ -25,6 +32,8 @@ use waterui_core::layout::{ProposalSize, Size};
 #[cfg(any(not(feature = "gpu_surface"), render_server_capture))]
 use crate::capture;
 use crate::contract::NativeLeaf;
+#[cfg(target_os = "ios")]
+use crate::contract::adopt_controllers;
 
 /// The Apple backend's [`ViewRenderer`]: renders a typed view under a
 /// fresh [`ContentLedger`] into premultiplied RGBA8 on the main thread.
@@ -111,6 +120,12 @@ async fn capture_leaf_to_rgba(
         cocoa_ui::Rect::new(0.0, 0.0, proposed.width, proposed.height),
     );
     let host = host::CaptureHost::attach(view, proposed, mtm)?;
+    // Establish UIKit view-controller containment for any embedded controllers
+    // (`UITabBarController`, `UINavigationController`, `UISearchController`)
+    // now that `view` lives under the capture window's root controller; unwind
+    // in reverse before detaching `host`.
+    #[cfg(target_os = "ios")]
+    let adopted_controllers = AdoptedControllers::adopt(view);
     apply_env_color_scheme(view, env);
     lay_out(view, request.size());
     // The capture window cannot present, so the surfaces inside never
@@ -156,8 +171,43 @@ async fn capture_leaf_to_rgba(
         .await
         .map(RenderResult::into_parts)
         .map_err(|error| RenderError::Capture(Box::new(error)));
+    #[cfg(target_os = "ios")]
+    drop(adopted_controllers);
     drop(host);
     captured
+}
+
+/// RAII guard adopting any parentless `UIViewController`s inside the captured
+/// subtree under the capture window's root controller, unwinding in reverse on
+/// drop before the capture host detaches the view.
+#[cfg(target_os = "ios")]
+struct AdoptedControllers(Vec<Retained<UIViewController>>);
+
+#[cfg(target_os = "ios")]
+impl AdoptedControllers {
+    fn adopt(root: &PlatformView) -> Self {
+        use cocoa_ui::uikit::view_controller::did_move_to_parent;
+
+        let controllers = adopt_controllers(root);
+        for controller in &controllers {
+            did_move_to_parent(controller);
+        }
+        Self(controllers)
+    }
+}
+
+#[cfg(target_os = "ios")]
+impl Drop for AdoptedControllers {
+    fn drop(&mut self) {
+        use cocoa_ui::uikit::view_controller::{remove_from_parent, will_move_to_parent};
+
+        for controller in &self.0 {
+            will_move_to_parent(controller);
+        }
+        for controller in self.0.iter().rev() {
+            remove_from_parent(controller);
+        }
+    }
 }
 
 /// Applies the `ColorScheme` installed in `env`, if any, onto `view`'s capture

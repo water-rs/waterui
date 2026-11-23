@@ -25,6 +25,7 @@ waterui_apple::preview_info_plist!();
 #[cfg(any(target_os = "macos", catalyst))]
 mod suite {
 
+    use std::error::Error as StdError;
     use std::ffi::c_void;
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -91,90 +92,106 @@ mod suite {
         MainThreadMarker::new().expect("the suite runs on the process's main thread")
     }
 
+    fn png_trial(name: &'static str, slug: &'static str, check: Option<fn(&Path)>) -> Trial {
+        Trial::test(name, move || {
+            run_trial(slug, Expect::Png);
+            if let Some(check) = check {
+                check(&output_dir().join(format!("{slug}.png")));
+            }
+            Ok(())
+        })
+    }
+
+    fn failure_trial(name: &'static str, slug: &'static str, needle: &'static str) -> Trial {
+        Trial::test(name, move || {
+            run_trial(slug, Expect::Failure(needle));
+            Ok(())
+        })
+    }
+
     /// The registered trials — one PNG per image run, written to
     /// `target/preview-captures/<trial>.png` for visual review.
     fn trials() -> Vec<Trial> {
         vec![
-            Trial::test("preview::captures_the_issue_view_set_windowless", || {
-                run_trial("view_set", Expect::Png);
-                Ok(())
-            }),
-            Trial::test("preview::awaits_an_image_asset_decode", || {
-                run_trial("image_asset", Expect::Png);
-                Ok(())
-            }),
+            png_trial(
+                "preview::captures_the_issue_view_set_windowless",
+                "view_set",
+                None,
+            ),
+            png_trial("preview::awaits_an_image_asset_decode", "image_asset", None),
             // Its first pass runs at layout, before the view has a window;
             // joining the window changes the backing scale and rebuilds the
             // installed layer tree (#4209).
             #[cfg(feature = "canvas")]
-            Trial::test("preview::captures_a_canvas_that_joins_a_window", || {
-                run_trial("canvas", Expect::Png);
-                Ok(())
-            }),
-            Trial::test(
+            png_trial(
+                "preview::captures_a_canvas_that_joins_a_window",
+                "canvas",
+                None,
+            ),
+            failure_trial(
                 "preview::fails_naming_content_still_owed_at_the_deadline",
-                || {
-                    run_trial(
-                        "content_deadline",
-                        Expect::Failure("still owes content after 200ms"),
-                    );
-                    Ok(())
-                },
+                "content_deadline",
+                "still owes content after 200ms",
             ),
-            Trial::test("preview::fails_naming_content_that_failed_to_load", || {
-                run_trial(
-                    "content_failed",
-                    Expect::Failure("failed to load its content"),
-                );
-                Ok(())
-            }),
+            failure_trial(
+                "preview::fails_naming_content_that_failed_to_load",
+                "content_failed",
+                "failed to load its content",
+            ),
             #[cfg(feature = "gpu_surface")]
-            Trial::test("preview::captures_gpu_surfaces_windowless", || {
-                run_trial("gpu_set", Expect::Png);
-                Ok(())
-            }),
-            Trial::test("preview::captures_liquid_glass_windowless", || {
-                run_trial("liquid_glass", Expect::Png);
-                assert_liquid_glass_png(&output_dir().join("liquid_glass.png"));
-                Ok(())
-            }),
+            png_trial("preview::captures_gpu_surfaces_windowless", "gpu_set", None),
+            png_trial(
+                "preview::captures_liquid_glass_windowless",
+                "liquid_glass",
+                Some(assert_liquid_glass_png),
+            ),
             #[cfg(feature = "gpu_surface")]
-            Trial::test(
+            png_trial(
                 "preview::captures_liquid_glass_with_gpu_surface_windowless",
-                || {
-                    run_trial("liquid_glass_gpu", Expect::Png);
-                    assert_liquid_glass_gpu_png(&output_dir().join("liquid_glass_gpu.png"));
-                    Ok(())
-                },
+                "liquid_glass_gpu",
+                Some(assert_liquid_glass_gpu_png),
             ),
-            Trial::test("preview::rejects_a_scenario_run", || {
-                run_trial(
-                    "scenario",
-                    Expect::Failure("apple preview supports image captures only"),
-                );
-                Ok(())
-            }),
-            Trial::test("preview::rejects_a_semantic_run", || {
-                run_trial(
-                    "semantic",
-                    Expect::Failure("apple preview supports image captures only"),
-                );
-                Ok(())
-            }),
-            Trial::test("preview::errors_when_the_run_config_is_missing", || {
-                run_trial(
-                    "missing_config",
-                    Expect::Failure("WATERUI_PREVIEW_RUN_CONFIG is not set"),
-                );
-                Ok(())
-            }),
-            Trial::test("preview::errors_when_the_run_config_is_malformed", || {
-                run_trial(
-                    "malformed_config",
-                    Expect::Failure("cannot parse preview run configuration"),
-                );
-                Ok(())
-            }),
+            png_trial(
+                "preview::captures_tabs_windowless",
+                "tabs",
+                Some(assert_tabs_png),
+            ),
+            png_trial(
+                "preview::captures_navigation_windowless",
+                "navigation",
+                Some(assert_navigation_png),
+            ),
+            png_trial(
+                "preview::captures_checkbox_toggle_windowless",
+                "checkbox_toggle",
+                Some(assert_checkbox_toggle_png),
+            ),
+            #[cfg(feature = "gpu_surface")]
+            png_trial(
+                "preview::offscreen_renderer_captures_tabs_nav_checkbox",
+                "offscreen_tabs_nav_checkbox",
+                None,
+            ),
+            failure_trial(
+                "preview::rejects_a_scenario_run",
+                "scenario",
+                "apple preview supports image captures only",
+            ),
+            failure_trial(
+                "preview::rejects_a_semantic_run",
+                "semantic",
+                "apple preview supports image captures only",
+            ),
+            failure_trial(
+                "preview::errors_when_the_run_config_is_missing",
+                "missing_config",
+                "WATERUI_PREVIEW_RUN_CONFIG is not set",
+            ),
+            failure_trial(
+                "preview::errors_when_the_run_config_is_malformed",
+                "malformed_config",
+                "cannot parse preview run configuration",
+            ),
         ]
     }
 
@@ -317,6 +334,15 @@ mod suite {
                 image_run("liquid_glass_gpu", 280.0, 200.0, liquid_glass_gpu_view)
                     .map_err(Into::into)
             }
+            "tabs" => image_run("tabs", 400.0, 260.0, tabs_view).map_err(Into::into),
+            "navigation" => {
+                image_run("navigation", 400.0, 260.0, navigation_view).map_err(Into::into)
+            }
+            "checkbox_toggle" => {
+                image_run("checkbox_toggle", 220.0, 80.0, checkbox_toggle_view).map_err(Into::into)
+            }
+            #[cfg(feature = "gpu_surface")]
+            "offscreen_tabs_nav_checkbox" => offscreen_tabs_nav_checkbox_run(),
             "scenario" => error_run("scenario", |dir| PreviewRunMode::Scenario {
                 output_dir: dir.clone(),
                 captures_ms: vec![0],
@@ -916,6 +942,227 @@ mod suite {
             pink_top > 500 && blue_bottom > 500,
             "ShaderPaintView gradient bars must composite alongside glass (pink_top={pink_top}, blue_bottom={blue_bottom})"
         );
+    }
+
+    fn tabs_view() -> impl View {
+        use waterui::navigation::{NavigationView, Tab, Tabs};
+        use waterui::theme::color::Background;
+
+        let selection = Binding::container(0_usize);
+        zstack((
+            Background,
+            Tabs::new(
+                &selection,
+                (
+                    Tab::new("Home", || {
+                        NavigationView::new("Home", text("Home Content").title())
+                    }),
+                    Tab::new("Search", || {
+                        NavigationView::new("Search", text("Search Content").title())
+                    }),
+                ),
+            ),
+        ))
+        .size(400.0, 260.0)
+    }
+
+    fn navigation_view() -> impl View {
+        use waterui::navigation::{NavigationStack, NavigationView};
+        use waterui::theme::color::Background;
+
+        zstack((
+            Background,
+            NavigationStack::new(NavigationView::new("Root", text("Root Body").title())),
+        ))
+        .size(400.0, 260.0)
+    }
+
+    fn checkbox_toggle_view() -> impl View {
+        use waterui::component::toggle::ToggleStyle;
+        use waterui::theme::color::Background;
+
+        let on = Binding::bool(true);
+        zstack((
+            Background,
+            toggle("Wi-Fi", &on).style(ToggleStyle::Checkbox).padding(),
+        ))
+        .size(220.0, 80.0)
+    }
+
+    fn count_ink_pixels(pixels: &[u8], width: usize, height: usize, bg: [u8; 4]) -> usize {
+        let mut count = 0_usize;
+        for y in 0..height {
+            for x in 0..width {
+                let offset = (y * width + x) * 4;
+                let dr = pixels[offset].abs_diff(bg[0]);
+                let dg = pixels[offset + 1].abs_diff(bg[1]);
+                let db = pixels[offset + 2].abs_diff(bg[2]);
+                if usize::from(dr) + usize::from(dg) + usize::from(db) >= 90 {
+                    count += 1;
+                }
+            }
+        }
+        count
+    }
+
+    fn assert_tabs_png(path: &Path) {
+        let (pixels, width, height) = decode_png_rgba(path);
+        let bg = [pixels[0], pixels[1], pixels[2], pixels[3]];
+        let ink = count_ink_pixels(&pixels, width, height, bg);
+        assert!(
+            ink > 300,
+            "tabs capture must render visible tab bar and selected pane content, got {ink} ink pixels in {width}x{height}"
+        );
+    }
+
+    fn assert_navigation_png(path: &Path) {
+        let (pixels, width, height) = decode_png_rgba(path);
+        let bg = [pixels[0], pixels[1], pixels[2], pixels[3]];
+        let ink = count_ink_pixels(&pixels, width, height, bg);
+        assert!(
+            ink > 300,
+            "navigation capture must render visible navigation bar and root page content, got {ink} ink pixels in {width}x{height}"
+        );
+    }
+
+    fn assert_checkbox_toggle_png(path: &Path) {
+        let (pixels, width, height) = decode_png_rgba(path);
+        // The checkbox sits to the left of the centered "Wi-Fi" label; require
+        // a compact, clearly saturated accent-tinted checkmark box (rejecting
+        // both an invisible box and UIButtonType::System's oversized legacy
+        // selection plate) with a bright interior checkmark.
+        let mut accent_px = 0_usize;
+        let (mut min_x, mut max_x, mut min_y, mut max_y) =
+            (usize::MAX, 0_usize, usize::MAX, 0_usize);
+        for y in 0..height {
+            for x in 0..(width / 2) {
+                let offset = (y * width + x) * 4;
+                let [r, g, b, a] = [
+                    pixels[offset],
+                    pixels[offset + 1],
+                    pixels[offset + 2],
+                    pixels[offset + 3],
+                ];
+                if a >= 200 && b >= 140 && b > r.saturating_add(40) && g >= 60 {
+                    accent_px += 1;
+                    min_x = min_x.min(x);
+                    max_x = max_x.max(x);
+                    min_y = min_y.min(y);
+                    max_y = max_y.max(y);
+                }
+            }
+        }
+        assert!(
+            accent_px > 200 && accent_px < 2200,
+            "checked checkbox toggle must render a compact accent-tinted checkmark box, got {accent_px} accent pixels in {width}x{height}"
+        );
+        let mut inner_white = 0_usize;
+        for y in (min_y + 2)..max_y.saturating_sub(1) {
+            for x in (min_x + 2)..max_x.saturating_sub(1) {
+                let offset = (y * width + x) * 4;
+                let [r, g, b, a] = [
+                    pixels[offset],
+                    pixels[offset + 1],
+                    pixels[offset + 2],
+                    pixels[offset + 3],
+                ];
+                if a >= 200 && r >= 220 && g >= 220 && b >= 220 {
+                    inner_white += 1;
+                }
+            }
+        }
+        assert!(
+            inner_white > 25,
+            "checked checkbox toggle must render a bright checkmark glyph inside the accent box, got {inner_white} white pixels"
+        );
+    }
+
+    #[cfg(feature = "gpu_surface")]
+    fn offscreen_tabs_nav_checkbox_run() -> Result<(), Box<dyn StdError>> {
+        use cocoa_ui::MainThreadMarker;
+        #[cfg(target_os = "macos")]
+        use cocoa_ui::appkit::{ActivationPolicy, Application};
+        #[cfg(catalyst)]
+        use cocoa_ui::uikit::catalyst::BackgroundApplication;
+        use waterui::layout::Size;
+        #[cfg(target_os = "macos")]
+        use waterui_apple::native_test_support::gpu_surface;
+        #[cfg(catalyst)]
+        use waterui_apple::native_test_support::initialize_process;
+        use waterui_apple::native_test_support::view_renderer::{
+            AppleOffscreenRenderer, GpuRuntime,
+        };
+        use waterui_apple::native_test_support::{block_on_main, install_gpu, window_environment};
+        use waterui_capture::view_renderer::{RenderRequest, ViewRenderer};
+        use waterui_preview_protocol::run::{Alpha, write_png};
+
+        let mtm = MainThreadMarker::new().ok_or("must run on main thread")?;
+        #[cfg(catalyst)]
+        let _bg = {
+            initialize_process();
+            BackgroundApplication::bring_up(mtm)
+        };
+        #[cfg(target_os = "macos")]
+        {
+            gpu_surface::initialize_process();
+            let app = Application::shared(mtm);
+            if app.activation_policy() != ActivationPolicy::Prohibited {
+                assert!(app.set_activation_policy(ActivationPolicy::Prohibited));
+            }
+        }
+        let (mut env, _theme) = window_environment(mtm);
+        let runtime = block_on_main(30.0, GpuRuntime::new())
+            .map_err(|error| format!("GPU runtime failed: {error:?}"))?;
+        install_gpu(&mut env, runtime);
+        let renderer = AppleOffscreenRenderer::new(mtm);
+
+        let dir = output_dir();
+        let (tabs_png, nav_png, checkbox_png) = (
+            dir.join("offscreen_tabs.png"),
+            dir.join("offscreen_nav.png"),
+            dir.join("offscreen_checkbox.png"),
+        );
+        let out_marker = dir.join("offscreen_tabs_nav_checkbox.png");
+
+        block_on_main(60.0, async {
+            let tabs = renderer
+                .render_to_rgba(
+                    tabs_view(),
+                    &env,
+                    RenderRequest::new(Size::new(400.0, 260.0), DEFAULT_CONTENT_DEADLINE),
+                )
+                .await?;
+            let (rgba, w, h) = tabs.into_parts();
+            write_png(&tabs_png, w, h, rgba, Alpha::Premultiplied)?;
+
+            let nav = renderer
+                .render_to_rgba(
+                    navigation_view(),
+                    &env,
+                    RenderRequest::new(Size::new(400.0, 260.0), DEFAULT_CONTENT_DEADLINE),
+                )
+                .await?;
+            let (rgba, w, h) = nav.into_parts();
+            write_png(&nav_png, w, h, rgba, Alpha::Premultiplied)?;
+
+            let cb = renderer
+                .render_to_rgba(
+                    checkbox_toggle_view(),
+                    &env,
+                    RenderRequest::new(Size::new(220.0, 80.0), DEFAULT_CONTENT_DEADLINE),
+                )
+                .await?;
+            let (rgba, w, h) = cb.into_parts();
+            write_png(&checkbox_png, w, h, rgba.clone(), Alpha::Premultiplied)?;
+            write_png(&out_marker, w, h, rgba, Alpha::Premultiplied)?;
+            Ok::<_, Box<dyn StdError>>(())
+        })?;
+
+        assert_tabs_png(&tabs_png);
+        assert_navigation_png(&nav_png);
+        assert_checkbox_toggle_png(&checkbox_png);
+        assert_background_application();
+        Ok(())
     }
 }
 

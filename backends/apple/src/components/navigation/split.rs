@@ -22,9 +22,6 @@ use waterui::reactive::{Binding, Signal};
 #[cfg(target_os = "macos")]
 use waterui_core::Native;
 use waterui_core::id::Id;
-use waterui_core::layout::{
-    LayoutError, ProposalSize, Rect, ResolvedExtent, StretchAxis, SubView, ViewDimensions,
-};
 
 use crate::contract::{Held, KeepAlive, NativeLeaf, RenderContext};
 
@@ -36,29 +33,7 @@ pub fn realize_navigation_split_layout(
     platform::split_leaf(value, ctx)
 }
 
-struct Fill;
-
-impl SubView for Fill {
-    fn resolve_extent(
-        &self,
-        bounds: Rect,
-        proposal: ProposalSize,
-    ) -> Result<ResolvedExtent, LayoutError> {
-        ResolvedExtent::centred(bounds, self.measure(proposal).size)
-    }
-
-    fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
-        ViewDimensions::new(waterui_core::layout::Size::new(0.0, 0.0))
-    }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::Both
-    }
-
-    fn priority(&self) -> i32 {
-        0
-    }
-}
+use super::Fill;
 
 /// What a selection change must rebuild: everything downstream of it.
 struct Columns {
