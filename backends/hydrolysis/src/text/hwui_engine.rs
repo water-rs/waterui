@@ -90,7 +90,10 @@ impl<P: PlatformText> HwuiTextEngine<P> {
         let request = {
             let mut literal = ShapeRequest::new(&input.plain, &runs, default_style);
             literal.set_locale(&input.locale);
-            literal.set_max_width(max_width);
+            // Layout containers (such as `HStack`'s max-width probe) pass
+            // `Some(f32::INFINITY)` for unconstrained horizontal measurement;
+            // normalize non-finite widths to `None` (`UNBOUNDED`) like Parley.
+            literal.set_max_width(max_width.filter(|width| width.is_finite()));
             literal.set_max_lines(max_lines.map(NonZeroUsize::get));
             literal.set_ellipsis(max_lines.is_some());
             literal.set_alignment(if input.alignment == HorizontalAlignment::Leading {

@@ -836,3 +836,89 @@ fn canvas_text_registers_the_platform_layout_it_leases() {
         "no lines, nothing to draw"
     );
 }
+
+#[test]
+fn wrap_width_packs_unbounded_or_refuses_non_finite_and_negative() {
+    use super::wire::UNBOUNDED;
+
+    let runs = [run(0..3)];
+    let unbounded = packed(&ShapeRequest::new("abc", &runs, run(0..0))).unwrap();
+    assert!(
+        (unbounded.max_width() - UNBOUNDED).abs() < f32::EPSILON,
+        "None max_width must pack as UNBOUNDED"
+    );
+
+    let finite = packed(&{
+        let mut literal = ShapeRequest::new("abc", &runs, run(0..0));
+        literal.set_max_width(Some(0.0));
+        literal
+    })
+    .unwrap();
+    assert!(finite.max_width().abs() < f32::EPSILON);
+
+    for invalid in [f32::INFINITY, f32::NEG_INFINITY, f32::NAN, -1.0] {
+        let mut literal = ShapeRequest::new("abc", &runs, run(0..0));
+        literal.set_max_width(Some(invalid));
+        let error = packed(&literal).unwrap_err();
+        assert!(
+            error.to_string().contains("wrap width"),
+            "{invalid}: {error}"
+        );
+    }
+}
+
+#[test]
+fn hwui_text_engine_treats_non_finite_max_width_as_unbounded() {
+    use core::num::NonZeroUsize;
+
+    use waterui_core::layout::HorizontalAlignment;
+    use waterui_text::styled::StyledStr;
+
+    use super::wire::UNBOUNDED;
+    use crate::renderer::tests::test_environment;
+    use crate::text::{
+        FontFamilyResolution, HwuiTextEngine, TextEngine as _, TextService,
+        resolve_text_layout_input,
+    };
+
+    let provider = Arc::new(Mono::default());
+    let ids = TextLayoutIds::new();
+    let engine = HwuiTextEngine::new(
+        Arc::clone(&provider),
+        ids.clone(),
+        FontFamilyResolution::Strict,
+    );
+    let service = TextService::new(HwuiTextEngine::new(
+        Arc::clone(&provider),
+        ids,
+        FontFamilyResolution::Strict,
+    ));
+    let env = test_environment();
+    let styled = StyledStr::plain("Thin".to_owned());
+    let input = resolve_text_layout_input(&styled, HorizontalAlignment::Leading, &env);
+
+    for width in [Some(f32::INFINITY), Some(f32::NAN)] {
+        let layout = engine.shape(&input, width);
+        assert_eq!(layout.line_count(), 1);
+        assert!((layout.bounds().width() - 40.0).abs() < f64::EPSILON);
+
+        let limited = engine.shape_limited(&input, width, NonZeroUsize::new(1).unwrap(), |_, _| {
+            unreachable!("HwuiTextEngine handles max_lines directly")
+        });
+        assert_eq!(limited.line_count(), 1);
+        assert!((limited.bounds().width() - 40.0).abs() < f64::EPSILON);
+    }
+
+    let requests = provider.requests.lock().unwrap();
+    assert_eq!(requests.len(), 4);
+    for request in requests.iter() {
+        assert!((request.max_width() - UNBOUNDED).abs() < f32::EPSILON);
+    }
+    drop(requests);
+
+    // `TextService` treats `Some(f32::INFINITY)` and `None` as the same unbounded cache key.
+    let unconstrained = service.shape(&input, None);
+    let infinity = service.shape(&input, Some(f32::INFINITY));
+    assert_eq!(unconstrained.layout_id(), infinity.layout_id());
+    assert_eq!(provider.requests.lock().unwrap().len(), 5);
+}
