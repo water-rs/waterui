@@ -58,12 +58,12 @@ fn render_view_pixels(painter: OffscreenPainter, view: impl Fn() -> AnyView + 's
     capture_at(&mut runtime, start + Duration::from_millis(64))
 }
 
-#[cfg(hydrolysis_cpu_painter)]
-#[test]
-fn shader_paint_and_flowing_gradient_render_and_react_on_cpu_painter() {
+fn assert_shader_paint_and_flowing_gradient_render_and_react(
+    open_painter: fn() -> OffscreenPainter,
+) {
     let uniforms = Binding::container(vec![0.1_f32, 0.0, 0.0, 0.0]);
     let animated = Binding::container(false);
-    let painter = OffscreenPainter::open_cpu().expect("CPU painter opens");
+    let painter = open_painter();
     let uniforms_for_view = uniforms.clone();
     let animated_for_view = animated.clone();
     let mut runtime = HeadlessRuntime::new_for_tests_on_context(
@@ -121,15 +121,30 @@ fn shader_paint_and_flowing_gradient_render_and_react_on_cpu_painter() {
         anim_later[center]
     );
 
-    // `FlowingGradient` renders non-uniform colour bands on the CPU painter.
-    let flowing = render_view_pixels(
-        OffscreenPainter::open_cpu().expect("CPU painter opens"),
-        || AnyView::new(FlowingGradient::new().size(64.0, 32.0)),
-    );
+    // `FlowingGradient` renders non-uniform colour bands through `Paint::Shader`.
+    let flowing = render_view_pixels(open_painter(), || {
+        AnyView::new(FlowingGradient::new().size(64.0, 32.0))
+    });
     let top_left = &flowing[0..4];
     let bottom_right = &flowing[(31 * 64 + 63) * 4..(31 * 64 + 64) * 4];
     assert_eq!(top_left[3], 255);
     assert_ne!(top_left, bottom_right);
+}
+
+#[cfg(hydrolysis_gpu_painter)]
+#[test]
+fn shader_paint_and_flowing_gradient_render_and_react_on_gpu_painter() {
+    assert_shader_paint_and_flowing_gradient_render_and_react(|| {
+        OffscreenPainter::select_with(false).expect("GPU painter opens on test hardware")
+    });
+}
+
+#[cfg(hydrolysis_cpu_painter)]
+#[test]
+fn shader_paint_and_flowing_gradient_render_and_react_on_cpu_painter() {
+    assert_shader_paint_and_flowing_gradient_render_and_react(|| {
+        OffscreenPainter::open_cpu().expect("CPU painter opens")
+    });
 }
 
 #[cfg(all(hydrolysis_gpu_painter, hydrolysis_cpu_painter))]
