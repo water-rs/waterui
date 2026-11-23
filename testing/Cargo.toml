@@ -42,7 +42,7 @@ cargo_metadata = { workspace = true, optional = true }
 waterui-assets-planner = { workspace = true, features = ["font-declarations"], optional = true }
 
 [features]
-default = ["harness", "gpu", "flip"]
+default = ["harness", "gpu", "cpu", "flip"]
 # Headless Hydrolysis UI test harness (`ui`, `SemanticApp`, `OffscreenApp`, queries, perf).
 harness = [
     "dep:hydrolysis",

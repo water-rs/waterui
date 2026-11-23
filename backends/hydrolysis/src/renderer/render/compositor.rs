@@ -635,6 +635,37 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
         frame: FrameGeometry,
         capture: Option<cherenkov::OutputAlpha>,
     ) -> Result<Option<Vec<u8>>, FrameError> {
+        self.render_raster_with(state, frame, |surface, headroom| {
+            capture
+                .map(|alpha| surface.readback_rgba8(headroom, alpha))
+                .transpose()
+        })
+    }
+
+    /// Commits and renders the frame on `state`'s CPU engine, writing the
+    /// presented sRGB `0x00RRGGBB` pixels into `out` for a desktop software
+    /// surface.
+    #[cfg(hydrolysis_software_surface)]
+    pub(crate) fn render_raster_0rgb_into(
+        &mut self,
+        state: &Rc<crate::engine::RasterEngineState>,
+        frame: FrameGeometry,
+        out: &mut [u32],
+    ) -> Result<(), FrameError> {
+        self.render_raster_with(state, frame, |surface, headroom| {
+            surface.present_0rgb_into(headroom, out)
+        })
+    }
+
+    fn render_raster_with<R>(
+        &mut self,
+        state: &Rc<crate::engine::RasterEngineState>,
+        frame: FrameGeometry,
+        finish: impl FnOnce(
+            &crate::engine::RasterCherenkovSurface,
+            f32,
+        ) -> Result<R, cherenkov::RenderError>,
+    ) -> Result<R, FrameError> {
         let _render_span = tracing::debug_span!("hydrolysis_render_scene").entered();
         if !self
             .raster_window
@@ -681,17 +712,15 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
         self.frame_applied_filter_effect = std::time::Duration::ZERO;
         self.engine_tracks = crate::engine::EngineSurface::running_tracks(&window.surface);
         self.engine_rate_vote = EngineSurface::rate_vote(&window.surface);
-        let pixels = match rendered {
+        let output = match rendered {
             Ok(next) => {
                 self.engine_next = Some(next.into());
-                capture
-                    .map(|alpha| window.surface.readback_rgba8(headroom, alpha))
-                    .transpose()
+                finish(&window.surface, headroom)
             }
             Err(error) => Err(error),
         };
         self.raster_window = Some(window);
-        Ok(pixels?)
+        Ok(output?)
     }
 }
 

@@ -1958,6 +1958,21 @@ impl SurfaceRenderResult {
             snapshot: None,
         }
     }
+
+    #[cfg(hydrolysis_software_surface)]
+    pub(crate) const fn window_presented(
+        acquire: Duration,
+        render: Duration,
+        present: Duration,
+    ) -> Self {
+        Self {
+            presented: true,
+            acquire,
+            render,
+            present,
+            snapshot: None,
+        }
+    }
 }
 
 /// How a window's presentation kind renders one frame and gets it to the
@@ -2193,7 +2208,7 @@ pub(super) fn render_engine_presented_frame<S: crate::platform::EnginePresented>
     })
 }
 
-#[cfg(all(target_os = "macos", hydrolysis_winit))]
+#[cfg(all(target_os = "macos", hydrolysis_winit, hydrolysis_gpu_painter))]
 impl PaintedFrame for crate::platform::WinitSurface {
     fn render_frame(
         &mut self,
@@ -2202,6 +2217,51 @@ impl PaintedFrame for crate::platform::WinitSurface {
         display_scale: f64,
     ) -> Result<SurfaceRenderResult, FrameFailure> {
         render_engine_presented_frame(self, renderer, clear_color, display_scale)
+    }
+}
+
+#[cfg(hydrolysis_software_surface)]
+impl<D, W> PaintedFrame for crate::platform::SoftwareWindowSurface<D, W>
+where
+    D: raw_window_handle::HasDisplayHandle,
+    W: raw_window_handle::HasWindowHandle,
+{
+    fn render_frame(
+        &mut self,
+        renderer: &mut HydrolysisRenderer<crate::text::ParleyEngine>,
+        clear_color: peniko::Color,
+        display_scale: f64,
+    ) -> Result<SurfaceRenderResult, FrameFailure> {
+        self.present_frame(renderer, clear_color, display_scale, || {})
+    }
+}
+
+#[cfg(all(hydrolysis_winit, hydrolysis_cpu_painter))]
+impl PaintedFrame for crate::platform::WinitRasterSurface {
+    fn render_frame(
+        &mut self,
+        renderer: &mut HydrolysisRenderer<crate::text::ParleyEngine>,
+        clear_color: peniko::Color,
+        display_scale: f64,
+    ) -> Result<SurfaceRenderResult, FrameFailure> {
+        self.present_frame(renderer, clear_color, display_scale)
+    }
+}
+
+#[cfg(hydrolysis_winit)]
+impl PaintedFrame for crate::platform::WinitPresentation {
+    fn render_frame(
+        &mut self,
+        renderer: &mut HydrolysisRenderer<crate::text::ParleyEngine>,
+        clear_color: peniko::Color,
+        display_scale: f64,
+    ) -> Result<SurfaceRenderResult, FrameFailure> {
+        match self {
+            #[cfg(hydrolysis_gpu_painter)]
+            Self::Gpu(surface) => (**surface).render_frame(renderer, clear_color, display_scale),
+            #[cfg(hydrolysis_cpu_painter)]
+            Self::Cpu(surface) => surface.render_frame(renderer, clear_color, display_scale),
+        }
     }
 }
 
