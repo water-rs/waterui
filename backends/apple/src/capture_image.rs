@@ -29,6 +29,9 @@ use cocoa_ui::objc2_metal::{
 };
 use waterui_backend_core::Environment;
 
+#[cfg(render_server_capture)]
+use crate::capture::CaptureError as NativeCaptureError;
+
 /// The platform's native image object — `NSImage` on macOS, `UIImage` on
 /// iOS — the type icon and drag endpoints publish.
 #[cfg(target_os = "macos")]
@@ -82,6 +85,10 @@ pub enum CaptureFailure {
         /// The requested target height in pixels.
         height: u32,
     },
+    /// The pure-native offscreen capture path (`capture::capture_presented`)
+    /// failed to produce a bitmap.
+    #[cfg(render_server_capture)]
+    NativeCapture(NativeCaptureError),
 }
 
 impl core::fmt::Display for CaptureFailure {
@@ -110,6 +117,8 @@ impl core::fmt::Display for CaptureFailure {
                 f,
                 "the device could not allocate a {width}x{height} capture target"
             ),
+            #[cfg(render_server_capture)]
+            Self::NativeCapture(error) => write!(f, "{error}"),
         }
     }
 }
@@ -123,6 +132,8 @@ impl std::error::Error for CaptureFailure {
             #[cfg(target_os = "ios")]
             Self::NoWindowScene => None,
             Self::TargetAllocation { .. } => None,
+            #[cfg(render_server_capture)]
+            Self::NativeCapture(cause) => Some(cause),
         }
     }
 }
@@ -211,10 +222,10 @@ impl WindowHost {
     /// [`CaptureFailure::NoWindowScene`] on iOS when no connected
     /// `UIWindowScene` can host the offscreen window.
     #[cfg_attr(
-        any(target_os = "macos", all(feature = "native-test", catalyst)),
+        any(target_os = "macos", all(render_server_capture, catalyst)),
         expect(
             clippy::unnecessary_wraps,
-            reason = "non-Catalyst UIKit can fail with NoWindowScene; AppKit and native-test Catalyst always attach"
+            reason = "non-Catalyst UIKit can fail with NoWindowScene; AppKit and render-server Catalyst always attach"
         )
     )]
     pub fn attach_if_windowless(
@@ -260,13 +271,13 @@ impl WindowHost {
         };
         #[cfg(target_os = "ios")]
         let window = {
-            #[cfg(all(feature = "native-test", catalyst))]
+            #[cfg(all(render_server_capture, catalyst))]
             use cocoa_ui::bitmap::scene_less_capture_window;
             use cocoa_ui::bitmap::{any_window_scene, make_offscreen_window, show_capture_window};
-            #[cfg(all(feature = "native-test", catalyst))]
+            #[cfg(all(render_server_capture, catalyst))]
             use cocoa_ui::uikit::catalyst::BackgroundApplication;
 
-            #[cfg(all(feature = "native-test", catalyst))]
+            #[cfg(all(render_server_capture, catalyst))]
             let window = any_window_scene().map_or_else(
                 || {
                     let application = BackgroundApplication::bring_up(mtm);
@@ -274,7 +285,7 @@ impl WindowHost {
                 },
                 |scene| make_offscreen_window(mtm, &scene, size),
             );
-            #[cfg(not(all(feature = "native-test", catalyst)))]
+            #[cfg(not(all(render_server_capture, catalyst)))]
             let window = {
                 let scene = any_window_scene().ok_or(CaptureFailure::NoWindowScene)?;
                 make_offscreen_window(mtm, &scene, size)
@@ -570,10 +581,13 @@ impl CaptureDrive {
         env: &Environment,
         mtm: cocoa_ui::MainThreadMarker,
     ) -> Rc<Self> {
+        use cocoa_ui::capture::ViewCapture;
+
         let root = cocoa_ui::view::retain_base(root);
         let scale = cocoa_ui::view::backing_scale_factor(root.as_ref());
+        let capture = Rc::new(ViewCapture::new(mtm, root.clone()));
         let drive = Rc::new(Self {
-            capture: Rc::new(cocoa_ui::capture::ViewCapture::new(mtm, root.clone())),
+            capture,
             root,
             runtime: crate::gpu_runtime::runtime(env),
             scale,
@@ -709,6 +723,11 @@ impl CaptureDrive {
         let Some(runtime) = &self.runtime else {
             return Err(CaptureFailure::GpuRuntimeUnavailable);
         };
+        // Only the terminal readback pass needs render-server compositing:
+        // earlier scratch `pump` passes exist solely to advance GPU scenes
+        // and discard their pixels.
+        #[cfg(render_server_capture)]
+        self.capture.set_use_render_server(true);
         let (width, height) = pixel_extent(bounds.size, self.scale);
         // The redraw contract the retry loop waits on — surface requests
         // now wake a recapture instead of queueing a pump pass.

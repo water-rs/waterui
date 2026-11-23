@@ -33,10 +33,15 @@ use std::time::Instant;
 use cocoa_ui::MainThreadMarker;
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::{ActivationPolicy, Application};
+#[cfg(feature = "gpu_surface")]
+use cocoa_ui::capture::collect_capturables;
 use cocoa_ui::objc2_core_foundation::CFRunLoop;
 use waterui_backend_core::Environment;
+use waterui_capture::view_renderer::RenderResult;
 use waterui_preview_protocol::run::{Alpha, PreviewRunConfig, PreviewRunMode};
 use waterui_resources::ResourceContext;
+
+use crate::capture;
 
 /// The capture failure a preview run reports — `ViewCapture`'s with
 /// `gpu_surface`, the bitmap readback's without it.
@@ -562,43 +567,47 @@ impl Stage {
         }
     }
 
-    /// Captures the presented subtree: `ViewCapture` composites the native
-    /// raster with every GPU surface inside it. The owed content has
-    /// settled by now, so a zero-size subtree is genuinely empty, not still
-    /// loading.
+    /// Captures the presented subtree: pure-native trees render directly
+    /// through `capture::capture_presented` (using the opt-in in-process
+    /// `Core Animation` render server so Liquid Glass and backdrop materials
+    /// composite without any visible window), while trees carrying GPU
+    /// surfaces composite their render-server native raster with every GPU
+    /// surface through `ViewCapture`.
     #[cfg(feature = "gpu_surface")]
     #[expect(
         clippy::future_not_send,
         reason = "the capture runs on the main thread; the Retained native objects it holds across the wait are not Send"
     )]
-    async fn capture(
-        &self,
-    ) -> Result<waterui_capture::view_renderer::RenderResult, CaptureFailure> {
+    async fn capture(&self) -> Result<RenderResult, CaptureFailure> {
         // The window is never ordered in, so its display pass never runs on
-        // its own: run it explicitly — it draws the backing stores and
-        // attaches every subview's backing layer into the root layer tree
-        // `ViewCapture`'s `renderInContext` reads.
+        // its own: run it explicitly so backing stores and subview layers are
+        // current before either capture path reads them.
         #[cfg(target_os = "macos")]
         self.window.displayIfNeeded();
+        let mut has_capturable = false;
+        collect_capturables(&self.root, &mut |_| has_capturable = true);
+        if !has_capturable {
+            return capture::capture_presented(&self.root)
+                .await
+                .map_err(CaptureFailure::NativeCapture);
+        }
         let result = self.drive.capture_rgba().await?;
-        Ok(waterui_capture::view_renderer::RenderResult::new(
+        Ok(RenderResult::new(
             result.pixels,
             result.width,
             result.height,
         ))
     }
 
-    /// The `gpu_surface`-free capture: every leaf rasterizes through the
-    /// platform's own display path, so the plain bitmap readback covers the
-    /// whole subtree.
+    /// The `gpu_surface`-free capture: every leaf rasterizes through
+    /// `capture::capture_presented` (using the in-process `Core Animation`
+    /// render server so glass and backdrop materials composite cleanly).
     #[cfg(not(feature = "gpu_surface"))]
     #[expect(
         clippy::future_not_send,
         reason = "the capture runs on the main thread; the Retained native objects it holds across the wait are not Send"
     )]
-    async fn capture(
-        &self,
-    ) -> Result<waterui_capture::view_renderer::RenderResult, CaptureFailure> {
-        crate::capture::capture_presented(&self.root).await
+    async fn capture(&self) -> Result<RenderResult, CaptureFailure> {
+        capture::capture_presented(&self.root).await
     }
 }

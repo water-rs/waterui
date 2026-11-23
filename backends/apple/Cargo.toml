@@ -86,9 +86,10 @@ video_player = ["dep:waterui-video", "dep:waterkit-audio", "cocoa-ui/avkit", "wa
 
 # The `preview::run` entry `water preview` links — the generated preview
 # package enables it; `water run` never does, so every other Apple app
-# builds without `waterui-preview-protocol`'s dependency closure. It exists
-# on macOS (`AppKit`) and Mac Catalyst (`UIKit`).
-preview = ["dep:waterui-preview-protocol"]
+# builds without `waterui-preview-protocol`'s dependency closure or
+# `cocoa-ui/render-server-capture`. It exists on macOS (`AppKit`) and Mac
+# Catalyst (`UIKit`).
+preview = ["dep:waterui-preview-protocol", "cocoa-ui/render-server-capture"]
 
 # The `SwiftUI` embedding bridge: compiles `Sources/WaterUI/Embedding.swift`
 # header-free into `WaterUIBridge` and carries its `.swiftmodule` path in a
