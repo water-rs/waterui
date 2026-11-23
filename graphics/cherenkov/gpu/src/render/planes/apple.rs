@@ -2227,6 +2227,26 @@ impl LayerScene {
         }
     }
 
+    /// Synchronizes `rasters` with the render thread's active recorded-plane
+    /// set inside the commit transaction, retiring removed layers for `place`
+    /// to detach in the same transaction.
+    fn sync_rasters(&mut self, active: &FxHashSet<LayerId>) {
+        let retired: Vec<_> = self
+            .rasters
+            .keys()
+            .filter(|id| !active.contains(id))
+            .copied()
+            .collect();
+        for id in retired {
+            if let Some(layer) = self.rasters.remove(&id) {
+                self.retired_rasters.push(layer);
+            }
+        }
+        for &id in active {
+            self.rasters.entry(id).or_insert_with(anchored);
+        }
+    }
+
     /// Makes the hosted objects exactly `hosted`, resolving each object
     /// on main ([`host`]).
     #[cfg(not(target_os = "macos"))]
@@ -2661,6 +2681,8 @@ pub trait CommitApply: Send + 'static {
 struct MainCommit {
     /// The layer scene the commit rewrites.
     scene: MainOwned<LayerScene>,
+    /// Active recorded-plane layers as of this commit.
+    rasters: FxHashSet<LayerId>,
     /// New raster `IOSurface` contents, keyed by their promoted layer.
     contents: Vec<(LayerId, raster::Contents)>,
     /// The frame's hosted objects.
@@ -2681,6 +2703,7 @@ impl CommitApply for MainCommit {
     fn apply(self: Box<Self>, mtm: MainThreadMarker) {
         let Self {
             scene,
+            rasters,
             contents,
             hosted,
             placements,
@@ -2691,6 +2714,7 @@ impl CommitApply for MainCommit {
         } = *self;
         scene.with(mtm, |scene, mtm| {
             let _tx = Transaction::begin();
+            scene.sync_rasters(&rasters);
             #[cfg(target_os = "macos")]
             let responder = scene.hosted_responder();
             for (layer, contents) in contents {
@@ -2881,6 +2905,7 @@ impl SystemPlanes for LayerPlanes {
         self.motion.placed(tree_changed);
         let commit = MainCommit {
             scene: self.scene.clone(),
+            rasters: self.static_candidates.clone(),
             contents,
             hosted,
             placements,
@@ -2933,21 +2958,12 @@ impl SystemPlanes for LayerPlanes {
         for id in removed {
             self.static_candidates.remove(&id);
             self.buffers.remove(&id);
-            self.scene.run(move |scene, _| {
-                if let Some(layer) = scene.rasters.remove(&id) {
-                    scene.retired_rasters.push(layer);
-                }
-            });
         }
         for (&id, _) in candidates
             .iter()
             .filter(|(_, candidate)| candidate.source == Source::Recorded)
         {
-            if self.static_candidates.insert(id) {
-                self.scene.run(move |scene, _| {
-                    scene.rasters.insert(id, anchored());
-                });
-            }
+            self.static_candidates.insert(id);
         }
         self.request_parts(candidates.len().min(Self::BUDGET) + 1, None);
         for &layer in candidates.keys() {
