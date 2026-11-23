@@ -1,6 +1,9 @@
 package dev.waterui.hydrolysis
 
+import android.content.pm.ActivityInfo
+import android.hardware.display.DisplayManager
 import android.os.Bundle
+import android.view.Display
 import android.view.View
 import androidx.activity.ComponentActivity
 import androidx.activity.enableEdgeToEdge
@@ -58,6 +61,15 @@ abstract class HydrolysisActivity : ComponentActivity() {
         // system-bar and IME regions reach the renderer as insets the
         // layout engine reasons about, not as framework-consumed padding.
         enableEdgeToEdge()
+        val attachedDisplay =
+            try {
+                display
+            } catch (_: UnsupportedOperationException) {
+                getSystemService(DisplayManager::class.java)?.getDisplay(Display.DEFAULT_DISPLAY)
+            }
+        if (attachedDisplay?.isWideColorGamut == true) {
+            window.colorMode = ActivityInfo.COLOR_MODE_WIDE_COLOR_GAMUT
+        }
         // The window shows the empty host view while the bundled asset tree
         // syncs off the main thread; the session mounts once it finishes.
         setContentView(
