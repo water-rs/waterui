@@ -2,6 +2,7 @@
 //! each `VARIANT` pipeline, so a Metal or D3D regression shows on Linux.
 
 use cherenkov::__engine_test as split_test;
+use cherenkov_gpu::{backdrop_effect_text, content_effect_text};
 use cherenkov_shader::SPIRV_WRITER_FLAGS;
 use naga::back::{hlsl, msl, spv};
 use naga::valid::{Capabilities, ValidationFlags, Validator};
@@ -249,5 +250,59 @@ fn standalone_modules_emit() {
             .unwrap_or_else(|e| panic!("{name}: {e:?}"));
         effect_emits(name, &module, &info);
     }
+}
+}
+
+split_test! {
+/// Specialized backdrop and content effect modules strip each other's unused
+/// stubs and dispatch branches, and translate through every naga backend.
+fn specialized_effect_modules_strip_unused_stubs_and_emit() {
+    let backdrop_user = "fn backdrop_effect(px: BackdropPixel, params: array<vec4<f32>, 16>) -> vec4<f32> {
+        return backdrop_sample(px.p) + params[0];
+    }";
+    for union in [false, true] {
+        let source = backdrop_effect_text(backdrop_user, union);
+        for forbidden in [
+            "ContentPixel",
+            "content_texel",
+            "content_sample",
+            "content_effect",
+            "if kind == EFFECT_CONTENT",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "backdrop_effect_text(union={union}) retained `{forbidden}`"
+            );
+        }
+        let label = if union { "backdrop-union" } else { "backdrop-plain" };
+        let module = wgsl::parse_str(&source).unwrap_or_else(|e| panic!("{label}: {e}"));
+        let info = Validator::new(
+            ValidationFlags::all(),
+            Capabilities::SHADER_FLOAT16_IN_FLOAT32,
+        )
+        .validate(&module)
+        .unwrap_or_else(|e| panic!("{label}: {e:?}"));
+        effect_emits(label, &module, &info);
+    }
+
+    let content_user = "fn content_effect(px: ContentPixel, params: array<vec4<f32>, 16>) -> vec4<f32> {
+        let t = clamp(1.0 + px.sdf / (12.0 * px.scale), 0.0, 1.0);
+        return content_sample(px.p - px.normal * params[0].x * t * t);
+    }";
+    let source = content_effect_text(content_user);
+    for forbidden in ["backdrop_effect", "if kind == EFFECT_CONTENT"] {
+        assert!(
+            !source.contains(forbidden),
+            "content_effect_text retained `{forbidden}`"
+        );
+    }
+    let module = wgsl::parse_str(&source).unwrap_or_else(|e| panic!("content-effect: {e}"));
+    let info = Validator::new(
+        ValidationFlags::all(),
+        Capabilities::SHADER_FLOAT16_IN_FLOAT32,
+    )
+    .validate(&module)
+    .unwrap_or_else(|e| panic!("content-effect: {e:?}"));
+    effect_emits("content-effect", &module, &info);
 }
 }
