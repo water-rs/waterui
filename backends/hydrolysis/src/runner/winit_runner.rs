@@ -30,7 +30,6 @@ use waterui_core::Environment;
 use waterui_core::Str;
 #[cfg(target_os = "windows")]
 use waterui_core::contract_violation;
-use waterui_graphics::gpu::RedrawHandle;
 use waterui_text::FontCollection;
 
 #[cfg(target_os = "windows")]
@@ -51,7 +50,8 @@ use winit::window::{Window as NativeWindow, WindowId};
 #[cfg(any(feature = "menu", feature = "color-picker"))]
 use super::window::runtime_window_origin;
 use super::window::{RootWindow, RootWindows};
-use crate::platform::{EngineGpuContext, PlatformWindow, WinitWindow};
+use crate::platform::{PlatformWindow, WinitPainter, WinitWindow};
+use crate::renderer::HostRedraw;
 #[cfg(any(feature = "text-field", feature = "secure-field"))]
 use crate::renderer::HydrolysisTextContextMenuMode;
 #[cfg(any(feature = "menu", feature = "color-picker"))]
@@ -921,7 +921,7 @@ pub fn run<W: Windows, M: AppMenuBar>(
         popup_window_manager,
         windows: HashMap::new(),
         popup_window_ids: std::collections::HashSet::new(),
-        gpu_context: None,
+        painter: None,
         accesskit_adapters: HashMap::new(),
         last_accessibility_updates: HashMap::new(),
         local_executor: Some(local_executor),
@@ -1000,7 +1000,7 @@ struct WinitRunner {
     /// Transient popup windows (mounted through `PopupWindowManager`): a
     /// pointer press that lands outside every app window dismisses them.
     popup_window_ids: std::collections::HashSet<WindowId>,
-    gpu_context: Option<EngineGpuContext>,
+    painter: Option<WinitPainter>,
     accesskit_adapters: HashMap<WindowId, AccessKitAdapter>,
     last_accessibility_updates: HashMap<WindowId, accesskit::TreeUpdate>,
     /// The executor is installed the first time the active event loop is
@@ -1328,21 +1328,21 @@ impl WinitRunner {
         let wake = {
             let event_proxy = self.event_proxy.clone();
             let window_id = native_window.id();
-            RedrawHandle::new(move || {
+            HostRedraw::new(move || {
                 // A loop that already exited has no window left to redraw.
                 let _ = event_proxy.send_event(RunnerEvent::RedrawWindow(window_id));
             })
         };
-        let created = pollster::block_on(WinitWindow::new_with_shared_gpu(
+        let created = WinitWindow::open_with_painter(
             native_window,
             wake,
-            self.gpu_context.as_ref(),
+            self.painter.as_ref(),
             super::window_requires_transparency(window, &self.env),
             self.window_icon.clone(),
-        ));
-        let (platform, gpu_context) = match created {
+        );
+        let (platform, painter) = match created {
             Ok(created) => created,
-            Err(error) if self.gpu_context.is_some() => {
+            Err(error) if self.painter.is_some() => {
                 tracing::error!(
                     "{:#}; the window is not mounted",
                     waterui_core::Error::from(error)
@@ -1351,8 +1351,8 @@ impl WinitRunner {
             }
             Err(error) => super::exit_without_gpu(error),
         };
-        if self.gpu_context.is_none() {
-            self.gpu_context = Some(gpu_context);
+        if self.painter.is_none() {
+            self.painter = Some(painter);
         }
         Some(platform)
     }

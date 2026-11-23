@@ -3888,6 +3888,10 @@ pub enum PainterUnavailable {
     #[cfg(hydrolysis_cpu_painter)]
     #[error("the Cherenkov CPU engine could not start")]
     Cpu(#[source] cherenkov::EngineError),
+    /// The window's software presentation surface could not be created.
+    #[cfg(all(hydrolysis_winit, hydrolysis_cpu_painter))]
+    #[error("failed to create the window's software presentation surface: {0}")]
+    SoftwareSurface(String),
 }
 
 #[cfg(all(hydrolysis_cherenkov, not(target_arch = "wasm32")))]
@@ -4216,7 +4220,7 @@ mod wayland_blur;
 #[cfg(all(hydrolysis_winit, target_os = "macos"))]
 mod macos_display_link;
 
-#[cfg(all(hydrolysis_winit, target_os = "macos"))]
+#[cfg(all(hydrolysis_winit, hydrolysis_gpu_painter, target_os = "macos"))]
 mod macos_display_moves;
 
 #[cfg(all(hydrolysis_winit, target_os = "macos"))]
@@ -4368,11 +4372,16 @@ impl EngineGpuContext {
 
 #[cfg(hydrolysis_winit)]
 mod winit_impl {
+    #[cfg(hydrolysis_gpu_painter)]
     use super::EngineGpuContext;
     use super::FrameRate;
+    #[cfg(hydrolysis_cpu_painter)]
+    use std::num::NonZeroU32;
     use std::rc::Rc;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
+    #[cfg(hydrolysis_cpu_painter)]
+    use std::time::Instant;
 
     use nami::Signal;
     use waterui::window::{UserAttention, WindowLevel, WindowState};
@@ -4392,21 +4401,27 @@ mod winit_impl {
     };
 
     use super::{
-        CursorStyle, DeviceLostError, GpuGeneration, GpuUnavailable, InputConventions, InputEvent,
-        KeyCode, KeyState, Modifiers, MultiClickConfig, PaintedWindow, PlatformWindow,
-        PointerButton, PointerKind, TextInputPurpose, TextInputState, TouchPhase,
-        TouchScrollConfig, enabled_window_buttons, validated_window_frame,
+        CursorStyle, InputConventions, InputEvent, KeyCode, KeyState, Modifiers, MultiClickConfig,
+        PaintedWindow, PainterUnavailable, PlatformWindow, PointerButton, PointerKind,
+        SurfaceError, TextInputPurpose, TextInputState, TouchPhase, TouchScrollConfig,
+        enabled_window_buttons, validated_window_frame,
     };
-    #[cfg(not(target_os = "macos"))]
-    use super::{SurfaceError, SurfaceFrame, SurfaceProvider, reclaim_device};
+    #[cfg(hydrolysis_gpu_painter)]
+    use super::{DeviceLostError, GpuGeneration, GpuUnavailable};
+    #[cfg(all(hydrolysis_gpu_painter, not(target_os = "macos")))]
+    use super::{SurfaceFrame, SurfaceProvider, reclaim_device};
+    use crate::renderer::HostRedraw;
+    #[cfg(hydrolysis_gpu_painter)]
     use waterui_graphics::gpu::RedrawHandle;
 
     /// The host step every winit GPU error names.
+    #[cfg(hydrolysis_gpu_painter)]
     const CONTEXT: &str = "hydrolysis winit surface";
 
     /// The window's presentation state. On macOS the window is
     /// engine-presented (water-rs/waterui#2223): no `wgpu::Surface` exists
     /// on the winit view, and the struct owns the lazy typed engine window.
+    #[cfg(hydrolysis_gpu_painter)]
     pub struct WinitSurface {
         /// The host's swapchain: absent on macOS, where the engine's
         /// `cherenkov_gpu::WindowTarget` presents the frame itself.
@@ -4466,7 +4481,7 @@ mod winit_impl {
         _screen_observer: Option<super::macos_display_moves::DisplayMoves>,
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(all(hydrolysis_gpu_painter, not(target_os = "macos")))]
     impl core::fmt::Debug for WinitSurface {
         fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
             f.debug_struct("WinitSurface")
@@ -4475,7 +4490,7 @@ mod winit_impl {
         }
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(all(hydrolysis_gpu_painter, target_os = "macos"))]
     impl core::fmt::Debug for WinitSurface {
         fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
             f.debug_struct("WinitSurface")
@@ -4484,6 +4499,7 @@ mod winit_impl {
         }
     }
 
+    #[cfg(hydrolysis_gpu_painter)]
     impl WinitSurface {
         /// The X11 presentation defect a transparent window hits on an old
         /// Mesa software rasterizer: the WSI's `x11_present_to_x11_sw` sent
@@ -4840,7 +4856,7 @@ mod winit_impl {
         }
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(all(hydrolysis_gpu_painter, target_os = "macos"))]
     impl super::EnginePresented for WinitSurface {
         fn render_targets(
             &mut self,
@@ -4867,7 +4883,7 @@ mod winit_impl {
         }
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(all(hydrolysis_gpu_painter, target_os = "macos"))]
     impl super::PresentationSurface for WinitSurface {
         fn device(&self) -> &wgpu::Device {
             &self.handles.gpu_context().shared_device.device
@@ -4894,7 +4910,7 @@ mod winit_impl {
         }
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(all(hydrolysis_gpu_painter, not(target_os = "macos")))]
     impl super::PresentationSurface for WinitSurface {
         /// The wgpu device this surface renders through.
         fn device(&self) -> &wgpu::Device {
@@ -4935,7 +4951,7 @@ mod winit_impl {
         }
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(all(hydrolysis_gpu_painter, not(target_os = "macos")))]
     impl SurfaceProvider for WinitSurface {
         fn acquire(&mut self) -> Result<SurfaceFrame, SurfaceError> {
             if self.handles.loss().is_lost() {
@@ -5193,6 +5209,168 @@ mod winit_impl {
     /// `clamp_frame_to_monitors` judges a frame write against.
     type MonitorRect = (LogicalPosition<f64>, LogicalSize<f64>);
 
+    /// Software presentation surface for a winit window rendered on
+    /// `cherenkov-cpu` through `softbuffer`.
+    #[cfg(hydrolysis_cpu_painter)]
+    pub struct WinitRasterSurface {
+        pub(crate) state: Rc<crate::engine::RasterEngineState>,
+        surface: softbuffer::Surface<Arc<NativeWindow>, Arc<NativeWindow>>,
+        _context: softbuffer::Context<Arc<NativeWindow>>,
+        window: Arc<NativeWindow>,
+        size: (u32, u32),
+    }
+
+    #[cfg(hydrolysis_cpu_painter)]
+    impl core::fmt::Debug for WinitRasterSurface {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            f.debug_struct("WinitRasterSurface")
+                .field("size", &self.size)
+                .finish_non_exhaustive()
+        }
+    }
+
+    #[cfg(hydrolysis_cpu_painter)]
+    impl WinitRasterSurface {
+        fn new(
+            window: Arc<NativeWindow>,
+            state: Rc<crate::engine::RasterEngineState>,
+        ) -> Result<Self, PainterUnavailable> {
+            let context = softbuffer::Context::new(Arc::clone(&window))
+                .map_err(|error| PainterUnavailable::SoftwareSurface(error.to_string()))?;
+            let surface = softbuffer::Surface::new(&context, Arc::clone(&window))
+                .map_err(|error| PainterUnavailable::SoftwareSurface(error.to_string()))?;
+            let inner = window.inner_size();
+            Ok(Self {
+                state,
+                surface,
+                _context: context,
+                window,
+                size: (inner.width.max(1), inner.height.max(1)),
+            })
+        }
+
+        const fn resize(&mut self, width: u32, height: u32) {
+            self.size = (
+                if width == 0 { 1 } else { width },
+                if height == 0 { 1 } else { height },
+            );
+        }
+
+        pub(crate) fn present_frame(
+            &mut self,
+            renderer: &mut crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine>,
+            clear_color: peniko::Color,
+            display_scale: f64,
+        ) -> Result<crate::runner::window::SurfaceRenderResult, crate::runner::window::FrameFailure>
+        {
+            let (width, height) = self.size;
+            let nz_width = NonZeroU32::new(width.max(1)).expect("clamped width is non-zero");
+            let nz_height = NonZeroU32::new(height.max(1)).expect("clamped height is non-zero");
+            let acquire_started_at = Instant::now();
+            self.surface.resize(nz_width, nz_height).map_err(|error| {
+                tracing::warn!(%error, "hydrolysis software window surface resize failed");
+                crate::runner::window::FrameFailure::Skipped(SurfaceError::Outdated)
+            })?;
+            let mut buffer = self.surface.buffer_mut().map_err(|error| {
+                tracing::warn!(%error, "hydrolysis software window buffer acquire failed");
+                crate::runner::window::FrameFailure::Skipped(SurfaceError::Outdated)
+            })?;
+            let acquire = acquire_started_at.elapsed();
+
+            let render_started_at = Instant::now();
+            renderer.render_raster_0rgb_into(
+                &self.state,
+                crate::renderer::FrameGeometry {
+                    display_scale,
+                    width: nz_width.get(),
+                    height: nz_height.get(),
+                    base_color: crate::renderer::working_color(clear_color),
+                },
+                &mut buffer,
+            )?;
+            let render = render_started_at.elapsed();
+
+            let present_started_at = Instant::now();
+            self.window.pre_present_notify();
+            buffer.present().map_err(|error| {
+                tracing::warn!(%error, "hydrolysis software window buffer present failed");
+                crate::runner::window::FrameFailure::Skipped(SurfaceError::Outdated)
+            })?;
+            let present = present_started_at.elapsed();
+
+            Ok(
+                crate::runner::window::SurfaceRenderResult::window_presented(
+                    acquire, render, present,
+                ),
+            )
+        }
+    }
+
+    /// The painter a winit runner renders its windows with, chosen once with
+    /// the first window and shared across all windows of the process.
+    #[derive(Clone, Debug)]
+    #[non_exhaustive]
+    pub enum WinitPainter {
+        /// The GPU painter, on a device chain every window of the runner shares.
+        #[cfg(hydrolysis_gpu_painter)]
+        Gpu(EngineGpuContext),
+        /// The CPU painter, on an engine every window of the runner shares.
+        #[cfg(hydrolysis_cpu_painter)]
+        Cpu(Rc<crate::engine::RasterEngineState>),
+    }
+
+    /// Presentation surface of a [`WinitWindow`], matching the runner's
+    /// selected [`WinitPainter`].
+    #[derive(Debug)]
+    #[non_exhaustive]
+    pub enum WinitPresentation {
+        /// GPU presentation (`wgpu::Surface` or Apple `WindowTarget`).
+        #[cfg(hydrolysis_gpu_painter)]
+        Gpu(Box<WinitSurface>),
+        /// Software presentation (`softbuffer` over `cherenkov-cpu`).
+        #[cfg(hydrolysis_cpu_painter)]
+        Cpu(WinitRasterSurface),
+    }
+
+    impl WinitPresentation {
+        #[cfg_attr(
+            not(hydrolysis_gpu_painter),
+            expect(
+                clippy::missing_const_for_fn,
+                reason = "the GPU variant's resize is not const; a CPU-only build has only the const arm"
+            )
+        )]
+        fn resize(&mut self, width: u32, height: u32) {
+            match self {
+                #[cfg(hydrolysis_gpu_painter)]
+                Self::Gpu(surface) => {
+                    super::PresentationSurface::resize(&mut **surface, width, height);
+                }
+                #[cfg(hydrolysis_cpu_painter)]
+                Self::Cpu(surface) => surface.resize(width, height),
+            }
+        }
+
+        #[cfg_attr(
+            not(hydrolysis_gpu_painter),
+            expect(
+                clippy::missing_const_for_fn,
+                clippy::needless_pass_by_ref_mut,
+                reason = "the GPU variant mutates its surface; a CPU-only build has only the no-op arm"
+            )
+        )]
+        fn set_transparent(&mut self, transparent: bool) {
+            match self {
+                #[cfg(hydrolysis_gpu_painter)]
+                Self::Gpu(surface) => surface.set_transparent(transparent),
+                #[cfg(hydrolysis_cpu_painter)]
+                Self::Cpu(_) => {
+                    let _ = transparent;
+                }
+            }
+        }
+    }
+
     /// The `PlatformWindow` realized on a winit window: its surface, input
     /// queues and visibility signals, and the IME/geometry sync state.
     #[derive(Debug)]
@@ -5204,8 +5382,8 @@ mod winit_impl {
         window: Arc<NativeWindow>,
         /// The host's wake for this window, behind every
         /// [`host_redraw_handle`](PaintedWindow::host_redraw_handle).
-        wake: RedrawHandle,
-        surface: WinitSurface,
+        wake: HostRedraw,
+        surface: WinitPresentation,
         pending_surface_size: Option<PhysicalSize<u32>>,
         pending_events: Vec<InputEvent>,
         pointer_position: (f32, f32),
@@ -5304,6 +5482,7 @@ mod winit_impl {
         ///
         /// # Errors
         /// [`GpuUnavailable`], as [`Self::new_with_shared_gpu`].
+        #[cfg(hydrolysis_gpu_painter)]
         #[expect(
             clippy::future_not_send,
             reason = "the GPU context's engine is main-thread Rc state; the winit runner drives this future with pollster::block_on on the main thread"
@@ -5333,24 +5512,11 @@ mod winit_impl {
         /// chain when given and returning the `EngineGpuContext` in use so
         /// the caller can hand it to the next surface.
         ///
-        /// `wake` asks the host's event loop to redraw this window. GPU
-        /// content and the engine's render thread call it from their own
-        /// threads, and the render thread may hold its last clone, so it
-        /// must not own or touch the winit window: on macOS a winit window
-        /// used or dropped off the main thread hops synchronously onto the
-        /// main thread, which deadlocks while the main thread waits on the
-        /// calling thread — as it does when it shuts the engine down after
-        /// the last window closes. Post the request to the event loop and
-        /// redraw the window there.
-        ///
-        /// `application_icon` is the icon the host staged on the window at
-        /// creation: `apply_properties` restores it when the declaration's
-        /// `icon` binding reads `None`.
-        ///
         /// # Errors
         /// [`GpuUnavailable`] when the host has no usable adapter, the
         /// adapter refuses the device, or the window's surface cannot be
         /// created or present on the adapter.
+        #[cfg(hydrolysis_gpu_painter)]
         #[expect(
             clippy::future_not_send,
             reason = "the GPU context's engine is main-thread Rc state; the winit runner drives this future with pollster::block_on on the main thread"
@@ -5364,6 +5530,148 @@ mod winit_impl {
         ) -> Result<(Self, EngineGpuContext), GpuUnavailable> {
             let (surface, gpu) =
                 WinitSurface::new(window.clone(), shared_gpu, requires_transparency).await?;
+            let host_wake = HostRedraw::new(move || wake.request_redraw());
+            Ok((
+                Self::from_presentation(
+                    window,
+                    host_wake,
+                    WinitPresentation::Gpu(Box::new(surface)),
+                    requires_transparency,
+                    application_icon,
+                ),
+                gpu,
+            ))
+        }
+
+        /// Opens `window`'s presentation on `shared_painter`, or selects the
+        /// runner's painter on the first window: GPU when a usable hardware
+        /// adapter presents `window`, falling back to `cherenkov-cpu` through
+        /// `softbuffer` when both painters are compiled in and the host has no
+        /// usable GPU.
+        ///
+        /// # Errors
+        /// [`PainterUnavailable`] when the selected painter cannot open or
+        /// attach to `window`.
+        pub fn open_with_painter(
+            window: Arc<NativeWindow>,
+            wake: HostRedraw,
+            shared_painter: Option<&WinitPainter>,
+            requires_transparency: bool,
+            application_icon: Option<winit::window::Icon>,
+        ) -> Result<(Self, WinitPainter), PainterUnavailable> {
+            let (presentation, painter) =
+                Self::open_presentation(&window, shared_painter, requires_transparency)?;
+            Ok((
+                Self::from_presentation(
+                    window,
+                    wake,
+                    presentation,
+                    requires_transparency,
+                    application_icon,
+                ),
+                painter,
+            ))
+        }
+
+        fn open_presentation(
+            window: &Arc<NativeWindow>,
+            shared_painter: Option<&WinitPainter>,
+            requires_transparency: bool,
+        ) -> Result<(WinitPresentation, WinitPainter), PainterUnavailable> {
+            if let Some(painter) = shared_painter {
+                return match painter {
+                    #[cfg(hydrolysis_gpu_painter)]
+                    WinitPainter::Gpu(gpu) => {
+                        let (surface, gpu) = pollster::block_on(WinitSurface::new(
+                            Arc::clone(window),
+                            Some(gpu),
+                            requires_transparency,
+                        ))?;
+                        Ok((
+                            WinitPresentation::Gpu(Box::new(surface)),
+                            WinitPainter::Gpu(gpu),
+                        ))
+                    }
+                    #[cfg(hydrolysis_cpu_painter)]
+                    WinitPainter::Cpu(cpu) => {
+                        let surface = WinitRasterSurface::new(Arc::clone(window), Rc::clone(cpu))?;
+                        Ok((
+                            WinitPresentation::Cpu(surface),
+                            WinitPainter::Cpu(Rc::clone(cpu)),
+                        ))
+                    }
+                };
+            }
+
+            #[cfg(hydrolysis_both_painters)]
+            {
+                let without_hardware_gpu = super::should_force_fallback_adapter();
+                if without_hardware_gpu {
+                    tracing::info!(
+                        target: "hydrolysis::gpu",
+                        without_hardware_gpu,
+                        "window painter: CPU, fallback requested"
+                    );
+                } else {
+                    match pollster::block_on(WinitSurface::new(
+                        Arc::clone(window),
+                        None,
+                        requires_transparency,
+                    )) {
+                        Ok((surface, gpu)) => {
+                            tracing::info!(target: "hydrolysis::gpu", "window painter: GPU");
+                            return Ok((
+                                WinitPresentation::Gpu(Box::new(surface)),
+                                WinitPainter::Gpu(gpu),
+                            ));
+                        }
+                        Err(error) => {
+                            tracing::info!(
+                                target: "hydrolysis::gpu",
+                                %error,
+                                "window painter: CPU, no usable hardware GPU"
+                            );
+                        }
+                    }
+                }
+                let cpu =
+                    crate::engine::RasterEngineState::new().map_err(PainterUnavailable::Cpu)?;
+                let surface = WinitRasterSurface::new(Arc::clone(window), Rc::clone(&cpu))?;
+                Ok((WinitPresentation::Cpu(surface), WinitPainter::Cpu(cpu)))
+            }
+
+            #[cfg(all(hydrolysis_gpu_painter, not(hydrolysis_both_painters)))]
+            {
+                tracing::info!(target: "hydrolysis::gpu", "window painter: GPU");
+                let (surface, gpu) = pollster::block_on(WinitSurface::new(
+                    Arc::clone(window),
+                    None,
+                    requires_transparency,
+                ))?;
+                Ok((
+                    WinitPresentation::Gpu(Box::new(surface)),
+                    WinitPainter::Gpu(gpu),
+                ))
+            }
+
+            #[cfg(all(hydrolysis_cpu_painter, not(hydrolysis_both_painters)))]
+            {
+                let _ = requires_transparency;
+                tracing::info!(target: "hydrolysis::gpu", "window painter: CPU");
+                let cpu =
+                    crate::engine::RasterEngineState::new().map_err(PainterUnavailable::Cpu)?;
+                let surface = WinitRasterSurface::new(Arc::clone(window), Rc::clone(&cpu))?;
+                Ok((WinitPresentation::Cpu(surface), WinitPainter::Cpu(cpu)))
+            }
+        }
+
+        fn from_presentation(
+            window: Arc<NativeWindow>,
+            wake: HostRedraw,
+            surface: WinitPresentation,
+            requires_transparency: bool,
+            application_icon: Option<winit::window::Icon>,
+        ) -> Self {
             let size = window.inner_size();
             let minimized = window.is_minimized().unwrap_or(false);
             let zero_sized = size.width == 0 || size.height == 0;
@@ -5371,44 +5679,39 @@ mod winit_impl {
             let cloaked = window_is_cloaked(&window);
             #[cfg(not(target_os = "windows"))]
             let cloaked = false;
-            Ok((
-                Self {
-                    #[cfg(target_os = "macos")]
-                    frame_rate_demand: super::macos_display_link::FrameRateDemandLink::attach(
-                        &window,
-                    ),
-                    window,
-                    wake,
-                    surface,
-                    occluded: false,
-                    zero_sized,
-                    minimized,
-                    cloaked,
-                    occlusion_signal: Arc::new(AtomicBool::new(minimized || zero_sized || cloaked)),
-                    pending_surface_size: None,
-                    pending_events: Vec::new(),
-                    pointer_position: (0.0, 0.0),
-                    modifiers: Modifiers::default(),
-                    text_input_sync: TextInputSync::default(),
-                    current_cursor_style: CursorStyle::Arrow,
-                    applied_size_limits: None,
-                    applied_properties: None,
-                    application_icon,
-                    pending_mapped_request: MappedRequestRetry::default(),
-                    transparent: requires_transparency,
-                    #[cfg(any(
-                        target_os = "macos",
-                        target_os = "windows",
-                        hydrolysis_wayland_platform
-                    ))]
-                    blur_behind: false,
-                    #[cfg(hydrolysis_wayland_platform)]
-                    wayland_blur: super::wayland_blur::WaylandBlurSupport::NotAsked,
-                    #[cfg(target_os = "macos")]
-                    blur_effect_view: None,
-                },
-                gpu,
-            ))
+            Self {
+                #[cfg(target_os = "macos")]
+                frame_rate_demand: super::macos_display_link::FrameRateDemandLink::attach(&window),
+                window,
+                wake,
+                surface,
+                occluded: false,
+                zero_sized,
+                minimized,
+                cloaked,
+                occlusion_signal: Arc::new(AtomicBool::new(minimized || zero_sized || cloaked)),
+                pending_surface_size: None,
+                pending_events: Vec::new(),
+                pointer_position: (0.0, 0.0),
+                modifiers: Modifiers::default(),
+                text_input_sync: TextInputSync::default(),
+                current_cursor_style: CursorStyle::Arrow,
+                applied_size_limits: None,
+                applied_properties: None,
+                application_icon,
+                pending_mapped_request: MappedRequestRetry::default(),
+                transparent: requires_transparency,
+                #[cfg(any(
+                    target_os = "macos",
+                    target_os = "windows",
+                    hydrolysis_wayland_platform
+                ))]
+                blur_behind: false,
+                #[cfg(hydrolysis_wayland_platform)]
+                wayland_blur: super::wayland_blur::WaylandBlurSupport::NotAsked,
+                #[cfg(target_os = "macos")]
+                blur_effect_view: None,
+            }
         }
 
         /// The winit [`WindowId`] identifying this window to the event loop.
@@ -6796,11 +7099,11 @@ mod winit_impl {
     }
 
     impl PaintedWindow for WinitWindow {
-        /// The GPU surface this window presents into, by presentation kind.
-        type Presentation = WinitSurface;
-        fn surface(&mut self) -> &mut WinitSurface {
+        /// The presentation surface this window renders into, by painter.
+        type Presentation = WinitPresentation;
+        fn surface(&mut self) -> &mut WinitPresentation {
             if let Some(size) = self.pending_surface_size.take() {
-                super::PresentationSurface::resize(&mut self.surface, size.width, size.height);
+                self.surface.resize(size.width, size.height);
             }
             &mut self.surface
         }
@@ -7939,11 +8242,12 @@ pub use web_impl::report_fatal_error;
 #[cfg(all(target_arch = "wasm32", feature = "web", feature = "video"))]
 pub use web_impl::yield_wheel;
 
-#[cfg(hydrolysis_winit)]
-#[cfg(hydrolysis_winit)]
-pub use winit_impl::ExportedWinitWindow as WinitWindow;
-#[cfg(all(hydrolysis_winit, target_os = "macos"))]
+#[cfg(all(hydrolysis_winit, hydrolysis_cpu_painter))]
+pub use winit_impl::WinitRasterSurface;
+#[cfg(all(hydrolysis_winit, hydrolysis_gpu_painter, target_os = "macos"))]
 pub use winit_impl::WinitSurface;
+#[cfg(hydrolysis_winit)]
+pub use winit_impl::{ExportedWinitWindow as WinitWindow, WinitPainter, WinitPresentation};
 
 /// Device-loss recovery tests: a simulated loss must swap the surface's
 /// generation for a rebuilt device on the same instance, and a streak of

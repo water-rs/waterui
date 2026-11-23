@@ -125,6 +125,11 @@ accesskit_winit = { version = "0.34.1", optional = true }
 png = { version = "0.18", optional = true }
 waterui-assets = { workspace = true, optional = true }
 
+[target.'cfg(not(any(target_os = "android", target_os = "ios", target_arch = "wasm32")))'.dependencies]
+# Software presentation buffer for desktop windows when rendering through
+# `cherenkov-cpu` (`winit` + `cpu`).
+softbuffer = { version = "0.4.8", default-features = false, features = ["x11", "x11-dlopen", "wayland", "wayland-dlopen"], optional = true }
+
 # The iOS host, under the GPU painter it presents through: `cocoa-ui` owns
 # `UIApplicationMain`, the scene delegate, the input view, the frame clock
 # and the main queue; Hydrolysis implements the window around them.
@@ -563,10 +568,10 @@ gpu = [
 # GPU device (`GpuView`, which `ShaderPaintView`, `FlowingGradient` and
 # the GPU video player render through, and `ExternalFrameView`) panic at mount
 # on it. A theme's backdrop shaders and a filtered view's filter run on the CPU
-# backend's lane executor. With `gpu` as well, the
-# offscreen runtime renders on the GPU when adapter selection finds a usable
-# hardware adapter and on the CPU otherwise. The windowed runner presents
-# through the GPU only (water-rs/waterui#4064).
+# backend's lane executor. With `gpu` as well, both the offscreen runtime and
+# the desktop `winit` runner render on the GPU when adapter selection finds a
+# usable hardware adapter and fall back to the CPU otherwise (`winit` presents
+# CPU frames through `softbuffer`).
 cpu = [
     "dep:cherenkov",
     "dep:cherenkov-cpu",
@@ -661,6 +666,7 @@ winit = [
     "dep:accesskit_winit",
     "dep:ctrlc",
     "dep:png",
+    "dep:softbuffer",
     "dep:waterui-assets",
     "dep:signal-hook",
     "dep:libc",

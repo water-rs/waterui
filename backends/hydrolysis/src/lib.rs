@@ -10,12 +10,13 @@
 // that shape — and the build script warns on it; the generated launcher
 // always enables the resolved painter features.
 
-// The winit runner presents through a wgpu surface; presenting CPU frames to
-// a window is water-rs/waterui#4064.
-#[cfg(all(feature = "winit", not(feature = "gpu"), not(target_os = "android")))]
+#[cfg(all(
+    feature = "winit",
+    not(any(feature = "gpu", feature = "cpu")),
+    not(target_os = "android")
+))]
 compile_error!(
-    "hydrolysis: the `winit` runner presents through the GPU backend — enable the `gpu` feature \
-     (windows presenting `cpu` frames are water-rs/waterui#4064)"
+    "hydrolysis: the `winit` runner requires a painter — enable the `gpu` or `cpu` feature"
 );
 
 #[cfg(any(
@@ -101,8 +102,8 @@ pub use hydrolysis_style::{Style, draw, theme};
 pub use keyboard_types;
 #[cfg(hydrolysis_cpu_painter)]
 pub use platform::RasterOffscreen;
-#[cfg(hydrolysis_winit)]
-pub use platform::WinitWindow;
+#[cfg(all(hydrolysis_winit, hydrolysis_cpu_painter))]
+pub use platform::WinitRasterSurface;
 #[cfg(hydrolysis_runtime)]
 pub use platform::{
     BackEdge, BackNavigation, EdgeBounce, EdgeStretch, ExponentialDecay, FlingDeceleration,
@@ -122,6 +123,8 @@ pub use platform::{
 pub use platform::{OffscreenPainter, PainterUnavailable};
 #[cfg(hydrolysis_cherenkov)]
 pub use platform::{OffscreenTarget, OffscreenWindow};
+#[cfg(hydrolysis_winit)]
+pub use platform::{WinitPainter, WinitPresentation, WinitWindow};
 #[cfg(hydrolysis_runtime)]
 pub use platform_view::{
     PlacementStretch, PlatformView, PlatformViewPlacement, PlatformViewSink, PlatformViewSource,

@@ -75,10 +75,11 @@ fn configure_cfg_aliases() {
         // backend — nothing in this library may — and on iOS the UIKit host
         // owns the application. Every winit-scoped item gates on this alias,
         // so `--features winit` compiles on both and simply means nothing.
-        // It presents through the GPU painter; `lib.rs` names the missing
-        // `gpu` feature when `winit` is asked for without it.
+        // It presents through the GPU painter or, via `softbuffer`, the CPU
+        // painter; `lib.rs` names the missing painter feature when `winit` is
+        // asked for with neither.
         hydrolysis_winit: {
-            all(feature = "winit", not(android_platform), not(target_os = "ios"), feature = "gpu")
+            all(feature = "winit", not(android_platform), not(target_os = "ios"), hydrolysis_cherenkov)
         },
         // Where `hydrolysis::run` exists: every target but Android, whose
         // entry point is the Kotlin host, and bare wasm32, which reaches no
@@ -101,7 +102,7 @@ fn configure_cfg_aliases() {
         // gate the engine window path keys on, so a host that presents the
         // same way joins by widening this alias.
         hydrolysis_apple_engine_window: {
-            any(all(hydrolysis_winit, target_os = "macos"), hydrolysis_uikit)
+            any(all(hydrolysis_winit, hydrolysis_gpu_painter, target_os = "macos"), hydrolysis_uikit)
         },
         // The platform range-editing protocol (`runner::editing`): a host
         // whose input method edits the focused field through UTF-16 ranges,
