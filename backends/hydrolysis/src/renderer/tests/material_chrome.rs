@@ -15,9 +15,9 @@ use std::time::Duration;
 use waterui_core::Binding;
 
 use cherenkov_record::{
-    BackdropEffect, BackdropShaderSource, CaptureClass, CaptureLevels, CaptureScale,
-    ContainerRecipe, GroupMember, Live, MaterialCapture, MaterialEffect, MaterialGrouping,
-    MaterialRegistry, MaterialShader, OuterExtent, ShapeData, UnionSmoothing,
+    BackdropEffect, BackdropSample, BackdropShaderSource, CaptureClass, CaptureLevels,
+    CaptureScale, ContainerRecipe, GroupMember, Live, MaterialCapture, MaterialEffect,
+    MaterialGrouping, MaterialRegistry, MaterialShader, OuterExtent, ShapeData, UnionSmoothing,
 };
 use kurbo::{Affine, Rect, RoundedRect, Shape as _};
 use nami::SignalExt as _;
@@ -2469,4 +2469,39 @@ fn a_recipe_naming_a_solo_class_is_reported() {
     for member in mirror_chrome_layers(&renderer) {
         assert!(mirrored_node(&renderer, member).backdrop.is_none());
     }
+}
+
+/// A `MaterialEffect`'s `emission` is forwarded to the bound
+/// `BackdropSample` on mount and updates live when the signal changes.
+#[test]
+fn material_effect_emission_reaches_mounted_backdrop_sample_and_updates_reactively() {
+    use crate::renderer::HydrolysisRenderer;
+    use crate::text::ParleyEngine;
+    use nami::binding;
+
+    let emission = binding([0.25_f32, 0.5, 0.75, 1.0]);
+    let effect = Live::from(emission.clone())
+        .map(|emit| MaterialEffect::new(vec![0.5]).emission(emit))
+        .into_shared();
+    let plan = glass_plan(vec![ChromeDraw {
+        effect,
+        ..chrome_draw(GLASS, GLASS_SHADER, vec![])
+    }]);
+    let mut renderer = test_renderer_with_theme(MinimalTestTheme {
+        chrome: plan.clone(),
+        ..Default::default()
+    });
+    mirror_frame_at(&mut renderer, &plan, tap_view(), DISPLAY_SCALE);
+    let member = mirror_chrome_layers(&renderer)[0];
+    let sample_emission = |renderer: &HydrolysisRenderer<ParleyEngine>| {
+        mirrored_node(renderer, member)
+            .backdrop
+            .as_ref()
+            .map(BackdropSample::member_emission)
+    };
+    assert_eq!(sample_emission(&renderer), Some([0.25, 0.5, 0.75, 1.0]));
+
+    let updated = [0.6_f32, 0.4, 0.2, 0.8];
+    emission.set(updated);
+    assert_eq!(sample_emission(&renderer), Some(updated));
 }
