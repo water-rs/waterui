@@ -345,6 +345,9 @@ pub struct BackdropSample {
     outer: BackdropOuter,
     /// The device pixels per logical pixel of the member's recording.
     recording_scale: RecordingScale,
+    /// Optional member emission in straight linear Display P3 RGB plus
+    /// scalar emission strength; `[0.0; 4]` when unset.
+    emission: [f32; 4],
 }
 
 impl BackdropSample {
@@ -356,6 +359,7 @@ impl BackdropSample {
             effect: None,
             outer: BackdropOuter::ZERO,
             recording_scale: RecordingScale::ONE,
+            emission: [0.0; 4],
         }
     }
 
@@ -368,6 +372,7 @@ impl BackdropSample {
             effect: Some(effect.into()),
             outer: BackdropOuter::ZERO,
             recording_scale: RecordingScale::ONE,
+            emission: [0.0; 4],
         }
     }
 
@@ -398,6 +403,16 @@ impl BackdropSample {
         }
     }
 
+    /// Sets the member's optional emission in straight linear Display P3
+    /// RGB plus scalar emission strength (`[r, g, b, strength]`), queried
+    /// by union siblings through `backdrop_sibling`. Defaults to
+    /// `[0.0; 4]`.
+    #[must_use]
+    pub const fn emission(mut self, emission: [f32; 4]) -> Self {
+        self.emission = emission;
+        self
+    }
+
     /// The sampled group.
     #[must_use]
     pub const fn group(&self) -> BackdropId {
@@ -423,6 +438,14 @@ impl BackdropSample {
     #[must_use]
     pub const fn recording_scale(&self) -> RecordingScale {
         self.recording_scale
+    }
+
+    /// The member's emission (`[r, g, b, strength]` in straight linear
+    /// Display P3 plus scalar strength; `[0.0; 4]` unless
+    /// [`BackdropSample::emission`] set it).
+    #[must_use]
+    pub const fn member_emission(&self) -> [f32; 4] {
+        self.emission
     }
 }
 
@@ -463,41 +486,59 @@ impl AnimLanes for BackdropSample {
             }
             _ => return None,
         }
+        lanes.extend(self.emission.map(f64::from));
         Some(lanes.into_boxed_slice())
     }
 
     fn with_lanes(&self, lanes: &[f64]) -> Self {
         let lane = |index: usize| f64_as_f32(lanes[index]);
         let positive = |index: usize| lane(index).max(f32::MIN_POSITIVE);
-        let effect = self.effect.as_ref().map(|effect| match effect {
-            BackdropEffect::Color(_) => {
-                BackdropEffect::Color(ColorMatrix(std::array::from_fn(|i| lane(1 + i))))
-            }
-            BackdropEffect::Refraction(_) => BackdropEffect::Refraction(Refraction {
-                depth: positive(1),
-                strength: lane(2).max(0.0),
-            }),
-            BackdropEffect::Rim(_) => BackdropEffect::Rim(Rim {
-                width: positive(1),
-                color: std::array::from_fn(|i| lane(2 + i)),
-                gain: lane(6),
-            }),
-            BackdropEffect::Level(_) => BackdropEffect::Level(LevelRamp {
-                depth: positive(1),
-                edge: lane(2),
-                interior: lane(3),
-            }),
-            BackdropEffect::Shader(shader) => BackdropEffect::Shader(BackdropShaderEffect {
-                shader: shader.shader,
-                uniforms: (0..shader.uniforms.len()).map(|i| lane(1 + i)).collect(),
-                reach: shader.reach,
-            }),
-        });
+        let (effect, emission_offset) = match self.effect.as_ref() {
+            None => (None, 1),
+            Some(BackdropEffect::Color(_)) => (
+                Some(BackdropEffect::Color(ColorMatrix(std::array::from_fn(
+                    |i| lane(1 + i),
+                )))),
+                1 + 12,
+            ),
+            Some(BackdropEffect::Refraction(_)) => (
+                Some(BackdropEffect::Refraction(Refraction {
+                    depth: positive(1),
+                    strength: lane(2).max(0.0),
+                })),
+                1 + 2,
+            ),
+            Some(BackdropEffect::Rim(_)) => (
+                Some(BackdropEffect::Rim(Rim {
+                    width: positive(1),
+                    color: std::array::from_fn(|i| lane(2 + i)),
+                    gain: lane(6),
+                })),
+                1 + 6,
+            ),
+            Some(BackdropEffect::Level(_)) => (
+                Some(BackdropEffect::Level(LevelRamp {
+                    depth: positive(1),
+                    edge: lane(2),
+                    interior: lane(3),
+                })),
+                1 + 3,
+            ),
+            Some(BackdropEffect::Shader(shader)) => (
+                Some(BackdropEffect::Shader(BackdropShaderEffect {
+                    shader: shader.shader,
+                    uniforms: (0..shader.uniforms.len()).map(|i| lane(1 + i)).collect(),
+                    reach: shader.reach,
+                })),
+                1 + shader.uniforms.len(),
+            ),
+        };
         Self {
             group: self.group,
             effect,
             outer: BackdropOuter(lane(0).max(0.0)),
             recording_scale: self.recording_scale,
+            emission: std::array::from_fn(|i| lane(emission_offset + i)),
         }
     }
 }
@@ -898,6 +939,16 @@ impl From<CaptureScale> for BackdropSpec {
 /// member's own clip without a union, and `weight` the member's ownership
 /// of `q` under the union (1 without one). `backdrop_field(px.p)` is
 /// exactly `px.sdf` and `px.normal`.
+///
+/// Inside a union group, `fn backdrop_sibling_count() -> u32` returns
+/// the number of members in the group (`0u` without a union),
+/// `fn backdrop_sibling_index() -> u32` returns the current member's own
+/// index (`0u` without a union), and
+/// `fn backdrop_sibling(i: u32, q: vec2<f32>) -> BackdropSibling`, with
+/// `struct BackdropSibling { sdf: f32, normal: vec2<f32>, emission: vec4<f32> }`,
+/// returns member `i`'s signed distance, outward unit normal at device
+/// point `q`, and optional emission ([`BackdropSample::emission`]), or
+/// zeroed fields outside a union group or out of bounds.
 /// `fn backdrop_sample(q: vec2<f32>) -> vec4<f32>` bilinearly samples the
 /// filtered capture at device point `q` — at `q · s` on a group's capture
 /// grid ([`CaptureScale`]) — clamped to its region. For a group keeping

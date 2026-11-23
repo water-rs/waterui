@@ -122,7 +122,13 @@ fn drop_marked(source: &str, marker: &str) -> String {
 }
 
 /// What the `// union-stub` spans carry.
-const UNION_NAMES: &[&str] = &["union_field", "member_field"];
+const UNION_NAMES: &[&str] = &[
+    "union_field",
+    "member_field",
+    "UnionSibling",
+    "union_sibling_count",
+    "union_sibling",
+];
 /// What the `// image-source` spans carry.
 const IMAGE_SOURCE_NAMES: &[&str] = &["image_decode", "image_source_texel"];
 /// What the `// cell-buffer` spans carry: the GPU coverage arena reads.
@@ -152,11 +158,15 @@ const NON_EFFECT_NAMES: &[&str] = &[
 const BACKDROP_ONLY_NAMES: &[&str] = &[
     "BackdropPixel",
     "BackdropField",
+    "BackdropSibling",
     "backdrop_sampler",
     "backdrop_sample",
     "backdrop_sample_level",
     "backdrop_sample_blur",
     "backdrop_field",
+    "backdrop_sibling_count",
+    "backdrop_sibling_index",
+    "backdrop_sibling",
     "backdrop_effect",
     "erf_tail",
     "if kind == EFFECT_CONTENT",

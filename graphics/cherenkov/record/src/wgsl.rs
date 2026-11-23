@@ -19,12 +19,13 @@ pub const PAINT_ENTRY: &str = "main";
 
 /// The backdrop shader contract as declarations.
 ///
-/// It holds `BackdropPixel`, `BackdropField`, `move_space` and the `SPACE_*`
-/// constants, and the capture reads `backdrop_sample`,
-/// `backdrop_sample_level` and `backdrop_field`, whose bodies only declare
-/// their signatures: an evaluator binds every call to them to its own
-/// capture and field. It is written against [`filtrate_core::space::WGSL`],
-/// which precedes it.
+/// It holds `BackdropPixel`, `BackdropField`, `BackdropSibling`,
+/// `move_space` and the `SPACE_*` constants, and the queries
+/// `backdrop_sample`, `backdrop_sample_level`, `backdrop_field`,
+/// `backdrop_sibling_count`, `backdrop_sibling_index` and
+/// `backdrop_sibling`, whose bodies only declare their signatures: an
+/// evaluator binds every call to them to its own capture and field. It
+/// is written against [`filtrate_core::space::WGSL`], which precedes it.
 pub const BACKDROP: &str = include_str!("wgsl/backdrop.wgsl");
 
 /// The function a backdrop shader defines:

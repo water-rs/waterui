@@ -773,6 +773,45 @@ fn backdrop_field(q: vec2<f32>) -> BackdropField {
     let own = device_sdf(inst.clip_inv, inst.clip, q);
     return BackdropField(own.x, own.yz, 1.0);
 }
+
+struct BackdropSibling {
+    sdf: f32,
+    normal: vec2<f32>,
+    emission: vec4<f32>,
+}
+
+fn backdrop_sibling_count() -> u32 {
+    // union-stub
+    let inst = instances[backdrop_member];
+    if ((inst.meta_.w >> 24u) & FLAG_UNION) != 0u {
+        return union_sibling_count(bitcast<u32>(inst.uv.x));
+    }
+    // union-stub
+    return 0u;
+}
+
+fn backdrop_sibling_index() -> u32 {
+    // union-stub
+    let inst = instances[backdrop_member];
+    if ((inst.meta_.w >> 24u) & FLAG_UNION) != 0u {
+        if union_sibling_count(bitcast<u32>(inst.uv.x)) != 0u {
+            return bitcast<u32>(inst.uv.y);
+        }
+    }
+    // union-stub
+    return 0u;
+}
+
+fn backdrop_sibling(i: u32, q: vec2<f32>) -> BackdropSibling {
+    // union-stub
+    let inst = instances[backdrop_member];
+    if ((inst.meta_.w >> 24u) & FLAG_UNION) != 0u {
+        let u = union_sibling(bitcast<u32>(inst.uv.x), i, q);
+        return BackdropSibling(u.sdf, u.normal, u.emission);
+    }
+    // union-stub
+    return BackdropSibling(0.0, vec2<f32>(0.0), vec4<f32>(0.0));
+}
 // backdrop-only
 
 // backdrop-effect-stub
