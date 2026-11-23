@@ -1077,7 +1077,7 @@ mod tests {
 
     use super::{
         Alpha, PreviewRunConfig, PreviewRunMode, RawFrameError, RawFrameStreamReader,
-        RawFrameStreamWriter, ScenarioEvent, ScenarioEventKind, VideoCaptureConfig,
+        RawFrameStreamWriter, ScenarioEvent, ScenarioEventKind, ScenarioSample, VideoCaptureConfig,
         flatten_alpha_over_white, frame_offset, plan_scenario_timeline,
     };
 
@@ -1186,7 +1186,7 @@ mod tests {
         assert_eq!(samples[0].offset(), frame_offset(0, 10));
         assert_eq!(samples[1].offset(), frame_offset(1, 10));
         assert_eq!(samples[2].offset(), frame_offset(2, 10));
-        assert!(samples.iter().all(super::ScenarioSample::record_video));
+        assert!(samples.iter().all(ScenarioSample::record_video));
     }
 
     #[test]

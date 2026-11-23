@@ -494,7 +494,7 @@ async fn render_and_write(
 
 /// Inputs for a scenario timeline capture on Apple (`AppKit` or Mac Catalyst).
 struct ScenarioRun<'a> {
-    size: cocoa_ui::Size,
+    size: Size,
     color_scheme: Option<ColorScheme>,
     content_deadline: Duration,
     output_dir: Option<&'a Path>,
