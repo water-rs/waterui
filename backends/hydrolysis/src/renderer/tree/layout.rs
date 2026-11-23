@@ -307,9 +307,14 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                         };
                         let non_scrolling = |offer: Option<f32>| match offer {
                             Some(0.0) => node.non_scrolling_minimum.get().unwrap_or_else(|| {
-                                let value = cross_extent(measured.expect(
+                                let answer = cross_extent(measured.expect(
                                     "a cold non-scrolling minimum runs the content measure",
                                 ));
+                                let value = if answer.is_finite() {
+                                    answer.max(0.0)
+                                } else {
+                                    0.0
+                                };
                                 node.non_scrolling_minimum.set(Some(value));
                                 value
                             }),
