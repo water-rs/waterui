@@ -5,12 +5,15 @@
 // core crate, formatted in by `build.rs` and `shaders.rs`.
 //
 // Backdrop union group data rides in the `stops` storage buffer: per
-// union group one header `Stop` — `(smoothing k, member count n, -, -)`
-// in its `color` — followed by `n` member records of exactly two `Stop`s:
-// `stops[s]` carries `clip_inv[0]` in `color` and `clip_inv[1]` across
-// `offset`/`pad`, `stops[s + 1]` the centred shape's `half`, `aspect`,
-// `exponent` and `radii` the same way. A member instance's `uv.xy`
-// bitcast to u32 carries `(record base, member index)`.
+// union group one header `Stop` — `(smoothing k, member count n,
+// has_emission, is_union)` in its `color` — followed by `n` member
+// records of 2 `Stop`s when `has_emission == 0` or 3 `Stop`s when
+// `has_emission != 0`: `stops[s]` carries `clip_inv[0]` in `color` and
+// `clip_inv[1]` across `offset`/`pad`, `stops[s + 1]` the centred
+// shape's `half`, `aspect`, `exponent` and `radii` the same way, and
+// `stops[s + 2].color` carries the member's emission when present.
+// A member instance's `uv.xy` bitcast to u32 carries `(record base,
+// member index)`.
 
 // The union field's evaluation at `pixel`: the folded signed distance,
 // the unit outward normal, the ownership weight, the field's pixel width
@@ -56,11 +59,12 @@ fn union_field(base: u32, ord: u32, pixel: vec2<f32>) -> UnionField {
     let header = stops[base];
     let k = header.color.x;
     let n = u32(header.color.y);
+    let stride = select(2u, 3u, header.color.z != 0.0);
     var ds: array<f32, UNION_MAX_MEMBERS>;
     var gs: array<vec2<f32>, UNION_MAX_MEMBERS>;
     var own = 0.0;
     for (var j = 0u; j < n; j = j + 1u) {
-        let e = union_member_dist(base + 1u + j * 2u, pixel);
+        let e = union_member_dist(base + 1u + j * stride, pixel);
         ds[j] = e.x;
         gs[j] = e.yz;
         if (j == ord) {
@@ -138,4 +142,38 @@ var<private> member_field: UnionField;
 // `params.x`. It replaces the member's clip coverage for the composite.
 fn union_coverage(u: UnionField, outer: f32) -> f32 {
     return u.w_own * coverage(u.d - outer, u.w);
+}
+
+struct UnionSibling {
+    sdf: f32,
+    normal: vec2<f32>,
+    emission: vec4<f32>,
+}
+
+fn union_sibling_count(base: u32) -> u32 {
+    let header = stops[base];
+    if header.color.w == 0.0 {
+        return 0u;
+    }
+    return u32(header.color.y);
+}
+
+fn union_sibling(base: u32, i: u32, pixel: vec2<f32>) -> UnionSibling {
+    let header = stops[base];
+    if header.color.w == 0.0 {
+        return UnionSibling(0.0, vec2<f32>(0.0), vec4<f32>(0.0));
+    }
+    let n = u32(header.color.y);
+    if i >= n {
+        return UnionSibling(0.0, vec2<f32>(0.0), vec4<f32>(0.0));
+    }
+    let has_emission = header.color.z != 0.0;
+    let stride = select(2u, 3u, has_emission);
+    let s = base + 1u + i * stride;
+    let e = union_member_dist(s, pixel);
+    var em = vec4<f32>(0.0);
+    if has_emission {
+        em = stops[s + 2u].color;
+    }
+    return UnionSibling(e.x, e.yz, em);
 }

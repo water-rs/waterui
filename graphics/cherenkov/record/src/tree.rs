@@ -2650,11 +2650,13 @@ mod hierarchy_tests {
                 depth: 8.0,
                 strength: 2.0,
             },
-        );
+        )
+        .emission([0.25, 0.5, 0.75, 1.0]);
         let lanes = sample.anim_lanes(&sample).expect("a sample has lanes");
-        assert_eq!(&*lanes, &[0.0, 8.0, 2.0]);
-        let rebuilt = sample.with_lanes(&[-1.0, -3.0, -0.5]);
+        assert_eq!(&*lanes, &[0.0, 8.0, 2.0, 0.25, 0.5, 0.75, 1.0]);
+        let rebuilt = sample.with_lanes(&[-1.0, -3.0, -0.5, 0.125, 0.375, 0.625, 0.875]);
         assert_eq!(rebuilt.outer_extent().get(), 0.0);
+        assert_eq!(rebuilt.member_emission(), [0.125, 0.375, 0.625, 0.875]);
         let Some(BackdropEffect::Refraction(refraction)) = rebuilt.effect() else {
             panic!("the rebuilt sample keeps its kind")
         };

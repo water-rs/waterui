@@ -445,7 +445,9 @@ fn synthetic_state(frame: &Frame, instances: Range<usize>, hash: &mut FxHasher) 
         }
         if instance.meta[3] & (FLAG_UNION << 24) != 0 {
             let first = instance.uv[0].to_bits() as usize;
-            let count = 1 + 2 * frame.stops[first].color[1] as usize;
+            let header = frame.stops[first].color;
+            let stride = if header[2] == 0.0 { 2 } else { 3 };
+            let count = 1 + stride * header[1] as usize;
             hash.write(bytemuck::cast_slice(&frame.stops[first..first + count]));
             template.uv[0] = 0.0;
         }

@@ -313,14 +313,21 @@ fn specialized_effect_modules_strip_unused_stubs_and_emit() {
     for forbidden in common_forbidden.into_iter().chain([
         "BackdropPixel",
         "BackdropField",
+        "BackdropSibling",
+        "UnionSibling",
         "backdrop_sampler",
         "backdrop_sample",
         "backdrop_sample_level",
         "backdrop_sample_blur",
         "backdrop_field",
+        "backdrop_sibling_count",
+        "backdrop_sibling_index",
+        "backdrop_sibling",
         "backdrop_effect",
         "erf_tail",
         "union_field",
+        "union_sibling_count",
+        "union_sibling",
         "if kind == EFFECT_CONTENT",
     ]) {
         assert!(

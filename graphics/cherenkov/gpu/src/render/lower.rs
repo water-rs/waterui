@@ -1986,6 +1986,9 @@ struct MemberEntry {
     outer: f32,
     /// The member effect's sampling reach, device pixels.
     reach: f32,
+    /// Optional member emission in straight linear Display P3 RGB plus
+    /// scalar emission strength; `[0.0; 4]` when unset.
+    emission: [f32; 4],
 }
 
 /// Reusable state for anchor planning and capture emission, owned by the
@@ -2684,6 +2687,12 @@ impl<'a> Lowering<'a> {
         );
         let spec = groups[&g].spec;
         let outer = sample.outer_extent().get();
+        let emission = sample.member_emission();
+        if !emission.into_iter().all(f32::is_finite) {
+            return Err(RenderError::Render(
+                "backdrop emission has a non-finite entry".into(),
+            ));
+        }
         // A union-field member's own clip is a group datum the
         // composite reads back through the union records in `stops`:
         // its analytic shape and inverse must exist — a path clip has
@@ -2735,6 +2744,7 @@ impl<'a> Lowering<'a> {
                 record,
                 outer,
                 reach: reach.unwrap_or(0.0),
+                emission,
             },
         );
         let anchored = spec.anchor_layer().is_some();
@@ -7510,9 +7520,13 @@ fn plan_union(plan: &mut BackdropPlan, stops: &mut Vec<Stop>) -> Result<(), Rend
         reason = "member runs stay below u32 and member counts below 2^24"
     )]
     if let Some(k) = union_k {
+        let has_emission = plan
+            .members
+            .values()
+            .any(|m| m.emission.into_iter().any(|v| v.abs() > 0.0));
         let base = stops.len() as u32;
         stops.push(Stop {
-            color: [k, n as f32, 0.0, 0.0],
+            color: [k, n as f32, f32::from(u8::from(has_emission)), 1.0],
             offset: 0.0,
             pad: [0.0; 3],
         });
@@ -7522,6 +7536,13 @@ fn plan_union(plan: &mut BackdropPlan, stops: &mut Vec<Stop>) -> Result<(), Rend
                 .get_mut(id)
                 .expect("an aproned member is planned");
             push_union_record(stops, entry.record.expect("union members carry records"));
+            if has_emission {
+                stops.push(Stop {
+                    color: entry.emission,
+                    offset: 0.0,
+                    pad: [0.0; 3],
+                });
+            }
             entry.union = Some(base);
         }
     } else {

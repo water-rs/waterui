@@ -27,10 +27,23 @@ pub const SAMPLE: usize = 0;
 pub const SAMPLE_LEVEL: usize = 1;
 /// `backdrop_field(q)`'s index.
 pub const FIELD: usize = 2;
+/// `backdrop_sibling_count()`'s index.
+pub const SIBLING_COUNT: usize = 3;
+/// `backdrop_sibling_index()`'s index.
+pub const SIBLING_INDEX: usize = 4;
+/// `backdrop_sibling(i, q)`'s index.
+pub const SIBLING: usize = 5;
 
 /// What the raster pass supplies a backdrop shader.
 const BACKDROP: Interface<'static> = Interface {
-    functions: &["backdrop_sample", "backdrop_sample_level", "backdrop_field"],
+    functions: &[
+        "backdrop_sample",
+        "backdrop_sample_level",
+        "backdrop_field",
+        "backdrop_sibling_count",
+        "backdrop_sibling_index",
+        "backdrop_sibling",
+    ],
     inputs: &[
         "backdrop_origin",
         "backdrop_size",

@@ -337,15 +337,25 @@ impl BoxClip {
     }
 }
 
+/// One union member's clip geometry and optional emission.
+#[derive(Clone, Copy, Debug)]
+pub struct UnionMember {
+    /// Device → box-local geometry for SDF evaluation.
+    pub clip: BoxClip,
+    /// Straight linear Display P3 RGB + scalar emission strength.
+    #[cfg(feature = "shaders")]
+    pub emission: [f32; 4],
+}
+
 /// The union-field data a member's sample composites against: every
-/// member's clip box in paint order, the smoothing distance,
-/// this member's index and its `outer` extent.
+/// member's clip box and emission in paint order, the smoothing
+/// distance, this member's index and its `outer` extent.
 #[derive(Clone, Debug)]
 pub struct UnionSample {
-    /// Each member's clip box, in paint order. A lone `outer`-band
-    /// member of a non-union group is its own one-member list with
-    /// `k == 0`.
-    pub members: Arc<[BoxClip]>,
+    /// Each member's clip box and emission, in paint order. A lone
+    /// `outer`-band member of a non-union group is its own one-member
+    /// list with `k == 0`.
+    pub members: Arc<[UnionMember]>,
     /// The group's smoothing distance `k`; `0` folds to the member's
     /// own distance.
     pub k: f32,
@@ -611,8 +621,8 @@ struct BackdropPlan {
     /// The group's union smoothing distance; `0` when the group has no
     /// union field.
     union_k: f32,
-    /// Every member's clip box in `order`, when the group unions.
-    union_members: Arc<[BoxClip]>,
+    /// Every member's clip box and emission in `order`, when the group unions.
+    union_members: Arc<[UnionMember]>,
     /// The innermost filter scope the capture item lands in.
     scope: Option<LayerId>,
 }
@@ -786,6 +796,9 @@ struct Member {
     field: Option<BoxClip>,
     /// The member's `outer` extent.
     outer: f32,
+    /// The member's emission (`[r, g, b, strength]`, default `[0.0; 4]`).
+    #[cfg(feature = "shaders")]
+    emission: [f32; 4],
     /// The member's index in the group's paint order.
     ord: u32,
     /// The innermost enclosing filter scope.
@@ -1761,6 +1774,12 @@ impl<'a, 'b> Lowering<'a, 'b> {
     ) -> Result<(), RenderError> {
         let g = sample.group().raw();
         let outer = sample.outer_extent().get();
+        let emission = sample.member_emission();
+        if !emission.into_iter().all(f32::is_finite) {
+            return Err(RenderError::Render(
+                "backdrop emission has a non-finite entry".into(),
+            ));
+        }
         let spec = prepared.spec;
         let field_member = spec.union_field().is_some() || outer > 0.0;
         let (field, effect, reach) = match box_form(clip) {
@@ -1815,6 +1834,8 @@ impl<'a, 'b> Lowering<'a, 'b> {
                 reach,
                 field,
                 outer,
+                #[cfg(feature = "shaders")]
+                emission,
                 ord,
                 scope,
                 effect,
@@ -2073,7 +2094,11 @@ impl<'a, 'b> Lowering<'a, 'b> {
                     .inflate(member.reach + pad, member.reach + pad),
             );
             if union_spec.is_some() {
-                members.push(member.field.expect("union members carry clip boxes"));
+                members.push(UnionMember {
+                    clip: member.field.expect("union members carry clip boxes"),
+                    #[cfg(feature = "shaders")]
+                    emission: member.emission,
+                });
             }
         }
         plan.union = union;
@@ -2148,7 +2173,11 @@ impl<'a, 'b> Lowering<'a, 'b> {
             (
                 ancestors.cloned(),
                 Some(UnionSample {
-                    members: Arc::from([entry.field.expect("outer members carry clip boxes")]),
+                    members: Arc::from([UnionMember {
+                        clip: entry.field.expect("outer members carry clip boxes"),
+                        #[cfg(feature = "shaders")]
+                        emission: entry.emission,
+                    }]),
                     k: 0.0,
                     ord: 0,
                     outer: entry.outer,

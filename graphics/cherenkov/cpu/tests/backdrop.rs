@@ -5,7 +5,10 @@ use std::ops::Range;
 use std::sync::mpsc;
 
 use cherenkov::kurbo::{Circle, Ellipse, Rect, RoundedRect};
-use cherenkov::{BackdropOuter, Draw, Engine, FrameTime, Offscreen, OffscreenFormat, WorkingColor};
+use cherenkov::{
+    BackdropOuter, BackdropSpec, BackdropUnion, Draw, Engine, FrameTime, Offscreen,
+    OffscreenFormat, RenderError, WorkingColor,
+};
 use cherenkov_cpu::{BandPixels, Bands, Raster, RasterConfig};
 use cherenkov_oracle::F32Image;
 use cherenkov_oracle::metrics::{assert_close, assert_images_match};
@@ -3055,4 +3058,29 @@ fn a_hidden_capture_point_still_captures_for_a_shown_member() {
     let mixed = shown.pixels[44 * 64 + 32];
     assert!(mixed[0] > 0.2 && mixed[2] > 0.2, "pixel {mixed:?}");
     assert_images_match(&shown, &render(true));
+}
+
+#[test]
+fn non_finite_backdrop_emission_fails_the_frame() {
+    let engine = engine();
+    for bad in [[f32::NAN, 0.0, 0.0, 1.0], [0.0, 0.0, f32::INFINITY, 1.0]] {
+        let surface = engine
+            .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF32), || {})
+            .expect("surface");
+        let group = surface.backdrop_group_unfiltered(
+            BackdropSpec::FULL.union(BackdropUnion::new(20.0).expect("union")),
+        );
+        let member = surface.layer();
+        surface.update(|tx| {
+            tx[surface.root()].push(&member);
+            tx[&member]
+                .clip(Rect::new(4.0, 4.0, 28.0, 28.0))
+                .backdrop(group.sample().emission(bad));
+        });
+        let result = engine.render(FrameTime::now());
+        assert!(
+            matches!(result, Err(RenderError::Render(_))),
+            "expected RenderError::Render for {bad:?}, got {result:?}",
+        );
+    }
 }

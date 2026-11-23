@@ -45,9 +45,15 @@ struct BackdropField {
     weight: f32,
 }
 
-// The three capture reads. The backend binds every call to them to its
-// capture and field; these bodies only declare the signatures and never
-// run.
+struct BackdropSibling {
+    sdf: f32,
+    normal: vec2<f32>,
+    emission: vec4<f32>,
+}
+
+// The capture and field queries. The backend binds every call to them
+// to its capture and field; these bodies only declare the signatures
+// and never run.
 fn backdrop_sample(q: vec2<f32>) -> vec4<f32> {
     return vec4<f32>(0.0);
 }
@@ -58,4 +64,16 @@ fn backdrop_sample_level(q: vec2<f32>, level: f32) -> vec4<f32> {
 
 fn backdrop_field(q: vec2<f32>) -> BackdropField {
     return BackdropField(0.0, vec2<f32>(0.0), 0.0);
+}
+
+fn backdrop_sibling_count() -> u32 {
+    return 0u;
+}
+
+fn backdrop_sibling_index() -> u32 {
+    return 0u;
+}
+
+fn backdrop_sibling(i: u32, q: vec2<f32>) -> BackdropSibling {
+    return BackdropSibling(0.0, vec2<f32>(0.0), vec4<f32>(0.0));
 }
