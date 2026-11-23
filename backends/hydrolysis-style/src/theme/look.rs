@@ -24,7 +24,10 @@ use core::time::Duration;
 use std::any::Any;
 use std::rc::Rc;
 
-use cherenkov_record::{BlendSpace, KeyframeAnimation, Keyframes, Live, Paint, Recorder, Repeat};
+use cherenkov_record::{
+    Animation as EngineAnimation, BlendSpace, Curve, KeyframeAnimation, Keyframes, Live, Paint,
+    Recorder, Repeat, Spring, curve_value,
+};
 use kurbo::{Point, Rect, Size, Vec2};
 use nami::Signal;
 use nami::signal::IntoComputed;
@@ -32,9 +35,10 @@ use nami::watcher::Context;
 use waterui::theme::Tint;
 use waterui_controls::ControlSize;
 use waterui_controls::button::ButtonStyle;
-use waterui_core::Environment;
 use waterui_core::animation::{Animation, ChangeAnimation};
 use waterui_core::layout::LayoutDirection;
+use waterui_core::{Environment, contract_violation};
+use waterui_graphics::animation::engine_animation;
 use waterui_graphics::color::Color;
 use waterui_interaction::interaction::{InteractionState, StateValue};
 use waterui_text::font::Font;
@@ -157,6 +161,19 @@ impl Motion {
     /// `None` when it snaps.
     #[must_use]
     pub fn interaction(&self, old: InteractionState, new: InteractionState) -> Option<&Animation> {
+        self.interaction_direction(old, new)
+            .map(|(animation, _)| animation)
+    }
+
+    /// The animation an interaction change from `old` to `new` runs with,
+    /// paired with whether the winning flag is entering (`true`) or exiting
+    /// (`false`); `None` when the change snaps.
+    #[must_use]
+    pub fn interaction_direction(
+        &self,
+        old: InteractionState,
+        new: InteractionState,
+    ) -> Option<(&Animation, bool)> {
         let changed = old ^ new;
         if changed.intersects(InteractionState::DISABLED | InteractionState::SELECTED) {
             return None;
@@ -169,8 +186,26 @@ impl Motion {
         ]
         .into_iter()
         .find(|(flag, _)| changed.contains(*flag))
-        .map(|(flag, transition)| transition.animation(new.contains(flag)))
+        .map(|(flag, transition)| {
+            let entering = new.contains(flag);
+            (transition.animation(entering), entering)
+        })
     }
+}
+
+/// Hermite smoothstep interpolation over `[edge0, edge1]`: `0.0` for
+/// `x <= edge0`, `1.0` for `x >= edge1`, and `3s² − 2s³` in between.
+#[must_use]
+pub fn smoothstep(edge0: f64, edge1: f64, x: f64) -> f64 {
+    if !(edge0.is_finite() && edge1.is_finite() && x.is_finite()) {
+        return 0.0;
+    }
+    let span = edge1 - edge0;
+    if span <= 0.0 {
+        return if x >= edge1 { 1.0 } else { 0.0 };
+    }
+    let s = ((x - edge0) / span).clamp(0.0, 1.0);
+    s * s * 2.0_f64.mul_add(-s, 3.0)
 }
 
 /// The live inputs a [`Driven`] value is a function of.
@@ -189,6 +224,9 @@ pub struct Inputs<'a, V> {
     /// The current press's point in the widget's own space; `None` between
     /// presses and for a keyboard or synthetic press.
     pub press_point: Option<Point>,
+    /// Exponentially smoothed pointer drag velocity in logical points per
+    /// second; `None` at rest.
+    pub velocity: Option<Vec2>,
 }
 
 impl<V> Clone for Inputs<'_, V> {
@@ -200,8 +238,8 @@ impl<V> Clone for Inputs<'_, V> {
 impl<V> Copy for Inputs<'_, V> {}
 
 impl<'a, V> Inputs<'a, V> {
-    /// Inputs at rest: `frame` in `state` showing `value`, with no drag
-    /// and no press point.
+    /// Inputs at rest: `frame` in `state` showing `value`, with no drag,
+    /// no press point and no velocity.
     #[must_use]
     pub const fn at_rest(frame: Rect, state: InteractionState, value: &'a V) -> Self {
         Self {
@@ -210,6 +248,7 @@ impl<'a, V> Inputs<'a, V> {
             value,
             drag: None,
             press_point: None,
+            velocity: None,
         }
     }
 }
@@ -237,6 +276,7 @@ pub struct Driven<T, V = ()> {
     motion: Option<Motion>,
     value_motion: Option<ValueMotionOf<V>>,
     repeating: Option<Repeating>,
+    smoothstep_window: Option<(f64, f64)>,
 }
 
 /// The track a repeating value runs, built for the frame it records on.
@@ -253,6 +293,7 @@ impl<T, V> Clone for Driven<T, V> {
             motion: self.motion.clone(),
             value_motion: self.value_motion.clone(),
             repeating: self.repeating.clone(),
+            smoothstep_window: self.smoothstep_window,
         }
     }
 }
@@ -264,6 +305,7 @@ impl<T, V> core::fmt::Debug for Driven<T, V> {
             .field("motion", &self.motion)
             .field("value_motion", &self.value_motion.is_some())
             .field("repeating", &self.repeating.is_some())
+            .field("smoothstep_window", &self.smoothstep_window)
             .finish_non_exhaustive()
     }
 }
@@ -278,6 +320,7 @@ impl<T: 'static, V: 'static> Driven<T, V> {
             motion: None,
             value_motion: None,
             repeating: None,
+            smoothstep_window: None,
         }
     }
 
@@ -307,6 +350,7 @@ impl<T: 'static, V: 'static> Driven<T, V> {
             repeating: Some(Rc::new(move |frame| {
                 KeyframeAnimation::new(keyframes(frame), repeat)
             })),
+            smoothstep_window: None,
         }
     }
 
@@ -343,6 +387,7 @@ impl<T: 'static, V: 'static> Driven<T, V> {
             repeating: Some(Rc::new(move |frame| {
                 source.with_ref(|value| KeyframeAnimation::new(keyframes(value, frame), repeat))
             })),
+            smoothstep_window: None,
         }
     }
 
@@ -375,6 +420,7 @@ impl<T: 'static, V: 'static> Driven<T, V> {
             motion: None,
             value_motion: None,
             repeating: None,
+            smoothstep_window: None,
         }
     }
 
@@ -384,6 +430,47 @@ impl<T: 'static, V: 'static> Driven<T, V> {
     pub const fn motion(mut self, motion: Motion) -> Self {
         self.motion = Some(motion);
         self
+    }
+
+    /// Applies a smoothstep transfer window `(edge0, edge1)` to animated
+    /// transitions of this driven value.
+    ///
+    /// Along a transition's normalized progress `p` in `[0, 1]`, the operand
+    /// holds its starting value for `p <= edge0`, moves smoothly from start
+    /// to target along `3s² − 2s³` (`s = (p − edge0) / (edge1 − edge0)`)
+    /// across `[edge0, edge1]`, and holds its target for `p >= edge1`.
+    /// On an interaction exit (`PRESSED`, `DRAGGED`, `FOCUSED`, or `HOVERED`
+    /// clearing), the window mirrors to `(1 − edge1, 1 − edge0)` so the
+    /// transfer curve plays in reverse across the same progress band.
+    ///
+    /// # Contract
+    /// `edge0` and `edge1` must be finite with `0.0 <= edge0 < edge1 <= 1.0`.
+    /// Out-of-range edges are clamped to `[0.0, 1.0]`, and a degenerate
+    /// window (`edge0 >= edge1`) is reported and ignored.
+    #[must_use]
+    pub fn smoothstep_window(mut self, edge0: f64, edge1: f64) -> Self {
+        if !(edge0.is_finite() && edge1.is_finite()) {
+            contract_violation!(
+                "smoothstep_window edges ({edge0}, {edge1}) must be finite; the window is ignored"
+            );
+            return self;
+        }
+        let lo = edge0.clamp(0.0, 1.0);
+        let hi = edge1.clamp(0.0, 1.0);
+        if lo >= hi {
+            contract_violation!(
+                "smoothstep_window requires edge0 < edge1 in [0, 1], got ({edge0}, {edge1}); the window is ignored"
+            );
+            return self;
+        }
+        self.smoothstep_window = Some((lo, hi));
+        self
+    }
+
+    /// The smoothstep transfer window `(edge0, edge1)`, when one is set.
+    #[must_use]
+    pub const fn get_smoothstep_window(&self) -> Option<(f64, f64)> {
+        self.smoothstep_window
     }
 
     /// The motion of a change of the widget's value *to* the value `motion`
@@ -461,7 +548,7 @@ impl<T: 'static, V: 'static> Driven<T, V> {
     #[must_use]
     pub fn map<U: 'static>(&self, f: impl Fn(T) -> U + 'static) -> Driven<U, V> {
         if self.repeating.is_some() {
-            waterui_core::contract_violation!(
+            contract_violation!(
                 "a repeating value cannot be mapped: its keyframes hold the source type; the mapped value runs without the repeating track"
             );
         }
@@ -472,8 +559,255 @@ impl<T: 'static, V: 'static> Driven<T, V> {
             motion: self.motion.clone(),
             value_motion: self.value_motion.clone(),
             repeating: None,
+            smoothstep_window: self.smoothstep_window,
         }
     }
+
+    /// Resolves `(animation, reverse)` for `change` at `inputs`, where
+    /// `reverse` is `true` when an interaction flag is exiting.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn resolve_change(
+        &self,
+        inputs: &Inputs<'_, V>,
+        change: Change<'_>,
+    ) -> (Option<Animation>, bool) {
+        match change {
+            Change::Interaction { old, motion } => self
+                .get_motion()
+                .unwrap_or(motion)
+                .interaction_direction(old, inputs.state)
+                .map_or((None, false), |(animation, entering)| {
+                    (Some(animation.clone()), !entering)
+                }),
+            Change::Value { change, motion } => {
+                let motion = self.get_motion().unwrap_or(motion);
+                let animation = self
+                    .get_value_motion(inputs.value)
+                    .as_ref()
+                    .unwrap_or(&motion.value)
+                    .animation(change.clone());
+                (animation, false)
+            }
+            Change::Animated(animation) => (animation.cloned(), false),
+        }
+    }
+
+    /// Applies `target` to `operand` under `(animation, reverse)`, honoring
+    /// [`Self::smoothstep_window`] through an engine-clock keyframe track.
+    #[doc(hidden)]
+    pub fn apply_value_to(
+        &self,
+        operand: &Operand<T>,
+        target: T,
+        animation: Option<&Animation>,
+        reverse: bool,
+    ) where
+        T: Clone + PartialEq,
+    {
+        if let (Some(animation), Some(window)) = (animation, self.smoothstep_window) {
+            let current = operand.snapshot();
+            if current == target {
+                return;
+            }
+            if let Some(track) =
+                windowed_keyframes(current, target.clone(), animation, window, reverse)
+            {
+                operand.set_keyframed(target, track);
+                return;
+            }
+        }
+        operand.set(target, animation);
+    }
+
+    /// Retargets `operand` to `inputs` under `change`, honoring
+    /// [`Self::smoothstep_window`].
+    #[doc(hidden)]
+    pub fn apply_to(&self, operand: &Operand<T>, inputs: &Inputs<'_, V>, change: Change<'_>)
+    where
+        T: Clone + PartialEq,
+    {
+        let (animation, reverse) = self.resolve_change(inputs, change);
+        self.apply_value_to(operand, self.target(inputs), animation.as_ref(), reverse);
+    }
+
+    /// Returns an `Animation` shaped by [`Self::smoothstep_window`] for
+    /// properties that take a single [`Animation`] rather than a keyframe track.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn shape_animation(
+        &self,
+        animation: Option<&Animation>,
+        reverse: bool,
+    ) -> Option<Animation> {
+        let animation = animation?;
+        let Some(window) = self.smoothstep_window else {
+            return Some(animation.clone());
+        };
+        windowed_animation(animation, window, reverse).or_else(|| Some(animation.clone()))
+    }
+}
+
+/// Finds normalized time `t in [0, 1]` where `curve` reaches `progress`.
+fn invert_curve(curve: &Curve, progress: f64) -> f64 {
+    if progress <= 0.0 {
+        return 0.0;
+    }
+    if progress >= 1.0 {
+        return 1.0;
+    }
+    let mut lo = 0.0_f64;
+    let mut hi = 1.0_f64;
+    for _ in 0..32 {
+        let mid = f64::midpoint(lo, hi);
+        if curve_value(curve, mid) < progress {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    f64::midpoint(lo, hi)
+}
+
+/// Computes `(total_duration, t0, t1)` in normalized `[0, 1]` time for where a
+/// damped spring crosses `win_lo` and `win_hi` on its step response `0 -> 1`.
+fn spring_window_times(spring: &Spring, win_lo: f64, win_hi: f64) -> (Duration, f64, f64) {
+    let response = spring.response.max(0.02);
+    let damping = spring.damping.clamp(0.15, 2.0);
+    let max_t = (response * 8.0 / damping).clamp(0.05, 4.0);
+    let step = (response / 64.0).min(0.005);
+
+    let progress = |t: f64| -> f64 { 1.0 + spring.sample(-1.0, 0.0, t).0 };
+    let bisect = |mut lo: f64, mut hi: f64, target: f64| -> f64 {
+        for _ in 0..24 {
+            let mid = f64::midpoint(lo, hi);
+            if progress(mid) < target {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        f64::midpoint(lo, hi)
+    };
+
+    let mut dt0 = if win_lo <= 0.0 { Some(0.0) } else { None };
+    let mut dt1 = if win_hi <= 0.0 { Some(0.0) } else { None };
+    let mut settled = None;
+    let mut prev_t = 0.0;
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "max_t / step is positive and bounded below 1000"
+    )]
+    let steps = (max_t / step).ceil() as u32;
+    for index in 1..=steps {
+        let t = (f64::from(index) * step).min(max_t);
+        let (offset, vel) = spring.sample(-1.0, 0.0, t);
+        let p = 1.0 + offset;
+        if dt0.is_none() && p >= win_lo {
+            dt0 = Some(bisect(prev_t, t, win_lo));
+        }
+        if dt1.is_none() && p >= win_hi {
+            dt1 = Some(bisect(prev_t, t, win_hi));
+        }
+        if dt1.is_some() && offset.abs() <= 1e-3 && vel.abs() <= 1e-3 {
+            settled = Some(t);
+            break;
+        }
+        prev_t = t;
+    }
+
+    let dt0 = dt0.unwrap_or(0.0);
+    let dt1 = dt1.unwrap_or(max_t).max(dt0);
+    let total_s = settled.unwrap_or(max_t).max(dt1).max(1e-4);
+    let t0 = (dt0 / total_s).clamp(0.0, 1.0);
+    let t1 = (dt1 / total_s).clamp(t0, 1.0);
+    (Duration::from_secs_f64(total_s), t0, t1)
+}
+
+/// Computes `(duration, t0, t1)` for `animation` over `window`, mirroring the
+/// window when `reverse` is `true`.
+fn resolve_window_timing(
+    animation: &Animation,
+    window: (f64, f64),
+    reverse: bool,
+) -> Option<(Duration, f64, f64)> {
+    let (edge0, edge1) = window;
+    let (win_lo, win_hi) = if reverse {
+        (1.0 - edge1, 1.0 - edge0)
+    } else {
+        (edge0, edge1)
+    };
+    match engine_animation(animation) {
+        EngineAnimation::Curve(curve) => {
+            if curve.duration.is_zero() {
+                return None;
+            }
+            let t0 = invert_curve(&curve, win_lo);
+            let t1 = invert_curve(&curve, win_hi).max(t0);
+            Some((curve.duration, t0, t1))
+        }
+        EngineAnimation::Spring(spring) => Some(spring_window_times(&spring, win_lo, win_hi)),
+        EngineAnimation::Decay(_) => None,
+    }
+}
+
+/// Builds a one-shot keyframe track moving `from -> target` through an exact
+/// Hermite smoothstep (`CubicBezier(1/3, 0, 2/3, 1)`) over `window`.
+#[doc(hidden)]
+#[must_use]
+pub fn windowed_keyframes_raw<T: Clone + 'static>(
+    from: T,
+    target: T,
+    animation: &Animation,
+    window: (f64, f64),
+    reverse: bool,
+) -> Option<Keyframes<T>> {
+    let (duration, t0, t1) = resolve_window_timing(animation, window, reverse)?;
+    // CubicBezier(1/3, 0, 2/3, 1) has x(u) = u and y(u) = 3u² - 2u³ (exact smoothstep).
+    let smooth = Curve::bezier(Duration::from_secs(1), 1.0 / 3.0, 0.0, 2.0 / 3.0, 1.0);
+    let linear = Curve::linear(Duration::from_secs(1));
+    let mut track = Keyframes::new(duration, from.clone());
+    if t0 > 0.0 {
+        track = track.then(t0, linear, from);
+    }
+    track = track.then(t1, smooth, target.clone());
+    if t1 < 1.0 {
+        track = track.then(1.0, linear, target);
+    }
+    Some(track)
+}
+
+/// Builds a one-shot [`KeyframeAnimation`] for [`windowed_keyframes_raw`].
+#[doc(hidden)]
+#[must_use]
+pub fn windowed_keyframes<T: Clone + 'static>(
+    from: T,
+    target: T,
+    animation: &Animation,
+    window: (f64, f64),
+    reverse: bool,
+) -> Option<KeyframeAnimation> {
+    windowed_keyframes_raw(from, target, animation, window, reverse)
+        .map(|track| KeyframeAnimation::new(track, Repeat::ONCE))
+}
+
+/// Approximates a smoothstep window as a single cubic Bézier [`Animation`]
+/// for layer properties that accept an [`Animation`] rather than keyframes.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "normalized Bézier control points in [0, 1] quantize cleanly to f32"
+)]
+fn windowed_animation(
+    animation: &Animation,
+    window: (f64, f64),
+    reverse: bool,
+) -> Option<Animation> {
+    let (duration, t0, t1) = resolve_window_timing(animation, window, reverse)?;
+    let span = t1 - t0;
+    let x1 = (span / 3.0 + t0).clamp(0.0, 1.0) as f32;
+    let x2 = (span.mul_add(2.0 / 3.0, t0)).clamp(x1.into(), 1.0) as f32;
+    Some(Animation::bezier(duration, x1, 0.0, x2, 1.0))
 }
 
 /// A [`StateValue`] is a [`Driven`] over the interaction state alone.
@@ -629,29 +963,22 @@ impl<T: Clone + PartialEq + 'static, V: 'static> LiveDriven<T, V> {
     pub const fn operand(&self) -> &Operand<T> {
         &self.operand
     }
+
+    /// Retargets the operand using a single [`Animation`] (shaped by any
+    /// smoothstep window) rather than a keyframe track, for layer properties
+    /// that do not accept keyframe tracks (such as backdrop clips and effects).
+    #[doc(hidden)]
+    pub fn retarget_shaped(&self, inputs: &Inputs<'_, V>, change: Change<'_>) {
+        let (animation, reverse) = self.driven.resolve_change(inputs, change);
+        let shaped = self.driven.shape_animation(animation.as_ref(), reverse);
+        self.operand
+            .set(self.driven.target(inputs), shaped.as_ref());
+    }
 }
 
 impl<T: Clone + PartialEq + 'static, V: 'static> Retarget<V> for LiveDriven<T, V> {
     fn retarget(&self, inputs: &Inputs<'_, V>, change: Change<'_>) {
-        let animation = match change {
-            Change::Interaction { old, motion } => self
-                .driven
-                .get_motion()
-                .unwrap_or(motion)
-                .interaction(old, inputs.state)
-                .cloned(),
-            Change::Value { change, motion } => {
-                let motion = self.driven.get_motion().unwrap_or(motion);
-                self.driven
-                    .get_value_motion(inputs.value)
-                    .as_ref()
-                    .unwrap_or(&motion.value)
-                    .animation(change.clone())
-            }
-            Change::Animated(animation) => animation.cloned(),
-        };
-        self.operand
-            .set(self.driven.target(inputs), animation.as_ref());
+        self.driven.apply_to(&self.operand, inputs, change);
         // A plain change replaces a running track, so a signal the track is
         // built from changing — or the frame — starts the new one.
         if matches!(change, Change::Animated(_)) {
@@ -1795,5 +2122,108 @@ impl SliderLook {
     #[must_use]
     pub fn parts(&self) -> &[Rc<dyn CustomPart<f64>>] {
         &self.parts
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use core::time::Duration;
+
+    use approx::assert_relative_eq;
+    use cherenkov_record::Repeat;
+    use waterui_core::animation::Animation;
+
+    use super::{smoothstep, windowed_keyframes_raw};
+
+    #[test]
+    fn smoothstep_matches_hermite_polynomial_across_window() {
+        assert_relative_eq!(smoothstep(0.05, 0.55, 0.0), 0.0);
+        assert_relative_eq!(smoothstep(0.05, 0.55, 0.05), 0.0);
+        assert_relative_eq!(smoothstep(0.05, 0.55, 0.30), 0.5, epsilon = 1e-12);
+        // s = 0.25 -> 3*(1/16) - 2*(1/64) = 5/32 = 0.15625
+        assert_relative_eq!(smoothstep(0.05, 0.55, 0.175), 0.15625, epsilon = 1e-12);
+        assert_relative_eq!(smoothstep(0.05, 0.55, 0.55), 1.0);
+        assert_relative_eq!(smoothstep(0.05, 0.55, 1.0), 1.0);
+    }
+
+    #[test]
+    fn windowed_keyframes_sample_exact_smoothstep_on_enter_and_mirrored_exit() {
+        let linear = Animation::linear(Duration::from_millis(1000));
+        let enter = windowed_keyframes_raw(0.0_f32, 1.0_f32, &linear, (0.05, 0.55), false)
+            .expect("linear animation produces windowed keyframes");
+
+        // Before edge0 (20ms = 0.02): holds 0.0
+        assert_relative_eq!(
+            enter
+                .sample(Duration::from_millis(20), Repeat::ONCE)
+                .unwrap(),
+            0.0_f32,
+            epsilon = 1e-5
+        );
+        // Quarter of window (175ms = 0.175): exact smoothstep(0.25) = 0.15625
+        assert_relative_eq!(
+            enter
+                .sample(Duration::from_millis(175), Repeat::ONCE)
+                .unwrap(),
+            0.15625_f32,
+            epsilon = 1e-4
+        );
+        // Midpoint of window (300ms = 0.30): exact 0.5
+        assert_relative_eq!(
+            enter
+                .sample(Duration::from_millis(300), Repeat::ONCE)
+                .unwrap(),
+            0.5_f32,
+            epsilon = 1e-4
+        );
+        // After edge1 (700ms = 0.70): holds 1.0
+        assert_relative_eq!(
+            enter
+                .sample(Duration::from_millis(700), Repeat::ONCE)
+                .unwrap(),
+            1.0_f32,
+            epsilon = 1e-5
+        );
+
+        // Exit mirrors (0.05, 0.55) to (0.45, 0.95) moving 1.0 -> 0.0
+        let exit = windowed_keyframes_raw(1.0_f32, 0.0_f32, &linear, (0.05, 0.55), true)
+            .expect("exit linear animation produces mirrored windowed keyframes");
+        assert_relative_eq!(
+            exit.sample(Duration::from_millis(300), Repeat::ONCE)
+                .unwrap(),
+            1.0_f32,
+            epsilon = 1e-5
+        );
+        assert_relative_eq!(
+            exit.sample(Duration::from_millis(700), Repeat::ONCE)
+                .unwrap(),
+            0.5_f32,
+            epsilon = 1e-4
+        );
+        assert_relative_eq!(
+            exit.sample(Duration::from_millis(980), Repeat::ONCE)
+                .unwrap(),
+            0.0_f32,
+            epsilon = 1e-5
+        );
+    }
+
+    #[test]
+    fn windowed_keyframes_support_springs() {
+        let spring = Animation::spring(300.0, 30.0);
+        let track = windowed_keyframes_raw(0.0_f32, 1.0_f32, &spring, (0.05, 0.55), false)
+            .expect("spring produces windowed keyframes");
+        assert!(track.duration() > Duration::ZERO);
+        assert_relative_eq!(
+            track.sample(Duration::ZERO, Repeat::ONCE).unwrap(),
+            0.0_f32,
+            epsilon = 1e-5
+        );
+        let near_end = track.duration().saturating_sub(Duration::from_millis(1));
+        assert_relative_eq!(
+            track.sample(near_end, Repeat::ONCE).unwrap(),
+            1.0_f32,
+            epsilon = 1e-4
+        );
     }
 }

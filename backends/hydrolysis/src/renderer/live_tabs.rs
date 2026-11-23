@@ -15,16 +15,20 @@ use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
-use kurbo::{Point, Rect};
+use kurbo::{Point, Rect, Vec2};
 use nami::{Binding, Computed, Signal, SignalExt as _};
 use waterui_core::Environment;
 use waterui_core::animation::{Animation, ChangeAnimation};
 use waterui_core::id::Id;
 use waterui_interaction::interaction::InteractionState;
 
-use crate::renderer::chrome::{LiveChrome, PartRuns, PartStep};
+use crate::renderer::chrome::{DragVelocity, LiveChrome, PartRuns, PartStep};
 use crate::renderer::{HydrolysisRenderer, RenderContext};
-use crate::theme::{Change, Chrome, Inputs, RealizedCustom, TabItem, TabItemGeometry, TabsLook};
+use crate::text::TextEngine;
+use crate::theme::{
+    Change, Chrome, Inputs, RealizedCustom, Retarget, TabItem, TabItemGeometry, TabsLook, TabsValue,
+};
+use crate::time::Instant;
 
 /// The interaction flags an item's own pointer and keyboard state set.
 const LIVE: InteractionState = InteractionState::HOVERED
@@ -52,23 +56,35 @@ pub struct TabsFrames {
 pub struct LiveTabs {
     look: TabsLook,
     frames: TabsFrames,
+    /// Shared item geometry slice passed to bar-level selection indicators.
+    items: Rc<[TabItemGeometry]>,
     /// Each item's tag, leading first.
     tags: Vec<Id>,
     /// The index of the selected item; `None` while the selection names no
     /// item.
     selected: Cell<Option<usize>>,
+    /// Continuous indicator position in item indices: `selected as f64` at
+    /// rest, fractional while dragging, `None` when nothing is selected.
+    position: Cell<Option<f64>>,
     press_point: Cell<Option<Point>>,
+    drag: Cell<Option<Vec2>>,
+    dragged: Cell<bool>,
+    velocity: RefCell<DragVelocity>,
     /// Each item's own hover, press and focus.
     states: Vec<Cell<InteractionState>>,
     bar: RealizedCustom<()>,
     divider: RealizedCustom<()>,
+    /// Bar-level selection indicator beneath the items' icons and labels.
+    indicator: Option<RealizedCustom<TabsValue>>,
+    /// Bar-level selection indicator over the items' icons and labels.
+    indicator_over_labels: Option<RealizedCustom<TabsValue>>,
     /// Each item's highlight, leading item first; `None` where the look
     /// draws none.
     highlights: Vec<Option<RealizedCustom<TabItem>>>,
     /// Each item's chrome as the look gave it, leading item first.
     specs: Vec<Chrome>,
     chromes: Vec<Rc<LiveChrome>>,
-    /// The subscriptions to the selection and to the signals the highlights'
+    /// The subscriptions to the selection and to the signals the parts'
     /// values follow.
     guards: RefCell<Vec<Box<dyn Any>>>,
     /// How many times the mount recorded the parts.
@@ -115,6 +131,25 @@ impl LiveTabs {
                 InteractionState::empty()
             }
         };
+        let items: Rc<[TabItemGeometry]> = Rc::from(frames.items.as_slice());
+        let initial_position = selected.map(tab_position);
+        let tabs_value = TabsValue {
+            selected,
+            position: initial_position,
+            items: Rc::clone(&items),
+        };
+        let indicator_state = if selected.is_some() {
+            InteractionState::SELECTED
+        } else {
+            InteractionState::empty()
+        };
+        let indicator_inputs = Inputs::at_rest(frames.surface, indicator_state, &tabs_value);
+        let indicator = look
+            .get_selection_indicator()
+            .map(|part| part.realize(&indicator_inputs));
+        let indicator_over_labels = look
+            .get_selection_indicator_over_labels()
+            .map(|part| part.realize(&indicator_inputs));
         let bar = look.bar().realize(&Inputs::at_rest(
             frames.surface,
             InteractionState::empty(),
@@ -149,11 +184,18 @@ impl LiveTabs {
                 .collect(),
             look,
             frames,
+            items,
             tags,
             selected: Cell::new(selected),
+            position: Cell::new(initial_position),
             press_point: Cell::new(None),
+            drag: Cell::new(None),
+            dragged: Cell::new(false),
+            velocity: RefCell::new(DragVelocity::new()),
             bar,
             divider,
+            indicator,
+            indicator_over_labels,
             highlights,
             specs,
             chromes,
@@ -164,7 +206,7 @@ impl LiveTabs {
     }
 
     /// Subscribes the container to `selection` and to every signal the
-    /// highlights' values follow, so a change retargets the operands under
+    /// parts' values follow, so a change retargets the operands under
     /// the animation the change carries.
     fn subscribe(this: &Rc<Self>, selection: &Binding<Id>) {
         let mut guards: Vec<Box<dyn Any>> = Vec::new();
@@ -178,6 +220,23 @@ impl LiveTabs {
                 }
             }
         })));
+        for driven in this.indicator_drivens() {
+            let weak_driven = Rc::downgrade(&driven);
+            let target: Rc<Retargeting> = Rc::new(move |tabs, animation| {
+                if let Some(driven) = weak_driven.upgrade() {
+                    tabs.with_indicator_inputs(|inputs| {
+                        driven.retarget(inputs, Change::Animated(animation));
+                    });
+                }
+            });
+            let weak: Weak<Self> = Rc::downgrade(this);
+            let notify = Rc::new(move |animation: Option<Animation>| {
+                if let Some(tabs) = weak.upgrade() {
+                    target(&tabs, animation.as_ref());
+                }
+            }) as Rc<dyn Fn(Option<Animation>)>;
+            guards.extend(driven.subscribe(notify));
+        }
         for index in 0..this.tags.len() {
             let Some(highlight) = &this.highlights[index] else {
                 continue;
@@ -201,6 +260,53 @@ impl LiveTabs {
             }
         }
         *this.guards.borrow_mut() = guards;
+    }
+
+    fn indicator_drivens(&self) -> impl Iterator<Item = Rc<dyn Retarget<TabsValue>>> + '_ {
+        self.indicator
+            .iter()
+            .chain(&self.indicator_over_labels)
+            .flat_map(|part| part.drivens.iter().cloned())
+    }
+
+    /// The bar-level indicator's state: the selected item's hover, press and
+    /// focus, `SELECTED` when a tab is selected, and `DRAGGED` while dragging.
+    fn control_state(&self) -> InteractionState {
+        let mut state = self
+            .selected
+            .get()
+            .map_or_else(InteractionState::empty, |selected| {
+                (self.states[selected].get() & LIVE) | InteractionState::SELECTED
+            });
+        state.set(InteractionState::DRAGGED, self.dragged.get());
+        state
+    }
+
+    fn with_indicator_inputs<R>(&self, f: impl FnOnce(&Inputs<'_, TabsValue>) -> R) -> R {
+        let value = TabsValue {
+            selected: self.selected.get(),
+            position: self.position.get(),
+            items: Rc::clone(&self.items),
+        };
+        f(&Inputs {
+            frame: self.frames.surface,
+            state: self.control_state(),
+            value: &value,
+            drag: self.drag.get(),
+            press_point: self.press_point.get(),
+            velocity: self.velocity.borrow().current(),
+        })
+    }
+
+    fn retarget_indicators(&self, change: Change<'_>) {
+        if self.indicator.is_none() && self.indicator_over_labels.is_none() {
+            return;
+        }
+        self.with_indicator_inputs(|inputs| {
+            for driven in self.indicator_drivens() {
+                driven.retarget(inputs, change);
+            }
+        });
     }
 
     /// Item `index`'s state: its own hover, press and focus, and selected
@@ -236,6 +342,7 @@ impl LiveTabs {
                 .press_point
                 .get()
                 .filter(|_| state.contains(InteractionState::PRESSED)),
+            velocity: None,
         })
     }
 
@@ -260,6 +367,7 @@ impl LiveTabs {
             return;
         }
         let old = self.item_state(index);
+        let old_control = self.control_state();
         self.states[index].set(state);
         if !self
             .states
@@ -275,6 +383,12 @@ impl LiveTabs {
                 motion: self.look.motion(),
             },
         );
+        if self.selected.get() == Some(index) {
+            self.retarget_indicators(Change::Interaction {
+                old: old_control,
+                motion: self.look.motion(),
+            });
+        }
     }
 
     /// Moves item `index`'s operands to the interaction state its handles
@@ -295,16 +409,22 @@ impl LiveTabs {
     /// space (`None` for a keyboard or synthetic press): the press point the
     /// highlight reads is `origin`, and the item's chrome starts ripple wave
     /// `wave` there.
-    pub(crate) fn begin_press(&self, index: usize, wave: usize, origin: Option<Point>) {
+    pub(crate) fn begin_press(
+        &self,
+        index: usize,
+        wave: usize,
+        origin: Option<Point>,
+        at: Instant,
+    ) {
         self.press_point.set(origin);
-        self.chromes[index].begin_wave(wave, origin);
+        self.chromes[index].begin_wave(wave, origin, at);
         self.set_flag(index, InteractionState::PRESSED, true);
     }
 
     /// Moves item `index`'s active press point to `point`: its chrome's
     /// values that read it follow the pointer.
-    pub(crate) fn move_press(&self, index: usize, point: Point) {
-        self.chromes[index].move_press(point);
+    pub(crate) fn move_press(&self, index: usize, point: Point, at: Instant) {
+        self.chromes[index].move_press(point, at);
     }
 
     /// Fades ripple wave `wave` of item `index`'s chrome out.
@@ -318,19 +438,113 @@ impl LiveTabs {
     }
 
     /// The selection became item `index` under `change`: the two items it
-    /// touches move their highlights under the look's value motion and their
-    /// chromes to their new selected state.
+    /// touches move their highlights under the look's value motion, their
+    /// chromes move to their new selected state, and any bar-level indicator
+    /// glides to `index`.
     pub(crate) fn change_selection(&self, index: usize, change: &ChangeAnimation) {
         let previous = self.selected.replace(Some(index));
-        if previous == Some(index) {
+        let target_pos = Some(tab_position(index));
+        let prev_pos = self.position.replace(target_pos);
+        if previous == Some(index) && prev_pos == target_pos {
             return;
         }
         let motion = self.look.motion();
         let change = Change::Value { change, motion };
-        if let Some(previous) = previous {
+        if let Some(previous) = previous
+            && previous != index
+        {
             self.retarget_item(previous, change);
         }
         self.retarget_item(index, change);
+        self.retarget_indicators(change);
+    }
+
+    /// Whether the bar's selection indicator follows a drag.
+    pub(crate) const fn drags(&self) -> bool {
+        self.look.get_drag().is_some()
+    }
+
+    /// The index of the selected item the operands show.
+    pub(crate) const fn selected(&self) -> Option<usize> {
+        self.selected.get()
+    }
+
+    /// Starts a drag of the bar-level selection indicator.
+    pub(crate) fn begin_drag(&self, at: Instant) {
+        if self.dragged.get() {
+            return;
+        }
+        let old = self.control_state();
+        self.dragged.set(true);
+        self.velocity.borrow_mut().start(Vec2::ZERO, at);
+        self.retarget_indicators(Change::Interaction {
+            old,
+            motion: self.look.motion(),
+        });
+    }
+
+    /// Moves the drag to `offset` from where the press landed, updating the
+    /// continuous indicator position and smoothed velocity with no animation.
+    pub(crate) fn drag_to(&self, offset: Vec2, at: Instant) {
+        let Some(drag) = self.look.get_drag() else {
+            return;
+        };
+        let Some(selected) = self.selected.get() else {
+            return;
+        };
+        self.drag.set(Some(offset));
+        self.velocity.borrow_mut().sample(offset, at);
+        let pos = drag.position(selected, Some(offset), &self.items);
+        self.position.set(Some(pos));
+        self.retarget_indicators(Change::Animated(None));
+    }
+
+    /// Ends the drag, settling on the nearest tab item.
+    pub(crate) fn end_drag(&self, selection: &Binding<Id>) {
+        let Some(drag) = self.look.get_drag() else {
+            return;
+        };
+        let Some(pos) = self.position.get() else {
+            self.cancel_drag();
+            return;
+        };
+        if self.tags.is_empty() {
+            self.cancel_drag();
+            return;
+        }
+        let settled = drag.settles_on(pos, self.tags.len());
+        let tag = self.tags[settled];
+        if selection.snapshot() == tag {
+            self.cancel_drag();
+        } else {
+            let old = self.control_state();
+            self.drag.set(None);
+            self.dragged.set(false);
+            self.velocity.borrow_mut().reset();
+            selection.set(tag);
+            self.retarget_indicators(Change::Interaction {
+                old,
+                motion: self.look.motion(),
+            });
+        }
+    }
+
+    /// Cancels an active drag and returns the indicator to the selected item
+    /// under the look's value motion.
+    pub(crate) fn cancel_drag(&self) {
+        let old = self.control_state();
+        self.drag.set(None);
+        self.dragged.set(false);
+        self.velocity.borrow_mut().reset();
+        self.position.set(self.selected.get().map(tab_position));
+        self.retarget_indicators(Change::Value {
+            change: &ChangeAnimation::Unspecified,
+            motion: self.look.motion(),
+        });
+        self.retarget_indicators(Change::Interaction {
+            old,
+            motion: self.look.motion(),
+        });
     }
 
     /// The chrome item `index` wears, as the look gave it.
@@ -344,7 +558,8 @@ impl LiveTabs {
     }
 
     /// The steps beneath the items' icons and labels: the bar, the divider,
-    /// then each item's highlight and chrome.
+    /// any bar-level selection indicator, then each item's highlight and
+    /// chrome.
     fn steps(tabs: &Rc<Self>) -> Vec<PartStep> {
         let mut steps: Vec<PartStep> = Self::counted(tabs).collect();
         steps.push(PartStep::part(
@@ -359,6 +574,11 @@ impl LiveTabs {
             |tabs: &Self| core::slice::from_ref(&tabs.divider),
             |tabs: &Self| tabs.frames.divider,
         ));
+        steps.extend(PartStep::parts(
+            tabs,
+            |tabs: &Self| tabs.indicator.as_slice(),
+            |tabs: &Self| tabs.frames.surface,
+        ));
         for index in 0..tabs.frames.items.len() {
             steps.extend(PartStep::parts(
                 tabs,
@@ -368,6 +588,17 @@ impl LiveTabs {
             steps.extend(LiveChrome::layer_steps(&tabs.chromes[index]));
         }
         steps
+    }
+
+    /// The steps over the items' icons and labels: any bar-level indicator
+    /// declared with [`TabsLook::selection_indicator_over_labels`].
+    fn steps_over_labels(tabs: &Rc<Self>) -> Vec<PartStep> {
+        PartStep::parts(
+            tabs,
+            |tabs: &Self| tabs.indicator_over_labels.as_slice(),
+            |tabs: &Self| tabs.frames.surface,
+        )
+        .collect()
     }
 
     /// A step that draws nothing and counts the recordings of the run it
@@ -391,12 +622,14 @@ impl LiveTabs {
     pub(crate) const fn recordings(&self) -> u32 {
         self.recordings.get()
     }
+}
 
-    /// The index of the selected item the operands show.
-    #[cfg(test)]
-    pub(crate) const fn selected(&self) -> Option<usize> {
-        self.selected.get()
-    }
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "tab indices are small integers far below 2^53"
+)]
+const fn tab_position(index: usize) -> f64 {
+    index as f64
 }
 
 /// A tab container's live parts and the recording its program lists: the
@@ -405,6 +638,7 @@ impl LiveTabs {
 pub struct LiveTabsParts {
     tabs: Rc<LiveTabs>,
     layers: Rc<RefCell<Option<PartRuns>>>,
+    over_labels: Rc<RefCell<Option<PartRuns>>>,
 }
 
 impl LiveTabsParts {
@@ -449,6 +683,7 @@ impl LiveTabsParts {
             *slot = Some(Self {
                 tabs: live,
                 layers: Rc::default(),
+                over_labels: Rc::default(),
             });
         }
         slot.as_ref().expect("the tabs parts were just ensured")
@@ -459,8 +694,9 @@ impl LiveTabsParts {
     }
 
     /// Lists the parts beneath the items' icons and labels in `ctx`: the
-    /// bar, the divider, then each item's highlight and chrome.
-    pub(crate) fn push<E: crate::text::TextEngine>(
+    /// bar, the divider, any bar-level selection indicator, then each item's
+    /// highlight and chrome.
+    pub(crate) fn push<E: TextEngine>(
         &self,
         renderer: &mut HydrolysisRenderer<E>,
         ctx: RenderContext,
@@ -472,5 +708,23 @@ impl LiveTabsParts {
             ctx,
             "tabs-part",
         );
+    }
+
+    /// Lists any bar-level selection indicator declared over the items'
+    /// icons and labels in `ctx`.
+    pub(crate) fn push_over_labels<E: TextEngine>(
+        &self,
+        renderer: &mut HydrolysisRenderer<E>,
+        ctx: RenderContext,
+    ) {
+        if self.tabs.indicator_over_labels.is_none() {
+            return;
+        }
+        let scope = renderer.material_scope();
+        let mut layers = self.over_labels.borrow_mut();
+        PartRuns::ensure(&mut layers, scope, || {
+            LiveTabs::steps_over_labels(&self.tabs)
+        })
+        .push(renderer, ctx, "tabs-over-labels");
     }
 }

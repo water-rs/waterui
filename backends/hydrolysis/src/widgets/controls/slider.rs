@@ -899,7 +899,7 @@ pub fn render_slider_parts<E: crate::text::TextEngine>(
         hit_bounds,
         press_slot,
         press_filter,
-        move |_renderer, point, _env| {
+        move |renderer, point, _env| {
             let local = placement.resolved_transform(true).inverse() * point;
             let press = drag_chrome
                 .press_point()
@@ -909,7 +909,7 @@ pub fn render_slider_parts<E: crate::text::TextEngine>(
             };
             let next = snap(span.mul_add(along, range_start), &drag_range, step);
             if let Some((press, _)) = press {
-                drag_chrome.set_drag(Some(local - press));
+                drag_chrome.set_drag(Some(local - press), renderer.frame_instant());
             }
             if (drag_value.snapshot() - next).abs() <= value_epsilon {
                 return false;

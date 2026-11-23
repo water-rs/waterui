@@ -28,7 +28,7 @@ use waterui_interaction::interaction::InteractionState;
 
 #[cfg(feature = "toggle")]
 use crate::renderer::chrome::varies_live;
-use crate::renderer::chrome::{LiveSource, opacity_runs};
+use crate::renderer::chrome::{DragVelocity, LiveSource, opacity_runs};
 use crate::renderer::recording::{LoweredResources, SceneResources};
 use crate::renderer::{HydrolysisRenderer, RenderContext};
 use crate::theme::live::Operand;
@@ -36,6 +36,21 @@ use crate::theme::{
     Backdrop, Change, Inputs, InteractionMotion, LiveDriven, RealizedCustom, Retarget,
     ToggleControl,
 };
+use crate::time::Instant;
+
+/// A backdrop shape, which clips a backdrop member (so it accepts a single
+/// shaped animation rather than a keyframe track).
+struct BackdropShapeOperand(Rc<LiveDriven<ShapeData, bool>>);
+
+impl Retarget<bool> for BackdropShapeOperand {
+    fn retarget(&self, inputs: &Inputs<'_, bool>, change: Change<'_>) {
+        self.0.retarget_shaped(inputs, change);
+    }
+
+    fn subscribe(&self, notify: Rc<dyn Fn(Option<Animation>)>) -> Option<Box<dyn Any>> {
+        self.0.subscribe(notify)
+    }
+}
 
 /// A backdrop effect, which reads the interaction state alone, retargeted
 /// with a toggle's inputs.
@@ -43,13 +58,14 @@ struct EffectOperand(Rc<LiveDriven<MaterialEffect, ()>>);
 
 impl Retarget<bool> for EffectOperand {
     fn retarget(&self, inputs: &Inputs<'_, bool>, change: Change<'_>) {
-        self.0.retarget(
+        self.0.retarget_shaped(
             &Inputs {
                 frame: inputs.frame,
                 state: inputs.state,
                 value: &(),
                 drag: inputs.drag,
                 press_point: inputs.press_point,
+                velocity: inputs.velocity,
             },
             change,
         );
@@ -82,6 +98,7 @@ pub struct LiveToggle {
     state: Cell<InteractionState>,
     press_point: Cell<Option<Point>>,
     drag: Cell<Option<Vec2>>,
+    velocity: RefCell<DragVelocity>,
     /// The parts below the backdrop, bottom first.
     below: Vec<RealizedCustom<bool>>,
     backdrop: Option<RealizedBackdrop>,
@@ -133,7 +150,7 @@ impl LiveToggle {
             .flat_map(|part| part.drivens.iter().cloned())
             .collect();
         if let Some(backdrop) = &backdrop {
-            drivens.push(Rc::clone(&backdrop.shape) as Rc<dyn Retarget<bool>>);
+            drivens.push(Rc::new(BackdropShapeOperand(Rc::clone(&backdrop.shape))));
             drivens.push(Rc::new(EffectOperand(Rc::clone(&backdrop.effect))));
         }
         drivens.extend(above.iter().flat_map(|part| part.drivens.iter().cloned()));
@@ -146,6 +163,7 @@ impl LiveToggle {
             state: Cell::new(state),
             press_point: Cell::new(None),
             drag: Cell::new(None),
+            velocity: RefCell::new(DragVelocity::new()),
             below,
             backdrop,
             above,
@@ -238,6 +256,7 @@ impl LiveToggle {
             value: &value,
             drag: self.drag.get(),
             press_point: self.press_point.get(),
+            velocity: self.velocity.borrow().current(),
         })
     }
 
@@ -276,6 +295,7 @@ impl LiveToggle {
         }
         if !state.contains(InteractionState::PRESSED) {
             self.press_point.set(None);
+            self.velocity.borrow_mut().reset();
         }
         self.retarget(Change::Interaction {
             old,
@@ -303,15 +323,17 @@ impl LiveToggle {
 
     /// Starts a drag of the knob: the toggle reads as dragged.
     #[cfg(feature = "toggle")]
-    pub(crate) fn begin_drag(&self) {
+    pub(crate) fn begin_drag(&self, at: Instant) {
+        self.velocity.borrow_mut().start(Vec2::ZERO, at);
         self.set_flag(InteractionState::DRAGGED, true);
     }
 
     /// Moves the drag to `offset` from where the press landed. The operands
     /// track it with no animation, so they follow the finger.
     #[cfg(feature = "toggle")]
-    pub(crate) fn drag_to(&self, offset: Vec2) {
+    pub(crate) fn drag_to(&self, offset: Vec2, at: Instant) {
         self.drag.set(Some(offset));
+        self.velocity.borrow_mut().sample(offset, at);
         self.retarget(Change::Animated(None));
     }
 
@@ -322,6 +344,7 @@ impl LiveToggle {
     #[cfg(feature = "toggle")]
     pub(crate) fn end_drag(&self, settled: bool, binding: &Binding<bool>) {
         self.drag.set(None);
+        self.velocity.borrow_mut().reset();
         if binding.snapshot() == settled {
             self.retarget(Change::Value {
                 change: &ChangeAnimation::Unspecified,

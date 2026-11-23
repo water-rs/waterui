@@ -87,6 +87,19 @@ impl<T: Clone + PartialEq + 'static> Operand<T> {
         self.0.watchers.notify_owned(Context::new(value, metadata));
     }
 
+    /// Moves the operand to `value` along `track`: the engine samples its
+    /// keyframes on its own clock and holds `value` once the track ends. An
+    /// unchanged value notifies nothing.
+    #[doc(hidden)]
+    pub fn set_keyframed(&self, value: T, track: KeyframeAnimation) {
+        if *self.0.value.borrow() == value {
+            return;
+        }
+        *self.0.value.borrow_mut() = value.clone();
+        let metadata = Metadata::new().with(track);
+        self.0.watchers.notify_owned(Context::new(value, metadata));
+    }
+
     #[doc(hidden)]
     #[must_use]
     pub fn live(&self) -> Live<T> {

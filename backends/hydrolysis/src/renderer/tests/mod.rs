@@ -66,6 +66,8 @@ mod image_ingest;
 mod ime;
 mod interaction_state;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
+mod interactive_dynamics;
+#[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod layer_occlusion;
 mod layout_contract;
 mod lazy_cross;
@@ -2759,6 +2761,8 @@ pub struct MinimalTestTheme {
     /// When set, the tabs look lays its items out horizontally from this bar
     /// extent up — a width-class theme like M3's medium-width boundary.
     horizontal_from_width: Option<f64>,
+    /// Optional explicit [`TabsLook`] override for tests.
+    tabs_look: Option<TabsLook>,
     /// Every frame the slider's value-indicator bubble records on.
     slider_indicator_draws: Rc<RefCell<Vec<Rect>>>,
     /// Every spec the theme was asked for a slider look.
@@ -2876,6 +2880,13 @@ impl MinimalTestTheme {
     #[must_use]
     pub fn with_button_chrome(mut self, chrome: Chrome) -> Self {
         self.button_chrome = Some(chrome);
+        self
+    }
+
+    /// Hands out `look` for every tab container.
+    #[must_use]
+    pub fn with_tabs_look(mut self, look: TabsLook) -> Self {
+        self.tabs_look = Some(look);
         self
     }
 
@@ -3416,6 +3427,9 @@ impl WidgetTheme for MinimalTestTheme {
 
     #[cfg(feature = "navigation")]
     fn tabs(&self, _spec: &TabsSpec, _env: &Environment) -> TabsLook {
+        if let Some(look) = &self.tabs_look {
+            return look.clone();
+        }
         let bar_draws = Rc::clone(&self.tabs_bar_draws);
         let divider_draws = Rc::clone(&self.tabs_bar_divider_draws);
         let highlight_draws = Rc::clone(&self.tabs_highlight_draws);

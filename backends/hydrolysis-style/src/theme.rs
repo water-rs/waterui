@@ -83,18 +83,20 @@ pub use cherenkov_record::MaterialRegistry;
 #[doc(hidden)]
 pub use chrome::path_commands_to_path;
 pub use chrome::{
-    Backdrop, Border, Chrome, ContentEffect, CornerShape, Corners, Elevation, Fill, FocusIndicator,
-    PressFeedback, Ripple, StateLayer, Surface, Wash,
+    Backdrop, Border, Chrome, ContentEffect, CornerShape, Corners, DragDeformation, Elevation,
+    Fill, FocusIndicator, PressFeedback, Ripple, StateLayer, Surface, Wash,
 };
 pub use glass::GlassLook;
 #[cfg(waterui_feature = "list")]
 pub use list::{ListControls, ListGestures, ListLook, ListSpec};
 pub use look::{
     ButtonLook, ButtonSpec, Custom, Driven, DrivenSet, HitRegion, Inputs, Label, Motion, SpecTint,
-    Transition, ValueMotion,
+    Transition, ValueMotion, smoothstep,
 };
 #[doc(hidden)]
-pub use look::{Change, CustomPart, LayerRotation, LiveDriven, RealizedCustom, Retarget};
+pub use look::{
+    Change, CustomPart, LayerRotation, LiveDriven, RealizedCustom, Retarget, windowed_keyframes,
+};
 #[cfg(waterui_feature = "menu")]
 pub use menu::{MenuLayout, MenuLook, MenuPresentationMotion, MenuPresentationSample, MenuSpec};
 #[cfg(waterui_feature = "navigation")]
@@ -115,7 +117,9 @@ pub use stepper::{StepperLook, StepperSpec};
 #[cfg(waterui_feature = "table")]
 pub use table::TableLook;
 #[cfg(waterui_feature = "navigation")]
-pub use tabs::{TabItem, TabItemGeometry, TabItemLayout, TabsLook, TabsMetrics, TabsSpec};
+pub use tabs::{
+    TabItem, TabItemGeometry, TabItemLayout, TabsDrag, TabsLook, TabsMetrics, TabsSpec, TabsValue,
+};
 pub use text_field::{Caret, FloatingLabel, TextFieldLook, TextFieldSpec};
 #[cfg(waterui_feature = "toggle")]
 pub use toggle::ToggleSpec;

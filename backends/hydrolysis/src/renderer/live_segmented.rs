@@ -16,7 +16,7 @@ use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
-use cherenkov_record::{Paint, WorkingColor};
+use cherenkov_record::Paint;
 use kurbo::{Affine, Point, Rect, Vec2};
 use nami::{Binding, Computed, Signal};
 use waterui_core::Environment;
@@ -24,13 +24,14 @@ use waterui_core::animation::{Animation, ChangeAnimation};
 use waterui_core::id::Id;
 use waterui_interaction::interaction::InteractionState;
 
-use crate::renderer::chrome::{LiveChrome, PartRuns, PartStep, varies_live};
+use crate::renderer::chrome::{DragVelocity, LiveChrome, PartRuns, PartStep, varies_live};
 use crate::renderer::{HydrolysisRenderer, RenderContext};
 use crate::theme::live::Operand;
 use crate::theme::{
     Change, Chrome, Inputs, InteractionMotion, LiveDriven, RealizedCustom, Retarget, Segment,
     SegmentedLook, SegmentedValue,
 };
+use crate::time::Instant;
 
 /// The interaction flags a segment's own pointer and keyboard state set.
 const LIVE: InteractionState = InteractionState::HOVERED
@@ -78,6 +79,7 @@ pub struct LiveSegmented {
     value: Cell<SegmentedValue>,
     drag: Cell<Option<Vec2>>,
     dragged: Cell<bool>,
+    velocity: RefCell<DragVelocity>,
     press_point: Cell<Option<Point>>,
     /// Each segment's own hover, press and focus.
     states: Vec<Cell<InteractionState>>,
@@ -89,8 +91,8 @@ pub struct LiveSegmented {
     segments: Vec<Vec<RealizedCustom<Segment>>>,
     above: Vec<RealizedCustom<SegmentedValue>>,
     group_opacity: Rc<LiveDriven<f32, ()>>,
-    /// Each segment's label colour.
-    label_colors: Vec<Rc<LiveDriven<WorkingColor, Segment>>>,
+    /// Each segment's label paint.
+    label_colors: Vec<Rc<LiveDriven<Paint, Segment>>>,
     /// Each segment's label paint, following its colour operand.
     label_paints: Vec<Computed<Paint>>,
     /// The subscriptions to the selection and to the signals the parts'
@@ -194,7 +196,7 @@ impl LiveSegmented {
             let env = env.clone();
             look.label()
                 .get_color()
-                .map(move |color| color.resolve(&env).snapshot())
+                .map(move |color| Paint::from(color.resolve(&env).snapshot()))
         };
         let label_colors: Vec<_> = frames
             .segments
@@ -210,7 +212,7 @@ impl LiveSegmented {
             .collect();
         let label_paints = label_colors
             .iter()
-            .map(|color| Computed::new(nami::SignalExt::map(color.operand(), Paint::from)))
+            .map(|color| Computed::new(color.operand().clone()))
             .collect();
         let group_opacity = Rc::new(LiveDriven::new(
             look.get_group_opacity().clone(),
@@ -227,6 +229,7 @@ impl LiveSegmented {
             value: Cell::new(value),
             drag: Cell::new(None),
             dragged: Cell::new(false),
+            velocity: RefCell::new(DragVelocity::new()),
             press_point: Cell::new(None),
             below,
             chromes,
@@ -354,6 +357,7 @@ impl LiveSegmented {
             value: &value,
             drag: self.drag.get(),
             press_point: self.press_point.get(),
+            velocity: self.velocity.borrow().current(),
         })
     }
 
@@ -372,6 +376,7 @@ impl LiveSegmented {
                 .press_point
                 .get()
                 .filter(|_| state.contains(InteractionState::PRESSED)),
+            velocity: None,
         })
     }
 
@@ -382,6 +387,7 @@ impl LiveSegmented {
             value: &(),
             drag: self.drag.get(),
             press_point: self.press_point.get(),
+            velocity: self.velocity.borrow().current(),
         })
     }
 
@@ -465,14 +471,20 @@ impl LiveSegmented {
     /// record space (`None` for a keyboard or synthetic press): the press
     /// point the parts read is `origin` in their mirrored space, and the
     /// segment's chrome starts ripple wave `wave` there.
-    pub(crate) fn begin_press(&self, index: usize, wave: usize, origin: Option<Point>) {
+    pub(crate) fn begin_press(
+        &self,
+        index: usize,
+        wave: usize,
+        origin: Option<Point>,
+        at: Instant,
+    ) {
         if self.disabled {
             return;
         }
         let origin = origin.map(|origin| self.frames.mirror() * origin);
         self.press_point.set(origin);
         if let Some(chrome) = self.chromes.get(index) {
-            chrome.begin_wave(wave, origin);
+            chrome.begin_wave(wave, origin, at);
         }
         self.set_flag(index, InteractionState::PRESSED, true);
     }
@@ -480,9 +492,9 @@ impl LiveSegmented {
     /// Moves segment `index`'s active press point to `point`, in the
     /// widget's record space: its chrome's values that read it follow the
     /// pointer.
-    pub(crate) fn move_press(&self, index: usize, point: Point) {
+    pub(crate) fn move_press(&self, index: usize, point: Point, at: Instant) {
         if let Some(chrome) = self.chromes.get(index) {
-            chrome.move_press(self.frames.mirror() * point);
+            chrome.move_press(self.frames.mirror() * point, at);
         }
     }
 
@@ -561,12 +573,13 @@ impl LiveSegmented {
     }
 
     /// Starts a drag of the thumb: the control reads as dragged.
-    pub(crate) fn begin_drag(&self) {
+    pub(crate) fn begin_drag(&self, at: Instant) {
         if self.dragged.get() {
             return;
         }
         let old = self.control_state();
         self.dragged.set(true);
+        self.velocity.borrow_mut().start(Vec2::ZERO, at);
         self.retarget_control(Change::Interaction {
             old,
             motion: self.look.motion(),
@@ -575,8 +588,9 @@ impl LiveSegmented {
 
     /// Moves the drag to `offset` from where the press landed. The thumb
     /// tracks it with no animation, so it follows the finger.
-    pub(crate) fn drag_to(&self, offset: Vec2) {
+    pub(crate) fn drag_to(&self, offset: Vec2, at: Instant) {
         self.drag.set(Some(offset));
+        self.velocity.borrow_mut().sample(offset, at);
         let mut value = self.value.get();
         value.position = self.position_for(value.selected);
         self.value.set(value);
@@ -599,6 +613,7 @@ impl LiveSegmented {
             let old = self.control_state();
             self.drag.set(None);
             self.dragged.set(false);
+            self.velocity.borrow_mut().reset();
             // The selection's change reaches the operands through the
             // subscription, with the drag already gone.
             selection.set(tag);
@@ -616,6 +631,7 @@ impl LiveSegmented {
         let old = self.control_state();
         self.drag.set(None);
         self.dragged.set(false);
+        self.velocity.borrow_mut().reset();
         let mut value = self.value.get();
         value.position = position(value.selected);
         self.value.set(value);

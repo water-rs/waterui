@@ -18,6 +18,7 @@ use crate::renderer::live_tabs::LiveTabs;
 #[cfg(any(feature = "toggle", feature = "picker"))]
 use crate::renderer::live_toggle::LiveToggle;
 use crate::theme::InteractionMotion;
+use kurbo::Point;
 use waterui_interaction::interaction::InteractionState;
 
 /// Maximum number of overlapping press ripple waves tracked per widget.
@@ -171,10 +172,10 @@ impl Steered {
         }
     }
 
-    fn begin_press(&self, index: usize, origin: Option<kurbo::Point>) {
+    fn begin_press(&self, index: usize, origin: Option<Point>, at: Instant) {
         match self {
             Self::Chrome(chrome) => {
-                chrome.begin_wave(index, origin);
+                chrome.begin_wave(index, origin, at);
                 chrome.set_flag(InteractionState::PRESSED, true);
             }
             #[cfg(any(feature = "toggle", feature = "picker"))]
@@ -183,19 +184,19 @@ impl Steered {
                 toggle.set_flag(InteractionState::PRESSED, true);
             }
             #[cfg(feature = "picker")]
-            Self::Segment(picker, segment) => picker.begin_press(*segment, index, origin),
+            Self::Segment(picker, segment) => picker.begin_press(*segment, index, origin, at),
             #[cfg(feature = "navigation")]
-            Self::Tab(tabs, item) => tabs.begin_press(*item, index, origin),
+            Self::Tab(tabs, item) => tabs.begin_press(*item, index, origin, at),
         }
     }
 
-    fn move_press(&self, point: kurbo::Point) {
+    fn move_press(&self, point: Point, at: Instant) {
         match self {
-            Self::Chrome(chrome) => chrome.move_press(point),
+            Self::Chrome(chrome) => chrome.move_press(point, at),
             #[cfg(feature = "picker")]
-            Self::Segment(picker, segment) => picker.move_press(*segment, point),
+            Self::Segment(picker, segment) => picker.move_press(*segment, point, at),
             #[cfg(feature = "navigation")]
-            Self::Tab(tabs, item) => tabs.move_press(*item, point),
+            Self::Tab(tabs, item) => tabs.move_press(*item, point, at),
             // A toggle's parts follow the pressed flag and its drag.
             #[cfg(any(feature = "toggle", feature = "picker"))]
             Self::Toggle(_) => {}
@@ -490,13 +491,13 @@ impl InteractionLayerHandles {
         // ripple's fade it is not gated by the minimum press duration.
         self.press_progress
             .apply_target(1.0, self.scalar(&self.motion.press_shape), now);
-        self.with_live(|live| live.begin_press(index, local_origin));
+        self.with_live(|live| live.begin_press(index, local_origin, now));
     }
 
     /// Moves the press point of the active press to `local`, in the widget's
     /// own space, so the look's values that read it follow the pointer.
-    pub(crate) fn move_press(&self, local: kurbo::Point) {
-        self.with_live(|live| live.move_press(local));
+    pub(crate) fn move_press(&self, local: Point, at: Instant) {
+        self.with_live(|live| live.move_press(local, at));
     }
 
     /// The slot a new press claims: the first invisible wave, or the oldest

@@ -25,7 +25,7 @@ use cherenkov_record::{
     CaptureClass, ContentShader, ContinuousRect, MaterialEffect, MaterialShader, Paint, Shadow,
     ShapeData, WorkingColor,
 };
-use kurbo::{Circle, Point, Rect, RoundedRect, RoundedRectRadii, Size, Vec2};
+use kurbo::{Affine, Circle, Point, Rect, RoundedRect, RoundedRectRadii, Size, Vec2};
 use waterui_core::animation::Animation;
 use waterui_core::plugin::Plugin;
 use waterui_graphics::color::Color;
@@ -702,14 +702,269 @@ pub struct Wash {
     pub radius: f64,
 }
 
-/// What a press shows: any combination of a ripple, a tint, a scale and a
-/// wash, each driven by the chrome's press transition.
+/// Elastic drag deformation for a pressed surface or control: a bounded
+/// rubber-band lag along the drag offset paired with an area-preserving
+/// stretch tensor (`lambda_par * lambda_perp == 1.0`).
+///
+/// All parameters default to zero deformation (identity transform), so a
+/// theme opts into the exact lag, displacement/velocity coupling, and stretch
+/// bounds its motion language calls for.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DragDeformation {
+    max_lag: f64,
+    lag_scale: f64,
+    displacement_gain: f64,
+    displacement_ref: f64,
+    velocity_gain: f64,
+    velocity_ref: f64,
+    min_stretch: f64,
+    max_stretch: f64,
+    active_motion: Option<Animation>,
+}
+
+impl Default for DragDeformation {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DragDeformation {
+    /// Identity drag deformation: zero lag and unit stretch.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            max_lag: 0.0,
+            lag_scale: 1.0,
+            displacement_gain: 0.0,
+            displacement_ref: 1.0,
+            velocity_gain: 0.0,
+            velocity_ref: 1.0,
+            min_stretch: 1.0,
+            max_stretch: 1.0,
+            active_motion: None,
+        }
+    }
+
+    /// Configures bounded rubber-band lag along the drag offset:
+    /// `max_lag * tanh(|drag| / lag_scale)`.
+    #[must_use]
+    pub const fn lag(mut self, max_lag: f64, lag_scale: f64) -> Self {
+        self.max_lag = max_lag;
+        self.lag_scale = lag_scale;
+        self
+    }
+
+    /// Configures displacement-driven stretch along the drag offset:
+    /// `gain * tanh(|drag| / reference)`.
+    #[must_use]
+    pub const fn displacement_stretch(mut self, gain: f64, reference: f64) -> Self {
+        self.displacement_gain = gain;
+        self.displacement_ref = reference;
+        self
+    }
+
+    /// Configures velocity-driven stretch along the smoothed pointer velocity:
+    /// `gain * tanh(|velocity| / reference)`.
+    #[must_use]
+    pub const fn velocity_stretch(mut self, gain: f64, reference: f64) -> Self {
+        self.velocity_gain = gain;
+        self.velocity_ref = reference;
+        self
+    }
+
+    /// Clamps the primary stretch eigenvalue `lambda_par` to
+    /// `[min_stretch, max_stretch]`; the perpendicular eigenvalue is always
+    /// `1.0 / lambda_par`.
+    #[must_use]
+    pub const fn stretch_bounds(mut self, min_stretch: f64, max_stretch: f64) -> Self {
+        self.min_stretch = min_stretch;
+        self.max_stretch = max_stretch;
+        self
+    }
+
+    /// Optional animation used while tracking pointer moves during an active
+    /// drag (`None` snaps directly to the deformed state with zero latency).
+    #[must_use]
+    pub const fn active_motion(mut self, animation: Animation) -> Self {
+        self.active_motion = Some(animation);
+        self
+    }
+
+    /// Maximum rubber-band lag in logical points.
+    #[must_use]
+    pub const fn get_max_lag(&self) -> f64 {
+        self.max_lag
+    }
+
+    /// Characteristic drag distance for rubber-band lag, in logical points.
+    #[must_use]
+    pub const fn get_lag_scale(&self) -> f64 {
+        self.lag_scale
+    }
+
+    /// Displacement stretch gain.
+    #[must_use]
+    pub const fn get_displacement_gain(&self) -> f64 {
+        self.displacement_gain
+    }
+
+    /// Characteristic displacement for stretch, in logical points.
+    #[must_use]
+    pub const fn get_displacement_ref(&self) -> f64 {
+        self.displacement_ref
+    }
+
+    /// Velocity stretch gain.
+    #[must_use]
+    pub const fn get_velocity_gain(&self) -> f64 {
+        self.velocity_gain
+    }
+
+    /// Characteristic velocity for stretch, in logical points per second.
+    #[must_use]
+    pub const fn get_velocity_ref(&self) -> f64 {
+        self.velocity_ref
+    }
+
+    /// Lower bound on the primary stretch eigenvalue.
+    #[must_use]
+    pub const fn get_min_stretch(&self) -> f64 {
+        self.min_stretch
+    }
+
+    /// Upper bound on the primary stretch eigenvalue.
+    #[must_use]
+    pub const fn get_max_stretch(&self) -> f64 {
+        self.max_stretch
+    }
+
+    /// Optional animation used while tracking active drag moves.
+    #[must_use]
+    pub const fn get_active_motion(&self) -> Option<&Animation> {
+        self.active_motion.as_ref()
+    }
+
+    /// Rubber-band translation offset for `drag`.
+    #[must_use]
+    pub fn lag_offset(&self, drag: Vec2) -> Vec2 {
+        let dist = drag.hypot();
+        if self.max_lag <= 0.0 || self.lag_scale <= 0.0 || dist <= 1e-9 || !dist.is_finite() {
+            return Vec2::ZERO;
+        }
+        let mag = self.max_lag * (dist / self.lag_scale).tanh();
+        drag * (mag / dist)
+    }
+
+    fn drive_vector(&self, drag: Vec2, velocity: Vec2) -> Vec2 {
+        let mut drive = Vec2::ZERO;
+        let dist = drag.hypot();
+        if self.displacement_gain > 0.0
+            && self.displacement_ref > 0.0
+            && dist > 1e-9
+            && dist.is_finite()
+        {
+            let mag = self.displacement_gain * (dist / self.displacement_ref).tanh();
+            drive += drag * (mag / dist);
+        }
+        let speed = velocity.hypot();
+        if self.velocity_gain > 0.0 && self.velocity_ref > 0.0 && speed > 1e-9 && speed.is_finite()
+        {
+            let mag = self.velocity_gain * (speed / self.velocity_ref).tanh();
+            drive += velocity * (mag / speed);
+        }
+        drive
+    }
+
+    /// Area-preserving stretch eigenvalues `(lambda_par, lambda_perp)` with
+    /// `lambda_par * lambda_perp == 1.0`.
+    #[must_use]
+    pub fn stretch(&self, drag: Vec2, velocity: Vec2) -> (f64, f64) {
+        let excess = self.drive_vector(drag, velocity).hypot();
+        if excess <= 1e-9 {
+            return (1.0, 1.0);
+        }
+        let lo = self.min_stretch.max(1e-3);
+        let hi = self.max_stretch.max(lo);
+        let lambda_par = (1.0 + excess).clamp(lo, hi);
+        (lambda_par, 1.0 / lambda_par)
+    }
+
+    /// Axis-aligned area-preserving scales `(sx, sy)` (`sx * sy == 1.0`) for
+    /// deforming an axis-aligned silhouette rectangle.
+    #[must_use]
+    pub fn axis_scales(&self, drag: Vec2, velocity: Vec2) -> (f64, f64) {
+        let drive = self.drive_vector(drag, velocity);
+        let mag = drive.hypot();
+        if mag <= 1e-9 {
+            return (1.0, 1.0);
+        }
+        let (lambda_par, _) = self.stretch(drag, velocity);
+        let ux = drive.x / mag;
+        let uy = drive.y / mag;
+        let cos2 = ux.mul_add(ux, -(uy * uy));
+        let sx = lambda_par.powf(cos2);
+        (sx, 1.0 / sx)
+    }
+
+    /// Deformed axis-aligned silhouette rectangle for `frame` under `(drag, velocity)`.
+    #[must_use]
+    pub fn deformed_rect(&self, frame: Rect, drag: Vec2, velocity: Vec2) -> Rect {
+        let lag = self.lag_offset(drag);
+        let (sx, sy) = self.axis_scales(drag, velocity);
+        Rect::from_center_size(
+            frame.center() + lag,
+            Size::new(frame.width() * sx, frame.height() * sy),
+        )
+    }
+
+    /// Combined rubber-band lag and 2D area-preserving stretch tensor about
+    /// `center` (`det == 1.0`).
+    #[must_use]
+    pub fn transform(&self, center: Point, drag: Vec2, velocity: Vec2) -> Affine {
+        let lag = self.lag_offset(drag);
+        let drive = self.drive_vector(drag, velocity);
+        let mag = drive.hypot();
+        let (diag_x, shear, diag_y) = if mag <= 1e-9 {
+            (1.0, 0.0, 1.0)
+        } else {
+            let (lambda_par, lambda_perp) = self.stretch(drag, velocity);
+            let ux = drive.x / mag;
+            let uy = drive.y / mag;
+            let ux2 = ux * ux;
+            let uy2 = uy * uy;
+            (
+                lambda_par.mul_add(ux2, lambda_perp * uy2),
+                (lambda_par - lambda_perp) * ux * uy,
+                lambda_par.mul_add(uy2, lambda_perp * ux2),
+            )
+        };
+        let pivot = center.to_vec2();
+        Affine::translate(pivot + lag)
+            * Affine::new([diag_x, shear, shear, diag_y, 0.0, 0.0])
+            * Affine::translate(-pivot)
+    }
+
+    /// Worst-case visual expansion beyond `size` on any side, in logical points.
+    #[must_use]
+    pub fn extent(&self, size: Size) -> f64 {
+        let lag = self.max_lag.max(0.0);
+        let stretch_excess = (self.max_stretch - 1.0).max(0.0);
+        let half_max = 0.5 * size.width.max(size.height).max(0.0);
+        stretch_excess.mul_add(half_max, lag)
+    }
+}
+
+/// What a press shows: any combination of a ripple, a tint, a scale, a wash
+/// and an optional drag deformation, each driven by the chrome's press
+/// transition.
 #[derive(Debug, Clone, Default)]
 pub struct PressFeedback {
     ripple: Option<Ripple>,
     tint: bool,
     scale: Option<f64>,
+    max_growth: Option<f64>,
     wash: Option<Wash>,
+    drag_deformation: Option<DragDeformation>,
 }
 
 impl PressFeedback {
@@ -720,7 +975,9 @@ impl PressFeedback {
             ripple: None,
             tint: false,
             scale: None,
+            max_growth: None,
             wash: None,
+            drag_deformation: None,
         }
     }
 
@@ -749,10 +1006,26 @@ impl PressFeedback {
         self
     }
 
+    /// Caps the uniform press scale so neither half-axis grows (or shrinks)
+    /// by more than `max_growth` logical points, preserving aspect ratio on
+    /// wide or tall controls. Default is `None` (unconstrained uniform scale).
+    #[must_use]
+    pub const fn max_growth(mut self, max_growth: f64) -> Self {
+        self.max_growth = Some(max_growth);
+        self
+    }
+
     /// A highlight centred on the press point ([`Wash`]).
     #[must_use]
     pub fn wash(mut self, wash: Wash) -> Self {
         self.wash = Some(wash);
+        self
+    }
+
+    /// Elastic lag and area-preserving stretch applied while a press drags.
+    #[must_use]
+    pub const fn drag_deformation(mut self, deformation: DragDeformation) -> Self {
+        self.drag_deformation = Some(deformation);
         self
     }
 
@@ -774,10 +1047,40 @@ impl PressFeedback {
         self.scale
     }
 
+    /// The half-axis growth cap in logical points, if one is set.
+    #[must_use]
+    pub const fn get_max_growth(&self) -> Option<f64> {
+        self.max_growth
+    }
+
+    /// Effective uniform press scale factor on a control of `size`, honoring
+    /// [`Self::max_growth`] without distorting aspect ratio.
+    #[must_use]
+    pub fn effective_scale(&self, size: Size) -> f64 {
+        let Some(amount) = self.scale else {
+            return 1.0;
+        };
+        let Some(cap) = self.max_growth else {
+            return 1.0 + amount;
+        };
+        let half_max = 0.5 * size.width.max(size.height);
+        if !half_max.is_finite() || half_max <= 0.0 {
+            return 1.0 + amount;
+        }
+        let limit = cap.max(0.0) / half_max;
+        1.0 + amount.clamp(-limit, limit)
+    }
+
     /// The wash, if the press shows one.
     #[must_use]
     pub const fn get_wash(&self) -> Option<&Wash> {
         self.wash.as_ref()
+    }
+
+    /// The drag deformation, if the press deforms under drag.
+    #[must_use]
+    pub const fn get_drag_deformation(&self) -> Option<&DragDeformation> {
+        self.drag_deformation.as_ref()
     }
 }
 
@@ -1109,4 +1412,70 @@ pub fn path_commands_to_path(
     }
 
     path
+}
+
+#[cfg(test)]
+mod tests {
+    use approx::assert_relative_eq;
+    use kurbo::{Affine, Point, Rect, Size, Vec2};
+
+    use super::{DragDeformation, PressFeedback};
+
+    #[test]
+    fn press_feedback_max_growth_caps_wide_frames_without_distorting_aspect() {
+        let uncapped = PressFeedback::new().scale(0.25);
+        assert_relative_eq!(uncapped.effective_scale(Size::new(300.0, 44.0)), 1.25);
+
+        let capped = PressFeedback::new().scale(0.25).max_growth(10.0);
+        // Compact 44x44: half_max = 22, 0.25 * 22 = 5.5 <= 10.0 -> uncapped 1.25
+        assert_relative_eq!(capped.effective_scale(Size::new(44.0, 44.0)), 1.25);
+        // Wide 300x44: half_max = 150, 10.0 / 150.0 = 1/15 -> 1 + 1/15
+        let wide_scale = capped.effective_scale(Size::new(300.0, 44.0));
+        assert_relative_eq!(wide_scale, 1.0 + 10.0 / 150.0, epsilon = 1e-12);
+        // Half-width delta equals exactly 10.0 pt
+        assert_relative_eq!(150.0 * (wide_scale - 1.0), 10.0, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn drag_deformation_preserves_area_and_bounds_lag() {
+        let deform = DragDeformation::new()
+            .lag(6.0, 40.0)
+            .displacement_stretch(0.10, 60.0)
+            .velocity_stretch(0.12, 800.0)
+            .stretch_bounds(0.85, 1.25);
+
+        // Rest state is identity.
+        assert_eq!(deform.lag_offset(Vec2::ZERO), Vec2::ZERO);
+        assert_eq!(deform.stretch(Vec2::ZERO, Vec2::ZERO), (1.0, 1.0));
+        assert_eq!(
+            deform.transform(Point::new(50.0, 20.0), Vec2::ZERO, Vec2::ZERO),
+            Affine::IDENTITY
+        );
+
+        // Large drag asymptotically approaches max_lag without exceeding it.
+        let far_lag = deform.lag_offset(Vec2::new(1000.0, 0.0));
+        assert!(far_lag.x > 5.99 && far_lag.x <= 6.0);
+        assert_relative_eq!(far_lag.y, 0.0, epsilon = 1e-12);
+
+        // Area preservation for arbitrary angle drag + velocity.
+        for (drag, vel) in [
+            (Vec2::new(40.0, 0.0), Vec2::new(600.0, 0.0)),
+            (Vec2::new(0.0, -50.0), Vec2::new(0.0, -400.0)),
+            (Vec2::new(30.0, 40.0), Vec2::new(500.0, -250.0)),
+        ] {
+            let (par, perp) = deform.stretch(drag, vel);
+            assert!(par > 1.0 && par <= 1.25);
+            assert_relative_eq!(par * perp, 1.0, epsilon = 1e-12);
+
+            let (sx, sy) = deform.axis_scales(drag, vel);
+            assert_relative_eq!(sx * sy, 1.0, epsilon = 1e-12);
+
+            let affine = deform.transform(Point::new(50.0, 20.0), drag, vel);
+            assert_relative_eq!(affine.determinant(), 1.0, epsilon = 1e-12);
+
+            let frame = Rect::from_origin_size((10.0, 10.0), (80.0, 40.0));
+            let deformed = deform.deformed_rect(frame, drag, vel);
+            assert_relative_eq!(deformed.area(), frame.area(), epsilon = 1e-9);
+        }
+    }
 }

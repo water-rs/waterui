@@ -463,14 +463,14 @@ fn switch_track(
             start.set(Some(point));
             dragging.set(false);
         }
-        Track::Move(point) => {
+        Track::Move(point, at) => {
             let offset = offset(start.get(), point);
             if !dragging.get() && offset.x.abs() > slop {
                 dragging.set(true);
-                toggle.begin_drag();
+                toggle.begin_drag(at);
             }
             if dragging.get() {
-                toggle.drag_to(offset);
+                toggle.drag_to(offset, at);
             }
         }
         Track::Release {
