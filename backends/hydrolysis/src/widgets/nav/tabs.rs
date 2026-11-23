@@ -2,20 +2,24 @@ use crate::renderer::bounded_proposal;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use crate::num_cast::usize_as_f64;
 #[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::HeldChild;
 use crate::renderer::live_tabs::{LiveTabs, LiveTabsParts, TabsFrames};
 use crate::renderer::{
-    ChromeBar, Edge, HydroState, RetainedSubview, Track, TrackAction, WidgetRenderContext,
-    tabs_button_rect, tabs_content_proposal,
+    ChromeBar, Edge, HydroState, HydrolysisRenderer, RetainedSubview, SemanticCore, Track,
+    TrackAction, WidgetRenderContext, tabs_button_rect, tabs_content_proposal,
 };
-use crate::theme::{TabBarWidth, TabItemGeometry, TabItemLayout, TabsLook, TabsSpec, WidgetTheme};
+use crate::text::TextEngine;
+use crate::theme::{
+    TabBarWidth, TabItemGeometry, TabItemLayout, TabsLook, TabsMetrics, TabsSpec, WidgetTheme,
+};
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
 };
-use kurbo::{Point, Vec2};
+use kurbo::{Point, Rect, Vec2};
 use nami::watcher::BoxWatcherGuard;
 use nami::{Binding, Signal, SignalExt as _};
 use waterui::navigation::tab::{NativeTabStyle, TabItem, TabsLayout};
@@ -144,7 +148,7 @@ impl<E: crate::text::TextEngine> TabsRenderState<E> {
     /// The look for the container's spec in `env`: the one already held
     /// when the spec is unchanged, otherwise requested again, which drops
     /// the parts recorded from the old one.
-    fn look(&mut self, theme: &Rc<dyn WidgetTheme>, env: &Environment) -> TabsLook {
+    pub(crate) fn look(&mut self, theme: &Rc<dyn WidgetTheme>, env: &Environment) -> TabsLook {
         let spec = self.spec();
         if self.held(spec).is_none() {
             self.parts = None;
@@ -238,31 +242,36 @@ impl<E: crate::text::TextEngine> TabsRenderState<E> {
     /// membership change before measure and render touch `self.tabs`, and
     /// builds the inserted tabs' sub-views — the measure pass that follows
     /// has no renderer to build on.
-    pub(crate) fn prepare_tabs(
-        &mut self,
-        renderer: &mut crate::renderer::HydrolysisRenderer<E>,
-        env: &Environment,
-    ) {
+    pub(crate) fn prepare_tabs(&mut self, renderer: &mut HydrolysisRenderer<E>, env: &Environment) {
         self.reconcile();
         let theme = renderer.theme();
         let look = self.look(&theme, env);
         self.prebuild_labels_for_look(renderer, env, Some(&look));
     }
 
+    /// Eagerly build each tab's content sub-view during node construction.
+    /// Labels and icons depend on `TabsLook` foreground overrides and wait for
+    /// [`Self::prepare_tabs`] (or [`Self::prebuild_labels`] in semantic-only
+    /// mode).
+    pub(crate) fn prebuild_contents(&mut self, renderer: &mut SemanticCore<E>, env: &Environment) {
+        self.reconcile();
+        for tab in &mut self.tabs {
+            tab.content.ensure_built(renderer, env);
+        }
+    }
+
     /// Eagerly build the tab-label and icon sub-views (the measure path has
     /// no renderer to build on). The label builds title-only: the bar places
     /// the icon itself, so the label must not draw it a second time.
-    pub(crate) fn prebuild_labels(
-        &mut self,
-        renderer: &mut crate::renderer::SemanticCore<E>,
-        env: &Environment,
-    ) {
-        self.prebuild_labels_for_look(renderer, env, None);
+    pub(crate) fn prebuild_labels(&mut self, renderer: &mut SemanticCore<E>, env: &Environment) {
+        self.reconcile();
+        let look = self.held(self.spec()).cloned();
+        self.prebuild_labels_for_look(renderer, env, look.as_ref());
     }
 
-    fn prebuild_labels_for_look(
+    pub(crate) fn prebuild_labels_for_look(
         &mut self,
-        renderer: &mut crate::renderer::SemanticCore<E>,
+        renderer: &mut SemanticCore<E>,
         env: &Environment,
         look: Option<&TabsLook>,
     ) {
@@ -346,9 +355,9 @@ type TabAccessibilityEntry = (
 /// rect — the docked band [`WidgetRenderContext::chrome_splits`] carves out;
 /// the semantic walk has no bounds and passes `None`.
 #[cfg(feature = "accessibility")]
-pub fn tabs_accessibility<E: crate::text::TextEngine>(
-    renderer: &mut crate::renderer::SemanticCore<E>,
-    bar_rects: Option<(kurbo::Rect, kurbo::Rect)>,
+pub fn tabs_accessibility<E: TextEngine>(
+    renderer: &mut SemanticCore<E>,
+    bar_rects: Option<(Rect, Rect)>,
     selection: &Binding<Id>,
     style: NativeTabStyle,
     labels: &[TabAccessibilityEntry],
@@ -589,10 +598,10 @@ pub fn render_tabs_node<E: crate::text::TextEngine>(
 /// Concrete placement rectangles derived for the tab bar chrome split.
 #[derive(Clone, Copy)]
 struct TabsBarGeometry {
-    bar_rect: kurbo::Rect,
-    items_rect: kurbo::Rect,
-    bar_surface: kurbo::Rect,
-    divider: kurbo::Rect,
+    bar_rect: Rect,
+    items_rect: Rect,
+    bar_surface: Rect,
+    divider: Rect,
 }
 
 /// How a render places a tab container: the chrome split its bar was carved
@@ -603,7 +612,7 @@ struct TabsPlacement {
     bar_geometry: TabsBarGeometry,
     look: TabsLook,
     layout: TabItemLayout,
-    metrics: crate::theme::TabsMetrics,
+    metrics: TabsMetrics,
 }
 
 /// One tab item as a render places it: its button, where its icon and label
@@ -976,14 +985,14 @@ fn tab_item_env(env: &Environment, look: &TabsLook, selected: bool) -> Environme
     )
 }
 
-fn resolve_tabs_layout<E: crate::text::TextEngine>(
+fn resolve_tabs_layout<E: TextEngine>(
     ctx: &mut WidgetRenderContext<'_, E>,
     state: &Rc<RefCell<TabsRenderState<E>>>,
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
     look: &TabsLook,
     style: NativeTabStyle,
-) -> (TabItemLayout, crate::theme::TabsMetrics, Option<f64>, f64) {
+) -> (TabItemLayout, TabsMetrics, Option<f64>, f64) {
     let margin = bottom_floating_margin(look, style);
     if style != NativeTabStyle::Sidebar
         && matches!(look.get_bar_width(), TabBarWidth::Compact { .. })
@@ -1066,7 +1075,7 @@ const fn bottom_floating_margin(look: &TabsLook, style: NativeTabStyle) -> f64 {
 
 fn compact_bar_width(
     item_sizes: &[(LayoutSize, Option<LayoutSize>)],
-    metrics: &crate::theme::TabsMetrics,
+    metrics: &TabsMetrics,
     layout: TabItemLayout,
     item_min_width: f64,
     max_width: Option<f64>,
@@ -1088,7 +1097,7 @@ fn compact_bar_width(
             tabs_item_natural_width(*label_size, *icon_size, metrics, layout)
         })
         .fold(min_slot, f64::max);
-    let desired = slot.mul_add(crate::num_cast::usize_as_f64(item_sizes.len()), pad * 2.0);
+    let desired = slot.mul_add(usize_as_f64(item_sizes.len()), pad * 2.0);
     match max_width {
         Some(max) if max.is_finite() && max >= 0.0 => desired.min(max),
         _ => desired,
@@ -1100,7 +1109,7 @@ fn tabs_decide_placement(
     style: NativeTabStyle,
     proposed_width: Option<f64>,
     item_sizes: &[(LayoutSize, Option<LayoutSize>)],
-) -> (TabItemLayout, crate::theme::TabsMetrics, Option<f64>) {
+) -> (TabItemLayout, TabsMetrics, Option<f64>) {
     if style == NativeTabStyle::Sidebar {
         let (layout, metrics) = tabs_decide_layout(look, style, proposed_width, item_sizes);
         return (layout, metrics, None);
@@ -1155,7 +1164,7 @@ fn tabs_bar_geometry(
     look: &TabsLook,
     style: NativeTabStyle,
     dock_edge: Edge,
-    metrics: &crate::theme::TabsMetrics,
+    metrics: &TabsMetrics,
     compact_width: Option<f64>,
 ) -> TabsBarGeometry {
     let bar_band = bar.band;
@@ -1163,13 +1172,13 @@ fn tabs_bar_geometry(
         let bar_surface = bar.surface(dock_edge);
         let inner = dock_edge.inner_edge(bar_band);
         let divider = match dock_edge {
-            Edge::Leading => kurbo::Rect::new(
+            Edge::Leading => Rect::new(
                 (inner - 1.0).max(bar_band.x0),
                 bar_surface.y0,
                 inner,
                 bar_surface.y1,
             ),
-            _ => kurbo::Rect::new(
+            _ => Rect::new(
                 inner,
                 bar_surface.y0,
                 (inner + 1.0).min(bar_band.x1),
@@ -1190,7 +1199,7 @@ fn tabs_bar_geometry(
     let available = margin.mul_add(-2.0, bar_band.width()).max(0.0);
     let bar_width = compact_width.map_or(available, |width| width.min(available));
     let x0 = (bar_band.width() - bar_width).mul_add(0.5, bar_band.x0);
-    let bar_rect = kurbo::Rect::new(x0, y0, x0 + bar_width, y1);
+    let bar_rect = Rect::new(x0, y0, x0 + bar_width, y1);
     let horizontal_padding = match look.get_bar_width() {
         TabBarWidth::Compact {
             horizontal_padding, ..
@@ -1199,7 +1208,7 @@ fn tabs_bar_geometry(
         }
         _ => 0.0,
     };
-    let items_rect = kurbo::Rect::new(
+    let items_rect = Rect::new(
         bar_rect.x0 + horizontal_padding,
         bar_rect.y0,
         bar_rect.x1 - horizontal_padding,
@@ -1210,7 +1219,7 @@ fn tabs_bar_geometry(
     } else {
         bar.surface(dock_edge)
     };
-    let divider = kurbo::Rect::new(
+    let divider = Rect::new(
         bar_surface.x0,
         bar_rect.y0,
         bar_surface.x1,

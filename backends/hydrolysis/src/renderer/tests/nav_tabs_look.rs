@@ -7,10 +7,9 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use accesskit::{Action, ActionRequest, Role, TreeId};
-use waterui_core::AnyView;
-use waterui_core::Environment;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::layout::LayoutDirection;
+use waterui_core::{AnyView, Environment, View};
 use waterui_interaction::interaction::InteractionState;
 use waterui_layout::stack::vstack;
 use waterui_navigation::tab::{Tab, Tabs};
@@ -25,8 +24,12 @@ use super::{MinimalTestTheme, test_environment};
 use crate::HeadlessRuntime;
 use crate::platform::{InputEvent, PointerButton, PointerKind};
 use crate::renderer::live_tabs::LiveTabs;
-use crate::renderer::mount::layers::LayerVisitor;
+use crate::renderer::mount::layers::{LayerVisitor, visit};
 use crate::renderer::recording::Recording;
+use crate::testing::{plain_tabs_metrics, plain_tabs_motion};
+use crate::text::TextEngine;
+use crate::theme::TabsLook;
+use kurbo::{Affine, Rect};
 
 const WINDOW_WIDTH: u32 = 400;
 const WINDOW_HEIGHT: u32 = 300;
@@ -318,8 +321,8 @@ fn rtl_navigation_bar_mirrors_back_button_and_slots() {
 #[derive(Default)]
 struct GlyphColours(Vec<(f64, f64, Vec<[u8; 4]>)>);
 
-impl<E: crate::text::TextEngine> LayerVisitor<E> for GlyphColours {
-    fn run(&mut self, world: kurbo::Affine, recording: &Recording) {
+impl<E: TextEngine> LayerVisitor<E> for GlyphColours {
+    fn run(&mut self, world: Affine, recording: &Recording) {
         if let Some((transform, _)) = recording.glyph_runs().next() {
             let point = (world * transform).translation();
             self.0
@@ -329,10 +332,27 @@ impl<E: crate::text::TextEngine> LayerVisitor<E> for GlyphColours {
 }
 
 #[derive(Default)]
+struct FillColours(Vec<(f64, f64, Vec<[f32; 4]>)>);
+
+impl<E: TextEngine> LayerVisitor<E> for FillColours {
+    fn run(&mut self, world: Affine, recording: &Recording) {
+        let fills: Vec<[f32; 4]> = recording
+            .solid_rects()
+            .iter()
+            .map(|rect| rect.current().1.components)
+            .collect();
+        if !fills.is_empty() {
+            let point = world.translation();
+            self.0.push((point.x, point.y, fills));
+        }
+    }
+}
+
+#[derive(Default)]
 struct GlyphSpans(Vec<(f64, f64)>);
 
-impl<E: crate::text::TextEngine> LayerVisitor<E> for GlyphSpans {
-    fn run(&mut self, world: kurbo::Affine, recording: &Recording) {
+impl<E: TextEngine> LayerVisitor<E> for GlyphSpans {
+    fn run(&mut self, world: Affine, recording: &Recording) {
         for (transform, glyphs) in recording.glyph_runs() {
             let y = (world * transform).translation().y;
             let span = match (glyphs.first(), glyphs.last()) {
@@ -348,7 +368,6 @@ impl<E: crate::text::TextEngine> LayerVisitor<E> for GlyphSpans {
 fn navigation_bar_title_font_applies_to_inline_titles_and_keeps_large_titles() {
     use super::test_renderer_with_theme;
     use crate::renderer::RetainedSubview;
-    use crate::renderer::mount::layers::visit;
     use waterui_core::layout::ProposalSize;
     use waterui_navigation::NavigationTitleDisplayMode;
     use waterui_text::font::{Body, Font, FontWeight};
@@ -437,23 +456,23 @@ fn navigation_bar_title_font_applies_to_inline_titles_and_keeps_large_titles() {
 }
 
 fn compact_floating_tabs_look(
-    bar_draws: &Rc<RefCell<Vec<kurbo::Rect>>>,
-    divider_draws: &Rc<RefCell<Vec<kurbo::Rect>>>,
-) -> crate::theme::TabsLook {
+    bar_draws: &Rc<RefCell<Vec<Rect>>>,
+    divider_draws: &Rc<RefCell<Vec<Rect>>>,
+) -> TabsLook {
     use super::invisible_chrome;
-    use crate::theme::{Custom, TabBarWidth, TabsLook};
+    use crate::theme::{Custom, TabBarWidth};
 
     let bar_draws = Rc::clone(bar_draws);
     let divider_draws = Rc::clone(divider_draws);
     TabsLook::new(
-        crate::testing::plain_tabs_metrics(),
+        plain_tabs_metrics(),
         Custom::new((), move |_recorder, frame, ()| {
             bar_draws.borrow_mut().push(frame);
         }),
         Custom::new((), move |_recorder, frame, ()| {
             divider_draws.borrow_mut().push(frame);
         }),
-        crate::testing::plain_tabs_motion(),
+        plain_tabs_motion(),
         |_item, _selected| invisible_chrome(),
     )
     .bar_width(TabBarWidth::Compact {
@@ -470,8 +489,8 @@ fn tabs_compact_floating_bar_centers_pill_and_reserves_bottom_margin() {
     use waterui_core::Binding;
 
     let env = test_environment();
-    let window = kurbo::Rect::new(0.0, 0.0, 400.0, 300.0);
-    let metrics = crate::testing::plain_tabs_metrics();
+    let window = Rect::new(0.0, 0.0, 400.0, 300.0);
+    let metrics = plain_tabs_metrics();
     let bar_draws = Rc::new(RefCell::new(Vec::new()));
     let divider_draws = Rc::new(RefCell::new(Vec::new()));
     let theme = MinimalTestTheme {
@@ -544,7 +563,7 @@ fn tabs_sidebar_ignores_compact_and_floating_margin() {
     use waterui_navigation::tab::tab_style;
 
     let env = test_environment();
-    let window = kurbo::Rect::new(0.0, 0.0, 400.0, 300.0);
+    let window = Rect::new(0.0, 0.0, 400.0, 300.0);
     let bar_draws = Rc::new(RefCell::new(Vec::new()));
     let divider_draws = Rc::new(RefCell::new(Vec::new()));
     let mut renderer = test_renderer_with_theme(MinimalTestTheme {
@@ -569,21 +588,117 @@ fn tabs_sidebar_ignores_compact_and_floating_margin() {
     approx::assert_relative_eq!(sidebar_frame.y1, 300.0, epsilon = 1e-6);
 }
 
+fn split_tab_bar_samples<T>(samples: Vec<(f64, f64, Vec<T>)>) -> (Vec<T>, Vec<T>) {
+    let mut left = Vec::new();
+    let mut right = Vec::new();
+    for (x, y, items) in samples {
+        if items.is_empty() || y < 250.0 {
+            continue;
+        }
+        if x < 200.0 {
+            left.extend(items);
+        } else {
+            right.extend(items);
+        }
+    }
+    (left, right)
+}
+
+struct TabBarPaint {
+    left_glyphs: Vec<[u8; 4]>,
+    right_glyphs: Vec<[u8; 4]>,
+    left_fills: Vec<[f32; 4]>,
+    right_fills: Vec<[f32; 4]>,
+}
+
+fn tab_bar_paint(runtime: &HeadlessRuntime) -> TabBarPaint {
+    let mut glyphs = GlyphColours::default();
+    visit(&runtime.renderer().mount_roots(), &mut glyphs);
+    let mut fills = FillColours::default();
+    visit(&runtime.renderer().mount_roots(), &mut fills);
+    let (left_glyphs, right_glyphs) = split_tab_bar_samples(glyphs.0);
+    let (left_fills, right_fills) = split_tab_bar_samples(fills.0);
+    TabBarPaint {
+        left_glyphs,
+        right_glyphs,
+        left_fills,
+        right_fills,
+    }
+}
+
+#[derive(Clone)]
+struct FixedForegroundIcon;
+
+impl View for FixedForegroundIcon {
+    fn body(self, _env: &Environment) -> impl View {
+        use waterui::theme::color::Foreground;
+        use waterui::{Color, ViewExt as _};
+        Color::new(Foreground).size(10.0, 10.0)
+    }
+}
+
+fn assert_tab_bar_paint(runtime: &HeadlessRuntime, selected_is_left: bool) {
+    let paint = tab_bar_paint(runtime);
+    assert!(
+        !paint.left_glyphs.is_empty() && !paint.right_glyphs.is_empty(),
+        "both tabs must draw glyphs: left={:?}, right={:?}",
+        paint.left_glyphs,
+        paint.right_glyphs
+    );
+    let (sel_glyphs, unsel_glyphs, sel_fills, unsel_fills) = if selected_is_left {
+        (
+            paint.left_glyphs,
+            paint.right_glyphs,
+            paint.left_fills,
+            paint.right_fills,
+        )
+    } else {
+        (
+            paint.right_glyphs,
+            paint.left_glyphs,
+            paint.right_fills,
+            paint.left_fills,
+        )
+    };
+    assert!(
+        sel_glyphs.iter().all(|c| c[0] > 200 && c[2] < 50),
+        "selected tab must use red foreground, got {sel_glyphs:?}"
+    );
+    assert!(
+        unsel_glyphs.iter().all(|c| c[2] > 200 && c[0] < 50),
+        "unselected tab must use blue foreground, got {unsel_glyphs:?}"
+    );
+    assert!(
+        !sel_fills.is_empty() && !unsel_fills.is_empty(),
+        "both tabs must draw foreground-coloured icons: selected={sel_fills:?}, unselected={unsel_fills:?}"
+    );
+    assert!(
+        sel_fills
+            .iter()
+            .all(|c| c[0] > 0.7 && c[1] < 0.1 && c[2] < 0.1),
+        "selected icon fill must use red foreground, got {sel_fills:?}"
+    );
+    assert!(
+        unsel_fills
+            .iter()
+            .all(|c| c[2] > 0.7 && c[0] < 0.1 && c[1] < 0.1),
+        "unselected icon fill must use blue foreground, got {unsel_fills:?}"
+    );
+}
+
 #[test]
 fn tabs_foreground_overrides_paint_selected_and_unselected_items_on_selection() {
     use super::invisible_chrome;
-    use crate::renderer::mount::layers::visit;
-    use crate::theme::{Custom, TabsLook};
+    use crate::theme::Custom;
     use waterui::color::Srgb;
     use waterui_controls::label::label;
     use waterui_core::Binding;
 
-    let metrics = crate::testing::plain_tabs_metrics();
     let look = TabsLook::new(
-        metrics,
+        plain_tabs_metrics(),
         Custom::new((), |_recorder, _frame, ()| {}),
         Custom::new((), |_recorder, _frame, ()| {}),
-        crate::testing::plain_tabs_motion(),
+        plain_tabs_motion(),
         |_item, _selected| invisible_chrome(),
     )
     .selected_foreground(Srgb::from_hex("#FF0000"))
@@ -595,8 +710,8 @@ fn tabs_foreground_overrides_paint_selected_and_unselected_items_on_selection() 
             &selection,
             [("Home", "H"), ("Work", "W")]
                 .into_iter()
-                .map(|(title, icon)| {
-                    Tab::new(label(title).icon(text::text(icon)), move || {
+                .map(|(title, _)| {
+                    Tab::new(label(title).icon(FixedForegroundIcon), move || {
                         NavigationView::new(title, text::text("pane"))
                     })
                 })
@@ -618,37 +733,7 @@ fn tabs_foreground_overrides_paint_selected_and_unselected_items_on_selection() 
     };
     rig.settle();
 
-    let tab_colours = |runtime: &HeadlessRuntime| -> (Vec<[u8; 4]>, Vec<[u8; 4]>) {
-        let mut visitor = GlyphColours::default();
-        visit(&runtime.renderer().mount_roots(), &mut visitor);
-        let mut left = Vec::new();
-        let mut right = Vec::new();
-        for (x, y, colours) in visitor.0 {
-            if colours.is_empty() || y < 250.0 {
-                continue;
-            }
-            if x < 200.0 {
-                left.extend(colours);
-            } else {
-                right.extend(colours);
-            }
-        }
-        (left, right)
-    };
-
-    let (left0, right0) = tab_colours(&rig.runtime);
-    assert!(
-        !left0.is_empty() && !right0.is_empty(),
-        "both tabs must draw glyphs: left={left0:?}, right={right0:?}"
-    );
-    assert!(
-        left0.iter().all(|c| c[0] > 200 && c[2] < 50),
-        "selected left tab must use red foreground, got {left0:?}"
-    );
-    assert!(
-        right0.iter().all(|c| c[2] > 200 && c[0] < 50),
-        "unselected right tab must use blue foreground, got {right0:?}"
-    );
+    assert_tab_bar_paint(&rig.runtime, true);
 
     // Click the second tab and verify foreground overrides follow selection.
     let tree = rig.runtime.accessibility_tree().expect("tree");
@@ -661,13 +746,5 @@ fn tabs_foreground_overrides_paint_selected_and_unselected_items_on_selection() 
     }));
     rig.settle();
 
-    let (left1, right1) = tab_colours(&rig.runtime);
-    assert!(
-        left1.iter().all(|c| c[2] > 200 && c[0] < 50),
-        "deselected left tab must switch to blue foreground, got {left1:?}"
-    );
-    assert!(
-        right1.iter().all(|c| c[0] > 200 && c[2] < 50),
-        "newly selected right tab must switch to red foreground, got {right1:?}"
-    );
+    assert_tab_bar_paint(&rig.runtime, false);
 }

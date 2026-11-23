@@ -194,6 +194,7 @@ use cherenkov_record::{
     SharedLive, WorkingColor,
 };
 use waterui_core::handler::SharedAction;
+use waterui_text::font::Font;
 
 /// A view realized into a retained node and measured through it — the path
 /// layout measures every child on.
@@ -2764,7 +2765,7 @@ pub struct MinimalTestTheme {
     /// Optional explicit [`TabsLook`] override for tests.
     tabs_look: Option<TabsLook>,
     /// Optional explicit inline title font override for [`NavigationBarLook`].
-    navigation_title_font: Option<waterui_text::font::Font>,
+    navigation_title_font: Option<Font>,
     /// Every frame the slider's value-indicator bubble records on.
     slider_indicator_draws: Rc<RefCell<Vec<Rect>>>,
     /// Every spec the theme was asked for a slider look.
