@@ -88,7 +88,10 @@ pub use {
         PlayerController, Playlist, RepeatMode, SubtitleTrack, video_player,
     },
 };
-pub use {photo::Photo, waterui_image::Image};
+pub use {
+    photo::{FailureSlot, Photo, PhotoCache, PhotoStatus, PlaceholderSlot, photo},
+    waterui_image::Image,
+};
 
 /// Re-export the stable [`Filter`] trait from `filtrate-core` for
 /// GPU-accelerated image filters.

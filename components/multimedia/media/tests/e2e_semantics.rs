@@ -4,11 +4,17 @@ use std::time::Duration;
 
 use image::ImageEncoder as _;
 use waterui::Binding;
+use waterui::OneOf2;
 use waterui::Signal;
 use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityRole;
+use waterui::component::lazy::Lazy;
+use waterui::component::text;
+use waterui::layout::frame::Frame;
+use waterui::layout::scroll::scroll;
 use waterui_media::{
-    LivePhoto, Media, Photo, Url, live::LivePhotoSource, photo::Event as PhotoEvent,
+    LivePhoto, Media, Photo, PhotoCache, PhotoStatus, Url, live::LivePhotoSource, photo,
+    photo::Event as PhotoEvent,
 };
 use waterui_testing::{Role, Selector, UiBuilder, WaitOptions, WaitResult};
 use waterui_testing::{RuntimeDriver, SemanticApp, TestStyle};
@@ -169,4 +175,151 @@ fn live_photo_exposes_still_image_accessibility_before_activation(ui: UiBuilder)
     let mut app = ui.mount(move || live_photo_view(source.clone()));
 
     assert_image_eventually_exists(&mut app, "Sample live photo");
+}
+
+#[waterui::test()]
+fn photo_placeholder_failure_and_status_track_each_source(ui: UiBuilder) {
+    let valid_path = sample_image_path();
+    let missing_path = format!("{valid_path}.missing");
+    let source = Binding::container(Url::from_file_path_str(valid_path));
+    let status = Binding::container(PhotoStatus::Loading);
+    let source_for_view = source.clone();
+    let status_for_view = status.clone();
+
+    let mut app = ui.theme(TestStyle::default()).mount_offscreen(move || {
+        photo(source_for_view.clone())
+            .resizable()
+            .placeholder(|| text("Loading photo"))
+            .on_failure(|reason: &str| waterui::text!("Load failed: {reason}"))
+            .status(&status_for_view)
+            .size(120.0, 80.0)
+            .a11y_role(AccessibilityRole::Image)
+            .a11y_label("Tracked photo")
+    });
+
+    assert_image_eventually_exists(app.semantic_mut(), "Tracked photo");
+    assert_eq!(status.snapshot(), PhotoStatus::Ready);
+    assert!(
+        !app.semantic_mut()
+            .query()
+            .role(Role::LABEL)
+            .label("Loading photo")
+            .exists(),
+        "placeholder must hide once the photo settles"
+    );
+
+    // Switching to a missing source resets status to Loading and settles on Failed + failure view.
+    source.set(Url::from_file_path_str(missing_path));
+    assert_eq!(
+        status.snapshot(),
+        PhotoStatus::Loading,
+        "changing source must reset bound status to Loading"
+    );
+    let failed_settled = {
+        let sem = app.semantic_mut();
+        let cond = sem.expect_exists(Selector::default().role(Role::LABEL));
+        sem.wait_for(&[cond], WaitOptions::new(Duration::from_millis(750)))
+    };
+    assert_eq!(failed_settled, WaitResult::Completed);
+    let reason = status
+        .snapshot()
+        .failure()
+        .expect("missing file must settle PhotoStatus::Failed")
+        .to_owned();
+    assert_ne!(reason, "");
+    app.semantic_mut()
+        .query()
+        .role(Role::LABEL)
+        .label(format!("Load failed: {reason}"))
+        .assert_exists();
+}
+
+#[derive(Clone, waterui::Identifiable)]
+struct LazyRowItem {
+    #[id]
+    id: usize,
+    url: Option<Url>,
+}
+
+#[waterui::test()]
+fn photo_in_lazy_list_serves_from_environment_cache_without_refetch(ui: UiBuilder) {
+    let row_zero_path = sample_image_path();
+    let row_zero_url = Url::from_file_path_str(row_zero_path.clone());
+    let row_zero_status = Binding::container(PhotoStatus::Loading);
+    let status_for_view = row_zero_status.clone();
+    let cache = PhotoCache::new(1024 * 1024);
+
+    let mut items =
+        waterui::reactive::collection::List::from_iter((0..12_usize).map(|id| LazyRowItem {
+            id,
+            url: (id == 0).then(|| row_zero_url.clone()),
+        }));
+    let items_for_view = items.clone();
+
+    let mut env = waterui::configure_environment!(waterui::Environment::new());
+    env.insert(cache.clone());
+
+    let mut app = ui
+        .environment(env)
+        .viewport(320, 200)
+        .theme(TestStyle::default())
+        .mount_offscreen(move || {
+            let status_for_view = status_for_view.clone();
+            scroll(Lazy::for_each(items_for_view.clone(), move |row| {
+                if let Some(url) = row.url {
+                    OneOf2::A(
+                        photo(url)
+                            .resizable()
+                            .placeholder(waterui::component::progress::loading)
+                            .on_failure(|err: &str| waterui::text!("Row 0 error: {err}"))
+                            .status(&status_for_view)
+                            .size(160.0, 60.0)
+                            .a11y_role(AccessibilityRole::Image)
+                            .a11y_label("Row 0 photo"),
+                    )
+                } else {
+                    let row_id = row.id;
+                    OneOf2::B(
+                        Frame::new(waterui::text!("Row {row_id}"))
+                            .width(160.0)
+                            .height(60.0),
+                    )
+                }
+            }))
+        });
+
+    assert_image_eventually_exists(app.semantic_mut(), "Row 0 photo");
+    assert_eq!(row_zero_status.snapshot(), PhotoStatus::Ready);
+    assert_eq!(cache.len(), 1);
+
+    // Delete the file on disk so any refetch on remount would fail with ENOENT.
+    std::fs::remove_file(&row_zero_path).expect("temporary sample PNG must be removable");
+
+    // Remove row 0 from the lazy collection so the row unmounts completely.
+    let _ = items.remove(0);
+    app.semantic_mut().settle();
+    assert!(
+        !app.semantic_mut()
+            .query()
+            .role(Role::IMAGE)
+            .label("Row 0 photo")
+            .exists(),
+        "removing row 0 must unmount its Photo view"
+    );
+
+    // Re-insert row 0 at the top: a brand-new `Photo` mounts and serves from `PhotoCache`
+    // without touching the deleted file on disk.
+    items.insert(
+        0,
+        LazyRowItem {
+            id: 0,
+            url: Some(row_zero_url),
+        },
+    );
+    assert_image_eventually_exists(app.semantic_mut(), "Row 0 photo");
+    assert_eq!(
+        row_zero_status.snapshot(),
+        PhotoStatus::Ready,
+        "remounted row 0 must settle Ready from PhotoCache even after disk source removal"
+    );
 }

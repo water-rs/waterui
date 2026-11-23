@@ -30,9 +30,13 @@ behind the `media` feature, which is not on by default: add `features = ["media"
 
 ```rust
 use waterui::media::photo::Event as PhotoEvent;   // the event type needs this alias import
-use waterui::media::{Image, Photo, Url};
+use waterui::media::{Image, Photo, PhotoCache, PhotoStatus, Url, photo};
 
-Photo::new("https://waterui.dev/logo.png")   // impl IntoComputed<Url>; Url: From<&'static str>
+photo("https://waterui.dev/logo.png")        // impl IntoComputed<Url>; Url: From<&'static str>
+    .resizable()
+    .placeholder(loading)                    // static generic slot shown while Loading
+    .on_failure(|err: &str| text!("{err}"))  // static generic slot shown on Failed(reason)
+    .status(&photo_status)                   // Binding<PhotoStatus>: Loading | Ready | Failed(Str), reset on source change
     .on_event(|event| match event {          // inherent on Photo — attach it BEFORE filters,
         PhotoEvent::Loaded => (),            // which wrap the view in a Filtered<..> type
         PhotoEvent::Error(_msg) => (),
@@ -44,10 +48,13 @@ Photo::new("https://waterui.dev/logo.png")   // impl IntoComputed<Url>; Url: Fro
 Image::new(rgba_pixels, 200, 150)        // in-memory RGBA8; asserts len == w * h * 4
 ```
 
-`Photo` displays a URL (`Photo::from_path(path)` takes a local path); `Image` is the route
-for decoded or generated pixel buffers — `Image::from_encoded(&bytes)` decodes PNG/JPEG/…
-bytes to a `Result<Image, String>`. Both keep their natural size (only scaling down,
-aspect preserved) until `.resizable()`; then they fill the offer, and
+`Photo` (`photo(url)` or `Photo::new(url)`, and `Photo::from_path(path)` for a local path)
+serves decoded images from a shared bounded `PhotoCache` in `Environment` (64 MiB by default;
+override with `env.insert(PhotoCache::new(max_bytes))` or adjust live via
+`cache.set_max_bytes(max_bytes)`), so remounting a row in a lazy list does not refetch.
+`Image` is the route for decoded or generated pixel buffers — `Image::from_encoded(&bytes)`
+decodes PNG/JPEG/… bytes to a `Result<Image, String>`. Both keep their natural size (only
+scaling down, aspect preserved) until `.resizable()`; then they fill the offer, and
 `.content_mode(ContentMode::Fit)` or `Fill` (`waterui::layout::ContentMode`) keeps the
 aspect ratio — without it the picture stretches per axis. A runtime string is not a
 `Url` — parse it, and report the failure rather than letting a bad address reach the

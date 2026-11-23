@@ -25,8 +25,9 @@ waterui-video = { workspace = true, optional = true }
 waterkit-dialog = { workspace = true, optional = true }
 filtrate-core.workspace = true
 executor-core.workspace = true
+lru.workspace = true
 tracing.workspace = true
-futures.workspace = true
+futures = { workspace = true, optional = true }
 blocking = "1.7.0"
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
@@ -58,7 +59,7 @@ video = ["dep:waterui-video"]
 # Remote media sources (`Photo`/`video` pointed at web URLs) link the `zenwave`
 # HTTP client. Off by default so an application showing only bundled media
 # carries no HTTP client.
-remote = ["dep:zenwave", "waterui-url/remote"]
+remote = ["dep:zenwave", "dep:futures", "waterui-url/remote"]
 
 [dev-dependencies]
 futures-lite.workspace = true
