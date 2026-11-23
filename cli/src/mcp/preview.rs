@@ -259,6 +259,7 @@ impl PreviewTool {
                         progress: None,
                     },
                     &output_path,
+                    None,
                 )
                 .await?;
             }

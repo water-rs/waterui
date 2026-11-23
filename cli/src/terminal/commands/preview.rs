@@ -17,14 +17,20 @@ use waterui_cli::preview::request::{
     PreviewTarget, ResolvedPreviewBackend,
 };
 use waterui_cli::preview::{
-    ApplePreviewRequest, HydrolysisPreviewEventKind, HydrolysisPreviewPointerButton,
-    HydrolysisPreviewRequest, HydrolysisPreviewScenario, HydrolysisPreviewScenarioEvent,
-    HydrolysisPreviewTheme, discover_hydrolysis_preview_exports, render_preview_with_apple,
+    ApplePreviewRequest, DEFAULT_VIDEO_FPS, HydrolysisPreviewRequest, HydrolysisPreviewTheme,
+    PreviewEventKind, PreviewPointerButton, PreviewScenario, PreviewScenarioEvent,
+    PreviewVideoOptions, discover_hydrolysis_preview_exports, render_preview_with_apple,
     render_preview_with_hydrolysis, test_preview_with_hydrolysis,
 };
 use waterui_cli::project::{Manifest, read_project_crate_name};
 
 async fn run_preview_test(shell: &Shell, args: PreviewTestArgs) -> Result<()> {
+    let video = resolve_video_options(args.video.clone(), args.fps)?;
+    if video.is_some() && args.all {
+        bail!(
+            "`--video` cannot be combined with `--all` because each preview test needs its own output path."
+        );
+    }
     let host = waterui_cli::toolchain::Host::current().with_offline(args.offline);
     let project_path = crate::project_path::canonicalize(&args.path)?;
     let manifest = Manifest::open(project_path.join("Water.toml")).await?;
@@ -77,12 +83,20 @@ async fn run_preview_test(shell: &Shell, args: PreviewTestArgs) -> Result<()> {
                 progress: Some(shell.build_progress()),
             },
             &automation_body,
+            video.as_ref(),
         ))
         .await?;
         if let Some(s) = spinner {
             s.finish_and_clear();
         }
         emit_child_output(shell, &output);
+        if let Some(video) = &video {
+            success!(
+                shell,
+                "Preview test video saved to {}",
+                video.output_path().display()
+            );
+        }
         success!(
             shell,
             "Preview semantic test passed: {}",
@@ -146,13 +160,21 @@ pub struct Args {
     )]
     content_timeout: f64,
 
-    /// Hydrolysis scenario TOML for interaction/timeline capture.
+    /// Scenario TOML for interaction/timeline capture.
     #[arg(long)]
     scenario: Option<PathBuf>,
 
-    /// Output directory for Hydrolysis scenario frames.
+    /// Output directory for scenario PNG frames.
     #[arg(long)]
     output_dir: Option<PathBuf>,
+
+    /// Hardware-encoded MP4 video output path (requires `--scenario`).
+    #[arg(long, value_name = "PATH")]
+    video: Option<PathBuf>,
+
+    /// Fixed video frame rate in frames per second (default: 60; requires `--video`).
+    #[arg(long, value_name = "FPS")]
+    fps: Option<u32>,
 
     /// Android device serial or AVD name (only with `--platform android`).
     /// Without it the remembered last-used device wins, then an unambiguous
@@ -247,6 +269,14 @@ struct PreviewTestArgs {
     #[arg(long)]
     code_file: Option<PathBuf>,
 
+    /// Hardware-encoded MP4 video output path recorded across the test timeline.
+    #[arg(long, value_name = "PATH")]
+    video: Option<PathBuf>,
+
+    /// Fixed video frame rate in frames per second (default: 60; requires `--video`).
+    #[arg(long, value_name = "FPS")]
+    fps: Option<u32>,
+
     /// Test without accessing the network — the same switch as
     /// `cargo build --offline`, and `CARGO_NET_OFFLINE` is honoured the same
     /// way. A declared font missing from the font cache then fails the
@@ -305,6 +335,14 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     // Detect sccache for compilation caching
     let sccache_path = super::detect_sccache_path(shell, &host).await;
 
+    let scenario = load_preview_scenario(
+        args.scenario.as_deref(),
+        args.output_dir,
+        args.video,
+        args.fps,
+    )
+    .await?;
+
     if let ResolvedPreviewBackend::Hydrolysis(platform) = request.backend() {
         let android = if platform == waterui_cli::platform::TargetPlatform::Android {
             let spinner = shell.spinner("Scanning for devices...");
@@ -326,7 +364,6 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
         } else {
             None
         };
-        let scenario = load_hydrolysis_scenario(args.scenario.as_deref(), args.output_dir).await?;
         let spinner = shell.spinner("Building and rendering with hydrolysis...");
         Box::pin(render_preview_with_hydrolysis(
             HydrolysisPreviewRequest {
@@ -354,20 +391,8 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
         if let Some(s) = spinner {
             s.finish_and_clear();
         }
-        if let Some(scenario) = scenario {
-            success!(
-                shell,
-                "Preview frames saved to {}",
-                scenario.output_dir().display()
-            );
-        } else {
-            success!(shell, "Preview saved to {}", args.output.display());
-        }
+        report_preview_outputs(shell, &args.output, scenario.as_ref());
         return Ok(());
-    }
-
-    if args.scenario.is_some() || args.output_dir.is_some() {
-        bail!("`--scenario` and `--output-dir` are supported only with `--backend hydrolysis`.");
     }
 
     if let ResolvedPreviewBackend::Apple(platform) = request.backend() {
@@ -387,21 +412,55 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
                 progress: Some(shell.build_progress()),
             },
             &args.output,
+            scenario.as_ref(),
         )
         .await?;
         if let Some(s) = spinner {
             s.finish_and_clear();
         }
-        success!(shell, "Preview saved to {}", args.output.display());
+        report_preview_outputs(shell, &args.output, scenario.as_ref());
         return Ok(());
     }
 
     Ok(())
 }
 
+fn report_preview_outputs(shell: &Shell, output: &Path, scenario: Option<&PreviewScenario>) {
+    if let Some(scenario) = scenario {
+        if let Some(output_dir) = scenario.output_dir() {
+            success!(shell, "Preview frames saved to {}", output_dir.display());
+        }
+        if let Some(video) = scenario.video() {
+            success!(
+                shell,
+                "Preview video saved to {}",
+                video.output_path().display()
+            );
+        }
+    } else {
+        success!(shell, "Preview saved to {}", output.display());
+    }
+}
+
+fn resolve_video_options(
+    video: Option<PathBuf>,
+    fps: Option<u32>,
+) -> Result<Option<PreviewVideoOptions>> {
+    match (video, fps) {
+        (None, Some(_)) => bail!("`--fps` requires `--video`."),
+        (None, None) => Ok(None),
+        (Some(path), fps) => {
+            PreviewVideoOptions::new(path, fps.unwrap_or(DEFAULT_VIDEO_FPS)).map(Some)
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct ScenarioFile {
+    #[serde(default)]
     captures_ms: Vec<u64>,
+    #[serde(default)]
+    duration_ms: Option<u64>,
     #[serde(default)]
     events: Vec<ScenarioEventFile>,
 }
@@ -418,91 +477,116 @@ struct ScenarioEventFile {
     is_line_delta: Option<bool>,
 }
 
-async fn load_hydrolysis_scenario(
-    scenario_path: Option<&std::path::Path>,
+async fn load_preview_scenario(
+    scenario_path: Option<&Path>,
     output_dir: Option<PathBuf>,
-) -> Result<Option<HydrolysisPreviewScenario>> {
+    video: Option<PathBuf>,
+    fps: Option<u32>,
+) -> Result<Option<PreviewScenario>> {
+    let video = resolve_video_options(video, fps)?;
     let Some(scenario_path) = scenario_path else {
         if output_dir.is_some() {
             bail!("`--output-dir` requires `--scenario`.");
         }
+        if video.is_some() {
+            bail!("`--video` requires `--scenario`.");
+        }
         return Ok(None);
     };
-    let Some(output_dir) = output_dir else {
-        bail!("`--scenario` requires `--output-dir`.");
-    };
+    if output_dir.is_none() && video.is_none() {
+        bail!("`--scenario` requires `--output-dir` and/or `--video`.");
+    }
     let source = smol::fs::read_to_string(scenario_path).await?;
-    let mut scenario: ScenarioFile = toml::from_str(&source)?;
-    if scenario.captures_ms.is_empty() {
-        bail!("Hydrolysis preview scenario must contain at least one capture timestamp.");
+    parse_preview_scenario_toml(&source, output_dir, video).map(Some)
+}
+
+fn parse_preview_scenario_toml(
+    source: &str,
+    output_dir: Option<PathBuf>,
+    video: Option<PreviewVideoOptions>,
+) -> Result<PreviewScenario> {
+    let mut scenario: ScenarioFile = toml::from_str(source)?;
+    if output_dir.is_some() && scenario.captures_ms.is_empty() {
+        bail!("Preview scenario with `--output-dir` must contain at least one capture timestamp.");
     }
     scenario.captures_ms.sort_unstable();
     let capture_count = scenario.captures_ms.len();
     scenario.captures_ms.dedup();
     if scenario.captures_ms.len() != capture_count {
-        bail!("Hydrolysis preview scenario capture timestamps must be unique.");
+        bail!("Preview scenario capture timestamps must be unique.");
     }
     let mut events = scenario
         .events
         .iter()
         .map(parse_scenario_event)
         .collect::<Result<Vec<_>>>()?;
-    events.sort_by_key(HydrolysisPreviewScenarioEvent::at_ms);
-    Ok(Some(HydrolysisPreviewScenario::new(
+    events.sort_by_key(PreviewScenarioEvent::at_ms);
+    if output_dir.is_none()
+        && scenario.duration_ms.is_none()
+        && scenario.captures_ms.is_empty()
+        && events.is_empty()
+    {
+        bail!(
+            "Preview video scenario must specify `duration_ms`, `captures_ms`, or at least one event."
+        );
+    }
+    Ok(PreviewScenario::new(
         scenario.captures_ms,
         events,
         output_dir,
-    )))
+        scenario.duration_ms,
+        video,
+    ))
 }
 
-fn parse_scenario_event(event: &ScenarioEventFile) -> Result<HydrolysisPreviewScenarioEvent> {
+fn parse_scenario_event(event: &ScenarioEventFile) -> Result<PreviewScenarioEvent> {
     let kind = match event.kind.as_str() {
-        "pointer_move" | "hover" => HydrolysisPreviewEventKind::PointerMove,
-        "pointer_down" => HydrolysisPreviewEventKind::PointerDown,
-        "pointer_up" => HydrolysisPreviewEventKind::PointerUp,
-        "pointer_cancel" => HydrolysisPreviewEventKind::PointerCancel,
-        "scroll" | "wheel" => HydrolysisPreviewEventKind::Scroll,
+        "pointer_move" | "hover" => PreviewEventKind::PointerMove,
+        "pointer_down" => PreviewEventKind::PointerDown,
+        "pointer_up" => PreviewEventKind::PointerUp,
+        "pointer_cancel" => PreviewEventKind::PointerCancel,
+        "scroll" | "wheel" => PreviewEventKind::Scroll,
         other => {
-            bail!("unsupported Hydrolysis preview scenario event kind `{other}`");
+            bail!("unsupported preview scenario event kind `{other}`");
         }
     };
     let button = event
         .button
         .as_deref()
         .map(|button| match button {
-            "primary" => Ok(HydrolysisPreviewPointerButton::Primary),
-            "secondary" => Ok(HydrolysisPreviewPointerButton::Secondary),
-            "middle" => Ok(HydrolysisPreviewPointerButton::Middle),
+            "primary" => Ok(PreviewPointerButton::Primary),
+            "secondary" => Ok(PreviewPointerButton::Secondary),
+            "middle" => Ok(PreviewPointerButton::Middle),
             other => {
-                bail!("unsupported Hydrolysis preview pointer button `{other}`");
+                bail!("unsupported preview pointer button `{other}`");
             }
         })
         .transpose()?
         .unwrap_or_default();
-    let needs_point = !matches!(kind, HydrolysisPreviewEventKind::PointerCancel);
+    let needs_point = !matches!(kind, PreviewEventKind::PointerCancel);
     let x = match event.x {
         Some(x) => x,
         None if needs_point => {
-            bail!("Hydrolysis preview scenario event requires x coordinate");
+            bail!("preview scenario event requires x coordinate");
         }
         None => 0.0,
     };
     let y = match event.y {
         Some(y) => y,
         None if needs_point => {
-            bail!("Hydrolysis preview scenario event requires y coordinate");
+            bail!("preview scenario event requires y coordinate");
         }
         None => 0.0,
     };
     let dx = event.dx.unwrap_or(0.0);
     let dy = event.dy.unwrap_or(0.0);
-    if matches!(kind, HydrolysisPreviewEventKind::Scroll)
+    if matches!(kind, PreviewEventKind::Scroll)
         && dx.abs() <= f32::EPSILON
         && dy.abs() <= f32::EPSILON
     {
-        bail!("Hydrolysis preview scroll event requires non-zero dx or dy");
+        bail!("preview scroll event requires non-zero dx or dy");
     }
-    Ok(HydrolysisPreviewScenarioEvent::new(event.at_ms, kind, x, y)
+    Ok(PreviewScenarioEvent::new(event.at_ms, kind, x, y)
         .with_button(button)
         .with_scroll_delta(dx, dy, event.is_line_delta.unwrap_or(false)))
 }
@@ -820,5 +904,73 @@ mod tests {
         );
         assert_eq!(cli_request.color_scheme(), Some(PreviewColorScheme::Dark));
         assert!((cli_request.scale() - 2.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn parses_video_and_fps_flags_for_preview_and_preview_test() {
+        let args = parse(&[
+            "preview",
+            "views::home",
+            "--scenario",
+            "scenario.toml",
+            "--video",
+            "out.mp4",
+            "--fps",
+            "30",
+        ]);
+        assert_eq!(args.scenario, Some(PathBuf::from("scenario.toml")));
+        assert_eq!(args.video, Some(PathBuf::from("out.mp4")));
+        assert_eq!(args.fps, Some(30));
+
+        let test_args = parse(&[
+            "preview",
+            "test",
+            "views::home",
+            "--video",
+            "test.mp4",
+            "--fps",
+            "60",
+        ]);
+        let Some(PreviewCommand::Test(test)) = test_args.command else {
+            panic!("expected test subcommand");
+        };
+        assert_eq!(test.video, Some(PathBuf::from("test.mp4")));
+        assert_eq!(test.fps, Some(60));
+    }
+
+    #[test]
+    fn resolves_and_validates_video_options() {
+        let defaulted = resolve_video_options(Some(PathBuf::from("a.mp4")), None)
+            .expect("default fps")
+            .expect("some video");
+        assert_eq!(defaulted.fps(), DEFAULT_VIDEO_FPS);
+        assert!(resolve_video_options(None, Some(60)).is_err());
+        assert!(resolve_video_options(Some(PathBuf::from("a.mp4")), Some(0)).is_err());
+    }
+
+    #[test]
+    fn parses_video_only_scenario_toml_with_duration_ms() {
+        let video = PreviewVideoOptions::new(PathBuf::from("clip.mp4"), 60).expect("valid video");
+        let scenario = parse_preview_scenario_toml(
+            "duration_ms = 500\n[[events]]\nat_ms = 100\nkind = 'pointer_down'\nx = 50.0\ny = 50.0\n",
+            None,
+            Some(video),
+        )
+        .expect("video-only scenario parses");
+        assert_eq!(scenario.duration_ms(), Some(500));
+        assert_eq!(scenario.captures_ms(), [0_u64; 0]);
+        assert_eq!(scenario.events().len(), 1);
+        assert!(scenario.output_dir().is_none());
+        assert!(scenario.video().is_some());
+
+        assert!(
+            parse_preview_scenario_toml(
+                "",
+                None,
+                Some(PreviewVideoOptions::new("a.mp4".into(), 60).unwrap())
+            )
+            .is_err(),
+            "empty video scenario without duration_ms/captures_ms/events must fail"
+        );
     }
 }

@@ -14,7 +14,10 @@ use crate::hydrolysis::platform::{
 };
 use crate::platform::{TargetBackend, TargetPlatform};
 use crate::preview::run::{self, absolute_output_path, expect_nonempty_output, write_run_config};
-use crate::preview::{PreviewSource, PreviewTargetTemplate};
+use crate::preview::{
+    PreviewScenario, PreviewSource, PreviewTargetTemplate, PreviewVideoOptions,
+    encode_raw_frame_stream_to_mp4,
+};
 use crate::project::Project;
 use crate::project_model::assets;
 use waterui_assets_planner::{FontDeclaration, FontSource};
@@ -24,12 +27,7 @@ const HYDROLYSIS_PREVIEW_TEST_FEATURE: &str = "waterui-preview-test-mode";
 
 use waterui_preview_protocol::run::{
     DEFAULT_CONTENT_DEADLINE, DEFAULT_PREVIEW_SCALE, PreviewColorScheme, PreviewRunConfig,
-    PreviewRunMode,
-};
-pub use waterui_preview_protocol::run::{
-    ScenarioEvent as HydrolysisPreviewScenarioEvent,
-    ScenarioEventKind as HydrolysisPreviewEventKind,
-    ScenarioPointerButton as HydrolysisPreviewPointerButton,
+    PreviewRunMode, VideoCaptureConfig,
 };
 
 /// Theme package selected for Hydrolysis preview rendering.
@@ -71,53 +69,6 @@ impl HydrolysisPreviewTheme {
                 None,
             )],
             Self::Glass => Vec::new(),
-        }
-    }
-}
-
-/// Interactive capture scenario for Hydrolysis preview.
-#[derive(Debug, Clone, PartialEq)]
-pub struct HydrolysisPreviewScenario {
-    /// Capture timestamps in milliseconds from scenario start.
-    captures_ms: Vec<u64>,
-    /// Input events sorted by timestamp.
-    events: Vec<HydrolysisPreviewScenarioEvent>,
-    /// Directory where captured frames are written.
-    output_dir: PathBuf,
-}
-impl HydrolysisPreviewScenario {
-    /// Capture timestamps in milliseconds from scenario start.
-    #[must_use]
-    pub fn captures_ms(&self) -> &[u64] {
-        &self.captures_ms
-    }
-
-    /// Input events sorted by timestamp.
-    #[must_use]
-    pub fn events(&self) -> &[HydrolysisPreviewScenarioEvent] {
-        &self.events
-    }
-
-    /// Directory where captured frames are written.
-    #[must_use]
-    pub fn output_dir(&self) -> &Path {
-        &self.output_dir
-    }
-}
-
-impl HydrolysisPreviewScenario {
-    /// A scenario replaying `events` and capturing at each of `captures_ms`
-    /// into `output_dir`.
-    #[must_use]
-    pub const fn new(
-        captures_ms: Vec<u64>,
-        events: Vec<HydrolysisPreviewScenarioEvent>,
-        output_dir: PathBuf,
-    ) -> Self {
-        Self {
-            captures_ms,
-            events,
-            output_dir,
         }
     }
 }
@@ -169,7 +120,7 @@ pub struct HydrolysisPreviewRequest<'a> {
 pub async fn render_preview_with_hydrolysis(
     request: HydrolysisPreviewRequest<'_>,
     output_path: &Path,
-    scenario: Option<&HydrolysisPreviewScenario>,
+    scenario: Option<&PreviewScenario>,
     kotlin_toolchain: Option<&crate::android::KotlinToolchain>,
     android: Option<crate::android::device::AndroidTarget>,
 ) -> Result<()> {
@@ -191,7 +142,7 @@ pub async fn render_preview_with_hydrolysis(
         .await;
     }
     let theme = request.theme;
-    let (project, built) = build_preview_session(&request, None).await?;
+    let (project, built) = build_preview_session(&request, None, false).await?;
     stage_hydrolysis_resources(
         &project,
         request.platform,
@@ -217,9 +168,11 @@ pub async fn render_preview_with_hydrolysis(
 pub async fn test_preview_with_hydrolysis(
     request: HydrolysisPreviewRequest<'_>,
     automation_body: &str,
+    video: Option<&PreviewVideoOptions>,
 ) -> Result<String> {
     let theme = request.theme;
-    let (project, built) = build_preview_session(&request, Some(automation_body)).await?;
+    let (project, built) =
+        build_preview_session(&request, Some(automation_body), video.is_some()).await?;
     stage_hydrolysis_resources(
         &project,
         request.platform,
@@ -228,7 +181,7 @@ pub async fn test_preview_with_hydrolysis(
     )
     .await?;
     stage_hydrolysis_shared_runtime(&project, &built, request.platform).await?;
-    run_preview_test_binary(&project, built.executable()?, &request).await
+    run_preview_test_binary(&project, built.executable()?, &request, video).await
 }
 
 /// Ensures the generated Hydrolysis backend declares `waterui-preview-glass`
@@ -266,13 +219,21 @@ pub async fn ensure_glass_theme_available(project: &Project) -> Result<()> {
 async fn build_preview_session(
     request: &HydrolysisPreviewRequest<'_>,
     automation_body: Option<&str>,
+    offscreen_semantic_test: bool,
 ) -> Result<(Project, BuiltTarget)> {
     let project =
         crate::hydrolysis::backend::open_ready(request.host, request.project_path).await?;
     if request.theme == HydrolysisPreviewTheme::Glass {
         ensure_glass_theme_available(&project).await?;
     }
-    write_preview_bindings(&project, request.source, request.theme, automation_body).await?;
+    write_preview_bindings(
+        &project,
+        request.source,
+        request.theme,
+        automation_body,
+        offscreen_semantic_test,
+    )
+    .await?;
 
     let mut build_options = BuildOptions::default_development(TargetBackend::Hydrolysis);
     if let Some(sccache_path) = request.sccache_path.clone() {
@@ -331,7 +292,7 @@ pub async fn discover_hydrolysis_preview_exports(
         sccache_path,
         progress,
     };
-    let (_project, built) = build_preview_session(&request, None).await?;
+    let (_project, built) = build_preview_session(&request, None, false).await?;
     Ok(built
         .app_symbols()
         .await?
@@ -381,6 +342,7 @@ pub async fn write_preview_bindings(
     source: PreviewSource<'_>,
     theme: HydrolysisPreviewTheme,
     automation_body: Option<&str>,
+    offscreen_semantic_test: bool,
 ) -> Result<()> {
     let file_name = if automation_body.is_some() {
         "preview_test.rs"
@@ -397,6 +359,7 @@ pub async fn write_preview_bindings(
         crate_name_ident.as_str(),
         theme.style(),
         automation_body,
+        offscreen_semantic_test,
     )
     .render()
     .wrap_err("Failed to render hydrolysis preview bindings template")?;
@@ -411,17 +374,33 @@ async fn run_preview_binary(
     binary_path: &Path,
     request: &HydrolysisPreviewRequest<'_>,
     output_path: &Path,
-    scenario: Option<&HydrolysisPreviewScenario>,
+    scenario: Option<&PreviewScenario>,
 ) -> Result<()> {
     let host = project.host();
+    let video_target = scenario
+        .and_then(PreviewScenario::video)
+        .map(|video| -> Result<_> {
+            let temp_dir = tempfile::tempdir()
+                .wrap_err("Failed to create temp dir for preview video frames")?;
+            let raw_path = temp_dir.path().join("frames.wuirf");
+            let output = absolute_output_path(host, video.output_path());
+            Ok((temp_dir, raw_path, output, video.fps()))
+        })
+        .transpose()?;
     let mode = scenario.map_or_else(
         || PreviewRunMode::Image {
             output: absolute_output_path(host, output_path),
         },
         |scenario| PreviewRunMode::Scenario {
-            output_dir: absolute_output_path(host, &scenario.output_dir),
-            captures_ms: scenario.captures_ms.clone(),
-            events: scenario.events.clone(),
+            output_dir: scenario
+                .output_dir()
+                .map(|dir| absolute_output_path(host, dir)),
+            captures_ms: scenario.captures_ms().to_vec(),
+            events: scenario.events().to_vec(),
+            video: video_target.as_ref().map(|(_, raw_path, _, fps)| {
+                VideoCaptureConfig::new(raw_path.clone(), *fps)
+                    .with_duration_ms(scenario.duration_ms())
+            }),
         },
     );
     let config = PreviewRunConfig::new(
@@ -449,17 +428,28 @@ async fn run_preview_binary(
             captures_ms,
             ..
         } => {
-            for capture_ms in captures_ms {
-                let frame_path = scenario_frame_path(output_dir, *capture_ms);
-                expect_nonempty_output(&frame_path, "scenario frame").await?;
+            if let Some(output_dir) = output_dir {
+                for capture_ms in captures_ms {
+                    let frame_path = scenario_frame_path(output_dir, *capture_ms);
+                    expect_nonempty_output(&frame_path, "scenario frame").await?;
+                }
             }
         }
         PreviewRunMode::Image { output } => {
             expect_nonempty_output(output, "output").await?;
         }
-        PreviewRunMode::Semantic => {
+        PreviewRunMode::Semantic { .. } => {
             unreachable!("render runs only produce images or scenarios")
         }
+    }
+
+    if let Some((_temp_dir, raw_path, video_output, _)) = video_target {
+        let video_output_for_encode = video_output.clone();
+        let _ = smol::unblock(move || {
+            encode_raw_frame_stream_to_mp4(&raw_path, &video_output_for_encode)
+        })
+        .await?;
+        expect_nonempty_output(&video_output, "preview video").await?;
     }
 
     Ok(())
@@ -469,11 +459,26 @@ async fn run_preview_test_binary(
     project: &Project,
     binary_path: &Path,
     request: &HydrolysisPreviewRequest<'_>,
+    video: Option<&PreviewVideoOptions>,
 ) -> Result<String> {
+    let host = project.host();
+    let video_target = video
+        .map(|video| -> Result<_> {
+            let temp_dir =
+                tempfile::tempdir().wrap_err("Failed to create temp dir for preview test video")?;
+            let raw_path = temp_dir.path().join("frames.wuirf");
+            let output = absolute_output_path(host, video.output_path());
+            Ok((temp_dir, raw_path, output, video.fps()))
+        })
+        .transpose()?;
     let config = PreviewRunConfig::new(
         request.width,
         request.height,
-        PreviewRunMode::Semantic,
+        PreviewRunMode::Semantic {
+            video: video_target
+                .as_ref()
+                .map(|(_, raw_path, _, fps)| VideoCaptureConfig::new(raw_path.clone(), *fps)),
+        },
         request.content_deadline,
     )
     .with_optional_color_scheme(request.color_scheme)
@@ -481,13 +486,22 @@ async fn run_preview_test_binary(
     let backend_path = project.backend_path::<HydrolysisBackend>();
     let config_path = write_run_config(&backend_path, &config).await?;
     let output = run::run_preview_binary(
-        project.host(),
+        host,
         &backend_path,
         binary_path,
         &config_path,
         "Hydrolysis preview test",
     )
     .await?;
+
+    if let Some((_temp_dir, raw_path, video_output, _)) = video_target {
+        let video_output_for_encode = video_output.clone();
+        let _ = smol::unblock(move || {
+            encode_raw_frame_stream_to_mp4(&raw_path, &video_output_for_encode)
+        })
+        .await?;
+        expect_nonempty_output(&video_output, "preview test video").await?;
+    }
 
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }

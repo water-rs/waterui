@@ -137,6 +137,14 @@ waterui-meta.workspace = true
 # `waterui_meta_widget_*` records carry.
 waterui-widgets.workspace = true
 waterui-preview-protocol.workspace = true
+# Hardware video encoding and MP4 muxing for `water preview --video` and
+# `water preview test --video`. `default-features = false` omits `wgpu` and
+# software codecs so encoding uses only the host's hardware encoder and fails
+# fast where none exists.
+waterkit-codec = { version = "0.3", default-features = false }
+waterkit-video-container = { version = "0.3", default-features = false }
+waterkit-video-core = { workspace = true, default-features = false }
+yuv = { version = "0.8.20", default-features = false, features = ["avx", "sse", "rdm"] }
 waterui-inspector-protocol.workspace = true
 waterui-mcp-protocol.workspace = true
 aither-core = "0.10"

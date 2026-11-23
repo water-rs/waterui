@@ -38,16 +38,19 @@ use futures_util::{StreamExt as _, TryStreamExt as _};
 use smol::fs;
 use tracing::info;
 
-use waterui_preview_protocol::run::{PreviewRunConfig, PreviewRunMode};
+use waterui_preview_protocol::run::{PreviewRunConfig, PreviewRunMode, VideoCaptureConfig};
 
 use crate::android::adb::{Adb, AdbCommandError, recent_crash_log};
 use crate::android::device::{AndroidAbiProvider as _, AndroidTarget};
 use crate::hydrolysis::android::{self as hydrolysis_android, PREVIEW_HOST_PACKAGE};
 use crate::preview::hydrolysis::{
-    HydrolysisPreviewRequest, HydrolysisPreviewScenario, HydrolysisPreviewTheme,
-    ensure_glass_theme_available, scenario_frame_path, write_preview_bindings,
+    HydrolysisPreviewRequest, HydrolysisPreviewTheme, ensure_glass_theme_available,
+    scenario_frame_path, write_preview_bindings,
 };
-use crate::preview::run::{RUN_CONFIG_FILE_NAME, run_config_json};
+use crate::preview::run::{
+    RUN_CONFIG_FILE_NAME, absolute_output_path, expect_nonempty_output, run_config_json,
+};
+use crate::preview::{PreviewScenario, encode_raw_frame_stream_to_mp4};
 use crate::project_model::water_dir;
 use crate::toolchain::Host;
 
@@ -119,7 +122,7 @@ const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
 pub async fn render_preview_with_hydrolysis_android(
     request: &HydrolysisPreviewRequest<'_>,
     output_path: &Path,
-    scenario: Option<&HydrolysisPreviewScenario>,
+    scenario: Option<&PreviewScenario>,
     kotlin: &crate::android::KotlinToolchain,
     target: &AndroidTarget,
 ) -> Result<()> {
@@ -134,7 +137,7 @@ pub async fn render_preview_with_hydrolysis_android(
     // waits until the first finishes; the lease is held for the whole run.
     let _project_lease = water_dir::android_preview_project_lock(host, project.root()).await?;
 
-    write_preview_bindings(&project, request.source, request.theme, None).await?;
+    write_preview_bindings(&project, request.source, request.theme, None, false).await?;
 
     // Everything local — the host APK and the launcher payload — builds
     // before the device is claimed, so a second preview waiting on this
@@ -162,9 +165,13 @@ pub async fn render_preview_with_hydrolysis_android(
             output: PathBuf::from("out/preview.png"),
         },
         |scenario| PreviewRunMode::Scenario {
-            output_dir: PathBuf::from("out/scenario"),
+            output_dir: scenario.output_dir().map(|_| PathBuf::from("out/scenario")),
             captures_ms: scenario.captures_ms().to_vec(),
             events: scenario.events().to_vec(),
+            video: scenario.video().map(|video| {
+                VideoCaptureConfig::new(PathBuf::from("out/video.wuirf"), video.fps())
+                    .with_duration_ms(scenario.duration_ms())
+            }),
         },
     );
     let run_config = run_config_json(
@@ -211,7 +218,7 @@ struct DeviceRender<'a> {
     /// This run's config document.
     run_config: &'a [u8],
     output_path: &'a Path,
-    scenario: Option<&'a HydrolysisPreviewScenario>,
+    scenario: Option<&'a PreviewScenario>,
 }
 
 /// Take the device lease, then run the version check, the clock read and
@@ -676,7 +683,7 @@ async fn pull_outputs(
     adb: &Adb,
     serial: &str,
     output_path: &Path,
-    scenario: Option<&HydrolysisPreviewScenario>,
+    scenario: Option<&PreviewScenario>,
 ) -> Result<()> {
     /// Read the rendered PNG at `remote_name` — a path relative to the run
     /// directory — out of the host's private files, and write it to `local`
@@ -710,18 +717,43 @@ async fn pull_outputs(
     }
 
     if let Some(scenario) = scenario {
-        if let Some(parent) = scenario.output_dir().parent() {
-            fs::create_dir_all(parent).await?;
+        if let Some(output_dir) = scenario.output_dir() {
+            if let Some(parent) = output_dir.parent() {
+                fs::create_dir_all(parent).await?;
+            }
+            fs::create_dir_all(output_dir).await?;
+            futures_util::stream::iter(scenario.captures_ms().iter().copied().map(|capture_ms| {
+                let remote = format!("out/scenario/frame-{capture_ms:04}ms.png");
+                let local = scenario_frame_path(output_dir, capture_ms);
+                async move { pull_png(host, adb, serial, &remote, &local).await }
+            }))
+            .buffer_unordered(SCENARIO_PULL_CONCURRENCY)
+            .try_collect::<()>()
+            .await?;
         }
-        fs::create_dir_all(scenario.output_dir()).await?;
-        futures_util::stream::iter(scenario.captures_ms().iter().copied().map(|capture_ms| {
-            let remote = format!("out/scenario/frame-{capture_ms:04}ms.png");
-            let local = scenario_frame_path(scenario.output_dir(), capture_ms);
-            async move { pull_png(host, adb, serial, &remote, &local).await }
-        }))
-        .buffer_unordered(SCENARIO_PULL_CONCURRENCY)
-        .try_collect::<()>()
-        .await?;
+        if let Some(video) = scenario.video() {
+            let remote = format!("{FILES_RUN_DIR}/out/video.wuirf");
+            let bytes = adb
+                .run_as_cat(
+                    host,
+                    serial,
+                    PREVIEW_HOST_PACKAGE,
+                    &remote,
+                    Duration::from_secs(120),
+                )
+                .await?;
+            let raw_dir = tempfile::tempdir()
+                .wrap_err("Failed to create temp dir for Android preview video frames")?;
+            let raw_path = raw_dir.path().join("frames.wuirf");
+            fs::write(&raw_path, &bytes).await?;
+            let video_output = absolute_output_path(host, video.output_path());
+            let video_output_for_encode = video_output.clone();
+            let _ = smol::unblock(move || {
+                encode_raw_frame_stream_to_mp4(&raw_path, &video_output_for_encode)
+            })
+            .await?;
+            expect_nonempty_output(&video_output, "preview video").await?;
+        }
         return Ok(());
     }
 

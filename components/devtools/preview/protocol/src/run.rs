@@ -5,6 +5,9 @@
 //! [`PREVIEW_RUN_CONFIG_ENV`], and every backend encodes its captures through
 //! the same PNG writer.
 
+use std::collections::BTreeMap;
+use std::fs::{self, File};
+use std::io::{self, BufReader, BufWriter, ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -13,6 +16,12 @@ use serde::{Deserialize, Serialize};
 /// Environment variable carrying the path of the JSON-encoded
 /// [`PreviewRunConfig`] for the generated preview binary.
 pub const PREVIEW_RUN_CONFIG_ENV: &str = "WATERUI_PREVIEW_RUN_CONFIG";
+
+/// Default frame rate for `water preview --video` and `water preview test --video`.
+pub const DEFAULT_VIDEO_FPS: u32 = 60;
+
+/// Magic header for raw RGBA8 preview frame streams (`WUIRF001`).
+const RAW_FRAME_STREAM_MAGIC: &[u8; 8] = b"WUIRF001";
 
 /// How long a capture waits for owed content when the caller names no bound.
 ///
@@ -109,6 +118,58 @@ impl PreviewRunConfig {
     }
 }
 
+/// Fixed-FPS raw RGBA8 frame capture configuration for video recording.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct VideoCaptureConfig {
+    /// Destination file path for the framed raw RGBA8 capture stream.
+    output: PathBuf,
+    /// Fixed sampling frame rate in frames per second (strictly positive).
+    fps: u32,
+    /// Total scenario timeline duration in milliseconds (`None` for semantic
+    /// test runs, whose duration is determined by the test automation).
+    #[serde(default)]
+    duration_ms: Option<u64>,
+}
+
+impl VideoCaptureConfig {
+    /// Creates a video capture configuration writing raw RGBA8 frames to
+    /// `output` at `fps` frames per second.
+    #[must_use]
+    pub const fn new(output: PathBuf, fps: u32) -> Self {
+        Self {
+            output,
+            fps,
+            duration_ms: None,
+        }
+    }
+
+    /// Sets the explicit timeline duration in milliseconds for scenario runs.
+    #[must_use]
+    pub const fn with_duration_ms(mut self, duration_ms: Option<u64>) -> Self {
+        self.duration_ms = duration_ms;
+        self
+    }
+
+    /// Destination file path for the framed raw RGBA8 capture stream.
+    #[must_use]
+    pub fn output(&self) -> &Path {
+        &self.output
+    }
+
+    /// Fixed sampling frame rate in frames per second.
+    #[must_use]
+    pub const fn fps(&self) -> u32 {
+        self.fps
+    }
+
+    /// Explicit scenario timeline duration in milliseconds, if set.
+    #[must_use]
+    pub const fn duration_ms(&self) -> Option<u64> {
+        self.duration_ms
+    }
+}
+
 /// What a preview run produces.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[expect(
@@ -121,18 +182,30 @@ pub enum PreviewRunMode {
         /// Destination PNG path.
         output: PathBuf,
     },
-    /// A timeline capture: frames at `captures_ms` with `events` replayed at
-    /// their timestamps.
+    /// A timeline capture: PNG frames at `captures_ms` (when `output_dir` is
+    /// set) and/or fixed-FPS raw RGBA8 frames into `video`, with `events`
+    /// replayed at their timestamps.
     Scenario {
-        /// Directory receiving `frame-XXXXms.png` captures.
-        output_dir: PathBuf,
+        /// Directory receiving `frame-XXXXms.png` captures, when PNG output is requested.
+        #[serde(default)]
+        output_dir: Option<PathBuf>,
         /// Capture timestamps in milliseconds from scenario start.
+        #[serde(default)]
         captures_ms: Vec<u64>,
         /// Input events sorted by timestamp.
+        #[serde(default)]
         events: Vec<ScenarioEvent>,
+        /// Optional fixed-FPS raw RGBA8 frame stream for video recording.
+        #[serde(default)]
+        video: Option<VideoCaptureConfig>,
     },
-    /// Semantic accessibility-tree assertions (no render target).
-    Semantic,
+    /// Semantic accessibility-tree assertions, optionally recording fixed-FPS
+    /// raw RGBA8 frames when `video` is set.
+    Semantic {
+        /// Optional fixed-FPS raw RGBA8 frame stream recorded across the semantic test timeline.
+        #[serde(default)]
+        video: Option<VideoCaptureConfig>,
+    },
 }
 
 /// One input event in a preview scenario timeline.
@@ -350,10 +423,28 @@ impl PreviewRunConfig {
                 PreviewRunMode::Image { output } if !output.is_absolute() => {
                     *output = base.join(&*output);
                 }
-                PreviewRunMode::Scenario { output_dir, .. } if !output_dir.is_absolute() => {
-                    *output_dir = base.join(&*output_dir);
+                PreviewRunMode::Scenario {
+                    output_dir, video, ..
+                } => {
+                    if let Some(dir) = output_dir
+                        && !dir.is_absolute()
+                    {
+                        *dir = base.join(&*dir);
+                    }
+                    if let Some(video) = video
+                        && !video.output.is_absolute()
+                    {
+                        video.output = base.join(&video.output);
+                    }
                 }
-                _ => {}
+                PreviewRunMode::Semantic { video } => {
+                    if let Some(video) = video
+                        && !video.output.is_absolute()
+                    {
+                        video.output = base.join(&video.output);
+                    }
+                }
+                PreviewRunMode::Image { .. } => {}
             }
         }
         Ok(config)
@@ -546,9 +637,459 @@ pub fn write_png(
     })
 }
 
+/// One scheduled capture point on a scenario timeline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ScenarioSample {
+    /// Exact offset from scenario start.
+    offset: Duration,
+    /// When `Some(ms)`, write `frame-{ms:04}ms.png` to the scenario output directory.
+    png_capture_ms: Option<u64>,
+    /// Whether this capture appends a frame to the video raw frame stream.
+    record_video: bool,
+}
+
+impl ScenarioSample {
+    /// Exact offset from scenario start.
+    #[must_use]
+    pub const fn offset(&self) -> Duration {
+        self.offset
+    }
+
+    /// Timestamp in milliseconds for the PNG frame, when this sample writes one.
+    #[must_use]
+    pub const fn png_capture_ms(&self) -> Option<u64> {
+        self.png_capture_ms
+    }
+
+    /// Whether this sample writes a frame into the video stream.
+    #[must_use]
+    pub const fn record_video(&self) -> bool {
+        self.record_video
+    }
+}
+
+/// Exact timeline offset for `frame_index` sampled at `fps` frames per second.
+///
+/// # Panics
+///
+/// Panics if `fps` is zero.
+#[must_use]
+pub fn frame_offset(frame_index: u64, fps: u32) -> Duration {
+    assert!(fps > 0, "video frame rate must be greater than zero");
+    let nanos = (u128::from(frame_index) * 1_000_000_000) / u128::from(fps);
+    Duration::from_nanos(u64::try_from(nanos).expect("scenario timeline fits u64 nanoseconds"))
+}
+
+/// Plans the ordered capture samples for a scenario run, coalescing matching
+/// PNG capture timestamps and fixed-FPS video sample instants into a single
+/// timeline.
+///
+/// # Errors
+///
+/// Returns [`RawFrameError::InvalidFps`] when `video` specifies `fps == 0`,
+/// or [`RawFrameError::EmptyTimeline`] when neither PNG captures nor video
+/// recording are configured.
+pub fn plan_scenario_timeline(
+    captures_ms: &[u64],
+    video: Option<&VideoCaptureConfig>,
+    events: &[ScenarioEvent],
+) -> Result<Vec<ScenarioSample>, RawFrameError> {
+    let mut merged: BTreeMap<Duration, (Option<u64>, bool)> = BTreeMap::new();
+
+    for &capture_ms in captures_ms {
+        let offset = Duration::from_millis(capture_ms);
+        merged.entry(offset).or_insert((None, false)).0 = Some(capture_ms);
+    }
+
+    if let Some(video) = video {
+        if video.fps == 0 {
+            return Err(RawFrameError::InvalidFps);
+        }
+        let inferred_ms = captures_ms
+            .iter()
+            .copied()
+            .chain(events.iter().map(ScenarioEvent::at_ms))
+            .max()
+            .unwrap_or(0);
+        let limit_nanos = u128::from(video.duration_ms.unwrap_or(inferred_ms)) * 1_000_000;
+        let mut frame_index = 0_u64;
+        loop {
+            let offset_ns = (u128::from(frame_index) * 1_000_000_000) / u128::from(video.fps);
+            if offset_ns > limit_nanos {
+                break;
+            }
+            let Ok(nanos) = u64::try_from(offset_ns) else {
+                break;
+            };
+            let offset = Duration::from_nanos(nanos);
+            merged.entry(offset).or_insert((None, false)).1 = true;
+            frame_index += 1;
+        }
+    }
+
+    if merged.is_empty() {
+        return Err(RawFrameError::EmptyTimeline);
+    }
+
+    Ok(merged
+        .into_iter()
+        .map(|(offset, (png_capture_ms, record_video))| ScenarioSample {
+            offset,
+            png_capture_ms,
+            record_video,
+        })
+        .collect())
+}
+
+/// Why reading or writing a raw RGBA8 preview frame stream failed.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum RawFrameError {
+    /// Video frame rate must be strictly positive.
+    #[error("video frame rate must be greater than zero")]
+    InvalidFps,
+    /// Scenario specified neither PNG captures nor video recording.
+    #[error("scenario timeline has no PNG captures and no video recording configured")]
+    EmptyTimeline,
+    /// The capture frame has zero width, zero height, or no pixels.
+    #[error("video frame is empty ({width}x{height}, {len} bytes)")]
+    EmptyFrame {
+        /// Frame width in pixels.
+        width: u32,
+        /// Frame height in pixels.
+        height: u32,
+        /// Buffer length in bytes.
+        len: usize,
+    },
+    /// Frame buffer length does not equal `width * height * 4`.
+    #[error("invalid RGBA8 frame buffer: {len} bytes for {width}x{height}")]
+    InvalidBuffer {
+        /// Frame width in pixels.
+        width: u32,
+        /// Frame height in pixels.
+        height: u32,
+        /// Buffer length in bytes.
+        len: usize,
+    },
+    /// A subsequent frame changed dimensions mid-stream.
+    #[error(
+        "video frame dimensions changed mid-stream from {expected_width}x{expected_height} to {actual_width}x{actual_height}"
+    )]
+    DimensionMismatch {
+        /// Width recorded by the first frame.
+        expected_width: u32,
+        /// Height recorded by the first frame.
+        expected_height: u32,
+        /// Width of the mismatched frame.
+        actual_width: u32,
+        /// Height of the mismatched frame.
+        actual_height: u32,
+    },
+    /// Stream finished with zero frames written.
+    #[error("video capture produced no frames")]
+    NoFrames,
+    /// Input file is not a valid `WUIRF001` raw frame stream.
+    #[error("invalid raw frame stream header in {}", .path.display())]
+    InvalidHeader {
+        /// File path whose header failed validation.
+        path: PathBuf,
+    },
+    /// Output directory creation failed.
+    #[error("cannot create video capture directory {}: {source}", .path.display())]
+    CreateDir {
+        /// Directory that could not be created.
+        path: PathBuf,
+        /// Underlying I/O error.
+        source: io::Error,
+    },
+    /// Underlying file I/O failed.
+    #[error("raw frame stream I/O failed for {}: {source}", .path.display())]
+    Io {
+        /// File path being read or written.
+        path: PathBuf,
+        /// Underlying I/O error.
+        source: io::Error,
+    },
+}
+
+/// Streams flattened opaque RGBA8 frames to disk in a compact binary framing
+/// (`WUIRF001`) so the host CLI can hardware-encode them without per-frame PNG
+/// compression overhead.
+#[derive(Debug)]
+pub struct RawFrameStreamWriter {
+    path: PathBuf,
+    writer: BufWriter<File>,
+    fps: u32,
+    dimensions: Option<(u32, u32)>,
+    frame_count: u64,
+}
+
+impl RawFrameStreamWriter {
+    /// Creates a new raw frame stream at `path` for captures at `fps`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RawFrameError::InvalidFps`] when `fps == 0`, or an I/O error
+    /// if the parent directory or file cannot be created.
+    pub fn create(path: impl AsRef<Path>, fps: u32) -> Result<Self, RawFrameError> {
+        if fps == 0 {
+            return Err(RawFrameError::InvalidFps);
+        }
+        let path = path.as_ref().to_path_buf();
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            fs::create_dir_all(parent).map_err(|source| RawFrameError::CreateDir {
+                path: parent.to_path_buf(),
+                source,
+            })?;
+        }
+        let file = File::create(&path).map_err(|source| RawFrameError::Io {
+            path: path.clone(),
+            source,
+        })?;
+        Ok(Self {
+            path,
+            writer: BufWriter::new(file),
+            fps,
+            dimensions: None,
+            frame_count: 0,
+        })
+    }
+
+    /// Flattens `rgba_data` over white under `alpha` and appends the frame at
+    /// `timestamp` to the stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RawFrameError`] if the frame is empty, malformed, changes
+    /// dimensions mid-stream, or cannot be written.
+    pub fn write_frame(
+        &mut self,
+        width: u32,
+        height: u32,
+        mut rgba_data: Vec<u8>,
+        alpha: Alpha,
+        timestamp: Duration,
+    ) -> Result<(), RawFrameError> {
+        if width == 0 || height == 0 || rgba_data.is_empty() {
+            return Err(RawFrameError::EmptyFrame {
+                width,
+                height,
+                len: rgba_data.len(),
+            });
+        }
+        let expected_len = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|pixels| pixels.checked_mul(4));
+        if expected_len != Some(rgba_data.len()) {
+            return Err(RawFrameError::InvalidBuffer {
+                width,
+                height,
+                len: rgba_data.len(),
+            });
+        }
+
+        if let Some((expected_width, expected_height)) = self.dimensions {
+            if expected_width != width || expected_height != height {
+                return Err(RawFrameError::DimensionMismatch {
+                    expected_width,
+                    expected_height,
+                    actual_width: width,
+                    actual_height: height,
+                });
+            }
+        } else {
+            self.write_all(RAW_FRAME_STREAM_MAGIC)?;
+            self.write_all(&self.fps.to_le_bytes())?;
+            self.write_all(&width.to_le_bytes())?;
+            self.write_all(&height.to_le_bytes())?;
+            self.dimensions = Some((width, height));
+        }
+
+        flatten_alpha_over_white(&mut rgba_data, alpha);
+        let timestamp_ns = u64::try_from(timestamp.as_nanos()).unwrap_or(u64::MAX);
+        self.write_all(&timestamp_ns.to_le_bytes())?;
+        self.write_all(&rgba_data)?;
+        self.frame_count += 1;
+        Ok(())
+    }
+
+    /// Flushes the stream and returns the number of written frames.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RawFrameError::NoFrames`] when no frames were written, or an
+    /// I/O error on flush failure.
+    pub fn finish(mut self) -> Result<u64, RawFrameError> {
+        if self.frame_count == 0 {
+            return Err(RawFrameError::NoFrames);
+        }
+        self.writer.flush().map_err(|source| RawFrameError::Io {
+            path: self.path,
+            source,
+        })?;
+        Ok(self.frame_count)
+    }
+
+    fn write_all(&mut self, bytes: &[u8]) -> Result<(), RawFrameError> {
+        self.writer
+            .write_all(bytes)
+            .map_err(|source| RawFrameError::Io {
+                path: self.path.clone(),
+                source,
+            })
+    }
+}
+
+/// Reads flattened opaque RGBA8 frames produced by [`RawFrameStreamWriter`].
+#[derive(Debug)]
+pub struct RawFrameStreamReader {
+    path: PathBuf,
+    reader: BufReader<File>,
+    fps: u32,
+    width: u32,
+    height: u32,
+    frame_bytes: usize,
+}
+
+impl RawFrameStreamReader {
+    /// Opens a `WUIRF001` raw frame stream and validates its header.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RawFrameError`] if the file cannot be opened or has an invalid
+    /// header, zero fps, or zero dimensions.
+    pub fn open(path: impl AsRef<Path>) -> Result<Self, RawFrameError> {
+        let path = path.as_ref().to_path_buf();
+        let file = File::open(&path).map_err(|source| RawFrameError::Io {
+            path: path.clone(),
+            source,
+        })?;
+        let mut reader = BufReader::new(file);
+        let mut header = [0_u8; 20];
+        reader.read_exact(&mut header).map_err(|source| {
+            if source.kind() == ErrorKind::UnexpectedEof {
+                RawFrameError::InvalidHeader { path: path.clone() }
+            } else {
+                RawFrameError::Io {
+                    path: path.clone(),
+                    source,
+                }
+            }
+        })?;
+        if &header[0..8] != RAW_FRAME_STREAM_MAGIC {
+            return Err(RawFrameError::InvalidHeader { path });
+        }
+        let fps = u32::from_le_bytes([header[8], header[9], header[10], header[11]]);
+        let width = u32::from_le_bytes([header[12], header[13], header[14], header[15]]);
+        let height = u32::from_le_bytes([header[16], header[17], header[18], header[19]]);
+        if fps == 0 {
+            return Err(RawFrameError::InvalidFps);
+        }
+        let Some(frame_bytes) = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|pixels| pixels.checked_mul(4))
+            .filter(|&len| len > 0)
+        else {
+            return Err(RawFrameError::InvalidHeader { path });
+        };
+        Ok(Self {
+            path,
+            reader,
+            fps,
+            width,
+            height,
+            frame_bytes,
+        })
+    }
+
+    /// Stream frame rate in frames per second.
+    #[must_use]
+    pub const fn fps(&self) -> u32 {
+        self.fps
+    }
+
+    /// Frame width in pixels.
+    #[must_use]
+    pub const fn width(&self) -> u32 {
+        self.width
+    }
+
+    /// Frame height in pixels.
+    #[must_use]
+    pub const fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// Reads the next frame into `rgba_out` (reusing its allocation) and
+    /// returns its timestamp, or `Ok(None)` at clean EOF.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RawFrameError::Io`] on truncated frames or read failures.
+    pub fn next_frame(
+        &mut self,
+        rgba_out: &mut Vec<u8>,
+    ) -> Result<Option<Duration>, RawFrameError> {
+        let mut ts_bytes = [0_u8; 8];
+        let mut read = 0;
+        while read < ts_bytes.len() {
+            match self.reader.read(&mut ts_bytes[read..]) {
+                Ok(0) if read == 0 => return Ok(None),
+                Ok(0) => {
+                    return Err(RawFrameError::Io {
+                        path: self.path.clone(),
+                        source: io::Error::new(
+                            ErrorKind::UnexpectedEof,
+                            "truncated raw frame timestamp",
+                        ),
+                    });
+                }
+                Ok(n) => read += n,
+                Err(error) if error.kind() == ErrorKind::Interrupted => {}
+                Err(source) => {
+                    return Err(RawFrameError::Io {
+                        path: self.path.clone(),
+                        source,
+                    });
+                }
+            }
+        }
+        let timestamp_ns = u64::from_le_bytes(ts_bytes);
+        rgba_out.resize(self.frame_bytes, 0);
+        self.reader
+            .read_exact(rgba_out)
+            .map_err(|source| RawFrameError::Io {
+                path: self.path.clone(),
+                source,
+            })?;
+        Ok(Some(Duration::from_nanos(timestamp_ns)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Alpha, flatten_alpha_over_white};
+    use std::path::PathBuf;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    use std::{env, fs, process};
+
+    use super::{
+        Alpha, PreviewRunConfig, PreviewRunMode, RawFrameError, RawFrameStreamReader,
+        RawFrameStreamWriter, ScenarioEvent, ScenarioEventKind, ScenarioSample, VideoCaptureConfig,
+        flatten_alpha_over_white, frame_offset, plan_scenario_timeline,
+    };
+
+    fn scratch_path(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or_default(|duration| duration.as_nanos());
+        env::temp_dir().join(format!(
+            "waterui-preview-protocol-{name}-{}-{nanos}.wuirf",
+            process::id()
+        ))
+    }
 
     /// A translucent straight-alpha pixel whose colour channel exceeds its
     /// alpha — the anti-aliased light-ink case the premultiplied formula
@@ -601,5 +1142,149 @@ mod tests {
             serde_json::from_str(&serialized).expect("run config deserializes");
         assert_eq!(parsed.color_scheme(), Some(PreviewColorScheme::Dark));
         assert!((parsed.scale() - 3.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn plan_scenario_timeline_coalesces_png_and_video_samples() {
+        let video = VideoCaptureConfig::new("frames.wuirf".into(), 20).with_duration_ms(Some(100));
+        let samples =
+            plan_scenario_timeline(&[0, 50, 75], Some(&video), &[]).expect("valid merged timeline");
+        // 20 fps over 100ms produces 0, 50, 100ms; PNG adds 75ms and coalesces at 0 & 50ms.
+        let summary: Vec<(Duration, Option<u64>, bool)> = samples
+            .iter()
+            .map(|sample| {
+                (
+                    sample.offset(),
+                    sample.png_capture_ms(),
+                    sample.record_video(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            summary,
+            vec![
+                (Duration::from_millis(0), Some(0), true),
+                (Duration::from_millis(50), Some(50), true),
+                (Duration::from_millis(75), Some(75), false),
+                (Duration::from_millis(100), None, true),
+            ]
+        );
+    }
+
+    #[test]
+    fn plan_scenario_timeline_infers_duration_from_events() {
+        let video = VideoCaptureConfig::new("frames.wuirf".into(), 10);
+        let events = [ScenarioEvent::new(
+            200,
+            ScenarioEventKind::PointerUp,
+            10.0,
+            20.0,
+        )];
+        let samples = plan_scenario_timeline(&[], Some(&video), &events)
+            .expect("video timeline inferred from events");
+        assert_eq!(samples.len(), 3);
+        assert_eq!(samples[0].offset(), frame_offset(0, 10));
+        assert_eq!(samples[1].offset(), frame_offset(1, 10));
+        assert_eq!(samples[2].offset(), frame_offset(2, 10));
+        assert!(samples.iter().all(ScenarioSample::record_video));
+    }
+
+    #[test]
+    fn plan_scenario_timeline_rejects_zero_fps_and_empty_timeline() {
+        let bad_video = VideoCaptureConfig::new("frames.wuirf".into(), 0);
+        assert!(matches!(
+            plan_scenario_timeline(&[], Some(&bad_video), &[]),
+            Err(RawFrameError::InvalidFps)
+        ));
+        assert!(matches!(
+            plan_scenario_timeline(&[], None, &[]),
+            Err(RawFrameError::EmptyTimeline)
+        ));
+    }
+
+    #[test]
+    fn raw_frame_stream_roundtrips_and_validates_frames() {
+        let path = scratch_path("roundtrip");
+        let mut writer = RawFrameStreamWriter::create(&path, 60).expect("create stream");
+        writer
+            .write_frame(
+                2,
+                1,
+                vec![200, 0, 0, 128, 10, 20, 30, 255],
+                Alpha::Straight,
+                Duration::from_millis(0),
+            )
+            .expect("frame 0");
+        writer
+            .write_frame(
+                2,
+                1,
+                vec![0, 100, 50, 255, 255, 255, 255, 255],
+                Alpha::Premultiplied,
+                Duration::from_millis(16),
+            )
+            .expect("frame 1");
+        assert!(matches!(
+            writer.write_frame(1, 1, vec![0; 4], Alpha::Straight, Duration::from_millis(33)),
+            Err(RawFrameError::DimensionMismatch { .. })
+        ));
+        assert_eq!(writer.finish().expect("finish"), 2);
+
+        let mut reader = RawFrameStreamReader::open(&path).expect("open stream");
+        assert_eq!((reader.fps(), reader.width(), reader.height()), (60, 2, 1));
+        let mut buf = Vec::new();
+        assert_eq!(
+            reader.next_frame(&mut buf).expect("read 0"),
+            Some(Duration::from_millis(0))
+        );
+        assert_eq!(buf, vec![227, 127, 127, 255, 10, 20, 30, 255]);
+        assert_eq!(
+            reader.next_frame(&mut buf).expect("read 1"),
+            Some(Duration::from_millis(16))
+        );
+        assert_eq!(buf, vec![0, 100, 50, 255, 255, 255, 255, 255]);
+        assert_eq!(reader.next_frame(&mut buf).expect("eof"), None);
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn preview_run_config_json_roundtrips_video_modes() {
+        let scenario = PreviewRunConfig::new(
+            375.0,
+            667.0,
+            PreviewRunMode::Scenario {
+                output_dir: None,
+                captures_ms: Vec::new(),
+                events: Vec::new(),
+                video: Some(
+                    VideoCaptureConfig::new("frames.wuirf".into(), 60).with_duration_ms(Some(500)),
+                ),
+            },
+            Duration::from_secs(10),
+        );
+        let json = serde_json::to_string(&scenario).expect("serialize scenario");
+        let parsed: PreviewRunConfig = serde_json::from_str(&json).expect("deserialize scenario");
+        let PreviewRunMode::Scenario { video, .. } = parsed.mode() else {
+            panic!("expected scenario mode");
+        };
+        let video = video.as_ref().expect("video config");
+        assert_eq!(video.fps(), 60);
+        assert_eq!(video.duration_ms(), Some(500));
+
+        let semantic = PreviewRunConfig::new(
+            375.0,
+            667.0,
+            PreviewRunMode::Semantic {
+                video: Some(VideoCaptureConfig::new("test.wuirf".into(), 30)),
+            },
+            Duration::from_secs(10),
+        );
+        let json = serde_json::to_string(&semantic).expect("serialize semantic");
+        let parsed: PreviewRunConfig = serde_json::from_str(&json).expect("deserialize semantic");
+        let PreviewRunMode::Semantic { video } = parsed.mode() else {
+            panic!("expected semantic mode");
+        };
+        assert_eq!(video.as_ref().map(VideoCaptureConfig::fps), Some(30));
     }
 }
