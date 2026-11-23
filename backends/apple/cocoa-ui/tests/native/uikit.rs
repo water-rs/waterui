@@ -137,6 +137,11 @@ pub fn trials() -> Vec<Trial> {
             "capture",
             a_detached_capture_renders_and_teardown_stays_clean
         ),
+        #[cfg(target_abi = "macabi")]
+        case!(
+            "capture",
+            render_server_captures_uikit_glass_without_windows
+        ),
     ])
 }
 
@@ -1865,4 +1870,127 @@ fn a_detached_capture_renders_and_teardown_stays_clean() {
     crate::harness::pump_main_turn();
     let _layer = content.layer(); // crashes on an invalidated layer
     label.removeFromSuperview();
+}
+
+/// On Mac Catalyst, the test-only in-process `Core Animation` render server
+/// captures real `UIGlassEffect` / `UIVisualEffectView` backdrop refraction and
+/// `UIButtonConfiguration.prominentGlassButtonConfiguration` glass fill inside a
+/// scene-less `CaptureWindow` with zero `NSWindow`s (`NSApp.windows.count == 0`,
+/// `!NSApp.isActive()`).
+#[cfg(target_abi = "macabi")]
+fn render_server_captures_uikit_glass_without_windows() {
+    use cocoa_ui::bitmap::{
+        close_capture_window, render_layer_via_render_server, scene_less_capture_window,
+        set_window_color_scheme, show_capture_window,
+    };
+    use cocoa_ui::objc2::runtime::{AnyClass, AnyObject};
+    use cocoa_ui::objc2::{MainThreadOnly as _, msg_send};
+    use cocoa_ui::objc2_core_foundation::{CGPoint, CGRect, CGSize};
+    use cocoa_ui::objc2_foundation::NSArray;
+    use cocoa_ui::objc2_ui_kit::{UIColor, UIView, UIVisualEffect, UIVisualEffectView};
+    use cocoa_ui::uikit::button::{Button, Chrome};
+    use cocoa_ui::uikit::catalyst::BackgroundApplication;
+    use cocoa_ui::view::{add_subview, prepare_for_capture, set_frame};
+    use cocoa_ui::{ColorScheme, Size};
+
+    let mtm = marker();
+    let app = BackgroundApplication::bring_up(mtm);
+    assert!(app.is_activation_prohibited() && !app.is_active());
+
+    let size = Size::new(320.0, 140.0);
+    let window = scene_less_capture_window(mtm, &app, size);
+    set_window_color_scheme(&window, ColorScheme::Light);
+
+    let make_view = |x: f64, y: f64, w: f64, h: f64| -> Retained<UIView> {
+        // SAFETY: `initWithFrame:` is `UIView`'s designated initializer on the main thread.
+        unsafe {
+            msg_send![
+                UIView::alloc(mtm),
+                initWithFrame: CGRect::new(CGPoint::new(x, y), CGSize::new(w, h))
+            ]
+        }
+    };
+    let root = make_view(0.0, 0.0, 320.0, 140.0);
+    for (y, color) in [
+        (0.0, UIColor::systemRedColor()),
+        (70.0, UIColor::systemGreenColor()),
+    ] {
+        let band = make_view(0.0, y, 320.0, 70.0);
+        band.setBackgroundColor(Some(&color));
+        add_subview(&root, &band);
+    }
+
+    let glass_class = AnyClass::get(c"UIGlassEffect").expect("UIGlassEffect exists on iOS 26+");
+    // SAFETY: `+[UIGlassEffect effectWithStyle:]` takes `NSInteger` (0 = regular).
+    let glass_effect: Retained<UIVisualEffect> =
+        unsafe { msg_send![glass_class, effectWithStyle: 0isize] };
+    let glass_view =
+        UIVisualEffectView::initWithEffect(UIVisualEffectView::alloc(mtm), Some(&glass_effect));
+    set_frame(&glass_view, Rect::new(16.0, 20.0, 120.0, 100.0));
+    glass_view.layer().setCornerRadius(24.0);
+    glass_view.setClipsToBounds(true);
+    add_subview(&root, &glass_view);
+
+    let button = Button::new(mtm);
+    button.set_chrome(Chrome::ProminentGlass, mtm);
+    button.set_title("Continue");
+    set_frame(&button, Rect::new(156.0, 16.0, 144.0, 44.0));
+    add_subview(&root, &button);
+
+    show_capture_window(&window, &root, size);
+    prepare_for_capture(&root);
+
+    let ns_app_class = AnyClass::get(c"NSApplication").expect("Catalyst loads NSApplication");
+    // SAFETY: standard `AppKit` accessors on the main thread.
+    let ns_window_count: usize = unsafe {
+        let ns_app: Retained<AnyObject> = msg_send![ns_app_class, sharedApplication];
+        let windows: Retained<NSArray<AnyObject>> = msg_send![&*ns_app, windows];
+        windows.count()
+    };
+    assert_eq!(
+        ns_window_count, 0,
+        "Catalyst capture must create 0 NSWindows"
+    );
+
+    let mut pixels = Vec::new();
+    for _ in 0..2 {
+        pixels = render_layer_via_render_server(&root.layer(), 2.0, 640, 280, true)
+            .expect("in-process CARenderServer capture must succeed on Mac Catalyst");
+    }
+
+    let pixel_at = |x: usize, y: usize| -> [u8; 4] {
+        let o = (y * 640 + x) * 4;
+        [pixels[o], pixels[o + 1], pixels[o + 2], pixels[o + 3]]
+    };
+    let top_px = pixel_at(4, 4);
+    assert!(top_px[0] > 200 && top_px[1] < 110 && top_px[2] < 110 && top_px[3] == 255);
+    let bottom_px = pixel_at(4, 275);
+    assert!(bottom_px[1] > 150 && bottom_px[0] < 110 && bottom_px[2] < 120 && bottom_px[3] == 255);
+
+    let blended_glass = (126..154)
+        .flat_map(|y| (60..240).map(move |x| pixel_at(x, y)))
+        .filter(|&[r, g, _, a]| a == 255 && r >= 130 && g >= 130)
+        .count();
+    assert!(
+        blended_glass > 500,
+        "UIGlassEffect must blend red/green seam: {blended_glass}"
+    );
+
+    let (mut glass_blue, mut white_glyph) = (0usize, 0usize);
+    for y in 36..116 {
+        for x in 320..592 {
+            let [r, g, b, a] = pixel_at(x, y);
+            glass_blue += usize::from(a >= 200 && b >= 180 && g >= 70 && r <= 100);
+            white_glyph += usize::from(a >= 200 && r >= 220 && g >= 220 && b >= 220);
+        }
+    }
+    assert!(
+        glass_blue > 5_000,
+        "prominent glass UIButton blue fill: {glass_blue}"
+    );
+    assert!(
+        white_glyph > 100,
+        "prominent glass UIButton white glyphs: {white_glyph}"
+    );
+    close_capture_window(&window);
 }

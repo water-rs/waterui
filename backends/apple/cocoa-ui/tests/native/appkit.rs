@@ -133,6 +133,10 @@ pub fn trials() -> Vec<Trial> {
             capture_preserves_background_behind_prominent_glass_button
         ),
         case!(
+            "capture",
+            render_server_captures_glass_and_orientation_without_windows
+        ),
+        case!(
             "appkit::text_field",
             a_fields_edit_path_carries_selection_undo_and_change
         ),
@@ -1599,6 +1603,123 @@ fn capture_preserves_background_behind_prominent_glass_button() {
         top_left,
         [255, 255, 255, 255],
         "cache_display must preserve the white ancestor background at (0, 0), got {top_left:?}"
+    );
+}
+
+/// The test-only in-process `Core Animation` render server captures real
+/// `CASDFLayer`/`CABackdropLayer` glass pixels (`NSBezelStyle::Glass` with
+/// `bezelColor`) and preserves top-down layout and right-side-up text without
+/// ordering any window on screen (`!window.isVisible()`, `!NSApp.isActive()`).
+fn render_server_captures_glass_and_orientation_without_windows() {
+    use cocoa_ui::ColorScheme;
+    use cocoa_ui::appkit::{Button, HostView};
+    use cocoa_ui::bitmap::{
+        capture_window, render_layer_via_render_server, set_window_color_scheme,
+    };
+    use cocoa_ui::objc2_app_kit::{NSApplication, NSBezelStyle, NSColor, NSView};
+    use cocoa_ui::view::{add_subview, is_flipped, layer, prepare_for_capture, set_frame};
+
+    let mtm = marker();
+    let app = NSApplication::sharedApplication(mtm);
+    assert!(
+        !app.isActive(),
+        "headless render-server test must never activate the application"
+    );
+
+    let size = Size::new(260.0, 140.0);
+    let window = capture_window(mtm, size);
+    assert!(
+        !window.isVisible(),
+        "capture_window must never order onto the screen"
+    );
+    set_window_color_scheme(&window, ColorScheme::Light);
+
+    let content = window
+        .contentView()
+        .expect("capture_window has a content view");
+    content.setWantsLayer(true);
+
+    // Flipped host view: top half (y = 0..70) is red with a prominent glass button,
+    // bottom half (y = 70..140) is green.
+    let host = HostView::new(mtm, Rect::new(0.0, 0.0, 260.0, 140.0));
+    add_subview(&content, &host);
+
+    let add_band = |y: f64, color: &NSColor| {
+        let band = NSView::new(mtm);
+        band.setWantsLayer(true);
+        set_frame(&band, Rect::new(0.0, y, 260.0, 70.0));
+        band.layer()
+            .expect("band is layer-backed")
+            .setBackgroundColor(Some(&color.CGColor()));
+        add_subview(&host, &band);
+    };
+    add_band(0.0, &NSColor::systemRedColor());
+    add_band(70.0, &NSColor::systemGreenColor());
+
+    let button = Button::new(mtm);
+    button.set_bordered(true);
+    button.set_bezel_style(NSBezelStyle::Glass);
+    button.set_bezel_color(Some(&NSColor::systemBlueColor()));
+    button.set_title("Prominent");
+    set_frame(&button, Rect::new(40.0, 18.0, 180.0, 34.0));
+    add_subview(&host, &button);
+
+    prepare_for_capture(&host);
+    let host_layer = layer(&host).expect("host view is layer-backed");
+    let flipped = is_flipped(&host);
+
+    // Run twice to prove repeated captures on the same hierarchy stay clean.
+    let mut pixels = Vec::new();
+    for _ in 0..2 {
+        pixels = render_layer_via_render_server(&host_layer, 2.0, 520, 280, flipped)
+            .expect("in-process CARenderServer capture must succeed");
+    }
+    assert!(
+        !window.isVisible() && !app.isActive(),
+        "render-server capture must keep the window offscreen and the app inactive"
+    );
+
+    let pixel_at = |x: usize, y: usize| -> [u8; 4] {
+        let offset = (y * 520 + x) * 4;
+        [
+            pixels[offset],
+            pixels[offset + 1],
+            pixels[offset + 2],
+            pixels[offset + 3],
+        ]
+    };
+    let top_px = pixel_at(4, 4);
+    assert!(
+        top_px[0] > 200 && top_px[1] < 110 && top_px[2] < 110 && top_px[3] == 255,
+        "top-left pixel must be red (top-down orientation), got {top_px:?}"
+    );
+    let bottom_px = pixel_at(4, 275);
+    assert!(
+        bottom_px[1] > 150 && bottom_px[0] < 110 && bottom_px[2] < 120 && bottom_px[3] == 255,
+        "bottom-left pixel must be green (top-down orientation), got {bottom_px:?}"
+    );
+
+    // Count active blue glass fill and bright white glyph pixels inside the button rect.
+    let mut glass_blue = 0usize;
+    let mut white_glyph = 0usize;
+    for y in 36..104 {
+        for x in 80..440 {
+            let [r, g, b, a] = pixel_at(x, y);
+            if a >= 200 && b >= 180 && g >= 70 && r <= 100 {
+                glass_blue += 1;
+            }
+            if a >= 200 && r >= 220 && g >= 220 && b >= 220 {
+                white_glyph += 1;
+            }
+        }
+    }
+    assert!(
+        glass_blue > 5_000,
+        "prominent glass button must render real compositor blue glass fill, got {glass_blue}"
+    );
+    assert!(
+        white_glyph > 100,
+        "prominent glass button must render crisp white title glyphs, got {white_glyph}"
     );
 }
 

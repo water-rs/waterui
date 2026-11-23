@@ -385,6 +385,8 @@ fn trials() -> Vec<Trial> {
     tests.extend(apple_content::trials());
     #[cfg(all(feature = "native-test", feature = "gpu_surface"))]
     tests.extend(capture_colour::trials());
+    #[cfg(all(catalyst, feature = "native-test", feature = "gpu_surface"))]
+    tests.extend(catalyst_view_renderer::trials());
     #[cfg(feature = "webview")]
     tests.extend(webview::trials());
     tests
@@ -17431,5 +17433,69 @@ mod apple_content {
             leaf.layout().measure(ProposalSize::UNSPECIFIED).size,
             Size::new(96.0, 44.0)
         );
+    }
+}
+
+/// Headless Mac Catalyst `ViewRenderer` capture through the in-process
+/// `Core Animation` render server without any `UIWindowScene` or `NSWindow`.
+#[cfg(all(catalyst, feature = "native-test", feature = "gpu_surface"))]
+mod catalyst_view_renderer {
+    use std::time::Duration;
+
+    use cocoa_ui::ColorScheme;
+    use cocoa_ui::objc2::msg_send;
+    use cocoa_ui::objc2::rc::Retained;
+    use cocoa_ui::objc2::runtime::{AnyClass, AnyObject};
+    use cocoa_ui::objc2_foundation::NSArray;
+    use libtest_mimic::{Failed, Trial};
+    use waterui::component::button::{ButtonStyle, button};
+    use waterui_apple::native_test_support::view_renderer::{AppleBackend, initialize_process};
+    use waterui_apple::native_test_support::{block_on_main, refresh_theme, window_environment};
+    use waterui_backend_core::{AnyView, NativeBackend as _};
+    use waterui_capture::view_renderer::{RenderRequest, ViewRenderer as _};
+    use waterui_core::layout::Size;
+
+    use super::mtm;
+
+    pub fn trials() -> Vec<Trial> {
+        vec![Trial::test(
+            "view_renderer::catalyst_captures_prominent_button_without_windows",
+            catalyst_captures_prominent_button_without_windows,
+        )]
+    }
+
+    fn catalyst_captures_prominent_button_without_windows() -> Result<(), Failed> {
+        initialize_process();
+        let (env, theme) = window_environment(mtm());
+        refresh_theme(&theme, ColorScheme::Light);
+
+        let renderer = AppleBackend::new(mtm()).offscreen(&env);
+        let request = RenderRequest::new(Size::new(160.0, 48.0), Duration::from_secs(10));
+        let view = AnyView::new(button("Action").style(ButtonStyle::BorderedProminent));
+        let result = block_on_main(30.0, renderer.render_to_rgba(view, &env, request))
+            .map_err(|error| format!("Catalyst prominent button render_to_rgba failed: {error}"))?;
+
+        let ns_app_class = AnyClass::get(c"NSApplication").expect("Catalyst loads NSApplication");
+        // SAFETY: main-thread `NSApplication.sharedApplication.windows.count`.
+        let ns_window_count: usize = unsafe {
+            let ns_app: Retained<AnyObject> = msg_send![ns_app_class, sharedApplication];
+            let windows: Retained<NSArray<AnyObject>> = msg_send![&*ns_app, windows];
+            windows.count()
+        };
+        assert_eq!(
+            ns_window_count, 0,
+            "headless Catalyst ViewRenderer must create 0 NSWindows"
+        );
+
+        let (texels, _) = result.rgba_data().as_chunks::<4>();
+        let active_blue = texels
+            .iter()
+            .filter(|&&[r, g, b, a]| a >= 200 && b >= 180 && g >= 70 && r <= 100)
+            .count();
+        assert!(
+            active_blue > 500,
+            "Catalyst prominent glass button must render active blue pixels, got {active_blue}"
+        );
+        Ok(())
     }
 }

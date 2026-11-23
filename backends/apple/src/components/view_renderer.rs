@@ -6,7 +6,10 @@
 //! capture then awaits the content the leaf's views owe, lays the leaf out
 //! again at the size that content gives it and captures it once into
 //! premultiplied RGBA8 — through the central native+GPU capture under
-//! `gpu_surface`, the plain offscreen bitmap path in a native-only build.
+//! `gpu_surface` (with pure-native `native-test` trees on macOS and Mac
+//! Catalyst routed through `crate::capture`'s in-process `Core Animation`
+//! render server), or through `crate::capture` directly in a native-only
+//! build.
 
 use waterui_backend_core::{Environment, View};
 use waterui_capture::ContentLedger;
@@ -84,13 +87,6 @@ fn render_error(failure: crate::capture_image::CaptureFailure) -> RenderError {
 )]
 async fn capture_leaf_to_rgba(
     leaf: &NativeLeaf,
-    #[cfg_attr(
-        not(feature = "gpu_surface"),
-        expect(
-            unused_variables,
-            reason = "only the central GPU capture reads the environment"
-        )
-    )]
     env: &Environment,
     ledger: &ContentLedger,
     request: RenderRequest,
@@ -106,6 +102,7 @@ async fn capture_leaf_to_rgba(
         cocoa_ui::Rect::new(0.0, 0.0, proposed.width, proposed.height),
     );
     let host = host::CaptureHost::attach(view, proposed, mtm)?;
+    apply_env_color_scheme(view, env);
     lay_out(view, request.size());
     // The capture window cannot present, so the surfaces inside never
     // attach: the drive keeps their frames — and the content their scenes
@@ -116,7 +113,32 @@ async fn capture_leaf_to_rgba(
     crate::content::await_content(ledger, view, request.content_deadline()).await?;
     lay_out(view, request.size());
 
-    #[cfg(feature = "gpu_surface")]
+    #[cfg(all(
+        feature = "gpu_surface",
+        feature = "native-test",
+        any(target_os = "macos", catalyst)
+    ))]
+    let captured = {
+        let mut has_capturable = false;
+        cocoa_ui::capture::collect_capturables(view, &mut |_| has_capturable = true);
+        if has_capturable {
+            drive
+                .capture_rgba()
+                .await
+                .map(|captured| (captured.pixels, captured.width, captured.height))
+                .map_err(render_error)
+        } else {
+            drop(drive);
+            crate::capture::capture_presented(view)
+                .await
+                .map(RenderResult::into_parts)
+                .map_err(|error| RenderError::Capture(Box::new(error)))
+        }
+    };
+    #[cfg(all(
+        feature = "gpu_surface",
+        not(all(feature = "native-test", any(target_os = "macos", catalyst)))
+    ))]
     let captured = {
         // The central capture owns the native+GPU composite and its
         // lifecycle — a first-frame wait here could deadlock under
@@ -134,6 +156,26 @@ async fn capture_leaf_to_rgba(
         .map_err(|error| RenderError::Capture(Box::new(error)));
     drop(host);
     captured
+}
+
+/// Applies the `ColorScheme` installed in `env`, if any, onto `view`'s capture
+/// window so native controls and glass materials resolve against light or dark
+/// mode before layout and rasterization.
+fn apply_env_color_scheme(view: &cocoa_ui::PlatformView, env: &Environment) {
+    use cocoa_ui::ColorScheme as CocoaColorScheme;
+    use waterui::theme::{ColorScheme, installed_color_scheme};
+    use waterui_core::Signal as _;
+
+    let Some(scheme_signal) = installed_color_scheme(env) else {
+        return;
+    };
+    let scheme = match scheme_signal.snapshot() {
+        ColorScheme::Light => CocoaColorScheme::Light,
+        ColorScheme::Dark => CocoaColorScheme::Dark,
+    };
+    if let Some(window) = cocoa_ui::view::window(view) {
+        cocoa_ui::bitmap::set_window_color_scheme(&window, scheme);
+    }
 }
 
 /// Measures `view` under the proposal `size` and lays it out at the size it
@@ -248,6 +290,7 @@ mod host {
 mod host {
     use waterui_capture::view_renderer::RenderError;
 
+    #[cfg(not(all(feature = "native-test", catalyst)))]
     use crate::capture::CaptureError;
 
     /// `UIKit`: an offscreen `UIWindow` in a connected scene hosts the
@@ -257,14 +300,33 @@ mod host {
 
     impl CaptureHost {
         /// Attaches `view` to an offscreen window sized `proposed`.
+        #[cfg_attr(
+            all(feature = "native-test", catalyst),
+            expect(
+                clippy::unnecessary_wraps,
+                reason = "non-Catalyst UIKit can fail with NoWindowScene; native-test Catalyst always attaches"
+            )
+        )]
         pub fn attach(
             view: &cocoa_ui::PlatformView,
             proposed: cocoa_ui::Size,
             mtm: cocoa_ui::MainThreadMarker,
         ) -> Result<Self, RenderError> {
-            let scene = cocoa_ui::bitmap::any_window_scene()
-                .ok_or_else(|| RenderError::Capture(Box::new(CaptureError::NoWindowScene)))?;
-            let window = cocoa_ui::bitmap::make_offscreen_window(mtm, &scene, proposed);
+            #[cfg(all(feature = "native-test", catalyst))]
+            let window = cocoa_ui::bitmap::any_window_scene().map_or_else(
+                || {
+                    let application =
+                        cocoa_ui::uikit::catalyst::BackgroundApplication::bring_up(mtm);
+                    cocoa_ui::bitmap::scene_less_capture_window(mtm, &application, proposed)
+                },
+                |scene| cocoa_ui::bitmap::make_offscreen_window(mtm, &scene, proposed),
+            );
+            #[cfg(not(all(feature = "native-test", catalyst)))]
+            let window = {
+                let scene = cocoa_ui::bitmap::any_window_scene()
+                    .ok_or_else(|| RenderError::Capture(Box::new(CaptureError::NoWindowScene)))?;
+                cocoa_ui::bitmap::make_offscreen_window(mtm, &scene, proposed)
+            };
             cocoa_ui::bitmap::show_capture_window(&window, view, proposed);
             Ok(Self(window))
         }

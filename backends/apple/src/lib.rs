@@ -17,12 +17,16 @@ compile_error!("waterui-apple: `webview-cef` is only supported on macOS");
 pub mod apple_content;
 pub mod backend;
 /// The offscreen capture shared by `view_renderer` and the `preview`
-/// entry — nothing else references it. With `gpu_surface` the captures go
-/// through `capture_image`'s `ViewCapture` instead, so the
-/// bitmap-readback half only exists without it.
-#[cfg(all(
-    not(feature = "gpu_surface"),
-    any(waterui_feature = "capture", preview_entry, feature = "native-test")
+/// entry — nothing else references it. With `gpu_surface` in production the
+/// captures go through `capture_image`'s `ViewCapture` instead; under
+/// `native-test` on macOS and Mac Catalyst it also serves pure native offscreen
+/// captures through the test-only in-process `Core Animation` render server.
+#[cfg(any(
+    all(
+        not(feature = "gpu_surface"),
+        any(waterui_feature = "capture", preview_entry, feature = "native-test")
+    ),
+    all(feature = "native-test", any(target_os = "macos", catalyst))
 ))]
 pub(crate) mod capture;
 /// Awaiting the content a captured subtree owes — shared by the same two

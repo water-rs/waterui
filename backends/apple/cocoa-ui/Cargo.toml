@@ -56,7 +56,12 @@ dialog = ["objc2-app-kit/NSAlert", "objc2-ui-kit/UIAlertController"]
 # power assertion's `IOKit` edge on macOS and, on iOS, the
 # `uikit::native_test` application the `native_app` harnesses run their
 # cases in — never part of a production build.
-native-test = ["dep:libtest-mimic", "dep:objc2-io-kit"]
+native-test = [
+    "dep:libtest-mimic",
+    "dep:objc2-io-kit",
+    "objc2-io-surface/IOSurfaceTypes",
+    "objc2-io-surface/libc",
+]
 
 # The `NativeLog` `tracing` writer (`log` module): `tracing` records into the
 # unified log under the caller's subsystem. Opt-in so a consumer without a
