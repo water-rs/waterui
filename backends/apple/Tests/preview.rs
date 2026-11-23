@@ -43,7 +43,7 @@ mod suite {
     use libtest_mimic::{Arguments, Trial};
     use waterui::prelude::*;
     use waterui::{AnyView, ResourceContext};
-    use waterui_apple::preview::PreviewError;
+    use waterui_apple::preview::{PreviewError, capture_hdr};
     use waterui_preview_protocol::run::{
         DEFAULT_CONTENT_DEADLINE, PREVIEW_RUN_CONFIG_ENV, PreviewRunConfig, PreviewRunMode,
         RawFrameStreamReader, RunConfigError, VideoCaptureConfig,
@@ -171,6 +171,18 @@ mod suite {
                 "preview::offscreen_renderer_captures_tabs_nav_checkbox",
                 "offscreen_tabs_nav_checkbox",
                 None,
+            ),
+            Trial::test("preview::captures_hdr_edr_highlights_windowless", || {
+                run_trial("hdr_edr", Expect::Success);
+                Ok(())
+            }),
+            #[cfg(feature = "gpu_surface")]
+            Trial::test(
+                "preview::captures_hdr_liquid_glass_with_gpu_surface_windowless",
+                || {
+                    run_trial("hdr_glass_gpu", Expect::Success);
+                    Ok(())
+                },
             ),
             Trial::test("preview::captures_a_scenario_windowless", || {
                 run_trial("scenario", Expect::Success);
@@ -377,6 +389,9 @@ mod suite {
             }
             #[cfg(feature = "gpu_surface")]
             "offscreen_tabs_nav_checkbox" => offscreen_tabs_nav_checkbox_run(),
+            "hdr_edr" => hdr_edr_run(),
+            #[cfg(feature = "gpu_surface")]
+            "hdr_glass_gpu" => hdr_glass_gpu_run(),
             "scenario" => {
                 scenario_run("scenario", 200.0, 120.0, liquid_glass_view).map_err(Into::into)
             }
@@ -1221,6 +1236,87 @@ mod suite {
         assert_tabs_png(&tabs_png);
         assert_navigation_png(&nav_png);
         assert_checkbox_toggle_png(&checkbox_png);
+        assert_background_application();
+        Ok(())
+    }
+
+    fn hdr_edr_view() -> impl View {
+        let hdr_white = Color::srgb(255, 255, 255).with_headroom(1.0);
+        let sdr_blue = Color::srgb(13, 38, 115);
+        vstack((hdr_white.size(160.0, 60.0), sdr_blue.size(160.0, 60.0)))
+            .spacing(0.0)
+            .size(160.0, 120.0)
+    }
+
+    fn hdr_edr_run() -> Result<(), Box<dyn StdError>> {
+        let raster = capture_hdr(
+            |env| env,
+            || AnyView::new(hdr_edr_view()),
+            ResourceContext::new(PathBuf::new(), PathBuf::new()),
+            160,
+            120,
+            None,
+            DEFAULT_CONTENT_DEADLINE,
+        )?;
+        assert!(
+            raster.width >= 160 && raster.height >= 120,
+            "HDR capture dimensions must be at least 160x120, got {}x{}",
+            raster.width,
+            raster.height
+        );
+        assert_eq!(
+            raster.pixels.len(),
+            raster.width as usize * raster.height as usize * 4
+        );
+        let max_channel = raster.max_channel();
+        let max_headroom = raster.max_edr_headroom();
+        tracing::info!(
+            max_channel,
+            max_headroom,
+            width = raster.width,
+            height = raster.height,
+            "Apple HDR render-server capture stats"
+        );
+        assert!(
+            max_channel > 1.2,
+            "ExtendedLinearDisplayP3 HDR capture must preserve unclamped >1.0 EDR highlights, got max_channel={max_channel}"
+        );
+        assert!(
+            max_headroom > 1.2,
+            "HDR capture max_edr_headroom must exceed 1.0, got {max_headroom}"
+        );
+        assert_background_application();
+        Ok(())
+    }
+
+    #[cfg(feature = "gpu_surface")]
+    fn hdr_glass_gpu_run() -> Result<(), Box<dyn StdError>> {
+        let hdr_white = Color::srgb(255, 255, 255).with_headroom(1.0);
+        let raster = capture_hdr(
+            |env| env,
+            move || {
+                AnyView::new(
+                    zstack((liquid_glass_gpu_view(), hdr_white.size(80.0, 40.0)))
+                        .size(280.0, 200.0),
+                )
+            },
+            ResourceContext::new(PathBuf::new(), PathBuf::new()),
+            280,
+            200,
+            None,
+            DEFAULT_CONTENT_DEADLINE,
+        )?;
+        let max_channel = raster.max_channel();
+        tracing::info!(
+            max_channel,
+            width = raster.width,
+            height = raster.height,
+            "Apple HDR GPU+glass capture stats"
+        );
+        assert!(
+            max_channel > 1.2,
+            "HDR GPU+glass capture must preserve unclamped >1.0 EDR highlights, got max_channel={max_channel}"
+        );
         assert_background_application();
         Ok(())
     }

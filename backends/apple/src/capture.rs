@@ -14,12 +14,24 @@
 //! `capture_image`'s `ViewCapture`.
 
 #[cfg(render_server_capture)]
-use cocoa_ui::bitmap::render_layer_via_render_server;
+use cocoa_ui::PlatformView;
+#[cfg(all(target_os = "macos", render_server_capture))]
+use cocoa_ui::bitmap::force_text_fields_display;
+#[cfg(render_server_capture)]
+use cocoa_ui::bitmap::{
+    HdrRaster, render_layer_via_render_server, render_layer_via_render_server_hdr,
+};
+#[cfg(any(target_os = "macos", render_server_capture))]
+use cocoa_ui::dynamic_range::{DynamicRange, apply_to_view};
 use cocoa_ui::view::backing_scale_factor;
+#[cfg(render_server_capture)]
+use cocoa_ui::view::bounds as view_bounds;
 #[cfg(any(target_os = "ios", all(target_os = "macos", render_server_capture)))]
 use cocoa_ui::view::layer;
-#[cfg(all(render_server_capture, catalyst))]
+#[cfg(render_server_capture)]
 use cocoa_ui::view::prepare_for_capture;
+#[cfg(all(target_os = "macos", render_server_capture))]
+use cocoa_ui::view::window as view_window;
 use waterui_capture::view_renderer::RenderResult;
 
 /// Why the platform capture produced no bitmap.
@@ -113,10 +125,7 @@ pub async fn capture_presented(
     let ancestor = cocoa_ui::view::window(host)
         .and_then(|window| window.contentView())
         .ok_or(CaptureError::NoWindow)?;
-    cocoa_ui::dynamic_range::apply_to_view(
-        cocoa_ui::dynamic_range::DynamicRange::Standard,
-        &ancestor,
-    );
+    apply_to_view(DynamicRange::Standard, &ancestor);
 
     let scale = backing_scale_factor(host);
     cocoa_ui::view::prepare_for_capture(host);
@@ -168,6 +177,66 @@ pub async fn capture_presented(
             pixel_height as u32,
         ))
     }
+}
+
+/// Captures `host` on macOS into an unclamped extended linear Display P3 `f32`
+/// RGBA raster via the opt-in in-process `Core Animation` render server
+/// (`kCVPixelFormatType_64RGBAHalf` + `kCGColorSpaceExtendedLinearDisplayP3`).
+///
+/// # Errors
+///
+/// Returns [`CaptureError`] when the view has no window, is zero-sized, or the
+/// render server fails.
+#[cfg(all(target_os = "macos", render_server_capture))]
+#[expect(
+    clippy::future_not_send,
+    reason = "the capture runs on the main thread; the Retained AppKit objects it holds across the wait are not Send"
+)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "`ceil` yields an integral value bounded by the view size, which fits usize/u32"
+)]
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "the zero-size guard keeps bounds and scale positive"
+)]
+#[expect(
+    clippy::unused_async,
+    reason = "the signature stays `async` to mirror `capture_presented`"
+)]
+pub async fn capture_presented_hdr(host: &PlatformView) -> Result<HdrRaster, CaptureError> {
+    let ancestor = view_window(host)
+        .and_then(|window| window.contentView())
+        .ok_or(CaptureError::NoWindow)?;
+    apply_to_view(DynamicRange::High, &ancestor);
+    apply_to_view(DynamicRange::High, host);
+
+    let scale = backing_scale_factor(host);
+    prepare_for_capture(host);
+    force_text_fields_display(host);
+
+    let bounds = view_bounds(host);
+    if bounds.size.width <= 0.0 || bounds.size.height <= 0.0 {
+        return Err(CaptureError::ZeroSize {
+            width: bounds.size.width,
+            height: bounds.size.height,
+        });
+    }
+    let pixel_width = (bounds.size.width * scale).ceil() as usize;
+    let pixel_height = (bounds.size.height * scale).ceil() as usize;
+    let target_layer = layer(host).ok_or(CaptureError::NoImage)?;
+    let pixels =
+        render_layer_via_render_server_hdr(&target_layer, scale, pixel_width, pixel_height).ok_or(
+            CaptureError::RenderServer {
+                width: pixel_width,
+                height: pixel_height,
+            },
+        )?;
+    Ok(HdrRaster {
+        pixels,
+        width: pixel_width as u32,
+        height: pixel_height as u32,
+    })
 }
 
 /// The `UIKit` tail of every capture: `host` is already inside its
@@ -256,4 +325,58 @@ pub async fn capture_presented(
             pixel_height as u32,
         ))
     }
+}
+
+/// Captures `host` on Mac Catalyst (`UIKit`) into an unclamped extended linear
+/// Display P3 `f32` RGBA raster via the opt-in in-process `Core Animation`
+/// render server (`kCVPixelFormatType_64RGBAHalf` +
+/// `kCGColorSpaceExtendedLinearDisplayP3`).
+///
+/// # Errors
+///
+/// Returns [`CaptureError`] when the view is zero-sized or the render server
+/// fails.
+#[cfg(all(target_os = "ios", render_server_capture))]
+#[expect(
+    clippy::future_not_send,
+    reason = "the capture runs on the main thread; the UIKit view it borrows is not Sync"
+)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "`ceil` yields an integral value bounded by the view size, which fits usize/u32"
+)]
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "the zero-size guard keeps bounds and scale positive"
+)]
+#[expect(
+    clippy::unused_async,
+    reason = "the signature stays `async` to mirror `capture_presented`"
+)]
+pub async fn capture_presented_hdr(host: &PlatformView) -> Result<HdrRaster, CaptureError> {
+    let bounds = view_bounds(host);
+    if bounds.size.width <= 0.0 || bounds.size.height <= 0.0 {
+        return Err(CaptureError::ZeroSize {
+            width: bounds.size.width,
+            height: bounds.size.height,
+        });
+    }
+    apply_to_view(DynamicRange::High, host);
+    let scale = backing_scale_factor(host).max(1.0);
+    let pixel_width = (bounds.size.width * scale).ceil() as usize;
+    let pixel_height = (bounds.size.height * scale).ceil() as usize;
+    prepare_for_capture(host);
+    let target_layer = layer(host).expect("every `UIView` owns a backing layer");
+    let pixels =
+        render_layer_via_render_server_hdr(&target_layer, scale, pixel_width, pixel_height).ok_or(
+            CaptureError::RenderServer {
+                width: pixel_width,
+                height: pixel_height,
+            },
+        )?;
+    Ok(HdrRaster {
+        pixels,
+        width: pixel_width as u32,
+        height: pixel_height as u32,
+    })
 }

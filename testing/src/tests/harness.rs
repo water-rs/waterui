@@ -916,3 +916,48 @@ fn offscreen_frame_recording_samples_fixed_fps_across_pump_for() {
         assert_eq!((w, h), (120, 80));
     }
 }
+
+#[cfg(feature = "gpu")]
+#[test]
+fn test_host_render_hdr_preserves_unclamped_linear_display_p3_headroom() {
+    use std::io::Cursor;
+
+    use png::{BitDepth, Decoder};
+    use waterui::graphics::color::Color;
+
+    use crate::CICP_DISPLAY_P3_PQ;
+
+    let host = TestHost::new(Environment::new(), 64, 48, Material3::defaults());
+    let hdr_white = Color::srgb(255, 255, 255).with_headroom(1.0);
+    let hdr = host.render_hdr(hdr_white);
+    assert_eq!((hdr.width(), hdr.height()), (64, 48));
+    assert!(
+        hdr.max_channel() > 1.5,
+        "Hydrolysis Rgba16Float LinearDisplayP3 capture must preserve >1.0 HDR values, got max_channel={}",
+        hdr.max_channel()
+    );
+    assert!(
+        hdr.max_edr_headroom() > 1.5,
+        "HDR snapshot max_edr_headroom must exceed 1.5, got {}",
+        hdr.max_edr_headroom()
+    );
+
+    let png_bytes = hdr.to_hdr_png().expect("encode 16-bit Display P3 PQ PNG");
+    let reader = Decoder::new(Cursor::new(&png_bytes))
+        .read_info()
+        .expect("decode HDR PNG info");
+    assert_eq!(reader.info().bit_depth, BitDepth::Sixteen);
+    let cicp = reader
+        .info()
+        .coding_independent_code_points
+        .expect("HDR PNG must carry Display P3 PQ cICP chunk");
+    assert_eq!(
+        [
+            cicp.color_primaries,
+            cicp.transfer_function,
+            cicp.matrix_coefficients,
+            u8::from(cicp.is_video_full_range_image),
+        ],
+        CICP_DISPLAY_P3_PQ
+    );
+}

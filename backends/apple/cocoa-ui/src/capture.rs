@@ -50,6 +50,11 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::fmt;
 use std::rc::{Rc, Weak};
+#[cfg(all(
+    feature = "render-server-capture",
+    any(target_os = "macos", all(target_os = "ios", target_abi = "macabi"))
+))]
+use std::slice::from_raw_parts_mut;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -86,7 +91,8 @@ use crate::bitmap::render_layer;
     any(target_os = "macos", all(target_os = "ios", target_abi = "macabi"))
 ))]
 use crate::bitmap::{
-    RenderServerTransform, image_from_srgb_rgba, render_layer_via_render_server_transformed,
+    RenderServerTransform, image_from_display_p3_rgba,
+    render_layer_via_render_server_hdr_into_buffer, render_layer_via_render_server_transformed,
 };
 use crate::core_animation::before_commit;
 use crate::geometry::Rect;
@@ -1672,8 +1678,10 @@ struct NativeRasterFrame {
     pixel_format: MTLPixelFormat,
     /// The padded row stride the buffer and the blit source layout share.
     row_bytes: usize,
-    /// What the texture samples as — [`raster_color`] of the format.
-    color: ShaderColor,
+    /// What the texture samples as — [`raster_color`] for `Core Graphics`
+    /// draws, or linear extended Display P3 when the half-float render-server
+    /// pass writes directly into `buffer`.
+    color: Cell<ShaderColor>,
 }
 
 /// The colour space the native raster draws a `pixel_format` destination
@@ -1820,7 +1828,7 @@ impl NativeRasterFrame {
             pixel_height,
             pixel_format,
             row_bytes,
-            color,
+            color: Cell::new(color),
         })
     }
 
@@ -1884,6 +1892,7 @@ impl NativeRasterFrame {
     /// macOS, matching `UIKit`'s top-left-origin layer space, which is
     /// why both flip the same way.
     fn draw(&self, layer: &CALayer, transform: CGAffineTransform) {
+        self.color.set(raster_color(self.pixel_format).1);
         let context: &CGContext = &self.context;
         // SAFETY: the casts stay representable — a capture destination is
         // at most a few thousand pixels on a side.
@@ -1903,6 +1912,12 @@ impl NativeRasterFrame {
     /// Rasterizes `layer`'s committed tree through the in-process
     /// `Core Animation` render server so glass and backdrop layers composite
     /// alongside external GPU surfaces in windowless previews and tests.
+    ///
+    /// Half-float (`RGBA16Float`) raster destinations write directly from the
+    /// render server's `kCVPixelFormatType_64RGBAHalf`
+    /// (`kCGColorSpaceExtendedLinearDisplayP3`) `IOSurface` into `self.buffer`
+    /// without an 8-bit sRGB detour so HDR (`> 1.0`) and wide-gamut highlights
+    /// survive compositing unclamped.
     #[cfg(all(
         feature = "render-server-capture",
         any(target_os = "macos", all(target_os = "ios", target_abi = "macabi"))
@@ -1912,6 +1927,31 @@ impl NativeRasterFrame {
         layer: &CALayer,
         rs_transform: RenderServerTransform,
     ) -> Result<(), CaptureError> {
+        if self.pixel_format == MTLPixelFormat::RGBA16Float {
+            let total_bytes = self.row_bytes * self.pixel_height;
+            // SAFETY: `self.buffer` is `.shared` storage sized to
+            // `self.row_bytes * self.pixel_height`, exclusively owned by this
+            // leased frame on the main thread before `encode_transfer` runs.
+            let dst = unsafe {
+                from_raw_parts_mut(self.buffer.contents().as_ptr().cast::<u8>(), total_bytes)
+            };
+            if !render_layer_via_render_server_hdr_into_buffer(
+                layer,
+                rs_transform,
+                self.pixel_width,
+                self.pixel_height,
+                dst,
+                self.row_bytes,
+            ) {
+                return Err(CaptureUnavailable::new(
+                    "in-process Core Animation render server failed to render HDR surface",
+                )
+                .into());
+            }
+            self.color.set(shader_color(MTLPixelFormat::RGBA16Float));
+            return Ok(());
+        }
+        self.color.set(raster_color(self.pixel_format).1);
         let context: &CGContext = &self.context;
         #[expect(
             clippy::cast_precision_loss,
@@ -1927,8 +1967,8 @@ impl NativeRasterFrame {
         .ok_or_else(|| {
             CaptureUnavailable::new("in-process Core Animation render server failed to render")
         })?;
-        let image = image_from_srgb_rgba(&pixels, self.pixel_width, self.pixel_height)
-            .ok_or_else(|| CaptureUnavailable::refused("render-server sRGB CGImage"))?;
+        let image = image_from_display_p3_rgba(&pixels, self.pixel_width, self.pixel_height)
+            .ok_or_else(|| CaptureUnavailable::refused("render-server Display P3 CGImage"))?;
         CGContext::clear_rect(Some(context), Rect::new(0.0, 0.0, width, height).into());
         CGContext::draw_image(
             Some(context),
@@ -1961,7 +2001,11 @@ impl RasterLease {
 
     /// What [`texture`](Self::texture) samples as.
     const fn color(&self) -> ShaderColor {
-        self.frame.as_ref().expect("a lease owns its frame").color
+        self.frame
+            .as_ref()
+            .expect("a lease owns its frame")
+            .color
+            .get()
     }
 
     /// Encodes the blit transfer into the composition command buffer —

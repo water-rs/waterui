@@ -96,6 +96,8 @@ pub const TARGET_FRAME_INTERVAL: Duration = Duration::from_nanos(8_333_333);
 /// producing surface presented with.
 #[cfg(all(not(target_arch = "wasm32"), hydrolysis_cherenkov))]
 pub use cherenkov::OutputAlpha;
+#[cfg(hydrolysis_gpu_painter)]
+pub use cherenkov_gpu::interop::OutputColor;
 pub use hydrolysis_style::{Style, draw, theme};
 /// The W3C UI Events key vocabulary this backend speaks, re-exported so hosts
 /// that synthesize key events use the same version of it.
@@ -118,8 +120,8 @@ pub use platform::{
 pub use platform::{BrowserWindow, BrowserWindowError};
 #[cfg(hydrolysis_gpu_painter)]
 pub use platform::{
-    DeviceLoss, DeviceLostError, GpuUnavailable, OffscreenGpuContext, OffscreenSceneSurface,
-    OffscreenSurface, OpenDeviceError, SurfaceFrame,
+    DEFAULT_HDR_CAPTURE_HEADROOM, DeviceLoss, DeviceLostError, GpuUnavailable, OffscreenGpuContext,
+    OffscreenSceneSurface, OffscreenSurface, OpenDeviceError, SurfaceFrame,
 };
 #[cfg(all(not(target_arch = "wasm32"), hydrolysis_cherenkov))]
 pub use platform::{OffscreenPainter, PainterUnavailable};
@@ -132,7 +134,10 @@ pub use platform_view::{
     PlacementStretch, PlatformView, PlatformViewPlacement, PlatformViewSink, PlatformViewSource,
 };
 #[cfg(hydrolysis_gpu_painter)]
-pub use readback::{ReadbackError, readback_texture_rgba8};
+pub use readback::{
+    ReadbackError, readback_surface_texture_rgba16f, readback_texture_rgba8,
+    readback_texture_rgba16f,
+};
 #[cfg(hydrolysis_cherenkov)]
 pub use renderer::FrameError;
 #[cfg(all(feature = "frame-profile", hydrolysis_runtime))]

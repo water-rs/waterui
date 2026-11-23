@@ -12,10 +12,16 @@
 #[cfg(any(waterui_feature = "capture", preview_entry, feature = "native-test"))]
 use std::cell::Cell;
 use std::cell::RefCell;
+#[cfg(preview_entry)]
+use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
+#[cfg(preview_entry)]
+use cocoa_ui::bitmap::HdrRaster;
+#[cfg(preview_entry)]
+use cocoa_ui::dynamic_range::{DynamicRange, apply_to_view};
 #[cfg(target_os = "macos")]
 use cocoa_ui::objc2::AnyThread;
 use cocoa_ui::objc2::MainThreadOnly;
@@ -27,6 +33,12 @@ use cocoa_ui::objc2_metal::{
     MTLDevice, MTLOrigin, MTLPixelFormat, MTLRegion, MTLSize, MTLStorageMode, MTLTexture,
     MTLTextureDescriptor, MTLTextureUsage,
 };
+#[cfg(preview_entry)]
+use cocoa_ui::view::bounds as view_bounds;
+#[cfg(preview_entry)]
+use half::f16;
+#[cfg(preview_entry)]
+use waterui::contract_violation;
 use waterui_backend_core::Environment;
 
 #[cfg(render_server_capture)]
@@ -369,21 +381,22 @@ impl Drop for CaptureGuard {
     }
 }
 
-/// The shared `RGBA8Unorm` readback target — `.shared` storage so the one
-/// `getBytes` the API permits can run without a blit.
+/// The shared readback target — `.shared` storage so the one `getBytes` the
+/// API permits can run without a blit.
 ///
 /// # Errors
 ///
 /// [`CaptureFailure::TargetAllocation`] when the device refuses the texture.
-fn rgba_target(
+fn capture_target(
     device: &ProtocolObject<dyn MTLDevice>,
     width: u32,
     height: u32,
+    format: MTLPixelFormat,
 ) -> Result<Retained<ProtocolObject<dyn MTLTexture>>, CaptureFailure> {
     // SAFETY: a 2D descriptor is always valid to construct.
     let descriptor = unsafe {
         MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
-            MTLPixelFormat::RGBA8Unorm,
+            format,
             width as usize,
             height as usize,
             false,
@@ -473,7 +486,16 @@ pub async fn capture_rgba(
     // replacement mid-wait makes the old-generation target obsolete, and
     // the readback must come from the successfully fenced current one.
     let runtime = crate::gpu_runtime::runtime(env).ok_or(CaptureFailure::GpuRuntimeUnavailable)?;
-    let target = capture_attempts(&runtime, guard.capture(), &redraw, width, height, mtm).await?;
+    let target = capture_attempts(
+        &runtime,
+        guard.capture(),
+        &redraw,
+        width,
+        height,
+        MTLPixelFormat::RGBA8Unorm,
+        mtm,
+    )
+    .await?;
     drop(guard);
     drop(host);
 
@@ -517,6 +539,43 @@ fn read_target(target: &ProtocolObject<dyn MTLTexture>, width: u32, height: u32)
         );
     }
     CapturedRgba {
+        pixels,
+        width,
+        height,
+    }
+}
+
+/// Reads `width` × `height` premultiplied extended linear Display P3 half-float
+/// texels out of a `.shared` `MTLPixelFormat::RGBA16Float` capture target and
+/// decodes them to unclamped `f32` channels.
+#[cfg(preview_entry)]
+fn read_hdr_target(target: &ProtocolObject<dyn MTLTexture>, width: u32, height: u32) -> HdrRaster {
+    let row_bytes = width as usize * 8;
+    let mut raw = vec![0u8; row_bytes * height as usize];
+    // SAFETY: `raw` holds `width * 8` bytes per row for `height` rows and
+    // `target` is `.shared` `RGBA16Float` — the region read stays in bounds.
+    unsafe {
+        target.getBytes_bytesPerRow_fromRegion_mipmapLevel(
+            NonNull::new(raw.as_mut_ptr().cast()).expect("a `Vec`'s buffer pointer is never null"),
+            row_bytes,
+            MTLRegion {
+                origin: MTLOrigin { x: 0, y: 0, z: 0 },
+                size: MTLSize {
+                    width: width as usize,
+                    height: height as usize,
+                    depth: 1,
+                },
+            },
+            0,
+        );
+    }
+    let pixels = raw
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|bytes| f16::from_le_bytes(*bytes).to_f32())
+        .collect();
+    HdrRaster {
         pixels,
         width,
         height,
@@ -739,9 +798,67 @@ impl CaptureDrive {
                  the later capture takes over the redraw signal"
             );
         }
-        let target =
-            capture_attempts(runtime, &self.capture, &redraw, width, height, self.mtm).await?;
+        let target = capture_attempts(
+            runtime,
+            &self.capture,
+            &redraw,
+            width,
+            height,
+            MTLPixelFormat::RGBA8Unorm,
+            self.mtm,
+        )
+        .await?;
         Ok(read_target(&target, width, height))
+    }
+
+    /// Captures the drive's mounted view tree into an unclamped extended linear
+    /// Display P3 `f32` RGBA raster (`MTLPixelFormat::RGBA16Float`), enabling
+    /// `DynamicRange::High` on the capture root and routing native layers
+    /// through the opt-in half-float `Core Animation` render-server surface.
+    ///
+    /// # Errors
+    ///
+    /// Same failure modes as [`Self::capture_rgba`].
+    #[cfg(preview_entry)]
+    #[expect(
+        clippy::future_not_send,
+        reason = "the terminal capture awaits main-thread signals shared through `Rc`"
+    )]
+    pub async fn capture_hdr(self: &Rc<Self>) -> Result<HdrRaster, CaptureFailure> {
+        let bounds = view_bounds(&self.root);
+        if bounds.size.width <= 0.0 || bounds.size.height <= 0.0 {
+            return Ok(HdrRaster {
+                pixels: Vec::new(),
+                width: 0,
+                height: 0,
+            });
+        }
+        let Some(runtime) = &self.runtime else {
+            return Err(CaptureFailure::GpuRuntimeUnavailable);
+        };
+        apply_to_view(DynamicRange::High, &self.root);
+        #[cfg(render_server_capture)]
+        self.capture.set_use_render_server(true);
+        let (width, height) = pixel_extent(bounds.size, self.scale);
+        let redraw = Rc::new(RefCell::new(Signal::default()));
+        let previous = self.terminal.borrow_mut().replace(redraw.clone());
+        if previous.is_some() {
+            contract_violation!(
+                "a capture drive performs one terminal capture; \
+                 the later capture takes over the redraw signal"
+            );
+        }
+        let target = capture_attempts(
+            runtime,
+            &self.capture,
+            &redraw,
+            width,
+            height,
+            MTLPixelFormat::RGBA16Float,
+            self.mtm,
+        )
+        .await?;
+        Ok(read_hdr_target(&target, width, height))
     }
 }
 
@@ -804,6 +921,7 @@ async fn capture_attempts(
     redraw: &Rc<RefCell<Signal>>,
     width: u32,
     height: u32,
+    format: MTLPixelFormat,
     mtm: cocoa_ui::MainThreadMarker,
 ) -> Result<Retained<ProtocolObject<dyn MTLTexture>>, CaptureFailure> {
     let target = loop {
@@ -819,7 +937,7 @@ async fn capture_attempts(
             continue;
         }
         let device = crate::gpu_runtime::raw_metal_device(&context);
-        let target = rgba_target(&device, width, height)?;
+        let target = capture_target(&device, width, height, format)?;
 
         let completion = Rc::new(RefCell::new(Signal::default()));
         let outcome = Rc::new(RefCell::new(None));

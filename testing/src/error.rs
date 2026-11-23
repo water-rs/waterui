@@ -4,6 +4,7 @@ use std::io;
 use std::path::PathBuf;
 
 use image::ImageError;
+use png::EncodingError;
 use thiserror::Error;
 
 /// Errors returned by RGBA8/PNG image I/O, FLIP perceptual diffing, and HTML
@@ -73,6 +74,10 @@ pub enum VisualDiffError {
     /// Invalid FLIP configuration parameter (for example non-positive PPD or zero block size).
     #[error("invalid FLIP configuration: {0}")]
     InvalidConfig(&'static str),
+
+    /// Encoding a PNG image stream failed.
+    #[error("PNG encoding error: {0}")]
+    EncodePng(#[from] EncodingError),
 
     /// Serializing `report.json` failed.
     #[error("failed to serialize gallery report: {0}")]

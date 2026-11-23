@@ -12,8 +12,9 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-# Core RGBA8/PNG image I/O, blank-frame analysis, and report schema types.
+# Core RGBA8/PNG image I/O, Display P3 / PQ cICP PNG encoding, blank-frame analysis, and report schema types.
 image = { version = "0.25", default-features = false, features = ["png"] }
+png = { version = "0.18", default-features = false }
 serde_json.workspace = true
 serde = { workspace = true, features = ["derive", "std"] }
 thiserror.workspace = true

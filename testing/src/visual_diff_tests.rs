@@ -3,11 +3,17 @@
 
 use std::env;
 use std::fs;
+use std::io::Cursor;
 use std::path::PathBuf;
 use std::process;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::{BlankFrameReason, RgbaImage, Snapshot, VisualDiffError, analyze_blank_frame};
+use png::{BitDepth, ColorType, Decoder};
+
+use crate::{
+    BlankFrameReason, CICP_DISPLAY_P3_PQ, CICP_DISPLAY_P3_SDR, HdrSnapshot, RgbaImage, Snapshot,
+    VisualDiffError, analyze_blank_frame,
+};
 
 fn solid_pixels(width: u32, height: u32, rgba: [u8; 4]) -> Vec<u8> {
     let mut pixels = Vec::with_capacity((width * height * 4) as usize);
@@ -97,6 +103,43 @@ fn snapshot_and_rgba_image_round_trip_png_and_conversions() {
     assert_eq!(reloaded.width(), 16);
     assert_eq!(reloaded.height(), 12);
     assert_eq!(reloaded.rgba8(), original.rgba8());
+
+    let png_bytes = fs::read(&png_path).expect("read saved PNG bytes");
+    let decoder = Decoder::new(Cursor::new(&png_bytes));
+    let reader = decoder.read_info().expect("decode PNG header");
+    let cicp = reader
+        .info()
+        .coding_independent_code_points
+        .expect("saved SDR PNG must carry Display P3 cICP chunk");
+    assert_eq!(
+        [
+            cicp.color_primaries,
+            cicp.transfer_function,
+            cicp.matrix_coefficients,
+            u8::from(cicp.is_video_full_range_image),
+        ],
+        CICP_DISPLAY_P3_SDR
+    );
+
+    let snap_path = dir.join("nested/snapshot.png");
+    reloaded.save_png(&snap_path).expect("save Snapshot PNG");
+    let snap_bytes = fs::read(&snap_path).expect("read Snapshot PNG bytes");
+    let snap_reader = Decoder::new(Cursor::new(&snap_bytes))
+        .read_info()
+        .expect("decode Snapshot PNG header");
+    let snap_cicp = snap_reader
+        .info()
+        .coding_independent_code_points
+        .expect("Snapshot::save_png must carry Display P3 cICP chunk");
+    assert_eq!(
+        [
+            snap_cicp.color_primaries,
+            snap_cicp.transfer_function,
+            snap_cicp.matrix_coefficients,
+            u8::from(snap_cicp.is_video_full_range_image),
+        ],
+        CICP_DISPLAY_P3_SDR
+    );
 
     let back_to_rgba = RgbaImage::try_from(&reloaded).expect("valid Snapshot -> RgbaImage");
     assert_eq!(back_to_rgba, original);
@@ -297,6 +340,7 @@ mod gallery_tests {
                             ),
                             metrics: flip.metrics(),
                         }),
+                        max_edr_headroom: Some(2.75),
                         passed: true,
                         failures: Vec::new(),
                     }],
@@ -304,11 +348,14 @@ mod gallery_tests {
             }],
         );
 
+        assert_eq!(report.summary.max_edr_headroom, Some(2.75));
+
         let paths = write_gallery_artifacts(&dir, &report).expect("write gallery artifacts");
         assert!(paths.report_json.is_file());
         assert!(paths.index_html.is_file());
 
         let json_text = fs::read_to_string(&paths.report_json).expect("read report.json");
+        assert!(json_text.contains("\"max_edr_headroom\": 2.75"));
         let parsed: GalleryReport =
             serde_json::from_str(&json_text).expect("report.json round-trips cleanly");
         assert_eq!(parsed, report);
@@ -323,4 +370,71 @@ mod gallery_tests {
 
         let _ = fs::remove_dir_all(&dir);
     }
+}
+
+#[test]
+fn hdr_snapshot_encodes_16bit_display_p3_pq_png_with_cicp() {
+    let dir = unique_temp_dir("hdr-pq-png");
+    let hdr_path = dir.join("hdr_frame.png");
+    // 3x1 pixels: black (0.0), SDR white (1.0 = 203 nits), and 4x EDR white (4.0 = 812 nits).
+    let pixels = vec![
+        0.0_f32, 0.0, 0.0, 1.0, // black
+        1.0, 1.0, 1.0, 1.0, // SDR white
+        4.0, 2.0, 0.5, 1.0, // HDR highlight
+    ];
+    let hdr = HdrSnapshot::new(3, 1, pixels).expect("valid HdrSnapshot");
+    assert!((hdr.max_channel() - 4.0).abs() < 1e-6);
+    assert!((hdr.max_edr_headroom() - 4.0).abs() < 1e-6);
+
+    hdr.save_hdr_png(&hdr_path).expect("save 16-bit HDR PQ PNG");
+    let bytes = fs::read(&hdr_path).expect("read HDR PQ PNG");
+    let decoder = Decoder::new(Cursor::new(&bytes));
+    let mut reader = decoder.read_info().expect("decode HDR PNG header");
+    let info = reader.info();
+    assert_eq!(info.bit_depth, BitDepth::Sixteen);
+    assert_eq!(info.color_type, ColorType::Rgba);
+    let cicp = info
+        .coding_independent_code_points
+        .expect("HDR PNG must carry Display P3 PQ cICP chunk");
+    assert_eq!(
+        [
+            cicp.color_primaries,
+            cicp.transfer_function,
+            cicp.matrix_coefficients,
+            u8::from(cicp.is_video_full_range_image),
+        ],
+        CICP_DISPLAY_P3_PQ
+    );
+
+    let mut frame_bytes = vec![0u8; reader.output_buffer_size().expect("output buffer size")];
+    reader
+        .next_frame(&mut frame_bytes)
+        .expect("decode HDR frame");
+    let words: Vec<u16> = frame_bytes
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|b| u16::from_be_bytes(*b))
+        .collect();
+    // Pixel 0 (black): R=0, A=65535
+    assert_eq!(words[0], 0);
+    assert_eq!(words[3], u16::MAX);
+    // Pixel 1 (203 nits SDR white): ST 2084 PQ(203/10000) ≈ 0.5806889 -> ~38055
+    let sdr_white_pq = words[4];
+    assert!(
+        (37_900..=38_200).contains(&sdr_white_pq),
+        "203-nit SDR white must map near PQ code 38055, got {sdr_white_pq}"
+    );
+    // Pixel 2 (812 nits = 4x SDR): ST 2084 PQ(812/10000) ≈ 0.7279 -> ~47703 > sdr_white_pq
+    let hdr_red_pq = words[8];
+    assert!(
+        hdr_red_pq > sdr_white_pq + 8_000,
+        "4x EDR red ({hdr_red_pq}) must be strictly brighter than SDR white ({sdr_white_pq}) in PQ"
+    );
+
+    let sdr = hdr.to_sdr_snapshot();
+    assert_eq!((sdr.width(), sdr.height()), (3, 1));
+    assert_eq!(sdr.rgba8()[4..8], [255, 255, 255, 255]);
+
+    let _ = fs::remove_dir_all(&dir);
 }

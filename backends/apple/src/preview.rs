@@ -33,10 +33,12 @@ use std::time::{Duration, Instant};
 
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::{ActivationPolicy, Application};
+pub use cocoa_ui::bitmap::HdrRaster;
 use cocoa_ui::bitmap::set_window_color_scheme;
 #[cfg(feature = "gpu_surface")]
 use cocoa_ui::capture::collect_capturables;
 use cocoa_ui::core_animation::flush_transaction;
+use cocoa_ui::dynamic_range::{DynamicRange, apply_to_view};
 #[cfg(target_os = "macos")]
 use cocoa_ui::objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType, NSView};
 use cocoa_ui::objc2_core_foundation::{CFRunLoop, CGPoint};
@@ -200,6 +202,145 @@ pub fn run(
         tracing::error!("preview run failed: {error}");
     }
     result
+}
+
+/// Runs one headless HDR preview capture and returns its unclamped extended
+/// linear Display P3 `f32` RGBA raster (`HdrRaster`).
+///
+/// Follows the same once-per-process windowless bring-up contract as [`run`],
+/// mounting the view with [`DynamicRange::High`] and reading back through the
+/// `RGBA16F` (`kCVPixelFormatType_64RGBAHalf` / `MTLPixelFormat::RGBA16Float`)
+/// `ExtendedLinearDisplayP3` pipeline so HDR (`> 1.0`) highlights from Liquid
+/// Glass and extended-range layers are preserved without clipping.
+///
+/// # Errors
+///
+/// Same failure modes as [`run`].
+pub fn capture_hdr(
+    compose: impl FnOnce(Environment) -> Environment + 'static,
+    view: impl FnOnce() -> AnyView + 'static,
+    resources: ResourceContext,
+    width: u32,
+    height: u32,
+    color_scheme: Option<PreviewColorScheme>,
+    content_deadline: Duration,
+) -> Result<HdrRaster, PreviewError> {
+    let result = drive_hdr(
+        compose,
+        view,
+        resources,
+        width,
+        height,
+        color_scheme,
+        content_deadline,
+    );
+    if let Err(error) = &result {
+        tracing::error!("preview HDR capture failed: {error}");
+    }
+    result
+}
+
+fn drive_hdr(
+    compose: impl FnOnce(Environment) -> Environment + 'static,
+    view: impl FnOnce() -> AnyView + 'static,
+    resources: ResourceContext,
+    width: u32,
+    height: u32,
+    color_scheme: Option<PreviewColorScheme>,
+    content_deadline: Duration,
+) -> Result<HdrRaster, PreviewError> {
+    use crate::contract::KeepAlive;
+    #[cfg(feature = "gpu_surface")]
+    use crate::gpu_runtime::prepare as prepare_gpu;
+    use crate::startup::initialize_for_preview;
+
+    let mtm = MainThreadMarker::new().ok_or(PreviewError::NotMainThread)?;
+    #[cfg(feature = "inspector")]
+    let inspector = initialize_for_preview();
+    #[cfg(not(feature = "inspector"))]
+    initialize_for_preview();
+
+    let color_scheme = color_scheme.map(|scheme| match scheme {
+        PreviewColorScheme::Light => ColorScheme::Light,
+        PreviewColorScheme::Dark => ColorScheme::Dark,
+    });
+    let size = Size::new(f64::from(width), f64::from(height));
+
+    let mut keepers = KeepAlive::default();
+    let (mut env, host) = prepare(
+        mtm,
+        resources,
+        color_scheme,
+        &mut keepers,
+        #[cfg(feature = "inspector")]
+        inspector,
+    )?;
+
+    let env_ptr = &raw mut env;
+    let outcome = Rc::new(RefCell::new(None::<Result<HdrRaster, PreviewError>>));
+    let launch = {
+        let outcome = Rc::clone(&outcome);
+        move || {
+            // SAFETY: `env_ptr` stays live until the capture completes and
+            // stops `CFRunLoop::run` below.
+            let env = unsafe { &mut *env_ptr };
+            let env = compose(env.clone());
+            executor_core::spawn_local(async move {
+                *outcome.borrow_mut() = Some(
+                    render_hdr(&env, mtm, &host, view, size, color_scheme, content_deadline).await,
+                );
+                CFRunLoop::current()
+                    .expect("the main executor drives this task from the main thread's run loop")
+                    .stop();
+            })
+            .detach();
+        }
+    };
+    #[cfg(feature = "gpu_surface")]
+    // SAFETY: `env` stays live until the completion stops `CFRunLoop::run`.
+    unsafe {
+        prepare_gpu(env_ptr, launch);
+    }
+    #[cfg(not(feature = "gpu_surface"))]
+    launch();
+    CFRunLoop::run();
+    let result = outcome
+        .borrow_mut()
+        .take()
+        .ok_or(PreviewError::RunLoopExited)?;
+    drop(env);
+    drop(keepers);
+    result
+}
+
+#[expect(
+    clippy::future_not_send,
+    reason = "the capture runs on the main thread; the Retained native objects it holds across awaits are not Send"
+)]
+async fn render_hdr(
+    env: &Environment,
+    mtm: MainThreadMarker,
+    host: &Host,
+    view: impl FnOnce() -> AnyView,
+    size: Size,
+    color_scheme: Option<ColorScheme>,
+    content_deadline: Duration,
+) -> Result<HdrRaster, PreviewError> {
+    let ledger = ContentLedger::new();
+    let content_env = env.extending(ledger.clone());
+    let stage = Stage::mount(
+        &content_env,
+        mtm,
+        host,
+        view,
+        size,
+        color_scheme,
+        DynamicRange::High,
+    );
+    await_content(&ledger, &stage.root, content_deadline).await?;
+    let result = stage.capture_hdr().await?;
+    drop(stage);
+    Ok(result)
 }
 
 /// What a preview run executes once bring-up succeeds.
@@ -466,6 +607,7 @@ async fn render_and_write(
         view,
         capture.size,
         capture.color_scheme,
+        DynamicRange::Standard,
     );
     crate::content::await_content(&ledger, &stage.root, capture.content_deadline).await?;
     let result = stage.capture().await?;
@@ -593,6 +735,7 @@ async fn render_scenario(
         view,
         scenario.size,
         scenario.color_scheme,
+        DynamicRange::Standard,
     );
     await_content(&ledger, &stage.root, scenario.content_deadline).await?;
 
@@ -1024,6 +1167,7 @@ impl Stage {
         view: impl FnOnce() -> waterui::AnyView,
         size: cocoa_ui::Size,
         color_scheme: Option<ColorScheme>,
+        dynamic_range: DynamicRange,
     ) -> Self {
         // `cocoa_ui::bitmap::capture_window` builds the one never-ordered
         // construction every `AppKit` capture shares.
@@ -1033,6 +1177,7 @@ impl Stage {
         }
         let root = HostView::new(mtm, cocoa_ui::Rect::new(0.0, 0.0, size.width, size.height));
         window.setContentView(Some(&*root));
+        apply_to_view(dynamic_range, &root);
         let mut keepalive = crate::contract::KeepAlive::default();
         let content = crate::embedding::mount_content(&root, view(), env, &mut keepalive, mtm);
         crate::first_paint::mark(&root, env);
@@ -1063,6 +1208,7 @@ impl Stage {
         view: impl FnOnce() -> waterui::AnyView,
         size: cocoa_ui::Size,
         color_scheme: Option<ColorScheme>,
+        dynamic_range: DynamicRange,
     ) -> Self {
         use cocoa_ui::objc2::Message;
 
@@ -1074,14 +1220,10 @@ impl Stage {
             cocoa_ui::uikit::ViewController::new(mtm, cocoa_ui::uikit::window_root(mtm));
         window.setRootViewController(Some(&**controller));
         let root = controller.host_view().retain();
-        // The render target is an RGBA8 bitmap, so the root declares
-        // `DynamicRange::Standard` before the content attaches: a leaf
-        // resolving its inherited mode answers from the tag rather than
-        // a display the window never reaches.
-        cocoa_ui::dynamic_range::apply_to_view(
-            cocoa_ui::dynamic_range::DynamicRange::Standard,
-            &root,
-        );
+        // Tag the root with the capture's dynamic range before content mounts
+        // so leaves resolving inherited range answer from the tag rather than
+        // a display the scene-less window never reaches.
+        apply_to_view(dynamic_range, &root);
         window.setHidden(false);
         // The window carries the traits the bring-up had no controller to
         // read: refresh the theme from them (or the requested scheme) before
@@ -1148,6 +1290,27 @@ impl Stage {
         ))
     }
 
+    /// Captures the presented subtree into an unclamped extended linear Display
+    /// P3 `f32` RGBA raster (`HdrRaster`), preserving HDR (`> 1.0`) highlights
+    /// from both native Liquid Glass / HDR layers and GPU surfaces.
+    #[cfg(feature = "gpu_surface")]
+    #[expect(
+        clippy::future_not_send,
+        reason = "the capture runs on the main thread; the Retained native objects it holds across the wait are not Send"
+    )]
+    async fn capture_hdr(&self) -> Result<HdrRaster, CaptureFailure> {
+        #[cfg(target_os = "macos")]
+        self.window.displayIfNeeded();
+        let mut has_capturable = false;
+        collect_capturables(&self.root, &mut |_| has_capturable = true);
+        if !has_capturable {
+            return capture::capture_presented_hdr(&self.root)
+                .await
+                .map_err(CaptureFailure::NativeCapture);
+        }
+        self.drive.capture_hdr().await
+    }
+
     /// The `gpu_surface`-free capture: every leaf rasterizes through
     /// `capture::capture_presented` (using the in-process `Core Animation`
     /// render server so glass and backdrop materials composite cleanly).
@@ -1158,5 +1321,16 @@ impl Stage {
     )]
     async fn capture(&self) -> Result<RenderResult, CaptureFailure> {
         capture::capture_presented(&self.root).await
+    }
+
+    /// The `gpu_surface`-free HDR capture: every leaf rasterizes through
+    /// `capture::capture_presented_hdr` (`RGBA16F` + `ExtendedLinearDisplayP3`).
+    #[cfg(not(feature = "gpu_surface"))]
+    #[expect(
+        clippy::future_not_send,
+        reason = "the capture runs on the main thread; the Retained native objects it holds across the wait are not Send"
+    )]
+    async fn capture_hdr(&self) -> Result<HdrRaster, CaptureFailure> {
+        capture::capture_presented_hdr(&self.root).await
     }
 }

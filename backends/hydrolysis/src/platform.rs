@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 use std::rc::Rc;
 
+#[cfg(hydrolysis_gpu_painter)]
+use cherenkov_gpu::interop::OutputColor;
 #[cfg(hydrolysis_cherenkov)]
 use nami::Signal;
 use waterui::cursor::CursorStyle;
@@ -9,6 +11,9 @@ use waterui::window::Window as WuiWindow;
 use waterui::window::WindowState;
 use waterui_core::contract_violation;
 use waterui_frame_rate::FrameRate;
+
+#[cfg(hydrolysis_gpu_painter)]
+use crate::engine::format_output_color;
 
 /// The output request every Hydrolysis host surface is negotiated by:
 /// the engine selects compact SDR storage and upgrades for HDR content
@@ -2752,6 +2757,14 @@ impl OffscreenGpuContext {
     }
 }
 
+/// Default HDR headroom ceiling for floating-point offscreen captures
+/// (`Rgba16Float` / `Rgba32Float`).
+///
+/// Computed as `10_000.0 / 203.0` (10,000 nits divided by the ITU-R BT.2408
+/// 203-nit SDR reference white), matching Cherenkov's PQ ceiling.
+#[cfg(hydrolysis_gpu_painter)]
+pub const DEFAULT_HDR_CAPTURE_HEADROOM: f32 = 10_000.0 / 203.0;
+
 /// Headless offscreen rendering surface.
 ///
 /// Dropping one lets the device reclaim the textures it allocated. That is a
@@ -2771,6 +2784,8 @@ pub struct OffscreenSurface {
     /// New logical height, in pixels.
     height: u32,
     format: wgpu::TextureFormat,
+    headroom: f32,
+    output_color: Option<OutputColor>,
     last_presented: Option<wgpu::Texture>,
 }
 
@@ -3457,6 +3472,9 @@ impl OffscreenSurface {
     ///
     /// Every surface built on one context shares its device, so a process that
     /// needs many surfaces requests a device once instead of once per surface.
+    /// Floating-point targets (`Rgba16Float` / `Rgba32Float`) default to
+    /// [`DEFAULT_HDR_CAPTURE_HEADROOM`] so extended linear Display P3 captures
+    /// preserve HDR highlights above `1.0`; integer targets default to `1.0`.
     #[must_use]
     pub fn on_context(
         gpu: OffscreenGpuContext,
@@ -3465,14 +3483,65 @@ impl OffscreenSurface {
         format: wgpu::TextureFormat,
     ) -> Self {
         let generation = gpu.inner.gpu.generation();
+        let headroom = if matches!(
+            format,
+            wgpu::TextureFormat::Rgba16Float | wgpu::TextureFormat::Rgba32Float
+        ) {
+            DEFAULT_HDR_CAPTURE_HEADROOM
+        } else {
+            1.0
+        };
         Self {
             gpu,
             generation,
             width: width.max(1),
             height: height.max(1),
             format,
+            headroom,
+            output_color: None,
             last_presented: None,
         }
+    }
+
+    /// Overrides the display headroom ceiling (`>= 1.0`) reported by this
+    /// offscreen surface during Cherenkov presentation.
+    #[must_use]
+    pub const fn with_headroom(mut self, headroom: f32) -> Self {
+        self.headroom = if headroom.is_finite() && headroom > 1.0 {
+            headroom
+        } else {
+            1.0
+        };
+        self
+    }
+
+    /// Overrides the display headroom ceiling (`>= 1.0`) in place.
+    pub const fn set_headroom(&mut self, headroom: f32) {
+        self.headroom = if headroom.is_finite() && headroom > 1.0 {
+            headroom
+        } else {
+            1.0
+        };
+    }
+
+    /// The configured display headroom ceiling for this offscreen surface.
+    #[must_use]
+    pub const fn headroom(&self) -> f32 {
+        self.headroom
+    }
+
+    /// Overrides the colour encoding written by Cherenkov's presentation pass
+    /// (for example `OutputColor::DisplayP3` on an `Rgba8Unorm` capture target).
+    #[must_use]
+    pub const fn with_output_color(mut self, color: OutputColor) -> Self {
+        self.output_color = Some(color);
+        self
+    }
+
+    /// Overrides the colour encoding written by Cherenkov's presentation pass
+    /// in place.
+    pub const fn set_output_color(&mut self, color: OutputColor) {
+        self.output_color = Some(color);
     }
 
     /// Creates an offscreen surface synchronously, polling the async setup to completion.
@@ -3658,6 +3727,15 @@ impl SurfaceProvider for OffscreenSurface {
 
     fn format(&self) -> wgpu::TextureFormat {
         Self::format(self)
+    }
+
+    fn display_headroom(&self) -> f32 {
+        self.headroom
+    }
+
+    fn output_color(&self) -> OutputColor {
+        self.output_color
+            .unwrap_or_else(|| format_output_color(self.format))
     }
 }
 

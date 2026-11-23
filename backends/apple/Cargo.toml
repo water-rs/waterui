@@ -44,7 +44,7 @@ applied_filter = ["gpu_surface", "dep:objc2-core-image", "waterui/effects"]
 calendar = ["waterui/calendar"]
 # The Core Animation realization of `Canvas`.
 canvas = ["dep:block2", "dep:skrifa", "waterui-graphics/text", "waterui/canvas"]
-gpu_surface = ["dep:block2", "dep:futures", "objc2-metal/block2", "dep:wgpu-hal", "waterui/gpu", "waterui-graphics/gpu"]
+gpu_surface = ["dep:block2", "dep:futures", "dep:half", "objc2-metal/block2", "dep:wgpu-hal", "waterui/gpu", "waterui-graphics/gpu"]
 color_picker = ["waterui/color-picker"]
 context_menu = ["waterui/menu"]
 date_picker = ["waterui/date-picker"]
@@ -148,6 +148,9 @@ waterui-meta = { workspace = true, optional = true }
 waterui-graphics = { workspace = true }
 # HAL access to the runtime device for native Metal presentation.
 wgpu-hal = { workspace = true, optional = true }
+# Decodes `MTLPixelFormat::RGBA16Float` Metal capture targets into `f32`
+# linear Display P3 pixels under `gpu_surface`.
+half = { version = "2.7", default-features = false, optional = true }
 # `addCompletedHandler` blocks on the submitted Metal command buffer —
 # `gpu_surface`-gated so no-GPU artifacts link neither it nor the metal
 # block2 feature.

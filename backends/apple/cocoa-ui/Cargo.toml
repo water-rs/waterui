@@ -54,6 +54,7 @@ dialog = ["objc2-app-kit/NSAlert", "objc2-ui-kit/UIAlertController"]
 # Catalyst. Strictly opt-in and forwarded only by `cocoa-ui/native-test` and
 # `waterui-apple/preview` — never in default or production features.
 render-server-capture = [
+    "dep:half",
     "objc2-io-surface/IOSurfaceTypes",
     "objc2-io-surface/libc",
 ]
@@ -202,6 +203,9 @@ objc2-web-kit = { version = "0.3", default-features = false, features = [
     "WKWebsiteDataStore",
     "WKWindowFeatures",
 ], optional = true }
+# Decodes half-float (`RGBA16F`) `IOSurface` pixels read back from the opt-in
+# `render-server-capture` HDR path.
+half = { version = "2.7", default-features = false, optional = true }
 # The canvas mesh gradient pass paints into IOSurfaces that layers show as
 # their contents.
 objc2-io-surface = { version = "0.3", default-features = false, features = [

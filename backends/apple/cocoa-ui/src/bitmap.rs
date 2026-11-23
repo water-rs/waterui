@@ -54,6 +54,43 @@ const BITS_PER_COMPONENT: usize = 8;
 const BITS_PER_PIXEL: usize = 32;
 const BYTES_PER_PIXEL: usize = 4;
 
+/// One owned top-down extended linear Display P3 `f32` RGBA raster.
+///
+/// Channels hold unclamped linear light in Display P3 primaries where `1.0`
+/// corresponds to SDR reference white and values above `1.0` represent EDR
+/// (HDR) headroom.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HdrRaster {
+    /// Row-major premultiplied linear Display P3 `f32` RGBA pixels
+    /// (`width * height * 4` floats).
+    pub pixels: Vec<f32>,
+    /// Raster width in pixels.
+    pub width: u32,
+    /// Raster height in pixels.
+    pub height: u32,
+}
+
+impl HdrRaster {
+    /// Maximum finite RGB channel value across all pixels (`0.0` when empty).
+    #[must_use]
+    pub fn max_channel(&self) -> f32 {
+        self.pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .flat_map(|px| [px[0], px[1], px[2]])
+            .filter(|v| v.is_finite())
+            .fold(0.0_f32, f32::max)
+    }
+
+    /// Peak EDR headroom observed in this raster relative to SDR white
+    /// (`>= 1.0`).
+    #[must_use]
+    pub fn max_edr_headroom(&self) -> f32 {
+        self.max_channel().max(1.0)
+    }
+}
+
 /// A `CGContext` drawing premultiplied RGBA8 into `pixels`' storage.
 ///
 /// The context holds a raw pointer into `pixels`' buffer, so callers must not
@@ -653,20 +690,23 @@ mod render_server {
     use core::ptr::{from_ref, null, null_mut};
     use core::slice::from_raw_parts;
 
+    use half::f16;
     use objc2::rc::Retained;
     use objc2::runtime::{AnyClass, AnyObject};
     use objc2::{Message as _, msg_send, sel};
     use objc2_core_foundation::{CFData, CFDictionary, CFNumber, CFRetained, CFString};
     use objc2_core_graphics::{
         CGBitmapInfo, CGColorRenderingIntent, CGColorSpace, CGDataProvider, CGImage,
-        CGImageAlphaInfo, kCGColorSpaceSRGB,
+        CGImageAlphaInfo, kCGColorSpaceDisplayP3, kCGColorSpaceExtendedLinearDisplayP3,
     };
     use objc2_foundation::{NSDictionary, NSObjectProtocol as _, NSString};
     use objc2_io_surface::{
         IOSurfaceLockOptions, IOSurfaceRef, kIOSurfaceBytesPerElement, kIOSurfaceColorSpace,
         kIOSurfaceHeight, kIOSurfacePixelFormat, kIOSurfaceWidth,
     };
-    use objc2_quartz_core::{CALayer, CATransaction, CATransform3D};
+    use objc2_quartz_core::{
+        CADynamicRange, CADynamicRangeHigh, CALayer, CATransaction, CATransform3D,
+    };
 
     use super::{BITS_PER_COMPONENT, BITS_PER_PIXEL, BYTES_PER_PIXEL};
 
@@ -686,7 +726,16 @@ mod render_server {
 
     /// `BGRA8` four-character code (`'BGRA'`).
     const SURFACE_PIXEL_FORMAT_BGRA8: i64 = u32::from_be_bytes(*b"BGRA") as i64;
-    const SURFACE_BYTES_PER_ELEMENT: i64 = 4;
+    const SURFACE_BYTES_PER_ELEMENT_BGRA8: i64 = 4;
+    /// `kCVPixelFormatType_64RGBAHalf` four-character code (`'RGhA'`), four
+    /// IEEE 754 binary16 channels per pixel (8 bytes/element).
+    const SURFACE_PIXEL_FORMAT_RGBA16F: i64 = u32::from_be_bytes(*b"RGhA") as i64;
+    const SURFACE_BYTES_PER_ELEMENT_RGBA16F: i64 = 8;
+    /// EDR headroom requested on the temporary local `CAContext` during HDR
+    /// render-server captures — matches Apple's maximum 16x (4-stop) EDR range
+    /// so Liquid Glass and HDR highlights render unclamped without hitting an
+    /// SDR ceiling.
+    const HDR_DESIRED_DYNAMIC_RANGE: f32 = 16.0;
     /// `QuartzCore` render-server flag (`0x80`) that leaves `CA::Render::Update`
     /// in macOS's native bottom-up coordinate space so `AppKit` `CABackingStore`
     /// bitmaps (`NSViewBackingLayerContents`, `CGDrawingLayer`) share the same
@@ -728,12 +777,21 @@ mod render_server {
         context: Retained<AnyObject>,
         previous_context: Option<Retained<AnyObject>>,
         previous_root: Retained<CALayer>,
+        previous_dynamic_ranges: Vec<(Retained<CALayer>, Retained<CADynamicRange>)>,
         #[cfg(target_os = "macos")]
         unwrapped_layer: Option<Retained<CALayer>>,
     }
 
     impl Drop for LocalContextGuard {
         fn drop(&mut self) {
+            if !self.previous_dynamic_ranges.is_empty() {
+                CATransaction::begin();
+                CATransaction::setDisableActions(true);
+                for (layer, previous) in self.previous_dynamic_ranges.drain(..) {
+                    layer.setPreferredDynamicRange(&previous);
+                }
+                CATransaction::commit();
+            }
             // SAFETY: `CAContext` exposes `-setLayer:` (accepting `nil`) and
             // `-invalidate` on the main thread.
             unsafe {
@@ -758,7 +816,13 @@ mod render_server {
         }
     }
 
-    fn allocate_bgra_surface(width: usize, height: usize) -> Option<CFRetained<IOSurfaceRef>> {
+    fn allocate_iosurface(
+        width: usize,
+        height: usize,
+        bytes_per_element: i64,
+        pixel_format: i64,
+        color_space_name: &CFString,
+    ) -> Option<CFRetained<IOSurfaceRef>> {
         let width = i64::try_from(width).ok()?;
         let height = i64::try_from(height).ok()?;
         // SAFETY: these statics are `IOSurface` framework `CFString` constants.
@@ -773,22 +837,46 @@ mod render_server {
         let values = [
             CFNumber::new_i64(width),
             CFNumber::new_i64(height),
-            CFNumber::new_i64(SURFACE_BYTES_PER_ELEMENT),
-            CFNumber::new_i64(SURFACE_PIXEL_FORMAT_BGRA8),
+            CFNumber::new_i64(bytes_per_element),
+            CFNumber::new_i64(pixel_format),
         ];
         let value_refs: [&CFNumber; 4] = values.each_ref().map(|value| &**value);
         let properties = CFDictionary::from_slices(&keys, &value_refs);
         // SAFETY: every key in `properties` is a valid `IOSurface` property
         // paired with a `CFNumber`.
         let surface = unsafe { IOSurfaceRef::new(properties.as_opaque()) }?;
-        // SAFETY: `kCGColorSpaceSRGB` is a `Core Graphics` string constant.
-        if let Some(space) = CGColorSpace::with_name(Some(unsafe { kCGColorSpaceSRGB }))
+        if let Some(space) = CGColorSpace::with_name(Some(color_space_name))
             && let Some(plist) = space.property_list()
         {
             // SAFETY: `kIOSurfaceColorSpace` accepts a color-space property list.
             unsafe { surface.set_value(kIOSurfaceColorSpace, &plist) };
         }
         Some(surface)
+    }
+
+    fn allocate_bgra_surface(width: usize, height: usize) -> Option<CFRetained<IOSurfaceRef>> {
+        // SAFETY: `kCGColorSpaceDisplayP3` is a `Core Graphics` string constant.
+        let color_space = unsafe { kCGColorSpaceDisplayP3 };
+        allocate_iosurface(
+            width,
+            height,
+            SURFACE_BYTES_PER_ELEMENT_BGRA8,
+            SURFACE_PIXEL_FORMAT_BGRA8,
+            color_space,
+        )
+    }
+
+    fn allocate_rgba16f_surface(width: usize, height: usize) -> Option<CFRetained<IOSurfaceRef>> {
+        // SAFETY: `kCGColorSpaceExtendedLinearDisplayP3` is a `Core Graphics`
+        // string constant.
+        let color_space = unsafe { kCGColorSpaceExtendedLinearDisplayP3 };
+        allocate_iosurface(
+            width,
+            height,
+            SURFACE_BYTES_PER_ELEMENT_RGBA16F,
+            SURFACE_PIXEL_FORMAT_RGBA16F,
+            color_space,
+        )
     }
 
     fn read_surface_rgba8(
@@ -832,10 +920,86 @@ mod render_server {
         pixels
     }
 
-    /// Wraps premultiplied sRGB RGBA8 pixels into a `CGImage` tagged with
-    /// `kCGColorSpaceSRGB` so drawing into a `CGContext` converts into that
-    /// context's destination color space without device-RGB drift.
-    pub fn image_from_srgb_rgba(
+    fn read_surface_rgba16f_f32(
+        surface: &IOSurfaceRef,
+        pixel_width: usize,
+        pixel_height: usize,
+    ) -> Option<Vec<f32>> {
+        let row_bytes = pixel_width.checked_mul(8)?;
+        // SAFETY: read-only lock on a live `IOSurface` owned by the caller.
+        let lock_status = unsafe { surface.lock(IOSurfaceLockOptions::ReadOnly, null_mut()) };
+        if lock_status != 0 {
+            return None;
+        }
+        let bytes_per_row = surface.bytes_per_row();
+        let base = surface.base_address().as_ptr().cast::<u8>();
+        let pixels = if !base.is_null() && bytes_per_row >= row_bytes {
+            let mut pixels = vec![0.0_f32; pixel_width * pixel_height * 4];
+            // SAFETY: `surface` is locked read-only and has `pixel_height` rows
+            // of at least `bytes_per_row` bytes each.
+            let raw = unsafe { from_raw_parts(base, bytes_per_row * pixel_height) };
+            for y in 0..pixel_height {
+                let src_row = &raw[y * bytes_per_row..y * bytes_per_row + row_bytes];
+                let dst_row = &mut pixels[y * pixel_width * 4..(y + 1) * pixel_width * 4];
+                for (src_ch, dst_ch) in src_row.as_chunks::<2>().0.iter().zip(dst_row.iter_mut()) {
+                    *dst_ch = f16::from_le_bytes(*src_ch).to_f32();
+                }
+            }
+            Some(pixels)
+        } else {
+            None
+        };
+        // SAFETY: pairs the successful read-only lock above.
+        unsafe { surface.unlock(IOSurfaceLockOptions::ReadOnly, null_mut()) };
+        pixels
+    }
+
+    fn read_surface_rgba16f_into_buffer(
+        surface: &IOSurfaceRef,
+        pixel_width: usize,
+        pixel_height: usize,
+        dst: &mut [u8],
+        dst_row_bytes: usize,
+    ) -> bool {
+        let Some(row_bytes) = pixel_width.checked_mul(8) else {
+            return false;
+        };
+        if dst_row_bytes < row_bytes
+            || dst_row_bytes
+                .checked_mul(pixel_height)
+                .is_none_or(|needed| dst.len() < needed)
+        {
+            return false;
+        }
+        // SAFETY: read-only lock on a live `IOSurface` owned by the caller.
+        let lock_status = unsafe { surface.lock(IOSurfaceLockOptions::ReadOnly, null_mut()) };
+        if lock_status != 0 {
+            return false;
+        }
+        let src_row_bytes = surface.bytes_per_row();
+        let base = surface.base_address().as_ptr().cast::<u8>();
+        let ok = if !base.is_null() && src_row_bytes >= row_bytes {
+            // SAFETY: `surface` is locked read-only and has `pixel_height` rows
+            // of at least `src_row_bytes` bytes each.
+            let raw = unsafe { from_raw_parts(base, src_row_bytes * pixel_height) };
+            for y in 0..pixel_height {
+                let src_row = &raw[y * src_row_bytes..y * src_row_bytes + row_bytes];
+                let dst_row = &mut dst[y * dst_row_bytes..y * dst_row_bytes + row_bytes];
+                dst_row.copy_from_slice(src_row);
+            }
+            true
+        } else {
+            false
+        };
+        // SAFETY: pairs the successful read-only lock above.
+        unsafe { surface.unlock(IOSurfaceLockOptions::ReadOnly, null_mut()) };
+        ok
+    }
+
+    /// Wraps premultiplied Display P3 RGBA8 pixels into a `CGImage` tagged with
+    /// `kCGColorSpaceDisplayP3` so drawing into a `CGContext` converts cleanly
+    /// without clamping wide-gamut colors to sRGB.
+    pub fn image_from_display_p3_rgba(
         pixels: &[u8],
         width: usize,
         height: usize,
@@ -845,8 +1009,8 @@ mod render_server {
         }
         let data = CFData::from_bytes(pixels);
         let provider = CGDataProvider::with_cf_data(Some(&data))?;
-        // SAFETY: `kCGColorSpaceSRGB` is a `Core Graphics` string constant.
-        let space = CGColorSpace::with_name(Some(unsafe { kCGColorSpaceSRGB }))?;
+        // SAFETY: `kCGColorSpaceDisplayP3` is a `Core Graphics` string constant.
+        let space = CGColorSpace::with_name(Some(unsafe { kCGColorSpaceDisplayP3 }))?;
         // SAFETY: `decode` is null; every other argument matches `pixels`'
         // premultiplied RGBA8 layout.
         unsafe {
@@ -867,8 +1031,8 @@ mod render_server {
     }
 
     /// Renders `layer`'s committed subtree through an in-process
-    /// `Core Animation` render server into premultiplied top-down RGBA8 pixels
-    /// (`pixel_width * pixel_height * 4` bytes).
+    /// `Core Animation` render server into premultiplied top-down Display P3
+    /// RGBA8 pixels (`pixel_width * pixel_height * 4` bytes).
     ///
     /// Unlike `CALayer.renderInContext:`, the in-process render server runs
     /// `Core Animation`'s real compositor passes — evaluating `CABackdropLayer`
@@ -885,6 +1049,34 @@ mod render_server {
     ) -> Option<Vec<u8>> {
         let bounds = layer.bounds();
         render_layer_via_render_server_transformed(
+            layer,
+            RenderServerTransform {
+                scale_x: scale,
+                scale_y: scale,
+                translate_x: -bounds.origin.x * scale,
+                translate_y: -bounds.origin.y * scale,
+            },
+            pixel_width,
+            pixel_height,
+        )
+    }
+
+    /// Renders `layer`'s committed subtree into unclamped linear Display P3
+    /// `f32` RGBA pixels (`pixel_width * pixel_height * 4` floats).
+    ///
+    /// Uses an in-process `Core Animation` render server targeting a
+    /// `kCVPixelFormatType_64RGBAHalf` (`kCGColorSpaceExtendedLinearDisplayP3`)
+    /// surface so HDR (`> 1.0`) highlights from Liquid Glass and extended-range
+    /// layers are preserved without clipping.
+    #[must_use]
+    pub fn render_layer_via_render_server_hdr(
+        layer: &CALayer,
+        scale: f64,
+        pixel_width: usize,
+        pixel_height: usize,
+    ) -> Option<Vec<f32>> {
+        let bounds = layer.bounds();
+        render_layer_via_render_server_hdr_transformed(
             layer,
             RenderServerTransform {
                 scale_x: scale,
@@ -1007,23 +1199,62 @@ mod render_server {
         }
     }
 
-    /// Renders `layer`'s committed subtree through an in-process
-    /// `Core Animation` render server with an explicit scale and pixel
-    /// translation, returning premultiplied top-down sRGB RGBA8 pixels.
-    ///
-    /// On `macOS`, `CARenderServerRenderDisplayLayerWithTransformTimeOffsetAndFlags`
-    /// is invoked with `RENDER_SERVER_FLAG_UNFLIPPED_COORDINATES` (`0x80`) so
-    /// `AppKit` `CABackingStore` bitmaps and `CAShapeLayer` vectors render with
-    /// matching orientation directly into top-down `IOSurface` rows. On Mac
-    /// Catalyst (`UIKit`), `CARenderServerRenderLayerWithTransform` already
-    /// renders top-down directly.
-    #[must_use]
-    pub fn render_layer_via_render_server_transformed(
+    fn configure_local_context(context: &AnyObject, hdr: bool) {
+        let context_space_name = if hdr {
+            // SAFETY: `kCGColorSpaceExtendedLinearDisplayP3` is a system constant.
+            unsafe { kCGColorSpaceExtendedLinearDisplayP3 }
+        } else {
+            // SAFETY: `kCGColorSpaceDisplayP3` is a system constant.
+            unsafe { kCGColorSpaceDisplayP3 }
+        };
+        // SAFETY: `CAContext` inherits `NSObject`'s `-respondsToSelector:`.
+        let supports_color_space: bool =
+            unsafe { msg_send![context, respondsToSelector: sel!(setColorSpace:)] };
+        if supports_color_space
+            && let Some(space) = CGColorSpace::with_name(Some(context_space_name))
+        {
+            // SAFETY: `-[CAContext setColorSpace:]` accepts a `CGColorSpaceRef`.
+            unsafe {
+                let _: () = msg_send![context, setColorSpace: from_ref(&*space)];
+            }
+        }
+        // SAFETY: `CAContext` inherits `NSObject`'s `-respondsToSelector:`.
+        let supports_dynamic_range: bool =
+            unsafe { msg_send![context, respondsToSelector: sel!(setDesiredDynamicRange:)] };
+        if hdr && supports_dynamic_range {
+            // SAFETY: `-[CAContext setDesiredDynamicRange:]` accepts an `f32`
+            // EDR headroom multiplier on modern QuartzCore.
+            unsafe {
+                let _: () = msg_send![context, setDesiredDynamicRange: HDR_DESIRED_DYNAMIC_RANGE];
+            }
+        }
+    }
+
+    fn apply_hdr_dynamic_range(
+        root: &CALayer,
+        target: &CALayer,
+    ) -> Vec<(Retained<CALayer>, Retained<CADynamicRange>)> {
+        let mut previous = Vec::with_capacity(2);
+        CATransaction::begin();
+        CATransaction::setDisableActions(true);
+        for candidate in [root, target] {
+            let prior = candidate.preferredDynamicRange();
+            // SAFETY: `CADynamicRangeHigh` is an immutable framework constant.
+            candidate.setPreferredDynamicRange(unsafe { CADynamicRangeHigh });
+            previous.push((candidate.retain(), prior));
+        }
+        CATransaction::commit();
+        previous
+    }
+
+    fn render_layer_into_surface(
         layer: &CALayer,
         transform: RenderServerTransform,
         pixel_width: usize,
         pixel_height: usize,
-    ) -> Option<Vec<u8>> {
+        surface: &IOSurfaceRef,
+        hdr: bool,
+    ) -> bool {
         if pixel_width == 0
             || pixel_height == 0
             || !transform.scale_x.is_finite()
@@ -1031,28 +1262,34 @@ mod render_server {
             || !transform.scale_y.is_finite()
             || transform.scale_y <= 0.0
         {
-            return None;
+            return false;
         }
         // SAFETY: `CARenderServerStart` is idempotent (guarded internally by
         // `CA::Render::Server::_mutex`) and must precede `CARenderServerGetPort`,
         // which otherwise lazily allocates an unserviced Mach port.
         let server_port = unsafe {
             if !CARenderServerStart() {
-                return None;
+                return false;
             }
             CARenderServerGetPort()
         };
         if server_port == 0 {
-            return None;
+            return false;
         }
 
-        let context_class = AnyClass::get(c"CAContext")?;
+        let Some(context_class) = AnyClass::get(c"CAContext") else {
+            return false;
+        };
         let options = NSDictionary::<NSString, AnyObject>::new();
         // SAFETY: `+[CAContext localContextWithOptions:]` returns an
         // autoreleased local `CAContext` (or nil).
         let context: Option<Retained<AnyObject>> =
             unsafe { msg_send![context_class, localContextWithOptions: &*options] };
-        let context = context?;
+        let Some(context) = context else {
+            return false;
+        };
+        configure_local_context(&context, hdr);
+
         // SAFETY: `-[CAContext contextId]` returns `u32`.
         let context_id: u32 = unsafe { msg_send![&*context, contextId] };
 
@@ -1077,6 +1314,11 @@ mod render_server {
         CATransaction::flush();
 
         let target = resolve_render_target(layer, top_root, transform);
+        let previous_dynamic_ranges = if hdr {
+            apply_hdr_dynamic_range(&target.root, &target.layer)
+        } else {
+            Vec::new()
+        };
 
         // SAFETY: `-[CAContext setLayer:]` binds the root layer on the main thread.
         unsafe {
@@ -1086,12 +1328,12 @@ mod render_server {
             context,
             previous_context,
             previous_root,
+            previous_dynamic_ranges,
             #[cfg(target_os = "macos")]
             unwrapped_layer: target.unwrapped_layer,
         };
         CATransaction::flush();
 
-        let surface = allocate_bgra_surface(pixel_width, pixel_height)?;
         let ca_transform =
             build_ca_transform(transform, target.offset_x, target.offset_y, pixel_height);
         #[cfg(target_os = "macos")]
@@ -1106,7 +1348,7 @@ mod render_server {
                     from_ref(&*display),
                     context_id,
                     from_ref(&*target.layer),
-                    from_ref(&*surface),
+                    from_ref(surface),
                     0,
                     0,
                     &raw const ca_transform,
@@ -1123,17 +1365,78 @@ mod render_server {
                 server_port,
                 context_id,
                 from_ref(&*target.layer),
-                from_ref(&*surface),
+                from_ref(surface),
                 0,
                 0,
                 &raw const ca_transform,
             )
         };
         drop(guard);
-        if !rendered {
+        rendered
+    }
+
+    /// Renders `layer`'s committed subtree through an in-process
+    /// `Core Animation` render server with an explicit scale and pixel
+    /// translation, returning premultiplied top-down Display P3 RGBA8 pixels.
+    ///
+    /// On `macOS`, `CARenderServerRenderDisplayLayerWithTransformTimeOffsetAndFlags`
+    /// is invoked with `RENDER_SERVER_FLAG_UNFLIPPED_COORDINATES` (`0x80`) so
+    /// `AppKit` `CABackingStore` bitmaps and `CAShapeLayer` vectors render with
+    /// matching orientation directly into top-down `IOSurface` rows. On Mac
+    /// Catalyst (`UIKit`), `CARenderServerRenderLayerWithTransform` already
+    /// renders top-down directly.
+    #[must_use]
+    pub fn render_layer_via_render_server_transformed(
+        layer: &CALayer,
+        transform: RenderServerTransform,
+        pixel_width: usize,
+        pixel_height: usize,
+    ) -> Option<Vec<u8>> {
+        let surface = allocate_bgra_surface(pixel_width, pixel_height)?;
+        if !render_layer_into_surface(layer, transform, pixel_width, pixel_height, &surface, false)
+        {
             return None;
         }
         read_surface_rgba8(&surface, pixel_width, pixel_height)
+    }
+
+    /// Renders `layer`'s committed subtree with an explicit transform into
+    /// unclamped linear Display P3 `f32` RGBA pixels.
+    ///
+    /// Allocates an `RGBA16F` (`kCVPixelFormatType_64RGBAHalf`) `IOSurface`
+    /// tagged with `kCGColorSpaceExtendedLinearDisplayP3` and decodes each
+    /// little-endian half-float channel to `f32`.
+    #[must_use]
+    pub fn render_layer_via_render_server_hdr_transformed(
+        layer: &CALayer,
+        transform: RenderServerTransform,
+        pixel_width: usize,
+        pixel_height: usize,
+    ) -> Option<Vec<f32>> {
+        let surface = allocate_rgba16f_surface(pixel_width, pixel_height)?;
+        if !render_layer_into_surface(layer, transform, pixel_width, pixel_height, &surface, true) {
+            return None;
+        }
+        read_surface_rgba16f_f32(&surface, pixel_width, pixel_height)
+    }
+
+    /// Renders `layer`'s committed subtree into `dst` as `RGBA16F` linear
+    /// Display P3 rows using `dst_row_bytes` stride.
+    pub fn render_layer_via_render_server_hdr_into_buffer(
+        layer: &CALayer,
+        transform: RenderServerTransform,
+        pixel_width: usize,
+        pixel_height: usize,
+        dst: &mut [u8],
+        dst_row_bytes: usize,
+    ) -> bool {
+        let Some(surface) = allocate_rgba16f_surface(pixel_width, pixel_height) else {
+            return false;
+        };
+        if !render_layer_into_surface(layer, transform, pixel_width, pixel_height, &surface, true) {
+            return false;
+        }
+        read_surface_rgba16f_into_buffer(&surface, pixel_width, pixel_height, dst, dst_row_bytes)
     }
 }
 
@@ -1141,12 +1444,14 @@ mod render_server {
     feature = "render-server-capture",
     any(target_os = "macos", all(target_os = "ios", target_abi = "macabi"))
 ))]
-pub(crate) use render_server::image_from_srgb_rgba;
+pub use render_server::{
+    RenderServerTransform, render_layer_via_render_server, render_layer_via_render_server_hdr,
+    render_layer_via_render_server_hdr_transformed, render_layer_via_render_server_transformed,
+};
 #[cfg(all(
     feature = "render-server-capture",
     any(target_os = "macos", all(target_os = "ios", target_abi = "macabi"))
 ))]
-pub use render_server::{
-    RenderServerTransform, render_layer_via_render_server,
-    render_layer_via_render_server_transformed,
+pub(crate) use render_server::{
+    image_from_display_p3_rgba, render_layer_via_render_server_hdr_into_buffer,
 };

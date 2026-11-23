@@ -190,7 +190,10 @@ pub use hydrolysis::{
     AccessibilityActivationPointError, HeadlessRuntime, KeyCode, Modifiers, PointerKind,
     SemanticRuntime, Style,
 };
-pub use image::{BlankFrameAnalysis, BlankFrameReason, RgbaImage, analyze_blank_frame};
+pub use image::{
+    BlankFrameAnalysis, BlankFrameReason, CICP_DISPLAY_P3_PQ, CICP_DISPLAY_P3_SDR,
+    HDR_REFERENCE_WHITE_NITS, RgbaImage, analyze_blank_frame,
+};
 #[cfg(feature = "harness")]
 pub use perf::{PerfApp, PerfConfig, PerfMeasurement, PerfReport, PerfRun, PerfStats};
 #[cfg(feature = "harness")]
@@ -204,9 +207,9 @@ pub use report::{
 pub use selector::{ElementAnchor, ElementRef, ElementSet, Selector};
 #[cfg(feature = "harness")]
 pub use semantics::{CheckedState, NodeBounds, NodeId, NodeSnapshot, Role, TreeSnapshot};
-pub use snapshot::Snapshot;
 #[cfg(feature = "gpu")]
 pub use snapshot::TestHost;
+pub use snapshot::{HdrSnapshot, Snapshot};
 #[cfg(feature = "harness")]
 pub use wait::{Expectation, WaitOptions, WaitResult};
 /// The content-type vocabulary `NodeSnapshot::content_type`,

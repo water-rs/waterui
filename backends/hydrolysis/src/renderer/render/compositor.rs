@@ -6,6 +6,14 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::engine::EngineSurface;
+#[cfg(hydrolysis_gpu_painter)]
+use crate::engine::{cfg_async_fn, engine_await, format_output_color};
+#[cfg(hydrolysis_gpu_painter)]
+use crate::platform::{GpuGeneration, SurfaceProvider};
+#[cfg(hydrolysis_gpu_painter)]
+use cherenkov_gpu::interop::{OutputAlpha, OutputColor};
+#[cfg(hydrolysis_gpu_painter)]
+use cherenkov_record::WorkingColor;
 use std::rc::Rc;
 #[cfg(hydrolysis_gpu_painter)]
 use std::sync::Arc;
@@ -100,17 +108,21 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
             texture: &wgpu::Texture,
             base_color: cherenkov_record::WorkingColor,
         ) -> Result<(), FrameError> {
-            crate::engine::engine_await!(self.render_generation_to_texture(
+            let headroom = SurfaceProvider::display_headroom(surface);
+            let output_color = SurfaceProvider::output_color(surface);
+            engine_await!(self.render_generation_to_texture_with(
                 surface.generation(),
                 texture,
                 surface.format(),
                 surface.size(),
                 base_color,
+                headroom,
+                output_color,
             ))
         }
     }
 
-    crate::engine::cfg_async_fn! {
+    cfg_async_fn! {
         /// Renders an SDR, single-scale frame of `size` (device pixels)
         /// through `generation`'s engine and copies it into `texture`, whose
         /// format is `format`.
@@ -124,24 +136,49 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
         /// or the frame fails to render.
         pub(crate) fn render_generation_to_texture(
             &mut self,
-            generation: &crate::platform::GpuGeneration,
+            generation: &GpuGeneration,
             texture: &wgpu::Texture,
             format: wgpu::TextureFormat,
             size: (u32, u32),
             base_color: cherenkov_record::WorkingColor,
         ) -> Result<(), FrameError> {
+            engine_await!(self.render_generation_to_texture_with(
+                generation,
+                texture,
+                format,
+                size,
+                base_color,
+                1.0,
+                format_output_color(texture.format()),
+            ))
+        }
+    }
+
+    cfg_async_fn! {
+        #[expect(
+            clippy::too_many_arguments,
+            reason = "internal helper taking the explicit target generation, format, headroom, and output color"
+        )]
+        fn render_generation_to_texture_with(
+            &mut self,
+            generation: &GpuGeneration,
+            texture: &wgpu::Texture,
+            format: wgpu::TextureFormat,
+            size: (u32, u32),
+            base_color: WorkingColor,
+            headroom: f32,
+            output_color: OutputColor,
+        ) -> Result<(), FrameError> {
             let target = FrameRenderTarget::new(generation, 1.0, size, base_color);
             let (device, queue) = (target.device, &generation.gpu_context().shared_device.queue);
-            let frame = crate::engine::engine_await!(
-                self.render_texture_frame(target, format, 1.0)
-            )?;
+            let frame = engine_await!(self.render_texture_frame(target, format, headroom))?;
             self.present_engine_frame(
                 frame,
                 device,
                 queue,
                 texture,
-                crate::engine::format_output_color(texture.format()),
-                cherenkov_gpu::interop::OutputAlpha::Straight,
+                output_color,
+                OutputAlpha::Straight,
             );
             Ok(())
         }
