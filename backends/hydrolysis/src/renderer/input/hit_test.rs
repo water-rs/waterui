@@ -4,6 +4,7 @@ use super::edge_stretch::{ScrollStretch, shown_stretch};
 use super::*;
 use crate::platform::Overscroll;
 use crate::theme::{InteractionFocusBinding, InteractionMotion, ModalInteraction};
+use kurbo::Point;
 use nami::Signal as _;
 use std::path::PathBuf;
 use waterui::Url;
@@ -374,9 +375,9 @@ pub type PointerAction<E> =
 #[cfg(any(feature = "toggle", feature = "picker", feature = "navigation"))]
 pub enum Track {
     /// The press landed at this point.
-    Begin(kurbo::Point),
+    Begin(Point),
     /// The pointer moved to this point at `at`.
-    Move(kurbo::Point, Instant),
+    Move(Point, Instant),
     /// The pointer lifted at `point`; `within_reach` says whether that is
     /// within the press slot's cancel distance of the target.
     Release {
@@ -2700,7 +2701,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
 
     /// Moves the press point of the active pointer target and every observer a
     /// press is on to `point`'s local position, wherever the pointer has moved.
-    fn observe_press_move(&self, point: kurbo::Point, at: Instant) {
+    fn observe_press_move(&self, point: Point, at: Instant) {
         let active_handles = self
             .hit_test
             .active_pointer_target

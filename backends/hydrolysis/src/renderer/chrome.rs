@@ -1865,7 +1865,7 @@ impl LiveChrome {
             .spec
             .press()
             .get_drag_deformation()
-            .map_or(0.0, |deform| deform.extent(frame.size()));
+            .map_or(0.0, |deform| deform.extent(scaled.size()));
         let reach = shadow.max(ring) + drag;
         scaled
             .inflate(reach, reach)

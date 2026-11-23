@@ -18,6 +18,7 @@ use crate::renderer::live_tabs::LiveTabs;
 #[cfg(any(feature = "toggle", feature = "picker"))]
 use crate::renderer::live_toggle::LiveToggle;
 use crate::theme::InteractionMotion;
+use kurbo::Point;
 use waterui_interaction::interaction::InteractionState;
 
 /// Maximum number of overlapping press ripple waves tracked per widget.
@@ -171,7 +172,7 @@ impl Steered {
         }
     }
 
-    fn begin_press(&self, index: usize, origin: Option<kurbo::Point>, at: Instant) {
+    fn begin_press(&self, index: usize, origin: Option<Point>, at: Instant) {
         match self {
             Self::Chrome(chrome) => {
                 chrome.begin_wave(index, origin, at);
@@ -189,7 +190,7 @@ impl Steered {
         }
     }
 
-    fn move_press(&self, point: kurbo::Point, at: Instant) {
+    fn move_press(&self, point: Point, at: Instant) {
         match self {
             Self::Chrome(chrome) => chrome.move_press(point, at),
             #[cfg(feature = "picker")]
@@ -495,7 +496,7 @@ impl InteractionLayerHandles {
 
     /// Moves the press point of the active press to `local`, in the widget's
     /// own space, so the look's values that read it follow the pointer.
-    pub(crate) fn move_press(&self, local: kurbo::Point, at: Instant) {
+    pub(crate) fn move_press(&self, local: Point, at: Instant) {
         self.with_live(|live| live.move_press(local, at));
     }
 
