@@ -543,12 +543,17 @@ class HydrolysisSession internal constructor(
             mainHandler.post { onNativeFrameCompleted() }
             return
         }
-        val renderCpuNanos =
-            withNativePtr(NativeBridge::nativeCompleteFrame.name) { ptr ->
-                NativeBridge.nativeCompleteFrame(ptr)
+        framePerformance.beginFrameCompletion()
+        try {
+            val renderCpuNanos =
+                withNativePtr(NativeBridge::nativeCompleteFrame.name) { ptr ->
+                    NativeBridge.nativeCompleteFrame(ptr)
+                }
+            if (renderCpuNanos >= 0L) {
+                framePerformance.completePendingFrame(renderCpuNanos)
             }
-        if (renderCpuNanos >= 0L) {
-            framePerformance.completePendingFrame(renderCpuNanos)
+        } finally {
+            framePerformance.endFrameCompletion()
         }
     }
 

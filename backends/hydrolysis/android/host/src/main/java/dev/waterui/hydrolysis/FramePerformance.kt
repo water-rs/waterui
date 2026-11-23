@@ -12,6 +12,7 @@ import android.os.WorkDuration
 import android.os.health.SystemHealthManager
 import androidx.annotation.RequiresApi
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
@@ -67,12 +68,17 @@ internal class FramePerformance(
     private var lastReportNanos: Long = 0L
 
     private var inFrameDispatch: Boolean = false
+    private var inFrameCompletion: Boolean = false
     private var deferredClose: Boolean = false
     private var pendingStartNanos: Long = -1L
     private var pendingUiCpuNanos: Long = 0L
 
+    private val pollLock = Any()
+    @Volatile
     private var closed: Boolean = false
+    @Volatile
     private var activeForSampling: Boolean = false
+    private var pollGeneration: Int = 0
 
     @Volatile
     private var latestThermalStatus: Int = PowerManager.THERMAL_STATUS_NONE
@@ -125,7 +131,21 @@ internal class FramePerformance(
     /** Marks the end of a synchronous [FrameScheduler] frame transaction. */
     fun endFrameDispatch() {
         inFrameDispatch = false
-        if (deferredClose && pendingStartNanos < 0L) {
+        if (deferredClose && !inFrameCompletion && pendingStartNanos < 0L) {
+            deferredClose = false
+            closeHintSession()
+        }
+    }
+
+    /** Marks the start of an async GPU frame completion callback. */
+    fun beginFrameCompletion() {
+        inFrameCompletion = true
+    }
+
+    /** Marks the end of an async GPU frame completion callback. */
+    fun endFrameCompletion() {
+        inFrameCompletion = false
+        if (deferredClose && !inFrameDispatch && pendingStartNanos < 0L) {
             deferredClose = false
             closeHintSession()
         }
@@ -140,9 +160,11 @@ internal class FramePerformance(
         if (closed) return
         if (targetDurationNanos <= 0L) {
             setSamplingActive(false)
-            if (inFrameDispatch || pendingStartNanos >= 0L) {
+            if (inFrameDispatch || inFrameCompletion) {
                 deferredClose = true
             } else {
+                pendingStartNanos = -1L
+                deferredClose = false
                 closeHintSession()
             }
             return
@@ -210,7 +232,7 @@ internal class FramePerformance(
         val cpuWallNanos = (pendingUiCpuNanos + renderCpuWallNanos.coerceAtLeast(0L))
             .coerceIn(1L, totalWallNanos)
         reportDuration(startNanos, totalWallNanos, cpuWallNanos)
-        if (deferredClose && !inFrameDispatch) {
+        if (deferredClose && !inFrameDispatch && !inFrameCompletion) {
             deferredClose = false
             closeHintSession()
         }
@@ -225,9 +247,17 @@ internal class FramePerformance(
 
     /** Releases the hint session, thermal listeners, and background poller. */
     fun close() {
-        if (closed) return
-        closed = true
-        setSamplingActive(false)
+        val executorToShutdown: ScheduledExecutorService?
+        synchronized(pollLock) {
+            if (closed) return
+            closed = true
+            activeForSampling = false
+            pollGeneration += 1
+            pollFuture?.cancel(false)
+            pollFuture = null
+            executorToShutdown = pollExecutor
+            pollExecutor = null
+        }
         pendingStartNanos = -1L
         deferredClose = false
         closeHintSession()
@@ -242,8 +272,7 @@ internal class FramePerformance(
         if (Build.VERSION.SDK_INT >= 36) {
             api36Probe?.unregisterListener(powerManager)
         }
-        pollExecutor?.shutdownNow()
-        pollExecutor = null
+        executorToShutdown?.shutdownNow()
     }
 
     private fun reportDuration(startNanos: Long, totalWallNanos: Long, cpuWallNanos: Long) {
@@ -284,45 +313,67 @@ internal class FramePerformance(
         }
 
     private fun setSamplingActive(active: Boolean) {
-        if (activeForSampling == active) return
-        activeForSampling = active
         if (!active) {
-            pollFuture?.cancel(false)
-            pollFuture = null
+            synchronized(pollLock) {
+                if (!activeForSampling) return
+                activeForSampling = false
+                pollGeneration += 1
+                pollFuture?.cancel(false)
+                pollFuture = null
+            }
             return
         }
         publishHeadroomIfChanged()
-        val executor = ensurePollExecutor()
+        val executor = synchronized(pollLock) {
+            if (closed || activeForSampling) return
+            activeForSampling = true
+            val gen = ++pollGeneration
+            val executor = ensurePollExecutorLocked()
+            schedulePollLocked(executor, gen, 0L)
+            executor
+        }
         if (Build.VERSION.SDK_INT >= 36) {
             api36Probe?.registerListenerIfSupported(powerManager, executor)
         }
-        pollFuture = executor.schedule(
-            { runBackgroundPollCycle() },
-            0L,
-            TimeUnit.MILLISECONDS,
-        )
     }
 
-    private fun ensurePollExecutor(): ScheduledExecutorService =
+    private fun ensurePollExecutorLocked(): ScheduledExecutorService =
         pollExecutor ?: Executors.newSingleThreadScheduledExecutor { runnable ->
             Thread(runnable, "waterui-adpf-headroom").apply { isDaemon = true }
         }.also { pollExecutor = it }
 
-    private fun runBackgroundPollCycle() {
-        val nextDelayMs = sampleBackgroundHeadroom()
-        if (closed || !activeForSampling || nextDelayMs == Long.MAX_VALUE) {
-            return
+    private fun schedulePollLocked(
+        executor: ScheduledExecutorService,
+        gen: Int,
+        delayMs: Long,
+    ) {
+        pollFuture?.cancel(false)
+        pollFuture = try {
+            executor.schedule(
+                { runBackgroundPollCycle(gen) },
+                delayMs,
+                TimeUnit.MILLISECONDS,
+            )
+        } catch (_: RejectedExecutionException) {
+            null
         }
-        val executor = pollExecutor ?: return
-        pollFuture = executor.schedule(
-            { runBackgroundPollCycle() },
-            nextDelayMs.coerceAtLeast(MIN_POLL_INTERVAL_MS),
-            TimeUnit.MILLISECONDS,
-        )
     }
 
-    private fun sampleBackgroundHeadroom(): Long {
-        if (closed || !activeForSampling) return Long.MAX_VALUE
+    private fun runBackgroundPollCycle(gen: Int) {
+        val shouldRun = synchronized(pollLock) { !closed && activeForSampling && gen == pollGeneration }
+        if (!shouldRun) return
+        val nextDelayMs = sampleBackgroundHeadroom(gen)
+        if (nextDelayMs == Long.MAX_VALUE) return
+        synchronized(pollLock) {
+            if (closed || !activeForSampling || gen != pollGeneration) return
+            val executor = pollExecutor ?: return
+            schedulePollLocked(executor, gen, nextDelayMs.coerceAtLeast(MIN_POLL_INTERVAL_MS))
+        }
+    }
+
+    private fun sampleBackgroundHeadroom(gen: Int): Long {
+        val active = synchronized(pollLock) { !closed && activeForSampling && gen == pollGeneration }
+        if (!active) return Long.MAX_VALUE
         val nowMs = System.currentTimeMillis()
         var cpu = latestCpuHeadroom
         var gpu = latestGpuHeadroom
@@ -432,6 +483,7 @@ private class Api36HeadroomProbe(
     private var lastCpu = Float.NaN
     private var lastGpu = Float.NaN
     private var lastThermal = Float.NaN
+    @Volatile
     private var listenerRegistered = false
     private var thermalListenerSupported = powerManager != null
 
@@ -447,6 +499,7 @@ private class Api36HeadroomProbe(
             }
         }
 
+    @Synchronized
     fun registerListenerIfSupported(powerManager: PowerManager?, executor: ScheduledExecutorService) {
         if (listenerRegistered || !thermalListenerSupported || powerManager == null) return
         try {
@@ -457,6 +510,7 @@ private class Api36HeadroomProbe(
         }
     }
 
+    @Synchronized
     fun unregisterListener(powerManager: PowerManager?) {
         if (!listenerRegistered || powerManager == null) return
         listenerRegistered = false

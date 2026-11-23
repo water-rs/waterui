@@ -179,6 +179,44 @@ class FramePerformanceTest {
         performance.close()
     }
 
+    @Test
+    fun idleTargetDuringCancelledPendingAsyncFrameClosesSessionImmediately() {
+        var nowNanos = 3_000_000_000L
+        val performance = FramePerformance(
+            context = context,
+            mainHandler = Handler(Looper.getMainLooper()),
+            onHeadroomChanged = { _, _, _, _ -> },
+            hintClock = { nowNanos },
+        )
+
+        performance.updateTarget(targetDurationNanos = 8_333_333L, renderThreadTid = 42)
+        performance.beginPendingFrame(startNanos = nowNanos, uiCpuWallNanos = 500_000L)
+
+        // Detach/background cancels the GPU frame before completion: outside dispatch/completion,
+        // updateTarget(0) must close immediately instead of leaking open.
+        performance.updateTarget(targetDurationNanos = 0L, renderThreadTid = 0)
+        assertEquals(1, ShadowPerformanceHintSession.closedCount)
+
+        nowNanos += 2_000_000L
+        performance.completePendingFrame(renderCpuWallNanos = 300_000L)
+        assertEquals(0, ShadowPerformanceHintSession.reportedTotalWallNanos.size)
+        assertEquals(1, ShadowPerformanceHintSession.closedCount)
+
+        // Inside completion, updateTarget(0) defers close until the completed frame reports.
+        performance.updateTarget(targetDurationNanos = 8_333_333L, renderThreadTid = 42)
+        performance.beginPendingFrame(startNanos = nowNanos, uiCpuWallNanos = 400_000L)
+        nowNanos += 2_000_000L
+        performance.beginFrameCompletion()
+        performance.updateTarget(targetDurationNanos = 0L, renderThreadTid = 0)
+        assertEquals(1, ShadowPerformanceHintSession.closedCount)
+        performance.completePendingFrame(renderCpuWallNanos = 300_000L)
+        performance.endFrameCompletion()
+        assertEquals(1, ShadowPerformanceHintSession.reportedTotalWallNanos.size)
+        assertEquals(2, ShadowPerformanceHintSession.closedCount)
+
+        performance.close()
+    }
+
     private fun HydrolysisSession.pumpOnceForTest() {
         val schedulerField = HydrolysisSession::class.java.declaredFields.single { field ->
             field.type == FrameScheduler::class.java

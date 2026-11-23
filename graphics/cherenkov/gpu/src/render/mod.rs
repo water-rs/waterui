@@ -58,6 +58,7 @@ use libc::gettid;
 use rustc_hash::{FxHashMap, FxHashSet};
 #[cfg(any(target_vendor = "apple", target_os = "android"))]
 use waterui_contract::contract_violation;
+use wgpu::AdapterInfo;
 use wgpu::util::DeviceExt;
 
 use crate::interop::ExternalFrame;
@@ -3273,7 +3274,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
     })
 }
 
-fn build_gpu_info(info: wgpu::AdapterInfo, timestamps: TimestampSupport) -> GpuInfo {
+fn build_gpu_info(info: AdapterInfo, timestamps: TimestampSupport) -> GpuInfo {
     #[cfg(target_os = "android")]
     // SAFETY: `gettid(2)` has no preconditions and returns the caller thread's
     // kernel thread ID on Android.
