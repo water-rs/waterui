@@ -498,11 +498,15 @@ impl ExecutionPlan {
             backing.last_consumer = image.last_consumer;
             image.backing = Some(slot);
         }
-        for (pass, id) in frame.passes.iter().zip(&self.targets) {
+        for (index, (pass, id)) in frame.passes.iter().zip(&self.targets).enumerate() {
             if let Some(slot) = self.images[id.0].backing {
                 let size = &mut self.scratch[slot].size;
                 size.0 = size.0.max(pass.region[2]);
                 size.1 = size.1.max(pass.region[3]);
+                if let Some((out_w, out_h)) = frame.filter_output_size(index) {
+                    size.0 = size.0.max(out_w);
+                    size.1 = size.1.max(out_h);
+                }
             }
         }
     }

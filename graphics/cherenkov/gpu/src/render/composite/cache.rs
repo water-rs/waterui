@@ -28,6 +28,7 @@ struct Placement {
     color_range: crate::render::present::ColorRange,
     extended_range: bool,
     region: [u32; 4],
+    filter_output: Option<(u32, u32)>,
     space: cherenkov::BlendSpace,
     transparent_clear: bool,
 }
@@ -111,7 +112,11 @@ impl Cache {
         }
         let placements = || {
             frame.passes.iter().enumerate().map(|(index, pass)| {
-                placement(pass, super::plan::requires_extended_range(frame, index))
+                placement(
+                    pass,
+                    super::plan::requires_extended_range(frame, index),
+                    frame.filter_output_size(index),
+                )
             })
         };
         let samples = || {
@@ -150,11 +155,12 @@ impl Cache {
     }
 }
 
-fn placement(pass: &Pass, extended_range: bool) -> Placement {
+fn placement(pass: &Pass, extended_range: bool, filter_output: Option<(u32, u32)>) -> Placement {
     Placement {
         color_range: pass.color_range,
         extended_range,
         region: pass.region,
+        filter_output,
         space: pass.space,
         transparent_clear: pass
             .clear

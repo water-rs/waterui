@@ -23,7 +23,7 @@ use cherenkov::{
 use crate::names;
 
 use crate::render::GpuImage;
-use crate::render::filter::FilterKey;
+use crate::render::filter::{FilterKey, Registry};
 
 use crate::render::glyph::{self, Atlas, FontData, MaskCell, PathEmit, PendingRaster, glyph_key};
 use crate::render::gpu_cov::CoverageLimit;
@@ -284,6 +284,14 @@ pub struct Frame {
     /// order — rendered and submitted alike.
     pub external: Vec<ProducerId>,
     pub filters: Vec<(usize, FilterKey)>,
+    /// Declared `(width, height)` output dimensions for filtered passes
+    /// (`(pass_index, (output_width, output_height))`), resolved before
+    /// execution planning and allocation.
+    pub filter_outputs: Vec<(usize, (u32, u32))>,
+    /// Filtered isolations (and enclosing scratch scopes) in post-order,
+    /// used to propagate `Effect::output_size` across lowering and
+    /// reactive filter redraws.
+    pub filter_scopes: Vec<FilterScope>,
     pub shadows: Vec<(usize, super::shadow::Parameters)>,
     /// Local images whose mip chains build after the pass at the index:
     /// the last pass of their realization.
@@ -334,6 +342,8 @@ struct FrameSnapshot {
     stops: usize,
     passes: usize,
     filters: usize,
+    filter_outputs: usize,
+    filter_scopes: usize,
     shadows: usize,
     open: Option<OpenPass>,
 }
@@ -348,6 +358,8 @@ impl Frame {
             stops: self.stops.len(),
             passes: self.passes.len(),
             filters: self.filters.len(),
+            filter_outputs: self.filter_outputs.len(),
+            filter_scopes: self.filter_scopes.len(),
             shadows: self.shadows.len(),
             open: self.open.clone(),
         }
@@ -362,6 +374,8 @@ impl Frame {
         self.passes.truncate(snap.passes);
         self.reduces.retain(|&(pass, _)| pass < snap.passes);
         self.filters.truncate(snap.filters);
+        self.filter_outputs.truncate(snap.filter_outputs);
+        self.filter_scopes.truncate(snap.filter_scopes);
         self.shadows.truncate(snap.shadows);
         self.open = snap.open;
         // Entries recorded since the snapshot index reverting instances;
@@ -391,8 +405,29 @@ impl Frame {
         self.passes.remove(i);
         shift(&mut self.shadows, i);
         shift(&mut self.filters, i);
+        shift(&mut self.filter_outputs, i);
         shift(&mut self.mips, i);
         shift(&mut self.reduces, i);
+        self.filter_scopes.retain_mut(|scope| {
+            if scope.filter_pass == Some(i) || scope.composite_pass == i {
+                return false;
+            }
+            if scope.passes_start > i {
+                scope.passes_start -= 1;
+            }
+            if scope.last_pass >= i {
+                scope.last_pass = scope.last_pass.saturating_sub(1);
+            }
+            if let Some(pass) = &mut scope.filter_pass
+                && *pass > i
+            {
+                *pass -= 1;
+            }
+            if scope.composite_pass > i {
+                scope.composite_pass -= 1;
+            }
+            true
+        });
     }
 
     /// This frame's pyramid reduce count: one globals slot per level
@@ -414,12 +449,239 @@ impl Frame {
         self.content.clear();
         self.external.clear();
         self.filters.clear();
+        self.filter_outputs.clear();
+        self.filter_scopes.clear();
         self.shadows.clear();
         self.mips.clear();
         self.reduces.clear();
         self.tier_scratch.clear();
         self.open = None;
     }
+
+    /// Declared output dimensions `(width, height)` for filtered pass
+    /// `pass_index`, if different from or resolved alongside `filters`.
+    #[must_use]
+    pub fn filter_output_size(&self, pass_index: usize) -> Option<(u32, u32)> {
+        self.filter_outputs
+            .iter()
+            .find(|&&(index, _)| index == pass_index)
+            .map(|&(_, size)| size)
+    }
+
+    /// Resolves declared output dimensions for every filtered layer scope
+    /// (and enclosing scratch scope) in post-order, updating scratch pass
+    /// capture regions and downstream composite placement/quads without
+    /// re-lowering.
+    pub fn resolve_filter_outputs(
+        &mut self,
+        filters: &Registry,
+        surface_size: (u32, u32),
+    ) -> Result<(), RenderError> {
+        self.filter_outputs.clear();
+        if self.filter_scopes.is_empty() || surface_size.0 == 0 || surface_size.1 == 0 {
+            return Ok(());
+        }
+        for scope in self.filter_scopes.iter().rev() {
+            if scope.needs_backdrop_copy {
+                self.passes[scope.composite_pass].backdrop_copy = scope.prior_backdrop_copy;
+            }
+        }
+        for index in 0..self.filter_scopes.len() {
+            let scope = self.filter_scopes[index];
+            let tight = self.scope_tight_region(&scope, surface_size);
+            let (input_region, output_size) =
+                resolve_scope_extent(&scope, filters, tight, surface_size)?;
+
+            for pass in &mut self.passes[scope.passes_start..=scope.last_pass] {
+                if pass.target == scope.target {
+                    pass.region = input_region;
+                }
+            }
+            if let Some(filter_pass) = scope.filter_pass {
+                self.filter_outputs.push((filter_pass, output_size));
+            }
+            let quad_region =
+                self.update_scope_composite(&scope, input_region, output_size, surface_size);
+            if scope.needs_backdrop_copy {
+                let pass = &mut self.passes[scope.composite_pass];
+                pass.backdrop_copy = Some(pass.backdrop_copy.map_or(quad_region, |prev| {
+                    let x0 = prev[0].min(quad_region[0]);
+                    let y0 = prev[1].min(quad_region[1]);
+                    let x1 = (prev[0] + prev[2]).max(quad_region[0] + quad_region[2]);
+                    let y1 = (prev[1] + prev[3]).max(quad_region[1] + quad_region[3]);
+                    [x0, y0, x1 - x0, y1 - y0]
+                }));
+            }
+        }
+        Ok(())
+    }
+
+    fn scope_tight_region(&self, scope: &FilterScope, surface_size: (u32, u32)) -> [u32; 4] {
+        if !matches!(scope.bounds, FilterScopeBounds::Tight) {
+            return [0; 4];
+        }
+        let mut min = [f32::INFINITY; 2];
+        let mut max = [f32::NEG_INFINITY; 2];
+        for pass in &self.passes[scope.passes_start..=scope.last_pass] {
+            if pass.target != scope.target {
+                continue;
+            }
+            for range in &pass.ranges {
+                let start = range.instances.start as usize;
+                let end = range.instances.end as usize;
+                for inst in &self.instances[start..end] {
+                    let b = device_bbox(inst);
+                    if b.iter().any(|v| !v.is_finite()) {
+                        continue;
+                    }
+                    min[0] = min[0].min(b[0]);
+                    min[1] = min[1].min(b[1]);
+                    max[0] = max[0].max(b[2]);
+                    max[1] = max[1].max(b[3]);
+                }
+            }
+        }
+        padded_region(min, max, surface_size.0, surface_size.1)
+    }
+
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "region and output dimensions fit surface-sized coordinates"
+    )]
+    fn update_scope_composite(
+        &mut self,
+        scope: &FilterScope,
+        input_region: [u32; 4],
+        output_size: (u32, u32),
+        surface_size: (u32, u32),
+    ) -> [u32; 4] {
+        let (placed_origin, quad_region) = if output_size == (input_region[2], input_region[3]) {
+            ([input_region[0], input_region[1]], input_region)
+        } else {
+            let ox = input_region[0].min(surface_size.0.saturating_sub(output_size.0));
+            let oy = input_region[1].min(surface_size.1.saturating_sub(output_size.1));
+            let cw = output_size.0.min(surface_size.0.saturating_sub(ox));
+            let ch = output_size.1.min(surface_size.1.saturating_sub(oy));
+            ([ox, oy], [ox, oy, cw, ch])
+        };
+
+        let inst = &mut self.instances[scope.composite_inst];
+        match scope.composite {
+            FilterScopeComposite::ContentEffect => {
+                inst.grad[0] = placed_origin[0] as f32;
+                inst.grad[1] = placed_origin[1] as f32;
+                inst.grad2[0] = output_size.0 as f32;
+                inst.grad2[1] = output_size.1 as f32;
+            }
+            FilterScopeComposite::Texture => {
+                inst.bounds = [
+                    quad_region[0] as f32,
+                    quad_region[1] as f32,
+                    (quad_region[0] + quad_region[2]) as f32,
+                    (quad_region[1] + quad_region[3]) as f32,
+                ];
+                inst.grad[0] = placed_origin[0] as f32;
+                inst.grad[1] = placed_origin[1] as f32;
+            }
+        }
+        quad_region
+    }
+}
+
+fn resolve_scope_extent(
+    scope: &FilterScope,
+    filters: &Registry,
+    tight: [u32; 4],
+    surface_size: (u32, u32),
+) -> Result<([u32; 4], (u32, u32)), RenderError> {
+    let surface_region = [0, 0, surface_size.0, surface_size.1];
+    let tight_nonempty = tight[2] > 0 && tight[3] > 0;
+    let Some(key) = scope.filter else {
+        return Ok(match scope.bounds {
+            FilterScopeBounds::Destructive(clip) => (clip, (clip[2], clip[3])),
+            FilterScopeBounds::Tight if tight_nonempty => (tight, (tight[2], tight[3])),
+            FilterScopeBounds::FullSurface | FilterScopeBounds::Tight => {
+                (surface_region, surface_size)
+            }
+        });
+    };
+    match scope.bounds {
+        FilterScopeBounds::FullSurface => {
+            Ok((surface_region, filters.output_size(key, surface_size)?))
+        }
+        FilterScopeBounds::Destructive(clip) => {
+            let input = if clip[2] > 0 && clip[3] > 0 {
+                clip
+            } else {
+                surface_region
+            };
+            let out = filters.output_size(key, (input[2], input[3]))?;
+            Ok((input, out))
+        }
+        FilterScopeBounds::Tight if filters.preserves_surface_input(key) || !tight_nonempty => {
+            Ok((surface_region, filters.output_size(key, surface_size)?))
+        }
+        FilterScopeBounds::Tight => {
+            let tight_size = (tight[2], tight[3]);
+            let declared_tight = filters.output_size(key, tight_size)?;
+            let declared_surface = filters.output_size(key, surface_size)?;
+            if declared_tight == tight_size && declared_surface == surface_size {
+                Ok((surface_region, declared_surface))
+            } else {
+                Ok((tight, declared_tight))
+            }
+        }
+    }
+}
+
+/// How an isolation scope bounds its captured scratch region.
+#[derive(Clone, Copy, Debug)]
+pub enum FilterScopeBounds {
+    /// Full surface required (e.g. an interior backdrop capture).
+    FullSurface,
+    /// Destructive blend bounded by its effective clip region.
+    Destructive([u32; 4]),
+    /// Bounded tightly to the drawn instances inside the scratch.
+    Tight,
+}
+
+/// How a filter scope composites back into its enclosing pass.
+#[derive(Clone, Copy, Debug)]
+pub enum FilterScopeComposite {
+    /// Standard `PAINT_TEXTURE` composite quad.
+    Texture,
+    /// Content-effect composite (`PAINT_BACKDROP` / `EFFECT_CONTENT`).
+    ContentEffect,
+}
+
+/// A lowered scratch isolation carrying or enclosing a layer filter, recorded
+/// in post-order so output-size propagation resolves nested and reactive
+/// scopes without re-lowering.
+#[derive(Clone, Copy, Debug)]
+pub struct FilterScope {
+    /// The scratch target holding the scope's captured subtree.
+    pub target: Target,
+    /// First pass index in `frame.passes` owned by this isolation.
+    pub passes_start: usize,
+    /// Last pass index in `frame.passes` owned by this isolation.
+    pub last_pass: usize,
+    /// Pass running `FilterKey::Layer`, if this scope itself is filtered.
+    pub filter_pass: Option<usize>,
+    /// Registered layer filter key, if this scope itself is filtered.
+    pub filter: Option<FilterKey>,
+    /// Enclosing pass into which this scope's composite instance draws.
+    pub composite_pass: usize,
+    /// Instance index of this scope's composite draw in `frame.instances`.
+    pub composite_inst: usize,
+    /// How this scope's input scratch capture is bounded.
+    pub bounds: FilterScopeBounds,
+    /// Composite path targeting `composite_inst`.
+    pub composite: FilterScopeComposite,
+    /// Whether this composite required a backdrop copy on `composite_pass`.
+    pub needs_backdrop_copy: bool,
+    /// Any `backdrop_copy` already present on `composite_pass` from non-filter
+    /// draws before the first filter scope targeted it.
+    pub prior_backdrop_copy: Option<[u32; 4]>,
 }
 
 /// A clip shape with its device-to-clip-local transform, plus its device
@@ -1800,6 +2062,8 @@ struct Isolation {
     /// `frame.instances.len()` when the scope's segment opened: the
     /// tight region is measured over these.
     inst_start: usize,
+    /// `frame.filter_scopes.len()` when the scope opened.
+    filters_start: usize,
     /// `capture_isolation` in force outside the scope.
     saved_capture: bool,
     /// `semantic_target` in force outside the scope.
@@ -3177,6 +3441,7 @@ impl<'a> Lowering<'a> {
         self.scratch_space[scratch] = storage;
         self.begin_pass(Target::Scratch(scratch), Some([0.0; 4]));
         let inst_start = self.frame.instances.len();
+        let filters_start = self.frame.filter_scopes.len();
         let saved_capture = self.capture_isolation;
         let saved_target = self.semantic_target;
         let saved_scratches = take(&mut self.looked_through_scratches);
@@ -3200,6 +3465,7 @@ impl<'a> Lowering<'a> {
             outer_member_clip,
             passes_start,
             inst_start,
+            filters_start,
             saved_capture,
             saved_target,
             saved_scratches,
@@ -3211,11 +3477,6 @@ impl<'a> Lowering<'a> {
     /// enclosing target under the saved outer clip. Returns the scope's
     /// record so a part boundary can reopen it
     /// ([`Lowering::next_part`]).
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "surface size is a small positive float"
-    )]
     fn close_isolation(&mut self) -> Isolation {
         let mut entry = self
             .isolations
@@ -3233,34 +3494,15 @@ impl<'a> Lowering<'a> {
         self.semantic_target = entry.saved_target;
         self.looked_through_scratches = std::mem::take(&mut entry.saved_scratches);
         let outer_target = self.current_target();
-        let region = if let Some(filter) = entry.filter {
-            self.frame
-                .filters
-                .push((self.frame.passes.len() - 1, FilterKey::Layer(filter.raw())));
-            [0, 0, self.width as u32, self.height as u32]
-        } else if inner_capture {
-            // A capture inside reads this scratch at texel origin (0, 0):
-            // its region must cover the whole surface.
-            [0, 0, self.width as u32, self.height as u32]
-        } else if entry.blend.is_destructive() {
-            clip_region(
-                entry.inner_clip.or(entry.outer_clip),
-                self.width as u32,
-                self.height as u32,
-            )
-        } else {
-            tight_region(
-                &self.frame.instances[entry.inst_start..],
-                self.width as u32,
-                self.height as u32,
-            )
-        };
+        let has_descendant_filters = self.frame.filter_scopes.len() > entry.filters_start;
+        let destructive = entry.blend.is_destructive();
+        let bounds = self.isolation_scope_bounds(&entry, inner_capture, destructive);
+        let last_pass = self.frame.passes.len() - 1;
+        let filter_pass = entry.filter.map(|_| last_pass);
+        let filter_key = entry.filter.map(|f| FilterKey::Layer(f.raw()));
+        let region = self.isolation_region(filter_key, bounds, &entry);
         if region[2] == 0 || region[3] == 0 {
-            // A capture inside forces the full-surface region, so this
-            // depth is never empty when one ran.
             debug_assert!(!inner_capture);
-            // Nothing visible in the scratch: drop this depth's segment
-            // passes and the composite entirely.
             for i in (entry.passes_start..self.frame.passes.len()).rev() {
                 if self.frame.passes[i].target == Target::Scratch(scratch) {
                     self.frame.remove_pass(i);
@@ -3275,22 +3517,23 @@ impl<'a> Lowering<'a> {
             }
         }
         self.begin_pass(outer_target, None);
-        let dst_space = self.current_space();
-        if entry.blend != cherenkov::BlendMode::Normal || entry.storage != dst_space {
-            // A blended or cross-space composite samples the backdrop
-            // explicitly: the target's current contents are copied aside
-            // before this pass.
-            if let Some(open) = &mut self.frame.open {
-                open.backdrop_copy = Some(region);
-            }
-        }
-        // The composite instance: a quad over the scratch's region
-        // sampling it with `grad.xy` as the texel origin. A destructive
-        // composite carries the effective clip itself: its coverage decides
-        // where the operator applies across the whole region.
-        if entry.blend.is_destructive() {
+        let needs_backdrop_copy =
+            entry.blend != cherenkov::BlendMode::Normal || entry.storage != self.current_space();
+        let composite_pass = self.frame.passes.len();
+        let prior_backdrop_copy = needs_backdrop_copy
+            .then(|| {
+                let open = self.frame.open.as_mut();
+                let prev = open.as_ref().and_then(|o| o.backdrop_copy);
+                if let Some(o) = open {
+                    o.backdrop_copy = Some(region);
+                }
+                prev
+            })
+            .flatten();
+        if destructive {
             self.set_clip(entry.inner_clip.or(entry.outer_clip));
         }
+        let composite_inst = self.frame.instances.len();
         #[expect(clippy::cast_precision_loss, reason = "region fits the surface")]
         let origin = [region[0] as f32, region[1] as f32];
         self.emit_composite(
@@ -3301,10 +3544,76 @@ impl<'a> Lowering<'a> {
             entry.blend,
             entry.storage,
         );
-        if entry.blend.is_destructive() {
+        if destructive {
             self.set_clip(entry.outer_clip);
         }
+        if filter_key.is_some() || has_descendant_filters {
+            self.frame.filter_scopes.push(FilterScope {
+                target: Target::Scratch(scratch),
+                passes_start: entry.passes_start,
+                last_pass,
+                filter_pass,
+                filter: filter_key,
+                composite_pass,
+                composite_inst,
+                bounds,
+                composite: FilterScopeComposite::Texture,
+                needs_backdrop_copy,
+                prior_backdrop_copy,
+            });
+        }
         entry
+    }
+
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "surface size is a small positive float"
+    )]
+    fn isolation_scope_bounds(
+        &self,
+        entry: &Isolation,
+        inner_capture: bool,
+        destructive: bool,
+    ) -> FilterScopeBounds {
+        if inner_capture {
+            FilterScopeBounds::FullSurface
+        } else if destructive {
+            FilterScopeBounds::Destructive(clip_region(
+                entry.inner_clip.or(entry.outer_clip),
+                self.width as u32,
+                self.height as u32,
+            ))
+        } else {
+            FilterScopeBounds::Tight
+        }
+    }
+
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "surface size is a small positive float"
+    )]
+    fn isolation_region(
+        &mut self,
+        filter_key: Option<FilterKey>,
+        bounds: FilterScopeBounds,
+        entry: &Isolation,
+    ) -> [u32; 4] {
+        let last_pass = self.frame.passes.len() - 1;
+        if let Some(key) = filter_key {
+            self.frame.filters.push((last_pass, key));
+            return [0, 0, self.width as u32, self.height as u32];
+        }
+        match bounds {
+            FilterScopeBounds::FullSurface => [0, 0, self.width as u32, self.height as u32],
+            FilterScopeBounds::Destructive(clip) => clip,
+            FilterScopeBounds::Tight => tight_region(
+                &self.frame.instances[entry.inst_start..],
+                self.width as u32,
+                self.height as u32,
+            ),
+        }
     }
 
     /// Capture a silhouette in padded device coordinates, convolve it, then
@@ -4560,6 +4869,7 @@ impl<'a> Lowering<'a> {
         let (outer_clip, outer_member_clip) = (self.clip, self.member_outer_clip.take());
         self.set_clip(Some(member_clip));
         let passes_start = self.frame.passes.len();
+        let filters_start = self.frame.filter_scopes.len();
         if self.scratch_space.len() <= scratch {
             self.scratch_space.resize(scratch + 1, BlendSpace::Linear);
         }
@@ -4587,10 +4897,12 @@ impl<'a> Lowering<'a> {
         self.transform = layer_transform;
         result?;
 
-        let scratch_region = if let Some(filter) = node.filter {
-            self.frame
-                .filters
-                .push((self.frame.passes.len() - 1, FilterKey::Layer(filter.raw())));
+        let last_pass = self.frame.passes.len() - 1;
+        let filter_pass = node.filter.map(|_| last_pass);
+        let filter_key = node.filter.map(|f| FilterKey::Layer(f.raw()));
+        let has_descendant_filters = self.frame.filter_scopes.len() > filters_start;
+        let scratch_region = if let Some(key) = filter_key {
+            self.frame.filters.push((last_pass, key));
             [0, 0, self.width as u32, self.height as u32]
         } else if inner_capture {
             [0, 0, self.width as u32, self.height as u32]
@@ -4622,18 +4934,7 @@ impl<'a> Lowering<'a> {
             f32_f64(member_bounds.height()),
         ];
         inst.color[0] = effect.recording_scale().get();
-        let first = self.frame.stops.len() as u32;
-        let mut count = 0u32;
-        for chunk in effect.uniforms.chunks(4) {
-            let mut v = [0.0; 4];
-            v[..chunk.len()].copy_from_slice(chunk);
-            self.frame.stops.push(Stop {
-                color: v,
-                offset: 0.0,
-                pad: [0.0; 3],
-            });
-            count += 1;
-        }
+        let (first, count) = self.push_effect_uniforms(&effect.uniforms);
         inst.meta[2] = first;
         inst.meta[3] |= EFFECT_CONTENT | (count << 8);
         if space == BlendSpace::SrgbEncoded {
@@ -4647,12 +4948,80 @@ impl<'a> Lowering<'a> {
         if explicit {
             self.open_member_blend_pass(&mut inst, &mut pipeline);
         }
+        let composite_pass = self.frame.passes.len();
+        let composite_inst = self.frame.instances.len();
         self.set_source(Some(Source::Scratch(scratch)));
         self.set_pipeline(pipeline);
         self.push_instance(&inst);
         self.set_pipeline(PipelineKind::SrcOver);
         self.set_source(None);
+        if filter_key.is_some() || has_descendant_filters {
+            self.push_content_effect_scope(
+                scratch,
+                passes_start,
+                last_pass,
+                filter_pass,
+                filter_key,
+                composite_pass,
+                composite_inst,
+                inner_capture,
+            );
+        }
         Ok(())
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "records the post-order filter scope indices and capture flags"
+    )]
+    fn push_content_effect_scope(
+        &mut self,
+        scratch: usize,
+        passes_start: usize,
+        last_pass: usize,
+        filter_pass: Option<usize>,
+        filter: Option<FilterKey>,
+        composite_pass: usize,
+        composite_inst: usize,
+        inner_capture: bool,
+    ) {
+        self.frame.filter_scopes.push(FilterScope {
+            target: Target::Scratch(scratch),
+            passes_start,
+            last_pass,
+            filter_pass,
+            filter,
+            composite_pass,
+            composite_inst,
+            bounds: if inner_capture {
+                FilterScopeBounds::FullSurface
+            } else {
+                FilterScopeBounds::Tight
+            },
+            composite: FilterScopeComposite::ContentEffect,
+            needs_backdrop_copy: false,
+            prior_backdrop_copy: None,
+        });
+    }
+
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "stop offsets and uniform counts fit u32"
+    )]
+    fn push_effect_uniforms(&mut self, uniforms: &[f32]) -> (u32, u32) {
+        let first = self.frame.stops.len() as u32;
+        let mut count = 0u32;
+        for chunk in uniforms.chunks(4) {
+            let mut v = [0.0; 4];
+            v[..chunk.len()].copy_from_slice(chunk);
+            self.frame.stops.push(Stop {
+                color: v,
+                offset: 0.0,
+                pad: [0.0; 3],
+            });
+            count += 1;
+        }
+        (first, count)
     }
 
     /// A filtered member whose opacity or blend is not a no-op
@@ -7438,7 +7807,11 @@ pub fn shadow_support(frame: &Frame, last: usize) -> [u32; 4] {
                     .filters
                     .iter()
                     .any(|&(pass_index, _)| pass_index == first + index)
-                    .then_some(pass.region);
+                    .then(|| {
+                        let [rx, ry, rw, rh] = pass.region;
+                        let (ow, oh) = frame.filter_output_size(first + index).unwrap_or((rw, rh));
+                        [rx, ry, rw.max(ow), rh.max(oh)]
+                    });
                 pass.ranges
                     .iter()
                     .flat_map(|range| {

@@ -10,8 +10,11 @@ use rustc_hash::FxHashMap;
 use cherenkov::{CompletionWaker, RenderError, SurfaceWakes};
 
 use filtrate::{
-    Effect, EffectContext, EffectFrameTiming, EffectInput, EffectOutput, RetainedMemory,
+    Effect, EffectContext, EffectFrameTiming, EffectInput, EffectOutput, EffectRedrawCallback,
+    EffectRenderError, EffectSetupError, Executor, RetainedMemory,
 };
+use filtrate_core::kind::{FilterKind, Kind};
+use wgpu::{CommandEncoder, Texture, TextureView};
 
 /// An effect moved to the render thread before its device resources exist.
 pub struct EffectBox(pub(crate) Box<dyn Source>);
@@ -42,7 +45,57 @@ pub struct FromFilter<F>(pub F);
 
 impl<F: filtrate_core::Filter + cherenkov::RenderTransfer> Source for FromFilter<F> {
     fn build(self: Box<Self>) -> Box<dyn Runnable> {
-        Box::new(filtrate::Executor::new(self.0))
+        Box::new(FilterRunnable(Executor::new(self.0)))
+    }
+}
+
+/// An `Executor` over a `FromFilter`, retaining full-surface input bounds
+/// for spatial filters whose blur or convolution halos extend past drawn
+/// subtree bounds.
+struct FilterRunnable<F: filtrate_core::Filter>(Executor<F>);
+
+impl<F: filtrate_core::Filter> Runnable for FilterRunnable<F> {
+    fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32) {
+        Effect::output_size(&self.0, input_width, input_height)
+    }
+
+    fn preserves_surface_input(&self) -> bool {
+        <F::Kind as Kind>::VALUE == FilterKind::Spatial
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn setup(&mut self, ctx: &EffectContext<'_>) -> Result<(), EffectSetupError> {
+        Runnable::setup(&mut self.0, ctx)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn setup<'a>(
+        &'a mut self,
+        ctx: &'a EffectContext<'a>,
+    ) -> core::pin::Pin<Box<dyn core::future::Future<Output = Result<(), EffectSetupError>> + 'a>>
+    {
+        Runnable::setup(&mut self.0, ctx)
+    }
+
+    fn encode(
+        &mut self,
+        input: &EffectInput<'_>,
+        output: &EffectOutput<'_>,
+        encoder: &mut CommandEncoder,
+    ) -> Result<bool, EffectRenderError> {
+        Runnable::encode(&mut self.0, input, output, encoder)
+    }
+
+    fn set_redraw(&mut self, callback: EffectRedrawCallback) {
+        Runnable::set_redraw(&mut self.0, callback);
+    }
+
+    fn retained_memory(&self) -> RetainedMemory {
+        Effect::retained_memory(&self.0)
+    }
+
+    fn trim(&mut self) {
+        Effect::trim(&mut self.0);
     }
 }
 
@@ -111,6 +164,10 @@ where
         self.0.set_length_scale(scale);
     }
 
+    fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32) {
+        Effect::output_size(&self.0, input_width, input_height)
+    }
+
     fn retained_memory(&self) -> RetainedMemory {
         Effect::retained_memory(&self.0)
     }
@@ -147,6 +204,19 @@ pub trait Runnable {
     /// scale arrives through this, not only through `EffectInput`.
     fn set_length_scale(&mut self, _scale: f32) {}
 
+    /// Declares the output dimensions `(width, height)` for an input
+    /// capture of `(input_width, input_height)`.
+    fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32) {
+        (input_width, input_height)
+    }
+
+    /// Whether the filter expects full-surface input bounds (for spatial
+    /// kernels registered via [`FromFilter`] whose halos extend outside
+    /// drawn children).
+    fn preserves_surface_input(&self) -> bool {
+        false
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     fn setup(&mut self, ctx: &EffectContext<'_>) -> Result<(), filtrate::EffectSetupError>;
     #[cfg(target_arch = "wasm32")]
@@ -176,6 +246,10 @@ pub trait Runnable {
 }
 
 impl<E: Effect> Runnable for E {
+    fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32) {
+        Effect::output_size(self, input_width, input_height)
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     fn setup(&mut self, ctx: &EffectContext<'_>) -> Result<(), filtrate::EffectSetupError> {
         pollster::block_on(Effect::setup(self, ctx))
@@ -209,6 +283,9 @@ impl<E: Effect> Runnable for E {
     }
 }
 
+/// Cache key pairing `(input_size, output_size)` for filter intermediate targets.
+type FilterTargetKey = ((u32, u32), (u32, u32));
+
 struct Entry {
     effect: Box<dyn Runnable>,
     dirty: Arc<AtomicBool>,
@@ -219,15 +296,16 @@ struct Entry {
     setup: Option<Result<(), String>>,
     #[cfg(target_arch = "wasm32")]
     setup_pending_frame: bool,
-    /// Input/output targets per size, capped; a frame can apply one filter
-    /// to several region sizes (#117 sparse backdrop captures).
-    io: Vec<((u32, u32), FilterTargets)>,
+    /// Input/output targets per `(input_size, output_size)` pair, capped;
+    /// a frame can apply one filter to several region sizes (#117 sparse
+    /// backdrop captures) and reactive effects can change output dimensions.
+    io: Vec<(FilterTargetKey, FilterTargets)>,
 }
 
 /// The input and output targets of one size.
 struct FilterTargets {
-    input: (wgpu::Texture, wgpu::TextureView),
-    output: (wgpu::Texture, wgpu::TextureView),
+    input: (Texture, TextureView),
+    output: (Texture, TextureView),
     /// The space conversion's bind groups when these targets last served
     /// an sRGB-encoded scope.
     convert: Option<ConvertBinds>,
@@ -294,6 +372,7 @@ impl FilterTargets {
         encoder: &mut wgpu::CommandEncoder,
         scope: Scope<'_>,
         format: wgpu::TextureFormat,
+        output_size: (u32, u32),
     ) {
         let scratch = scope.target;
         if let Some(convert) = scope.encoded {
@@ -306,13 +385,13 @@ impl FilterTargets {
                 encoder,
                 &binds.encode,
                 (&scratch.view, format),
-                scope.size,
+                output_size,
             );
         } else {
             encoder.copy_texture_to_texture(
                 self.output.0.as_image_copy(),
                 scratch.texture.as_image_copy(),
-                extent(scope.size),
+                extent(output_size),
             );
         }
     }
@@ -396,17 +475,20 @@ impl Entry {
             .map_err(|error| RenderError::Render(format!("filter {id:?} setup: {error}")))
     }
 
-    /// The index of `size`'s input/output targets, allocating on first use.
+    /// The index of `(input_size, output_size)`'s input/output targets,
+    /// allocating on first use.
     fn targets_index(
         &mut self,
         device: &wgpu::Device,
-        size: (u32, u32),
+        input_size: (u32, u32),
+        output_size: (u32, u32),
         format: wgpu::TextureFormat,
         sequence: u64,
     ) -> usize {
-        // A used size is live this frame: mark it before stale sizes are
-        // dropped so steady state reuses its targets.
-        if let Some(index) = self.io.iter().position(|(io_size, _)| *io_size == size) {
+        let key = (input_size, output_size);
+        // A used size pair is live this frame: mark it before stale entries
+        // are dropped so steady state reuses its targets.
+        if let Some(index) = self.io.iter().position(|(io_key, _)| *io_key == key) {
             self.io[index].1.last_used = sequence;
         }
         // Stale sizes go first so the lookup below cannot pick them up
@@ -418,7 +500,7 @@ impl Entry {
             .retain(|(_, targets)| targets.last_used.saturating_add(1) >= sequence);
         self.io
             .iter()
-            .position(|(io_size, _)| *io_size == size)
+            .position(|(io_key, _)| *io_key == key)
             .unwrap_or_else(|| {
                 const MAX_FILTER_TARGET_SIZES: usize = 4;
                 if self.io.len() == MAX_FILTER_TARGET_SIZES {
@@ -440,19 +522,19 @@ impl Entry {
                     }
                 }
                 self.io.push((
-                    size,
+                    key,
                     FilterTargets {
                         input: super::create_target(
                             device,
                             "filter input",
-                            size,
+                            input_size,
                             super::TARGET_USAGES,
                             format,
                         ),
                         output: super::create_target(
                             device,
                             "filter output",
-                            size,
+                            output_size,
                             super::TARGET_USAGES,
                             format,
                         ),
@@ -460,14 +542,16 @@ impl Entry {
                         last_used: sequence,
                     },
                 ));
-                let created = u64::from(size.0) * u64::from(size.1) * super::texel_bytes(format);
-                for label in ["filter input", "filter output"] {
+                let texel_bytes = super::texel_bytes(format);
+                for (label, (width, height)) in
+                    [("filter input", input_size), ("filter output", output_size)]
+                {
                     crate::diag::grow(
                         device,
                         label,
                         crate::diag::Class::Target,
                         0,
-                        created,
+                        u64::from(width) * u64::from(height) * texel_bytes,
                         0,
                         true,
                     );
@@ -594,6 +678,34 @@ impl Registry {
         }
     }
 
+    /// Declares the output dimensions `(width, height)` for an input
+    /// capture of `input_size`.
+    pub fn output_size(
+        &self,
+        id: FilterKey,
+        input_size: (u32, u32),
+    ) -> Result<(u32, u32), RenderError> {
+        let entry = self
+            .entries
+            .get(&id)
+            .ok_or_else(|| RenderError::Render(format!("unregistered filter {id:?}")))?;
+        let output_size = entry.effect.output_size(input_size.0, input_size.1);
+        if output_size.0 == 0 || output_size.1 == 0 {
+            return Err(RenderError::Render(format!(
+                "filter {id:?} declared invalid output size {output_size:?} for input {input_size:?}"
+            )));
+        }
+        Ok(output_size)
+    }
+
+    /// Whether the registered filter expects full-surface input bounds even
+    /// when its declared output size matches the input.
+    pub fn preserves_surface_input(&self, id: FilterKey) -> bool {
+        self.entries
+            .get(&id)
+            .is_some_and(|entry| entry.effect.preserves_surface_input())
+    }
+
     pub(super) fn apply(
         &mut self,
         id: FilterKey,
@@ -602,7 +714,7 @@ impl Registry {
         timing: EffectFrameTiming,
         encoder: &mut wgpu::CommandEncoder,
     ) -> Result<(), RenderError> {
-        let (scratch, size) = (scope.target, scope.size);
+        let (scratch, input_size) = (scope.target, scope.size);
         let (device, queue) = (context.device, context.queue);
         let entry = self
             .entries
@@ -636,7 +748,20 @@ impl Registry {
         }
         let format = scratch.texture.format();
         entry.check_setup(id, context, format, scope.cache)?;
-        let targets_index = entry.targets_index(device, size, format, timing.sequence());
+        let output_size = entry.effect.output_size(input_size.0, input_size.1);
+        if output_size.0 == 0 || output_size.1 == 0 {
+            return Err(RenderError::Render(format!(
+                "filter {id:?} declared invalid output size {output_size:?} for input {input_size:?}"
+            )));
+        }
+        let target_size = (scratch.texture.width(), scratch.texture.height());
+        if output_size.0 > target_size.0 || output_size.1 > target_size.1 {
+            return Err(RenderError::Render(format!(
+                "filter {id:?} output size {output_size:?} exceeds target texture size {target_size:?}"
+            )));
+        }
+        let targets_index =
+            entry.targets_index(device, input_size, output_size, format, timing.sequence());
         let targets = &mut entry.io[targets_index].1;
         targets.load(device, encoder, &mut scope, format);
         let input = EffectInput::new(device, queue, &targets.input.0, timing, scope.length_scale);
@@ -645,7 +770,7 @@ impl Registry {
             .effect
             .encode(&input, &output, encoder)
             .map_err(|error| RenderError::Render(format!("filter {id:?}: {error}")))?;
-        targets.store(device, encoder, scope, format);
+        targets.store(device, encoder, scope, format, output_size);
         Ok(())
     }
 }
@@ -698,6 +823,7 @@ impl Registry {
 mod tests {
     use super::*;
     use filtrate::filters::GaussianBlur;
+    use wgpu::TextureFormat;
 
     /// An adapter plus device, or `None` where no GPU exists.
     fn device_and_queue() -> Option<(wgpu::Device, wgpu::Queue)> {
@@ -734,36 +860,64 @@ mod tests {
             eprintln!("no GPU adapter; skipping");
             return;
         };
-        let format = wgpu::TextureFormat::Rgba16Float;
+        let format = TextureFormat::Rgba16Float;
         let size_a = (64, 64);
         let size_b = (64, 32);
         let mut entry = entry();
-        entry.targets_index(&device, size_a, format, 1);
-        entry.targets_index(&device, size_b, format, 1);
-        entry.targets_index(&device, size_a, format, 2);
+        entry.targets_index(&device, size_a, size_a, format, 1);
+        entry.targets_index(&device, size_b, size_b, format, 1);
+        entry.targets_index(&device, size_a, size_a, format, 2);
         assert!(
-            entry.io.iter().any(|(size, _)| *size == size_b),
+            entry.io.iter().any(|(size, _)| *size == (size_b, size_b)),
             "a size the previous frame used is still live"
         );
-        let index = entry.targets_index(&device, size_b, format, 2);
+        let index = entry.targets_index(&device, size_b, size_b, format, 2);
         let input_b = entry.io[index].1.input.0.clone();
         assert!(
             input_b
                 == entry
                     .io
                     .iter()
-                    .find(|(size, _)| *size == size_b)
+                    .find(|(size, _)| *size == (size_b, size_b))
                     .expect("size B targets")
                     .1
                     .input
                     .0,
             "size B's targets are reused, not reallocated"
         );
-        entry.targets_index(&device, size_a, format, 3);
-        entry.targets_index(&device, size_a, format, 4);
+        entry.targets_index(&device, size_a, size_a, format, 3);
+        entry.targets_index(&device, size_a, size_a, format, 4);
         assert!(
-            !entry.io.iter().any(|(size, _)| *size == size_b),
+            !entry.io.iter().any(|(size, _)| *size == (size_b, size_b)),
             "a size unused for a whole frame is dropped"
+        );
+    }
+
+    #[test]
+    fn targets_index_allocates_distinct_input_and_output_dimensions() {
+        let Some((device, _queue)) = device_and_queue() else {
+            eprintln!("no GPU adapter; skipping");
+            return;
+        };
+        let format = TextureFormat::Rgba16Float;
+        let input_size = (24, 36);
+        let out_a = (72, 48);
+        let out_b = (12, 18);
+        let mut entry = entry();
+        let idx_a = entry.targets_index(&device, input_size, out_a, format, 1);
+        assert_eq!(entry.io[idx_a].1.input.0.width(), input_size.0);
+        assert_eq!(entry.io[idx_a].1.input.0.height(), input_size.1);
+        assert_eq!(entry.io[idx_a].1.output.0.width(), out_a.0);
+        assert_eq!(entry.io[idx_a].1.output.0.height(), out_a.1);
+        let idx_b = entry.targets_index(&device, input_size, out_b, format, 2);
+        assert_eq!(entry.io[idx_b].1.input.0.width(), input_size.0);
+        assert_eq!(entry.io[idx_b].1.input.0.height(), input_size.1);
+        assert_eq!(entry.io[idx_b].1.output.0.width(), out_b.0);
+        assert_eq!(entry.io[idx_b].1.output.0.height(), out_b.1);
+        assert_eq!(
+            entry.io.len(),
+            2,
+            "different output dimensions for the same input size do not overwrite each other"
         );
     }
 }

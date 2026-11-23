@@ -386,6 +386,7 @@ fn pass_state(frame: &Frame, index: usize, version: &impl Fn(&DrawRange) -> u64)
     for (_, key) in frame.filters.iter().filter(|(owner, _)| *owner == index) {
         key.hash(&mut hash);
     }
+    frame.filter_output_size(index).hash(&mut hash);
     for (_, parameters) in frame.shadows.iter().filter(|(owner, _)| *owner == index) {
         parameters
             .transform
