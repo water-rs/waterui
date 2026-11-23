@@ -17,4 +17,8 @@ interface SessionPainter {
 
     /** Applies or releases the high-refresh demand for the bound host. */
     fun setHighRefresh(active: Boolean)
+
+    /** Sets an upper refresh-rate ceiling (`<= 0` clears the cap) driven by
+     * thermal or compute headroom pressure. */
+    fun setMaxRefreshRate(maxHz: Float) {}
 }

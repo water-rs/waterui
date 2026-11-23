@@ -25,12 +25,13 @@ pub enum HostMethodId {
     BandShow,
     BandClear,
     FrameCompleted,
+    PerformanceTarget,
 }
 
 impl HostMethodId {
     /// Every id, in table order — the per-variant `dead_code` exemption for
     /// non-Android test builds and the test's order check both read it.
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::RequestRedraw,
         Self::SoftInput,
         Self::AccessibilityTreeChanged,
@@ -44,6 +45,7 @@ impl HostMethodId {
         Self::BandShow,
         Self::BandClear,
         Self::FrameCompleted,
+        Self::PerformanceTarget,
     ];
 }
 
@@ -109,6 +111,10 @@ pub const HOST_METHODS: &[HostMethod] = &[
         name: "onNativeFrameCompleted",
         signature: "()V",
     },
+    HostMethod {
+        name: "onNativePerformanceTarget",
+        signature: "(JIF)V",
+    },
 ];
 
 const _: () = assert!(
@@ -139,6 +145,7 @@ mod tests {
     fn kotlin_type_to_jni(kotlin: &str, method: &str) -> &'static str {
         match kotlin {
             "Boolean" => "Z",
+            "Float" => "F",
             "Int" => "I",
             "IntArray" => "[I",
             "Long" => "J",

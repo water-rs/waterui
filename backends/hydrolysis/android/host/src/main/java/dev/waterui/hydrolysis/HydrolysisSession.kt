@@ -82,6 +82,22 @@ class HydrolysisSession internal constructor(
     private val mainHandler = Handler(Looper.getMainLooper())
 
     /**
+     * Coordinates ADPF [android.os.PerformanceHintManager.Session] work-duration
+     * reporting and off-thread thermal/CPU/GPU headroom sampling.
+     */
+    internal val framePerformance: FramePerformance = FramePerformance(
+        context.applicationContext,
+        mainHandler,
+        onHeadroomChanged = { cpu, gpu, thermalStatus, thermalHeadroom ->
+            if (!destroyed && !destroyRequested) {
+                withNativePtr(NativeBridge::nativeSetHeadroom.name) { ptr ->
+                    NativeBridge.nativeSetHeadroom(ptr, cpu, gpu, thermalStatus, thermalHeadroom)
+                }
+            }
+        },
+    )
+
+    /**
      * The session's frame pump. It belongs to the session, not to a host
      * view: a configuration change replaces the view but keeps this
      * session, and the one scheduler must stop with the native state it
@@ -360,12 +376,9 @@ class HydrolysisSession internal constructor(
      */
     internal fun setFrameDemand(continuous: Boolean, touching: Boolean) {
         check(!destroyed) { "hydrolysis: frame demand reached a destroyed HydrolysisSession" }
-        if (painter != null) {
-            painter.setHighRefresh(continuous || touching)
-        } else {
-            withNativePtr(NativeBridge::nativeSetFrameDemand.name) { ptr ->
-                NativeBridge.nativeSetFrameDemand(ptr, continuous, touching)
-            }
+        painter?.setHighRefresh(continuous || touching)
+        withNativePtr(NativeBridge::nativeSetFrameDemand.name) { ptr ->
+            NativeBridge.nativeSetFrameDemand(ptr, continuous, touching)
         }
     }
 
@@ -457,6 +470,7 @@ class HydrolysisSession internal constructor(
             try {
                 painter?.destroy()
             } finally {
+                framePerformance.close()
                 mainHandler.removeCallbacksAndMessages(null)
                 frameScheduler.stop()
             }
@@ -529,9 +543,20 @@ class HydrolysisSession internal constructor(
             mainHandler.post { onNativeFrameCompleted() }
             return
         }
-        withNativePtr(NativeBridge::nativeCompleteFrame.name) { ptr ->
-            NativeBridge.nativeCompleteFrame(ptr)
+        val renderCpuNanos =
+            withNativePtr(NativeBridge::nativeCompleteFrame.name) { ptr ->
+                NativeBridge.nativeCompleteFrame(ptr)
+            }
+        if (renderCpuNanos >= 0L) {
+            framePerformance.completePendingFrame(renderCpuNanos)
         }
+    }
+
+    /** Updates ADPF session threads/budget and HWUI headroom refresh cap. */
+    @CalledFromNative
+    fun onNativePerformanceTarget(targetDurationNanos: Long, renderThreadTid: Int, maxRefreshHz: Float) {
+        painter?.setMaxRefreshRate(maxRefreshHz)
+        framePerformance.updateTarget(targetDurationNanos, renderThreadTid)
     }
 
     /**

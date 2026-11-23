@@ -76,6 +76,11 @@ class HwuiPainter : OrderedContent, SessionPainter {
         highRefresh.set(active, host)
     }
 
+    override fun setMaxRefreshRate(maxHz: Float) {
+        check(!destroyed) { "hydrolysis: refresh ceiling reached a destroyed HWUI painter" }
+        highRefresh.setMaxRefreshRate(maxHz, host)
+    }
+
     /**
      * Replays the first `length` bytes of the session's command buffer, on
      * the UI thread. `clear` is the window background as a `ColorLong` when
@@ -185,6 +190,7 @@ class HwuiPainter : OrderedContent, SessionPainter {
  */
 private class HighRefresh {
     private var active = false
+    private var maxRefreshHz = 0f
     private var appliedTo: HydrolysisHostView? = null
     private var previousFrameRate: Float? = null
     private var previousWindowRate: Float? = null
@@ -195,6 +201,14 @@ private class HighRefresh {
             host?.let { apply(it) }
         } else {
             release()
+        }
+    }
+
+    fun setMaxRefreshRate(maxHz: Float, host: HydrolysisHostView?) {
+        if (maxRefreshHz == maxHz) return
+        maxRefreshHz = maxHz
+        if (active && host != null && appliedTo === host) {
+            writeDesiredRate(host)
         }
     }
 
@@ -211,15 +225,25 @@ private class HighRefresh {
         release()
         if (Build.VERSION.SDK_INT >= 35) {
             previousFrameRate = host.requestedFrameRate
-            host.requestedFrameRate = peakRefresh(host)
         } else {
             val window = activityWindow(host)
             previousWindowRate = window.attributes.preferredRefreshRate
+        }
+        writeDesiredRate(host)
+        appliedTo = host
+    }
+
+    private fun writeDesiredRate(host: HydrolysisHostView) {
+        val peak = peakRefresh(host)
+        val target = if (maxRefreshHz > 0f) peak.coerceAtMost(maxRefreshHz) else peak
+        if (Build.VERSION.SDK_INT >= 35) {
+            host.requestedFrameRate = target
+        } else {
+            val window = activityWindow(host)
             val attributes = window.attributes
-            attributes.preferredRefreshRate = peakRefresh(host)
+            attributes.preferredRefreshRate = target
             window.attributes = attributes
         }
-        appliedTo = host
     }
 
     private fun release() {

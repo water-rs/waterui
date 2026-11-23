@@ -68,6 +68,10 @@ pub struct GpuInfo {
     pub driver_info: String,
     /// Supported GPU timestamp positions.
     pub timestamps: TimestampSupport,
+    /// Kernel thread ID (`gettid`) of the `"cherenkov-render"` worker thread,
+    /// registered in Android ADPF performance hint sessions.
+    #[cfg(target_os = "android")]
+    pub render_thread_id: i32,
 }
 
 /// One engine-creation boundary a [`CreationProbe`] observes — the phases
