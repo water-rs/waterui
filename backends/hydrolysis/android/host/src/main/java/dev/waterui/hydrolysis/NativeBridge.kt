@@ -84,11 +84,19 @@ object NativeBridge {
      * tracks only painted regions.
      * 32 = [nativeOnFrame] carries the active Choreographer frame timeline
      * vsync ID (`hasVsyncId`, `vsyncId`) alongside `presentationNanos`.
+     * 33 = ADPF hint & thermal/CPU/GPU headroom: [nativeSetHeadroom],
+     * [nativeCompleteFrame] returns GPU render-thread CPU wall nanoseconds
+     * (`-1` when incomplete), [nativeOnFrame] reports work/async bits,
+     * [nativeSetFrameDemand] serves both GPU and HWUI, and
+     * [HydrolysisSession.onNativePerformanceTarget] pushes budget/tid/cap.
      */
-    private const val SCHEMA: Int = 32
+    private const val SCHEMA: Int = 33
 
-    /** Applies the pending GPU result on the UI thread. */
-    @JvmStatic external fun nativeCompleteFrame(session: Long)
+    /**
+     * Applies the pending GPU result on the UI thread, returning the render
+     * worker's wall CPU nanoseconds when a GPU frame completed (`-1` when not).
+     */
+    @JvmStatic external fun nativeCompleteFrame(session: Long): Long
 
     /** [nativeBackEvent] phase: a predictive gesture began. */
     const val BACK_STARTED: Int = 0
@@ -307,10 +315,23 @@ object NativeBridge {
 
     /**
      * Continuous work and touch demand, combined with the engine's content
-     * range on the native side. The demand survives surface re-creation.
+     * range and thermal/compute headroom on the native side.
      */
     @JvmStatic
     external fun nativeSetFrameDemand(sessionPtr: Long, continuous: Boolean, touching: Boolean)
+
+    /**
+     * Latest thermal status, thermal headroom, and Android 16 CPU/GPU headroom
+     * sampled off the frame-critical threads (`Float.NaN` = unavailable).
+     */
+    @JvmStatic
+    external fun nativeSetHeadroom(
+        sessionPtr: Long,
+        cpuHeadroom: Float,
+        gpuHeadroom: Float,
+        thermalStatus: Int,
+        thermalHeadroom: Float,
+    )
 
     /**
      * One system-back phase. `phase` is a `BACK_*` constant. `edge` is

@@ -53,9 +53,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::time::Duration;
 
+#[cfg(target_os = "android")]
+use libc::gettid;
 use rustc_hash::{FxHashMap, FxHashSet};
 #[cfg(any(target_vendor = "apple", target_os = "android"))]
 use waterui_contract::contract_violation;
+use wgpu::AdapterInfo;
 use wgpu::util::DeviceExt;
 
 use crate::interop::ExternalFrame;
@@ -3267,20 +3270,27 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             #[cfg(not(target_arch = "wasm32"))]
             picture_commands_pending: false,
         };
-        Ok((
-            renderer,
-            GpuInfo {
-                name: info.name,
-                backend: format!("{:?}", info.backend),
-                vendor: info.vendor,
-                device: info.device,
-                device_type: format!("{:?}", info.device_type),
-                driver: info.driver,
-                driver_info: info.driver_info,
-                timestamps: timestamp_support,
-            },
-        ))
+        Ok((renderer, build_gpu_info(info, timestamp_support)))
     })
+}
+
+fn build_gpu_info(info: AdapterInfo, timestamps: TimestampSupport) -> GpuInfo {
+    #[cfg(target_os = "android")]
+    // SAFETY: `gettid(2)` has no preconditions and returns the caller thread's
+    // kernel thread ID on Android.
+    let render_thread_id = unsafe { gettid() };
+    GpuInfo {
+        name: info.name,
+        backend: format!("{:?}", info.backend),
+        vendor: info.vendor,
+        device: info.device,
+        device_type: format!("{:?}", info.device_type),
+        driver: info.driver,
+        driver_info: info.driver_info,
+        timestamps,
+        #[cfg(target_os = "android")]
+        render_thread_id,
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -3625,19 +3635,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         #[cfg(not(target_arch = "wasm32"))]
         picture_commands_pending: false,
     };
-    Ok((
-        renderer,
-        GpuInfo {
-            name: info.name,
-            backend: format!("{:?}", info.backend),
-            vendor: info.vendor,
-            device: info.device,
-            device_type: format!("{:?}", info.device_type),
-            driver: info.driver,
-            driver_info: info.driver_info,
-            timestamps: timestamp_support,
-        },
-    ))
+    Ok((renderer, build_gpu_info(info, timestamp_support)))
 }
 
 /// The stack entries the surface's committed plan promotes, each with its

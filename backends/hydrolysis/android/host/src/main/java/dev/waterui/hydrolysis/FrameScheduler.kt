@@ -141,18 +141,34 @@ internal class FrameScheduler(private val session: HydrolysisSession) :
      * started.
      */
     private fun pump(cause: String, presentationNanos: Long?, vsyncId: Long?) {
-        val outcome =
-            session.withNativePtr(NativeBridge::nativeOnFrame.name) { ptr ->
-                NativeBridge.nativeOnFrame(
-                    ptr,
-                    presentationNanos != null,
-                    presentationNanos ?: 0L,
-                    vsyncId != null,
-                    vsyncId ?: 0L,
-                )
+        session.framePerformance.beginFrameDispatch()
+        var outcome = 0L
+        val frameStartNanos = System.nanoTime()
+        try {
+            outcome =
+                session.withNativePtr(NativeBridge::nativeOnFrame.name) { ptr ->
+                    NativeBridge.nativeOnFrame(
+                        ptr,
+                        presentationNanos != null,
+                        presentationNanos ?: 0L,
+                        vsyncId != null,
+                        vsyncId ?: 0L,
+                    )
+                }
+            val uiWallNanos = (System.nanoTime() - frameStartNanos).coerceAtLeast(1L)
+            // The frame can end the session: a teardown requested inside it ran
+            // as the frame returned and stopped this scheduler.
+            if (stopped) return
+            if (outcome and RENDERED_WORK != 0L) {
+                if (outcome and FRAME_ASYNC_PENDING != 0L) {
+                    session.framePerformance.beginPendingFrame(frameStartNanos, uiWallNanos)
+                } else {
+                    session.framePerformance.reportSynchronousFrame(frameStartNanos, uiWallNanos)
+                }
             }
-        // The frame can end the session: a teardown requested inside it ran
-        // as the frame returned and stopped this scheduler.
+        } finally {
+            session.framePerformance.endFrameDispatch()
+        }
         if (stopped) return
         val wantsNext = outcome and WANTS_NEXT_FRAME != 0L
         val deadlineNanos =
@@ -197,6 +213,8 @@ internal class FrameScheduler(private val session: HydrolysisSession) :
         const val TAG = "hydrolysis"
         const val WANTS_NEXT_FRAME = 1L
         const val HAS_DEADLINE = 4L
+        const val RENDERED_WORK = 8L
+        const val FRAME_ASYNC_PENDING = 16L
         const val NANOS_PER_MILLI = 1_000_000L
     }
 }
