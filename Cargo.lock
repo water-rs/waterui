@@ -4075,7 +4075,6 @@ version = "0.1.0"
 dependencies = [
  "hydrolysis-m3",
  "waterui",
- "waterui-conformance",
  "waterui-icons-material-icon",
  "waterui-testing",
 ]
@@ -13225,23 +13224,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "waterui-conformance"
-version = "0.5.1"
-dependencies = [
- "askama",
- "image",
- "pollster",
- "rayon",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "waterui",
- "waterui-capture",
- "waterui-core",
- "waterui-testing",
-]
-
-[[package]]
 name = "waterui-contract"
 version = "0.5.1"
 dependencies = [
@@ -13873,6 +13855,7 @@ version = "0.5.1"
 dependencies = [
  "accesskit",
  "approx",
+ "askama",
  "async-io",
  "bitflags 2.13.2",
  "cargo_metadata",
@@ -13882,9 +13865,11 @@ dependencies = [
  "image",
  "kurbo",
  "pollster",
+ "rayon",
  "serde",
  "serde_json",
  "sysinfo",
+ "thiserror 2.0.21",
  "waterui",
  "waterui-assets-planner",
  "waterui-core",

@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use askama::Template;
 use serde::{Deserialize, Serialize};
 
-use crate::error::ConformanceError;
+use crate::error::VisualDiffError;
 use crate::flip::FlipMetrics;
 use crate::image::BlankFrameAnalysis;
 
@@ -54,8 +54,8 @@ impl GalleryReport {
     ///
     /// # Errors
     ///
-    /// Returns [`ConformanceError::SerializeReport`] if JSON serialization fails.
-    pub fn to_json_pretty(&self) -> Result<String, ConformanceError> {
+    /// Returns [`VisualDiffError::SerializeReport`] if JSON serialization fails.
+    pub fn to_json_pretty(&self) -> Result<String, VisualDiffError> {
         Ok(serde_json::to_string_pretty(self)?)
     }
 
@@ -64,9 +64,9 @@ impl GalleryReport {
     ///
     /// # Errors
     ///
-    /// Returns [`ConformanceError::SerializeReport`] or
-    /// [`ConformanceError::RenderTemplate`] if serialization or rendering fails.
-    pub fn render_html(&self) -> Result<String, ConformanceError> {
+    /// Returns [`VisualDiffError::SerializeReport`] or
+    /// [`VisualDiffError::RenderTemplate`] if serialization or rendering fails.
+    pub fn render_html(&self) -> Result<String, VisualDiffError> {
         // Escape `<`, `>`, and `&` inside embedded JSON so HTML parsers can
         // never misinterpret `</script>`, `<!--`, or raw tags inside the
         // script element while preserving valid JSON.
@@ -168,7 +168,7 @@ impl GallerySummary {
     }
 }
 
-/// Report for a single named conformance suite.
+/// Report for a single named visual-test suite.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SuiteReport {
     /// Suite identifier (matches the top-level artifact directory segment).
@@ -248,28 +248,28 @@ pub struct GalleryArtifactPaths {
 ///
 /// # Errors
 ///
-/// Returns [`ConformanceError`] if creating the directory, serializing JSON,
+/// Returns [`VisualDiffError`] if creating the directory, serializing JSON,
 /// rendering the HTML template, or writing either file fails.
 pub fn write_gallery_artifacts(
     artifact_root: impl AsRef<Path>,
     report: &GalleryReport,
-) -> Result<GalleryArtifactPaths, ConformanceError> {
+) -> Result<GalleryArtifactPaths, VisualDiffError> {
     let root = artifact_root.as_ref().to_path_buf();
-    fs::create_dir_all(&root).map_err(|source| ConformanceError::Io {
+    fs::create_dir_all(&root).map_err(|source| VisualDiffError::Io {
         path: root.clone(),
         source,
     })?;
 
     let report_json_path = root.join("report.json");
     let json = report.to_json_pretty()?;
-    fs::write(&report_json_path, json).map_err(|source| ConformanceError::Io {
+    fs::write(&report_json_path, json).map_err(|source| VisualDiffError::Io {
         path: report_json_path.clone(),
         source,
     })?;
 
     let index_html_path = root.join("index.html");
     let html = report.render_html()?;
-    fs::write(&index_html_path, html).map_err(|source| ConformanceError::Io {
+    fs::write(&index_html_path, html).map_err(|source| VisualDiffError::Io {
         path: index_html_path.clone(),
         source,
     })?;

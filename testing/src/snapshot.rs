@@ -1,3 +1,4 @@
+use std::fs;
 use std::path::Path;
 #[cfg(feature = "gpu")]
 use std::rc::Rc;
@@ -9,6 +10,7 @@ use hydrolysis::{
     FontFamilyResolution, HydrolysisRenderer, OffscreenGpuContext, OffscreenWindow, Style,
     readback_texture_rgba8,
 };
+use image::{ImageError, ImageResult, RgbaImage as RawRgbaImage};
 #[cfg(feature = "gpu")]
 use waterui::graphics::WorkingColor;
 #[cfg(feature = "gpu")]
@@ -18,6 +20,10 @@ use waterui_core::{AnyView, Environment, View};
 
 #[cfg(feature = "gpu")]
 use crate::artifacts::{CapturedSnapshot, TestArtifacts};
+use crate::error::VisualDiffError;
+#[cfg(feature = "flip")]
+use crate::flip::{FlipConfig, FlipResult, compare_flip_rgba8};
+use crate::image::{BlankFrameAnalysis, RgbaImage, analyze_blank_rgba8};
 
 /// RGBA8 frame captured from a headless hydrolysis render pass.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,9 +70,25 @@ impl Snapshot {
     pub const fn rgba8_mut(&mut self) -> &mut [u8] {
         self.rgba8.as_mut_slice()
     }
+
+    /// Consumes the snapshot and returns `(width, height, rgba8)`.
+    #[must_use]
+    pub fn into_parts(self) -> (u32, u32, Vec<u8>) {
+        (self.width, self.height, self.rgba8)
+    }
 }
 
 impl Snapshot {
+    /// Loads a PNG file into a [`Snapshot`] using pure-Rust decoding.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VisualDiffError::Io`] or [`VisualDiffError::Image`] if the
+    /// file cannot be read or decoded as a PNG image.
+    pub fn load_png(path: impl AsRef<Path>) -> Result<Self, VisualDiffError> {
+        RgbaImage::load_png(path).map(Self::from)
+    }
+
     /// Saves the snapshot to a PNG file.
     ///
     /// # Errors
@@ -76,14 +98,64 @@ impl Snapshot {
     /// # Panics
     ///
     /// Panics if the stored RGBA buffer length does not match the snapshot dimensions.
-    pub fn save_png(&self, path: impl AsRef<Path>) -> image::ImageResult<()> {
+    pub fn save_png(&self, path: impl AsRef<Path>) -> ImageResult<()> {
         let path = path.as_ref();
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(image::ImageError::IoError)?;
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            fs::create_dir_all(parent).map_err(ImageError::IoError)?;
         }
-        let image = image::RgbaImage::from_raw(self.width, self.height, self.rgba8.clone())
+        let image = RawRgbaImage::from_raw(self.width, self.height, self.rgba8.clone())
             .expect("Snapshot::save_png: rgba buffer shape must match dimensions");
         image.save(path)
+    }
+
+    /// Analyzes the snapshot to detect blank (empty, fully transparent, or
+    /// uniform single-color) captures.
+    #[must_use]
+    pub fn analyze_blank(&self) -> BlankFrameAnalysis {
+        analyze_blank_rgba8(self.width, self.height, &self.rgba8)
+    }
+
+    /// Compares this reference snapshot against `candidate` using NVIDIA
+    /// LDR-FLIP with [`FlipConfig::default`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VisualDiffError::InvalidImageBuffer`] if either snapshot's
+    /// buffer length does not match its dimensions,
+    /// [`VisualDiffError::DimensionMismatch`] when the snapshots differ in
+    /// size, or [`VisualDiffError::EmptyImage`] when either dimension is zero.
+    #[cfg(feature = "flip")]
+    pub fn compare_flip(&self, candidate: &Self) -> Result<FlipResult, VisualDiffError> {
+        self.compare_flip_with(candidate, FlipConfig::default())
+    }
+
+    /// Compares this reference snapshot against `candidate` using NVIDIA
+    /// LDR-FLIP with an explicit [`FlipConfig`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VisualDiffError::InvalidConfig`] for invalid parameters,
+    /// [`VisualDiffError::InvalidImageBuffer`] if either snapshot's buffer
+    /// length does not match its dimensions,
+    /// [`VisualDiffError::DimensionMismatch`] when the snapshots differ in
+    /// size, or [`VisualDiffError::EmptyImage`] when either dimension is zero.
+    #[cfg(feature = "flip")]
+    pub fn compare_flip_with(
+        &self,
+        candidate: &Self,
+        config: FlipConfig,
+    ) -> Result<FlipResult, VisualDiffError> {
+        compare_flip_rgba8(
+            self.width,
+            self.height,
+            &self.rgba8,
+            candidate.width,
+            candidate.height,
+            &candidate.rgba8,
+            config,
+        )
     }
 }
 
