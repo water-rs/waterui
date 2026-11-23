@@ -1104,10 +1104,11 @@ impl<E: crate::text::TextEngine> LazyStackNode<E> {
     /// realized rows that left become ghosts holding their slot, and rows it
     /// inserted start their insertion when they are first built this frame.
     /// Every row and ghost clock then advances.
-    pub(super) fn patch_visible(&self, renderer: &mut SemanticCore<E>) -> bool {
+    pub(super) fn patch_visible(&self, renderer: &mut SemanticCore<E>) -> PatchOutcome {
         let transitions = &self.transitions;
         let replaced = core::mem::take(&mut *self.replaced_ids.borrow_mut());
-        if !replaced.is_empty() {
+        let had_replaced = !replaced.is_empty();
+        if had_replaced {
             // A same-id content change drops exactly those rows' retained
             // sub-views; they re-materialize from the collection's current
             // data when the visible window next fills them.
@@ -1174,16 +1175,22 @@ impl<E: crate::text::TextEngine> LazyStackNode<E> {
         }
         let first_rebuilt = self.realize_first_item(&snapshot, renderer);
         let changed = self.item_cache.borrow_mut().patch_for_parent(renderer);
-        if changed || materialized || first_rebuilt {
+        if had_replaced || changed.layout || first_rebuilt {
             self.estimate_sample.set(None);
             self.floor_sample.set(None);
+        }
+        if changed.structural || materialized || first_rebuilt {
             renderer.state.counters.structural_patches += 1;
         }
         let (dropped, animating) = transitions.advance(renderer.frame_instant);
         if animating {
             renderer.context_mark_layout();
         }
-        changed | materialized | ghosted | dropped | animating | first_rebuilt
+        let layout = had_replaced | changed.layout | ghosted | dropped | animating | first_rebuilt;
+        PatchOutcome {
+            structural: layout | changed.structural | materialized,
+            layout,
+        }
     }
 
     /// Keeps the collection's first item realized in the item cache and
