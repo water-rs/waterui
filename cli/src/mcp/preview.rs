@@ -352,15 +352,18 @@ mod tests {
     /// renders through the headless `aarch64-apple-ios-sim` preview binary.
     #[test]
     fn ios_resolves_to_the_ios_simulator_preview_binary() {
+        use serde_json::{from_value, json};
+
+        use crate::platform::TargetPlatform;
+
         let args: PreviewArgs =
-            serde_json::from_value(serde_json::json!({"target": "home", "platform": "ios"}))
-                .expect("args parse");
+            from_value(json!({"target": "home", "platform": "ios"})).expect("args parse");
         let request = args
             .resolve(&project_manifest(), "demo_app")
             .expect("resolve");
         assert_eq!(
             request.backend(),
-            ResolvedPreviewBackend::Apple(crate::platform::TargetPlatform::IOSSimulator)
+            ResolvedPreviewBackend::Apple(TargetPlatform::IOSSimulator)
         );
         assert_eq!(request.hydrolysis_theme(), None);
     }

@@ -228,7 +228,7 @@ objc2-quartz-core = { version = "0.3", default-features = false, features = [
 ] }
 
 [build-dependencies]
-cc = { version = "1.2", optional = true }
+cc = { version = "1.2", default-features = false, optional = true }
 cfg_aliases = "0.2.2"
 waterkit-build = { workspace = true, default-features = false, optional = true }
 

@@ -484,9 +484,11 @@ mod tests {
     /// `water doctor --fix` remedy.
     #[test]
     fn ios_sim_preview_requires_the_ios_sim_target() {
+        use smol::block_on;
+
         let machine = apple_machine(&["aarch64-apple-darwin", "aarch64-apple-ios"]);
         let host = machine.host(Vec::<(String, String)>::new());
-        let error = smol::block_on(check_apple_preview(&host, TargetPlatform::IOSSimulator))
+        let error = block_on(check_apple_preview(&host, TargetPlatform::IOSSimulator))
             .expect_err("a missing ios-sim target must fail the check");
         let message = error.to_string();
         assert!(message.contains("aarch64-apple-ios-sim"), "{message}");
@@ -494,7 +496,7 @@ mod tests {
 
         let machine = apple_machine(&["aarch64-apple-darwin", "aarch64-apple-ios-sim"]);
         let host = machine.host(Vec::<(String, String)>::new());
-        smol::block_on(check_apple_preview(&host, TargetPlatform::IOSSimulator))
+        block_on(check_apple_preview(&host, TargetPlatform::IOSSimulator))
             .expect("an installed ios-sim target satisfies the check");
     }
 }

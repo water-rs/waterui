@@ -7,7 +7,7 @@
 //! declaration lives here, discharged next to the call. Everything else is
 //! safe `objc2` API on the caller's own objects, all main-thread.
 
-use filtrate_core::space::srgb_encode;
+use filtrate_core::space::{SRGB_TO_P3, from_srgb, srgb_decode, srgb_encode, transform};
 use objc2::rc::Retained;
 #[cfg(target_os = "macos")]
 use objc2::runtime::AnyClass;
@@ -71,7 +71,85 @@ pub struct HdrRaster {
     pub height: u32,
 }
 
+/// Source encoding of premultiplied extended-range RGBA `f32` pixels before
+/// normalization into [`HdrRaster`]'s extended linear Display P3 working space.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtendedColorSpace {
+    /// Already premultiplied extended linear Display P3.
+    ExtendedLinearDisplayP3,
+    /// Premultiplied extended linear sRGB (Rec. 709 primaries, D65).
+    ExtendedLinearSrgb,
+    /// Premultiplied extended gamma-encoded Display P3.
+    ExtendedDisplayP3,
+    /// Premultiplied extended gamma-encoded sRGB.
+    ExtendedSrgb,
+}
+
 impl HdrRaster {
+    /// Normalizes premultiplied extended-range RGBA `f32` pixels from `space`
+    /// into an [`HdrRaster`] in extended linear Display P3, reusing
+    /// `filtrate_core::space`'s canonical transfer and chromaticity transforms.
+    #[must_use]
+    pub fn from_extended_rgba(
+        mut pixels: Vec<[f32; 4]>,
+        width: u32,
+        height: u32,
+        space: ExtendedColorSpace,
+    ) -> Self {
+        for pixel in &mut pixels {
+            let alpha = if pixel[3].is_finite() {
+                pixel[3].clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            if alpha <= 0.0 {
+                *pixel = [0.0; 4];
+            } else {
+                for channel in &mut pixel[..3] {
+                    if !channel.is_finite() {
+                        *channel = 0.0;
+                    }
+                }
+                pixel[3] = alpha;
+            }
+        }
+        match space {
+            ExtendedColorSpace::ExtendedLinearDisplayP3 => {}
+            ExtendedColorSpace::ExtendedSrgb => from_srgb(&mut pixels),
+            ExtendedColorSpace::ExtendedLinearSrgb => {
+                for pixel in &mut pixels {
+                    let alpha = pixel[3];
+                    if alpha > 0.0 {
+                        let [r, g, b] = transform(
+                            &SRGB_TO_P3,
+                            [pixel[0] / alpha, pixel[1] / alpha, pixel[2] / alpha],
+                        );
+                        *pixel = [r * alpha, g * alpha, b * alpha, alpha];
+                    }
+                }
+            }
+            ExtendedColorSpace::ExtendedDisplayP3 => {
+                for pixel in &mut pixels {
+                    let alpha = pixel[3];
+                    if alpha > 0.0 {
+                        let [r, g, b] =
+                            [pixel[0] / alpha, pixel[1] / alpha, pixel[2] / alpha].map(srgb_decode);
+                        *pixel = [r * alpha, g * alpha, b * alpha, alpha];
+                    }
+                }
+            }
+        }
+        let mut flat = Vec::with_capacity(pixels.len() * 4);
+        for pixel in pixels {
+            flat.extend_from_slice(&pixel);
+        }
+        Self {
+            pixels: flat,
+            width,
+            height,
+        }
+    }
+
     /// Maximum finite RGB channel value across all pixels (`0.0` when empty).
     #[must_use]
     pub fn max_channel(&self) -> f32 {

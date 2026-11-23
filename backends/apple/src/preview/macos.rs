@@ -15,6 +15,7 @@ use cocoa_ui::objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType, NSView
 use cocoa_ui::objc2_core_foundation::{CFRunLoop, CGPoint};
 use cocoa_ui::view::{display_immediately, layout_immediately};
 use cocoa_ui::{ColorScheme, MainThreadMarker, Rect, Retained, Size};
+use executor_core::spawn_local;
 use objc2_core_graphics::{CGEvent, CGScrollEventUnit};
 use waterui::AnyView;
 #[cfg(feature = "inspector")]
@@ -89,7 +90,7 @@ pub(super) fn drive_hdr(
             // stops `CFRunLoop::run` below.
             let env = unsafe { &mut *env_ptr };
             let env = compose(env.clone());
-            executor_core::spawn_local(async move {
+            spawn_local(async move {
                 *outcome.borrow_mut() =
                     Some(render_hdr(&env, mtm, view, size, color_scheme, content_deadline).await);
                 CFRunLoop::current()
@@ -203,7 +204,7 @@ pub(super) fn drive(
                 elapsed_ms = load_started.elapsed().as_millis(),
                 "Apple preview phase"
             );
-            executor_core::spawn_local(async move {
+            spawn_local(async move {
                 *outcome.borrow_mut() = Some(
                     execute_run_task(
                         &env,

@@ -4,12 +4,13 @@
 
 #[cfg(target_os = "macos")]
 mod cache;
-pub mod runtime;
+#[cfg(target_os = "macos")]
+mod runtime;
 
 use std::path::Path;
 use std::process::Output;
 
-use eyre::Result;
+use eyre::{Result, bail};
 
 use crate::toolchain::Host;
 
@@ -42,7 +43,7 @@ pub struct IosSimPreviewLaunch<'a> {
 /// non-zero.
 #[cfg(target_os = "macos")]
 pub async fn run_ios_sim_preview(host: &Host, launch: IosSimPreviewLaunch<'_>) -> Result<Output> {
-    use eyre::{Context as _, bail};
+    use eyre::Context as _;
     use smol::fs;
     use tempfile::Builder;
     use waterui_preview_protocol::run::PREVIEW_RUN_CONFIG_ENV;
@@ -133,8 +134,19 @@ pub async fn run_ios_sim_preview(host: &Host, launch: IosSimPreviewLaunch<'_>) -
 
 /// Non-macOS stub failing cleanly when `--platform ios` preview is invoked off macOS.
 #[cfg(not(target_os = "macos"))]
-pub async fn run_ios_sim_preview(_host: &Host, _launch: IosSimPreviewLaunch<'_>) -> Result<Output> {
-    eyre::bail!(
-        "`water preview --platform ios` requires a macOS host with an iOS Simulator runtime"
+pub async fn run_ios_sim_preview(_host: &Host, launch: IosSimPreviewLaunch<'_>) -> Result<Output> {
+    let IosSimPreviewLaunch {
+        working_dir,
+        binary_path,
+        run_config_path,
+        width,
+        height,
+        scale,
+        fps,
+    } = launch;
+    let _ = (working_dir, run_config_path, width, height, scale, fps);
+    bail!(
+        "`water preview --platform ios` (for {}) requires a macOS host with an iOS Simulator runtime",
+        binary_path.display()
     )
 }

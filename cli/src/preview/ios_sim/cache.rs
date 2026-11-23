@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 use std::process;
 
 use eyre::{Context as _, Result};
+use futures_util::try_join;
+use hex::encode;
 use sha2::{Digest as _, Sha256};
 use smol::fs;
 use tempfile::Builder;
@@ -64,7 +66,7 @@ impl IosSimHelpers {
 /// Returns an error if the Xcode SDKs cannot be located, `clang` or `codesign`
 /// fails, or the cache directory cannot be written.
 pub async fn ensure_helpers(host: &Host, runtime: &IosSimRuntime) -> Result<IosSimHelpers> {
-    let (macos_sdk, sim_sdk, cache_root) = futures_util::try_join!(
+    let (macos_sdk, sim_sdk, cache_root) = try_join!(
         sdk_path(host, "macosx"),
         sdk_path(host, "iphonesimulator"),
         water_dir::build_cache_root(host),
@@ -95,14 +97,14 @@ pub async fn ensure_helpers(host: &Host, runtime: &IosSimRuntime) -> Result<IosS
     fs::write(stage_dir.join("sim_interpose.m"), SIM_INTERPOSE_M).await?;
 
     let staged = IosSimHelpers::in_dir(stage_dir);
-    futures_util::try_join!(
+    try_join!(
         compile_simhost(host, stage_dir, &staged.simhost),
         compile_simns(host, stage_dir, &staged.simns),
         compile_simfb(host, stage_dir, &staged.simfb),
         compile_interpose(host, stage_dir, &staged.interpose),
     )?;
 
-    futures_util::try_join!(
+    try_join!(
         ad_hoc_sign(host, &staged.simhost),
         ad_hoc_sign(host, &staged.simns),
         ad_hoc_sign(host, &staged.simfb),
@@ -139,7 +141,7 @@ fn cache_key(runtime: &IosSimRuntime, macos_sdk: &Path, sim_sdk: &Path) -> Strin
     hasher.update(SIMNS_C.as_bytes());
     hasher.update(SIMFB_M.as_bytes());
     hasher.update(SIM_INTERPOSE_M.as_bytes());
-    let digest = hex::encode(hasher.finalize());
+    let digest = encode(hasher.finalize());
     digest[..16].to_string()
 }
 

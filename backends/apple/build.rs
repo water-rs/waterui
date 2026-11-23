@@ -46,13 +46,17 @@ fn main() {
 /// all runtime hooks resolve via `dlsym` at preview launch.
 #[cfg(feature = "preview")]
 fn compile_ios_sim_preview_shim() {
-    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
-    let target_abi = std::env::var("CARGO_CFG_TARGET_ABI").unwrap_or_default();
+    use std::env;
+
+    use cc::Build;
+
+    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let target_abi = env::var("CARGO_CFG_TARGET_ABI").unwrap_or_default();
     if target_os != "ios" || target_abi != "sim" {
         return;
     }
     println!("cargo::rerun-if-changed=src/preview/ios_sim_shim.m");
-    cc::Build::new()
+    Build::new()
         .file("src/preview/ios_sim_shim.m")
         .flag("-fobjc-arc")
         .compile("waterui_ios_sim_preview_shim");

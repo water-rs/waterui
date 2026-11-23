@@ -2,8 +2,9 @@
 
 use std::path::{Path, PathBuf};
 
-use eyre::{Context as _, Result, bail};
+use eyre::{Context as _, Result, bail, eyre};
 use serde::Deserialize;
+use serde_json::from_str;
 use smol::fs;
 
 use crate::toolchain::Host;
@@ -69,8 +70,8 @@ pub async fn discover_ios_sim_runtime(host: &Host) -> Result<IosSimRuntime> {
 
 /// Select the newest available arm64 iOS runtime from `xcrun simctl list runtimes --json`.
 pub fn select_ios_sim_runtime(json: &str) -> Result<IosSimRuntime> {
-    let parsed: SimctlRuntimesOutput = serde_json::from_str(json)
-        .wrap_err("Failed to parse `xcrun simctl list runtimes --json` output")?;
+    let parsed: SimctlRuntimesOutput =
+        from_str(json).wrap_err("Failed to parse `xcrun simctl list runtimes --json` output")?;
     let mut candidates = parsed
         .runtimes
         .into_iter()
@@ -102,7 +103,7 @@ pub fn select_ios_sim_runtime(json: &str) -> Result<IosSimRuntime> {
     });
 
     candidates.into_iter().next().ok_or_else(|| {
-        eyre::eyre!(
+        eyre!(
             "No available arm64 iOS Simulator runtime is installed. \
              Install an iOS Simulator runtime in Xcode (`xcodebuild -downloadPlatform iOS`)."
         )

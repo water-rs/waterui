@@ -9,7 +9,7 @@ use std::ptr;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use cocoa_ui::bitmap::HdrRaster;
+use cocoa_ui::bitmap::{ExtendedColorSpace, HdrRaster};
 use cocoa_ui::core_animation::flush_transaction;
 use cocoa_ui::dynamic_range::{DynamicRange, apply_to_view};
 use cocoa_ui::objc2::Message as _;
@@ -18,6 +18,7 @@ use cocoa_ui::objc2_ui_kit::UIWindow;
 use cocoa_ui::uikit::{HostView, ViewController, current_scheme, window_root};
 use cocoa_ui::view::{display_immediately, layout_immediately};
 use cocoa_ui::{ColorScheme, MainThreadMarker};
+use executor_core::spawn_local;
 use half::f16;
 use waterui::AnyView;
 #[cfg(feature = "inspector")]
@@ -228,7 +229,7 @@ extern "C" fn on_scene_ready(window_ptr: *mut c_void, user_data: *mut c_void) {
             elapsed_ms = load_started.elapsed().as_millis(),
             "Apple iOS Simulator preview phase"
         );
-        executor_core::spawn_local(async move {
+        spawn_local(async move {
             let result = execute_sim_task(
                 &env,
                 mtm,
@@ -246,7 +247,6 @@ extern "C" fn on_scene_ready(window_ptr: *mut c_void, user_data: *mut c_void) {
                 Ok(()) => process::exit(0),
                 Err(error) => {
                     tracing::error!("preview run failed: {error}");
-                    eprintln!("Error: {error}");
                     process::exit(1);
                 }
             }
@@ -634,40 +634,38 @@ fn write_single_frame(
 impl CapturedSimFrame {
     fn into_hdr_raster(self) -> Result<HdrRaster, PreviewError> {
         if self.pixel_format == FOURCC_RGHA && self.bytes_per_element == 8 {
-            let mut pixels = Vec::with_capacity((self.width as usize) * (self.height as usize) * 4);
-            let mode = SimColorEncoding::from_iosurface_name(&self.colorspace);
+            let mut pixels = Vec::with_capacity((self.width as usize) * (self.height as usize));
             for chunk in self.bytes.as_chunks::<8>().0 {
                 let r = f16::from_le_bytes([chunk[0], chunk[1]]).to_f32();
                 let g = f16::from_le_bytes([chunk[2], chunk[3]]).to_f32();
                 let b = f16::from_le_bytes([chunk[4], chunk[5]]).to_f32();
                 let a = f16::from_le_bytes([chunk[6], chunk[7]]).to_f32();
-                let converted = mode.to_linear_display_p3([r, g, b, a]);
-                pixels.extend_from_slice(&converted);
+                pixels.push([r, g, b, a]);
             }
-            return Ok(HdrRaster {
+            let space = iosurface_color_space(&self.colorspace);
+            return Ok(HdrRaster::from_extended_rgba(
                 pixels,
-                width: self.width,
-                height: self.height,
-            });
+                self.width,
+                self.height,
+                space,
+            ));
         }
         if self.pixel_format == FOURCC_BGRA && self.bytes_per_element == 4 {
-            let mut pixels = Vec::with_capacity((self.width as usize) * (self.height as usize) * 4);
+            let mut pixels = Vec::with_capacity((self.width as usize) * (self.height as usize));
             for chunk in self.bytes.as_chunks::<4>().0 {
-                let a = f32::from(chunk[3]) / 255.0;
-                if a <= 0.0 {
-                    pixels.extend_from_slice(&[0.0, 0.0, 0.0, 0.0]);
-                    continue;
-                }
-                let r = extended_srgb_to_linear((f32::from(chunk[2]) / 255.0) / a) * a;
-                let g = extended_srgb_to_linear((f32::from(chunk[1]) / 255.0) / a) * a;
-                let b = extended_srgb_to_linear((f32::from(chunk[0]) / 255.0) / a) * a;
-                pixels.extend_from_slice(&[r, g, b, a]);
+                pixels.push([
+                    f32::from(chunk[2]) / 255.0,
+                    f32::from(chunk[1]) / 255.0,
+                    f32::from(chunk[0]) / 255.0,
+                    f32::from(chunk[3]) / 255.0,
+                ]);
             }
-            return Ok(HdrRaster {
+            return Ok(HdrRaster::from_extended_rgba(
                 pixels,
-                width: self.width,
-                height: self.height,
-            });
+                self.width,
+                self.height,
+                ExtendedColorSpace::ExtendedDisplayP3,
+            ));
         }
         Err(PreviewError::SimulatorFramebuffer(format!(
             "unsupported SimFramebuffer pixel format 0x{:08x} (bpe={})",
@@ -689,94 +687,15 @@ impl CapturedSimFrame {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-enum SimColorEncoding {
-    ExtendedLinearDisplayP3,
-    ExtendedLinearSrgb,
-    ExtendedDisplayP3,
-    ExtendedSrgb,
-}
-
-impl SimColorEncoding {
-    fn from_iosurface_name(name: &str) -> Self {
-        if name.contains("LinearDisplayP3") {
-            Self::ExtendedLinearDisplayP3
-        } else if name.contains("LinearSRGB") {
-            Self::ExtendedLinearSrgb
-        } else if name.contains("DisplayP3") {
-            Self::ExtendedDisplayP3
-        } else if name.contains("SRGB") {
-            Self::ExtendedSrgb
-        } else {
-            // Core Animation's simulator `RGhA` swapchain defaults to extended sRGB.
-            Self::ExtendedSrgb
-        }
-    }
-
-    fn to_linear_display_p3(self, pixel: [f32; 4]) -> [f32; 4] {
-        let a = if pixel[3].is_finite() {
-            pixel[3].clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-        if a <= 0.0 {
-            return [0.0, 0.0, 0.0, 0.0];
-        }
-        let sr = if pixel[0].is_finite() {
-            pixel[0] / a
-        } else {
-            0.0
-        };
-        let sg = if pixel[1].is_finite() {
-            pixel[1] / a
-        } else {
-            0.0
-        };
-        let sb = if pixel[2].is_finite() {
-            pixel[2] / a
-        } else {
-            0.0
-        };
-
-        let [lr, lg, lb] = match self {
-            Self::ExtendedLinearDisplayP3 => [sr, sg, sb],
-            Self::ExtendedLinearSrgb => linear_srgb_to_linear_display_p3([sr, sg, sb]),
-            Self::ExtendedDisplayP3 => [
-                extended_srgb_to_linear(sr),
-                extended_srgb_to_linear(sg),
-                extended_srgb_to_linear(sb),
-            ],
-            Self::ExtendedSrgb => linear_srgb_to_linear_display_p3([
-                extended_srgb_to_linear(sr),
-                extended_srgb_to_linear(sg),
-                extended_srgb_to_linear(sb),
-            ]),
-        };
-
-        [lr * a, lg * a, lb * a, a]
-    }
-}
-
-/// Extended sRGB / Display P3 electro-optical transfer function (IEC 61966-2-1,
-/// mirrored for negative values per Apple's `kCGColorSpaceExtendedSRGB`).
-fn extended_srgb_to_linear(v: f32) -> f32 {
-    let sign = v.signum();
-    let abs = v.abs();
-    let lin = if abs <= 0.04045 {
-        abs / 12.92
+fn iosurface_color_space(name: &str) -> ExtendedColorSpace {
+    if name.contains("LinearDisplayP3") {
+        ExtendedColorSpace::ExtendedLinearDisplayP3
+    } else if name.contains("LinearSRGB") {
+        ExtendedColorSpace::ExtendedLinearSrgb
+    } else if name.contains("DisplayP3") {
+        ExtendedColorSpace::ExtendedDisplayP3
     } else {
-        ((abs + 0.055) / 1.055).powf(2.4)
-    };
-    sign * lin
-}
-
-/// Exact 3x3 chromaticity conversion matrix from linear sRGB (Rec. 709 / D65)
-/// to linear Display P3 (DCI-P3 primaries / D65).
-fn linear_srgb_to_linear_display_p3(rgb: [f32; 3]) -> [f32; 3] {
-    let [r, g, b] = rgb;
-    [
-        0.177_538_f32.mul_add(g, 0.822_462 * r),
-        0.966_805_8_f32.mul_add(g, 0.033_194_2 * r),
-        0.910_52_f32.mul_add(b, 0.072_397_4_f32.mul_add(g, 0.017_082_6 * r)),
-    ]
+        // Core Animation's simulator `RGhA` swapchain defaults to extended sRGB.
+        ExtendedColorSpace::ExtendedSrgb
+    }
 }
