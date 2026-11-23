@@ -36,9 +36,8 @@ use waterui::theme::ColorScheme;
 use waterui::window::WindowState;
 use waterui_core::contract_violation;
 use waterui_core::layout::LayoutDirection;
-use waterui_frame_rate::FrameRate;
 #[cfg(hydrolysis_gpu_painter)]
-use waterui_frame_rate::combine;
+use waterui_frame_rate::{FrameRate, combine};
 
 #[cfg(hydrolysis_gpu_painter)]
 use super::gpu::RefreshDemand;
@@ -49,8 +48,6 @@ use super::gpu::{AndroidGpuContext, AndroidSurface};
 #[cfg(any(feature = "text-field", feature = "secure-field"))]
 use super::ime::ImeBridge;
 use super::jni::JniError;
-#[cfg(hydrolysis_hwui)]
-use crate::num_cast::f64_as_f32;
 #[cfg(hydrolysis_gpu_painter)]
 use crate::platform::PaintedWindow;
 use crate::platform::{InputEvent, PlatformWindow, TextInputState, validated_window_frame};
@@ -60,13 +57,8 @@ use crate::renderer::FontFamilyResolution;
 use crate::renderer::HydrolysisRenderer;
 #[cfg(any(feature = "text-field", feature = "secure-field"))]
 use crate::renderer::HydrolysisTextContextMenuMode;
-#[cfg(hydrolysis_gpu_painter)]
-use crate::renderer::Next;
 use crate::runner::android_methods::{HOST_METHODS, HostMethodId};
 use crate::runner::android_metrics::InsetsMetrics;
-use crate::runner::android_performance::{
-    DisplayRefreshSpec, HeadroomSnapshot, PerformanceTarget, resolve_target_performance,
-};
 use crate::runner::host_executor::{AndroidExecutor, EventFdWake, UiThreadPoster, redraw_wake};
 #[cfg(hydrolysis_inspector)]
 use crate::runner::init_main_thread_executors;
@@ -441,20 +433,6 @@ impl HostBridge {
                 JValue::Bool(translucent),
                 JValue::Bool(blur_behind),
                 JValue::Int(blur_radius_px),
-            ],
-        );
-    }
-
-    /// `session.onNativePerformanceTarget(targetDurationNanos, renderThreadTid, maxRefreshHz)` —
-    /// updates the host ADPF performance hint session threads/budget and HWUI
-    /// headroom refresh ceiling.
-    fn set_performance_target(&self, target: PerformanceTarget, render_thread_tid: i32) {
-        self.call(
-            HostMethodId::PerformanceTarget,
-            &[
-                JValue::Long(target.target_duration_nanos),
-                JValue::Int(render_thread_tid),
-                JValue::Float(target.max_refresh_hz),
             ],
         );
     }
@@ -1303,7 +1281,6 @@ impl FrameHost for AndroidSession {
     fn after_render(&mut self, presented: bool) {
         if presented {
             self.presented_once.set(true);
-            self.performance.last_frame_rendered = true;
         }
         #[cfg(feature = "navigation")]
         self.sync_back_navigation_available();
@@ -1343,19 +1320,6 @@ impl FrameHost for AndroidSession {
     }
 }
 
-/// How a frame transaction's work duration maps to ADPF reporting.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum FrameWorkReport {
-    /// No frame work was submitted or rendered.
-    #[default]
-    Idle,
-    /// Work finished synchronously before `nativeOnFrame` returned.
-    Synchronous,
-    /// Async Cherenkov GPU work is in flight and completes on `nativeCompleteFrame`.
-    #[cfg(hydrolysis_gpu_painter)]
-    AsyncPending,
-}
-
 /// Outcome of one frame transaction, decoded by the Kotlin scheduler.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FrameOutcome {
@@ -1369,18 +1333,6 @@ pub struct FrameOutcome {
     pub(crate) deadline_in_nanos: Option<i64>,
     /// The window's content asked to close (its `Window::state` is Closed).
     pub(crate) should_close: bool,
-    /// ADPF work-duration reporting state for this frame transaction.
-    pub(crate) work: FrameWorkReport,
-}
-
-/// Session-scoped ADPF target, headroom, and frame-demand cache.
-#[derive(Default)]
-struct PerformanceState {
-    host_frame_demand: (bool, bool),
-    headroom: HeadroomSnapshot,
-    last_wants_next_frame: bool,
-    last_frame_rendered: bool,
-    last_target: Option<(i64, i32, u32)>,
 }
 
 /// The mounted app session: one runtime window, its environment, the
@@ -1392,7 +1344,8 @@ pub struct AndroidSession {
     executor: AndroidExecutor,
     #[cfg(hydrolysis_gpu_painter)]
     completion_waker: std::task::Waker,
-    performance: PerformanceState,
+    #[cfg(hydrolysis_gpu_painter)]
+    host_frame_demand: (bool, bool),
     /// The GPU context outlives the surface and renderer inside `runtime`
     /// (they drop first — field order is teardown order).
     #[cfg(hydrolysis_gpu_painter)]
@@ -1930,7 +1883,8 @@ impl AndroidSession {
             executor,
             #[cfg(hydrolysis_gpu_painter)]
             completion_waker,
-            performance: PerformanceState::default(),
+            #[cfg(hydrolysis_gpu_painter)]
+            host_frame_demand: (false, false),
             #[cfg(hydrolysis_gpu_painter)]
             gpu,
             #[cfg(hydrolysis_hwui)]
@@ -2072,10 +2026,6 @@ impl AndroidSession {
         // Android has no about-to-wait pass to notice an armed mode — the
         // restore frame needs the explicit Choreographer post.
         self.runtime.sync_occlusion_and_post_restore();
-        if !started {
-            self.performance.last_wants_next_frame = false;
-        }
-        self.sync_performance_target(self.performance.last_wants_next_frame);
     }
 
     /// The hosting Activity crossed `onResume`/`onPause` — forwarded to
@@ -2101,7 +2051,6 @@ impl AndroidSession {
             .surface
             .set_hidden(self.runtime.platform.is_occluded());
         self.runtime.sync_occlusion_and_post_restore();
-        self.sync_performance_target(self.performance.last_wants_next_frame);
     }
 
     /// Tells the host when the rendered frame's back-target answer changes.
@@ -2134,7 +2083,6 @@ impl AndroidSession {
         vsync_id: Option<i64>,
     ) -> FrameOutcome {
         tracing::debug!(target: "waterui::hydrolysis::android", "frame wake");
-        self.performance.last_frame_rendered = false;
         #[cfg(not(hydrolysis_hwui))]
         self.runtime.renderer.set_frame_timeline(vsync_id);
         #[cfg(hydrolysis_hwui)]
@@ -2153,36 +2101,17 @@ impl AndroidSession {
         let frame_rate_vote = outcome.frame_rate_vote;
         #[cfg(hydrolysis_gpu_painter)]
         {
-            let (continuous, touching) = self.performance.host_frame_demand;
+            let (continuous, touching) = self.host_frame_demand;
             if let Err(error) = self.set_frame_demand(continuous, touching) {
                 self.end_rendering(&error);
             }
         }
-        self.performance.last_wants_next_frame = outcome.wants_next_frame;
-        self.sync_performance_target(outcome.wants_next_frame);
-        #[cfg(hydrolysis_gpu_painter)]
-        let work = if !self.performance.last_frame_rendered
-            || self.runtime.platform.surface.window_pending()
-        {
-            FrameWorkReport::Idle
-        } else if self.runtime.platform.surface.gpu_work_pending() {
-            FrameWorkReport::AsyncPending
-        } else {
-            FrameWorkReport::Synchronous
-        };
-        #[cfg(hydrolysis_hwui)]
-        let work = if self.performance.last_frame_rendered {
-            FrameWorkReport::Synchronous
-        } else {
-            FrameWorkReport::Idle
-        };
         self.frame_deadline_in_nanos = deadline_in_nanos;
         tracing::debug!(
             target: "waterui::hydrolysis::android",
             wants_next_frame = outcome.wants_next_frame,
             deadline_in_nanos,
             should_close = outcome.should_close,
-            ?work,
             ?frame_rate_vote,
             "frame outcome"
         );
@@ -2190,7 +2119,6 @@ impl AndroidSession {
             wants_next_frame: outcome.wants_next_frame,
             deadline_in_nanos,
             should_close: outcome.should_close,
-            work,
         }
     }
 
@@ -2213,38 +2141,31 @@ impl AndroidSession {
     }
 
     #[cfg(hydrolysis_gpu_painter)]
-    pub(crate) fn complete_gpu_frame(&mut self) -> i64 {
-        let completed = self.poll_gpu_frame();
-        let (continuous, touching) = self.performance.host_frame_demand;
+    pub(crate) fn complete_gpu_frame(&mut self) {
+        self.poll_gpu_frame();
+        let (continuous, touching) = self.host_frame_demand;
         if let Err(error) = self.set_frame_demand(continuous, touching) {
             self.end_rendering(&error);
         }
-        let next_pending = !self.rendering_failed
-            && !self.runtime.is_hidden()
-            && (self.runtime.mode.is_pending()
-                || self.runtime.platform.redraw_pending.load(Ordering::Acquire)
-                || self.runtime.renderer.has_pending_frame_request()
-                || matches!(self.runtime.engine_next, Next::At { .. }));
-        self.performance.last_wants_next_frame = next_pending;
-        self.sync_performance_target(next_pending);
         self.report_idle(
             self.runtime.platform.surface.frame_pending()
                 || self.runtime.mode.is_pending()
                 || self.runtime.platform.redraw_pending.load(Ordering::Acquire)
                 || self.runtime.renderer.has_pending_frame_request(),
         );
-        if next_pending {
+        if !self.rendering_failed
+            && !self.runtime.is_hidden()
+            && (self.runtime.mode.is_pending()
+                || self.runtime.platform.redraw_pending.load(Ordering::Acquire)
+                || self.runtime.renderer.has_pending_frame_request()
+                || matches!(self.runtime.engine_next, crate::renderer::Next::At { .. }))
+        {
             self.runtime.platform.bridge.request_frame();
-        }
-        if completed {
-            self.runtime.platform.surface.last_render_cpu_nanos()
-        } else {
-            -1
         }
     }
 
     #[cfg(hydrolysis_gpu_painter)]
-    fn poll_gpu_frame(&mut self) -> bool {
+    fn poll_gpu_frame(&mut self) {
         let preparing = self.runtime.platform.surface.window_pending();
         let mut cx = std::task::Context::from_waker(&self.completion_waker);
         match self
@@ -2274,22 +2195,18 @@ impl AndroidSession {
                     self.runtime.engine_next = next;
                 }
                 self.commit_bands();
-                true
             }
             Ok(false) => {
                 if preparing && !self.runtime.platform.surface.window_pending() {
                     self.runtime.request_refresh();
                 }
-                false
             }
             Err(crate::runner::window::FrameFailure::Skipped(_)) => {
                 self.runtime.request_refresh();
                 self.runtime.platform.request_redraw();
-                false
             }
             Err(crate::runner::window::FrameFailure::Failed(error)) => {
                 self.end_rendering(&format!("{:#}", waterui_core::Error::from(error)));
-                false
             }
         }
     }
@@ -2312,7 +2229,7 @@ impl AndroidSession {
     pub(crate) fn surface_attached_with_generation(
         &mut self,
         native_window: ndk::native_window::NativeWindow,
-        refresh: DisplayRefreshSpec,
+        refresh: super::gpu::DisplayRefresh,
         width: u32,
         height: u32,
         generation: u64,
@@ -2471,104 +2388,28 @@ impl AndroidSession {
         }
     }
 
-    #[cfg_attr(
-        hydrolysis_hwui,
-        expect(
-            clippy::unnecessary_wraps,
-            reason = "GPU painter forwards ANativeWindow_setFrameRate failures"
-        )
-    )]
+    /// Combines host work with the window's effective refresh-rate vote.
+    #[cfg(hydrolysis_gpu_painter)]
     pub(crate) fn set_frame_demand(
         &mut self,
         continuous: bool,
         touching: bool,
     ) -> Result<(), String> {
-        self.performance.host_frame_demand = (continuous, touching);
-        #[cfg(hydrolysis_gpu_painter)]
-        {
-            let visible = !self.runtime.is_hidden();
-            let touching_vote = (visible && touching).then_some(FrameRate::FAST);
-            let mut rate = combine(self.runtime.effective_frame_rate_vote(), touching_vote);
-            if rate.is_none()
-                && visible
-                && (continuous || self.runtime.platform.surface.frame_pending())
-            {
-                rate = Some(FrameRate::FAST);
-            }
-            self.runtime
-                .platform
-                .surface
-                .set_refresh_demand(RefreshDemand {
-                    rate,
-                    headroom: self.performance.headroom,
-                })
-                .map_err(|error| error.to_string())?;
-        }
-        self.sync_performance_target(self.performance.last_wants_next_frame);
-        Ok(())
-    }
-
-    /// Stores the latest thermal and Android 16 CPU/GPU headroom sample and
-    /// updates refresh/ADPF budgets when pressure crosses a tier boundary.
-    pub(crate) fn set_headroom(&mut self, headroom: HeadroomSnapshot) {
-        if self.performance.headroom == headroom {
-            return;
-        }
-        let previous_tier = self.performance.headroom.pressure_tier();
-        self.performance.headroom = headroom;
-        if self.performance.headroom.pressure_tier() != previous_tier {
-            let (continuous, touching) = self.performance.host_frame_demand;
-            if let Err(error) = self.set_frame_demand(continuous, touching) {
-                self.end_rendering(&error);
-            }
-        }
-    }
-
-    /// Pushes ADPF session target budget, participating render thread ID, and
-    /// HWUI headroom refresh cap when any component changes.
-    fn sync_performance_target(&mut self, wants_next_frame: bool) {
+        self.host_frame_demand = (continuous, touching);
         let visible = !self.runtime.is_hidden();
-        let active_host_demand =
-            self.performance.host_frame_demand.0 || self.performance.host_frame_demand.1;
-        #[cfg(hydrolysis_gpu_painter)]
-        let (active_work, render_thread_tid, display) = {
-            let active =
-                visible && (wants_next_frame || self.gpu_frame_pending() || active_host_demand);
-            let tid = self.runtime.platform.surface.render_thread_id();
-            let display = self.runtime.platform.surface.refresh_spec();
-            (active, tid, display)
-        };
-        #[cfg(hydrolysis_hwui)]
-        let (active_work, render_thread_tid, display) = {
-            let active = visible && (wants_next_frame || active_host_demand);
-            let display = self
-                .runtime
-                .platform
-                .metrics
-                .refresh_hz
-                .map(|hz| DisplayRefreshSpec::from_peak(f64_as_f32(hz)));
-            (active, 0, display)
-        };
-        let mut vote = visible
-            .then(|| self.runtime.effective_frame_rate_vote())
-            .flatten();
-        if vote.is_none() && active_work {
-            vote = Some(FrameRate::FAST);
+        let touching_vote = (visible && touching).then_some(FrameRate::FAST);
+        let mut rate = combine(self.runtime.effective_frame_rate_vote(), touching_vote);
+        if rate.is_none()
+            && visible
+            && (continuous || self.runtime.platform.surface.frame_pending())
+        {
+            rate = Some(FrameRate::FAST);
         }
-        let target =
-            resolve_target_performance(active_work, vote, self.performance.headroom, display);
-        let key = (
-            target.target_duration_nanos,
-            render_thread_tid,
-            target.max_refresh_hz.to_bits(),
-        );
-        if self.performance.last_target != Some(key) {
-            self.performance.last_target = Some(key);
-            self.runtime
-                .platform
-                .bridge
-                .set_performance_target(target, render_thread_tid);
-        }
+        self.runtime
+            .platform
+            .surface
+            .set_refresh_demand(RefreshDemand { rate })
+            .map_err(|error| error.to_string())
     }
 
     /// Whether the window's content asked the host to close.

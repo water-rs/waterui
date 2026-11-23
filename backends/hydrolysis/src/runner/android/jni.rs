@@ -23,10 +23,7 @@ use crate::platform::{
     BackEdge, BackNavigation, InputEvent, Modifiers, PointerButton, PointerKind,
 };
 
-use super::host::{AndroidSession, FrameWorkReport, MetricsSnapshot, UiThreadServices};
-#[cfg(hydrolysis_gpu_painter)]
-use crate::runner::android_performance::DisplayRefreshSpec;
-use crate::runner::android_performance::HeadroomSnapshot;
+use super::host::{AndroidSession, MetricsSnapshot, UiThreadServices};
 
 /// The JNI schema this build of the runner speaks — `nativeInit` returns it.
 /// 24 adds `DefineEffect` (`effect, stage_count, kind + 12 floats` stages)
@@ -102,12 +99,7 @@ use crate::runner::android_performance::HeadroomSnapshot;
 /// passes painted device-pixel rects through `onNativeBandShow` for viewability.
 /// 32 passes the active Choreographer frame timeline vsync ID (`has_vsync_id`,
 /// `vsync_id`) through `nativeOnFrame`.
-/// 33 adds ADPF performance-hint & thermal/CPU/GPU headroom integration:
-/// `nativeSetHeadroom`, `nativeCompleteFrame` returns render-thread CPU wall
-/// nanoseconds (`-1` when not completed), `nativeOnFrame` carries
-/// `RENDERED_WORK`/`FRAME_ASYNC_PENDING` bits, `nativeSetFrameDemand` reaches
-/// HWUI as well as GPU, and `onNativePerformanceTarget` pushes target/tid/cap.
-pub const JNI_SCHEMA: jint = 33;
+pub const JNI_SCHEMA: jint = 32;
 
 /// A failure crossing the JNI boundary as an exception.
 #[derive(Debug)]
@@ -698,29 +690,24 @@ fn monotonic_nanos_to_instant(nanos: i64) -> Result<crate::time::Instant, JniErr
 }
 
 /// Applies a render-thread completion without waiting for another vsync.
-/// Returns the render thread's wall work duration in nanoseconds when a GPU
-/// frame finished, or `-1` when no frame completed on this poll.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeCompleteFrame<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     session_ptr: jlong,
-) -> jlong {
-    guard_val(&mut env, -1, |_env| {
+) {
+    guard(&mut env, |_env| {
         #[cfg(hydrolysis_gpu_painter)]
-        return Ok(session!(session_ptr, -1).complete_gpu_frame());
+        session!(session_ptr).complete_gpu_frame();
         #[cfg(hydrolysis_hwui)]
-        {
-            let _ = session_ptr;
-            Ok(-1)
-        }
-    })
+        let _ = session_ptr;
+        Ok(())
+    });
 }
 
 /// The Choreographer callback. Returns a bitmask: `1` = the engine wants
-/// another frame; `2` = the window asked to close; `4` = a deadline is read out
-/// with `nativeFrameDeadlineInNanos`; `8` = the transaction rendered/submitted
-/// a frame; `16` = an async GPU frame is in-flight for `nativeCompleteFrame`.
+/// another frame; `2` = the window asked to close. A deadline is read out
+/// with `nativeFrameDeadlineInNanos` when `4` is set.
 ///
 /// `has_presentation` says the frame came from a vsync callback, and
 /// `presentation_nanos` is then its expected presentation time on the
@@ -781,12 +768,6 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeOnFrame<'l
         if outcome.deadline_in_nanos.is_some() {
             bits |= 4;
         }
-        match outcome.work {
-            FrameWorkReport::Idle => {}
-            FrameWorkReport::Synchronous => bits |= 8,
-            #[cfg(hydrolysis_gpu_painter)]
-            FrameWorkReport::AsyncPending => bits |= 8 | 16,
-        }
         Ok(bits)
     })
 }
@@ -844,7 +825,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSurfaceAtt
         initializing!(session_ptr, pending, {
             pending.surface = Some(super::startup::Attachment {
                 window,
-                refresh: DisplayRefreshSpec {
+                refresh: super::gpu::DisplayRefresh {
                     peak: peak_refresh_hz,
                     normal: normal_refresh_hz,
                     high: high_refresh_hz,
@@ -858,7 +839,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSurfaceAtt
         session!(session_ptr, false)
             .surface_attached_with_generation(
                 window,
-                DisplayRefreshSpec {
+                super::gpu::DisplayRefresh {
                     peak: peak_refresh_hz,
                     normal: normal_refresh_hz,
                     high: high_refresh_hz,
@@ -1233,8 +1214,8 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetHostAtt
 }
 
 /// The host's continuous-work and touch demand. The session combines these
-/// with the current engine content-rate range and thermal/compute headroom
-/// before updating window refresh demand and the ADPF hint session.
+/// with the current engine content-rate range before voting on its window.
+#[cfg(hydrolysis_gpu_painter)]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetFrameDemand<'local>(
     mut env: EnvUnowned<'local>,
@@ -1244,7 +1225,6 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetFrameDe
     touching: jboolean,
 ) {
     guard(&mut env, |_env| {
-        #[cfg(hydrolysis_gpu_painter)]
         initializing!(session_ptr, pending, {
             pending.demand = (continuous, touching);
             return Ok(());
@@ -1252,35 +1232,6 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetFrameDe
         session!(session_ptr)
             .set_frame_demand(continuous, touching)
             .map_err(JniError)
-    });
-}
-
-/// Pushes thermal status, thermal headroom, and Android 16 CPU/GPU headroom
-/// sampled off the frame-critical thread (`Float.NaN` = unavailable).
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetHeadroom<'local>(
-    mut env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    session_ptr: jlong,
-    cpu_headroom: jfloat,
-    gpu_headroom: jfloat,
-    thermal_status: jint,
-    thermal_headroom: jfloat,
-) {
-    guard(&mut env, |_env| {
-        let snapshot = HeadroomSnapshot::from_jni(
-            cpu_headroom,
-            gpu_headroom,
-            thermal_status,
-            thermal_headroom,
-        );
-        #[cfg(hydrolysis_gpu_painter)]
-        initializing!(session_ptr, pending, {
-            pending.headroom = snapshot;
-            return Ok(());
-        });
-        session!(session_ptr).set_headroom(snapshot);
-        Ok(())
     });
 }
 
