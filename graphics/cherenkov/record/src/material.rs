@@ -292,6 +292,9 @@ pub struct MaterialEffect {
     ///
     /// [`BackdropOuter`]: crate::BackdropOuter
     outer: OuterExtent,
+    /// Optional member emission in straight linear Display P3 RGB plus
+    /// scalar emission strength; `[0.0; 4]` when unset.
+    emission: [f32; 4],
 }
 
 impl MaterialEffect {
@@ -332,6 +335,7 @@ impl MaterialEffect {
         Self {
             uniforms,
             outer: OuterExtent::ZERO,
+            emission: [0.0; 4],
         }
     }
 
@@ -348,7 +352,34 @@ impl MaterialEffect {
         Self {
             uniforms: self.uniforms,
             outer: extent,
+            emission: self.emission,
         }
+    }
+
+    /// Sets the member's optional emission in straight linear Display P3
+    /// RGB plus scalar emission strength (`[r, g, b, strength]`), forwarded
+    /// to [`BackdropSample::emission`](crate::BackdropSample::emission).
+    /// Defaults to `[0.0; 4]`.
+    ///
+    /// # Contract
+    /// Every entry must be finite; otherwise it is a contract violation
+    /// naming the rule and the non-finite entry becomes zero.
+    #[must_use]
+    pub fn emission(mut self, mut emission: [f32; 4]) -> Self {
+        if let Some(index) = emission.iter().position(|v| !v.is_finite()) {
+            contract_violation!(
+                "backdrop material emission channel {index} is {}; every entry must be finite; it \
+                 becomes zero",
+                emission[index]
+            );
+            for value in &mut emission {
+                if !value.is_finite() {
+                    *value = 0.0;
+                }
+            }
+        }
+        self.emission = emission;
+        self
     }
 
     /// The uniforms the effect was made with, in the shader's declared
@@ -364,6 +395,14 @@ impl MaterialEffect {
     #[must_use]
     pub const fn outer_extent(&self) -> OuterExtent {
         self.outer
+    }
+
+    /// The member's emission (`[r, g, b, strength]` in straight linear
+    /// Display P3 plus scalar strength; `[0.0; 4]` unless
+    /// [`emission`](Self::emission) set it).
+    #[must_use]
+    pub const fn member_emission(&self) -> [f32; 4] {
+        self.emission
     }
 }
 
@@ -1167,5 +1206,32 @@ mod tests {
         assert_eq!(registry.capture_class(CaptureClass::new(8)), None);
         assert_eq!(registry.shaders().count(), 1);
         assert_eq!(registry.capture_classes().count(), 1);
+    }
+
+    #[test]
+    fn emission_defaults_to_zero_and_survives_builder_order() {
+        let default = MaterialEffect::new(vec![1.0]);
+        assert_eq!(default.member_emission(), [0.0; 4]);
+
+        let outer = OuterExtent::new(4.0).expect("finite");
+        let a = MaterialEffect::new(vec![1.0])
+            .emission([0.25, 0.5, 0.75, 1.0])
+            .outer(outer);
+        let b = MaterialEffect::new(vec![1.0])
+            .outer(outer)
+            .emission([0.25, 0.5, 0.75, 1.0]);
+        assert_eq!(a, b);
+        assert_eq!(a.member_emission(), [0.25, 0.5, 0.75, 1.0]);
+        assert_eq!(a.outer_extent(), outer);
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "backdrop material emission channel 1 is NaN")
+    )]
+    fn non_finite_emission_zeroes_it() {
+        let effect = MaterialEffect::new(vec![]).emission([0.5, f32::NAN, f32::INFINITY, 1.0]);
+        assert_eq!(effect.member_emission(), [0.5, 0.0, 0.0, 1.0]);
     }
 }

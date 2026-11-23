@@ -459,7 +459,8 @@ pub fn group_sample_with(
     Ok(
         cherenkov::BackdropSample::with_effect(id, shader.effect(effect.uniforms().to_vec()))
             .outer(outer)
-            .scale(recording),
+            .scale(recording)
+            .emission(effect.member_emission()),
     )
 }
 
