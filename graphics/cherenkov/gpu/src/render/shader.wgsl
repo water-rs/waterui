@@ -13,6 +13,7 @@
 // `shared.wgsl` precedes this file in every build: the consts, instance
 // layout, vertex stage and coverage machinery live there.
 
+// non-effect
 // The Rust side prepends `const VARIANT: u32 = <n>u;` when building each
 // module; the file stays compilable standalone.
 const VARIANT_SIMPLE: u32 = 0u;
@@ -25,14 +26,19 @@ const VARIANT_CELL: u32 = 5u;
 const VARIANT_IMAGE: u32 = 6u;
 const VARIANT_GLYPH: u32 = 7u;
 const VARIANT_COMPOSITE: u32 = 8u;
+// non-effect
 
 @group(1) @binding(0) var source: texture_2d<f32>;
 // The blend backdrop: a copy of the target's region, sampled like `source`.
 @group(1) @binding(1) var backdrop: texture_2d<f32>;
+// non-effect
 @group(1) @binding(2) var image_tex: texture_2d<f32>;
+// non-effect
+// backdrop-only
 // Linear mag/min, nearest mipmap, clamp-to-edge: the hardware bilinear
 // fetches of `backdrop_sample_blur` read `source` through it.
 @group(1) @binding(4) var backdrop_sampler: sampler;
+// backdrop-only
 
 // image-source
 // The sRGB transfer decode of each 8-bit code (`image_storage::transfer_table`).
@@ -42,12 +48,15 @@ struct ImageDecode {
 @group(0) @binding(5) var<storage, read> image_decode: ImageDecode;
 // image-source
 
+// backdrop-only
 // Abramowitz & Stegun 7.1.26: `erf(x) ≈ 1 − erf_tail(t)·exp(−x²)` for
 // `x ≥ 0` with `t = 1 / (1 + 0.3275911·x)`, `|error| < 1.5e-7`.
 fn erf_tail(t: f32) -> f32 {
     return (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t;
 }
+// backdrop-only
 
+// non-effect
 fn erf(x: f32) -> f32 {
     let s = sign(x);
     let a = abs(x);
@@ -511,19 +520,18 @@ fn paint(i: u32, meta_: vec4<u32>, color: Color, local: vec2<f32>, device: vec2<
     }
     // non-gradient-paint
 }
+// non-effect
 
-// Per-member backdrop effects: a member composite bilinearly samples the
-// bound capture and applies the effect packed in meta_.w's low bits.
-// `backdrop_origin`/`backdrop_size`/`backdrop_scale`/`backdrop_levels`/
-// `backdrop_space` are set per instance by paint_backdrop; registered
-// effect shaders call backdrop_sample and backdrop_sample_level. The
+// Per-member effect capture state set per instance by paint_backdrop. The
 // capture stores its group's working space (`backdrop_space`, from
 // FLAG_TEX_SRGB): every read interpolates there and returns the linear
 // working space.
 var<private> backdrop_origin: vec2<f32>;
 var<private> backdrop_size: vec2<f32>;
+// backdrop-only
 var<private> backdrop_scale: f32;
 var<private> backdrop_levels: f32;
+// backdrop-only
 var<private> backdrop_space: u32;
 
 // A read of the capture, interpolated in its group's working space, in
@@ -532,6 +540,7 @@ fn backdrop_read(raw: vec4<f32>) -> vec4<f32> {
     return move_space(raw, backdrop_space, SPACE_LINEAR);
 }
 
+// backdrop-only
 // Bilinear sample of the bound capture's level `k` at device point `q`:
 // on the level-k grid `q` is `q · scale / 2^k`, the four texels around
 // it minus 0.5 (texel centres) are read at mip `k`, clamped to the
@@ -764,6 +773,7 @@ fn backdrop_field(q: vec2<f32>) -> BackdropField {
     let own = device_sdf(inst.clip_inv, inst.clip, q);
     return BackdropField(own.x, own.yz, 1.0);
 }
+// backdrop-only
 
 // backdrop-effect-stub
 fn backdrop_effect(px: BackdropPixel, params: array<vec4<f32>, 16>) -> vec4<f32> {
@@ -819,18 +829,23 @@ fn content_effect(px: ContentPixel, params: array<vec4<f32>, 16>) -> vec4<f32> {
 // affine the member layer's local-to-device transform.
 fn paint_backdrop(i: u32, pixel: vec2<f32>) -> vec4<f32> {
     let inst = instances[i];
+    // backdrop-only
     backdrop_member = i;
+    // backdrop-only
     backdrop_origin = inst.grad.xy;
+    // backdrop-only
     backdrop_scale = inst.grad.z;
     backdrop_levels = inst.grad.w;
+    // backdrop-only
     backdrop_size = inst.grad2.xy;
     backdrop_space = select(
         SPACE_LINEAR,
         SPACE_SRGB,
         ((inst.meta_.w >> 24u) & FLAG_TEX_SRGB) != 0u,
     );
-    let kind = inst.meta_.w & 0xffu;
     let first = inst.meta_.z;
+    // builtin-effects
+    let kind = inst.meta_.w & 0xffu;
     if kind == EFFECT_SAMPLE {
         return backdrop_sample(pixel);
     }
@@ -845,33 +860,36 @@ fn paint_backdrop(i: u32, pixel: vec2<f32>) -> vec4<f32> {
             c.a,
         );
     }
+    // builtin-effects
     // Refraction and effect shaders need the member clip's SDF: signed
     // distance and unit outward normal in device space, the same
     // J^-T math the clip coverage block uses. A union member's own clip
     // lives in its union record — the instance clip then carries the
     // ancestors only — and the shared field replaces both `sdf` and
     // `normal` for every effect kind.
-    var px: BackdropPixel;
-    px.p = pixel;
-    px.size = inst.grad2.zw;
-    px.scale = inst.color.x;
-    px.local = apply_inverse(inst.affine, pixel);
+    let px_size = inst.grad2.zw;
+    let px_scale = inst.color.x;
+    let px_local = apply_inverse(inst.affine, pixel);
+    var px_own_sdf: f32;
+    var px_sdf: f32;
+    var px_normal: vec2<f32>;
     // union-stub
     if ((inst.meta_.w >> 24u) & FLAG_UNION) != 0u {
         let field = member_field;
-        px.own_sdf = field.own;
-        px.sdf = field.d;
-        px.normal = field.n;
+        px_own_sdf = field.own;
+        px_sdf = field.d;
+        px_normal = field.n;
     } else
     // union-stub
     {
         let own = device_sdf(inst.clip_inv, inst.clip, pixel);
-        px.own_sdf = own.x;
-        px.sdf = own.x;
-        px.normal = own.yz;
+        px_own_sdf = own.x;
+        px_sdf = own.x;
+        px_normal = own.yz;
     }
-    let d = px.sdf;
-    let n = px.normal;
+    // builtin-effects
+    let d = px_sdf;
+    let n = px_normal;
     if kind == EFFECT_REFRACTION {
         // stops[first].color.xy = (depth, strength).
         let p0 = stops[first].color;
@@ -897,6 +915,7 @@ fn paint_backdrop(i: u32, pixel: vec2<f32>) -> vec4<f32> {
         let t = clamp(1.0 + d / p0.x, 0.0, 1.0);
         return backdrop_sample_level(pixel, p0.z + (p0.y - p0.z) * t);
     }
+    // builtin-effects
     var params = array<vec4<f32>, 16>();
     let count = (inst.meta_.w >> 8u) & 0xffu;
     for (var j = 0u; j < count; j = j + 1u) {
@@ -907,7 +926,7 @@ fn paint_backdrop(i: u32, pixel: vec2<f32>) -> vec4<f32> {
     if kind == EFFECT_CONTENT {
     // content-effect-guard
         return content_effect(
-            ContentPixel(px.p, px.own_sdf, px.normal, px.size, px.scale, px.local),
+            ContentPixel(pixel, px_own_sdf, px_normal, px_size, px_scale, px_local),
             params,
         );
     // content-effect-guard
@@ -915,20 +934,26 @@ fn paint_backdrop(i: u32, pixel: vec2<f32>) -> vec4<f32> {
     // content-effect-guard
     // content-effect-branch
     // backdrop-effect-branch
-    return backdrop_effect(px, params);
+    return backdrop_effect(
+        BackdropPixel(pixel, px_sdf, px_normal, px_own_sdf, px_size, px_scale, px_local),
+        params,
+    );
     // backdrop-effect-branch
 }
 
+// non-effect
 // The tile build profile replaces these two interfaces with attachment
 // inputs. Coverage, colour conversion and blend arithmetic remain shared.
 fn read_composite_source(coord: vec2<i32>) -> vec4<f32> {
     return textureLoad(source, coord, 0);
 }
+// non-effect
 
 fn read_composite_backdrop(coord: vec2<i32>) -> vec4<f32> {
     return textureLoad(backdrop, coord, 0);
 }
 
+// non-effect
 // Solid fill/span/glyph coverage: no clip, mask, inner, or paint()
 // evaluation, and no `instances` reads at all.
 fn fs_simple(in: VsOut, classified: bool) -> vec4<f32> {
@@ -1199,6 +1224,7 @@ fn plain_composite(in: VsOut, cov: f32) -> vec4<f32> {
     let coord = vec2<i32>(floor(in.device - instances[in.instance].grad.xy));
     return move_space(read_composite_source(coord), tspace, globals.space) * cov;
 }
+// non-effect
 
 // full-fragment
 fn fs_full(fragment: VsOut) -> vec4<f32> {

@@ -58,19 +58,19 @@ pub struct ComputeProgram {
 /// painter, then the opaque and partial coverage phases.
 pub type EnginePrograms = [RenderProgram; 3];
 
-/// The engine programs of `module`, a checked WGSL module holding every
-/// engine entry point — a user backdrop effect's composed module.
+/// The painter program of `module`, a checked WGSL effect module holding
+/// `vs_main` and `fs_main`.
 #[must_use]
-pub fn wgsl_engine_programs(module: &wgpu::ShaderModule) -> EnginePrograms {
-    programs::ENGINE.map(|program| match program {
+pub fn wgsl_painter_program(module: &wgpu::ShaderModule) -> RenderProgram {
+    match programs::MAIN[0] {
         Program::Render { vertex, fragment } => RenderProgram {
             vertex: module.clone(),
             vertex_entry: vertex,
             fragment: module.clone(),
             fragment_entry: fragment,
         },
-        Program::Compute { .. } => unreachable!("programs::ENGINE is render only"),
-    })
+        Program::Compute { .. } => unreachable!("programs::MAIN is render only"),
+    }
 }
 
 /// The `dxc` output `build.rs` embeds per module: per program in order,
@@ -149,70 +149,34 @@ const ENGINE_WGSL9: &str = include_str!(concat!(env!("OUT_DIR"), "/engine9.wgsl"
 const ENGINE_WGSL10: &str = include_str!(concat!(env!("OUT_DIR"), "/engine10.wgsl"));
 const ENGINE_WGSL11: &str = include_str!(concat!(env!("OUT_DIR"), "/engine11.wgsl"));
 
-/// Removes every span bracketed by two `// {marker}` lines from `source`.
-///
-/// # Panics
-///
-/// If a marker is missing or unpaired (a build bug in `shader.wgsl`).
-fn drop_marked(source: &str, marker: &str) -> String {
-    let tag = format!("// {marker}");
-    let mut out = String::with_capacity(source.len());
-    let mut dropping = false;
-    let mut seen = false;
-    for line in source.split_inclusive('\n') {
-        if line.trim() == tag {
-            dropping = !dropping;
-            seen = true;
-        } else if !dropping {
-            out.push_str(line);
-        }
-    }
-    assert!(seen, "missing `{tag}` marker in shader.wgsl");
-    assert!(!dropping, "unpaired `{tag}` marker in shader.wgsl");
-    out
-}
+/// Specialized WGSL templates emitted by `build.rs` for runtime user effect
+/// shaders (`backdrop_effect_text` and `content_effect_text`).
+const EFFECT_BACKDROP_WGSL: &str = include_str!(concat!(env!("OUT_DIR"), "/effect_backdrop.wgsl"));
+const EFFECT_BACKDROP_UNION_WGSL: &str =
+    include_str!(concat!(env!("OUT_DIR"), "/effect_backdrop_union.wgsl"));
+const EFFECT_CONTENT_WGSL: &str = include_str!(concat!(env!("OUT_DIR"), "/effect_content.wgsl"));
 
 /// The effect-module text for a user `backdrop_effect` source.
 ///
-/// The full engine module — `ENGINE_WGSL5`, which keeps the cell-buffer
-/// reads and the source image conversion, or `ENGINE_WGSL3` when `union`
-/// marks a member of a union group, since one effect pipeline serves
-/// whatever route and paint its draws carry — with the stub
-/// `backdrop_effect` and the content-effect helpers and branch stripped,
-/// and the user source appended.
-///
-/// # Panics
-///
-/// If the stub markers are missing from `shader.wgsl` (a build bug).
+/// Uses the specialized `KIND_SPAN` + `PAINT_BACKDROP` template emitted by
+/// `build.rs` (plain or union), with the user source appended.
 #[must_use]
 pub fn backdrop_effect_text(user: &str, union: bool) -> Cow<'static, str> {
-    let module = if union {
-        ENGINE_F32[3].wgsl
+    let template = if union {
+        EFFECT_BACKDROP_UNION_WGSL
     } else {
-        ENGINE_F32[5].wgsl
+        EFFECT_BACKDROP_WGSL
     };
-    let stripped = drop_marked(module, "backdrop-effect-stub");
-    let stripped = drop_marked(&stripped, "content-effect-only");
-    let stripped = drop_marked(&stripped, "content-effect-branch");
-    format!("{stripped}\n{user}").into()
+    format!("{template}\n{user}").into()
 }
 
 /// The effect-module text for a user `content_effect` source.
 ///
-/// The full non-union engine module (`ENGINE_F32[5]`) with the stub
-/// `content_effect`, the unused `backdrop_effect` stub and branch, and the
-/// `EFFECT_CONTENT` guard stripped, and the user source appended.
-///
-/// # Panics
-///
-/// If the stub markers are missing from `shader.wgsl` (a build bug).
+/// Uses the specialized `KIND_SPAN` + `PAINT_BACKDROP` content-effect template
+/// emitted by `build.rs`, with the user source appended.
 #[must_use]
 pub fn content_effect_text(user: &str) -> Cow<'static, str> {
-    let stripped = drop_marked(ENGINE_F32[5].wgsl, "content-effect-stub");
-    let stripped = drop_marked(&stripped, "backdrop-effect-stub");
-    let stripped = drop_marked(&stripped, "backdrop-effect-branch");
-    let stripped = drop_marked(&stripped, "content-effect-guard");
-    format!("{stripped}\n{user}").into()
+    format!("{EFFECT_CONTENT_WGSL}\n{user}").into()
 }
 
 /// Whether the validated effect module's entry points reach the

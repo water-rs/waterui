@@ -2513,11 +2513,11 @@ fn create_pipeline(
     config: &GpuConfig,
     layout: &wgpu::PipelineLayout,
     cache: Option<&wgpu::PipelineCache>,
-    programs: &shaders::EnginePrograms,
+    program: &shaders::RenderProgram,
     format: wgpu::TextureFormat,
     mode: CoveragePass,
 ) -> Result<wgpu::RenderPipeline, EngineError> {
-    let pipeline = compile_pipeline(device, layout, cache, programs, format, mode)?;
+    let pipeline = compile_pipeline(device, layout, cache, program, format, mode)?;
     persist_pipeline_cache(cache, config);
     Ok(pipeline)
 }
@@ -2527,11 +2527,10 @@ fn compile_pipeline(
     device: &wgpu::Device,
     layout: &wgpu::PipelineLayout,
     cache: Option<&wgpu::PipelineCache>,
-    programs: &shaders::EnginePrograms,
+    program: &shaders::RenderProgram,
     format: wgpu::TextureFormat,
     mode: CoveragePass,
 ) -> Result<wgpu::RenderPipeline, EngineError> {
-    let program = &programs[mode.program()];
     let error_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("cherenkov"),
@@ -2578,11 +2577,10 @@ async fn create_pipeline(
     config: &GpuConfig,
     layout: &wgpu::PipelineLayout,
     cache: Option<&wgpu::PipelineCache>,
-    programs: &shaders::EnginePrograms,
+    program: &shaders::RenderProgram,
     format: wgpu::TextureFormat,
     mode: CoveragePass,
 ) -> Result<wgpu::RenderPipeline, EngineError> {
-    let program = &programs[mode.program()];
     let error_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("cherenkov"),
@@ -2649,7 +2647,7 @@ impl PipelineFactory<'_> {
             self.config,
             self.layout,
             self.cache,
-            &module,
+            &module[mode.program()],
             format,
             mode,
         )
@@ -2928,13 +2926,14 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
                             })
                         {
                             for replace in [false, true] {
+                                let mode = CoveragePass::Painter(replace);
                                 let pipeline = compile_pipeline(
                                     device,
                                     layout,
                                     cache,
-                                    module,
+                                    &module[mode.program()],
                                     format,
-                                    CoveragePass::Painter(replace),
+                                    mode,
                                 )?;
                                 compiled.push((format_slot(format), replace, pipeline));
                             }
@@ -2956,13 +2955,14 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
                 .iter_mut()
                 .zip([CoveragePhase::Opaque, CoveragePhase::Partial])
             {
+                let mode = CoveragePass::Coverage(phase);
                 *cell = Some(compile_pipeline(
                     &device,
                     &pipeline_layout,
                     pipeline_cache.as_ref(),
-                    &modules[0],
+                    &modules[0][mode.program()],
                     WORKING_FORMAT,
-                    CoveragePass::Coverage(phase),
+                    mode,
                 )?);
             }
             persist_pipeline_cache(pipeline_cache.as_ref(), &config);
@@ -3342,15 +3342,16 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
             for (variant, module) in EAGER_CORE_VARIANTS.iter().zip(&modules) {
                 let cell = &mut pipelines[slot][usize::from(replace)][*variant];
                 if cell.is_none() {
+                    let mode = CoveragePass::Painter(replace);
                     *cell = Some(
                         create_pipeline(
                             &device,
                             &config,
                             &pipeline_layout,
                             pipeline_cache.as_ref(),
-                            module,
+                            &module[mode.program()],
                             format,
-                            CoveragePass::Painter(replace),
+                            mode,
                         )
                         .await?,
                     );
@@ -3358,6 +3359,8 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
             }
         }
     }
+    let opaque = CoveragePass::Coverage(CoveragePhase::Opaque);
+    let partial = CoveragePass::Coverage(CoveragePhase::Partial);
     let simple_coverage = <[_; 2]>::from(
         futures_util::future::try_join(
             create_pipeline(
@@ -3365,18 +3368,18 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
                 &config,
                 &pipeline_layout,
                 pipeline_cache.as_ref(),
-                &modules[0],
+                &modules[0][opaque.program()],
                 WORKING_FORMAT,
-                CoveragePass::Coverage(CoveragePhase::Opaque),
+                opaque,
             ),
             create_pipeline(
                 &device,
                 &config,
                 &pipeline_layout,
                 pipeline_cache.as_ref(),
-                &modules[0],
+                &modules[0][partial.program()],
                 WORKING_FORMAT,
-                CoveragePass::Coverage(CoveragePhase::Partial),
+                partial,
             ),
         )
         .await?,
@@ -5759,7 +5762,7 @@ impl GpuRenderer {
                     &self.config,
                     &self.pipeline_layout,
                     self.pipeline_cache.handle.as_ref(),
-                    &shaders::wgsl_engine_programs(module),
+                    &shaders::wgsl_painter_program(module),
                     format,
                     CoveragePass::Painter(false),
                 )
@@ -5835,7 +5838,7 @@ impl GpuRenderer {
                         &self.config,
                         &self.pipeline_layout,
                         self.pipeline_cache.handle.as_ref(),
-                        &shaders::wgsl_engine_programs(&module),
+                        &shaders::wgsl_painter_program(&module),
                         format,
                         CoveragePass::Painter(false),
                     )
@@ -5897,7 +5900,7 @@ impl GpuRenderer {
                     &self.config,
                     &self.pipeline_layout,
                     self.pipeline_cache.handle.as_ref(),
-                    &shaders::wgsl_engine_programs(module),
+                    &shaders::wgsl_painter_program(module),
                     format,
                     CoveragePass::Painter(false),
                 )
@@ -5953,7 +5956,7 @@ impl GpuRenderer {
                         &self.config,
                         &self.pipeline_layout,
                         self.pipeline_cache.handle.as_ref(),
-                        &shaders::wgsl_engine_programs(&module),
+                        &shaders::wgsl_painter_program(&module),
                         format,
                         CoveragePass::Painter(false),
                     )
@@ -11203,7 +11206,7 @@ impl GpuRenderer {
                                             &self.config,
                                             &self.pipeline_layout,
                                             self.pipeline_cache.handle.as_ref(),
-                                            &shaders::wgsl_engine_programs(module),
+                                            &shaders::wgsl_painter_program(module),
                                             target_format,
                                             CoveragePass::Painter(replace),
                                         )
@@ -11244,7 +11247,7 @@ impl GpuRenderer {
                                             &self.config,
                                             &self.pipeline_layout,
                                             self.pipeline_cache.handle.as_ref(),
-                                            &shaders::wgsl_engine_programs(&entry.module),
+                                            &shaders::wgsl_painter_program(&entry.module),
                                             target_format,
                                             CoveragePass::Painter(replace),
                                         )
@@ -12663,7 +12666,7 @@ impl GpuRenderer {
             &self.config,
             &self.pipeline_layout,
             self.pipeline_cache.handle.as_ref(),
-            &shaders::wgsl_engine_programs(module),
+            &shaders::wgsl_painter_program(module),
             RENDER_FORMATS[format_i],
             CoveragePass::Painter(replace),
         )
@@ -12702,7 +12705,7 @@ impl GpuRenderer {
             &self.config,
             &self.pipeline_layout,
             self.pipeline_cache.handle.as_ref(),
-            &shaders::wgsl_engine_programs(&entry.module),
+            &shaders::wgsl_painter_program(&entry.module),
             RENDER_FORMATS[format_i],
             CoveragePass::Painter(replace),
         )
@@ -12739,15 +12742,16 @@ impl GpuRenderer {
                     RENDER_FORMATS[format_i],
                 )
             });
+        let mode = CoveragePass::Painter(replace);
         *cell = Some(
             create_pipeline(
                 &self.device,
                 &self.config,
                 &self.pipeline_layout,
                 self.pipeline_cache.handle.as_ref(),
-                module,
+                &module[mode.program()],
                 RENDER_FORMATS[format_i],
-                CoveragePass::Painter(replace),
+                mode,
             )
             .await
             .map_err(|e| RenderError::Render(e.to_string()))?,
@@ -12788,15 +12792,16 @@ impl GpuRenderer {
                 )
             });
         for phase in [CoveragePhase::Opaque, CoveragePhase::Partial] {
+            let mode = CoveragePass::Coverage(phase);
             self.coverage_pipelines[format_i][usize::from(gpu)][phase as usize] = Some(
                 create_pipeline(
                     &self.device,
                     &self.config,
                     &self.pipeline_layout,
                     self.pipeline_cache.handle.as_ref(),
-                    module,
+                    &module[mode.program()],
                     RENDER_FORMATS[format_i],
-                    CoveragePass::Coverage(phase),
+                    mode,
                 )
                 .await
                 .map_err(|e| RenderError::Render(e.to_string()))?,
