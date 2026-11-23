@@ -51,6 +51,7 @@ pub(crate) fn app_environment() -> waterui::env::Environment {
 {% if let Some(body) = semantic_automation_body %}
 {% if offscreen_semantic_test %}
 pub(crate) fn run_preview_test(
+    env: waterui::env::Environment,
     width: u32,
     height: u32,
     scale: f64,
@@ -64,11 +65,6 @@ pub(crate) fn run_preview_test(
     use waterui_testing::ui;
 
     let video = video.expect("offscreen preview test requires video capture configuration");
-    let mut env = app_environment();
-    if let Some(scheme) = color_scheme {
-        waterui::theme::install_color_scheme(&mut env, waterui::Computed::constant(scheme));
-    }
-    env.insert(hydrolysis::DeclaredFonts::default());
     let mut app = ui()
         .environment(env)
         .theme(preview_style(color_scheme))
@@ -105,6 +101,7 @@ pub(crate) fn run_semantic_automation(app: &mut waterui_testing::OffscreenApp) {
 }
 {% else %}
 pub(crate) fn run_preview_test(
+    env: waterui::env::Environment,
     width: u32,
     height: u32,
     _scale: f64,
@@ -117,11 +114,6 @@ pub(crate) fn run_preview_test(
         video.is_none(),
         "hydrolysis preview test: video capture requires offscreen semantic test bindings"
     );
-    let mut env = app_environment();
-    if let Some(scheme) = color_scheme {
-        waterui::theme::install_color_scheme(&mut env, waterui::Computed::constant(scheme));
-    }
-    env.insert(hydrolysis::DeclaredFonts::default());
     let mut app = ui()
         .environment(env)
         .theme(preview_style(color_scheme))

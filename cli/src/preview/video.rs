@@ -395,8 +395,10 @@ const fn length_prefixed_is_keyframe(data: &[u8], is_hevc: bool) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "macos")]
     use std::time::Duration;
 
+    #[cfg(target_os = "macos")]
     use waterui_preview_protocol::run::{Alpha, RawFrameStreamWriter};
 
     use super::*;
@@ -439,6 +441,7 @@ mod tests {
 
     /// Generates an animated `width`x`height` RGBA8 frame with a horizontal bar
     /// moving across the frame so inter-frame compression exercises real motion.
+    #[cfg(target_os = "macos")]
     fn synthetic_animated_rgba(width: u32, height: u32, frame_index: u32) -> Vec<u8> {
         let mut rgba = Vec::with_capacity((width as usize) * (height as usize) * 4);
         let bar_x = (frame_index * 16) % width.max(1);

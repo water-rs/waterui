@@ -19,7 +19,13 @@ pub(crate) fn run() {
     });
     match config.mode() {
         PreviewRunMode::Semantic { video } => {
+            let mut env = preview_test::app_environment();
+            if let Some(scheme) = color_scheme {
+                waterui::theme::install_color_scheme(&mut env, waterui::Computed::constant(scheme));
+            }
+            env.insert(hydrolysis::DeclaredFonts::default());
             preview_test::run_preview_test(
+                env,
                 dimension_to_u32(config.width()),
                 dimension_to_u32(config.height()),
                 f64::from(config.scale()),

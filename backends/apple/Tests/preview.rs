@@ -174,30 +174,7 @@ mod suite {
             ),
             Trial::test("preview::captures_a_scenario_windowless", || {
                 run_trial("scenario", Expect::Success);
-                let dir = output_dir().join("scenario");
-                let png = dir.join("frame-0000ms.png");
-                assert!(
-                    fs::metadata(&png).is_ok_and(|meta| meta.len() > 0),
-                    "scenario PNG frame must exist at {}",
-                    png.display()
-                );
-                let stream_path = dir.join("frames.wuirf");
-                let mut reader = RawFrameStreamReader::open(&stream_path)
-                    .expect("scenario raw frame stream must open");
-                assert_eq!(reader.fps(), 20);
-                assert!(reader.width() > 0 && reader.height() > 0);
-                let expected_bytes = (reader.width() * reader.height() * 4) as usize;
-                let mut buf = Vec::new();
-                let mut count = 0usize;
-                while reader
-                    .next_frame(&mut buf)
-                    .expect("read raw frame")
-                    .is_some()
-                {
-                    assert_eq!(buf.len(), expected_bytes);
-                    count += 1;
-                }
-                assert_eq!(count, 3, "20fps over 100ms must record 3 frames");
+                assert_scenario_output(&output_dir().join("scenario"));
                 Ok(())
             }),
             failure_trial(
@@ -216,6 +193,32 @@ mod suite {
                 "cannot parse preview run configuration",
             ),
         ]
+    }
+
+    fn assert_scenario_output(dir: &Path) {
+        let png = dir.join("frame-0000ms.png");
+        assert!(
+            fs::metadata(&png).is_ok_and(|meta| meta.len() > 0),
+            "scenario PNG frame must exist at {}",
+            png.display()
+        );
+        let stream_path = dir.join("frames.wuirf");
+        let mut reader =
+            RawFrameStreamReader::open(&stream_path).expect("scenario raw frame stream must open");
+        assert_eq!(reader.fps(), 20);
+        assert!(reader.width() > 0 && reader.height() > 0);
+        let expected_bytes = (reader.width() * reader.height() * 4) as usize;
+        let mut buf = Vec::new();
+        let mut count = 0usize;
+        while reader
+            .next_frame(&mut buf)
+            .expect("read raw frame")
+            .is_some()
+        {
+            assert_eq!(buf.len(), expected_bytes);
+            count += 1;
+        }
+        assert_eq!(count, 3, "20fps over 100ms must record 3 frames");
     }
 
     /// What the parent checks after the child exits.
