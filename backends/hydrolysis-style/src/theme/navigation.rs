@@ -14,6 +14,7 @@ use std::rc::Rc;
 use cherenkov_record::WorkingColor;
 use waterui_core::EasingCurve;
 use waterui_core::layout::LayoutDirection;
+use waterui_text::font::Font;
 
 use super::Chrome;
 use super::look::{Custom, CustomPart, DrivenSet};
@@ -119,6 +120,7 @@ pub struct NavigationBarLook {
     back: Chrome,
     bar: Rc<dyn CustomPart<BarSurface>>,
     separator: Option<Rc<dyn CustomPart<BarSurface>>>,
+    title_font: Option<Font>,
 }
 
 impl core::fmt::Debug for NavigationBarLook {
@@ -128,6 +130,7 @@ impl core::fmt::Debug for NavigationBarLook {
             .field("motion", &self.motion)
             .field("back", &self.back)
             .field("separator", &self.separator.is_some())
+            .field("title_font", &self.title_font)
             .finish_non_exhaustive()
     }
 }
@@ -153,6 +156,7 @@ impl NavigationBarLook {
             back,
             bar: Rc::new(bar),
             separator: None,
+            title_font: None,
         }
     }
 
@@ -165,6 +169,14 @@ impl NavigationBarLook {
         S::Live: 'static,
     {
         self.separator = Some(Rc::new(separator));
+        self
+    }
+
+    /// Overrides the typography used for inline navigation bar titles (`Body`
+    /// slot), leaving titles that explicitly specify their own slot untouched.
+    #[must_use]
+    pub fn title_font(mut self, font: Font) -> Self {
+        self.title_font = Some(font);
         self
     }
 
@@ -198,5 +210,11 @@ impl NavigationBarLook {
     #[must_use]
     pub fn separator_part(&self) -> Option<&Rc<dyn CustomPart<BarSurface>>> {
         self.separator.as_ref()
+    }
+
+    /// Inline navigation bar title font override, if configured.
+    #[must_use]
+    pub const fn get_title_font(&self) -> Option<&Font> {
+        self.title_font.as_ref()
     }
 }

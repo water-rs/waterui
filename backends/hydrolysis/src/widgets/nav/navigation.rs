@@ -30,6 +30,7 @@ use waterui::navigation::{
     ResolvedNavigationView, RetainedNavigationTransition,
 };
 use waterui::theme::color::{Background, Surface};
+use waterui::theme::install_font_signal;
 use waterui_controls::label::LabelDisplayMode;
 use waterui_controls::text_field::TextField;
 use waterui_core::contract_violation;
@@ -40,6 +41,7 @@ use waterui_core::layout::{
 use waterui_core::{Environment, Native};
 use waterui_graphics::color::Color;
 use waterui_interaction::interaction::InteractionState;
+use waterui_text::font::Body;
 
 #[derive(Clone, Copy)]
 struct NavigationLeadingReserve(f64);
@@ -47,6 +49,24 @@ struct NavigationLeadingReserve(f64);
 fn navigation_leading_reserve(env: &Environment) -> f64 {
     env.get::<NavigationLeadingReserve>()
         .map_or(0.0, |reserve| reserve.0)
+}
+
+/// Environment for an inline navigation bar title, overriding `Body` when the
+/// look sets `title_font`.
+fn navigation_title_env(
+    env: &Environment,
+    look: &NavigationBarLook,
+    display_mode: NavigationTitleDisplayMode,
+) -> Environment {
+    if matches!(display_mode, NavigationTitleDisplayMode::Large) {
+        return env.clone();
+    }
+    let Some(font) = look.get_title_font() else {
+        return env.clone();
+    };
+    let mut scoped = env.clone();
+    install_font_signal::<Body>(&mut scoped, font.resolve(env));
+    scoped
 }
 
 fn back_button_title_reserve(metrics: &crate::theme::NavigationMetrics) -> f64 {
@@ -483,7 +503,9 @@ pub fn navigation_view_accessibility<E: crate::text::TextEngine>(
             ctx.as_ref()
                 .zip(theme)
                 .map_or((None, None, None), |(ctx, theme)| {
-                    let metrics = navigation_look(theme, env).metrics();
+                    let look = navigation_look(theme, env);
+                    let metrics = look.metrics();
+                    let title_env = navigation_title_env(env, &look, display_mode);
                     let bar_height = navigation_base_bar_height(display_mode, metrics);
                     let bar_rect = kurbo::Rect::new(
                         ctx.bounds().x0,
@@ -548,7 +570,9 @@ pub fn navigation_view_accessibility<E: crate::text::TextEngine>(
                     // positioned by the same split the suppressed flush draws at.
                     let subtitle_bounds = if state.subtitle_present() {
                         let title_size =
-                            state.title.measure_built(renderer.state_mut(), env, theme);
+                            state
+                                .title
+                                .measure_built(renderer.state_mut(), &title_env, theme);
                         let subtitle_size =
                             state
                                 .subtitle
@@ -650,7 +674,8 @@ pub fn measure_navigation_view_node<E: crate::text::TextEngine>(
         return ViewDimensions::new(LayoutSize::new(width, height));
     }
     let bar_hidden = hydro.measure_signal(&state.hidden);
-    let metrics = navigation_look(theme, env).metrics();
+    let look = navigation_look(theme, env);
+    let metrics = look.metrics();
     let bar_height = if bar_hidden {
         0.0
     } else {
@@ -665,7 +690,8 @@ pub fn measure_navigation_view_node<E: crate::text::TextEngine>(
         base + search_extra
     };
     let title_size = if bar_height > 0.0 && state.principal.is_empty() {
-        let title = state.title.measure_built(hydro, env, theme);
+        let title_env = navigation_title_env(env, &look, state.display_mode);
+        let title = state.title.measure_built(hydro, &title_env, theme);
         let subtitle = if state.subtitle_present() {
             state.subtitle.measure_built(hydro, env, theme)
         } else {
@@ -965,7 +991,8 @@ pub fn render_navigation_view_parts<E: crate::text::TextEngine>(
                 // (buttons, menus) emit like the other toolbar groups.
                 #[cfg(feature = "accessibility")]
                 ctx.renderer_mut().push_accessibility_suppression();
-                flush_title_and_subtitle(ctx, &mut state, env, title_rect, top);
+                let title_env = navigation_title_env(env, &look, display_mode);
+                flush_title_and_subtitle(ctx, &mut state, env, &title_env, title_rect, top);
                 #[cfg(feature = "accessibility")]
                 ctx.renderer_mut().pop_accessibility_suppression();
             } else {
@@ -1186,10 +1213,11 @@ fn flush_title_and_subtitle<E: crate::text::TextEngine>(
     ctx: &mut WidgetRenderContext<'_, E>,
     state: &mut NavigationViewRenderState<E>,
     env: &Environment,
+    title_env: &Environment,
     bounds: kurbo::Rect,
     bar: &crate::renderer::ChromeBar,
 ) {
-    let title_size = state.title.measure_intrinsic(ctx.renderer_mut(), env);
+    let title_size = state.title.measure_intrinsic(ctx.renderer_mut(), title_env);
     let subtitle_size = if state.subtitle_present() {
         state.subtitle.measure_intrinsic(ctx.renderer_mut(), env)
     } else {
@@ -1202,7 +1230,7 @@ fn flush_title_and_subtitle<E: crate::text::TextEngine>(
         state.title.place(
             ctx.renderer_mut(),
             render_ctx,
-            env,
+            title_env,
             ProposalSize::UNSPECIFIED,
             title_rect,
             title_area,
