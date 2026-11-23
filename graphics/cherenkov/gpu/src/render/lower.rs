@@ -472,13 +472,9 @@ impl Frame {
     /// (and enclosing scratch scope) in post-order, updating scratch pass
     /// capture regions and downstream composite placement/quads without
     /// re-lowering.
-    pub fn resolve_filter_outputs(
-        &mut self,
-        filters: &Registry,
-        surface_size: (u32, u32),
-    ) -> Result<(), RenderError> {
+    pub fn resolve_filter_outputs(&mut self, filters: &Registry) -> Result<(), RenderError> {
         self.filter_outputs.clear();
-        if self.filter_scopes.is_empty() || surface_size.0 == 0 || surface_size.1 == 0 {
+        if self.filter_scopes.is_empty() {
             return Ok(());
         }
         for scope in self.filter_scopes.iter().rev() {
@@ -488,9 +484,11 @@ impl Frame {
         }
         for index in 0..self.filter_scopes.len() {
             let scope = self.filter_scopes[index];
-            let tight = self.scope_tight_region(&scope, surface_size);
-            let (input_region, output_size) =
-                resolve_scope_extent(&scope, filters, tight, surface_size)?;
+            if scope.extent.0 == 0 || scope.extent.1 == 0 {
+                continue;
+            }
+            let tight = self.scope_tight_region(&scope);
+            let (input_region, output_size) = resolve_scope_extent(&scope, filters, tight)?;
 
             for pass in &mut self.passes[scope.passes_start..=scope.last_pass] {
                 if pass.target == scope.target {
@@ -500,8 +498,7 @@ impl Frame {
             if let Some(filter_pass) = scope.filter_pass {
                 self.filter_outputs.push((filter_pass, output_size));
             }
-            let quad_region =
-                self.update_scope_composite(&scope, input_region, output_size, surface_size);
+            let quad_region = self.update_scope_composite(&scope, input_region, output_size);
             if scope.needs_backdrop_copy {
                 let pass = &mut self.passes[scope.composite_pass];
                 pass.backdrop_copy = Some(pass.backdrop_copy.map_or(quad_region, |prev| {
@@ -516,7 +513,7 @@ impl Frame {
         Ok(())
     }
 
-    fn scope_tight_region(&self, scope: &FilterScope, surface_size: (u32, u32)) -> [u32; 4] {
+    fn scope_tight_region(&self, scope: &FilterScope) -> [u32; 4] {
         if !matches!(scope.bounds, FilterScopeBounds::Tight) {
             return [0; 4];
         }
@@ -541,7 +538,7 @@ impl Frame {
                 }
             }
         }
-        padded_region(min, max, surface_size.0, surface_size.1)
+        padded_region(min, max, scope.extent.0, scope.extent.1)
     }
 
     #[expect(
@@ -553,15 +550,15 @@ impl Frame {
         scope: &FilterScope,
         input_region: [u32; 4],
         output_size: (u32, u32),
-        surface_size: (u32, u32),
     ) -> [u32; 4] {
+        let extent = scope.extent;
         let (placed_origin, quad_region) = if output_size == (input_region[2], input_region[3]) {
             ([input_region[0], input_region[1]], input_region)
         } else {
-            let ox = input_region[0].min(surface_size.0.saturating_sub(output_size.0));
-            let oy = input_region[1].min(surface_size.1.saturating_sub(output_size.1));
-            let cw = output_size.0.min(surface_size.0.saturating_sub(ox));
-            let ch = output_size.1.min(surface_size.1.saturating_sub(oy));
+            let ox = input_region[0].min(extent.0.saturating_sub(output_size.0));
+            let oy = input_region[1].min(extent.1.saturating_sub(output_size.1));
+            let cw = output_size.0.min(extent.0.saturating_sub(ox));
+            let ch = output_size.1.min(extent.1.saturating_sub(oy));
             ([ox, oy], [ox, oy, cw, ch])
         };
 
@@ -592,41 +589,37 @@ fn resolve_scope_extent(
     scope: &FilterScope,
     filters: &Registry,
     tight: [u32; 4],
-    surface_size: (u32, u32),
 ) -> Result<([u32; 4], (u32, u32)), RenderError> {
-    let surface_region = [0, 0, surface_size.0, surface_size.1];
+    let extent = scope.extent;
+    let full_region = [0, 0, extent.0, extent.1];
     let tight_nonempty = tight[2] > 0 && tight[3] > 0;
     let Some(key) = scope.filter else {
         return Ok(match scope.bounds {
             FilterScopeBounds::Destructive(clip) => (clip, (clip[2], clip[3])),
             FilterScopeBounds::Tight if tight_nonempty => (tight, (tight[2], tight[3])),
-            FilterScopeBounds::FullSurface | FilterScopeBounds::Tight => {
-                (surface_region, surface_size)
-            }
+            FilterScopeBounds::FullSurface | FilterScopeBounds::Tight => (full_region, extent),
         });
     };
     match scope.bounds {
-        FilterScopeBounds::FullSurface => {
-            Ok((surface_region, filters.output_size(key, surface_size)?))
-        }
+        FilterScopeBounds::FullSurface => Ok((full_region, filters.output_size(key, extent)?)),
         FilterScopeBounds::Destructive(clip) => {
             let input = if clip[2] > 0 && clip[3] > 0 {
                 clip
             } else {
-                surface_region
+                full_region
             };
             let out = filters.output_size(key, (input[2], input[3]))?;
             Ok((input, out))
         }
         FilterScopeBounds::Tight if filters.preserves_surface_input(key) || !tight_nonempty => {
-            Ok((surface_region, filters.output_size(key, surface_size)?))
+            Ok((full_region, filters.output_size(key, extent)?))
         }
         FilterScopeBounds::Tight => {
             let tight_size = (tight[2], tight[3]);
             let declared_tight = filters.output_size(key, tight_size)?;
-            let declared_surface = filters.output_size(key, surface_size)?;
-            if declared_tight == tight_size && declared_surface == surface_size {
-                Ok((surface_region, declared_surface))
+            let declared_full = filters.output_size(key, extent)?;
+            if declared_tight == tight_size && declared_full == extent {
+                Ok((full_region, declared_full))
             } else {
                 Ok((tight, declared_tight))
             }
@@ -682,6 +675,10 @@ pub struct FilterScope {
     /// Any `backdrop_copy` already present on `composite_pass` from non-filter
     /// draws before the first filter scope targeted it.
     pub prior_backdrop_copy: Option<[u32; 4]>,
+    /// Coordinate extent `(width, height)` in which this scope was lowered
+    /// (the surface size at top level, or the padded silhouette size inside a
+    /// shadow capture).
+    pub extent: (u32, u32),
 }
 
 /// A clip shape with its device-to-clip-local transform, plus its device
@@ -3518,7 +3515,7 @@ impl<'a> Lowering<'a> {
         }
         self.begin_pass(outer_target, None);
         let needs_backdrop_copy =
-            entry.blend != cherenkov::BlendMode::Normal || entry.storage != self.current_space();
+            entry.blend != BlendMode::Normal || entry.storage != self.current_space();
         let composite_pass = self.frame.passes.len();
         let prior_backdrop_copy = needs_backdrop_copy
             .then(|| {
@@ -3548,19 +3545,19 @@ impl<'a> Lowering<'a> {
             self.set_clip(entry.outer_clip);
         }
         if filter_key.is_some() || has_descendant_filters {
-            self.frame.filter_scopes.push(FilterScope {
-                target: Target::Scratch(scratch),
-                passes_start: entry.passes_start,
+            self.push_filter_scope(
+                scratch,
+                entry.passes_start,
                 last_pass,
                 filter_pass,
-                filter: filter_key,
+                filter_key,
                 composite_pass,
                 composite_inst,
                 bounds,
-                composite: FilterScopeComposite::Texture,
+                FilterScopeComposite::Texture,
                 needs_backdrop_copy,
                 prior_backdrop_copy,
-            });
+            );
         }
         entry
     }
@@ -4845,8 +4842,7 @@ impl<'a> Lowering<'a> {
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
-        clippy::cast_precision_loss,
-        reason = "surface and region coordinates fit u32/f32 and stop counts fit u32"
+        reason = "surface and region coordinates fit u32"
     )]
     fn emit_content_effect_isolated(
         &mut self,
@@ -4914,9 +4910,70 @@ impl<'a> Lowering<'a> {
                 pass.region = scratch_region;
             }
         }
-        let outer_target = self.current_target();
-        self.begin_pass(outer_target, None);
+        let mut inst = self.build_content_effect_instance(
+            layer_transform,
+            member_clip,
+            member_bounds,
+            draw_region,
+            scratch_region,
+            opacity,
+            space,
+            effect,
+        );
+        self.begin_pass(self.current_target(), None);
+        let explicit = space != self.current_space();
+        let mut pipeline = PipelineKind::ContentEffect {
+            id: effect.shader.raw(),
+            replace: explicit,
+        };
+        if explicit {
+            self.open_member_blend_pass(&mut inst, &mut pipeline);
+        }
+        let (composite_pass, composite_inst) =
+            (self.frame.passes.len(), self.frame.instances.len());
+        self.set_source(Some(Source::Scratch(scratch)));
+        self.set_pipeline(pipeline);
+        self.push_instance(&inst);
+        self.set_pipeline(PipelineKind::SrcOver);
+        self.set_source(None);
+        if filter_key.is_some() || has_descendant_filters {
+            self.push_filter_scope(
+                scratch,
+                passes_start,
+                last_pass,
+                filter_pass,
+                filter_key,
+                composite_pass,
+                composite_inst,
+                if inner_capture {
+                    FilterScopeBounds::FullSurface
+                } else {
+                    FilterScopeBounds::Tight
+                },
+                FilterScopeComposite::ContentEffect,
+                false,
+                None,
+            );
+        }
+        Ok(())
+    }
 
+    #[expect(
+        clippy::too_many_arguments,
+        clippy::cast_precision_loss,
+        reason = "packs device geometry and uniforms for the isolated content-effect quad"
+    )]
+    fn build_content_effect_instance(
+        &mut self,
+        layer_transform: Affine,
+        member_clip: DeviceClip,
+        member_bounds: Rect,
+        draw_region: [u32; 4],
+        scratch_region: [u32; 4],
+        opacity: f32,
+        space: BlendSpace,
+        effect: &ContentShaderEffect,
+    ) -> Instance {
         let mut inst = Self::base(KIND_SPAN, affine(layer_transform), Some(member_clip));
         inst.bounds = [
             draw_region[0] as f32,
@@ -4940,41 +4997,16 @@ impl<'a> Lowering<'a> {
         if space == BlendSpace::SrgbEncoded {
             inst.meta[3] |= FLAG_TEX_SRGB << 24;
         }
-        let explicit = space != self.current_space();
-        let mut pipeline = PipelineKind::ContentEffect {
-            id: effect.shader.raw(),
-            replace: explicit,
-        };
-        if explicit {
-            self.open_member_blend_pass(&mut inst, &mut pipeline);
-        }
-        let composite_pass = self.frame.passes.len();
-        let composite_inst = self.frame.instances.len();
-        self.set_source(Some(Source::Scratch(scratch)));
-        self.set_pipeline(pipeline);
-        self.push_instance(&inst);
-        self.set_pipeline(PipelineKind::SrcOver);
-        self.set_source(None);
-        if filter_key.is_some() || has_descendant_filters {
-            self.push_content_effect_scope(
-                scratch,
-                passes_start,
-                last_pass,
-                filter_pass,
-                filter_key,
-                composite_pass,
-                composite_inst,
-                inner_capture,
-            );
-        }
-        Ok(())
+        inst
     }
 
     #[expect(
         clippy::too_many_arguments,
-        reason = "records the post-order filter scope indices and capture flags"
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "records post-order filter scope indices and positive lowering extent"
     )]
-    fn push_content_effect_scope(
+    fn push_filter_scope(
         &mut self,
         scratch: usize,
         passes_start: usize,
@@ -4983,7 +5015,10 @@ impl<'a> Lowering<'a> {
         filter: Option<FilterKey>,
         composite_pass: usize,
         composite_inst: usize,
-        inner_capture: bool,
+        bounds: FilterScopeBounds,
+        composite: FilterScopeComposite,
+        needs_backdrop_copy: bool,
+        prior_backdrop_copy: Option<[u32; 4]>,
     ) {
         self.frame.filter_scopes.push(FilterScope {
             target: Target::Scratch(scratch),
@@ -4993,14 +5028,11 @@ impl<'a> Lowering<'a> {
             filter,
             composite_pass,
             composite_inst,
-            bounds: if inner_capture {
-                FilterScopeBounds::FullSurface
-            } else {
-                FilterScopeBounds::Tight
-            },
-            composite: FilterScopeComposite::ContentEffect,
-            needs_backdrop_copy: false,
-            prior_backdrop_copy: None,
+            bounds,
+            composite,
+            needs_backdrop_copy,
+            prior_backdrop_copy,
+            extent: (self.width as u32, self.height as u32),
         });
     }
 
@@ -9903,5 +9935,117 @@ mod tests {
         // bounds; its explicit region joins the union.
         frame.filters.push((3, FilterKey::Layer(7)));
         assert_eq!(shadow_support(&frame, 3), [0, 0, 64, 64]);
+    }
+
+    #[test]
+    fn resolve_filter_outputs_respects_scope_extent_past_surface_size() {
+        use super::super::present::ColorRange;
+        use core::future::{Future, ready};
+        use filtrate::{
+            Effect, EffectContext, EffectInput, EffectOutput, EffectRenderResult,
+            EffectSetupResult, RetainedMemory,
+        };
+        use wgpu::CommandEncoder;
+
+        struct DoubleEffect;
+
+        impl Effect for DoubleEffect {
+            fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32) {
+                (input_width * 2, input_height * 2)
+            }
+
+            fn setup(&mut self, _: &EffectContext<'_>) -> impl Future<Output = EffectSetupResult> {
+                ready(Ok(()))
+            }
+
+            fn encode_render(
+                &mut self,
+                _: &EffectInput<'_>,
+                _: &EffectOutput<'_>,
+                _: &mut CommandEncoder,
+            ) -> EffectRenderResult {
+                Ok(false)
+            }
+
+            fn retained_memory(&self) -> RetainedMemory {
+                RetainedMemory::default()
+            }
+
+            fn trim(&mut self) {}
+        }
+
+        let mut registry = Registry::default();
+        let key = FilterKey::Layer(42);
+        registry.add(key, Box::new(DoubleEffect));
+
+        let mut draw_inst = Instance::new(KIND_SPAN);
+        draw_inst.bounds = [60.0, 60.0, 72.0, 72.0];
+        let composite_inst = Instance::new(KIND_SPAN);
+        let mut frame = Frame {
+            instances: vec![draw_inst, composite_inst],
+            passes: vec![
+                Pass {
+                    color_range: ColorRange::Standard,
+                    target: Target::Scratch(1),
+                    clear: Some([0.0; 4]),
+                    ranges: vec![DrawRange {
+                        source: None,
+                        image: None,
+                        mask: None,
+                        pipeline: PipelineKind::SrcOver,
+                        variant: ShaderVariant::Simple,
+                        instances: 0..1,
+                        gpu: None,
+                    }],
+                    space: BlendSpace::Linear,
+                    region: [0, 0, 96, 96],
+                    backdrop_copy: None,
+                    capture: None,
+                    tier_ranges: [Range::default(), Range::default()],
+                },
+                Pass {
+                    color_range: ColorRange::Standard,
+                    target: Target::Scratch(0),
+                    clear: None,
+                    ranges: vec![DrawRange {
+                        source: Some(Source::Scratch(1)),
+                        image: None,
+                        mask: None,
+                        pipeline: PipelineKind::SrcOver,
+                        variant: ShaderVariant::Simple,
+                        instances: 1..2,
+                        gpu: None,
+                    }],
+                    space: BlendSpace::Linear,
+                    region: [0, 0, 96, 96],
+                    backdrop_copy: None,
+                    capture: None,
+                    tier_ranges: [Range::default(), Range::default()],
+                },
+            ],
+            filter_scopes: vec![FilterScope {
+                target: Target::Scratch(1),
+                passes_start: 0,
+                last_pass: 0,
+                filter_pass: Some(0),
+                filter: Some(key),
+                composite_pass: 1,
+                composite_inst: 1,
+                bounds: FilterScopeBounds::Tight,
+                composite: FilterScopeComposite::Texture,
+                needs_backdrop_copy: false,
+                prior_backdrop_copy: None,
+                extent: (96, 96),
+            }],
+            ..Frame::default()
+        };
+
+        frame
+            .resolve_filter_outputs(&registry)
+            .expect("valid output dimensions");
+        assert_eq!(frame.passes[0].region, [59, 59, 14, 14]);
+        assert_eq!(frame.filter_output_size(0), Some((28, 28)));
+        assert_eq!(frame.instances[1].bounds, [59.0, 59.0, 87.0, 87.0]);
+        assert_eq!(frame.instances[1].grad[..2], [59.0, 59.0]);
     }
 }

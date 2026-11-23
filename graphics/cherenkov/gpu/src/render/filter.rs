@@ -1,5 +1,7 @@
 //! Engine execution of composed filtrate filters and custom effects.
 
+#[cfg(target_arch = "wasm32")]
+use core::{future::Future, pin::Pin};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -13,6 +15,7 @@ use filtrate::{
     Effect, EffectContext, EffectFrameTiming, EffectInput, EffectOutput, EffectRedrawCallback,
     EffectRenderError, EffectSetupError, Executor, RetainedMemory,
 };
+use filtrate_core::Filter;
 use filtrate_core::kind::{FilterKind, Kind};
 use wgpu::{CommandEncoder, Texture, TextureView};
 
@@ -43,7 +46,7 @@ impl<E: Effect + cherenkov::RenderTransfer> Source for E {
 
 pub struct FromFilter<F>(pub F);
 
-impl<F: filtrate_core::Filter + cherenkov::RenderTransfer> Source for FromFilter<F> {
+impl<F: Filter + cherenkov::RenderTransfer> Source for FromFilter<F> {
     fn build(self: Box<Self>) -> Box<dyn Runnable> {
         Box::new(FilterRunnable(Executor::new(self.0)))
     }
@@ -52,9 +55,9 @@ impl<F: filtrate_core::Filter + cherenkov::RenderTransfer> Source for FromFilter
 /// An `Executor` over a `FromFilter`, retaining full-surface input bounds
 /// for spatial filters whose blur or convolution halos extend past drawn
 /// subtree bounds.
-struct FilterRunnable<F: filtrate_core::Filter>(Executor<F>);
+struct FilterRunnable<F: Filter>(Executor<F>);
 
-impl<F: filtrate_core::Filter> Runnable for FilterRunnable<F> {
+impl<F: Filter> Runnable for FilterRunnable<F> {
     fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32) {
         Effect::output_size(&self.0, input_width, input_height)
     }
@@ -72,8 +75,7 @@ impl<F: filtrate_core::Filter> Runnable for FilterRunnable<F> {
     fn setup<'a>(
         &'a mut self,
         ctx: &'a EffectContext<'a>,
-    ) -> core::pin::Pin<Box<dyn core::future::Future<Output = Result<(), EffectSetupError>> + 'a>>
-    {
+    ) -> Pin<Box<dyn Future<Output = Result<(), EffectSetupError>> + 'a>> {
         Runnable::setup(&mut self.0, ctx)
     }
 

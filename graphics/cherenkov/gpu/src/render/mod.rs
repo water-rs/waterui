@@ -8916,7 +8916,7 @@ impl GpuRenderer {
         let Some(surf) = self.surfaces.get_mut(&id) else {
             return Ok(());
         };
-        surf.frame.resolve_filter_outputs(filters, surf.size)?;
+        surf.frame.resolve_filter_outputs(filters)?;
         for (&layer, entry) in &mut surf.static_layers {
             if !surf.plan.planes.iter().any(|plane| plane.layer == layer) {
                 entry.capture = None;

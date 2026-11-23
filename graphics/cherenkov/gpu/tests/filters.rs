@@ -12,7 +12,8 @@ use filtrate::{
     Effect, EffectContext, EffectFrameTiming, EffectInput, EffectOutput, EffectRedrawCallback,
     EffectRenderResult, EffectSetupResult, RetainedMemory,
 };
-use std::future::Future;
+use std::error::Error;
+use std::future::{Future, ready};
 use std::sync::{
     Arc,
     atomic::{AtomicU32, Ordering},
@@ -701,7 +702,7 @@ impl Effect for DynamicOutputShaderEffect {
             });
         self.layout = Some(layout);
         self.pipeline = Some(pipeline);
-        std::future::ready(Ok(()))
+        ready(Ok(()))
     }
 
     fn encode_render(
@@ -763,7 +764,7 @@ split_test! {
 /// keep unscaled tight input dimensions and render outside source bounds
 /// across the whole surface without clipping to the input scratch texture.
 fn small_subtree_effect_expands_to_window_size_without_scaling_input()
--> Result<(), Box<dyn std::error::Error>> {
+-> Result<(), Box<dyn Error>> {
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
     let surface = wait!(engine.surface(
         Offscreen::new((64, 64), OffscreenFormat::LinearF16),
@@ -819,8 +820,7 @@ split_test! {
 /// Reactive `Effect::output_size` changes (growth and shrink) re-plan
 /// targets, composite bounds, and damage cleanly without re-lowering
 /// (`commands_lowered == 0`), preserving source placement and premultiplied alpha.
-fn reactive_output_size_grows_and_shrinks_without_relowering()
--> Result<(), Box<dyn std::error::Error>> {
+fn reactive_output_size_grows_and_shrinks_without_relowering() -> Result<(), Box<dyn Error>> {
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
     let surface = wait!(engine.surface(
         Offscreen::new((64, 64), OffscreenFormat::LinearF16),
@@ -896,8 +896,7 @@ split_test! {
 /// Nested filters honor inner output expansion before outer capture and
 /// preserve filter chain order and sRGB-encoded space conversion across
 /// distinct input/output dimensions.
-fn nested_filters_and_srgb_scope_preserve_order_and_sizes()
--> Result<(), Box<dyn std::error::Error>> {
+fn nested_filters_and_srgb_scope_preserve_order_and_sizes() -> Result<(), Box<dyn Error>> {
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
     let surface = wait!(engine.surface(
         Offscreen::new((64, 64), OffscreenFormat::LinearF16),
