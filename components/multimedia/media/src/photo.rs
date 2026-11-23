@@ -1,7 +1,10 @@
 //! A Photo component that displays an image from a URL.
 //!
-//! The Photo component fetches an image from a URL, decodes it, and displays
-//! it using the GPU-accelerated [`Image`] view.
+//! `Photo` fetches an image from a local or remote [`Url`], decodes it, caches
+//! the decoded [`Image`] in the [`Environment`]'s [`PhotoCache`], and displays
+//! it through a persistent [`ReactiveImage`] surface, with optional static
+//! generic placeholder and failure views plus reactive [`PhotoStatus`]
+//! reporting.
 //!
 //! # Example
 //!
@@ -22,6 +25,7 @@ use crate::Url;
 use executor_core::spawn_local;
 #[cfg(feature = "remote")]
 use futures::StreamExt;
+use lru::LruCache;
 #[cfg(target_arch = "wasm32")]
 use std::path::Path;
 #[cfg(target_arch = "wasm32")]
@@ -29,21 +33,257 @@ use waterkit_fs::WaterFs;
 use waterui_capture::ContentLedger;
 use waterui_capture::content_ledger::OwedContent;
 use waterui_core::contract_violation;
+use waterui_core::dynamic::{Dynamic, DynamicHandler};
 use waterui_core::handler::ReportExtraction as _;
 use waterui_core::reactive::signal::IntoComputed;
 use waterui_core::reactive::watcher::BoxWatcherGuard;
-use waterui_core::{Computed, Environment, Metadata, Retain, Signal, View};
+use waterui_core::{
+    Binding, Computed, Environment, Metadata, OneOf2, OneOf3, Retain, Signal, Str, View,
+};
 use waterui_image::{
     ContentMode, Image, ImageStatus, ReactiveImage, ReactiveImageHandle, reactive_image,
 };
 use waterui_interaction::event::{LifeCycle, LifeCycleHook};
+use waterui_layout::stack::zstack;
 #[cfg(feature = "remote")]
 use zenwave::{Client, Method};
 
+/// Each decoded [`Image`] stores straight-alpha sRGB8 (`width * height * 4` bytes).
+const RGBA8_BYTES_PER_PIXEL: usize = 4;
+
+/// Default byte capacity of [`PhotoCache`]: 64 MiB of decoded RGBA8 pixels
+/// (~8 full 1920x1080 frames or ~256 256x256 thumbnails). Operators override
+/// this per environment with [`PhotoCache::new`] or at runtime with
+/// [`PhotoCache::set_max_bytes`].
+const DEFAULT_PHOTO_CACHE_MAX_BYTES: usize = 64 * 1024 * 1024;
+
+/// Lifecycle state of a [`Photo`]'s current source.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum PhotoStatus {
+    /// The photo is fetching, decoding, or registering its image.
+    #[default]
+    Loading,
+    /// The decoded image is registered on the render target and ready.
+    Ready,
+    /// Fetching, decoding, or registering the image failed with this reason.
+    Failed(Str),
+}
+
+impl PhotoStatus {
+    /// Returns whether the photo is currently loading.
+    #[must_use]
+    pub const fn is_loading(&self) -> bool {
+        matches!(self, Self::Loading)
+    }
+
+    /// Returns whether the photo's final frame is registered and ready.
+    #[must_use]
+    pub const fn is_ready(&self) -> bool {
+        matches!(self, Self::Ready)
+    }
+
+    /// Returns the failure reason when loading failed.
+    #[must_use]
+    pub const fn failure(&self) -> Option<&str> {
+        match self {
+            Self::Failed(reason) => Some(reason.as_str()),
+            Self::Loading | Self::Ready => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct CachedPhoto {
+    image: Image,
+    bytes: usize,
+}
+
+#[derive(Debug)]
+struct PhotoCacheInner {
+    max_bytes: usize,
+    used_bytes: usize,
+    entries: LruCache<Url, CachedPhoto>,
+}
+
+/// Shared bounded LRU cache of decoded [`Image`]s held in an [`Environment`].
+///
+/// Capacity is measured in decoded RGBA8 pixel bytes (`width * height * 4`) and
+/// is an operator setting: install a custom budget with
+/// `env.insert(PhotoCache::new(bytes))` or adjust it live with
+/// [`PhotoCache::set_max_bytes`].
+#[derive(Clone, Debug)]
+pub struct PhotoCache {
+    inner: Rc<RefCell<PhotoCacheInner>>,
+}
+
+impl Default for PhotoCache {
+    fn default() -> Self {
+        Self::new(DEFAULT_PHOTO_CACHE_MAX_BYTES)
+    }
+}
+
+impl PhotoCache {
+    /// Creates an empty cache bounded to `max_bytes` of decoded pixel data.
+    #[must_use]
+    pub fn new(max_bytes: usize) -> Self {
+        Self {
+            inner: Rc::new(RefCell::new(PhotoCacheInner {
+                max_bytes,
+                used_bytes: 0,
+                entries: LruCache::unbounded(),
+            })),
+        }
+    }
+
+    /// Current byte budget of this cache.
+    #[must_use]
+    pub fn max_bytes(&self) -> usize {
+        self.inner.borrow().max_bytes
+    }
+
+    /// Adjusts the byte budget at runtime, immediately evicting least-recently
+    /// used decoded images until [`Self::used_bytes`] fits within `max_bytes`.
+    pub fn set_max_bytes(&self, max_bytes: usize) {
+        let mut inner = self.inner.borrow_mut();
+        inner.max_bytes = max_bytes;
+        while inner.used_bytes > inner.max_bytes {
+            let Some((_, evicted)) = inner.entries.pop_lru() else {
+                inner.used_bytes = 0;
+                break;
+            };
+            inner.used_bytes = inner.used_bytes.saturating_sub(evicted.bytes);
+        }
+    }
+
+    /// Decoded pixel bytes currently retained in the cache.
+    #[must_use]
+    pub fn used_bytes(&self) -> usize {
+        self.inner.borrow().used_bytes
+    }
+
+    /// Number of cached URLs currently retained.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.inner.borrow().entries.len()
+    }
+
+    /// Returns whether the cache holds no decoded images.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.inner.borrow().entries.is_empty()
+    }
+
+    /// Drops all cached images.
+    pub fn clear(&self) {
+        let mut inner = self.inner.borrow_mut();
+        inner.entries.clear();
+        inner.used_bytes = 0;
+    }
+
+    pub(crate) fn contains(&self, url: &Url) -> bool {
+        self.inner.borrow().entries.contains(url)
+    }
+
+    pub(crate) fn get(&self, url: &Url) -> Option<Image> {
+        self.inner
+            .borrow_mut()
+            .entries
+            .get(url)
+            .map(|entry| entry.image.clone())
+    }
+
+    pub(crate) fn insert(&self, url: Url, image: Image) {
+        let bytes = decoded_image_bytes(&image);
+        let mut inner = self.inner.borrow_mut();
+        if let Some(previous) = inner.entries.pop(&url) {
+            inner.used_bytes = inner.used_bytes.saturating_sub(previous.bytes);
+        }
+        if bytes > inner.max_bytes {
+            return;
+        }
+        while inner.used_bytes.saturating_add(bytes) > inner.max_bytes {
+            let Some((_, evicted)) = inner.entries.pop_lru() else {
+                inner.used_bytes = 0;
+                break;
+            };
+            inner.used_bytes = inner.used_bytes.saturating_sub(evicted.bytes);
+        }
+        inner.used_bytes += bytes;
+        inner.entries.put(url, CachedPhoto { image, bytes });
+    }
+}
+
+fn decoded_image_bytes(image: &Image) -> usize {
+    (image.width() as usize)
+        .saturating_mul(image.height() as usize)
+        .saturating_mul(RGBA8_BYTES_PER_PIXEL)
+}
+
+/// Static slot contract for [`Photo::placeholder`].
+pub trait PlaceholderSlot: 'static {
+    /// The concrete view type produced while loading.
+    type View: View;
+    /// Whether a placeholder view was configured.
+    const PRESENT: bool;
+    /// Builds the placeholder view for a loading source.
+    fn build(&mut self) -> Self::View;
+}
+
+impl PlaceholderSlot for () {
+    type View = ();
+    const PRESENT: bool = false;
+
+    fn build(&mut self) {}
+}
+
+impl<B, V> PlaceholderSlot for B
+where
+    B: FnMut() -> V + 'static,
+    V: View,
+{
+    type View = V;
+    const PRESENT: bool = true;
+
+    fn build(&mut self) -> Self::View {
+        (self)()
+    }
+}
+
+/// Static slot contract for [`Photo::on_failure`].
+pub trait FailureSlot: 'static {
+    /// The concrete view type produced on load failure.
+    type View: View;
+    /// Whether a failure view was configured.
+    const PRESENT: bool;
+    /// Builds the failure view from the error message.
+    fn build(&mut self, reason: &str) -> Self::View;
+}
+
+impl FailureSlot for () {
+    type View = ();
+    const PRESENT: bool = false;
+
+    fn build(&mut self, _reason: &str) {}
+}
+
+impl<B, V> FailureSlot for B
+where
+    B: FnMut(&str) -> V + 'static,
+    V: View,
+{
+    type View = V;
+    const PRESENT: bool = true;
+
+    fn build(&mut self, reason: &str) -> Self::View {
+        (self)(reason)
+    }
+}
+
 /// A photo component that displays an image from a URL.
 ///
-/// Photo fetches the image asynchronously and displays it using the
-/// GPU-accelerated [`Image`] view once loaded.
+/// `Photo` fetches the image asynchronously, caches decoded frames in the
+/// environment's [`PhotoCache`], and displays them using [`Image`] once loaded.
 ///
 /// # Example
 ///
@@ -53,27 +293,32 @@ use zenwave::{Client, Method};
 ///
 /// Photo::new(Url::parse("https://www.rust-lang.org/logos/rust-logo-512x512.png").unwrap());
 /// ```
-pub struct Photo {
+pub struct Photo<P = (), F = ()> {
     /// The URL of the image to display.
     source: Computed<Url>,
-    /// Event handler for photo loading events. Stored as a typed
-    /// [`BoxedEventAction`] so the closure can extract `State<T>` /
-    /// environment values, mirroring the [`Button::action`] pattern.
+    /// Event handler for photo loading events.
     on_event: Option<waterui_core::handler::BoxedEventAction<Event>>,
-    /// Persistent GPU image surface updated when decoded frames arrive.
+    /// Caller-owned status binding updated across each source's load lifecycle.
+    status: Option<Binding<PhotoStatus>>,
+    /// Static placeholder builder shown while a source loads.
+    placeholder: P,
+    /// Static failure builder shown when a source fails.
+    on_failure: F,
+    /// Persistent image surface updated when decoded frames arrive.
     content: ReactiveImage,
     /// Handle for publishing decoded frames into `content`.
     content_handler: ReactiveImageHandle,
 }
 
-impl core::fmt::Debug for Photo {
+impl<P, F> core::fmt::Debug for Photo<P, F> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Photo")
             .field("source", &self.source)
             .field("on_event", &self.on_event.is_some())
+            .field("status", &self.status.is_some())
             .field("content", &self.content)
             .field("content_handler", &self.content_handler)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -92,18 +337,17 @@ pub enum Event {
     Error(String),
 }
 
-impl Photo {
+impl Photo<(), ()> {
     /// Creates a new `Photo` component with the specified image source URL.
-    ///
-    /// # Arguments
-    ///
-    /// * `source` - The URL of the image to display.
     #[must_use]
     pub fn new(source: impl IntoComputed<Url>) -> Self {
         let (content_handler, content) = reactive_image();
         Self {
             source: source.into_computed(),
             on_event: None,
+            status: None,
+            placeholder: (),
+            on_failure: (),
             content,
             content_handler,
         }
@@ -114,7 +358,9 @@ impl Photo {
     pub fn from_path(path: impl Into<String>) -> Self {
         Self::new(Url::from_file_path_str(path.into()))
     }
+}
 
+impl<P, F> Photo<P, F> {
     /// Allows the decoded image to stretch to the bounds proposed by its parent.
     #[must_use]
     pub fn resizable(mut self) -> Self {
@@ -132,12 +378,53 @@ impl Photo {
         self
     }
 
-    /// Sets the event handler for the photo.
+    /// Declares the placeholder view shown while a source is loading.
+    #[must_use]
+    pub fn placeholder<P2, V>(self, placeholder: P2) -> Photo<P2, F>
+    where
+        P2: FnMut() -> V + 'static,
+        V: View,
+    {
+        Photo {
+            source: self.source,
+            on_event: self.on_event,
+            status: self.status,
+            placeholder,
+            on_failure: self.on_failure,
+            content: self.content,
+            content_handler: self.content_handler,
+        }
+    }
+
+    /// Declares the view shown when fetching, decoding, or registering a source
+    /// fails, receiving the human-readable failure reason.
+    #[must_use]
+    pub fn on_failure<F2, V>(self, on_failure: F2) -> Photo<P, F2>
+    where
+        F2: FnMut(&str) -> V + 'static,
+        V: View,
+    {
+        Photo {
+            source: self.source,
+            on_event: self.on_event,
+            status: self.status,
+            placeholder: self.placeholder,
+            on_failure,
+            content: self.content,
+            content_handler: self.content_handler,
+        }
+    }
+
+    /// Observes each source's load lifecycle through a caller-owned binding.
     ///
-    /// The handler shares the [`Handler`](waterui_core::handler::Handler)
-    /// extractor pattern used by `Button::action`: the leading argument is
-    /// the [`Event`] payload and any subsequent arguments are extracted from
-    /// the rendering [`Environment`] at fire time.
+    /// Resets to [`PhotoStatus::Loading`] whenever the source URL changes.
+    #[must_use]
+    pub fn status(mut self, status: &Binding<PhotoStatus>) -> Self {
+        self.status = Some(status.clone());
+        self
+    }
+
+    /// Sets the event handler for the photo.
     ///
     /// # Examples
     ///
@@ -148,15 +435,12 @@ impl Photo {
     ///
     /// # fn gallery() -> impl View {
     /// # let url = Url::parse("https://www.rust-lang.org/logos/rust-logo-512x512.png").unwrap();
-    /// // Plain callback — no extractors.
     /// let photo = Photo::new(url.clone()).on_event(|event: Event| match event {
     ///     Event::Loaded => tracing::debug!("Image loaded!"),
     ///     Event::Error(msg) => tracing::debug!("Error: {msg}"),
-    ///     // `Event` is `#[non_exhaustive]`: later releases may add events.
     ///     _ => {}
     /// });
     ///
-    /// // Extractor-based callback — pulls a binding via `State<T>`.
     /// let last_status: Binding<String> = binding(String::new());
     /// let photo = Photo::new(url)
     ///     .on_event(|event: Event, State(last): State<Binding<String>>| {
@@ -176,20 +460,100 @@ impl Photo {
     }
 }
 
-impl View for Photo {
+trait PhotoUiSink: 'static {
+    fn show_loading(&self, cached: bool);
+    fn hide_overlay(&self);
+    fn mark_ready(&self);
+    fn mark_failed(&self, reason: &str);
+}
+
+type OverlayView<P, F> = OneOf3<(), <P as PlaceholderSlot>::View, <F as FailureSlot>::View>;
+
+struct PhotoSlots<P: PlaceholderSlot, F: FailureSlot> {
+    status: Option<Binding<PhotoStatus>>,
+    overlay: Option<DynamicHandler<OverlayView<P, F>>>,
+    placeholder: RefCell<P>,
+    on_failure: RefCell<F>,
+}
+
+impl<P: PlaceholderSlot, F: FailureSlot> PhotoUiSink for PhotoSlots<P, F> {
+    fn show_loading(&self, cached: bool) {
+        if let Some(status) = &self.status {
+            status.set(PhotoStatus::Loading);
+        }
+        if let Some(overlay) = &self.overlay {
+            if P::PRESENT && !cached {
+                overlay.set(OneOf3::B(self.placeholder.borrow_mut().build()));
+            } else {
+                overlay.set(OneOf3::A(()));
+            }
+        }
+    }
+
+    fn hide_overlay(&self) {
+        if let Some(overlay) = &self.overlay {
+            overlay.set(OneOf3::A(()));
+        }
+    }
+
+    fn mark_ready(&self) {
+        self.hide_overlay();
+        if let Some(status) = &self.status {
+            status.set(PhotoStatus::Ready);
+        }
+    }
+
+    fn mark_failed(&self, reason: &str) {
+        if let Some(status) = &self.status {
+            status.set(PhotoStatus::Failed(Str::from(reason.to_owned())));
+        }
+        if let Some(overlay) = &self.overlay {
+            if F::PRESENT {
+                overlay.set(OneOf3::C(self.on_failure.borrow_mut().build(reason)));
+            } else {
+                overlay.set(OneOf3::A(()));
+            }
+        }
+    }
+}
+
+impl<P: PlaceholderSlot, F: FailureSlot> View for Photo<P, F> {
     fn body(self, env: &Environment) -> impl View {
         let Self {
             source,
             on_event,
+            status,
+            placeholder,
+            on_failure,
             content,
             content_handler,
         } = self;
+
+        let cache = env.get::<PhotoCache>().cloned();
+        let (overlay_handler, overlay_view) = if P::PRESENT || F::PRESENT {
+            let (handler, view) = Dynamic::<OneOf3<(), P::View, F::View>>::new();
+            handler.set(OneOf3::A(()));
+            (Some(handler), Some(view))
+        } else {
+            (None, None)
+        };
+
+        let ui_sink: Rc<dyn PhotoUiSink> = Rc::new(PhotoSlots {
+            status,
+            overlay: overlay_handler,
+            placeholder: RefCell::new(placeholder),
+            on_failure: RefCell::new(on_failure),
+        });
+
         let env_for_event = env.clone();
         let on_event = Rc::new(RefCell::new(on_event));
         let generation = Rc::new(Cell::new(0));
         let load_state = Rc::new(RefCell::new(PhotoLoadState::default()));
         let start = {
             let load_state = Rc::clone(&load_state);
+            let cache = cache.clone();
+            let ui_sink = Rc::clone(&ui_sink);
+            let content_handler = content_handler.clone();
             move |url| {
                 start_load_task(
                     url,
@@ -198,21 +562,36 @@ impl View for Photo {
                     env_for_event.clone(),
                     generation.clone(),
                     Rc::clone(&load_state),
+                    cache.clone(),
+                    Rc::clone(&ui_sink),
                 );
             }
         };
-        // Each source owes a capture its first decoded frame from the moment
-        // it is set — from mount for the initial one — not from `Appear`,
-        // which a capture's mount may not have reached yet.
         let owe = {
             let env = env.clone();
-            move |url: &Url| ContentLedger::owe::<Self>(&env, url.as_str().to_owned())
+            move |url: &Url| ContentLedger::owe::<Photo>(&env, url.as_str().to_owned())
         };
-        let guard = subscribe_photo_source(&source, &load_state, owe, start.clone());
+        let on_source_reset = {
+            let content_handler = content_handler;
+            let cache = cache;
+            let ui_sink = ui_sink;
+            move |url: &Url| {
+                content_handler.clear();
+                let is_cached = cache.as_ref().is_some_and(|c| c.contains(url));
+                ui_sink.show_loading(is_cached);
+            }
+        };
+        let guard =
+            subscribe_photo_source(&source, &load_state, owe, on_source_reset, start.clone());
+
+        let composed = match overlay_view {
+            Some(overlay) => OneOf2::B(zstack((content, overlay))),
+            None => OneOf2::A(content),
+        };
 
         Metadata::new(
             Metadata::new(
-                content,
+                composed,
                 LifeCycleHook::new(LifeCycle::Appear, {
                     let load_state = Rc::clone(&load_state);
                     move || appear_photo(&load_state, &start)
@@ -242,10 +621,12 @@ impl PhotoLoadState {
         &mut self,
         source: Url,
         owe: impl FnOnce(&Url) -> Option<OwedContent>,
+        on_reset: impl FnOnce(&Url),
     ) -> Option<Url> {
         if self.latest_source.as_ref() != Some(&source) {
             self.owed = owe(&source);
             self.status = None;
+            on_reset(&source);
         }
         self.latest_source = Some(source.clone());
         self.start_if_ready(source)
@@ -273,9 +654,10 @@ fn update_photo_source(
     state: &Rc<RefCell<PhotoLoadState>>,
     source: Url,
     owe: impl FnOnce(&Url) -> Option<OwedContent>,
+    on_reset: impl FnOnce(&Url),
     start: &impl Fn(Url),
 ) {
-    let source = state.borrow_mut().update_source(source, owe);
+    let source = state.borrow_mut().update_source(source, owe, on_reset);
     if let Some(source) = source {
         start(source);
     }
@@ -288,24 +670,27 @@ fn appear_photo(state: &Rc<RefCell<PhotoLoadState>>, start: &impl Fn(Url)) {
     }
 }
 
-fn subscribe_photo_source<S, O, F>(
+fn subscribe_photo_source<S, O, R, F>(
     source: &S,
     state: &Rc<RefCell<PhotoLoadState>>,
     owe: O,
+    on_reset: R,
     start: F,
 ) -> S::Guard
 where
     S: Signal<Output = Url>,
     O: Clone + Fn(&Url) -> Option<OwedContent> + 'static,
+    R: Clone + Fn(&Url) + 'static,
     F: Clone + Fn(Url) + 'static,
 {
     let guard = source.watch({
         let state = Rc::clone(state);
         let owe = owe.clone();
+        let on_reset = on_reset.clone();
         let start = start.clone();
-        move |context| update_photo_source(&state, context.into_value(), &owe, &start)
+        move |context| update_photo_source(&state, context.into_value(), &owe, &on_reset, &start)
     });
-    update_photo_source(state, source.snapshot(), owe, &start);
+    update_photo_source(state, source.snapshot(), owe, on_reset, &start);
     guard
 }
 
@@ -323,6 +708,10 @@ impl core::error::Error for PhotoLoadError {}
 
 type PhotoEventHandler = Rc<RefCell<Option<waterui_core::handler::BoxedEventAction<Event>>>>;
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "internal helper wiring source URL, event/UI sinks, generation guard, and optional cache"
+)]
 fn start_load_task(
     url: Url,
     on_event: PhotoEventHandler,
@@ -330,19 +719,52 @@ fn start_load_task(
     env: Environment,
     generation: Rc<Cell<usize>>,
     load_state: Rc<RefCell<PhotoLoadState>>,
+    cache: Option<PhotoCache>,
+    ui_sink: Rc<dyn PhotoUiSink>,
 ) {
-    let (token, settlement) =
-        begin_source_load(&handler, &on_event, &env, &generation, &load_state);
+    let (token, settlement) = begin_source_load(
+        &handler,
+        &on_event,
+        &env,
+        &generation,
+        &load_state,
+        &ui_sink,
+    );
+
+    if let Some(cached) = cache.as_ref().and_then(|c| c.get(&url)) {
+        publish_decoded_frame(&handler, cached);
+        decode_finished(
+            &settlement,
+            &generation,
+            token,
+            &load_state,
+            &on_event,
+            &env,
+            &ui_sink,
+        );
+        return;
+    }
+
     spawn_local(async move {
         let frame_generation = generation.clone();
-        match fetch_and_decode_streaming(url, move |image| {
+        let handler_for_frames = handler.clone();
+        let last_decoded: Rc<RefCell<Option<Image>>> = Rc::new(RefCell::new(None));
+        let last_decoded_sink = Rc::clone(&last_decoded);
+        match fetch_and_decode_streaming(url.clone(), move |image| {
             if frame_generation.get() == token {
-                publish_decoded_frame(&handler, image);
+                *last_decoded_sink.borrow_mut() = Some(image.clone());
+                publish_decoded_frame(&handler_for_frames, image);
             }
         })
         .await
         {
             Ok(()) => {
+                if generation.get() == token
+                    && let (Some(cache), Some(final_image)) =
+                        (&cache, last_decoded.borrow_mut().take())
+                {
+                    cache.insert(url, final_image);
+                }
                 decode_finished(
                     &settlement,
                     &generation,
@@ -350,17 +772,18 @@ fn start_load_task(
                     &load_state,
                     &on_event,
                     &env,
+                    &ui_sink,
                 );
             }
             Err(e) => {
                 tracing::error!("[Photo] Failed to load: {}", e);
                 if generation.get() == token {
-                    // A source whose decode failed reports no later
-                    // status event.
                     let mut settlement = settlement.borrow_mut();
                     let fresh = !matches!(settlement.phase, Phase::Reported);
                     settlement.phase = Phase::Reported;
                     drop(settlement);
+                    handler.clear();
+                    ui_sink.mark_failed(&e);
                     let owed = load_state.borrow_mut().owed.take();
                     if let Some(owed) = owed {
                         owed.fail(PhotoLoadError(e.clone()));
@@ -380,27 +803,15 @@ fn start_load_task(
 /// once the stream ends.
 #[derive(Debug)]
 struct Settlement {
-    /// The status last observed on the handle:
-    /// [`Pending`](ImageStatus::Pending) while no target has drawn the
-    /// published frame yet.
     latest: ImageStatus,
-    /// What the source's report still waits for.
     phase: Phase,
-    /// The decode stream ended, making the last published frame the final
-    /// one.
     finished: bool,
 }
 
-/// Which status settlement a source's report still waits for.
 #[derive(Debug)]
 enum Phase {
-    /// No published frame has settled yet; the first to do so resolves the
-    /// owed capture, and a refusal there is the source's error.
     AwaitingFirst,
-    /// The first frame resolved the owed capture; the report waits for the
-    /// final frame's settlement.
     WatchingFinal,
-    /// An `Event` was already reported for this source.
     Reported,
 }
 
@@ -414,18 +825,13 @@ impl Settlement {
     }
 }
 
-/// Starts reporting for the source the load is about to fetch: bumps the
-/// load generation, clears the published frame, and installs the watch that
-/// turns the handle's image status into the source's owed capture and
-/// events. The watch's guard is owned by `load_state`, so a source change
-/// ends it. Returns the load's token and the settlement record the decode
-/// task marks finished on.
 fn begin_source_load(
     handler: &ReactiveImageHandle,
     on_event: &PhotoEventHandler,
     env: &Environment,
     generation: &Rc<Cell<usize>>,
     load_state: &Rc<RefCell<PhotoLoadState>>,
+    ui_sink: &Rc<dyn PhotoUiSink>,
 ) -> (usize, Rc<RefCell<Settlement>>) {
     let token = generation
         .get()
@@ -440,22 +846,27 @@ fn begin_source_load(
         let on_event = Rc::clone(on_event);
         let env = env.clone();
         let generation = Rc::clone(generation);
+        let handler = handler.clone();
+        let ui_sink = Rc::clone(ui_sink);
         move |context| {
             if generation.get() != token {
                 return;
             }
-            let mut settlement = settlement.borrow_mut();
-            settlement.latest = context.into_value();
-            settle_registration(&mut settlement, &load_state, &on_event, &env);
+            settlement.borrow_mut().latest = context.into_value();
+            settle_registration_inner(
+                &settlement,
+                &load_state,
+                &on_event,
+                &env,
+                Some(&handler),
+                &*ui_sink,
+            );
         }
     });
     load_state.borrow_mut().status = Some(guard);
     (token, settlement)
 }
 
-/// The decode stream ended: the frame last published is the final one, so
-/// its settlement — observed already or still to come — decides the source's
-/// `Loaded` report.
 fn decode_finished(
     settlement: &Rc<RefCell<Settlement>>,
     generation: &Rc<Cell<usize>>,
@@ -463,60 +874,98 @@ fn decode_finished(
     load_state: &Rc<RefCell<PhotoLoadState>>,
     on_event: &PhotoEventHandler,
     env: &Environment,
+    ui_sink: &Rc<dyn PhotoUiSink>,
 ) {
     if generation.get() != token {
         return;
     }
-    let mut settlement = settlement.borrow_mut();
-    settlement.finished = true;
-    settle_registration(&mut settlement, load_state, on_event, env);
+    settlement.borrow_mut().finished = true;
+    settle_registration_inner(settlement, load_state, on_event, env, None, &**ui_sink);
 }
 
-/// Applies the settlement the source stands at. The first published frame's
-/// outcome resolves the capture it owes; [`Event::Loaded`] fires on the
-/// final frame being ready, and [`Event::Error`] on a refusal of the
-/// first or the final frame. A refused progressive frame between them is
-/// superseded by the frame that replaces it, so it reports nothing. Each
-/// event fires once per source.
-fn settle_registration(
-    settlement: &mut Settlement,
+fn settle_registration_inner(
+    settlement: &RefCell<Settlement>,
     load_state: &RefCell<PhotoLoadState>,
     on_event: &PhotoEventHandler,
     env: &Environment,
+    handler: Option<&ReactiveImageHandle>,
+    ui_sink: &dyn PhotoUiSink,
 ) {
-    if matches!(settlement.phase, Phase::Reported) {
-        return;
+    enum Outcome {
+        None,
+        Ready {
+            first: bool,
+            finished: bool,
+        },
+        Refused {
+            first: bool,
+            error: alloc::sync::Arc<dyn core::error::Error + Send + Sync>,
+        },
+        Unknown(ImageStatus),
     }
-    match settlement.latest.clone() {
-        ImageStatus::Pending => {}
-        ImageStatus::Ready => {
-            if matches!(settlement.phase, Phase::AwaitingFirst) {
-                settlement.phase = Phase::WatchingFinal;
+
+    let outcome = {
+        let mut settlement = settlement.borrow_mut();
+        if matches!(settlement.phase, Phase::Reported) {
+            Outcome::None
+        } else {
+            match settlement.latest.clone() {
+                ImageStatus::Pending => Outcome::None,
+                ImageStatus::Ready => {
+                    let first = matches!(settlement.phase, Phase::AwaitingFirst);
+                    if first {
+                        settlement.phase = Phase::WatchingFinal;
+                    }
+                    let finished = settlement.finished;
+                    if finished {
+                        settlement.phase = Phase::Reported;
+                    }
+                    Outcome::Ready { first, finished }
+                }
+                ImageStatus::Refused(error) => {
+                    let first = matches!(settlement.phase, Phase::AwaitingFirst);
+                    if first || settlement.finished {
+                        settlement.phase = Phase::Reported;
+                        Outcome::Refused { first, error }
+                    } else {
+                        Outcome::None
+                    }
+                }
+                status => Outcome::Unknown(status),
+            }
+        }
+    };
+
+    match outcome {
+        Outcome::None => {}
+        Outcome::Ready { first, finished } => {
+            if first {
+                ui_sink.hide_overlay();
                 if let Some(owed) = load_state.borrow_mut().owed.take() {
                     owed.fulfil();
                 }
             }
-            if settlement.finished {
-                settlement.phase = Phase::Reported;
+            if finished {
+                ui_sink.mark_ready();
                 if let Some(on_event) = on_event.borrow_mut().as_mut() {
                     on_event(Event::Loaded, env).report_extraction();
                 }
             }
         }
-        ImageStatus::Refused(error) => {
-            let first = matches!(settlement.phase, Phase::AwaitingFirst);
-            if !(first || settlement.finished) {
-                return;
+        Outcome::Refused { first, error } => {
+            let message = error.to_string();
+            if let Some(handler) = handler {
+                handler.clear();
             }
-            settlement.phase = Phase::Reported;
+            ui_sink.mark_failed(&message);
             if first && let Some(owed) = load_state.borrow_mut().owed.take() {
-                owed.fail(error.clone());
+                owed.fail(error);
             }
             if let Some(on_event) = on_event.borrow_mut().as_mut() {
-                on_event(Event::Error(error.to_string()), env).report_extraction();
+                on_event(Event::Error(message), env).report_extraction();
             }
         }
-        status => {
+        Outcome::Unknown(status) => {
             contract_violation!("Photo has no settlement for the image status {status:?}");
         }
     }
@@ -613,8 +1062,9 @@ mod tests {
     #[cfg(feature = "remote")]
     use super::fetch_and_decode_streaming;
     use super::{
-        Event, Photo, PhotoEventHandler, PhotoLoadState, appear_photo, begin_source_load,
-        decode_finished, subscribe_photo_source, update_photo_source,
+        Event, Photo, PhotoCache, PhotoEventHandler, PhotoLoadState, PhotoStatus, PhotoUiSink,
+        appear_photo, begin_source_load, decode_finished, subscribe_photo_source,
+        update_photo_source,
     };
     use crate::Url;
     use image::ImageEncoder as _;
@@ -629,6 +1079,19 @@ mod tests {
     use waterui_core::{AnyView, Binding, Environment, Signal, View, reactive::watcher::Context};
     use waterui_image::{DecodePath, Image, ReactiveImage, ReactiveImageHandle, reactive_image};
     use waterui_layout::container::FixedContainer;
+
+    struct NoopUiSink;
+
+    impl PhotoUiSink for NoopUiSink {
+        fn show_loading(&self, _cached: bool) {}
+        fn hide_overlay(&self) {}
+        fn mark_ready(&self) {}
+        fn mark_failed(&self, _reason: &str) {}
+    }
+
+    fn noop_sink() -> Rc<dyn PhotoUiSink> {
+        Rc::new(NoopUiSink)
+    }
 
     #[derive(Clone)]
     struct EmitsDuringSubscription {
@@ -667,7 +1130,13 @@ mod tests {
             move |source| started.borrow_mut().push(source)
         };
 
-        let _guard = subscribe_photo_source(&signal, &load_state, |_: &Url| None, start.clone());
+        let _guard = subscribe_photo_source(
+            &signal,
+            &load_state,
+            |_: &Url| None,
+            |_: &Url| {},
+            start.clone(),
+        );
         assert!(
             started.borrow().is_empty(),
             "source updates before Appear must not start offscreen loading"
@@ -691,7 +1160,7 @@ mod tests {
         let load_state = Rc::new(RefCell::new(PhotoLoadState::default()));
         let owe = move |url: &Url| ContentLedger::owe::<Photo>(&env, url.as_str().to_owned());
 
-        let _guard = subscribe_photo_source(&source, &load_state, owe, |_| {});
+        let _guard = subscribe_photo_source(&source, &load_state, owe, |_: &Url| {}, |_| {});
         assert_eq!(
             ledger
                 .outstanding()
@@ -728,6 +1197,54 @@ mod tests {
             .expect("the current source is owed")
             .fulfil();
         assert_eq!(ledger.pending().snapshot(), 0);
+    }
+
+    #[test]
+    fn photo_cache_evicts_least_recently_used_entries_and_adjusts_max_bytes() {
+        // Each 2x2 RGBA8 image is 16 bytes.
+        let cache = PhotoCache::new(32);
+        let url_a = Url::from_file_path_str("/photos/a.png");
+        let url_b = Url::from_file_path_str("/photos/b.png");
+        let url_c = Url::from_file_path_str("/photos/c.png");
+        let img = || Image::new(vec![255; 16], 2, 2);
+
+        cache.insert(url_a.clone(), img());
+        cache.insert(url_b.clone(), img());
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.used_bytes(), 32);
+
+        // Touch `url_a` so `url_b` becomes least-recently used.
+        assert!(cache.get(&url_a).is_some());
+        cache.insert(url_c.clone(), img());
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.used_bytes(), 32);
+        assert!(cache.get(&url_a).is_some(), "url_a was recently accessed");
+        assert!(cache.get(&url_b).is_none(), "url_b must be evicted");
+        assert!(cache.get(&url_c).is_some(), "url_c was just inserted");
+
+        // Operator lowers max_bytes at runtime: excess entries evict immediately.
+        cache.set_max_bytes(16);
+        assert_eq!(cache.max_bytes(), 16);
+        assert_eq!(cache.len(), 1);
+        assert_eq!(cache.used_bytes(), 16);
+        assert!(cache.get(&url_c).is_some());
+
+        cache.set_max_bytes(0);
+        assert!(cache.is_empty());
+        assert_eq!(cache.used_bytes(), 0);
+    }
+
+    #[test]
+    fn photo_status_helpers_report_loading_ready_and_failure_reason() {
+        assert!(PhotoStatus::default().is_loading());
+        assert!(!PhotoStatus::Loading.is_ready());
+        assert_eq!(PhotoStatus::Loading.failure(), None);
+        assert!(PhotoStatus::Ready.is_ready());
+        assert_eq!(PhotoStatus::Ready.failure(), None);
+        let failed = PhotoStatus::Failed("bad header".into());
+        assert!(!failed.is_loading());
+        assert!(!failed.is_ready());
+        assert_eq!(failed.failure(), Some("bad header"));
     }
 
     /// A scene backend that admits every image registration, or refuses
@@ -782,10 +1299,6 @@ mod tests {
         }
     }
 
-    /// The mounted canvas inside a `ReactiveImage`'s body — the view keeps
-    /// its canvas behind a layout container, so a test pulls it out through
-    /// the public view API and mounts it, as a backend does, to drive
-    /// `build_scene` itself.
     fn mounted_content(image: ReactiveImage) -> Box<dyn SceneContent> {
         let env = Environment::new();
         let body = AnyView::new(image.body(&env));
@@ -801,8 +1314,6 @@ mod tests {
             .unwrap_or_else(|_| panic!("a canvas mounts as a canvas view"))) as _
     }
 
-    /// Records one frame of `content` against `resources`, running the
-    /// registration the published frame attempts.
     fn settle_frame(content: &mut dyn SceneContent, resources: &SceneResources) {
         let mut recording = resources.recording();
         let recorded = Content::record(&LayoutSize::new(), |recorder| {
@@ -812,8 +1323,6 @@ mod tests {
         drop(recorded);
     }
 
-    /// An event handler recording the debug form of each event it fires, in
-    /// order.
     fn recorded_events() -> (Rc<RefCell<Vec<String>>>, PhotoEventHandler) {
         let events = Rc::new(RefCell::new(Vec::new()));
         let handler: PhotoEventHandler = Rc::new(RefCell::new(Some(Box::new({
@@ -830,9 +1339,6 @@ mod tests {
         (events, handler)
     }
 
-    /// A photo load under test: the handle drives published frames, the
-    /// extracted scene content runs their registration against `resources`,
-    /// and `events` records what the handler fired.
     struct LoadTest {
         env: Environment,
         ledger: ContentLedger,
@@ -886,11 +1392,11 @@ mod tests {
             events,
             on_event,
         } = load_test_setup(false);
+        let sink = noop_sink();
         load_state.borrow_mut().owed = ContentLedger::owe::<Photo>(&env, "refused.png".to_owned());
         let (token, settlement) =
-            begin_source_load(&handle, &on_event, &env, &generation, &load_state);
+            begin_source_load(&handle, &on_event, &env, &generation, &load_state, &sink);
 
-        // Publish the first frame and draw it — the target refuses it.
         handle.set(Image::new(vec![255; 4], 1, 1));
         settle_frame(&mut *content, &resources);
 
@@ -913,7 +1419,6 @@ mod tests {
             "{failure}"
         );
 
-        // The stream ending afterwards cannot turn the report into Loaded.
         decode_finished(
             &settlement,
             &generation,
@@ -921,6 +1426,7 @@ mod tests {
             &load_state,
             &on_event,
             &env,
+            &sink,
         );
         assert_eq!(
             events.borrow().len(),
@@ -942,13 +1448,12 @@ mod tests {
             events,
             on_event,
         } = load_test_setup(true);
+        let sink = noop_sink();
         load_state.borrow_mut().owed =
             ContentLedger::owe::<Photo>(&env, "registered.png".to_owned());
         let (token, settlement) =
-            begin_source_load(&handle, &on_event, &env, &generation, &load_state);
+            begin_source_load(&handle, &on_event, &env, &generation, &load_state, &sink);
 
-        // The first published frame is drawn: the owed capture is
-        // fulfilled, but nothing is reported while the stream runs.
         handle.set(Image::new(vec![255; 4], 1, 1));
         settle_frame(&mut *content, &resources);
         assert_eq!(
@@ -961,7 +1466,6 @@ mod tests {
             "Loaded waits for the final frame"
         );
 
-        // The stream ends — the published frame is final.
         decode_finished(
             &settlement,
             &generation,
@@ -969,10 +1473,10 @@ mod tests {
             &load_state,
             &on_event,
             &env,
+            &sink,
         );
         assert_eq!(*events.borrow(), vec![String::from("Loaded")]);
 
-        // Re-recording the same frame reports nothing further.
         settle_frame(&mut *content, &resources);
         assert_eq!(events.borrow().len(), 1);
     }
@@ -990,30 +1494,35 @@ mod tests {
             events,
             on_event,
         } = load_test_setup(false);
+        let sink = noop_sink();
 
-        // Source A publishes a frame the target would refuse, but no
-        // recording pass has drawn it yet.
         load_state.borrow_mut().appeared = true;
         load_state.borrow_mut().owed = ContentLedger::owe::<Photo>(&env, "replaced.png".to_owned());
-        let _ = begin_source_load(&handle, &on_event, &env, &generation, &load_state);
+        let _ = begin_source_load(&handle, &on_event, &env, &generation, &load_state, &sink);
         handle.set(Image::new(vec![255; 4], 1, 1));
 
-        // The source changes before that frame is drawn: the watch is
-        // dropped with the old source's load state, the published frame is
-        // cleared, and the new source owes its own capture.
         let next = Url::from_file_path_str("/photos/next.png");
         update_photo_source(
             &load_state,
             next.clone(),
             |url| ContentLedger::owe::<Photo>(&env, url.as_str().to_owned()),
+            |_: &Url| {},
             &{
                 let handle = handle.clone();
                 let on_event = Rc::clone(&on_event);
                 let env = env.clone();
                 let generation = Rc::clone(&generation);
                 let load_state = Rc::clone(&load_state);
+                let sink = Rc::clone(&sink);
                 move |_| {
-                    let _ = begin_source_load(&handle, &on_event, &env, &generation, &load_state);
+                    let _ = begin_source_load(
+                        &handle,
+                        &on_event,
+                        &env,
+                        &generation,
+                        &load_state,
+                        &sink,
+                    );
                 }
             },
         );
@@ -1033,7 +1542,6 @@ mod tests {
             "the previous source's entry was released"
         );
 
-        // And the current source's own settlement still reports.
         handle.set(Image::new(vec![255; 4], 1, 1));
         settle_frame(&mut *content, &resources);
         assert_eq!(events.borrow().len(), 1);

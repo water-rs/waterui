@@ -354,7 +354,11 @@ pub fn install_application_resources(env: &mut Environment) {
         });
         env.insert(context);
     }
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(feature = "media")]
+    if env.get::<waterui_media::PhotoCache>().is_none() {
+        env.insert(waterui_media::PhotoCache::default());
+    }
+    #[cfg(all(target_arch = "wasm32", not(feature = "media")))]
     let _ = env;
 }
 

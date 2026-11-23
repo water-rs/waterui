@@ -16,13 +16,18 @@ use waterui::prelude::*;
 pub fn media_block_01() {
     let radius = Binding::f64(2.0);
     let sat = Binding::f64(1.0);
+    let photo_status = Binding::container(waterui::media::PhotoStatus::Loading);
     let rgba_pixels = vec![0u8; 200 * 150 * 4];
 
     use waterui::media::photo::Event as PhotoEvent; // the event type needs this alias import
-    use waterui::media::{Image, Photo, Url};
+    use waterui::media::{Image, Photo, PhotoCache, PhotoStatus, Url, photo};
 
     let _ = {
-        Photo::new("https://waterui.dev/logo.png") // impl IntoComputed<Url>; Url: From<&'static str>
+        photo("https://waterui.dev/logo.png") // impl IntoComputed<Url>; Url: From<&'static str>
+            .resizable()
+            .placeholder(loading) // static generic slot shown while Loading
+            .on_failure(|err: &str| text!("{err}")) // static generic slot shown on Failed(reason)
+            .status(&photo_status) // Binding<PhotoStatus>: Loading | Ready | Failed(Str), reset on source change
             .on_event(|event| match event {
                 // inherent on Photo — attach it BEFORE filters,
                 PhotoEvent::Loaded => (), // which wrap the view in a Filtered<..> type
@@ -37,17 +42,21 @@ pub fn media_block_01() {
         Image::new(rgba_pixels, 200, 150) // in-memory RGBA8; asserts len == w * h * 4
     };
 
-    let _: Option<Url> = None;
+    let _: Option<(Photo, PhotoCache, PhotoStatus, Url)> = None;
 }
 
 // ---------------------------------------------------------------------------
-// media.md § "## Media" (prose): `Photo::from_path`, `Image::from_encoded`,
-// `.resizable()` and `.content_mode(ContentMode::Fit)` on both. Not counted as a
-// rust block.
+// media.md § "## Media" (prose): `Photo::from_path`, `PhotoCache::new`,
+// `PhotoCache::set_max_bytes`, `Image::from_encoded`, `.resizable()` and
+// `.content_mode(ContentMode::Fit)` on both. Not counted as a rust block.
 // ---------------------------------------------------------------------------
-pub fn media_image_prose(encoded: &[u8]) -> impl View {
+pub fn media_image_prose(encoded: &[u8], env: &mut Environment, max_bytes: usize) -> impl View {
     use waterui::layout::ContentMode;
-    use waterui::media::{Image, Photo};
+    use waterui::media::{Image, Photo, PhotoCache};
+
+    let cache = PhotoCache::new(max_bytes);
+    cache.set_max_bytes(max_bytes);
+    env.insert(cache);
 
     let _decoded: Result<Image, String> = Image::from_encoded(encoded);
     let _fill = Image::new(vec![0u8; 4], 1, 1)
