@@ -103,7 +103,7 @@ pub use navigation::{
 };
 pub use picker::{MenuPickerLayout, MenuPickerLook, PickerSpec, RadioGroupLook, RadioLayout};
 pub use progress::{
-    IndicatorLook, LinearLayout, LinearProgressLook, ProgressControl, ProgressSpec,
+    IndicatorLayout, IndicatorLook, LinearLayout, LinearProgressLook, ProgressControl, ProgressSpec,
 };
 pub use scroll_indicator::ScrollIndicatorLook;
 #[cfg(waterui_feature = "picker")]

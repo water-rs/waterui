@@ -316,12 +316,12 @@ fn place(look: &SliderLook, spec: &SliderSpec, measured: &Measured, bounds: Rect
     let (left, right) = drawn.sides(layout, direction);
     let band = drawn.band(layout);
     let label = (drawn.label > 0.0).then(|| {
-        Rect::new(
-            bounds.x0,
-            bounds.y0,
-            bounds.x1,
-            (bounds.y0 + drawn.label).min(bounds.y1),
-        )
+        let width = f64::from(measured.label.width).min(bounds.width()).max(0.0);
+        let (x0, x1) = match direction {
+            LayoutDirection::LeftToRight => (bounds.x0, bounds.x0 + width),
+            LayoutDirection::RightToLeft => (bounds.x1 - width, bounds.x1),
+        };
+        Rect::new(x0, bounds.y0, x1, (bounds.y0 + drawn.label).min(bounds.y1))
     });
     let row = Rect::new(
         bounds.x0,
@@ -974,10 +974,81 @@ pub fn emit_slider_accessibility<E: crate::text::TextEngine>(
 
 #[cfg(test)]
 mod tests {
-    use super::{dragged_value, valid_range};
-    use crate::theme::DragMapping;
-    use kurbo::{Point, Rect};
-    use waterui_core::layout::LayoutDirection;
+    use super::{Measured, dragged_value, place, valid_range};
+    use crate::theme::{
+        DragMapping, HitRegion, Knob, Motion, SliderLayout, SliderLook, SliderSpec, SpecTint,
+    };
+    use core::time::Duration;
+    use kurbo::{Point, Rect, Size};
+    use waterui::animation::Animation;
+    use waterui_controls::ControlSize;
+    use waterui_core::Environment;
+    use waterui_core::layout::{LayoutDirection, Size as LayoutSize};
+
+    fn test_slider_look() -> SliderLook {
+        SliderLook::new(
+            SliderLayout {
+                row_height: 30.0,
+                track_inset: 12.0,
+                label_inset: 0.0,
+                label_gap: 8.0,
+                minimum_track: 72.0,
+                label_spacing: Some(6.0),
+            },
+            Knob {
+                size: Size::new(24.0, 24.0),
+                hit: HitRegion::NONE,
+            },
+            DragMapping::Absolute,
+            Motion::uniform(Animation::linear(Duration::from_millis(15))),
+        )
+    }
+
+    #[test]
+    fn place_aligns_main_label_to_the_leading_edge_and_mirrors_in_rtl() {
+        let look = test_slider_look();
+        let env = Environment::new();
+        let bounds = Rect::new(10.0, 20.0, 310.0, 76.0);
+        let measured = Measured {
+            label: LayoutSize::new(56.0, 18.0),
+            min: LayoutSize::zero(),
+            max: LayoutSize::zero(),
+        };
+
+        let ltr_spec = SliderSpec::new(
+            ControlSize::Medium,
+            0.0..=1.0,
+            None,
+            LayoutDirection::LeftToRight,
+            SpecTint::resolve(&env),
+            true,
+            false,
+            false,
+        );
+        let ltr = place(&look, &ltr_spec, &measured, bounds);
+        assert_eq!(ltr.label, Some(Rect::new(10.0, 20.0, 66.0, 38.0)));
+
+        let rtl_spec = SliderSpec::new(
+            ControlSize::Medium,
+            0.0..=1.0,
+            None,
+            LayoutDirection::RightToLeft,
+            SpecTint::resolve(&env),
+            true,
+            false,
+            false,
+        );
+        let rtl = place(&look, &rtl_spec, &measured, bounds);
+        assert_eq!(rtl.label, Some(Rect::new(254.0, 20.0, 310.0, 38.0)));
+
+        let wide = Measured {
+            label: LayoutSize::new(500.0, 18.0),
+            min: LayoutSize::zero(),
+            max: LayoutSize::zero(),
+        };
+        let clamped = place(&look, &ltr_spec, &wide, bounds);
+        assert_eq!(clamped.label, Some(Rect::new(10.0, 20.0, 310.0, 38.0)));
+    }
 
     #[test]
     #[cfg_attr(

@@ -16,7 +16,7 @@ use waterui::component::progress::{ProgressConfig, ProgressStyle};
 use waterui_core::Environment;
 use waterui_core::contract_violation;
 use waterui_core::layout::Size as LayoutSize;
-use waterui_core::layout::{ProposalSize, ViewDimensions};
+use waterui_core::layout::{LayoutDirection, ProposalSize, ViewDimensions, layout_direction};
 
 /// A progress indicator's look: the theme's linear bar, or the indicator it
 /// draws in a square.
@@ -44,15 +44,15 @@ impl ProgressLook {
 
     /// The heights of the label band and the value-label band an indicator
     /// of `style` reserves, when it is `determinate` and its labels measure
-    /// `labels`: a label with no extent is no label, only a linear indicator
-    /// draws labels, and only a determinate one draws a value label.
-    /// Measurement and rendering both place the bands from this.
+    /// `labels`: a label with no extent is no label, loading indicators draw
+    /// no visible text labels, and only a determinate indicator draws a value
+    /// label. Measurement and rendering both place the bands from this.
     fn bands(
         style: ProgressStyle,
         determinate: bool,
         labels: (LayoutSize, LayoutSize),
     ) -> (Option<f64>, Option<f64>) {
-        if !matches!(style, ProgressStyle::Linear) {
+        if matches!(style, ProgressStyle::Loading) {
             return (None, None);
         }
         (extent(labels.0), extent(labels.1).filter(|_| determinate))
@@ -69,15 +69,44 @@ impl ProgressLook {
         )
     }
 
-    /// The size an indicator of this look measures with the given bands.
-    fn size(&self, (label, value_label): (Option<f64>, Option<f64>)) -> LayoutSize {
+    /// The size an indicator of this look measures with the given bands and
+    /// measured label sizes.
+    fn size(
+        &self,
+        (label, value_label): (Option<f64>, Option<f64>),
+        labels: (LayoutSize, LayoutSize),
+    ) -> LayoutSize {
         let size = match self {
             Self::Linear(look) => {
-                let width = look.minimum_width();
+                let label_w = if label.is_some() {
+                    f64::from(labels.0.width)
+                } else {
+                    0.0
+                };
+                let value_w = if value_label.is_some() {
+                    f64::from(labels.1.width)
+                } else {
+                    0.0
+                };
+                let width = look.minimum_width().max(label_w).max(value_w);
                 let layout = look.layout(width, label, value_label);
                 Size::new(width, layout.height)
             }
-            Self::Indicator(look) => look.control().size(),
+            Self::Indicator(look) => {
+                let label_w = if label.is_some() && look.get_label_spacing().is_some() {
+                    f64::from(labels.0.width)
+                } else {
+                    0.0
+                };
+                let value_w = if value_label.is_some() && look.get_value_label_spacing().is_some() {
+                    f64::from(labels.1.width)
+                } else {
+                    0.0
+                };
+                let width = look.control().size().width.max(label_w).max(value_w);
+                let layout = look.layout(width, label, value_label);
+                Size::new(width, layout.height)
+            }
         };
         LayoutSize::new(
             crate::num_cast::f64_as_f32(size.width),
@@ -108,7 +137,7 @@ fn progress_spec(
     ProgressSpec::new(
         style,
         determinate,
-        waterui_core::layout::layout_direction(env).snapshot(),
+        layout_direction(env).snapshot(),
         SpecTint::resolve(env),
     )
     .with_label(label.is_some())
@@ -288,7 +317,7 @@ pub fn measure_progress_node<E: crate::text::TextEngine>(
     ViewDimensions::new(
         render_state
             .peek(theme, &spec, env)
-            .size(ProgressLook::spec_bands(&spec, labels)),
+            .size(ProgressLook::spec_bands(&spec, labels), labels),
     )
 }
 
@@ -349,6 +378,7 @@ pub fn render_progress_parts<E: crate::text::TextEngine>(
         labels,
         env,
     );
+    let direction = spec.direction();
     let (label_height, value_label_height) = ProgressLook::spec_bands(&spec, labels);
     let look = progress.look(&theme, spec, env).clone();
     let origin = Vec2::new(ctx.bounds.x0, ctx.bounds.y0);
@@ -359,14 +389,31 @@ pub fn render_progress_parts<E: crate::text::TextEngine>(
             // node by `progress_accessibility`, so the sub-views flush
             // visual-only.
             if let Some(band) = layout.label {
-                place_label(ctx, &mut progress.label, band + origin, env);
+                let rect = align_label_in_band(band + origin, labels.0, direction);
+                place_label(ctx, &mut progress.label, rect, env);
             }
             if let Some(band) = layout.value_label {
-                place_label(ctx, &mut progress.value_label, band + origin, env);
+                let rect = align_label_in_band(band + origin, labels.1, direction);
+                place_label(ctx, &mut progress.value_label, rect, env);
             }
             (linear.control(), layout.bar + origin)
         }
-        ProgressLook::Indicator(indicator) => (indicator.control(), indicator.frame(ctx.bounds)),
+        ProgressLook::Indicator(indicator) => {
+            let layout = indicator.layout(ctx.bounds.width(), label_height, value_label_height);
+            if layout.label.is_none() && layout.value_label.is_none() {
+                (indicator.control(), indicator.frame(ctx.bounds))
+            } else {
+                if let Some(band) = layout.label {
+                    let rect = align_label_in_band(band + origin, labels.0, direction);
+                    place_label(ctx, &mut progress.label, rect, env);
+                }
+                if let Some(band) = layout.value_label {
+                    let rect = align_label_in_band(band + origin, labels.1, direction);
+                    place_label(ctx, &mut progress.value_label, rect, env);
+                }
+                (indicator.control(), layout.indicator + origin)
+            }
+        }
     };
     // The parts read the value through its signal: a value change moves
     // their operands and records nothing.
@@ -374,6 +421,20 @@ pub fn render_progress_parts<E: crate::text::TextEngine>(
     let parts = LiveProgressParts::ensure(&mut progress.parts, control, frame, &value).clone();
     let render_ctx = ctx.render_context();
     parts.push(ctx.renderer_mut(), render_ctx);
+}
+
+/// Aligns a measured label leading-first inside `band` (mirrored to the
+/// trailing edge in right-to-left layout) and centres it vertically within
+/// the band's height.
+fn align_label_in_band(band: Rect, measured: LayoutSize, direction: LayoutDirection) -> Rect {
+    let width = f64::from(measured.width).min(band.width()).max(0.0);
+    let height = f64::from(measured.height).min(band.height()).max(0.0);
+    let (x0, x1) = match direction {
+        LayoutDirection::LeftToRight => (band.x0, band.x0 + width),
+        LayoutDirection::RightToLeft => (band.x1 - width, band.x1),
+    };
+    let y0 = (band.height() - height).mul_add(0.5, band.y0);
+    Rect::new(x0, y0, x1, y0 + height)
 }
 
 /// Places a retained label sub-view in `band`, visual-only.
@@ -417,4 +478,56 @@ pub fn emit_progress_accessibility<E: crate::text::TextEngine>(
         )
     };
     progress_accessibility(renderer, None, default_label, &value, env);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ProgressLook, align_label_in_band};
+    use kurbo::Rect;
+    use waterui::component::progress::ProgressStyle;
+    use waterui_core::layout::{LayoutDirection, Size as LayoutSize};
+
+    #[test]
+    fn align_label_in_band_aligns_leading_and_mirrors_in_rtl() {
+        let band = Rect::new(12.0, 4.0, 312.0, 24.0);
+        let measured = LayoutSize::new(60.0, 14.0);
+
+        assert_eq!(
+            align_label_in_band(band, measured, LayoutDirection::LeftToRight),
+            Rect::new(12.0, 7.0, 72.0, 21.0)
+        );
+        assert_eq!(
+            align_label_in_band(band, measured, LayoutDirection::RightToLeft),
+            Rect::new(252.0, 7.0, 312.0, 21.0)
+        );
+        assert_eq!(
+            align_label_in_band(
+                band,
+                LayoutSize::new(500.0, 14.0),
+                LayoutDirection::LeftToRight
+            ),
+            Rect::new(12.0, 7.0, 312.0, 21.0)
+        );
+    }
+
+    #[test]
+    fn progress_bands_include_circular_labels_and_omit_loading_labels() {
+        let labels = (LayoutSize::new(80.0, 16.0), LayoutSize::new(30.0, 14.0));
+        assert_eq!(
+            ProgressLook::bands(ProgressStyle::Linear, true, labels),
+            (Some(16.0), Some(14.0))
+        );
+        assert_eq!(
+            ProgressLook::bands(ProgressStyle::Circular, true, labels),
+            (Some(16.0), Some(14.0))
+        );
+        assert_eq!(
+            ProgressLook::bands(ProgressStyle::Circular, false, labels),
+            (Some(16.0), None)
+        );
+        assert_eq!(
+            ProgressLook::bands(ProgressStyle::Loading, false, labels),
+            (None, None)
+        );
+    }
 }

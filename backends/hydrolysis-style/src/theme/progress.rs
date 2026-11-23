@@ -73,16 +73,17 @@ impl ProgressSpec {
         }
     }
 
-    /// Whether the indicator has a label: a linear indicator reserves a band
-    /// for it above the bar.
+    /// Whether the indicator has a label: linear and circular indicators
+    /// reserve a band for it above the control when their look draws labels.
     #[must_use]
     pub const fn with_label(mut self, label: bool) -> Self {
         self.label = label;
         self
     }
 
-    /// Whether the indicator has a value label: a determinate linear
-    /// indicator reserves a band for it below the bar.
+    /// Whether the indicator has a value label: determinate linear and
+    /// circular indicators reserve a band for it below the control when their
+    /// look draws value labels.
     #[must_use]
     pub const fn with_value_label(mut self, value_label: bool) -> Self {
         self.value_label = value_label;
@@ -228,18 +229,57 @@ impl ProgressControl {
     }
 }
 
+/// Default vertical gap between a circular progress indicator and its label
+/// or value label, matching `WuiProgress`'s 6 pt vertical spacing.
+const DEFAULT_INDICATOR_LABEL_SPACING: f64 = 6.0;
+
 /// How a circular progress indicator or a loading indicator looks: its
-/// [`ProgressControl`], drawn in a square.
+/// [`ProgressControl`], drawn in a square, with optional bands for its label
+/// above and value label below.
 #[derive(Debug, Clone)]
 pub struct IndicatorLook {
     control: ProgressControl,
+    label_height: f64,
+    label_spacing: Option<f64>,
+    value_label_spacing: Option<f64>,
 }
 
 impl IndicatorLook {
-    /// An indicator drawn as `control`.
+    /// An indicator drawn as `control`, reserving 6 pt vertical spacing for
+    /// any label above and determinate value label below it.
     #[must_use]
     pub const fn new(control: ProgressControl) -> Self {
-        Self { control }
+        Self {
+            control,
+            label_height: 0.0,
+            label_spacing: Some(DEFAULT_INDICATOR_LABEL_SPACING),
+            value_label_spacing: Some(DEFAULT_INDICATOR_LABEL_SPACING),
+        }
+    }
+
+    /// Reserves a label band at least `height` tall above the indicator, with
+    /// `spacing` between the band and the indicator.
+    #[must_use]
+    pub const fn label_band(mut self, height: f64, spacing: f64) -> Self {
+        self.label_height = height;
+        self.label_spacing = Some(spacing);
+        self
+    }
+
+    /// Reserves a value-label band below the indicator, `spacing` beneath it.
+    #[must_use]
+    pub const fn value_label_band(mut self, spacing: f64) -> Self {
+        self.value_label_spacing = Some(spacing);
+        self
+    }
+
+    /// Suppresses visible label and value-label bands around the indicator,
+    /// keeping the label in the accessibility tree only.
+    #[must_use]
+    pub const fn without_labels(mut self) -> Self {
+        self.label_spacing = None;
+        self.value_label_spacing = None;
+        self
     }
 
     /// The indicator's control.
@@ -248,13 +288,84 @@ impl IndicatorLook {
         &self.control
     }
 
-    /// The control's frame in an indicator laid out in `bounds`: the largest
-    /// square about their centre.
+    /// The minimum height of a label band around the indicator.
+    #[must_use]
+    pub const fn get_label_height(&self) -> f64 {
+        self.label_height
+    }
+
+    /// The space between the label band and the indicator, or `None` when the
+    /// look suppresses the visible label.
+    #[must_use]
+    pub const fn get_label_spacing(&self) -> Option<f64> {
+        self.label_spacing
+    }
+
+    /// The space between the indicator and the value-label band, or `None`
+    /// when the look suppresses the visible value label.
+    #[must_use]
+    pub const fn get_value_label_spacing(&self) -> Option<f64> {
+        self.value_label_spacing
+    }
+
+    /// The control's frame in an indicator laid out in `bounds` with no
+    /// labels: the largest square about their centre.
     #[must_use]
     pub fn frame(&self, bounds: Rect) -> Rect {
         let side = bounds.width().min(bounds.height());
         Rect::from_center_size(bounds.center(), Size::new(side, side))
     }
+
+    /// Where the indicator and its labels lie in a container of `width` whose
+    /// label is `label` tall and value label `value_label` tall, each `None`
+    /// when absent. The origin is the indicator's.
+    #[must_use]
+    pub fn layout(
+        &self,
+        width: f64,
+        label: Option<f64>,
+        value_label: Option<f64>,
+    ) -> IndicatorLayout {
+        let label_band = label
+            .zip(self.label_spacing)
+            .map(|(height, spacing)| (height.max(self.label_height), spacing));
+        let indicator_top = label_band.map_or(0.0, |(height, spacing)| height + spacing);
+        let control_size = self.control.size();
+        let indicator_x = (width - control_size.width) * 0.5;
+        let indicator = Rect::new(
+            indicator_x,
+            indicator_top,
+            indicator_x + control_size.width,
+            indicator_top + control_size.height,
+        );
+        let value_label_band =
+            value_label
+                .zip(self.value_label_spacing)
+                .map(|(height, spacing)| {
+                    let top = indicator.y1 + spacing;
+                    Rect::new(0.0, top, width, top + height.max(self.label_height))
+                });
+        IndicatorLayout {
+            label: label_band.map(|(height, _)| Rect::new(0.0, 0.0, width, height)),
+            indicator,
+            value_label: value_label_band,
+            height: value_label_band.map_or(indicator.y1, |band| band.y1),
+        }
+    }
+}
+
+/// The geometry of a circular or loading progress indicator, in its own space:
+/// from [`IndicatorLook::layout`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct IndicatorLayout {
+    /// The label band above the indicator, when drawn.
+    pub label: Option<Rect>,
+    /// The indicator control's frame, centred horizontally.
+    pub indicator: Rect,
+    /// The value-label band below the indicator, when drawn.
+    pub value_label: Option<Rect>,
+    /// The indicator's total height.
+    pub height: f64,
 }
 
 /// How a linear progress indicator looks: the [`ProgressControl`] of its

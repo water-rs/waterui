@@ -512,13 +512,20 @@ pub fn picker_accessibility<E: crate::text::TextEngine>(
                             segmented_label_size(&look, styled, segment, renderer.state_mut(), env)
                         })
                         .collect();
-                    let heading = state
-                        .label_view
-                        .measure_built(renderer.state_mut(), env, theme);
+                    let heading_height = if look.shows_label() {
+                        f64::from(
+                            state
+                                .label_view
+                                .measure_built(renderer.state_mut(), env, theme)
+                                .height,
+                        )
+                    } else {
+                        0.0
+                    };
                     place_segmented(
                         look.layout(),
                         &sizes,
-                        f64::from(heading.height),
+                        heading_height,
                         ctx.bounds(),
                         spec.direction(),
                     )
@@ -1648,14 +1655,17 @@ pub fn render_segmented_picker<E: crate::text::TextEngine>(
             )
         })
         .collect();
-    let heading = state.label_view.measure_intrinsic(ctx.renderer_mut(), env);
-    let placed = place_segmented(
-        look.layout(),
-        &sizes,
-        f64::from(heading.height),
-        ctx.bounds,
-        direction,
-    );
+    let heading_height = if look.shows_label() {
+        f64::from(
+            state
+                .label_view
+                .measure_intrinsic(ctx.renderer_mut(), env)
+                .height,
+        )
+    } else {
+        0.0
+    };
+    let placed = place_segmented(look.layout(), &sizes, heading_height, ctx.bounds, direction);
     if let Some(rect) = placed.heading {
         flush_picker_label(ctx, &mut state.label_view, env, rect);
     }

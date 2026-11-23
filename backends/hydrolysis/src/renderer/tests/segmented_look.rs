@@ -998,3 +998,117 @@ fn accessibility_follows_the_mirrored_placement_and_the_live_selection() {
     drop(result);
     assert_eq!(rig.picker().recordings(), recordings);
 }
+
+/// `SegmentedLook::show_label(false)` suppresses the visible heading band in
+/// both measurement and placement while keeping the picker's label in the
+/// accessibility tree.
+#[cfg(feature = "accessibility")]
+#[test]
+fn show_label_false_omits_visible_heading_and_keeps_accessibility_label() {
+    use accesskit::Role;
+    use std::rc::Rc;
+    use waterui_layout::stack::vstack;
+
+    use super::{Realized, test_environment};
+    use crate::theme::WidgetTheme;
+
+    let env = test_environment();
+    let labelled = || {
+        let selection = Binding::i32(0);
+        AnyView::new(
+            picker(
+                "View",
+                vec![
+                    text("Day").tag(0),
+                    text("Week").tag(1),
+                    text("Month").tag(2),
+                ],
+                &selection,
+            )
+            .style(PickerStyle::Segmented),
+        )
+    };
+    let hidden = || {
+        let selection = Binding::i32(0);
+        AnyView::new(
+            picker(
+                "View",
+                vec![
+                    text("Day").tag(0),
+                    text("Week").tag(1),
+                    text("Month").tag(2),
+                ],
+                &selection,
+            )
+            .style(PickerStyle::Segmented)
+            .hide_label(),
+        )
+    };
+
+    let with_heading: Rc<dyn WidgetTheme> =
+        Rc::new(MinimalTestTheme::default().with_segmented(|_, _| thumb_look(linear(15))));
+    let without_heading: Rc<dyn WidgetTheme> = Rc::new(
+        MinimalTestTheme::default().with_segmented(|_, _| thumb_look(linear(15)).show_label(false)),
+    );
+
+    let shown_size = Realized::with_theme(labelled(), &env, &with_heading).intrinsic();
+    let suppressed_size = Realized::with_theme(labelled(), &env, &without_heading).intrinsic();
+    let hidden_size = Realized::with_theme(hidden(), &env, &with_heading).intrinsic();
+
+    assert!(
+        shown_size.height > suppressed_size.height,
+        "a visible heading adds height above the segments: shown {shown_size:?} vs suppressed {suppressed_size:?}"
+    );
+    near(
+        "show_label(false) height matches hide_label()",
+        f64::from(suppressed_size.height),
+        f64::from(hidden_size.height),
+        0.01,
+    );
+
+    let view = RefCell::new(Some(AnyView::new(vstack((labelled(),)))));
+    let builder = AnyViewBuilder::<AnyView>::new(move || {
+        view.borrow_mut()
+            .take()
+            .expect("the segmented picker view is built once")
+    });
+    let mut runtime = HeadlessRuntime::new_for_tests(
+        pumped_test_environment(),
+        builder,
+        WIDTH,
+        HEIGHT,
+        MinimalTestTheme::default().with_segmented(|_, _| thumb_look(linear(15)).show_label(false)),
+    );
+    let first = runtime.pump(true);
+    let update = first
+        .tree_update()
+        .expect("the first frame publishes the tree");
+    let group_label = update
+        .nodes
+        .iter()
+        .find(|(_, node)| node.role() == Role::Group)
+        .and_then(|(_, node)| node.label());
+    assert_eq!(
+        group_label,
+        Some("View"),
+        "show_label(false) must still announce the picker's label in accessibility"
+    );
+    let first_option = update
+        .nodes
+        .iter()
+        .find(|(_, node)| node.role() == Role::RadioButton && node.label() == Some("Day"))
+        .and_then(|(_, node)| node.bounds())
+        .expect("the Day segment carries bounds");
+    let group_bounds = update
+        .nodes
+        .iter()
+        .find(|(_, node)| node.role() == Role::Group)
+        .and_then(|(_, node)| node.bounds())
+        .expect("the group carries bounds");
+    near(
+        "segment row starts at the group's top edge when show_label(false)",
+        first_option.y0,
+        group_bounds.y0,
+        0.5,
+    );
+}

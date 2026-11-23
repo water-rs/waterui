@@ -291,6 +291,7 @@ pub struct SegmentedLook {
     above: Vec<Rc<dyn CustomPart<SegmentedValue>>>,
     group_opacity: Driven<f32>,
     group_blend_space: Option<BlendSpace>,
+    show_label: bool,
 }
 
 impl core::fmt::Debug for SegmentedLook {
@@ -307,6 +308,7 @@ impl core::fmt::Debug for SegmentedLook {
             .field("above", &self.above.len())
             .field("group_opacity", &self.group_opacity)
             .field("group_blend_space", &self.group_blend_space)
+            .field("show_label", &self.show_label)
             .finish()
     }
 }
@@ -314,8 +316,8 @@ impl core::fmt::Debug for SegmentedLook {
 impl SegmentedLook {
     /// A picker laid out by `layout`, its labels styled by `label` and its
     /// values running with `motion`. It draws nothing until parts are
-    /// added, takes touches on each segment's frame, takes taps only and is
-    /// drawn opaque.
+    /// added, takes touches on each segment's frame, takes taps only, draws
+    /// its heading label above the segment row and is drawn opaque.
     #[must_use]
     pub fn new(layout: SegmentedLayout, label: SegmentLabel, motion: Motion) -> Self {
         let chrome = Chrome::new(
@@ -337,7 +339,26 @@ impl SegmentedLook {
             above: Vec::new(),
             group_opacity: Driven::constant(1.0),
             group_blend_space: None,
+            show_label: true,
         }
+    }
+
+    /// Sets whether the picker's heading label is drawn above the segment row.
+    ///
+    /// Defaults to `true`. Passing `false` suppresses the visible heading and
+    /// reserves no label band while keeping the label in the accessibility
+    /// tree, matching segmented controls that carry no visible title above
+    /// the bar.
+    #[must_use]
+    pub const fn show_label(mut self, show: bool) -> Self {
+        self.show_label = show;
+        self
+    }
+
+    /// Whether the picker draws its heading label above the segment row.
+    #[must_use]
+    pub const fn shows_label(&self) -> bool {
+        self.show_label
     }
 
     /// Takes touches in `hit`, per segment: each segment's frame grown to
