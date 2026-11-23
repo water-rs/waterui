@@ -32,7 +32,8 @@ use kurbo::{Affine, Rect, Vec2};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use cherenkov::{
-    BlendMode, BlendSpace, Display, LayerId, RenderError, ShapeData, SurfaceError, SurfaceTree,
+    BlendMode, BlendSpace, Display, FrameTime, LayerId, RenderError, ShapeData, SurfaceError,
+    SurfaceTree,
 };
 
 use crate::interop::ExternalFrame;
@@ -1210,6 +1211,10 @@ pub struct Composition<'a> {
     /// Generation of the rendered engine parts, unchanged by presentation retries.
     #[cfg(target_os = "android")]
     pub generation: u64,
+    /// Active Choreographer frame timeline vsync ID (`AVsyncId`) for this frame,
+    /// when driven from a vsync callback.
+    #[cfg(target_os = "android")]
+    pub vsync_id: Option<i64>,
     /// The engine's device.
     pub device: &'a wgpu::Device,
     /// The engine's queue.
@@ -1302,7 +1307,11 @@ pub trait SystemPlanes: Compositor {
     ///
     /// # Errors
     /// A [`RenderError`] naming the cause when the system rejects a plane.
-    fn refresh<'a>(&mut self, frames: impl Iterator<Item = Plane<'a>>) -> Result<(), RenderError>;
+    fn refresh<'a>(
+        &mut self,
+        frames: impl Iterator<Item = Plane<'a>>,
+        time: FrameTime,
+    ) -> Result<(), RenderError>;
 
     /// Queues whatever realization a candidate still needs — a display
     /// layer another thread must create — and notes when one first
@@ -1414,7 +1423,11 @@ impl SystemPlanes for NoPlanes {
     fn compose(&mut self, _: Composition<'_>) -> Result<(Presentation, ()), RenderError> {
         unreachable!("no `NoPlanes` value exists")
     }
-    fn refresh<'a>(&mut self, _: impl Iterator<Item = Plane<'a>>) -> Result<(), RenderError> {
+    fn refresh<'a>(
+        &mut self,
+        _: impl Iterator<Item = Plane<'a>>,
+        _: FrameTime,
+    ) -> Result<(), RenderError> {
         unreachable!("no `NoPlanes` value exists")
     }
     fn resize(&mut self, _: (u32, u32)) {

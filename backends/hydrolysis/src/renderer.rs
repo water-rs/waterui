@@ -637,6 +637,10 @@ pub struct SemanticCore<E: crate::text::TextEngine> {
     /// instant it starts.
     #[cfg(all(target_os = "android", not(hydrolysis_hwui)))]
     presentation_target: Option<Instant>,
+    /// Active Android Choreographer frame timeline vsync ID (`AVsyncId`) for
+    /// the current vsync frame, or `None` for non-vsync wakes.
+    #[cfg(all(target_os = "android", not(hydrolysis_hwui)))]
+    frame_timeline_vsync_id: Option<i64>,
     pub(crate) lazy: LazyState,
     #[cfg(feature = "navigation")]
     pub(crate) navigation: NavigationState<E>,
@@ -1090,6 +1094,8 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             frame_instant,
             #[cfg(all(target_os = "android", not(hydrolysis_hwui)))]
             presentation_target: None,
+            #[cfg(all(target_os = "android", not(hydrolysis_hwui)))]
+            frame_timeline_vsync_id: None,
             lazy: LazyState::default(),
             #[cfg(feature = "navigation")]
             navigation: NavigationState::default(),

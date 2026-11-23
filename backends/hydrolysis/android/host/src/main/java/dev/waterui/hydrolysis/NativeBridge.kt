@@ -82,8 +82,10 @@ object NativeBridge {
      * `AndroidContent` views, and `onNativeBandShow` carries the band's
      * painted device-pixel rectangles (`[x, y, w, h, ...]`) so viewability
      * tracks only painted regions.
+     * 32 = [nativeOnFrame] carries the active Choreographer frame timeline
+     * vsync ID (`hasVsyncId`, `vsyncId`) alongside `presentationNanos`.
      */
-    private const val SCHEMA: Int = 31
+    private const val SCHEMA: Int = 32
 
     /** Applies the pending GPU result on the UI thread. */
     @JvmStatic external fun nativeCompleteFrame(session: Long)
@@ -227,14 +229,18 @@ object NativeBridge {
      * 2 = window requested close, 4 = a fallback deadline is available through
      * [nativeFrameDeadlineInNanos]. `hasPresentation` is set for a frame a
      * vsync callback started, and `presentationNanos` is then its expected
-     * presentation time on the `System.nanoTime` clock; a delayed deadline
-     * frame has none.
+     * presentation time on the `System.nanoTime` clock; `hasVsyncId` and
+     * `vsyncId` carry the preferred frame timeline's `AVsyncId` for
+     * `ASurfaceTransaction_setFrameTimeline`. A delayed deadline frame has
+     * neither.
      */
     @JvmStatic
     external fun nativeOnFrame(
         sessionPtr: Long,
         hasPresentation: Boolean,
         presentationNanos: Long,
+        hasVsyncId: Boolean,
+        vsyncId: Long,
     ): Long
 
     @JvmStatic external fun nativeFrameDeadlineInNanos(sessionPtr: Long): Long

@@ -7014,6 +7014,7 @@ impl GpuRenderer {
                         ),
                         surface,
                         sf,
+                        frame.time,
                         &currents,
                     )?,
                 };
@@ -7147,6 +7148,7 @@ impl GpuRenderer {
         present: (&wgpu::Device, &wgpu::Queue, &mut present::Presenter),
         surface: &mut SurfaceState,
         sf: &SurfaceFrame<'_>,
+        time: FrameTime,
         currents: &FxHashMap<ProducerId, &external::Slot>,
     ) -> Result<(planes::Presentation, PlatformCommit), RenderError> {
         let (device, queue, presenter) = present;
@@ -7161,6 +7163,7 @@ impl GpuRenderer {
                 planes::SystemPlanes::refresh(
                     system,
                     plane_stack(surface, sf.tree, currents, sf.plane_frames),
+                    time,
                 )?;
                 Ok((planes::Presentation::Presented, PlatformCommit::default()))
             } else {
@@ -7183,6 +7186,8 @@ impl GpuRenderer {
                     planes::Composition {
                         #[cfg(target_os = "android")]
                         generation: surface.present_generation,
+                        #[cfg(target_os = "android")]
+                        vsync_id: time.vsync_id(),
                         device,
                         queue,
                         presenter,

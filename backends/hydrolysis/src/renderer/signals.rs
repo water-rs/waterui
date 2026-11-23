@@ -5,6 +5,8 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::renderer::input::TouchScrollGesture;
+#[cfg(hydrolysis_cherenkov)]
+use cherenkov::FrameTime;
 use rustc_hash::FxHashMap;
 use waterui_frame_rate::{FrameRate, combine, combine_all};
 
@@ -487,18 +489,29 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         self.presentation_target = target;
     }
 
+    /// Records Choreographer's active frame timeline vsync ID for the current
+    /// vsync frame, or clears it outside a vsync callback.
+    #[cfg(all(target_os = "android", not(hydrolysis_hwui)))]
+    pub(crate) const fn set_frame_timeline(&mut self, vsync_id: Option<i64>) {
+        self.frame_timeline_vsync_id = vsync_id;
+    }
+
     /// The time the engine renders the next frame against: the platform's
     /// reported presentation time, else the frame's own instant — the clock
     /// every animation Hydrolysis samples reads, so an operand animated
     /// inside the engine advances with the presented frames rather than
     /// with the wall clock.
     #[cfg(hydrolysis_cherenkov)]
-    pub(crate) const fn frame_time(&self) -> cherenkov::FrameTime {
+    pub(crate) const fn frame_time(&self) -> FrameTime {
         #[cfg(all(target_os = "android", not(hydrolysis_hwui)))]
         if let Some(target) = self.presentation_target {
-            return cherenkov::FrameTime::presented_at(target);
+            let time = FrameTime::presented_at(target);
+            return match self.frame_timeline_vsync_id {
+                Some(vsync_id) => time.with_vsync_id(vsync_id),
+                None => time,
+            };
         }
-        cherenkov::FrameTime::unpresented_at(self.frame_instant)
+        FrameTime::unpresented_at(self.frame_instant)
     }
 
     pub(crate) const fn frame_instant(&self) -> Instant {
