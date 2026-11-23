@@ -58,6 +58,8 @@ pub struct ApplePreviewRequest<'a> {
     pub color_scheme: Option<PreviewColorScheme>,
     /// Display scale factor applied to the captured image.
     pub scale: f32,
+    /// Capture extended-dynamic-range HDR output (`--hdr`).
+    pub hdr: bool,
     /// Optional sccache binary path.
     pub sccache_path: Option<PathBuf>,
     /// Optional build progress sink.
@@ -160,6 +162,8 @@ pub struct ApplePreviewRenderOptions<'a> {
     pub color_scheme: Option<PreviewColorScheme>,
     /// Capture scale factor.
     pub scale: f32,
+    /// Capture extended-dynamic-range HDR output (`--hdr`).
+    pub hdr: bool,
     /// Destination PNG path for single-image captures.
     pub output_path: &'a Path,
     /// Optional scenario timeline (PNG frames and/or hardware-encoded MP4 video).
@@ -188,6 +192,7 @@ impl ApplePreviewBinary {
             content_deadline,
             color_scheme,
             scale,
+            hdr,
             output_path,
             scenario,
         } = options;
@@ -221,7 +226,8 @@ impl ApplePreviewBinary {
         );
         let run_config = PreviewRunConfig::new(width, height, mode, content_deadline)
             .with_optional_color_scheme(color_scheme)
-            .with_scale(scale);
+            .with_scale(scale)
+            .with_hdr(hdr);
         let run_config_path = write_run_config(&crate_dir, &run_config).await?;
         let process_started = Instant::now();
         let output = run::run_preview_binary(
@@ -362,12 +368,13 @@ pub async fn render_preview_with_apple(
     output_path: &Path,
     scenario: Option<&PreviewScenario>,
 ) -> Result<()> {
-    let (width, height, content_deadline, color_scheme, scale) = (
+    let (width, height, content_deadline, color_scheme, scale, hdr) = (
         request.width,
         request.height,
         request.content_deadline,
         request.color_scheme,
         request.scale,
+        request.hdr,
     );
     build_preview_with_apple(request)
         .await?
@@ -377,6 +384,7 @@ pub async fn render_preview_with_apple(
             content_deadline,
             color_scheme,
             scale,
+            hdr,
             output_path,
             scenario,
         })

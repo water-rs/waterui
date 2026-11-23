@@ -182,7 +182,8 @@ pub async fn render_preview_with_hydrolysis_android(
             request.content_deadline,
         )
         .with_optional_color_scheme(request.color_scheme)
-        .with_scale(request.scale),
+        .with_scale(request.scale)
+        .with_hdr(request.hdr),
     )?;
 
     render_on_device(

@@ -197,6 +197,8 @@ pub struct PreviewRequest {
     color_scheme: Option<PreviewColorScheme>,
     /// Display scale factor applied to the preview render.
     scale: f32,
+    /// Whether extended-dynamic-range HDR capture is requested (`--hdr`).
+    hdr: bool,
 }
 impl PreviewRequest {
     /// A `PreviewRequest` carrying each of its fields.
@@ -226,7 +228,15 @@ impl PreviewRequest {
             content_deadline,
             color_scheme,
             scale,
+            hdr: false,
         }
+    }
+
+    /// Enables or disables extended-dynamic-range HDR capture (`--hdr`).
+    #[must_use]
+    pub const fn with_hdr(mut self, hdr: bool) -> Self {
+        self.hdr = hdr;
+        self
     }
 
     /// Resolved target platform.
@@ -283,6 +293,12 @@ impl PreviewRequest {
     #[must_use]
     pub const fn scale(&self) -> f32 {
         self.scale
+    }
+
+    /// Whether extended-dynamic-range HDR capture is requested (`--hdr`).
+    #[must_use]
+    pub const fn hdr(&self) -> bool {
+        self.hdr
     }
 }
 

@@ -11,6 +11,9 @@ use std::io::{self, BufReader, BufWriter, ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use half::f16;
+use png::chunk::cICP as CICP_CHUNK;
+use png::{BitDepth, ColorType, Compression, Encoder as PngEncoder, EncodingError, Filter};
 use serde::{Deserialize, Serialize};
 
 /// Environment variable carrying the path of the JSON-encoded
@@ -20,8 +23,28 @@ pub const PREVIEW_RUN_CONFIG_ENV: &str = "WATERUI_PREVIEW_RUN_CONFIG";
 /// Default frame rate for `water preview --video` and `water preview test --video`.
 pub const DEFAULT_VIDEO_FPS: u32 = 60;
 
-/// Magic header for raw RGBA8 preview frame streams (`WUIRF001`).
-const RAW_FRAME_STREAM_MAGIC: &[u8; 8] = b"WUIRF001";
+/// PNG3 `cICP` payload for Display P3 SDR captures: Display P3 primaries (12),
+/// sRGB transfer (13), RGB identity matrix (0), full range (1).
+pub const CICP_DISPLAY_P3_SDR: [u8; 4] = [12, 13, 0, 1];
+
+/// PNG3 `cICP` payload for Display P3 PQ HDR captures: Display P3 primaries
+/// (12), SMPTE ST 2084 PQ transfer (16), RGB identity matrix (0), full range
+/// (1).
+pub const CICP_DISPLAY_P3_PQ_HDR: [u8; 4] = [12, 16, 0, 1];
+
+/// ITU-R BT.2408 / Apple EDR SDR reference white luminance in nits (`1.0` in
+/// extended linear Display P3).
+pub const SDR_REFERENCE_WHITE_NITS: f32 = 203.0;
+
+/// SMPTE ST 2084 PQ peak luminance in nits.
+const PQ_PEAK_NITS: f32 = 10_000.0;
+
+/// Magic header for version-1 raw RGBA8 Display P3 preview frame streams.
+const RAW_FRAME_STREAM_MAGIC_V1: &[u8; 8] = b"WUIRF001";
+
+/// Magic header for version-2 typed raw preview frame streams (carrying a
+/// trailing [`RawPixelFormat`] byte after dimensions).
+const RAW_FRAME_STREAM_MAGIC_V2: &[u8; 8] = b"WUIRF002";
 
 /// How long a capture waits for owed content when the caller names no bound.
 ///
@@ -71,6 +94,19 @@ pub struct PreviewRunConfig {
     /// Display scale factor applied to the captured image.
     #[serde(default = "default_scale")]
     scale: f32,
+    /// Whether this preview run captures extended-dynamic-range (`--hdr`)
+    /// Display P3 output (16-bit PQ PNGs and `Rgba16Float` linear P3 video
+    /// streams) instead of 8-bit Display P3 SDR.
+    #[serde(default, skip_serializing_if = "is_false")]
+    hdr: bool,
+}
+
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde skip_serializing_if requires a shared reference predicate"
+)]
+const fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl PreviewRunConfig {
@@ -115,6 +151,12 @@ impl PreviewRunConfig {
     #[must_use]
     pub const fn scale(&self) -> f32 {
         self.scale
+    }
+
+    /// Whether extended-dynamic-range HDR capture is enabled (`--hdr`).
+    #[must_use]
+    pub const fn hdr(&self) -> bool {
+        self.hdr
     }
 }
 
@@ -361,6 +403,7 @@ impl PreviewRunConfig {
                 .expect("a preview content deadline fits u64 milliseconds"),
             color_scheme: None,
             scale: DEFAULT_PREVIEW_SCALE,
+            hdr: false,
         }
     }
 
@@ -385,6 +428,13 @@ impl PreviewRunConfig {
     #[must_use]
     pub const fn with_scale(mut self, scale: f32) -> Self {
         self.scale = scale;
+        self
+    }
+
+    /// Enables or disables extended-dynamic-range HDR capture (`--hdr`).
+    #[must_use]
+    pub const fn with_hdr(mut self, hdr: bool) -> Self {
+        self.hdr = hdr;
         self
     }
 
@@ -504,7 +554,7 @@ pub enum PngError {
     },
     /// The PNG encoder failed.
     #[error("PNG encoding failed: {0}")]
-    Encode(#[source] image::ImageError),
+    Encode(#[source] EncodingError),
     /// The output directory could not be created.
     #[error("cannot create capture directory {}: {source}", .path.display())]
     CreateDir {
@@ -541,7 +591,8 @@ pub enum Alpha {
     Straight,
 }
 
-/// Encodes a capture's RGBA8 pixels as PNG bytes.
+/// Encodes a capture's Display P3 RGBA8 pixels as PNG bytes tagged with the
+/// Display P3 SDR `cICP` chunk (`[12, 13, 0, 1]`).
 ///
 /// The bytes are written as they arrive — this is a raw encode, so a
 /// capture meant to sit on white flattens first; [`write_png`] does both
@@ -551,10 +602,11 @@ pub enum Alpha {
 ///
 /// Returns [`PngError`] when the capture is empty, the buffer size does not
 /// match `width * height * 4`, or encoding fails.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "preserves the public encode_png signature for callers holding owned capture buffers"
+)]
 pub fn encode_png(width: u32, height: u32, rgba_data: Vec<u8>) -> Result<Vec<u8>, PngError> {
-    use image::codecs::png::{CompressionType, FilterType, PngEncoder};
-    use image::{ExtendedColorType, ImageBuffer, ImageEncoder, Rgba};
-
     if rgba_data.is_empty() || width == 0 || height == 0 {
         return Err(PngError::Empty {
             width,
@@ -563,21 +615,154 @@ pub fn encode_png(width: u32, height: u32, rgba_data: Vec<u8>) -> Result<Vec<u8>
         });
     }
 
-    let len = rgba_data.len();
-    let Some(img): Option<ImageBuffer<Rgba<u8>, _>> =
-        ImageBuffer::from_raw(width, height, rgba_data)
-    else {
-        return Err(PngError::InvalidBuffer { width, height, len });
-    };
+    let expected_len = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|pixels| pixels.checked_mul(4));
+    if expected_len != Some(rgba_data.len()) {
+        return Err(PngError::InvalidBuffer {
+            width,
+            height,
+            len: rgba_data.len(),
+        });
+    }
 
+    encode_cicp_png(
+        width,
+        height,
+        BitDepth::Eight,
+        CICP_DISPLAY_P3_SDR,
+        &rgba_data,
+    )
+}
+
+/// Converts a single linear extended-dynamic-range channel value (`1.0` =
+/// [`SDR_REFERENCE_WHITE_NITS`] = 203 nits) into a normalized `[0.0, 1.0]`
+/// SMPTE ST 2084 PQ code value (peaking at 10,000 nits).
+#[must_use]
+pub fn linear_edr_to_pq(linear_edr: f32) -> f32 {
+    // SMPTE ST 2084-2014 EOTF^-1 constants.
+    const M1: f64 = 2610.0 / 16384.0;
+    const M2: f64 = (2523.0 / 4096.0) * 128.0;
+    const C1: f64 = 3424.0 / 4096.0;
+    const C2: f64 = (2413.0 / 4096.0) * 32.0;
+    const C3: f64 = (2392.0 / 4096.0) * 32.0;
+
+    if !linear_edr.is_finite() || linear_edr <= 0.0 {
+        return 0.0;
+    }
+    let nits =
+        (f64::from(linear_edr) * f64::from(SDR_REFERENCE_WHITE_NITS)).min(f64::from(PQ_PEAK_NITS));
+    let y = nits / f64::from(PQ_PEAK_NITS);
+    let ym1 = y.powf(M1);
+    let pq = (C2.mul_add(ym1, C1) / C3.mul_add(ym1, 1.0)).powf(M2);
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "PQ code is normalized in [0.0, 1.0]"
+    )]
+    let out = pq.clamp(0.0, 1.0) as f32;
+    out
+}
+
+/// Encodes flattened `ExtendedLinearDisplayP3` RGBA `f32` pixels (`1.0` = 203
+/// nits SDR reference white, `> 1.0` = HDR highlights) as a 16-bit Display P3
+/// PQ PNG tagged with `cICP` (`[12, 16, 0, 1]`).
+///
+/// # Errors
+///
+/// Returns [`PngError`] when the capture is empty, the buffer length does not
+/// equal `width * height * 4`, or PNG encoding fails.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "normalized [0.0, 1.0] values scaled by 65535.0 fit u16"
+)]
+pub fn encode_hdr_png(
+    width: u32,
+    height: u32,
+    rgba_linear_p3: &[f32],
+) -> Result<Vec<u8>, PngError> {
+    if rgba_linear_p3.is_empty() || width == 0 || height == 0 {
+        return Err(PngError::Empty {
+            width,
+            height,
+            len: size_of_val(rgba_linear_p3),
+        });
+    }
+
+    let expected_floats = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|pixels| pixels.checked_mul(4));
+    if expected_floats != Some(rgba_linear_p3.len()) {
+        return Err(PngError::InvalidBuffer {
+            width,
+            height,
+            len: size_of_val(rgba_linear_p3),
+        });
+    }
+
+    let mut rgba16_be = Vec::with_capacity(rgba_linear_p3.len() * 2);
+    for pixel in rgba_linear_p3.as_chunks::<4>().0 {
+        let r = (linear_edr_to_pq(pixel[0]) * 65535.0).round() as u16;
+        let g = (linear_edr_to_pq(pixel[1]) * 65535.0).round() as u16;
+        let b = (linear_edr_to_pq(pixel[2]) * 65535.0).round() as u16;
+        let a = (pixel[3].clamp(0.0, 1.0) * 65535.0).round() as u16;
+        rgba16_be.extend_from_slice(&r.to_be_bytes());
+        rgba16_be.extend_from_slice(&g.to_be_bytes());
+        rgba16_be.extend_from_slice(&b.to_be_bytes());
+        rgba16_be.extend_from_slice(&a.to_be_bytes());
+    }
+
+    encode_cicp_png(
+        width,
+        height,
+        BitDepth::Sixteen,
+        CICP_DISPLAY_P3_PQ_HDR,
+        &rgba16_be,
+    )
+}
+
+fn encode_cicp_png(
+    width: u32,
+    height: u32,
+    depth: BitDepth,
+    cicp: [u8; 4],
+    pixel_bytes: &[u8],
+) -> Result<Vec<u8>, PngError> {
     let mut png_bytes = Vec::new();
+    let mut encoder = PngEncoder::new(&mut png_bytes, width, height);
+    encoder.set_color(ColorType::Rgba);
+    encoder.set_depth(depth);
     // Preview favors encode speed over smallest file size.
-    let encoder =
-        PngEncoder::new_with_quality(&mut png_bytes, CompressionType::Fast, FilterType::NoFilter);
-    encoder
-        .write_image(img.as_raw(), width, height, ExtendedColorType::Rgba8)
+    encoder.set_compression(Compression::Fast);
+    encoder.set_filter(Filter::NoFilter);
+    let mut writer = encoder.write_header().map_err(PngError::Encode)?;
+    // PNG3 requires `cICP` before `PLTE` and `IDAT`.
+    writer
+        .write_chunk(CICP_CHUNK, &cicp)
         .map_err(PngError::Encode)?;
+    writer
+        .write_image_data(pixel_bytes)
+        .map_err(PngError::Encode)?;
+    writer.finish().map_err(PngError::Encode)?;
     Ok(png_bytes)
+}
+
+/// Composites `alpha`-convention linear Display P3 pixels onto opaque SDR
+/// reference white `(1.0, 1.0, 1.0)` without clamping HDR highlights above
+/// `1.0`.
+fn flatten_linear_over_white(rgba_linear: &mut [f32], alpha: Alpha) {
+    for pixel in rgba_linear.as_chunks_mut::<4>().0 {
+        let a = pixel[3].clamp(0.0, 1.0);
+        let inv = 1.0 - a;
+        for channel in &mut pixel[..3] {
+            let c = if channel.is_finite() { *channel } else { 0.0 };
+            *channel = match alpha {
+                Alpha::Premultiplied => c + inv,
+                Alpha::Straight => c.mul_add(a, inv),
+            };
+        }
+        pixel[3] = 1.0;
+    }
 }
 
 /// Composites `alpha`-convention pixels onto opaque white, so captures
@@ -608,9 +793,10 @@ fn flatten_alpha_over_white(rgba_data: &mut [u8], alpha: Alpha) {
     }
 }
 
-/// Flattens `rgba_data` over white under its declared `alpha` convention,
-/// encodes it as PNG and writes it to `output`, creating the
-/// destination's parent directory when needed.
+/// Writes a Display P3 SDR PNG (`cICP [12, 13, 0, 1]`) to `output`.
+///
+/// Flattens `rgba_data` over white under `alpha` and creates the parent
+/// directory when needed.
 ///
 /// # Errors
 ///
@@ -625,13 +811,86 @@ pub fn write_png(
 ) -> Result<(), PngError> {
     flatten_alpha_over_white(&mut rgba_data, alpha);
     let png = encode_png(width, height, rgba_data)?;
-    if let Some(parent) = output.parent() {
-        std::fs::create_dir_all(parent).map_err(|source| PngError::CreateDir {
+    write_png_bytes(output, &png)
+}
+
+/// Flattens `ExtendedLinearDisplayP3` RGBA `f32` pixels over SDR white
+/// `(1.0, 1.0, 1.0)` under `alpha`, encodes a 16-bit Display P3 PQ HDR PNG
+/// (`cICP [12, 16, 0, 1]`), and writes it to `output`.
+///
+/// # Errors
+///
+/// Returns [`PngError`] when the capture is empty, the buffer is the wrong
+/// size, encoding fails, or the file cannot be written.
+pub fn write_hdr_png(
+    output: &Path,
+    width: u32,
+    height: u32,
+    mut rgba_linear_p3: Vec<f32>,
+    alpha: Alpha,
+) -> Result<(), PngError> {
+    flatten_linear_over_white(&mut rgba_linear_p3, alpha);
+    let png = encode_hdr_png(width, height, &rgba_linear_p3)?;
+    write_png_bytes(output, &png)
+}
+
+/// Writes a 16-bit Display P3 PQ HDR PNG (`cICP [12, 16, 0, 1]`) from
+/// little-endian IEEE-754 `f16` `ExtendedLinearDisplayP3` RGBA bytes.
+///
+/// Flattens over SDR white `(1.0, 1.0, 1.0)` under `alpha` and creates the
+/// parent directory when needed.
+///
+/// # Errors
+///
+/// Returns [`PngError`] when the capture is empty, the buffer length does not
+/// match `width * height * 8`, encoding fails, or the file cannot be written.
+pub fn write_hdr_png_f16(
+    output: &Path,
+    width: u32,
+    height: u32,
+    rgba16f_bytes: &[u8],
+    alpha: Alpha,
+) -> Result<(), PngError> {
+    let rgba_f32 = decode_rgba16f_le(width, height, rgba16f_bytes)?;
+    write_hdr_png(output, width, height, rgba_f32, alpha)
+}
+
+fn decode_rgba16f_le(width: u32, height: u32, rgba16f_bytes: &[u8]) -> Result<Vec<f32>, PngError> {
+    if rgba16f_bytes.is_empty() || width == 0 || height == 0 {
+        return Err(PngError::Empty {
+            width,
+            height,
+            len: rgba16f_bytes.len(),
+        });
+    }
+    let expected_len = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|pixels| pixels.checked_mul(8));
+    if expected_len != Some(rgba16f_bytes.len()) {
+        return Err(PngError::InvalidBuffer {
+            width,
+            height,
+            len: rgba16f_bytes.len(),
+        });
+    }
+    Ok(rgba16f_bytes
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&bits| f16::from_le_bytes(bits).to_f32())
+        .collect())
+}
+
+fn write_png_bytes(output: &Path, png: &[u8]) -> Result<(), PngError> {
+    if let Some(parent) = output.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent).map_err(|source| PngError::CreateDir {
             path: parent.to_path_buf(),
             source,
         })?;
     }
-    std::fs::write(output, &png).map_err(|source| PngError::Write {
+    fs::write(output, png).map_err(|source| PngError::Write {
         path: output.to_path_buf(),
         source,
     })
@@ -742,7 +1001,50 @@ pub fn plan_scenario_timeline(
         .collect())
 }
 
-/// Why reading or writing a raw RGBA8 preview frame stream failed.
+/// Pixel format carried by a `WUIRF` raw preview frame stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RawPixelFormat {
+    /// Display P3 8-bit opaque RGBA (4 bytes per pixel).
+    Rgba8DisplayP3,
+    /// `ExtendedLinearDisplayP3` IEEE-754 half-float (`f16` little-endian)
+    /// opaque RGBA (8 bytes per pixel; `1.0` = 203 nits SDR reference white).
+    Rgba16FloatLinearDisplayP3,
+}
+
+impl RawPixelFormat {
+    /// Bytes stored per pixel in the frame payload.
+    #[must_use]
+    pub const fn bytes_per_pixel(self) -> usize {
+        match self {
+            Self::Rgba8DisplayP3 => 4,
+            Self::Rgba16FloatLinearDisplayP3 => 8,
+        }
+    }
+
+    /// Whether this format carries extended-dynamic-range linear HDR pixels.
+    #[must_use]
+    pub const fn is_hdr(self) -> bool {
+        matches!(self, Self::Rgba16FloatLinearDisplayP3)
+    }
+
+    const fn wire_code(self) -> u8 {
+        match self {
+            Self::Rgba8DisplayP3 => 0,
+            Self::Rgba16FloatLinearDisplayP3 => 1,
+        }
+    }
+
+    const fn from_wire_code(code: u8) -> Option<Self> {
+        match code {
+            0 => Some(Self::Rgba8DisplayP3),
+            1 => Some(Self::Rgba16FloatLinearDisplayP3),
+            _ => None,
+        }
+    }
+}
+
+/// Why reading or writing a raw preview frame stream failed.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum RawFrameError {
@@ -762,8 +1064,8 @@ pub enum RawFrameError {
         /// Buffer length in bytes.
         len: usize,
     },
-    /// Frame buffer length does not equal `width * height * 4`.
-    #[error("invalid RGBA8 frame buffer: {len} bytes for {width}x{height}")]
+    /// Frame buffer length does not match the expected pixel format byte size.
+    #[error("invalid raw frame buffer: {len} bytes for {width}x{height}")]
     InvalidBuffer {
         /// Frame width in pixels.
         width: u32,
@@ -771,6 +1073,14 @@ pub enum RawFrameError {
         height: u32,
         /// Buffer length in bytes.
         len: usize,
+    },
+    /// Attempted to write a frame whose pixel format does not match the stream's format.
+    #[error("raw frame stream expects {expected:?} frames, got {actual:?}")]
+    FormatMismatch {
+        /// Format the writer was opened with.
+        expected: RawPixelFormat,
+        /// Format the caller attempted to write.
+        actual: RawPixelFormat,
     },
     /// A subsequent frame changed dimensions mid-stream.
     #[error(
@@ -789,7 +1099,7 @@ pub enum RawFrameError {
     /// Stream finished with zero frames written.
     #[error("video capture produced no frames")]
     NoFrames,
-    /// Input file is not a valid `WUIRF001` raw frame stream.
+    /// Input file is not a valid `WUIRF001` or `WUIRF002` raw frame stream.
     #[error("invalid raw frame stream header in {}", .path.display())]
     InvalidHeader {
         /// File path whose header failed validation.
@@ -813,26 +1123,55 @@ pub enum RawFrameError {
     },
 }
 
-/// Streams flattened opaque RGBA8 frames to disk in a compact binary framing
-/// (`WUIRF001`) so the host CLI can hardware-encode them without per-frame PNG
-/// compression overhead.
+/// Streams flattened opaque Display P3 frames to disk for host-side encoding.
+///
+/// Uses `WUIRF001` for 8-bit Display P3 SDR streams and `WUIRF002` for typed
+/// SDR/HDR (`Rgba16Float` linear Display P3) streams.
 #[derive(Debug)]
 pub struct RawFrameStreamWriter {
     path: PathBuf,
     writer: BufWriter<File>,
     fps: u32,
+    pixel_format: RawPixelFormat,
     dimensions: Option<(u32, u32)>,
     frame_count: u64,
 }
 
 impl RawFrameStreamWriter {
-    /// Creates a new raw frame stream at `path` for captures at `fps`.
+    /// Creates a new 8-bit Display P3 (`WUIRF001`) raw frame stream at `path`
+    /// for captures at `fps`.
     ///
     /// # Errors
     ///
     /// Returns [`RawFrameError::InvalidFps`] when `fps == 0`, or an I/O error
     /// if the parent directory or file cannot be created.
     pub fn create(path: impl AsRef<Path>, fps: u32) -> Result<Self, RawFrameError> {
+        Self::create_with_format(path, fps, RawPixelFormat::Rgba8DisplayP3)
+    }
+
+    /// Creates a new HDR `Rgba16Float` `ExtendedLinearDisplayP3` (`WUIRF002`)
+    /// raw frame stream at `path` for captures at `fps`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RawFrameError::InvalidFps`] when `fps == 0`, or an I/O error
+    /// if the parent directory or file cannot be created.
+    pub fn create_hdr(path: impl AsRef<Path>, fps: u32) -> Result<Self, RawFrameError> {
+        Self::create_with_format(path, fps, RawPixelFormat::Rgba16FloatLinearDisplayP3)
+    }
+
+    /// Creates a new raw frame stream at `path` for `pixel_format` captures at
+    /// `fps`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RawFrameError::InvalidFps`] when `fps == 0`, or an I/O error
+    /// if the parent directory or file cannot be created.
+    pub fn create_with_format(
+        path: impl AsRef<Path>,
+        fps: u32,
+        pixel_format: RawPixelFormat,
+    ) -> Result<Self, RawFrameError> {
         if fps == 0 {
             return Err(RawFrameError::InvalidFps);
         }
@@ -853,18 +1192,26 @@ impl RawFrameStreamWriter {
             path,
             writer: BufWriter::new(file),
             fps,
+            pixel_format,
             dimensions: None,
             frame_count: 0,
         })
     }
 
-    /// Flattens `rgba_data` over white under `alpha` and appends the frame at
-    /// `timestamp` to the stream.
+    /// Pixel format written by this stream.
+    #[must_use]
+    pub const fn pixel_format(&self) -> RawPixelFormat {
+        self.pixel_format
+    }
+
+    /// Flattens 8-bit Display P3 `rgba_data` over white under `alpha` and
+    /// appends the frame at `timestamp` to the stream.
     ///
     /// # Errors
     ///
-    /// Returns [`RawFrameError`] if the frame is empty, malformed, changes
-    /// dimensions mid-stream, or cannot be written.
+    /// Returns [`RawFrameError`] if the writer format is not
+    /// [`RawPixelFormat::Rgba8DisplayP3`], the frame is empty or malformed,
+    /// dimensions change mid-stream, or writing fails.
     pub fn write_frame(
         &mut self,
         width: u32,
@@ -873,24 +1220,122 @@ impl RawFrameStreamWriter {
         alpha: Alpha,
         timestamp: Duration,
     ) -> Result<(), RawFrameError> {
-        if width == 0 || height == 0 || rgba_data.is_empty() {
+        if self.pixel_format != RawPixelFormat::Rgba8DisplayP3 {
+            return Err(RawFrameError::FormatMismatch {
+                expected: self.pixel_format,
+                actual: RawPixelFormat::Rgba8DisplayP3,
+            });
+        }
+        self.validate_frame_bytes(width, height, rgba_data.len())?;
+        flatten_alpha_over_white(&mut rgba_data, alpha);
+        self.append_encoded_frame(width, height, &rgba_data, timestamp)
+    }
+
+    /// Flattens `ExtendedLinearDisplayP3` RGBA `f32` pixels over SDR white
+    /// under `alpha`, encodes them as IEEE-754 `f16` little-endian RGBA, and
+    /// appends the frame at `timestamp` to an HDR stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RawFrameError`] if the writer format is not
+    /// [`RawPixelFormat::Rgba16FloatLinearDisplayP3`], the buffer is empty or
+    /// malformed, dimensions change mid-stream, or writing fails.
+    pub fn write_hdr_frame_f32(
+        &mut self,
+        width: u32,
+        height: u32,
+        rgba_linear_p3: &[f32],
+        alpha: Alpha,
+        timestamp: Duration,
+    ) -> Result<(), RawFrameError> {
+        if self.pixel_format != RawPixelFormat::Rgba16FloatLinearDisplayP3 {
+            return Err(RawFrameError::FormatMismatch {
+                expected: self.pixel_format,
+                actual: RawPixelFormat::Rgba16FloatLinearDisplayP3,
+            });
+        }
+        let byte_len = rgba_linear_p3.len().saturating_mul(2);
+        self.validate_frame_bytes(width, height, byte_len)?;
+        let mut linear = rgba_linear_p3.to_vec();
+        flatten_linear_over_white(&mut linear, alpha);
+        let mut f16_bytes = Vec::with_capacity(byte_len);
+        for value in linear {
+            f16_bytes.extend_from_slice(&f16::from_f32(value).to_le_bytes());
+        }
+        self.append_encoded_frame(width, height, &f16_bytes, timestamp)
+    }
+
+    /// Flattens `ExtendedLinearDisplayP3` IEEE-754 `f16` little-endian RGBA
+    /// bytes (`width * height * 8` bytes) over SDR white under `alpha` and
+    /// appends the frame at `timestamp` to an HDR stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RawFrameError`] if the writer format is not
+    /// [`RawPixelFormat::Rgba16FloatLinearDisplayP3`], the buffer is empty or
+    /// malformed, dimensions change mid-stream, or writing fails.
+    pub fn write_hdr_frame_f16(
+        &mut self,
+        width: u32,
+        height: u32,
+        rgba16f_bytes: &[u8],
+        alpha: Alpha,
+        timestamp: Duration,
+    ) -> Result<(), RawFrameError> {
+        if self.pixel_format != RawPixelFormat::Rgba16FloatLinearDisplayP3 {
+            return Err(RawFrameError::FormatMismatch {
+                expected: self.pixel_format,
+                actual: RawPixelFormat::Rgba16FloatLinearDisplayP3,
+            });
+        }
+        self.validate_frame_bytes(width, height, rgba16f_bytes.len())?;
+        let mut linear: Vec<f32> = rgba16f_bytes
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|&bits| f16::from_le_bytes(bits).to_f32())
+            .collect();
+        flatten_linear_over_white(&mut linear, alpha);
+        let mut encoded = Vec::with_capacity(rgba16f_bytes.len());
+        for value in linear {
+            encoded.extend_from_slice(&f16::from_f32(value).to_le_bytes());
+        }
+        self.append_encoded_frame(width, height, &encoded, timestamp)
+    }
+
+    fn validate_frame_bytes(
+        &self,
+        width: u32,
+        height: u32,
+        byte_len: usize,
+    ) -> Result<(), RawFrameError> {
+        if width == 0 || height == 0 || byte_len == 0 {
             return Err(RawFrameError::EmptyFrame {
                 width,
                 height,
-                len: rgba_data.len(),
+                len: byte_len,
             });
         }
         let expected_len = (width as usize)
             .checked_mul(height as usize)
-            .and_then(|pixels| pixels.checked_mul(4));
-        if expected_len != Some(rgba_data.len()) {
+            .and_then(|pixels| pixels.checked_mul(self.pixel_format.bytes_per_pixel()));
+        if expected_len != Some(byte_len) {
             return Err(RawFrameError::InvalidBuffer {
                 width,
                 height,
-                len: rgba_data.len(),
+                len: byte_len,
             });
         }
+        Ok(())
+    }
 
+    fn append_encoded_frame(
+        &mut self,
+        width: u32,
+        height: u32,
+        payload: &[u8],
+        timestamp: Duration,
+    ) -> Result<(), RawFrameError> {
         if let Some((expected_width, expected_height)) = self.dimensions {
             if expected_width != width || expected_height != height {
                 return Err(RawFrameError::DimensionMismatch {
@@ -901,17 +1346,27 @@ impl RawFrameStreamWriter {
                 });
             }
         } else {
-            self.write_all(RAW_FRAME_STREAM_MAGIC)?;
-            self.write_all(&self.fps.to_le_bytes())?;
-            self.write_all(&width.to_le_bytes())?;
-            self.write_all(&height.to_le_bytes())?;
+            match self.pixel_format {
+                RawPixelFormat::Rgba8DisplayP3 => {
+                    self.write_all(RAW_FRAME_STREAM_MAGIC_V1)?;
+                    self.write_all(&self.fps.to_le_bytes())?;
+                    self.write_all(&width.to_le_bytes())?;
+                    self.write_all(&height.to_le_bytes())?;
+                }
+                RawPixelFormat::Rgba16FloatLinearDisplayP3 => {
+                    self.write_all(RAW_FRAME_STREAM_MAGIC_V2)?;
+                    self.write_all(&self.fps.to_le_bytes())?;
+                    self.write_all(&width.to_le_bytes())?;
+                    self.write_all(&height.to_le_bytes())?;
+                    self.write_all(&[self.pixel_format.wire_code()])?;
+                }
+            }
             self.dimensions = Some((width, height));
         }
 
-        flatten_alpha_over_white(&mut rgba_data, alpha);
         let timestamp_ns = u64::try_from(timestamp.as_nanos()).unwrap_or(u64::MAX);
         self.write_all(&timestamp_ns.to_le_bytes())?;
-        self.write_all(&rgba_data)?;
+        self.write_all(payload)?;
         self.frame_count += 1;
         Ok(())
     }
@@ -943,7 +1398,8 @@ impl RawFrameStreamWriter {
     }
 }
 
-/// Reads flattened opaque RGBA8 frames produced by [`RawFrameStreamWriter`].
+/// Reads flattened opaque frames produced by [`RawFrameStreamWriter`]
+/// (`WUIRF001` 8-bit Display P3 or `WUIRF002` typed SDR/HDR).
 #[derive(Debug)]
 pub struct RawFrameStreamReader {
     path: PathBuf,
@@ -951,16 +1407,18 @@ pub struct RawFrameStreamReader {
     fps: u32,
     width: u32,
     height: u32,
+    pixel_format: RawPixelFormat,
     frame_bytes: usize,
 }
 
 impl RawFrameStreamReader {
-    /// Opens a `WUIRF001` raw frame stream and validates its header.
+    /// Opens a `WUIRF001` or `WUIRF002` raw frame stream and validates its
+    /// header.
     ///
     /// # Errors
     ///
     /// Returns [`RawFrameError`] if the file cannot be opened or has an invalid
-    /// header, zero fps, or zero dimensions.
+    /// header, unknown pixel format, zero fps, or zero dimensions.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, RawFrameError> {
         let path = path.as_ref().to_path_buf();
         let file = File::open(&path).map_err(|source| RawFrameError::Io {
@@ -979,9 +1437,27 @@ impl RawFrameStreamReader {
                 }
             }
         })?;
-        if &header[0..8] != RAW_FRAME_STREAM_MAGIC {
-            return Err(RawFrameError::InvalidHeader { path });
-        }
+        let pixel_format = match &header[0..8] {
+            magic if magic == RAW_FRAME_STREAM_MAGIC_V1 => RawPixelFormat::Rgba8DisplayP3,
+            magic if magic == RAW_FRAME_STREAM_MAGIC_V2 => {
+                let mut format_byte = [0_u8; 1];
+                reader.read_exact(&mut format_byte).map_err(|source| {
+                    if source.kind() == ErrorKind::UnexpectedEof {
+                        RawFrameError::InvalidHeader { path: path.clone() }
+                    } else {
+                        RawFrameError::Io {
+                            path: path.clone(),
+                            source,
+                        }
+                    }
+                })?;
+                let Some(format) = RawPixelFormat::from_wire_code(format_byte[0]) else {
+                    return Err(RawFrameError::InvalidHeader { path });
+                };
+                format
+            }
+            _ => return Err(RawFrameError::InvalidHeader { path }),
+        };
         let fps = u32::from_le_bytes([header[8], header[9], header[10], header[11]]);
         let width = u32::from_le_bytes([header[12], header[13], header[14], header[15]]);
         let height = u32::from_le_bytes([header[16], header[17], header[18], header[19]]);
@@ -990,7 +1466,7 @@ impl RawFrameStreamReader {
         }
         let Some(frame_bytes) = (width as usize)
             .checked_mul(height as usize)
-            .and_then(|pixels| pixels.checked_mul(4))
+            .and_then(|pixels| pixels.checked_mul(pixel_format.bytes_per_pixel()))
             .filter(|&len| len > 0)
         else {
             return Err(RawFrameError::InvalidHeader { path });
@@ -1001,6 +1477,7 @@ impl RawFrameStreamReader {
             fps,
             width,
             height,
+            pixel_format,
             frame_bytes,
         })
     }
@@ -1021,6 +1498,18 @@ impl RawFrameStreamReader {
     #[must_use]
     pub const fn height(&self) -> u32 {
         self.height
+    }
+
+    /// Pixel format carried by every frame in this stream.
+    #[must_use]
+    pub const fn pixel_format(&self) -> RawPixelFormat {
+        self.pixel_format
+    }
+
+    /// Bytes per pixel for this stream's pixel format.
+    #[must_use]
+    pub const fn bytes_per_pixel(&self) -> usize {
+        self.pixel_format.bytes_per_pixel()
     }
 
     /// Reads the next frame into `rgba_out` (reusing its allocation) and
@@ -1071,14 +1560,20 @@ impl RawFrameStreamReader {
 
 #[cfg(test)]
 mod tests {
+    use std::fs::{self, File};
+    use std::io::{BufReader, Cursor};
     use std::path::PathBuf;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
-    use std::{env, fs, process};
+    use std::{env, process};
+
+    use half::f16;
+    use png::{BitDepth, Decoder as PngDecoder};
 
     use super::{
         Alpha, PreviewRunConfig, PreviewRunMode, RawFrameError, RawFrameStreamReader,
-        RawFrameStreamWriter, ScenarioEvent, ScenarioEventKind, ScenarioSample, VideoCaptureConfig,
-        flatten_alpha_over_white, frame_offset, plan_scenario_timeline,
+        RawFrameStreamWriter, RawPixelFormat, ScenarioEvent, ScenarioEventKind, ScenarioSample,
+        VideoCaptureConfig, encode_hdr_png, encode_png, flatten_alpha_over_white, frame_offset,
+        linear_edr_to_pq, plan_scenario_timeline, write_hdr_png_f16,
     };
 
     fn scratch_path(name: &str) -> PathBuf {
@@ -1232,6 +1727,7 @@ mod tests {
 
         let mut reader = RawFrameStreamReader::open(&path).expect("open stream");
         assert_eq!((reader.fps(), reader.width(), reader.height()), (60, 2, 1));
+        assert_eq!(reader.pixel_format(), RawPixelFormat::Rgba8DisplayP3);
         let mut buf = Vec::new();
         assert_eq!(
             reader.next_frame(&mut buf).expect("read 0"),
@@ -1246,6 +1742,165 @@ mod tests {
         assert_eq!(reader.next_frame(&mut buf).expect("eof"), None);
 
         let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn encode_png_tags_display_p3_sdr_cicp() {
+        let png_bytes =
+            encode_png(2, 1, vec![255, 0, 0, 255, 0, 255, 0, 255]).expect("encode sdr png");
+        let decoder = PngDecoder::new(Cursor::new(png_bytes));
+        let reader = decoder.read_info().expect("decode sdr png");
+        let info = reader.info();
+        assert_eq!(info.bit_depth, BitDepth::Eight);
+        let cicp = info
+            .coding_independent_code_points
+            .expect("SDR preview PNG must carry Display P3 cICP chunk");
+        assert_eq!(cicp.color_primaries, 12);
+        assert_eq!(cicp.transfer_function, 13);
+        assert_eq!(cicp.matrix_coefficients, 0);
+        assert!(cicp.is_video_full_range_image);
+    }
+
+    #[test]
+    fn encode_hdr_png_writes_16bit_display_p3_pq_preserving_edr_headroom() {
+        // Pixel 0: SDR white (1.0 = 203 nits), Pixel 1: 4x EDR highlight (812 nits).
+        let png_bytes =
+            encode_hdr_png(2, 1, &[1.0, 1.0, 1.0, 1.0, 4.0, 2.0, 0.5, 1.0]).expect("encode hdr");
+        let decoder = PngDecoder::new(Cursor::new(png_bytes));
+        let mut reader = decoder.read_info().expect("decode hdr png");
+        let info = reader.info();
+        assert_eq!(info.bit_depth, BitDepth::Sixteen);
+        let cicp = info
+            .coding_independent_code_points
+            .expect("HDR preview PNG must carry Display P3 PQ cICP chunk");
+        assert_eq!(cicp.color_primaries, 12);
+        assert_eq!(cicp.transfer_function, 16);
+        assert_eq!(cicp.matrix_coefficients, 0);
+        assert!(cicp.is_video_full_range_image);
+
+        let mut pixels = vec![0_u8; reader.output_buffer_size().expect("buffer size")];
+        let frame = reader.next_frame(&mut pixels).expect("read hdr pixels");
+        let bytes = &pixels[..frame.buffer_size()];
+        let sdr_r = u16::from_be_bytes([bytes[0], bytes[1]]);
+        let hdr_r = u16::from_be_bytes([bytes[8], bytes[9]]);
+        let hdr_g = u16::from_be_bytes([bytes[10], bytes[11]]);
+        let hdr_b = u16::from_be_bytes([bytes[12], bytes[13]]);
+        assert!(
+            hdr_r > sdr_r,
+            "4.0 EDR highlight ({hdr_r}) must encode strictly brighter than 1.0 SDR white ({sdr_r})"
+        );
+        assert!(hdr_g > sdr_r);
+        assert!(hdr_b < sdr_r);
+        assert!((linear_edr_to_pq(1.0) - 0.5807).abs() < 0.002);
+    }
+
+    #[test]
+    fn write_hdr_png_f16_flattens_and_tags_cicp() {
+        let path = scratch_path("hdr-png-f16").with_extension("png");
+        let mut f16_bytes = Vec::new();
+        for v in [3.0_f32, 1.5, 0.5, 1.0] {
+            f16_bytes.extend_from_slice(&f16::from_f32(v).to_le_bytes());
+        }
+        write_hdr_png_f16(&path, 1, 1, &f16_bytes, Alpha::Premultiplied)
+            .expect("write hdr png from f16");
+        let file = File::open(&path).expect("open hdr png");
+        let reader = PngDecoder::new(BufReader::new(file))
+            .read_info()
+            .expect("decode hdr png");
+        let cicp = reader
+            .info()
+            .coding_independent_code_points
+            .expect("cICP present");
+        assert_eq!((cicp.color_primaries, cicp.transfer_function), (12, 16));
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn hdr_raw_frame_stream_v2_roundtrips_linear_p3_f16_and_rejects_mismatch() {
+        let path = scratch_path("hdr-v2");
+        let mut writer = RawFrameStreamWriter::create_hdr(&path, 60).expect("create hdr stream");
+        assert_eq!(
+            writer.pixel_format(),
+            RawPixelFormat::Rgba16FloatLinearDisplayP3
+        );
+        assert!(matches!(
+            writer.write_frame(1, 1, vec![0; 4], Alpha::Straight, Duration::ZERO),
+            Err(RawFrameError::FormatMismatch { .. })
+        ));
+        writer
+            .write_hdr_frame_f32(
+                2,
+                1,
+                &[3.5, 1.0, 0.25, 1.0, 2.0, 0.0, 0.0, 0.5],
+                Alpha::Straight,
+                Duration::from_millis(0),
+            )
+            .expect("write hdr f32 frame");
+        let mut f16_frame = Vec::new();
+        for v in [4.0_f32, 2.0, 1.0, 1.0, 0.5, 0.5, 0.5, 1.0] {
+            f16_frame.extend_from_slice(&f16::from_f32(v).to_le_bytes());
+        }
+        writer
+            .write_hdr_frame_f16(
+                2,
+                1,
+                &f16_frame,
+                Alpha::Premultiplied,
+                Duration::from_millis(16),
+            )
+            .expect("write hdr f16 frame");
+        assert_eq!(writer.finish().expect("finish hdr stream"), 2);
+
+        let mut reader = RawFrameStreamReader::open(&path).expect("open hdr v2 stream");
+        assert_eq!(
+            reader.pixel_format(),
+            RawPixelFormat::Rgba16FloatLinearDisplayP3
+        );
+        assert_eq!(reader.bytes_per_pixel(), 8);
+        assert_eq!((reader.fps(), reader.width(), reader.height()), (60, 2, 1));
+
+        let mut buf = Vec::new();
+        assert_eq!(
+            reader.next_frame(&mut buf).expect("read hdr 0"),
+            Some(Duration::from_millis(0))
+        );
+        assert_eq!(buf.len(), 2 * 8);
+        let r0 = f16::from_le_bytes([buf[0], buf[1]]).to_f32();
+        let r1 = f16::from_le_bytes([buf[8], buf[9]]).to_f32();
+        assert!((r0 - 3.5).abs() < 0.01, "HDR 3.5 preserved: {r0}");
+        // Straight (2.0 * 0.5 + 1.0 * 0.5) = 1.5 over SDR white.
+        assert!((r1 - 1.5).abs() < 0.01, "flattened HDR pixel: {r1}");
+
+        assert_eq!(
+            reader.next_frame(&mut buf).expect("read hdr 1"),
+            Some(Duration::from_millis(16))
+        );
+        let r0_f2 = f16::from_le_bytes([buf[0], buf[1]]).to_f32();
+        assert!((r0_f2 - 4.0).abs() < 0.01);
+        assert_eq!(reader.next_frame(&mut buf).expect("eof"), None);
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn preview_run_config_json_defaults_and_roundtrips_hdr() {
+        let legacy_json = r#"{"width":375.0,"height":667.0,"mode":{"Image":{"output":"out.png"}},"content_deadline_ms":10000}"#;
+        let legacy: PreviewRunConfig =
+            serde_json::from_str(legacy_json).expect("legacy json without hdr parses");
+        assert!(!legacy.hdr());
+
+        let hdr_config = PreviewRunConfig::new(
+            375.0,
+            667.0,
+            PreviewRunMode::Image {
+                output: PathBuf::from("hdr.png"),
+            },
+            Duration::from_secs(10),
+        )
+        .with_hdr(true);
+        let json = serde_json::to_string(&hdr_config).expect("serialize hdr config");
+        let parsed: PreviewRunConfig = serde_json::from_str(&json).expect("deserialize hdr config");
+        assert!(parsed.hdr());
     }
 
     #[test]

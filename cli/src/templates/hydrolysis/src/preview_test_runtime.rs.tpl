@@ -13,6 +13,10 @@ pub(crate) fn run() {
     hydrolysis::init_tracing();
     let config = PreviewRunConfig::load_from_env()
         .unwrap_or_else(|error| panic!("hydrolysis preview test: {error}"));
+    assert!(
+        !config.hdr(),
+        "hydrolysis preview test: --hdr capture requires linear Display P3 float readback from OffscreenApp"
+    );
     let color_scheme = config.color_scheme().map(|scheme| match scheme {
         PreviewColorScheme::Light => waterui::theme::ColorScheme::Light,
         PreviewColorScheme::Dark => waterui::theme::ColorScheme::Dark,

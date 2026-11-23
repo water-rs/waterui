@@ -79,6 +79,7 @@ async fn run_preview_test(shell: &Shell, args: PreviewTestArgs) -> Result<()> {
                 content_deadline: request::DEFAULT_CONTENT_DEADLINE,
                 color_scheme,
                 scale,
+                hdr: args.hdr,
                 sccache_path: sccache_path.clone(),
                 progress: Some(shell.build_progress()),
             },
@@ -176,6 +177,11 @@ pub struct Args {
     #[arg(long, value_name = "FPS")]
     fps: Option<u32>,
 
+    /// Capture extended-dynamic-range HDR output (16-bit Display P3 PQ PNGs
+    /// and 10-bit PQ HEVC video when `--video` is set).
+    #[arg(long)]
+    hdr: bool,
+
     /// Android device serial or AVD name (only with `--platform android`).
     /// Without it the remembered last-used device wins, then an unambiguous
     /// single candidate, then a picker.
@@ -218,6 +224,7 @@ impl Args {
             platform: self.platform,
             device: self.device.clone(),
             content_timeout: Some(self.content_timeout),
+            hdr: self.hdr,
         }
     }
 }
@@ -229,6 +236,10 @@ enum PreviewCommand {
 }
 
 #[derive(ClapArgs, Debug)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "clap CLI flags map directly to independent boolean options"
+)]
 struct PreviewTestArgs {
     /// Preview target: a `#[preview]` function path or a `WaterUI` expression.
     target: Option<String>,
@@ -276,6 +287,11 @@ struct PreviewTestArgs {
     /// Fixed video frame rate in frames per second (default: 60; requires `--video`).
     #[arg(long, value_name = "FPS")]
     fps: Option<u32>,
+
+    /// Capture extended-dynamic-range HDR output (16-bit Display P3 PQ PNGs
+    /// and 10-bit PQ HEVC video when `--video` is set).
+    #[arg(long)]
+    hdr: bool,
 
     /// Test without accessing the network — the same switch as
     /// `cargo build --offline`, and `CARGO_NET_OFFLINE` is honoured the same
@@ -379,6 +395,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
                 content_deadline: request.content_deadline(),
                 color_scheme: request.color_scheme(),
                 scale: request.scale(),
+                hdr: request.hdr(),
                 sccache_path,
                 progress: Some(shell.build_progress()),
             },
@@ -408,6 +425,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
                 content_deadline: request.content_deadline(),
                 color_scheme: request.color_scheme(),
                 scale: request.scale(),
+                hdr: request.hdr(),
                 sccache_path,
                 progress: Some(shell.build_progress()),
             },
@@ -917,10 +935,12 @@ mod tests {
             "out.mp4",
             "--fps",
             "30",
+            "--hdr",
         ]);
         assert_eq!(args.scenario, Some(PathBuf::from("scenario.toml")));
         assert_eq!(args.video, Some(PathBuf::from("out.mp4")));
         assert_eq!(args.fps, Some(30));
+        assert!(args.hdr);
 
         let test_args = parse(&[
             "preview",
@@ -930,12 +950,44 @@ mod tests {
             "test.mp4",
             "--fps",
             "60",
+            "--hdr",
         ]);
         let Some(PreviewCommand::Test(test)) = test_args.command else {
             panic!("expected test subcommand");
         };
         assert_eq!(test.video, Some(PathBuf::from("test.mp4")));
         assert_eq!(test.fps, Some(60));
+        assert!(test.hdr);
+    }
+
+    #[test]
+    fn cli_and_mcp_hdr_args_resolve_to_the_same_request() {
+        let platform = host_platform_name();
+        let cli_args = parse(&[
+            "preview",
+            "views::hdr_glass",
+            "--backend",
+            "hydrolysis",
+            "--platform",
+            platform,
+            "--hdr",
+        ]);
+        let cli_request = cli_args
+            .preview_args(cli_args.target.as_deref().expect("target"))
+            .resolve(&project_manifest(), "demo_app")
+            .expect("cli hdr resolve");
+        let mcp_args: PreviewArgs = serde_json::from_value(serde_json::json!({
+            "target": "views::hdr_glass",
+            "backend": "hydrolysis",
+            "platform": platform,
+            "hdr": true,
+        }))
+        .expect("mcp hdr args parse");
+        let mcp_request = mcp_args
+            .resolve(&project_manifest(), "demo_app")
+            .expect("mcp hdr resolve");
+        assert_eq!(cli_request, mcp_request);
+        assert!(cli_request.hdr());
     }
 
     #[test]
