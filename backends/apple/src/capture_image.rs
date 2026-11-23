@@ -12,15 +12,15 @@
 #[cfg(any(waterui_feature = "capture", preview_entry, feature = "native-test"))]
 use std::cell::Cell;
 use std::cell::RefCell;
-#[cfg(any(preview_entry, feature = "native-test"))]
+#[cfg(preview_entry)]
 use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
-#[cfg(any(preview_entry, feature = "native-test"))]
+#[cfg(preview_entry)]
 use cocoa_ui::bitmap::HdrRaster;
-#[cfg(any(preview_entry, feature = "native-test"))]
+#[cfg(preview_entry)]
 use cocoa_ui::dynamic_range::{DynamicRange, apply_to_view};
 #[cfg(target_os = "macos")]
 use cocoa_ui::objc2::AnyThread;
@@ -33,11 +33,11 @@ use cocoa_ui::objc2_metal::{
     MTLDevice, MTLOrigin, MTLPixelFormat, MTLRegion, MTLSize, MTLStorageMode, MTLTexture,
     MTLTextureDescriptor, MTLTextureUsage,
 };
-#[cfg(any(preview_entry, feature = "native-test"))]
+#[cfg(preview_entry)]
 use cocoa_ui::view::bounds as view_bounds;
-#[cfg(any(preview_entry, feature = "native-test"))]
+#[cfg(preview_entry)]
 use half::f16;
-#[cfg(any(preview_entry, feature = "native-test"))]
+#[cfg(preview_entry)]
 use waterui::contract_violation;
 use waterui_backend_core::Environment;
 
@@ -548,7 +548,7 @@ fn read_target(target: &ProtocolObject<dyn MTLTexture>, width: u32, height: u32)
 /// Reads `width` × `height` premultiplied extended linear Display P3 half-float
 /// texels out of a `.shared` `MTLPixelFormat::RGBA16Float` capture target and
 /// decodes them to unclamped `f32` channels.
-#[cfg(any(preview_entry, feature = "native-test"))]
+#[cfg(preview_entry)]
 fn read_hdr_target(target: &ProtocolObject<dyn MTLTexture>, width: u32, height: u32) -> HdrRaster {
     let row_bytes = width as usize * 8;
     let mut raw = vec![0u8; row_bytes * height as usize];
@@ -819,7 +819,7 @@ impl CaptureDrive {
     /// # Errors
     ///
     /// Same failure modes as [`Self::capture_rgba`].
-    #[cfg(any(preview_entry, feature = "native-test"))]
+    #[cfg(preview_entry)]
     #[expect(
         clippy::future_not_send,
         reason = "the terminal capture awaits main-thread signals shared through `Rc`"
