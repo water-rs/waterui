@@ -141,3 +141,37 @@ fn a_row_straddling_the_viewport_edge_cannot_be_tapped_above_the_clip() {
         "the painted sliver of row 0 must still receive its tap"
     );
 }
+
+#[test]
+fn infinite_cross_axis_scroll_content_reports_zero_window_minimum_on_both_axes() {
+    for horizontal in [false, true] {
+        let builder = AnyViewBuilder::<AnyView>::new(move || {
+            if horizontal {
+                AnyView::new(waterui_layout::scroll::scroll_horizontal(
+                    vstack((text("wide"),)).size(120.0, f32::INFINITY),
+                ))
+            } else {
+                AnyView::new(scroll(vstack((text("tall"),)).size(f32::INFINITY, 120.0)))
+            }
+        });
+        let env = test_environment();
+        let mut runtime = HeadlessRuntime::new_for_tests(
+            env.clone(),
+            builder,
+            WINDOW_WIDTH,
+            WINDOW_HEIGHT,
+            MinimalTestTheme::default(),
+        );
+        let mut at = Instant::now();
+        settle(&mut runtime, &mut at, 2);
+        let min = runtime
+            .renderer_mut()
+            .measure_content_minimum(&env)
+            .expect("the window tree is mounted");
+        assert!(
+            min.width.is_finite() && min.height.is_finite(),
+            "horizontal={horizontal} content_minimum must stay finite, got {min:?}"
+        );
+        assert_eq!(min, waterui_core::layout::Size::zero());
+    }
+}
