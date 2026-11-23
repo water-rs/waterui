@@ -13,7 +13,7 @@ use std::time::Instant;
 use cherenkov_record::{Curve, Draw as _, Keyframes, Paint, Repeat, ShapeData, WorkingColor};
 use kurbo::{Rect, Size};
 use nami::Signal as _;
-use waterui::component::progress::{Progress, progress};
+use waterui::component::progress::{Progress, loading, progress};
 use waterui::theme::ColorScheme;
 use waterui::{AnyView, Binding, Color, Environment, View, ViewExt as _};
 use waterui_core::handler::AnyViewBuilder;
@@ -495,6 +495,71 @@ mod measured_equals_drawn {
         assert!(
             bounds.height() - bar.y1 >= 6.0 - 1e-3,
             "the value label and its spacing lie below the bar: bar at {bar:?} in {bounds:?}"
+        );
+    }
+
+    #[test]
+    fn a_circular_progress_reserves_label_and_value_label_bands() {
+        let (bounds, ring) = laid_out(
+            progress(Binding::container(0.65_f64))
+                .circular()
+                .label("Please wait..."),
+        );
+        assert!(
+            ring.y0 > 6.0,
+            "circular progress must reserve its label band above the ring: ring {ring:?} in {bounds:?}"
+        );
+        assert!(
+            bounds.height() - ring.y1 > 6.0,
+            "determinate circular progress must reserve its value-label band below the ring: ring {ring:?} in {bounds:?}"
+        );
+        assert!(
+            f64::mul_add(bounds.width(), -0.5, ring.center().x).abs() < 1e-2,
+            "circular ring must stay horizontally centred under its wider label: ring {ring:?} in {bounds:?}"
+        );
+    }
+
+    #[test]
+    fn circular_indicator_without_labels_reserves_no_bands() {
+        let view = vstack((progress(Binding::container(0.65_f64))
+            .circular()
+            .label("Please wait..."),));
+        let realizations = Rc::new(RefCell::new(Vec::new()));
+        let theme = MinimalTestTheme {
+            progress_bar_realizations: Rc::clone(&realizations),
+            circular_without_labels: true,
+            ..Default::default()
+        };
+        let mut runtime = runtime_with(view, theme);
+        let mut frames = Frames::new();
+        for _ in 0..4 {
+            frames.pump(&mut runtime);
+        }
+        let bounds = runtime
+            .accessibility_tree()
+            .and_then(|tree| {
+                tree.nodes
+                    .iter()
+                    .find(|(_, node)| node.role() == accesskit::Role::ProgressIndicator)
+                    .and_then(|(_, node)| node.bounds())
+            })
+            .expect("the indicator emits a node with bounds");
+        let (ring, _) = *realizations
+            .borrow()
+            .last()
+            .expect("the look realized its ring");
+        assert!(
+            ring.y0.abs() < 1e-3 && (bounds.height() - ring.y1).abs() < 1e-3,
+            "without_labels() suppresses bands around the ring: ring {ring:?} in {bounds:?}"
+        );
+    }
+
+    #[test]
+    fn a_loading_indicator_with_label_reserves_no_visible_label_bands() {
+        let (bounds, indicator) = laid_out(loading().label("Loading"));
+        assert!(
+            indicator.y0.abs() < 1e-3 && (bounds.height() - indicator.y1).abs() < 1e-3,
+            "loading indicator keeps its label accessibility-only: indicator {indicator:?} in {bounds:?}"
         );
     }
 }

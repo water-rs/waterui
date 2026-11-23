@@ -2797,6 +2797,8 @@ pub struct MinimalTestTheme {
     progress_specs: Rc<RefCell<Vec<ProgressSpec>>>,
     /// How the indeterminate progress looks move.
     indeterminate_progress: IndeterminateProgress,
+    /// When set, `circular_progress` suppresses visible label bands.
+    circular_without_labels: bool,
     /// Every radio indicator the theme realized.
     radio_indicator_realizations: Rc<RefCell<Vec<RadioIndicatorRealization>>>,
     /// The text field look the theme hands out for a spec and environment;
@@ -3342,30 +3344,55 @@ impl WidgetTheme for MinimalTestTheme {
 
     fn circular_progress(&self, spec: &ProgressSpec, _env: &Environment) -> IndicatorLook {
         self.progress_specs.borrow_mut().push(spec.clone());
-        IndicatorLook::new(
-            if self.indeterminate_progress.moves() && !spec.determinate() {
-                progress_looks::spinner(
-                    self.indeterminate_progress == IndeterminateProgress::Nested,
-                )
-            } else {
-                ProgressControl::new(
-                    Size::new(32.0, 32.0),
-                    Motion::uniform(Animation::linear(Duration::from_millis(15))),
-                )
-            },
-        )
+        let control = if self.indeterminate_progress.moves() && !spec.determinate() {
+            progress_looks::spinner(self.indeterminate_progress == IndeterminateProgress::Nested)
+        } else {
+            let realizations = Rc::clone(&self.progress_bar_realizations);
+            let recordings = Rc::clone(&self.progress_bar_recordings);
+            ProgressControl::new(
+                Size::new(32.0, 32.0),
+                Motion::uniform(Animation::linear(Duration::from_millis(15))),
+            )
+            .part(Custom::new(
+                (Driven::<f64, f64>::new(move |inputs| {
+                    realizations
+                        .borrow_mut()
+                        .push((inputs.frame, *inputs.value));
+                    *inputs.value
+                }),),
+                move |_recorder, _frame, (_fill,)| recordings.set(recordings.get() + 1),
+            ))
+        };
+        let look = IndicatorLook::new(control);
+        if self.circular_without_labels {
+            look.without_labels()
+        } else {
+            look
+        }
     }
 
     fn loading_indicator(&self, spec: &ProgressSpec, _env: &Environment) -> IndicatorLook {
         self.progress_specs.borrow_mut().push(spec.clone());
-        IndicatorLook::new(if self.indeterminate_progress.moves() {
+        let control = if self.indeterminate_progress.moves() {
             progress_looks::morphing()
         } else {
+            let realizations = Rc::clone(&self.progress_bar_realizations);
+            let recordings = Rc::clone(&self.progress_bar_recordings);
             ProgressControl::new(
                 Size::new(48.0, 48.0),
                 Motion::uniform(Animation::linear(Duration::from_millis(15))),
             )
-        })
+            .part(Custom::new(
+                (Driven::<f64, f64>::new(move |inputs| {
+                    realizations
+                        .borrow_mut()
+                        .push((inputs.frame, *inputs.value));
+                    *inputs.value
+                }),),
+                move |_recorder, _frame, (_fill,)| recordings.set(recordings.get() + 1),
+            ))
+        };
+        IndicatorLook::new(control)
     }
 
     #[cfg(feature = "navigation")]

@@ -8,6 +8,8 @@ use crate::theme::{NavigationBarLook, NavigationMetrics, NavigationSpec};
 use crate::widgets::controls::field_look::placeholder_text;
 #[cfg(any(feature = "text-field", feature = "secure-field"))]
 use crate::widgets::controls::field_look::value_text;
+#[cfg(feature = "picker")]
+use crate::widgets::controls::picker::segmented_intrinsic;
 #[cfg(feature = "list")]
 use waterui_core::views::AnyViewsSnapshot;
 #[cfg(any(feature = "text-field", feature = "secure-field"))]
@@ -733,7 +735,12 @@ pub fn measure_segmented_intrinsic<E: crate::text::TextEngine>(
             )
         })
         .collect();
-    crate::widgets::controls::picker::segmented_intrinsic(look.layout(), &sizes, label_size)
+    let effective_label = if look.shows_label() {
+        label_size
+    } else {
+        LayoutSize::zero()
+    };
+    segmented_intrinsic(look.layout(), &sizes, effective_label)
 }
 
 /// The intrinsic size of a menu picker's field: the widest item value, the
