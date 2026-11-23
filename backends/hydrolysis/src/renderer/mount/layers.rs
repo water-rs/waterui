@@ -42,7 +42,7 @@ use super::stretch::{ShownStretch, StretchFilter};
 use super::target::LayerTarget;
 use crate::renderer::ProducerWake;
 use crate::renderer::chrome::LiveSource;
-use crate::renderer::recording::{LoweredResources, SolidRect};
+use crate::renderer::recording::{LoweredResources, Recording, SolidRect};
 use crate::text::TextEngine;
 
 /// The liveness token of one node's layers: parents list children by
@@ -316,9 +316,13 @@ pub struct RunLayer<E: crate::text::TextEngine> {
     /// The single-colour rectangles the run's recording fills, in the
     /// parent's content space — what a top-edge sample composes.
     solid: Box<[SolidRect]>,
+    /// The compact static recording currently installed on the layer, kept so
+    /// an unchanged run skips `tx.record` on subsequent commits without
+    /// retaining large or resource-bearing recordings.
+    cached: Option<Recording>,
     /// The run's recording, kept for the tests' window-space readback.
     #[cfg(test)]
-    recording: Option<crate::renderer::recording::Recording>,
+    recording: Option<Recording>,
 }
 
 /// A widget-internal scope's layer.
@@ -2079,13 +2083,13 @@ fn commit_list_slots<T: LayerTarget<E>, E: crate::text::TextEngine>(
 
 /// Lowers one run: the list's first item draws into the parent's own
 /// content, any other gets a run layer, kept by `key` across commits.
-fn lower_run<T: LayerTarget<E>, E: crate::text::TextEngine>(
+fn lower_run<T: LayerTarget<E>, E: TextEngine>(
     cx: &mut CommitCx<'_, '_, '_, T, E>,
     parent: &Layer,
     old_runs: &mut Vec<RunLayer<E>>,
     key: RunKey<E>,
     own: bool,
-    recording: &crate::renderer::recording::Recording,
+    recording: &Recording,
 ) -> RunLayer<E> {
     let mut run = old_runs.iter().position(|run| run.key == key).map_or_else(
         || RunLayer {
@@ -2093,11 +2097,22 @@ fn lower_run<T: LayerTarget<E>, E: crate::text::TextEngine>(
             layer: None,
             held: None,
             solid: Box::default(),
+            cached: None,
             #[cfg(test)]
             recording: None,
         },
         |at| old_runs.remove(at),
     );
+    let same_target = own == run.layer.is_none();
+    if same_target
+        && run.held.is_some()
+        && run
+            .cached
+            .as_ref()
+            .is_some_and(|cached| cached.static_eq(recording))
+    {
+        return run;
+    }
     if own {
         if let Some(layer) = run.layer.take() {
             cx.retire_layer(layer);
@@ -2106,6 +2121,7 @@ fn lower_run<T: LayerTarget<E>, E: crate::text::TextEngine>(
         run.layer = Some(cx.layer());
     }
     run.solid = recording.solid_rects();
+    run.cached = recording.is_compact_static().then(|| recording.clone());
     #[cfg(test)]
     {
         run.recording = Some(recording.clone());
